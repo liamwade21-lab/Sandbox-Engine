@@ -326,10 +326,8 @@ pub fn draw_hud_pointers(
         return Ok(());
     }
     let Some(ship) = flight.ship.and_then(|e| ships.get(e).ok()) else { return Ok(()) };
+    // Pointers that need a reference body are left out without one (deep space).
     let info = &flight.info.panel;
-    if !info.valid {
-        return Ok(());
-    }
     let rect = ctx.content_rect();
     let tan_y = (cam.fov_deg.to_radians() as f64 * 0.5).tan();
     let proj = Projector { inv_rot: cam.rot.inverse(), tan: (tan_y * rect.width() as f64 / rect.height() as f64, tan_y), rect };
@@ -352,13 +350,13 @@ pub fn draw_hud_pointers(
     let min_v = 1e-3;
     match flight.hud {
         HudMode::Off => {}
-        HudMode::Horizontal => {
+        HudMode::Horizontal if info.valid => {
             draw_ladder(&painter, &proj, info.nose, info.up, hud_c);
             if info.ref_vel.length() > min_v {
                 put(info.ref_vel, Mark::Pro, vel_c);
             }
         }
-        HudMode::Orbital => {
+        HudMode::Orbital if info.valid => {
             put(info.to_ref, Mark::Body, ref_c);
             put(-info.to_ref, Mark::Body, ref_c);
             if info.ref_vel.length() > min_v {
@@ -387,6 +385,7 @@ pub fn draw_hud_pointers(
                 }
             }
         }
+        HudMode::Horizontal | HudMode::Orbital => {}
     }
     if flight.hud != HudMode::Off {
         put(info.nose, Mark::Nose, hud_c);

@@ -199,7 +199,9 @@ fn update_warp_bubble(
     let view_to_world = DMat3::from_quat(cam.rot);
     let view_to_bubble = frame * view_to_world;
 
-    // The environment map around the ship, as often as ShipWarpQuality asks.
+    // The environment map around the ship, as often as ShipWarpQuality asks (a lensed black hole
+    // that needs it keeps its rolling face updates).
+    let hole_wants = env.want;
     env.want = true;
     let now = time.elapsed_secs_f64();
     if !env.cams.is_empty() {
@@ -207,7 +209,7 @@ fn update_warp_bubble(
         let restart = match settings.env_interval() {
             None => settings.quality >= 4 || stale,
             Some(dt) => {
-                env.paused = !env.restart;
+                env.paused = !env.restart && !hole_wants;
                 stale || now - *last_restart >= dt
             }
         };
@@ -249,11 +251,16 @@ struct WarpPipelines {
     compute: CachedRenderPipelineId,
     render: CachedRenderPipelineId,
     render_ms: CachedRenderPipelineId,
+    /// Copies the shaded frame back into the main texture.
+    blit_layout: BindGroupLayoutDescriptor,
+    blit: CachedRenderPipelineId,
 }
 
-/// The view's bent-direction map.
+/// The view's bent-direction map, and the scratch texture the shaded frame goes to before it is
+/// copied back into the main texture (the main textures are not flipped: an extra flip made the
+/// frame flicker, see color_correction.rs).
 #[derive(Component)]
-struct WarpMap(CachedTexture);
+struct WarpMap(CachedTexture, CachedTexture);
 
 fn render_layout_entries(ms: bool) -> Vec<BindGroupLayoutEntry> {
     let tex = || texture_2d(TextureSampleType::Float { filterable: true });
@@ -316,7 +323,12 @@ fn init_pipeline(
     let compute = queue("warp_compute", &compute_layout, "compute", MAP_FORMAT);
     let render = queue("warp_render", &render_layout, "render", HDR_FORMAT);
     let render_ms = queue("warp_render_ms", &render_layout_ms, "render_ms", HDR_FORMAT);
-    commands.insert_resource(WarpPipelines { compute_layout, render_layout, render_layout_ms, sampler, compute, render, render_ms });
+    let blit_layout = BindGroupLayoutDescriptor::new(
+        "warp_blit_layout",
+        &BindGroupLayoutEntries::with_indices(ShaderStages::FRAGMENT, ((0, texture_2d(TextureSampleType::Float { filterable: true })),)),
+    );
+    let blit = queue("warp_blit", &blit_layout, "blit", HDR_FORMAT);
+    commands.insert_resource(WarpPipelines { compute_layout, render_layout, render_layout_ms, sampler, compute, render, render_ms, blit_layout, blit });
 }
 
 fn prepare_maps(
@@ -324,30 +336,39 @@ fn prepare_maps(
     mut texture_cache: ResMut<TextureCache>,
     render_device: Res<RenderDevice>,
     views: Query<(Entity, &bevy::render::camera::ExtractedCamera, &WarpBubble)>,
+    stale: Query<Entity, (With<WarpMap>, Without<WarpBubble>)>,
 ) {
+    for entity in &stale {
+        commands.entity(entity).remove::<WarpMap>();
+    }
     for (entity, camera, bubble) in &views {
-        let Some(size) = camera.physical_viewport_size else { continue };
+        let (Some(size), Some(full)) = (camera.physical_viewport_size, camera.physical_target_size) else { continue };
         let scale = (bubble.view.w as u32).max(1);
-        let texture = texture_cache.get(
-            &render_device,
-            TextureDescriptor {
-                label: Some("warp_map"),
-                size: Extent3d { width: size.x.div_ceil(scale).max(1), height: size.y.div_ceil(scale).max(1), depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: MAP_FORMAT,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
-        );
-        commands.entity(entity).insert(WarpMap(texture));
+        let mut texture = |label: &'static str, w: u32, h: u32, format: TextureFormat| {
+            texture_cache.get(
+                &render_device,
+                TextureDescriptor {
+                    label: Some(label),
+                    size: Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format,
+                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+            )
+        };
+        let map = texture("warp_map", size.x.div_ceil(scale), size.y.div_ceil(scale), MAP_FORMAT);
+        let scratch = texture("warp_scratch", full.x, full.y, HDR_FORMAT);
+        commands.entity(entity).insert(WarpMap(map, scratch));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn warp_pass(
-    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<WarpBubble>, &WarpMap, &ViewDepthStencilTexture, &Msaa)>,
+    // `WarpBubble` itself: its uniform index and map outlive it on the render camera.
+    view: ViewQuery<(&ViewTarget, &WarpBubble, &DynamicUniformIndex<WarpBubble>, &WarpMap, &ViewDepthStencilTexture, &Msaa)>,
     pipes: Res<WarpPipelines>,
     pipeline_cache: Res<PipelineCache>,
     uniforms: Res<ComponentUniforms<WarpBubble>>,
@@ -355,16 +376,17 @@ fn warp_pass(
     gpu_images: Res<RenderAssets<GpuImage>>,
     mut ctx: RenderContext,
 ) {
-    let (target, index, map, depth, msaa) = view.into_inner();
-    if target.main_texture_format() != HDR_FORMAT {
+    let (target, _, index, map, depth, msaa) = view.into_inner();
+    if target.main_texture_format() != HDR_FORMAT || map.1.texture.size() != target.main_texture().size() {
         return;
     }
     let ms = msaa.samples() > 1;
     let (render_id, render_layout) = if ms { (pipes.render_ms, &pipes.render_layout_ms) } else { (pipes.render, &pipes.render_layout) };
-    let (Some(binding), Some(compute), Some(render), Some(images)) = (
+    let (Some(binding), Some(compute), Some(render), Some(blit), Some(images)) = (
         uniforms.uniforms().binding(),
         pipeline_cache.get_render_pipeline(pipes.compute),
         pipeline_cache.get_render_pipeline(render_id),
+        pipeline_cache.get_render_pipeline(pipes.blit),
         images,
     ) else {
         return;
@@ -397,15 +419,14 @@ fn warp_pass(
         pass.set_bind_group(0, &compute_bind, &[index.index()]);
         pass.draw(0..3, 0..1);
     }
-    // Shade the frame.
-    let post = target.post_process_write();
+    // Shade the frame into the scratch texture, then copy it back into the main texture.
     let depth_view = &depth.attachment.texture.default_view;
     let depth_slot = if ms { 11 } else { 10 };
     let bind = ctx.render_device().create_bind_group(
         "warp_render_group",
         &pipeline_cache.get_bind_group_layout(render_layout),
         &BindGroupEntries::with_indices((
-            (0, post.source),
+            (0, target.main_texture_view()),
             (1, &pipes.sampler),
             (2, binding),
             (3, &map.0.default_view),
@@ -418,22 +439,28 @@ fn warp_pass(
             (depth_slot, depth_view),
         )),
     );
-    let mut pass = ctx.command_encoder().begin_render_pass(&RenderPassDescriptor {
-        label: Some("warp_render_pass"),
-        color_attachments: &[Some(RenderPassColorAttachment {
-            view: post.destination,
-            depth_slice: None,
-            resolve_target: None,
-            ops: Operations::default(),
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    pass.set_pipeline(render);
-    pass.set_bind_group(0, &bind, &[index.index()]);
-    pass.draw(0..3, 0..1);
+    let blit_bind = ctx.render_device().create_bind_group(
+        "warp_blit_group",
+        &pipeline_cache.get_bind_group_layout(&pipes.blit_layout),
+        &BindGroupEntries::with_indices(((0, &map.1.default_view),)),
+    );
+    let encoder = ctx.command_encoder();
+    let scratch = RenderPassColorAttachment { view: &map.1.default_view, depth_slice: None, resolve_target: None, ops: Operations::default() };
+    for (attachment, pipeline, group, offsets) in
+        [(scratch, render, &bind, vec![index.index()]), (target.get_unsampled_color_attachment(), blit, &blit_bind, vec![])]
+    {
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("warp_render_pass"),
+            color_attachments: &[Some(attachment)],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, group, &offsets);
+        pass.draw(0..3, 0..1);
+    }
 }
 
 #[cfg(test)]

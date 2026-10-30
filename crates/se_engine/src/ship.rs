@@ -291,6 +291,18 @@ pub struct Ship {
     pub mine: bool,
     /// Build number, the ship's number in the manager and the script commands.
     pub serial: u32,
+    /// Where an idle ship holds station ([`park_ships`]).
+    pub parked: Option<Parked>,
+}
+
+/// An idle ship's place relative to the body it holds station at: in the body's turning frame
+/// close to it (`turning`), else in fixed axes.
+#[derive(Clone, Copy, Debug)]
+pub struct Parked {
+    pub body: Entity,
+    pub local_pos: DVec3,
+    pub local_rot: DQuat,
+    pub turning: bool,
 }
 
 /// The ship rests on a body and turns with it.
@@ -691,6 +703,7 @@ fn ship_commands(
         if let Ok((_, _, mut s)) = ships.get_mut(e) {
             s.vel = v;
             s.landed = None;
+            s.parked = None;
             s.ang_vel = DVec3::ZERO;
         }
     }
@@ -783,6 +796,7 @@ fn spawn_ship(
         nickname: String::new(),
         mine,
         serial: flight.next_serial,
+        parked: None,
     };
     let id = commands
         .spawn((ship, ShipLoading(task), ShipVisuals::default(), UPosition(pos), UOrientation(orient), Transform::IDENTITY, Visibility::Visible))
@@ -1758,21 +1772,22 @@ fn ship_physics(
 }
 
 /// Ships nobody flies hold station: a landed one stays where it stands on its body, any other
-/// keeps at rest in the frame of the body with the nearest surface (SE goes on simulating them;
-/// not ported), engines and warp off.
+/// keeps its place relative to the body with the nearest surface when it was left (turning with it
+/// within two radii, as the frame the warp uses), rebuilt from the body every frame so it follows
+/// the body at any time rate (SE goes on simulating them; not ported). Engines and warp off.
 fn park_ships(
-    time: Res<Time>,
     sim: Res<SimTime>,
     data: Res<SeData>,
     flight: Res<Flight>,
     body_q: Query<(Entity, &SystemBody)>,
     mut ships: Query<(Entity, &mut Ship, &mut UPosition, &mut UOrientation)>,
 ) {
-    let dt = time.delta_secs_f64().min(0.1);
-    let ship_dt = if sim.paused { dt } else { dt * sim.rate.abs().clamp(0.01, 10.0) };
     let eph = Ephemeris::new(&data.catalog);
     for (e, mut ship, mut upos, mut urot) in &mut ships {
         if flight.ship == Some(e) {
+            if ship.parked.is_some() {
+                ship.parked = None;
+            }
             continue;
         }
         (ship.main, ship.retro, ship.hover, ship.warp, ship.ang_vel) = (0.0, 0.0, 0.0, 0.0, DVec3::ZERO);
@@ -1785,13 +1800,30 @@ fn park_ships(
             }
             ship.landed = None;
         }
-        let p = upos.0;
-        let near = body_q.iter().map(|(_, b)| b).min_by(|a, b| {
-            (a.pos.delta_m(p).length() - a.radius_m).total_cmp(&(b.pos.delta_m(p).length() - b.radius_m))
-        });
-        let v = near.map_or(DVec3::ZERO, |b| reference_velocity(&eph, b.obj, b.pos, b.radius_m, p, &sim));
-        ship.vel = v;
-        upos.0 = p.offset_m(v * ship_dt);
+        let place = ship.parked.and_then(|pk| body_q.iter().find(|(be, _)| *be == pk.body).map(|(_, b)| (pk, b)));
+        let (pk, b) = match place {
+            Some(x) => x,
+            None => {
+                let p = upos.0;
+                let Some((be, b)) = body_q
+                    .iter()
+                    .min_by(|a, b| (a.1.pos.delta_m(p).length() - a.1.radius_m).total_cmp(&(b.1.pos.delta_m(p).length() - b.1.radius_m)))
+                else {
+                    continue;
+                };
+                let rel = p.delta_m(b.pos);
+                let turning = rel.length() - b.radius_m < 2.0 * b.radius_m;
+                let frame = if turning { b.orient } else { DQuat::IDENTITY };
+                let pk = Parked { body: be, local_pos: frame.inverse() * rel, local_rot: frame.inverse() * urot.0, turning };
+                ship.parked = Some(pk);
+                (pk, b)
+            }
+        };
+        let frame = if pk.turning { b.orient } else { DQuat::IDENTITY };
+        upos.0 = b.pos.offset_m(frame * pk.local_pos);
+        urot.0 = (frame * pk.local_rot).normalize();
+        let spin = if pk.turning { body_spin(&eph, b.obj, &sim).cross(frame * pk.local_pos) } else { DVec3::ZERO };
+        ship.vel = body_velocity(&eph, b.obj, &sim) + spin;
     }
 }
 
@@ -2158,6 +2190,7 @@ mod tests {
             nickname: String::new(),
             mine: true,
             serial: 1,
+            parked: None,
         };
         // A nose thruster blowing to +x pushes the nose left: it fires for a left yaw.
         let spec = PlumeSpec {

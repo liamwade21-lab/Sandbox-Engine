@@ -389,3 +389,9 @@ fn render_ms(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     }
     return shade(s, geometry_ms(s.ship_uv, dims, 0), s.land.on && geometry_ms(s.land.uv, dims, 1), dims);
 }
+
+// Copies the shaded scratch texture (bound as `scene`) back into the main texture.
+@fragment
+fn blit(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return textureLoad(scene, vec2<i32>(in.position.xy), 0);
+}

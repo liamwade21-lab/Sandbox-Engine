@@ -307,6 +307,7 @@ mod tests {
             nickname: nick.into(),
             mine: true,
             serial,
+            parked: None,
         };
         let ships = [(Entity::from_raw_u32(1).unwrap(), mk(1, "", "DragonFly")), (Entity::from_raw_u32(2).unwrap(), mk(2, "Rocinante", "Shuttle"))];
         let it = || ships.iter().map(|(e, s)| (*e, s));
