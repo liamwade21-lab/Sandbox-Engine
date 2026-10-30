@@ -518,10 +518,24 @@ impl CloudLayer {
             color: Vec3::new((m[0] * k) as f32, (m[1] * k) as f32, (m[2] * k) as f32),
             // SE's catalog loader defaults (FUN_1405057e0): DayAmbient 0.07, no subsurface scattering.
             look: Vec4::new(f("DayAmbient", 0.07), f("SubsurfScatBright", 0.0), f("SubsurfScatPower", 0.0), f("Hapke", 0.0)),
-            bump_m: if c.str("BumpMap").is_some() { (c.f64("BumpHeight").unwrap_or(0.0) * 1000.0) as f32 } else { 0.0 },
+            // A procedural layer's relief is its generated height map's (tg_clouds_height.glsl).
+            bump_m: if c.str("BumpMap").is_some() || c.str("DiffMap").is_none() {
+                (c.f64("BumpHeight").unwrap_or(0.0) * 1000.0) as f32
+            } else {
+                0.0
+            },
             flip,
             rad_per_s: sense * c.f64("Velocity").unwrap_or(0.0) / 3.6 / (radius + height),
         }
+    }
+
+    /// One of SE's generated layers (procedural, the loader's defaults otherwise).
+    fn generated(g: &se_core::climate::CloudGen, radius: f64, sense: f64) -> Self {
+        let mut l = Self::from_block(&se_core::sc::Block::default(), radius, sense);
+        l.height = g.height_km as f64 * 1000.0;
+        l.bump_m = g.bump_km * 1000.0;
+        l.rad_per_s = sense * g.velocity_kmh as f64 / 3.6 / (radius + l.height);
+        l
     }
 
     /// The layer's turn about the body's pole (rad) at simulation time `jd`.
@@ -686,15 +700,17 @@ impl Terrain {
             _ => 1.0,
         };
         let mut clouds: Vec<CloudLayer> = cloud_blocks.iter().map(|c| CloudLayer::from_block(c, radius, sense)).collect();
-        // A body without a `Clouds` block gets SE's cloud layer when its completion forms clouds
-        // (above 0.05 atm, FUN_1405057e0), with the layer defaults and SE's generated cloud
-        // parameters.
+        // A body without a `Clouds` block gets SE's cloud layers when its completion forms clouds
+        // (above 0.05 atm, FUN_1405057e0): 1 to PlanetCloudsTerra of them at SE's heights, reliefs
+        // and winds, with the layer defaults and SE's generated cloud parameters.
         // Giants and brown dwarfs keep their clouds in the surface: SE's height shader leaves
         // their cloud layers empty (tg_gasgiant_height.glsl / tg_browndwarf_height.glsl).
         let giant = (se_core::surface_gen::bulk::NEPTUNE..=se_core::surface_gen::bulk::BROWN_DWARF).contains(&surf_gen.classes.bulk);
         let no_clouds = b.bool("NoClouds").unwrap_or(false) || b.sub("Atmosphere").is_some() || giant;
-        if clouds.is_empty() && !no_clouds && completion.is_some_and(|c| c.has_clouds) {
-            clouds.push(CloudLayer::from_block(&se_core::sc::Block::default(), radius, sense));
+        if clouds.is_empty() && !no_clouds {
+            if let Some(c) = completion.filter(|c| c.has_clouds) {
+                clouds.extend(c.clouds.iter().map(|g| CloudLayer::generated(g, radius, sense)));
+            }
         }
         let base = body
             .color
@@ -1970,7 +1986,7 @@ fn update_terrain(
                                 if terrain.proc.kind.is_giant() { 0.0 } else { 1.0 },
                                 0.0,
                             ),
-                            se: se_cloud_uniform(&terrain.surf_gen, terrain.tidal_lock, procedural),
+                            se: se_cloud_uniform(&terrain.surf_gen, terrain.tidal_lock, procedural, layer),
                             color: c.color.extend(1.0),
                             look: c.look,
                             atm_flags: Vec4::new(ground_u.atm_flags.x, ATM_SUN_SCALE, ground_u.atm_flags.z, 0.0),
@@ -2503,17 +2519,24 @@ fn update_node_transforms(
 
 /// SE's HeightMapCloudsTerra inputs: 0 (cloudsFreq, cloudsOctaves, stripeZones, stripeTwist),
 /// 1 (cycloneMagn, cycloneFreq, cycloneDensity, cycloneOctaves), 2 (Randomize, tidal lock +-1);
-/// zeros (the port's own clouds) for mapped layers and giants.
-fn se_cloud_uniform(g: &se_core::surface_gen::SurfaceGen, tidal_lock: bool, procedural: bool) -> [Vec4; 3] {
+/// zeros (the port's own clouds) for mapped layers and giants. SE moves the k-th layer's (from 1)
+/// Randomize by k (0.716, -0.239, 0.381) (FUN_1402fba00; 0 is the ground), so each has its pattern.
+fn se_cloud_uniform(g: &se_core::surface_gen::SurfaceGen, tidal_lock: bool, procedural: bool, layer: usize) -> [Vec4; 3] {
     use se_core::surface_gen as sg;
     if !procedural || g.get(sg::CLOUDS_MAIN_FREQ).is_none() || (sg::bulk::NEPTUNE..=sg::bulk::BROWN_DWARF).contains(&g.classes.bulk) {
         return [Vec4::ZERO; 3];
     }
     let v = |i: usize| g.v(i);
+    let k = (layer + 1) as f32;
     [
         Vec4::new(v(sg::CLOUDS_MAIN_FREQ), v(sg::CLOUDS_MAIN_OCTAVES).clamp(1.0, 12.0), v(sg::STRIPE_ZONES), v(sg::STRIPE_TWIST)),
         Vec4::new(v(sg::CYCLONE_MAGN), v(sg::CYCLONE_FREQ), v(sg::CYCLONE_DENSITY), v(sg::CYCLONE_OCTAVES).clamp(0.0, 8.0)),
-        Vec4::new(v(sg::RANDOMIZE), v(sg::RANDOMIZE + 1), v(sg::RANDOMIZE + 2), if tidal_lock { 1.0 } else { -1.0 }),
+        Vec4::new(
+            v(sg::RANDOMIZE) + k * 0.716,
+            v(sg::RANDOMIZE + 1) - k * 0.239,
+            v(sg::RANDOMIZE + 2) + k * 0.381,
+            if tidal_lock { 1.0 } else { -1.0 },
+        ),
     ]
 }
 

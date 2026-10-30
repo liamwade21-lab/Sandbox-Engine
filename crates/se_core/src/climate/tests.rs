@@ -318,3 +318,62 @@ fn visual_atmosphere_heights() {
     // And at most 10% of the radius.
     assert!((se_visual_atm_height_km(90.0, 200.0, 0.01, 300.0) - 30.0).abs() < 1e-3);
 }
+
+#[test]
+fn cloud_layers_follow_se() {
+    // Earth-like: 10 km relief over a 3 km sea, so the cloud base is mid-relief, 2 km up.
+    let c = CloudsIn { radius_km: 6371.0, bump_km: 10.0, sea_km: 3.0, atm_height_km: 100.0, pressure_atm: 1.0, t_surf: 288.0 };
+    let mut counts = [0usize; 4];
+    for s in 0..600u32 {
+        let mut r = SeRng::new(s.wrapping_mul(2_654_435_761), s ^ 0x5bd1);
+        let u = draw_a(&mut r);
+        let l = cloud_layers(&mut r, u, c);
+        counts[l.len()] += 1;
+        let n = l.len() as f32;
+        // The span is 2 n U(2, 3) km here (under 0.2 H); the lowest layer one step above the base.
+        let step = l[0].height_km - 2.0;
+        assert!(step >= 4.0 - 1e-3 && step <= 6.0 + 1e-3, "{step}");
+        for (i, g) in l.iter().enumerate() {
+            assert!((g.height_km - (2.0 + (i + 1) as f32 * step)).abs() < 1e-3);
+            assert!(g.bump_km > 0.0 && g.bump_km <= (step * 0.5).min(7.0) + 1e-4);
+            assert!((2.0..=500.0).contains(&g.velocity_kmh), "{}", g.velocity_kmh);
+        }
+        assert!(l.last().unwrap().height_km <= 2.0 + 6.0 * n + 1e-3);
+    }
+    assert_eq!(counts[0], 0);
+    assert!(counts[1..].iter().all(|&k| k > 150), "{counts:?}");
+    // Under an atmosphere thinner than 0.5% of the radius: one layer.
+    let mut r = SeRng::new(7, 9);
+    assert!((0..50).all(|u| cloud_layers(&mut r, u, CloudsIn { atm_height_km: 30.0, ..c }).len() == 1));
+    // Dense (Venus-like): the span is U(0.2, 0.3) H whatever the count; no ocean, so mid-relief.
+    let venus = CloudsIn { sea_km: 0.0, atm_height_km: 250.0, pressure_atm: 90.0, t_surf: 735.0, ..c };
+    let l = cloud_layers(&mut r, 2, venus);
+    let top = l.last().unwrap().height_km - 5.0;
+    assert_eq!(l.len(), 3);
+    assert!((50.0..=75.0).contains(&top), "{top}");
+}
+
+#[test]
+#[ignore = "reads the catalogs from the install"]
+fn catalog_cloud_layers() {
+    use crate::catalog::{Catalog, ObjectRef};
+    let vfs = crate::vfs::Vfs::mount_install(std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine")).unwrap();
+    let mut cat = Catalog::load(&vfs);
+    crate::system_gen::complete_catalog_orbits(&mut cat);
+    let t = tables();
+    let eph = crate::ephemeris::Ephemeris::new(&cat);
+    let mut counts = [0usize; 4];
+    for i in 0..cat.bodies.len() {
+        let light = star_light(&eph, &cat, ObjectRef::Body(i as u32), 2_451_545.0);
+        let Some(c) = catalog_body_in(&cat, i, &light).and_then(|b| complete(&t, &b)) else { continue };
+        if !c.has_clouds || c.clouds.is_empty() {
+            continue;
+        }
+        counts[c.clouds.len().min(3)] += 1;
+        if counts[1..].iter().sum::<usize>() <= 12 {
+            eprintln!("{:<24} {:.2} atm, H {:.0} km: {:?}", cat.bodies[i].names[0], c.pressure_atm, c.atm_height_km, c.clouds);
+        }
+    }
+    eprintln!("layers: {counts:?}");
+    assert!(counts[2] > 0 && counts[3] > 0, "{counts:?}");
+}

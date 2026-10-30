@@ -984,7 +984,80 @@ pub struct Completion {
     pub ocean_depth_km: f32,
     pub bump_km: f32,
     pub has_clouds: bool,
+    /// SE's generated cloud layers, bottom up ([`cloud_layers`]): a terrestrial body's 1 to
+    /// [`PLANET_CLOUDS_TERRA`]. Empty for giants, whose clouds SE draws in the surface.
+    pub clouds: Vec<CloudGen>,
     pub converged: bool,
+}
+
+/// main-def.cfg `PlanetCloudsTerra` (DAT_14075f814): the most cloud layers SE gives a terrestrial
+/// body. (`PlanetCloudsGasGiant` is read but no code uses it; giants get 1 or 2.)
+pub const PLANET_CLOUDS_TERRA: u32 = 3;
+
+/// One of SE's generated cloud layers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CloudGen {
+    /// Height above the radius (km).
+    pub height_km: f32,
+    /// Relief of the cloud tops (the layer's `BumpHeight`, km).
+    pub bump_km: f32,
+    /// Wind (`Velocity`, km/h).
+    pub velocity_kmh: f32,
+}
+
+/// What SE's cloud layers of a terrestrial body depend on.
+#[derive(Clone, Copy, Debug)]
+pub struct CloudsIn {
+    pub radius_km: f32,
+    /// `BumpHeight` (km).
+    pub bump_km: f32,
+    /// Ocean height (km), 0 without an ocean: SE's `BumpOffset`, which puts the sea at the radius.
+    pub sea_km: f32,
+    /// Atmosphere height (km).
+    pub atm_height_km: f32,
+    pub pressure_atm: f32,
+    /// Surface temperature (K).
+    pub t_surf: f32,
+}
+
+/// SE's cloud layers of a terrestrial body without `Clouds` blocks. FUN_1405057e0: `1 + u_count %
+/// PlanetCloudsTerra` layers (one under an atmosphere thinner than 0.5% of the radius), spread
+/// evenly over a span from the cloud base (mid-relief, or the sea when that is higher):
+/// `min(2 n U(2, 3), U(0.2, 0.3) H)` km, or `U(0.2, 0.3) H` alone under a dense atmosphere (over 1 atm
+/// below 100 K, over 10 atm above), the lowest layer one step above the base. Each layer's relief is
+/// `U(5, 7) clamp(R / 6371, 0.5, 10)` km, at most half the step. FUN_140510f40 then gives each layer of
+/// a round body a wind of `rnd_tn(100, 50, 2, 500)` km/h on stream B. Stream A draws in SE's order:
+/// the span (2), the surface's +0x1170 (1, unused here), one per layer.
+pub fn cloud_layers(r: &mut SeRng, u_count: u32, c: CloudsIn) -> Vec<CloudGen> {
+    let mut n = if PLANET_CLOUDS_TERRA == 0 { 1 } else { 1 + u_count % PLANET_CLOUDS_TERRA };
+    if c.atm_height_km < c.radius_km * 0.005 {
+        n = 1;
+    }
+    let bump = c.bump_km.max(1e-6);
+    let base = (c.sea_km / bump).max(0.5) * bump - c.sea_km;
+    let u1 = draw_a(r);
+    let u2 = draw_a(r);
+    let atm_span = (u1 as f32 * 0.1 * INV_2_32 + 0.2) * c.atm_height_km;
+    let n_span = (u2 as f32 * INV_2_32 + 2.0) * n as f32 * 2.0;
+    let dense = (c.t_surf < 100.0 && c.pressure_atm > 1.0) || (c.t_surf >= 100.0 && c.pressure_atm > 10.0);
+    let span = if dense { atm_span } else { n_span.min(atm_span) };
+    let step = span / n as f32;
+    let _ = draw_a(r);
+    let k = (c.radius_km / 6371.0).clamp(0.5, 10.0);
+    let mut out: Vec<CloudGen> = (1..=n)
+        .map(|i| {
+            let u = draw_a(r) as f32;
+            CloudGen {
+                height_km: i as f32 * step + base,
+                bump_km: (((u + u) * INV_2_32 + 5.0) * k).min(step * 0.5),
+                velocity_kmh: 0.0,
+            }
+        })
+        .collect();
+    for l in &mut out {
+        l.velocity_kmh = r.tnormal(100.0, 50.0, 2.0, 500.0);
+    }
+    out
 }
 
 impl Completion {
@@ -1488,11 +1561,10 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
     let t_base = (((out.t_eq as f64).powf(4.0) + (out.heat * 1_048_576.0) as f64).powf(0.25) as f32).min(3500.0);
     out.t_surf = if class < bulk::NEPTUNE || class == bulk::NONE { t_base + out.greenhouse_k } else { t_base };
 
-    // Ocean, bump and clouds (FUN_1405057e0).
+    // Ocean, bump and clouds (FUN_1405057e0). Giants draw no layer count (they get 1 or 2).
+    let giant = (bulk::NEPTUNE..=bulk::BROWN_DWARF).contains(&class);
     out.has_clouds = out.pressure_atm > 0.05 && !b.no_clouds;
-    if out.has_clouds {
-        draw_a(&mut r);
-    }
+    let u_clouds = (out.has_clouds && !giant).then(|| draw_a(&mut r));
     let asteroid = class == bulk::ASTEROID;
     let bump = se_bump_default_km(m, rad, asteroid);
     out.bump_km = bump;
@@ -1502,6 +1574,17 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
         if out.ocean_depth_km >= bump && v.liquid[H2O] > 0.0 {
             out.bump_km = draw_a(&mut r) as f32 * 1.5 * INV_2_32 + (out.ocean_depth_km + 0.5);
         }
+    }
+    if let Some(u) = u_clouds {
+        let c = CloudsIn {
+            radius_km: rad,
+            bump_km: out.bump_km,
+            sea_km: if out.has_ocean { out.ocean_depth_km } else { 0.0 },
+            atm_height_km: out.atm_height_km,
+            pressure_atm: out.pressure_atm,
+            t_surf: out.t_surf,
+        };
+        out.clouds = cloud_layers(&mut r, u, c);
     }
     // The temperature model SE sets up once the system is built (FUN_14025f1c0); its average
     // picks the class word. Locked rotation without a period follows the orbit.
