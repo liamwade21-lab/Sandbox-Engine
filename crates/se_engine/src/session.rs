@@ -8,8 +8,8 @@
 //! decoded), so with no save the port starts by Earth as before. Scripted runs and `--start` neither read
 //! nor write the save. `MoveMode` is the camera's movement mode (1 Free, 2 Spacecraft, 3 Aircraft) or 4 while a
 //! spacecraft is flown (FUN_1401be6b0); SE then restores the piloted ship by its `Spacecraft` id
-//! (FUN_1401beaa0), which the port cannot (its ships are made in the Ships window each session), so a
-//! saved 4 comes back as Free mode, as SE does for an unknown spacecraft id.
+//! (FUN_1401beaa0). Here a saved 4 comes back as Free mode and `ship/persist.rs` flies the ship marked
+//! `Piloted` in spacecraft.cfg again.
 
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;

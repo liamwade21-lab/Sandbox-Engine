@@ -34,6 +34,7 @@ mod autopilot;
 mod engine_sound;
 pub mod hud;
 mod manager;
+mod persist;
 pub mod warp;
 
 use std::sync::Arc;
@@ -388,7 +389,10 @@ impl Plugin for ShipPlugin {
             .add_message::<ShipCommand>()
             .add_systems(Startup, (load_library, make_plume_mesh))
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
-            .add_systems(Update, disable_egui_keyboard_zoom)
+            .init_resource::<persist::PendingRefs>()
+            .add_systems(Update, (disable_egui_keyboard_zoom, persist::restore_ships, persist::settle_restored))
+            // After bevy_window turns the closed window into AppExit (as the session).
+            .add_systems(Last, persist::save_ships_on_exit.after(bevy::window::ExitSystems))
             .add_systems(
                 Update,
                 (ship_commands, ship_input, finish_ship_loading, sync_hold, start_engine_sounds).chain(),
@@ -800,6 +804,28 @@ fn spawn_ship(
         Placement::Ahead(i) => place_ahead(cam, data, sim, bodies, &full, i),
     };
 
+    let id = spawn_built(commands, data, flight, full.clone(), (thermal_shift, model_bright), pos, orient, vel, mine);
+    if place == Placement::Pilot {
+        take_control(flight, cam, id, &full, false);
+        info!("flying {} ({} modules)", full.name, full.modules.len());
+    } else {
+        info!("built {} ({} modules)", full.name, full.modules.len());
+    }
+}
+
+/// Spawns a ship of the loaded design `full` at `pos` with its hull building in the background.
+#[allow(clippy::too_many_arguments)]
+fn spawn_built(
+    commands: &mut Commands,
+    data: &SeData,
+    flight: &mut Flight,
+    full: Arc<ShipDesign>,
+    (thermal_shift, model_bright): (f32, f32),
+    pos: UPos,
+    orient: DQuat,
+    vel: DVec3,
+    mine: bool,
+) -> Entity {
     let vfs = data.vfs.clone();
     let d2 = full.clone();
     let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift, model_bright) });
@@ -820,15 +846,9 @@ fn spawn_ship(
         serial: flight.next_serial,
         parked: None,
     };
-    let id = commands
+    commands
         .spawn((ship, ShipLoading(task), ShipVisuals::default(), UPosition(pos), UOrientation(orient), Transform::IDENTITY, Visibility::Visible))
-        .id();
-    if place == Placement::Pilot {
-        take_control(flight, cam, id, &full, false);
-        info!("flying {} ({} modules)", full.name, full.modules.len());
-    } else {
-        info!("built {} ({} modules)", full.name, full.modules.len());
-    }
+        .id()
 }
 
 /// SE's Take control / Control remotely: fly `ship`, from its chase camera or from where the

@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 188 have been fixed since (listed at the end); the tables count the 23 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 189 have been fixed since (listed at the end); the tables count the 22 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 6 | 10 | 7 |
+| Gaps | 0 | 0 | 6 | 10 | 6 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 1 | 13 | 9 |
+| Gaps | 1 | 12 | 9 |
 
 | Area | Kept |
 |---|---|
@@ -125,7 +125,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 2 |
-| 10 Scripts, audio, spacecraft | 7 |
+| 10 Scripts, audio, spacecraft | 6 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
 
@@ -335,15 +335,6 @@ Script locale and utility commands: SetLocale, PrintTranslations, ExportLocale a
 - SE evidence: Scripts.pak CheckLoc.se; exe command table setlocale .. edit
 - Port: crates/se_engine/src/scripting.rs:577-580
 - Check: The exe command table has setlocale, printtranslations, exportlocale, importlocale, printvars, printnames, printfont, exportfont, printtexcachelog, dbsort, optimizesm, reloadconstellations, displaymode, togglestereoscopic3d, debuggen, rebuild and edit, and CheckLoc.se uses SetLocale/PrintTranslations; the port parses none of them and skips them as Op::Other (it has a locale module, se_core/src/locale.rs and i18n.rs, but no script hook into it); "Edit" opens the editors, which are out of scope, so it comes off the list
-
-### 10-034 · Scripts, audio, spacecraft
-
-Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, SystemID, RefBodyID, TargetShipID, DockedShipID/DockedPort, ship state such as WarpBoost) and restores them, also through the game state (seGameState::ApplyToCamera spacecraft id). Port forgets the ship on exit
-
-- Status: missing, effort **M**, auditor confidence medium
-- SE evidence: exe ConfigFileSpacecraft, "spacecraft.cfg", seSpacecraftsList::SaveSpacecraftsConfig, "ShipID %i"
-- Port: none
-- Check: The exe has "spacecraft.cfg" (FUN_1400402e0), ConfigFileSpacecraft, seSpacecraftList::ReadShipsConfig ("has no ShipID"), seSpacecraftsList::SaveSpacecraftsConfig, RefBodyID/TargetShipID (FUN_140531d60) and "seGameState::ApplyToCamera(): Unknown spacecraft id %i"; the port has no ship save or load (no spacecraft.cfg, ShipID or ship save code in crates/; ship.rs only spawns and despawns through ShipCommand)
 
 
 ## Deferred by the owner
@@ -781,6 +772,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **10-029** (Scripts, audio, spacecraft, fixed 2026-10-30): Script camera commands: Track/Untrack (port logs "not supported"), Horizon, Fly, Turn/StopTurn, StopRotation, ... Fix: SE: command table at 0x14075f9c0 (0x30-byte entries: u32, name[36], handler). `fly` FUN_140562dd0 { Axis (default 0 0 1), Speed pc/s (default 10) / SpeedKm, FadeTime (default 2 s), Func "linear" }, `stopfly` FUN_140562b00 { FadeTime }, `turn` FUN_140562670 { Axis (default 0 1 0), AngularSpeed (default 10), FadeTime, Func }, `stopturn` FUN_1405623a0, `stoprotation` FUN_1405c4f50, `stopmotion` FUN_1405c4f80, `speed` FUN_140561b00 (pc/s, same scale as `speedkm` FUN_140561a40), `movemode` FUN_140561bb0 (1..4 -> FUN_1405c4fb0), `track`/`untrack`, `horizon` FUN_140563b40, `gotourl` FUN_140563720, `bind` FUN_1405514b0 (VR controller buttons), `checkversion` FUN_140565510 (another version: message box and the script halts). Goto FUN_140563f30: accel 1 s, drift 0, decel 1 s by default, `Time T` -> T/2 + T/2 (FUN_140571db0), AccelTime/DriftTime/DecelTime override, flight time their sum; powers default to `GotoSpeed` (FUN_140015720, main-def 10); progress FUN_14056b1e0: (t/a)^pa x a/T, then even, then (1-(1-u)^pd) x c/T + (a+d)/T. Ported: typed ops for all of the above; Fly/Turn as eased camera motions (SE axes x left, y down, z ahead mapped to the port's), StopFly/StopTurn fades, StopRotation, Speed/SpeedKm, Horizon, CheckVersion (message, then stop), Goto timing and progress curve as SE's (a bare Goto now takes 2 s, was 4), StopFly separate from StopMotion. Checked: unit tests (Goto timing and curve per FUN_14056b1e0, Motion easing, parser); `triggers.se` (`Speed`, `Get Fov`). Not ported: GotoURL (the port has no se:// location parser; logged), MoveMode (its modes were not traced; logged), Bind (VR, out of scope), Fly/Turn `Func` other than linear.
 - **10-031** (Scripts, audio, spacecraft, fixed 2026-10-30): Script capture and object commands: Screenshot, SavePNG, SaveTGA, SaveJPG, SaveDDS, SaveTIF and Watermark (wit... Fix: SE (command table at 0x140760xxx, name + handler): Screenshot / Screenshot { Name 'scr' GUI Format } (FUN_140565210); SavePNG/TGA/JPG/DDS/TIF 'file' (FUN_140559200 .., FUN_140185120) load that image and save it again with the command's extension; Show/Hide 'x' (FUN_14055bfd0 / FUN_14055add0) switch 26 display items by name; ShowObject/HideObject (thunks to FUN_14055d310) fade one object in/out over Time (0.5 s); Scene 'space'/'universe' and Map are the universe map; Watermark { Path Opacity Visible } (FUN_140558390). Port: Screenshot with Name and Format through screenshot::take_named, WaitTrigger 'ScreenshotComplete' now waits until the file is saved (ScriptShots); Save* convert PNG/JPEG files (relative names in the port's screenshot folder, never inside the SE install); Show/Hide for atmospheres, aurora, clusters, comettails, constellations, eclipsemask, eclipses, galaxies (procedural), grids, labels, lensflares, markers, nebulae (procedural), orbits, planetshine, pseudoflares, selpointer, water. Checked: test script (named PNG shot, trigger, SaveJPG conversion, switches) in the port. Not ported: Show/Hide accretiondisks, nightlights, orbitmarks, planets, ships, stars, vectors, velvector (no port switch); Screenshot GUI false; ShowObject/HideObject (no per-object fader in the port); Watermark (its drawing was not found); Scene/Map (universe map deferred); Clear (FUN_1405611b0, purpose not traced).
 - **10-033** (Scripts, audio, spacecraft, fixed 2026-10-30): Thermal hull glow: materials with TempMap/TempMapMaxTemp (4) and the design's RadTemp (25 designs, radiators u... Fix: SE: ship.glsl THERM: surfTemp = TempMap.r x ThermalParams.x (RadTemp), colour from the PlanckFunction texture at log(surfTemp + ThermalParams.y) x 0.188 + 0.1316, x ThermalParams.z x 500. Port (already in with the hull material merge, efb5949; verified by the main session): ship_assets.rs loads TempMap for RadTemp designs, hull_uniform sets THERM and ThermalParams (RadTemp kK, ThermalEmissionShift, 1), ship.wesl adds planck(log(temp + shift) x 0.188 + 0.1316) x 500 from blackholes::planck_table. TempMapMaxTemp is SE's PBR path only (10-027).
+- **10-034** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, SystemID, RefBodyID, TargetShipID... Fix: SE: spacecraft.cfg (seSpacecraftsList::SaveSpacecraftsConfig FUN_1401f5510, block writer FUN_1405339e0: Spacecraft "name" { ShipID SystemID RefBodyID TargetID TargetShipID Model UnivPos Orientation Velocity AngVelocity WarpBoost FuelQuantity PropellantQuantity RadHeat DockedShipID DockedPort HUDMode PhysMode Autopilot }; ReadShipsConfig FUN_1401f56c0 skips blocks without ShipID). Port: ship/persist.rs writes %APPDATA%/SpaceEngine-rs/spacecraft.cfg on exit with SE's keys (ShipID, RefBodyID, Model, UnivPos in the port's fixed-point coordinates, Orientation, Velocity m/s, AngVelocity, WarpBoost, plus Mine and Piloted), rebuilds the ships on the next start (spawn_built), flies the piloted one again, and lets an idle ship park again once its RefBodyID body exists; scripted runs and --start skip it (SE_SHIPS_FILE test override). Checked: build two Apollo Eagles, exit, restore, re-save (ids, models, flags, RefBodyID Earth kept), unit round trip. Not kept: SystemID, targets, fuel/propellant/heat, docking, HUDMode, PhysMode, autopilot.
 
 ## Refuted by the checkers
 
