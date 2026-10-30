@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 90 have been fixed since (listed at the end); the tables count the 151 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 91 have been fixed since (listed at the end); the tables count the 150 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 65 | 63 | 20 |
+| Gaps | 1 | 2 | 65 | 62 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 48 | 75 | 28 |
+| Gaps | 47 | 75 | 28 |
 
 | Area | Kept |
 |---|---|
@@ -121,7 +121,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 03 Galaxies and nebulae | 14 |
 | 04 Planet surfaces | 10 |
 | 05 Atmospheres, rings, comets | 14 |
-| 06 Procedural generation | 13 |
+| 06 Procedural generation | 12 |
 | 07 Camera and time | 6 |
 | 08 Interface | 26 |
 | 09 Graphics and settings | 16 |
@@ -933,15 +933,6 @@ Auroras: SE draws an aurora as particle sprites (NorthParticles/SouthParticles) 
 - Port: crates/se_engine/assets/shaders/aurora.wesl:62-92; crates/se_engine/src/aurora.rs:173-182
 - Check: aurora.glsl:126-251 is a sprite shader (VertexPos sprite centres, Fbm4-displaced, top colour from Fbm4 noise, FbmTex brightness drifting with ScaleTime.w, TEX_NOISE/DETAIL variants) with only a distance clip via SunVecClip and no day/night term, catalog writer FUN_1404eb190 emits NorthParticles/SouthParticles, and main-def.cfg has AuroraBright, AuroraQuality and realAuroraBright 3; the port's aurora.wesl:62-92 builds mesh curtains with its own 1D value noise and a night-side smoothstep discard, aurora.rs:180 multiplies bright by 1.5, and no AuroraBright/AuroraQuality/realAuroraBright or particle count is read anywhere in crates/
 
-### 06-016 · Procedural generation
-
-StarGenerator settings not honoured: SE drops procedural stars brighter than StarMaxAppMagn 10 seen from the Sun (port hard-codes 8.5 within 2.5 kpc, so mag 8.5-10 stars are duplicated by catalog stars), keeps procedural stars at least StarMinDistNormal 2.5 / StarMinDistBrownDwarf 2 / StarMinDistRemnant 3 pc from the Sun (port: no minimum) and scales density by StarDensityInGalaxy/StarDensityInCluster (port: not read)
-
-- Status: differs, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg StarGenerator 966-978; FUN_140014900, FUN_1405945e0 (StarMaxAppMagn), FUN_14049b390 (StarDensityInGalaxy), FUN_14047fcb0 (StarDensityInCluster)
-- Port: crates/se_engine/src/procstars.rs:290-293
-- Check: FUN_140280ec0 binds StarMaxAppMagn/StarMinDist*/StarDensityIn* to DAT_14075f950..93c, which are read by FUN_1405945e0 (mag limit, squared min distances), FUN_140014900, FUN_14049b390 (galaxy density) and FUN_14047fcb0/FUN_140543c70 (cluster density); the port's only exclusion is the hard-coded `d < 2500 && m_app < 8.5` in procstars.rs:288-293 and no crate reads any StarGenerator key or applies a minimum distance from the Sun
-
 ### 06-013 · Procedural generation
 
 Rogue planets (planemos) missing from the star field: SE makes 45% of last-octree-level systems (70% in the galactic kern) planemo systems, a free-floating planet with its own moons and rings (CreateRoguePlanetSystem); the port's procedural field holds only stars and remnants
@@ -1554,6 +1545,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **06-004** (Procedural generation, fixed 2026-10-29): No multiple-star procedural systems: SE splits ~50% of systems into binaries, 11% of those into triples, 22% i... Fix: Procedural stars become SE's multiple systems (procgen/se_multiple.rs, from seSolarSystem::CreateProcedural FUN_1404f7c40 and the binary branch of FUN_1404f9210): A/B with ProbBinaryStar 0.5 (0.95 for luminosity code 10), A and B again with ProbTripleStar 0.11 and their halves with ProbQuadrupleStar 0.22 (up to 8 stars, SE's suffixes A..BBB), sub-splits capped at 0.3 of the component's sphere of influence; companion white dwarfs / neutron stars / black holes (ProbCompanionWD/NS/BH, SE's mass draws, a too-old primary reset to the mass whose lifetime is the age), brown-dwarf companions (ProbBrownDwarf, x0.2 after each), else the light split by SE's mass-luminosity law (FUN_1401dd880); separations log-normal up to the cap (tn(log10 cap/1.84, 2.5, -2, log10 cap) AU, at least 2.5 radii), e = tn(0.5,0.5,0,0.89) damped for close pairs, a random barycentre plane; planets per component (rand%10+5 slots inside sphere of influence periapsis/(sqrt(q/0.05)+1)) and circumbinary planets of the root barycentre (FUN_14050a890 inner edge 3 apoapses). The engine adds such a star as a barycentre (system.rs materialize_star, procgen::is_multiple) with component Star/Barycenter records and the stars' total mass; the planet search lists the components. Not decoded: SE's class tables and star physics (component temperatures, radii and classes from the port's main-sequence relations; remnant temperatures the port's), the split-decision streams.
 - **06-008** (Procedural generation, fixed 2026-10-30): No comets in procedural systems: SE gives each single non-remnant star u%100+100 (100-199) comets on eccentric... Fix: SE: FUN_1404f9210 gives a single star u%100+100 comets (+0x1d40; 0 for brown dwarfs, lum code 7 letter >= 7, or system flag 0x8000). FUN_1404fc9b0: R = inner planet-zone edge (FUN_14050a890), q = tn_d(U(5,10)R, sigma (outer-R/4)/3, R/4, 2 outer - R/4), Q = tn_d(1.2 SOI, 0.8 SOI/3, 0.4 SOI, 2 SOI) (FUN_140441b80), e = clamp((Q-q)/(Q+q), 0, 0.9999), a = q/(1-e), inc/node/argp/M uniform +-pi; none if 2 outer - R/4 > 0.4 SOI. Name star + "C" + n. Body FUN_140502710 on seeds n*0x21ad+sys*0x2244 / sys*0xc49+n*0x1938: mass 10^U(-20,-8.6) MJ, density tn(500,100,200,3000) -> radius (FUN_1404c8990), albedo tn(0.04,0.01,0.01,0.1), rotation tn(2,1.5,0.1,20) h, tail values FUN_140486280; period with the comet mass. Ported: crates/se_core/src/procgen/se_comets.rs (generator, tail defaults, tail particles), se_layout keeps the comet count it already drew, mod.rs emits `Comet "<star>C<n>"` blocks (Mass, Radius, Albedo, rotation, AbsMagn, SlopeParam, CometTail, Orbit tilted like the planets). Checked: tests (100-199 comets per single star, q/Q ranges, tail defaults, parse into the catalog); Altair gets 157 comets (generated in 3 ms), AltairC119 at perihelion 2006-10-17 shows its tail (proc_altair_c119.png). Not ported: comets of multiple-star components (FUN_1404f9210:614-652, count from a pow() formula), the orbit stream state (the port seeds its own; SE uses whatever its thread RNG holds after the planets), and the composition/0x1210/0x1214 draws (FUN_1401aa500, FUN_14050a5f0, FUN_14050a520) that sit between the body draws on stream b.
 - **06-011** (Procedural generation, fixed 2026-10-30): Planet class words use designed thresholds instead of SE's: procgen temperature frigid<130/cold<240/cool<273/t... Fix: Procedural class words use SE's thresholds through the functions already ported in surface_gen: temperature > 1000/500/330/250/170/90 K (temp_class), pressure 1e-6/1e-3/0.1/10/1000 atm (atmo_class, FUN_1404caaa0), size 0.002/0.02/0.2/2/10 Me, Neptunes 4/10/25/62.5 Me, Jupiters 0.2/0.5/2.5/12.5 MJ (size_class, FUN_1404cabf0); the star browser's search classifies with them too. Not ported: the volatiles word still comes from ocean/ice cover (SE: ocean depth against BumpHeight, FUN_140505680, and no glacial), because the generator's bodies carry no ocean depth.
+- **06-016** (Procedural generation, fixed 2026-10-30): StarGenerator settings not honoured: SE drops procedural stars brighter than StarMaxAppMagn 10 seen from the S... Fix: SE's StarGenerator limits are read from main-def.cfg: procedural Milky Way stars brighter than StarMaxAppMagn (10) as seen from the Sun, at any distance, or nearer to it than StarMinDistNormal (2.5 pc), are left to the catalogs (FUN_1405945e0), replacing the port's hard-coded magnitude 8.5 within 2.5 kpc. Not ported: the separate minimum distances of brown dwarfs (2 pc) and remnants (3 pc), which the generator's exclusion test cannot tell apart, and StarDensityInGalaxy/InCluster (both 1 by default).
 - **07-001** (Camera and time, fixed 2026-10-28): Startup field of view: SE starts at FOV 45 deg (Controls FOV 45, DefaultFOV 45); port's camera and projection ... Fix: The camera starts at SE's 45 degrees (and the `fov` command defaults to it).
 - **07-002** (Camera and time, fixed 2026-10-28): Time-rate steps: SE's L/K (and the toolbar buttons) step the rate through 1, 3, 10, 30, 100, 300... (two press... Fix: K/L and the top bar's << / >> step the rate through 1, 3, 10, 30, ... (`hud::rate_step`).
 - **07-003** (Camera and time, fixed 2026-10-28): Go to arrival distance: SE arrives 4 radii from the centre (25,513 km for Earth, velocity set to 2,551 km/s, p... Fix: Go to arrives 4 radii from the centre (`GOTO_RADII`).
