@@ -78,6 +78,8 @@ fn update_body_models(
                                         sun_dir: light.sun_dir.extend(light.sun_intensity),
                                         sun_color: light.sun_color.extend(1.0),
                                         base_color: Vec4::new(1.0, 1.0, 1.0, 0.02),
+                                        light_dir: light.extra_uniforms(false).0,
+                                        light_color: light.extra_uniforms(false).1,
                                     },
                                     texture,
                                 });
@@ -122,6 +124,7 @@ fn update_body_models(
                         if let Some(mut m) = mats.get_mut(mat) {
                             m.u.sun_dir = light.sun_dir.extend(light.sun_intensity);
                             m.u.sun_color = light.sun_color.extend(1.0);
+                            (m.u.light_dir, m.u.light_color) = light.extra_uniforms(false);
                         }
                     }
                 }

@@ -22,6 +22,10 @@ struct Ring {
     hapke: vec4<f32>,
     /// x 1 / SpotWidthCB.
     hapke2: vec4<f32>,
+    /// The further stars (SE's rings shaders loop over NLights): xyz direction, w 1 when used;
+    /// rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> ring: Ring;
@@ -113,36 +117,12 @@ fn detail_noise(x: f32) -> f32 {
     return sum * 0.85 / 2.4;
 }
 
-@fragment
-fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
-    let l = normalize(ring.sun_dir.xyz);
-    let sun = ring.sun_color.rgb * ring.sun_dir.w;
+// The light of a star in direction `l` (light `sun`) the slab scatters towards the viewer, before
+// `Brightness`, and in w the slab's transparency along the view: SE's march with the planet's
+// shadow, the Hapke and Mie phase functions and self-shadowing.
+fn ring_scatter(in: VertexOut, l: vec3<f32>, sun: vec3<f32>, front: vec4<f32>, back: vec4<f32>, od0: vec4<f32>) -> vec4<f32> {
     let v = normalize(-in.world_pos);
     let n = normalize(in.normal);
-    let r = in.uv.x;
-
-    var front = vec4<f32>(0.8, 0.75, 0.65, 0.6);
-    var back = vec4<f32>(0.4, 0.37, 0.32, 0.6);
-    if ring.params.z > 0.5 {
-        front = textureSample(ring_tex, ring_smp, vec2<f32>(r, 0.75));
-        back = textureSample(ring_tex, ring_smp, vec2<f32>(r, 0.25));
-    }
-    front = vec4<f32>(front.rgb * front.a, front.a);
-
-    // Radial detail where its finest octave is resolved (SE fades it by distance; assumed here).
-    let rad = r * ring.geom.z;
-    let detail = 1.0 - smoothstep(0.3, 1.0, fwidth(rad * 4.9));
-    if detail > 0.0 {
-        let m = detail_noise(rad);
-        let e_ring = smoothstep(0.0, 0.01, front.a);
-        back = vec4<f32>(back.rgb * mix(1.0, m, 0.5 * detail * e_ring), back.a);
-        front *= mix(1.0, m, 0.5 * detail);
-    }
-
-    // Optical densities (SE's ColorToOpticalDensity over a normal path of 2 half-thicknesses):
-    // x front scattering, y back scattering, z opacity, w self-shadow.
-    let d = clamp(1.0 - vec4<f32>(dot(front.rgb, TO_GRAY), dot(back.rgb, TO_GRAY), front.a, front.a) * ring.density, vec4<f32>(0.01), vec4<f32>(1.0));
-    let od0 = -log(d) / (2.0 * FALLOFF_INTEGRAL);
     let nv = dot(n, v);
     let nl = dot(n, l);
     let mu = clamp(dot(l, v), -0.999999, 0.999999);
@@ -179,8 +159,50 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         col += (lit * (1.0 - ext.x) * transp.x + dusty * (1.0 - ext.y) * transp.y) * self_shadow;
         transp *= ext;
     }
+    return vec4<f32>(col, transp.z);
+}
+
+@fragment
+fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
+    let l = normalize(ring.sun_dir.xyz);
+    let sun = ring.sun_color.rgb * ring.sun_dir.w;
+    let v = normalize(-in.world_pos);
+    let n = normalize(in.normal);
+    let r = in.uv.x;
+
+    var front = vec4<f32>(0.8, 0.75, 0.65, 0.6);
+    var back = vec4<f32>(0.4, 0.37, 0.32, 0.6);
+    if ring.params.z > 0.5 {
+        front = textureSample(ring_tex, ring_smp, vec2<f32>(r, 0.75));
+        back = textureSample(ring_tex, ring_smp, vec2<f32>(r, 0.25));
+    }
+    front = vec4<f32>(front.rgb * front.a, front.a);
+
+    // Radial detail where its finest octave is resolved (SE fades it by distance; assumed here).
+    let rad = r * ring.geom.z;
+    let detail = 1.0 - smoothstep(0.3, 1.0, fwidth(rad * 4.9));
+    if detail > 0.0 {
+        let m = detail_noise(rad);
+        let e_ring = smoothstep(0.0, 0.01, front.a);
+        back = vec4<f32>(back.rgb * mix(1.0, m, 0.5 * detail * e_ring), back.a);
+        front *= mix(1.0, m, 0.5 * detail);
+    }
+
+    // Optical densities (SE's ColorToOpticalDensity over a normal path of 2 half-thicknesses):
+    // x front scattering, y back scattering, z opacity, w self-shadow.
+    let d = clamp(1.0 - vec4<f32>(dot(front.rgb, TO_GRAY), dot(back.rgb, TO_GRAY), front.a, front.a) * ring.density, vec4<f32>(0.01), vec4<f32>(1.0));
+    let od0 = -log(d) / (2.0 * FALLOFF_INTEGRAL);
+    let lit = ring_scatter(in, l, sun, front, back, od0);
+    var col = lit.rgb;
+    for (var i = 0; i < 3; i++) {
+        if ring.light_dir[i].w < 0.5 {
+            break;
+        }
+        col += ring_scatter(in, normalize(ring.light_dir[i].xyz), ring.light_color[i].rgb, front, back, od0).rgb;
+    }
     col *= ring.geom.w;
-    let alpha = 1.0 - transp.z;
+    let alpha = 1.0 - lit.w;
+    let nv = dot(n, v);
 
     // Soft inner and outer edges, and none edge-on.
     let edge = clamp(min(r, 1.0 - r) / max(fwidth(r * 3.0), 1e-6), 0.0, 1.0) * smoothstep(0.0, 0.01, abs(nv));

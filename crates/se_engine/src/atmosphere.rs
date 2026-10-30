@@ -337,6 +337,9 @@ fn upload_tables(t: AtmTables, images: &mut Assets<Image>) -> AtmosphereGpu {
 // Sky material
 // ------------------------------------------------------------------------------------------------
 
+/// The further stars a sky is lit by besides the brightest (`system::MAX_LIGHTS` - 1).
+pub const SKY_EXTRA_LIGHTS: usize = 3;
+
 /// Uniform block of the sky shader (`SkyUniform` in `sky.wesl`).
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct SkyUniform {
@@ -350,6 +353,9 @@ pub struct SkyUniform {
     pub occluder: Vec4,
     /// rgb: star irradiance for the disc, before eclipse dimming.
     pub disc_irradiance: Vec4,
+    /// The further stars: xyz direction, w 1 when used; rgb their irradiance like `sun_irradiance`.
+    pub light_dir: [Vec4; SKY_EXTRA_LIGHTS],
+    pub light_irradiance: [Vec4; SKY_EXTRA_LIGHTS],
 }
 
 /// The three passes of a sky shell, drawn in this order (SE: `atmo_transm.glsl` dims what lies
@@ -401,6 +407,8 @@ impl SkyMaterial {
                 sun_irradiance: Vec4::new(1.0, 1.0, 1.0, bright),
                 occluder: Vec4::ZERO,
                 disc_irradiance: Vec4::ONE,
+                light_dir: [Vec4::ZERO; SKY_EXTRA_LIGHTS],
+                light_irradiance: [Vec4::ZERO; SKY_EXTRA_LIGHTS],
             },
             inscatter: gpu.inscatter.clone(),
             transmittance: gpu.transmittance.clone(),
@@ -546,11 +554,13 @@ pub fn sky_uniform_update(
     sun_angular_radius: f32,
     occluder: Vec4,
     disc_irradiance: Vec3,
+    extra: ([Vec4; SKY_EXTRA_LIGHTS], [Vec4; SKY_EXTRA_LIGHTS]),
 ) {
     for handle in std::iter::once(&shell.material).chain(&shell.dimming) {
         if let Some(mut m) = materials.get_mut(handle) {
             m.set_sun(dir_to_star, sun_irradiance, sun_angular_radius);
             m.set_occluder(occluder, disc_irradiance);
+            (m.uniform.light_dir, m.uniform.light_irradiance) = extra;
         }
     }
 }

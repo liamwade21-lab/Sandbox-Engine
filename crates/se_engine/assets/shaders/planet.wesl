@@ -51,6 +51,10 @@ struct Planet {
     // x star surface radiance per its irradiance here (1 / (pi (R*/d)^2)), y star temperature (K),
     // z ThermalEmissionShift (kK).
     thermal2: vec4<f32>,
+    // The further stars (SE lights a body by up to 4, planet.glsl's NLights loop): xyz direction,
+    // w 1 when used; rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -1731,6 +1735,39 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     let day = e_sun * (PI * ATM_AMBIENT_SCALE * planet.atm_flags.w * max(dot(up, l), 0.0));
     s.col += albedo / PI * day;
     s.e_level += day;
+    // The further stars: their direct light (with the Hapke term), sky light and day ambient,
+    // shadowed by the rings and eclipses on their own paths (planet.glsl:1032-1131).
+    for (var i = 0; i < 3; i++) {
+        if planet.light_dir[i].w < 0.5 {
+            break;
+        }
+        let lx = normalize(planet.light_dir[i].xyz);
+        let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_shadow(p_rel, lx);
+        let e_x = sun_x * planet.atm_flags.y;
+        let term_x = smoothstep(-0.08, 0.12, dot(up, lx));
+        var ground_x = sun_x * term_x;
+        if has_atm {
+            s.col += albedo / PI * atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, lx, e_x, 1.0);
+            s.e_level += atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, up, lx, e_x, 1.0);
+            let r = length(pos_km);
+            ground_x = sun_x * atm_transmittance_sun(planet.atm, transmittance_tex, atm_smp, r, dot(pos_km / r, lx));
+        } else {
+            s.col += albedo / PI * max(dot(ns, lx), 0.0) * term_x * e_x;
+            s.e_level += max(dot(up, lx), 0.0) * term_x * e_x;
+        }
+        if planet.modulate.w > 0.0 {
+            let v = normalize(-in.world_pos);
+            let nl = max(dot(ns, lx), 0.0);
+            let nv = max(dot(ns, v), 0.0);
+            let vl = clamp(dot(v, lx), -0.999, 1.0);
+            let t = sqrt((1.0 - vl) / (1.0 + vl));
+            let k = 1.0 + planet.hapke.x / (1.0 + t * planet.hapke.y) + planet.hapke.z / (1.0 + t * planet.hapke.w);
+            s.col += albedo / PI * ground_x * planet.atm_flags.y * nl * (mix(1.0, k / (nl + nv + 0.001), planet.modulate.w) - 1.0);
+        }
+        let day_x = e_x * (PI * ATM_AMBIENT_SCALE * planet.atm_flags.w * max(dot(up, lx), 0.0));
+        s.col += albedo / PI * day_x;
+        s.e_level += day_x;
+    }
     s.col += albedo * planet.base_color.w + emission;
     // The soils' sheen: GGX with their roughness (dielectric, F0 0.04), only where the
     // mesh's own surface faces the star.
@@ -1817,6 +1854,14 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
         // ends in the same (interpolated) geometry or the difference blows up.
         let view_km = (in.world_pos - in.centre.xyz) * to_table;
         col = atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, l, e_sun * planet.atm_flags.z);
+        // The further stars' haze.
+        for (var i = 0; i < 3; i++) {
+            if planet.light_dir[i].w < 0.5 {
+                break;
+            }
+            let e_x = planet.light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
+            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, normalize(planet.light_dir[i].xyz), e_x);
+        }
     }
     return col;
 }

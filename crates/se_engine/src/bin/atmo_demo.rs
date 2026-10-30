@@ -287,6 +287,8 @@ fn setup(
             atm: gpu.uniform(),
             sun_dir: sun_dir.extend(0.0),
             sun_irradiance: sun_irr.extend(1.0),
+            light_dir: [Vec4::ZERO; 3],
+            light_irradiance: [Vec4::ZERO; 3],
         },
         inscatter: gpu.inscatter.clone(),
         transmittance: gpu.transmittance.clone(),

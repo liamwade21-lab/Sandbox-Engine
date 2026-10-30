@@ -53,7 +53,30 @@ impl SystemBody {
     }
 }
 
-/// Illumination of a body by its brightest star.
+/// How many stars SE lights a body with (MAX_LIGHTS in its planet, sky and ring shaders,
+/// FUN_1404bf5c0 stops gathering at 4).
+pub const MAX_LIGHTS: usize = 4;
+const _: () = assert!(crate::atmosphere::SKY_EXTRA_LIGHTS == MAX_LIGHTS - 1);
+
+/// One of the further stars lighting a body, after its brightest one.
+#[derive(Debug, Clone, Copy)]
+pub struct ExtraLight {
+    /// Unit direction (universe/render frame) from the body towards the star.
+    pub dir: Vec3,
+    /// The light's colour times its intensity relative to the brightest star.
+    pub color: Vec3,
+    /// The same on rings (0 for a star fainter than `RingsLightingFadeEndMagn`).
+    pub rings_color: Vec3,
+}
+
+impl Default for ExtraLight {
+    fn default() -> Self {
+        Self { dir: Vec3::Y, color: Vec3::ZERO, rings_color: Vec3::ZERO }
+    }
+}
+
+/// Illumination of a body by its brightest star, plus up to [`MAX_LIGHTS`] - 1 further ones in
+/// `extra` (SE lights a planet in a multiple system by each of its suns).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct BodyLighting {
     /// Unit direction (universe/render frame) from the body towards the star.
@@ -70,6 +93,23 @@ pub struct BodyLighting {
     /// for SE's thermal emission.
     pub star_teff: f32,
     pub heat: f32,
+    /// The further stars, brightest first; the first `n_extra` are used.
+    pub extra: [ExtraLight; MAX_LIGHTS - 1],
+    pub n_extra: usize,
+}
+
+impl BodyLighting {
+    /// The further lights for a shader: `dir` xyz towards the star, w 1 when used; `color` rgb
+    /// the light (`rings` picks the ring intensities).
+    pub fn extra_uniforms(&self, rings: bool) -> ([Vec4; MAX_LIGHTS - 1], [Vec4; MAX_LIGHTS - 1]) {
+        let mut dirs = [Vec4::ZERO; MAX_LIGHTS - 1];
+        let mut colors = [Vec4::ZERO; MAX_LIGHTS - 1];
+        for (i, l) in self.extra.iter().take(self.n_extra).enumerate() {
+            dirs[i] = l.dir.extend(1.0);
+            colors[i] = if rings { l.rings_color } else { l.color }.extend(0.0);
+        }
+        (dirs, colors)
+    }
 }
 
 impl Default for BodyLighting {
@@ -83,6 +123,8 @@ impl Default for BodyLighting {
             star_radius_m: 0.0,
             star_teff: 5772.0,
             heat: 0.0,
+            extra: [ExtraLight::default(); MAX_LIGHTS - 1],
+            n_extra: 0,
         }
     }
 }
@@ -184,14 +226,22 @@ impl LightingFade {
 
     /// SE's intensity of the brightest star of flux `flux` on a planet: faded, then
     /// `(F / max(F_begin, F))^0.35`, the brightest star normalised to 1.
+    #[cfg(test)]
     pub fn planet_intensity(&self, flux: f64) -> f32 {
+        self.planet_intensities(&[flux]).first().copied().unwrap_or(0.0)
+    }
+
+    /// The same for the stars of fluxes `fluxes`, brightest first (FUN_1404bf5c0): the list ends
+    /// at the first star past the fade end, each is faded, then `(F / max(F_begin, F_max))^0.35`.
+    pub fn planet_intensities(&self, fluxes: &[f64]) -> Vec<f32> {
         let (begin, end) = (Self::flux(self.planet_begin_mag), Self::flux(self.planet_end_mag));
-        if !(flux >= end) {
-            return 0.0;
-        }
-        let f = if flux < begin { ((flux - end) / (begin - end)).max(0.0) } else { 1.0 };
-        let lit = f * flux;
-        (lit / begin.max(lit)).powf(0.35) as f32
+        let lit: Vec<f64> = fluxes
+            .iter()
+            .take_while(|&&flux| flux >= end)
+            .map(|&flux| if flux < begin { ((flux - end) / (begin - end)).max(0.0) * flux } else { flux })
+            .collect();
+        let max = lit.iter().fold(begin, |m, &l| m.max(l));
+        lit.iter().map(|&l| (l / max).powf(0.35) as f32).collect()
     }
 
     pub fn rings_lit(&self, flux: f64) -> bool {
@@ -873,25 +923,37 @@ fn update_lighting(data: Res<SeData>, fade: Res<LightingFade>, settings: Res<Sta
         if b.star {
             continue;
         }
-        let mut best: Option<(f64, &(UPos, f64, Vec3, f64, f64))> = None;
-        for s in &stars {
-            let d = s.0.delta_m(b.pos).length().max(1.0);
-            let flux = s.1 / (d / METERS_PER_AU).powi(2);
-            if best.is_none_or(|(bf, _)| flux > bf) {
-                best = Some((flux, s));
-            }
-        }
-        if let Some((flux, s)) = best {
+        // SE lights a body with its up to MAX_LIGHTS stars of the most flux (FUN_1404bf5c0).
+        let mut lit: Vec<(f64, &(UPos, f64, Vec3, f64, f64))> = stars
+            .iter()
+            .map(|s| (s.1 / (s.0.delta_m(b.pos).length().max(1.0) / METERS_PER_AU).powi(2), s))
+            .collect();
+        lit.sort_by(|a, b| b.0.total_cmp(&a.0));
+        lit.truncate(MAX_LIGHTS);
+        let fluxes: Vec<f64> = lit.iter().map(|l| l.0).collect();
+        let intensities = fade.planet_intensities(&fluxes);
+        light.n_extra = 0;
+        if let Some(&(flux, s)) = lit.first() {
             light.sun_dir = s.0.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3();
             // The eye adapts to its sun: SE shows a red dwarf's planet tan, not deep red (the star
             // itself is still drawn in its full colour).
             light.sun_color = illum_color(s.2, s.4 as f32, &settings);
-            light.sun_intensity = fade.planet_intensity(flux);
+            light.sun_intensity = intensities.first().copied().unwrap_or(0.0);
             light.rings_intensity = if fade.rings_lit(flux) { light.sun_intensity } else { 0.0 };
             light.star_pos = s.0;
             light.star_radius_m = s.3;
             light.star_teff = s.4.max(500.0) as f32;
             light.heat = flux as f32;
+            for (&(flux, s), &k) in lit.iter().zip(&intensities).skip(1) {
+                let color = illum_color(s.2, s.4 as f32, &settings) * k;
+                let n = light.n_extra;
+                light.extra[n] = ExtraLight {
+                    dir: s.0.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3(),
+                    color,
+                    rings_color: if fade.rings_lit(flux) { color } else { Vec3::ZERO },
+                };
+                light.n_extra += 1;
+            }
         } else {
             // No star: SE lights nothing.
             (light.sun_intensity, light.rings_intensity, light.heat) = (0.0, 0.0, 0.0);
@@ -1125,6 +1187,13 @@ fn update_sky_shells(
             ang,
             occluder,
             light.sun_color * light.sun_intensity * crate::terrain::ATM_SUN_SCALE,
+            {
+                let (dirs, mut colors) = light.extra_uniforms(false);
+                for c in &mut colors {
+                    *c *= crate::terrain::ATM_SCATTER_SCALE;
+                }
+                (dirs, colors)
+            },
         );
     }
 }
@@ -1235,6 +1304,21 @@ mod tests {
         assert!(mid[0] > 0.0 && mid[0] < mid[1] && mid[1] < mid[2] && mid[2] < 1.0, "{mid:?}");
         // Rings lose the star from -10 (2e-7).
         assert!(f.rings_lit(1e-6) && !f.rings_lit(1e-7));
+    }
+
+    #[test]
+    fn several_stars_are_normalised_to_the_brightest() {
+        let f = LightingFade::default();
+        // A companion a quarter as bright shows at 0.25^0.35; a star past the fade end, and every
+        // one after it, is dropped.
+        let k = f.planet_intensities(&[4.0, 1.0, 1e-9, 1e-10]);
+        assert_eq!(k.len(), 2);
+        assert_eq!(k[0], 1.0);
+        assert!((k[1] - 0.25f32.powf(0.35)).abs() < 1e-6, "{k:?}");
+        // Under a faint brightest star the normalisation is to the fade start, as for one star.
+        let faint = 2.0 * LightingFade::flux(-7.0);
+        assert_eq!(f.planet_intensities(&[faint, faint]), vec![1.0, 1.0]);
+        assert!(f.planet_intensities(&[]).is_empty());
     }
 
     #[test]

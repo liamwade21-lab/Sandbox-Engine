@@ -32,6 +32,9 @@ pub struct ModelUniform {
     pub sun_color: Vec4,
     /// rgb: tint multiplied with the diffuse texture; w: ambient level.
     pub base_color: Vec4,
+    /// The further stars ([`crate::system::BodyLighting::extra_uniforms`]).
+    pub light_dir: [Vec4; crate::system::MAX_LIGHTS - 1],
+    pub light_color: [Vec4; crate::system::MAX_LIGHTS - 1],
 }
 
 /// Lambert-lit model material with one diffuse texture.

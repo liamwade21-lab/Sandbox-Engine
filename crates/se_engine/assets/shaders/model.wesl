@@ -8,6 +8,9 @@ struct Model {
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
     base_color: vec4<f32>,
+    // The further stars: xyz direction, w 1 when used; rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> model: Model;
@@ -44,7 +47,13 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let l = normalize(model.sun_dir.xyz);
     let ndl = max(dot(n, l), 0.0);
     let albedo = textureSample(model_tex, model_smp, in.uv).rgb * model.base_color.rgb;
-    let sun = model.sun_color.rgb * model.sun_dir.w * ndl;
+    var sun = model.sun_color.rgb * model.sun_dir.w * ndl;
+    for (var i = 0; i < 3; i++) {
+        if model.light_dir[i].w < 0.5 {
+            break;
+        }
+        sun += model.light_color[i].rgb * max(dot(n, normalize(model.light_dir[i].xyz)), 0.0);
+    }
     let ambient = model.base_color.w * albedo;
     return vec4<f32>(albedo * sun + ambient, 1.0);
 }

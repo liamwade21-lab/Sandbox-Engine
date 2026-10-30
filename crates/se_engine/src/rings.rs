@@ -17,7 +17,7 @@ use bevy::shader::ShaderRef;
 use se_core::rings::RingsParams;
 use se_core::vfs::Vfs;
 
-use crate::system::{BodyLighting, SystemBody, SystemMember};
+use crate::system::{BodyLighting, MAX_LIGHTS, SystemBody, SystemMember};
 use crate::universe::{MeterScale, UOrientation, UPosition, UniverseSet};
 
 #[derive(Clone, Copy, Debug, ShaderType, Default)]
@@ -35,6 +35,9 @@ pub struct RingUniform {
     pub hapke: Vec4,
     /// x 1 / `SpotWidthCB`.
     pub hapke2: Vec4,
+    /// The further stars ([`BodyLighting::extra_uniforms`] for rings).
+    pub light_dir: [Vec4; MAX_LIGHTS - 1],
+    pub light_color: [Vec4; MAX_LIGHTS - 1],
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -290,6 +293,7 @@ pub fn spawn_rings(
             density: Vec4::new(p.density as f32, p.density as f32, p.opacity as f32, p.self_shadow as f32).max(Vec4::ZERO),
             hapke: Vec4::new(spot(p.spot_bright, p.spot_width), inv(p.spot_width), p.hapke.clamp(0.0, 1.0) as f32, spot(p.spot_bright_cb, p.spot_width_cb)),
             hapke2: Vec4::new(inv(p.spot_width_cb), 0.0, 0.0, 0.0),
+            ..Default::default()
         },
         texture: tex.unwrap_or(white),
     });
@@ -329,6 +333,7 @@ fn update_rings(
             if let Some(mut m) = materials.get_mut(&ring.material) {
                 m.u.sun_dir = light.sun_dir.extend(light.rings_intensity);
                 m.u.sun_color = light.sun_color.extend(1.0);
+                (m.u.light_dir, m.u.light_color) = light.extra_uniforms(true);
             }
         }
     }

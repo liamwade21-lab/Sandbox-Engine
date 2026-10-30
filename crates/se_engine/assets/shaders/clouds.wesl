@@ -33,6 +33,9 @@ struct Clouds {
     // x: atmosphere enabled, y: sun irradiance scale for the tables, z: the haze relative to y, w unused
     atm_flags: vec4<f32>,
     atm: AtmParams,
+    // The further stars: xyz direction, w 1 when used; rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> clouds: Clouds;
@@ -460,9 +463,41 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         let back = clamp(nl * thickness + (1.0 - thickness), 0.0, 1.0) * 0.5;
         col += clouds.look.y * mix(back, 1.0, forward) / PI * e_sun;
     }
+    // The further stars, lit the same way (SE's NLights loop).
+    for (var i = 0; i < 3; i++) {
+        if clouds.light_dir[i].w < 0.5 {
+            break;
+        }
+        let lx = normalize(clouds.light_dir[i].xyz);
+        let top_x = clouds.light_color[i].rgb * eclipse_light(clouds.eclipse, rel / max(in.centre.w, 1e-30), lx) * clouds.atm_flags.y;
+        let mu_x = dot(up, lx);
+        var sun_x = top_x * clamp((sqrt(1.0 - rr * rr) + mu_x) * 500.0, 0.0, 1.0);
+        var sky_x = vec3<f32>(0.0);
+        if has_atm {
+            let r = length(pos_km);
+            sun_x *= atm_transmittance_sun(clouds.atm, transmittance_tex, atm_smp, r, mu_x);
+            sky_x = atm_irradiance(clouds.atm, irradiance_tex, atm_smp, r, mu_x) * clouds.atm.look.w;
+        }
+        let nl_x = max(dot(nb, lx), 0.0);
+        let hapke_x = mix(1.0, 1.0 / (nl_x + nv + 0.001), clouds.look.w);
+        col += albedo / PI * sun_x * nl_x * hapke_x + albedo * a * top_x * ATM_AMBIENT_SCALE * (max(mu_x, 0.0) * clouds.look.x + sky_x);
+        if clouds.look.y > 0.0 {
+            let thickness = 1.0 - a;
+            let forward = exp2(-clamp(dot(v, normalize(lx + v)), 0.0, 1.0) * clouds.look.z - clouds.look.z);
+            let back = clamp(nl_x * thickness + (1.0 - thickness), 0.0, 1.0) * 0.5;
+            col += clouds.look.y * mix(back, 1.0, forward) / PI * sun_x;
+        }
+    }
     // The haze between the camera and the cloud (the ground's own lies under it).
     if has_atm {
         col = atm_apply_aerial(clouds.atm, inscatter_tex, transmittance_tex, atm_smp, col, -in.centre.xyz * to_table, pos_km, l, e_top * clouds.atm_flags.z);
+        for (var i = 0; i < 3; i++) {
+            if clouds.light_dir[i].w < 0.5 {
+                break;
+            }
+            let e_x = clouds.light_color[i].rgb * clouds.atm_flags.y * clouds.atm_flags.z;
+            col += atm_apply_aerial(clouds.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), -in.centre.xyz * to_table, pos_km, normalize(clouds.light_dir[i].xyz), e_x);
+        }
     }
     return vec4<f32>(col, a);
 }

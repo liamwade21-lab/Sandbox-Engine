@@ -34,7 +34,7 @@ use crate::atmosphere::{AtmosphereGpu, AtmosphereParamsUniform};
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::surface_tex::{BiomeUniform, SOIL_WRAP_M, SurfaceTextures};
-use crate::system::{BodyLighting, SystemBody, SystemMember};
+use crate::system::{BodyLighting, MAX_LIGHTS, SystemBody, SystemMember};
 use crate::universe::{MeterScale, ScaleAnchor, UOrientation, UPosition, UniverseSet};
 
 /// The star's light on planetary surfaces, in the atmosphere tables' units (unit irradiance):
@@ -109,6 +109,10 @@ pub struct PlanetUniform {
     /// x 1 / (pi (R* / d)^2), the star's surface radiance per its irradiance here; y the star's
     /// temperature (K); z SE's ThermalEmissionShift (thousand K).
     pub thermal2: Vec4,
+    /// The further stars ([`BodyLighting::extra_uniforms`]): xyz direction, w 1 when used.
+    pub light_dir: [Vec4; MAX_LIGHTS - 1],
+    /// Their rgb light, intensity included.
+    pub light_color: [Vec4; MAX_LIGHTS - 1],
 }
 
 /// SE's `ThermalEmissionShift` (main-def.cfg 0), in thousand K.
@@ -497,6 +501,7 @@ pub struct Terrain {
     gen_failed: bool,
     frame: u64,
     last_sun: Vec4,
+    last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
     last_eclipse: EclipseUniform,
@@ -638,6 +643,7 @@ impl Terrain {
             gen_failed: false,
             frame: 0,
             last_sun: Vec4::ZERO,
+            last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
             last_eclipse: EclipseUniform::default(),
         }
@@ -1599,6 +1605,7 @@ fn update_terrain(
             let (pcl, rcl) = layer_rect(shadow.and_then(|i| layers.clouds[i].as_ref()), key);
             let s = &terrain.surface;
             let (u0n, v0n, sizen) = key.uv_rect();
+            let (extra_dir, extra_color) = light.extra_uniforms(false);
             let u = PlanetUniform {
                 sun_dir: light.sun_dir.extend(light.sun_intensity),
                 sun_color: light.sun_color.extend(1.0),
@@ -1684,6 +1691,8 @@ fn update_terrain(
                     let omega = (light.star_radius_m / d).powi(2).max(1e-30);
                     Vec4::new((1.0 / (std::f64::consts::PI * omega)) as f32, light.star_teff, THERMAL_EMISSION_SHIFT, 0.0)
                 },
+                light_dir: extra_dir,
+                light_color: extra_color,
             };
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             let ground = PlanetMaterial {
@@ -1748,6 +1757,8 @@ fn update_terrain(
                             look: c.look,
                             atm_flags: Vec4::new(ground_u.atm_flags.x, ATM_SUN_SCALE, ground_u.atm_flags.z, 0.0),
                             atm: ground_u.atm,
+                            light_dir: ground_u.light_dir,
+                            light_color: ground_u.light_color,
                         },
                         clouds: ctex,
                         inscatter: ground_atm.0.clone(),
@@ -1976,8 +1987,11 @@ fn update_terrain(
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
         let eclipse = terrain.eclipse;
-        if (sun - terrain.last_sun).length() > 1e-3 || eclipse.differs(&terrain.last_eclipse) {
+        let (extra_dir, extra_color) = light.extra_uniforms(false);
+        let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
+        if (sun - terrain.last_sun).length() > 1e-3 || extra_moved || eclipse.differs(&terrain.last_eclipse) {
             terrain.last_sun = sun;
+            terrain.last_extra = extra_dir;
             terrain.last_eclipse = eclipse;
             for slot in terrain.nodes.values() {
                 if let NodeState::Ready(e, c) = &slot.state {
@@ -1986,6 +2000,7 @@ fn update_terrain(
                             if let Some(mut m) = materials.get_mut(h) {
                                 m.u.sun_dir = sun;
                                 m.u.sun_color = light.sun_color.extend(1.0);
+                                (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
                                 m.u.eclipse = eclipse;
                             }
                         }
@@ -1994,6 +2009,7 @@ fn update_terrain(
                         if let Some(mut m) = cloud_mats.get_mut(&cn.material) {
                             m.u.sun_dir = sun;
                             m.u.sun_color = light.sun_color.extend(1.0);
+                            (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
                             m.u.eclipse = eclipse;
                         }
                     }
@@ -2267,6 +2283,8 @@ pub struct CloudUniform {
     /// relative to y, w unused (SkyLight is in `atm.look`).
     pub atm_flags: Vec4,
     pub atm: AtmosphereParamsUniform,
+    pub light_dir: [Vec4; MAX_LIGHTS - 1],
+    pub light_color: [Vec4; MAX_LIGHTS - 1],
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

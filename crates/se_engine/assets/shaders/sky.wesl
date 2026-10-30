@@ -16,6 +16,10 @@ struct SkyUniform {
     occluder: vec4<f32>,
     // rgb: star irradiance for the disc, before eclipse dimming.
     disc_irradiance: vec4<f32>,
+    // The further stars (SE's sky.glsl NLights loop): xyz direction, w 1 when used; rgb their
+    // irradiance like `sun_irradiance`.
+    light_dir: array<vec4<f32>, 3>,
+    light_irradiance: array<vec4<f32>, 3>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> sky: SkyUniform;
@@ -38,7 +42,23 @@ struct VertexOut {
     @location(2) @interpolate(flat) cam_local: vec3<f32>,
     // The star's direction, turned into the shell's frame.
     @location(3) @interpolate(flat) sun_local: vec3<f32>,
+    // The further stars' directions likewise, w 1 when used.
+    @location(4) @interpolate(flat) extra0: vec4<f32>,
+    @location(5) @interpolate(flat) extra1: vec4<f32>,
+    @location(6) @interpolate(flat) extra2: vec4<f32>,
 };
+
+// A direction `s` (world) in the frame of the shell with axes `c0`..`c2` (times its scale).
+fn to_shell(c0: vec3<f32>, c1: vec3<f32>, c2: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return normalize(vec3<f32>(dot(c0, s) / length(c0), dot(c1, s) / length(c1), dot(c2, s) / length(c2)));
+}
+
+fn extra_local(c0: vec3<f32>, c1: vec3<f32>, c2: vec3<f32>, l: vec4<f32>) -> vec4<f32> {
+    if l.w < 0.5 {
+        return vec4<f32>(0.0, 1.0, 0.0, 0.0);
+    }
+    return vec4<f32>(to_shell(c0, c1, c2, normalize(l.xyz)), 1.0);
+}
 
 @vertex
 fn vertex(v: Vertex) -> VertexOut {
@@ -57,8 +77,10 @@ fn shell_vertex(v: Vertex) -> VertexOut {
     let c2 = m[2].xyz;
     let d = view.world_position - m[3].xyz;
     o.cam_local = vec3<f32>(dot(c0, d) / dot(c0, c0), dot(c1, d) / dot(c1, c1), dot(c2, d) / dot(c2, c2));
-    let s = normalize(sky.sun_dir.xyz);
-    o.sun_local = normalize(vec3<f32>(dot(c0, s) / length(c0), dot(c1, s) / length(c1), dot(c2, s) / length(c2)));
+    o.sun_local = to_shell(c0, c1, c2, normalize(sky.sun_dir.xyz));
+    o.extra0 = extra_local(c0, c1, c2, sky.light_dir[0]);
+    o.extra1 = extra_local(c0, c1, c2, sky.light_dir[1]);
+    o.extra2 = extra_local(c0, c1, c2, sky.light_dir[2]);
     return o;
 }
 
@@ -87,6 +109,15 @@ fn sky_look(in: VertexOut) -> SkyLook {
     let s = normalize(sky.sun_dir.xyz);
     let e_sun = sky.sun_irradiance.rgb * sky.sun_irradiance.w;
     var col = sr.radiance * e_sun;
+    // The further stars' sky light.
+    var extra = array<vec4<f32>, 3>(in.extra0, in.extra1, in.extra2);
+    for (var i = 0; i < 3; i++) {
+        if extra[i].w < 0.5 {
+            break;
+        }
+        let sx = atm_sky_radiance(sky.atm, inscatter_tex, transmittance_tex, atm_sampler, cam, normalize(in.local_pos - in.cam_local), extra[i].xyz);
+        col += sx.radiance * sky.light_irradiance[i].rgb * sky.sun_irradiance.w;
+    }
 
     // Optional sun disc, reddened by the atmosphere (only when the ray does not hit the ground).
     let rad = sky.sun_dir.w;
