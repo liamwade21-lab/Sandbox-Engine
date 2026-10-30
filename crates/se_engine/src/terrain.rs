@@ -118,6 +118,9 @@ pub struct PlanetUniform {
     /// SE's GlowColor: rgb the catalog's tint of the glow map, w its mode (1 "Night": off where
     /// light reaches the ground, 0 "Permanent").
     pub glow: Vec4,
+    /// SE's ice glint (planet.glsl AICE): x SpecBrightIce, y RoughnessIce, z 1 when the colour map's
+    /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint).
+    pub ice: Vec4,
 }
 
 /// SE's self-emission settings (main-def.cfg `EnableSelfEmission`, `SelfEmissionBright`; key
@@ -1770,6 +1773,14 @@ fn update_terrain(
                 light_dir: extra_dir,
                 light_color: extra_color,
                 glow: Vec3::from_array(s.glow_color.map(|c| c as f32)).extend(if s.glow_permanent { 0.0 } else { 1.0 }),
+                ice: Vec4::new(
+                    s.spec_bright_ice
+                        .unwrap_or_else(|| se_core::planet_tiles::ice_spec_default(terrain.surf_gen.classes.surface, terrain.atmosphere.is_some()))
+                        as f32,
+                    s.roughness_ice.unwrap_or(se_core::planet_tiles::ROUGHNESS_ICE_DEFAULT) as f32,
+                    if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
+                    0.0,
+                ),
             };
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             let ground = PlanetMaterial {

@@ -281,6 +281,13 @@ pub struct SurfaceParams {
     /// the default) it goes out where light reaches the ground (FUN_14046dde0, GlowColor.a).
     pub glow_permanent: bool,
     pub diff_map_alpha_water: bool,
+    /// SE's `DiffMapAlpha "Ice"` (Europa, Triton, Pluto, Charon): the colour map's alpha is the ice
+    /// mask that SpecBrightIce's glint is scaled by (planet.glsl AICE, `specTer = SpecParams.x x
+    /// roughMap`).
+    pub diff_map_alpha_ice: bool,
+    /// `SpecBrightIce` / `RoughnessIce` when the catalog sets them ([`ice_spec_default`] otherwise).
+    pub spec_bright_ice: Option<f64>,
+    pub roughness_ice: Option<f64>,
     pub spec_bright_water: f64,
     pub color_sea: Option<[f64; 3]>,
     pub color_shelf: Option<[f64; 3]>,
@@ -299,6 +306,10 @@ impl SurfaceParams {
             // SE compares the exact words "Night" and "Permanent".
             glow_permanent: b.str("GlowMode") == Some("Permanent"),
             diff_map_alpha_water: b.str("DiffMapAlpha").map(|s| s.eq_ignore_ascii_case("Water")).unwrap_or(false),
+            // SE compares the exact words "None", "Ice", "Water" and "Transp" (FUN_14046f840).
+            diff_map_alpha_ice: b.str("DiffMapAlpha") == Some("Ice"),
+            spec_bright_ice: b.f64("SpecBrightIce"),
+            roughness_ice: b.f64("RoughnessIce"),
             spec_bright_water: b.f64("SpecBrightWater").unwrap_or(0.0),
             color_sea: b.vec3("colorSea"),
             color_shelf: b.vec3("colorShelf"),
@@ -310,6 +321,25 @@ impl SurfaceParams {
         (sample * self.bump_height_km - self.bump_offset_km) * 1000.0
     }
 }
+
+/// SE's default `SpecBrightIce` by surface class (FUN_1404cb030, the record's +0x1154): 0.85 for the
+/// wet classes 1 and 2, 10 for class 3 (wet aquaria), 0.3 for arid worlds, 0.05 for airless rocky
+/// worlds and asteroids, and for icy airless aquaria (class 6) 10 once they hold any atmosphere (the
+/// record's +0x1828 over 1e-6), else 0.05; 0 otherwise. It scales the GGX glint (F0 0.04).
+pub fn ice_spec_default(surface_class: i32, has_atmosphere: bool) -> f64 {
+    match surface_class {
+        1 | 2 => 0.85,
+        3 => 10.0,
+        4 => 0.3,
+        5 | 7 => 0.05,
+        6 if has_atmosphere => 10.0,
+        6 => 0.05,
+        _ => 0.0,
+    }
+}
+
+/// SE's default `RoughnessIce` (+0x115c) for every class.
+pub const ROUGHNESS_ICE_DEFAULT: f64 = 0.45;
 
 #[cfg(test)]
 mod tests {
@@ -384,6 +414,20 @@ mod tests {
         // SE matches the words exactly; anything else keeps the Night default.
         assert!(!parse("GlowMode \"permanent\"").glow_permanent);
         assert!(!parse("").glow_permanent);
+    }
+
+    #[test]
+    fn ice_alpha_and_defaults() {
+        let s = SurfaceParams::from_block(&crate::sc::parse("DiffMap \"Europa\"\nDiffMapAlpha \"Ice\"\n"));
+        assert!(s.diff_map_alpha_ice && !s.diff_map_alpha_water);
+        assert_eq!((s.spec_bright_ice, s.roughness_ice), (None, None));
+        let e = SurfaceParams::from_block(&crate::sc::parse("DiffMapAlpha \"Water\"\nSpecBrightIce 0.65\n"));
+        assert!(!e.diff_map_alpha_ice && e.diff_map_alpha_water);
+        assert_eq!(e.spec_bright_ice, Some(0.65));
+        assert_eq!(ice_spec_default(6, false), 0.05);
+        assert_eq!(ice_spec_default(6, true), 10.0);
+        assert_eq!(ice_spec_default(1, false), 0.85);
+        assert_eq!(ice_spec_default(8, true), 0.0);
     }
 
     #[test]

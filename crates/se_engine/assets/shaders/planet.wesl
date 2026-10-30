@@ -57,6 +57,8 @@ struct Planet {
     light_color: array<vec4<f32>, 3>,
     // SE's GlowColor: rgb the glow map's tint, w the mode (1 Night, 0 Permanent).
     glow: vec4<f32>,
+    // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask.
+    ice: vec4<f32>,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -1947,9 +1949,13 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         sample_rough = b.rough;
         sample_k = b.k;
     }
+    // SE's ice glint (AICE): SpecBrightIce times the colour map's alpha, the ice mask.
+    var ice = 0.0;
     if textured {
         // SE tints the colour map by the catalog's ModulateColor (Mars, Venus, Titan).
-        albedo = textureSample(color_tex, color_smp, tile_uv(planet.rect_color, in.uv)).rgb * planet.modulate.rgb;
+        let c = textureSample(color_tex, color_smp, tile_uv(planet.rect_color, in.uv));
+        albedo = c.rgb * planet.modulate.rgb;
+        ice = planet.ice.x * planet.ice.z * c.a;
         // Below the texture's resolution, steep faces shed their snow or soil: show rock.
         let steep = smoothstep(0.18, 0.45, slope);
         let rock = vec3<f32>(0.11, 0.10, 0.09) + albedo * 0.25;
@@ -2071,6 +2077,22 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     if sheen > 0.0 {
         let v = normalize(-in.world_pos);
         s.col += s.sun_at_ground * planet.atm_flags.y * ground_spec(ns, v, l, rough * rough) * smoothstep(0.0, 0.1, dot(n, l)) * sheen;
+    }
+    // The ice's Cook-Torrance glint (RoughnessIce) from every light, giving way to the soils' own
+    // close by (SE's specTer goes to the detail textures' by detailFadeSpec).
+    if ice * (1.0 - fade) > 0.0 {
+        let v = normalize(-in.world_pos);
+        let a = planet.ice.y * planet.ice.y;
+        var glint = s.sun_at_ground * ground_spec(ns, v, l, a);
+        for (var i = 0; i < 3; i++) {
+            if planet.light_dir[i].w < 0.5 {
+                break;
+            }
+            let lx = normalize(planet.light_dir[i].xyz);
+            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_shadow(p_rel, lx);
+            glint += sun_x * horizon_shadow(in.height, dot(up, lx)) * ground_spec(ns, v, lx, a);
+        }
+        s.col += glint * planet.atm_flags.y * ice * (1.0 - fade) * smoothstep(0.0, 0.1, dot(n, l));
     }
     s.water = 0.0;
     if planet.ocean_sea.w > 0.5 {
