@@ -446,6 +446,10 @@ pub fn draw_flight_hud(mut contexts: EguiContexts, flight: Res<Flight>, time: Re
                 ui.vertical_centered(|ui| {
                     let nick = if ship.nickname.is_empty() { String::new() } else { format!("\"{}\"  ", ship.nickname) };
                     ui.label(egui::RichText::new(format!("{nick}{}  ({})   {}", d.name, d.class, flight.hud.label())).strong().size(15.0).color(hud_c));
+                    // SE's "Cheater!" mark while a cheat differs from main-def's Physics block.
+                    if flight.ftl || !flight.god || !flight.aero || !flight.gravity || !flight.collisions {
+                        ui.label(egui::RichText::new("Cheater!").strong().color(egui::Color32::from_rgb(255, 80, 80)));
+                    }
                 });
                 ui.horizontal_top(|ui| {
                     egui::Grid::new("ship_panel_a").num_columns(2).spacing([10.0, 1.0]).show(ui, |ui| {

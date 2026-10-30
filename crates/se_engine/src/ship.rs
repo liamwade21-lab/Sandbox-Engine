@@ -207,6 +207,13 @@ pub struct Flight {
     pub hold_altitude: Option<f64>,
     /// The Physics key `Aero` (main-def.cfg: true).
     pub aero: bool,
+    /// SE's cheats `FTL` ("Unlimited velocity", false: no speed of light cap outside warp,
+    /// FUN_140537060) and `God` ("Invulnerability", true: with it off a crash destroys the ship,
+    /// "Destroying spacecraft", FUN_14051b720 / FUN_140537060).
+    pub ftl: bool,
+    pub god: bool,
+    /// The flown ship crashed without invulnerability: it is destroyed on the next command pass.
+    pub wrecked: bool,
     /// The HUD mode (Ctrl+1 .. Ctrl+5).
     pub hud: hud::HudMode,
     /// Control remotely: the ship is flown, the camera stays where it is.
@@ -246,6 +253,9 @@ impl Default for Flight {
             sync_velocity: false,
             hold_altitude: None,
             aero: true,
+            ftl: false,
+            god: true,
+            wrecked: false,
             hud: hud::HudMode::default(),
             remote: false,
             next_serial: 0,
@@ -509,6 +519,13 @@ fn ship_commands(
     hull_defaults: Res<HullDefaults>,
 ) {
     let (mut teleports, mut nicknames) = (Vec::new(), Vec::new());
+    if std::mem::take(&mut flight.wrecked) {
+        if let Some(e) = flight.ship.take() {
+            info!("Destroying spacecraft");
+            commands.entity(e).despawn();
+            flight.active = false;
+        }
+    }
     for msg in reader.read() {
         let arg = msg.arg.trim();
         match msg.verb.as_str() {
@@ -1653,7 +1670,7 @@ fn ship_physics(
                 }
             }
             vel += a * h;
-            if ship.warp == 0.0 && vel.length() > SPEED_OF_LIGHT {
+            if ship.warp == 0.0 && !flight.ftl && vel.length() > SPEED_OF_LIGHT {
                 vel *= SPEED_OF_LIGHT / vel.length();
             }
             pos = pos.offset_m((warp_frame + (vel - warp_frame) * boost) * h);
@@ -1687,6 +1704,8 @@ fn ship_physics(
             if vn < 0.0 {
                 if -vn >= CRASH_SPEED {
                     notice = Some(format!("CRASH: impact at {}", format_speed(-vn)));
+                    // Without invulnerability (SE's God cheat off) the crash destroys the ship.
+                    flight.wrecked |= !flight.god;
                 }
                 v_rel -= up * vn;
             }

@@ -264,6 +264,9 @@ pub fn draw_ship_window(
             ui.checkbox(&mut flight.collisions, "Collisions");
             ui.checkbox(&mut flight.assist, "Flight assist");
             ui.checkbox(&mut flight.aero, "Aerodynamics");
+            // SE's cheats dialog: "Unlimited velocity" (FTL) and "Invulnerability" (God).
+            ui.checkbox(&mut flight.ftl, "Unlimited velocity");
+            ui.checkbox(&mut flight.god, "Invulnerability");
         });
     });
     if !open {
