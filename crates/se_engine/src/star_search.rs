@@ -433,7 +433,7 @@ fn scan_stars(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_
     let mut rows: Vec<SystemRow> = cat
         .stars
         .iter()
-        .filter(|s| s.has_position && !s.barycenter && s.source != "procedural" && star_type_ok(t, &s.class))
+        .filter(|s| s.has_position && !s.barycenter && !s.hidden() && s.source != "procedural" && star_type_ok(t, &s.class))
         .map(|s| (s, s.pos_pc.distance(center)))
         .filter(|(_, d)| *d <= radius_pc)
         .map(|(s, d)| SystemRow {

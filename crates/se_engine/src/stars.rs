@@ -399,8 +399,10 @@ fn build_catalog_starfield(
     let (mut positions, mut sdata, mut corners, mut indices) =
         (Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 6));
     let mut count = 0;
-    for s in &cat.stars {
-        if s.barycenter || !s.has_position {
+    // A ForceAppMagn system's components share its catalog AppMagn (catalog.rs).
+    let forced = cat.forced_system_offsets();
+    for (s, off) in cat.stars.iter().zip(forced) {
+        if s.barycenter || !s.has_position || s.hidden() {
             continue;
         }
         // A black hole shines only by its accretion disk's `Luminosity` (blackholes.rs).
@@ -410,7 +412,7 @@ fn build_catalog_starfield(
                 None => continue,
             }
         } else {
-            (star_render_color(s.class.kind, s.teff), s.abs_mag as f32)
+            (star_render_color(s.class.kind, s.teff), s.abs_mag as f32 + off)
         };
         let p = s.pos_pc.as_vec3();
         push_star(&mut positions, &mut sdata, &mut corners, &mut indices, [p.x, p.y, p.z], rgb, abs_mag);

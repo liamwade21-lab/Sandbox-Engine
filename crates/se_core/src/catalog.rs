@@ -70,6 +70,18 @@ impl StarRecord {
         }
         [1.0, (1.0 - b.f64("Oblateness").unwrap_or(0.0)).clamp(0.01, 1.0), 1.0]
     }
+
+    /// `Hidden true` (FUN_140476e90 sets flag 0x4000000): kept out of the sky and the star lists, as
+    /// SE's main-menu backdrop "Menu Star".
+    pub fn hidden(&self) -> bool {
+        self.block.bool("Hidden") == Some(true)
+    }
+
+    /// `ForceAppMagn true` (FUN_140476e90 sets flag 0x20000000): the catalog's `AppMagn` is the
+    /// star's or system's brightness, whatever its luminosity or its components give.
+    pub fn force_app_magn(&self) -> bool {
+        self.block.bool("ForceAppMagn") == Some(true)
+    }
 }
 
 /// A star's radius (km) from its `Dimensions` (km) or `DimensionsSol` (solar radii) diameters: half
@@ -500,9 +512,15 @@ impl Catalog {
             Some(radec_to_universe(ra, dec) * 10f64.powf((m - abs + 5.0) / 5.0))
         });
         let dist = pos.map(|p| p.length());
-        let abs_mag = match (b.f64("AbsMagn"), app_mag, dist) {
+        // SE (FUN_140476e90) fills the visual luminosity from `Lum`/`Luminosity`, then `AbsMagn`;
+        // only without either does it use `AppMagn` and the distance, and only without those the
+        // bolometric luminosity, radius or class. `ForceAppMagn` puts `AppMagn` first.
+        let visual_abs = b.f64("AbsMagn").or_else(|| b.f64_any(&["Lum", "Luminosity"]).map(star::abs_mag_from_lum));
+        let force_app = b.bool("ForceAppMagn") == Some(true);
+        let abs_mag = match (visual_abs, app_mag, dist) {
+            (Some(m), _, _) if !force_app => m,
+            (_, Some(m), Some(d)) => star::abs_mag_from_app(m, d.max(1e-9)),
             (Some(m), _, _) => m,
-            (None, Some(m), Some(d)) => star::abs_mag_from_app(m, d.max(1e-9)),
             _ => intrinsic_abs.unwrap_or_else(|| class.typical_abs_mag()),
         };
         let radius_km = if let Some(r) = b.f64("Radius") {
@@ -1192,6 +1210,37 @@ impl Catalog {
         }
         None
     }
+
+    /// Magnitude shift of each star's point in the sky (indexed like `stars`): SE draws a distant
+    /// system as one point, at the sum of its components unless the system has `ForceAppMagn`;
+    /// then it shines at its own `AppMagn`, so its components' summed light is scaled to that.
+    /// 0 for every other star.
+    pub fn forced_system_offsets(&self) -> Vec<f32> {
+        let roots: Vec<Option<u32>> = (0..self.stars.len())
+            .map(|i| {
+                let s = &self.stars[i];
+                if s.barycenter || !s.has_position {
+                    return None;
+                }
+                let r = self.system_root(ObjectRef::Star(i as u32))?;
+                let root = &self.stars[r as usize];
+                (r as usize != i && root.barycenter && root.force_app_magn() && root.abs_mag.is_finite()).then_some(r)
+            })
+            .collect();
+        let mut sum: HashMap<u32, f64> = HashMap::new();
+        for (i, r) in roots.iter().enumerate() {
+            if let Some(r) = r {
+                *sum.entry(*r).or_default() += star::lum_from_abs_mag(self.stars[i].abs_mag);
+            }
+        }
+        roots
+            .iter()
+            .map(|r| match r.and_then(|r| Some((r, *sum.get(&r)?))) {
+                Some((r, l)) if l > 0.0 => (self.stars[r as usize].abs_mag - star::abs_mag_from_lum(l)) as f32,
+                _ => 0.0,
+            })
+            .collect()
+    }
 }
 
 /// Deterministic orientation derived from a string hash (for catalog entries
@@ -1350,6 +1399,35 @@ Remove \"BET2 Cyg\"
         assert!((a.shape()[1] - 7.3 / 11.4).abs() < 1e-9 && a.shape()[0] == 1.0, "{:?}", a.shape());
         let b = c.find("Altair").and_then(|r| if let ObjectRef::Star(i) = r { Some(&c.stars[i as usize]) } else { None }).unwrap();
         assert!((b.shape()[1] - 0.803).abs() < 1e-9 && (b.radius_km - 2.03 * SOLAR_RADIUS_KM).abs() < 1.0);
+    }
+
+    #[test]
+    fn force_app_magn_and_hidden() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            "StarBarycenter \"Sys\" { RA 1 Dec 2 Dist 100 AppMagn 2.5 ForceAppMagn true }
+             Star \"Sys A\" { ParentBody \"Sys\" Class \"B1V\" AbsMagn -3 }
+             Star \"Sys B\" { ParentBody \"Sys\" Class \"B2V\" AbsMagn -3 }
+             Star \"Lit\" { RA 3 Dec 4 Dist 10 AppMagn 9 Lum 100 Class \"M3I\" }
+             Star \"Forced\" { RA 3 Dec 4 Dist 10 AppMagn 9 Lum 100 Class \"M3I\" ForceAppMagn true }
+             Star \"Menu Star\" { RA 5 Dec 6 Dist 50 Class \"G2V\" Lum 1 Hidden true }",
+            "s.sc",
+        );
+        c.finalize();
+        let star = |n: &str| match c.find(n) {
+            Some(ObjectRef::Star(i)) => i as usize,
+            _ => panic!("{n}"),
+        };
+        // SE takes Lum before AppMagn and the distance, unless ForceAppMagn.
+        assert!((c.stars[star("Lit")].abs_mag - star::abs_mag_from_lum(100.0)).abs() < 1e-9);
+        assert!((c.stars[star("Forced")].abs_mag - star::abs_mag_from_app(9.0, 10.0)).abs() < 1e-9);
+        // The two components together shine at the system's AppMagn.
+        let off = c.forced_system_offsets();
+        let (a, b) = (star("Sys A"), star("Sys B"));
+        let sum = star::lum_from_abs_mag(-3.0 + off[a] as f64) + star::lum_from_abs_mag(-3.0 + off[b] as f64);
+        assert!((star::abs_mag_from_lum(sum) - star::abs_mag_from_app(2.5, 100.0)).abs() < 1e-4);
+        assert_eq!(off[star("Lit")], 0.0);
+        assert!(c.stars[star("Menu Star")].hidden() && !c.stars[a].hidden());
     }
 
     #[test]

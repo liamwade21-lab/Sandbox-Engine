@@ -104,19 +104,19 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 148 have been fixed since (listed at the end); the tables count the 63 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 149 have been fixed since (listed at the end); the tables count the 62 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 17 | 29 | 17 |
+| Gaps | 0 | 0 | 17 | 29 | 16 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 14 | 35 | 14 |
+| Gaps | 13 | 35 | 14 |
 
 | Area | Kept |
 |---|---|
-| 01 Stars | 4 |
+| 01 Stars | 3 |
 | 02 Star clusters | 2 |
 | 03 Galaxies and nebulae | 6 |
 | 04 Planet surfaces | 3 |
@@ -561,15 +561,6 @@ black hole settings: Black hole quality (BlackHoleQuality 0-4), Black hole updat
 - Port: crates/se_engine/src/blackholes.rs
 - Check: main-def.cfg:187/189 has BlackHoleQuality 3 (0-4) and BlackHoleWarpRadius 100 and strings_utf16.txt:2826/2828 has "Black hole quality"/"Black hole update interval", while the port's blackholes.rs uses a fixed MAX_STEPS 220 in its lens shader and a hard-coded influence radius (blackholes.rs:250-262); neither settings.rs nor config.rs reads any of these, and SE_NO_BLACKHOLES (README:40) is the only switch.
 
-### 01-026 · Stars
-
-catalog star flags ForceAppMagn (use the given system AppMagn instead of the sum of its components) and Hidden (e.g. "Menu Star") are ignored
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: Catalogs.pak stars/Stars-bin.sc:831 ForceAppMagn, stars/SpaceEngine.sc Hidden true
-- Port: crates/se_core/src/catalog.rs:308-399
-- Check: Catalogs.pak has ForceAppMagn true on three bright barycenters (Stars-bin.sc:831 BET Sco, :1145 SIG Ori, :2177 ETA Car; exe string ForceAppMagn) and Hidden true on "Menu Star" (SpaceEngine.sc:14; exe string Hidden), but nothing in crates/ matches ForceAppMagn, Hidden or "Menu Star"; the port's starfield skips barycenters and draws each component (stars.rs:285), so the forced magnitude is never used and Menu Star is drawn like any other star.
-
 ### 01-027 · Stars
 
 planet points: SE moves a point-like planet's sprite towards its sunlit crescent by phase*radius (OffsetToCrescent); the port pulls the sprite in front of the body along the view ray (like SE) but leaves out the sunward crescent shift
@@ -975,6 +966,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **01-020** (Stars, fixed 2026-10-30): black holes with luminous disks seen from afar: SE gives an accretion disk its own luminosity (AccretionDisk L... Fix: SE: AccretionDisk Luminosity/Lum (visual) and LuminosityBol/LumBol (FUN_14046c410, body+0x1b40/0x1b44); FUN_14050ed10 sums a system's visual light as star L x factor + disk Luminosity, FUN_14050ec50 the bolometric light with LuminosityBol; FUN_140507690 derives both when missing (max of (T/5572)^4 (4.32 R/Rsun)^2 0.05 and an accretion term; BC -0.41..-4.41 between 10300 and 47300 K). stars/BlackHoles.sc gives Sgr A* Lum 1e5 on its barycentre. Ported: blackholes::disk_light (catalogued `Luminosity`/`Lum` of the AccretionDisk -> absolute magnitude 4.83 - 2.5 log10 L, blackbody colour at the disk temperature) used by stars.rs build_catalog_starfield for class X stars (they were skipped before). stars.rs no longer hides the active system's point when that system has no bodies (a lone hole: Sgr A* entered as "Sgr A* (0 bodies)" hid its own point) until the lens draws its disk (blackholes::LensedHoles). Checked: `galactic 1000; look Sagittarius A*; fov 2` baseline vs new (.audit/work/blackholes/01-020_sgra_far.png: brighter blue-white point), debug -20 mag magenta test sprite found at the screen centre; 3 holes get points (Sagittarius A*, M51-ULS-1 B, Mini-Sky). Not ported: the defaults SE derives from the accretion rate are not shown as points (with them every supermassive hole, e.g. 3C 66B* at M -27, would light up; how SE feeds them to the distant point is not decoded); LuminosityBol is parsed and resolved but has no visual use here.
 - **01-022** (Stars, fixed 2026-10-30): pseudo lens flare: SE's preset also draws lens dirt and a starburst (DirtTexture, DirtBright, DirtDispersal, R... Fix: SE: hdr_combine.glsl FLARES: ghosts (GhostsCount, GhostsDispersal, fade /1 - i x dispersal/^2, weight (1 - /0.5 - offset/ sqrt2)^10 x smoothstep(0, 5.5, luma)) and a halo (HaloRadius, (1 - /v/)^5 x HaloBright x 0.33) read from the bloom mip chain at GhostsBlur / HaloBlur levels with chromatic offsets (Chromaticism x frame texel), times (LensRays x 3 + LensDirt); the frame plus bloom is mixed toward the bloom at DirtDispersal levels by dirt x DirtBright, per channel, then the flare is added. FUN_14026c610 reads `<Name> pseudo.cfg` and clears RaysTexture/DirtTexture first (Clean lens has no dirt). Ported: se_bloom.wesl combine_flares (bloom.rs: reads the frame, writes the other target, so the dirt mix is per channel as in SE), uniforms in SeBloom set by lensflare.rs from the preset (ghost/halo bright x PseudoFlareBright); se_core parse_pseudo leaves missing textures empty. Replaces the frame-based pseudo_flare.wesl pass (deleted), which had no dirt or rays and used a lens colour texture SE's shader does not. Port choices: LensRaysMatr not decoded, John Chapman's camera-rotation angle used (rays turn with the camera); viewport scale 1. The pass runs whenever EnablePseudoFlares is on, as in SE (it ran only while a sun was flared). Checked: sunset halo with the rays pattern (r_sunset_b.png), amplified x30 debug view of halo, ghosts and dirt (pseudo_x30_debug.png); no veil on the Sun-behind-limb view (r_limb108.png).
 - **01-023** (Stars, fixed 2026-10-30): CenterOf ignored: SE ties a star or black hole to the centre of a galaxy or nebula (134 supermassive holes in ... Fix: `CenterOf` ties a star to the centre of the galaxy, nebula or cluster it names, whatever its own RA/Dec/Dist (SE's star parser FUN_140476e90 sets flag 0x20 and queues the name): applied when positions resolve after every catalog has loaded, so BlackHoles.sc's 134 supermassive holes sit in their galaxies (NGC 1023* was 0.9 Mpc off, TON 618* 2.3 Gpc) and the Crab Pulsar's system in the Crab Nebula; components without their own position follow as before.
+- **01-026** (Stars, fixed 2026-10-30): catalog star flags ForceAppMagn (use the given system AppMagn instead of the sum of its components) and Hidden... Fix: SE: the star parser FUN_140476e90 reads Hidden (flag 0x4000000) and ForceAppMagn (flag 0x20000000), and fills the visual luminosity from Lum/Luminosity then AbsMagn, using AppMagn with Dist only when neither is given (sentinel -1e38). Port: StarRecord::hidden / force_app_magn; Hidden stars (the main menu's Menu Star) are left out of the starfield, black holes, labels, star browser, star search and the nearest-system pick; catalog magnitudes now follow SE's order (Lum before AppMagn, ForceAppMagn puts AppMagn first: W1-26 -8.9 not +4.4, KY Cyg keeps its AppMagn); Catalog::forced_system_offsets scales a ForceAppMagn system's components so their summed light matches its AppMagn (BET Sco, SIG Ori, ETA Car), as SE draws a distant system as one point. Checked: unit test force_app_magn_and_hidden, example appmagn_check lists the offsets (ETA Car A drawn -7.6 not -11.9), starfield builds 130089 stars.
 - **02-001** (Star clusters, fixed 2026-10-28): Catalog cluster far sprite: SE draws every catalog (and extragalactic catalog) cluster as a star-like particle... Fix: Catalog clusters are SE's star-like particle (`procsystems.rs` setup, `galaxy_far.wesl` ptype 4), coloured by `Color` or SE's default by type, open clusters at 0.25; `Color (0 0 0)` draws none. Omega Cen shows from Earth.
 - **02-002** (Star clusters, fixed 2026-10-28): Far-to-near switch rule: SE renders member stars once the cluster's angular radius exceeds 8 px (x max(1, heig... Fix: Member stars from 8 px x max(1, h/1080) of radius (`clusters::members_range_pc`, also for procedural promotion); every cluster particle fades out from 1 to 100 px x h/1080. Not done: SE's brightness cut on members (d^2 ClusterBrightMin < K L).
 - **02-003** (Star clusters, fixed 2026-10-29): Member-star LOD octree: SE gives each cluster a 5-level star octree (nodes "SC cluster-level-node", root half-... Fix: Cluster member octree (clusters.rs): SE's structure (FUN_140543c70 / FUN_140540220 / FUN_1401d7300): five levels below a root cube of half-size the cluster radius, level d holding one of SE's five equal-probability bands of Mv ~ N(3, 6) from -8 to 30 (-8, -1.5, 1.8, 4.7, 8.2, 25); a node loads while the camera is inside its sphere or its band's brightest star seen from the sphere's edge is above the star magnitude limit (StarMagnLimit + PointOverbright), at most 16384 stars per node, brighter nodes first, so faint members appear as you approach and big globulars reach millions of stars around the camera; counts scale with StarDensityInCluster. Not done: SE's own per-node star counts and member generator (CreateClusterBlock, FUN_1401d6c60) are not decoded, so band populations come from the port's Salpeter/turn-off model and Plummer profile.

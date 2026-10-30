@@ -1110,7 +1110,7 @@ fn compute_markers(
         sky_cache.1.clear();
         if wanted(MarkerKind::Star) {
             for (i, s) in cat.stars.iter().enumerate() {
-                if s.barycenter || !s.has_position {
+                if s.barycenter || !s.has_position || s.hidden() {
                     continue;
                 }
                 let d = s.pos_pc.distance(cam_pc).max(1e-9);
@@ -1337,7 +1337,7 @@ fn pick_in_sky(
         }
     };
     for (i, s) in cat.stars.iter().enumerate() {
-        if s.barycenter || !s.has_position {
+        if s.barycenter || !s.has_position || s.hidden() {
             continue;
         }
         if let Some(d) = near_ray(s.pos_pc) {

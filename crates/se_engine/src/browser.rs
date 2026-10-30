@@ -74,7 +74,7 @@ fn refresh_stars(st: &mut BrowserState, data: &SeData, cam: &FlyCamera) {
         .stars
         .iter()
         .enumerate()
-        .filter(|(_, s)| s.has_position && !s.barycenter)
+        .filter(|(_, s)| s.has_position && !s.barycenter && !s.hidden())
         .map(|(i, s)| {
             let d = s.pos_pc.distance(cam_pc).max(1e-9);
             (i as u32, d, s.abs_mag + 5.0 * (d.log10() - 1.0))

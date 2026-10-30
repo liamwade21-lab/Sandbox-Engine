@@ -348,7 +348,7 @@ fn star_distance_pc(cat: &se_core::catalog::Catalog, eph: &Ephemeris, i: u32, jd
 fn nearest_catalog_star(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f64, cam_pc: DVec3) -> Option<(u32, f64)> {
     let drawn = |i: usize| {
         let s = &cat.stars[i];
-        s.has_position && !s.barycenter
+        s.has_position && !s.barycenter && !s.hidden()
     };
     let d0 = (0..cat.stars.len())
         .filter(|&i| drawn(i))

@@ -416,7 +416,7 @@ fn build_list(cat: &se_core::catalog::Catalog, warp_radius: f64) -> Vec<BhInfo> 
     for (i, s) in cat.stars.iter().enumerate() {
         // A star whose parent never resolved has no real position (it would sit on the Sun).
         let Some(kind) = params::Remnant::of(s.class.kind) else { continue };
-        if s.barycenter || !s.has_position {
+        if s.barycenter || !s.has_position || s.hidden() {
             continue;
         }
         let hole = kind == params::Remnant::BlackHole;
