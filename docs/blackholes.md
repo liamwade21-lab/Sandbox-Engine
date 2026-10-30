@@ -184,7 +184,12 @@ Kerr shadow: `SE_BH_KERR="0.998,0" SE_BH_EDGE=1` with `goto Gaia BH1 B 1500; wai
 `goto U Gem B 1500000` (catalog `Density 5000`: opaque disk and jets).
 
 Cost (RTX 5080, shared): about +1.2 ms per frame with a disk filling the screen, +0.6 ms for
-lensing with the environment map; nothing without a hole in range.
+lensing with the environment map; nothing without a hole in range. The Kerr-Newman trace costs
+no more than the Schwarzschild one it replaced (Cygnus X-1 A, Gaia BH1 B at 600 and 150 km, Sgr
+A* at 3e9 km: equal within run noise, often faster since SE's integration sphere bends fewer
+rays). A neutron star with its default disk filling the screen (Hercules X-1 at 300 km) costs
+about +5 ms: ~1 ms for the geodesics and the surface, the rest the optically thin disk volume,
+which every ray crosses in full (SE computes this at reduced resolution).
 
 ## Limitations
 
