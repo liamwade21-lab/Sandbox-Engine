@@ -112,6 +112,131 @@ pub struct GotoArgs {
     pub time: Option<f64>,
     /// Finish looking at the object's centre.
     pub center: bool,
+    /// Flight profile (FUN_140563f30): seconds speeding up, cruising and braking, and the
+    /// powers of the speed-up and braking curves.
+    pub accel_time: Option<f64>,
+    pub drift_time: Option<f64>,
+    pub decel_time: Option<f64>,
+    pub accel_power: Option<f64>,
+    pub decel_power: Option<f64>,
+}
+
+/// The user input a `User*Control` command locks: `UserMoveControl` (FUN_140552c30),
+/// `UserRotationControl` (FUN_140552900), `UserTimeControl` (FUN_140552330) and
+/// `UserStereobaseControl` (FUN_140551ef0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    Move,
+    Rotation,
+    Time,
+    Stereobase,
+}
+
+/// `"Free"`, `"Disabled"` or `"Limited"` (the last with a block of limits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockMode {
+    Free,
+    Disabled,
+    Limited,
+}
+
+/// Limits of a `"Limited"` user control.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ControlLimits {
+    /// Movement: the object (`Center`) the camera must stay near, the distance (`DistKm`,
+    /// `DistLy` as km, or `DistRad` in its radii) and the top speed (`SpeedKm`, or `Speed` pc/s,
+    /// as km/s).
+    pub center: Option<String>,
+    pub dist_km: Option<f64>,
+    pub dist_rad: Option<f64>,
+    pub speed_kms: Option<f64>,
+    /// Time: the allowed dates (`TimeRange`, Julian Dates) and time rates (`TimeRateRange`).
+    pub time_range: Option<(f64, f64)>,
+    pub rate_range: Option<(f64, f64)>,
+    /// Stereobase: `Range`.
+    pub range: Option<(f64, f64)>,
+}
+
+/// `Shape` of a waypoint (FUN_140549e90: CIRCLE 0 .. WIRESPHERE 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WaypointShape {
+    #[default]
+    Circle,
+    Triangle,
+    Square,
+    Diamond,
+    Hexagon,
+    Billboard,
+    Sphere,
+    WireSphere,
+}
+
+impl WaypointShape {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s.to_ascii_uppercase().as_str() {
+            "CIRCLE" => Self::Circle,
+            "TRIANGLE" => Self::Triangle,
+            "SQUARE" => Self::Square,
+            "DIAMOND" => Self::Diamond,
+            "HEXAGON" => Self::Hexagon,
+            "BILLBOARD" => Self::Billboard,
+            "SPHERE" => Self::Sphere,
+            "WIRESPHERE" => Self::WireSphere,
+            _ => return None,
+        })
+    }
+}
+
+/// A waypoint's position relative to its parent's centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaypointPos {
+    /// Kilometres, in the parent's axes (the port's body frame: y to the north pole).
+    pub km: [f64; 3],
+    /// `FixedPos*`: turns with the parent's rotation; `StaticPos*`: does not.
+    pub fixed: bool,
+}
+
+/// `Waypoint "name" { ... }` (FUN_140065f40, FUN_140549e90). Every key is optional: defining
+/// a waypoint again by name changes only the keys given; the `DEFAULT_*` constants hold the
+/// values of a new one (FUN_14054aeb0).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WaypointDef {
+    pub name: String,
+    pub parent: Option<String>,
+    /// `RadiusKm`, or `Radius` in parsecs, as km.
+    pub radius_km: Option<f64>,
+    /// `Roll`, degrees: turns the shape in the view.
+    pub roll_deg: Option<f64>,
+    pub color: Option<[f32; 4]>,
+    pub color_empty: Option<[f32; 4]>,
+    /// Defaults to `Color`.
+    pub label_color: Option<[f32; 4]>,
+    pub line_width: Option<f32>,
+    pub shape: Option<WaypointShape>,
+    pub texture: Option<String>,
+    pub pos: Option<WaypointPos>,
+    pub visible: Option<bool>,
+    pub label: Option<bool>,
+    pub triggerable: Option<bool>,
+}
+
+impl WaypointDef {
+    /// A new waypoint's values (FUN_14054aeb0): radius 1 km, white, line width 2, a circle at the
+    /// parent's centre, visible, labelled and triggerable.
+    pub const DEFAULT_RADIUS_KM: f64 = 1.0;
+    pub const DEFAULT_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    pub const DEFAULT_LINE_WIDTH: f32 = 2.0;
+}
+
+/// `HighlightWidget "Toolbar|Button" { Time Freq Color }` (FUN_14055df80): the widget blinks in
+/// `Color` (default (1, 0.2, 0.2, 1), FUN_14036c000) `Freq` times a second (default 4) for `Time`
+/// seconds, or with no `Time` until the next wait ends. An empty name clears the highlight.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Highlight {
+    pub widget: String,
+    pub time: Option<f64>,
+    pub freq: Option<f64>,
+    pub color: Option<[f32; 4]>,
 }
 
 /// What a `WaitTrigger "Kind|Name" { ... }` waits for.
@@ -137,6 +262,21 @@ pub struct Trigger {
     pub max_wait_time: Option<f64>,
     /// `Time "YYYY.MM.DD hh:mm:ss"` of a `Time` trigger, as Julian Date.
     pub time_jd: Option<f64>,
+    /// `TimeRange ("date", "date")` of a `Time` trigger (`Mode "InRange"`/`"OutRange"`), Julian Dates.
+    pub time_range: Option<(f64, f64)>,
+    /// `Direction (x y z)` of `Control|Move`, in SE's camera axes (x left, y down, z ahead).
+    pub direction: Option<[f64; 3]>,
+    /// `LonLatRange (lon0 lon1 lat0 lat1)` of `Object|Approach`, degrees: where the camera is
+    /// over the object.
+    pub lonlat_range: Option<[f64; 4]>,
+    /// `ActivationDelay`, seconds: the trigger counts only after this long.
+    pub activation_delay: Option<f64>,
+    /// `AnimateObject`: an object to point out while waiting.
+    pub animate_object: Option<String>,
+    /// `Value` of `GUI|ChangeValue`.
+    pub value: Option<f64>,
+    /// `Button` of `Input|Button` / `Input|JoyButton`.
+    pub button: Option<String>,
     pub raw: Block,
 }
 
@@ -171,6 +311,28 @@ pub enum Op {
     Orbit { axis: [f64; 3], speed: f64 },
     StopOrbit,
     StopMotion,
+    /// `Horizon`: level the view to the selection's horizon.
+    Horizon,
+    /// `Fly { Axis Speed|SpeedKm FadeTime }` (FUN_140562dd0): fly along `axis` (SE's camera axes,
+    /// x left, y down, z ahead) at `speed` m/s, reached over `fade` s.
+    Fly { axis: [f64; 3], speed: f64, fade: f64 },
+    /// `StopFly { FadeTime }` (FUN_140562b00).
+    StopFly { fade: f64 },
+    /// `Turn { Axis AngularSpeed FadeTime }` (FUN_140562670): turn about `axis` at `speed` deg/s.
+    Turn { axis: [f64; 3], speed: f64, fade: f64 },
+    /// `StopTurn { FadeTime }` (FUN_1405623a0).
+    StopTurn { fade: f64 },
+    /// `StopRotation`: stop turning at once.
+    StopRotation,
+    /// `Speed` (pc/s) and `SpeedKm` (km/s), as m/s: the assigned velocity (FUN_140561b00,
+    /// FUN_140561a40).
+    Speed(f64),
+    /// `MoveMode 1..4` (FUN_140561bb0).
+    MoveMode(u32),
+    /// `UserMoveControl`, `UserRotationControl`, `UserTimeControl`, `UserStereobaseControl`.
+    UserControl { kind: InputKind, mode: LockMode, limits: Box<ControlLimits> },
+    /// `GotoURL "se://..."`.
+    GotoUrl(String),
 
     TimeScale(f64),
     /// `Date "2019.05.31 18:23:57.57"` / `Time +hex`: set the simulation date (JD).
@@ -190,14 +352,42 @@ pub enum Op {
     HidePrint,
     Log(String),
 
+    /// `HighlightWidget`.
+    HighlightWidget(Box<Highlight>),
+    /// `SetWidgetStyle "Message box" { Pos (x, y) PosPix (x, y) Visible }` (FUN_14055e790): `Pos`
+    /// in fractions of the screen, `PosPix` in pixels, of the widget's top-left corner.
+    SetWidgetStyle { widget: String, pos: Option<[f64; 2]>, pos_pix: Option<[f64; 2]>, visible: Option<bool> },
+    /// `ShowDialog "Settings" { Tab "Graphics" }` (FUN_14055f680); toolbars are dialogs too.
+    ShowDialog { dialog: String, tab: Option<String> },
+    HideDialog(String),
+    HideAllDialogs,
+    /// FUN_1402536d0: the four toolbars go into auto-hide and slide away.
+    HideAllToolbars,
+    /// `OpenMenu "Main|Planetarium|Tutorial"` (FUN_14055d840) and `CloseMenu`.
+    OpenMenu(String),
+    CloseMenu,
+    /// `FadeOut { Time Color }` / `FadeIn { Time }` (FUN_1405554e0, FUN_140554f90): fade the
+    /// screen to `color` and back.
+    ScreenFade { out: bool, time: Option<f64>, color: Option<[f32; 4]> },
+
+    /// `PlayMusic "file.ogg" { CrossfadeDuration }` (FUN_14055dd30), `PauseMusic` and
+    /// `ResumeMusic` (FUN_14055dc00, FUN_14055dad0); `None` takes `MixDurationScript`.
+    PlayMusic { file: String, crossfade: Option<f64> },
+    PauseMusic { crossfade: Option<f64> },
+    ResumeMusic { crossfade: Option<f64> },
+
     /// `Set Name value`, `SetU`, or `SetForce` (`force`).
     Set { name: String, value: Value, force: bool },
+    /// `Get Name`: print a variable's value (FUN_14055a6a0).
+    Get(String),
+    /// `Reset Name`: back to its default (FUN_14055a8d0).
+    Reset(String),
     WaitVar { name: String, wait: VarWait },
     SaveVars,
     RestoreVars,
     Interpolate { name: String, to: f64, time: f64 },
 
-    Waypoint { name: String, block: Block },
+    Waypoint(Box<WaypointDef>),
     ClearWaypoints,
     DeleteWaypoint(String),
 
@@ -479,7 +669,96 @@ impl Builder {
                 Op::Orbit { axis, speed: blk_f("AngularSpeed").unwrap_or(10.0) }
             }
             "stoporbit" => Op::StopOrbit,
-            "stopmotion" | "stopfly" => Op::StopMotion,
+            "stopmotion" => Op::StopMotion,
+            "horizon" => Op::Horizon,
+            "fly" => {
+                let axis = blk.and_then(|b| b.vec3("Axis")).unwrap_or([0.0, 0.0, 1.0]);
+                let speed = match (blk_f("SpeedKm"), blk_f("Speed")) {
+                    (Some(km), _) => km * 1000.0,
+                    (None, Some(pc)) => pc * PC_M,
+                    // FUN_140562dd0's default, 10 pc/s.
+                    (None, None) => FLY_SPEED_PC * PC_M,
+                };
+                Op::Fly { axis, speed, fade: blk_f("FadeTime").unwrap_or(FADE_TIME_S) }
+            }
+            "stopfly" => Op::StopFly { fade: blk_f("FadeTime").unwrap_or(FADE_TIME_S) },
+            "turn" => Op::Turn {
+                axis: blk.and_then(|b| b.vec3("Axis")).unwrap_or([0.0, 1.0, 0.0]),
+                speed: blk_f("AngularSpeed").unwrap_or(TURN_SPEED_DEG),
+                fade: blk_f("FadeTime").unwrap_or(FADE_TIME_S),
+            },
+            "stopturn" => Op::StopTurn { fade: blk_f("FadeTime").unwrap_or(FADE_TIME_S) },
+            "stoprotation" => Op::StopRotation,
+            "speed" | "speedkm" => match item.f64() {
+                Some(v) => Op::Speed(if key == "speed" { v * PC_M } else { v * 1000.0 }),
+                None => {
+                    self.warn(line, "Speed without a value");
+                    Op::Other(item.clone())
+                }
+            },
+            "movemode" => match item.f64() {
+                Some(m) if (1.0..=4.0).contains(&m) => Op::MoveMode(m as u32),
+                _ => {
+                    self.warn(line, "MoveMode takes 1 to 4");
+                    Op::Other(item.clone())
+                }
+            },
+            "usermovecontrol" | "userrotationcontrol" | "usertimecontrol" | "userstereobasecontrol" => {
+                let kind = match key {
+                    "usermovecontrol" => InputKind::Move,
+                    "userrotationcontrol" => InputKind::Rotation,
+                    "usertimecontrol" => InputKind::Time,
+                    _ => InputKind::Stereobase,
+                };
+                let mode = match item.str().map(str::to_ascii_lowercase).as_deref() {
+                    Some("free") => LockMode::Free,
+                    Some("disabled") => LockMode::Disabled,
+                    Some("limited") => LockMode::Limited,
+                    _ => {
+                        self.warn(line, format!("{} takes \"Free\", \"Disabled\" or \"Limited\"", item.key));
+                        return Op::Other(item.clone());
+                    }
+                };
+                Op::UserControl { kind, mode, limits: Box::new(blk.map(parse_limits).unwrap_or_default()) }
+            }
+            "gotourl" => Op::GotoUrl(item.str().unwrap_or("").to_string()),
+            "highlightwidget" => Op::HighlightWidget(Box::new(Highlight {
+                widget: item.str().unwrap_or("").to_string(),
+                time: blk_f("Time"),
+                freq: blk_f("Freq"),
+                color: blk.and_then(|b| color4(b, "Color")),
+            })),
+            "setwidgetstyle" => Op::SetWidgetStyle {
+                widget: item.str().unwrap_or("").to_string(),
+                pos: blk.and_then(|b| range2(b, "Pos")).map(|(x, y)| [x, y]),
+                pos_pix: blk.and_then(|b| range2(b, "PosPix")).map(|(x, y)| [x, y]),
+                visible: blk.and_then(|b| b.bool("Visible")),
+            },
+            "showdialog" => Op::ShowDialog {
+                dialog: item.str().unwrap_or("").to_string(),
+                tab: blk.and_then(|b| b.str("Tab")).map(str::to_string),
+            },
+            "hidedialog" => Op::HideDialog(item.str().unwrap_or("").to_string()),
+            "hidealldialogs" => Op::HideAllDialogs,
+            "hidealltoolbars" => Op::HideAllToolbars,
+            "openmenu" => Op::OpenMenu(item.str().unwrap_or("").to_string()),
+            "closemenu" => Op::CloseMenu,
+            "fadeout" | "fadein" => Op::ScreenFade {
+                out: key == "fadeout",
+                time: item.f64().or_else(|| blk_f("Time")),
+                color: blk.and_then(|b| color4(b, "Color")),
+            },
+            "playmusic" => Op::PlayMusic { file: item.str().unwrap_or("").to_string(), crossfade: blk_f("CrossfadeDuration") },
+            "pausemusic" => Op::PauseMusic { crossfade: item.f64().or_else(|| blk_f("CrossfadeDuration")) },
+            "resumemusic" => Op::ResumeMusic { crossfade: item.f64().or_else(|| blk_f("CrossfadeDuration")) },
+            "get" | "reset" => match item.args.first().and_then(Value::as_str) {
+                Some(n) if key == "get" => Op::Get(n.to_string()),
+                Some(n) => Op::Reset(n.to_string()),
+                None => {
+                    self.warn(line, format!("{} without a variable name", item.key));
+                    Op::Other(item.clone())
+                }
+            },
             "timescale" => Op::TimeScale(item.f64().unwrap_or(1.0)),
             "date" | "time" => match item.args.first().and_then(value_to_jd) {
                 Some(jd) => Op::SetDate(jd),
@@ -542,9 +821,12 @@ impl Builder {
                 },
                 None => Op::Other(item.clone()),
             },
-            "waypoint" => Op::Waypoint {
-                name: item.str().unwrap_or("").to_string(),
-                block: blk.cloned().unwrap_or_default(),
+            "waypoint" => match item.str() {
+                Some(name) => Op::Waypoint(Box::new(parse_waypoint(name, blk))),
+                None => {
+                    self.warn(line, "Waypoint without a name");
+                    Op::Other(item.clone())
+                }
             },
             "clearwaypoints" => Op::ClearWaypoints,
             "deletewaypoint" => Op::DeleteWaypoint(item.str().unwrap_or("").to_string()),
@@ -577,7 +859,127 @@ fn parse_trigger(kind: &str, blk: Option<&Block>) -> Trigger {
         rect,
         max_wait_time: b.f64("MaxWaitTime"),
         time_jd: b.get("Time").and_then(|i| i.args.first()).and_then(value_to_jd),
+        time_range: b.get_last("TimeRange").and_then(|i| {
+            let dates: Vec<f64> = flat_values(&i.args).iter().filter_map(|v| value_to_jd(v)).collect();
+            (dates.len() >= 2).then(|| (dates[0].min(dates[1]), dates[0].max(dates[1])))
+        }),
+        direction: b.get_last("Direction").map(lenient_nums).filter(|n| n.len() >= 3).map(|n| [n[0], n[1], n[2]]),
+        lonlat_range: b.vec4("LonLatRange"),
+        activation_delay: b.f64("ActivationDelay"),
+        animate_object: b.str("AnimateObject").map(str::to_string),
+        value: b.f64("Value"),
+        button: b.str("Button").map(str::to_string),
         raw: b.clone(),
+    }
+}
+
+/// Defaults of `Fly` / `Turn` (FUN_140562dd0, FUN_140562670): 10 pc/s, 10 deg/s, 2 s fade.
+const FLY_SPEED_PC: f64 = 10.0;
+const TURN_SPEED_DEG: f64 = 10.0;
+const FADE_TIME_S: f64 = 2.0;
+const KM_PER_LY: f64 = 9.460_730_472_580_8e12;
+
+/// Values with tuples flattened.
+fn flat_values(args: &[Value]) -> Vec<&Value> {
+    let mut out = Vec::new();
+    for a in args {
+        match a {
+            Value::Tuple(t) => out.extend(t.iter()),
+            v => out.push(v),
+        }
+    }
+    out
+}
+
+/// Numbers of a row, reading words with a stray prefix as their number: SE's own
+/// tut-02-free-mov.se has `Direction (0.0, 0.0, s-1.0)` for "backward".
+fn lenient_nums(item: &Item) -> Vec<f64> {
+    flat_values(&item.args)
+        .into_iter()
+        .filter_map(|v| match v {
+            Value::Ident(s) | Value::Str(s) => {
+                let t = s.trim_start_matches(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+' || c == '.'));
+                t.parse().ok()
+            }
+            other => other.as_f64(),
+        })
+        .collect()
+}
+
+/// An RGBA colour row (`(r, g, b)` gets alpha 1).
+fn color4(b: &Block, key: &str) -> Option<[f32; 4]> {
+    let n = b.nums(key)?;
+    match n.len() {
+        3 => Some([n[0] as f32, n[1] as f32, n[2] as f32, 1.0]),
+        l if l >= 4 => Some([n[0] as f32, n[1] as f32, n[2] as f32, n[3] as f32]),
+        _ => None,
+    }
+}
+
+/// Limits of `User*Control "Limited" { ... }`.
+fn parse_limits(b: &Block) -> ControlLimits {
+    let range = |key: &str| range2(b, key).map(|(a, c)| (a.min(c), a.max(c)));
+    ControlLimits {
+        center: b.str("Center").map(str::to_string),
+        dist_km: b.f64("DistKm").or_else(|| b.f64("DistLy").map(|ly| ly * KM_PER_LY)),
+        dist_rad: b.f64("DistRad"),
+        speed_kms: b.f64("SpeedKm").or_else(|| b.f64("Speed").map(|pc| pc * PC_M / 1000.0)),
+        time_range: b.get_last("TimeRange").and_then(|i| {
+            let d: Vec<f64> = flat_values(&i.args).iter().filter_map(|v| value_to_jd(v)).collect();
+            (d.len() >= 2).then(|| (d[0].min(d[1]), d[0].max(d[1])))
+        }),
+        rate_range: range("TimeRateRange"),
+        range: range("Range"),
+    }
+}
+
+/// Unit direction for polar `(lon, lat)` degrees in the port's body frame (as `Goto`'s Lat/Lon).
+pub fn polar_dir(lon_deg: f64, lat_deg: f64) -> [f64; 3] {
+    let (lon, lat) = (lon_deg.to_radians(), lat_deg.to_radians());
+    [lat.cos() * lon.cos(), lat.sin(), -lat.cos() * lon.sin()]
+}
+
+/// The keys of a `Waypoint` block (FUN_140549e90).
+fn parse_waypoint(name: &str, blk: Option<&Block>) -> WaypointDef {
+    let empty = Block::default();
+    let b = blk.unwrap_or(&empty);
+    let km_per_pc = PC_M / 1000.0;
+    // Positions, read in SE's order so the last given wins.
+    let mut pos = None;
+    for (key, fixed, polar, scale) in [
+        ("StaticPosXYZ", false, false, km_per_pc),
+        ("StaticPosXYZKm", false, false, 1.0),
+        ("StaticPosPolar", false, true, km_per_pc),
+        ("StaticPosPolarKm", false, true, 1.0),
+        ("FixedPosXYZ", true, false, km_per_pc),
+        ("FixedPosXYZKm", true, false, 1.0),
+        ("FixedPosPolar", true, true, km_per_pc),
+        ("FixedPosPolarKm", true, true, 1.0),
+    ] {
+        let Some(v) = b.vec3(key) else { continue };
+        let km = if polar {
+            let d = polar_dir(v[0], v[1]);
+            [d[0] * v[2] * scale, d[1] * v[2] * scale, d[2] * v[2] * scale]
+        } else {
+            [v[0] * scale, v[1] * scale, v[2] * scale]
+        };
+        pos = Some(WaypointPos { km, fixed });
+    }
+    WaypointDef {
+        name: name.to_string(),
+        parent: b.str("Parent").map(str::to_string),
+        radius_km: b.f64("RadiusKm").or_else(|| b.f64("Radius").map(|pc| pc * km_per_pc)),
+        roll_deg: b.f64("Roll"),
+        color: color4(b, "Color"),
+        color_empty: color4(b, "ColorEmpty"),
+        label_color: color4(b, "LabelColor"),
+        line_width: b.f64("LineWidth").map(|w| w as f32),
+        shape: b.str("Shape").and_then(WaypointShape::parse),
+        texture: b.str("Texture").map(str::to_string),
+        pos,
+        visible: b.bool("Visible"),
+        label: b.bool("Label"),
+        triggerable: b.bool("Triggerable"),
     }
 }
 
@@ -594,6 +996,11 @@ fn parse_goto(b: &Block) -> GotoArgs {
         roll: b.f64("Roll"),
         time: b.f64("Time"),
         center: b.bool("Center").unwrap_or(false),
+        accel_time: b.f64("AccelTime"),
+        drift_time: b.f64("DriftTime"),
+        decel_time: b.f64("DecelTime"),
+        accel_power: b.f64("AccelPower"),
+        decel_power: b.f64("DecelPower"),
     }
 }
 
@@ -860,7 +1267,110 @@ HighlightWidget "Main toolbar|Wiki"
         assert_eq!(ops[13], &Op::WaitVar { name: "StarMagnLimit".into(), wait: VarWait::Range(7.5, 9.4) });
         assert_eq!(ops[14], &Op::WaitVar { name: "PhotoMode".into(), wait: VarWait::Equals(Value::Num(2.0)) });
         assert_eq!(ops[15], &Op::Interpolate { name: "TimeScale".into(), to: 1.0, time: 2.0 });
-        assert!(matches!(ops[16], Op::Other(i) if i.key == "HighlightWidget"));
+        assert!(matches!(ops[16], Op::HighlightWidget(h) if h.widget == "Main toolbar|Wiki" && h.time.is_none()));
+    }
+
+    #[test]
+    fn waypoints() {
+        let src = r#"
+Waypoint "WP 1"
+{
+	Parent	"TRAPPIST-1|TRAPPIST-1 g"
+	RadiusKm  500
+	Color    (2.0, 2.0, 0.2, 0.5)
+	FixedPosPolarKm (2.9 0.62 14000)
+	Shape    "Circle"
+}
+Waypoint "WP" { Radius 1e-10 Shape "WireSphere" StaticPosXYZKm (1 2 3) Label false }
+DeleteWaypoint "WP"
+ClearWaypoints
+"#;
+        let s = parse(src);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let Op::Waypoint(w) = &s.commands[0].op else { panic!("{:?}", s.commands[0]) };
+        assert_eq!((w.name.as_str(), w.parent.as_deref()), ("WP 1", Some("TRAPPIST-1|TRAPPIST-1 g")));
+        assert_eq!((w.radius_km, w.shape, w.color), (Some(500.0), Some(WaypointShape::Circle), Some([2.0, 2.0, 0.2, 0.5])));
+        let p = w.pos.unwrap();
+        assert!(p.fixed);
+        let r = (p.km[0].powi(2) + p.km[1].powi(2) + p.km[2].powi(2)).sqrt();
+        assert!((r - 14000.0).abs() < 1e-6 && (p.km[1] / r - 0.62f64.to_radians().sin()).abs() < 1e-9);
+        let Op::Waypoint(w) = &s.commands[1].op else { panic!() };
+        // Radius in parsecs, as km.
+        assert!((w.radius_km.unwrap() - 1e-10 * PC_M / 1000.0).abs() < 1e-6);
+        assert_eq!((w.shape, w.label), (Some(WaypointShape::WireSphere), Some(false)));
+        assert_eq!(w.pos, Some(WaypointPos { km: [1.0, 2.0, 3.0], fixed: false }));
+        assert!(w.color.is_none() && w.radius_km.is_some());
+        assert_eq!(s.commands[2].op, Op::DeleteWaypoint("WP".into()));
+        assert_eq!(s.commands[3].op, Op::ClearWaypoints);
+    }
+
+    #[test]
+    fn gui_music_and_camera_commands() {
+        let src = r#"
+UserMoveControl "Disabled"
+UserTimeControl "Free"
+UserMoveControl "Limited" { Center "Earth" DistKm 1e5 SpeedKm 10 }
+HighlightWidget "Wiki|Object name" { Time 1 Color (0.5, 0, 0, 1) }
+HighlightWidget ""
+SetWidgetStyle "Message box" { Pos (0.7, 0.2) }
+ShowDialog  "Settings" { Tab "Graphics" }
+HideDialog "Wiki"
+HideAllToolbars
+PlayMusic "Lokijar - Quasar Medusa.ogg"
+PauseMusic { CrossfadeDuration 3 }
+Fly { Axis (0 0 1) SpeedKm 100 FadeTime 1 }
+StopFly
+Turn { AngularSpeed 5 }
+Speed 0.5
+SpeedKm 500
+FadeOut { Time 2 Color (0 0 0 1) }
+Goto { Time 5 AccelTime 1 DecelTime 2 AccelPower 3 }
+"#;
+        let s = parse(src);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let ops: Vec<&Op> = s.commands.iter().map(|c| &c.op).collect();
+        assert!(matches!(ops[0], Op::UserControl { kind: InputKind::Move, mode: LockMode::Disabled, .. }));
+        assert!(matches!(ops[1], Op::UserControl { kind: InputKind::Time, mode: LockMode::Free, .. }));
+        let Op::UserControl { mode: LockMode::Limited, limits, .. } = ops[2] else { panic!("{:?}", ops[2]) };
+        assert_eq!((limits.center.as_deref(), limits.dist_km, limits.speed_kms), (Some("Earth"), Some(1e5), Some(10.0)));
+        let Op::HighlightWidget(h) = ops[3] else { panic!() };
+        assert_eq!((h.widget.as_str(), h.time, h.color), ("Wiki|Object name", Some(1.0), Some([0.5, 0.0, 0.0, 1.0])));
+        assert!(matches!(ops[4], Op::HighlightWidget(h) if h.widget.is_empty()));
+        assert_eq!(ops[5], &Op::SetWidgetStyle { widget: "Message box".into(), pos: Some([0.7, 0.2]), pos_pix: None, visible: None });
+        assert_eq!(ops[6], &Op::ShowDialog { dialog: "Settings".into(), tab: Some("Graphics".into()) });
+        assert_eq!(ops[7], &Op::HideDialog("Wiki".into()));
+        assert_eq!(ops[8], &Op::HideAllToolbars);
+        assert_eq!(ops[9], &Op::PlayMusic { file: "Lokijar - Quasar Medusa.ogg".into(), crossfade: None });
+        assert_eq!(ops[10], &Op::PauseMusic { crossfade: Some(3.0) });
+        assert_eq!(ops[11], &Op::Fly { axis: [0.0, 0.0, 1.0], speed: 100e3, fade: 1.0 });
+        assert_eq!(ops[12], &Op::StopFly { fade: 2.0 });
+        assert_eq!(ops[13], &Op::Turn { axis: [0.0, 1.0, 0.0], speed: 5.0, fade: 2.0 });
+        assert_eq!(ops[14], &Op::Speed(0.5 * PC_M));
+        assert_eq!(ops[15], &Op::Speed(500e3));
+        assert_eq!(ops[16], &Op::ScreenFade { out: true, time: Some(2.0), color: Some([0.0, 0.0, 0.0, 1.0]) });
+        let Op::Goto(g) = ops[17] else { panic!() };
+        assert_eq!((g.accel_time, g.drift_time, g.decel_time, g.accel_power), (Some(1.0), None, Some(2.0), Some(3.0)));
+    }
+
+    #[test]
+    fn trigger_parameters() {
+        let src = r#"
+WaitTrigger "Control|Move" { Direction (0.0, 0.0, s-1.0) RangeKm (100, 1.0e9) }
+WaitTrigger "Time" { Mode "InRange" TimeRange ("2016.11.17 00:38:00", "2016.11.17 03:04:00") }
+WaitTrigger "Object|Approach" { Object "Sun|Jupiter" RangeKm (5e6, 5e7) LonLatRange (-180, 180, 70, 90) }
+WaitTrigger "GUI|ChangeValue" { Dialog "Star browser|Filter" Value 3 ActivationDelay 0.5 }
+"#;
+        let s = parse(src);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let t = |i: usize| match &s.commands[i].op {
+            Op::WaitTrigger(t) => t.clone(),
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(t(0).direction, Some([0.0, 0.0, -1.0]));
+        let (a, b) = t(1).time_range.unwrap();
+        assert!(b > a && (b - a - (2.0 + 26.0 / 60.0) / 24.0).abs() < 1e-6, "{a} {b}");
+        assert_eq!(t(2).lonlat_range, Some([-180.0, 180.0, 70.0, 90.0]));
+        assert_eq!((t(3).value, t(3).activation_delay), (Some(3.0), Some(0.5)));
     }
 
     #[test]

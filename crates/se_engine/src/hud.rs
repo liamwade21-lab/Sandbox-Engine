@@ -377,7 +377,9 @@ fn draw_hud(
         bar_frame.show(ui, |ui| {
             ui.vertical(|ui| {
                 let tool = |ui: &mut egui::Ui, label: &str, hint: &str, on: bool| {
-                    ui.add(egui::Button::selectable(on, i18n.tr(label)).min_size(egui::vec2(72.0, 0.0))).on_hover_text(i18n.tr(hint)).clicked()
+                    let r = ui.add(egui::Button::selectable(on, i18n.tr(label)).min_size(egui::vec2(72.0, 0.0))).on_hover_text(i18n.tr(hint));
+                    crate::script_gui::mark(ui, "Main toolbar", label, &r); // script HighlightWidget (script_gui.rs)
+                    r.clicked()
                 };
                 if tool(ui, "Find", "Find object (F3)", hud.show_find) {
                     hud.show_find = !hud.show_find;
@@ -412,7 +414,9 @@ fn draw_hud(
         bar_frame.show(ui, |ui| {
             ui.vertical(|ui| {
                 let filter = |ui: &mut egui::Ui, on: &mut bool, label: &str| {
-                    if ui.add(egui::Button::selectable(*on, i18n.tr(label)).min_size(egui::vec2(96.0, 0.0))).clicked() {
+                    let r = ui.add(egui::Button::selectable(*on, i18n.tr(label)).min_size(egui::vec2(96.0, 0.0)));
+                    crate::script_gui::mark(ui, "Filters toolbar", label, &r); // script HighlightWidget
+                    if r.clicked() {
                         *on = !*on;
                     }
                 };
@@ -426,6 +430,7 @@ fn draw_hud(
                 // SE's constellations and grids buttons; their switches on a right click.
                 let sky = |ui: &mut egui::Ui, on: &mut bool, label: &str| {
                     let r = ui.add(egui::Button::selectable(*on, i18n.tr(label)).min_size(egui::vec2(96.0, 0.0)));
+                    crate::script_gui::mark(ui, "Filters toolbar", label, &r); // script HighlightWidget
                     if r.clicked() {
                         *on = !*on;
                     }
@@ -462,43 +467,43 @@ fn draw_hud(
                     }
                     None => {
                         let date = egui::Label::new(egui::RichText::new(sim.date().to_string()).monospace().strong()).sense(egui::Sense::click());
-                        if ui.add(date).on_hover_text(i18n.tr("Set date")).clicked() {
+                        if crate::script_gui::tag("Navigation toolbar|Date", ui.add(date).on_hover_text(i18n.tr("Set date"))).clicked() {
                             hud.date_edit = Some(sim.date().to_string());
                         }
                     }
                 }
-                if ui.button(if sim.paused { "▶" } else { "⏸" }).on_hover_text(i18n.tr("Pause (Space)")).clicked() {
+                if crate::script_gui::tag("Navigation toolbar|Pause time", ui.button(if sim.paused { "▶" } else { "⏸" }).on_hover_text(i18n.tr("Pause (Space)"))).clicked() {
                     sim.paused = !sim.paused;
                 }
-                if ui.button("<<").on_hover_text(i18n.tr("Slower (K)")).clicked() {
+                if crate::script_gui::tag("Navigation toolbar|Decelerate time speed", ui.button("<<").on_hover_text(i18n.tr("Slower (K)"))).clicked() {
                     sim.rate = rate_step(sim.rate, false);
                 }
-                if ui.button(">>").on_hover_text(i18n.tr("Faster (L)")).clicked() {
+                if crate::script_gui::tag("Navigation toolbar|Accelerate time speed", ui.button(">>").on_hover_text(i18n.tr("Faster (L)"))).clicked() {
                     sim.rate = rate_step(sim.rate, true);
                 }
-                if ui.button(i18n.tr("Real")).clicked() {
+                if crate::script_gui::tag("Navigation toolbar|Set normal time speed", ui.button(i18n.tr("Real"))).clicked() {
                     sim.rate = 1.0;
                 }
-                if ui.button(i18n.tr("Now")).on_hover_text(i18n.tr("Current time (Ctrl+\\)")).clicked() {
+                if crate::script_gui::tag("Navigation toolbar|Set current time", ui.button(i18n.tr("Now")).on_hover_text(i18n.tr("Current time (Ctrl+\\)"))).clicked() {
                     sim.jd = SimTime::default().jd;
                 }
                 ui.label(format!("×{:.3e}", sim.rate));
                 if let Some(sel) = cam.selected {
                     ui.separator();
-                    if ui.button(i18n.tr("Go to")).on_hover_text(i18n.tr("Go to (G); again: fast Go to")).clicked() {
+                    if crate::script_gui::tag("Navigation toolbar|Go to object", ui.button(i18n.tr("Go to")).on_hover_text(i18n.tr("Go to (G); again: fast Go to"))).clicked() {
                         start_travel(&mut cam, sel, None);
                     }
-                    if ui.button(i18n.tr("Center")).on_hover_text(i18n.tr("Center (C)")).clicked() {
+                    if crate::script_gui::tag("Navigation toolbar|Center object", ui.button(i18n.tr("Center")).on_hover_text(i18n.tr("Center (C)"))).clicked() {
                         start_center(&mut cam, sel);
                     }
-                    if matches!(sel, ObjectRef::Body(_)) && ui.button(i18n.tr("Land")).on_hover_text(i18n.tr("Land on object (Shift+G)")).clicked() {
+                    if matches!(sel, ObjectRef::Body(_)) && crate::script_gui::tag("Navigation toolbar|Land on object", ui.button(i18n.tr("Land")).on_hover_text(i18n.tr("Land on object (Shift+G)"))).clicked() {
                         crate::camera::start_land(&mut cam, sel);
                     }
                     // SE's binding buttons: free, follow, rotate with the selection; and tracking.
                     let mode = if cam.follow.is_some_and(|f| f.target == sel) { cam.bind_mode() } else { 0 };
                     let eph = se_core::ephemeris::Ephemeris::new(cat);
                     for (m, label, tip) in [(0u8, "Free", "Free binding to object (Shift+D)"), (1, "Follow", "Follow object (Shift+F)"), (2, "Rotate", "Rotate with object (Shift+R)")] {
-                        if ui.add(egui::Button::selectable(mode == m, i18n.tr(label))).on_hover_text(i18n.tr(tip)).clicked() {
+                        if crate::script_gui::tag(&format!("Navigation toolbar|{label}"), ui.add(egui::Button::selectable(mode == m, i18n.tr(label))).on_hover_text(i18n.tr(tip))).clicked() {
                             cam.bind((m > 0).then_some(sel), m == 2, &eph, sim.jd);
                         }
                     }
@@ -513,7 +518,7 @@ fn draw_hud(
                 if let Some(f) = cam.follow {
                     ui.separator();
                     let word = i18n.tr(if f.sync { "Rotating" } else { "Following" });
-                    ui.label(format!("{word}: {}", cat.display_name(f.target)));
+                    crate::script_gui::tag("Navigation toolbar|Following object", ui.label(format!("{word}: {}", cat.display_name(f.target))));
                 }
                 if cam.track {
                     ui.label(i18n.tr("Tracking"));
@@ -530,15 +535,17 @@ fn draw_hud(
                     ui.label(format!("{} ({})", cam.nearest_name, format_distance(cam.nearest_surface)));
                 }
                 ui.separator();
-                ui.label(format!("{} {}", i18n.tr("velocity"), format_speed(cam.speed)));
+                let v = ui.label(format!("{} {}", i18n.tr("velocity"), format_speed(cam.speed)));
+                crate::script_gui::tag("Navigation toolbar|Current velocity", v.clone());
+                crate::script_gui::tag("Navigation toolbar|Assigned velocity", v);
                 ui.separator();
                 // Zooms in as far as a telescope would (`fov` script command down to arcseconds).
                 let fov_speed = (cam.fov_deg * 0.01).max(1e-4) as f64;
-                ui.add(egui::DragValue::new(&mut cam.fov_deg).range(crate::camera::MIN_FOV_DEG..=crate::camera::MAX_FOV_DEG).speed(fov_speed).max_decimals(4).suffix("°")).on_hover_text(i18n.tr("field of view"));
+                crate::script_gui::tag("Camera toolbar|FOV", ui.add(egui::DragValue::new(&mut cam.fov_deg).range(crate::camera::MIN_FOV_DEG..=crate::camera::MAX_FOV_DEG).speed(fov_speed).max_decimals(4).suffix("°")).on_hover_text(i18n.tr("field of view")));
                 // SE's "Mag limit": the star limit raised by the zoom, as a telescope would.
                 let mut shown = stars.shown_limit();
                 let edit = egui::DragValue::new(&mut shown).speed(0.05).max_decimals(1).prefix("m ");
-                if ui.add(edit).on_hover_text(i18n.tr("Mag limit")).changed() {
+                if crate::script_gui::tag("Camera toolbar|Plan mag limit", ui.add(edit).on_hover_text(i18n.tr("Mag limit"))).changed() {
                     stars.set_shown_limit(shown);
                 }
                 if overlay.show_fps {
