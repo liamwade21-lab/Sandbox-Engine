@@ -707,7 +707,7 @@ fn ship_input(
             if !flight.active {
                 flight.stop_engines();
             }
-        } else if keys.just_pressed(KeyCode::KeyF) && flight.ship.is_some() && !flight.active {
+        } else if keys.just_pressed(KeyCode::KeyF) && flight.ship.is_some() && !flight.active && !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight]) {
             // F only enters: in flight it is SE's ShipMoveDown.
             flight.active = true;
         }
