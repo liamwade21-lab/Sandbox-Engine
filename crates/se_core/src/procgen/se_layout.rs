@@ -12,6 +12,7 @@
 //!   [`climate::procedural_radius_km`]. A body of at most 2000 km is a dwarf planet with an
 //!   asteroid belt (FUN_1404fd2a0).
 //! - The layout stream finally draws each planet's number of moons.
+//! - A single star that is not a brown dwarf also gets 100-199 comets ([`super::se_comets`]).
 //!
 //! The star's seeds are the port's, not SE's (the port's stars are not SE's octree stars), so a
 //! system follows SE's rules without matching SE's system for the same star.
@@ -97,6 +98,8 @@ pub(super) struct SeAsteroid {
 pub(super) struct SeSystem {
     pub planets: Vec<SePlanet>,
     pub asteroids: Vec<SeAsteroid>,
+    /// A single star's comets ([`super::se_comets`]); none for a host of a multiple system.
+    pub comets: Vec<super::se_comets::SeComet>,
 }
 
 pub(super) fn ua(r: &mut SeRng) -> f64 {
@@ -141,15 +144,15 @@ pub(super) fn layout(s: &SeStar, seed: u32) -> SeSystem {
     // FUN_1404f9210: the star's own stream.
     let mut sr = SeRng::new(seed.wrapping_mul(0x2e3).wrapping_add(0x1486), seed.wrapping_mul(0x234).wrapping_add(0x1cdb));
     let slots = sr.int(10) + 5;
-    // SE's 100-199 comets (none around brown dwarfs) are not generated.
-    if !s.brown_dwarf() {
-        sr.int(100);
-    }
+    // 100-199 comets, none around brown dwarfs (FUN_1404f9210 +0x1d40).
+    let n_comets = if s.brown_dwarf() { 0 } else { sr.int(100) + 100 };
     let soi = sr.tnormal(40.0, 8.0, 10.0, 1000.0) as f64 * s.mass_sol;
     // SE caps it by the star's surroundings (10-1000 AU); a field star gets the 1000.
     let soi = soi.min(1000.0);
     let mut budget = MAX_ASTEROIDS;
-    place(s, 0, slots, soi, &|hot| inner_limit_au(s, hot), seed, 0, &mut budget)
+    let mut sys = place(s, 0, slots, soi, &|hot| inner_limit_au(s, hot), seed, 0, &mut budget);
+    sys.comets = super::se_comets::comets(s, seed, n_comets, soi);
+    sys
 }
 
 /// FUN_140500700 for one host (a star or a barycentre) at SE's object index `idx`: `slots`
@@ -297,7 +300,7 @@ pub(super) fn place(s: &SeStar, idx: u32, slots: u32, soi: f64, inner: &dyn Fn(b
             belt(s, seed, i, n0 + i as u32, &planets, &mut asteroids);
         }
     }
-    SeSystem { planets, asteroids }
+    SeSystem { planets, asteroids, comets: Vec::new() }
 }
 
 /// The asteroids of dwarf planet `i` (FUN_1404fd2a0): between its neighbours' orbits (an
