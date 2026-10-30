@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 181 have been fixed since (listed at the end); the tables count the 30 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 184 have been fixed since (listed at the end); the tables count the 27 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 7 | 13 | 10 |
+| Gaps | 0 | 0 | 7 | 10 | 10 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 3 | 17 | 10 |
+| Gaps | 3 | 15 | 9 |
 
 | Area | Kept |
 |---|---|
@@ -124,7 +124,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 06 Procedural generation | 6 |
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
-| 09 Graphics and settings | 6 |
+| 09 Graphics and settings | 3 |
 | 10 Scripts, audio, spacecraft | 8 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
@@ -251,33 +251,6 @@ Only one cloud layer per procedural body, and only one is rendered: SE gives eli
 - SE evidence: main-def.cfg PlanetGenerator PlanetCloudsTerra, PlanetCloudsGasGiant; FUN_1405057e0 (reads DAT_14075f814); eng-gui "Clouds 0", "Clouds 1", "Clouds 2"
 - Port: crates/se_core/src/procgen/mod.rs:1755-1760
 - Check: FUN_1405057e0:185-193 gives a terrestrial-type body 1 + rand % PlanetCloudsTerra layers (DAT_14075f814), but the other branch (lines 173-181) hard-codes 1 or 2 layers, and PlanetCloudsGasGiant (DAT_14075f810) has no reader outside config load/save (x-ref); the port's procgen emits at most one Clouds block (procgen/mod.rs:1353 gas giants, 1756-1762 solids), and its renderer also uses a single cloud layer (terrain.rs layers.clouds), although body_params.rs:169 parses several
-
-### 09-010 · Graphics and settings
-
-High-resolution screenshot tool: SE renders screenshots larger than the window as tiles (seScreenshotTool: Target resolution, Tile resolution / count, Max dimensions, Max size in memory, Scale stars, its own landscape LOD ScreenshotLandLOD/ScreenshotTileRes, "Wait loading completeness") into screenshots-hd/. Port has none
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seScreenshotTool; strings "Starting high-resolution screenshot rendering: %i x %i, %i x %i tiles of %i x %i" "screenshots-hd/" ScreenshotLandLOD ScreenshotTileRes UserScreenshotsHDSubDir; eng-gui "High resolution screenshot" "Target resolution" "Scale stars" "Tile resolution"
-- Port: none
-- Check: rtti seScreenshotTool, exe strings "Starting high-resolution screenshot rendering: %i x %i, %i x %i tiles...", "screenshots-hd/", ScreenshotLandLOD, ScreenshotTileRes, UserScreenshotsHDSubDir, and UTF-16 "High resolution screenshot", "Target resolution", "Scale stars", "Tile resolution", "Max size in memory", "Wait loading"; no tiled or above-window-size capture anywhere in crates/ (only window-size Screenshot::primary_window)
-
-### 09-011 · Graphics and settings
-
-Skybox / panorama export: SE exports the sky around the camera as a 6-face cubemap or a cylindrical panorama (seExportSkyboxDialog: Resolution, Image format SkyboxFormat tga/jpg/png/dds/tif, Pixel format 8-bit / 16-bit / 32-bit float, Post-process or "Color correction (no HDR!)", Save transparency). Port has none
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seExportSkyboxDialog; main-def.cfg Export SkyboxFormat; eng-gui "Export skybox" "Cubemap" "Cylindrical" "Pixel format" "32-bit (floating-point)" "Post-process" "Color correction (no HDR!)"; hdr_copy_cube.glsl
-- Port: none
-- Check: SE has seExportSkyboxDialog (rtti_classes.txt:145), Export SkyboxFormat "tga" (main-def.cfg:456), hdr_copy_cube.glsl samplerCube, and locale keys "Export skybox" "Cylindrical" "32-bit (floating-point)" "Color correction (no HDR!)" (in the *-gui.cfg files; this install's eng-gui.cfg is a 5 KB stub); port grep for skybox/cubemap/panorama/equirect finds only galaxy-model loader code (galaxy_model.rs CubeMap type), no export path
-
-### 09-013 · Graphics and settings
-
-Projection modes: SE renders a cubemap and resamples it into fish-eye (proj_fisheye.glsl: FisheyeFOV 180, circular crop, zoom, offset, off-axis warp, flips, dome GUI angle and optional interface distortion) or 360-degree cylindrical (proj_cylinder.glsl) projections, or shows the cube faces as a mosaic (ProjectionMode 1, CubemapFormat, ShowCubempEdges, FitCubemapToScreen), with their own cube-face / GUI / lens-flare resolutions. Port has perspective only
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: proj_fisheye.glsl:20-50; proj_cylinder.glsl:18-38; main-def.cfg Projection ProjectionMode Fisheye* CubeFaceResolution GUIResolution LensFlareResolution DistortInterface; eng-gui "Perspective" "Fish eye" "Cylindrical" "Configure projection" "Lens angle" "Circle crop" "X warp" "Identify faces" "Fit to screen"
-- Port: crates/se_engine/src/camera.rs:188-192
-- Check: main-def.cfg Projection has ProjectionMode 0-3 (perspective/cubic/fish eye/cylinder), Fisheye FOV/Crop/Zoom/Offset/Warp/Flip, CubeFaceResolution/GUIResolution/LensFlareResolution; proj_fisheye.glsl samples a samplerCube with Param(LensAngle,CutOff)/Offset/Warp and a GUI variant, proj_cylinder.glsl resamples the cube to a 360x180 lat-long view; port camera.rs:188-192 spawns a single Projection::Perspective and grep finds no fisheye/cubic/cylinder projection
 
 ### 09-014 · Graphics and settings
 
@@ -808,6 +781,9 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **09-007** (Graphics and settings, fixed 2026-10-30): Graphics presets apply only 7 keys: SE loads the whole preset-*.cfg, so a preset also sets VideoMemorySize, Te... Fix: SE: FUN_140288db0 loads the whole preset-*.cfg; FUN_14030b0e0 picks Potato / Low / Medium / High by video memory (<=2 / 3 / 4 GB) on a hardware or build change. Port (agent, graphics.rs): Quality keeps every key, applies StarPointMethod and WarpPrecision when a preset is picked or loaded (review fix: scripted runs keep main-def's values), the settings save the whole preset; first run or a changed GPU / version picks it by VRAM (`reg query`, no new dependency; a file without Version counts as no change). Not ported: keys whose features the port draws differently; the 2x MaxTilesPerFrame stays. Checked: unit tests; first-run log.
 - **09-008** (Graphics and settings, fixed 2026-10-30): Tone mapping operator choice: SE lists every data/shaders/*_tone.glh as a "Tone mapping" choice (ToneMappingSh... Fix: SE: FUN_1403238d0 lists data/shaders *_tone.glh (ACES_Fitted, AgX, AgX_Punchy, Bruneton, Exposure, Filmic, Filmic_Hejl, Rec_709, Reinhard, Reinhard_SE, sRGB); hdr_tone.glsl applies ToneMapping(clamp(color, 0, 65000) x exposure); main-def ToneMappingShader "AgX". Port (agent): all 11 transcribed into color_correction.wesl inside the existing scratch-and-blit pass, chosen in Settings > Graphics and saved; Bevy's tonemapping now Linear (exposure only). Assumed: the tone outputs are linear for the sRGB swapchain. Review: SE's AgX polynomial shifts the default look slightly (Earth disc R -3, B +2 levels; saturated close-ups bluer), kept as SE's. Checked: unit tests; tone screenshots; 30-frame flicker test on the branch.
 - **09-009** (Graphics and settings, fixed 2026-10-30): Screenshot formats: SE saves screenshots as jpg (default, JpegQuality 95), png, dds, tga or tif (ScreenshotFor... Fix: SE: Export ScreenshotFormat "jpg" (jpg, png, dds, tga, tif), JpegQuality 95, SaveAlpha; names scr%05i. Port (agent, screenshot.rs, F11): format, quality and alpha from main-def and the settings (Settings > Display), files scrNNNNN.<ext> in Pictures/SpaceEngine-rs (never the install), a running counter (review fix); jpg/png through the image crate, TGA, DDS and baseline TIFF written by hand. The swapchain's alpha is opaque. Checked: unit tests; every format with and without alpha opened with PIL.
+- **09-010** (Graphics and settings, fixed 2026-10-30): High-resolution screenshot tool: SE renders screenshots larger than the window as tiles (seScreenshotTool: Tar... Fix: SE: HD screenshot (Shift+F11 dialog, tiles saved as screenshots-hd/mosaicNNNNN, ScreenshotLandLOD, Scale stars, Wait loading completeness; input locked during the job, FUN_140221d70). Port (capture branch, capture.rs / screenshot.rs): Shift+F11 or Settings > Display, tiles through one offscreen camera slicing the full frame at the rotation from the job's start (camera input locked), time paused, ScreenshotLandLOD, Scale stars, Wait loading completeness. Not ported: bloom per tile (tile edges showed), lens flares and black-hole lensing in tiles.
+- **09-011** (Graphics and settings, fixed 2026-10-30): Skybox / panorama export: SE exports the sky around the camera as a 6-face cubemap or a cylindrical panorama (... Fix: SE: skybox export as cube faces in SE's face order pos_x, neg_x, neg_y, pos_y, pos_z, neg_z (FUN_1403278f0 renders GL order, saved under SE's name table), dds cubemap, cylindrical panorama, 8/16/32-bit. Port (capture branch): faces, dds cubemap (X8R8G8B8 without Save transparency), panorama, 8/16-bit PNG/TIFF/DDS and float TIFF/DDS writers (files read back); star loading all round during export. Not traced: each face image's orientation in SE, the panorama file name. Post-process per face off by default (edges show).
+- **09-013** (Graphics and settings, fixed 2026-10-30): Projection modes: SE renders a cubemap and resamples it into fish-eye (proj_fisheye.glsl: FisheyeFOV 180, circ... Fix: SE: projection modes from proj_fisheye / proj_cylinder (decrypted) and the cubemap mosaic, Projection settings. Port (capture branch, projection.rs): fish eye, cylindrical, cubemap mosaic, Projection tab, saved Projection block; ship layer kept; star loading not clipped to the view cone in projection modes. Checked: still-frame flicker in each mode, frame times unchanged in perspective. Not ported: SE's distort-interface option (labels, orbits, flares drawn flat), GUI/lens-flare resolution settings that go with it.
 - **09-015** (Graphics and settings, fixed 2026-10-30): Memory limits and caches: SE caps VRAM and RAM (VideoMemoryStrategy, VideoMemorySize 3072 MB, VideoMemoryReser... Fix: SE: main-def Memory block (CacheSize*, MaxRAM/VRAM) and the RAM/VRAM log lines. Port (camera branch, memory.rs): cache sizes from main-def.cfg with least-recently-used eviction for planetary systems (64; a revisited system is regenerated; systems referenced by the selection, bound object, Go to target and history are kept), star and galaxy octree nodes, cluster/nebula lists, atmosphere models; SE's RAM/VRAM lines in se.log. Terrain nodes stay at the port's 1250 (main-def's 10000 took a surface flight from ~50 to 280 ms a frame). No port counterpart: the RAM/VRAM caps themselves, CacheSizeLandTextures, CacheSizeGalModels, the model VRAM minimums.
 - **09-016** (Graphics and settings, fixed 2026-10-30): Settings persistence: SE keeps every setting in config/main-user.cfg as overrides of main-def.cfg (created on ... Fix: SE: config/main-user.cfg holds the user's values over main-def.cfg (DetectVersionChange). Port (agent, settings.rs): %APPDATA%/SpaceEngine-rs/settings.cfg in SE's key names and blocks (Version, Settings, PostEffects, Export, Graphics with the whole preset and GPU, Display), written atomically (review fix); scripted runs neither read nor write it. Not ported: main-def keys without a port setting (modules reading main-def directly do not see user overrides). Checked: unit test; runs with APPDATA redirected.
 - **09-019** (Graphics and settings, fixed 2026-10-30): Log file: SE writes system/se.log with optional time and thread stamps (LogTimeStamp, LogThreadStamp) and filt... Fix: SE: main-def.cfg Log (LogTimeStamp false, LogThreadStamp true, CatalogLogLevel 2, CsvLogLevel 1, CsvPatchWarning true); system/se.log has a version line, STARTING, then '[MT] ' / '[NN] ' stamped lines with 'ERROR: ' / 'WARNING: ' prefixes. Port: log_file.rs adds a tracing layer (LogPlugin custom_layer) writing se.log in %APPDATA%/SpaceEngine-rs (never the install) in that format, with the time and thread stamps from main-def.cfg; the catalog loader's warnings follow CatalogLogLevel / CsvLogLevel (0 silences them). Not ported: each catalog's own LogLevel cap and CsvPatchWarning (the port's loader reports only problems, no per-object messages). Checked: unit test reads_main_def_and_formats_like_se; a run writes se.log with [MT] / [00] lines and '[MT] WARNING: catalog: ...'.
