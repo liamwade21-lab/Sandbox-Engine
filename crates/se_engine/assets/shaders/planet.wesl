@@ -2086,7 +2086,15 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.col += s.sun_at_ground * planet.atm_flags.y * ground_spec(ns, v, l, rough * rough) * smoothstep(0.0, 0.1, dot(n, l)) * sheen;
     }
     // The ice's Cook-Torrance glint (RoughnessIce) from every light, giving way to the soils' own
-    // close by (SE's specTer goes to the detail textures' by detailFadeSpec).
+    // close by (SE's specTer goes to the detail textures' by detailFadeSpec). The rings' shadow uses
+    // fwidth, so it is taken here in uniform control flow, not inside the per-pixel branch.
+    var ring_x = array<f32, 3>(1.0, 1.0, 1.0);
+    for (var i = 0; i < 3; i++) {
+        if planet.light_dir[i].w < 0.5 {
+            break;
+        }
+        ring_x[i] = ring_shadow(p_rel, normalize(planet.light_dir[i].xyz));
+    }
     if ice * (1.0 - fade) > 0.0 {
         let v = normalize(-in.world_pos);
         let a = planet.ice.y * planet.ice.y;
@@ -2096,7 +2104,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
                 break;
             }
             let lx = normalize(planet.light_dir[i].xyz);
-            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_shadow(p_rel, lx);
+            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_x[i];
             glint += sun_x * horizon_shadow(in.height, dot(up, lx)) * ground_spec(ns, v, lx, a);
         }
         s.col += glint * planet.atm_flags.y * ice * (1.0 - fade) * smoothstep(0.0, 0.1, dot(n, l));
@@ -2237,8 +2245,9 @@ fn table_pos(up: vec3<f32>, h: f32) -> vec3<f32> {
 // terrain.rs `encode_normal_offset`), so a smooth disc shades from its exact direction. Normals
 // stored whole quantised the sphere's own curvature into a grid near the terminator (04-014).
 fn ground_normal(in: VertexOut) -> vec3<f32> {
+    // Half the offset is stored (terrain.rs encode_offset), so slopes past 60 degrees fit.
     let e = textureSample(normal_tex, normal_smp, node_map_uv(in)).xyz * 2.0 - 1.0;
-    let nb = normalize(normalize(in.body_dir) + e * abs(e));
+    let nb = normalize(normalize(in.body_dir) + 2.0 * e * abs(e));
     return normalize(in.axis_x * nb.x + in.axis_y * nb.y + in.axis_z * nb.z);
 }
 

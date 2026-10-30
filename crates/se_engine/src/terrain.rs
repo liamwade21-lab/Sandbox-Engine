@@ -870,13 +870,15 @@ fn encode_normal_offset(n: DVec3, up: DVec3) -> [u8; 3] {
     encode_offset((n - up).as_vec3())
 }
 
+/// Half the offset is stored: its length is 2 sin(slope / 2), so whole offsets past 60 degrees of
+/// slope would not fit the -1..1 range.
 fn encode_offset(d: Vec3) -> [u8; 3] {
-    d.to_array().map(|c| ((c.signum() * c.abs().sqrt() * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8)
+    (d * 0.5).to_array().map(|c| ((c.signum() * c.abs().sqrt() * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8)
 }
 
 fn decode_normal_offset(rgb: [u8; 3]) -> Vec3 {
     let e = Vec3::from_array(rgb.map(|c| c as f32 / 127.5 - 1.0));
-    e * e.abs()
+    2.0 * e * e.abs()
 }
 
 /// A node's normal map (`n` x `n` RGBA8: normal offset, shore code) followed by its mip chain, each
@@ -1826,7 +1828,7 @@ fn update_terrain(
                 glow: Vec3::from_array(s.glow_color.map(|c| c as f32)).extend(if s.glow_permanent { 0.0 } else { 1.0 }),
                 ice: Vec4::new(
                     s.spec_bright_ice
-                        .unwrap_or_else(|| se_core::planet_tiles::ice_spec_default(terrain.surf_gen.classes.surface, terrain.atmosphere.is_some()))
+                        .unwrap_or_else(|| se_core::planet_tiles::ice_spec_default(terrain.surf_gen.classes.surface, terrain.surf_gen.classes.atmo > 0))
                         as f32,
                     s.roughness_ice.unwrap_or(se_core::planet_tiles::ROUGHNESS_ICE_DEFAULT) as f32,
                     if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
