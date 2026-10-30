@@ -1,0 +1,16 @@
+[package]
+name = "se_engine"
+description = "Rust/Bevy port of SpaceEngine (Vulkan renderer)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "spaceengine-rs"
+path = "src/main.rs"
+
+[dependencies]
+se_core = { path = "../se_core" }
+bevy = "0.20"
+bevy_egui = "0.43"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

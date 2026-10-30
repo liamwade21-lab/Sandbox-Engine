@@ -1,0 +1,7 @@
+/target/
+/shots/
+/.audit/work/
+/re/ghidra_projects/
+/re/se_shaders/
+/water_vs_se.jpg
+*.bak*

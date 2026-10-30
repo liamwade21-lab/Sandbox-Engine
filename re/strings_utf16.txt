@@ -1,0 +1,4606 @@
+kernel32.dll
+nvpowerapi.dll
+nvapi64.dll
+Shell32.dll
+Advapi32.dll
+SOFTWARE\Microsoft\Windows NT\CurrentVersion
+CurrentBuildNumber
+VEN_10DE
+Setupapi.dll
+SYSTEM\CurrentControlSet\Control\Class\
+DriverSupportModules
+DriverSupportModulesWow
+SOFTWARE\Khronos\OpenCL\Vendors
+SOFTWARE\Khronos\Vulkan\Drivers
+UserModeDListDriverName
+OpenGLDriverName
+UserModeDriverName
+UserModeDListDriverNameWow
+OpenGLDriverNameWow
+UserModeDriverNameWow
+\SystemRoot\system32\
+system32\
+DigiCert SHA2 Assured ID Code Signing CA
+Oculus VR, LLC
+DigiCert Assured ID Root CA
+3wintrust
+crypt32
+%lsLibOVRRT%hs_%d.dll
+)OculusHMDConnected
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_
+`abcdefghijklmn
+stuvwxyz
+tABCDEFGHIJKLMNOPQRSTUVWXYZ
+tabcdefghijklmnopqrstuvwxyz
+@LV^a
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_
+`abcdefghijklmn
+stuvwxyz
+api-ms-win-core-fibers-l1-1-1
+api-ms-win-core-synch-l1-2-0
+kernel32
+api-ms-
+(null)
+minkernel\crts\ucrt\inc\corecrt_internal_strtox.h
+__crt_strtox::floating_point_value::as_double
+_is_double
+__crt_strtox::floating_point_value::as_float
+!_is_double
+INITY
+inity
+SNAN)
+snan)
+IND)ind)
+         (((((                  H
+         (((((                  H
+      (                          
+mscoree.dll
+LC_ALL
+LC_COLLATE
+LC_CTYPE
+LC_MONETARY
+LC_NUMERIC
+LC_TIME
+Sunday
+Monday
+Tuesday
+Wednesday
+Thursday
+Friday
+Saturday
+January
+February
+March
+April
+August
+September
+October
+November
+December
+MM/dd/yy
+dddd, MMMM dd, yyyy
+HH:mm:ss
+en-US
+api-ms-win-core-datetime-l1-1-1
+api-ms-win-core-fibers-l1-1-2
+api-ms-win-core-file-l1-2-4
+api-ms-win-core-file-l1-2-2
+api-ms-win-core-file-l2-1-4
+api-ms-win-core-localization-l1-2-1
+api-ms-win-core-localization-obsolete-l1-2-0
+api-ms-win-core-processthreads-l1-1-2
+api-ms-win-core-string-l1-1-0
+api-ms-win-core-sysinfo-l1-2-1
+api-ms-win-core-winrt-l1-1-0
+api-ms-win-core-xstate-l2-1-0
+api-ms-win-rtcore-ntuser-window-l1-1-0
+api-ms-win-security-systemfunctions-l1-1-0
+ext-ms-win-ntuser-dialogbox-l1-1-0
+ext-ms-win-ntuser-windowstation-l1-1-0
+advapi32
+kernelbase
+ntdll
+api-ms-win-appmodel-runtime-l1-1-2
+user32
+ext-ms-
+ja-JP
+zh-CN
+ko-KR
+zh-TW
+american
+american english
+american-english
+australian
+belgian
+canadian
+chinese
+chinese-hongkong
+chinese-simplified
+chinese-singapore
+chinese-traditional
+dutch-belgian
+english-american
+english-aus
+english-belize
+english-can
+english-caribbean
+english-ire
+english-jamaica
+english-nz
+english-south africa
+english-trinidad y tobago
+english-uk
+english-us
+english-usa
+french-belgian
+french-canadian
+french-luxembourg
+french-swiss
+german-austrian
+german-lichtenstein
+german-luxembourg
+german-swiss
+irish-english
+italian-swiss
+norwegian
+norwegian-bokmal
+norwegian-nynorsk
+portuguese-brazilian
+spanish-argentina
+spanish-bolivia
+spanish-chile
+spanish-colombia
+spanish-costa rica
+spanish-dominican republic
+spanish-ecuador
+spanish-el salvador
+spanish-guatemala
+spanish-honduras
+spanish-mexican
+spanish-modern
+spanish-nicaragua
+spanish-panama
+spanish-paraguay
+spanish-peru
+spanish-puerto rico
+spanish-uruguay
+spanish-venezuela
+swedish-finland
+swiss
+america
+britain
+china
+czech
+england
+great britain
+holland
+hong-kong
+new-zealand
+pr china
+pr-china
+puerto-rico
+slovak
+south africa
+south korea
+south-africa
+south-korea
+trinidad & tobago
+united-kingdom
+united-states
+utf-8
+zh-CHS
+ar-SA
+bg-BG
+ca-ES
+cs-CZ
+da-DK
+de-DE
+el-GR
+fi-FI
+fr-FR
+he-IL
+hu-HU
+is-IS
+it-IT
+nl-NL
+nb-NO
+pl-PL
+pt-BR
+ro-RO
+ru-RU
+hr-HR
+sk-SK
+sq-AL
+sv-SE
+th-TH
+tr-TR
+ur-PK
+id-ID
+uk-UA
+be-BY
+sl-SI
+et-EE
+lv-LV
+lt-LT
+fa-IR
+vi-VN
+hy-AM
+az-AZ-Latn
+eu-ES
+mk-MK
+tn-ZA
+xh-ZA
+zu-ZA
+af-ZA
+ka-GE
+fo-FO
+hi-IN
+mt-MT
+se-NO
+ms-MY
+kk-KZ
+ky-KG
+sw-KE
+uz-UZ-Latn
+tt-RU
+bn-IN
+pa-IN
+gu-IN
+ta-IN
+te-IN
+kn-IN
+ml-IN
+mr-IN
+sa-IN
+mn-MN
+cy-GB
+gl-ES
+kok-IN
+syr-SY
+div-MV
+quz-BO
+ns-ZA
+mi-NZ
+ar-IQ
+de-CH
+en-GB
+es-MX
+fr-BE
+it-CH
+nl-BE
+nn-NO
+pt-PT
+sr-SP-Latn
+sv-FI
+az-AZ-Cyrl
+se-SE
+ms-BN
+uz-UZ-Cyrl
+quz-EC
+ar-EG
+zh-HK
+de-AT
+en-AU
+es-ES
+fr-CA
+sr-SP-Cyrl
+se-FI
+quz-PE
+ar-LY
+zh-SG
+de-LU
+en-CA
+es-GT
+fr-CH
+hr-BA
+smj-NO
+ar-DZ
+zh-MO
+de-LI
+en-NZ
+es-CR
+fr-LU
+bs-BA-Latn
+smj-SE
+ar-MA
+en-IE
+es-PA
+fr-MC
+sr-BA-Latn
+sma-NO
+ar-TN
+en-ZA
+es-DO
+sr-BA-Cyrl
+sma-SE
+ar-OM
+en-JM
+es-VE
+sms-FI
+ar-YE
+en-CB
+es-CO
+smn-FI
+ar-SY
+en-BZ
+es-PE
+ar-JO
+en-TT
+es-AR
+ar-LB
+en-ZW
+es-EC
+ar-KW
+en-PH
+es-CL
+ar-AE
+es-UY
+ar-BH
+es-PY
+ar-QA
+es-BO
+es-SV
+es-HN
+es-NI
+es-PR
+zh-CHT
+af-za
+ar-ae
+ar-bh
+ar-dz
+ar-eg
+ar-iq
+ar-jo
+ar-kw
+ar-lb
+ar-ly
+ar-ma
+ar-om
+ar-qa
+ar-sa
+ar-sy
+ar-tn
+ar-ye
+az-az-cyrl
+az-az-latn
+be-by
+bg-bg
+bn-in
+bs-ba-latn
+ca-es
+cs-cz
+cy-gb
+da-dk
+de-at
+de-ch
+de-de
+de-li
+de-lu
+div-mv
+el-gr
+en-au
+en-bz
+en-ca
+en-cb
+en-gb
+en-ie
+en-jm
+en-nz
+en-ph
+en-tt
+en-us
+en-za
+en-zw
+es-ar
+es-bo
+es-cl
+es-co
+es-cr
+es-do
+es-ec
+es-es
+es-gt
+es-hn
+es-mx
+es-ni
+es-pa
+es-pe
+es-pr
+es-py
+es-sv
+es-uy
+es-ve
+et-ee
+eu-es
+fa-ir
+fi-fi
+fo-fo
+fr-be
+fr-ca
+fr-ch
+fr-fr
+fr-lu
+fr-mc
+gl-es
+gu-in
+he-il
+hi-in
+hr-ba
+hr-hr
+hu-hu
+hy-am
+id-id
+is-is
+it-ch
+it-it
+ja-jp
+ka-ge
+kk-kz
+kn-in
+kok-in
+ko-kr
+ky-kg
+lt-lt
+lv-lv
+mi-nz
+mk-mk
+ml-in
+mn-mn
+mr-in
+ms-bn
+ms-my
+mt-mt
+nb-no
+nl-be
+nl-nl
+nn-no
+ns-za
+pa-in
+pl-pl
+pt-br
+pt-pt
+quz-bo
+quz-ec
+quz-pe
+ro-ro
+ru-ru
+sa-in
+se-fi
+se-no
+se-se
+sk-sk
+sl-si
+sma-no
+sma-se
+smj-no
+smj-se
+smn-fi
+sms-fi
+sq-al
+sr-ba-cyrl
+sr-ba-latn
+sr-sp-cyrl
+sr-sp-latn
+sv-fi
+sv-se
+sw-ke
+syr-sy
+ta-in
+te-in
+th-th
+tn-za
+tr-tr
+tt-ru
+uk-ua
+ur-pk
+uz-uz-cyrl
+uz-uz-latn
+vi-vn
+xh-za
+zh-chs
+zh-cht
+zh-cn
+zh-hk
+zh-mo
+zh-sg
+zh-tw
+zu-za
+CONOUT$
+sMgSiO
+INITIALIZING ENGINE:  Linking shaders
+BUILDING SHADER CACHE:  Linking shaders
+INITIALIZING ENGINE:  Loading shaders (hold ESC to skip)
+BUILDING SHADER CACHE:  Compiling shaders (hold ESC to skip)
+LOADING GALAXIES:  "%S"
+LOADING GALAXIES:  Merging duplicates
+LOADING GALAXIES:  Building octree
+INITIALIZING GALAXIES
+INITIALIZING GALAXIES:  Preloading models
+INITIALIZING GALAXIES:  "%s"
+INITIALIZING GALAXIES:  Updating database
+RenderGalaxies
+LOADING NEBULAE:  "%S"
+LOADING NEBULAE
+Merging duplicates
+INITIALIZING NEBULAE
+INITIALIZING ENGINE:  Loading DEA ephemerides "%S"
+INITIALIZING ENGINE:  Saving DEA ephemerides "%S"
+INITIALIZING ENGINE:  Loading DEA ephemerides for %S
+INITIALIZING ENGINE:  Loading "%S"
+INITIALIZING ENGINE:  Creating texture arrays
+Detail 
+Samples 
+Layer %i
+NVIDIA Hardware H.264
+NVIDIA Hardware HEVC
+NVIDIA Hardware AV1
+AMD Hardware H.264
+AMD Hardware HEVC
+fAMD Hardware AV1
+Intel Hardware H.264
+Intel Hardware HEVC
+vIntel Hardware AV1
+SVT Software AV1
+AOM Software AV1
+seAsyncVideoRecorder::StartCapture
+seAsyncVideoRecorder::TriggerCapture
+Nearest
+Linear
+Bicubic
+Lanczos
+ sharp
+ naive
+Checkerboard
+impostors (tex%i)
+color pickers
+skyboxes[%i] (tex%i)
+Skybox
+LensFlareSkybox
+fboEffects (tex%i) %ix%i
+fboRecons
+fboAccum[%i]
+volumFBO (tex%i) %ix%i
+INITIALIZING ENGINE:  Allocating terrain texture arrays
+INITIALIZING ENGINE:  Allocating terrain texture array %S
+seUboManager::AllocAndBindBuffer()
+ASECD
+MERCURY
+VENUS
+EARTH
+EARTH2
+JUPITER
+SATURN
+URANUS
+NEPTUNE
+PLUTO
+RIGHT
+COPYRIGHT
+AndNom
+AntNom
+ApsNom
+AqrNom
+AqlNom
+AraNom
+AriNom
+AurNom
+BooNom
+CaeNom
+CamNom
+CncNom
+CVnNom
+CMaNom
+CMiNom
+CapNom
+CarNom
+CasNom
+CenNom
+CepNom
+CetNom
+ChaNom
+CirNom
+ColNom
+ComNom
+CrANom
+CrBNom
+CrvNom
+CrtNom
+CruNom
+CygNom
+DelNom
+DorNom
+DraNom
+EquNom
+EriNom
+ForNom
+GemNom
+GruNom
+HerNom
+HorNom
+HyaNom
+HyiNom
+IndNom
+LacNom
+LeoNom
+LMiNom
+LepNom
+LibNom
+LupNom
+LynNom
+LyrNom
+MenNom
+MicNom
+MonNom
+MusNom
+NorNom
+OctNom
+OphNom
+OriNom
+PavNom
+PegNom
+PerNom
+PheNom
+PicNom
+PscNom
+PsANom
+PupNom
+PyxNom
+RetNom
+SgeNom
+SgrNom
+ScoNom
+SclNom
+SctNom
+SerCapNom
+SerCauNom
+SexNom
+TauNom
+TelNom
+TriNom
+TrANom
+TucNom
+UMaNom
+UMiNom
+VelNom
+VirNom
+VolNom
+VulNom
+SMALL
+/SMALL
+/HUGE
+COLOR=
+/COLOR
+SHADOW
+/SHADOW
+[/LOC]
+VERSION
+MAJORVER
+MINORVER
+BUILDVER
+REVVER
+Input
+Filename edit
+Default
+Weight
+Weight edit
+BulkClass
+TempClass
+AtmoClass
+VolqClass
+SunClass
+SunTemp
+LifeOrganic
+DontMatter
+UniOrMulti
+Unicellular
+Multicellular
+LifeExotic
+CloudsPalette
+OceanPalette
+ColorVary
+OceanAbsorption
+Global
+Biome
+Color
+GalleryBiomes
+Selected material
+GalleryMaterials
+707070
+%s: %s
+%S, %S
+HDTV (sRGB)
+UHDTV
+CIE RGB
+Adobe RGB
+Display P3
+Milky Way
+Solar System
+Earth
+Non-existing object
+BUILDING DATABASE
+BUILDING DATABASE:  Sorting
+BUILDING DATABASE:  Building star catalog index
+BUILDING DATABASE: Loading local database
+HIP %d
+HD %d
+StarBarycenter
+Barycenter
+Planet
+DwarfPlanet
+DwarfMoon
+Asteroid
+Comet
+Object
+Spacecraft
+Structure
+Artifact
+TGalaxy
+Cluster
+Nebula
+Dwarf planet
+Dwarf moon
+Unspecified body
+Constellation
+Object of unknown type
+RS %u-%u-%I64d-%u-%u-%u-%I64d-%u
+RS %u-%u-%u-%I64d-%u
+RSC %u-%u-%I64d-%u-%u-%u-%I64d-%u
+RSC %u-%u-%u-%I64d-%u
+RSN %u-%u-%I64d-%u-%u-%u
+RSN %u-%u-%u
+RN %u-%u-%I64d-%u-%u
+RN %u-%u
+RC %u-%u-%I64d-%u-%u
+RC %u-%u
+RG %u-%u-%I64d-%u
+%i.%i.%I64d.%i.%i.%i.%i.%I64d.%i.%i
+%i-%i-%I64d
+RG %i-%i-%I64d-%i
+%i-%i-%i-%I64d
+%i-%i
+%i-%i-%I64d-%i-%i-%i-%I64d
+%i-%i-%I64d-%i-%i
+RS %i-%i-%i-%I64d-%i
+RSN %i-%i-%i
+RSC %i-%i-%i-%I64d-%i
+RS %i-%i-%I64d-%i-%i-%i-%I64d-%i
+RSN %i-%i-%I64d-%i-%i-%i
+RSC %i-%i-%I64d-%i-%i-%i-%I64d-%i
+RN %i-%i
+RC %i-%i
+RN %i-%i-%I64d-%i-%i
+RC %i-%i-%I64d-%i-%i
+Invalid PosSpline
+Invalid RotSpline
+Invalid StereoSpline
+SplineData{} has too few points
+Missing SplineData{}
+OBAFGKMLTY??????
+0123456789??????
+00FFFF
+00FF00
+FF0000
+%s%1.2f%s/%1.2f/%1.2f
+sePerfCounterStorage::StopTimerGPU
+sePerfCounterStorage::FrameEnd
+00FFFF%1.2f/%1.2f/%1.2f
+00FF00%1.2f/%1.2f/%1.2f
+ %d.%u.%u %u:%u:%lf 
+ %d.%u.%u %u:%u 
+ %d.%u.%u
+ %d.%u
+d %d.%u.%u.%u.%u.%lf 
+%4i.%02i.%02i.%02i.%02i.%02i.%02i
+%4i.%02i.%02i %02i%s%02i%s%02i.%02i%s
+%4i.%02i.%02i %02i%s%02i%s%02i%s
+%4i.%02i.%02i %02i:%02i:%02i.%02i
+%4i.%02i.%02i %02i:%02i:%02i
+%4i.%02i.%02i
+%4i.%02i
+INITIALIZING ENGINE:  Loading JPL ephemerides "%S"
+LOADING SPACECRAFT:  Loading aerodynamics models
+LOADING SPACECRAFT:  Loading config
+LOADING SPACECRAFT:  Loading materials
+LOADING SPACECRAFT:  Loading shaders
+sePBO::BindCopy
+Gallery
+modal
+Precision input
+Time step input
+Start date input
+Bodies table
+SearchStop
+Events table
+File name edit
+Resolution edit
+Status
+707070%s %s
+%s: %d x %d
+%s: 6 x %d x %d
+surface_
+clouds
+Height
+dds cubemap
+%s: %u x %u
+%s: %llu MB
+pos_x
+neg_x
+neg_y
+pos_y
+neg_z
+pos_z
+Status string
+Name edit
+Table
+HW auto
+FPS meter
+VSync: 
+Tgt time: %1.2f ms
+Max time: %1.2f ms
+Min time: %1.2f ms
+Tgt FPS: %i
+Max FPS: %1.2f
+Min FPS: %1.2f
+Gallery "
+startup
+https://spaceengine.org/manual/space-flight-school/
+Fulldome dashboard
+F0D080[D]
+F08080[G]
+Edit dust component
+Edit gas component
+Script file
+Shader
+UseForObject
+UseForType
+RGB dust opacity
+BaseShape
+Sphere
+Cylinder
+BaseDims.x
+BaseDims.y
+BaseDims.z
+Scale.x
+Scale.y
+Scale.z
+Bright
+ParticleColor
+Model Randomize.x
+Model Randomize.y
+Model Randomize.z
+Object Randomize.x
+Object Randomize.y
+Object Randomize.z
+ExplosionDate
+ExplosionDuration
+PosSpline
+RotSpline
+StereoSpline
+SyncRot
+Points interval edit
+Replay duration edit
+Coordinates
+sePathEditor::Render
+%s: %i
+Target width edit
+Target height edit
+Rendering progress bar
+Saving progress bar
+File name
+%s: %u x %u
+%s: %llu GB
+%s: %i x %i
+%s %i / %i, %i%%
+%s %s, %i%%
+seScreenshotTool::RecordTile
+Land quadtree: 
+CatStar octree: 
+Star octree: 
+Cluster octree: 
+Nebula model boxes: 
+Galaxy model boxes: 
+CatGalaxy octree: 
+Galaxy octree: 
+GalSysModel octree: 
+Pseudo list
+Flares list
+Ghosts list
+Catalog galaxies
+Procedural galaxies
+Catalog stars
+Procedural stars
+Catalog clusters
+Procedural clusters
+Catalog nebulae
+Procedural nebulae
+Catalog planets
+Procedural planets
+Procedural CS planets
+Resolution list
+Window width
+Window height
+4x3 Cubemap
+3x2 Youtube, GoPro, Gear VR, AirPano
+3x2 Facebook
+3x2 Pano2VR, GardenGnome
+6x1 GoPro
+6x1 Photoshop DDS plugin
+Common controls form
+Common table header
+Common table
+Camera controls form
+Camera table header
+Camera table
+Ship controls form
+Ship table header
+Ship table
+Chart controls form
+Chart table header
+Chart table
+707070%i%s
+general
+style
+camera
+filter
+graphics
+display
+sound
+reset
+controls
+controls|common
+controls|camera
+controls|ship
+controls|chart
+Preset name edit
+Slope
+ModColor
+ModRough
+ModNorm
+ModHeight
+BiasRough
+ScaleRough
+BiasHeight
+ScaleHeight
+Shaded
+Albedo
+Roughness
+Normals
+Main toolbar
+Filters toolbar
+Navigation toolbar
+Current velocity
+Assigned velocity
+Tracking object
+Following object
+%1.2f %s
+Camera toolbar
+Exposure
+Exposure comp
+Plan mag limit
+Plan mag value
+Star mag limit
+Star mag value
+Gal mag limit
+Gal mag value
+Context menu
+Parent
+Satellites
+Add to locations
+Message box
+Message text
+Button 1
+Button 2
+Save file
+Enter file name
+Lightness
+Saturation
+0...255
+,.;:!?
+eseBodyColorPicker::DrawBodyPreview
+INITIALIZING CONSTELLATIONS
+seGalModelCache::DeleteModel
+%+i%s
+seNebulaModelCache::DeleteModel
+seBillboardEffect::DrawBlackHole
+Player
+SpaceEngine
+/ntdll.dll
+-paths=
+LOADING PAK FILES:  Searching...
+LOADING PAK FILES:  Scanning...
+LOADING PAK FILES:  Initializing filesystem data...
+LOADING PAK FILES:  Sorting...
+LOADING PAK FILES:  "%S"
+seGalaxySpriteModel::DrawBulge
+seGalaxySpriteModel::Draw
+seMeshCache::DeleteMesh
+seNebulaSpriteModel::Draw
+Create folder edit
+Screenshot format list
+Video codec list
+Video format list
+YUV420P (12bpp)
+YUV422P (16bpp)
+YUV444P (24bpp)
+YUVA444P16 (64bpp)
+NV12 (12bpp)
+P010 (10bpp)
+Video preset list
+Ultra fast
+Super fast
+Balanced
+Quality
+Super quality
+Ultra quality
+Bitrate preset list
+Lowest
+Medium
+Highest
+Custom
+Video bitrate edit
+FPS capping method list
+Video FPS edit
+Script file name label
+%s: %s  %s
+seScreenCapture::RecordCubeFaces
+seShader::Unbind
+INITIALIZING ENGINE:  Loading shaders
+seTexture::CreateTexture1D
+seTexture::CreateTexture2D
+seTexture::CreateTexture3D
+seTexture::CreateTexture2DArray
+seTexture::CreateTextureCube
+seTexture::UploadPixelsTo1D
+seTexture::StartAsyncGetPixelsFromTexture
+seTexture::FinishAsyncGetPixelsFromTexture
+seTexture::GetPixelsFromTexture
+seTextureCache::DeleteTexture
+seTextureGenerator::Init
+INITIALIZING ENGINE:  Loading generator textures
+LandWorkingTexDiff
+LandWorkingTexNorm
+seTextureGenerator::CreateMipmapsDefault
+seTextureGenerator::CreateMipmapsCustom
+seTextureGenerator::CreatePlanetMipmaps
+seTextureGenerator::ConvertToNormalMap
+seTextureGenerator::ConvertToNormalMapArr
+seTextureGenerator::CompressMipLevel
+seTextureGenerator::CompressPlanetTexture
+seTextureGenerator::FinishCompressPlanetTexture
+seTextureGenerator::CreatePlanetHeightMap
+seTextureGenerator::CreatePlanetColorMapArray
+seTextureGenerator::CreatePlanetThermalMap
+seTextureGenerator::CreatePlanetDetalMap
+seTextureGenerator::UploadPlanetHeightMap
+seTextureGenerator::UploadPlanetColorMap
+seTextureGenerator::UploadPlanetThermalMap
+seFBO::Create
+seFBO::AttachCubeFace
+seFBO::Bind
+seFBO::Unbind
+seFBO::BindMipmapLevel
+seFBO::GenerateMipmaps
+seFBO::GenerateCustomCubeMipmaps
+seFBO::Invalidate
+seSkybox::ResolveRenderFBOtoCubeFace
+seSkybox::GenerateMipmaps
+Pass 
+neg_x (back)
+pos_x (front)
+neg_y (down)
+pos_y (top)
+pos_z (left)
+neg_z (right)
+Hardware\Devicemap\Video
+\Device\Video
+\Registry\Machine\
+HardwareInformation.AdapterString
+HardwareInformation.qwMemorySize
+seMemoryManager::GetTotalVRAM
+MemoryManager::GetAvailableVRAM
+seMemoryManager::Clean
+%s (%d.%d).
+%s%sGL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT
+%s%sGL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT
+%s%sGL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER
+%s%sGL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER
+%s%sGL_FRAMEBUFFER_UNSUPPORTED
+%s%sGL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE
+%s%sFBO status code 0x%x
+ERROR: %s%sGL_INVALID_ENUM
+ERROR: %s%sGL_INVALID_VALUE
+ERROR: %s%sGL_INVALID_OPERATION
+ERROR: %s%sGL_STACK_OVERFLOW
+ERROR: %s%sGL_STACK_UNDERFLOW
+ERROR: %s%sGL_OUT_OF_MEMORY
+ERROR: %s%sGL_INVALID_FRAMEBUFFER_OPERATION
+ERROR: %s%sOpenGL error code 0x%x
+sePrimitive::Create
+seRenderer::BeginFrame
+seRenderer::EndFrame
+Renderer::DrawGalaxies
+Pre-DrawUniverse
+seRenderer::DrawUniverseOnScreen
+seRenderer::BlitBufferTC
+seRenderer::Downscale
+seRenderer::GenerateHistogram
+seRenderer::GenerateBloom
+seRenderer::PostEffectStereoFinal
+seRenderer::DrawPostEffectsSimple
+Pre-DrawPostEffects
+DrawGUIinBuffer
+Frame histogram
+Histogram sum
+%7.5g
+log2 %g%% lum
+%7.5g
+log2 50%% lum
+%7.5g
+log2 trgt lum
+%7.5g
+Bloom (mip %1.2f)
+Depth
+fboTest (mip %1.2f)
+seLandBatchVBO::CreatePatch
+seLandBatchVBO::Draw
+seBodyBatchVBO::Draw
+seMeshVBO::CreateFromRAM
+seMeshVBO::CreateVAO
+seMeshVBO::Create
+seMeshVBO::Draw
+tseSpriteVBO::CreateVAO
+seSpriteVBO::Allocate
+seSpriteVBO::Free
+seSpriteVBO::Destroy
+Debug toolbox
+General
+Buffers
+Overlays
+General left
+General right
+Buffers left
+Buffers right
+Overlays left
+Overlays right
+Debug screen
+Performance
+Memory
+Loader
+Camera
+Show FPS meter
+Frame time
+Log lag spikes
+Show histogram
+Normalize histogram
+Wireframe
+Backface culling
+Asynchronous lighting
+Asynchronous sprite sorting
+VR info
+Cursor info
+Joystick info
+Music player info
+Write OpenGL errors to log
+Land detail tex
+Layer
+Land cache tex
+Latest updated layer
+Compressor working textures
+Reload object
+Debug texture generator
+Update generator shaders
+Update draw shaders
+Solid res
+Volum res
+Impostor res
+Skybox res
+Solid upscale
+Volum upscale
+Global sharp
+Solid sharp
+Volum sharp
+Solid auto sharp
+Volum auto sharp
+Volum bilateral filter
+UI impostors FXAA
+Solid FXAA
+Solid temporal update
+Fix temporal ghosting
+Clip 3D rings
+Stop rings rotation
+Blink camera sub-ring
+Show scene alpha
+Show scene bloom
+Show scene depth
+Show test texture
+Show scene cubemap (fish eye)
+Show GUI texture (fish eye)
+Show exported planet textures
+Show color pickers
+Show environment maps
+Component
+Envmap
+specIBL
+diffIBL
+RenderFBO
+Mip level
+Show skyboxes/impostors/FB
+Show attachment 0/1/2
+Show in 3D
+Use skyboxes/impostors/FB
+Show Land quadtree
+Show Star octree
+Show CatStars octree
+Show Galaxy octree
+Show CatGalaxy octree
+Show GalSysModel octree
+Show Cluster octree
+Show galaxy model BBoxes
+Show nebula model BBoxes
+Show raymarch model BBoxes
+Show BBox labels
+LandLimLevel
+StarLimLevel
+GalLimLevel
+Draw terrain
+Draw 3D water
+Draw clouds
+Draw 3D clouds
+Draw sky
+Draw 2D rings
+Draw 3D rings
+Draw lens flares
+Draw galaxy front texture
+Draw galaxy sprite model
+Texture generator debug
+Reconstruct YCoCg/norm
+Select node
+Real-time render
+Update shaders
+Select landscape node!
+Finish selecting
+Return to Universe
+Surf=%i         Face=%i         Level=%i          U=%i          V=%i
+Select landscape node
+Node not selected
+Normal
+Diffuse
+Emission
+Detail normal
+Detail diffuse
+Minimize
+Maximize
+Close
+ArrowLeft
+ArrowRight
+ArrowUp
+ArrowDown
+Button "
+TEXT_BUTTON
+TEXT_SORT_BUTTON
+TEXT_TAB_HOR_BUTTON
+TEXT_TAB_VER_BUTTON
+TEXT_MENU_BUTTON
+TEXTURED_BUTTON
+MINIMIZE_BUTTON
+MAXIMIZE_BUTTON
+CLOSE_BUTTON
+ARROW_LEFT_BUTTON
+ARROW_RIGHT_BUTTON
+ARROW_UP_BUTTON
+ARROW_DOWN_BUTTON
+(Unknown type)
+" (checked)
+" (unchecked)
+CheckBox "
+" (textured)
+Label "
+Tip "
+ColorBar (textured)
+ColorBar
+ListBox "
+(empty)
+Value
+Slider "
+Slider ("
+Slider
+Log(0)
+NO_DATA
+SlideBar "
+SlideBar ("
+SlideBar
+Cell 
+Table "
+" (panel)
+Dialog "
+Group "
+Form "
+MenuItem "
+Menu "
+Canvas "
+Edit "
+ (int32)
+ (float)
+ (double)
+ (string)
+Log (empty)
+Log "
+Screen
+Global hint
+%1.0f, %1.0f
+seGUI::DrawBuffer
+seGUI::DrawLabelsBuffer
+Parent:
+Widget:
+InfoTable
+SelectionPointer
+VelocityVector
+ShipNoseVector
+ShipRefBodyVector
+ShipTargetVector
+ShipRefBodyVelVector
+ShipTargetVelVector
+ShipTargetDeltaVVector
+ShipWarpDeltaVVector
+ShipBoostVelVector
+FPS %2.0f %c
+cur FPS %5.2f %c
+avg FPS %5.2f
+CPU %5.3f ms
+frm %5.3f ms
+Test %5.3f ms
+[Detection by API]
+[Detection DISABLED]
+[Detection UNSUPPORTED]
+               
+CPU time (ms)
+GPU time (ms)
+Interface      
+Spacecraft     
+LandNode       
+Planets        
+SolarSys       
+CatStars       
+CatGalaxies    
+Stars          
+Galaxies       
+SysModels      
+GalModels      
+NebModels      
+Lens flares    
+3D rings       
+Labels         
+Markers        
+Orbits         
+Previews       
+Vismag / Aurora
+Lights / Comets
+Upd.ship / Warp
+Upd.univ / Post
+Envmap filter  
+Solid upscale  
+Volum upscale  
+Loader         
+Memory mgr     
+Unaccounted    
+Total          
+Drawn/Cached/Total
+Additional
+%i/%i
+%i/%i   
+TMP: %i/%i/%i
+%i/-/%i
+TMP: %i/%i/%i
+%i/%i/%i
+%i/%i
+Srch: %i %c
+%i/%i
+Nodes: %i/%i/%i
+%i/%i/%i
+spr: %i
+%i/%i
+--   Clusters
+%i/%i
+--   Nebulae
+Drawn/Upd/Total
+%i/%i/%i
+--   Impostors
+%i/%i/%i
+--   Skybox faces
+%i/%i/%i
+--   Solid/Volum/Screen/Wiki
+%i/%i   
+--   Envmaps faces/maps
+NQueries: %i
+Memory Mb
+Physical
+Max allowed
+Available
+Unaccounted
+Used static
+Used dynamic
+Atmospheres
+Textures
+Meshes
+SolarSystems
+LandNode
+StarNode
+GalNode
+GalModels
+GalSysModels
+NebModels
+Pools
+sePixelPoolSmall
+sePixelPoolMed
+sePixelPoolLarge
+seBodySurface
+LandTextureCache
+%1.2f
+Allocated
+Reserved
+NE:%i
+Allocated
+Reserved
+Pools
+Queue   
+#Land
+#Light
+#Other
+Renderer
+Upload  
+Download
+Copy    
+Finalize  
+Threads (all)
+Thread %02i
+Land tex
+Clean
+Loader    
+Memory mgr
+CPU time
+GalNodes
+%i/%i
+GalLeafs
+%i/%i
+Camera Leaf
+OUTSIDE
+Camera Leaf
+Camera Leaf
+StarNodes
+%i/%i
+StarLeafs
+%i/%i
+SysNodes
+%i/%i
+SysLeafs
+%i/%i
+Camera Leaf
+SysNodes
+SysLeafs
+Camera Leaf
+Subring index
+Subring index
+Inner radius
+%1.1f
+Outer radius
+%1.1f
+Alpha       
+%1.3f
+Rock thickness
+Rock spacing
+Collision mode
+LandNode
+level
+(%d, %d)
+(%5.3f, %5.3f)
+Collision mode
+CAMERA
+Collision mode
+LandNode
+level
+(---, ---)
+PlanNodes
+Recursion
+Texture queue
+Land Requests
+Gal  level
+%i/%i
+Star level
+%i/%i
+Land level
+%i/%i
+gui.NVertexes
+gui.NBatches
+labels.NVertexes
+labels.NBatches
+pntrs.NVertexes
+pntrs.NBatches
+VSync
+NewTick
+%I64d us
+Gal fadeout
+%1.3g
+Last changed vars
+%1.5g
+TimeScale   
+%1.3g
+Stereobase  
+%1.3g
+Quat        
+(% 5.3f, % 5.3f, % 5.3f, % 5.3f )
+relQuat     
+(% 5.3f, % 5.3f, % 5.3f, % 5.3f )
+LocalRelPos 
+relPos      
+UniversalPos
+UniversalPos (s)
+UniversalPos (u)
+Ship univPos
+Ship baryPos
+Map focus
+Brushes
+%i/%i
+Polygons
+Vertices
+Nodes
+%i/%i
+Leafs
+%i/%i
+Particles
+Update all
+INITIALIZING ENGINE:  Loading interface textures
+false
+AutoRotDir
+AutoRotQuat
+UpdateGUI
+Descr
+DateSys
+DateUni
+Parent
+Entry
+Object info
+Journey info
+Quasar
+Stellar barycenter
+Planetary barycenter
+Planetary barycenters
+Asteroidal barycenter
+Other
+Spacecraft#plural
+Waypoint
+Route
+galaxy
+quasar
+cluster
+nebula
+planet
+dwarf planet
+dwarf moon
+asteroid
+comet
+barycenter
+other
+object
+spacecraft
+spacecraft#plural
+structure
+artifact
+constellation
+waypoint
+route
+Galaxies
+Clusters
+Nebulae
+Stars
+Planets
+Moons
+Dwarf planets
+Dwarf moons
+Asteroids
+Comets
+Barycenters
+Others
+Constellations
+Gas giant minor moons
+Clouds
+Water
+Surface
+Aurora
+Comet tails
+Comet tail
+Rings
+Clouds 0
+Clouds 1
+Clouds 2
+Tidal locking
+Spin-orbital resonance
+System
+Near stars
+Near galaxies
+Universe
+Group
+Distance
+Distance to center
+Height above surface
+Landscape height
+Surf/sea altitude
+Azimuth/height
+Lat/Lon
+Latitude
+Longitude
+RA/Dec
+Right ascension
+Declination
+System radius
+System diameter
+Radius
+Mean radius
+Equatorial radius
+Polar radius
+Diameter
+Mean diameter
+Equatorial diameter
+Polar diameter
+Length
+Combined mass
+Combined mass of satellites
+Density
+Apparent mag
+Absolute mag
+Combined app mag
+Combined abs mag
+Luminosity
+Combined lum
+Bolom. luminosity
+Bolometric luminosity
+Luminosity optical / bolometric
+Hawking luminosity
+App. mag
+Abs. mag
+Lumin.
+Apparent size
+Phase
+Lifetime
+Age / lifetime
+Spectrum
+Class
+Temperature
+Temp.
+Effective temperature
+Average temperature
+Local temperature
+Star temperature
+Tidal heating
+Metallicity
+Insolation
+Albedo Bond / geom
+Gravity
+Gravity (mean)
+Gravity on equator
+Gravity on poles
+Gravity polar / equat
+Climate
+Hydrosphere
+Atmosphere
+Atmo pressure
+Atmospheric pressure
+Air pressure
+Air density
+Air temperature
+Exosphere temperature
+Atmospheric pressure at surface
+Air density at surface
+Air temperature at surface
+Height of homogeneous atmosphere
+Tropopause height
+Average molar mass
+Relative mass
+Greenhouse eff
+Greenhouse effect
+Average depth
+Maximum depth
+Bottom pressure
+Bottom composition
+Freezing/boiling temperature
+Seas composition
+Atmo composition
+Composition
+Accretion rate
+Accretion disk
+Accretion disks
+Internal structure
+Ice VI
+Ice VII
+Hydrogen
+Helium
+Water/icy envelope
+Silicate mantle
+Carbide mantle
+Metallic core
+Oblateness
+Axial tilt
+Axial tilt to orbit / to sun
+Rotation period
+Solar day
+Main body
+Static
+Circular
+Elliptical
+Parabolic
+Hyperbolic
+Orbital period
+Period
+Pericenter epoch
+Semimajor axis
+Pericentric distance
+Apocentric distance
+Pericenter
+Apocenter
+Eccentricity
+Inclination
+Ascending node
+Argument of pericenter
+Mean anomaly
+Longitude of pericenter
+Mean longitude
+Hill sphere radius
+Influence sphere radius
+Hill / influence sphere radius
+Roche limit for satellites
+Orbital resonances
+Indeterminate
+Orbital velocity
+Ephemerids validity dates
+Filter settings
+Filter
+Object to search
+System's main star
+Object's parent sun
+Planet only
+Moon only
+Planet and moon
+Sun count
+Planet count
+Moon count
+Planet parameters
+Moon parameters
+Object parameters
+Doesn't matter
+doesn't matter
+any#masculine
+any#feminine
+any#neuter
+Terrestrial planet classification
+Gas giant planet classification
+torrid#masculine
+torrid#feminine
+torrid#neuter
+hot#masculine
+hot#feminine
+hot#neuter
+warm#masculine
+warm#feminine
+warm#neuter
+temperate#masculine
+temperate#feminine
+temperate#neuter
+cool#masculine
+cool#feminine
+cool#neuter
+cold#masculine
+cold#feminine
+cold#neuter
+frigid#masculine
+frigid#feminine
+frigid#neuter
+airless#masculine
+airless#feminine
+airless#neuter
+ultrabaric#masculine
+ultrabaric#feminine
+ultrabaric#neuter
+hyperbaric#masculine
+hyperbaric#feminine
+hyperbaric#neuter
+mesobaric#masculine
+mesobaric#feminine
+mesobaric#neuter
+hypobaric#masculine
+hypobaric#feminine
+hypobaric#neuter
+infrabaric#masculine
+infrabaric#feminine
+infrabaric#neuter
+thermo
+psychro
+arid#masculine
+arid#feminine
+arid#neuter
+lacustrine#masculine
+lacustrine#feminine
+lacustrine#neuter
+marine#masculine
+marine#feminine
+marine#neuter
+oceanic#masculine
+oceanic#feminine
+oceanic#neuter
+superoceanic#masculine
+superoceanic#feminine
+superoceanic#neuter
+glacial#masculine
+glacial#feminine
+glacial#neuter
+superglacial#masculine
+superglacial#feminine
+superglacial#neuter
+non-arid#masculine
+non-arid#feminine
+non-arid#neuter
+microterra
+miniterra
+subterra
+terra
+superterra
+megaterra
+microcarbonia
+minicarbonia
+subcarbonia
+carbonia
+supercarbonia
+megacarbonia
+microferria
+miniferria
+subferria
+ferria
+superferria
+megaferria
+microoceania
+minioceania
+suboceania
+oceania
+superoceania
+megaoceania
+microaquaria
+miniaquaria
+subaquaria
+aquaria
+superaquaria
+megaaquaria
+ice minigiant
+ice subgiant
+ice giant
+ice supergiant
+ice megagiant
+gas minigiant
+gas subgiant
+gas giant
+gas supergiant
+gas megagiant
+helium minigiant
+helium subgiant
+helium giant
+helium supergiant
+helium megagiant
+microearth
+miniearth
+subearth
+earth
+superearth
+megaearth
+microtitan
+minititan
+subtitan
+titan
+supertitan
+megatitan
+minineptune
+subneptune
+neptune
+superneptune
+meganeptune
+minijupiter
+subjupiter
+jupiter
+superjupiter
+megajupiter
+minichthonia
+subchthonia
+chthonia
+superchthonia
+megachthonia
+Apollo
+Hungaria
+Phocaea
+Hilda
+Themis
+Flora
+Eunomia
+Jupiter trojan
+Neptune trojan
+Centaur
+Plutino
+Resonant TNO
+Cubewano
+Scattered disk object
+Detached object
+Sednoid
+Oort cloud object
+Damocloid
+Life forms
+Life biomes
+Life origin
+With life
+with life
+Organic life
+Exotic life
+Organic
+Exotic
+unicellular
+multicellular
+Unicel. or multicel.
+Any biome
+subglacial
+marine
+terrestrial
+aerial
+Subglacial
+Marine
+Terrestrial
+Aerial
+Abiogenesis
+Panspermia
+Air properties at current lon/lat
+Global air properties at zero altitude
+At current altitude
+At surface
+At zero altitude
+Daily average temperature
+Annual average temperature
+Daylight hours at equator/current latitude
+Annual fraction of polar day at current latitude
+Characteristic global wind speed
+Blue hypergiant
+White hypergiant
+Yellow hypergiant
+Orange hypergiant
+Red hypergiant
+Blue luminous supergiant
+White luminous supergiant
+Yellow luminous supergiant
+Orange luminous supergiant
+Red luminous supergiant
+Blue supergiant
+White supergiant
+Yellow supergiant
+Orange supergiant
+Red supergiant
+Blue bright giant
+White bright giant
+Yellow bright giant
+Orange bright giant
+Red bright giant
+Blue giant
+White giant
+Yellow giant
+Orange giant
+Red giant
+Blue subgiant
+White subgiant
+Yellow subgiant
+Orange subgiant
+Red subgiant
+Blue main sequence star
+White main sequence star
+Yellow dwarf
+Orange dwarf
+Red dwarf
+Blue subdwarf
+White subdwarf
+Yellow subdwarf
+Orange subdwarf
+Red subdwarf
+Carbon star
+Zirconium star
+Wolf-Rayet star
+Subgiant
+Main sequence
+Subdwarf
+Brown dwarf
+White dwarf
+Neutron star
+Black hole
+Wormhole
+Planemo
+Unknown
+unknown
+No name
+no name
+elliptical#galaxy_type
+lenticular#galaxy_type
+spiral#galaxy_type
+barred spiral#galaxy_type
+irregular#galaxy_type
+globular#star_cluster_type
+open#star_cluster_type
+diffuse#nebula_type
+planetary#nebula_type
+supernova remnant#nebula_type
+Multiplicity
+planemo
+single
+binary
+triple
+quadruple
+quintuple
+sextuple
+septuple
+octuple
+x multiple
+Full constellation names
+Andromeda
+Antlia
+Aquarius
+Aquila
+Aries
+Auriga
+Bootes
+Caelum
+Camelopardalis#nominative
+Cancer
+Canes Venatici
+Canis Major
+Canis Minor
+Capricornus
+Carina
+Cassiopeia
+Centaurus
+Cepheus
+Cetus
+Chamaeleon
+Circinus
+Columba
+Coma Berenices
+Corona Australis
+Corona Borealis
+Corvus
+Crater
+Cygnus
+Delphinus
+Dorado
+Draco
+Equuleus
+Eridanus
+Fornax
+Gemini
+Hercules
+Horologium
+Hydra
+Hydrus
+Indus
+Lacerta
+Leo Minor
+Lepus
+Libra
+Lupus
+Mensa
+Microscopium
+Monoceros
+Musca
+Norma
+Octans
+Ophiuchus
+Orion
+Pegasus
+Perseus
+Phoenix
+Pictor
+Pisces
+Piscis Austrinus
+Puppis#nominative
+Pyxis
+Reticulum
+Sagitta
+Sagittarius
+Scorpius
+Sculptor
+Scutum
+Serpens
+Serpens Caput
+Serpens Cauda
+Sextans
+Taurus
+Telescopium
+Triangulum
+Triangulum Australe
+Tucana
+Ursa Major
+Ursa Minor
+Virgo
+Volans
+Vulpecula
+Andromedae
+Antliae
+Apodis
+Aquarii
+Aquilae
+Arietis
+Aurigae
+Bootis
+Caeli
+Camelopardalis#genitive
+Cancri
+Canum Venaticorum
+Canis Majoris
+Canis Minoris
+Capricorni
+Carinae
+Cassiopeiae
+Centauri
+Cephei
+Chamaeleontis
+Circini
+Columbae
+Comae Berenices
+Coronae Australis
+Coronae Borealis
+Corvi
+Crateris
+Crucis
+Cygni
+Delphini
+Doradus
+Draconis
+Equulei
+Eridani
+Fornacis
+Geminorum
+Gruis
+Herculis
+Horologii
+Hydrae
+Hydri
+Lacertae
+Leonis
+Leonis Minoris
+Leporis
+Librae
+Lyncis
+Lyrae
+Mensae
+Microscopii
+Monocerotis
+Muscae
+Normae
+Octantis
+Ophiuchi
+Orionis
+Pavonis
+Pegasi
+Persei
+Phoenicis
+Pictoris
+Piscium
+Piscis Austrini
+Puppis#genitive
+Pyxidis
+Reticuli
+Sagittae
+Sagittarii
+Scorpii
+Sculptoris
+Scuti
+Serpentis
+Sextantis
+Tauri
+Telescopii
+Trianguli
+Trianguli Australis
+Tucanae
+Ursae Majoris
+Ursae Minoris
+Velorum
+Virginis
+Volantis
+Vulpeculae
+thousand
+million
+billion
+trillion
+kilometer
+nautical mile
+astronomical unit
+light-second
+light-seconds
+light-minutes
+light-hours
+light-days
+light-years
+light-year
+parsec
+parsecs
+cm/sec
+m/sec
+km/sec
+ft/sec
+mi/sec
+nmi/sec
+AU/sec
+pc/sec
+kpc/sec
+Mpc/sec
+Gpc/sec
+ly/sec
+kly/sec
+Mly/sec
+Gly/sec
+mph/sec
+kn/sec
+c/sec
+seconds
+minutes
+hours
+years
+Kelvin
+Celsius
+Fahrenheit
+Pressure
+Pascal
+Pound per square inch
+mm of Hg (Torr)
+Inch of Hg
+Earth's atmospheres
+Units of measurement
+Large  distances
+Medium distances
+Small  distances
+Star gravity
+Show radius instead of diameter
+Auto horizon on planets
+Toggle auto horizon
+Main menu
+3D background in the main menu
+Toggle toolbars
+Navigation
+Settings
+Editor
+Advanced
+Loading...
+Edit planet
+Planet editor
+Edit nebula
+Nebula editor
+Edit ship
+Ship editor
+Edit camera path
+Camera path editor
+Start recording
+Stop recording
+Recording...
+Recording paused
+Replaying...
+Replaying paused
+Add point
+Add points automatically
+Interval between points
+Display path curve
+Update curve on the fly
+Reverse
+Pause
+Replay duration
+Replay
+Replay and capture video
+Video capture
+Video capture settings
+Record as screenshots
+Record as video file
+Configure codec
+Capture mode
+Streaming (real time)
+Offline rendering (fixed FPS)
+Framerate capping
+Unlimited
+Limited
+Max frame rate
+Video frame rate
+Codec#video
+Format#video
+Preset#video
+Bitrate#video
+Kbps#video
+With interface
+Auto hide recording tools
+Set graphics to maximum
+Take screenshot
+Screenshot without GUI
+Screenshot with GUI
+Recording frame
+Start
+Switch to fullscreen
+Switch to next display
+Minimize window
+Exit to desktop
+Can't save nebula model script. See log for details.
+Export skybox
+Export system script
+Export planet script
+Export planet textures
+Export script
+Export textures
+Export stars data
+Orbit as a state vector
+Update planet
+Restore planet
+Enter file name:
+Choose file
+Cannot save the file!
+Cannot open the file!
+File not found
+Please select an option!
+Please select an object which you want to edit
+Spacecraft manager
+Universe map
+Universe map (selection)
+Universe map (current position)
+Planetary system
+Browse planetary system
+Solar system browser
+Solar system browser (selection level)
+Solar system browser (selection root)
+Solar system browser (current position)
+Solar system chart
+Star browser
+Event finder
+Event type
+Precision
+Time step
+Start date
+Alignment#event_finder
+Ordered alignment#event_finder
+Eclipse#event_finder
+Transit#event_finder
+Occultation#event_finder
+Please select a star or planetary object
+Please select an object in the current planetary system
+Please add at least 3 objects
+Add object
+Viewpoint
+Light source
+Being eclipsed
+Eclipsing
+Being transited
+Transits
+Occults
+Being occulted
+Find object
+Current
+Locations
+Featured locations
+My locations
+Journey log
+Search radius
+Search
+Systems found
+Ignore planemo
+Ignore asteroids and comets
+Number of moons
+Number of planets
+Number of satellites
+Number of stars
+Number of clusters
+Number of nebulae
+Fly inside to count stars
+Focus
+Center
+Go to
+Go to center
+Center object
+Horizon object
+Go to object
+Land on object
+Go to object's center
+Traveling
+Free binding to object
+Follow object
+Rotate with object
+Track object
+Following
+Rotating
+Tracking
+Hide/show object
+Interface interaction
+Interface scroll up
+Interface scroll down
+Interface scrolling
+Orbit object
+Select object
+Select previous object
+Select home object
+Drag with VR controller
+Zoom with VR controller
+Flying mode
+Increase velocity
+Decrease velocity
+Next velocity
+Previous velocity
+Move forward
+Move back
+Move left
+Move right
+Move up
+Move down
+Look back
+Look left
+Look right
+Look up
+Look down
+Turn clockwise
+Turn counterclockwise
+Turn left
+Turn right
+Turn up
+Turn down
+Stop motion
+Stop rotation
+Zoom in
+Zoom out
+Reset zoom
+Accelerate time speed
+Decelerate time speed
+Next time speed
+Previous time speed
+Reverse time speed
+Pause time
+Resume time
+Game is paused!
+Resume game
+Set normal time speed
+Set current time
+Pause scenario
+Cancel scenario
+Scenario is paused
+Spacebar
+Graphics
+Visual style
+Filter objects
+Display
+Projection
+Controls
+Common controls
+Free camera
+Camera controls
+Ship controls
+Map/chart controls
+Controller
+Action
+Key 1
+Key 2
+Button
+Keyboard
+Mouse
+Joystick
+Mouse and keyboard
+Controller sensitivity
+Mouse sensitivity
+Velocity change
+Turns
+Turn by mouse speed
+Turn by keys speed
+Roll by keys speed
+<Press key>
+<Move mouse>
+<Move stick>
+Physical properties
+Surface optical properties
+Axial rotation parameters
+Life parameters
+Biomes and palette preset
+Landscape parameters
+Clouds parameters
+Ocean parameters
+Atmosphere parameters
+Climate parameters
+Aurora parameters
+Star corona parameters
+Comet tail parameters
+Rings / accretion disk parameters
+Polar coordinates
+Precise
+Link Period and SemimajorAxis
+Edit entire ship
+Edit module
+Edit behind camera
+Edit engine effect
+Edit docking port
+Edit docking port corridor
+Hide structural modules
+Show axes
+Move here
+Position
+Rotation
+Preset
+Can't update the planet while loading is in progress
+You have unsaved changes. Exit without saving?
+This feature is provided only in the PRO version. Would you like to open the DLC purchasing menu?
+Steam overlay is disabled for this application. Enable it or use the Steam client or website to buy the DLC.
+Steam client must be running to use this application.
+Steam account must be logged in to use this application.
+Oculus Home must be running to use this application.
+License key verification failed. Application will be closed.
+Unexpected error occurred. Please restart the application.
+Biome preset editor
+Soil material editor
+This is default preset
+Copy parameters from...
+Click on texture or color bar to copy its parameters to the current one
+Please choose default preset
+Soil materials
+Preview
+Please enter new preset name, and choose a script file to which you want to save this preset
+Cannot add new preset: maximum number is reached
+Color picker
+Select material
+Console
+Error in line
+Unknown command
+Unknown variable
+Invalid operation
+Variable is read only
+Variable was reset to a default value
+Variable doesn't have a default value
+Warning: value out of range
+Warning: value clamped to range
+Only WaitTrigger command is allowed between BeginMultitrigger and EndMultiTrigger
+No corresponding EndMultiTrigger found for BeginMultitrigger at line
+Missing parameter in command
+Invalid parameter in command
+Invalid value
+Invalid date
+Illegal ELIF without matching IF
+Illegal ELSE without matching IF
+Illegal ENDIF without matching IF
+Illegal ELIF after ELSE
+Illegal ENDLOOP without matching LOOP
+Already running another script!
+Can't run a new script: stack overflow
+Run script
+On complete:
+Please wait...
+Script running
+Script finished
+Script interrupted
+Min diameter
+Max diameter
+Min temperature
+Max temperature
+Min mass
+Max mass
+Min density
+Max density
+Lighting angle
+System architecture
+Next mode
+Previous mode
+Select
+Instantly
+Cancel
+Apply
+Break
+Delete
+Rename
+Clone
+Export
+Import
+Objects exported
+Objects imported
+Objects overwritten
+Update
+Reset
+Calibrate
+Clear
+Continue
+New game
+Create folder
+Reload
+Save as...
+Create new...
+Paste
+Share
+This location
+Paste from clipboard
+Paste URL from clipboard
+Paste script code from clipboard
+Copied to clipboard
+Copy URL to clipboard
+Copy BB code to clipboard
+Copy html code to clipboard
+Copy script code to clipboard
+Invalid location code or URL
+Register se:// protocol
+Cannot register protocol. Make sure that you have write permissions in the system registry.
+Protocol has been registered successfully. You may need to restart SpaceEngine for it to take effect.
+Screenshots format
+Save transparency
+Image format
+Cubemap
+Cylindrical
+Resolution
+Texture
+Color map
+Specular map
+Glow map
+Elevation map
+Normal map
+Paint up oceans
+Pixel format
+8-bit
+16-bit
+32-bit (floating-point)
+Post-process
+Color correction (no HDR!)
+Incorrect resolution
+Invalid object type
+Generating
+Saving
+Wait loading completeness
+Saving files
+Object's parent
+Enter object name
+Enter name
+Object not found
+No object selected
+Location does not exist
+Load location to update picture
+Widget not found
+Information
+Confirmation
+Are you sure?
+This will restore the whole planetary system to its original state. Are you sure?
+This will reset all controls in the current tab to their default values. Are you sure?
+This will clear all bindings for the selected action. Are you sure?
+Save your progress and switch to the planetarium mode?
+Save your progress and switch to the game mode?
+You are trying to open location URL from different version of SpaceEngine
+You are trying to import location from different version of SpaceEngine
+It may not exist in the current version
+This script was designed for a different version of SpaceEngine. It cannot be run in the current version, sorry.
+Invalid location URL
+Visit date
+Game date
+System date
+Enabled
+Disabled
+enabled
+disabled
+Any of
+All of
+In order
+unsupported
+ERROR
+Error
+Critical error
+Critical extensions missing
+Error initializing glew library
+Error loading texture generator shaders
+Incompatible workshop addon detected. The program will restart with this addon disabled. After the author has updated the addon, you may enable it again.
+Your hardware does not meet the minimum requirements for this program. A computer with a discrete GPU (dedicated graphics hardware) containing at least 3 GB of VRAM (dedicated video memory) is required.
+Your hardware does not meet the minimum requirements for this program. A computer with at least 6 GB of RAM is required.
+Your system does not meet the minimum requirements for this program. GPU vendors only support Windows 10 and newer, and driver updates critical to SpaceEngine may not be available for your system.
+Run anyway?
+No VR devices detected: please make sure your VR system is properly set up, then restart
+Press YES to run program with procedural planets disabled
+Press NO to exit
+Your system has an obsolete OpenGL version
+Your system has an obsolete GLSL version
+Update your graphics card driver or install compatible hardware
+Failed to start video capture
+Please wait while previous video processing completes
+Video recording failure
+Procedural
+Procedural on real stars
+Celestial grids
+Equatorial grid
+Ecliptic grid
+Galactic grid
+Geographic grid
+Selection pointer
+Vectors
+Rotation axis
+Prime meridian
+Velocity vector
+Direction to parent
+Eclipse totality mask
+Orbit marks
+Selected object
+All objects
+Orbits
+Labels
+Markers
+Constellation lines
+Constellation boundaries
+Constellation names
+Constellation art
+Crop orbits
+Orbit trails length
+Thickness (major bodies)
+Thickness (minor bodies)
+Label pos (planetary system)
+Label pos (deep sky objects)
+Right
+Bottom
+simple
+normal
+detail
+super
+potato
+lowest
+medium
+ultra
+custom
+Exploration mode
+Align horizontally
+Lines
+Camera settings
+Objects apparent magnitude limit
+Intergalactic vision
+Deep-sky objects
+Ambient lighting
+Models lighting
+Photo mode
+Manual
+Exposure compensation
+Exposure comp.
+Increase exposure compensation
+Decrease exposure compensation
+Reset exposure compensation
+Model
+Graphics quality
+Bloom
+MSAA antialiasing
+MSAA antialiasing (VR)
+FXAA antialiasing
+Lines antialiasing
+Dithering
+Planet shine
+Planet shine brightness
+Eclipse shadows
+Ring shadows on sky
+Atmospheric extinction
+Compress textures
+Planets quality
+Detail textures
+3D stones
+Volumetric rings
+Volumetric rings quality
+Fast temporal rendering
+Fast landscape loading
+Landscape LOD
+Landscape target resolution
+Landscape target res. (VR)
+Landscape loading speed
+Landscape loading speed (VR)
+Rings target resolution
+Rings target resolution (VR)
+Sun and bright sources
+Point sources
+Scale
+Points scale
+Link points scale with window resolution
+Overbright
+Stars overbright
+Desaturate
+Desaturate dim stars
+Flare bright
+Flare decay
+Star points style
+Planet points style
+Points
+Sprites
+Motion blur
+Motion and rotation blur
+Real brightness
+Real sun brightness
+Real planet brightness
+Self-emission
+Self-emission brightness
+Thermal emission shift
+Tone mapping
+Brightness
+Contrast
+Color vibrance
+Gamma
+Sharpness
+Illumination saturation
+Black body colouration
+Diffraction spikes
+Lens flares
+Glare
+Diff. spikes size
+Diff. spikes brightness
+Lens flares brightness
+Glare brightness
+Comet brightness
+Aurora brightness
+Aurora quality
+Ship engine quality
+Black hole quality
+Warp/reflection quality
+Black hole update interval
+Warp & refl. update interval
+Gravitational lensing precision
+Skybox/Impostors/FB
+Interstellar reddening
+Rings resolution
+Volumetric objects resolution
+While moving
+While stationary
+Impostors
+Loading shader
+Loading texture
+Retrieving texture
+Updating BBox
+Loading mesh
+Creating texture
+Creating mesh
+Loading spacecraft
+Loading atmosphere
+Loading galaxy model
+Creating galaxy
+Creating cluster
+Loading nebula model
+Generating stars
+Generating galaxies
+Creating planetary system
+Searching stars
+Spacecraft disabled
+Spacecraft enabled
+Planets disabled
+Planets enabled
+Real planets only
+Procedural planets only
+Real & Procedural planets
+Procedural on real stars planets only
+Real & Procedural on real stars planets
+Procedural & Procedural on real stars planets
+All planets
+Stars disabled
+Stars enabled
+Real stars only
+Procedural stars only
+All stars
+Clusters disabled
+Clusters enabled
+Real clusters only
+Procedural clusters only
+All clusters
+Nebulae disabled
+Nebulae enabled
+Real nebulae only
+Procedural nebulae only
+All nebulae
+Galaxies disabled
+Galaxies enabled
+Real galaxies only
+Procedural galaxies only
+All galaxies
+Catalog systems only
+Window mode
+Fullscreen
+Windowed
+Custom display resolution
+Window size
+Vertical synchronization
+Vertical sync
+Anisotropy level
+Perspective
+Fish eye
+Distort interface
+High quality interface
+Interface resolution
+Rendering resolution
+Warp & refl. resolution
+Environment maps resolution
+Diff. spikes resolution
+Configure projection
+Configure VR
+Show background
+Identify faces
+Fit to screen
+Movement direction
+By gaze
+By controller
+Discrete view turns
+Limit field of view
+Swap controllers
+Lens angle
+Circle crop
+X offset
+Y offset
+X warp
+Y warp
+Z warp
+Flip horizontally
+Flip vertically
+Reset to default
+Interface
+Interface: brief
+Interface: full
+Real sizes
+View angle
+Planets magnitude limit
+Stars magnitude limit
+Galaxies magnitude limit
+DSO magnitude limit
+Magnitude limit
+Max magnitude limit
+Mag limit
+Increase landscape LOD
+Decrease landscape LOD
+Increase magnitude limit
+Decrease magnitude limit
+Reset magnitude limit
+Increase galaxies mag limit
+Decrease galaxies mag limit
+Increase stars mag limit
+Decrease stars mag limit
+Increase planets mag limit
+Decrease planets mag limit
+Increase ambient light
+Decrease ambient light
+Increase galaxies brightness
+Decrease galaxies brightness
+Increase stars overbright
+Decrease stars overbright
+Pioneer name
+Discovery date
+Discovery method
+Real object
+Real objects
+Procedural object
+Procedural objects
+Procedural (generated) object
+Procedural (generated) objects
+Object from franchise
+Orbital
+Orbit
+Atmospheric
+Enter description here
+Only this object
+Only my discoveries
+All real objects
+All procedural objects
+Overwrite duplicates
+Radial velocity
+Transit
+Astrometry
+Microlensing
+Direct imaging
+Transit timing variations
+Transit duration variations
+Orbital light variations
+Eclipsing binary timing
+Variable star timing
+Pulsar timing
+Polarimetry
+Auroral radio emission
+Interferometry
+Take control
+Take control of spacecraft
+Control remotely
+Teleport here
+My ships
+Other ships
+To pilot ships, switch to the simulator mode
+Switch to simulator
+Velocity
+Acceleration
+Frame timing mode
+Real time mode
+Frame time mode
+Loader mode
+Interleaved loading mode
+Asynchronous loading mode
+Immediate loading mode
+Free mode
+Spacecraft mode
+Aircraft mode
+Time scale
+Time reset
+Time paused
+Time resumed
+Debug mode
+Edit mode
+Debug screen mode
+Cullface
+Freeze camera
+Camera frozen
+Camera released
+Terrain max level
+Galaxies max level
+Stars max level
+Stars color saturation
+Stars color shift
+Writing
+Version
+(C) Cosmographic Software LLC. All rights reserved.
+Astronaut
+Probe
+Shuttle
+Starship
+Planetship
+Space station
+Building
+Planetary base
+Build menu
+Build fleet
+Build
+Destroy
+Destroy all
+constructed
+destroyed
+Nickname
+Interface language
+Interface skin
+Interface scaling
+Interface scaling (VR)
+Use system DPI
+Sound
+Sound effects
+Music
+Music player
+Play track
+Pause playback
+Stop playback
+Previous track
+Next track
+Playlist
+No repeat
+Repeat track
+Repeat playlist
+Play in order
+Play random
+Context playing
+Volume
+Sound is muted
+[Playing] - 
+[Paused] - 
+[No files]
+Reset settings
+Really reset settings
+This will reset all settings except controls and restart SpaceEngine. If you sure, press the button below.
+Game mode
+View ship trajectory
+Switch view
+Can't move camera in cockpit view
+Auto view
+Cockpit view
+Behind view
+Select reference body
+Select target
+Nearest body
+Influence body
+Reference body
+Ref body
+Target
+Hyperdrive
+Warp drive
+Hyperjump
+Normal space
+In warp
+Hyperspace
+Flight mode
+Aviation
+Interplanetary
+Interstellar
+Intergalactic
+1st cosmic vel
+2nd cosmic vel
+Circular / escape velocity
+Body velocity
+Ship velocity
+Rel velocity
+Relative velocity
+Off HUD
+Horizontal HUD
+Orbital HUD
+Warp HUD
+Docking HUD
+Prograde
+Retrograde
+Radial
+Antiradial
+Normal Up
+Normal Down
+Horizon
+Rotate to target
+Center on ship
+Kill rotation
+Stop engines
+Stop hyperdrive
+Stop warp drive
+Sync velocity
+Sync rotation
+Flight assist
+Hold altitude
+Takeoff
+Landing
+Elevation
+Altitude
+Speed of sound
+Dynamic pressure
+Arrival after
+Efficiency
+Field is unstable, turn to the target!
+Max boost factor
+Boost factor
+Boost exponent
+Physical velocity
+Effective velocity
+Air velocity
+Surf velocity
+Grav accel
+Aero accel
+Thrust
+Max acceleration
+Total accel
+g Force
+Tidal force
+Angular velocity
+Angular accel
+Attack angle
+Sideslip angle
+Elevator
+Elevator +
+Elevator -
+Rudder
+Rudder +
+Rudder -
+Ailerons
+Ailerons +
+Ailerons -
+Flaps
+Flaps +
+Flaps -
+Main engines
+Main engines +
+Main engines -
+Retro engines
+Retro engines +
+Retro engines -
+Hover engines
+Hover engines +
+Hover engines -
+Warp drive +
+Warp drive -
+Thrusters
+Orbital parameters
+Stable orbit
+Unstable orbit
+Planet radius
+Atmo height
+Cheater!
+Cheats
+Unlimited thruster acceleration
+Unlimited velocity
+Time travel
+Invulnerability
+Disable aerodynamics
+Disable gravity
+Disable collision detection
+Faction
+Docking ports
+No docking ports available
+Docked ships
+Free docks
+Distance to target
+Distance to ship
+Distance to dock
+Angle with dock
+Docked with
+Docking
+Undocking
+On surface of
+Autopilot
+Program
+Stage
+Warp to target
+Fly to target
+Fly or warp to target
+Hyperjump here
+Warp here
+Fly here
+Preparing jump vector
+Correcting jump vector
+Preparing fly vector
+Correcting fly vector
+Accelerating
+Braking
+Turning for braking
+Orientation
+To target
+Selected coordinates
+High resolution screenshot
+This tool can only be used in 2D mode with perspective projection. Do you want to switch to that mode and open the tool?
+Target resolution
+Scale stars
+Open folder
+Too big resolution!
+Cannot finish loading current tile; reduce tile resolution and/or landscape LOD and try again.
+Max dimensions
+Max size in memory
+Tile resolution
+Tile count
+Rendering tile
+Stereoscopic 3D
+Virtual reality headset
+Cross eye
+Horizontal stereopair
+Vertical stereopair
+Anaglyph
+Active (shutter)
+Restart SpaceEngine and go to fullscreen to enable or disable hardware shutter 3D
+Go to fullscreen to enable hardware shutter 3D!
+Shutter 3D is not supported by your hardware, imitation is used
+Virtual reality headset not detected
+VR controllers can be configured in the SteamVR home app. Press SteamVR home button, then go to Settings -> Configure controller.
+Distortion
+Interlaced
+Swap left/right
+Lock interface
+Mirror to window
+Interpup. distance
+Stereobase
+Increase stereobase
+Decrease stereobase
+Next stereobase
+Previous stereobase
+Reset stereobase
+Convergence
+Tracking lost
+Tracking acquired
+Center location
+Dome tilt
+Frame format
+Reset pose in VR
+Exit VR
+Interface depth
+Interface size
+Left lens color
+Right lens color
+Left eye
+Right eye
+Both eyes
+HMD display
+Look deep into nature, and then you will understand everything better._- Albert Einstein
+The true sign of intelligence is not knowledge but imagination._- Albert Einstein
+The world stands before us as a great, eternal riddle._- Albert Einstein
+We still do not know one thousandth of one percent of what nature has revealed to us._- Albert Einstein
+Science is a way of thinking much more than it is a body of knowledge._- Carl Sagan
+Imagination will often carry us to worlds that never were. But without it we go nowhere._- Carl Sagan
+The total number of stars in the Universe is larger than all the grains of sand on all the beaches of the planet Earth._- Carl Sagan
+The most amazing discoveries will be the ones we are not today wise enough to foresee._- Carl Sagan
+Astronomy compels the soul to look upward, and leads us from this world to another._- Plato
+The purpose of life is the investigation of the Sun, the Moon, and the heavens._- Anaxagoras
+Two possibilities exist: either we are alone in the Universe or we are not. Both are equally terrifying._- Arthur C. Clarke
+The only way of discovering the limits of the possible is to venture a little way past them into the impossible._- Arthur C. Clarke
+The history of astronomy is a history of receding horizons._- Edwin P. Hubble
+Given ships or sails adapted to the breezes of heaven, there will be those who will not shrink from even that vast expanse._- Johannes Kepler
+What is wanted is not the will to believe, but the will to find out, which is the exact opposite._- Bertrand Russell
+The world is full of magical things patiently waiting for our wits to grow sharper._- Bertrand Russell
+It is not what the man of science believes that distinguishes him, but how and why he believes it._- Bertrand Russell
+Science may set limits to knowledge, but should not set limits to imagination._- Bertrand Russell
+When you are studying any matter, ask yourself only 'what are the facts and what is the truth that the facts bear out'._- Bertrand Russell
+Science and everyday life cannot and should not be separated._- Rosalind Franklin
+Science progresses best when observations force us to alter our preconceptions._- Vera Rubin
+All my life through, the new sights of Nature made me rejoice like a child._- Marie Curie
+Scientists in their laboratories are not mere technicians: they are also children confronting natural phenomena that impress them as though they were fairy tales._- Marie Curie
+Scientific work must not be considered from the point of view of the direct usefulness of it. It must be done for itself, for the beauty of science._- Marie Curie
+I suspect that the Universe is not only stranger than we imagine, but stranger than we can imagine._- J.B.S. Haldane
+Line %i:
+Line %i, used %i times, previous appearance at line %i:
+Translations
+ScriptTranslations
+ScriptTranslations
+Track name
+Playback time
+Track #
+Duration
+PausePos
+Volume
+State
+File name
+PLAYING
+FD_IN
+FD_OUT
+AT_END
+STOPPED
+Track[%i]
+%3.1f
+%3.1f
+%3.1f
+%5.3f
+LabelPos
+(%1.5f, %1.5f)
+  (ID = 
+Catalog file%s"%S", line %i
+Catalog file%s[PROCEDURAL]
+RA    
+Dec   
+SysModel
+NClusters%s%d
+NNebulae%s%d
+NClusters
+NNebulae
+SpriteModel%s%i "%S"
+RadiusPix%s%g
+LOD%s%5.3f
+Sprites%s%i/%i
+-2 (E galaxy)
+SpiteModel
+Bright%s%1.7g
+Axis%s(%1.7g, %1.7g, %1.7g, %1.7g)
+Quat%s(%1.7g, %1.7g, %1.7g, %1.7g)
+ModelSize%s(%1.7g, %1.7g, %1.7g)
+emMapSize%s(%d, %d, %d)
+) CatCLuster[
+NStars
+M    %s%g
+Radius%s%1.7g
+) CatNebula[
+DISABLED
+Model (Sprite)%s%i "%S"
+Model (Sprite)
+Model (Raymarch)%s%i (%S)
+Model script%s"%S", Line %i
+Model (Raymarch)
+Bright%s%g
+M    
+SysRadius
+ModelDist
+, DebugNum = 
+%s/%s%s%d/%d
+Lon Lat Dist%s(%1.6f, %1.6f, %1.6f)
+ (Rg)
+ (2 Rg)
+M sin i
+   nLights: 
+   nLightsRings: 
+ [NOT READY]
+%s%s%5.3f
+ (3 Rg)
+relPos
+MaxLevel%s%d   Layers: %d/%d/%d
+Warp shader pass 1
+Warp shader pass 2
+Surface shader
+Clouds shader
+Ocean shader
+computed
+default
+Color [%s]
+(%f, %f, %f)
+AlbedoGeom/Bright
+%f / %f
+  (ShipID 
+%s%s%5.3f   nLights: %d
+Force Simulation mode
+Force Orbital mode
+Auto Orbital mode
+Auto Simulation mode
+SCK_COLLIDED
+Iterations%s%i (%6.4f sec)
+M    %s%1.7g
+Use Set ShipDrawMode 1 to see the list of shaders
+].shader
+%8.6f %s
+%i (%i/%i)
+%s: %i
+%s: %i
+%i (%i/%i/%i)
+%s: %i
+%s: %i
+%s: %i
+[Fe/H] = 
+C/O = 
+Cam: 
+Surf: 
+Zero: 
+se://v=
+qx=%1.7g&qy=%1.7g&qz=%1.7g&qw=%1.7g&u=%1.5g&m=%i&s=%1.5g&f=%i&e=%1.5g
+Gallery 0
+Gallery 1
+Add menu
+Share menu
+Name edit 0
+Name edit 1
+featured
+%s (%i.%i). %s (%i.%i). %s
+[/url]
+[url=
+<a href="
+se://
+Spectral class
+Oblateness X
+Oblateness Y
+Oblateness Z
+AlbedoBond
+AlbedoGeom
+EndogenousHeating
+LuminosityBol
+KerrSpin
+KerrCharge
+TunnelLength
+LensingWidth
+DistortionRadius
+BrightnessReal
+Hapke
+SpotBright
+SpotWidth
+SpotBrightCB
+SpotWidthCB
+SpecBrightWater
+SpecBrightIce
+RoughnessWater
+RoughnessIce
+SpecularScale
+RoughnessBias
+RoughnessScale
+TempMapMaxTemp
+DayAmbient
+RingsWinter
+GlowBright
+GlowColor
+RotationModel
+Simple
+FF0000/!\ 
+808080
+RotationEpoch
+Obliquity
+EqAscendNode
+RotationOffset
+RotationPeriod
+Precession
+TidalLocked
+Epoch
+PoleRA
+PoleDec
+PrimeMeridian
+RotationRate
+PoleRARate
+PoleDecRate
+AnalyticModel
+RefPlane/Type
+PosXYZ.x
+PosXYZ.y
+PosXYZ.z
+SemimajorAxis
+AscendingNode
+ArgOfPericenter
+MeanAnomaly
+Biomes
+Ocean
+SurfStyle
+detailScale
+ModulateColor
+FlipMap
+BumpHeight
+BumpOffset
+seaLevel
+snowLevel
+Randomize.x
+Randomize.y
+Randomize.z
+colorDistMagn
+colorDistFreq
+mainFreq
+venusMagn
+venusFreq
+drivenDarkening
+climatePole
+climateTropic
+climateEquator
+climateSteppeMin
+climateSteppeMax
+climateForestMin
+climateForestMax
+climateGrassMin
+climateGrassMax
+humidity
+heightTempGrad
+beachWidth
+tropicWidth
+tropicLatitude
+icecapLatitude
+icecapHeight
+mareFreq
+mareDensity
+terraceProb
+erosion
+montesMagn
+montesFreq
+montesFraction
+montesSpiky
+dunesMagn
+dunesFreq
+dunesFraction
+hillsMagn
+hillsFreq
+hillsFraction
+hills2Fraction
+canyonsMagn
+canyonsFreq
+canyonsFraction
+riversMagn
+riversFreq
+riversSin
+riftsMagn
+riftsFreq
+riftsSin
+eqridgeMagn
+eqridgeWidth
+eqridgeModMagn
+eqridgeModFreq
+cracksMagn
+cracksFreq
+cracksOctaves
+craterMagn
+craterFreq
+craterDensity
+craterOctaves
+craterRayedFactor
+volcanoMagn
+volcanoRadius
+volcanoFreq
+volcanoDensity
+volcanoOctaves
+volcanoFlows
+volcanoTemp
+volcanoActivity
+lavaCoverTidal
+lavaCoverSun
+lavaCoverYoung
+ModulateBright
+Opacity
+SubsurfScatBright
+SubsurfScatPower
+Coverage
+mainOctaves
+stripeZones
+stripeFluct
+stripeTwist
+cycloneMagn
+cycloneFreq
+cycloneDensity
+cycloneOctaves
+cycloneMagn2
+cycloneFreq2
+cycloneLatitude2
+cycloneOctaves2
+Greenhouse
+SkyLight
+GlobalWindSpeed
+MinSurfaceTemp
+MaxSurfaceTemp
+Vertical Profile
+NorthLat
+NorthLon
+NorthRadius
+NorthWidth
+NorthBright
+NorthFlashFreq
+NorthMoveSpeed
+NorthRings
+NorthParticles
+SouthLat
+SouthLon
+SouthRadius
+SouthWidth
+SouthBright
+SouthFlashFreq
+SouthMoveSpeed
+SouthRings
+SouthParticles
+TopColor
+BottomColor
+RayDensity
+RayCurvature
+MaxLength
+Particles
+GasToDust
+GasBright
+DustBright
+GasColor
+DustColor
+InnerRadius
+OuterRadius
+EdgeRadius
+MeanRadius
+Thickness
+InnerThickness
+OuterThickness
+ThicknessPow
+TwistMagn
+DetailScaleR
+DetailScaleV
+OctaveDistortionX
+OctaveDistortionY
+OctaveDistortionZ
+OctaveScale
+DiskNoiseContrast
+DiskTempContrast
+DiskOuterSpin
+AccretionRate
+Link disk and jet properties
+JetVelocity
+JetLength
+JetStartRadius
+JetEndRadius
+JetStartTemp
+JetEndTemp
+JetDistortion
+JetThickness
+JetBrightness
+JetDensity
+LightingBright
+ShadowContrast
+ShadowLength
+SelfShadow
+PlanetShadow
+RocksMaxSize
+RocksSpacing
+DustDrawDist
+FrontBright
+BackBright
+frequency
+densityScale
+densityOffset
+densityPower
+colorContrast
+FrontColor
+BackThickColor
+BackIceColor
+BackDustColor
+PosPolar.x (lon)
+PosPolar.y (lat)
+PosPolar.z (dist)
+Pack form
+Faction form
+Build form
+Pack table
+Faction table
+Build table
+%s %02i
+%s F%03i
+Ships form
+Ships table
+Edit module list
+Edit camera list
+Edit engine list
+Edit dock list
+Cockpit
+Behind
+Passenger
+Cargo
+Retro
+Hover
+Thruster
+BrightnessHDR
+Pos x +0.1
+Pos y +0.1
+Pos z +0.1
+Pos x +0.01
+Pos y +0.01
+Pos z +0.01
+Pos x
+Pos y
+Pos z
+Pos x -0.01
+Pos y -0.01
+Pos z -0.01
+Pos x -0.1
+Pos y -0.1
+Pos z -0.1
+Rot x +45
+Rot y +45
+Rot z +45
+Rot x +1
+Rot y +1
+Rot z +1
+Rot x
+Rot y
+Rot z
+Rot x -1
+Rot y -1
+Rot z -1
+Rot x -45
+Rot y -45
+Rot z -45
+Size x x10
+Size y x10
+Size z x10
+Size x x2
+Size y x2
+Size z x2
+Size x
+Size y
+Size z
+Size x /2
+Size y /2
+Size z /2
+Size x /10
+Size y /10
+Size z /10
++0.01
+-0.01
+Ship:
+Offset
+( %1.5g %1.5g %1.5g )
+( %1.3g %1.3g %1.3g %1.3g )
+Length
+Camera:
+( %g %g %g )
+( %g %g %g %g )
+Module:
+Matrix
+( %1.3g %1.3g %1.3g %1.3g
+  %1.3g %1.3g %1.3g %1.3g
+  %1.3g %1.3g %1.3g %1.3g
+  %1.3g %1.3g %1.3g %1.3g )
+EngineEffect:
+( %g %g %g )
+( %g %g %g )
+( %g %g %g %g )
+( %g %g %g )
+DockingPort:
+CorrPos
+( %g %g %g )
+CorrRot
+( %g %g %g )
+CorrSize
+( %g %g %g )
+DockingPort:
+ShipPos
+( %g %g %g )
+ShipRot
+( %g %g %g )
+%s: %s
+%s: %i/%i
+Ship control panel
+Engine
+% i%s
+%1.0f%%
+Mode: Force Sim
+Mode: Force Orbit
+Mode: Auto Orbit
+Mode: Auto Sim
+System's main star SpecClass
+System's main star SubClass
+Object's parent sun SpecClass
+Object's parent sun SubClass
+Star type
+Planet TempClass
+Planet VolClass
+Planet BulkClass
+Planet diameter
+Planet diameter min
+Planet diameter max
+Planet mass
+Planet mass min
+Planet mass max
+Planet temperature
+Planet temperature min
+Planet temperature max
+Planet atmo pressure
+Planet atmo pressure min
+Planet atmo pressure max
+Planet atmo composition
+Planet atmo substance 1
+Planet atmo substance 2
+Planet atmo substance 3
+Planet ocean depth
+Planet ocean depth min
+Planet ocean depth max
+Planet ocean composition
+Planet ocean substance 1
+Planet ocean substance 2
+Planet ocean substance 3
+Planet clouds
+Planet aurora
+Planet rings
+Planet tail
+Planet tidal locking
+Planet organic life
+Planet organic any
+Planet organic subglacial
+Planet organic aerial
+Planet organic marine
+Planet organic terrestrial
+Planet exotic life
+Planet exotic any
+Planet exotic subglacial
+Planet exotic aerial
+Planet exotic marine
+Planet exotic terrestrial
+Moon TempClass
+Moon VolClass
+Moon BulkClass
+Moon diameter
+Moon diameter min
+Moon diameter max
+Moon mass
+Moon mass min
+Moon mass max
+Moon temperature
+Moon temperature min
+Moon temperature max
+Moon atmo pressure
+Moon atmo pressure min
+Moon atmo composition
+Moon atmo substance 1
+Moon atmo substance 2
+Moon atmo substance 3
+Moon ocean depth
+Moon ocean depth min
+Moon ocean depth max
+Moon ocean composition
+Moon ocean substance 1
+Moon ocean substance 2
+Moon ocean substance 3
+Moon clouds
+Moon aurora
+Moon rings
+Moon tail
+Moon tidal locking
+Moon organic life
+Moon organic any
+Moon organic subglacial
+Moon organic aerial
+Moon organic marine
+Moon organic terrestrial
+Moon exotic life
+Moon exotic any
+Moon exotic subglacial
+Moon exotic aerial
+Moon exotic marine
+Moon exotic terrestrial
+Radius edit
+StopClear
+Class        Distance        Luminosity      App.magn      Mult  Plan  Life   Name
+  % 12.6E  % 12.6E  % 12.6E  %4i  %4i  %4i    
+%s: %i/%i/%i
+ %lf:%lf:%lf 
+ %lf:%lf 
+%1.5g
+%*.*f
+%*.*g
+%1.9lg
+%*.*lf
+%*.*lg
+(%5.3f %5.3f %5.3f)
+-%i:%02i:%02i
+%i:%02i:%02i
+-%i%s%02i%s%02i.%02i%s
+%i%s%02i%s%02i.%02i%s
+-%i%s%02i%s%02i%s
+%i%s%02i%s%02i%s
+-%i%s%02i%s%02i.%02i%s = %f
+%i%s%02i%s%02i.%02i%s = %f
+%4.2f%s
+-%02i:%02i
+%02i:%02i
+-%1i%s%02i
+%1i%s%02i
+%1.0f K
+%1.0f %sC
+%1.0f %sF
+%4.2f %s
+%1.0f %s
+%6.4f %s
+%1.1f %s
+%g %s
+% 4.2f %s
+ %s/%s
+ %s/%s
+%5.3f %s
+%5.3f%s10
+%5.3f%s10
+%1.3g %s
+%5.3f %s %s
+Object name
+Franchise
+Franchise edit
+Discoverer name
+Discoverer edit
+Discovery date edit
+Description
+seAtmosphereModelCache::InitPrecomputing
+seAtmosphereModelCache::Precompute
+seAtmosphereModelCache::LoadBinary
+seAtmosphereModelCache::DeleteModel
+BodyRenderList::Draw
+LOADING PLANETS:  "%S"
+LOADING PLANETS:  Loading shaders
+LOADING PLANETS:  Merging duplicates
+INITIALIZING PLANETS:  Building hierarchy
+LOADING STARS:  "%S"
+LOADING STARS:  Merging duplicates
+LOADING STARS:  Building octree
+INITIALIZING STARS
+RenderStars
+%s/HIP %d
+%s/HD %d
+%s/HIP %d/HD %d
+HIP %d/HD %d
+LOADING CLUSTERS:  "%S"
+LOADING CLUSTERS:  Merging duplicates
+INITIALIZING CLUSTERS
+seCustomModel::Draw
+G %i-%i-%I64d
+seGalNodeCache::DeleteNode
+GalNodeRenderList::Render
+RenderProceduralGalaxies
+%p (%d)
+%p (%d)
+Leaf %d
+seGalSysModel::Draw
+seLandNodeCache:DeleteNode
+Node    
+HMNode 
+Height   
+Normal   
+Diff      
+Thermal  
+Detail   
+DetGen Norm [
+DetGen Diff   [
+Load  
+%g / %g
+%p %s/base
+%p %s/%i_%i_%i
+]  SELF
+]  LOADING
+[-1]  NONE
+seLandQuadtree::DrawBase
+seLandQuadtree::DrawFaces
+ (%i:%i)
+%s %i:%i
+seRingVBO::Draw
+seSpacecraft::Draw
+Printing star histogram to the log
+Starting star histogram collection
+SC %i-%i-%I64d
+S %i-%i-%I64d
+seStarNodeCache::DeleteNode
+child %d
+%i-%i-%I64d
+StarNodeRenderList::Render
+Nested IF statement is not supported
+%s: "%s"
+%S, line %i:
+%S, line %i:
+%s: "%s"
+%s: %s %s
+%s: %s (%i, %i)
+%s: %s %i
+%s: %s (%g, %g)
+%s: %s %g
+seScriptMachine::FrameTick
+[PRO]
+ [PRO]
+STARTING WORKER THREADS...
+INITIALIZING ENGINE...
+Pre-UpdateAndRender
+UpdateAndRender
+Post-UpdateAndRender
+SelectObjectByPointer
+seOVRRenderBuffer::Bind
+seOVRRenderBuffer::Unbind
+seOculusRift::CreateMirrorTexture
+Oculus Touch Left
+Oculus Touch Right
+Left Thumbstick
+Left Shoulder
+X touch
+Y touch
+Left Thumbstick touch
+Left Touchpad
+Left Trigger touch
+Left Trigger untouch
+Left untouch all
+Left Trigger
+Left Trigger -
+Left Grip
+Left Grip -
+Left Thumbstick right
+Left Thumbstick left
+Left Thumbstick up
+Left Thumbstick down
+Right Thumbstick
+Right Shoulder
+A touch
+B touch
+Right Thumbstick touch
+Right Touchpad
+Right Trigger touch
+Right Trigger untouch
+Right untouch all
+Right Trigger
+Right Trigger -
+Right Grip
+Right Grip -
+Right Thumbstick right
+Right Thumbstick left
+Right Thumbstick up
+Right Thumbstick down
+Left but 
+Right but 
+Left but %i
+Right but %i
+Thumbstick down
+Thumbstick left
+Grip -
+Trigger -
+Trigger
+Thumbstick right
+Thumbstick up
++ Axis 
++ Axis %i
+- Axis %i
+sandbox
+chart
+Layers mask: [
+Polygons 
+Lines 
+Vertexes 
+Backspace
+Enter
+Shift
+Caps Lock
+Convert
+Nonconvert
+Accept
+Mode change
+Page Up
+Page Down
+Left Arrow
+Up Arrow
+Right Arrow
+Down Arrow
+Print
+Execute
+Print Screen
+Insert
+Left Win
+Right Win
+Win Apps
+Sleep
+Numpad 0
+Numpad 1
+Numpad 2
+Numpad 3
+Numpad 4
+Numpad 5
+Numpad 6
+Numpad 7
+Numpad 8
+Numpad 9
+Numpad *
+Numpad +
+Separator
+Numpad -
+Numpad .
+Numpad /
+Num Lock
+Scroll Lock
+Guide
+Left Stick
+Right Stick
+Pad Up
+Pad Down
+Pad Left
+Pad Right
+SpaceNavigator
+MainMenu
+ToggleToolbars
+VideoCaptureDialog
+VideoRecording
+ScreenshotNoGUI
+ScreenshotWithGUI
+HiresScreenshot
+FullScreen
+ChangeDisplay
+MinimizeWindow
+ToggleStereo3D
+ResetVRPose
+CloseProgram
+InterfaceClick
+SelectObject
+OrbitObject
+DragContr
+ZoomContr
+JourneyLog
+UniverseMapSel
+UniverseMapCur
+ChartMode
+SolarSysBrowserRoot
+SolarSysBrowserSel
+SolarSysBrowserCur
+FindObject
+StarsBrowser
+SpacecraftManager
+EventFinder
+PlayerSettings
+VisualSettings
+CameraSettings
+FilterSettings
+GraphSettings
+DisplaySettings
+SoundSettings
+ControlsSettings
+MusicPlayer
+ObjectEditor
+PathEditor
+AddPathPoint
+DebugMode
+SelectPrevObject
+SelectHomeObject
+FreeObject
+FollowObject
+SyncRotObject
+NegTimeScale
+DecTimeScale
+IncTimeScale
+PauseTime
+ResetTimeScale
+CurrentTime
+TimingMode
+LoaderMode
+PauseScript
+BreakScript
+ZoomOut
+ZoomIn
+ResetZoom
+MoveModeFree
+MoveModeSpacecraft
+MoveModeAircraft
+MoveModeGame
+ToggleCamautoHorizon
+ToggleGalaxies
+ToggleNebulae
+ToggleClusters
+ToggleStars
+TogglePlanets
+ToggleAtmospheres
+ToggleAurora
+ToggleClouds
+ToggleWater
+ToggleCometTails
+ToggleAccrDisks
+ToggleAccrJets
+ToggleSelfEmission
+ToggleOrbitMarks
+ToggleOrbits
+ToggleVectors
+ToggleSelPointer
+ToggleVelVector
+ToggleCelGrids
+ToggleGeoGrids
+ToggleLabels
+ToggleMarkers
+ToggleEclipseMask
+ToggleConstellations
+ToggleConstLines
+ToggleConstBoundaries
+ToggleConstLabels
+ToggleConstDrawings
+ToggleInterface
+ToggleLensFlares
+ToggleLensGhosts
+TogglePseudoFlares
+ToggleBloom
+SwitchPhotoMode
+ToggleDithering
+ToggleAntialiasing
+TogglePlanetShine
+ToggleEclipses
+ToggleSkyRingsShadows
+IncPlanetLOD
+DecPlanetLOD
+ResetAllMagnCoef
+IncAllMagnCoef
+DecAllMagnCoef
+IncGalMagnCoef
+DecGalMagnCoef
+IncStarMagnCoef
+DecStarMagnCoef
+IncPlanMagnCoef
+DecPlanMagnCoef
+IncExposure
+DecExposure
+ResetExposure
+IncAmbient
+DecAmbient
+IncGlowMagnCoef
+DecGlowMagnCoef
+DebugScreenMode
+UpdateStdShaders
+UpdateProcShaders
+UpdateUnivTree
+ReloadObject
+ToggleCullface
+ToggleWireframe
+ToggleFreezeCamera
+ViewImpostors
+ToggleCatStarOctree
+ToggleStarOctree
+ToggleCatGalOctree
+ToggleGalOctree
+ToggleGalSysOctree
+ToggleGalModelBoxes
+ToggleClusOctree
+ToggleNebModelBoxes
+ToggleLandOctree
+StarHistogramColl
+IncLayersMask
+DecLayersMask
+IncStarSaturation
+DecStarSaturation
+IncStarColorShift
+DecStarColorShift
+Trigger1
+Trigger2
+Trigger3
+Trigger4
+SbCenterObject
+SbGotoObject
+SbSelectHomeObject
+SbNegTimeScale
+SbDecTimeScale
+SbIncTimeScale
+SbStartStopTime
+SbResetTimeScale
+SbCurrentTime
+SbTimingMode
+SbDebugMode
+SbLaunchParticles
+SbToggleDrawPolys
+SbToggleDrawLines
+SbToggleDrawVerts
+SbFreezeCamera
+CamLookBack
+CamLookLeft
+CamLookRight
+CamLookUp
+CamLookDown
+CamHorizonObject
+CamCenterObject
+CamGotoObject
+CamLandObject
+CamGotoCenterObject
+CamTrackObject
+CamStopRotation
+CamStopMotion
+CamNextVelocity
+CamPrevVelocity
+CamNextStereobase
+CamPrevStereobase
+CamResetStereobase
+ShipLookBack
+ShipLookLeft
+ShipLookRight
+ShipLookUp
+ShipLookDown
+ShipOffHUD
+ShipHorizonHUD
+ShipOrbitalHUD
+ShipWarpHUD
+ShipDockingHUD
+ShipPrograde
+ShipRetrograde
+ShipRadial
+ShipAntiradial
+ShipNormalUp
+ShipNormalDown
+ShipHorRot
+ShipHoldAlt
+ShipFlightAssist
+ShipStopRotation
+ShipStopEngines
+ShipStopWarpDrive
+ShipSyncVelocity
+ShipFlyTo
+ShipWarpTo
+ShipGoTo
+ShipRotateTo
+ShipSelectRefBody
+ShipSelectTarget
+ShipViewOrbit
+ShipCenter
+ChartSelectObject
+ChartModeScheme
+ChartModeSize
+ChartModeMass
+ChartModeDensity
+ChartModeTemperature
+ChartModeNext
+ChartModePrev
+MapToggleExploration
+MapToggleProcedural
+MapChartCenterObject
+MapChartGotoObject
+CamMoveForward
+CamMoveBack
+CamMoveLeft
+CamMoveRight
+CamMoveUp
+CamMoveDown
+CamTurnLeft
+CamTurnRight
+CamTurnUp
+CamTurnDown
+CamTurnCW
+CamTurnCCW
+CamIncSpeed
+CamDecSpeed
+CamIncStereobase
+CamDecStereobase
+CamIncTimeScale
+CamDecTimeScale
+CamIncExposure
+CamDecExposure
+CamScrollUp
+CamScrollDown
+ShipMoveForward
+ShipMoveBack
+ShipMoveLeft
+ShipMoveRight
+ShipMoveUp
+ShipMoveDown
+ShipTurnLeft
+ShipTurnRight
+ShipTurnUp
+ShipTurnDown
+ShipTurnCW
+ShipTurnCCW
+ShipRudderPlus
+ShipRudderMinus
+ShipElevatorPlus
+ShipElevatorMinus
+ShipAileronsPlus
+ShipAileronsMinus
+ShipFlapsPlus
+ShipFlapsMinus
+ShipMainEnginePlus
+ShipMainEngineMinus
+ShipRetroEnginePlus
+ShipRetroEngineMinus
+ShipHoverEnginePlus
+ShipHoverEngineMinus
+ShipWarpDrivePlus
+ShipWarpDriveMinus
+ChartMoveForward
+ChartMoveBack
+ChartMoveLeft
+ChartMoveRight
+ChartMoveUp
+ChartMoveDown
+ChartTurnLeft
+ChartTurnRight
+ChartTurnUp
+ChartTurnDown
+ChartTurnCW
+ChartTurnCCW
+mouse
+vr controller 1
+vr controller 2
+Name: %s
+Axis %i: %6i - %6i = %6i  %f
+Axis %i: %6i %+6i = %6i  %f
+Ctrl-
+Shift-
+But %i
+Hat %i
+- Mouse Y
+- Mouse X
++ Mouse X
++ Mouse Y
+Left X
+Left Y
+Right X
+Right Y
+Axis 
+Axis %i
+"version": 1,
+"minimum_required_version": 1,
+"default_bindings": [
+    "controller_type": "oculus_touch",
+    "binding_url" : "bindings_oculus_touch.json"
+    "controller_type": "vive_controller",
+    "binding_url" : "bindings_vive_controller.json"
+  }, 
+    "controller_type": "knuckles_ev1",
+    "binding_url" : "bindings_knuckles_ev1.json"
+    "controller_type": "knuckles",
+    "binding_url" : "bindings_knuckles.json"
+    "controller_type": "holographic_controller",
+    "binding_url" : "bindings_holographic.json"
+    "controller_type": "vive_cosmos_controller",
+    "binding_url" : "bindings_cosmos.json"
+"actions": [
+    "requirement" : "optional",
+    "type" : "boolean"
+    "name": "
+    "requirement" : "optional",
+    "type" : "vector1"
+"action_sets": [
+    "usage": "leftright"
+    "name": "/actions/
+"localization" : [
+  "language_tag" : "en_us",
+  "/actions/general" : "General",
+  "/actions/camera" : "Camera",
+  "/actions/ship" : "Ship",
+  "/actions/chart" : "Chart",
+" : "
+eEdit mode help
+------Keys-----
+----Modifiers----
+-----Action-----
+[Arrows],[<],[>],[PgUp],[PgDn]
+rotate with step of 5
+[Shift]
+rotate with step of 0.1
+[Arrows]
+[Ctrl]
+change RA and Dec with step of 1'
+[Ctrl]+[Shift]
+change RA and Dec with step of 1"
+[<],[>]
+change Distance by 10%
+change Distance by 0.1%
+[Arrows],[<],[>]
+[Ctrl]+[Alt]
+change model scale
+move with step of 1   meter
+move with step of 10 meters
+move with step of 0.1 meter
+move with step of 1  meter
+rotate with step of 90
+rotate with step of 1
+reset offset
+reset rotation
+switch to next module
+[Ctrl]+[Alt]+[Shift]
+switch to next engine
+change label RA and Dec with step of 10
+change label RA and Dec with step of 1
+SensitivityScroll     
+SensitivityExposure   
+SensitivityTimeScale  
+SensitivityStereobase 
+SensitivityVelocity   
+SensitivityRollShip   
+SensitivityTurnShip   
+SensitivityRollCamera 
+Keyboard
+SensitivityTurnCamera 
+Mouse
+SensitivityTurnCamera 
+SensitivityScroll     
+SensitivityExposure   
+SensitivityTimeScale  
+SensitivityStereobase 
+SensitivityVelocity   
+SensitivityTurnShip   
+SensitivityTurnCamera 
+Smooth       
+Differential 
+DeadZone     
+AxisSettings 
+Button
+w%d x %d @ %d Hz
+NLOADING
+DELETING
+READY CPU & GPU
+READY CPU
+READY GPU
+UNKNOWN
+/-rings
+Updating planet lights
+Updating ship lights
+Sorting sprites
+Scanning star node
+Scanning galaxy node
+Updating star octree
+seLoaderThread::CreateGLCompContext
+CreateGLCoreContext(): Can't get the function address
+seLoaderThread::CreateGLCoreContext(): Can't find a suitable pixel format
+seLoaderThread::CreateGLCoreContext(): Can't set a pixel format
+seLoaderThread::CreateGLCoreContext(): Can't create the core OpenGL context
+seLoaderThread::CreateGLCoreContext
+seLoaderThreadPool::ThreadFunction
+%s (%dx%d)
+%s: ERROR_INVALID_VERSION_ARB
+%s: ERROR_INVALID_PROFILE_ARB
+%s: code 0x%x
+seWindow::CreateGLCompContext(): Can't find a suitable pixel format
+seWindow::CreateGLCompContext(): Can't set a pixel format
+seWindow::CreateGLCompContext(): Can't create an OpenGL context
+seWindow::CreateGLCompContext(): Can't make an OpenGL context current
+seWindow::CreateGLCoreContext(): Can't find a suitable pixel format
+seWindow::CreateGLCoreContext(): Can't set a pixel format
+seWindow::CreateGLCoreContext(): Can't create a temporary OpenGL context
+CreateGLCoreContext(): Can't make a temporary OpenGL context current
+seWindow::CreateGLCoreContext(): Can't get the function address
+seWindow::CreateGLCoreContext(): Can't create the core OpenGL context
+seWindow::CreateGLCoreContext(): Can't make the core OpenGL context current
+=CRITICAL ERROR, CANNOT START!
+EXITING...
+STARTING...
+INITIALIZING OPENGL...
+seVive::CreateEyeTextures
+seVive::CreateHUDTextures
+seVive::UnbindHUDBuffer
+SteamVR Controller Left
+SteamVR Controller Right
+Trackpad left
+Trackpad up
+Trackpad right
+Trackpad down
+Trackpad center
+VERDANA
+SE Splash
+Banner
+%s %2i%%
+DETECTING VR RUNTIME...
+%s %s
+Head   rot     
+(% 5.2f % 5.2f % 5.2f % 5.2f)
+Head   pos (cm)
+(% 5.2f % 5.2f % 5.2f)
+Eye[0] pos (cm)
+(% 5.2f % 5.2f % 5.2f)
+Eye[1] pos (cm)
+(% 5.2f % 5.2f % 5.2f)
+Cnt[0] rot     
+(% 5.2f % 5.2f % 5.2f % 5.2f)
+Cnt[1] rot     
+(% 5.2f % 5.2f % 5.2f % 5.2f)
+Cnt[0] pos (cm)
+(% 5.2f % 5.2f % 5.2f)
+Cnt[1] pos (cm)
+(% 5.2f % 5.2f % 5.2f)
+cam.AngAccum   
+(% 5.2f % 5.2f % 5.2f)
+cam.AngAccel   
+(% 5.2f % 5.2f % 5.2f)
+LimitFOVfactor 
+ %1.3f
+seVRHelmet::SubmitFrame
+@@@@@@@@
+qP's'
+s J5J
+tpYzY
+tzY~Y
+o bLb
+oPbsb
+VS_VERSION_INFO
+StringFileInfo
+000904b0
+CompanyName
+SpaceEngine
+FileDescription
+SpaceEngine
+FileVersion
+0.991.50.2155
+InternalName
+LegalCopyright
+Copyright (C) 2011-2026 Cosmographic Software
+OriginalFilename
+SpaceEngine.exe
+ProductName
+SpaceEngine
+ProductVersion
+0.991.50.2155
+VarFileInfo
+Translation
