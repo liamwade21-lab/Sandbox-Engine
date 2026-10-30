@@ -173,7 +173,11 @@ pub struct TileLayer {
     pub ext: String,
     /// Optional per-tile suffix (`_c` colour / `_a` alpha on Earth).
     pub suffix: String,
+    /// The deepest level every tile of the layer has.
     pub max_level: u8,
+    /// Tiles below `max_level` the layer has only here and there (the Moon's close-ups around the
+    /// Apollo sites, `Moon-Closeups-KL.pak`).
+    pub sparse: std::collections::HashSet<TileKey>,
 }
 
 impl TileLayer {
@@ -192,6 +196,33 @@ impl TileLayer {
 
     /// Discover a tiled layer from a catalog map reference like `"Earth/Surface-PBC"`.
     /// `prefer_suffix` selects a variant (e.g. `"_c"`), falling back to none.
+    /// The tile `key` takes its texture from: its deepest ancestor (or itself) the layer has.
+    pub fn source(&self, key: TileKey) -> TileKey {
+        let mut level = key.level;
+        while level > self.max_level && !self.sparse.contains(&key.ancestor_at(level)) {
+            level -= 1;
+        }
+        key.ancestor_at(level.min(key.level))
+    }
+
+    /// The tiles deeper than `max_level` that exist, from the layer's file names.
+    fn find_sparse(&mut self, vfs: &Vfs) {
+        let tail = format!("{}.{}", self.suffix, self.ext).to_ascii_lowercase();
+        for face in CubeFace::ALL {
+            for path in vfs.list(&format!("{}/{}", self.dir, face.dir_name())) {
+                let name = path.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
+                let Some(stem) = name.strip_suffix(&tail) else { continue };
+                let n: Vec<u32> = stem.split('_').filter_map(|p| p.parse().ok()).collect();
+                if let [level, row, col] = n[..]
+                    && level as u8 > self.max_level
+                    && level < 24
+                {
+                    self.sparse.insert(TileKey { face, level: level as u8, row, col });
+                }
+            }
+        }
+    }
+
     pub fn discover(vfs: &Vfs, map: &str, prefer_suffix: &[&str]) -> Option<TileLayer> {
         let map = map.trim().trim_end_matches('/');
         let dir = if map.to_ascii_lowercase().starts_with("textures/") {
@@ -210,6 +241,7 @@ impl TileLayer {
                         ext: ext.to_string(),
                         suffix: suffix.to_string(),
                         max_level: 0,
+                        sparse: Default::default(),
                     };
                     while layer.max_level < 16 {
                         let next = TileKey {
@@ -224,6 +256,7 @@ impl TileLayer {
                             break;
                         }
                     }
+                    layer.find_sparse(vfs);
                     return Some(layer);
                 }
             }
@@ -313,8 +346,29 @@ mod tests {
             ext: "jpg".into(),
             suffix: "_c".into(),
             max_level: 5,
+            sparse: Default::default(),
         };
         assert_eq!(layer.tile_path(k), "textures/planets/Earth/Surface-PBC/neg_z/3_5_2_c.jpg");
+    }
+
+    #[test]
+    fn sparse_deeper_tiles() {
+        let close = TileKey { face: CubeFace::PosX, level: 6, row: 15, col: 33 };
+        let layer = TileLayer {
+            dir: "textures/planets/Moon/Surface-KL".into(),
+            ext: "png".into(),
+            suffix: String::new(),
+            max_level: 5,
+            sparse: [close].into_iter().collect(),
+        };
+        // Inside the close-up: its own level 6 tile, even from deeper nodes.
+        let child = close.children()[2];
+        assert_eq!(layer.source(close), close);
+        assert_eq!(layer.source(child.children()[1]), close);
+        // Elsewhere: the dense level 5.
+        let other = TileKey { face: CubeFace::PosX, level: 7, row: 0, col: 0 };
+        assert_eq!(layer.source(other), other.ancestor_at(5));
+        assert_eq!(layer.source(close.parent().unwrap()), close.parent().unwrap());
     }
 
     #[test]

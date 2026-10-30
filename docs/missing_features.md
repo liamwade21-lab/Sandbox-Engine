@@ -104,22 +104,22 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 82 have been fixed since (listed at the end); the tables count the 159 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 83 have been fixed since (listed at the end); the tables count the 158 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 69 | 67 | 20 |
+| Gaps | 1 | 2 | 69 | 66 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 53 | 76 | 30 |
+| Gaps | 52 | 76 | 30 |
 
 | Area | Kept |
 |---|---|
 | 01 Stars | 17 |
 | 02 Star clusters | 12 |
 | 03 Galaxies and nebulae | 14 |
-| 04 Planet surfaces | 11 |
+| 04 Planet surfaces | 10 |
 | 05 Atmospheres, rings, comets | 14 |
 | 06 Procedural generation | 14 |
 | 07 Camera and time | 6 |
@@ -915,15 +915,6 @@ Ice specular: SE gives ice its own glint (SpecBrightIce, SpecPowerIce, Roughness
 - Port: crates/se_core/src/planet_tiles.rs:263
 - Check: SE's AICE path sets specTer = SpecParams.x (ice specular bright) * roughMap (planet.glsl:133, 930, 1169) and SolarSys.sc sets DiffMapAlpha "Ice" on Europa, Triton/Pluto, Charon and SpecBrightIce 0.65 on Earth; the port parses only DiffMapAlpha "Water" and SpecBrightWater (planet_tiles.rs:263-264), but its ground does get a generic GGX sheen from the biome sample layers' roughness (planet.wesl:1172-1177), so it is partial, not wholly missing
 
-### 04-018 · Planet surfaces
-
-Moon close-up tiles never load: Moon-Closeups-KL.pak adds sparse pos_x tiles around the Apollo sites (Surface-KL levels 6-7, Bump-KL levels 5-7, beyond the main paks' Surface 5 / Bump 4); the port finds a layer's deepest level by probing tile 0_0 of pos_x, which these sparse levels lack, so it stops at Surface 5 / Bump 4 and has no per-tile fallback for sparse deeper tiles
-
-- Status: missing, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: data/textures/planets/Moon-Closeups-KL.pak (pos_x/6_15_33 ... 7_*)
-- Port: crates/se_core/src/planet_tiles.rs:214-226
-- Check: Moon-Closeups-KL.pak holds 174 sparse pos_x tiles (Surface-KL 15/22/50 and Bump-KL 15/22/50 at levels 5/6/7) while the main paks stop at Surface level 5 and Bump level 4, and TileLayer::discover (planet_tiles.rs:214-226) stops at the first level whose pos_x 0_0 tile is missing, so the port never uses Surface levels 6-7 or Bump levels 5-7 (terrain.rs:877,1238 clamp to max_level, no sparse fallback)
-
 ### 04-020 · Planet surfaces
 
 Water display toggle: SE's ShowWater object filter (key ToggleWater) hides and shows oceans with a fade (WaterSurfColor.a "water on/off animation"); the port has no such toggle
@@ -1604,6 +1595,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **04-008** (Planet surfaces, fixed 2026-10-30): Lighting by several stars and its magnitude fade: SE lights a surface with up to 4 stars (MAX_LIGHTS 4 loop) a... Fix: Surfaces lit by up to 4 stars with SE's magnitude fade (see 01-006): SE gathers up to MAX_LIGHTS 4 stars per body, brightest flux first, ends the list at the first one past PlanetLightingFadeEndMagn, fades those between the begin/end magnitudes and normalises each to (F / max(F_begin, F_max))^0.35 (FUN_1404bf5c0, the port's LightingFade::planet_intensities); BodyLighting keeps the brightest as before plus up to 3 ExtraLight (direction, illumination colour times intensity, ring colour cut at RingsLightingFadeEndMagn).
 - **04-011** (Planet surfaces, fixed 2026-10-30): Terminator on airless bodies: SE uses a sharp per-pixel horizon shadow that depends on height (HorShadow = cla... Fix: SE's sharp, height-aware horizon shadow on every lit body: HorShadow = clamp((cosHor + N.L) * 500, 0, 1) with cosHor = sqrt(1 - rr^2), rr = clamp(1 / (1 + height / R), 0, 0.9999) (planet.glsl:1087-1095), for the brightest star and the further lights alike, so the terminator is sharp and raised points stay lit past it (was a smoothstep(-0.08, 0.12) of the sphere normal). Checked on the Moon at first quarter.
 - **04-012** (Planet surfaces, fixed 2026-10-30): Ambient light: SE adds DayAmbient (catalog Surface key) only on the lit side and a user "Ambient lighting" lev... Fix: SE's AmbientLighting (default 0, 0..1 in steps of 0.05, rounded to them as FUN_1404c12c0 does) replaces the port's fixed 1.5% albedo ambient: it adds albedo/pi x level in the sun's units, day and night, and Shift+. / Shift+, (> / <, IncAmbient / DecAmbient from SE's key table FUN_1405ba8f0) change it with SE's two-decimal message. DayAmbient on the lit side was already ported. Night sides are now dark as in SE apart from planet shine and city lights. Not ported: the Settings window entry and saving the level.
+- **04-018** (Planet surfaces, fixed 2026-10-30): Moon close-up tiles never load: Moon-Closeups-KL.pak adds sparse pos_x tiles around the Apollo sites (Surface-... Fix: Sparse deeper tiles load: TileLayer keeps the deepest complete level (probing pos_x 0_0 as before) and also the tiles below it found by name in the VFS (TileLayer::sparse, from vfs.list); a node takes its deepest ancestor the layer has (TileLayer::source), so Moon-Closeups-KL.pak's 72 Surface-KL tiles (levels 6-7) and 87 Bump-KL tiles (levels 5-7) around the Apollo sites are used, and everywhere else the dense levels as before. Checked: the layers report them at load; the Apollo 11 site at 4 km renders with them (small, sharper difference).
 - **05-001** (Atmospheres, rings, comets, fixed 2026-10-29): Clouds are not lit through the atmosphere: SE draws each cloud layer through the planet shader (ACLOUDS), so t... Fix: `clouds.wesl` lights clouds as SE's ACLOUDS: sun light reddened by the transmittance and cut at the planet's horizon at cloud height, sky irradiance x SkyLight, DayAmbient (default 0.07, SE's loader), Hapke mix, SubsurfScatBright/Power (default 0), aerial perspective over the cloud, SE's 5% opacity cut; the night side is unlit. Relief: a layer with a BumpMap (Earth's is its cloud map) tilts the cloud-top normal by the density's screen-space gradient times BumpHeight.
 - **05-002** (Atmospheres, rings, comets, fixed 2026-10-29): Cloud layers and Clouds catalog keys: SE draws every Clouds block as its own layer (Titan 3 orange haze layers... Fix: Every Clouds block is its own layer (`terrain::CloudLayer`; Titan's three haze layers at 20/30/50 km, Mars's two textured and one procedural), NoClouds honoured. Per layer: height, map, Opacity, ModulateColor x ModulateBright, DayAmbient, Hapke, SubsurfScat, BumpMap/BumpHeight, DiffMapAlpha "None" (the map is an opaque colour layer: Venus), FlipMap and Velocity (the layer's shell turns about the pole with the simulation time, signed by the body's rotation, each turned layer with its own patch selection); SE's body-wide Coverage/mainFreq/mainOctaves (FUN_14046dde0 writes them to the body: the last block's win) for the procedural ones, Coverage 1 closing the layer; SE's 1 km close-camera fade; textured-surface bodies get their procedural layers (Titan's orange haze); nodes are culled against the highest layer. Not done: GlowMode/GlowMap, TempMap, RingsWinter; ground shadows come from the first textured layer that does not turn.
 - **05-003** (Atmospheres, rings, comets, fixed 2026-10-29): Procedural cloud generator: SE's tg_clouds_height/color/glow use HeightMapCloudsTerra with cyclones (cycloneMa... Fix: Procedural clouds follow SE's terra cloud generator (clouds.wesl `se_terra_clouds`, from tg_common.glh HeightMapCloudsTerra / CycloneNoiseTerra / TurbulenceTerra / FbmClouds and tg_clouds_color.glsl): cyclones in random spherical Fibonacci cells per octave (cycloneMagn/Freq/Density/Octaves), two octaves of small vortices, the Coriolis twist by latitude zones (stripeZones, stripeTwist), the flow distortion of FbmClouds (x pi, x 0.333 per octave, cloudsFreq, cloudsOctaves) against the coverage, SE's `saturate(h^2 3.5 + h)` opacity; on tidally locked worlds one giant cyclone at the substellar point and a clear night side. The parameters are SE's generated ones (surface_gen), and bodies SE's completion gives clouds (above 0.05 atm) without a Clouds block get SE's default layer. Not done: the cloud palette colours (GetCloudsColor) and the cloud glow map; a lattice artifact can show over flat lowland seen from afar (Kepler-62 e).
