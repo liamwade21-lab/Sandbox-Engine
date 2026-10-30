@@ -1083,6 +1083,28 @@ impl DensityMap {
         }
         s
     }
+
+    /// The red channel as SE's galaxy star generator reads it (FUN_140440840): `x`, `y`, `z` in
+    /// `[-1, 1]` over the whole grid along each axis (the galaxy's box), cell `(c + 1) n / 2` with no
+    /// half-cell offset, trilinear, corners outside the grid 0.
+    pub fn sample_se(&self, x: f32, y: f32, z: f32) -> f32 {
+        let f = |c: f32, n: usize| (c + 1.0) * 0.5 * n as f32;
+        let (fx, fy, fz) = (f(x, self.nx), f(y, self.ny), f(z, self.nz));
+        let (ix, iy, iz) = (fx as i32, fy as i32, fz as i32);
+        let (tx, ty, tz) = (fx - ix as f32, fy - iy as f32, fz - iz as f32);
+        let at = |x: i32, y: i32, z: i32| -> f32 {
+            if x < 0 || y < 0 || z < 0 || x >= self.nx as i32 || y >= self.ny as i32 || z >= self.nz as i32 {
+                return 0.0;
+            }
+            self.data[(((x as usize * self.ny) + y as usize) * self.nz + z as usize) * 3]
+        };
+        let lerp = |a: f32, b: f32, t: f32| (b - a) * t + a;
+        let x00 = lerp(at(ix, iy, iz), at(ix, iy, iz + 1), tz);
+        let x01 = lerp(at(ix, iy + 1, iz), at(ix, iy + 1, iz + 1), tz);
+        let x10 = lerp(at(ix + 1, iy, iz), at(ix + 1, iy, iz + 1), tz);
+        let x11 = lerp(at(ix + 1, iy + 1, iz), at(ix + 1, iy + 1, iz + 1), tz);
+        lerp(lerp(x00, x01, ty), lerp(x10, x11, ty), tx)
+    }
 }
 
 /// Result of [`build_galaxy_model`].

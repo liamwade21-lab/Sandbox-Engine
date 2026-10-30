@@ -919,6 +919,33 @@ pub fn procedural_star_record(s: &crate::procstars::ProcStarInfo, pos_pc: DVec3)
     // - [Fe/H] and C/O by the star's place in its galaxy (FUN_1401d63b0); cluster members (`RSC`)
     //   draw a cluster's (FUN_1401d6c60), their age and [Fe/H] coming from `clusters::member_record`.
     use se_core::procgen::se_stars as ss;
+    let record = |abs_mag: f64, teff: f64, radius_km: f64, mass_sol: f64, age: f64, feh: f64, cto: f64| se_core::catalog::StarRecord {
+        names: vec![s.name.clone()],
+        barycenter: false,
+        parent: None,
+        pos_pc,
+        has_position: true,
+        class: class.clone(),
+        abs_mag,
+        teff,
+        radius_km,
+        mass_kg: mass_sol * se_core::units::SOLAR_MASS_KG,
+        orbit: None,
+        rotation: se_core::rotation::RotationModel::default(),
+        source: "procedural".into(),
+        block: se_core::sc::parse(&format!("Age {age}\nFeH {feh}\nCtoO {cto}\n")),
+    };
+    // A rogue planet of SE's star octree: a dark system centre, its planet generated at its place.
+    if class.kind == se_core::star::StarKind::Planemo {
+        let f = s.se.unwrap_or(crate::procstars::SeStarFacts { mass_sol: 0.0, age_gyr: 4.0, feh: 0.0, c_to_o: 0.55 });
+        return record(30.0, 1000.0, 0.0, 0.0, f.age_gyr as f64, f.feh as f64, f.c_to_o as f64);
+    }
+    // A galaxy field star of SE's star octree carries its generator's mass, age, [Fe/H] and C/O.
+    if let Some(f) = s.se.filter(|f| f.mass_sol > 0.0) {
+        let mass = f.mass_sol as f64;
+        let radius_km = ss::remnant_radius_km(class.kind, mass).unwrap_or_else(|| star::radius_from_lum_teff(lum_bol, teff) * se_core::units::SOLAR_RADIUS_KM);
+        return record(abs_mag, teff, radius_km, mass, f.age_gyr as f64, f.feh as f64, f.c_to_o as f64);
+    }
     let h = se_core::proc_surface::name_seed(&s.name);
     let mut r = se_core::surface_gen::SeRng::new(h as u32, (h >> 32) as u32);
     let (lum_code, letter, _) = se_core::climate::star_class_bits(&class);
@@ -1728,7 +1755,7 @@ mod tests {
 
     #[test]
     fn cluster_members_keep_their_age() {
-        let info = |age_feh| crate::procstars::ProcStarInfo { name: "RSC 8514-12-3-4-5".into(), class: "K0V".into(), abs_mag: 6.0, teff: 5200.0, age_feh };
+        let info = |age_feh| crate::procstars::ProcStarInfo { name: "RSC 8514-12-3-4-5".into(), class: "K0V".into(), abs_mag: 6.0, teff: 5200.0, age_feh, se: None };
         let rec = procedural_star_record(&info(Some((0.12, -0.3))), DVec3::new(100.0, 0.0, 0.0));
         let (params, _) = proc_system_input(&rec);
         assert!((params.age_gyr - 0.12).abs() < 1e-6 && (params.feh + 0.3).abs() < 1e-6, "{} {}", params.age_gyr, params.feh);

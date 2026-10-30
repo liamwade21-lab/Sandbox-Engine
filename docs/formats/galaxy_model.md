@@ -508,26 +508,13 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   universe frame, parsecs from the Sun), `relative_emission(model_pos)` (dimensionless voxel brightness of
   the generator's emission map, SE model units, disk radius = 1), `analytic_stars_per_pc3` (exponential disc
   + bulge fallback, used until the map is built), `model_from_universe`. Normalised to 0.14 stars/pc^3 at the Sun.
-* **Stars inside other galaxies**: `se_core::star_octree::GalaxyStarDensity` (used by `procstars.rs` for the galaxy
-  the camera is deepest inside, entered within 3 radii, left beyond 3.5: as in SE, a galaxy's brightest stars show
-  as a cloud around it from a few radii out). The Milky Way model is stretched to the galaxy's radius (vertical
-  scales by the square root, so dwarfs are thicker), reshaped by `GalaxyForm::from_type` (disk with a bulge weight
-  Sa 1.6 .. Sd 0.3, S0 2.0; cored Hernquist ellipticals flattened to `1 - n/10`; thick exponential irregulars), and
-  normalised to the stars of the Milky Way model's disk over its 80% share of the light (the model's bulge holds
-  60% of its stars) times the volume of the stretch: every galaxy is as full as a Milky Way twin of its size,
-  whatever its luminosity. That is what SE shows. Compared in SE at the same spots (2026-10-27, magnitude limit 7,
-  FOV 45 degrees): inside the dwarf irregular `RG 0-9-74298994-1423` (M -15.6, R 881 pc) at 0.22 R the sky is
-  sparse, while the fainter E7 dwarf `RG 0-9-74298994-625` (M -14.6, R 3.3 kpc) is crowded at 0.3 R. Scaling by
-  `L / R^3`, as before, made the first a wall of stars (about 30 times SE's count) and the second nearly empty. With
-  the twin normalisation both are within a factor of 2 of SE's star counts. SE also puts blue and red supergiants
-  in ellipticals: `ELLIPTICAL_YOUNG` (0.3) keeps that share of the luminous stars there (none otherwise; the Milky
-  Way bulge stays old). `ArmMap` multiplies the disk by `0.3 + 0.7 v / <v>_ring` from the sprite model's emission
-  map at the mid-plane (`GalaxyState::interior_arms`; the field waits up to 5 s for the model). SE's exact
-  normalisation was not decoded. Big octree nodes over a steep density average a 6^3 midpoint grid instead of the
-  27-point grid (the centre sample otherwise sat on the peak and gave small galaxies about 4 times too many bright
-  stars). No star is brighter than Mv -10.5 (`BRIGHTEST_MAG`; the luminosity function continues its -10..-8 slope
-  to there): level 0 of a big galaxy spans Mv -30 to about -10, and a flat tail used to fill it with stars as bright
-  as galaxies, whose 0.3 ly radii also overflowed the sphere mesh's f32 normal matrix (drawn black).
+* **Stars inside galaxies**: SE's star octree (`se_core::star_octree`, `procstars.rs`, docs/missing_features.md
+  06-005): a galaxy with a sprite model accepts its candidate points with probability `0.15 x` the red channel of
+  its emission voxel map at box coordinates (`DensityMap::sample_se`, FUN_140440840: the grid spans the galaxy's
+  whole box along every axis, cell `(c + 1) n / 2` without a half-cell offset). The Milky Way's map (89 x 89 x 18
+  over a cubic box of one radius) gives R 0.16 on the Sun's ring and a stellar disk about 2 kpc thick. Galaxies
+  without a map (ellipticals) use SE's analytic exp(-r) young disk, bulge and halo. The field waits up to 5 s for
+  a galaxy's model.
 * **Daylight**: inside an atmosphere shell whose star is above -3 degrees elevation the whole galaxy
   (far sprites, emission, dust) is faded out (`1 - smoothstep(-0.2, -0.05, sin elevation)`), because the
   shell replaces the background and a multiplicative dust sprite would otherwise darken the blue sky. The

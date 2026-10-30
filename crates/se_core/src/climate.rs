@@ -2077,6 +2077,10 @@ pub fn star_light_from(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::
         let mut lit = Vec::new();
         for &i in stars {
             let st = &cat.stars[i as usize];
+            // A rogue planet's system centre gives no light.
+            if st.class.kind == crate::star::StarKind::Planemo {
+                continue;
+            }
             let lum = st.lum_bol();
             let d_au = eph.position(ObjectRef::Star(i), jd).delta_m(pos).length() / crate::units::METERS_PER_AU;
             let (lc, ty, sub) = star_class_bits(&st.class);
@@ -2164,7 +2168,7 @@ pub fn catalog_body_in(cat: &crate::catalog::Catalog, i: usize, light: &StarLigh
     let rot = blk.sub("Rotation");
     let given = |key: &str| blk.f64(key).is_some() || rot.is_some_and(|r| r.f64(key).is_some());
     Some(BodyIn {
-        seeds: crate::surface_gen::catalog_seeds(&b.names.join("/"), &b.parent),
+        seeds: crate::surface_gen::body_seeds(b),
         obj_type,
         bulk,
         mass_earth: (b.mass_kg / crate::units::EARTH_MASS_KG) as f32,

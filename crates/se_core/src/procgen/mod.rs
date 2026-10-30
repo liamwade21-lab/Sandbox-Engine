@@ -234,6 +234,12 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
         ctx.mass, ctx.lum, ctx.teff, ctx.radius_sol, ctx.age, ctx.feh, ctx.regime
     );
     let mut out = GeneratedSystem { sc: String::new(), bodies: Vec::new(), stars: Vec::new(), root_mass_sol: None, barycenters: Vec::new() };
+    // SE's planemos of its star octree are rogue planets (FUN_1404f7c40 -> FUN_1404fc280).
+    if star.kind == StarKind::Planemo {
+        rogue_system(&mut rng, star, seed32, &mut sc, &mut out.bodies);
+        out.sc = sc;
+        return out;
+    }
     // SE's black holes of 400 solar masses or more get stars, no planets (FUN_1404fb950).
     if big_black_hole(star) {
         let stars = se_smbh::stars(star.mass_sol, star.radius_sol * crate::units::SOLAR_RADIUS_KM, seed32);
@@ -250,7 +256,7 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
     match multiple {
         None => {
             let (planets, asteroids, se_comets) = se_bodies(&mut rng, star, &ctx, seed32);
-            host_bodies(&mut rng, &ctx, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
+            host_bodies(&mut rng, &ctx, seed32, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
             if comets {
                 host_comets(&ctx, &se_comets, &mut sc, &mut out.bodies);
             }
@@ -288,12 +294,102 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
                 n0 += sys.planets.len() as u32;
                 let mut hrng = rng.fork(0x51_0000 + c.idx as u64);
                 let (planets, asteroids, _) = bodies_from(&mut hrng, &hctx, &sys);
-                host_bodies(&mut hrng, &hctx, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
+                host_bodies(&mut hrng, &hctx, seed32, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
             }
         }
     }
     out.sc = sc;
     out
+}
+
+/// SE's rogue planet system (`seSolarSystem::CreateRoguePlanetSystem`, FUN_1404fc280) of a planemo
+/// of its star octree: one planet at the system's place, named as the system's first planet, with
+/// - the system's age `u x 12.87` Gyr and the planet's temperature from its own heat,
+///   `20 - 10.857 ln(u)` K (SE's draw `20 + 150 x 0.0724 x -ln(u)`), both on SE's LCG of the
+///   system seed (the temperature is the summary's; the completion computes the body's own);
+/// - SE's moon counts by the planet's gas share: a gas giant N(60, 20) in [5, 100], an ice giant
+///   N(20, 8) up to 40, a solid planet N(3, 2) up to 10 (SE's swarm of small moons, 63 % of rogue
+///   planets with `N(300, 100) sqrt(M / M_J)` of them, is left out).
+///
+/// The planet is SE's planet draw ([`se_layout::lone_planet`], FUN_140501f60) at its own temperature,
+/// on the streams SE gives a lone star (the planet's own seeds in FUN_1404fc280 are not traced).
+fn rogue_system(rng: &mut Rng, star: &StarParams, seed32: u32, sc: &mut String, summaries: &mut Vec<BodySummary>) {
+    let mut s = seed32;
+    let mut unit = || {
+        s = s.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+        s as f32 * 2.328_306_4e-10
+    };
+    let age = (unit() * 12.87).max(1e-3) as f64;
+    let t_own = 20.0 + (unit() * 0.999_998_9 + 1e-6).ln() * -0.072_382_41 * 150.0;
+    let host = StarParams {
+        name: star.name.clone(),
+        mass_sol: 1.0,
+        lum_bol: 1e-9,
+        teff: 3000.0,
+        radius_sol: 1e-3,
+        age_gyr: age,
+        feh: star.feh,
+        kind: StarKind::Normal,
+        class: None,
+        c_to_o: star.c_to_o,
+        se_seed: None,
+    };
+    let ctx = Ctx::new(&host);
+    // SE's planet draw on the system's star streams (the planet's own are not known).
+    let (pa, pb) = (seed32.wrapping_mul(0x2e3).wrapping_add(0x1486), seed32.wrapping_mul(0x234).wrapping_add(0x1cdb));
+    let c_to_o = star.c_to_o.unwrap_or(0.55) as f32;
+    let met = 10f32.powf(star.feh as f32);
+    let (mass, radius_km, comp, class) = se_layout::lone_planet(pa, pb, t_own, c_to_o, met);
+    let kind = match class {
+        bulk::JUPITER => Kind::GasGiant,
+        bulk::NEPTUNE => Kind::Envelope,
+        _ => Kind::Solid,
+    };
+    let rock = (comp[3] + comp[4] + comp[5]).max(1e-6);
+    // Moons and the physics read an orbit: a Jupiter-like place gives Jupiter-like Hill spheres.
+    let mut p = Body {
+        name: planet_name(&star.name, 1),
+        parent: star.name.clone(),
+        tag: Tag::Planet,
+        kind,
+        class: BULK_NAMES[class.clamp(0, 10) as usize],
+        mass_me: mass,
+        radius_km,
+        wmf: comp[2] as f64,
+        cmf: (comp[5] / rock) as f64,
+        a_au: 5.2,
+        helio_a: 1e4,
+        ref_plane: "Ecliptic",
+        at_rest: true,
+        se_comp: Some(comp),
+        se_seeds: Some((pa, pb)),
+        ..Default::default()
+    };
+    // SE's size and class stay; the port's physics fills in what the emitter writes.
+    let se = (p.radius_km, p.class, p.kind, p.tag);
+    physics_planet(rng, &ctx, &mut p, SOLAR_MASS_KG);
+    (p.radius_km, p.class, p.kind, p.tag) = se;
+    let mut normal = |mean: f64, sd: f64, lo: f64, hi: f64| (mean + sd * rng.normal()).clamp(lo, hi) as u32;
+    p.se_moons = Some(match kind {
+        Kind::GasGiant => normal(60.0, 20.0, 5.0, 100.0),
+        Kind::Envelope => normal(20.0, 8.0, 0.0, 40.0),
+        _ => normal(3.0, 2.0, 0.0, 10.0),
+    });
+    roll_rings(&ctx, &mut p);
+    let mut moons = gen_moons(rng, &ctx, &p);
+    for (j, m) in moons.iter_mut().enumerate() {
+        let mut r = rng.fork(9000 + j as u64);
+        physics_moon(&mut r, &ctx, m, &p);
+        roll_rings(&ctx, m);
+    }
+    p.t_surf = t_own as f64;
+    let _ = writeln!(sc, "// {}: rogue planet, age {age:.2} Gyr, {} moon(s)", star.name, moons.len());
+    emit_body(sc, &p);
+    summaries.push(p.summary());
+    for m in &moons {
+        emit_body(sc, m);
+        summaries.push(m.summary());
+    }
 }
 
 /// SE's life generator ([`se_life`]) for the generated bodies of the system under catalog star
@@ -374,7 +470,8 @@ fn comp_name(system: &str, suffix: &str) -> String {
 
 /// Planets (with moons, binary planets about their barycentres) and asteroids of one host, through
 /// the port's physics, into `sc`.
-fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: Vec<Body>, sc: &mut String, summaries: &mut Vec<BodySummary>, barys: &mut Vec<String>) {
+#[allow(clippy::too_many_arguments)]
+fn host_bodies(rng: &mut Rng, ctx: &Ctx, seed32: u32, mut planets: Vec<Body>, mut asteroids: Vec<Body>, sc: &mut String, summaries: &mut Vec<BodySummary>, barys: &mut Vec<String>) {
     for (i, p) in planets.iter_mut().enumerate() {
         p.name = planet_name(&ctx.name, i + 1);
         p.parent = ctx.name.clone();
@@ -382,6 +479,9 @@ fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: 
     for (i, a) in asteroids.iter_mut().enumerate() {
         a.name = format!("{} S{}", ctx.name, i + 1);
         a.parent = ctx.name.clone();
+        // SE's asteroid seeds (FUN_1404fd2a0) by the asteroid's number (its belt's is not kept).
+        let k = i as u32;
+        a.se_seeds = Some((seed32.wrapping_mul(0x619).wrapping_add(k.wrapping_mul(0x1e4)), k.wrapping_mul(0x28b).wrapping_add(seed32.wrapping_mul(0x159))));
     }
     let star_mass_kg = ctx.mass * SOLAR_MASS_KG;
     let mut moons_of: Vec<Vec<Body>> = Vec::with_capacity(planets.len());
@@ -396,6 +496,12 @@ fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: 
         let mut mrng = rng.fork(5000 + i as u64);
         let mut moons = gen_moons(&mut mrng, ctx, p);
         for (j, m) in moons.iter_mut().enumerate() {
+            // SE's moon seeds (FUN_1404fdc90) by the planet's number and the moon's.
+            let (n, pn) = (j as u32, p.se_n);
+            m.se_seeds = Some((
+                n.wrapping_mul(0x1e7).wrapping_add(seed32.wrapping_mul(0x85e)).wrapping_add(pn.wrapping_mul(0x2de)),
+                n.wrapping_mul(0xa5e).wrapping_add(seed32.wrapping_mul(0xc52)).wrapping_add(pn.wrapping_mul(0xc8b)),
+            ));
             let mut r = rng.fork(9000 + (i as u64) * 64 + j as u64);
             physics_moon(&mut r, ctx, m, p);
             roll_rings(ctx, m);
@@ -872,6 +978,14 @@ struct Body {
     irregular: bool,
     /// The orbit's period is written out (binary planets: about their barycentre, with both masses).
     period_given: bool,
+    /// No orbit: the body rests at its parent's place (a rogue planet at its system's).
+    at_rest: bool,
+    /// SE's record seeds (streams A and B) from the system seed and the body's indices
+    /// (FUN_140500700 planets, FUN_1404fdc90 moons, FUN_1404fd2a0 asteroids): written as
+    /// `SeSeedA`/`SeSeedB`, they seed the body's completion and surface as in SE.
+    se_seeds: Option<(u32, u32)>,
+    /// SE's planet counter of a planet (the moons' seeds read it).
+    se_n: u32,
 }
 
 /// The barycentre of a binary planet ([`se_moons`]), in the planet's place about its star.
@@ -1226,6 +1340,8 @@ fn bodies_from(rng: &mut Rng, c: &Ctx, sys: &se_layout::SeSystem) -> (Vec<Body>,
                 helio_a: p.a_au,
                 se_moons: Some(p.moons - p.debris),
                 se_comp: Some(p.comp),
+                se_seeds: Some(p.seeds),
+                se_n: p.n,
                 ..Default::default()
             }
         })
@@ -2319,6 +2435,9 @@ fn emit_body(out: &mut String, b: &Body) {
     let _ = writeln!(out, "{} \"{}\"\n{{", b.tag.key(), b.name);
     let _ = writeln!(out, "\tParentBody     \"{}\"", b.parent);
     let _ = writeln!(out, "\tClass          \"{}\"", b.class);
+    if let Some((a, s)) = b.se_seeds {
+        let _ = writeln!(out, "\tSeSeedA        {a}\n\tSeSeedB        {s}");
+    }
     let _ = writeln!(out, "\tMass           {}\t// Earth masses", num(b.mass_me));
     let _ = writeln!(out, "\tRadius         {}\t// km", num(b.radius_km));
     if b.oblateness > 1e-7 {
@@ -2512,6 +2631,10 @@ fn emit_body(out: &mut String, b: &Body) {
         let _ = writeln!(out, "\tNoAurora       true");
     }
     let _ = writeln!(out, "\tNoCometTail    true");
+    if b.at_rest {
+        let _ = writeln!(out, "}}");
+        return;
+    }
 
     let _ = writeln!(out, "\tOrbit\n\t{{");
     let _ = writeln!(out, "\t\tRefPlane        \"{}\"", b.ref_plane);
@@ -2567,6 +2690,26 @@ mod tests {
             c_to_o: None,
             se_seed: None,
         }
+    }
+
+    #[test]
+    fn planemos_are_rogue_planets_with_moons() {
+        let mut moons = 0;
+        let mut giants = 0;
+        for i in 0..40 {
+            let mut p = sun_like(&format!("RS 8514-491-8-1234-{i}"));
+            p.kind = StarKind::Planemo;
+            p.se_seed = Some((i as u32 + 1).wrapping_mul(2_654_435_761));
+            let g = generate_system(&p, 7);
+            let planet = &g.bodies[0];
+            assert_eq!((planet.tag, planet.name.as_str()), ("Planet", format!("RS 8514-491-8-1234-{i} 1").as_str()));
+            assert!(g.bodies[1..].iter().all(|b| b.parent == planet.name));
+            assert!(g.stars.is_empty() && !g.sc.contains("SemiMajorAxis   5.2	"));
+            assert!(planet.t_surf_k >= 20.0 && planet.t_surf_k < 200.0, "{}", planet.t_surf_k);
+            moons += g.bodies.len() - 1;
+            giants += (planet.class == "Jupiter") as usize;
+        }
+        assert!(moons > 40 && giants >= 1, "{moons} {giants}");
     }
 
     fn star(mass: f64, kind: StarKind, r: f64, age: f64) -> StarParams {

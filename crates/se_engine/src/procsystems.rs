@@ -145,13 +145,57 @@ impl Plugin for ProcSystemsPlugin {
     }
 }
 
+/// The young clusters of the catalog nebulae that make stars (`GenerateStars`, on for diffuse ones):
+/// SE's stars inside nebulae, `RSN <galaxy>-<nebula>-<index>`, the nebula numbered among its galaxy's
+/// catalog nebulae as in `RN` names. Their clusters are catalog entries of their own, drawn only
+/// through their member stars.
+fn add_nebula_clusters(cat: &mut Catalog, cfg: &DeepSkyConfig) {
+    let mut per_galaxy: HashMap<String, u32> = HashMap::new();
+    let mut add = Vec::new();
+    for n in cat.nebulae.iter().filter(|n| n.source != "procedural") {
+        let k = per_galaxy.entry(n.galaxy.clone()).or_insert(0);
+        let index = *k;
+        *k += 1;
+        if !n.generate_stars || n.radius_pc <= 0.0 {
+            continue;
+        }
+        let g = match cat.find(&n.galaxy) {
+            Some(ObjectRef::Galaxy(g)) => g,
+            _ => continue,
+        };
+        let e = proc_galsys::catalog_embedded(cfg, [n.pos_pc.x as f32, n.pos_pc.y as f32, n.pos_pc.z as f32], n.radius_pc as f32);
+        add.push(ClusterRecord {
+            names: vec![format!("{} cluster", n.names[0])],
+            galaxy: n.galaxy.clone(),
+            kind: "Open".into(),
+            pos_pc: n.pos_pc,
+            radius_pc: e.radius_pc as f64,
+            abs_mag: proc_galsys::abs_mag_of_lum(e.lum) as f64,
+            age_gyr: e.age_gyr as f64,
+            cen_pow: e.cen_pow as f64,
+            no_members: false,
+            color: None,
+            source: "procedural".into(),
+            embedded_in: Some(proc_galsys::system_name(SystemKind::Nebula, galaxy_code(cat, g), index)),
+        });
+    }
+    let n = add.len();
+    for rec in add {
+        cat.add_cluster_record(rec);
+    }
+    info!("{n} catalog nebulae hold young clusters of RSN stars");
+}
+
 fn setup(
     mut commands: Commands,
-    data: Res<SeData>,
+    mut data: ResMut<SeData>,
+    engine: Res<crate::config::EngineConfig>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     memory: Option<Res<crate::memory::MemoryLimits>>,
 ) {
+    let deep = std::fs::read_to_string(engine.se_path.join("config/main-def.cfg")).map_or_else(|_| DeepSkyConfig::default(), |t| DeepSkyConfig::from_cfg(&t));
+    add_nebula_clusters(data.catalog_mut(), &deep);
     let gs = GalaxySettings::default();
     let clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
     let neb_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
@@ -253,25 +297,27 @@ fn galaxy_name_of(cat: &Catalog, g: u32) -> String {
     cat.galaxies[g as usize].names.first().cloned().unwrap_or_default()
 }
 
-/// The generator input of catalog galaxy `g`, or `None` when it cannot hold clusters/nebulae (quasars, odd types).
-///
-/// The Milky Way follows the emission map of its sprite model, which is built in the background at start-up; its system
-/// waits for it (`fallback` allows the analytic spiral after a while).
-fn gen_input(g: u32, cat: &Catalog, gs: &GalaxyState, ns: &NebulaState, density: &GalaxyDensity, cfg: &DeepSkyConfig, fallback: bool) -> Option<GenInput> {
+/// What SE's galaxy record holds of catalog galaxy `g` for its generators: `None` for quasars and
+/// galaxies without a radius.
+struct Basics {
+    hubble: u8,
+    /// The record radius (rec +0x20): an elliptical's catalog radius is 2.4 times it.
+    radius: f32,
+    /// Half extents of the box (rec +0x40..+0x48).
+    dims: [f32; 3],
+    seed_pos: [f32; 3],
+    model_scale: Option<[f32; 3]>,
+}
+
+fn basics(g: u32, cat: &Catalog, gs: &GalaxyState) -> Option<Basics> {
     let rec = cat.galaxies.get(g as usize)?;
     let hubble = hubble_type_index(&rec.kind);
     let r = rec.radius_pc as f32;
-    if rec.quasar || hubble == 0 || !(r > 0.0) || !r.is_finite() {
+    if rec.quasar || !(r > 0.0) || !r.is_finite() {
         return None;
     }
-    let is_mw = rec.names.iter().any(|n| n == "Milky Way");
-    let procedural = rec.source == "procedural";
-    let frame = GalaxyFrame { center_pc: rec.pos_pc, rot: rec.orientation };
     let model_scale = if hubble >= 9 { gs.model_scale_of(rec) } else { None };
-    if is_mw && model_scale.is_some() && !density.has_map() && !fallback {
-        return None;
-    }
-    let (lum_radius, dims) = if hubble < 9 {
+    let (radius, dims) = if hubble < 9 {
         // E galaxies: the record radius is the 2.4x visual radius; En has axis ratio 1 - n/10.
         let e = r;
         let f = 1.0 - (hubble as f32 - 1.0) / 10.0;
@@ -281,13 +327,61 @@ fn gen_input(g: u32, cat: &Catalog, gs: &GalaxyState, ns: &NebulaState, density:
     } else {
         (r, [r, r, r])
     };
-    let seed_pos = if procedural {
+    let seed_pos = if rec.source == "procedural" {
         let key = rec.names.first().and_then(|n| parse_galaxy_name(n)).map(|(k, _)| k)?;
         let off = rec.pos_pc - key.center();
         [off.x as f32, off.y as f32, off.z as f32]
     } else {
         [rec.pos_pc.x as f32, rec.pos_pc.y as f32, rec.pos_pc.z as f32]
     };
+    Some(Basics { hubble, radius, dims, seed_pos, model_scale })
+}
+
+/// What SE's star octree reads of catalog galaxy `g` (FUN_14053b5d0): its box, radius, type, model
+/// and seed, and its name part.
+pub(crate) fn star_input(g: u32, cat: &Catalog, gs: &GalaxyState) -> Option<se_core::star_octree::GalaxyStarInput> {
+    let b = basics(g, cat, gs)?;
+    let shape = GalaxyShape {
+        seed_pos: b.seed_pos,
+        hubble: b.hubble,
+        radius_pc: b.radius,
+        lum: 0.0,
+        compact: false,
+        dims: b.dims,
+        has_model: b.model_scale.is_some(),
+        home: None,
+        catalog_clusters: 0,
+        catalog_nebulae: 0,
+        glob_clusters: None,
+    };
+    Some(se_core::star_octree::GalaxyStarInput {
+        dims: DVec3::new(b.dims[0] as f64, b.dims[1] as f64, b.dims[2] as f64),
+        radius_pc: b.radius as f64,
+        hubble: b.hubble,
+        has_model: b.model_scale.is_some(),
+        seed: shape.seed(),
+        galaxy: galaxy_code(cat, g),
+    })
+}
+
+/// The generator input of catalog galaxy `g`, or `None` when it cannot hold clusters/nebulae (quasars, odd types).
+///
+/// The Milky Way follows the emission map of its sprite model, which is built in the background at start-up; its system
+/// waits for it (`fallback` allows the analytic spiral after a while).
+fn gen_input(g: u32, cat: &Catalog, gs: &GalaxyState, ns: &NebulaState, density: &GalaxyDensity, cfg: &DeepSkyConfig, fallback: bool) -> Option<GenInput> {
+    let rec = cat.galaxies.get(g as usize)?;
+    let hubble = hubble_type_index(&rec.kind);
+    if hubble == 0 {
+        return None;
+    }
+    let b = basics(g, cat, gs)?;
+    let is_mw = rec.names.iter().any(|n| n == "Milky Way");
+    let frame = GalaxyFrame { center_pc: rec.pos_pc, rot: rec.orientation };
+    let model_scale = b.model_scale;
+    if is_mw && model_scale.is_some() && !density.has_map() && !fallback {
+        return None;
+    }
+    let (lum_radius, dims, seed_pos) = (b.radius, b.dims, b.seed_pos);
     let count = |name: &str| cat.clusters.iter().filter(|c| c.galaxy == name).count() as u32;
     let count_n = |name: &str| cat.nebulae.iter().filter(|c| c.galaxy == name).count() as u32;
     let (cc, cn) = if is_mw { (count("Milky Way"), count_n("Milky Way")) } else { (0, 0) };
@@ -647,6 +741,7 @@ fn cluster_record(cat: &Catalog, g: u32, c: &proc_galsys::ProcCluster, frame: Ga
         no_members: false,
         color: None,
         source: "procedural".into(),
+        embedded_in: c.nebula.map(|n| proc_galsys::system_name(SystemKind::Nebula, galaxy_code(cat, g), n)),
     }
 }
 
@@ -664,6 +759,7 @@ fn nebula_record(cat: &Catalog, g: u32, n: &proc_galsys::ProcNebula, frame: Gala
         source: "procedural".into(),
         model_roll: n.model_roll,
         randomize: [0.0; 3],
+        generate_stars: n.class == proc_galsys::NebulaClass::Diffuse,
     }
 }
 

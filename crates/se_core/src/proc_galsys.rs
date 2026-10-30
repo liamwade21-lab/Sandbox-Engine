@@ -452,6 +452,44 @@ fn generate_nebulae(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Emi
     out
 }
 
+/// A nebula's young embedded cluster (FUN_14049cf40): radius `exp_draw(ClusterOpenRadius)` but at
+/// most `N(0.4, 0.02)` of the nebula's, luminosity `exp_draw(ClusterOpenLum)` times the cube of that
+/// cut, age `tn(0.02, 0.005, 0.001, 0.1)` Gyr, `CenPow` `tn(1.5, 0.3, 0.5, 2.5)`.
+pub struct Embedded {
+    pub radius_pc: f32,
+    pub lum: f32,
+    pub age_gyr: f32,
+    pub cen_pow: f32,
+}
+
+fn embedded_draw(s24: &mut u32, s20: &mut u32, cfg: &DeepSkyConfig, nebula_radius_pc: f32) -> Embedded {
+    let _q = random_quat(s24);
+    let mut radius = exp_draw(s24, cfg.open_radius[0], cfg.open_radius[1]);
+    let limit = irwin_hall(s20, 0.4, 0.02) * nebula_radius_pc;
+    let mut frac = 1.0f32;
+    if limit < radius {
+        frac = limit / radius;
+        radius = limit;
+    }
+    let mut lum = exp_draw(s24, cfg.open_lum[0], cfg.open_lum[1]);
+    if frac < 1.0 {
+        lum *= frac * frac * frac;
+    }
+    let age_gyr = truncated_normal(s20, 0.02, 0.005, 0.001, 0.1);
+    let cen_pow = truncated_normal(s20, 1.5, 0.3, 0.5, 2.5);
+    Embedded { radius_pc: radius, lum, age_gyr, cen_pow }
+}
+
+/// The young cluster of a catalog nebula that makes stars (its `GenerateStars`), drawn as SE draws a
+/// procedural nebula's ([`embedded_draw`]) on streams seeded by the nebula's position hash (the
+/// galaxies' rule, [`GalaxyShape::seed`]).
+pub fn catalog_embedded(cfg: &DeepSkyConfig, pos_pc: [f32; 3], nebula_radius_pc: f32) -> Embedded {
+    let seed = GalaxyShape { seed_pos: pos_pc, hubble: 0, radius_pc: 0.0, lum: 0.0, compact: false, dims: [0.0; 3], has_model: false, home: None, catalog_clusters: 0, catalog_nebulae: 0, glob_clusters: None }.seed();
+    let mut s24 = (seed as u32).wrapping_mul(0x34cb);
+    let mut s20 = (seed as u32).wrapping_mul(0xb5e1);
+    embedded_draw(&mut s24, &mut s20, cfg, nebula_radius_pc)
+}
+
 fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn EmissionMap, nebulae: &[ProcNebula], seed: i32) -> Vec<ProcCluster> {
     let mut s24 = (seed as u32).wrapping_mul(0x34cb);
     let mut s20 = (seed as u32).wrapping_mul(0xb5e1);
@@ -505,21 +543,8 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
 
     // 2. one young cluster inside every diffuse nebula.
     for n in nebulae.iter().filter(|n| n.class == NebulaClass::Diffuse) {
-        let _q = random_quat(&mut s24);
-        let mut radius = exp_draw(&mut s24, cfg.open_radius[0], cfg.open_radius[1]);
-        let limit = irwin_hall(&mut s20, 0.4, 0.02) * n.radius_pc;
-        let mut frac = 1.0f32;
-        if limit < radius {
-            frac = limit / radius;
-            radius = limit;
-        }
-        let mut lum = exp_draw(&mut s24, cfg.open_lum[0], cfg.open_lum[1]);
-        if frac < 1.0 {
-            lum *= frac * frac * frac;
-        }
-        let age = truncated_normal(&mut s20, 0.02, 0.005, 0.001, 0.1);
-        let cen_pow = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
-        push(&mut out, ClusterClass::Open, n.pos, radius, lum, (age, cen_pow), [0.7, 0.8, 1.0], Some(n.index));
+        let e = embedded_draw(&mut s24, &mut s20, cfg, n.radius_pc);
+        push(&mut out, ClusterClass::Open, n.pos, e.radius_pc, e.lum, (e.age_gyr, e.cen_pow), [0.7, 0.8, 1.0], Some(n.index));
     }
 
     // 3. globular clusters: a halo blob.

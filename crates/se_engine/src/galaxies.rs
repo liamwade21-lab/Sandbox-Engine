@@ -41,7 +41,6 @@ use se_core::galaxy_model::{
     DensityMap, GalaxyModelDef, ModelCatalog, ModelImages, ModelSelection, RgbaImage, SpriteLayer,
     build_galaxy_model, model_textures, parse_pst,
 };
-use se_core::star_octree::ArmMap;
 use se_core::vfs::Vfs;
 
 use crate::camera::FlyCamera;
@@ -733,6 +732,11 @@ impl GalaxyDensity {
         self.map.is_some()
     }
 
+    /// The Milky Way model's emission voxel map, once built.
+    pub fn map(&self) -> Option<Arc<DensityMap>> {
+        self.map.clone()
+    }
+
     /// Universe-frame position (pc from the Sun) -> SE model units (disc radius = 1, z up the axis).
     pub fn model_from_universe(&self, pos_pc: DVec3) -> DVec3 {
         let port = self.orientation.inverse() * (pos_pc - self.centre_pc);
@@ -846,18 +850,15 @@ pub(crate) struct GalaxyState {
 }
 
 impl GalaxyState {
-    /// Spiral arms for the stars generated inside catalog galaxy `g`, from its sprite model's
-    /// emission map: `None` while the model is still being built, `Some(None)` when there is none.
-    pub(crate) fn interior_arms(&self, g: usize, radius_pc: f64) -> Option<Option<ArmMap>> {
-        let Some(Some(m)) = self.model_of.get(g) else { return Some(None) };
+    /// The emission voxel map of catalog galaxy `g`'s sprite model, which SE's galaxy star generator
+    /// samples: `None` while the model is still being built, `Some(None)` when there is none.
+    pub(crate) fn interior_map(&self, g: usize) -> Option<Option<Arc<se_core::galaxy_model::DensityMap>>> {
+        let Some(Some(_)) = self.model_of.get(g) else { return Some(None) };
         if self.failed.contains(&g) {
             return Some(None);
         }
         match self.slots.iter().find(|s| s.galaxy == g).map(|s| &s.state) {
-            Some(SlotState::Ready(r)) => Some(r.map.clone().map(|map| {
-                let ms = self.models.models()[*m].model_scale();
-                ArmMap::new(map, DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc)
-            })),
+            Some(SlotState::Ready(r)) => Some(r.map.clone()),
             Some(SlotState::Failed) => Some(None),
             _ => None,
         }

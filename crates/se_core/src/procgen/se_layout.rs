@@ -83,6 +83,10 @@ pub(super) struct SePlanet {
     pub asteroids: u32,
     /// Bodies of a "debris" ring (ProbRingsDebris), counted in `moons` as SE does.
     pub debris: u32,
+    /// SE's record seeds of the planet (its streams A and B, FUN_140500700).
+    pub seeds: (u32, u32),
+    /// Its number among the system's planets (SE's planet counter).
+    pub n: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -137,6 +141,29 @@ pub(super) fn inner_limit_au(s: &SeStar, hot: bool) -> f64 {
     let by_size = s.radius_km * 1.05;
     let by_mass = (2.0 * s.mass_earth()).cbrt() * 15_545.24 * 4.0;
     by_temp.max(by_size).max(by_mass) / KM_PER_AU
+}
+
+/// A planet drawn on its own streams `(pa, pb)` as SE's planet generator draws one (FUN_140501f60):
+/// C/O and metallicity `U(0.8, 1.2)` times the system's, type by `ProbGasGiant` / `ProbIceGiant`, mass
+/// `10^tn(...)` Jupiter masses, then composition, class and radius at equilibrium temperature `t_eq`.
+/// SE's rogue planets (FUN_1404fc280) are drawn so, without a disk cap.
+pub(super) fn lone_planet(pa: u32, pb: u32, t_eq: f32, c_to_o: f32, met: f32) -> (f64, f64, [f32; 6], i32) {
+    let mut pr = SeRng::new(pa, pb);
+    let c_to_o = (1.2 - pr.uniform(0.4)) * c_to_o;
+    let met = (1.2 - pr.uniform(0.4)) * met;
+    let u = pr.uniform(1.0);
+    let (ty, mean, sig, lo, hi) = if u < PROB_GAS_GIANT {
+        (3u8, 0.5, 0.5, -1.0, 1.12f32)
+    } else if u < PROB_GAS_GIANT + PROB_ICE_GIANT {
+        (2, -1.0, 0.5, 0.003_146_352f32.log10(), -0.5)
+    } else {
+        (1, -2.66, 1.0, -6.2, -1.2)
+    };
+    let mass_me = 10f64.powf(pr.tnormal(mean, sig, lo, hi) as f64) * JUPITER_ME;
+    let cold = pr.uniform(1.0) < PROB_COLD_TERRA;
+    let (comp, class) = climate::procedural_composition(&mut pr, ty, mass_me as f32, t_eq, cold, c_to_o, met);
+    let radius_km = climate::procedural_radius_km(&comp, mass_me as f32, t_eq) as f64;
+    (mass_me, radius_km, comp, class)
 }
 
 /// The planets and belts of a single star; `seed` stands in for SE's system seed.
@@ -276,6 +303,8 @@ pub(super) fn place(s: &SeStar, idx: u32, slots: u32, soi: f64, inner: &dyn Fn(b
             moons += 1;
         }
         planets.push(SePlanet {
+            seeds: (pa, pb),
+            n,
             a_au: sma,
             ecc,
             inc_deg: inc / DEG,

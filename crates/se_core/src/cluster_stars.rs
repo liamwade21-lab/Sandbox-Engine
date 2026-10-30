@@ -268,7 +268,22 @@ pub struct Member {
     pub age_gyr: f32,
     /// [Fe/H].
     pub feh: f32,
+    /// SE's star+0x18, the carbon-to-oxygen ratio (C/O) its systems inherit.
+    pub c_to_o: f32,
     pub class: ClassWord,
+}
+
+/// SE's star populations, FUN_1401d63b0's mode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Population {
+    /// 1: a galaxy's young disk; `r` is the star's distance from the galaxy's centre in units of its box.
+    Disk { r: f64 },
+    /// 2: a galaxy's old bulge and halo.
+    Old,
+    /// 3: a globular cluster of this age (Gyr).
+    Globular { age: f64 },
+    /// 4: a galaxy's nucleus cluster (its kern).
+    Nucleus,
 }
 
 /// Temperature and bolometric light of a normal star of class `c` and magnitude `mv`.
@@ -323,16 +338,24 @@ pub fn carbon(rng: &mut Rng, c: ClassWord, x6: f64) -> ClassWord {
 
 /// A member whose class may have been converted: its light and mass for the class (SE recomputes
 /// them, FUN_1401de170).
-fn converted(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, old: ClassWord, c: ClassWord) -> Member {
+#[allow(clippy::too_many_arguments)]
+fn converted(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, cto: f64, old: ClassWord, c: ClassWord) -> Member {
     if c == old {
-        return member(mv, teff, mass, age, feh, c);
+        return member(mv, teff, mass, age, feh, cto, c);
     }
     let (teff, lb) = light(c, mv);
-    member(mv, teff, mass_of(c, lb), age, feh, c)
+    member(mv, teff, mass_of(c, lb), age, feh, cto, c)
 }
 
-fn member(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, class: ClassWord) -> Member {
-    Member { abs_mag: mv as f32, teff: teff as f32, mass: mass as f32, age_gyr: age as f32, feh: feh as f32, class }
+fn member(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, cto: f64, class: ClassWord) -> Member {
+    Member { abs_mag: mv as f32, teff: teff as f32, mass: mass as f32, age_gyr: age as f32, feh: feh as f32, c_to_o: cto as f32, class }
+}
+
+/// SE's C/O at `r` box units from a galaxy's centre (FUN_1401d6fe0): N(1 - 0.6755 r, 0.17), N(0.3245,
+/// 0.17) beyond the box.
+fn c_to_o_at(rng: &mut Rng, r: f64) -> f64 {
+    let mean = if r > 1.0 { 0.324_502_59 } else { 1.0 - r * 0.675_497_4 };
+    normal(rng, mean, 0.169_864_37)
 }
 
 /// A member of an open cluster of age `cluster_age` (FUN_1401d6c60): [Fe/H] N(-0.125, 0.07), the
@@ -349,7 +372,7 @@ pub fn open_member(rng: &mut Rng, cluster_age: f64) -> Member {
     let mass = mass_of(c, lb);
     if lifetime(mass, c) > age {
         let w = wolf_rayet(rng, c, age);
-        return converted(mv, teff, mass, age, feh, c, w);
+        return converted(mv, teff, mass, age, feh, x6, c, w);
     }
     let mv_g = normal(rng, 1.0, 1.0);
     let g = giant_class(rng, mv_g);
@@ -357,23 +380,32 @@ pub fn open_member(rng: &mut Rng, cluster_age: f64) -> Member {
     let mass_g = mass_of(g, lb_g);
     if lifetime(mass_g, g) > age {
         let k = carbon(rng, g, x6);
-        return converted(mv_g, teff_g, mass_g, age, feh, g, k);
+        return converted(mv_g, teff_g, mass_g, age, feh, x6, g, k);
     }
     let mv_r = normal(rng, 14.0, 0.83);
     let (r, _, teff_r) = remnant(rng, mass_g, false);
-    member(mv_r, teff_r, mass_g, age, feh, r)
+    member(mv_r, teff_r, mass_g, age, feh, x6, r)
 }
 
-/// A member of a globular (`nucleus` false) or nucleus cluster in the magnitude band `[lo, hi]`
-/// (FUN_1401d63b0): [Fe/H] N(-1, 0.25); a main-sequence star of Mv `tn(0, 6, lo, hi)` (the mean is
-/// `0x140808174`, which nothing writes; the band edges use 3); the age is the
-/// cluster's +- N(0, 0.01) Gyr (nucleus: 70 % a uniform share of the star's lifetime, else a young
-/// N(0, 0.01)). A star whose lifetime is over is a giant of Mv `tn(1, 1, lo, hi)`, unless the band
-/// reaches past Mv 11.5 and the star is older than 1.1 lifetimes: then a remnant of its mass.
-pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Member {
-    let feh = normal(rng, -1.0, 0.25);
-    // SE's star+0x18 for cluster stars (FUN_1401d6fe0 of 0), read by the carbon test.
-    let x6 = normal(rng, 1.0, 0.169_864_37);
+/// A star of population `pop` in the magnitude band `[lo, hi]` (FUN_1401d63b0):
+/// - [Fe/H]: the disk's N(0.1 - 0.4503 r, 0.07) (N(-0.35, 0.07) beyond its box, FUN_1401d7070), else
+///   N(-1, 0.25); C/O by `r` in the disk ([`c_to_o_at`]), else as at the centre;
+/// - a main-sequence star of Mv `tn(0, 6, lo, hi)` (the mean is `0x140808174`, which nothing writes;
+///   the band edges use 3);
+/// - the age: the disk's 90 % a uniform share of the star's lifetime, else a newborn N(0, 0.01); the
+///   old population's N(7, 0.3) Gyr; a globular's age +- N(0, 0.01); a nucleus's 70 % a uniform
+///   share, else newborn.
+///
+/// A star whose lifetime is over is a giant of Mv `tn(1, 1, lo, hi)`, unless the band reaches past
+/// Mv 11.5 and the star is older than 1.1 lifetimes: then a remnant of its mass.
+pub fn star_of(rng: &mut Rng, pop: Population, lo: f64, hi: f64) -> Member {
+    let (feh, x6) = match pop {
+        Population::Disk { r } => {
+            let mean = if (0.0..=1.0).contains(&r) { 0.1 - r * 0.450_331_6 } else { -0.350_331_6 };
+            (normal(rng, mean, 0.07), c_to_o_at(rng, r.abs()))
+        }
+        _ => (normal(rng, -1.0, 0.25), c_to_o_at(rng, 0.0)),
+    };
     let mv = trunc_normal(rng, 0.0, 6.0, lo, hi);
     let c = ms_class(rng, mv);
     let (teff, lb) = light(c, mv);
@@ -382,17 +414,17 @@ pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi:
     let mv_g = trunc_normal(rng, 1.0, 1.0, lo, hi);
     let g = giant_class(rng, mv_g);
     let t_end = t_ms * 1.1;
-    let age = if !nucleus {
-        cluster_age + normal(rng, 0.0, 0.01)
-    } else if rng.f64() >= 0.3 {
-        rng.f64() * t_ms.min(AGE_MAX)
-    } else {
-        normal(rng, 0.0, 0.01)
+    let share = |rng: &mut Rng, p_young: f64| if rng.f64() >= p_young { rng.f64() * t_ms.min(AGE_MAX) } else { normal(rng, 0.0, 0.01) };
+    let age = match pop {
+        Population::Disk { .. } => share(rng, 0.1),
+        Population::Old => normal(rng, 7.0, 0.3),
+        Population::Globular { age } => age + normal(rng, 0.0, 0.01),
+        Population::Nucleus => share(rng, 0.3),
     }
     .clamp(AGE_MIN, AGE_MAX);
     if t_ms > age {
         let w = wolf_rayet(rng, c, age);
-        return converted(mv, teff, mass, age, feh, c, w);
+        return converted(mv, teff, mass, age, feh, x6, c, w);
     }
     if age < t_end || hi < 11.5 {
         let (teff_g, lb_g) = light(g, mv_g);
@@ -400,28 +432,44 @@ pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi:
         // SE then sets the age to the giant's lifetime or 1.1 MS lifetimes, the shorter.
         let age = lifetime(mass_g, g).min(t_end);
         let k = carbon(rng, g, x6);
-        return converted(mv_g, teff_g, mass_g, age, feh, g, k);
+        return converted(mv_g, teff_g, mass_g, age, feh, x6, g, k);
     }
     let (r, mv_r, teff_r) = remnant(rng, mass, true);
-    member(mv_r.unwrap_or(mv), teff_r, mass, age, feh, r)
+    member(mv_r.unwrap_or(mv), teff_r, mass, age, feh, x6, r)
 }
 
-/// A member of the deepest octree level (FUN_1401d63b0 with its leaf flag): 45 % (globular) / 60 %
-/// (nucleus) of the draws are objects of luminosity 0 (class 0x6800, radius 1 AU), which draw nothing
-/// (`None`); then a share 0.0333 / 0.14 of the rest (`0x1408300f8` / `0x1408300fc`, summed at start-up)
-/// are remnants of a mass `tn(8, 3, 3, 100)` (black holes: 3e-5 / 0.01), `tn(2.22, 0.39, 1.44, 3)`
-/// (neutron stars: 2.5e-4 / 0.03) or `tn(1, 0.5, 0.56, 1.44)` (white dwarfs: 0.033 / 0.1)
-/// (FUN_1401d8060), magnitudes their own (FUN_1401d5fe0); the others are [`dense_member`]s.
-pub fn leaf_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Option<Member> {
+/// A member of a globular (`nucleus` false) or nucleus cluster (FUN_1401d63b0 modes 3 and 4, see
+/// [`star_of`]).
+pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Member {
+    star_of(rng, if nucleus { Population::Nucleus } else { Population::Globular { age: cluster_age } }, lo, hi)
+}
+
+/// What a draw of the deepest octree level makes (FUN_1401d63b0 with its leaf flag).
+#[derive(Clone, Copy, Debug)]
+pub enum LeafDraw {
+    /// A rogue planet (class 0x67ff, luminosity 0, radius 1 AU) of this age (Gyr): a whole number
+    /// of Gyr plus 0.001.
+    Planemo { age_gyr: f32 },
+    Star(Member),
+}
+
+/// A draw of the deepest octree level (FUN_1401d63b0 with its leaf flag): `ProbPlanemo` 45 % (the
+/// nucleus's `ProbKernPlanemo` 60 %) are rogue planets; then a share 0.0333 / 0.14 of the rest
+/// (`0x1408300f8` / `0x1408300fc`, summed at start-up) are lone remnants of a mass `tn(8, 3, 3, 100)`
+/// (black holes: `ProbSolitaryBH` 3e-5 / 0.01), `tn(2.22, 0.39, 1.44, 3)` (neutron stars: 2.5e-4 /
+/// 0.03) or `tn(1, 0.5, 0.56, 1.44)` (white dwarfs: 0.033 / 0.1) (FUN_1401d8060), magnitudes their
+/// own (FUN_1401d5fe0); the others are [`star_of`]s.
+pub fn leaf_draw(rng: &mut Rng, pop: Population, lo: f64, hi: f64) -> LeafDraw {
+    let nucleus = pop == Population::Nucleus;
     let share = if nucleus { 0.6 } else { 0.45 };
     let u = rng.f64();
     if u < share {
-        return None;
+        return LeafDraw::Planemo { age_gyr: (rng.next_u64() % 12) as f32 + 0.001 };
     }
     let x = (u - share) / (1.0 - share);
     let (bh, ns, wd) = if nucleus { (0.01, 0.03, 0.1) } else { (3e-5, 2.5e-4, 0.033) };
     if x > bh + ns + wd {
-        return Some(dense_member(rng, nucleus, cluster_age, lo, hi));
+        return LeafDraw::Star(star_of(rng, pop, lo, hi));
     }
     let mass = if x < bh {
         trunc_normal(rng, 8.0, 3.0, 3.0, 100.0)
@@ -432,7 +480,20 @@ pub fn leaf_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: 
     };
     let (c, mv, teff) = remnant(rng, mass, true);
     let feh = normal(rng, -1.0, 0.25);
-    Some(member(mv.unwrap_or(15.0), teff, mass, cluster_age.clamp(AGE_MIN, AGE_MAX), feh, c))
+    let age = match pop {
+        Population::Globular { age } => age,
+        _ => 10.0,
+    };
+    LeafDraw::Star(member(mv.unwrap_or(15.0), teff, mass, age.clamp(AGE_MIN, AGE_MAX), feh, 1.0, c))
+}
+
+/// [`leaf_draw`] for a cluster, whose rogue planets draw nothing (`None`).
+pub fn leaf_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Option<Member> {
+    let pop = if nucleus { Population::Nucleus } else { Population::Globular { age: cluster_age } };
+    match leaf_draw(rng, pop, lo, hi) {
+        LeafDraw::Planemo { .. } => None,
+        LeafDraw::Star(m) => Some(m),
+    }
 }
 
 /// The black hole SE makes the first member of a globular cluster older than 10 Myr, or of a
@@ -487,6 +548,16 @@ pub fn node_cell(level: u8, number: u64) -> Option<[u16; 3]> {
 /// name, level, node and index. Any case.
 pub fn parse_member_name(s: &str) -> Option<(String, u8, u64, u32)> {
     let s = s.trim();
+    // `RSN <nebula numbers>-<index>`: a star of the young cluster in nebula `RN <nebula numbers>`
+    // (two numbers in catalog galaxies, five in procedural ones), its one node.
+    if s.get(..4)?.eq_ignore_ascii_case("RSN ") {
+        let parts: Vec<&str> = s[4..].trim().split('-').map(str::trim).collect();
+        if (parts.len() != 3 && parts.len() != 6) || parts.iter().any(|p| p.parse::<u64>().is_err()) {
+            return None;
+        }
+        let n = parts.len();
+        return Some((format!("RN {}", parts[..n - 1].join("-")), 0, 0, parts[n - 1].parse().ok()?));
+    }
     if !s.get(..4)?.eq_ignore_ascii_case("RSC ") {
         return None;
     }
@@ -524,6 +595,9 @@ mod tests {
         assert_eq!(parse_member_name("rsc 0-3-116-2668-52089-0-0-0"), Some(("RC 0-3-116-2668-52089".into(), 0, 0, 0)));
         assert_eq!(parse_member_name("RSC 8514-12-1-9-0"), None);
         assert_eq!(parse_member_name("RS 8514-12-1-0-0"), None);
+        assert_eq!(parse_member_name("RSN 8514-9602-17"), Some(("RN 8514-9602".into(), 0, 0, 17)));
+        assert_eq!(parse_member_name("rsn 0-9-110030168-905-7-3"), Some(("RN 0-9-110030168-905-7".into(), 0, 0, 3)));
+        assert_eq!(parse_member_name("RSN 8514-9602"), None);
     }
 
     #[test]

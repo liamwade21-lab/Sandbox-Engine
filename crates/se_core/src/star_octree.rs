@@ -1,375 +1,126 @@
-//! Procedural stars of a galaxy, organised as a magnitude-stratified octree.
+//! SpaceEngine's star octree of a galaxy, decompiled: `seStarNodeCache::CreateGalaxyBlock`
+//! (FUN_14053b5d0), the node set-up (FUN_140543c70), the galaxy's root grid (`seGalSysModel::Build`,
+//! FUN_1404a1a10 / FUN_1404a40b0), the magnitude bands (FUN_1401d7300) and the names (FUN_1401c0180).
 //!
-//! The galaxy's bounding cube is subdivided into an octree. Each level `L` owns a
-//! band of absolute magnitudes chosen so that its stars are visible (above the
-//! magnitude limit) from up to about `VIEW_FACTOR` node sizes away: bright, rare
-//! stars live in big shallow nodes; faint, common stars in small deep ones. To
-//! draw the sky from any point, load for every level the few nodes around the
-//! camera. Each node's stars are generated deterministically from its address.
+//! - **Roots.** The galaxy's box (half extents `dims`, record +0x40..+0x48) is cut into a regular grid
+//!   of 2^d cells per axis, `d = clamp((int)log2(dims.x / (2000 / 2^sc)) + 1, 1, 6)`, `sc` the galaxy's
+//!   size class `clamp((int)log2(4000 / R), 0, 5)`. Roots are numbered depth first in SE's octant order
+//!   (octant bits 4, 2, 1 mark the lower x, y, z half), so a root's number is its base-8 octant path.
+//! - **Nodes.** Every root holds an octree of `9 - sc` levels; a child's number is its parent's x 8
+//!   plus its octant. Here a node is the cell of the global grid of depth `d + level`.
+//! - **Bands.** Level `L` holds the stars of the `L`-th of `9 - sc` equal-probability slices of
+//!   N(0, 6) over Mv -8 .. 30 (the last edge capped at p 0.9999, Mv 22.3): coarse nodes hold the rare
+//!   bright stars, the deepest ones the dwarfs.
+//! - **Candidates.** Every node tries the same number of points, `16384 x 0.3 x` the root volume over
+//!   `(2000 / 2^sc)^3` pc^3 (at least `0.015 x 16384`), split among the galaxy's components (model
+//!   disk 1 and bulge 1 for types S0..SBc, young disk 0.25 for S0..SBc, halo 0.1 for all but Irr),
+//!   at the deepest level `1 / (1 - ProbPlanemo - ProbSolitaryBH)` times as many. Nodes past level 4
+//!   with fewer than 64 tries, and nodes past level 2 that keep fewer than 64 stars, are empty.
+//! - **Acceptance.** A galaxy with a sprite model's emission voxel map keeps a uniform point of the
+//!   node with probability `0.15 x` the map's red channel there, as a young disk star. Without a map,
+//!   SE's analytic components: young disk `exp(-|(3x, 3y, 120z)|)` inside the box's sphere, bulge
+//!   `exp(-|(37x, 37y, 45z)|)` and halo `exp(-8|p|)` (old stars), `p` in box units.
+//! - **Stars.** SE's star generator ([`cluster_stars::star_of`]); at the deepest level its leaf draw:
+//!   45 % rogue planets (planemos), 3.3 % of the rest lone white dwarfs, neutron stars and black holes.
+//! - **Random numbers.** SE's LCG pair seeded with `(node * 0x56a + level * 0x24db + root * 0x1430) x`
+//!   the galaxy's seed, a component multiplier per stream, three position draws then one acceptance
+//!   draw per point, as in the exe. SE's star generator draws from the same stream; here each kept point
+//!   types its star from a stream of its own (seeded by the node and the point), so a star's position is
+//!   SE's rule for SE's stream while its type is SE's rule for another stream.
+//! - **Names.** `RS <galaxy>-<root>-<level>-<node>-<index>` (catalog galaxies) and
+//!   `RS 0-<level>-<node>-<index>-<root>-<level>-<node>-<index>` (procedural ones); the index counts
+//!   the stars the node keeps. SE's level-0 nodes first hold the catalog stars of their root, which shift
+//!   SE's indices there; the port's start at 0.
 //!
-//! Positions are in the galaxy's model frame (parsecs, disk normal = -Z, as for
-//! catalog galaxies), relative to the galaxy centre.
+//! Positions are in the galaxy's model frame (parsecs, disk normal = -Z, as for catalog galaxies),
+//! relative to the galaxy centre.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use glam::{DQuat, DVec3};
 
+use crate::cluster_stars::{self as cs, LeafDraw, Member, Population};
 use crate::galaxy_model::DensityMap;
-use crate::star::{SpectralClass, StarKind, blackbody_rgb, main_sequence_abs_mag};
+use crate::proc_galsys::GalaxyRef;
+use crate::star::{SpectralClass, StarKind, blackbody_rgb};
 
-/// Stars are kept visible this many node sizes from the camera.
-pub const VIEW_FACTOR: f64 = 1.5;
-/// Faint limit of the procedural population (absolute magnitude).
-pub const FAINTEST_MAG: f64 = 16.0;
+/// SE's most stars (and tries per component) in one node (`0x4000`).
+pub const NODE_CAP: usize = 16_384;
+/// SE's deepest root grid (`GOCT_MAX_DEPTH`) and most star levels (`0x140762a88`).
+const MAX_DEPTH: u32 = 6;
+const MAX_LEVELS: u8 = 9;
+/// Root cell edge (pc) of a size class 0 galaxy and the size class reference radius.
+const CELL_PC: f64 = 2000.0;
+const SIZE_CLASS_PC: f64 = 4000.0;
+/// `1 / (1 - ProbPlanemo - ProbSolitaryBH)` (`0x140807fdc`): room for the deepest level's planemos.
+const LEAF_BOOST: f32 = 1.0 / ((1.0 - 0.45) - 3e-5);
+/// Voxel map gain (`0x1406d4190`).
+const VOXEL_GAIN: f32 = 0.15;
+/// The magnitude bands: N(MEAN, 6) from Mv -8 to 30 (`0x140808174` is never written: 0).
+const BAND_MEAN: f64 = 0.0;
+const BAND_SIGMA_SQRT2: f64 = 8.485_281_374_238_571;
+/// Keep a node while its brightest band edge is this many magnitudes past the limit (star fade-in).
+const REACH_MARGIN_MAG: f64 = 0.5;
 
-/// Solar-neighbourhood luminosity function: stars per pc^3 per magnitude
-/// (Wielen-like, all luminosity classes). Integrates to ~0.1 stars/pc^3.
-const LF: [(f64, f64); 15] = [
-    (-10.0, 1.0e-10),
-    (-8.0, 1.0e-9),
-    (-6.0, 2.0e-8),
-    (-4.0, 3.0e-7),
-    (-2.0, 4.0e-6),
-    (0.0, 6.0e-5),
-    (2.0, 4.0e-4),
-    (4.0, 2.0e-3),
-    (6.0, 3.5e-3),
-    (8.0, 5.0e-3),
-    (10.0, 1.0e-2),
-    (12.0, 1.5e-2),
-    (13.0, 1.6e-2),
-    (14.0, 1.4e-2),
-    (16.0, 8.0e-3),
-];
-
-/// No star is brighter than this (the most luminous hypergiants reach about -10). Level 0 of a
-/// big galaxy spans magnitudes -30 to about -10; a flat tail there filled it with stars as
-/// bright as whole galaxies, and their radii (tenths of a light year) broke the sphere mesh.
-const BRIGHTEST_MAG: f64 = -10.5;
-
-fn lf(m: f64) -> f64 {
-    if m < BRIGHTEST_MAG {
-        return 0.0;
-    }
-    if m <= LF[0].0 {
-        // Continue the -10..-8 slope.
-        let (m0, p0) = LF[0];
-        let (m1, p1) = LF[1];
-        return (p0.ln() + (p1.ln() - p0.ln()) * (m - m0) / (m1 - m0)).exp();
-    }
-    for w in LF.windows(2) {
-        let (m0, p0) = w[0];
-        let (m1, p1) = w[1];
-        if m <= m1 {
-            let t = (m - m0) / (m1 - m0);
-            return (p0.ln() + (p1.ln() - p0.ln()) * t).exp();
-        }
-    }
-    LF[LF.len() - 1].1
-}
-
-/// Integral of the luminosity function over [m0, m1] (stars per pc^3).
-pub fn lf_integral(m0: f64, m1: f64) -> f64 {
-    if m1 <= m0 {
-        return 0.0;
-    }
-    let n = ((m1 - m0) / 0.05).ceil().max(1.0) as usize;
-    let h = (m1 - m0) / n as f64;
-    (0..n).map(|i| lf(m0 + h * (i as f64 + 0.5)) * h).sum()
-}
-
-/// Brightest absolute magnitude of the old (bulge / halo) stellar population: the tip of the red giant branch.
-const OLD_POPULATION_MAG_LIMIT: f64 = -2.0;
-/// Dead stars per pc^3 at density 1 (the solar neighbourhood): about 15 black holes and 40 neutron
-/// stars within 100 light years.
-const BLACK_HOLES_PER_PC3: f64 = 1.2e-4;
-const NEUTRON_STARS_PER_PC3: f64 = 3.0e-4;
-
-/// Stellar number density model, relative to the solar neighbourhood (= 1).
-pub trait DensityModel: Send + Sync {
-    /// `p` in parsecs, galaxy model frame.
-    fn density(&self, p: DVec3) -> f64;
-
-    /// Fraction of the stars at `p` that belong to a young population (disk). Luminous supergiants and OB
-    /// stars only exist there; the old bulge/halo population has none.
-    fn young_fraction(&self, _p: DVec3) -> f64 {
-        1.0
-    }
-}
-
-/// Analytic Milky Way: thin + thick exponential disks, a bulge and a halo.
-#[derive(Debug, Clone)]
-pub struct MilkyWayDensity {
-    norm: f64,
+/// What SE knows about a galaxy when it fills it with stars.
+#[derive(Debug, Clone, Copy)]
+pub struct GalaxyStarInput {
+    /// Half extents of the galaxy's box along the model x, y, z axes (record +0x40..+0x48), pc.
+    pub dims: DVec3,
+    /// The galaxy's radius (record +0x20), pc: its size class.
     pub radius_pc: f64,
+    /// Hubble type index 1..=16 (0 unknown).
+    pub hubble: u8,
+    /// Whether it has a sprite model (record +0x68 >= 0).
+    pub has_model: bool,
+    /// The galaxy's seed (record +0x60, [`crate::proc_galsys::GalaxyShape::seed`]).
+    pub seed: i32,
+    /// The galaxy, for the star names.
+    pub galaxy: GalaxyRef,
 }
 
-impl MilkyWayDensity {
-    pub fn new(radius_pc: f64, sun_model_pos: DVec3) -> Self {
-        let mut m = Self { norm: 1.0, radius_pc };
-        let at_sun = m.raw(sun_model_pos);
-        m.norm = 1.0 / at_sun.max(1e-12);
-        m
-    }
-
-    /// `(disk, bulge + halo)` unnormalised densities at `p`.
-    fn parts(&self, p: DVec3) -> (f64, f64) {
-        let r_cyl = (p.x * p.x + p.y * p.y).sqrt();
-        let z = p.z.abs();
-        let r = p.length();
-        let thin = (-r_cyl / 2600.0).exp() * (-z / 300.0).exp();
-        let thick = 0.12 * (-r_cyl / 3600.0).exp() * (-z / 900.0).exp();
-        let bulge = 30.0 * (-(r / 700.0).powf(1.8)).exp();
-        let halo = 0.0015 * (1.0 + r / 2000.0).powf(-3.0);
-        // Truncate beyond the visible disk.
-        let edge = 1.0 / (1.0 + ((r_cyl - self.radius_pc * 1.3) / 800.0).exp());
-        ((thin + thick) * edge, bulge + halo)
-    }
-
-    fn raw(&self, p: DVec3) -> f64 {
-        let (disk, spheroid) = self.parts(p);
-        disk + spheroid
-    }
+/// How a galaxy accepts its candidate points.
+#[derive(Clone, Debug)]
+pub enum StarDensity {
+    /// The emission voxel map of the galaxy's sprite model (SE's voxel branch).
+    Voxel(Arc<DensityMap>),
+    /// SE's analytic components, for galaxies without a voxel map.
+    Analytic,
 }
 
-impl DensityModel for MilkyWayDensity {
-    fn density(&self, p: DVec3) -> f64 {
-        self.raw(p) * self.norm
-    }
-
-    fn young_fraction(&self, p: DVec3) -> f64 {
-        let (disk, spheroid) = self.parts(p);
-        disk / (disk + spheroid).max(1e-12)
-    }
+/// SE's `StarGenerator` limits in the home galaxy (main-def.cfg): stars brighter than `max_app_mag`
+/// as seen from the Sun, or nearer to it than their class's minimum distance, are left to the
+/// catalogs.
+#[derive(Debug, Clone, Copy)]
+pub struct HomeCut {
+    /// The Sun, model frame (pc).
+    pub sun: DVec3,
+    pub max_app_mag: f64,
+    pub min_dist_normal: f64,
+    pub min_dist_brown: f64,
+    pub min_dist_remnant: f64,
 }
 
-/// Radius of the Milky Way in SE's catalog (`galaxies/LocalGroup.sc`): the reference
-/// [`GalaxyStarDensity`] scales other galaxies from.
-pub const MILKY_WAY_RADIUS_PC: f64 = 19_329.9;
-/// The Sun's distance from the Milky Way centre in the same catalog (pc).
-const SUN_GALACTOCENTRIC_PC: f64 = 8_584.74;
-
-/// Hubble-type family of a galaxy, which sets the shape of its interior star density.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum GalaxyForm {
-    /// Disk galaxy (S0, spirals); `bulge` scales the central bulge relative to the Milky Way's.
-    Disk { bulge: f64 },
-    /// Elliptical with axis ratio `q` (E0 = 1 ... E7 = 0.3).
-    Elliptical { q: f64 },
-    Irregular,
-}
-
-impl GalaxyForm {
-    /// From a catalog Hubble type (`"E3"`, `"S0"`, `"SBb"`, `"Irr"`...).
-    pub fn from_type(t: &str) -> Self {
-        let b = t.trim().as_bytes();
-        match b.first() {
-            Some(b'E') => {
-                let n = b.get(1).filter(|c| c.is_ascii_digit()).map(|c| (c - b'0') as f64).unwrap_or(3.0);
-                Self::Elliptical { q: 1.0 - n.min(7.0) / 10.0 }
-            }
-            Some(b'I') => Self::Irregular,
-            Some(b'S') => {
-                let sub = if b.get(1) == Some(&b'B') { b.get(2) } else { b.get(1) };
-                let bulge = match sub {
-                    Some(b'0') => 2.0,
-                    Some(b'a') => 1.6,
-                    Some(b'b') => 1.0,
-                    Some(b'c') => 0.6,
-                    _ => 0.3,
-                };
-                Self::Disk { bulge }
-            }
-            _ => Self::Disk { bulge: 1.0 },
-        }
-    }
-}
-
-/// Spiral-arm contrast from a galaxy model's emission voxel map (the map SpaceEngine's
-/// galaxy-interior star generator samples): the mid-plane brightness relative to its mean around
-/// the same radius, so stars crowd into the arms the model draws while every ring keeps its count.
-#[derive(Debug, Clone)]
-pub struct ArmMap {
-    map: Arc<DensityMap>,
-    /// Parsecs per model unit along x, y, z (the map spans -1..1 in x and y).
-    scale_pc: DVec3,
-    /// Mean mid-plane brightness in `RINGS` rings out to model radius 1.
-    ring_mean: Vec<f32>,
-}
-
-const RINGS: usize = 64;
-
-impl ArmMap {
-    pub fn new(map: Arc<DensityMap>, scale_pc: DVec3) -> Self {
-        let mut ring_mean = vec![0.0f32; RINGS];
-        for (i, m) in ring_mean.iter_mut().enumerate() {
-            let r = (i as f32 + 0.5) / RINGS as f32;
-            let n = 96;
-            let sum: f32 = (0..n)
-                .map(|k| {
-                    let a = k as f32 / n as f32 * std::f32::consts::TAU;
-                    map.sample(r * a.cos(), r * a.sin(), 0.0)
-                })
-                .sum();
-            *m = sum / n as f32;
-        }
-        Self { map, scale_pc, ring_mean }
-    }
-
-    /// Density factor at `p` (pc, model frame): 1 on average around every ring, `0.3` in empty
-    /// gaps between arms, and 1 outside the map.
-    pub fn factor(&self, p: DVec3) -> f64 {
-        let (x, y) = ((p.x / self.scale_pc.x) as f32, (p.y / self.scale_pc.y) as f32);
-        let r = (x * x + y * y).sqrt();
-        let i = (r * RINGS as f32) as usize;
-        let Some(&mean) = self.ring_mean.get(i) else { return 1.0 };
-        if mean <= 1e-6 {
-            return 1.0;
-        }
-        let v = self.map.sample(x, y, 0.0);
-        (0.3 + 0.7 * (v / mean)).min(4.0) as f64
-    }
-}
-
-/// Stellar density of any galaxy, for the stars generated inside it: the Milky Way's model
-/// stretched to the galaxy's radius and reshaped for its Hubble type, optionally with the arms of
-/// its sprite model. Like SpaceEngine it ignores the galaxy's luminosity: every galaxy is as full
-/// as a Milky Way twin of its size and type (the Milky Way, normalised to 1 at the Sun, being the
-/// reference). Scaling by light/size^3 instead made small bright dwarfs walls of stars and faint
-/// ellipticals nearly empty, the reverse of SE (compared inside the LMC, a dwarf irregular and an
-/// E7 dwarf, 2026-10-27). Units as [`DensityModel`].
-#[derive(Debug, Clone)]
-pub struct GalaxyStarDensity {
-    form: GalaxyForm,
-    /// Radius in Milky Way radii.
-    s: f64,
-    /// Vertical stretch: disks thicken relative to their size as galaxies get smaller.
-    vz: f64,
-    arms: Option<ArmMap>,
-    norm: f64,
-}
-
-/// Share of luminous (young) stars in ellipticals. Real ones have none, but SE fills its ellipticals with
-/// the same mix as everything else (blue and red supergiants in the clouds around E galaxies, 2026-10-27);
-/// without them nothing in an elliptical is visible beyond a few hundred parsecs.
-const ELLIPTICAL_YOUNG: f64 = 0.3;
-
-/// Fraction of the Milky Way's light in its disk.
-const MILKY_WAY_DISK_LIGHT: f64 = 0.8;
-
-/// Stars of a Milky Way twin, in pc^3 of solar-neighbourhood density: the
-/// integral of the Milky Way model's disk (which matches the solar neighbourhood) over its share
-/// of the light. Its bulge is left out: it holds 60% of the model's stars, far more than its
-/// share of the light, and would crowd the disks of other galaxies.
-fn stars_per_milky_way() -> f64 {
-    static V: OnceLock<f64> = OnceLock::new();
-    *V.get_or_init(|| {
-        let mw = MilkyWayDensity::new(MILKY_WAY_RADIUS_PC, DVec3::new(SUN_GALACTOCENTRIC_PC, 0.0, 0.0));
-        let disk = integrate_axisymmetric(|p| mw.density(p) * mw.young_fraction(p), MILKY_WAY_RADIUS_PC * 1.5);
-        disk / MILKY_WAY_DISK_LIGHT
-    })
-}
-
-/// Volume integral of an axisymmetric (about z) density over `R, |z| < r_max`: log-spaced rings and
-/// layers finest at the plane, so thin disks and steep cusps both resolve.
-fn integrate_axisymmetric(f: impl Fn(DVec3) -> f64, r_max: f64) -> f64 {
-    let (nr, nz) = (160, 96);
-    let r_min = r_max * 1e-5;
-    let lr = (r_max / r_min).ln();
-    let z0 = (r_max * 1e-4).max(0.5);
-    let tz = (1.0 + r_max / z0).ln();
-    let mut sum = 0.0;
-    for i in 0..nr {
-        let a = r_min * (lr * i as f64 / nr as f64).exp();
-        let b = r_min * (lr * (i + 1) as f64 / nr as f64).exp();
-        let (r, area) = (0.5 * (a + b), std::f64::consts::PI * (b * b - a * a));
-        for j in 0..nz {
-            let za = z0 * ((tz * j as f64 / nz as f64).exp() - 1.0);
-            let zb = z0 * ((tz * (j + 1) as f64 / nz as f64).exp() - 1.0);
-            sum += 2.0 * f(DVec3::new(r, 0.0, 0.5 * (za + zb))) * area * (zb - za);
-        }
-    }
-    sum
-}
-
-impl GalaxyStarDensity {
-    pub fn new(form: GalaxyForm, radius_pc: f64, arms: Option<ArmMap>) -> Self {
-        let s = (radius_pc / MILKY_WAY_RADIUS_PC).max(1e-3);
-        let mut d = Self { form, s, vz: s.sqrt(), arms, norm: 1.0 };
-        let shape = integrate_axisymmetric(
-            |p| {
-                let (disk, spheroid) = d.parts(p);
-                disk + spheroid
-            },
-            radius_pc * 1.5,
-        );
-        // The twin's stars, times the volume of the stretch.
-        d.norm = stars_per_milky_way() * d.s * d.s * d.vz / shape.max(1e-12);
-        d
-    }
-
-    /// `(disk, spheroid)` unnormalised densities without arms, in the Milky Way's units after
-    /// stretching `p` to its size.
-    fn parts(&self, p: DVec3) -> (f64, f64) {
-        let rc = (p.x * p.x + p.y * p.y).sqrt() / self.s;
-        let z = p.z.abs() / self.vz;
-        let r = (rc * rc + z * z).sqrt();
-        let edge = |x: f64, w: f64| 1.0 / (1.0 + ((x - MILKY_WAY_RADIUS_PC * 1.3) / w).exp());
-        match self.form {
-            GalaxyForm::Disk { bulge } => {
-                let thin = (-rc / 2600.0).exp() * (-z / 300.0).exp();
-                let thick = 0.12 * (-rc / 3600.0).exp() * (-z / 900.0).exp();
-                let bulge = 30.0 * bulge * (-(r / 700.0).powf(1.8)).exp();
-                let halo = 0.0015 * (1.0 + r / 2000.0).powf(-3.0);
-                ((thin + thick) * edge(rc, 800.0), bulge + halo)
-            }
-            GalaxyForm::Elliptical { q } => {
-                // Cored Hernquist profile (scale 12% of the radius), flattened to `q`.
-                let zq = p.z.abs() / self.s / q;
-                let m = (rc * rc + zq * zq).sqrt() / (0.12 * MILKY_WAY_RADIUS_PC);
-                (0.0, edge(m * 0.12 * MILKY_WAY_RADIUS_PC, 1000.0) / ((m + 0.02) * (1.0 + m).powi(3)))
-            }
-            GalaxyForm::Irregular => {
-                // A thick exponential ellipsoid (axis ratio 0.5), young throughout.
-                let m = (rc * rc + 4.0 * (p.z / self.s).powi(2)).sqrt();
-                ((-m / (0.3 * MILKY_WAY_RADIUS_PC)).exp() * edge(m, 800.0), 0.0)
-            }
-        }
-    }
-
-    fn arm(&self, p: DVec3) -> f64 {
-        self.arms.as_ref().map_or(1.0, |a| a.factor(p))
-    }
-}
-
-impl DensityModel for GalaxyStarDensity {
-    fn density(&self, p: DVec3) -> f64 {
-        let (disk, spheroid) = self.parts(p);
-        (disk * self.arm(p) + spheroid) * self.norm
-    }
-
-    fn young_fraction(&self, p: DVec3) -> f64 {
-        if let GalaxyForm::Elliptical { .. } = self.form {
-            return ELLIPTICAL_YOUNG;
-        }
-        let (disk, spheroid) = self.parts(p);
-        let disk = disk * self.arm(p);
-        disk / (disk + spheroid).max(1e-300)
-    }
-}
-
-/// Octree parameters for one galaxy.
+/// A galaxy's star octree.
 #[derive(Debug, Clone)]
 pub struct StarOctree {
-    /// Galaxy id used in seeds and names.
-    pub galaxy_id: u32,
-    /// Side of the root cube, parsecs.
-    pub root_size: f64,
-    /// Apparent magnitude limit the strata are designed for.
-    pub mag_limit: f64,
-    /// Local stellar density at density 1 (stars / pc^3).
-    pub n0: f64,
+    pub galaxy: GalaxyRef,
+    pub dims: DVec3,
+    pub size_class: u8,
+    /// Depth of the root grid.
+    pub depth: u8,
+    /// Star levels per root (`9 - size_class`).
     pub levels: u8,
+    seed: u32,
+    /// Tries per node of the components (model disk, young disk, bulge, halo).
+    counts: [u32; 4],
+    /// Their sum, and at the deepest level the boosted sum.
+    total: u32,
+    leaf_total: u32,
+    /// Absolute magnitude band of each level.
+    bands: Vec<(f64, f64)>,
+    /// Apparent magnitude limit the node reach is measured for.
+    pub mag_limit: f64,
 }
 
 /// Whether the sphere at `centre` of radius `r` meets the cone from `apex` along the unit `axis`
@@ -387,8 +138,8 @@ pub fn sphere_meets_cone(apex: DVec3, (axis, half): (DVec3, f64), centre: DVec3,
     }
 }
 
-/// Node address: level and integer cell coordinates (cells of side `root/2^level`
-/// with the root cube centred on the galaxy centre).
+/// Node address: star level and the cell of the global grid of depth `depth + level` (cells per axis
+/// `2^(depth + level)`, the grid spanning the galaxy's box).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeKey {
     pub level: u8,
@@ -399,136 +150,249 @@ pub struct NodeKey {
 pub struct ProcStar {
     /// Model-frame position (pc) relative to the galaxy centre.
     pub pos: DVec3,
+    /// Absolute V magnitude (infinite for a planemo).
     pub abs_mag: f32,
     pub teff: f32,
     pub rgb: [f32; 3],
     pub kind: StarKind,
+    /// SE's class text ("G5.5V", "WC5", "C-N3", "DA9.5", "Q", "X"; "Planemo").
     pub class: String,
     /// Index within its node (stable).
     pub index: u32,
+    /// SE's generated mass (solar), age (Gyr), [Fe/H] and C/O.
+    pub mass_sol: f32,
+    pub age_gyr: f32,
+    pub feh: f32,
+    pub c_to_o: f32,
+}
+
+impl ProcStar {
+    /// Whether the star gives light (planemos are dark).
+    pub fn luminous(&self) -> bool {
+        self.abs_mag.is_finite()
+    }
+}
+
+/// SE's LCG step (`x * 1664525 + 1013904223`).
+fn lcg(s: &mut u32) -> u32 {
+    *s = s.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+    *s
+}
+
+/// A uniform `[0, 1)` draw as SE makes it (`(float)u * 2^-32`).
+fn unit(s: &mut u32) -> f32 {
+    lcg(s) as f32 * 2.328_306_4e-10
+}
+
+/// An offset in `[-h, h)` from the node centre (SE's float arithmetic).
+fn offset(s: &mut u32, h: f64) -> f32 {
+    let u = lcg(s) as f32;
+    (((h + h) as f32 * u * 2.328_306_4e-10) as f64 - h) as f32
+}
+
+/// SE's base-8 octant path of a cell's low `bits` bits (octant bits 4, 2, 1 for the lower x, y, z half).
+fn path_of(cell: [i32; 3], bits: u32) -> u64 {
+    (0..bits).rev().fold(0u64, |n, j| {
+        let bit = |c: i32| 1 - ((c >> j) & 1) as u64;
+        n * 8 + (bit(cell[0]) << 2 | bit(cell[1]) << 1 | bit(cell[2]))
+    })
+}
+
+/// Inverse of [`path_of`]: the cell of a path of `bits` octants.
+fn cell_of_path(path: u64, bits: u32) -> Option<[i32; 3]> {
+    if bits > 20 || path >= 8u64.pow(bits) {
+        return None;
+    }
+    let mut c = [0i32; 3];
+    for j in (0..bits).rev() {
+        let k = (path >> (3 * j)) & 7;
+        c[0] = c[0] * 2 + (1 - ((k >> 2) & 1)) as i32;
+        c[1] = c[1] * 2 + (1 - ((k >> 1) & 1)) as i32;
+        c[2] = c[2] * 2 + (1 - (k & 1)) as i32;
+    }
+    Some(c)
+}
+
+/// SE's magnitude bands of a galaxy of `levels` levels (FUN_1401d7300).
+fn bands(levels: u8) -> Vec<(f64, f64)> {
+    let cdf = |m: f64| (crate::surface_gen::erf((m - BAND_MEAN) / BAND_SIGMA_SQRT2) + 1.0) * 0.5;
+    let (lo, hi) = (cdf(-8.0), cdf(30.0));
+    let step = (hi - lo) / levels as f64;
+    let mut p = lo as f32;
+    let mut edges = Vec::with_capacity(levels as usize + 1);
+    for _ in 0..=levels {
+        edges.push(BAND_MEAN + BAND_SIGMA_SQRT2 / std::f64::consts::SQRT_2 * crate::surface_gen::inv_norm_cdf(p as f64));
+        p = ((p as f64 + step) as f32).min(0.9999);
+    }
+    edges.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// A galaxy's size class (FUN_1404648b0): `clamp((int)log2(4000 / R), 0, 5)`, `R` capped at 50 kpc.
+pub fn size_class(radius_pc: f64) -> u8 {
+    let r = (radius_pc as f32).min(50_000.0);
+    ((SIZE_CLASS_PC / r as f64).log2() as i32).clamp(0, 5) as u8
 }
 
 impl StarOctree {
-    pub fn new(galaxy_id: u32, galaxy_radius_pc: f64, mag_limit: f64) -> Self {
-        let root_size = galaxy_radius_pc * 3.0;
-        let mut t = Self {
-            galaxy_id,
-            root_size,
-            mag_limit,
-            n0: 0.1,
-            levels: 0,
-        };
-        // Deepest level whose bright limit is still brighter than the faint end.
-        let mut l = 0u8;
-        while l < 30 && t.mag_band(l).0 < FAINTEST_MAG {
-            l += 1;
+    pub fn new(g: &GalaxyStarInput, mag_limit: f64) -> Self {
+        let sc = size_class(g.radius_pc);
+        let unit = CELL_PC / (1u32 << sc) as f64;
+        let d = (((g.dims.x as f32) / unit as f32).log2() as i32 + 1).clamp(1, 9).min(MAX_DEPTH as i32) as u32;
+        let cells = (1u32 << d) as f32;
+        let (sx, sy, sz) = (g.dims.x as f32, g.dims.y as f32, g.dims.z as f32);
+        let vol = ((sx + sx) / cells) * ((sy + sy) / cells) * ((sz + sz) / cells);
+        let mut base = (vol as f64 / unit.powi(3)) as f32 * 0.3;
+        if base < 0.015 {
+            base = 0.015;
         }
-        t.levels = l;
-        t
+        // Component weights (FUN_140543c70).
+        let disk = (9..=15).contains(&g.hubble);
+        let model = (9..=16).contains(&g.hubble) && g.has_model;
+        let w = [
+            if model { 1.0f32 } else { 0.0 },
+            if disk { 0.25 } else { 0.0 },
+            if disk { 1.0 } else { 0.0 },
+            if g.hubble & 0xef != 0 { 0.1 } else { 0.0 },
+        ];
+        let sum: f32 = w.iter().sum();
+        let f = if sum != 0.0 { (base / sum) * 16384.0 } else { 0.0 };
+        let counts = w.map(|w| (f * w) as u32);
+        let total: u32 = counts.iter().sum();
+        let levels = (MAX_LEVELS as i32 - sc as i32).clamp(1, MAX_LEVELS as i32) as u8;
+        Self {
+            galaxy: g.galaxy,
+            dims: g.dims,
+            size_class: sc,
+            depth: d as u8,
+            levels,
+            seed: g.seed as u32,
+            counts,
+            total,
+            leaf_total: (total as f32 * LEAF_BOOST) as u32,
+            bands: bands(levels),
+            mag_limit,
+        }
     }
 
-    pub fn node_size(&self, level: u8) -> f64 {
-        self.root_size / (1u64 << level) as f64
-    }
-
-    /// Faintest absolute magnitude visible at distance `d` pc (with fade margin).
-    fn faint_mag_at(&self, d: f64) -> f64 {
-        self.mag_limit + 1.5 - 5.0 * (d.max(1e-6) / 10.0).log10()
-    }
-
-    /// Absolute-magnitude band [bright, faint) stored at a level.
+    /// Absolute-magnitude band [bright, faint) of a level.
     pub fn mag_band(&self, level: u8) -> (f64, f64) {
-        let faint = self.faint_mag_at(VIEW_FACTOR * self.node_size(level)).min(FAINTEST_MAG).max(BRIGHTEST_MAG);
-        // Clamped to the brightest star: `sample_mag` falls back to a uniform draw over the band
-        // when rejection keeps failing, which on level 0's old -30..-10 band gave stars of
-        // Mv -20 and radii of hundreds of AU.
-        let bright = if level == 0 {
-            BRIGHTEST_MAG
-        } else {
-            self.faint_mag_at(VIEW_FACTOR * self.node_size(level - 1)).min(FAINTEST_MAG).max(BRIGHTEST_MAG)
-        };
-        (bright, faint)
+        self.bands[level.min(self.levels - 1) as usize]
+    }
+
+    fn grid_bits(&self, level: u8) -> u32 {
+        self.depth as u32 + level as u32
+    }
+
+    /// Half extents of a node of `level` (pc, model frame).
+    pub fn node_half(&self, level: u8) -> DVec3 {
+        self.dims / (1u64 << self.grid_bits(level)) as f64
     }
 
     pub fn node_center(&self, key: NodeKey) -> DVec3 {
-        let s = self.node_size(key.level);
-        let off = -self.root_size * 0.5;
-        DVec3::new(
-            off + (key.cell[0] as f64 + 0.5) * s,
-            off + (key.cell[1] as f64 + 0.5) * s,
-            off + (key.cell[2] as f64 + 0.5) * s,
-        )
+        let h = self.node_half(key.level);
+        let c = DVec3::new(key.cell[0] as f64, key.cell[1] as f64, key.cell[2] as f64);
+        -self.dims + (c * 2.0 + DVec3::ONE) * h
     }
 
-    /// Cell containing model position `p` at `level`.
+    /// Cell containing model position `p` at `level` (may lie outside the grid).
     pub fn cell_of(&self, level: u8, p: DVec3) -> [i32; 3] {
-        let s = self.node_size(level);
-        let q = (p + DVec3::splat(self.root_size * 0.5)) / s;
+        let q = (p + self.dims) / (self.node_half(level) * 2.0);
         [q.x.floor() as i32, q.y.floor() as i32, q.z.floor() as i32]
     }
 
-    /// Nodes of `level` that should be loaded for a camera at model position `cam`.
-    pub fn nodes_around(&self, level: u8, cam: DVec3) -> Vec<NodeKey> {
-        let s = self.node_size(level);
-        let r = VIEW_FACTOR * s;
-        let lo = self.cell_of(level, cam - DVec3::splat(r));
-        let hi = self.cell_of(level, cam + DVec3::splat(r));
-        let n = 1i64 << level;
-        let mut out = Vec::new();
-        for x in lo[0]..=hi[0] {
-            for y in lo[1]..=hi[1] {
-                for z in lo[2]..=hi[2] {
-                    if x < 0 || y < 0 || z < 0 || x as i64 >= n || y as i64 >= n || z as i64 >= n {
-                        continue;
-                    }
-                    let key = NodeKey { level, cell: [x, y, z] };
-                    // Sphere/box test.
-                    let c = self.node_center(key);
-                    let d = (cam - c).abs() - DVec3::splat(s * 0.5);
-                    if d.max(DVec3::ZERO).length() <= r {
-                        out.push(key);
-                    }
-                }
-            }
-        }
-        out
+    fn in_grid(&self, level: u8, c: [i32; 3]) -> bool {
+        let n = 1i64 << self.grid_bits(level);
+        c.iter().all(|&v| v >= 0 && (v as i64) < n)
     }
 
-    /// Nodes to load for a camera at model position `cam`, by level (coarse first, nearest first
-    /// within a level): those of [`nodes_around`](Self::nodes_around), and with `reach` > 1 (a
-    /// magnitude limit `5 log10(reach)` above the one the strata are designed for) also those
-    /// out to `reach` times as far whose bounding sphere meets `cone` (unit axis, half-angle in
-    /// radians), or every one that far without a cone. SE keeps a node of stars while its
-    /// brightest star could still show (FUN_1404a0e80) and clips them to the view frustum when
-    /// the field of view is under `StarFrustumClipFOV` (FUN_14047b670). At most `max_far` nodes
-    /// per level beyond the usual reach are kept, the nearest.
+    /// SE's root and node numbers of a node.
+    pub fn root_node(&self, key: NodeKey) -> (u32, u64) {
+        let l = key.level as u32;
+        let root = path_of(key.cell.map(|c| c >> l), self.depth as u32) as u32;
+        let node = path_of(key.cell.map(|c| c & ((1 << l) - 1)), l);
+        (root, node)
+    }
+
+    /// The node of SE's root, level and node numbers.
+    pub fn key_of(&self, root: u32, level: u8, node: u64) -> Option<NodeKey> {
+        if level >= self.levels {
+            return None;
+        }
+        let r = cell_of_path(root as u64, self.depth as u32)?;
+        let n = cell_of_path(node, level as u32)?;
+        let l = level as u32;
+        Some(NodeKey { level, cell: [0, 1, 2].map(|a| (r[a] << l) | n[a]) })
+    }
+
+    /// SE's seed of a node (FUN_14053b5d0).
+    pub fn seed(&self, key: NodeKey) -> u32 {
+        let (root, node) = self.root_node(key);
+        (node as u32)
+            .wrapping_mul(0x56a)
+            .wrapping_add((key.level as u32).wrapping_mul(0x24db))
+            .wrapping_add(root.wrapping_mul(0x1430))
+            .wrapping_mul(self.seed)
+    }
+
+    /// The star's name, `RS <galaxy>-<root>-<level>-<node>-<index>` (FUN_1401c0180).
+    pub fn star_name(&self, key: NodeKey, index: u32) -> String {
+        let (root, node) = self.root_node(key);
+        match self.galaxy {
+            GalaxyRef::Catalog(g) => format!("RS {g}-{root}-{}-{node}-{index}", key.level),
+            GalaxyRef::Procedural(k, gi) => format!("RS 0-{}-{}-{gi}-{root}-{}-{node}-{index}", k.level, k.id, key.level),
+        }
+    }
+
+    /// Node and index of a star name of this galaxy (any case), the inverse of [`star_name`](Self::star_name).
+    pub fn parse_name(&self, name: &str) -> Option<(NodeKey, u32)> {
+        let s = name.trim();
+        if !s.get(..3)?.eq_ignore_ascii_case("RS ") {
+            return None;
+        }
+        let n: Vec<u64> = s[3..].trim().split('-').map(|p| p.trim().parse::<u64>()).collect::<Result<_, _>>().ok()?;
+        let tail = match (self.galaxy, n.as_slice()) {
+            (GalaxyRef::Catalog(g), [a, rest @ ..]) if *a == g as u64 && rest.len() == 4 => rest,
+            (GalaxyRef::Procedural(k, gi), [0, l, id, i, rest @ ..]) if *l == k.level as u64 && *id == k.id && *i == gi as u64 && rest.len() == 4 => rest,
+            _ => return None,
+        };
+        let key = self.key_of(u32::try_from(tail[0]).ok()?, u8::try_from(tail[1]).ok()?, tail[2])?;
+        Some((key, u32::try_from(tail[3]).ok()?))
+    }
+
+    /// How far (pc) a node of `level` stays loaded: until its brightest stars fall below the limit.
+    pub fn reach(&self, level: u8) -> f64 {
+        10f64.powf(1.0 + (self.mag_limit + REACH_MARGIN_MAG - self.mag_band(level).0) / 5.0)
+    }
+
+    /// Distance from `p` to a node's box (0 inside).
+    pub fn box_distance(&self, key: NodeKey, p: DVec3) -> f64 {
+        ((p - self.node_center(key)).abs() - self.node_half(key.level)).max(DVec3::ZERO).length()
+    }
+
+    /// Nodes to load for a camera at model position `cam`, by level (nearest first within a level):
+    /// those within the level's [`reach`](Self::reach), and with `reach` > 1 (a magnitude limit
+    /// `5 log10(reach)` above the one the reach is measured for) also those out to `reach` times as
+    /// far whose bounding sphere meets `cone` (unit axis, half-angle in radians), or every one that
+    /// far without a cone. SE keeps a node of stars while its brightest star could still show
+    /// (FUN_1404a0e80) and clips them to the view frustum when the field of view is under
+    /// `StarFrustumClipFOV` (FUN_14047b670). At most `max_far` nodes per level beyond the usual
+    /// reach are kept, the nearest.
     pub fn wanted_nodes(&self, cam: DVec3, reach: f64, cone: Option<(DVec3, f64)>, max_far: usize) -> Vec<Vec<NodeKey>> {
         let reach = reach.max(1.0);
-        let in_cone = |c: DVec3, r: f64| cone.is_none_or(|k| sphere_meets_cone(cam, k, c, r));
-        let mut out: Vec<Vec<(f64, NodeKey)>> = vec![Vec::new(); self.levels as usize];
-        let mut stack = vec![NodeKey { level: 0, cell: [0, 0, 0] }];
-        while let Some(key) = stack.pop() {
-            let s = self.node_size(key.level);
-            let c = self.node_center(key);
-            let d = ((cam - c).abs() - DVec3::splat(s * 0.5)).max(DVec3::ZERO).length();
-            let near = VIEW_FACTOR * s;
-            let seen = d <= near * reach && in_cone(c, s * 0.5 * 3f64.sqrt());
-            if d <= near || seen {
-                out[key.level as usize].push((d, key));
-            }
-            // Children are half the size, so they reach half as far.
-            if key.level + 1 < self.levels && (d <= near * 0.5 || (seen && d <= near * reach * 0.5)) {
-                for i in 0..8 {
-                    let cell = [0, 1, 2].map(|a| key.cell[a] * 2 + ((i >> a) & 1));
-                    stack.push(NodeKey { level: key.level + 1, cell });
-                }
-            }
-        }
-        out.into_iter()
-            .enumerate()
-            .map(|(level, mut v)| {
+        (0..self.levels)
+            .map(|level| {
+                let near = self.reach(level);
+                let far = near * reach;
+                let half = self.node_half(level);
+                let radius = half.length();
+                let mut v: Vec<(f64, NodeKey)> = Vec::new();
+                self.for_cells_near(level, cam, far, |key| {
+                    let d = self.box_distance(key, cam);
+                    if d <= near || (d <= far && cone.is_none_or(|k| sphere_meets_cone(cam, k, self.node_center(key), radius))) {
+                        v.push((d, key));
+                    }
+                });
                 v.sort_by(|a, b| a.0.total_cmp(&b.0));
-                let near = VIEW_FACTOR * self.node_size(level as u8);
                 let n = v.partition_point(|(d, _)| *d <= near);
                 v.truncate(n.saturating_add(max_far));
                 v.into_iter().map(|(_, k)| k).collect()
@@ -536,158 +400,163 @@ impl StarOctree {
             .collect()
     }
 
-    /// Stars per pc^3 a node of `level` holds at density 1 (the `expected` count of
-    /// [`generate`](Self::generate) is this times the node's mean density times its volume).
-    pub fn level_rate(&self, level: u8) -> f64 {
-        let (m_bright, m_faint) = self.mag_band(level);
-        if m_faint <= m_bright { 0.0 } else { self.n0 / 0.1 * lf_integral(m_bright, m_faint) }
-    }
-
-    /// True when a node whose expected star count is at most `max_expected` surely holds no
-    /// stars: its first random draw alone already gives a Poisson count of 0. Lets a search skip
-    /// the millions of tiny, nearly always empty nodes of the deep levels without sampling the
-    /// density in each.
-    pub fn surely_empty(&self, key: NodeKey, max_expected: f64) -> bool {
-        key.level != self.remnant_level() && max_expected < 30.0 && Rng(self.seed(key)).f64() <= (-max_expected).exp()
-    }
-
-    pub fn seed(&self, key: NodeKey) -> u64 {
-        let mut h = 0x9E37_79B9_7F4A_7C15u64 ^ self.galaxy_id as u64;
-        for v in [key.level as i64, key.cell[0] as i64, key.cell[1] as i64, key.cell[2] as i64] {
-            h = splitmix(h ^ v as u64);
-        }
-        h
-    }
-
-    /// Generate the stars of one node. `exclude` returns true for stars that
-    /// must be skipped (e.g. ones already present in a real catalog).
-    pub fn generate(
-        &self,
-        key: NodeKey,
-        density: &dyn DensityModel,
-        exclude: &dyn Fn(DVec3, f64) -> bool,
-    ) -> Vec<ProcStar> {
-        self.generate_where(key, density, exclude, &|_| true)
-    }
-
-    /// [`generate`](Self::generate), keeping only the stars at positions that pass `keep`; the
-    /// others still take their random draws, so the kept ones are the same stars, but skip the
-    /// costly type and colour (a search over a small region of a big node).
-    pub fn generate_where(
-        &self,
-        key: NodeKey,
-        density: &dyn DensityModel,
-        exclude: &dyn Fn(DVec3, f64) -> bool,
-        keep: &dyn Fn(DVec3) -> bool,
-    ) -> Vec<ProcStar> {
-        let s = self.node_size(key.level);
-        let c = self.node_center(key);
-        let (m_bright, m_faint) = self.mag_band(key.level);
-        if m_faint <= m_bright {
-            return Vec::new();
-        }
-        // Density samples for rejection sampling.
-        let mut rho_max: f64 = 0.0;
-        let mut rho_sum = 0.0;
-        for dx in [-0.5, 0.0, 0.5] {
-            for dy in [-0.5, 0.0, 0.5] {
-                for dz in [-0.5, 0.0, 0.5] {
-                    let r = density.density(c + DVec3::new(dx, dy, dz) * s);
-                    rho_max = rho_max.max(r);
-                    rho_sum += r;
+    /// Calls `f` for every node of `level` in the grid whose cell meets the cube of half-side `r`
+    /// around `p`.
+    pub fn for_cells_near(&self, level: u8, p: DVec3, r: f64, mut f: impl FnMut(NodeKey)) {
+        let n = (1i64 << self.grid_bits(level)) as i32;
+        let lo = self.cell_of(level, p - DVec3::splat(r));
+        let hi = self.cell_of(level, p + DVec3::splat(r));
+        for x in lo[0].max(0)..=hi[0].min(n - 1) {
+            for y in lo[1].max(0)..=hi[1].min(n - 1) {
+                for z in lo[2].max(0)..=hi[2].min(n - 1) {
+                    f(NodeKey { level, cell: [x, y, z] });
                 }
             }
         }
-        let mut rho_mean = rho_sum / 27.0;
-        // Where the density varies steeply across the node (a big node around a galaxy's centre),
-        // the centre sample can sit on the peak and inflate the count: average a finer grid of
-        // cell midpoints instead.
-        if rho_max > 0.0 && rho_max > 8.0 * rho_mean {
-            let n = 6;
-            let mut sum = 0.0;
-            for i in 0..n {
-                for j in 0..n {
-                    for k in 0..n {
-                        let f = |a: i32| (a as f64 + 0.5) / n as f64 - 0.5;
-                        sum += density.density(c + DVec3::new(f(i), f(j), f(k)) * s);
-                    }
-                }
-            }
-            rho_mean = sum / (n * n * n) as f64;
-        }
-        let per_pc3 = self.n0 / 0.1 * lf_integral(m_bright, m_faint);
-        let expected = rho_mean * per_pc3 * s * s * s;
-        if expected < 1e-6 {
+    }
+
+    /// Generate the stars of one node, keeping those whose position passes `keep` (the others are
+    /// still generated, so every star keeps its index).
+    pub fn generate_where(&self, key: NodeKey, density: &StarDensity, home: Option<&HomeCut>, keep: &dyn Fn(DVec3) -> bool) -> Vec<ProcStar> {
+        if key.level >= self.levels || !self.in_grid(key.level, key.cell) {
             return Vec::new();
         }
-        let mut rng = Rng(self.seed(key));
-        let pmax = lf_max(m_bright, m_faint);
-        let n = rng.poisson(expected).min(20_000);
-        let mut out = Vec::with_capacity(n as usize);
-        let mut attempts = 0;
-        let mut index = 0u32;
-        while (out.len() as u64) < n && attempts < n * 20 + 64 {
-            attempts += 1;
-            let p = c + DVec3::new(rng.f64() - 0.5, rng.f64() - 0.5, rng.f64() - 0.5) * s;
-            if rho_max > 0.0 && rng.f64() * rho_max > density.density(p) {
-                continue;
-            }
-            let m = sample_mag(&mut rng, m_bright, m_faint, pmax);
-            // Supergiants and OB stars (brighter than the red-giant tip) belong to the young disk only; without
-            // this the dense bulge produced a few saturated white "stars" towards the galactic centre.
-            if m < OLD_POPULATION_MAG_LIMIT && rng.f64() > density.young_fraction(p) {
-                continue;
-            }
-            index += 1;
-            if exclude(p, m) {
-                continue;
-            }
-            let draw = draw_star(&mut rng, m);
-            if !keep(p) {
-                continue;
-            }
-            let (kind, teff, class) = star_for_mag(m, &draw);
-            out.push(ProcStar {
-                pos: p,
-                abs_mag: m as f32,
-                teff: teff as f32,
-                rgb: blackbody_rgb(teff),
-                kind,
-                class,
-                index,
-            });
+        let leaf = key.level == self.levels - 1;
+        let tries = if leaf { self.leaf_total } else { self.total };
+        if key.level > 4 && tries < 64 {
+            return Vec::new();
         }
-        // Dead stars (SE's fields have neutron stars and black holes): a sparse population of their
-        // own on the level of ~50 pc nodes, with its own random stream. They give no light, so no
-        // visibility band places them, and a search for them visits only that level.
-        if key.level == self.remnant_level() {
-            let mut rr = Rng(self.seed(key) ^ 0xDEAD_57A2_0000_0001);
-            let k = rr.poisson(rho_mean * (BLACK_HOLES_PER_PC3 + NEUTRON_STARS_PER_PC3) * s * s * s).min(2_000);
-            for _ in 0..k {
-                let p = c + DVec3::new(rr.f64() - 0.5, rr.f64() - 0.5, rr.f64() - 0.5) * s;
-                let hole = rr.f64() * (BLACK_HOLES_PER_PC3 + NEUTRON_STARS_PER_PC3) < BLACK_HOLES_PER_PC3;
-                index += 1;
-                if !keep(p) {
+        let seed = self.seed(key);
+        let centre = self.node_center(key);
+        let half = self.node_half(key.level);
+        let (lo, hi) = self.mag_band(key.level);
+        let dims = self.dims.as_vec3();
+        let mut out: Vec<ProcStar> = Vec::new();
+        let mut ordinal = 0u64;
+        let cap = (tries as usize).min(NODE_CAP);
+        // One component's loop: SE's stream multiplier, tries, and per point the acceptance and the
+        // population (None: rejected).
+        let mut run = |mult: u32, n: u32, accept: &mut dyn FnMut([f32; 3], &mut u32) -> Option<Population>, out: &mut Vec<ProcStar>| {
+            let mut s = seed.wrapping_mul(mult);
+            let n = (n as usize).min(NODE_CAP.saturating_sub(out.len()));
+            for _ in 0..n {
+                if out.len() >= cap {
+                    break;
+                }
+                let o = [offset(&mut s, half.x), offset(&mut s, half.y), offset(&mut s, half.z)];
+                let p = [
+                    ((o[0] as f64 + centre.x) / dims.x as f64) as f32,
+                    ((o[1] as f64 + centre.y) / dims.y as f64) as f32,
+                    ((o[2] as f64 + centre.z) / dims.z as f64) as f32,
+                ];
+                let Some(pop) = accept(p, &mut s) else { continue };
+                ordinal += 1;
+                let pos = centre + DVec3::new(o[0] as f64, o[1] as f64, o[2] as f64);
+                let mut rng = Rng(splitmix(seed as u64 ^ ordinal.wrapping_mul(0x9E37_79B9_7F4A_7C15)));
+                let star = make_star(&mut rng, pop, lo, hi, leaf, pos, out.len() as u32);
+                if home.is_some_and(|h| h.excludes(&star)) {
                     continue;
                 }
-                let (kind, abs_mag, teff, rgb, class) = if hole {
-                    (StarKind::BlackHole, 30.0, 3000.0, [0.0; 3], "X")
-                } else {
-                    (StarKind::NeutronStar, 25.0, 600_000.0, [0.75, 0.85, 1.0], "Q")
+                out.push(star);
+            }
+        };
+        match density {
+            StarDensity::Voxel(map) => {
+                let mut accept = |p: [f32; 3], s: &mut u32| {
+                    let v = map.sample_se(p[0], p[1], p[2]);
+                    (unit(s) <= v * VOXEL_GAIN).then(|| Population::Disk { r: (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() as f64 })
                 };
-                out.push(ProcStar { pos: p, abs_mag, teff, rgb, kind, class: class.to_string(), index });
+                run(0x2103, tries, &mut accept, &mut out);
+            }
+            StarDensity::Analytic => {
+                // SE's model-disk component reads the model's 2D front map, which a galaxy without a
+                // voxel map has not got here: its tries are skipped.
+                let mut young = |p: [f32; 3], s: &mut u32| {
+                    if p[0] * p[0] + p[1] * p[1] + p[2] * p[2] >= 1.0 {
+                        return None;
+                    }
+                    let r = ((p[1] * 3.0) * (p[1] * 3.0) + (p[0] * 3.0) * (p[0] * 3.0) + (p[2] * 120.0) * (p[2] * 120.0)).sqrt();
+                    (unit(s) <= (-r).exp()).then_some(Population::Disk { r: r as f64 })
+                };
+                run(0x1651d, self.counts[1], &mut young, &mut out);
+                let mut bulge = |p: [f32; 3], s: &mut u32| {
+                    let q = [p[0] as f64 * 37.0, p[1] as f64 * 37.0, p[2] as f64 * 45.0].map(|v| v as f32);
+                    let r = (q[1] * q[1] + q[0] * q[0] + q[2] * q[2]).sqrt();
+                    (unit(s) <= (-r).exp()).then_some(Population::Old)
+                };
+                run(0x24d7, self.counts[2], &mut bulge, &mut out);
+                let mut halo = |p: [f32; 3], s: &mut u32| {
+                    let q = p.map(|v| (v as f64 * 8.0) as f32);
+                    let r = (q[1] * q[1] + q[0] * q[0] + q[2] * q[2]).sqrt();
+                    (unit(s) <= (-r).exp()).then_some(Population::Old)
+                };
+                run(0x4bf, self.counts[3], &mut halo, &mut out);
             }
         }
+        if key.level > 2 && out.len() < 64 {
+            return Vec::new();
+        }
+        out.retain(|s| keep(s.pos));
         out
     }
+}
 
-    /// The level holding the dead stars: nodes of about 50 pc (at least 40).
-    pub fn remnant_level(&self) -> u8 {
-        let mut l = 0;
-        while l + 1 < self.levels && self.node_size(l + 1) >= 40.0 {
-            l += 1;
+impl HomeCut {
+    /// Whether the catalogs, not the generator, hold this star: too bright as seen from the Sun, or
+    /// too near it for its class (FUN_14053b5d0 with `StarMinDist*`).
+    pub fn excludes(&self, s: &ProcStar) -> bool {
+        let d = (s.pos - self.sun).length().max(1e-6);
+        let min = match s.kind {
+            StarKind::WhiteDwarf | StarKind::NeutronStar | StarKind::BlackHole | StarKind::Planemo => self.min_dist_remnant,
+            StarKind::BrownDwarf => self.min_dist_brown,
+            _ => self.min_dist_normal,
+        };
+        d <= min || (s.luminous() && s.abs_mag as f64 + 5.0 * (d / 10.0).log10() < self.max_app_mag)
+    }
+}
+
+/// The star of a kept point (FUN_1401d63b0; `leaf`: the deepest level's draw).
+fn make_star(rng: &mut Rng, pop: Population, lo: f64, hi: f64, leaf: bool, pos: DVec3, index: u32) -> ProcStar {
+    let m: Member = if leaf {
+        match cs::leaf_draw(rng, pop, lo, hi) {
+            LeafDraw::Planemo { age_gyr } => {
+                return ProcStar {
+                    pos,
+                    abs_mag: f32::INFINITY,
+                    teff: 0.0,
+                    rgb: [0.0; 3],
+                    kind: StarKind::Planemo,
+                    class: "Planemo".into(),
+                    index,
+                    mass_sol: 0.0,
+                    age_gyr,
+                    feh: 0.0,
+                    c_to_o: 0.55,
+                };
+            }
+            LeafDraw::Star(m) => m,
         }
-        l
+    } else {
+        cs::star_of(rng, pop, lo, hi)
+    };
+    let kind = m.class.kind();
+    let rgb = match kind {
+        StarKind::BlackHole => [0.0; 3],
+        StarKind::NeutronStar => [0.75, 0.85, 1.0],
+        _ => blackbody_rgb(m.teff as f64),
+    };
+    ProcStar {
+        pos,
+        abs_mag: m.abs_mag,
+        teff: m.teff,
+        rgb,
+        kind,
+        class: m.class.name(),
+        index,
+        mass_sol: m.mass,
+        age_gyr: m.age_gyr,
+        feh: m.feh,
+        c_to_o: m.c_to_o,
     }
 }
 
@@ -708,71 +577,6 @@ impl GalaxyFrame {
     pub fn to_universe(&self, model_pc: DVec3) -> DVec3 {
         self.center_pc + self.rot * model_pc
     }
-}
-
-/// Peak of the luminosity function over a band (sampled), for [`sample_mag`].
-fn lf_max(m0: f64, m1: f64) -> f64 {
-    let n = 16;
-    (0..=n).map(|i| lf(m0 + (m1 - m0) * i as f64 / n as f64)).fold(0.0, f64::max)
-}
-
-fn sample_mag(rng: &mut Rng, m0: f64, m1: f64, pmax: f64) -> f64 {
-    // Rejection sample the luminosity function within the band.
-    for _ in 0..64 {
-        let m = m0 + (m1 - m0) * rng.f64();
-        if rng.f64() * pmax <= lf(m) {
-            return m;
-        }
-    }
-    m0 + (m1 - m0) * rng.f64()
-}
-
-/// Pick a stellar type consistent with an absolute magnitude.
-/// The random draws behind a star's type ([`star_for_mag`]): the type pick, then one value
-/// (temperature or its jitter), and a giant's subclass.
-struct StarDraw {
-    u: f64,
-    a: f64,
-    b: f64,
-}
-
-fn draw_star(rng: &mut Rng, m: f64) -> StarDraw {
-    let u = rng.f64();
-    let a = rng.f64();
-    let b = if m < 1.0 && u < giant_fraction(m) { rng.f64() } else { 0.0 };
-    StarDraw { u, a, b }
-}
-
-fn star_for_mag(m: f64, d: &StarDraw) -> (StarKind, f64, String) {
-    let u = d.u;
-    // Luminous stars are a mix of hot dwarfs and cool giants/supergiants.
-    if m < 1.0 && u < giant_fraction(m) {
-        let t = 3500.0 + d.a * 1700.0;
-        let lc = if m < -4.0 { "Ib" } else if m < -1.5 { "II" } else { "III" };
-        let letter = if t < 3900.0 { "M" } else if t < 5200.0 { "K" } else { "G" };
-        return (StarKind::Normal, t, format!("{letter}{} {lc}", (d.b * 9.0).round()));
-    }
-    // White dwarfs among faint stars.
-    if m > 10.0 && u < 0.08 {
-        let t = 5000.0 + d.a.powi(2) * 25000.0;
-        return (StarKind::WhiteDwarf, t, format!("DA{:.0}", (50400.0 / t).clamp(1.0, 9.0)));
-    }
-    // Main sequence: invert the Mv(T) relation by bisection.
-    let (mut lo, mut hi) = (2300.0f64, 50000.0f64);
-    for _ in 0..40 {
-        let mid = (lo * hi).sqrt();
-        if main_sequence_abs_mag(mid) > m {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let t = (lo * hi).sqrt() * (0.97 + 0.06 * d.a);
-    (StarKind::Normal, t, format!("{}V", ms_class_name(t)))
-}
-
-fn giant_fraction(m: f64) -> f64 {
-    if m < -3.0 { 0.6 } else if m < 0.0 { 0.7 } else { 0.5 }
 }
 
 /// Main-sequence spectral class letter and subclass for effective temperature `t`, e.g. "G2".
@@ -809,7 +613,6 @@ fn splitmix(mut x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Small deterministic RNG (SplitMix64).
 pub struct Rng(pub u64);
 
 impl Rng {
@@ -838,7 +641,6 @@ impl Rng {
                 k += 1;
             }
         }
-        // Normal approximation for large lambda.
         let u1 = self.f64().max(1e-300);
         let u2 = self.f64();
         let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
@@ -850,153 +652,133 @@ impl Rng {
 mod tests {
     use super::*;
 
-    #[test]
-    fn luminosity_function_total() {
-        let total = lf_integral(-10.0, 16.0);
-        assert!(total > 0.07 && total < 0.15, "{total}");
+    /// A Milky Way like SE's: radius 19.33 kpc, cubic box (its model's scale is 1, 1, 1), type SBc.
+    fn milky_way() -> GalaxyStarInput {
+        let r = 19_329.9;
+        GalaxyStarInput { dims: DVec3::splat(r), radius_pc: r, hubble: 15, has_model: true, seed: -8_628_293, galaxy: GalaxyRef::Catalog(8514) }
+    }
+
+    /// A voxel map whose red channel is `v` everywhere inside `|z| < 0.1` of the box.
+    fn slab(v: f32) -> StarDensity {
+        let (nx, nz) = (16, 20);
+        let mut data = vec![0.0f32; nx * nx * nz * 3];
+        for x in 0..nx {
+            for y in 0..nx {
+                for z in 8..12 {
+                    data[((x * nx + y) * nz + z) * 3] = v;
+                }
+            }
+        }
+        StarDensity::Voxel(Arc::new(DensityMap { nx, ny: nx, nz, data }))
     }
 
     #[test]
-    fn bands_are_contiguous() {
-        let t = StarOctree::new(0, 19_000.0, 7.5);
-        assert!(t.levels > 10 && t.levels < 24, "{}", t.levels);
+    fn milky_way_layout_follows_se() {
+        let t = StarOctree::new(&milky_way(), 7.0);
+        assert_eq!((t.size_class, t.depth, t.levels), (0, 4, 9));
+        // 0.3 x (2416.2 pc)^3 / 2000^3 x 16384 tries, split (1 + 0.25 + 1 + 0.1).
+        assert!((8600..8700).contains(&t.total), "{}", t.total);
+        assert_eq!(t.leaf_total, (t.total as f32 * LEAF_BOOST) as u32);
+        // Bands: N(0, 6) slices from Mv -8, the last ending at the 0.9999 quantile.
+        assert!((t.mag_band(0).0 + 8.0).abs() < 1e-3);
+        assert!((t.mag_band(8).1 - 22.31).abs() < 0.02, "{:?}", t.mag_band(8));
+        assert!((t.mag_band(4).0 + 0.075).abs() < 0.05, "{:?}", t.mag_band(4));
         for l in 1..t.levels {
-            assert!((t.mag_band(l).0 - t.mag_band(l - 1).1).abs() < 1e-9);
+            assert_eq!(t.mag_band(l).0, t.mag_band(l - 1).1);
+        }
+        // Dwarfs and small galaxies: fewer levels, finer roots.
+        assert_eq!(size_class(881.0), 2);
+        assert_eq!(size_class(60_000.0), 0);
+    }
+
+    #[test]
+    fn se_root_and_node_numbers_round_trip() {
+        let t = StarOctree::new(&milky_way(), 7.0);
+        // Root 491 is the octant path 0, 7, 5, 3: (3/16, 5/16, 1/16) of the box from the centre.
+        let k = t.key_of(491, 0, 0).unwrap();
+        let c = t.node_center(k) / t.dims;
+        assert!((c - DVec3::new(3.0 / 16.0, 5.0 / 16.0, 1.0 / 16.0)).length() < 1e-9, "{c}");
+        let k = t.key_of(491, 6, 169_551).unwrap();
+        assert_eq!(t.root_node(k), (491, 169_551));
+        assert_eq!(t.star_name(k, 68), "RS 8514-491-6-169551-68");
+        assert_eq!(t.parse_name("rs 8514-491-6-169551-68"), Some((k, 68)));
+        assert_eq!(t.parse_name("RS 8514-491-9-0-0"), None);
+        assert_eq!(t.parse_name("RS 8513-491-6-169551-68"), None);
+        // A child is the parent's cell refined, numbered parent * 8 + octant.
+        let parent = t.key_of(491, 5, 169_551 / 8).unwrap();
+        assert_eq!(t.cell_of(5, t.node_center(k)), parent.cell);
+    }
+
+    #[test]
+    fn nodes_fill_with_se_stars() {
+        let t = StarOctree::new(&milky_way(), 7.0);
+        let d = slab(0.3);
+        let sun = DVec3::new(8_500.0, 0.0, 0.0);
+        let all = |_: DVec3| true;
+        let key = NodeKey { level: 6, cell: t.cell_of(6, sun) };
+        let a = t.generate_where(key, &d, None, &all);
+        let b = t.generate_where(key, &d, None, &all);
+        // About 0.045 of the 8666 tries.
+        assert!((250..550).contains(&a.len()), "{}", a.len());
+        assert!(a.iter().zip(&b).all(|(x, y)| x.pos == y.pos && x.class == y.class));
+        let (lo, hi) = t.mag_band(6);
+        assert!(a.iter().all(|s| s.abs_mag as f64 >= lo - 1e-3 && s.abs_mag as f64 <= hi + 1e-3 || !s.kind.eq(&StarKind::Normal)));
+        assert!(a.iter().enumerate().all(|(i, s)| s.index == i as u32));
+        let h = t.node_half(6);
+        assert!(a.iter().all(|s| ((s.pos - t.node_center(key)).abs() - h).max_element() <= 1e-3));
+        // The deepest level: 45 % planemos, a few lone remnants.
+        let leaf = NodeKey { level: 8, cell: t.cell_of(8, sun) };
+        let l = t.generate_where(leaf, &d, None, &all);
+        let pm = l.iter().filter(|s| s.kind == StarKind::Planemo).count() as f64 / l.len() as f64;
+        assert!((pm - 0.45).abs() < 0.08, "{pm} of {}", l.len());
+        // Below 64 kept stars past level 2 a node is empty.
+        assert!(t.generate_where(key, &slab(0.02), None, &all).is_empty());
+        // Positions kept by `keep` are the same stars.
+        let near = |p: DVec3| p.x < t.node_center(key).x;
+        let k = t.generate_where(key, &d, None, &near);
+        assert!(k.iter().all(|s| a.iter().any(|x| x.index == s.index && x.pos == s.pos)));
+    }
+
+    #[test]
+    fn analytic_galaxies_have_old_halos() {
+        let e = GalaxyStarInput { dims: DVec3::new(8_000.0, 10_000.0, 8_000.0), radius_pc: 4_000.0, hubble: 3, has_model: false, seed: 77, galaxy: GalaxyRef::Catalog(5) };
+        let t = StarOctree::new(&e, 7.0);
+        assert_eq!(t.counts[..3], [0, 0, 0]);
+        let all = |_: DVec3| true;
+        let core = t.generate_where(NodeKey { level: 3, cell: t.cell_of(3, DVec3::splat(100.0)) }, &StarDensity::Analytic, None, &all);
+        assert!(!core.is_empty());
+        assert!(core.iter().all(|s| s.feh < 0.5));
+        let far = t.generate_where(NodeKey { level: 3, cell: t.cell_of(3, DVec3::new(7_000.0, 0.0, 0.0)) }, &StarDensity::Analytic, None, &all);
+        assert!(far.len() < core.len());
+    }
+
+    #[test]
+    fn home_cut_leaves_bright_and_near_stars_to_the_catalogs() {
+        let t = StarOctree::new(&milky_way(), 7.0);
+        let sun = DVec3::new(8_500.0, 0.0, 0.0);
+        let cut = HomeCut { sun, max_app_mag: 10.0, min_dist_normal: 2.5, min_dist_brown: 2.0, min_dist_remnant: 3.0 };
+        let all = |_: DVec3| true;
+        let key = NodeKey { level: 4, cell: t.cell_of(4, sun) };
+        let stars = t.generate_where(key, &slab(0.6), Some(&cut), &all);
+        for s in &stars {
+            let d = (s.pos - sun).length();
+            assert!(d > 2.0 && (!s.luminous() || s.abs_mag as f64 + 5.0 * (d / 10.0).log10() >= 10.0));
         }
     }
 
     #[test]
-    fn deterministic_and_dense_near_sun() {
-        let sun = DVec3::new(8200.0, 0.0, 20.0);
-        let d = MilkyWayDensity::new(19_000.0, sun);
-        assert!((d.density(sun) - 1.0).abs() < 1e-9);
-        assert!(d.density(DVec3::ZERO) > 20.0);
-        assert!(d.density(DVec3::new(8200.0, 0.0, 3000.0)) < 0.05);
-        let t = StarOctree::new(0, 19_000.0, 7.5);
-        let lvl = t.levels - 1;
-        let keys = t.nodes_around(lvl, sun);
-        assert!(!keys.is_empty());
-        let none = |_: DVec3, _: f64| false;
-        let a = t.generate(keys[0], &d, &none);
-        let b = t.generate(keys[0], &d, &none);
-        assert_eq!(a.len(), b.len());
-        assert!(a.iter().zip(&b).all(|(x, y)| x.pos == y.pos && x.abs_mag == y.abs_mag));
-        // Visible star count around the Sun across all levels: thousands, not millions.
-        let mut visible = 0usize;
-        for l in 0..t.levels {
-            for k in t.nodes_around(l, sun) {
-                for s in t.generate(k, &d, &none) {
-                    let dist = (s.pos - sun).length().max(0.01);
-                    if s.abs_mag as f64 + 5.0 * (dist / 10.0).log10() < 7.5 {
-                        visible += 1;
-                    }
-                }
-            }
+    fn wanted_nodes_reach_by_band() {
+        let t = StarOctree::new(&milky_way(), 7.0);
+        let cam = DVec3::new(8_500.0, 0.0, 0.0);
+        let w = t.wanted_nodes(cam, 1.0, None, 0);
+        assert_eq!(w.len(), 9);
+        for (l, keys) in w.iter().enumerate() {
+            assert!(!keys.is_empty(), "level {l}");
+            assert!(keys.iter().all(|k| t.box_distance(*k, cam) <= t.reach(l as u8)));
         }
-        assert!(visible > 2_000 && visible < 80_000, "{visible}");
-    }
-
-    #[test]
-    fn galaxy_density_scales_from_the_milky_way() {
-        let sun = DVec3::new(SUN_GALACTOCENTRIC_PC, 0.0, 0.0);
-        // A bulgeless Milky Way twin puts all of its light in the disk: the solar neighbourhood
-        // density times 1 / (the Milky Way's disk share of the light).
-        let twin = GalaxyStarDensity::new(GalaxyForm::Disk { bulge: 0.0 }, MILKY_WAY_RADIUS_PC, None);
-        let d = twin.density(sun);
-        assert!((d * MILKY_WAY_DISK_LIGHT - 1.0).abs() < 0.1, "{d}");
-        // A galaxy a quarter the size is as dense at the same relative place.
-        let small = GalaxyStarDensity::new(GalaxyForm::Disk { bulge: 0.0 }, MILKY_WAY_RADIUS_PC / 4.0, None);
-        assert!((small.density(DVec3::new(SUN_GALACTOCENTRIC_PC / 4.0, 0.0, 0.0)) / d - 1.0).abs() < 0.05);
-        // Ellipticals have SE's small share of luminous stars and are densest at the centre.
-        let e = GalaxyStarDensity::new(GalaxyForm::from_type("E3"), 5_000.0, None);
-        assert_eq!(e.young_fraction(DVec3::new(500.0, 0.0, 0.0)), ELLIPTICAL_YOUNG);
-        assert!(e.density(DVec3::new(100.0, 0.0, 0.0)) > e.density(DVec3::new(2_000.0, 0.0, 0.0)));
-        // A dwarf irregular still has a sensible density (stars per solar-neighbourhood volume).
-        let irr = GalaxyStarDensity::new(GalaxyForm::from_type("Irr"), 2_000.0, None);
-        let c = irr.density(DVec3::new(200.0, 0.0, 0.0));
-        assert!(c > 0.01 && c < 100.0, "{c}");
-        assert_eq!(GalaxyForm::from_type("SBa"), GalaxyForm::Disk { bulge: 1.6 });
-    }
-
-    #[test]
-    fn no_star_is_brighter_than_a_hypergiant() {
-        // A giant spiral: its top levels span magnitudes far brighter than any star.
-        let d = GalaxyStarDensity::new(GalaxyForm::Disk { bulge: 1.0 }, 40_000.0, None);
-        let t = StarOctree::new(7, 40_000.0, 7.5);
-        let none = |_: DVec3, _: f64| false;
-        let cam = DVec3::new(15_000.0, 0.0, 0.0);
-        let mut n = 0;
-        for l in 0..4 {
-            for k in t.nodes_around(l, cam) {
-                for s in t.generate(k, &d, &none) {
-                    assert!(s.abs_mag as f64 >= BRIGHTEST_MAG, "level {l}: Mv {}", s.abs_mag);
-                    n += 1;
-                }
-            }
-        }
-        assert!(n > 0);
-    }
-
-    #[test]
-    fn wanted_nodes_reach_further_inside_the_cone() {
-        let t = StarOctree::new(0, 19_000.0, 7.5);
-        let cam = DVec3::new(8200.0, 0.0, 20.0);
-        // Without a raised limit: exactly the nodes around the camera.
-        let base = t.wanted_nodes(cam, 1.0, None, 0);
-        for l in 0..t.levels {
-            let mut a = base[l as usize].clone();
-            let mut b = t.nodes_around(l, cam);
-            a.sort();
-            b.sort();
-            assert_eq!(a, b, "level {l}");
-        }
-        // Raised by 5 magnitudes (10x the reach) inside a narrow cone: the base set plus nodes
-        // far along the axis only.
-        let axis = DVec3::X;
-        let zoomed = t.wanted_nodes(cam, 10.0, Some((axis, 2f64.to_radians())), usize::MAX);
-        let capped = t.wanted_nodes(cam, 10.0, Some((axis, 2f64.to_radians())), 3);
-        assert!(capped.iter().zip(&base).all(|(c, b)| c.len() <= b.len() + 3));
-        let deep = t.levels - 1;
-        let s = t.node_size(deep);
-        let far: Vec<_> = zoomed[deep as usize].iter().filter(|k| !base[deep as usize].contains(k)).collect();
-        assert!(!far.is_empty());
-        for k in &far {
-            let v = t.node_center(**k) - cam;
-            assert!(v.x > -s && v.length() <= VIEW_FACTOR * s * 10.0 + s, "{v}");
-            assert!((v.y * v.y + v.z * v.z).sqrt() < v.x.max(0.0) * 0.05 + s, "{v}");
-        }
-        // Nearest first within a level.
-        let d = |k: &NodeKey| (t.node_center(*k) - cam).length();
-        assert!(d(&zoomed[deep as usize][0]) <= d(zoomed[deep as usize].last().unwrap()));
-    }
-}
-
-#[cfg(test)]
-mod remnant_tests {
-    use super::*;
-
-    struct Flat;
-    impl DensityModel for Flat {
-        fn density(&self, _p: DVec3) -> f64 {
-            1.0
-        }
-    }
-
-    #[test]
-    fn dead_stars_live_on_one_level() {
-        let t = StarOctree::new(0, 19_300.0, 7.5);
-        let l = t.remnant_level();
-        assert!((40.0..80.0).contains(&t.node_size(l)), "{}", t.node_size(l));
-        let c = t.cell_of(l, DVec3::new(8_000.0, 0.0, 0.0));
-        let stars = t.generate(NodeKey { level: l, cell: c }, &Flat, &|_, _| false);
-        let holes = stars.iter().filter(|s| s.kind == StarKind::BlackHole).count();
-        let pulsars = stars.iter().filter(|s| s.kind == StarKind::NeutronStar).count();
-        assert!(holes > 3 && pulsars > holes, "{holes} {pulsars}");
-        assert!(stars.iter().filter(|s| s.kind == StarKind::BlackHole).all(|s| s.class == "X" && s.rgb == [0.0; 3]));
-        // Indices stay unique, so names stay unique.
-        let mut ix: Vec<u32> = stars.iter().map(|s| s.index).collect();
-        ix.sort();
-        ix.dedup();
-        assert_eq!(ix.len(), stars.len());
+        // The camera's own node at every level.
+        assert!(w[8].contains(&NodeKey { level: 8, cell: t.cell_of(8, cam) }));
+        let zoomed = t.wanted_nodes(cam, 10.0, Some((DVec3::X, 2f64.to_radians())), 3);
+        assert!(zoomed.iter().zip(&w).all(|(z, b)| z.len() <= b.len() + 3));
     }
 }

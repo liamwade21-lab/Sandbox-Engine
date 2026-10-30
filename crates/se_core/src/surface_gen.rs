@@ -258,6 +258,15 @@ pub fn inv_norm_cdf(p: f64) -> f64 {
 
 /// Seeds of a catalog body (FUN_1404652f0): a x131 hash of `"<names>|<parent>"` (the header
 /// name string as written, then `ParentBody`), bytes as signed chars.
+/// A catalog body's record seeds: SE's index seeds a generated body carries (`SeSeedA`/`SeSeedB`,
+/// written by `procgen`), else the name hash of [`catalog_seeds`].
+pub fn body_seeds(b: &crate::catalog::BodyRecord) -> (u32, u32) {
+    match (b.block.f64("SeSeedA"), b.block.f64("SeSeedB")) {
+        (Some(a), Some(s)) => (a as u32, s as u32),
+        _ => catalog_seeds(&b.names.join("/"), &b.parent),
+    }
+}
+
 pub fn catalog_seeds(names: &str, parent: &str) -> (u32, u32) {
     let mut h: i32 = 0;
     for c in names.bytes().chain(std::iter::once(b'|')).chain(parent.bytes()) {
@@ -2029,7 +2038,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
         }
     });
     let inp = GenInput {
-        seeds: catalog_seeds(&b.names.join("/"), &b.parent),
+        seeds: body_seeds(b),
         obj_type,
         classes,
         radius_km,

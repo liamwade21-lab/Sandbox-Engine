@@ -238,12 +238,16 @@ impl ClusterField {
 }
 
 fn info_of(rsc: &str, id: MemberId, m: &MemberStar) -> ProcStarInfo {
+    // SE names the stars of a nebula's young cluster by the nebula and their index only (its one
+    // node, FUN_1401c0180's `RSN` formats).
+    let name = if rsc.starts_with("RSN ") { format!("{rsc}-{}", id.index) } else { format!("{rsc}-{}-{}-{}", id.level, id.node, id.index) };
     ProcStarInfo {
-        name: format!("{rsc}-{}-{}-{}", id.level, id.node, id.index),
+        name,
         class: m.class.name(),
         abs_mag: m.abs_mag,
         teff: m.teff,
         age_feh: Some((m.age_gyr, m.feh)),
+        se: None,
     }
 }
 
@@ -252,6 +256,9 @@ fn info_of(rsc: &str, id: MemberId, m: &MemberStar) -> ProcStarInfo {
 /// cluster's index among the galaxy's catalog clusters (they come before the procedural ones).
 pub fn rsc_prefix(cat: &Catalog, ci: usize) -> String {
     let rec = &cat.clusters[ci];
+    if let Some(rn) = rec.embedded_in.as_deref().and_then(|n| n.strip_prefix("RN ")) {
+        return format!("RSN {rn}");
+    }
     if let Some(rest) = rec.names.first().and_then(|n| n.strip_prefix("RC ")) {
         return format!("RSC {rest}");
     }
@@ -274,6 +281,10 @@ fn galaxy_code(cat: &Catalog, galaxy: &str) -> u32 {
 pub fn cluster_of_rc(cat: &Catalog, rc: &str) -> Option<usize> {
     if let Some(ObjectRef::Cluster(i)) = cat.find(rc) {
         return Some(i as usize);
+    }
+    // A nebula's young cluster, by the nebula's `RN` name.
+    if rc.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("RN ")) {
+        return cat.clusters.iter().position(|c| c.embedded_in.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(rc)));
     }
     let (_, GalaxyRef::Catalog(g), index) = se_core::proc_galsys::parse_system_name(rc)? else { return None };
     cat.clusters
@@ -788,7 +799,7 @@ fn build_node(model: &Model, id: NodeId) -> NodeBuilt {
             if id.level == 0 {
                 if let Some(mass) = model.black_hole {
                     let mv = se_core::star::abs_mag_from_lum(BLACK_HOLE_LUM) as f32;
-                    let m = cs::Member { abs_mag: mv, teff: 0.0, mass: mass as f32, age_gyr: model.age as f32, feh: 0.0, class: cs::black_hole_class() };
+                    let m = cs::Member { abs_mag: mv, teff: 0.0, mass: mass as f32, age_gyr: model.age as f32, feh: 0.0, c_to_o: 1.0, class: cs::black_hole_class() };
                     stars.push(MemberStar { hidden: true, ..star(DVec3::ZERO, m) });
                 }
             }
@@ -853,6 +864,7 @@ mod tests {
             no_members: false,
             color: None,
             source: "test".into(),
+            embedded_in: None,
         }
     }
 

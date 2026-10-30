@@ -56,13 +56,14 @@ meaning.
 ## Naming
 
 Verified against `SpaceEngine/save/places-def.cfg`, `data/locale/*-db.cfg` and exe strings:
-* Stars: `RS <galaxy-code>-<level>-<node>-<index>`, e.g. `RS 8514-491-6-169551-68` (galaxy code
-  `8514-491`, octree level 6, node 169551, star 68) and `RS 0-8-11084762-901-49-7-384587-1004`
-  (galaxy `0-8-11084762-901-49`, level 7, node 384587, star 1004). The exe contains `RG %i-%i-%I64d-%i`
-  (galaxy), `RN`/`RC` (nebula/cluster) and a bare `%i-%i-%I64d-%i` format (the galaxy, cluster and nebula
-  names are decoded in `docs/formats/procedural_deepsky.md`). SE's node numbering itself
-  was not decoded: `procedural_star_name` packs the `[i64;3]` octree cell into the node id by 3-D Morton
-  interleaving (21 bits/axis, biased by 2^20). Same galaxy code + cell + level + index => same name.
+* Stars: SE's star octree names (`se_core::star_octree`, FUN_1401c0180): `RS <galaxy>-<root>-<level>-<node>-<index>`
+  in catalog galaxies (the Milky Way is 8514: `RS 8514-491-6-169551-68` is root 491, level 6, node 169551,
+  star 68) and `RS 0-<level>-<node>-<galaxy>-<root>-<level>-<node>-<index>` in procedural ones
+  (`RS 0-8-11084762-901-49-7-384587-1004`). Roots are the cells of the galaxy's regular root grid and nodes
+  their octrees, both numbered by SE's base-8 octant paths (octant bits 4, 2, 1 for the lower x, y, z half);
+  the index counts the stars the node keeps. Cluster members are `RSC <cluster>-<level>-<node>-<index>`, the
+  stars of a nebula's young cluster `RSN <nebula>-<index>`. Rogue planets (planemos) are named like stars;
+  their planet is `<name> 1`.
 * Planets: `<star> <n>` (n = 1.. outward by semi-major axis, dwarf planets share the numbering);
   after a binary component letter the number is attached: `<system> A4`, `<system> B2`, `<system> AB3`
   (`planet_name` treats a trailing 1-3 capital letters as a component). Circumbinary planets of the

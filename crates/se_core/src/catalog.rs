@@ -196,6 +196,8 @@ pub struct ClusterRecord {
     /// `Color (0 0 0)` means no particle (the stars are in the star catalog).
     pub color: Option<[f32; 3]>,
     pub source: String,
+    /// The `RN` name of the nebula a young cluster is embedded in: its members are SE's `RSN` stars.
+    pub embedded_in: Option<String>,
 }
 
 /// SE's `ClusterGenerator`/`StarGenerator` values used to complete catalog clusters. The catalog cap
@@ -293,6 +295,9 @@ pub struct NebulaRecord {
     pub model_roll: Option<u32>,
     /// `Randomize` (FUN_140172400): added to the ray-marched model's own as the shader's `uRandomize`.
     pub randomize: [f32; 3],
+    /// SE's per-nebula star flag (FUN_140172400): on for `Diffuse` nebulae unless `GenerateStars` says
+    /// otherwise; such a nebula holds a young embedded cluster of `RSN` stars.
+    pub generate_stars: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -853,6 +858,7 @@ impl Catalog {
             no_members: b.f64("NStars") == Some(0.0),
             color: b.vec3("Color").map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]),
             source: source.to_string(),
+            embedded_in: None,
         };
         let idx = self.clusters.len() as u32;
         for n in &rec.names {
@@ -873,9 +879,11 @@ impl Catalog {
             .f64("Radius")
             .or_else(|| b.f64("RadiusLy").map(|r| r * crate::units::METERS_PER_LY / crate::units::METERS_PER_PC))
             .unwrap_or(1.0);
+        let kind = b.str("Type").unwrap_or("Diffuse").to_string();
         let rec = NebulaRecord {
             galaxy: b.str("Galaxy").unwrap_or("Milky Way").to_string(),
-            kind: b.str("Type").unwrap_or("Diffuse").to_string(),
+            generate_stars: b.bool("GenerateStars").unwrap_or(kind == "Diffuse"),
+            kind,
             pos_pc: pos,
             radius_pc,
             abs_mag: b

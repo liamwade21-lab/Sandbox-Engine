@@ -1,13 +1,14 @@
-//! Procedural stars of the galaxy the camera is in, streamed from a magnitude-stratified
-//! octree around the camera (see `se_core::star_octree`). The Milky Way uses its analytic
-//! model; any other galaxy gets [`GalaxyStarDensity`] (its Hubble type, size and luminosity,
-//! with the spiral arms of its sprite model), so every galaxy is full of stars from inside.
+//! Procedural stars of the galaxy the camera is in, streamed from SpaceEngine's star octree around
+//! the camera (see `se_core::star_octree`). A galaxy with a sprite model fills its octree from the
+//! model's emission voxel map, as SE does (the Milky Way waits for its map up to `MAP_WAIT_S`); one
+//! without uses SE's analytic disk, bulge and halo.
 //!
 //! Every loaded node is a sprite mesh whose vertices are star positions relative
 //! to the node centre (universe frame, parsecs). All nodes share one
 //! [`StarMaterial`] in "octree mode": the node entity's translation holds the node
 //! centre minus the camera, in parsecs, so camera motion only updates transforms. A new node
 //! fades in over SE's `StarFadeDuration` on a copy of that material, then joins the shared one.
+//! Planemos (rogue planets) are dark: they are in the nodes, never in the meshes.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,11 +18,8 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use se_core::catalog::ObjectRef;
-use se_core::catalog::GalaxyRecord;
-use se_core::procgen::procedural_star_name;
-use se_core::star_octree::{
-    DensityModel, GalaxyForm, GalaxyFrame, GalaxyStarDensity, MilkyWayDensity, NodeKey, ProcStar, StarOctree,
-};
+use se_core::star::StarKind;
+use se_core::star_octree::{GalaxyFrame, HomeCut, NodeKey, ProcStar, StarDensity, StarOctree};
 
 use crate::camera::FlyCamera;
 use crate::data::SeData;
@@ -31,7 +29,7 @@ use crate::universe::UniverseSet;
 const MAX_IN_FLIGHT: usize = 48;
 /// Frames a node may stay unused before it is dropped.
 const KEEP_FRAMES: u64 = 90;
-/// With the magnitude limit raised above the one the octree was laid out for, nodes are loaded
+/// With the magnitude limit raised above the one the node reach is measured for, nodes are loaded
 /// all around out to at most this times their usual reach (1.5 magnitudes); SE loads them all the
 /// way, which a big raise turns into millions of stars.
 const FULL_REACH_MAX: f64 = 2.0;
@@ -59,14 +57,13 @@ pub struct ProcStarField {
     pub enabled: bool,
     pub octree: StarOctree,
     pub frame: GalaxyFrame,
-    density: Arc<dyn DensityModel>,
-    /// Catalog galaxy the stars belong to.
-    pub galaxy: usize,
+    density: StarDensity,
+    /// In the home galaxy: what the catalogs hold instead (SE's `StarGenerator` limits).
+    home: Option<HomeCut>,
+    /// Catalog galaxy the stars belong to; `None` until the first galaxy is set up.
+    pub galaxy: Option<usize>,
     milky_way: usize,
-    /// Galaxy part of the star names (`RS <code>-<level>-<node>-<index>`); `None` in the Milky
-    /// Way, whose stars keep their short `RS L-x-y-z-i` names.
-    code: Option<String>,
-    /// A galaxy the camera has entered whose sprite model (and so its arms) is still being
+    /// A galaxy the camera has entered whose sprite model (and so its voxel map) is still being
     /// built, and since when (seconds).
     pending: Option<(usize, f32)>,
     nodes: HashMap<NodeKey, NodeSlot>,
@@ -81,29 +78,40 @@ pub struct ProcStarField {
 /// a galaxy's brightest stars already show as a cloud around it from a few radii away.
 const ENTER_RADII: f64 = 3.0;
 const LEAVE_RADII: f64 = 3.5;
-/// How long to wait for a galaxy's sprite model before generating its stars without arms.
-const ARMS_WAIT_S: f32 = 5.0;
+/// How long to wait for a galaxy's sprite model (its voxel map) before generating its stars from
+/// SE's analytic components.
+const MAP_WAIT_S: f32 = 5.0;
 
 /// A procedural star nearer than this (and nearer than any catalog star) becomes a real
 /// catalog star with planets, the centre of the active system.
 pub const PROMOTE_PC: f64 = 50.0;
 
-/// A procedural star (Milky Way field or cluster member) that can become a catalog star.
+/// What SE's star generator made of a field star: its mass, age, [Fe/H] and C/O.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SeStarFacts {
+    pub mass_sol: f32,
+    pub age_gyr: f32,
+    pub feh: f32,
+    pub c_to_o: f32,
+}
+
+/// A procedural star (galaxy field or cluster member) that can become a catalog star.
 #[derive(Debug, Clone)]
 pub struct ProcStarInfo {
     pub name: String,
-    /// Spectral class, e.g. "G2V".
+    /// Spectral class, e.g. "G2V" ("Planemo" for a rogue planet).
     pub class: String,
     pub abs_mag: f32,
     pub teff: f32,
     /// A cluster member's age (Gyr) and [Fe/H]: SE copies the cluster's age into its members
     /// (FUN_14053a760) before drawing their scatter and metallicity (FUN_1401d6c60). None for
-    /// field stars, which draw their own.
+    /// field stars, which carry their own in `se`.
     pub age_feh: Option<(f32, f32)>,
+    /// A galaxy field star's values from SE's star generator.
+    pub se: Option<SeStarFacts>,
 }
 
-
-/// Nearest procedural star to the camera (from the loaded nodes of the Milky Way field
+/// Nearest procedural star to the camera (from the loaded nodes of the galaxy field
 /// and of star clusters).
 #[derive(Resource, Debug, Clone)]
 pub struct NearestProcStar {
@@ -172,9 +180,19 @@ pub fn galaxy_radius_fraction(pos_pc: DVec3) -> Option<f64> {
     FIELD_GALAXIES.read().ok()?.iter().map(|&(c, r)| pos_pc.distance(c) / r).min_by(f64::total_cmp)
 }
 
-/// Procedural star name in SpaceEngine's "RS" style, from the node address.
-pub fn proc_star_name(key: NodeKey, index: u32) -> String {
-    format!("RS {}-{}-{}-{}-{}", key.level, key.cell[0], key.cell[1], key.cell[2], index)
+/// A placeholder octree until the first galaxy is set up (no levels hold anything near the camera).
+fn empty_octree() -> StarOctree {
+    StarOctree::new(
+        &se_core::star_octree::GalaxyStarInput {
+            dims: DVec3::ONE,
+            radius_pc: 1.0,
+            hubble: 0,
+            has_model: false,
+            seed: 0,
+            galaxy: se_core::proc_galsys::GalaxyRef::Catalog(0),
+        },
+        7.0,
+    )
 }
 
 fn setup_field(
@@ -190,29 +208,18 @@ fn setup_field(
         return;
     };
     let g = &cat.galaxies[gi as usize];
-    let frame = GalaxyFrame {
-        center_pc: g.pos_pc,
-        rot: g.orientation,
-    };
-    let sun_model = frame.to_model(DVec3::ZERO);
     register_field_galaxy(g.pos_pc, g.radius_pc);
-    let density = milky_way_density(g);
-    let octree = StarOctree::new(0, g.radius_pc, settings.faint_limit() as f64);
-    info!(
-        "procedural Milky Way: {} octree levels, Sun at model ({:.0}, {:.0}, {:.0}) pc",
-        octree.levels, sun_model.x, sun_model.y, sun_model.z
-    );
     let mut u = uniforms_for(Vec3::ZERO, &settings);
     u.anchor = Vec4::new(0.0, 0.0, 0.0, 2.0);
     let material = materials.add(StarMaterial { uniforms: u });
     commands.insert_resource(ProcStarField {
         enabled: true,
-        octree,
-        frame,
-        density,
-        galaxy: gi as usize,
+        octree: empty_octree(),
+        frame: GalaxyFrame { center_pc: g.pos_pc, rot: g.orientation },
+        density: StarDensity::Analytic,
+        home: None,
+        galaxy: None,
         milky_way: gi as usize,
-        code: None,
         pending: None,
         nodes: HashMap::new(),
         material,
@@ -222,87 +229,62 @@ fn setup_field(
     });
 }
 
-fn milky_way_density(g: &GalaxyRecord) -> Arc<dyn DensityModel> {
-    let frame = GalaxyFrame {
-        center_pc: g.pos_pc,
-        rot: g.orientation,
-    };
-    Arc::new(MilkyWayDensity::new(g.radius_pc, frame.to_model(DVec3::ZERO)))
-}
-
-/// Seed of a galaxy's star octree (FNV-1a of its name); the Milky Way keeps 0.
-fn galaxy_seed(name: &str) -> u32 {
-    name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193)).max(1)
-}
-
 impl ProcStarField {
     /// Name, class and brightness of a loaded star.
     pub fn info(&self, s: &ProcStar, key: NodeKey) -> ProcStarInfo {
-        let name = match &self.code {
-            None => proc_star_name(key, s.index),
-            Some(code) => procedural_star_name(code, key.cell.map(|c| c as i64), key.level, s.index),
-        };
-        ProcStarInfo {
-            name,
-            class: s.class.clone(),
-            abs_mag: s.abs_mag,
-            teff: s.teff,
-            age_feh: None,
-        }
+        star_info(&self.octree, s, key)
     }
 
     /// Start generating the stars of another galaxy: drop every node (loading ones are
     /// cancelled) and rebuild the octree in its frame.
-    fn switch_to(&mut self, commands: &mut Commands, g: usize, rec: &GalaxyRecord, density: Arc<dyn DensityModel>, mag_limit: f64) {
+    fn switch_to(&mut self, commands: &mut Commands, g: usize, cat: &se_core::catalog::Catalog, octree: StarOctree, density: StarDensity) {
         for (_, slot) in self.nodes.drain() {
             if let NodeState::Ready { entity: Some(e), .. } = slot.state {
                 commands.entity(e).despawn();
             }
         }
-        let mw = g == self.milky_way;
-        self.galaxy = g;
-        self.frame = GalaxyFrame {
-            center_pc: rec.pos_pc,
-            rot: rec.orientation,
-        };
-        self.octree = StarOctree::new(if mw { 0 } else { galaxy_seed(&rec.names[0]) }, rec.radius_pc, mag_limit);
+        let rec = &cat.galaxies[g];
+        self.galaxy = Some(g);
+        self.frame = GalaxyFrame { center_pc: rec.pos_pc, rot: rec.orientation };
+        let lim = star_gen();
+        self.home = (g == self.milky_way).then(|| HomeCut {
+            sun: self.frame.to_model(DVec3::ZERO),
+            max_app_mag: lim.max_app_mag,
+            min_dist_normal: lim.min_dist_normal,
+            min_dist_brown: lim.min_dist_brown,
+            min_dist_remnant: lim.min_dist_remnant,
+        });
         register_field_galaxy(rec.pos_pc, rec.radius_pc);
+        info!(
+            "procedural stars: inside {} ({}), size class {}, {}^3 roots, {} levels, {} star density",
+            rec.names[0],
+            rec.kind,
+            octree.size_class,
+            1u32 << octree.depth,
+            octree.levels,
+            if matches!(density, StarDensity::Voxel(_)) { "voxel map" } else { "analytic" }
+        );
+        self.octree = octree;
         self.density = density;
-        self.code = (!mw).then(|| rec.names[0].strip_prefix("RG ").map(str::to_string).unwrap_or_else(|| g.to_string()));
         self.pending = None;
         self.loaded_stars = 0;
-        info!("procedural stars: inside {} ({}), {} octree levels", rec.names[0], rec.kind, self.octree.levels);
     }
 
-    /// Universe position (pc) of a star of this field named `RS L-x-y-z-i` (Milky Way) or
-    /// `RS <code>-L-<node>-i`; generates its node if needed.
+    /// Universe position (pc) of a star of this field named `RS <galaxy>-<root>-<level>-<node>-<index>`;
+    /// generates its node if needed.
     pub fn find_by_name(&self, name: &str) -> Option<DVec3> {
-        let rest = name.trim().strip_prefix("RS ")?;
-        let n: Vec<i64> = rest.rsplit('-').take(5).map(|s| s.trim().parse().ok()).collect::<Option<_>>()?;
-        let key = match &self.code {
-            None if n.len() == 5 && rest.split('-').count() == 5 => NodeKey {
-                level: n[4] as u8,
-                cell: [n[3] as i32, n[2] as i32, n[1] as i32],
-            },
-            _ => return None,
-        };
-        let index = n[0] as u32;
+        self.galaxy?;
+        let (key, index) = self.octree.parse_name(name)?;
         if let Some(NodeSlot { state: NodeState::Ready { stars, .. }, .. }) = self.nodes.get(&key) {
             return stars.iter().find(|s| s.index == index).map(|s| self.frame.to_universe(s.pos));
         }
-        let built = build(self.octree.clone(), self.frame, self.density.clone(), self.galaxy == self.milky_way, key);
+        let built = build(self.octree.clone(), self.frame, self.density.clone(), self.home, key);
         built.stars.iter().find(|s| s.index == index).map(|s| self.frame.to_universe(s.pos))
     }
 
     /// A snapshot for scanning the field's stars off the main thread.
     pub fn scan(&self) -> StarScan {
-        StarScan {
-            octree: self.octree.clone(),
-            frame: self.frame,
-            density: self.density.clone(),
-            milky_way: self.galaxy == self.milky_way,
-            code: self.code.clone(),
-        }
+        StarScan { octree: self.octree.clone(), frame: self.frame, density: self.density.clone(), home: self.home, ready: self.galaxy.is_some() }
     }
 
     /// Stars of the loaded nodes: (universe position in parsecs, star, node).
@@ -317,47 +299,47 @@ impl ProcStarField {
     }
 }
 
+fn star_info(octree: &StarOctree, s: &ProcStar, key: NodeKey) -> ProcStarInfo {
+    ProcStarInfo {
+        name: octree.star_name(key, s.index),
+        class: s.class.clone(),
+        abs_mag: s.abs_mag,
+        teff: s.teff,
+        age_feh: None,
+        se: Some(SeStarFacts { mass_sol: s.mass_sol, age_gyr: s.age_gyr, feh: s.feh, c_to_o: s.c_to_o }),
+    }
+}
+
 /// SE's `StarGenerator` limits (main-def.cfg): procedural stars brighter than `StarMaxAppMagn` as
-/// seen from the Sun, or nearer to it than `StarMinDistNormal`, are left to the catalogs
-/// (FUN_1405945e0 keeps the magnitude as a brightness coefficient and the distances squared).
+/// seen from the Sun, or nearer to it than `StarMinDistNormal` (`StarMinDistBrownDwarf` for brown
+/// dwarfs, `StarMinDistRemnant` for remnants and planemos), are left to the catalogs (FUN_1405945e0
+/// keeps the magnitude as a brightness coefficient and the distances squared).
 #[derive(Clone, Copy, Debug)]
 struct StarGenLimits {
     max_app_mag: f64,
-    min_dist_pc: f64,
+    min_dist_normal: f64,
+    min_dist_brown: f64,
+    min_dist_remnant: f64,
 }
 
 static STAR_GEN: std::sync::OnceLock<StarGenLimits> = std::sync::OnceLock::new();
 
 fn star_gen() -> StarGenLimits {
-    *STAR_GEN.get_or_init(|| StarGenLimits { max_app_mag: 10.0, min_dist_pc: 2.5 })
+    *STAR_GEN.get_or_init(|| StarGenLimits { max_app_mag: 10.0, min_dist_normal: 2.5, min_dist_brown: 2.0, min_dist_remnant: 3.0 })
 }
 
 fn load_star_generator(cfg: Res<crate::config::EngineConfig>) {
     let get = |k: &str, d: f64| crate::stars::main_def_f64(&cfg, k).unwrap_or(d);
-    let _ = STAR_GEN.set(StarGenLimits { max_app_mag: get("StarMaxAppMagn", 10.0), min_dist_pc: get("StarMinDistNormal", 2.5) });
-}
-
-/// The stars of one node, without those the real catalogs already provide (bright-from-Earth
-/// stars and the Sun's neighbourhood).
-fn node_stars(
-    octree: &StarOctree,
-    frame: GalaxyFrame,
-    density: &dyn DensityModel,
-    milky_way: bool,
-    key: NodeKey,
-    keep: &dyn Fn(DVec3) -> bool,
-) -> Vec<ProcStar> {
-    let sun_model = frame.to_model(DVec3::ZERO);
-    let lim = star_gen();
-    let exclude = move |p: DVec3, m: f64| {
-        let d = (p - sun_model).length().max(0.01);
-        milky_way && (d < lim.min_dist_pc || m + 5.0 * (d / 10.0).log10() < lim.max_app_mag)
-    };
-    octree.generate_where(key, density, &exclude, keep)
+    let _ = STAR_GEN.set(StarGenLimits {
+        max_app_mag: get("StarMaxAppMagn", 10.0),
+        min_dist_normal: get("StarMinDistNormal", 2.5),
+        min_dist_brown: get("StarMinDistBrownDwarf", 2.0),
+        min_dist_remnant: get("StarMinDistRemnant", 3.0),
+    });
 }
 
 /// Which octree levels a search visits: all, those whose magnitude band meets an absolute
-/// magnitude range, or only the dead stars' level.
+/// magnitude range, or only the deepest (its lone remnants and planemos).
 #[derive(Clone, Copy, Debug)]
 pub enum ScanLevels {
     All,
@@ -371,9 +353,9 @@ pub enum ScanLevels {
 pub struct StarScan {
     octree: StarOctree,
     frame: GalaxyFrame,
-    density: Arc<dyn DensityModel>,
-    milky_way: bool,
-    code: Option<String>,
+    density: StarDensity,
+    home: Option<HomeCut>,
+    ready: bool,
 }
 
 impl StarScan {
@@ -389,6 +371,9 @@ impl StarScan {
         levels: ScanLevels,
         keep: &(dyn Fn(&ProcStar) -> bool + Sync),
     ) -> Vec<(DVec3, ProcStarInfo)> {
+        if !self.ready {
+            return Vec::new();
+        }
         let mut r = radius_pc.min(10.0);
         loop {
             let found = self.stars_in_sphere(center_pc, r, limit, levels, keep);
@@ -399,9 +384,7 @@ impl StarScan {
         }
     }
 
-    /// Every node the sphere touches, level by level on all threads, typing only the stars
-    /// inside it. The deep levels' nodes are tiny (0.2 pc) and nearly always empty: with the
-    /// sphere's peak density as a bound, most are dismissed on their first random draw.
+    /// Every node the sphere touches, level by level on all threads.
     fn stars_in_sphere(
         &self,
         center_pc: DVec3,
@@ -421,84 +404,48 @@ impl StarScan {
             }
         };
         let c = self.frame.to_model(center_pc);
-        // Peak density over the sphere and a margin (sampled, doubled for safety).
-        let reach = radius_pc * 1.25;
-        let mut rho_bound: f64 = 0.0;
-        for i in 0..=16 {
-            for j in 0..=16 {
-                for k in 0..=16 {
-                    let f = |a: i32| (a as f64 / 8.0 - 1.0) * reach;
-                    rho_bound = rho_bound.max(self.density.density(c + DVec3::new(f(i), f(j), f(k))));
-                }
-            }
-        }
-        rho_bound *= 2.0;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
         let inside = |p: DVec3| (p - c).length() <= radius_pc;
         let mut out: Vec<(DVec3, ProcStarInfo)> = Vec::new();
+        let deepest = self.octree.levels - 1;
         for level in 0..self.octree.levels {
             let wanted = match levels {
                 ScanLevels::All => true,
                 ScanLevels::Mags(lo, hi) => {
                     let (b, f) = self.octree.mag_band(level);
-                    b < hi && f > lo
+                    // The deepest level also holds remnants with magnitudes of their own.
+                    (b < hi && f > lo) || level == deepest
                 }
-                ScanLevels::Remnants => level == self.octree.remnant_level(),
+                ScanLevels::Remnants => level == deepest,
             };
             if !wanted {
                 continue;
             }
-            let s = self.octree.node_size(level);
-            // Nodes well inside the sampled box: their expected count is bounded.
-            let max_expected = (s < radius_pc * 0.25).then(|| rho_bound * self.octree.level_rate(level) * s * s * s);
-            let lo = self.octree.cell_of(level, c - DVec3::splat(radius_pc));
-            let hi = self.octree.cell_of(level, c + DVec3::splat(radius_pc));
-            let n = (1i64 << level) as i32;
-            let (x0, x1) = (lo[0].max(0), hi[0].min(n - 1));
-            if x1 < x0 {
+            let mut keys = Vec::new();
+            self.octree.for_cells_near(level, c, radius_pc, |k| {
+                if self.octree.box_distance(k, c) <= radius_pc {
+                    keys.push(k);
+                }
+            });
+            if keys.is_empty() {
                 continue;
             }
-            let xs: Vec<i32> = (x0..=x1).collect();
-            let chunk = xs.len().div_ceil(threads).max(1);
+            let chunk = keys.len().div_ceil(threads).max(1);
             let part: Vec<(DVec3, ProcStarInfo)> = std::thread::scope(|sc| {
-                let handles: Vec<_> = xs
+                let handles: Vec<_> = keys
                     .chunks(chunk)
-                    .map(|xc| {
+                    .map(|kc| {
                         let inside = &inside;
                         sc.spawn(move || {
                             let mut v = Vec::new();
-                            // Distance from the centre to a cell's span along one axis (0 inside).
-                            let origin = -self.octree.node_size(0) * 0.5;
-                            let gap = |cell: i32, cc: f64| {
-                                let a = origin + cell as f64 * s;
-                                (a - cc).max(cc - (a + s)).max(0.0)
-                            };
-                            let r2 = radius_pc * radius_pc;
-                            for &x in xc {
-                                let gx = gap(x, c.x);
-                                for y in lo[1].max(0)..=hi[1].min(n - 1) {
-                                    let gy = gap(y, c.y);
-                                    if gx * gx + gy * gy > r2 {
-                                        continue;
+                            for &key in kc {
+                                for st in self.octree.generate_where(key, &self.density, self.home.as_ref(), inside) {
+                                    if keep(&st) {
+                                        v.push((self.frame.to_universe(st.pos), star_info(&self.octree, &st, key)));
                                     }
-                                    // The column's chord through the sphere: every cell on it touches the sphere.
-                                    let zr = (r2 - gx * gx - gy * gy).sqrt();
-                                    let z0 = self.octree.cell_of(level, DVec3::new(0.0, 0.0, c.z - zr))[2].max(0);
-                                    let z1 = self.octree.cell_of(level, DVec3::new(0.0, 0.0, c.z + zr))[2].min(n - 1);
-                                    for z in z0..=z1 {
-                                        let key = NodeKey { level, cell: [x, y, z] };
-                                        if max_expected.is_some_and(|m| self.octree.surely_empty(key, m)) {
-                                            continue;
-                                        }
-                                        for st in node_stars(&self.octree, self.frame, self.density.as_ref(), self.milky_way, key, inside) {
-                                            if keep(&st) {
-                                                v.push((self.frame.to_universe(st.pos), self.info(&st, key)));
-                                            }
-                                        }
-                                        if v.len() > limit * 2 + 4096 {
-                                            trim(&mut v);
-                                        }
-                                    }
+                                }
+                                if v.len() > limit * 2 + 4096 {
+                                    trim(&mut v);
                                 }
                             }
                             trim(&mut v);
@@ -514,35 +461,17 @@ impl StarScan {
         out.sort_by(nearer);
         out
     }
-
-    fn info(&self, s: &ProcStar, key: NodeKey) -> ProcStarInfo {
-        let name = match &self.code {
-            None => proc_star_name(key, s.index),
-            Some(code) => procedural_star_name(code, key.cell.map(|c| c as i64), key.level, s.index),
-        };
-        ProcStarInfo {
-            name,
-            class: s.class.clone(),
-            abs_mag: s.abs_mag,
-            teff: s.teff,
-            age_feh: None,
-        }
-    }
 }
 
-fn build(octree: StarOctree, frame: GalaxyFrame, density: Arc<dyn DensityModel>, milky_way: bool, key: NodeKey) -> BuiltNode {
-    let stars = node_stars(&octree, frame, density.as_ref(), milky_way, key, &|_| true);
-    let mesh = if stars.is_empty() {
-        None
-    } else {
-        let center_model = octree.node_center(key);
-        let (mut p, mut d, mut c, mut i) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for s in &stars {
-            let rel = (frame.rot * (s.pos - center_model)).as_vec3();
-            push_star(&mut p, &mut d, &mut c, &mut i, rel.to_array(), s.rgb, s.abs_mag);
-        }
-        Some(build_sprite_mesh(p, d, c, i))
-    };
+fn build(octree: StarOctree, frame: GalaxyFrame, density: StarDensity, home: Option<HomeCut>, key: NodeKey) -> BuiltNode {
+    let stars = octree.generate_where(key, &density, home.as_ref(), &|_| true);
+    let center_model = octree.node_center(key);
+    let (mut p, mut d, mut c, mut i) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for s in stars.iter().filter(|s| s.luminous()) {
+        let rel = (frame.rot * (s.pos - center_model)).as_vec3();
+        push_star(&mut p, &mut d, &mut c, &mut i, rel.to_array(), s.rgb, s.abs_mag);
+    }
+    let mesh = (!p.is_empty()).then(|| build_sprite_mesh(p, d, c, i));
     BuiltNode {
         mesh,
         stars: Arc::new(stars),
@@ -566,6 +495,8 @@ fn stream_nodes(
     field.frame_no += 1;
     let frame_no = field.frame_no;
     let cam_model = field.frame.to_model(cam.pos.to_parsecs());
+    // The reach of the nodes follows the star magnitude limit.
+    field.octree.mag_limit = settings.faint_limit() as f64;
 
     // SE keeps a node while its brightest star could show under the limit raised by the zoom
     // (FUN_1404a0e80), and below StarFrustumClipFOV only inside the view frustum (FUN_14047b670).
@@ -581,7 +512,7 @@ fn stream_nodes(
         .values()
         .filter(|n| matches!(n.state, NodeState::Loading(_)))
         .count();
-    if field.enabled {
+    if field.enabled && field.galaxy.is_some() {
         for keys in field.octree.wanted_nodes(cam_model, reach, cone, FAR_NODES_MAX) {
             for key in keys {
                 if let Some(slot) = field.nodes.get_mut(&key) {
@@ -591,8 +522,8 @@ fn stream_nodes(
                 if in_flight >= MAX_IN_FLIGHT {
                     continue;
                 }
-                let (o, f, d, mw) = (field.octree.clone(), field.frame, field.density.clone(), field.galaxy == field.milky_way);
-                let task = AsyncComputeTaskPool::get().spawn(async move { build(o, f, d, mw, key) });
+                let (o, f, d, h) = (field.octree.clone(), field.frame, field.density.clone(), field.home);
+                let task = AsyncComputeTaskPool::get().spawn(async move { build(o, f, d, h, key) });
                 field.nodes.insert(
                     key,
                     NodeSlot {
@@ -679,8 +610,10 @@ fn stream_nodes(
 }
 
 /// Follow the camera into other galaxies: the field moves to the galaxy the camera is deepest
-/// inside, within `ENTER_RADII` of a new one and `LEAVE_RADII` of the current one.
-/// Outside every galaxy it stays where it is (no node of its octree is then near the camera).
+/// inside, within `ENTER_RADII` of a new one and `LEAVE_RADII` of the current one (the Milky Way
+/// from the start). Outside every galaxy it stays where it is (no node of its octree is then near
+/// the camera). A galaxy with a sprite model waits up to `MAP_WAIT_S` for its voxel map.
+#[allow(clippy::too_many_arguments)]
 fn follow_galaxy(
     mut commands: Commands,
     time: Res<Time>,
@@ -688,9 +621,11 @@ fn follow_galaxy(
     data: Res<SeData>,
     settings: Res<StarSettings>,
     galaxies: Option<Res<crate::galaxies::GalaxyState>>,
+    density: Option<Res<crate::galaxies::GalaxyDensity>>,
     field: Option<ResMut<ProcStarField>>,
 ) {
     let Some(mut field) = field else { return };
+    let Some(gs) = galaxies else { return };
     if field.frame_no % 8 != 0 {
         return;
     }
@@ -703,37 +638,46 @@ fn follow_galaxy(
         }
         // Depth in units of the entry (or, for the current galaxy, exit) distance: below 1 the
         // camera is inside, and of two overlapping galaxies the current one is favoured.
-        let limit = if g == field.galaxy { LEAVE_RADII } else { ENTER_RADII };
+        let limit = if Some(g) == field.galaxy { LEAVE_RADII } else { ENTER_RADII };
         let k = (rec.pos_pc - cam_pc).length() / (rec.radius_pc * limit);
         if k < 1.0 && best.is_none_or(|(bk, _)| k < bk) {
             best = Some((k, g));
         }
     }
-    let Some((_, g)) = best.filter(|&(_, g)| g != field.galaxy) else {
+    // The Milky Way's stars from the start, wherever the camera is.
+    let target = best.map(|(_, g)| g).or(field.galaxy.is_none().then_some(field.milky_way));
+    let Some(g) = target.filter(|&g| Some(g) != field.galaxy) else {
         field.pending = None;
         return;
     };
-    let rec = &cat.galaxies[g];
-    let density = if g == field.milky_way {
-        milky_way_density(rec)
-    } else {
-        let now = time.elapsed_secs();
-        let since = match field.pending {
-            Some((p, t)) if p == g => t,
-            _ => {
-                field.pending = Some((g, now));
-                now
-            }
-        };
-        let arms = match galaxies.as_ref().map(|s| s.interior_arms(g, rec.radius_pc)) {
-            Some(Some(arms)) => arms,
-            // Wait for the sprite model: its emission map puts the stars into its arms.
-            Some(None) if now - since < ARMS_WAIT_S => return,
-            _ => None,
-        };
-        Arc::new(GalaxyStarDensity::new(GalaxyForm::from_type(&rec.kind), rec.radius_pc, arms))
+    let Some(input) = crate::procsystems::star_input(g as u32, cat, &gs) else { return };
+    let now = time.elapsed_secs();
+    let since = match field.pending {
+        Some((p, t)) if p == g => t,
+        _ => {
+            field.pending = Some((g, now));
+            now
+        }
     };
-    field.switch_to(&mut commands, g, rec, density, settings.faint_limit() as f64);
+    let map = if g == field.milky_way {
+        match density.as_ref().and_then(|d| d.map()) {
+            Some(m) => Some(m),
+            None if input.has_model && now - since < MAP_WAIT_S => return,
+            None => None,
+        }
+    } else {
+        match gs.interior_map(g) {
+            Some(m) => m,
+            None if now - since < MAP_WAIT_S => return,
+            None => None,
+        }
+    };
+    let density = match map {
+        Some(m) if input.has_model => StarDensity::Voxel(m),
+        _ => StarDensity::Analytic,
+    };
+    let octree = StarOctree::new(&input, settings.faint_limit() as f64);
+    field.switch_to(&mut commands, g, cat, octree, density);
 }
 
 fn position_nodes(cam: Res<FlyCamera>, mut q: Query<(&ProcStarNode, &mut Transform)>) {
@@ -750,9 +694,8 @@ fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut near
     // The nearest star can live at any level (bright stars sit in coarse nodes),
     // so scan every node whose box could still beat the current best.
     for (key, slot) in &field.nodes {
-        let half = field.octree.node_size(key.level) * 0.5;
-        let gap = ((cam_model - field.octree.node_center(*key)).abs() - DVec3::splat(half)).max(DVec3::ZERO);
-        if best.is_some_and(|(bd, _, _)| gap.length_squared() > bd) {
+        let gap = field.octree.box_distance(*key, cam_model);
+        if best.is_some_and(|(bd, _, _)| gap * gap > bd) {
             continue;
         }
         if let NodeState::Ready { stars, .. } = &slot.state {
@@ -766,12 +709,19 @@ fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut near
     }
     if field.frame_no % 120 == 0 {
         let ready = field.nodes.values().filter(|n| matches!(n.state, NodeState::Ready { .. })).count();
+        // The nearest rogue planet too (there is no way to see one).
+        let planemo = field
+            .loaded_stars()
+            .filter(|(_, s, _)| s.kind == StarKind::Planemo)
+            .min_by(|a, b| (a.1.pos - cam_model).length_squared().total_cmp(&(b.1.pos - cam_model).length_squared()))
+            .map(|(_, s, k)| (field.octree.star_name(k, s.index), (s.pos - cam_model).length()));
         debug!(
-            "procstars: {} nodes ({} ready), {} stars, nearest {:?} pc",
+            "procstars: {} nodes ({} ready), {} stars, nearest {:?} pc, nearest planemo {:?}",
             field.nodes.len(),
             ready,
             field.loaded_stars,
-            best.map(|(d2, _, k)| (d2.sqrt(), k.level))
+            best.map(|(d2, s, k)| (d2.sqrt(), k.level, s.kind == StarKind::Planemo)),
+            planemo
         );
     }
     match best {

@@ -353,6 +353,7 @@ impl CoronaStar {
             StarKind::Carbon => (9, 6),
             StarKind::BrownDwarf => (7, letter.max(7)),
             StarKind::Subdwarf => (8, letter),
+            StarKind::Planemo => (12, 15),
             StarKind::Normal => {
                 let lum = match sc.lum_class {
                     LumClass::Hypergiant => 0,

@@ -15,6 +15,8 @@ pub enum StarKind {
     BlackHole,
     Carbon,
     Subdwarf,
+    /// A rogue planet in SE's star octree (class 12, no light): its system is a planet with moons.
+    Planemo,
 }
 
 /// Luminosity class (MK system).
@@ -49,6 +51,9 @@ impl SpectralClass {
     /// "L3", "T5", "B1.5Ia+", "Q" (neutron star) or "X" (black hole).
     pub fn parse(s: &str) -> Self {
         let raw = s.trim().to_string();
+        if raw.eq_ignore_ascii_case("Planemo") {
+            return Self { kind: StarKind::Planemo, letter: 'P', subclass: 0.0, lum_class: LumClass::V, raw };
+        }
         let mut rest = raw.as_str();
         let mut kind = StarKind::Normal;
         let mut lum = LumClass::V;

@@ -570,7 +570,7 @@ pub fn catalog_view(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Cat
         .filter_map(|s| {
             let ObjectRef::Star(k) = s else { return None };
             let st = &cat.stars[k as usize];
-            if st.barycenter || st.class.kind == crate::star::StarKind::BlackHole {
+            if st.barycenter || matches!(st.class.kind, crate::star::StarKind::BlackHole | crate::star::StarKind::Planemo) {
                 return None;
             }
             let d = eph.position(s, jd).delta_m(pos);
