@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 92 have been fixed since (listed at the end); the tables count the 149 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 93 have been fixed since (listed at the end); the tables count the 148 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 65 | 61 | 20 |
+| Gaps | 1 | 2 | 64 | 61 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 47 | 74 | 28 |
+| Gaps | 46 | 74 | 28 |
 
 | Area | Kept |
 |---|---|
@@ -124,7 +124,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 06 Procedural generation | 12 |
 | 07 Camera and time | 6 |
 | 08 Interface | 26 |
-| 09 Graphics and settings | 16 |
+| 09 Graphics and settings | 15 |
 | 10 Scripts, audio, spacecraft | 28 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
@@ -632,15 +632,6 @@ Wiki window: SE's wiki has tabs (General, Physical, Orbital, Atmospheric...) wit
 - SE evidence: rtti seWiki seWikiPageMode seWikiExportDialog; eng-gui "General" "Physical" "Orbital" "Atmospheric" "Pioneer name" "Discovery method"; tutorial "switch to the Physical tab", "rotate the planet preview"
 - Port: crates/se_engine/src/wiki.rs:71-134
 - Check: Locale has the wiki fields ("Status", "Real object", "Procedural (generated) object", "Pioneer name", "Discovery date", "Discovery method" with its method list, "General"/"Physical"/"Orbital"/"Atmospheric", "Enter description here", export scopes) and the tutorial confirms the Physical tab and rotatable preview; port wiki.rs:71-134 shows only the DB description or distance/radius/parent, but the separate Selection panel (hud.rs:232-345) already shows mass, Teff/Mv, average/day/night temperature, a/e/P, rotation period and day lines, and locale.rs parses Pioneer/Date without displaying them, so the gap is the tabbed layout, atmosphere/life data, 3D preview, status/discovery lines, editable description and export rather than all object data.
-
-### 09-005 · Graphics and settings
-
-Final colour correction: SE applies ColorCorrentionLDR after tone mapping with Brightness, Contrast, Saturation (per-pixel vibrance 1 + (S-1)(1 - pixel saturation), so grey pixels gain more than vivid ones) and Gamma settings, plus a Dithering on/off switch; port has no brightness/contrast/saturation/gamma settings and approximates Saturation 1.5 by a uniform post_saturation 1.35 (vibrance at pixel saturation 0.3), over-saturating vivid colours (nebulae, red/blue stars, flare tints) and under-saturating greys; the port always dithers (Bevy DebandDither on Camera3d) with no switch
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: hsl.glh:31-54 ColorCorrentionLDR; hdr_final.glsl:184-204; main-def.cfg PostEffects Brightness Contrast Saturation Gamma, RenderingQuality Dithering; eng-gui "Brightness" "Contrast" "Color vibrance" "Gamma" "Dithering"
-- Port: crates/se_engine/src/camera.rs:167-177
-- Check: hsl.glh:33-53 ColorCorrentionLDR (contrast, brightness, per-pixel vibrance 1+(S-1)(1-sat), gamma) and hdr_final.glsl:186-204 confirm SE's side and the port only has a uniform post_saturation 1.35 at camera.rs:175, but the port does dither: Bevy 0.20 makes DebandDither::Enabled a required component of Camera3d (bevy_core_pipeline core_3d/mod.rs:104), so only the Dithering toggle is missing, not dithering
 
 ### 09-006 · Graphics and settings
 
@@ -1573,6 +1564,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **09-001** (Graphics and settings, fixed 2026-10-29): Bloom: SE's bloom adds 0.5x (BloomBright) of a 6-level Gaussian mip pyramid of the whole frame (weights 0.50/0... Fix: SE's bloom replaces Bevy's (`bloom.rs`, `se_bloom.wesl`): six levels of 2x2 averages (frame clamped to 65535, bloom source luma to 50), each blurred with SE's 9-tap Gaussian (normalised), added at BloomBright 0.5 with SE's weights before tone mapping. EnableBloom, BloomBright and BloomThreshold are in the Graphics window and saved (`bloom::BloomSettings`); SE leaves ToggleBloom unbound.
 - **09-002** (Graphics and settings, fixed 2026-10-29): Window and display settings: SE starts as a maximized window (Maximized true) and remembers its size and posit... Fix: Window and display (`display.rs`): the window opens maximized or at its saved size and place (SE's Display WindowSizeX/Y, WindowPosX/Y, Maximized, kept from winit while windowed), FullScreen 0 windowed / 1 fullscreen window / 2 exclusive fullscreen, VSync 0 off / 1 on / 2 auto (adaptive), Alt+Enter fullscreen, Shift+Enter next display, Ctrl+Enter minimize, Graphics window "Window mode" and "Vertical synchronization"; saved in the settings file's Display block. Not done: ScreenResX/Y, RefreshRate (exclusive fullscreen keeps the display's mode) and AspectRatio.
 - **09-003** (Graphics and settings, fixed 2026-10-30): Exposure compensation: SE lets the user brighten or darken the whole image in photographic stops (ExposureComp... Fix: SE's exposure compensation: ExposureComp is stored negated (FUN_140011e60 registers it -42..4, step 0.25; main-def.cfg MinExposureComp -4 / MaxExposureComp 42 bound the shown value), so +1 shown doubles the image; `.` / `,` step it by 0.25 stop and `/` resets it (IncExposure / DecExposure / ResetExposure in SE's key table FUN_1405ba8f0; FUN_1404c6000 adds the step and shows the splash), applied on top of the camera's tone-mapping exposure (exposure.rs). Assumed: the repeat while held (0.35 s, then every 0.05 s; SE's comes from its input system). Not ported: typing it on the Camera toolbar and applying a place's Exposure.
+- **09-005** (Graphics and settings, fixed 2026-10-30): Final colour correction: SE applies ColorCorrentionLDR after tone mapping with Brightness, Contrast, Saturatio... Fix: SE: hdr_final.glsl applies hsl.glh ColorCorrentionLDR to the tone-mapped (linear: hdrt_AgX_tone.glh agx_eotf returns pow(v, 2.2)) image with bcsg = (Brightness - 1, Contrast, Saturation - 1, 1 / Gamma): contrast around 0.5 plus brightness, vibrance mix(luma, c, 1 + (S - 1)(1 - (max - min))), gamma; DITHERING by RenderingQuality Dithering. Ported: color_correction.rs ColorCorrection, a FullscreenMaterial pass after Bevy's tonemapping (color_correction.wesl), settings from main-def.cfg; Dithering false turns Bevy's DebandDither off; camera.rs drops its uniform post_saturation 1.35 stand-in. Checked: Earth, Orion Nebula, Betelgeuse against the release build (.audit/work/colorcorr/cmp.jpg): means within 2 levels, vivid colours slightly less saturated, greys slightly more. Not ported: a settings UI for the four values (09-006) and main-user.cfg overrides (09-016); SE's own 4-level noise dither (Bevy's deband dither kept).
 - **10-002** (Scripts, audio, spacecraft, fixed 2026-10-29): Music transitions and title: SE cross-fades tracks (MixDurationGUI 2 s, MixDurationLoop 5 s, MixDurationContex... Fix: Music as SE's Sound settings: consecutive tracks cross-fade over MixDurationLoop 5 s (the next starts 5 s before the end, from the Ogg length), N cross-fades over MixDurationGUI 2 s, M fades out over 2 s, each new track's title shows as an on-screen message (MusicShowTitle), default MusicVolume 20 of 100, saved as SE's 0..100 MusicVolume (Settings "Music volume"). Not done: SE's repeat/order modes and the context mode (left out with 10-001).
 - **10-003** (Scripts, audio, spacecraft, fixed 2026-10-29): Interface sound effects: SE loads data/sounds/menu/button.ogg and menu.ogg (SDL_mixer) for GUI clicks and menu... Fix: Interface sounds (`sound.rs`): SE's data/sounds/menu/button.ogg on clicks of buttons, check boxes and list entries and menu.ogg when a drop-down opens (from egui's click events), at SoundVolume 30 of 100 (Settings "Sound effects", saved as SoundVolume). Assumed: which widgets sound. Not done: SetAudioDevice.
 - **10-004** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship sounds: every EngineEffect has a looping Sound and Volume (156 effects: Starship_engine, Starship_thruste... Fix: SE: FUN_1402a8ed0 reads each EngineEffect's `Sound`, `SoundVolume`/`Volume` (Volume wins); defaults: volume 1, thrusters 0.02; sound by group (FUN_1405693a0): Main/Retro `Shuttle_engine.ogg`, Hover `Shuttle_hover.ogg`, Thruster `Shuttle_thruster.ogg`, Hyper `Starship_warp.ogg`. Playback is SDL_mixer: `seSound::FadeIn/FadeOut` (FUN_140567f30/FUN_140568060, Mix_FadeInChannelTimed/Mix_FadeOutChannel), channel volume (FUN_140567eb0, Mix_Volume) at `SoundVolume`. No positional calls are imported (no Mix_SetPosition/SetDistance/SetPanning): no distance attenuation or panning. Ported: `EngineEffect::sound_file`, `sound_candidates`, thruster default 0.02 (se_core ship.rs); `PlumeSpec.sound/volume`; `ship/engine_sound.rs` plays one looping voice per sound file of the flown ship: volume = SoundVolume x min(1, sum of Volume x effect level), the level that sizes the plume (spooled engine, RCS/turn command, warp fraction), faded over 0.3 s; silent outside flight mode. Checked: unit tests (defaults, voice mixing); logs show "ship sounds: 3 voices" (Shuttle) and 2 (Dragonfly), files read from data/sounds/spacecraft. Not ported / assumed: SE's per-effect channels and its fade times for ship sounds were not traced (the code that calls FadeIn for engines was not found); summing effect volumes stands in for SDL_mixer's channel mixing.
