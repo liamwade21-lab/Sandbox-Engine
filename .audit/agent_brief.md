@@ -42,23 +42,25 @@ agents can call Ghidra at once.
 
 ## Build, test, run
 Use your own target dir (given in your prompt; it is pre-seeded so only the port's crates
-rebuild). Never build into the main checkout's `target/`.
+rebuild) and the `agent` profile (release optimisation without LTO, incremental: about a
+minute a rebuild instead of six). Never build into the main checkout's `target/`.
 ```
 export CARGO_TARGET_DIR=<your dir>
-cargo build --release -q 2>&1 | tail -30
-cargo test --release -q 2>&1 | tail -30
+cargo build --profile agent -q 2>&1 | tail -30
+cargo test --profile agent -q 2>&1 | tail -30
 ```
-Screenshots: `PORT_BIN="$CARGO_TARGET_DIR/release/spaceengine-rs.exe" bash .audit/tools/runport.sh OUT.png FRAMES "cmds"`
+Screenshots: `PORT_BIN="$CARGO_TARGET_DIR/agent/spaceengine-rs.exe" bash .audit/tools/runport.sh OUT.png FRAMES "cmds"`
 (cmds separated by `;`, e.g. `goto Sirius 0.01; wait 30; fov 20; shot b.png`). The dev
 commands are parsed in `crates/se_engine/src/camera.rs` around line 1000. `SE_FRAMETIME_LOG=file`
 writes `frame ms nearest` lines. Other agents share the GPU, so compare frame times against a
-baseline run of the unmodified main build (`C:/Users/liamw/Desktop/Space Engine Recomp/target/release/spaceengine-rs.exe`)
+baseline run of the unmodified port built the same way,
+`C:/Users/liamw/Desktop/se-targets/agentseed/agent/spaceengine-rs.exe` (don't rebuild it),
 taken at the same time, not against absolute numbers. Put screenshots and scratch files in
 `.audit/work/<your package>/` of your worktree (git ignores it). Look at your screenshots.
 
 ## Done means
 1. Each gap in your package is done, or the part you couldn't do is stated with the reason.
-2. `cargo build --release` has no new warnings and `cargo test --release` passes; add unit
+2. `cargo build --profile agent` has no new warnings and `cargo test --profile agent` passes; add unit
    tests for logic you add (constants, formulas, parsing), like the existing tests.
 3. Screenshots show the feature working, and frame times are not worse than the baseline.
 4. `.audit/notes/<gap id>.md` per gap, under 15 lines: what SE does (functions, keys,
