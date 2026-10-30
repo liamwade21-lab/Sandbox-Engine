@@ -16,6 +16,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy::camera::SubCameraView;
 use bevy::prelude::*;
@@ -54,7 +56,8 @@ impl Plugin for ScreenshotPlugin {
             .init_resource::<HiresUi>()
             .init_resource::<HiresState>()
             .add_systems(Startup, load_settings)
-            .add_systems(Update, (hires_key, run_hires).chain())
+            .init_resource::<ScriptShots>()
+            .add_systems(Update, ((hires_key, run_hires).chain(), script_shots))
             .add_systems(bevy_egui::EguiPrimaryContextPass, hires_window.in_set(crate::skin::UiSet::Draw));
     }
 }
@@ -117,22 +120,83 @@ impl ScreenshotNumber {
 
 /// Takes a screenshot of the window and saves it in SE's format (F11).
 pub fn take(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut ScreenshotNumber) {
+    take_named(commands, settings, number, None);
+}
+
+/// A screenshot named `<prefix>NNNNN.<format>` (`scr` by default); the flag turns true once it is saved
+/// (or failed).
+pub fn take_named(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut ScreenshotNumber, prefix: Option<&str>) -> Arc<AtomicBool> {
     let dir = folder();
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("scr{:05}.{}", number.next(&dir), settings.format));
+    let n = match prefix {
+        Some(p) if p != "scr" => scan_number(p, &dir),
+        _ => number.next(&dir),
+    };
+    let path = dir.join(format!("{}{n:05}.{}", prefix.unwrap_or("scr"), settings.format));
     let s = settings.clone();
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
     info!("screenshot -> {}", path.display());
     commands.spawn(Screenshot::primary_window()).observe(move |ev: On<ScreenshotCaptured>| {
-        let Ok(img) = ev.image.clone().try_into_dynamic() else {
-            warn!("screenshot: unsupported capture format");
-            return;
-        };
-        let rgba = img.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        if let Err(e) = encode(&path, &s.format, s.jpeg_quality, &Picture::rgba8(w, h, rgba.into_raw(), s.save_alpha)) {
-            warn!("cannot save screenshot {}: {e}", path.display());
+        match ev.image.clone().try_into_dynamic() {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                if let Err(e) = encode(&path, &s.format, s.jpeg_quality, &Picture::rgba8(w, h, rgba.into_raw(), s.save_alpha)) {
+                    warn!("cannot save screenshot {}: {e}", path.display());
+                }
+            }
+            Err(_) => warn!("screenshot: unsupported capture format"),
         }
+        flag.store(true, Ordering::Release);
     });
+    done
+}
+
+/// Screenshots asked for by scripts (`Screenshot`), taken by `script_shots`, and the state of the last one
+/// for `WaitTrigger "ScreenshotComplete"`.
+#[derive(Resource, Default)]
+pub struct ScriptShots {
+    pub requests: Vec<ShotRequest>,
+    pending: Option<Arc<AtomicBool>>,
+}
+
+/// SE's `Screenshot { Name "scr" Format "jpg" GUI true }` (FUN_140565210); the port's screenshots always
+/// include the interface.
+pub struct ShotRequest {
+    pub name: Option<String>,
+    pub format: Option<String>,
+}
+
+impl ScriptShots {
+    /// No screenshot is waiting to be taken or saved.
+    pub fn complete(&self) -> bool {
+        self.requests.is_empty() && self.pending.as_ref().is_none_or(|p| p.load(Ordering::Acquire))
+    }
+}
+
+fn script_shots(mut commands: Commands, settings: Res<ScreenshotSettings>, mut number: ResMut<ScreenshotNumber>, mut shots: ResMut<ScriptShots>) {
+    for r in std::mem::take(&mut shots.requests) {
+        let mut s = settings.clone();
+        if let Some(f) = r.format.map(|f| f.to_ascii_lowercase()).filter(|f| FORMATS.contains(&f.as_str())) {
+            s.format = f;
+        }
+        // Only a file name: the folder is the screenshot folder.
+        let prefix = r.name.as_deref().and_then(|n| Path::new(n).file_name()).and_then(|n| n.to_str()).map(str::to_string);
+        shots.pending = Some(take_named(&mut commands, &s, &mut number, prefix.as_deref()));
+    }
+}
+
+/// SE's `SavePNG`, `SaveTGA`, `SaveJPG`, `SaveDDS`, `SaveTIF "file"` (FUN_140559200 .. FUN_140558d80 ->
+/// FUN_140185120): loads the image `file` and writes it again next to it with the command's extension.
+/// The port reads PNG and JPEG files.
+pub fn convert(path: &Path, format: &str, settings: &ScreenshotSettings) -> Result<PathBuf, String> {
+    let img = image::open(path).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let out = path.with_extension(format);
+    encode(&out, format, settings.jpeg_quality, &Picture::rgba8(w, h, rgba.into_raw(), settings.save_alpha)).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------

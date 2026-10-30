@@ -427,6 +427,10 @@ struct Cx<'a, 'w, 's, 'd> {
     data: &'a SeData,
     vars: &'a mut Settings<'w, 's>,
     dialogs: &'a mut Dialogs<'d>,
+    shots: &'a mut crate::screenshot::ScriptShots,
+    shot_settings: &'a crate::screenshot::ScreenshotSettings,
+    /// The SE install, which scripts never write into.
+    se_path: &'a std::path::Path,
     music: &'a mut ScriptMusic,
     /// `--script-auto`: waits for the user end after this many seconds (`SE_SCRIPT_AUTO_S`, else 8).
     auto: Option<f64>,
@@ -461,6 +465,7 @@ fn run_script(
     mut vars: Settings,
     mut dialogs: Dialogs,
     mut music: ResMut<ScriptMusic>,
+    (mut shots, shot_settings): (ResMut<crate::screenshot::ScriptShots>, Res<crate::screenshot::ScreenshotSettings>),
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -475,6 +480,9 @@ fn run_script(
         data: &data,
         vars: &mut vars,
         dialogs: &mut dialogs,
+        shots: &mut shots,
+        shot_settings: &shot_settings,
+        se_path: &cfg.se_path,
         music: &mut music,
         auto: cfg.script_auto.then(|| std::env::var("SE_SCRIPT_AUTO_S").ok().and_then(|v| v.parse().ok()).unwrap_or(AUTO_TRIGGER_S)),
         persist: !crate::settings::scripted(&cfg),
@@ -951,10 +959,46 @@ impl ScriptRunner {
             Op::Untrack => cx.cam.track = false,
             // The port has no menu or game modes: the planetarium is all there is.
             Op::Other(item) if matches!(item.key.to_ascii_lowercase().as_str(), "enterplanetarium" | "continuesession") => {}
-            Op::Other(item) => {
-                let key = item.key.to_ascii_lowercase();
-                self.warn_once(&key, format!("command \"{}\" is not supported, skipping (first at line {})", item.key, cmd.line));
+            Op::Other(item) => self.other_command(cx, item, cmd.line),
+        }
+    }
+
+    /// Commands without their own `Op`.
+    fn other_command(&mut self, cx: &mut Cx, item: &se_core::sc::Item, line: u32) {
+        let key = item.key.to_ascii_lowercase();
+        match key.as_str() {
+            // FUN_140565210: `Screenshot` or `Screenshot { Name Format GUI }`.
+            "screenshot" => {
+                let b = item.block.as_ref();
+                cx.shots.requests.push(crate::screenshot::ShotRequest {
+                    name: b.and_then(|b| b.str("Name")).map(str::to_string),
+                    format: b.and_then(|b| b.str("Format")).map(str::to_string),
+                });
             }
+            "savepng" | "savetga" | "savejpg" | "savedds" | "savetif" => {
+                let Some(file) = item.name() else {
+                    self.warn_once(&key, format!("{} needs a file name (line {line})", item.key));
+                    return;
+                };
+                // A relative name is taken in the port's screenshot folder; the SE install is never written.
+                let path = std::path::Path::new(file);
+                let path = if path.is_absolute() { path.to_path_buf() } else { crate::screenshot::folder().join(path) };
+                if path.starts_with(cx.se_path) {
+                    self.warn_once(&format!("{key}:{file}"), format!("{} \"{file}\": not writing into the SE install (line {line})", item.key));
+                    return;
+                }
+                match crate::screenshot::convert(&path, &key[4..], cx.shot_settings) {
+                    Ok(out) => info!("{} -> {}", item.key, out.display()),
+                    Err(e) => self.warn_once(&format!("{key}:{file}"), format!("{} \"{}\": {e} (line {line})", item.key, path.display())),
+                }
+            }
+            "show" | "hide" => {
+                let what = item.name().unwrap_or("").to_ascii_lowercase();
+                if !show_hide(cx, &what, key == "show") {
+                    self.warn_once(&format!("{key}:{what}"), format!("{} \"{what}\" has no switch in the port, skipping (line {line})", item.key));
+                }
+            }
+            _ => self.warn_once(&key, format!("command \"{}\" is not supported, skipping (first at line {line})", item.key)),
         }
     }
 
@@ -1596,6 +1640,43 @@ fn outside(v: f64, r: (f64, f64)) -> bool {
     v < r.0.min(r.1) || v > r.0.max(r.1)
 }
 
+/// SE's `Show` / `Hide "what"` (FUN_14055bfd0 / FUN_14055add0): a display switch by name, set through the
+/// matching setting. False for SE's switches the port has no setting for (accretion disks, night lights,
+/// orbit marks, planets, ships, stars, vectors, velocity vector).
+fn show_hide(cx: &mut Cx, what: &str, on: bool) -> bool {
+    let names: &[&str] = match what {
+        "atmospheres" => &["ShowAtmospheres"],
+        "aurora" => &["ShowAurora"],
+        "clusters" => &["ShowCatClusters", "ShowProcClusters"],
+        "comettails" => &["ShowCometTails"],
+        "eclipsemask" => &["ShowEclipseMask"],
+        "eclipses" => &["EnableEclipses"],
+        "galaxies" => &["ShowProcGalaxies"],
+        "labels" => &["LabelsMode"],
+        "lensflares" => &["EnableLensFlares"],
+        "markers" => &["ShowMarkers"],
+        "nebulae" => &["ShowProcNebulae"],
+        "orbits" => &["ShowOrbits"],
+        "planetshine" => &["EnablePlanetshine"],
+        "pseudoflares" => &["EnablePseudoFlares"],
+        "selpointer" => &["ShowSelectionPointer"],
+        "water" => &["ShowWater"],
+        "constellations" => {
+            cx.vars.overlay.sky.constellations = on;
+            return true;
+        }
+        "grids" => {
+            cx.vars.overlay.sky.grids = on;
+            return true;
+        }
+        _ => return false,
+    };
+    for n in names {
+        cx.vars.set(cx.cam, cx.sim, n, if on { 1.0 } else { 0.0 });
+    }
+    true
+}
+
 fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
     let yes = |b: bool| if b { Check::Yes } else { Check::No };
     let cat = cx.cat();
@@ -1608,7 +1689,8 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
     it.moved += cam.velocity * dt;
     match t.kind.to_ascii_lowercase().as_str() {
         "loadingcomplete" => yes(elapsed >= LOADING_SETTLE_S),
-        "screenshotcomplete" | "entermenu" | "enterplanetarium" | "entersingleplayer" => Check::Yes,
+        "screenshotcomplete" => yes(cx.shots.complete()),
+        "entermenu" | "enterplanetarium" | "entersingleplayer" => Check::Yes,
         // FUN_140276ca0: Mode CROSSED / EARLIER / LATER against `Time`, INRANGE / OUTRANGE
         // against `TimeRange`.
         "time" => {

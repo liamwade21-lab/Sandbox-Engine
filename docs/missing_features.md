@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 184 have been fixed since (listed at the end); the tables count the 27 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 185 have been fixed since (listed at the end); the tables count the 26 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 7 | 10 | 10 |
+| Gaps | 0 | 0 | 7 | 10 | 9 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 3 | 15 | 9 |
+| Gaps | 3 | 14 | 9 |
 
 | Area | Kept |
 |---|---|
@@ -125,7 +125,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 3 |
-| 10 Scripts, audio, spacecraft | 8 |
+| 10 Scripts, audio, spacecraft | 7 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
 
@@ -353,15 +353,6 @@ Script spline paths: SplinePath, PlaySplinePath, DeleteSplinePath and ClearSplin
 - SE evidence: exe command table splinepath, playsplinepath, deletesplinepath, clearsplinepaths; rtti seSplinePath, seSplinePathList
 - Port: crates/se_engine/src/scripting.rs:577-580
 - Check: Exe command table has splinepath, deletesplinepath, clearsplinepaths, playsplinepath and the "SE Spline Path (*.ssp)" filter, and Scripts.pak ships menu/Scene1.ssp (a SplinePath block with Catmull-Rom/B-spline data) though menu/Scene1.se does not use it; the port has no spline op or .ssp reader (no match for spline/ssp in se_engine), so these go to Op::Other and are skipped.
-
-### 10-031 · Scripts, audio, spacecraft
-
-Script capture and object commands: Screenshot, SavePNG, SaveTGA, SaveJPG, SaveDDS, SaveTIF and Watermark (with WaitTrigger "ScreenshotComplete"), plus ShowObject, HideObject, Show, Hide, Scene, Map and Clear. Port skips them; its ScreenshotComplete fires at once
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: exe command table screenshot, savepng .. savetif, watermark, showobject, hideobject, show, hide, scene, map, clear
-- Port: crates/se_engine/src/scripting.rs:577-580,1053
-- Check: The exe script command table (name + handler pointer pairs, read from SpaceEngine.exe .rdata) contains screenshot, savepng/tga/jpg/dds/tif, watermark, showobject, hideobject, show, hide, scene, map and clear; the port's se_script.rs Op enum has none of them, so they fall to Op::Other and are skipped with a warning (scripting.rs:577-580), and "screenshotcomplete" returns Check::Yes at once (scripting.rs:1053); no shipped Scripts.pak script uses them, so visibility 1 stands
 
 ### 10-032 · Scripts, audio, spacecraft
 
@@ -812,6 +803,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **10-026** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship brightness keys: SE scales ship models by the design's Exposure (1.5-3), Albedo and Color and by hdrShipM... Fix: SE: the design parser FUN_1405308b0 stores Albedo (+0xf30), Exposure (+0xf2c) and Color (+0xf34); the hull draw FUN_140528000 passes design +0xf2c to FUN_14029f670, which sets ship.glsl Params.w = Exposure x hdrShipModelBright (renderer +0x3608, struct +0x68 of FUN_1404c4ae0) x fade, and ship.glsl multiplies the whole hull colour (ambient, lit, emissive, thermal) by it. Port: ship_assets.rs HullDefaults.model_bright from main-def, build_ship sets the hull uniform's Params.w (ambient.z) to the design's Exposure (default 2) x hdrShipModelBright; catalog models keep 1. Not ported: Albedo and Color (the ship's look as a distant point; the port draws no ship points). Checked: build; DragonFly near Earth (.audit/work/shipexp/cmp.jpg).
 - **10-028** (Scripts, audio, spacecraft, fixed 2026-10-30): Script music and sound commands: PlayMusic "file.ogg" (used by 2 tutorials), PauseMusic, ResumeMusic, FadeOut,... Fix: SE: `playmusic` FUN_14055dd30 ("file" { CrossfadeDuration }, default the `MixDurationScript` variable, main-def 1 s; FUN_140399520 plays, errors when the file is missing), `pausemusic` FUN_14055dc00 / `resumemusic` FUN_14055dad0 (CrossfadeDuration; FUN_140399340 / FUN_140399270). `fadeout` / `fadein` (FUN_1405554e0 / FUN_140554f90) are screen fades (Time, Color, DefTime "guifadeout"/"overlayfadeout"/...), not music: ported under 10-006. `setaudiodevice` FUN_140555a90. Ported: `music::ScriptMusic` requests from the runner; the driver cross-fades to the named track (found as `music/<file>` or by file name anywhere under music/) over the given time or 1 s, fades out and pauses on PauseMusic (kept, not removed), resumes and fades in on ResumeMusic; when the script's track ends the shuffled playlist carries on; music a script paused plays again when the script ends or is stopped, and N (or a new track) fades a paused track out instead of leaving it counted as playing. Respects the user's music switch (requests are dropped while music is off). Checked: build/tests; both tracks the tutorials name (tut-05 "Lokijar - Quasar Medusa.ogg", tut-07 "Water Drips - Deep Space Journey.ogg") resolve in the VFS the way the driver looks them up (`script_survey music`); tut-05/07 run through their PlayMusic lines. Playback was not listened to (test runs use SE_NO_MUSIC, and the port must not make sound on the owner's machine). Not ported: SetAudioDevice (the port uses the default device; logged).
 - **10-029** (Scripts, audio, spacecraft, fixed 2026-10-30): Script camera commands: Track/Untrack (port logs "not supported"), Horizon, Fly, Turn/StopTurn, StopRotation, ... Fix: SE: command table at 0x14075f9c0 (0x30-byte entries: u32, name[36], handler). `fly` FUN_140562dd0 { Axis (default 0 0 1), Speed pc/s (default 10) / SpeedKm, FadeTime (default 2 s), Func "linear" }, `stopfly` FUN_140562b00 { FadeTime }, `turn` FUN_140562670 { Axis (default 0 1 0), AngularSpeed (default 10), FadeTime, Func }, `stopturn` FUN_1405623a0, `stoprotation` FUN_1405c4f50, `stopmotion` FUN_1405c4f80, `speed` FUN_140561b00 (pc/s, same scale as `speedkm` FUN_140561a40), `movemode` FUN_140561bb0 (1..4 -> FUN_1405c4fb0), `track`/`untrack`, `horizon` FUN_140563b40, `gotourl` FUN_140563720, `bind` FUN_1405514b0 (VR controller buttons), `checkversion` FUN_140565510 (another version: message box and the script halts). Goto FUN_140563f30: accel 1 s, drift 0, decel 1 s by default, `Time T` -> T/2 + T/2 (FUN_140571db0), AccelTime/DriftTime/DecelTime override, flight time their sum; powers default to `GotoSpeed` (FUN_140015720, main-def 10); progress FUN_14056b1e0: (t/a)^pa x a/T, then even, then (1-(1-u)^pd) x c/T + (a+d)/T. Ported: typed ops for all of the above; Fly/Turn as eased camera motions (SE axes x left, y down, z ahead mapped to the port's), StopFly/StopTurn fades, StopRotation, Speed/SpeedKm, Horizon, CheckVersion (message, then stop), Goto timing and progress curve as SE's (a bare Goto now takes 2 s, was 4), StopFly separate from StopMotion. Checked: unit tests (Goto timing and curve per FUN_14056b1e0, Motion easing, parser); `triggers.se` (`Speed`, `Get Fov`). Not ported: GotoURL (the port has no se:// location parser; logged), MoveMode (its modes were not traced; logged), Bind (VR, out of scope), Fly/Turn `Func` other than linear.
+- **10-031** (Scripts, audio, spacecraft, fixed 2026-10-30): Script capture and object commands: Screenshot, SavePNG, SaveTGA, SaveJPG, SaveDDS, SaveTIF and Watermark (wit... Fix: SE (command table at 0x140760xxx, name + handler): Screenshot / Screenshot { Name 'scr' GUI Format } (FUN_140565210); SavePNG/TGA/JPG/DDS/TIF 'file' (FUN_140559200 .., FUN_140185120) load that image and save it again with the command's extension; Show/Hide 'x' (FUN_14055bfd0 / FUN_14055add0) switch 26 display items by name; ShowObject/HideObject (thunks to FUN_14055d310) fade one object in/out over Time (0.5 s); Scene 'space'/'universe' and Map are the universe map; Watermark { Path Opacity Visible } (FUN_140558390). Port: Screenshot with Name and Format through screenshot::take_named, WaitTrigger 'ScreenshotComplete' now waits until the file is saved (ScriptShots); Save* convert PNG/JPEG files (relative names in the port's screenshot folder, never inside the SE install); Show/Hide for atmospheres, aurora, clusters, comettails, constellations, eclipsemask, eclipses, galaxies (procedural), grids, labels, lensflares, markers, nebulae (procedural), orbits, planetshine, pseudoflares, selpointer, water. Checked: test script (named PNG shot, trigger, SaveJPG conversion, switches) in the port. Not ported: Show/Hide accretiondisks, nightlights, orbitmarks, planets, ships, stars, vectors, velvector (no port switch); Screenshot GUI false; ShowObject/HideObject (no per-object fader in the port); Watermark (its drawing was not found); Scene/Map (universe map deferred); Clear (FUN_1405611b0, purpose not traced).
 - **10-033** (Scripts, audio, spacecraft, fixed 2026-10-30): Thermal hull glow: materials with TempMap/TempMapMaxTemp (4) and the design's RadTemp (25 designs, radiators u... Fix: SE: ship.glsl THERM: surfTemp = TempMap.r x ThermalParams.x (RadTemp), colour from the PlanckFunction texture at log(surfTemp + ThermalParams.y) x 0.188 + 0.1316, x ThermalParams.z x 500. Port (already in with the hull material merge, efb5949; verified by the main session): ship_assets.rs loads TempMap for RadTemp designs, hull_uniform sets THERM and ThermalParams (RadTemp kK, ThermalEmissionShift, 1), ship.wesl adds planck(log(temp + shift) x 0.188 + 0.1316) x 500 from blackholes::planck_table. TempMapMaxTemp is SE's PBR path only (10-027).
 
 ## Refuted by the checkers
