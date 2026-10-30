@@ -104,22 +104,22 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 70 have been fixed since (listed at the end); the tables count the 171 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 71 have been fixed since (listed at the end); the tables count the 170 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 81 | 67 | 20 |
+| Gaps | 1 | 2 | 80 | 67 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 56 | 83 | 32 |
+| Gaps | 56 | 83 | 31 |
 
 | Area | Kept |
 |---|---|
 | 01 Stars | 17 |
 | 02 Star clusters | 12 |
 | 03 Galaxies and nebulae | 14 |
-| 04 Planet surfaces | 14 |
+| 04 Planet surfaces | 13 |
 | 05 Atmospheres, rings, comets | 15 |
 | 06 Procedural generation | 15 |
 | 07 Camera and time | 6 |
@@ -452,15 +452,6 @@ Faint square grid on smooth lit planet discs from orbit (Saturn at 250000 km, Ke
 - SE evidence: planet.glsl:577 PlanetUVShatter; terrain_noise.glh:89-91
 - Port: crates/se_engine/assets/shaders/planet.wesl (terrain/aerial pass, cause not isolated)
 - Check: The auditor's own runs (.audit/work/04/saturn.png, kep10_zoom.png) show a regular ~10 px checker on the lit discs of Saturn and Kepler-10 b, visible even at half size, and SE jitters its lookups (planet.glsl:576 PlanetUVShatter, terrain_noise.glh:89-91); cause in the port is still not isolated
-
-### 04-007 · Planet surfaces
-
-Planet shine (secondary lighting): SE lights night sides with light reflected from nearby bodies (earthshine on the Moon, Jupiter's night side lit by its moons), colour sampled by preview renders; settings EnablePlanetShine, PlanetShineMode, PlanetShineBright, PlanetShineUpdateFrames, GUI "Planet shine"/"Planet shine brightness", key TogglePlanetShine. The port has none
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg EnablePlanetShine..PlanetShinePickPerFrame; planet.glsl:1023-1026 AmbientColor; locale "Jupiter reveals its night side, faintly illuminated by its moons"
-- Port: none
-- Check: SE has EnablePlanetShine/PlanetShineMode/PlanetShineBright/PlanetShineUpdateFrames/PlanetShinePickPerFrame (main-def.cfg:105-109, exe strings), controller TogglePlanetShine, GUI "Planet shine"/"Planet shine brightness" and planet.glsl:1023-1026 seeds every surface's ambient with the AmbientColor uniform; the port has no planet-shine term anywhere (only docs/formats/config_locale.md lists the keys), its night sides get only the fixed base_color.w ambient (terrain.rs:1443, planet.wesl:1171)
 
 ### 05-015 · Atmospheres, rings, comets
 
@@ -1708,6 +1699,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **04-004** (Planet surfaces, fixed 2026-10-29): Procedural terra colour maps: SE paints procedural rocky worlds with tg_terra_color (biome by height band via ... Fix: Procedural surface colours follow SE's own colour shaders (planet.wesl `se_terra_mix` / `se_selena_mix`, from the decrypted tg_terra_color.glsl / tg_selena_color.glsl): terra worlds get SE's climate (Fbm-distorted latitude through the tropic band, or the substellar distance on tidally locked worlds; height temperature gradient, snow line, ice caps; the flatland distortion by ridged multifractals of hillsFreq/hillsMagn and colorDistFreq), the base surface by SE's height bands (bottom, shelf, beach at sea level, lowland, upland, rock), steppe/forest/grass by their climate ranges where humid enough (PlantsBlendCoeff with the transition fractal), snow above climate 0.9, layered cliff rock on slopes over 0.35, and SE's albedoVary with ColorVary; airless worlds (SE's selena generator) get the height bands, the slope- and young-surface-modulated albedo variation, drivenDarkening and whitened ice caps. SE's noise (hash Perlin, its Fbm/Fbm3D/RidgedMultifractal) with octaves under a pixel dropped. Not done: cracks, volcano masks, rayed craters, the hills' Jordan turbulence and SE's height-aware BlendMaterials (the port blends its two strongest slots).
 - **04-005** (Planet surfaces, fixed 2026-10-29): Thermal emission and lava glow: SE gives hot bodies a temperature map (tg_terra_glow, tg_selena_glow, tg_aster... Fix: Thermal emission (planet.wesl `thermal_emission`, SE's planet.glsl THERM): the temperature map as SE's tg_*_glow generators make it (Neptune/Jupiter/Chthonia-bulk bodies glow all over at surfTemperature x (1 - 0.2 height); rocky worlds where lava covers them, with SE's glob/vary noise and lava-coverage terms), the sun's heating T = (0.010673289 L/d^2 n.l + T^4)^(1/4), ThermalEmissionShift; the colour is a blackbody's radiance relative to the star's surface at 610/550/465 nm, scaled by the star's surface radiance implied by the port's irradiance. WASP-12 b and Kepler-10 b now glow orange on their night sides. Assumed: surfTemperature = the body's average temperature; SE's Planck texture and thermal brightness (SurfParams4.w) are not decoded. Not done: volcano calderas (VolcanoGlowNoise), the glowing atmosphere (GlowColorAtmo), clouds hiding the glow.
 - **04-006** (Planet surfaces, fixed 2026-10-29): Procedural gas and ice giants: SE builds bands from HeightMapCloudsGasGiant (noise zones by stripeZones, equat... Fix: Procedural gas and ice giants (planet.wesl `gas_giant_albedo`): SE's HeightMapCloudsGasGiant per pixel (Noise zones by stripeZones, equatorial oval and polar round cyclones from cyclone*/cycloneMagn2/cycloneLatitude2, TurbulenceGasGiant vortices twisted by stripeTwist, Fbm stripes by cloudsFreq/cloudsOctaves and stripeFluct; SE's hash Perlin noise and spherical Fibonacci cells), coloured as tg_gasgiant_color from the giant preset's 8-colour CloudsPalette (height x colour, then gamma); giants now get a biome preset (SamplesPresets jupiter_*/neptune_*). The stripe and cyclone parameters follow FUN_1402f37c0's giant branch distributions (surface_gen::giant_clouds). Assumed: two undecoded inputs (polar cyclone latitude factor, a cold Jupiter's equatorial cyclone octaves), the palette lookup's row mapping, and the branch for bodies flagged at +0x38; the draws do not follow SE's order. Not done: the giants' fog layer (HeightMapFogGasGiant).
+- **04-007** (Planet surfaces, fixed 2026-10-30): Planet shine (secondary lighting): SE lights night sides with light reflected from nearby bodies (earthshine o... Fix: Planet shine as SE does it: bodies drawn as discs are lit by the planets and moons around them as further lights among their up to 4 (FUN_1404bc1a0 gathers them, FUN_1404bbf40 picks the sources: the body's moons, up its parents a planet itself, and at the first star or barycentre its other children). Each reflects, per star lighting it, F (R/d)^2 albedo (0.36 without one) Lambert(a) clamp(pi - asin(R/d) - a, 0, 1) times its opposition surge (Hapke, SpotBright, SpotWidth), the total scaled by the luminance of its colour (PlanetShineMode 1) and by PlanetShineBright; its colour is its own times the stars', brightest channel 1 (FUN_1404da600). They are faded like stars but never set the normalisation (only stars do, FUN_1404bf5c0), so earthshine lights the Moon's night side at about 4% and Jupiter's moons its night side. EnablePlanetShine / PlanetShineBright are read from main-def.cfg. Bodies inside their star (the port leaves 'Oumuamua at the Sun) are skipped; the cost is about 0.2 ms with 2566 Solar System bodies. Not ported: SE's preview renders for the colour (the sprite colour is used), eclipses of the shine, the rings' host-planet light (05-012), the TogglePlanetShine key and the settings entries.
 - **04-008** (Planet surfaces, fixed 2026-10-30): Lighting by several stars and its magnitude fade: SE lights a surface with up to 4 stars (MAX_LIGHTS 4 loop) a... Fix: Surfaces lit by up to 4 stars with SE's magnitude fade (see 01-006): SE gathers up to MAX_LIGHTS 4 stars per body, brightest flux first, ends the list at the first one past PlanetLightingFadeEndMagn, fades those between the begin/end magnitudes and normalises each to (F / max(F_begin, F_max))^0.35 (FUN_1404bf5c0, the port's LightingFade::planet_intensities); BodyLighting keeps the brightest as before plus up to 3 ExtraLight (direction, illumination colour times intensity, ring colour cut at RingsLightingFadeEndMagn).
 - **05-001** (Atmospheres, rings, comets, fixed 2026-10-29): Clouds are not lit through the atmosphere: SE draws each cloud layer through the planet shader (ACLOUDS), so t... Fix: `clouds.wesl` lights clouds as SE's ACLOUDS: sun light reddened by the transmittance and cut at the planet's horizon at cloud height, sky irradiance x SkyLight, DayAmbient (default 0.07, SE's loader), Hapke mix, SubsurfScatBright/Power (default 0), aerial perspective over the cloud, SE's 5% opacity cut; the night side is unlit. Relief: a layer with a BumpMap (Earth's is its cloud map) tilts the cloud-top normal by the density's screen-space gradient times BumpHeight.
 - **05-002** (Atmospheres, rings, comets, fixed 2026-10-29): Cloud layers and Clouds catalog keys: SE draws every Clouds block as its own layer (Titan 3 orange haze layers... Fix: Every Clouds block is its own layer (`terrain::CloudLayer`; Titan's three haze layers at 20/30/50 km, Mars's two textured and one procedural), NoClouds honoured. Per layer: height, map, Opacity, ModulateColor x ModulateBright, DayAmbient, Hapke, SubsurfScat, BumpMap/BumpHeight, DiffMapAlpha "None" (the map is an opaque colour layer: Venus), FlipMap and Velocity (the layer's shell turns about the pole with the simulation time, signed by the body's rotation, each turned layer with its own patch selection); SE's body-wide Coverage/mainFreq/mainOctaves (FUN_14046dde0 writes them to the body: the last block's win) for the procedural ones, Coverage 1 closing the layer; SE's 1 km close-camera fade; textured-surface bodies get their procedural layers (Titan's orange haze); nodes are culled against the highest layer. Not done: GlowMode/GlowMap, TempMap, RingsWinter; ground shadows come from the first textured layer that does not turn.

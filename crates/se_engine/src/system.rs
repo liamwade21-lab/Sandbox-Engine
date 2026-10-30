@@ -196,12 +196,16 @@ pub struct LightingFade {
     pub planet_begin_mag: f64,
     pub planet_end_mag: f64,
     pub rings_end_mag: f64,
+    /// SE's `EnablePlanetShine` and `PlanetShineBright`: bodies lit by the light other planets and
+    /// moons reflect onto them.
+    pub planet_shine: bool,
+    pub planet_shine_bright: f64,
 }
 
 impl Default for LightingFade {
     /// main-def.cfg's values.
     fn default() -> Self {
-        Self { planet_begin_mag: -7.0, planet_end_mag: -5.0, rings_end_mag: -10.0 }
+        Self { planet_begin_mag: -7.0, planet_end_mag: -5.0, rings_end_mag: -10.0, planet_shine: true, planet_shine_bright: 1.0 }
     }
 }
 
@@ -214,6 +218,8 @@ impl LightingFade {
             planet_begin_mag: num("PlanetLightingFadeBeginMagn", d.planet_begin_mag),
             planet_end_mag: num("PlanetLightingFadeEndMagn", d.planet_end_mag),
             rings_end_mag: num("RingsLightingFadeEndMagn", d.rings_end_mag),
+            planet_shine: doc.find_deep("EnablePlanetShine").and_then(|i| i.bool()).unwrap_or(d.planet_shine),
+            planet_shine_bright: num("PlanetShineBright", d.planet_shine_bright),
         }
     }
 
@@ -226,22 +232,27 @@ impl LightingFade {
 
     /// SE's intensity of the brightest star of flux `flux` on a planet: faded, then
     /// `(F / max(F_begin, F))^0.35`, the brightest star normalised to 1.
-    #[cfg(test)]
     pub fn planet_intensity(&self, flux: f64) -> f32 {
-        self.planet_intensities(&[flux]).first().copied().unwrap_or(0.0)
+        self.planet_intensities(&[(flux, true)]).first().copied().unwrap_or(0.0)
     }
 
-    /// The same for the stars of fluxes `fluxes`, brightest first (FUN_1404bf5c0): the list ends
-    /// at the first star past the fade end, each is faded, then `(F / max(F_begin, F_max))^0.35`.
-    pub fn planet_intensities(&self, fluxes: &[f64]) -> Vec<f32> {
+    /// The same for the lights `(flux, star)`, brightest first (FUN_1404bf5c0): the list ends at
+    /// the first light past the fade end, each is faded, then `(F / max(F_begin, F_max))^0.35`
+    /// with `F_max` over the stars only (planet shine never sets the scale).
+    pub fn planet_intensities(&self, lights: &[(f64, bool)]) -> Vec<f32> {
         let (begin, end) = (Self::flux(self.planet_begin_mag), Self::flux(self.planet_end_mag));
-        let lit: Vec<f64> = fluxes
+        let lit: Vec<(f64, bool)> = lights
             .iter()
-            .take_while(|&&flux| flux >= end)
-            .map(|&flux| if flux < begin { ((flux - end) / (begin - end)).max(0.0) * flux } else { flux })
+            .take_while(|l| l.0 >= end)
+            .map(|&(flux, star)| (if flux < begin { ((flux - end) / (begin - end)).max(0.0) * flux } else { flux }, star))
             .collect();
-        let max = lit.iter().fold(begin, |m, &l| m.max(l));
-        lit.iter().map(|&l| (l / max).powf(0.35) as f32).collect()
+        let max = lit.iter().filter(|l| l.1).fold(begin, |m, l| m.max(l.0));
+        lit.iter().map(|l| (l.0 / max).powf(0.35) as f32).collect()
+    }
+
+    /// The flux past which a light is dropped (`PlanetLightingFadeEndMagn`).
+    pub fn end_flux(&self) -> f64 {
+        Self::flux(self.planet_end_mag)
     }
 
     pub fn rings_lit(&self, flux: f64) -> bool {
@@ -904,12 +915,97 @@ fn auto_illum_saturation(t: f32) -> f32 {
     }
 }
 
-fn update_lighting(data: Res<SeData>, fade: Res<LightingFade>, settings: Res<StarSettings>, mut q: Query<(&SystemBody, &mut BodyLighting)>) {
+/// A light on a body: flux (L_sun / AU^2), direction towards it, colour, and whether it is a star
+/// (else planet shine).
+struct Light {
+    flux: f64,
+    dir: Vec3,
+    color: Vec3,
+    star: bool,
+}
+
+/// SE's planet shine from body `p` onto `target` (FUN_1404da600): each star lighting `p`, of flux
+/// `F` there, adds `F (R/d)^2 albedo Lambert(a) clamp(pi - asin(R/d) - a, 0, 1)` times the opposition
+/// surge, `a` the phase angle at `p`; the total is scaled by the luminance of `p`'s colour (its
+/// PlanetShineMode 1 colour) and the light's colour is `p`'s times the stars', brightest channel 1.
+fn planet_shine(pos: UPos, radius_m: f64, albedo: f64, color: Vec3, hapke: Option<(f32, f32, f32)>, stars: &[(f64, UPos, Vec3)], target: UPos) -> Option<(f64, Vec3)> {
+    use std::f64::consts::PI;
+    let to_target = target.delta_m(pos);
+    let d = to_target.length();
+    if d <= radius_m || radius_m <= 0.0 {
+        return None;
+    }
+    let (rd, to_target) = (radius_m / d, to_target / d);
+    let max_phase = PI - rd.asin();
+    let (mut total, mut rgb) = (0.0, Vec3::ZERO);
+    for &(flux, star_pos, star_rgb) in stars {
+        let cos = star_pos.delta_m(pos).normalize_or(DVec3::Y).dot(to_target).clamp(-1.0, 1.0);
+        let a = cos.acos();
+        let lambert = a.sin() / PI + (1.0 - a / PI) * cos;
+        let mut f = flux * rd * rd * albedo * lambert * (max_phase - a).clamp(0.0, 1.0);
+        if let Some((h, spot, inv_w)) = hapke {
+            let surge = spot / (((1.0 - cos) / (1.0 + cos).max(1e-9)).sqrt() as f32 * inv_w + 1.0) + 1.0;
+            f *= if h < 0.0 { 1.0 } else if h <= 1.0 { ((surge - 1.0) * h + 1.0) as f64 } else { surge as f64 };
+        }
+        if f > 0.0 {
+            total += f;
+            rgb += star_rgb * f as f32;
+        }
+    }
+    let rgb = rgb * color;
+    let max = rgb.max_element();
+    (total > 0.0 && max > 0.0).then(|| (total * color.dot(Vec3::new(0.299, 0.587, 0.114)) as f64, rgb / max))
+}
+
+/// The bodies' family tree for planet shine, rebuilt when the set of bodies changes.
+#[derive(Default)]
+struct ShineTree {
+    key: (usize, u64),
+    /// The bodies (not stars) and their parents.
+    entities: Vec<Entity>,
+    parent: Vec<Option<ObjectRef>>,
+    index: std::collections::HashMap<Entity, usize>,
+    by_ref: std::collections::HashMap<ObjectRef, usize>,
+    children: std::collections::HashMap<ObjectRef, Vec<usize>>,
+}
+
+impl ShineTree {
+    /// SE's planet-shine sources for body `i` (FUN_1404bbf40): its own moons, then up its parents,
+    /// a planet itself, and at the first star or barycentre its other children (may repeat one).
+    fn sources(&self, i: usize, obj: ObjectRef, out: &mut Vec<usize>) {
+        out.clear();
+        out.extend(self.children.get(&obj).into_iter().flatten());
+        let mut up = self.parent[i];
+        for _ in 0..8 {
+            let Some(r) = up else { break };
+            match self.by_ref.get(&r) {
+                Some(&p) => {
+                    out.push(p);
+                    up = self.parent[p];
+                }
+                None => {
+                    out.extend(self.children.get(&r).into_iter().flatten().filter(|&&c| c != i));
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn update_lighting(
+    data: Res<SeData>,
+    fade: Res<LightingFade>,
+    settings: Res<StarSettings>,
+    sprites: Query<&BatchedSprite>,
+    terrains: Query<&crate::terrain::Terrain>,
+    mut tree: Local<ShineTree>,
+    mut q: Query<(Entity, &SystemBody, &mut BodyLighting)>,
+) {
     let cat = &data.catalog;
     // Collect luminous stars of the system.
     let stars: Vec<(UPos, f64, Vec3, f64, f64)> = q
         .iter()
-        .filter_map(|(b, _)| match b.obj {
+        .filter_map(|(_, b, _)| match b.obj {
             ObjectRef::Star(i) => {
                 let s = &cat.stars[i as usize];
                 let lum = se_core::star::lum_from_abs_mag(s.abs_mag);
@@ -919,44 +1015,126 @@ fn update_lighting(data: Res<SeData>, fade: Res<LightingFade>, settings: Res<Sta
             _ => None,
         })
         .collect();
-    for (b, mut light) in &mut q {
+    let flux_at = |s: &(UPos, f64, Vec3, f64, f64), pos: UPos| s.1 / (s.0.delta_m(pos).length().max(1.0) / METERS_PER_AU).powi(2);
+    let brightest_at = |pos: UPos| stars.iter().enumerate().map(|(k, s)| (flux_at(s, pos), k)).max_by(|x, y| x.0.total_cmp(&y.0));
+    // A body's stars of the most flux, brightest first (flux, index in `stars`).
+    let star_lights = |pos: UPos| {
+        let mut lit: Vec<(f64, usize)> = stars.iter().enumerate().map(|(i, s)| (flux_at(s, pos), i)).collect();
+        lit.sort_by(|a, b| b.0.total_cmp(&a.0));
+        lit.truncate(MAX_LIGHTS);
+        lit
+    };
+    // The eye adapts to its sun: SE shows a red dwarf's planet tan, not deep red (the star itself is
+    // still drawn in its full colour).
+    let star_color = |k: usize| illum_color(stars[k].2, stars[k].4 as f32, &settings);
+    let star_light = |pos: UPos, (flux, k): (f64, usize)| Light {
+        flux,
+        dir: stars[k].0.delta_m(pos).normalize_or(DVec3::Y).as_vec3(),
+        color: star_color(k),
+        star: true,
+    };
+
+    // SE lights a body with its up to MAX_LIGHTS lights of the most flux (FUN_1404bf5c0): its stars
+    // and, with planet shine, the planets and moons around it. Only bodies drawn as discs (or their
+    // rings) show more than their brightest star.
+    let mut full: std::collections::HashMap<Entity, Vec<Light>> = std::collections::HashMap::new();
+    if fade.planet_shine && q.iter().any(|(_, b, _)| !b.star && b.px_radius >= 0.5) {
+        let key = q.iter().fold((0usize, 0u64), |(n, h), (e, _, _)| (n + 1, h ^ e.to_bits().wrapping_mul(0x9e37_79b9_7f4a_7c15)));
+        if tree.key != key {
+            *tree = ShineTree { key, ..default() };
+            for (e, b, _) in &q {
+                let ObjectRef::Body(i) = b.obj else { continue };
+                let parent = cat.find(&cat.bodies[i as usize].parent);
+                let k = tree.entities.len();
+                tree.entities.push(e);
+                tree.parent.push(parent);
+                tree.index.insert(e, k);
+                tree.by_ref.insert(b.obj, k);
+                if let Some(p) = parent {
+                    tree.children.entry(p).or_default().push(k);
+                }
+            }
+        }
+        // Each body's position and the most light it can reflect, `F R^2 albedo` doubled for the
+        // opposition surge and times its stars (SE's albedo for a body without one: FUN_1404da600).
+        let reach: Vec<(UPos, f64, f64)> = tree
+            .entities
+            .iter()
+            .map(|&e| {
+                let Ok((_, b, _)) = q.get(e) else { return (UPos::ZERO, 0.0, 0.0) };
+                let ObjectRef::Body(i) = b.obj else { return (b.pos, 0.0, 0.0) };
+                let albedo = Some(cat.bodies[i as usize].albedo).filter(|&a| a > 0.0).unwrap_or(0.36);
+                // A body inside its star (an orbit the port cannot place) reflects nothing.
+                let flux = brightest_at(b.pos).filter(|&(_, k)| stars[k].0.delta_m(b.pos).length() > stars[k].3).map_or(0.0, |l| l.0);
+                (b.pos, albedo, 2.0 * flux * b.radius_m * b.radius_m * albedo * stars.len().min(MAX_LIGHTS) as f64)
+            })
+            .collect();
+        let end_flux = fade.end_flux() / fade.planet_shine_bright.max(1e-30);
+        let mut colors: Option<std::collections::HashMap<Entity, Vec3>> = None;
+        let mut sources = Vec::new();
+        for (e, b, _) in q.iter().filter(|(_, b, _)| !b.star && b.px_radius >= 0.5) {
+            let Some(&i) = tree.index.get(&e) else { continue };
+            let mut lights: Vec<Light> = star_lights(b.pos).into_iter().map(|l| star_light(b.pos, l)).collect();
+            tree.sources(i, b.obj, &mut sources);
+            let mut seen: Vec<usize> = Vec::new();
+            for &k in &sources {
+                // Most of a star's other planets are far too faint: skip them before the trigonometry.
+                let (pos, albedo, power) = reach[k];
+                if power < end_flux * pos.delta_m(b.pos).length_squared() || seen.contains(&k) {
+                    continue;
+                }
+                seen.push(k);
+                let src = tree.entities[k];
+                let Ok((_, p, _)) = q.get(src) else { continue };
+                let lit: Vec<(f64, UPos, Vec3)> = star_lights(p.pos).into_iter().map(|(f, s)| (f, stars[s].0, star_color(s))).collect();
+                let colors = colors.get_or_insert_with(|| sprites.iter().map(|s| (s.owner, Vec3::from_array(s.rgb))).collect());
+                let color = colors.get(&src).copied().unwrap_or(Vec3::ONE);
+                let hapke = terrains.get(src).ok().map(|t| (t.surf_modulate.w, t.surf_hapke.x, t.surf_hapke.y));
+                if let Some((flux, color)) = planet_shine(p.pos, p.radius_m, albedo, color, hapke, &lit, b.pos) {
+                    let dir = p.pos.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3();
+                    lights.push(Light { flux: flux * fade.planet_shine_bright, dir, color, star: false });
+                }
+            }
+            full.insert(e, lights);
+        }
+    }
+
+    for (e, b, mut light) in &mut q {
         if b.star {
             continue;
         }
-        // SE lights a body with its up to MAX_LIGHTS stars of the most flux (FUN_1404bf5c0).
-        let mut lit: Vec<(f64, &(UPos, f64, Vec3, f64, f64))> = stars
-            .iter()
-            .map(|s| (s.1 / (s.0.delta_m(b.pos).length().max(1.0) / METERS_PER_AU).powi(2), s))
-            .collect();
-        lit.sort_by(|a, b| b.0.total_cmp(&a.0));
-        lit.truncate(MAX_LIGHTS);
-        let fluxes: Vec<f64> = lit.iter().map(|l| l.0).collect();
-        let intensities = fade.planet_intensities(&fluxes);
-        light.n_extra = 0;
-        if let Some(&(flux, s)) = lit.first() {
-            light.sun_dir = s.0.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3();
-            // The eye adapts to its sun: SE shows a red dwarf's planet tan, not deep red (the star
-            // itself is still drawn in its full colour).
-            light.sun_color = illum_color(s.2, s.4 as f32, &settings);
-            light.sun_intensity = intensities.first().copied().unwrap_or(0.0);
-            light.rings_intensity = if fade.rings_lit(flux) { light.sun_intensity } else { 0.0 };
-            light.star_pos = s.0;
-            light.star_radius_m = s.3;
-            light.star_teff = s.4.max(500.0) as f32;
-            light.heat = flux as f32;
-            for (&(flux, s), &k) in lit.iter().zip(&intensities).skip(1) {
-                let color = illum_color(s.2, s.4 as f32, &settings) * k;
-                let n = light.n_extra;
-                light.extra[n] = ExtraLight {
-                    dir: s.0.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3(),
-                    color,
-                    rings_color: if fade.rings_lit(flux) { color } else { Vec3::ZERO },
-                };
-                light.n_extra += 1;
-            }
-        } else {
+        let Some((main_flux, main_star)) = brightest_at(b.pos) else {
             // No star: SE lights nothing.
-            (light.sun_intensity, light.rings_intensity, light.heat) = (0.0, 0.0, 0.0);
+            (light.sun_intensity, light.rings_intensity, light.heat, light.n_extra) = (0.0, 0.0, 0.0, 0);
+            continue;
+        };
+        let s = &stars[main_star];
+        light.sun_dir = s.0.delta_m(b.pos).normalize_or(DVec3::Y).as_vec3();
+        light.sun_color = star_color(main_star);
+        light.star_pos = s.0;
+        light.star_radius_m = s.3;
+        light.star_teff = s.4.max(500.0) as f32;
+        light.heat = main_flux as f32;
+        light.n_extra = 0;
+        let more = || (stars.len() > 1 && b.px_radius >= 0.15).then(|| star_lights(b.pos).into_iter().map(|l| star_light(b.pos, l)).collect());
+        let Some(mut lights) = full.remove(&e).or_else(more) else {
+            // Too small to show more than its brightest star (and the only one in most systems).
+            light.sun_intensity = fade.planet_intensity(main_flux);
+            light.rings_intensity = if fade.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
+            continue;
+        };
+        // The brightest star stays the main light; the rest by flux.
+        lights[1..].sort_by(|a, b| b.flux.total_cmp(&a.flux));
+        lights.truncate(MAX_LIGHTS);
+        let intensities = fade.planet_intensities(&lights.iter().map(|l| (l.flux, l.star)).collect::<Vec<_>>());
+        light.sun_intensity = intensities.first().copied().unwrap_or(0.0);
+        light.rings_intensity = if fade.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
+        for (l, &k) in lights.iter().zip(&intensities).skip(1) {
+            let color = l.color * k;
+            let n = light.n_extra;
+            // Rings take the stars only (SE adds just their host planet's light, not ported).
+            light.extra[n] = ExtraLight { dir: l.dir, color, rings_color: if l.star && fade.rings_lit(l.flux) { color } else { Vec3::ZERO } };
+            light.n_extra += 1;
         }
     }
 }
@@ -1311,13 +1489,18 @@ mod tests {
         let f = LightingFade::default();
         // A companion a quarter as bright shows at 0.25^0.35; a star past the fade end, and every
         // one after it, is dropped.
-        let k = f.planet_intensities(&[4.0, 1.0, 1e-9, 1e-10]);
+        let k = f.planet_intensities(&[(4.0, true), (1.0, true), (1e-9, true), (1e-10, true)]);
         assert_eq!(k.len(), 2);
         assert_eq!(k[0], 1.0);
         assert!((k[1] - 0.25f32.powf(0.35)).abs() < 1e-6, "{k:?}");
         // Under a faint brightest star the normalisation is to the fade start, as for one star.
         let faint = 2.0 * LightingFade::flux(-7.0);
-        assert_eq!(f.planet_intensities(&[faint, faint]), vec![1.0, 1.0]);
+        assert_eq!(f.planet_intensities(&[(faint, true), (faint, true)]), vec![1.0, 1.0]);
+        // Planet shine never sets the scale: 1e-4 of the Sun's light shows at 1e-4^0.35.
+        let k = f.planet_intensities(&[(1.0, true), (1e-4, false)]);
+        assert!((k[1] - 1e-4f32.powf(0.35)).abs() < 1e-6, "{k:?}");
+        // Alone it is scaled to the fade start, as SE does (the port always has a star first).
+        assert!((f.planet_intensities(&[(1e-4, false)])[0] - (1e-4 / LightingFade::flux(-7.0)).powf(0.35) as f32).abs() < 1e-3);
         assert!(f.planet_intensities(&[]).is_empty());
     }
 
