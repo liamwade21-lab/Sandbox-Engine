@@ -11,9 +11,9 @@
 //! Not ported: the RAM and VRAM caps themselves (`VideoMemoryStrategy`, `VideoMemorySize`,
 //! `VideoMemoryReserved`, `RAMSizeMax`, `RAMSizeMaxPercentage`) only set what the log reports, as the
 //! port has no memory manager that budgets its allocations against them; `CacheSizeLandTextures`
-//! (SE's terrain texture array; the port's surface textures are per-file), `CacheSizeGalModels` and
-//! the `CacheSize*ModelsVRAM` minimums (the port draws a fixed few galaxy and nebula models,
-//! galaxies.rs and nebulae.rs `max_models`, with no resident model cache behind them).
+//! (SE's terrain texture array; the port's surface textures are per-file) and the
+//! `CacheSize*ModelsVRAM` minimums. `CacheSizeGalModels` sets how many galaxy models stay resident
+//! (galaxies.rs); the nebula models are a fixed few (nebulae.rs `max_models`).
 
 use bevy::prelude::*;
 

@@ -51,7 +51,8 @@ use crate::universe::UniverseSet;
 /// Focal length (px) at which galaxy surface brightness is defined (60 deg vertical FOV at 900 px).
 pub(crate) const FOCAL_REF: f64 = 780.0;
 /// Maximum number of simultaneous 3D models (including the pinned Milky Way).
-const MAX_SLOTS: usize = 8;
+/// At most this many resident models (SE's `CacheSizeGalModels` 64 sets [`GalaxySettings::max_models`]).
+const MAX_SLOTS: usize = 64;
 /// Handedness mapping from SE model space to the port frame (see `se_to_port`).
 const DEFAULT_MAP_MODE: u32 = 0;
 
@@ -288,8 +289,8 @@ impl Default for GalaxySettings {
             bright_min: 0.03,
             dust_strength: 1.0,
             min_px: 2.5,
-            build_px: 4.0,
-            max_models: 6,
+            build_px: 2.0,
+            max_models: 64,
             mag_ref: 7.5,
             cull: 0.003,
             auto_gain: true,
@@ -1041,6 +1042,8 @@ pub(crate) fn setup_galaxies(
             settings.auto_gain = flag("AutoGalaxyMagnitude").unwrap_or(settings.auto_gain);
         }
         settings.auto_speed = num("AutoGalaxyMagnSpeed").unwrap_or(settings.auto_speed);
+        // CacheSizeGalModels: the most galaxy models kept (SE's model cache).
+        settings.max_models = num("CacheSizeGalModels").map_or(settings.max_models, |v| (v as usize).clamp(1, MAX_SLOTS));
         settings.enabled &= flag("ShowCatGalaxies").unwrap_or(true);
     }
     let vfs = data.vfs.clone();
@@ -1231,7 +1234,13 @@ pub(crate) fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Fade of the 3D model (and inverse fade of the far sprite).
+/// SE's fade of a galaxy's 3D model (FUN_140299fe0, `fade_in = clamp((px - 2) / 3)`): none below a
+/// 2 px radius, full at 5 px; the far sprite fades out as it fades in.
+pub(crate) fn galaxy_model_fade(px: f64) -> f32 {
+    if px.is_infinite() { 1.0 } else { ((px - 2.0) / 3.0).clamp(0.0, 1.0) as f32 }
+}
+
+/// Fade of a 3D model (and inverse fade of the far sprite) from `build_px` (the nebula models).
 pub(crate) fn model_fade(px: f64, build_px: f64) -> f32 {
     if px.is_infinite() {
         1.0
@@ -1422,7 +1431,7 @@ pub(crate) fn update_galaxies(
         let def = &st.models.models()[st.model_of[slot.galaxy].unwrap()];
         let d = (rec.pos_pc - cam_pc).length();
         let px = angular_px(rec.radius_pc, d, focal);
-        let fade = if settings.enabled { model_fade(px, settings.build_px as f64) } else { 0.0 };
+        let fade = if settings.enabled { galaxy_model_fade(px) } else { 0.0 };
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
 
         // SE's brightness chain (FUN_14029bdf0 / FUN_140299fe0): emBright = se_glow_bright x model
