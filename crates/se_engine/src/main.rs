@@ -15,12 +15,14 @@ mod camera;
 mod clusters;
 mod comets;
 mod config;
+mod constellations;
 mod corona;
 mod data;
 mod display;
 mod ellipticals;
 mod galaxies;
 mod graphics;
+mod grids;
 mod lensflare;
 mod nebula_raymarch;
 mod nebulae;
@@ -132,6 +134,8 @@ fn main() {
         graphics::GraphicsPlugin,
         scripting::ScriptingPlugin,
         ship::ShipPlugin,
-    ));
+    ))
+    // Sky overlays: coordinate grids and constellations.
+    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin));
     app.run();
 }

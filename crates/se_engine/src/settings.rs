@@ -13,7 +13,7 @@ use crate::i18n::I18n;
 use crate::bloom::BloomSettings;
 use crate::lensflare::LensFlareSettings;
 use crate::music::MusicState;
-use crate::overlay::{KindSet, MarkerKind, OverlaySettings};
+use crate::overlay::{KindSet, MarkerKind, OverlaySettings, SkySwitches};
 use crate::stars::StarSettings;
 
 pub struct SettingsPlugin;
@@ -62,6 +62,8 @@ struct Snapshot {
     markers: bool,
     /// SE's per-kind `ShowOrbits*`, `ShowLabels*`, `ShowMarkers*`.
     kinds: [KindSet; 3],
+    /// SE's constellation and grid switches ([`SkySwitches::KEYS`]).
+    sky: [bool; 12],
     star_label_mag: f32,
     show_fps: bool,
     info_full: bool,
@@ -106,6 +108,7 @@ impl Snapshot {
             labels_mode: o.labels_mode,
             markers: o.markers,
             kinds: [o.orbit_kinds, o.label_kinds, o.marker_kinds],
+            sky: o.sky.saved(),
             star_label_mag: o.star_label_mag,
             show_fps: o.show_fps,
             info_full: o.info_full,
@@ -153,6 +156,9 @@ impl Snapshot {
             for k in MarkerKind::ALL {
                 out += &format!("\t{filter}{} {}\n", k.key(), set.has(k));
             }
+        }
+        for (key, on) in SkySwitches::KEYS.iter().zip(self.sky) {
+            out += &format!("\t{key} {on}\n");
         }
         out
     }
@@ -281,6 +287,11 @@ fn load_settings(
                     if let Some(on) = b.bool(&format!("{filter}{}", k.key())) {
                         set.set(k, on);
                     }
+                }
+            }
+            for key in SkySwitches::KEYS {
+                if let Some(on) = b.bool(key) {
+                    o.sky.set_var(key, on);
                 }
             }
             f("StarNameMagn", &mut overlay.star_label_mag);

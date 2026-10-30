@@ -58,6 +58,8 @@ pub struct SkinText {
     kinds: HashMap<String, egui::Color32>,
     /// `BodySelectedOrbitColor`: the selection's orbit line.
     pub selected_orbit: egui::Color32,
+    /// Every `*Color` key as written (RGBA), e.g. the grids' and constellations' line colours.
+    colors: HashMap<String, [f32; 4]>,
 }
 
 impl Default for SkinText {
@@ -67,6 +69,7 @@ impl Default for SkinText {
             info: egui::Color32::from_rgb(153, 230, 255),
             kinds: HashMap::new(),
             selected_orbit: egui::Color32::from_rgb(255, 51, 51),
+            colors: HashMap::new(),
         }
     }
 }
@@ -75,6 +78,11 @@ impl SkinText {
     /// `Info<kind>Color` (e.g. `"Planet"`), else `InfoDefaultColor`.
     pub fn kind(&self, kind: &str) -> egui::Color32 {
         self.kinds.get(kind).or_else(|| self.kinds.get("Default")).copied().unwrap_or(self.info)
+    }
+
+    /// A skin colour key's RGBA (e.g. `"ConstelLinesColor"`), else `default` (SE's own).
+    pub fn rgba(&self, key: &str, default: [f32; 4]) -> [f32; 4] {
+        self.colors.get(key).copied().unwrap_or(default)
     }
 }
 
@@ -276,7 +284,8 @@ fn load(vfs: &se_core::vfs::Vfs, name: &str, ctx: &egui::Context, skin: &mut Ski
         .map(|(kind, k)| (kind, color(one, cfg.rgba(&k, one))))
         .collect();
     let selected_orbit = color(one, cfg.rgba("BodySelectedOrbitColor", [1.0, 0.2, 0.2, 1.0]));
-    let text = SkinText { header_capital: cfg.bool("DialogHeaderCapital"), info, kinds, selected_orbit };
+    let colors = cfg.0.keys().filter(|k| k.ends_with("Color")).filter_map(|k| Some((k.clone(), cfg.nums(k).filter(|n| n.len() >= 4).map(|n| [n[0], n[1], n[2], n[3]])?))).collect();
+    let text = SkinText { header_capital: cfg.bool("DialogHeaderCapital"), info, kinds, selected_orbit, colors };
     ctx.data_mut(|d| d.insert_temp(text_id(), text));
     Some(())
 }

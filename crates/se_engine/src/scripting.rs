@@ -666,7 +666,8 @@ impl ScriptRunner {
             "starmagnlimit" => Some(cx.stars.mag_limit as f64),
             "timescale" => Some(cx.sim.rate),
             "fov" => Some(cx.cam.fov_deg as f64),
-            _ => self.vars.get(&k).and_then(Value::as_f64),
+            // ShowConstellations, ShowGrid*, ConstLines<Abbr>, ...
+            _ => cx.overlay.sky.var(&k).map(|on| on as u8 as f64).or_else(|| self.vars.get(&k).and_then(Value::as_f64)),
         }
     }
 
@@ -680,6 +681,8 @@ impl ScriptRunner {
             ("starmagnlimit", Some(v)) => cx.stars.mag_limit = v as f32,
             ("timescale", Some(v)) => cx.sim.rate = v,
             ("fov", Some(v)) => cx.cam.fov_deg = v as f32,
+            // The constellation and grid switches.
+            (f, Some(v)) if cx.overlay.sky.set_var(f, v != 0.0) => {}
             // SE's per-kind filters: ShowOrbitsPlanets, ShowLabelsStars, ShowMarkersGalaxies, ...
             (f, Some(v)) if f.starts_with("show") => match crate::overlay::kind_filter(cx.overlay, f) {
                 Some((set, kind)) => set.set(kind, v != 0.0),
@@ -703,6 +706,9 @@ impl ScriptRunner {
             if let Some(v) = self.get_var(cx, k) {
                 m.insert((*k).to_string(), Value::Num(v));
             }
+        }
+        for k in crate::overlay::SkySwitches::KEYS {
+            m.insert(k.to_ascii_lowercase(), Value::Num(cx.overlay.sky.var(k).unwrap_or(false) as u8 as f64));
         }
         m
     }
