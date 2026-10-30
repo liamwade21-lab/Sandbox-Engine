@@ -1,39 +1,43 @@
-//! Member stars of nearby star clusters, generated procedurally in SE's cluster octree.
+//! Member stars of nearby star clusters, generated in SE's cluster octree
+//! (`seStarNodeCache::CreateClusterBlock`, FUN_14053a760; the stars in `se_core::cluster_stars`).
 //!
-//! SE (`FUN_140543c70` node counts, `FUN_140540220` node loading, tables from `FUN_1401d7300`)
-//! gives each cluster an octree of [`LEVELS`] levels below a root cube of half-size the cluster
-//! radius. Level `d` holds the members of one of five equal-probability bands of Mv ~ N(3, 6)
+//! Globular and nucleus (`Kern`) clusters (`FUN_140543c70` node counts, `FUN_140540220` node loading,
+//! tables from `FUN_1401d7300`) have an octree of [`LEVELS`] levels below a root cube of half-size the
+//! cluster radius. Level `d` holds the members of one of five equal-probability bands of Mv ~ N(3, 6)
 //! between -8 and 30 ([`band_edges`]: -8, -1.5, 1.8, 4.7, 8.2, 25), so the root holds the few
-//! brightest members and the smallest, deepest nodes the faint majority. A node is loaded while the
-//! camera is inside its sphere (radius its half-size) or the brightest star of its band, seen from
-//! the sphere's edge, would show above the star magnitude limit; SE caps a node at [`NODE_CAP`]
-//! stars. So faint members appear as you approach, and only around you. The root loads once the
-//! cluster spans 8 px on screen ([`members_range_pc`]). Clusters the catalog already resolves star by
-//! star (>= 15 catalog stars inside the radius) are skipped.
+//! brightest members and the smallest, deepest nodes the faint majority. A node tries SE's count of
+//! uniform points in its cube and keeps those inside the radius with probability exp(-c r/R) (`c`
+//! from `CenPow`); the root's first member is the cluster's black hole, which draws nothing. Open
+//! clusters have only the root: a blob (mean squared radius 1/CenPow) of stars until their light adds
+//! up to the cluster's. A node is loaded while the camera is inside its sphere (radius its half-size)
+//! or the brightest star of its band, seen from the sphere's edge, would show above the star
+//! magnitude limit. The root loads once the cluster spans 8 px on screen ([`members_range_pc`]).
+//! Clusters with `NStars 0` (their stars are in the star catalog: the Pleiades, the Hyades) and `Part`
+//! clusters get none, and SE's `ShowCatClusters` / `ShowProcClusters` switch the catalog / procedural
+//! clusters off ([`ClusterSettings`]).
 //!
-//! How many members a band has comes from the port's population model (SE's per-node table needs
-//! its star generator, CreateClusterBlock, which is not decoded): a Salpeter mass function
-//! truncated at the turn-off mass for the age, plus a few red giants for old clusters, scaled to
-//! `n_stars` or to the integrated absolute magnitude, times SE's `StarDensityInCluster`. Stars
-//! follow a Plummer profile. A capped node's stars are brightened by the ratio, so its light stays.
+//! Members are named as SE names them, `RSC <galaxy>-<cluster>-<level>-<node>-<index>` (FUN_1401c0180,
+//! the 8-number form in procedural galaxies), and those names resolve in commands and the search box
+//! ([`resolve_member_names`]).
 //!
 //! Each node is one mesh entity sharing the [`StarMaterial`] "octree mode" with `procstars`: the
 //! entity translation is `(centre_pc - camera_pc)` every frame, vertices are offsets from the
 //! cluster centre (universe frame, parsecs).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
-use se_core::catalog::{Catalog, ClusterRecord};
-use se_core::star::{blackbody_rgb, main_sequence_abs_mag};
+use se_core::catalog::{Catalog, ClusterRecord, ClusterType, ObjectRef};
+use se_core::cluster_stars::{self as cs, ClassWord};
+use se_core::proc_galsys::{GalaxyRef, MILKY_WAY_SE_INDEX, SystemKind};
+use se_core::star::blackbody_rgb;
 use se_core::star_octree::Rng;
-use se_core::star_octree::ms_class_name;
 
-use crate::camera::FlyCamera;
+use crate::camera::{CommandQueue, FlyCamera};
 use crate::config::EngineConfig;
 use crate::data::SeData;
 use crate::procstars::{NearestProcStar, PROMOTE_PC, ProcStarInfo};
@@ -44,13 +48,15 @@ const MAX_IN_FLIGHT: usize = 8;
 /// SE's cluster octree depth (its band tables have five rows).
 pub const LEVELS: u8 = 5;
 /// SE's most stars in one cluster node (`0x4000`).
-pub const NODE_CAP: usize = 16_384;
+pub const NODE_CAP: usize = cs::NODE_CAP;
 /// SE draws a cluster's member stars once its radius spans this many pixels (times height/1080 above
 /// 1080 rows; `FUN_14045ea50` writes 8 x max(1, h/1080), tested in `FUN_1404a09a0`/`FUN_140499f30`).
 /// Its far particle fades out between 1 and 100 px meanwhile (`galaxy_far.wesl`).
 const MEMBERS_PX: f64 = 8.0;
 /// Hysteresis: loaded clusters and nodes are dropped beyond FAR_FACTOR times their load range.
 const FAR_FACTOR: f64 = 1.25;
+/// SE's luminosity of a cluster's central black hole (FUN_14053a760).
+const BLACK_HOLE_LUM: f64 = 1000.0;
 
 /// Distance (pc) within which a cluster of `radius_pc` spans [`MEMBERS_PX`] on a screen `height_px`
 /// tall with a vertical field of view `fov_deg`.
@@ -71,12 +77,26 @@ pub fn band_edges() -> [f64; 6] {
 pub struct MemberStar {
     /// Offset from the cluster centre, universe frame, parsecs.
     pub offset: DVec3,
-    /// True absolute magnitude (the sprite may be brighter, see `drawn_mag`).
+    /// Absolute V magnitude.
     pub abs_mag: f32,
-    /// Absolute magnitude of its sprite: one drawn star can stand for several.
-    pub drawn_mag: f32,
     pub teff: f32,
-    pub giant: bool,
+    pub mass: f32,
+    /// The cluster's age with SE's scatter (FUN_1401d6c60 / FUN_1401d63b0), Gyr.
+    pub age_gyr: f32,
+    pub feh: f32,
+    pub class: ClassWord,
+    /// Not drawn: the central black hole.
+    pub hidden: bool,
+}
+
+/// A member's place in its cluster's octree, for its `RSC` name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberId {
+    pub cluster: usize,
+    pub level: u8,
+    /// SE's node number ([`cs::node_number`]).
+    pub node: u64,
+    pub index: u32,
 }
 
 /// A node of a cluster's octree: level and cell (0..2^level per axis).
@@ -88,27 +108,46 @@ struct NodeId {
 }
 
 impl NodeId {
-    /// Index of the node among all of its cluster's nodes, level by level (for member names).
-    fn linear(&self) -> usize {
-        let n = 1usize << self.level;
-        let before: usize = (0..self.level).map(|l| 1usize << (3 * l)).sum();
-        before + self.cell[0] as usize + n * (self.cell[1] as usize + n * self.cell[2] as usize)
+    fn member(&self, index: usize) -> MemberId {
+        MemberId { cluster: self.cluster, level: self.level, node: cs::node_number(self.level, self.cell), index: index as u32 }
     }
 }
 
-/// A cluster's member population, shared by the builds of its nodes.
+/// How a cluster's members are made (SE's cluster types, FUN_140483080).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// One root node filled by light (type 3).
+    Open,
+    /// The five-level octree with the exp(-c r/R) profile (types 2 globular, 1 nucleus).
+    Dense { nucleus: bool },
+}
+
+/// A cluster's member model, shared by the builds of its nodes.
 struct Model {
     name: String,
     radius: f64,
-    /// Plummer scale radius.
-    a: f64,
-    pop: Pop,
+    /// V luminosity, solar.
+    lum: f64,
+    age: f64,
+    shape: Shape,
+    /// Open: the blob's mean squared radius 1/CenPow (cluster radii); dense: the concentration `c`.
+    k: f64,
+    /// SE's node count factor ([`cs::count_factor`]).
+    factor: f64,
     edges: [f64; 6],
-    /// Expected members of each band in the whole cluster.
-    band_n: [f64; 5],
+    /// The central black hole's mass, solar.
+    black_hole: Option<f64>,
+    /// The members' name prefix, `RSC <galaxy>-<cluster>`.
+    rsc: String,
 }
 
 impl Model {
+    fn levels(&self) -> u8 {
+        match self.shape {
+            Shape::Open => 1,
+            Shape::Dense { .. } => LEVELS,
+        }
+    }
     fn node_half(&self, level: u8) -> f64 {
         self.radius / (1u32 << level) as f64
     }
@@ -123,14 +162,29 @@ type NodeBuilt = Option<(Mesh, Arc<Vec<MemberStar>>)>;
 
 enum ModelSlot {
     Loading(Task<Option<Arc<Model>>>),
-    /// `None`: nothing to draw (resolved by the catalog, or no members).
+    /// `None`: nothing to draw (`NStars 0`, `Part`, or no members).
     Ready(Option<Arc<Model>>),
 }
 
 enum NodeSlot {
     Loading(Task<NodeBuilt>),
-    /// Entity `None` when the node holds no stars.
+    /// Entity `None` when the node draws no stars.
     Ready(Option<Entity>, Arc<Vec<MemberStar>>),
+}
+
+/// SE's cluster display switches (main-def.cfg): `ShowCatClusters`; `ShowProcClusters` is
+/// `ProcSettings::clusters`.
+#[derive(Resource, Debug, Clone)]
+pub struct ClusterSettings {
+    pub show_cat: bool,
+}
+
+impl ClusterSettings {
+    /// Whether cluster `rec` is shown: catalog clusters by `ShowCatClusters`, procedural (`RC`) ones by
+    /// `ShowProcClusters` (FUN_140499ce0).
+    pub fn shows(&self, rec: &ClusterRecord, show_proc: bool) -> bool {
+        if rec.source == "procedural" { show_proc } else { self.show_cat }
+    }
 }
 
 #[derive(Resource)]
@@ -141,39 +195,92 @@ pub struct ClusterField {
     nodes: HashMap<NodeId, NodeSlot>,
     /// SE's `StarDensityInCluster` (main-def.cfg): scales every cluster's member count.
     density: f64,
-    /// Positions of the catalog stars (pc), for builds to skip clusters the catalog already
-    /// resolves. A snapshot, so builds never hold the catalog itself: while anything shares
-    /// it, adding an object deep-copies the whole catalog (a ~300 ms stall).
-    star_pos: Arc<Vec<DVec3>>,
-    star_count: usize,
+    /// [`centre_names`], read once from the catalog stars.
+    centres: Option<HashSet<String>>,
 }
 
 impl ClusterField {
-    /// Member stars of the loaded nodes: (universe position in parsecs, star, cluster index, member
-    /// number).
-    pub fn members<'a>(&'a self, cat: &'a Catalog) -> impl Iterator<Item = (DVec3, &'a MemberStar, usize, usize)> + 'a {
+    /// Member stars of the loaded nodes: (universe position in parsecs, star, its id).
+    pub fn members<'a>(&'a self, cat: &'a Catalog) -> impl Iterator<Item = (DVec3, &'a MemberStar, MemberId)> + 'a {
         self.nodes.iter().flat_map(move |(id, slot)| {
             let stars: &[MemberStar] = match slot {
                 NodeSlot::Ready(_, stars) => stars,
                 _ => &[],
             };
             let centre = cat.clusters[id.cluster].pos_pc;
-            let base = id.linear() * NODE_CAP;
-            stars.iter().enumerate().map(move |(k, m)| (centre + m.offset, m, id.cluster, base + k))
+            stars.iter().enumerate().map(move |(k, m)| (centre + m.offset, m, id.member(k)))
         })
+    }
+
+    /// How many members of cluster `ci` are generated, if its model is loaded (SE counts the stars of
+    /// the loaded blocks: "Fly inside to count stars" otherwise).
+    pub fn member_count(&self, ci: usize) -> Option<usize> {
+        matches!(self.models.get(&ci), Some(ModelSlot::Ready(_))).then(|| {
+            self.nodes
+                .iter()
+                .filter(|(id, _)| id.cluster == ci)
+                .map(|(_, s)| match s {
+                    NodeSlot::Ready(_, stars) => stars.len(),
+                    _ => 0,
+                })
+                .sum()
+        })
+    }
+
+    /// Catalog-ready description of member `id`.
+    pub fn member_info(&self, cat: &Catalog, id: MemberId, m: &MemberStar) -> ProcStarInfo {
+        let rsc = match self.models.get(&id.cluster) {
+            Some(ModelSlot::Ready(Some(model))) => model.rsc.clone(),
+            _ => rsc_prefix(cat, id.cluster),
+        };
+        info_of(&rsc, id, m)
     }
 }
 
-/// Catalog-ready description of member `k` of cluster `ci`.
-pub fn member_info(cat: &Catalog, ci: usize, k: usize, m: &MemberStar) -> ProcStarInfo {
-    let cluster = cat.clusters[ci].names.first().map(String::as_str).unwrap_or("RC");
-    let lum_class = if m.giant { "III" } else { "V" };
+fn info_of(rsc: &str, id: MemberId, m: &MemberStar) -> ProcStarInfo {
     ProcStarInfo {
-        name: format!("{cluster} #{k}"),
-        class: format!("{}{}", ms_class_name(m.teff as f64), lum_class),
+        name: format!("{rsc}-{}-{}-{}", id.level, id.node, id.index),
+        class: m.class.name(),
         abs_mag: m.abs_mag,
         teff: m.teff,
     }
+}
+
+/// `RSC <galaxy>-<cluster>`, SE's member name prefix of catalog cluster `ci` (FUN_1401c0180): a
+/// procedural cluster's `RC` numbers, else the galaxy's catalog index (8514 for the Milky Way) and the
+/// cluster's index among the galaxy's catalog clusters (they come before the procedural ones).
+pub fn rsc_prefix(cat: &Catalog, ci: usize) -> String {
+    let rec = &cat.clusters[ci];
+    if let Some(rest) = rec.names.first().and_then(|n| n.strip_prefix("RC ")) {
+        return format!("RSC {rest}");
+    }
+    let index = cat.clusters[..ci].iter().filter(|c| c.galaxy == rec.galaxy && c.source != "procedural").count() as u32;
+    let rc = se_core::proc_galsys::system_name(SystemKind::Cluster, GalaxyRef::Catalog(galaxy_code(cat, &rec.galaxy)), index);
+    format!("RSC {}", &rc[3..])
+}
+
+/// The catalog index SE names a galaxy's clusters by: 8514 for the Milky Way, else the port's index.
+fn galaxy_code(cat: &Catalog, galaxy: &str) -> u32 {
+    match cat.find(galaxy) {
+        _ if galaxy == "Milky Way" => MILKY_WAY_SE_INDEX,
+        Some(ObjectRef::Galaxy(g)) => g,
+        _ => 0,
+    }
+}
+
+/// The catalog cluster an `RC` name stands for: a promoted procedural cluster of that name, or the
+/// galaxy's catalog cluster of that index.
+fn cluster_of_rc(cat: &Catalog, rc: &str) -> Option<usize> {
+    if let Some(ObjectRef::Cluster(i)) = cat.find(rc) {
+        return Some(i as usize);
+    }
+    let (_, GalaxyRef::Catalog(g), index) = se_core::proc_galsys::parse_system_name(rc)? else { return None };
+    cat.clusters
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.source != "procedural" && galaxy_code(cat, &c.galaxy) == g)
+        .nth(index as usize)
+        .map(|(i, _)| i)
 }
 
 #[derive(Component)]
@@ -186,7 +293,7 @@ pub struct ClustersPlugin;
 
 impl Plugin for ClustersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_clusters).add_systems(
+        app.add_systems(Startup, setup_clusters).add_systems(PreUpdate, resolve_member_names).add_systems(
             PostUpdate,
             (update_clusters, position_clusters, nearest_member)
                 .chain()
@@ -206,19 +313,12 @@ fn setup_clusters(
     let mut u = uniforms_for(Vec3::ZERO, &settings);
     u.anchor = Vec4::new(0.0, 0.0, 0.0, 2.0);
     let material = materials.add(StarMaterial { uniforms: u });
-    let density = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg"))
-        .ok()
-        .and_then(|t| se_core::sc::parse(&t).find_deep("StarDensityInCluster").and_then(|i| i.f64()))
-        .unwrap_or(1.0)
-        .max(0.0);
-    commands.insert_resource(ClusterField {
-        material,
-        models: HashMap::new(),
-        nodes: HashMap::new(),
-        density,
-        star_pos: Arc::new(Vec::new()),
-        star_count: usize::MAX,
-    });
+    let main_def = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).map(|t| se_core::sc::parse(&t)).ok();
+    let key = |k: &str| main_def.as_ref().and_then(|d| d.find_deep(k));
+    let density = key("StarDensityInCluster").and_then(|i| i.f64()).unwrap_or(1.0).max(0.0);
+    let show_cat = key("ShowCatClusters").and_then(|i| i.bool()).unwrap_or(true);
+    commands.insert_resource(ClusterSettings { show_cat });
+    commands.insert_resource(ClusterField { material, models: HashMap::new(), nodes: HashMap::new(), density, centres: None });
 }
 
 /// The magnitude limits cluster stars load to: `base`, and `zoomed` (raised by the zoom) for the
@@ -241,11 +341,41 @@ fn node_wanted(model: &Model, centre: DVec3, id: NodeId, cam: DVec3, lim: &Limit
     d <= r || se_core::star::app_mag_from_abs(model.edges[id.level as usize], (d - r).max(1e-6)) < limit
 }
 
+/// What a model build needs from the catalog.
+struct ModelInput {
+    rec: ClusterRecord,
+    galaxy_radius_pc: f64,
+    rsc: String,
+    /// A catalog star is the cluster's centre: no black hole is generated (FUN_140471df0).
+    has_centre_star: bool,
+}
+
+/// The lower-cased objects catalog stars are `CenterOf` (galaxies' central black holes, BlackHoles.sc).
+fn centre_names(cat: &Catalog) -> HashSet<String> {
+    cat.stars.iter().filter(|s| s.source != "procedural").filter_map(|s| s.block.str("CenterOf")).map(str::to_lowercase).collect()
+}
+
+fn model_input(cat: &Catalog, ci: usize, centres: &HashSet<String>) -> ModelInput {
+    let rec = cat.clusters[ci].clone();
+    let galaxy_radius_pc = match cat.find(&rec.galaxy) {
+        Some(ObjectRef::Galaxy(g)) => cat.galaxies[g as usize].radius_pc,
+        _ => 0.0,
+    };
+    // A star `CenterOf` the cluster, or of the galaxy for its nucleus (Sgr A* of the Milky Way's).
+    let nucleus = ClusterType::parse(&rec.kind) == ClusterType::Kern;
+    let has_centre_star =
+        rec.names.iter().any(|n| centres.contains(&n.to_lowercase())) || (nucleus && centres.contains(&rec.galaxy.to_lowercase()));
+    ModelInput { rsc: rsc_prefix(cat, ci), rec, galaxy_radius_pc, has_centre_star }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn update_clusters(
     mut commands: Commands,
     cam: Res<FlyCamera>,
     data: Res<SeData>,
     settings: Res<StarSettings>,
+    filter: Res<ClusterSettings>,
+    proc_settings: Res<crate::procgalaxies::ProcSettings>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     field: Option<ResMut<ClusterField>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -256,7 +386,8 @@ fn update_clusters(
     let height = windows.iter().next().map_or(900.0, |w| w.resolution.physical_height() as f64);
     let fov = cam.fov_deg as f64;
     let view_range = |rec: &ClusterRecord| members_range_pc(rec.radius_pc, fov, height);
-    let is_far = |rec: &ClusterRecord, cam_pc: DVec3| (rec.pos_pc - cam_pc).length() > view_range(rec) * FAR_FACTOR;
+    let shown = |rec: &ClusterRecord| filter.shows(rec, proc_settings.clusters);
+    let is_far = |rec: &ClusterRecord, cam_pc: DVec3| !shown(rec) || (rec.pos_pc - cam_pc).length() > view_range(rec) * FAR_FACTOR;
     // Stars show down to about the magnitude limit plus the point overbright; zoomed in, fainter
     // ones too, inside the view (SE raises its cluster coefficient by the zoom, FUN_1404c51a0).
     let limits = Limits {
@@ -276,21 +407,18 @@ fn update_clusters(
             }
         }
     }
-    if field.star_count != cat.stars.len() {
-        field.star_count = cat.stars.len();
-        field.star_pos = Arc::new(cat.stars.iter().filter(|s| !s.barycenter && s.has_position).map(|s| s.pos_pc).collect());
-    }
+    let centres = field.centres.get_or_insert_with(|| centre_names(&cat));
     let mut in_flight = field.models.values().filter(|s| matches!(s, ModelSlot::Loading(_))).count()
         + field.nodes.values().filter(|s| matches!(s, NodeSlot::Loading(_))).count();
     for (i, rec) in cat.clusters.iter().enumerate() {
         if in_flight >= MAX_IN_FLIGHT {
             break;
         }
-        if field.models.contains_key(&i) || (rec.pos_pc - cam_pc).length() > view_range(rec) {
+        if field.models.contains_key(&i) || !shown(rec) || (rec.pos_pc - cam_pc).length() > view_range(rec) {
             continue;
         }
-        let (rec, star_pos, density) = (rec.clone(), field.star_pos.clone(), field.density);
-        let task = AsyncComputeTaskPool::get().spawn(async move { build_model(&rec, &star_pos, density).map(Arc::new) });
+        let (input, density) = (model_input(&cat, i, centres), field.density);
+        let task = AsyncComputeTaskPool::get().spawn(async move { build_model(&input, density).map(Arc::new) });
         field.models.insert(i, ModelSlot::Loading(task));
         in_flight += 1;
     }
@@ -304,7 +432,7 @@ fn update_clusters(
         let mut stack = vec![NodeId { cluster: ci, level: 0, cell: [0; 3] }];
         while let Some(id) = stack.pop() {
             wanted.push((id, model.clone()));
-            if id.level + 1 >= LEVELS {
+            if id.level + 1 >= model.levels() {
                 continue;
             }
             for k in 0..8u16 {
@@ -322,7 +450,7 @@ fn update_clusters(
     }
     // Shallow (bright) nodes first.
     wanted.sort_by_key(|(id, _)| id.level);
-    let keep: std::collections::HashSet<NodeId> = wanted.iter().map(|(id, _)| *id).collect();
+    let keep: HashSet<NodeId> = wanted.iter().map(|(id, _)| *id).collect();
 
     // 3. Finished node builds become entities.
     let mut done = Vec::new();
@@ -404,7 +532,7 @@ fn nearest_member(cam: Res<FlyCamera>, data: Res<SeData>, field: Option<Res<Clus
         })
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut best: Option<(f64, DVec3, &MemberStar, usize, usize)> = None;
+    let mut best: Option<(f64, DVec3, &MemberStar, MemberId)> = None;
     for (gap, id, stars) in near {
         if best.is_some_and(|b| gap * gap > b.0) {
             break;
@@ -414,17 +542,109 @@ fn nearest_member(cam: Res<FlyCamera>, data: Res<SeData>, field: Option<Res<Clus
             let p = centre + m.offset;
             let d2 = (p - cam_pc).length_squared();
             if best.is_none_or(|b| d2 < b.0) {
-                best = Some((d2, p, m, id.cluster, id.linear() * NODE_CAP + k));
+                best = Some((d2, p, m, id.member(k)));
             }
         }
     }
-    if let Some((d2, p, m, ci, k)) = best {
+    if let Some((d2, p, m, id)) = best {
         if d2.sqrt() < nearest.dist_pc {
-            nearest.star = Some(member_info(cat, ci, k, m));
+            nearest.star = Some(field.member_info(cat, id, m));
             nearest.pos_pc = p;
             nearest.dist_pc = d2.sqrt();
         }
     }
+}
+
+/// The member name inside a command line: `goto RSC 8514-12-0-0-3 0.01` -> `RSC 8514-12-0-0-3`.
+fn member_name_in_command(cmd: &str) -> Option<&str> {
+    let (verb, arg) = cmd.trim().split_once(' ')?;
+    if !matches!(verb.to_ascii_lowercase().as_str(), "goto" | "select" | "look") {
+        return None;
+    }
+    let arg = arg.trim();
+    let name = match arg.rsplit_once(' ') {
+        Some((n, d)) if d.parse::<f64>().is_ok() => n.trim(),
+        _ => arg,
+    };
+    cs::parse_member_name(name).is_some().then_some(name)
+}
+
+/// Turns `RSC ...` member names mentioned by a command or the search box into catalog stars, so
+/// `goto`, selection and the search box work on them: the member's node is generated on the spot.
+/// A procedural `RC` cluster is first made a catalog cluster by `procsystems` (the Milky Way's once
+/// its emission map exists): a scripted command waits for it.
+fn resolve_member_names(
+    mut data: ResMut<SeData>,
+    hud: Option<Res<crate::hud::HudState>>,
+    mut queue: ResMut<CommandQueue>,
+    field: Option<Res<ClusterField>>,
+    mut tried: Local<HashSet<String>>,
+    mut held: Local<u32>,
+) {
+    let Some(field) = field else { return };
+    // (name, from a scripted command)
+    let mut names: Vec<(String, bool)> = Vec::new();
+    if let Some(n) = queue.queue.front().and_then(|c| member_name_in_command(c)) {
+        names.push((n.to_string(), true));
+    }
+    if let Some(h) = hud.as_ref().filter(|h| cs::parse_member_name(&h.search).is_some()) {
+        names.push((h.search.trim().to_string(), false));
+    }
+    let mut hold = false;
+    for (name, scripted) in names {
+        let key = name.to_ascii_lowercase();
+        if data.catalog.find(&name).is_some() || tried.contains(&key) {
+            continue;
+        }
+        let Some((rc, level, node, index)) = cs::parse_member_name(&name) else { continue };
+        let Some(ci) = cluster_of_rc(&data.catalog, &rc) else {
+            if scripted && *held < 3000 {
+                hold = true;
+            } else if scripted {
+                tried.insert(key);
+                warn!("star cluster of {name} not found");
+            }
+            continue;
+        };
+        tried.insert(key);
+        let centres = field.centres.clone().unwrap_or_else(|| centre_names(&data.catalog));
+        let Some(model) = build_model(&model_input(&data.catalog, ci, &centres), field.density) else { continue };
+        let Some(cell) = cs::node_cell(level, node).filter(|_| level < model.levels()) else { continue };
+        let id = NodeId { cluster: ci, level, cell };
+        let Some((_, stars)) = build_node(&model, id) else { continue };
+        let Some(m) = stars.get(index as usize) else {
+            warn!("{name}: the node has {} stars", stars.len());
+            continue;
+        };
+        let info = info_of(&model.rsc, id.member(index as usize), m);
+        let rec = member_record(&info, data.catalog.clusters[ci].pos_pc + m.offset, m);
+        let i = crate::system::promote_star(data.catalog_mut(), rec);
+        info!("{} -> catalog star {i}", info.name);
+    }
+    if hold {
+        *held += 1;
+        queue.wait_frames = queue.wait_frames.max(2);
+    } else {
+        *held = 0;
+    }
+}
+
+/// The catalog record of member `m`: the procedural star's, with SE's mass and the member's age and
+/// metallicity (`Age`, `FeH`; SE copies the cluster's age into its members, FUN_14053a760).
+pub fn member_record(info: &ProcStarInfo, pos_pc: DVec3, m: &MemberStar) -> se_core::catalog::StarRecord {
+    use se_core::sc::{Item, Value};
+    let mut rec = crate::system::procedural_star_record(info, pos_pc);
+    if m.mass > 0.0 {
+        rec.mass_kg = m.mass as f64 * se_core::units::SOLAR_MASS_KG;
+        if rec.class.kind == se_core::star::StarKind::BlackHole {
+            // SE's radius `M x 4.245e-6` solar radii (FUN_14053a760, FUN_1401d5fe0).
+            rec.radius_km = m.mass as f64 * 4.245e-6 * se_core::units::SOLAR_RADIUS_KM;
+        }
+    }
+    for (key, v) in [("Age", m.age_gyr), ("FeH", m.feh)] {
+        rec.block.items.push(Item { key: key.into(), args: vec![Value::Num(v as f64)], ..Default::default() });
+    }
+    rec
 }
 
 fn seed_of(name: &str) -> u64 {
@@ -437,176 +657,115 @@ fn seed_of(name: &str) -> u64 {
     h
 }
 
-/// Stellar population of a cluster: stars are drawn from a Salpeter mass
-/// function truncated at the turn-off mass, plus red giants when old.
-struct Pop {
-    m_to: f64,
-    giant_frac: f64,
-}
-
-/// Returns (absolute V magnitude, effective temperature).
-fn sample_star(rng: &mut Rng, pop: &Pop) -> (f64, f64) {
-    if rng.f64() < pop.giant_frac {
-        let m = -1.0 + 1.5 * rng.f64();
-        let teff = 3800.0 + 1100.0 * rng.f64();
-        return (m, teff);
-    }
-    // Salpeter (alpha = 2.35): inverse CDF of m^-1.35 between the limits.
-    let (m_lo, m_hi) = (0.1f64, pop.m_to.max(0.1));
-    let a = m_lo.powf(-1.35);
-    let b = m_hi.powf(-1.35);
-    let mass = (a + (b - a) * rng.f64()).powf(-1.0 / 1.35);
-    let teff = (5772.0 * mass.powf(0.57)).clamp(2400.0, 40_000.0);
-    (main_sequence_abs_mag(teff), teff)
-}
-
-/// A member of the band `[lo, hi)`: the population's own draw when it falls in the band (a few
-/// hundred tries), else a star at a random magnitude of the band.
-fn sample_in_band(rng: &mut Rng, pop: &Pop, lo: f64, hi: f64) -> (f64, f64) {
-    for _ in 0..400 {
-        let s = sample_star(rng, pop);
-        if s.0 >= lo && s.0 < hi {
-            return s;
-        }
-    }
-    (lo + (hi - lo) * rng.f64(), if lo < 1.0 { 4400.0 } else { 5772.0 })
-}
-
-/// V-band luminosity (solar units) of a star with absolute magnitude `m`.
-fn lum_of(m: f64) -> f64 {
-    10f64.powf(-0.4 * (m - 4.83))
-}
-
-fn mean_lum(rng: &mut Rng, pop: &Pop) -> f64 {
-    const N: usize = 512;
-    let mut s = 0.0;
-    for _ in 0..N {
-        s += lum_of(sample_star(rng, pop).0);
-    }
-    (s / N as f64).max(1e-9)
-}
-
-/// Plummer density relative to the centre's, at radius `r` for scale radius `a`.
-fn plummer_rho(r: f64, a: f64) -> f64 {
-    (1.0 + (r * r) / (a * a)).powf(-2.5)
-}
-
-/// The cluster's member model, or `None` when the catalog stars at `star_pos` already resolve it
-/// or it has no members.
-fn build_model(rec: &ClusterRecord, star_pos: &[DVec3], density: f64) -> Option<Model> {
-    let radius = rec.radius_pc.max(0.5);
-    let r2 = radius * radius;
-    // Catalog stars already cover this cluster.
-    let mut found = 0;
-    for p in star_pos {
-        if (*p - rec.pos_pc).length_squared() < r2 {
-            found += 1;
-            if found >= 15 {
-                return None;
-            }
-        }
-    }
-    let name = rec.names.first().cloned().unwrap_or_default();
-    let mut rng = Rng(seed_of(&name));
-    let age = rec.age_gyr.max(0.01);
-    let pop = Pop {
-        // Turn-off mass for the age (lifetime ~ m^-2.5, 10 Gyr at 1 solar mass).
-        m_to: (10.0 / age).powf(0.4).clamp(0.1, 40.0),
-        giant_frac: if age > 1.0 { 0.002 } else { 0.0 },
-    };
-    // Member count: from the catalog, or from the integrated luminosity.
-    let l_tot = 10f64.powf(-0.4 * (rec.abs_mag - 4.83));
-    let total = match rec.n_stars {
-        Some(n) if n > 0.0 => n,
-        _ => l_tot / mean_lum(&mut rng, &pop),
-    } * density;
-    if !total.is_finite() || total < 1.0 {
+/// The cluster's member model, or `None` when it has none: `NStars 0` (its stars are catalog
+/// stars), a `Part` cluster (FUN_140543c70 gives it no stars) or an unknown type.
+fn build_model(input: &ModelInput, density: f64) -> Option<Model> {
+    let rec = &input.rec;
+    if rec.no_members {
         return None;
     }
-    // The population's share in each band.
-    let edges = band_edges();
-    const N: usize = 8192;
-    let mut share = [0usize; 5];
-    for _ in 0..N {
-        let m = sample_star(&mut rng, &pop).0;
-        if let Some(b) = (0..5).find(|&b| m >= edges[b] && m < edges[b + 1]) {
-            share[b] += 1;
+    let shape = match ClusterType::parse(&rec.kind) {
+        ClusterType::Open => Shape::Open,
+        ClusterType::Globular => Shape::Dense { nucleus: false },
+        ClusterType::Kern => Shape::Dense { nucleus: true },
+        ClusterType::Part | ClusterType::Other => return None,
+    };
+    let name = rec.names.first().cloned().unwrap_or_default();
+    let lum = se_core::star::lum_from_abs_mag(rec.abs_mag);
+    let cen_pow = rec.cen_pow.max(1e-3);
+    let mut rng = Rng(seed_of(&name) ^ 0x5bd1_e995);
+    let (k, black_hole) = match shape {
+        Shape::Open => (1.0 / cen_pow, None),
+        Shape::Dense { nucleus } => {
+            let hole = cs::central_black_hole(&mut rng, nucleus, rec.age_gyr, input.galaxy_radius_pc);
+            (cs::concentration(cen_pow), hole.filter(|_| !input.has_centre_star))
         }
-    }
+    };
     Some(Model {
         name,
-        radius,
-        // Plummer scale: catalog radius ~ 2 half-light radii.
-        a: 0.5 * radius / 1.305,
-        pop,
-        edges,
-        band_n: std::array::from_fn(|b| total * share[b] as f64 / N as f64),
+        radius: rec.radius_pc.max(0.05),
+        lum,
+        age: rec.age_gyr,
+        shape,
+        k,
+        factor: cs::count_factor(lum, density),
+        edges: band_edges(),
+        black_hole,
+        rsc: input.rsc.clone(),
     })
 }
 
-/// The stars of one node (and their mesh): its band's members in its cube, as many as the
-/// Plummer profile puts there.
+/// The stars of one node (and their mesh), as SE's CreateClusterBlock makes them.
 fn build_node(model: &Model, id: NodeId) -> NodeBuilt {
     let mut h = seed_of(&model.name);
     for v in [id.level as u64, id.cell[0] as u64, id.cell[1] as u64, id.cell[2] as u64] {
         h = (h ^ v).wrapping_mul(0x9E37_79B9_7F4A_7C15).rotate_left(29);
     }
     let mut rng = Rng(h);
-    let (r, a) = (model.radius, model.a);
-    let half = model.node_half(id.level);
-    let lo = model.node_centre(id) - DVec3::splat(half);
-    let s = 2.0 * half;
-    // The node's share of the cluster: the profile averaged over a 4^3 grid of the cube, over
-    // its integral inside the radius ((4 pi / 3) a^3 x^3 / (1 + x^2)^1.5, x = r / a).
-    let mut sum = 0.0;
-    for i in 0..64 {
-        let g = DVec3::new((i % 4) as f64, ((i / 4) % 4) as f64, (i / 16) as f64);
-        let p = lo + (g + 0.5) * (s / 4.0);
-        if p.length() <= r {
-            sum += plummer_rho(p.length(), a);
+    let r = model.radius;
+    let mut stars: Vec<MemberStar> = Vec::new();
+    let star = |offset: DVec3, m: cs::Member| MemberStar {
+        offset,
+        abs_mag: m.abs_mag,
+        teff: m.teff,
+        mass: m.mass,
+        age_gyr: m.age_gyr,
+        feh: m.feh,
+        class: m.class,
+        hidden: false,
+    };
+    match model.shape {
+        Shape::Open => {
+            // The blob's stars, each at most half the cluster's light, until they add up to it.
+            let mut sum = 0.0;
+            let mut tries = 0usize;
+            while stars.len() < NODE_CAP && sum < model.lum && tries < 4 * NODE_CAP * 64 {
+                tries += 1;
+                let p = cs::blob_point(&mut rng, model.k);
+                if p[0] * p[0] + p[1] * p[1] + p[2] * p[2] > 1.0 {
+                    continue;
+                }
+                let m = cs::open_member(&mut rng, model.age);
+                let l = se_core::star::lum_from_abs_mag(m.abs_mag as f64);
+                if l > model.lum * 0.5 {
+                    continue;
+                }
+                sum += l;
+                stars.push(star(DVec3::from_array(p) * r, m));
+            }
         }
-    }
-    let x = r / a;
-    let norm = 4.0 / 3.0 * std::f64::consts::PI * a.powi(3) * x.powi(3) / (1.0 + x * x).powf(1.5);
-    let expected = model.band_n[id.level as usize] * sum / 64.0 * s.powi(3) / norm;
-    let n = rng.poisson(expected) as usize;
-    if n == 0 {
-        return None;
-    }
-    let drawn = n.min(NODE_CAP);
-    // Each drawn star stands for n / drawn: brighten it to keep the light.
-    let shift = -2.5 * (n as f64 / drawn as f64).log10();
-    // Positions: uniform in the cube and the radius, kept by the profile over its highest value in
-    // the cube (at the cube's point nearest the centre).
-    let rho_max = plummer_rho(DVec3::ZERO.clamp(lo, lo + DVec3::splat(s)).length(), a);
-    let (band_lo, band_hi) = (model.edges[id.level as usize], model.edges[id.level as usize + 1]);
-    let (mut p, mut d, mut c, mut ix) = (
-        Vec::with_capacity(drawn * 4),
-        Vec::with_capacity(drawn * 4),
-        Vec::with_capacity(drawn * 4),
-        Vec::with_capacity(drawn * 6),
-    );
-    let mut stars = Vec::with_capacity(drawn);
-    let mut tries = 0usize;
-    while stars.len() < drawn && tries < drawn * 200 {
-        tries += 1;
-        let pos = lo + DVec3::new(rng.f64(), rng.f64(), rng.f64()) * s;
-        let len = pos.length();
-        if len > r || rng.f64() * rho_max > plummer_rho(len, a) {
-            continue;
+        Shape::Dense { nucleus } => {
+            if id.level == 0 {
+                if let Some(mass) = model.black_hole {
+                    let mv = se_core::star::abs_mag_from_lum(BLACK_HOLE_LUM) as f32;
+                    let m = cs::Member { abs_mag: mv, teff: 0.0, mass: mass as f32, age_gyr: model.age as f32, feh: 0.0, class: cs::black_hole_class() };
+                    stars.push(MemberStar { hidden: true, ..star(DVec3::ZERO, m) });
+                }
+            }
+            // Uniform points of the node's cube inside the radius, kept by the profile.
+            let half = model.node_half(id.level);
+            let centre = model.node_centre(id);
+            let (lo, hi) = (model.edges[id.level as usize], model.edges[id.level as usize + 1]);
+            for _ in 0..cs::node_tries(id.level, model.factor) {
+                if stars.len() >= NODE_CAP {
+                    break;
+                }
+                let p = centre + DVec3::new(1.0 - 2.0 * rng.f64(), 1.0 - 2.0 * rng.f64(), 1.0 - 2.0 * rng.f64()) * half;
+                let x2 = p.length_squared() / (r * r);
+                if x2 > 1.0 || rng.f64() > (-model.k * x2.sqrt()).exp() {
+                    continue;
+                }
+                stars.push(star(p, cs::dense_member(&mut rng, nucleus, model.age, lo, hi)));
+            }
         }
-        let (m, teff) = sample_in_band(&mut rng, &model.pop, band_lo, band_hi);
-        push_star(&mut p, &mut d, &mut c, &mut ix, pos.as_vec3().to_array(), blackbody_rgb(teff), (m + shift) as f32);
-        stars.push(MemberStar {
-            offset: pos,
-            abs_mag: m as f32,
-            drawn_mag: (m + shift) as f32,
-            teff: teff as f32,
-            giant: teff < 5000.0 && m < 1.0,
-        });
     }
     if stars.is_empty() {
         return None;
+    }
+    let n = stars.len();
+    let (mut p, mut d, mut c, mut ix) = (Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 6));
+    for s in stars.iter().filter(|s| !s.hidden) {
+        push_star(&mut p, &mut d, &mut c, &mut ix, s.offset.as_vec3().to_array(), blackbody_rgb(s.teff as f64), s.abs_mag);
     }
     Some((build_sprite_mesh(p, d, c, ix), Arc::new(stars)))
 }
@@ -622,5 +781,75 @@ mod tests {
         for (a, b) in e.iter().zip(want) {
             assert!((a - b).abs() < 0.05, "{e:?}");
         }
+    }
+
+    fn record(kind: &str, abs_mag: f64, radius: f64, cen_pow: f64, age: f64) -> ClusterRecord {
+        ClusterRecord {
+            names: vec!["Test".into()],
+            galaxy: "Milky Way".into(),
+            kind: kind.into(),
+            pos_pc: DVec3::ZERO,
+            radius_pc: radius,
+            abs_mag,
+            age_gyr: age,
+            cen_pow,
+            no_members: false,
+            color: None,
+            source: "test".into(),
+        }
+    }
+
+    fn model(rec: ClusterRecord) -> Option<Model> {
+        build_model(&ModelInput { rec, galaxy_radius_pc: 15_000.0, rsc: "RSC 8514-0".into(), has_centre_star: false }, 1.0)
+    }
+
+    #[test]
+    fn open_cluster_fills_its_light() {
+        // Pozzo 1: 44.5 L_sun in the root, each member at most half of it.
+        let m = model(record("Open", 4.83 - 2.5 * 44.5f64.log10(), 0.88, 1.5, 0.15)).unwrap();
+        assert_eq!(m.levels(), 1);
+        let (_, stars) = build_node(&m, NodeId { cluster: 0, level: 0, cell: [0; 3] }).unwrap();
+        let sum: f64 = stars.iter().map(|s| se_core::star::lum_from_abs_mag(s.abs_mag as f64)).sum();
+        assert!(sum >= 44.5 && sum < 44.5 * 1.5, "{sum} from {}", stars.len());
+        assert!(stars.iter().all(|s| s.offset.length() <= 0.88 + 1e-9));
+        assert!(model(ClusterRecord { no_members: true, ..record("Open", -3.6, 2.3, 0.5, 0.13) }).is_none());
+        assert!(model(record("Part", -5.0, 300.0, 1.5, 0.1)).is_none());
+    }
+
+    #[test]
+    fn globular_follows_se_profile() {
+        // Omega Cen: the root's 5e5 tries keep about pi / c^3 of themselves, centrally concentrated,
+        // after the central black hole.
+        let m = model(record("Globular", -10.29, 43.96, 1.61, 12.0)).unwrap();
+        let (_, stars) = build_node(&m, NodeId { cluster: 0, level: 0, cell: [0; 3] }).unwrap();
+        assert!(stars[0].hidden && stars[0].class.kind() == se_core::star::StarKind::BlackHole);
+        let n = stars.len() as f64;
+        let expect = 5e5 * std::f64::consts::PI / m.k.powi(3);
+        assert!((n / expect - 1.0).abs() < 0.2, "{n} vs {expect}");
+        // exp(-c r/R) with c = 9.26: P(c r/R < 2.3) of a Gamma(3) is 0.41 inside a quarter radius.
+        let inner = stars.iter().filter(|s| s.offset.length() < 43.96 * 0.25).count() as f64;
+        assert!((inner / n - 0.41).abs() < 0.06, "{inner} of {n}");
+        // Its brightest band is giants.
+        assert!(stars[1..].iter().all(|s| s.class.lum() <= 6));
+        let id = NodeId { cluster: 0, level: 0, cell: [0; 3] }.member(3);
+        assert_eq!(info_of(&m.rsc, id, &stars[3]).name, "RSC 8514-0-0-0-3");
+    }
+
+    #[test]
+    fn show_switches() {
+        let s = ClusterSettings { show_cat: false };
+        let cat = record("Open", -3.0, 2.0, 1.5, 0.1);
+        let proc = ClusterRecord { source: "procedural".into(), ..cat.clone() };
+        assert!(!s.shows(&cat, true) && s.shows(&proc, true) && !s.shows(&proc, false));
+        // A nucleus is a dense cluster with its own black hole unless a catalog star is its centre.
+        let k = |centre| build_model(&ModelInput { rec: record("Kern", -10.0, 3.0, 2.0, 0.1), galaxy_radius_pc: 15_000.0, rsc: String::new(), has_centre_star: centre }, 1.0);
+        assert!(k(false).unwrap().black_hole.is_some() && k(true).unwrap().black_hole.is_none());
+    }
+
+    #[test]
+    fn member_names_in_commands() {
+        assert_eq!(member_name_in_command("goto RSC 8514-12-0-0-3 0.01"), Some("RSC 8514-12-0-0-3"));
+        assert_eq!(member_name_in_command("select RSC 8514-12-2-63-10"), Some("RSC 8514-12-2-63-10"));
+        assert_eq!(member_name_in_command("goto RC 8514-12"), None);
     }
 }

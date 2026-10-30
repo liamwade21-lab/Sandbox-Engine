@@ -251,6 +251,8 @@ pub struct GalaxyShape {
     /// Number of catalog clusters / nebulae of the galaxy (they take the first indices).
     pub catalog_clusters: u32,
     pub catalog_nebulae: u32,
+    /// The catalog galaxy's `GlobClusters`: its globular count instead of the luminosity formula.
+    pub glob_clusters: Option<i32>,
 }
 
 impl GalaxyShape {
@@ -278,6 +280,7 @@ impl GalaxyShape {
             home: None,
             catalog_clusters: 0,
             catalog_nebulae: 0,
+            glob_clusters: None,
         }
     }
 
@@ -315,6 +318,8 @@ pub struct ProcCluster {
     /// Luminosity, solar units.
     pub lum: f32,
     pub age_gyr: f32,
+    /// Concentration `CenPow` (`tn(1.5, 0.3, 0.5, 2.5)`).
+    pub cen_pow: f32,
     pub color: [f32; 3],
     /// Index (in the nebula list) of the diffuse nebula the cluster is embedded in.
     pub nebula: Option<u32>,
@@ -454,9 +459,9 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
     let k_home = DeepSkyConfig::limit_k(cfg.cluster_max_app_magn);
     let mut out: Vec<ProcCluster> = Vec::new();
     let base = shape.catalog_clusters;
-    let push = |out: &mut Vec<ProcCluster>, class, pos, radius_pc, lum, age_gyr, color, nebula| {
+    let push = |out: &mut Vec<ProcCluster>, class, pos, radius_pc, lum, (age_gyr, cen_pow), color, nebula| {
         let index = base + out.len() as u32;
-        out.push(ProcCluster { index, class, pos, radius_pc, lum, age_gyr, color, nebula });
+        out.push(ProcCluster { index, class, pos, radius_pc, lum, age_gyr, cen_pow, color, nebula });
     };
 
     // Counts.
@@ -472,7 +477,9 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
     if has_glob {
         let lum = if shape.compact { shape.lum * 0.001 } else { shape.lum };
         let m = abs_mag_of_lum(lum);
-        let req = if shape.hubble < 9 {
+        let req = if let Some(n) = shape.glob_clusters.filter(|n| *n >= 0) {
+            n as f32
+        } else if shape.hubble < 9 {
             let a = (m + 18.5).powf(2.0);
             let f = if m < -18.5 { 0.6 } else { 0.45 };
             10f32.powf((m + 15.0) * -0.4) * (a * f + 1.0)
@@ -492,8 +499,8 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
         let radius = exp_draw(&mut s24, cfg.kern_radius[0], cfg.kern_radius[1]) * 0.3 * scale;
         let lum = exp_draw(&mut s24, cfg.kern_lum[0], cfg.kern_lum[1]) * scale * scale * scale;
         let age = truncated_normal(&mut s20, 0.1, 0.03, 0.01, 13.0);
-        let _ = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
-        push(&mut out, ClusterClass::Kern, [0.0; 3], radius, lum, age, [1.0, 0.9, 0.7], None);
+        let cen_pow = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
+        push(&mut out, ClusterClass::Kern, [0.0; 3], radius, lum, (age, cen_pow), [1.0, 0.9, 0.7], None);
     }
 
     // 2. one young cluster inside every diffuse nebula.
@@ -511,8 +518,8 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
             lum *= frac * frac * frac;
         }
         let age = truncated_normal(&mut s20, 0.02, 0.005, 0.001, 0.1);
-        let _ = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
-        push(&mut out, ClusterClass::Open, n.pos, radius, lum, age, [0.7, 0.8, 1.0], Some(n.index));
+        let cen_pow = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
+        push(&mut out, ClusterClass::Open, n.pos, radius, lum, (age, cen_pow), [0.7, 0.8, 1.0], Some(n.index));
     }
 
     // 3. globular clusters: a halo blob.
@@ -534,8 +541,8 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
             let _q = random_quat(&mut s24);
             let radius = exp_draw(&mut s24, cfg.glob_radius[0], cfg.glob_radius[1]);
             let age = truncated_normal(&mut s20, 11.0, 3.0, 0.0, 13.0);
-            let _ = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
-            push(&mut out, ClusterClass::Globular, pos, radius, lum, age, [1.0, 0.9, 0.7], None);
+            let cen_pow = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
+            push(&mut out, ClusterClass::Globular, pos, radius, lum, (age, cen_pow), [1.0, 0.9, 0.7], None);
         }
     }
 
@@ -558,8 +565,8 @@ fn generate_clusters(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn Em
             let _q = random_quat(&mut s24);
             let radius = exp_draw(&mut s24, cfg.open_radius[0], cfg.open_radius[1]);
             let age = truncated_normal(&mut s20, 0.15, 0.1, 0.001, 3.5);
-            let _ = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
-            push(&mut out, ClusterClass::Open, pos, radius, lum, age, [0.7, 0.8, 1.0], None);
+            let cen_pow = truncated_normal(&mut s20, 1.5, 0.3, 0.5, 2.5);
+            push(&mut out, ClusterClass::Open, pos, radius, lum, (age, cen_pow), [0.7, 0.8, 1.0], None);
         }
     }
     out
@@ -633,6 +640,7 @@ mod tests {
             dims: [33_000.0, 33_000.0, 1_300.0],
             has_model: true,
             home: Some([-8_000.0, 0.0, 20.0]),
+            glob_clusters: None,
             catalog_clusters: 20,
             catalog_nebulae: 190,
         }
@@ -718,11 +726,18 @@ mod tests {
             home: None,
             catalog_clusters: 0,
             catalog_nebulae: 0,
+            glob_clusters: None,
         };
         let a = generate_system(&s, &DeepSkyConfig::default(), &AnalyticSpiral, [0, 3, 3, 4]);
         assert!(a.nebulae.iter().all(|n| n.class == NebulaClass::Planetary));
         assert!(a.clusters.iter().all(|c| matches!(c.class, ClusterClass::Kern | ClusterClass::Globular)));
         assert!(a.clusters.len() > 500, "{}", a.clusters.len());
+        assert!(a.clusters.iter().all(|c| (0.5..=2.5).contains(&c.cen_pow)));
+        // A catalog `GlobClusters` replaces the luminosity count (the nucleus comes on top).
+        let b = generate_system(&GalaxyShape { glob_clusters: Some(14), ..s.clone() }, &DeepSkyConfig::default(), &AnalyticSpiral, [0, 3, 3, 4]);
+        assert_eq!(b.clusters.iter().filter(|c| c.class == ClusterClass::Globular).count(), 14);
+        let z = generate_system(&GalaxyShape { glob_clusters: Some(0), ..s }, &DeepSkyConfig::default(), &AnalyticSpiral, [0, 3, 3, 4]);
+        assert_eq!(z.clusters.len(), 1);
     }
 
     #[test]
