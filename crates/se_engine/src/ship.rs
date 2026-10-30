@@ -185,6 +185,8 @@ pub struct Flight {
     pub cam_mode: usize,
     /// Chase camera distance factor.
     pub zoom: f64,
+    /// The chase or cockpit view turned by SE's held look keys (ShipLookBack .. ShipLookDown).
+    pub look: DQuat,
     pub orbit_yaw: f64,
     pub orbit_pitch: f64,
     pub orbit_dist: f64,
@@ -237,6 +239,7 @@ impl Default for Flight {
             collisions: true,
             cam_mode: 0,
             zoom: 1.0,
+            look: DQuat::IDENTITY,
             orbit_yaw: 0.6,
             orbit_pitch: 0.3,
             orbit_dist: 100.0,
@@ -991,6 +994,29 @@ fn ship_input(
     flight.input.boost_turn = shift;
 
     hud::hud_keys(&keys, &mut flight);
+    // SE's view keys (key table FUN_1405ba8f0 entries 189-193, 218, 219): while Ctrl + keypad 5 / 4 / 6 /
+    // 8 / 2 are held the chase or cockpit view looks back / left / right / up / down (ShipLookBack ..
+    // ShipLookDown); Alt+O is the orbit view (ShipViewOrbit), Alt+C centres it on the ship (ShipCenter).
+    let look = |k: KeyCode| ctrl && keys.pressed(k);
+    flight.look = if look(KeyCode::Numpad5) {
+        DQuat::from_rotation_y(std::f64::consts::PI)
+    } else if look(KeyCode::Numpad4) {
+        DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad6) {
+        DQuat::from_rotation_y(-std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad8) {
+        DQuat::from_rotation_x(std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad2) {
+        DQuat::from_rotation_x(-std::f64::consts::FRAC_PI_2)
+    } else {
+        DQuat::IDENTITY
+    };
+    if alt && keys.just_pressed(KeyCode::KeyO) {
+        flight.cam_mode = n_chase;
+    }
+    if alt && keys.just_pressed(KeyCode::KeyC) {
+        (flight.orbit_yaw, flight.orbit_pitch) = (0.0, 0.3);
+    }
     if keys.just_pressed(KeyCode::KeyU) && plain {
         // ShipFlightAssist.
         flight.assist = !flight.assist;
@@ -1929,7 +1955,7 @@ fn ship_camera(
     let (cp, cr) = if mode < chase.len() {
         let c = &chase[mode];
         let local = c.pos * flight.zoom;
-        (pos.0.offset_m(rot.0 * local), (rot.0 * c.rot).normalize())
+        (pos.0.offset_m(rot.0 * local), (rot.0 * c.rot * flight.look).normalize())
     } else {
         let dir = DQuat::from_rotation_y(flight.orbit_yaw) * DQuat::from_rotation_x(-flight.orbit_pitch) * DVec3::Z;
         let world_dir = rot.0 * dir;

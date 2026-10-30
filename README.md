@@ -137,6 +137,7 @@ starts. Ship data comes from SpaceEngine's `ShipsModels.pak`; see `docs/formats/
 | C / Shift+G / Alt+G / G | autopilot: rotate to / fly to / warp to / go to (fly or warp) the target; Z stops it |
 | PageUp / PageDown, Alt+`=` / Alt+`-` | warp drive (ships with a `Warpdrive` or `Hyperdrive`): engage and raise the target boost / lower it, stopping at 0 |
 | V | cycle the design's `Behind` chase cameras and the free orbit camera |
+| Ctrl + keypad 5 / 4 / 6 / 8 / 2 (held), Alt+O, Alt+C | look back / left / right / up / down from the chase or cockpit view; the orbit view; centre the orbit view behind the ship (SE's keys) |
 | Ctrl+1 .. Ctrl+5 | flight HUD: Off / Horizontal / Orbital / Warp / Docking (SE's pointers in the skin's colours; script `flight hud MODE`) |
 
 Engines are accelerations in m/s² (not thrust), warp multiplies velocity by 10^boost with the boost capped as the
