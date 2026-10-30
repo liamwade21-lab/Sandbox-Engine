@@ -983,7 +983,10 @@ fn init_pipeline(
 }
 
 fn lens_pass(
-    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<BlackHoleLens>)>,
+    // `&BlackHoleLens` too: once the last lens is removed, Bevy keeps the view's stale uniform
+    // index while the buffer behind it is refilled from fresh staging memory (garbage), so a
+    // pass keyed on the index alone ran on a random hole count and hung the GPU.
+    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<BlackHoleLens>, &BlackHoleLens)>,
     pipe: Res<LensPipeline>,
     pipeline_cache: Res<PipelineCache>,
     uniforms: Res<ComponentUniforms<BlackHoleLens>>,
@@ -991,7 +994,7 @@ fn lens_pass(
     gpu_images: Res<RenderAssets<GpuImage>>,
     mut ctx: RenderContext,
 ) {
-    let (target, index) = view.into_inner();
+    let (target, index, _) = view.into_inner();
     if target.main_texture_format() != HDR_FORMAT {
         return;
     }

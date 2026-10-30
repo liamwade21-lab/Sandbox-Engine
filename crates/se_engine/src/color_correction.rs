@@ -246,14 +246,15 @@ fn init_pipeline(
 }
 
 fn color_correction(
-    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<ColorCorrection>, &Scratch)>,
+    // `&ColorCorrection` too: a view that loses it keeps a stale uniform index (see blackholes.rs).
+    view: ViewQuery<(&ViewTarget, &DynamicUniformIndex<ColorCorrection>, &Scratch, &ColorCorrection)>,
     pipeline: Res<ColorCorrectionPipeline>,
     pipeline_cache: Res<PipelineCache>,
     uniforms: Res<ComponentUniforms<ColorCorrection>>,
     auto: Res<AutoExposureBuffers>,
     mut ctx: RenderContext,
 ) {
-    let (target, index, scratch) = view.into_inner();
+    let (target, index, scratch, _) = view.into_inner();
     let (Some(correct), Some(blit), Some(binding)) = (
         pipeline_cache.get_render_pipeline(pipeline.pipeline),
         pipeline_cache.get_render_pipeline(pipeline.blit),

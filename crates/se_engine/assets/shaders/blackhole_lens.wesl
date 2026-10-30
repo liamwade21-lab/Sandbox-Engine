@@ -531,7 +531,8 @@ fn view_dir(p: vec2<f32>, dims: vec2<f32>) -> vec3<f32> {
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let dims = vec2<f32>(textureDimensions(scene));
     let px = in.position.xy;
-    let count = i32(lens.view.w);
+    // At most the array's 4 holes, whatever the uniform holds (shaders run without bounds checks).
+    let count = clamp(i32(lens.view.w), 0, 4);
 
     // Pick the hole whose influence region contains this pixel most deeply.
     let d0 = view_dir(px, dims);
