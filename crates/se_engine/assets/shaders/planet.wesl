@@ -2180,20 +2180,16 @@ fn city_lights_on(e_city: vec3<f32>) -> f32 {
     return 1.0 - smoothstep(cut * 0.2, cut, lum) * planet.glow.w;
 }
 
-// Cloud shadows, city lights at night and aerial perspective, for a camera above the sea.
+// City lights at night and aerial perspective, for a camera above the sea. SE's surface pass casts
+// no cloud shadows (planet.glsl's Shadow is rings x eclipse only; the clouds are their own shell
+// drawn over the ground, which also covers the city lights).
 fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>, e_city: vec3<f32>) -> vec3<f32> {
     var col = col_in;
-    // Cloud shadows (the clouds themselves are a separate shell).
-    var cloud = 0.0;
-    if planet.rect_clouds.w > 0.5 {
-        cloud = clamp(textureSample(clouds_tex, clouds_smp, tile_uv(planet.rect_clouds, in.uv)).r * planet.params.z, 0.0, 1.0);
-        col *= 1.0 - 0.55 * cloud;
-    }
 
     // The glow map (city lights, Io's lava) in the catalog's GlowColor, by SE's switch.
     if planet.rect_lights.w > 0.5 {
         let glow = textureSample(lights_tex, lights_smp, tile_uv(planet.rect_lights, in.uv)).rgb * planet.glow.rgb;
-        col += glow * city_lights_on(e_city) * planet.params.x * (1.0 - clamp(cloud, 0.0, 1.0) * 0.7);
+        col += glow * city_lights_on(e_city) * planet.params.x;
     }
 
     // Aerial perspective: haze and attenuation between the camera and the ground.
