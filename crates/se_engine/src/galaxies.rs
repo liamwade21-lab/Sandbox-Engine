@@ -260,8 +260,6 @@ pub struct GalaxySettings {
     pub mag_ref: f32,
     /// Far sprites with a peak intensity below this are skipped.
     pub cull: f32,
-    /// Model sprites larger than this many pixels start to fade out (and vanish at 3.5x).
-    pub big_px: f32,
     /// "Intergalactic vision" (SE `AutoGalaxyMagnitude`): raise the brightness of all galaxies as the
     /// nearest bright galaxy gets farther than `auto_d0_pc`, by `(d / d0)^2`, up to `auto_max`.
     pub auto_gain: bool,
@@ -281,7 +279,6 @@ impl Default for GalaxySettings {
             max_models: 6,
             mag_ref: 7.5,
             cull: 0.003,
-            big_px: 250.0,
             auto_gain: true,
             auto_d0_pc: 3.0e6,
             auto_max: 5000.0,
@@ -291,7 +288,7 @@ impl Default for GalaxySettings {
 
 impl GalaxySettings {
     /// Defaults, overridable for quick tuning with `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`,
-    /// `SE_GAL_BIG`, `SE_GAL_BUILD` environment variables.
+    /// `SE_GAL_BUILD` environment variables.
     pub fn from_env() -> Self {
         let mut s = Self::default();
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
@@ -303,9 +300,6 @@ impl GalaxySettings {
         }
         if let Some(v) = get("SE_GAL_DUST") {
             s.dust_strength = v;
-        }
-        if let Some(v) = get("SE_GAL_BIG") {
-            s.big_px = v;
         }
         if let Some(v) = get("SE_GAL_BUILD") {
             s.build_px = v;
@@ -1265,7 +1259,7 @@ pub(crate) fn update_galaxies(
             let mat = mats.add(GalaxyModelMaterial {
                 uniforms: ModelParams {
                     center_rel: Vec4::ZERO,
-                    params: Vec4::new(1.0, MODEL_MIN_PX, settings.big_px, settings.big_px * 3.5),
+                    params: Vec4::new(1.0, MODEL_MIN_PX, 0.0, 0.0),
                     params2: Vec4::new(if dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
                 },
                 atlas: st.atlas.clone(),
@@ -1383,12 +1377,7 @@ pub(crate) fn update_galaxies(
         for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
             if let Some(mut m) = model_mats.get_mut(mat) {
                 m.uniforms.center_rel = center_rel;
-                m.uniforms.params = Vec4::new(
-                    if dust { k_dust } else { k_emission },
-                    MODEL_MIN_PX,
-                    settings.big_px,
-                    settings.big_px * 3.5,
-                );
+                m.uniforms.params = Vec4::new(if dust { k_dust } else { k_emission }, MODEL_MIN_PX, 0.0, 0.0);
             }
             if let Ok(mut v) = vis.get_mut(*e) {
                 *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };

@@ -14,8 +14,7 @@ import bevy_pbr::render::mesh_functions::get_world_from_local;
 struct ModelParams {
     // xyz: galaxy centre relative to the camera (pc), w: model fade (0..1)
     center_rel: vec4<f32>,
-    // x: brightness (emission) / optical depth scale (dust), y: min sprite radius (px),
-    // z, w: sprite pixel radius at which the sprite starts / finishes fading out
+    // x: brightness (emission) / optical depth scale (dust), y: min sprite radius (px), zw unused
     params: vec4<f32>,
     // x: mode (0 emission, 1 dust)
     params2: vec4<f32>,
@@ -58,9 +57,10 @@ fn vertex(v: Vertex) -> VertexOut {
     let size_pc = v.info.x;
     let focal = view.clip_from_view[1][1] * view.viewport.w * 0.5;
     let s_px = size_pc / d * focal;
-    // Sprites that grow huge (we are inside or very close to them) fade out so the local
-    // part of the galaxy never covers the screen.
-    let big = 1.0 - smoothstep(model.params.z, model.params.w, s_px);
+    // SE fades a sprite as the eye comes within 1.5 of its radii, gone inside half a radius
+    // (galaxy_model.glsl / nebula_model.glsl: clamp(dist / spriteSize - 0.5, 0, 1)); by distance,
+    // so zooming in leaves the glow as it is.
+    let big = clamp(d / max(size_pc, 1e-9) - 0.5, 0.0, 1.0);
     if big <= 0.0 || model.center_rel.w <= 0.0 {
         return hidden();
     }

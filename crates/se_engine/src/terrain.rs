@@ -501,6 +501,7 @@ pub struct Terrain {
     gen_failed: bool,
     frame: u64,
     last_sun: Vec4,
+    last_ambient: f32,
     last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
@@ -643,6 +644,7 @@ impl Terrain {
             gen_failed: false,
             frame: 0,
             last_sun: Vec4::ZERO,
+            last_ambient: 0.0,
             last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
             last_eclipse: EclipseUniform::default(),
@@ -1517,6 +1519,7 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain)>,
+    ambient: Res<crate::system::AmbientLighting>,
     nodes: Query<&TerrainNode>,
     clouds_q: Query<&CloudNode>,
     mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
@@ -1614,7 +1617,7 @@ fn update_terrain(
                 rect_lights: rl,
                 rect_water: rw,
                 rect_clouds: rcl,
-                base_color: terrain.base_color.extend(0.015),
+                base_color: terrain.base_color.extend(ambient.0),
                 params: Vec4::new(
                     s.glow_bright as f32 * 1.5,
                     terrain.water_spec.0,
@@ -1986,6 +1989,10 @@ fn update_terrain(
         }
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
+        if terrain.last_ambient != ambient.0 {
+            terrain.last_ambient = ambient.0;
+            terrain.last_sun = Vec4::ZERO;
+        }
         let eclipse = terrain.eclipse;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
@@ -2001,6 +2008,7 @@ fn update_terrain(
                                 m.u.sun_dir = sun;
                                 m.u.sun_color = light.sun_color.extend(1.0);
                                 (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
+                                m.u.base_color.w = ambient.0;
                                 m.u.eclipse = eclipse;
                             }
                         }

@@ -260,6 +260,38 @@ impl LightingFade {
     }
 }
 
+/// SE's `AmbientLighting` (0 to 1 in steps of 0.05, none by default): a flat light on every
+/// surface, day and night, so dark bodies can be seen. `>` / `<` (Shift+. / Shift+,) change it
+/// (IncAmbient / DecAmbient in SE's key table, FUN_1405ba8f0).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct AmbientLighting(pub f32);
+
+const AMBIENT_STEP: f32 = 0.05;
+
+fn ambient_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut egui: bevy_egui::EguiContexts,
+    mut ambient: ResMut<AmbientLighting>,
+    mut msg: ResMut<crate::messages::Messages>,
+    i18n: Res<crate::i18n::I18n>,
+) {
+    if egui.ctx_mut().is_ok_and(|c| c.egui_wants_keyboard_input()) {
+        return;
+    }
+    let held = |a, b| keys.pressed(a) || keys.pressed(b);
+    if !held(KeyCode::ShiftLeft, KeyCode::ShiftRight) || held(KeyCode::ControlLeft, KeyCode::ControlRight) || held(KeyCode::AltLeft, KeyCode::AltRight) {
+        return;
+    }
+    let step = match (keys.just_pressed(KeyCode::Period), keys.just_pressed(KeyCode::Comma)) {
+        (true, false) => AMBIENT_STEP,
+        (false, true) => -AMBIENT_STEP,
+        _ => return,
+    };
+    // SE rounds to its steps (FUN_1404c12c0).
+    ambient.0 = ((ambient.0 + step) / AMBIENT_STEP).round().clamp(0.0, 1.0 / AMBIENT_STEP) * AMBIENT_STEP;
+    msg.show(format!("{}: {:.2}", i18n.tr("Ambient lighting"), ambient.0));
+}
+
 fn load_lighting_fade(mut commands: Commands, cfg: Res<crate::config::EngineConfig>) {
     if let Ok(text) = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")) {
         commands.insert_resource(LightingFade::from_main_def(&text));
@@ -273,6 +305,8 @@ impl Plugin for SystemPlugin {
         app.init_resource::<ActiveSystem>()
             .init_resource::<SystemLoad>()
             .init_resource::<LightingFade>()
+            .init_resource::<AmbientLighting>()
+            .add_systems(Update, ambient_keys)
             .add_plugins(MaterialPlugin::<StarSurfaceMaterial>::default())
             .add_systems(Startup, (setup_sprite_batch, load_lighting_fade))
             .add_systems(Last, log_frame_times)

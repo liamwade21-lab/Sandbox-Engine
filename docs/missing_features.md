@@ -104,22 +104,22 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 71 have been fixed since (listed at the end); the tables count the 170 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 73 have been fixed since (listed at the end); the tables count the 168 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 80 | 67 | 20 |
+| Gaps | 1 | 2 | 78 | 67 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 56 | 83 | 31 |
+| Gaps | 54 | 83 | 31 |
 
 | Area | Kept |
 |---|---|
 | 01 Stars | 17 |
 | 02 Star clusters | 12 |
 | 03 Galaxies and nebulae | 14 |
-| 04 Planet surfaces | 13 |
+| 04 Planet surfaces | 11 |
 | 05 Atmospheres, rings, comets | 15 |
 | 06 Procedural generation | 15 |
 | 07 Camera and time | 6 |
@@ -398,24 +398,6 @@ Galaxy/nebula display controls: SE has galaxy and DSO magnitude limits (GalaxyMa
 - SE evidence: locale *-gui.cfg keys "Galaxies magnitude limit", "Increase galaxies brightness", "DSO magnitude limit", "Intergalactic vision", "Real galaxies only"; main-def.cfg 167-177, 666-671
 - Port: crates/se_engine/src/procsystems.rs:169; galaxies.rs:241-266 (env only)
 - Check: Locale keys "Galaxies magnitude limit", "DSO magnitude limit", "Increase/Decrease galaxies brightness", "Intergalactic vision", "Real galaxies only", "All galaxies", "Real nebulae only", "All nebulae", "Galaxies disabled" exist (fra-gui.cfg 1268-1466; eng-gui.cfg is only a 5 KB stub) and main-def.cfg 167-177, 666-670 hold GalaxyMagnLimit/NebulaMagnLimit/GlowMagnLimit/AutoGalaxyMagnitude/ShowCatGalaxies/ShowCatNebulae; the port's only deep-sky UI is the three ShowProc* checkboxes (procsystems.rs:169-171), hud.rs/graphics.rs sliders cover stars and flares only, and galaxy brightness/auto gain are env-only (galaxies.rs:241-266).
-
-### 04-011 · Planet surfaces
-
-Terminator on airless bodies: SE uses a sharp per-pixel horizon shadow that depends on height (HorShadow = clamp((cosHor + N.L) * 500), cosHor from the point's height), so crater rims and peaks catch light past the terminator; the port multiplies by a soft smoothstep(-0.08, 0.12) of the sphere normal only, giving a blurred terminator band with no lit peaks
-
-- Status: differs, effort **S**, auditor confidence high
-- SE evidence: planet.glsl:1087-1101
-- Port: crates/se_engine/assets/shaders/planet.wesl:1156,1168
-- Check: planet.glsl:1087-1092 HorShadow = clamp((cosHor + dot(Normal,L))*500) with Normal = normalize(fPosition) (line 622) and cosHor from rr = 1/(1+height), so raised points stay lit past the terminator with a sharp edge; the airless port path (planet.wesl:1156,1168) multiplies by smoothstep(-0.08,0.12,dot(up,l)) independent of height
-
-### 04-012 · Planet surfaces
-
-Ambient light: SE adds DayAmbient (catalog Surface key) only on the lit side and a user "Ambient lighting" level (Settings Camera tab, keys IncAmbient/DecAmbient, Shift+< / Shift+>) so dark planemos can be seen; the port adds a fixed 1.5% albedo ambient everywhere, day and night, with no setting and no DayAmbient
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: planet.glsl:1130-1135; exe strings "DayAmbient", "AmbientLighting"; locale "Ambient lighting", "Increase ambient light"; def_generic_controller.cfg IncAmbient/DecAmbient
-- Port: crates/se_engine/src/terrain.rs:1432 base_color.w 0.015; crates/se_engine/assets/shaders/planet.wesl:1171
-- Check: planet.glsl:1130-1131 adds day ambient LightColor*NdotLSC*Shadow*SurfParams2.y only on the lit side and 1023 starts from the AmbientColor uniform; exe strings DayAmbient/AmbientLighting, controller IncAmbient/DecAmbient, GUI "Ambient lighting"/"Increase ambient light"; the port parses DayAmbient in se_core (body_params.rs:152) but se_engine never uses it, and adds a fixed albedo*0.015 everywhere (terrain.rs:1443, planet.wesl:1171) with no ambient setting
 
 ### 04-009 · Planet surfaces
 
@@ -1701,6 +1683,8 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **04-006** (Planet surfaces, fixed 2026-10-29): Procedural gas and ice giants: SE builds bands from HeightMapCloudsGasGiant (noise zones by stripeZones, equat... Fix: Procedural gas and ice giants (planet.wesl `gas_giant_albedo`): SE's HeightMapCloudsGasGiant per pixel (Noise zones by stripeZones, equatorial oval and polar round cyclones from cyclone*/cycloneMagn2/cycloneLatitude2, TurbulenceGasGiant vortices twisted by stripeTwist, Fbm stripes by cloudsFreq/cloudsOctaves and stripeFluct; SE's hash Perlin noise and spherical Fibonacci cells), coloured as tg_gasgiant_color from the giant preset's 8-colour CloudsPalette (height x colour, then gamma); giants now get a biome preset (SamplesPresets jupiter_*/neptune_*). The stripe and cyclone parameters follow FUN_1402f37c0's giant branch distributions (surface_gen::giant_clouds). Assumed: two undecoded inputs (polar cyclone latitude factor, a cold Jupiter's equatorial cyclone octaves), the palette lookup's row mapping, and the branch for bodies flagged at +0x38; the draws do not follow SE's order. Not done: the giants' fog layer (HeightMapFogGasGiant).
 - **04-007** (Planet surfaces, fixed 2026-10-30): Planet shine (secondary lighting): SE lights night sides with light reflected from nearby bodies (earthshine o... Fix: Planet shine as SE does it: bodies drawn as discs are lit by the planets and moons around them as further lights among their up to 4 (FUN_1404bc1a0 gathers them, FUN_1404bbf40 picks the sources: the body's moons, up its parents a planet itself, and at the first star or barycentre its other children). Each reflects, per star lighting it, F (R/d)^2 albedo (0.36 without one) Lambert(a) clamp(pi - asin(R/d) - a, 0, 1) times its opposition surge (Hapke, SpotBright, SpotWidth), the total scaled by the luminance of its colour (PlanetShineMode 1) and by PlanetShineBright; its colour is its own times the stars', brightest channel 1 (FUN_1404da600). They are faded like stars but never set the normalisation (only stars do, FUN_1404bf5c0), so earthshine lights the Moon's night side at about 4% and Jupiter's moons its night side. EnablePlanetShine / PlanetShineBright are read from main-def.cfg. Bodies inside their star (the port leaves 'Oumuamua at the Sun) are skipped; the cost is about 0.2 ms with 2566 Solar System bodies. Not ported: SE's preview renders for the colour (the sprite colour is used), eclipses of the shine, the rings' host-planet light (05-012), the TogglePlanetShine key and the settings entries.
 - **04-008** (Planet surfaces, fixed 2026-10-30): Lighting by several stars and its magnitude fade: SE lights a surface with up to 4 stars (MAX_LIGHTS 4 loop) a... Fix: Surfaces lit by up to 4 stars with SE's magnitude fade (see 01-006): SE gathers up to MAX_LIGHTS 4 stars per body, brightest flux first, ends the list at the first one past PlanetLightingFadeEndMagn, fades those between the begin/end magnitudes and normalises each to (F / max(F_begin, F_max))^0.35 (FUN_1404bf5c0, the port's LightingFade::planet_intensities); BodyLighting keeps the brightest as before plus up to 3 ExtraLight (direction, illumination colour times intensity, ring colour cut at RingsLightingFadeEndMagn).
+- **04-011** (Planet surfaces, fixed 2026-10-30): Terminator on airless bodies: SE uses a sharp per-pixel horizon shadow that depends on height (HorShadow = cla... Fix: SE's sharp, height-aware horizon shadow on every lit body: HorShadow = clamp((cosHor + N.L) * 500, 0, 1) with cosHor = sqrt(1 - rr^2), rr = clamp(1 / (1 + height / R), 0, 0.9999) (planet.glsl:1087-1095), for the brightest star and the further lights alike, so the terminator is sharp and raised points stay lit past it (was a smoothstep(-0.08, 0.12) of the sphere normal). Checked on the Moon at first quarter.
+- **04-012** (Planet surfaces, fixed 2026-10-30): Ambient light: SE adds DayAmbient (catalog Surface key) only on the lit side and a user "Ambient lighting" lev... Fix: SE's AmbientLighting (default 0, 0..1 in steps of 0.05, rounded to them as FUN_1404c12c0 does) replaces the port's fixed 1.5% albedo ambient: it adds albedo/pi x level in the sun's units, day and night, and Shift+. / Shift+, (> / <, IncAmbient / DecAmbient from SE's key table FUN_1405ba8f0) change it with SE's two-decimal message. DayAmbient on the lit side was already ported. Night sides are now dark as in SE apart from planet shine and city lights. Not ported: the Settings window entry and saving the level.
 - **05-001** (Atmospheres, rings, comets, fixed 2026-10-29): Clouds are not lit through the atmosphere: SE draws each cloud layer through the planet shader (ACLOUDS), so t... Fix: `clouds.wesl` lights clouds as SE's ACLOUDS: sun light reddened by the transmittance and cut at the planet's horizon at cloud height, sky irradiance x SkyLight, DayAmbient (default 0.07, SE's loader), Hapke mix, SubsurfScatBright/Power (default 0), aerial perspective over the cloud, SE's 5% opacity cut; the night side is unlit. Relief: a layer with a BumpMap (Earth's is its cloud map) tilts the cloud-top normal by the density's screen-space gradient times BumpHeight.
 - **05-002** (Atmospheres, rings, comets, fixed 2026-10-29): Cloud layers and Clouds catalog keys: SE draws every Clouds block as its own layer (Titan 3 orange haze layers... Fix: Every Clouds block is its own layer (`terrain::CloudLayer`; Titan's three haze layers at 20/30/50 km, Mars's two textured and one procedural), NoClouds honoured. Per layer: height, map, Opacity, ModulateColor x ModulateBright, DayAmbient, Hapke, SubsurfScat, BumpMap/BumpHeight, DiffMapAlpha "None" (the map is an opaque colour layer: Venus), FlipMap and Velocity (the layer's shell turns about the pole with the simulation time, signed by the body's rotation, each turned layer with its own patch selection); SE's body-wide Coverage/mainFreq/mainOctaves (FUN_14046dde0 writes them to the body: the last block's win) for the procedural ones, Coverage 1 closing the layer; SE's 1 km close-camera fade; textured-surface bodies get their procedural layers (Titan's orange haze); nodes are culled against the highest layer. Not done: GlowMode/GlowMap, TempMap, RingsWinter; ground shadows come from the first textured layer that does not turn.
 - **05-003** (Atmospheres, rings, comets, fixed 2026-10-29): Procedural cloud generator: SE's tg_clouds_height/color/glow use HeightMapCloudsTerra with cyclones (cycloneMa... Fix: Procedural clouds follow SE's terra cloud generator (clouds.wesl `se_terra_clouds`, from tg_common.glh HeightMapCloudsTerra / CycloneNoiseTerra / TurbulenceTerra / FbmClouds and tg_clouds_color.glsl): cyclones in random spherical Fibonacci cells per octave (cycloneMagn/Freq/Density/Octaves), two octaves of small vortices, the Coriolis twist by latitude zones (stripeZones, stripeTwist), the flow distortion of FbmClouds (x pi, x 0.333 per octave, cloudsFreq, cloudsOctaves) against the coverage, SE's `saturate(h^2 3.5 + h)` opacity; on tidally locked worlds one giant cyclone at the substellar point and a clear night side. The parameters are SE's generated ones (surface_gen), and bodies SE's completion gives clouds (above 0.05 atm) without a Clouds block get SE's default layer. Not done: the cloud palette colours (GetCloudsColor) and the cloud glow map; a lattice artifact can show over flat lowland seen from afar (Kepler-62 e).

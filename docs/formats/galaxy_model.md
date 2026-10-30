@@ -480,7 +480,7 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   (2 size)^2) / pi` (generator output, face-on mean) and `SB_target = K_far * 10^(0.4 (m_ref - M)) * 100 /
   (pi (R Radius.x)^2 focal_ref^2)`, so the model and the far sprite have the same mean surface brightness
   (no pop when the far sprite fades out). Defaults: `K_far = 1.5`, `m_ref = 7.5`, `dust_strength = 0.35`.
-  Env overrides for tuning: `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`, `SE_GAL_BIG`, `SE_GAL_BUILD`.
+  Env overrides for tuning: `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`, `SE_GAL_BUILD`.
 * **Sort order**: Bevy sorts transparent items by the view depth of the mesh AABB centre plus
   `depth_bias`. The atmosphere sky shell shader returns alpha 1 with premultiplied blending, i.e. it
   erases everything drawn before it, and its sort depth depends on the look direction (a shell below the

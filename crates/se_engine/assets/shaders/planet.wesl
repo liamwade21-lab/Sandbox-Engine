@@ -1620,6 +1620,14 @@ struct Surf {
     water: f32,
 };
 
+// SE's planetary sphere shadow (planet.glsl:1087-1095): a point `height` m up is lit until the star
+// (at `mu` = cos of its zenith angle) sets below the point's own horizon, with a sharp edge, so
+// peaks and crater rims catch the light past the terminator.
+fn horizon_shadow(height: f32, mu: f32) -> f32 {
+    let rr = clamp(1.0 / (1.0 + max(height, 0.0) / max(planet.planet.w, 1.0)), 0.0, 0.9999);
+    return clamp((sqrt(1.0 - rr * rr) + mu) * 500.0, 0.0, 1.0);
+}
+
 // The ground's colour lit at `pos_km` (no water, clouds or haze yet).
 fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: vec3<f32>) -> Surf {
     let has_atm = planet.atm_flags.x > 0.5;
@@ -1704,7 +1712,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     }
 
     // Sun light reaching the surface (reddened through the atmosphere) and sky light.
-    let terminator = smoothstep(-0.08, 0.12, dot(up, l));
+    let terminator = horizon_shadow(in.height, dot(up, l));
     var s: Surf;
     s.e_sun = e_sun;
     s.sun_at_ground = sun * terminator;
@@ -1744,7 +1752,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         let lx = normalize(planet.light_dir[i].xyz);
         let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_shadow(p_rel, lx);
         let e_x = sun_x * planet.atm_flags.y;
-        let term_x = smoothstep(-0.08, 0.12, dot(up, lx));
+        let term_x = horizon_shadow(in.height, dot(up, lx));
         var ground_x = sun_x * term_x;
         if has_atm {
             s.col += albedo / PI * atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, lx, e_x, 1.0);
@@ -1768,7 +1776,9 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.col += albedo / PI * day_x;
         s.e_level += day_x;
     }
-    s.col += albedo * planet.base_color.w + emission;
+    // SE's AmbientLighting (the AmbientColor its light sums start from), in the light's units.
+    s.col += albedo / PI * planet.base_color.w * planet.atm_flags.y + emission;
+    s.e_level += vec3<f32>(planet.base_color.w * planet.atm_flags.y);
     // The soils' sheen: GGX with their roughness (dielectric, F0 0.04), only where the
     // mesh's own surface faces the star.
     // Beyond the soils' 2 km, the sample layers' roughness where they show.

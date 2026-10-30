@@ -53,8 +53,6 @@ pub struct NebulaSettings {
     pub build_px: f32,
     /// Maximum resident models.
     pub max_models: usize,
-    /// Sprites larger than this many pixels fade out (gone at 3.5x).
-    pub big_px: f32,
 }
 
 impl Default for NebulaSettings {
@@ -66,7 +64,6 @@ impl Default for NebulaSettings {
             dust_strength: 0.06,
             build_px: 4.0,
             max_models: 4,
-            big_px: 250.0,
         };
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         if let Some(v) = get("SE_NEB_FAR") {
@@ -77,9 +74,6 @@ impl Default for NebulaSettings {
         }
         if let Some(v) = get("SE_NEB_DUST") {
             s.dust_strength = v;
-        }
-        if let Some(v) = get("SE_NEB_BIG") {
-            s.big_px = v;
         }
         s
     }
@@ -567,7 +561,7 @@ pub(crate) fn update_nebulae(
             let mat = model_mats.add(GalaxyModelMaterial {
                 uniforms: ModelParams {
                     center_rel: Vec4::ZERO,
-                    params: Vec4::new(1.0, 2.0, settings.big_px, settings.big_px * 3.5),
+                    params: Vec4::new(1.0, 2.0, 0.0, 0.0),
                     params2: Vec4::new(if dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
                 },
                 atlas: st.atlas.handle.clone(),
@@ -619,7 +613,7 @@ pub(crate) fn update_nebulae(
         for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
             if let Some(mut m) = model_mats.get_mut(mat) {
                 m.uniforms.center_rel = center_rel;
-                m.uniforms.params = Vec4::new(if dust { k_dust } else { k_em }, 2.0, settings.big_px, settings.big_px * 3.5);
+                m.uniforms.params = Vec4::new(if dust { k_dust } else { k_em }, 2.0, 0.0, 0.0);
             }
             if let Ok(mut v) = vis.get_mut(*e) {
                 *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };

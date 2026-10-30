@@ -150,7 +150,7 @@ which is what the stored values describe.
   symmetric padded AABB (see galaxy_model.md section 11) so the atmosphere sky shell cannot erase them; they
   fade with the shared `SkyFade` resource written by the galaxy renderer.
 * Defaults: far brightness 0.8, model brightness 1.0, dust 0.06. Env overrides for tuning:
-  `SE_NEB_FAR`, `SE_NEB_MODEL`, `SE_NEB_DUST`, `SE_NEB_BIG`.
+  `SE_NEB_FAR`, `SE_NEB_MODEL`, `SE_NEB_DUST`.
 
 Results: `goto Orion Nebula 2e14` (21 ly) shows the pink H-II region with the dark dust lane and the Trapezium
 region; at 8e14 to 1e15 km it is a compact pink core with the blue reflection nebulae (Running Man, M43)
