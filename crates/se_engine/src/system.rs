@@ -435,7 +435,8 @@ fn select_active_system(
     cam: Res<FlyCamera>,
     sim: Res<SimTime>,
     mut active: ResMut<ActiveSystem>,
-    members: Query<Entity, With<SystemMember>>,
+    // Hidden terrain patches are `Disabled` (terrain.rs `show_patch`): they go too.
+    members: Query<Entity, (With<SystemMember>, bevy::ecs::query::Allow<bevy::ecs::entity_disabling::Disabled>)>,
     mut load: ResMut<SystemLoad>,
     mut scan: Local<ActiveScan>,
     memory: Option<Res<crate::memory::MemoryLimits>>,

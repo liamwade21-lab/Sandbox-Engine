@@ -16,6 +16,8 @@ use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageF
 use bevy::math::{DQuat, DVec3};
 use bevy::mesh::{Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
+use bevy::ecs::entity_disabling::Disabled;
+use bevy::ecs::query::Allow;
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
@@ -558,6 +560,8 @@ struct NodeSlot {
     /// the node is only drawable from the next one (else a tile-sized hole flashes
     /// between hiding the parent and showing the children).
     ready_frame: u64,
+    /// The `Terrain::light_gen` its materials were last lit for.
+    light_gen: u64,
 }
 
 #[derive(Component)]
@@ -604,6 +608,9 @@ pub struct Terrain {
     node_hrange: HashMap<TileKey, (f32, f32)>,
     /// Nodes drawn this frame (sorted): the ground the camera collides with.
     visible: Vec<TileKey>,
+    /// Nodes with a patch (ground or cloud) shown: the only ones whose visibility can change next
+    /// frame, so the thousands of cached ones are not touched every frame.
+    drawn: Vec<TileKey>,
     /// Radii of the highest and the lowest ground, for the horizon test.
     horizon_top: f64,
     horizon_floor: f64,
@@ -626,6 +633,8 @@ pub struct Terrain {
     /// The materials' casters ([`crate::eclipse::EclipseCasters`]) and the last uploaded ones.
     casters: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     last_casters: [crate::eclipse::EclipseLight; MAX_LIGHTS],
+    /// Bumped when the lighting changes: shown nodes take it at once, cached ones when shown again.
+    light_gen: u64,
 }
 
 /// The light an atmosphere of `Bright` `atm_bright` scatters (haze, the sky seen in water) relative to
@@ -799,6 +808,7 @@ impl Terrain {
             node_heights: HashMap::new(),
             node_hrange: HashMap::new(),
             visible: Vec::new(),
+            drawn: Vec::new(),
             horizon_top,
             horizon_floor,
             nodes: HashMap::new(),
@@ -815,6 +825,7 @@ impl Terrain {
             eclipse: EclipseUniform::default(),
             casters: Default::default(),
             last_casters: Default::default(),
+            light_gen: 0,
         }
     }
 
@@ -1726,11 +1737,11 @@ fn update_terrain(
         Res<WaterDisplay>,
         Res<crate::switches::RenderSwitches>,
     ),
-    nodes: Query<&TerrainNode>,
-    clouds_q: Query<&CloudNode>,
-    mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
+    nodes: Query<&TerrainNode, Allow<Disabled>>,
+    clouds_q: Query<&CloudNode, Allow<Disabled>>,
+    mut vis_q: Query<(&mut Visibility, Has<Disabled>), (Or<(With<TerrainNode>, With<CloudNode>)>, Allow<Disabled>)>,
     rings: Query<&crate::rings::Rings>,
-    (ring_mats, surface_tex, quality, mut tgen, mut gen_queue, mut shader_buffers, time, memory): (
+    (ring_mats, surface_tex, quality, mut tgen, mut gen_queue, mut shader_buffers, time, memory, mut tick, children): (
         Res<Assets<crate::rings::RingMaterial>>,
         Option<Res<SurfaceTextures>>,
         Res<crate::graphics::TerrainQuality>,
@@ -1739,6 +1750,8 @@ fn update_terrain(
         ResMut<Assets<bevy::render::storage::ShaderBuffer>>,
         Res<crate::universe::SimTime>,
         Res<crate::memory::MemoryLimits>,
+        Local<u32>,
+        Query<&Children, Allow<Disabled>>,
     ),
 ) {
     let (Some(defaults), Some(surface_tex)) = (defaults, surface_tex) else { return };
@@ -2015,6 +2028,7 @@ fn update_terrain(
                             MeterScale(body.shape),
                             Transform::IDENTITY,
                             Visibility::Hidden,
+                            Disabled,
                         ))
                         .id()
                 })
@@ -2039,27 +2053,29 @@ fn update_terrain(
                     MeterScale(body.shape),
                     Transform::IDENTITY,
                     Visibility::Hidden,
+                    Disabled,
                 ));
-            // The sea surface shares the node's centre, transform and visibility.
+            // The sea surface shares the node's centre, transform, visibility and `Disabled`.
             if let (Some(wm), Some(wmat)) = (build.water, water_mat) {
-                node.with_child((Mesh3d(meshes.add(wm)), MeshMaterial3d(wmat), Transform::IDENTITY, Visibility::Inherited));
+                node.with_child((Mesh3d(meshes.add(wm)), MeshMaterial3d(wmat), Transform::IDENTITY, Visibility::Inherited, Disabled));
             }
             let e = node.id();
             let range = build.grid_heights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
             terrain.node_hrange.insert(key, range);
             terrain.node_heights.insert(key, Arc::new(build.grid_heights));
             slot.state = NodeState::Ready(e, cloud_entities);
+            slot.light_gen = terrain.light_gen;
             slot.ready_frame = frame;
         }
 
         if !resolved {
             terrain.visible.clear();
-            // Hide everything; keep nodes cached for a while.
-            for slot in terrain.nodes.values() {
-                if let NodeState::Ready(e, c) = &slot.state {
+            // Hide what is shown; keep nodes cached for a while.
+            for key in std::mem::take(&mut terrain.drawn) {
+                if let Some(NodeSlot { state: NodeState::Ready(e, c), .. }) = terrain.nodes.get(&key) {
                     for &e in std::iter::once(e).chain(c) {
-                        if let Ok(mut vis) = vis_q.get_mut(e) {
-                            *vis = Visibility::Hidden;
+                        if let Ok((mut vis, disabled)) = vis_q.get_mut(e) {
+                            show_patch(&mut commands, &children, e, &mut vis, disabled, false);
                         }
                     }
                 }
@@ -2194,32 +2210,41 @@ fn update_terrain(
                     state: NodeState::Loading(task),
                     last_used: frame,
                     ready_frame: u64::MAX,
+                    light_gen: 0,
                 },
             );
             in_flight += 1;
             started += 1;
         }
-        // Visibility.
+        // Visibility: of the nodes drawn now and those shown last frame (every other is hidden).
+        let mut touch: Vec<TileKey> = std::mem::take(&mut terrain.drawn);
+        touch.extend(visible.iter().copied());
+        touch.extend(cloud_visible.iter().flatten().flatten().copied());
+        touch.sort_unstable();
+        touch.dedup();
         terrain.visible = visible;
         let visible = &terrain.visible;
-        for (key, slot) in &terrain.nodes {
-            if let NodeState::Ready(e, c) = &slot.state {
-                let want = visible.binary_search(key).is_ok();
-                for &e in std::iter::once(e).chain(c) {
-                    let cloud = clouds_q.get(e).ok();
-                    let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
-                        Some(v) => v.binary_search(key).is_ok(),
-                        None => want,
-                    } && (cloud.is_none() || switches.clouds);
-                    let v = if want { Visibility::Visible } else { Visibility::Hidden };
-                    if let Ok(mut vis) = vis_q.get_mut(e) {
-                        if *vis != v {
-                            *vis = v;
-                        }
-                    }
+        let mut drawn = Vec::with_capacity(touch.len());
+        for key in touch {
+            let Some(NodeSlot { state: NodeState::Ready(e, c), .. }) = terrain.nodes.get(&key) else { continue };
+            let want = visible.binary_search(&key).is_ok();
+            let mut shown = false;
+            for &e in std::iter::once(e).chain(c) {
+                let cloud = clouds_q.get(e).ok();
+                let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
+                    Some(v) => v.binary_search(&key).is_ok(),
+                    None => want,
+                } && (cloud.is_none() || switches.clouds);
+                shown |= want;
+                if let Ok((mut vis, disabled)) = vis_q.get_mut(e) {
+                    show_patch(&mut commands, &children, e, &mut vis, disabled, want);
                 }
             }
+            if shown {
+                drawn.push(key);
+            }
         }
+        terrain.drawn = drawn;
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
         // SE's atmospheres switch (Shift+A) also takes the aerial perspective off the ground and clouds.
@@ -2243,44 +2268,54 @@ fn update_terrain(
             terrain.last_sun = sun;
             terrain.last_extra = extra_dir;
             terrain.last_casters = eclipse;
-            for slot in terrain.nodes.values() {
-                if let NodeState::Ready(e, c) = &slot.state {
-                    if let Ok(node) = nodes.get(*e) {
-                        for h in std::iter::once(&node.material).chain(node.water.as_ref()) {
-                            if let Some(mut m) = materials.get_mut(h) {
-                                m.u.sun_dir = sun;
-                                m.u.sun_color = light.sun_color.extend(1.0);
-                                (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
-                                m.u.base_color.w = ambient.0;
-                                m.u.eclipse = eclipse;
-                                m.u.params.x = glow_bright;
-                                m.u.thermal2.w = emission.scale();
-                                m.u.ice.w = water_display.level;
-                                m.u.atm_flags.x = atm_on;
-                                m.u.glow_atmo = glow_atmo;
-                            }
-                        }
-                    }
-                    for cn in c.iter().filter_map(|&c| clouds_q.get(c).ok()) {
-                        if let Some(mut m) = cloud_mats.get_mut(&cn.material) {
+            terrain.light_gen += 1;
+        }
+        // The shown nodes are lit now; cached ones when they are shown again.
+        let light_gen = terrain.light_gen;
+        for key in &terrain.drawn {
+            let Some(slot) = terrain.nodes.get_mut(key) else { continue };
+            if slot.light_gen == light_gen {
+                continue;
+            }
+            slot.light_gen = light_gen;
+            if let NodeState::Ready(e, c) = &slot.state {
+                if let Ok(node) = nodes.get(*e) {
+                    for h in std::iter::once(&node.material).chain(node.water.as_ref()) {
+                        if let Some(mut m) = materials.get_mut(h) {
                             m.u.sun_dir = sun;
                             m.u.sun_color = light.sun_color.extend(1.0);
                             (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
+                            m.u.base_color.w = ambient.0;
                             m.u.eclipse = eclipse;
+                            m.u.params.x = glow_bright;
+                            m.u.thermal2.w = emission.scale();
+                            m.u.ice.w = water_display.level;
                             m.u.atm_flags.x = atm_on;
+                            m.u.glow_atmo = glow_atmo;
                         }
+                    }
+                }
+                for cn in c.iter().filter_map(|&c| clouds_q.get(c).ok()) {
+                    if let Some(mut m) = cloud_mats.get_mut(&cn.material) {
+                        m.u.sun_dir = sun;
+                        m.u.sun_color = light.sun_color.extend(1.0);
+                        (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
+                        m.u.eclipse = eclipse;
+                        m.u.atm_flags.x = atm_on;
                     }
                 }
             }
         }
     }
-    // SE's CacheSizeLandNode: the nodes of all planets together; beyond it the least recently used
-    // ones go first (only nodes unused for STALE_FRAMES, never a root or one still loading). The
-    // port keeps at most LAND_NODES_MAX whatever the setting: main-def.cfg's 10000 took a surface
-    // flight from ~50 to ~280 ms a frame, measured while every node's material was rewritten each
-    // frame (fixed in switches.rs); SE's value has not been measured since.
+    // SE's CacheSizeLandNode (main-def.cfg 10000): the nodes of all planets together; beyond it the
+    // least recently used ones go first (only nodes unused for STALE_FRAMES, never a root or one
+    // still loading).
     let total: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.len()).sum();
-    let cap = memory.land_nodes.min(LAND_NODES_MAX);
+    let cap = memory.land_nodes;
+    *tick += 1;
+    if *tick % 300 == 0 {
+        debug!("terrain: {total} resident nodes (cache {cap})");
+    }
     if total > cap {
         let mut stale: Vec<(u64, Entity, TileKey)> = bodies
             .iter()
@@ -2307,8 +2342,22 @@ fn update_terrain(
     }
 }
 
-/// The port's ceiling on resident terrain nodes (its earlier per-planet eviction threshold).
-const LAND_NODES_MAX: usize = 1250;
+/// Show or hide a node's patch. A hidden one is also `Disabled`, so the thousands of cached patches
+/// (SE's CacheSizeLandNode, 10000 nodes) drop out of every per-entity scan (transforms, visibility,
+/// render extraction); shown again, it is enabled before the floating origin places it (the
+/// commands apply at the sync point after `update_terrain`). Its sea surface (a child) goes with it.
+fn show_patch(commands: &mut Commands, children: &Query<&Children, Allow<Disabled>>, e: Entity, vis: &mut Mut<Visibility>, disabled: bool, show: bool) {
+    vis.set_if_neq(if show { Visibility::Visible } else { Visibility::Hidden });
+    if show == disabled {
+        for e in std::iter::once(e).chain(children.get(e).into_iter().flatten().copied()) {
+            if show {
+                commands.entity(e).remove::<Disabled>();
+            } else {
+                commands.entity(e).insert(Disabled);
+            }
+        }
+    }
+}
 
 /// A node unused for this many frames may be evicted.
 const STALE_FRAMES: u64 = 30;

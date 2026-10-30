@@ -4,7 +4,7 @@
 //! The cache sizes drive the port's matching caches: `CacheSizeSolarSystems` the generated
 //! planetary systems kept in the catalog (system.rs, least recently entered dropped first),
 //! `CacheSizeLandNode` the terrain nodes of all planets together (terrain.rs, least recently used
-//! first, at most the port's own ceiling), `CacheSizeStarNode` and `CacheSizeGalNode` the procedural star and galaxy octree nodes
+//! first; hidden cached patches are `Disabled`), `CacheSizeStarNode` and `CacheSizeGalNode` the procedural star and galaxy octree nodes
 //! (procstars.rs, procgalaxies.rs), `CacheSizeGalSysModels` the generated star clusters and nebulae
 //! of galaxies (procsystems.rs) and `CacheSizeAtmoModels` the atmosphere models (atmosphere.rs).
 //!
