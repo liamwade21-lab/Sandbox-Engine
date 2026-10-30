@@ -79,11 +79,14 @@ pub struct BiomeUniform {
     /// w height (SE's `ModColor`, `ModNorm`, `ModRough`, `ModHeight`).
     pub soil_mod: [Vec4; SOIL_SLOTS],
     /// Per soil: x `BiasRough`, y `ScaleRough`, z and w the detail and Modul layers' rotation flags
-    /// (SE's `matScaleRot.zw`, for its anti-tiling; `BiasHeight` and `ScaleHeight` go unused, as in SE).
+    /// (SE's `matScaleRot.zw`, for its anti-tiling).
     pub soil_bias: [Vec4; SOIL_SLOTS],
     /// Per soil: xyz its `Color` in HSV (SE's `rgb2hsl` of the stored colour), which the ground's
     /// colour is matched against; w its `Slope`.
     pub soil_color: [Vec4; SOIL_SLOTS],
+    /// Per soil, its relief ("3D stones"): x `ScaleHeight`, y `BiasHeight`, z the displacement (m)
+    /// of a unit of height ([`SurfaceTextures::detail_disp`] x the detail layer's period), 0 for none.
+    pub soil_height: [Vec4; SOIL_SLOTS],
     /// x: biomes enabled, y: soils enabled, z: vegetation enabled, w: number of soils.
     pub flags: Vec4,
     /// SE climate parameters ([`climate_uniform`]); `climate[4].w` 0 when unused.
@@ -159,6 +162,13 @@ pub struct SurfaceTextures {
     pub soil_rhao: Handle<Image>,
     sample_layer: HashMap<String, u32>,
     soil_layer: HashMap<String, u32>,
+    /// main-def.cfg `DisplaceDetailHeight` (0.1 m vertically per metre horizontally), 0 with
+    /// `DisplaceDetailTextures` off: SE raises the ground near the camera by the soils' height maps
+    /// (planet.glsl DET + DISP). SE scales one amplitude per planet from its detail-texture level
+    /// (FUN_1404acdd0: `SurfParams3.z = DisplaceDetailHeight x R (pi/2) / 2^(a + b - 1) / 300 /
+    /// BumpHeight`, levels a and b not decoded); the port takes the key's own meaning per soil, a
+    /// unit of height raising the ground by this times the detail layer's period.
+    pub detail_disp: f32,
 }
 
 /// Decoded texture array: `layers` images of LAYER_SIZE with full mip chains, layer-major.
@@ -199,7 +209,12 @@ fn start_load(mut commands: Commands, data: Res<SeData>) {
     commands.insert_resource(LoadTask(AsyncComputeTaskPool::get().spawn(async move { load_all(&vfs) })));
 }
 
-fn finish_load(mut commands: Commands, task: Option<ResMut<LoadTask>>, mut images: ResMut<Assets<Image>>) {
+fn finish_load(
+    mut commands: Commands,
+    task: Option<ResMut<LoadTask>>,
+    mut images: ResMut<Assets<Image>>,
+    cfg: Option<Res<crate::config::EngineConfig>>,
+) {
     let Some(mut task) = task else { return };
     let Some(l) = check_ready(&mut task.0) else { return };
     commands.remove_resource::<LoadTask>();
@@ -220,7 +235,16 @@ fn finish_load(mut commands: Commands, task: Option<ResMut<LoadTask>>, mut image
         soil_rhao: images.add(bc_image(rhao, TextureFormat::Bc1RgbaUnorm)),
         sample_layer: l.samples.index,
         soil_layer: l.soil_index,
+        detail_disp: cfg.as_deref().map_or(0.1, detail_displacement),
     });
+}
+
+/// main-def.cfg `DisplaceDetailHeight` (default 0.1), 0 with `DisplaceDetailTextures false`.
+fn detail_displacement(cfg: &crate::config::EngineConfig) -> f32 {
+    let doc = crate::galaxies::main_def_doc(cfg);
+    let on = doc.as_ref().and_then(|d| d.find_deep("DisplaceDetailTextures")).and_then(|i| i.bool()).unwrap_or(true);
+    let h = doc.as_ref().and_then(|d| d.find_deep("DisplaceDetailHeight")).and_then(|i| i.f64()).unwrap_or(0.1);
+    if on { h.clamp(0.0, 1.0) as f32 } else { 0.0 }
 }
 
 fn load_all(vfs: &Vfs) -> Loaded {
@@ -640,6 +664,8 @@ impl SurfaceTextures {
             u.soil_bias[i] = Vec4::new(s.bias_rough, s.scale_rough, rot(s.detail.as_ref()), rot(s.modul.as_ref()));
             let c = rgb_to_hsv([s.color[0], s.color[1], s.color[2]]);
             u.soil_color[i] = Vec4::new(c[0], c[1], c[2], s.slope);
+            let period = if u.soil[i].x >= 0.0 { u.soil[i].y } else { u.soil[i].w };
+            u.soil_height[i] = Vec4::new(s.scale_height, s.bias_height, self.detail_disp * period.max(0.0), 0.0);
         }
         let n = chosen.len();
         debug!("soils of {} ({}): {:?}", info.name, preset.file, chosen.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());

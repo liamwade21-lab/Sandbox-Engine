@@ -63,8 +63,11 @@ files' own BC blocks (`surface_tex.rs`) and `planet.wesl` (`soil_look`) uses the
 `DetailTextureMulti` and `BlendModulate` do: the detail layer's colour and roughness times
 `mix(1, luma(Modul), ModColor / ModRough)`, normals and occlusion mixed towards the Modul's by
 `ModNorm` / `ModHeight` times the layers' scale ratio `min(a/b, b/a)`, roughness then
-`Scale r + Bias`, then the HSV recolour below. SE never reads the height channel (no parallax), so
-`BiasHeight`/`ScaleHeight` have no visible effect.
+`Scale r + Bias`, then the HSV recolour below. SE reads the height channel only to displace the ground
+near the camera (`DisplaceDetailTextures`, planet.glsl DET + DISP: no parallax): the detail layer's
+height mixed towards the Modul's by `ModHeight` times the scale ratio, then `ScaleHeight h + BiasHeight`.
+The port moves each vertex within the soils' 2 km by that height around the texture's mean, times
+`DisplaceDetailHeight` (0.1) times the detail layer's period (`planet.wesl` `soil_disp_v`).
 
 A layer's `freq` is copied to the GPU as an integer (`FUN_140373330` fills the soil table from the
 parser's `FUN_14015f8d0` table at `0x14080d54c`), so its scale is set in the shader. It is a
