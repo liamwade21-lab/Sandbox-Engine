@@ -7,16 +7,6 @@ const PI: f32 = 3.14159265359;
 // SE's ECLIPSE_SHADOW_GAMMA (and ECLIPSE_SHADOW_GAMMA_RINGS3D).
 const ECLIPSE_SHADOW_GAMMA: f32 = 1.0 / 1.6;
 
-// The planet surface's and clouds' casters (terrain.rs `EclipseUniform`).
-struct Eclipse {
-    // xyz: occluder centre relative to the lit body's centre (render orientation,
-    // in lit-body radii); w: occluder radius in the same units (negative when the
-    // occluder has an atmosphere).
-    occ: array<vec4<f32>, 4>,
-    // x: star angular radius (radians), y: number of occluders.
-    info: vec4<f32>,
-};
-
 // One light's casters (eclipse.rs `EclipseLight`): xyz centre relative to the lit body (render
 // orientation, lit-body radii), w radius (0 ends the list); info.x the light's angular radius.
 struct EclipseLight {
@@ -92,23 +82,8 @@ fn eclipse_shadow(e: EclipseLight, p: vec3<f32>, l: vec3<f32>) -> f32 {
     return 1.0 - pow(lit, ECLIPSE_SHADOW_GAMMA);
 }
 
-// Starlight reaching `p` (lit-body radii, relative to its centre) from direction `l`, through the
-// planet's casters (SE's EclipseShadowFar on the surface: Shadow *= 1 - eclipse).
-fn eclipse_light(e: Eclipse, p: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
-    let rl = max(e.info.x, 1e-7);
-    let n = e.info.y;
-    var lit = 1.0;
-    if n > 0.5 {
-        lit *= caster_slot(e.occ[0], p, l, rl);
-    }
-    if n > 1.5 {
-        lit *= caster_slot(e.occ[1], p, l, rl);
-    }
-    if n > 2.5 {
-        lit *= caster_slot(e.occ[2], p, l, rl);
-    }
-    if n > 3.5 {
-        lit *= caster_slot(e.occ[3], p, l, rl);
-    }
-    return vec3<f32>(pow(lit, ECLIPSE_SHADOW_GAMMA));
+// Starlight reaching `p` (lit-body radii, relative to its centre) from direction `l` through one
+// light's casters: SE's EclipseShadowFar on the surface and clouds, Shadow *= 1 - eclipse.
+fn eclipse_light(e: EclipseLight, p: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(1.0 - eclipse_shadow(e, p, l));
 }

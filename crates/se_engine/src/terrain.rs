@@ -88,7 +88,8 @@ pub struct PlanetUniform {
     /// x: radius (m), y: seed (fraction), z: procedural colour enabled, w: unused.
     pub proc_params2: Vec4,
     pub atm: AtmosphereParamsUniform,
-    pub eclipse: EclipseUniform,
+    /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl, from [`crate::eclipse::EclipseCasters`]).
+    pub eclipse: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     /// Own rings: x inner, y outer radius (planet radii), z opacity, w 0 none / 0.5 untextured / 1 textured.
     pub ring: Vec4,
     /// xyz: ring plane normal (render orientation); w: SE's rings winter strength, `RingsWinter` x
@@ -221,7 +222,8 @@ fn thermal_uniform(terrain: &Terrain, light: &crate::system::BodyLighting) -> Ve
     Vec4::new(t, lava, 0.010_673_289 * light.heat, if giant { 1.0 } else { 0.0 })
 }
 
-/// Bodies casting shadows on a lit body (see `eclipse.wesl`).
+/// Bodies casting shadows on a lit body from its main star, kept on the CPU for the sky's sun-disc mask
+/// (system.rs); the surface and clouds take eclipse.rs's casters of every light.
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
 pub struct EclipseUniform {
     /// xyz: occluder centre relative to the lit body (universe orientation, lit-body radii);
@@ -231,14 +233,16 @@ pub struct EclipseUniform {
     pub info: Vec4,
 }
 
-impl EclipseUniform {
-    /// Whether the shadows moved enough to be worth re-uploading the materials.
-    fn differs(&self, o: &Self) -> bool {
-        self.info.y != o.info.y
-            || (self.info.x - o.info.x).abs() > self.info.x * 1e-3
-            || self.occ.iter().zip(&o.occ).any(|(a, b)| (*a - *b).abs().max_element() > 2e-4)
-    }
+/// Whether the casters moved enough to be worth re-uploading the materials.
+fn casters_differ(a: &[crate::eclipse::EclipseLight], b: &[crate::eclipse::EclipseLight]) -> bool {
+    a.iter().zip(b).any(|(a, b)| {
+        a.info.y != b.info.y
+            || (a.info.x - b.info.x).abs() > a.info.x * 1e-3
+            || a.casters.iter().zip(&b.casters).any(|(c, d)| (*c - *d).abs().max_element() > 2e-4)
+    })
+}
 
+impl EclipseUniform {
     /// CPU version of `eclipse_light`: starlight reaching `p` (lit-body radii) from direction `l`.
     pub fn light_at(&self, p: DVec3, l: DVec3) -> Vec3 {
         let mut light = Vec3::ONE;
@@ -600,7 +604,9 @@ pub struct Terrain {
     last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
-    last_eclipse: EclipseUniform,
+    /// The materials' casters ([`crate::eclipse::EclipseCasters`]) and the last uploaded ones.
+    casters: [crate::eclipse::EclipseLight; MAX_LIGHTS],
+    last_casters: [crate::eclipse::EclipseLight; MAX_LIGHTS],
 }
 
 /// The light an atmosphere of `Bright` `atm_bright` scatters (haze, the sky seen in water) relative to
@@ -744,7 +750,8 @@ impl Terrain {
             last_water: 1.0,
             last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
-            last_eclipse: EclipseUniform::default(),
+            casters: Default::default(),
+            last_casters: Default::default(),
         }
     }
 
@@ -1649,7 +1656,7 @@ fn update_terrain(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
-    mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain)>,
+    mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain, Option<&crate::eclipse::EclipseCasters>)>,
     (ambient, emission, water_display, switches): (
         Res<crate::system::AmbientLighting>,
         Res<SelfEmission>,
@@ -1673,11 +1680,13 @@ fn update_terrain(
     let (Some(defaults), Some(surface_tex)) = (defaults, surface_tex) else { return };
     let mut in_flight: usize = bodies
         .iter()
-        .map(|(_, _, _, t)| t.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count())
+        .map(|(_, _, _, t, _)| t.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count())
         .sum();
     // Tiles started this frame, over all bodies (SE's `MaxTilesPerFrame`).
     let mut started = 0usize;
-    for (body_entity, body, light, mut terrain) in &mut bodies {
+    for (body_entity, body, light, mut terrain, casters) in &mut bodies {
+        // SE's EclipseCasters per light (eclipse.rs), none with the eclipses switch off.
+        terrain.casters = casters.filter(|_| switches.eclipses).map_or_else(Default::default, |c| c.lights);
         let terrain = &mut *terrain;
         if !terrain.biome_chosen {
             terrain.biome_chosen = true;
@@ -1813,7 +1822,7 @@ fn update_terrain(
                         mie_g: 0.8,
                         mie_fade: 0.1,
                     }).into()),
-                eclipse: terrain.eclipse,
+                eclipse: terrain.casters,
                 ring: ring.as_ref().map_or(Vec4::ZERO, |r| r.1),
                 ring_normal,
                 soil_tile: {
@@ -1895,7 +1904,7 @@ fn update_terrain(
                             rect: crect,
                             params: Vec4::new(c.opacity.min(1.0), c.bump_m, if c.opaque_map { 1.0 } else { 0.0 }, 0.0),
                             planet: (-ccenter).as_vec3().extend(terrain.radius as f32),
-                            eclipse: terrain.eclipse,
+                            eclipse: terrain.casters,
                             proc: terrain
                                 .cloud_proc
                                 .filter(|_| procedural)
@@ -2155,13 +2164,13 @@ fn update_terrain(
             terrain.last_sun = Vec4::ZERO;
         }
         let glow_bright = terrain.surface.glow_bright as f32 * 1.5 * emission.scale();
-        let eclipse = terrain.eclipse;
+        let eclipse = terrain.casters;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
-        if (sun - terrain.last_sun).length() > 1e-3 || extra_moved || eclipse.differs(&terrain.last_eclipse) {
+        if (sun - terrain.last_sun).length() > 1e-3 || extra_moved || casters_differ(&eclipse, &terrain.last_casters) {
             terrain.last_sun = sun;
             terrain.last_extra = extra_dir;
-            terrain.last_eclipse = eclipse;
+            terrain.last_casters = eclipse;
             for slot in terrain.nodes.values() {
                 if let NodeState::Ready(e, c) = &slot.state {
                     if let Ok(node) = nodes.get(*e) {
@@ -2443,7 +2452,8 @@ pub struct CloudUniform {
     pub params: Vec4,
     /// xyz: planet centre in node-local coordinates (m); w: planet radius (m).
     pub planet: Vec4,
-    pub eclipse: EclipseUniform,
+    /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl).
+    pub eclipse: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     /// Procedural clouds (no texture): x coverage, y base frequency, z octaves, w enabled.
     pub proc: Vec4,
     /// x seed, y unused (the layer's drift turns the shell), z latitude belt strength.

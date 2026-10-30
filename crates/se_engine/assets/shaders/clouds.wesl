@@ -5,7 +5,7 @@
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
-import super::eclipse::{Eclipse, eclipse_light};
+import super::eclipse::{EclipseLight, eclipse_light};
 import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_transmittance_sun, atm_irradiance, atm_apply_aerial};
 
 const PI: f32 = 3.14159265358979;
@@ -18,7 +18,8 @@ struct Clouds {
     params: vec4<f32>,
     // xyz: planet centre (node-local), w: planet radius
     planet: vec4<f32>,
-    eclipse: Eclipse,
+    // Each light's casters: [0] the brightest star, then the extra lights in order.
+    eclipse: array<EclipseLight, 4>,
     // Procedural clouds (no texture): x coverage, y base frequency, z octaves, w enabled
     proc: vec4<f32>,
     // x seed, y unused, z latitude belt strength
@@ -428,7 +429,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let a = clamp((density - 0.05) / 0.95 * clouds.params.x, 0.0, 1.0) * near;
 
     let rel = in.world_pos - in.centre.xyz;
-    let shadow = eclipse_light(clouds.eclipse, rel / max(in.centre.w, 1e-30), l);
+    let shadow = eclipse_light(clouds.eclipse[0], rel / max(in.centre.w, 1e-30), l);
     // Star light above the atmosphere, in the tables' scale.
     let e_top = clouds.sun_color.rgb * clouds.sun_dir.w * shadow * clouds.atm_flags.y;
     let mu_s = dot(up, l);
@@ -469,7 +470,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
             break;
         }
         let lx = normalize(clouds.light_dir[i].xyz);
-        let top_x = clouds.light_color[i].rgb * eclipse_light(clouds.eclipse, rel / max(in.centre.w, 1e-30), lx) * clouds.atm_flags.y;
+        let top_x = clouds.light_color[i].rgb * eclipse_light(clouds.eclipse[i + 1], rel / max(in.centre.w, 1e-30), lx) * clouds.atm_flags.y;
         let mu_x = dot(up, lx);
         var sun_x = top_x * clamp((sqrt(1.0 - rr * rr) + mu_x) * 500.0, 0.0, 1.0);
         var sky_x = vec3<f32>(0.0);

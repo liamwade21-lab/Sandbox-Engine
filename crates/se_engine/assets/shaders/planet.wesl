@@ -5,7 +5,7 @@ import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_lo
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::globals;
 import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irradiance, atm_apply_aerial, atm_transmittance_sun, atm_sky_radiance};
-import super::eclipse::{Eclipse, eclipse_light};
+import super::eclipse::{EclipseLight, eclipse_light};
 
 struct Planet {
     sun_dir: vec4<f32>,
@@ -31,7 +31,8 @@ struct Planet {
     // x: radius (m), y: seed fraction, z: procedural colour enabled
     proc_params2: vec4<f32>,
     atm: AtmParams,
-    eclipse: Eclipse,
+    // Each light's casters: [0] the brightest star, then the extra lights in order.
+    eclipse: array<EclipseLight, 4>,
     // Own rings: x inner, y outer radius (planet radii), z opacity, w 0 none / 0.5 untextured / 1 textured.
     ring: vec4<f32>,
     // xyz: ring plane normal (render orientation).
@@ -1921,7 +1922,7 @@ fn horizon_shadow(height: f32, mu: f32) -> f32 {
 fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: vec3<f32>) -> Surf {
     let has_atm = planet.atm_flags.x > 0.5;
     let p_rel = (in.world_pos - in.centre.xyz) / max(in.centre.w, 1e-30);
-    let shadow = eclipse_light(planet.eclipse, p_rel, l) * ring_shadow(p_rel, l);
+    let shadow = eclipse_light(planet.eclipse[0], p_rel, l) * ring_shadow(p_rel, l);
     let sun = planet.sun_color.rgb * planet.sun_dir.w * shadow;
     let e_sun = sun * planet.atm_flags.y;
 
@@ -2053,7 +2054,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             break;
         }
         let lx = normalize(planet.light_dir[i].xyz);
-        let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_shadow(p_rel, lx);
+        let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse[i + 1], p_rel, lx) * ring_shadow(p_rel, lx);
         let e_x = sun_x * planet.atm_flags.y;
         let term_x = horizon_shadow(in.height, dot(up, lx));
         var ground_x = sun_x * term_x;
@@ -2112,7 +2113,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
                 break;
             }
             let lx = normalize(planet.light_dir[i].xyz);
-            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse, p_rel, lx) * ring_x[i];
+            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse[i + 1], p_rel, lx) * ring_x[i];
             glint += sun_x * horizon_shadow(in.height, dot(up, lx)) * ground_spec(ns, v, lx, a);
         }
         s.col += glint * planet.atm_flags.y * ice * (1.0 - fade) * smoothstep(0.0, 0.1, dot(n, l));
