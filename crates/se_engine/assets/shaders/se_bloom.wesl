@@ -13,11 +13,25 @@ import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 struct SeBloom {
     // x: BloomBright, y: BloomThreshold, z: FrameDynamicRange, w: BloomDynamicRange.
     params: vec4<f32>,
+    // Pseudo lens flare (hdr_combine.glsl): x GhostsBright, y HaloBright, z DirtBright, w on.
+    flare_bright: vec4<f32>,
+    // x GhostsBlur, y HaloBlur, z DirtDispersal (bloom levels), w viewport scale.
+    flare_blur: vec4<f32>,
+    // x GhostsDispersal, y GhostsCount, z HaloRadius, w Chromaticism.
+    flare_shape: vec4<f32>,
+    // x width / height, y 1 with a dirt texture, z 1 with a rays texture, w the ghosts' and halo's
+    // gain to SE's brightness scale (lensflare.rs STAR_FRAME_GAIN).
+    lens: vec4<f32>,
+    // LensRaysMatr by columns.
+    rays: vec4<f32>,
 };
 
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var src_sampler: sampler;
 @group(0) @binding(2) var<uniform> bloom: SeBloom;
+// combine_flares only.
+@group(0) @binding(3) var dirt_tex: texture_2d<f32>;
+@group(0) @binding(4) var rays_tex: texture_2d<f32>;
 
 const TO_GRAY: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 
@@ -74,16 +88,93 @@ fn blur_v(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return gauss(in.uv, vec2<f32>(0.0, 1.0), 0.0);
 }
 
-// hdr_combine.glsl BLOOM: added to the frame (the pipeline blends One + One).
-@fragment
-fn combine(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+// hdr_combine.glsl BLOOM: BloomBright x the normalised weighted sum of the levels.
+fn bloom_sum(uv: vec2<f32>) -> vec3<f32> {
     let w = array<f32, 6>(0.50, 0.60, 0.60, 0.45, 0.35, 0.23);
     var c = vec3<f32>(0.0);
     for (var k = 0; k < 6; k = k + 1) {
-        c += textureSampleLevel(src, src_sampler, in.uv, f32(k)).rgb * w[k];
+        c += textureSampleLevel(src, src_sampler, uv, f32(k)).rgb * w[k];
     }
     let bn = 1.0 / (0.5 + 0.6 + 0.6 + 0.45 + 0.35 + 0.23);
-    return vec4<f32>(c * bn * bloom.params.x, 0.0);
+    return c * bn * bloom.params.x;
+}
+
+// Added to the frame (the pipeline blends One + One).
+@fragment
+fn combine(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(bloom_sum(in.uv), 0.0);
+}
+
+// hdr_combine.glsl textureCroma: the chain at `lod` with the channels pulled apart along `dir`. The
+// port's suns are dimmer than SE's, so the samples are raised by the flare gain and limited to
+// BloomDynamicRange, as SE's own bloom is where it is made.
+fn croma(uv: vec2<f32>, lod: f32, dir: vec2<f32>, dist: vec3<f32>) -> vec3<f32> {
+    let c = vec3<f32>(
+        textureSampleLevel(src, src_sampler, uv + dir * dist.r, lod).r,
+        textureSampleLevel(src, src_sampler, uv + dir * dist.g, lod).g,
+        textureSampleLevel(src, src_sampler, uv + dir * dist.b, lod).b,
+    ) * bloom.lens.w;
+    return c * clamp(bloom.params.w / (dot(c, TO_GRAY) + 1.0e-10), 0.0, 1.0);
+}
+
+fn safe_normalize(v: vec2<f32>) -> vec2<f32> {
+    let l = length(v);
+    return select(vec2<f32>(0.0), v / l, l > 1.0e-12);
+}
+
+// hdr_combine.glsl BLOOM + FLARES (John Chapman's pseudo lens flare): ghosts of the bright parts of
+// the bloom mirrored through the screen centre and a halo, both multiplied by the starburst
+// (`LensRays`, x3) plus the lens dirt; the frame is also mixed towards a blurred bloom level by the
+// dirt times DirtBright. Returns the added light in rgb and the dirt mix in alpha (the pipeline
+// blends One + OneMinusSrcAlpha, so a grey dirt level stands for SE's per-channel mix).
+@fragment
+fn combine_flares(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let uv = in.uv;
+    let fb = bloom.flare_bright;
+    let blur = bloom.flare_blur;
+    let fs = bloom.flare_shape;
+    let aspect = vec2<f32>(bloom.lens.x, 1.0);
+    // The frame's texel (the chain's first level is half its size).
+    let texel = 0.5 / vec2<f32>(textureDimensions(src));
+    let dist = vec3<f32>(-texel.x * fs.w, 0.0, texel.y * fs.w);
+
+    // Ghosts.
+    let tc = vec2<f32>(1.0) - uv;
+    let ghost_vec = (uv - vec2<f32>(0.5)) * fs.x;
+    let ghost_dir = safe_normalize(ghost_vec);
+    var ghost = vec3<f32>(0.0);
+    let n = i32(fs.y);
+    for (var i = 0; i < n; i = i + 1) {
+        let fi = f32(i);
+        let size = fi * fs.x;
+        let refl = select(1.0, -1.0, size > 1.0);
+        let fade = abs(1.0 - size);
+        let offset = fract(tc + ghost_vec * fi);
+        let color = croma(offset, blur.x * blur.w, refl * ghost_dir, dist);
+        let luma = dot(color, TO_GRAY);
+        let w0 = clamp(length(vec2<f32>(0.5) - offset) * 1.41421356, 0.0, 1.0);
+        let w = pow(1.0 - w0, 10.0) * smoothstep(0.0, 5.5, luma) * fade * fade;
+        ghost += color * w;
+    }
+    ghost *= fb.x;
+
+    // Halo.
+    var halo_vec = (uv - vec2<f32>(0.5)) * aspect;
+    halo_vec = halo_vec - safe_normalize(halo_vec) * fs.z;
+    let hw = pow(1.0 - clamp(length(halo_vec), 0.0, 1.0), 5.0) * fb.y;
+    halo_vec = vec2<f32>(0.5) - halo_vec;
+    let halo = croma(halo_vec, blur.y * blur.w, -2.0 * safe_normalize(halo_vec), dist) * hw * 0.33;
+
+    // Lens dirt and the starburst.
+    let dirt = textureSampleLevel(dirt_tex, src_sampler, uv, 0.0).rgb * bloom.lens.y;
+    let rays_m = mat2x2<f32>(bloom.rays.xy, bloom.rays.zw);
+    let tc_rays = rays_m * (uv - vec2<f32>(0.5)) * 0.5 + vec2<f32>(0.5);
+    let rays = textureSampleLevel(rays_tex, src_sampler, tc_rays, 0.0).rgb * 3.0 * bloom.lens.z;
+    let flare = (ghost + halo) * (rays + dirt);
+
+    let dirt_mix = dirt * fb.z;
+    let dirt_mask = textureSampleLevel(src, src_sampler, uv, blur.z * blur.w).rgb;
+    return vec4<f32>(bloom_sum(uv) + flare + dirt_mask * dirt_mix, dot(dirt_mix, TO_GRAY));
 }
 
 // The blurred frame behind the interface's windows (gui.glsl BLUR_BACKGROUND, `BackTex`), tone-mapped
