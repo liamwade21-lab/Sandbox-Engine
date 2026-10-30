@@ -103,9 +103,20 @@ DockingPort ...   (CorrPos CorrSize CorrRot ShipPos ShipRot, `Type "Passenger"`/
 ## 4. Materials (`.sml`) and textures
 
 `Material "name" { DiffColor, EmisColor, EmisBright, SpecColor, SpecPower, DiffMap, EmisMap, SpecMap, NormMap,
-BumpMap, TempMap, DetBumpMap, DiffMapAlpha, ... }`. 19 materials. The port uses `DiffColor`, `DiffMap`, `EmisColor`
-times `EmisBright` with `EmisMap`, and `DiffMapAlpha "Transp"` (cut-out transparency: the `SHW_Frame_new` lattice
-modules). Specular, normal, bump, temperature (heat glow) and detail maps are not used yet.
+BumpMap, TempMap, DetBumpMap, DiffMapAlpha, ... }`. 19 materials, every key of the parser FUN_1402a1fb0 read
+(`crates/se_core/src/ship.rs`) and drawn by `ship.wesl` as ship.glsl. `Reflections true` (only `Skylone`) sets
+material flag 0x10: the ship gets an environment map (`crates/se_engine/src/ship/envmap.rs`) whose reflection adds
+to the specular light (ENVMAP). SHW.sml's `EnvMap true` is not a key SE reads.
+
+`MaterialPBR "name" { ... }` blocks (only `ApolloEaglePBR`, which no design uses; its `ApolloEagle_RMAO.dds` is not
+in the install) take the same keys plus `PbrMap` (roughness, metalness, occlusion), `RoughnessScale` 1,
+`RoughnessConst` 0, `MetallnessScale` 1, `MetallnessConst` 0 and `AmbOcclScale` 1; flags 0x30, so they always
+reflect, and a `"Spec"` alpha becomes `"None"`. They are drawn as ship_pbr.glsl (`fragment_pbr`): its analytic
+lights, image-based light from the environment map's prefiltered cubes and SE's `ibl_brdf_lut.png` (loaded only
+with `EnableShipPBR`), emission, no thermal glow. ship_pbr.glsl's analytic lights use the camera-to-fragment
+vector where the direction to the camera belongs, so n.v and v.h stay at their floors: Fresnel 1, no diffuse,
+a weak highlight, each light's terms added once more unlit. The port keeps all of it. A missing `PbrMap` reads
+SE's default (roughness 0, metalness 0, occlusion 0.5).
 
 * Texture names are relative to the `.sml` directory, its parent, or `textures/spacecraft/` (case-insensitive).
   `name.*` means any extension; the port prefers PNG, then DDS.
@@ -119,8 +130,15 @@ modules). Specular, normal, bump, temperature (heat glow) and detail maps are no
 ## 5. Port behaviour and approximations
 
 * **Rendering.** Module instances sharing texture, tint, emissive map and alpha mode are merged into one mesh
-  (the 3886-module `Asterisk` is 4 meshes, 243k vertices). Lighting is Lambert from the brightest star of the
-  active system plus a small ambient; no shadows, specular or normal maps.
+  (the 3886-module `Asterisk` is 4 meshes, 243k vertices). Lighting as ship.glsl: up to 4 stars with eclipse
+  shadows, Lambert / Hapke, normal, specular, emissive, detail and temperature maps; no shadows cast.
+* **Environment map.** SE renders one for each reflecting ship over 1.5 px (FUN_140534b40) from a pool of
+  `MaxEnvmaps` chains at three resolutions. The port keeps one, for the reflecting ship largest on screen: six
+  cameras at its centre draw the scene without ships (one face per frame), and `ship_env.wesl` copies them into
+  an `EnvmapDimensions` cube with its mip chain, then builds EnvMapSpec (half size, level i of n prefiltered at
+  roughness ((i + 1) / n), 32 GGX samples, pbr_spec_cubemap.glsl) and EnvMapDiff (`IrrmapDimensions`, 96 cosine
+  samples of the source's last level, which is where SE's pass reads, pbr_diff_cubemap.glsl). EnvMapParams is
+  the specular cube's size and last level, (512, 9) without a map.
 * **Plumes.** One additive teardrop mesh per `EngineEffect`, sized by `Size`, scaled by the level of its group:
   `Main` by the spooled throttle, `Retro` by negative throttle, `Hover` by upward RCS, `Hyper` by warp boost,
   `Thruster` by the RCS or turn commands it can serve. No sound.

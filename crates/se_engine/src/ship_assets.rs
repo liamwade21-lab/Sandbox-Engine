@@ -6,9 +6,10 @@
 //! merged into one mesh, so a ship with thousands of modules still costs a handful of draw
 //! calls.
 //!
-//! [`HullMaterial`] is SE's `ship.glsl` (`shaders/ship.wesl`), which also draws the catalog
-//! models (`models.rs`): the `.sml` material maps ([`load_hull_textures`]) and parameters
-//! ([`hull_uniform`]) are shared.
+//! [`HullMaterial`] is SE's `ship.glsl` and, for `MaterialPBR`, `ship_pbr.glsl`
+//! (`shaders/ship.wesl`), which also draws the catalog models (`models.rs`): the `.sml` material
+//! maps ([`load_hull_textures`]) and parameters ([`hull_uniform`]) are shared. The environment
+//! maps both reflect are `ship/envmap.rs`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension,
-    TextureFormat,
+    TextureFormat, TextureUsages, TextureViewDescriptor, TextureViewDimension,
 };
 use bevy::shader::ShaderRef;
 use se_core::dds::decode_dds;
@@ -49,6 +50,14 @@ pub mod hull_flags {
     pub const THERM: u32 = 64;
     /// `TwoSided`: drawn without back-face culling (not a shader switch).
     pub const TWOSIDED: u32 = 128;
+    /// `Reflections` (material flag 0x10): the ship needs an environment map.
+    pub const REFLECT: u32 = 256;
+    /// `MaterialPBR` (flag 0x20): drawn by ship_pbr.glsl.
+    pub const PBR: u32 = 512;
+    /// Set while the ship's environment map is drawn (`ship/envmap.rs`): ship.glsl's ENVMAP for a
+    /// reflecting material, ship_pbr.glsl's image-based light. Without it SE binds its black
+    /// default cube maps.
+    pub const ENV: u32 = 1024;
 }
 
 /// Uniform block of [`HullMaterial`] (`Hull` in `ship.wesl`; SE's `ShipUniforms`).
@@ -75,6 +84,11 @@ pub struct HullUniform {
     pub detail: Vec4,
     /// `MapCorrections`: `DiffGamma`, `SpecGamma`, `EmisGamma`, `DirectXNormMap`.
     pub corrections: Vec4,
+    /// `RMScaleConst`: `RoughnessScale`, `MetallnessScale`, `RoughnessConst`, `MetallnessConst`.
+    pub pbr: Vec4,
+    /// `EnvMapParams`: the specular map's resolution, its last mip level, 1 / the map's exposure;
+    /// w `AmbOcclScale` (SE's `AmbientParams.z`).
+    pub env: Vec4,
     /// x: [`hull_flags`].
     pub flags: UVec4,
 }
@@ -109,6 +123,24 @@ pub struct HullMaterial {
     pub temperature: Handle<Image>,
     #[texture(15, sample_type = "float", filterable = false)]
     pub planck: Handle<Image>,
+    /// ship_pbr.glsl's RmaoMap (`PbrMap`).
+    #[texture(16)]
+    #[sampler(17)]
+    pub rmao: Handle<Image>,
+    /// The ship's environment map (EnvMap), its prefiltered specular (EnvMapSpec) and irradiance
+    /// (EnvMapDiff) cubes, and SE's BRDF table (BDRFLookupTexture).
+    #[texture(18, dimension = "cube")]
+    #[sampler(19)]
+    pub env_map: Handle<Image>,
+    #[texture(20, dimension = "cube")]
+    #[sampler(21)]
+    pub env_spec: Handle<Image>,
+    #[texture(22, dimension = "cube")]
+    #[sampler(23)]
+    pub env_diff: Handle<Image>,
+    #[texture(24)]
+    #[sampler(25)]
+    pub brdf_lut: Handle<Image>,
 }
 
 /// Pipeline key: alpha-tested (ATRNS) materials use the entry point with the discard; the others
@@ -117,11 +149,13 @@ pub struct HullMaterial {
 pub struct HullMaterialKey {
     cutout: bool,
     two_sided: bool,
+    pbr: bool,
 }
 
 impl From<&HullMaterial> for HullMaterialKey {
     fn from(m: &HullMaterial) -> Self {
-        Self { cutout: m.u.flags.x & hull_flags::ATRNS != 0, two_sided: m.u.flags.x & hull_flags::TWOSIDED != 0 }
+        let f = m.u.flags.x;
+        Self { cutout: f & hull_flags::ATRNS != 0, two_sided: f & hull_flags::TWOSIDED != 0, pbr: f & hull_flags::PBR != 0 }
     }
 }
 
@@ -139,7 +173,16 @@ impl Material for HullMaterial {
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(f) = descriptor.fragment.as_mut() {
-            f.entry_point = Some(if key.bind_group_data.cutout { "fragment_cutout" } else { "fragment" }.into());
+            let k = key.bind_group_data;
+            f.entry_point = Some(
+                match (k.pbr, k.cutout) {
+                    (false, false) => "fragment",
+                    (false, true) => "fragment_cutout",
+                    (true, false) => "fragment_pbr",
+                    (true, true) => "fragment_pbr_cutout",
+                }
+                .into(),
+            );
         }
         let vertex_layout = layout.0.get_layout(&[
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
@@ -167,12 +210,27 @@ pub struct HullDefaults {
     pub thermal_shift: f32,
     /// main-def.cfg `hdrShipModelBright` (1): with the design's `Exposure`, the hull's `Params.w`.
     pub model_bright: f32,
+    /// SE's default RmaoMap (FUN_1402f0880): roughness 0, metalness 0, occlusion 127 / 255.
+    pub rmao: Handle<Image>,
+    /// The ship environment map's cubes (`ship/envmap.rs` draws them; every hull binds them and
+    /// [`hull_flags::ENV`] says whether they hold the ship's surroundings).
+    pub env_map: Handle<Image>,
+    pub env_spec: Handle<Image>,
+    pub env_diff: Handle<Image>,
+    /// `EnvmapDimensions` (512): the environment map's face size; the specular cube is half that.
+    pub env_size: u32,
+    /// `textures/common/ibl_brdf_lut.*`, loaded at start-up when `EnableShipPBR` (true) is set;
+    /// black otherwise.
+    pub brdf_lut: Handle<Image>,
 }
 
 impl FromWorld for HullDefaults {
     fn from_world(world: &mut World) -> Self {
         let def = |k: &str, d: f64| world.get_resource::<crate::config::EngineConfig>().and_then(|c| crate::stars::main_def_f64(c, k)).unwrap_or(d) as f32;
         let (thermal_shift, model_bright) = (def("ThermalEmissionShift", 0.0), def("hdrShipModelBright", 1.0));
+        // EnvmapDimensions and IrrmapDimensions, powers of two.
+        let env_size = (def("EnvmapDimensions", 512.0) as u32).clamp(16, 2048).next_power_of_two();
+        let irr_size = (def("IrrmapDimensions", 32.0) as u32).clamp(1, 256).next_power_of_two();
         let mut images = world.resource_mut::<Assets<Image>>();
         let planck: Vec<u8> = crate::blackholes::planck_table().iter().flatten().flat_map(|f| f.to_le_bytes()).collect();
         let n = (planck.len() / 16) as u32;
@@ -191,8 +249,57 @@ impl FromWorld for HullDefaults {
             planck: images.add(planck),
             thermal_shift,
             model_bright,
+            rmao: images.add(flat_raw([0, 0, 127, 0])),
+            env_map: images.add(env_cube(env_size, true)),
+            env_spec: images.add(env_cube(env_size / 2, true)),
+            env_diff: images.add(env_cube(irr_size, false)),
+            env_size,
+            brdf_lut: images.add(flat_raw([0, 0, 0, 255])),
         }
     }
+}
+
+/// A cube map that `ship/envmap.rs` writes from a compute shader: RGBA16F, six layers, with a full
+/// mip chain when `mips`, sampled linearly between levels.
+fn env_cube(size: u32, mips: bool) -> Image {
+    let mut image = Image::new_uninit(
+        Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+        TextureDimension::D2,
+        TextureFormat::Rgba16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = if mips { size.ilog2() + 1 } else { 1 };
+    image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST;
+    image.texture_view_descriptor = Some(TextureViewDescriptor { dimension: Some(TextureViewDimension::Cube), ..default() });
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    image
+}
+
+/// Loads SE's BRDF table (FUN_1402f0880, only with `EnableShipPBR`) into [`HullDefaults::brdf_lut`].
+pub fn load_brdf_lut(data: Res<crate::data::SeData>, cfg: Option<Res<crate::config::EngineConfig>>, defaults: Res<HullDefaults>, mut images: ResMut<Assets<Image>>) {
+    let enabled = cfg
+        .and_then(|c| std::fs::read_to_string(c.se_path.join("config/main-def.cfg")).ok())
+        .and_then(|t| se_core::sc::parse(&t).find_deep("EnableShipPBR").and_then(|i| i.bool()))
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let Some(path) = se_core::ship::resolve_texture(|p| data.vfs.exists(p), "textures/common/x", "ibl_brdf_lut.*") else {
+        warn!("ibl_brdf_lut not found");
+        return;
+    };
+    let Some(mut lut) = load_map(&data.vfs, &path, MapKind::Raw, 1024) else { return };
+    lut.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    let _ = images.insert(&defaults.brdf_lut, lut);
 }
 
 /// Registers [`HullMaterial`] and its defaults once (ships and catalog models both use it).
@@ -200,7 +307,9 @@ pub fn add_hull_material(app: &mut App) {
     if !app.is_plugin_added::<MaterialPlugin<HullMaterial>>() {
         app.add_plugins(MaterialPlugin::<HullMaterial>::default());
     }
-    app.init_resource::<HullDefaults>();
+    if !app.world().contains_resource::<HullDefaults>() {
+        app.init_resource::<HullDefaults>().add_systems(Startup, load_brdf_lut);
+    }
 }
 
 /// The decoded maps of one material; `None` where the material has none.
@@ -213,6 +322,7 @@ pub struct HullTextures {
     pub detail_diffuse: Option<Image>,
     pub detail_normal: Option<Image>,
     pub temperature: Option<Image>,
+    pub rmao: Option<Image>,
 }
 
 impl HullTextures {
@@ -229,6 +339,11 @@ impl HullTextures {
             detail_normal: add(self.detail_normal, &d.flat_normal),
             temperature: add(self.temperature, &d.black),
             planck: d.planck.clone(),
+            rmao: add(self.rmao, &d.rmao),
+            env_map: d.env_map.clone(),
+            env_spec: d.env_spec.clone(),
+            env_diff: d.env_diff.clone(),
+            brdf_lut: d.brdf_lut.clone(),
         }
     }
 }
@@ -264,7 +379,8 @@ pub fn load_hull_textures(
         emissive: load(&mat.emis_map, MapKind::Color, 1024),
         detail_diffuse: load(&mat.det_diff_map, MapKind::Raw, 1024),
         detail_normal: load(&mat.det_norm_map, height(mat.det_is_height, mat.det_bump_height), 1024),
-        temperature: if rad_temp > 0.0 { load(&mat.temp_map, MapKind::Raw, 1024) } else { None },
+        temperature: if rad_temp > 0.0 && !mat.pbr { load(&mat.temp_map, MapKind::Raw, 1024) } else { None },
+        rmao: if mat.pbr { load(&mat.pbr_map, MapKind::Raw, 2048) } else { None },
     }
 }
 
@@ -297,6 +413,13 @@ pub fn hull_uniform(mat: &ShipMaterial, tex: &HullTextures, rad_temp: f64, shift
     if mat.two_sided {
         flags |= TWOSIDED;
     }
+    if mat.reflections {
+        flags |= REFLECT;
+    }
+    if mat.pbr {
+        // FUN_1402a01e0's PBR variants have no SPEC, ASPEC or THERM.
+        flags = (flags & !(SPEC | ASPEC | THERM)) | PBR;
+    }
     let v3 = |c: [f32; 3], w: f32| Vec4::new(c[0], c[1], c[2], w);
     let e = mat.emis_bright;
     HullUniform {
@@ -311,6 +434,9 @@ pub fn hull_uniform(mat: &ShipMaterial, tex: &HullTextures, rad_temp: f64, shift
         spec: v3(mat.spec_color, mat.spec_power),
         detail: Vec4::new(mat.det_diff_scale, mat.det_diff_mag, mat.det_bump_scale, mat.det_bump_mag),
         corrections: Vec4::new(mat.diff_gamma, mat.spec_gamma, mat.emis_gamma, if mat.directx_norm { 1.0 } else { 0.0 }),
+        pbr: Vec4::new(mat.roughness_scale, mat.metallness_scale, mat.roughness_const, mat.metallness_const),
+        // FUN_14029f200's defaults without an environment map; `ship/envmap.rs` sets x and y.
+        env: Vec4::new(512.0, 9.0, 1.0, mat.amb_occl_scale),
         flags: UVec4::new(flags, 0, 0, 0),
     }
 }

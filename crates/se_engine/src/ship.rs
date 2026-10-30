@@ -32,6 +32,7 @@
 mod air;
 mod autopilot;
 mod engine_sound;
+pub mod envmap;
 pub mod hud;
 mod manager;
 mod persist;
@@ -392,7 +393,7 @@ pub struct ShipPlugin;
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         add_hull_material(app);
-        app.add_plugins((MaterialPlugin::<PlumeMaterial>::default(), warp::WarpPlugin))
+        app.add_plugins((MaterialPlugin::<PlumeMaterial>::default(), warp::WarpPlugin, envmap::ShipEnvPlugin))
             .init_resource::<Flight>()
             .insert_resource(ShipUi { show: std::env::var_os("SE_SHIPS_WINDOW").is_some(), ..default() })
             .init_resource::<ShipLibrary>()

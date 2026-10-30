@@ -6,7 +6,7 @@ fn main() {
     let (dir, needle) = (&a[0], &a[1]);
     let after: usize = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(12);
     let vfs = Vfs::mount_install(std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine")).unwrap();
-    for ext in ["sc", "cfg", "se", "csv"] {
+    for ext in ["sc", "cfg", "se", "csv", "sml"] {
         for f in vfs.list_ext(dir, ext) {
             let Ok(t) = vfs.read_string(&f) else { continue };
             let lines: Vec<&str> = t.lines().collect();

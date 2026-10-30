@@ -558,9 +558,22 @@ pub struct ShipMaterial {
     /// `TempMapMaxTemp`, default 3000 K (used by the PBR path only).
     pub temp_max: f32,
     pub two_sided: bool,
-    /// `Reflections` / `EnvMap`: the environment-map reflection (not drawn by the port).
+    /// `Reflections` (material flag 0x10): the ship renders an environment map that this
+    /// material reflects (ship.glsl ENVMAP). SE's parser has no `EnvMap` key.
     pub reflections: bool,
     pub diff_alpha: DiffAlpha,
+    /// A `MaterialPBR` block (flags 0x30, FUN_14029e110): drawn by ship_pbr.glsl, with reflections.
+    pub pbr: bool,
+    /// `PbrMap`: roughness, metalness and ambient occlusion in r, g, b (ship_pbr.glsl's RmaoMap).
+    pub pbr_map: Option<String>,
+    /// `RoughnessScale` 1, `MetallnessScale` 1, `RoughnessConst` 0, `MetallnessConst` 0: the PbrMap's
+    /// r and g times the scale plus the constant (RMScaleConst).
+    pub roughness_scale: f32,
+    pub metallness_scale: f32,
+    pub roughness_const: f32,
+    pub metallness_const: f32,
+    /// `AmbOcclScale` 1: the PbrMap's ambient occlusion factor (AmbientParams.z).
+    pub amb_occl_scale: f32,
 }
 
 impl Default for ShipMaterial {
@@ -596,6 +609,13 @@ impl Default for ShipMaterial {
             two_sided: false,
             reflections: false,
             diff_alpha: DiffAlpha::Spec,
+            pbr: false,
+            pbr_map: None,
+            roughness_scale: 1.0,
+            metallness_scale: 1.0,
+            roughness_const: 0.0,
+            metallness_const: 0.0,
+            amb_occl_scale: 1.0,
         }
     }
 }
@@ -606,6 +626,11 @@ fn color3(b: &Block, key: &str, default: [f32; 3]) -> [f32; 3] {
 
 /// Parses one `Material "name" { ... }` block (FUN_1402a1fb0). `map` resolves a texture name.
 pub fn parse_ship_material(name: &str, b: &Block, map: impl Fn(&str) -> Option<String>) -> ShipMaterial {
+    parse_material_block(name, b, false, map)
+}
+
+/// Parses a `Material` or (`pbr`) `MaterialPBR` block.
+fn parse_material_block(name: &str, b: &Block, pbr: bool, map: impl Fn(&str) -> Option<String>) -> ShipMaterial {
     let d = ShipMaterial::default();
     let f = |key: &str, def: f32| b.f64(key).map_or(def, |v| v as f32);
     // Keys sharing a slot: the later one in the executable's order wins.
@@ -625,11 +650,15 @@ pub fn parse_ship_material(name: &str, b: &Block, map: impl Fn(&str) -> Option<S
     if let Some(p) = tex("DetNormMap") {
         (det_norm_map, det_is_height) = (Some(p), false);
     }
-    let diff_alpha = match b.str("DiffMapAlpha").map(str::to_ascii_lowercase).as_deref() {
+    let mut diff_alpha = match b.str("DiffMapAlpha").map(str::to_ascii_lowercase).as_deref() {
         Some("none") => DiffAlpha::None,
         Some("transp") => DiffAlpha::Transp,
         _ => DiffAlpha::Spec,
     };
+    // ship_pbr.glsl has no specular power: a PBR material's "Spec" (the default too) is "None".
+    if pbr && diff_alpha == DiffAlpha::Spec {
+        diff_alpha = DiffAlpha::None;
+    }
     ShipMaterial {
         name: name.to_owned(),
         diff_color: color("DiffColor", "DiffColorScale", d.diff_color),
@@ -659,8 +688,15 @@ pub fn parse_ship_material(name: &str, b: &Block, map: impl Fn(&str) -> Option<S
         det_bump_mag: f("DetBumpMag", d.det_bump_mag),
         temp_max: f("TempMapMaxTemp", d.temp_max),
         two_sided: b.bool("TwoSided").unwrap_or(false),
-        reflections: b.bool("Reflections").unwrap_or(false) || b.bool("EnvMap").unwrap_or(false),
+        reflections: pbr || b.bool("Reflections").unwrap_or(false),
         diff_alpha,
+        pbr,
+        pbr_map: tex("PbrMap"),
+        roughness_scale: f("RoughnessScale", d.roughness_scale),
+        metallness_scale: f("MetallnessScale", d.metallness_scale),
+        roughness_const: f("RoughnessConst", d.roughness_const),
+        metallness_const: f("MetallnessConst", d.metallness_const),
+        amb_occl_scale: f("AmbOcclScale", d.amb_occl_scale),
     }
 }
 
@@ -682,13 +718,16 @@ pub fn resolve_texture(exists: impl Fn(&str) -> bool, from_file: &str, name: &st
     }
 }
 
-/// Parses the `Material` blocks of one `.sml` file.
+/// Parses the `Material` blocks of one `.sml` file, then its `MaterialPBR` blocks (FUN_14029e110's
+/// order).
 pub fn parse_ship_materials(src: &str, file: &str, exists: impl Fn(&str) -> bool) -> Vec<ShipMaterial> {
     let root = sc::parse(src);
     let mut out = Vec::new();
-    for m in root.all("Material") {
-        let (Some(name), Some(b)) = (first_str(m), m.block.as_ref()) else { continue };
-        out.push(parse_ship_material(name, b, |t| resolve_texture(&exists, file, t)));
+    for (key, pbr) in [("Material", false), ("MaterialPBR", true)] {
+        for m in root.all(key) {
+            let (Some(name), Some(b)) = (first_str(m), m.block.as_ref()) else { continue };
+            out.push(parse_material_block(name, b, pbr, |t| resolve_texture(&exists, file, t)));
+        }
     }
     out
 }
@@ -953,6 +992,31 @@ Material "Frame" { DiffColorScale (0.5 0.5 0.5) DiffMapAlpha "Transp" BumpMap "a
         // NormMap comes after BumpMap in the executable and takes the slot.
         assert!(!f.bump_is_height && f.norm_map.as_deref().is_some_and(|p| p.ends_with("b.png")));
         assert!(f.two_sided && f.det_norm_map.is_none());
+        assert!(!s.pbr && !s.reflections);
+    }
+
+    #[test]
+    fn pbr_materials() {
+        // real/ApolloEagle.sml, and SHW.sml's "EnvMap", which SE's parser does not know.
+        let sml = r#"
+MaterialPBR "ApolloEaglePBR"
+{
+	DiffColorScale  (0.588 0.588 0.588)
+	RoughnessScale  0.5
+	MetallnessConst 0.25
+	DiffMap         "real/ApolloEagle_albedo.dds"
+	PbrMap          "real/ApolloEagle_RMAO.dds"
+}
+Material "SHW_Gold" { SpecPower 50 EnvMap true }
+Material "Skylone" { Reflections true }
+"#;
+        let m = parse_ship_materials(sml, "textures/spacecraft/real/ApolloEagle.sml", |_| true);
+        assert_eq!(m.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["SHW_Gold", "Skylone", "ApolloEaglePBR"]);
+        assert!(!m[0].reflections && m[1].reflections && !m[1].pbr);
+        let p = &m[2];
+        assert!(p.pbr && p.reflections && p.pbr_map.as_deref().is_some_and(|t| t.ends_with("ApolloEagle_RMAO.dds")));
+        assert_eq!((p.roughness_scale, p.metallness_scale, p.roughness_const, p.metallness_const), (0.5, 1.0, 0.0, 0.25));
+        assert_eq!((p.amb_occl_scale, p.diff_alpha, p.diff_color), (1.0, DiffAlpha::None, [0.588; 3]));
     }
 
     /// Checks every shipped design against the real install and prints bounds data.
