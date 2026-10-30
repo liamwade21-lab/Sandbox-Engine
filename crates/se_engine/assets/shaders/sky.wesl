@@ -175,6 +175,12 @@ fn sky_look(in: VertexOut) -> SkyLook {
     if sky.shadow.z > 0.0 && cl > sky.shadow.z {
         cam_l *= sky.shadow.z / cl;
     }
+    // Under water (below the atmosphere's bottom) the sky is the one seen from its bottom, as SE's
+    // tables clamp the radius there; it shows through the sea's surface (water.glsl's alpha).
+    let r_min = sky.atm.radii.x / rt * 1.000001;
+    if cl < r_min {
+        cam_l *= r_min / max(cl, 1e-9);
+    }
     let cam = cam_l * rt;
     let ray = normalize(in.local_pos - cam_l);
     // Where the shadows are taken: where the ray enters the shell from space (SE draws its near side

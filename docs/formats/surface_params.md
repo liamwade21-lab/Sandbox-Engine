@@ -104,20 +104,32 @@ otherwise; `SpecBrightIce` 0.85 (classes 1, 2), 0.3 (class 4); `RoughnessWater` 
 airless); `RoughnessScale` 1; `DayAmbient` 0.07; `Exposure` 1 (giants 1.5, asteroids 2.25, comets 0.5).
 The `Ocean` block reader (FUN_14046eab0) takes `Height`, `Depth`, `Density`, `BottomCompositon`,
 maps, `Opacity`, Hapke/Lommel and spot parameters; there is no ocean colour key. The planet
-shader's uniform block has `WaterSurfColor`, `WaterFogColor`, `SpecParams` and `WaterParams`
-(not traced to the code that fills them).
+shader's water uniforms are filled by FUN_1404ae4a0: `WaterSurfColor` = ModulateColor x the
+body's preset `OceanPalette Deep` (alpha: the ShowWater animation squared), `WaterFogColor` = the
+preset's `Absorption` (rgb and opacity, per km), `SpecParams` = (SpecBrightIce, SpecBrightWater x the
+ShowWater animation squared, RoughnessIce, RoughnessWater), `SurfParams5` = (hdrPlanetSurfaceBright,
+hdrWaterSurfaceBright, hdrAtmoIllumBright), `WaterParams` = (sea level, ocean radius, z, w). A preset
+without `OceanPalette` keys gets the loader's defaults (FUN_140166410): Deep (0.04 0.1 0.2), Shelf
+the same, Absorption (40 5 1 5). SE 0.991 reads no `colorSea`/`colorShelf` keys. z, per km, is set by
+FUN_1404acdd0 from the camera's height h above the ocean: 1 / (100 - 99 min(h / WaterVisibilityHeight,
+1)) (a config variable, default 10 km), 1 / 2R under water, 0 on Oceanic and Superoceanic worlds
+(volatiles class 4, 5). w is 1.5; Oceanic 1.5 + 2 clamp(h / WaterVisibilityHeight); Superoceanic 4.5.
 
-The port draws the ocean as SE's ocean sphere does: each terrain node of a body with an ocean that
-reaches below sea level gets a second mesh, flat at sea level (a child entity, drawn from both
-sides by `water_fragment` in planet.wesl), while the ground mesh keeps the seabed. Where Earth's
-water map says land, the water surface is cut away (land below sea level stays dry). Seen from
-above the surface is see-through (premultiplied alpha, still writing depth): it adds the sky's
-reflection (the atmosphere's sky radiance) and the star's glint, GGX with `RoughnessWater`
-(catalog or 0.35) and `SpecBrightWater` (catalog or the class default above), over `1 - Fresnel`
-of what the ground pass drew below it. The ground pass draws the seabed where it is, faded to the
-deep colour along its own light path (`exp(-depth (1 + 1/mu) / 120 m)`), so it keeps its depth
-as the camera comes down (painted on the surface, it had looked a few metres down from any
-height). The glint's gain (x10) was matched by eye earlier. Instead of skirts the sea patches
+The port draws the water as SE does (planet.wesl, `se_ground_water` and `water_fragment`). The ground
+pass is planet.glsl's AWATER path: the ground under water fades through `exp(-(path under water +
+depth) x a x Absorption)` into the lit water colour (on Earth, the water map adds a fake 70 m), and
+past 1/z from the camera the flat sea covers it: SE's Cook-Torrance (terrain_pbr.glh) on every light
+with RoughnessWater and SpecBrightWater (catalog or the class default above), the water's diffuse
+colour and ambient by the Fresnel opacity `0.02 + w 0.98 (1 - n.v)^4` plus the fog's. Near the camera
+each terrain node of a body with an ocean that reaches below sea level gets a second mesh, flat at sea
+level (SE's 3D water, water.glsl), drawn whole to 1/z from the camera and gone at 2/z (patches
+beyond it are hidden, `water_reach_m`): the same lighting on the waves' normal, see-through by the
+Fresnel opacity (premultiplied alpha, still writing depth), and from under water fading into the fog
+over the whole path, the sky (drawn from the atmosphere's bottom) showing through. There is no sky
+reflection, refraction or Snell's window, as in SE. The waves are the port's own (SE's are four
+scrolling taps of a NoiseMap texture made by code not decoded), faded out from 10 to 20 km as SE's
+wavesFade. Where Earth's water map says land, the water surface is cut away (land below sea level
+stays dry). Instead of skirts the sea patches
 have flanges: one more row of the grid continued along the sphere over the neighbour, a hair
 lower, drawn only from below (from above they would blend a second surface over the neighbour);
 they close the cracks along coarser neighbours' straight edges. On bodies with an ocean the

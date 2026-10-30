@@ -72,10 +72,11 @@ pub struct PlanetUniform {
     /// x glow brightness (self-emission included), y water specular, z cloud opacity, w water
     /// roughness.
     pub params: Vec4,
-    /// rgb deep ocean colour; w: 1 = body has an ocean.
+    /// rgb SE's WaterSurfColor ([`Terrain::water_color`] x ModulateColor, linear); w: 1 = body has
+    /// water.
     pub ocean_sea: Vec4,
-    /// rgb shallow shelf colour; w: shelf depth (m).
-    pub ocean_shelf: Vec4,
+    /// SE's WaterFogColor ([`Terrain::water_fog`]): the water's absorption, rgb and opacity, per km.
+    pub water_fog: Vec4,
     /// x: atmosphere enabled, y: sun irradiance scale for the tables, z: the scattered light's scale
     /// relative to y ([`scatter_rel`]), w: the surface's `DayAmbient`.
     pub atm_flags: Vec4,
@@ -86,7 +87,8 @@ pub struct PlanetUniform {
     pub proc_pal3: Vec4,
     /// x: surface kind id, y: relief (m), z: temperature (K), w: has life.
     pub proc_params: Vec4,
-    /// x: radius (m), y: seed (fraction), z: procedural colour enabled, w: unused.
+    /// x: radius (m), y: seed (fraction), z: procedural colour enabled, w: SE's volatiles class
+    /// (4 Oceanic, 5 Superoceanic: 3D water at every distance, see [`water_reach_m`]).
     pub proc_params2: Vec4,
     pub atm: AtmosphereParamsUniform,
     /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl, from [`crate::eclipse::EclipseCasters`]).
@@ -441,6 +443,12 @@ impl Material for PlanetMaterial {
         // The sea surface lets the seabed (drawn by the ground pass) show through from above.
         if self.u.water.w > 0.5 { AlphaMode::Premultiplied } else { AlphaMode::Opaque }
     }
+    fn depth_bias(&self) -> f32 {
+        // The sea surface after the sky shells, as the clouds: from under water the sky shows through
+        // it (water.glsl's alpha), and looking up the shell (sorted by the planet's centre, behind
+        // the camera) would come after it and fail its depth.
+        if self.u.water.w > 0.5 { 1.0e10 } else { 0.0 }
+    }
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -450,7 +458,7 @@ impl Material for PlanetMaterial {
         let water = key.bind_group_data.water;
         if water {
             descriptor.primitive.cull_mode = None;
-            // Still hides what lies beyond it (seen from below it is opaque).
+            // Still hides what is drawn after it beyond it (far from the camera it is opaque).
             if let Some(ds) = descriptor.depth_stencil.as_mut() {
                 ds.depth_write_enabled = Some(true);
             }
@@ -590,6 +598,10 @@ pub struct Terrain {
     pub surf_gen: se_core::surface_gen::SurfaceGen,
     /// Water `SpecBrightWater` and `RoughnessWater` (catalog, else SE's class defaults).
     pub water_spec: (f32, f32),
+    /// SE's water colour and absorption from the body's preset ([`SurfaceTextures::ocean_palette`]):
+    /// `OceanPalette` `Deep` (linear) and `Absorption` (per km). SE reads no `colorSea` key.
+    pub water_color: Vec3,
+    pub water_fog: Vec4,
     /// Precomputed scattering tables, if the body has an atmosphere.
     pub atmosphere: Option<AtmosphereGpu>,
     /// The atmosphere's `Bright` and look (Opacity, Hue, Saturation, SkyLight), set with `atmosphere`.
@@ -777,6 +789,9 @@ impl Terrain {
             radius,
             proc,
             water_spec,
+            // SE's defaults (FUN_140166410) until the preset is chosen.
+            water_color: Vec3::new(0.04, 0.1, 0.2).powf(2.2),
+            water_fog: Vec4::new(40.0, 5.0, 1.0, 5.0),
             surf_gen,
             surface,
             clouds,
@@ -1098,7 +1113,7 @@ impl Plugin for TerrainPlugin {
             .add_systems(
                 PostUpdate,
                 // After update_terrain, so the camera collides with this frame's nodes.
-                (update_eclipses, update_terrain, keep_camera_above_ground, update_node_transforms)
+                (update_eclipses, update_terrain, cull_sea_patches, keep_camera_above_ground, update_node_transforms)
                     .chain()
                     .after(UniverseSet::Camera)
                     .before(UniverseSet::FloatingOrigin),
@@ -1614,6 +1629,46 @@ pub struct BodyAttached {
     pub center: DVec3,
 }
 
+/// A node's sea surface (SE's 3D water mesh, water.glsl), a child of its ground node; `extent_m`
+/// bounds the node's reach from its centre.
+#[derive(Component)]
+pub struct SeaPatch {
+    extent_m: f64,
+}
+
+/// SE's WaterVisibilityHeight (config variable, default 10 km; not in main-def.cfg).
+const WATER_VISIBILITY_HEIGHT_M: f64 = 10_000.0;
+
+/// How far from the camera SE draws its 3D water, 2 / WaterParams.z (FUN_1404acdd0): 200 km from sea
+/// level down to 2 km at WaterVisibilityHeight and above; past it the ground pass draws a flat sea.
+/// `None` (everywhere) from under water (1 / (2 R)) and on Oceanic and Superoceanic worlds
+/// (volatiles class 4, 5: 0). `alt_m` is the camera's height above sea level.
+pub fn water_reach_m(alt_m: f64, volq: i32) -> Option<f64> {
+    if volq == 4 || volq == 5 || alt_m <= 0.0 {
+        return None;
+    }
+    let t = (alt_m / WATER_VISIBILITY_HEIGHT_M).min(1.0);
+    Some(2.0 * (100.0 - 99.0 * t) * 1000.0)
+}
+
+/// Hides the sea patches SE would not draw (beyond [`water_reach_m`]); their water is the ground
+/// pass's flat sea there.
+fn cull_sea_patches(
+    cam: Res<FlyCamera>,
+    bodies: Query<(&SystemBody, &Terrain)>,
+    nodes: Query<&BodyAttached, Allow<Disabled>>,
+    mut seas: Query<(&SeaPatch, &ChildOf, &mut Visibility), Allow<Disabled>>,
+) {
+    for (sea, parent, mut vis) in &mut seas {
+        let Ok(node) = nodes.get(parent.parent()) else { continue };
+        let Ok((body, terrain)) = bodies.get(node.body) else { continue };
+        let cam_body = body.from_shape(body.orient.inverse() * cam.pos.delta_m(body.pos));
+        let reach = water_reach_m(cam_body.length() - terrain.radius, terrain.surf_gen.classes.volq);
+        let near = reach.is_none_or(|r| (cam_body - node.center).length() - sea.extent_m < r);
+        vis.set_if_neq(if near { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
+
 /// Layer rect for a node: (ancestor key, uniform rect).
 fn layer_rect(layer: Option<&TileLayer>, key: TileKey) -> (Option<String>, Vec4) {
     match layer {
@@ -1789,6 +1844,9 @@ fn update_terrain(
                     terrain.surf_gen.classes
                 );
                 terrain.biome = if giant { surface_tex.giant_uniform(&info, &terrain.surf_gen) } else { surface_tex.biome_uniform(&info) };
+                let (deep, fog) = surface_tex.ocean_palette(&info);
+                terrain.water_color = Vec3::from_array(deep);
+                terrain.water_fog = Vec4::from_array(fog);
                 if let (Some(u), true, false) = (terrain.biome.as_mut(), terrain.proc.se.is_some(), giant) {
                     u.climate = crate::surface_tex::climate_uniform(&terrain.surf_gen, terrain.proc.bump_m, terrain.proc.ocean_fraction > 0.0, terrain.tidal_lock);
                 }
@@ -1857,16 +1915,10 @@ fn update_terrain(
                     shadow.map_or(0.0, |i| terrain.clouds[i].opacity.min(1.0)),
                     terrain.water_spec.1,
                 ),
-                ocean_sea: s
-                    .color_sea
-                    .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32))
-                    .unwrap_or(Vec3::new(0.012, 0.03, 0.06))
+                // SE's WaterSurfColor: ModulateColor x the preset's Deep (FUN_1404ae4a0).
+                ocean_sea: (terrain.water_color * terrain.surf_modulate.truncate())
                     .extend(if terrain.has_ocean || layers.water.is_some() { 1.0 } else { 0.0 }),
-                ocean_shelf: s
-                    .color_shelf
-                    .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32))
-                    .unwrap_or(Vec3::new(0.15, 0.48, 0.46))
-                    .extend(120.0),
+                water_fog: terrain.water_fog,
                 atm_flags: Vec4::new(
                     if terrain.atmosphere.is_some() && switches.atmospheres { 1.0 } else { 0.0 },
                     ATM_SUN_SCALE,
@@ -1887,7 +1939,7 @@ fn update_terrain(
                     terrain.radius as f32,
                     (terrain.proc.seed % 10_000) as f32 / 10_000.0,
                     if layers.color.is_none() { 1.0 } else { 0.0 },
-                    0.0,
+                    terrain.surf_gen.classes.volq as f32,
                 ),
                 atm: terrain
                     .atmosphere
@@ -2057,7 +2109,8 @@ fn update_terrain(
                 ));
             // The sea surface shares the node's centre, transform, visibility and `Disabled`.
             if let (Some(wm), Some(wmat)) = (build.water, water_mat) {
-                node.with_child((Mesh3d(meshes.add(wm)), MeshMaterial3d(wmat), Transform::IDENTITY, Visibility::Inherited, Disabled));
+                let extent_m = terrain.radius * node_angle(key.level);
+                node.with_child((SeaPatch { extent_m }, Mesh3d(meshes.add(wm)), MeshMaterial3d(wmat), Transform::IDENTITY, Visibility::Inherited, Disabled));
             }
             let e = node.id();
             let range = build.grid_heights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
@@ -2688,6 +2741,18 @@ mod tests {
         // The colour follows the surface temperature.
         let w = glow_color_atmo(2500.0, 6000.0, 1.0);
         assert!(w.z / w.x > g.z / g.x);
+    }
+
+    #[test]
+    fn sea_reach_follows_se() {
+        // 2 / WaterParams.z: 200 km at sea level, 2 km from WaterVisibilityHeight (10 km) up.
+        assert!((water_reach_m(1.0, 3).unwrap() - 199_980.2).abs() < 0.1);
+        assert_eq!(water_reach_m(5_000.0, 3), Some(101_000.0));
+        assert_eq!(water_reach_m(20_000.0, 2), Some(2_000.0));
+        // Under water, and on Oceanic and Superoceanic worlds, everywhere.
+        assert_eq!(water_reach_m(-3.0, 3), None);
+        assert_eq!(water_reach_m(50_000.0, 4), None);
+        assert_eq!(water_reach_m(50_000.0, 5), None);
     }
 
     #[test]

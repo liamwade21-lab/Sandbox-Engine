@@ -583,6 +583,17 @@ impl SurfaceTextures {
         Vec4::new(d, dp, m, mp)
     }
 
+    /// SE's water colours of a body (FUN_1404ae4a0): its preset's `OceanPalette` `Deep`, the
+    /// WaterSurfColor (linear, before `ModulateColor`), and `Absorption`, the WaterFogColor (rgb and
+    /// opacity, per km). SE's defaults (FUN_140166410) where the preset has none, or the body no
+    /// preset.
+    pub fn ocean_palette(&self, info: &BodyInfo) -> ([f32; 3], [f32; 4]) {
+        let p = self.presets.find_for(info);
+        let deep = p.and_then(|p| p.ocean_palette).unwrap_or([0.04, 0.1, 0.2, 1.0]);
+        let fog = p.and_then(|p| p.ocean_absorption).unwrap_or([40.0, 5.0, 1.0, 5.0]);
+        ([srgb_to_linear(deep[0]), srgb_to_linear(deep[1]), srgb_to_linear(deep[2])], fog)
+    }
+
     /// File name of the biome preset a body gets.
     pub fn preset_file(&self, info: &BodyInfo) -> Option<String> {
         self.preset_for(info).map(|p| p.file.clone())

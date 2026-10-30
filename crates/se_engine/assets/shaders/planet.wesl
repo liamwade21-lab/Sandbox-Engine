@@ -4,7 +4,7 @@
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::globals;
-import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irradiance, atm_apply_aerial, atm_transmittance_sun, atm_sky_radiance};
+import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irradiance, atm_apply_aerial, atm_transmittance_sun};
 import super::eclipse::{EclipseLight, eclipse_light};
 
 struct Planet {
@@ -17,8 +17,10 @@ struct Planet {
     rect_clouds: vec4<f32>,
     base_color: vec4<f32>,
     params: vec4<f32>,
+    // rgb SE's WaterSurfColor (linear), w 1 when the body has water.
     ocean_sea: vec4<f32>,
-    ocean_shelf: vec4<f32>,
+    // SE's WaterFogColor: the water's absorption, rgb and opacity, per km.
+    water_fog: vec4<f32>,
     // x: atmosphere enabled, y: sun irradiance scale for the tables (SE hdrPlanetSurfaceBright),
     // z: the scattered light (haze, the sky seen in water) relative to y: Bright x hdrAtmoScatterBright / y
     atm_flags: vec4<f32>,
@@ -28,7 +30,7 @@ struct Planet {
     proc_pal3: vec4<f32>,
     // x: surface kind id, y: relief (m), z: temperature (K), w: has life
     proc_params: vec4<f32>,
-    // x: radius (m), y: seed fraction, z: procedural colour enabled
+    // x: radius (m), y: seed fraction, z: procedural colour enabled, w: SE's volatiles class
     proc_params2: vec4<f32>,
     atm: AtmParams,
     // Each light's casters: [0] the brightest star, then the extra lights in order.
@@ -2055,49 +2057,154 @@ fn wave_slopes(xy: vec2<f32>, footprint_m: f32, t: f32, total_var: f32) -> vec3<
     return vec3<f32>(g, faded);
 }
 
-// How fast daylight fades with depth, per metre: blue sea water loses red within metres and keeps
-// blue for tens; other seas by their colour.
-fn water_dimming() -> vec3<f32> {
-    let c = planet.ocean_sea.rgb / max(max(planet.ocean_sea.r, planet.ocean_sea.g), max(planet.ocean_sea.b, 1e-4));
-    let k = 1.0 - c;
-    return vec3<f32>(0.025) + 0.35 * k * k * k;
-}
+// SE's WaterVisibilityHeight (config variable, default 10 km; terrain.rs `water_reach_m`).
+const WATER_VISIBILITY_KM: f32 = 10.0;
+// SE's hdrWaterSurfaceBright (main-def.cfg 1): the underwater fog's light (SurfParams5.y).
+const WATER_SURFACE_BRIGHT: f32 = 1.0;
 
-// Extinction of a line of sight through the water, per metre (absorption plus scattering: some
-// 25 m of visibility in clear blue water).
-fn water_extinction() -> vec3<f32> {
-    return water_dimming() + vec3<f32>(0.04);
-}
-
-// Light the water scatters toward the eye at `depth` (m) looking along `d`: the sea colour lit by
-// what reaches that depth, brighter looking up toward the surface.
-fn water_glow(e_surf: vec3<f32>, depth: f32, d: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
-    let look_up = smoothstep(-0.4, 1.0, dot(d, up));
-    return planet.ocean_sea.rgb / PI * e_surf * exp(-water_dimming() * max(depth, 0.0)) * mix(1.5, 8.0, look_up);
-}
-
-// Sky radiance seen from sea level at `pos_km` along `dir` (turned up to the horizon at least).
-fn sky_seen(pos_km: vec3<f32>, dir: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>) -> vec3<f32> {
-    let d = normalize(dir + up * max(0.01 - dot(dir, up), 0.0));
-    return atm_sky_radiance(planet.atm, inscatter_tex, transmittance_tex, atm_smp, pos_km * 1.000001, d, l).radiance * e_sun;
-}
-
-// GGX glint of the star on water with normal `n` and roughness `a` (alpha).
-fn water_glint(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, a_in: f32) -> f32 {
-    let nl = dot(n, l);
-    if nl <= 0.0 {
+// SE's WaterParams.z (FUN_1404acdd0), per km: the 3D water is whole up to 1/z from the camera and
+// gone at 2/z, the ground pass's flat sea taking over. From sea level 1/100 km to 1/1 km at
+// WaterVisibilityHeight and above; under water 1/(2R); Oceanic and Superoceanic worlds (volatiles
+// 4, 5) 0, the 3D water everywhere.
+fn water_fade_z(cam_alt_m: f32) -> f32 {
+    let volq = planet.proc_params2.w;
+    if volq > 3.5 && volq < 5.5 {
         return 0.0;
     }
-    let a = max(a_in, 0.01);
-    let nv = max(dot(n, v), 0.05);
-    let hv = normalize(l + v);
-    let nh = max(dot(n, hv), 0.0);
-    let dd = nh * nh * (a * a - 1.0) + 1.0;
-    let ndf = a * a / (PI * dd * dd);
-    let fh = 0.02 + 0.98 * pow(1.0 - max(dot(hv, v), 0.0), 5.0);
-    let kg = a * 0.5;
-    let vis = 1.0 / ((nl * (1.0 - kg) + kg) * (nv * (1.0 - kg) + kg));
-    return ndf * fh * vis * 0.25 * nl;
+    let h = cam_alt_m / 1000.0;
+    if h <= 0.0 {
+        return 500.0 / max(planet.planet.w, 1.0);
+    }
+    return 1.0 / (100.0 - 99.0 * min(h / WATER_VISIBILITY_KM, 1.0));
+}
+
+// SE's WaterParams.w (FUN_1404ae4a0), the Fresnel opacity's gain that makes the sea opaque towards
+// the horizon: 1.5; Oceanic worlds 1.5 to 3.5 by the camera's height over WaterVisibilityHeight;
+// Superoceanic 4.5.
+fn water_horizon_opacity(cam_alt_m: f32) -> f32 {
+    let volq = planet.proc_params2.w;
+    if volq > 4.5 && volq < 5.5 {
+        return 4.5;
+    }
+    if volq > 3.5 && volq < 4.5 {
+        return 1.5 + 2.0 * clamp(cam_alt_m / 1000.0 / WATER_VISIBILITY_KM, 0.0, 1.0);
+    }
+    return 1.5;
+}
+
+// SE's CookTorranceBRDF (terrain_pbr.glh) for a dielectric (F0 0.04, metallic 0, ao 1): x the
+// diffuse term's (1 - F) / pi, y the specular term, with SE's specular occlusion (1 - (1 - n.v)^2).
+fn se_cook_torrance(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, nv: f32, nl: f32, rough: f32) -> vec2<f32> {
+    let r2 = rough * rough;
+    let r4 = r2 * r2;
+    let r1 = rough + 1.0;
+    let rk = r1 * r1 * 0.125;
+    let h = normalize(l + v + vec3<f32>(1e-7));
+    let vh = clamp(dot(v, h), 0.0, 1.0);
+    let nh = clamp(dot(n, h), 0.0, 1.0);
+    let dd = nh * nh * (r4 - 1.0) + 1.0;
+    let ndf = r4 / max(PI * dd * dd, 1e-10);
+    let g = nv / (nv * (1.0 - rk) + rk) * (nl / (nl * (1.0 - rk) + rk));
+    let f = 0.04 + 0.96 * pow(1.0 - vh, 5.0);
+    let occ = (1.0 - nv) * (1.0 - nv);
+    return vec2<f32>((1.0 - f) / PI, ndf * g * f / (4.0 * nv * nl + 0.001) * (1.0 - occ));
+}
+
+struct SeaLight {
+    // Sum over the lights of their sea-level light on the normal times the diffuse term (before the
+    // water's colour) and times the specular term (before SpecBrightWater).
+    diff: vec3<f32>,
+    spec: vec3<f32>,
+};
+
+// SE's sea lighting (planet.glsl:1032-1213, water.glsl:475-599): every light's Cook-Torrance terms on
+// the surface normal `n` (RoughnessWater) times its light at sea level on it, in the surface's units
+// (x hdrPlanetSurfaceBright, SurfParams5.x).
+fn sea_light(s: Surf, n: vec3<f32>, v: vec3<f32>, rough: f32) -> SeaLight {
+    var o: SeaLight;
+    o.diff = vec3<f32>(0.0);
+    o.spec = vec3<f32>(0.0);
+    let nv = clamp(dot(n, v), 0.0, 1.0);
+    for (var i = 0; i < 4; i++) {
+        var l = normalize(planet.sun_dir.xyz);
+        var sun = s.sun_at_ground;
+        if i > 0 {
+            if planet.light_dir[i - 1].w < 0.5 {
+                break;
+            }
+            l = normalize(planet.light_dir[i - 1].xyz);
+            sun = s.sun_x[i - 1];
+        }
+        let nl = clamp(dot(n, l), 0.0, 1.0);
+        let ct = se_cook_torrance(n, v, l, nv, nl, rough);
+        let e = sun * (planet.atm_flags.y * nl);
+        o.diff += e * ct.x;
+        o.spec += e * ct.y;
+    }
+    return o;
+}
+
+// SE's waterFogAccum (planet.glsl:959, 1157-1159, 1245) before the water's colour: AmbientColor plus
+// each light's direct light on level ground and sky irradiance, at hdrWaterSurfaceBright.
+fn water_fog_light(s: Surf) -> vec3<f32> {
+    return (vec3<f32>(planet.base_color.w) + s.e_direct / planet.atm_flags.y + (s.e_city - s.e_direct) / PI) * WATER_SURFACE_BRIGHT;
+}
+
+// SE's ambSeaAccum light (planet.glsl:1026, 1132-1144, 1213): AmbientColor plus each light's day
+// ambient and sky irradiance (at hdrAtmoIllumBright 1), `amb_k` x AmbientColor (water.glsl tints
+// the AmbientColor by the water's colour twice).
+fn water_amb_light(s: Surf, amb_k: vec3<f32>) -> vec3<f32> {
+    return planet.base_color.w * amb_k + (s.e_level - s.e_direct - vec3<f32>(planet.base_color.w * planet.atm_flags.y)) / PI;
+}
+
+// SE's water in the ground pass (planet.glsl:807-867, 1243-1275), over the lit ground `col`: the ground
+// under water (the seabed, and from under water all of it) fades through the water's absorption
+// (WaterFogColor) along the view's path under water plus the water's depth there into the lit
+// water colour (the underwater fog); past the 3D water's reach (waterFade3D) the flat sea surface
+// covers it, its diffuse colour and ambient by the Fresnel opacity (0.02 + WaterParams.w x 0.98 (1 -
+// n.v)^4) and the fog's, its Cook-Torrance glint on top. No sky reflection, refraction or Snell's
+// window: SE has none.
+fn se_ground_water(in: VertexOut, s: Surf, col: vec3<f32>, up: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    // WaterSurfColor.a: the ShowWater animation, squared (DAT_1419fb564^2 in FUN_1404ae4a0).
+    let a = planet.ice.w * planet.ice.w;
+    let wm = clamp(s.water, 0.0, 1.0);
+    // SurfParams1.w: the water mask is the body's water map (Earth's).
+    let earth = select(0.0, 1.0, planet.rect_water.w > 0.5);
+    let d = length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30) / 1000.0;
+    let h = in.height / 1000.0;
+    let e = in.cam_alt / 1000.0;
+    // The view's path under water (km), the ground taken as flat (planet.glsl:833-848).
+    var uwd = 0.0;
+    if e > 0.0 {
+        if h < 0.0 {
+            uwd = d * -h / max(e - h, 1e-9);
+        }
+    } else {
+        uwd = select(d, d * -e / max(h - e, 1e-9), h > 0.0);
+    }
+    var depth = water_depth(in) / 1000.0;
+    // No underwater fog where the water mask says land.
+    if depth > 0.0 {
+        uwd *= wm;
+        depth *= wm;
+    }
+    // Earth's rivers and lakes above sea level: a fake depth by the mask.
+    uwd += 0.07 * max(wm - 0.18, 0.0) * earth;
+    let att = clamp(exp(-(uwd + depth) * a * planet.water_fog), vec4<f32>(0.0), vec4<f32>(1.0));
+    let opacity = 1.0 - att.a;
+    let fog = planet.ocean_sea.rgb * water_fog_light(s);
+    let fog_mix = opacity * mix(1.0, wm, earth);
+    var c = col * att.rgb * (1.0 - fog_mix) + fog * fog_mix;
+    // The flat sea surface, faded in where the 3D water fades out (waterMaskAF).
+    let af = wm * a * clamp(d * water_fade_z(in.cam_alt) - 1.0, 0.0, 1.0);
+    if af > 0.0 {
+        let fres = clamp(0.02 + water_horizon_opacity(in.cam_alt) * 0.98 * pow(1.0 - abs(dot(v, up)), 4.0), 0.0, 1.0);
+        let op = clamp(opacity + fres, 0.0, 1.0) * af;
+        let sl = sea_light(s, up, v, planet.params.w);
+        let sea = planet.ocean_sea.rgb * (sl.diff + water_amb_light(s, vec3<f32>(1.0)));
+        c = c * (1.0 - op) + sea * op + sl.spec * (planet.params.y * a * af);
+    }
+    return c;
 }
 
 // Cook-Torrance GGX for a dielectric (F0 0.04), times n.l.
@@ -2132,6 +2239,10 @@ struct Surf {
     // The light on level ground from the stars and their sky light, shadowed (SE's
     // cityLightingAccum), which switches the night lights.
     e_city: vec3<f32>,
+    // Of `e_city`, the stars' direct light (SE's sunLightHorShadow x NdotLSC), for the water.
+    e_direct: vec3<f32>,
+    // The further stars' light at the ground (as `sun_at_ground`), for the sea's glint.
+    sun_x: array<vec3<f32>, 3>,
 };
 
 // SE's planetary sphere shadow (planet.glsl:1087-1095): a point `height` m up is lit until the star
@@ -2255,6 +2366,8 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.e_level = max(dot(up, l), 0.0) * terminator * e_sun;
     }
     s.e_city = s.e_level;
+    s.e_direct = s.sun_at_ground * (planet.atm_flags.y * max(dot(up, l), 0.0));
+    s.sun_x = array<vec3<f32>, 3>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     // SE's Hapke BRDF (terrain_pbr.glh) on the direct light: Lommel-Seeliger with the opposition
     // surge (SpotBright over SpotWidth, and the coherent-backscatter spot), mixed in by `Hapke`.
     if planet.modulate.w > 0.0 {
@@ -2294,6 +2407,8 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         }
         s.e_level += level_x;
         s.e_city += level_x;
+        s.e_direct += ground_x * (planet.atm_flags.y * max(dot(up, lx), 0.0));
+        s.sun_x[i] = ground_x;
         if planet.modulate.w > 0.0 {
             let v = normalize(-in.world_pos);
             let nl = max(dot(ns, lx), 0.0);
@@ -2355,41 +2470,6 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     return s;
 }
 
-// The seabed (`s.col`) `depth` m down seen from above, through shallow water fading into the deep
-// colour along the light path (down to the bed and back up along `v`).
-fn ocean_under(s: Surf, depth: f32, up: vec3<f32>, v: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
-    let mu = max(dot(up, v), 0.05);
-    let nl = max(dot(up, l), 0.0);
-    let trans = exp(-max(depth, 0.0) * (1.0 + 1.0 / mu) / planet.ocean_shelf.w);
-    var deep = planet.ocean_sea.rgb * nl * s.sun_at_ground;
-    if planet.atm_flags.x > 0.5 {
-        deep = planet.ocean_sea.rgb / PI * s.e_level;
-    }
-    return s.col * trans + deep * (1.0 - trans);
-}
-
-// The sea surface seen from above: the sky's reflection and the star's glint (rgb), GGX with SE's
-// RoughnessWater (params.w) and SpecBrightWater (params.y) on the waves' normal `nw`, and the
-// Fresnel reflectance (w); what lies below shows through the rest.
-fn ocean_surface(s: Surf, pos_km: vec3<f32>, up: vec3<f32>, nw: vec3<f32>, v: vec3<f32>, l: vec3<f32>, a: f32) -> vec4<f32> {
-    let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(nw, v), 0.0), 5.0);
-    let spec_k = max(planet.params.y, 0.05);
-    // The sky in the waves (a flat 8% of the sunlight without an atmosphere).
-    var sky = s.sun_at_ground * 0.08;
-    if planet.atm_flags.x > 0.5 {
-        sky = sky_seen(pos_km, reflect(-v, nw), up, l, s.e_sun * planet.atm_flags.z);
-    }
-    // x10: the HDR gain the earlier glint was matched to SE with.
-    return vec4<f32>(s.sun_at_ground * water_glint(nw, v, l, a) * spec_k * 10.0 + sky * fresnel, fresnel);
-}
-
-// Water seen from above with the seabed painted into it (lakes and shores the sea's own surface
-// does not cover).
-fn ocean_from_above(s: Surf, pos_km: vec3<f32>, depth: f32, up: vec3<f32>, nw: vec3<f32>, v: vec3<f32>, l: vec3<f32>, a: f32) -> vec3<f32> {
-    let surf = ocean_surface(s, pos_km, up, nw, v, l, a);
-    return ocean_under(s, depth, up, v, l) * (1.0 - surf.w) + surf.rgb;
-}
-
 // SE's city-light cutoff, per unit of the main light's intensity (SurfParams4.x = 0.001 with HDR,
 // 0.05 without, times light 0's intensity at +0x58: FUN_1404ae4a0, FUN_1404bf5c0).
 const CITY_LIGHTS_CUTOFF: f32 = 0.001;
@@ -2440,23 +2520,6 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
         }
     }
     return col;
-}
-
-// Under water everything is seen through the water: `col` fades over the path of `dist_m` (from
-// `cam_depth` down to `end_depth`) into the water's glow. Most of that glow comes from the first
-// visibility length, so it takes the light at the depth there (or the path's middle if shorter).
-fn through_water(col: vec3<f32>, e_level: vec3<f32>, dist_m: f32, cam_depth: f32, end_depth: f32, d: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
-    let ext = water_extinction();
-    let tr = exp(-ext * dist_m);
-    let seen = min(0.5, 1.0 / (ext.b * max(dist_m, 1e-3)));
-    return col * tr + water_glow(e_level, mix(cam_depth, end_depth, seen), d, up) * (1.0 - tr);
-}
-
-// Under water the eye adapts as the daylight above fades: up to twice as bright when the sun is
-// low (SE's sea at sunset is about 1.7 times the port's otherwise).
-fn underwater_exposure(e_level: vec3<f32>, e_sun: vec3<f32>) -> f32 {
-    let w = vec3<f32>(0.2126, 0.7152, 0.0722);
-    return clamp(sqrt(0.5 * dot(e_sun, w) / max(dot(e_level, w), 1e-12)), 1.0, 2.0);
 }
 
 // Wave normal at the fragment; w: slope variance of the waves too fine to show (for the glint).
@@ -2518,33 +2581,22 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let l = normalize(planet.sun_dir.xyz);
     let v = normalize(-in.world_pos);
     g_footprint_m = length(fwidth(in.world_pos)) * planet.planet.w / max(in.centre.w, 1e-30);
-    // Texture lookups stay out of branches on the camera's depth (uniform control flow); the
-    // results are picked at the end.
     // With the water hidden (SE's ShowWater filter, faded by `ice.w`) the seabed is dry ground.
     let under = planet.ocean_sea.w > 0.5 && in.cam_alt < 0.0 && planet.ice.w > 0.5;
     let s = lit_ground(in, n, up, l, table_pos(up, max(in.height, 0.0)));
     var col = s.col;
-    // Water above sea level (lakes, by the water map) and along the shore, with its surface. Under
-    // the sea's own (see-through) surface only the water's depth: the seabed is drawn where it
-    // is, so it no longer looks painted on the surface as the camera comes down to it.
-    let wd = water_depth(in);
-    if s.water * planet.ice.w > 0.0 {
-        let a = max(planet.params.w * planet.params.w, 0.002);
-        // Where the sea's mesh lies in front of the ground it draws the surface itself.
-        let sea = in.height < 0.0 && s.water >= 0.5;
-        let lake = ocean_from_above(s, table_pos(up, max(in.height, 0.0)), wd, up, up, v, l, a);
-        col = mix(col, select(lake, ocean_under(s, wd, up, v, l), sea), clamp(s.water, 0.0, 1.0) * planet.ice.w);
+    // SE's AWATER path: the underwater fog over the ground and, past the 3D water, the flat sea.
+    if planet.ocean_sea.w > 0.5 {
+        col = se_ground_water(in, s, col, up, v);
     }
-    let above = finish(in, col, up, l, s.e_sun, s.e_city);
-
-    // Under water: the seabed lit by the light that gets down to it, seen through the water.
-    let depth = max(-in.height, 0.0);
-    let bed = s.col * exp(-water_extinction() * depth * 1.3);
-    let dist = length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30);
-    let below = through_water(bed, s.e_level, dist, -in.cam_alt, depth, -v, up) * underwater_exposure(s.e_level, s.e_sun);
-    return vec4<f32>(select(above, below, under), 1.0);
+    // Under water the view is all water: no aerial perspective or night lights over it.
+    return vec4<f32>(select(finish(in, col, up, l, s.e_sun, s.e_city), col, under), 1.0);
 }
 
+// SE's 3D water (water.glsl): the sea surface near the camera, drawn over the ground pass with
+// premultiplied alpha. Lit as the ground pass's flat sea (Cook-Torrance on the waves' normal, the
+// water's colour, ambient), its opacity the Fresnel term (and from under water the absorption's
+// fog), whole to 1 / WaterParams.z from the camera and gone at twice that.
 @fragment
 fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let up = normalize(in.up);
@@ -2557,49 +2609,48 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     g_footprint_m = length(fwidth(in.world_pos)) * planet.planet.w / max(in.centre.w, 1e-30);
     let pos_km = table_pos(up, 0.0);
     let s = lit_ground(in, up, up, l, pos_km);
-    // The waves carry SE's roughness close by; a little stays on each facet.
+    let d = length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30) / 1000.0;
+    // waterFade3D (water.glsl:348-355).
+    let fade_x = d * water_fade_z(in.cam_alt) - 1.0;
+    let fade = 1.0 - clamp(fade_x, 0.0, 1.0);
+    // The waves are the port's own (SE's NoiseMap texture is generated by code not decoded), full to
+    // 10 km and gone at 20 km as SE's wavesFade.
     let a0 = max(planet.params.w * planet.params.w, 0.002);
     let a_facet = min(a0, 0.04);
-    let nw = wave_normal(in, up, 0.5 * (a0 * a0 - a_facet * a_facet));
-    let a = sqrt(a_facet * a_facet + 2.0 * nw.w);
-    // From above the surface is see-through (premultiplied alpha): its reflection over the seabed
-    // the ground pass drew, whose haze (`finish` of nothing) is already in that colour.
-    let w = clamp(s.water, 0.0, 1.0) * planet.ice.w;
-    let surf = ocean_surface(s, pos_km, up, nw.xyz, v, l, a);
-    let above = vec4<f32>((finish(in, surf.rgb, up, l, s.e_sun, s.e_city) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city) * (1.0 - surf.w)) * w, surf.w * w);
+    let waves = clamp(2.0 - d * 0.1, 0.0, 1.0);
+    let nw = normalize(mix(up, wave_normal(in, up, 0.5 * (a0 * a0 - a_facet * a_facet)).xyz, waves * waves));
+    // WaterSurfColor.a: the ShowWater animation, squared.
+    let a = planet.ice.w * planet.ice.w;
+    let col = planet.ocean_sea.rgb;
+    let horizon = water_horizon_opacity(in.cam_alt);
 
-    // From below: the sky through Snell's window (the light refracted out), beyond it the water's
-    // own depths reflected from the surface; then the water between the camera and the surface.
-    let d = -v0 + up * 2.0 * max(dot(v0, up), 0.0);
-    let n_down = -nw.xyz;
-    let ci = clamp(dot(d, nw.xyz), 0.0, 1.0);
-    let eta = 1.333;
-    let st2 = eta * eta * (1.0 - ci * ci);
-    let depth = -in.cam_alt;
-    // Reflected from the surface: the water just below it, looking down.
-    var col = water_glow(s.e_level, 0.0, reflect(d, n_down), up);
-    if st2 < 1.0 {
-        let ct = sqrt(1.0 - st2);
-        let rs = (eta * ci - ct) / (eta * ci + ct);
-        let rp = (eta * ct - ci) / (eta * ct + ci);
-        let f = 0.5 * (rs * rs + rp * rp);
-        let t = refract(d, n_down, eta);
-        var sky = s.e_level / PI * (0.3 + 0.7 * max(dot(t, up), 0.0));
-        if planet.atm_flags.x > 0.5 {
-            sky = sky_seen(pos_km, t, up, l, s.e_sun * planet.atm_flags.z);
-        }
-        // The star itself, spread by the waves.
-        sky += s.sun_at_ground * water_glint(t, t, l, max(a, 0.05)) * 4.0;
-        col = sky * (1.0 - f) + col * f;
-    }
-    let dist = length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30);
-    let below = through_water(col, s.e_level, dist, depth, 0.0, d, up) * underwater_exposure(s.e_level, s.e_sun);
+    // From above there is no fog (water.glsl:400-403). The ground pass drew the ground's haze under
+    // the surface (`finish` of nothing), so only the surface's share of it is added.
+    let sa = sea_light(s, nw, v, planet.params.w);
+    let alpha_a = clamp(0.02 + horizon * 0.98 * pow(1.0 - abs(dot(v, nw)), 4.0), 0.0, 1.0) * a * fade;
+    let surf = sa.spec * (planet.params.y * a * fade) + col * (sa.diff + water_amb_light(s, col)) * alpha_a;
+    let above = vec4<f32>(finish(in, surf, up, l, s.e_sun, s.e_city) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city) * (1.0 - alpha_a), alpha_a);
+
+    // From under water the whole path is in the water: the surface (lit from above, so no glint
+    // towards the camera) fades through the absorption into the underwater fog, which also makes it
+    // opaque with distance.
+    let att = clamp(exp(-d * a * planet.water_fog), vec4<f32>(0.0), vec4<f32>(1.0));
+    let op_w = 1.0 - att.a;
+    let sb = sea_light(s, nw, v0, planet.params.w);
+    let alpha_b = clamp(op_w + 0.02 + horizon * 0.98 * pow(1.0 - abs(dot(v0, nw)), 4.0), 0.0, 1.0) * a * fade;
+    let diff_b = mix(col * sb.diff * att.rgb, col * water_fog_light(s), op_w);
+    let rest_b = col * water_amb_light(s, col) * att.rgb * (1.0 - op_w);
+    let spec_b = sb.spec * (planet.params.y * a) * att.rgb * (1.0 - op_w);
+    let below = vec4<f32>(spec_b * fade + (diff_b + rest_b) * alpha_b, alpha_b);
+
     // Land (by the water map) shows through: the ground below sea level there is dry. The
-    // flanges past the node's edges (uv outside 0..1) only close the cracks seen from below;
-    // from above they would blend a second layer of surface over the neighbour.
+    // flanges past the node's edges (uv outside 0..1) only close the cracks seen from below where
+    // the fog has made the surface opaque; elsewhere they would blend a second layer of surface
+    // over the neighbour.
     let flange = any(in.uv < vec2<f32>(-1e-4)) || any(in.uv > vec2<f32>(1.0 + 1e-4));
-    if s.water < 0.5 || (flange && in.cam_alt >= 0.0) || planet.ice.w <= 0.0 {
+    let flange_off = in.cam_alt >= 0.0 || op_w < 0.95;
+    if s.water < 0.5 || (flange && flange_off) || planet.ice.w <= 0.0 || fade_x > 1.0 {
         discard;
     }
-    return select(above, vec4<f32>(below, 1.0), in.cam_alt < 0.0 && planet.ice.w > 0.5);
+    return select(above, below, in.cam_alt < 0.0);
 }
