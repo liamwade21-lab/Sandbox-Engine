@@ -5,8 +5,8 @@
 // magnitude, x the overbright; compressed above 100), fades the point in over b = StarBrightMin ..
 // +1/20, greys faint points (PointDesaturation) and draws a Gaussian of 2 sigma^2 = PointScale^2
 // px^2 (at 1080 rows) out to where it falls to 1/500 of the cutoff. Bright points are only a few
-// pixels across: their glare comes from the bloom (bloom.rs), as in SE. SE's flare wing is left out:
-// SE passes CosmHorizon (4.2e9) as its decay, which makes it vanish.
+// pixels across, with SE's flare wing around them (flareBright x 2 sigma^2 / (flareDecay r^2 + 1), the
+// sprite then reaching where the wing falls to the cutoff); their glare comes from the bloom (bloom.rs).
 
 import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_pbr::render::mesh_functions::get_world_from_local;
@@ -38,6 +38,8 @@ struct StarParams {
     // The active system draws its own stars: hide the point at xyz (relative to the camera, pc)
     // within w pc; w = 0 hides nothing.
     hide: vec4<f32>,
+    // SE's Param3: x flareBright, y flareDecay (stars.rs flare_params).
+    flare: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> star: StarParams;
@@ -57,6 +59,8 @@ struct VertexOut {
     @location(2) edge: f32,
     // Half the blur trail, in sprite radii.
     @location(3) @interpolate(flat) trail: f32,
+    // The flare wing at r^2 (sprite radii): x / (y r^2 + 1).
+    @location(4) @interpolate(flat) flare: vec2<f32>,
 };
 
 const LOG10_2: f32 = 0.30102999566;
@@ -126,6 +130,7 @@ fn hidden() -> VertexOut {
     o.uv = vec2<f32>(0.0);
     o.edge = 0.0;
     o.trail = 0.0;
+    o.flare = vec2<f32>(0.0);
     return o;
 }
 
@@ -200,9 +205,13 @@ fn vertex(v: Vertex) -> VertexOut {
         depth = c.z;
     }
 
-    // The Gaussian out to where it falls to 1/500 of the cutoff: radius^2 = ln(500 b) 2 sigma^2.
-    let edge = log(b * 500.0);
-    let radius_px = sqrt(edge * star.params.z);
+    // The Gaussian out to where it falls to 1/500 of the cutoff, radius^2 = ln(500 b) 2 sigma^2, or the
+    // flare wing to where it does, ((flareBright 500 b 2 sigma^2 - 1) / flareDecay) (SE's spriteSize).
+    let gauss_r2 = log(b * 500.0) * star.params.z;
+    let flare_r2 = (star.flare.x * 500.0 * b * star.params.z - 1.0) / max(star.flare.y, 1e-6);
+    let r2_px = max(gauss_r2, flare_r2);
+    let edge = r2_px / star.params.z;
+    let radius_px = sqrt(r2_px);
     // Motion blur: the sprite becomes a capsule from its last position to this one.
     var trail = vec2<f32>(0.0);
     if star.anchor.w < 0.5 || (star.anchor.w > 1.5 && !batched) {
@@ -235,6 +244,7 @@ fn vertex(v: Vertex) -> VertexOut {
     o.uv = vec2<f32>(v.corner.x * (1.0 + half), v.corner.y);
     o.edge = edge;
     o.trail = half;
+    o.flare = vec2<f32>(star.flare.x * star.params.z, star.flare.y * r2_px);
     return o;
 }
 
@@ -246,8 +256,9 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     if r2 > 1.0 {
         discard;
     }
-    // SE's Gaussian, exp(-r^2 / 2 sigma^2) with r^2 / 2 sigma^2 = r2 ln(500 b).
-    let a = exp(-r2 * in.edge);
+    // SE's Gaussian, exp(-r^2 / 2 sigma^2) with r^2 / 2 sigma^2 = r2 x edge, plus its flare wing
+    // flareBright 2 sigma^2 / (flareDecay r^2 + 1), faded at the sprite's edge.
+    let a = exp(-r2 * in.edge) + in.flare.x / (in.flare.y * r2 + 1.0) * smoothstep(1.0, 0.0, r2);
     // AlphaMode::Add is premultiplied blending in Bevy: alpha 0 makes it purely additive.
     return vec4<f32>(in.color * a * star.tint.rgb, 0.0);
 }

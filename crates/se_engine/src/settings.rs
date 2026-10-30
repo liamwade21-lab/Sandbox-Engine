@@ -95,6 +95,8 @@ struct Snapshot {
     illum_saturation_auto: bool,
     star_points: u32,
     blur_length: f32,
+    /// `PointFlareBright`, `PointFlareDecay`, `LinkScaleToScreenRes`.
+    flare: (f32, f32, bool),
     fov: f32,
     /// SE's `AutoHorizon` (Controls).
     auto_horizon: bool,
@@ -160,6 +162,7 @@ impl Snapshot {
             illum_saturation_auto: s.illum_saturation_auto,
             star_points: s.point_style.method(),
             blur_length: s.blur_length,
+            flare: (s.flare_bright, s.flare_decay, s.link_screen_res),
             fov: l.cam.fov_deg,
             auto_horizon: l.cam.auto_horizon,
             orbits: o.orbits,
@@ -190,7 +193,7 @@ impl Snapshot {
     fn to_cfg(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
         format!(
-            "// SpaceEngine-rs user settings (overrides of the install's config/main-def.cfg)\nVersion \"{}\"\nSettings\n{{\n\tStarMagnLimit   {}\n\tPointOverbright {}\n\tPointScale      {}\n\tStarColorSaturation {}\n\tPointDesaturation {}\n\tStarColorShift  {}\n\tSunIllumSaturation {}\n\tIllumSaturationAuto {}\n\tStarPointMethod {}\n\tMotionBlurLength {}\n\tFOV             {}\n\tAutoHorizon     {}\n\tShowOrbits      {}\n\tLabelsMode      {}\n\tShowMarkers     {}\n\tStarNameMagn    {}\n\tFPS             {}\n\tTextMode        {}\n\tMusic           {}\n\tMusicVolume     {}\n\tSoundVolume     {}\n\tLanguage        \"{}\"\n\tSkin            \"{}\"\n\tEnableSelfEmission {}\n\tSelfEmissionBright {}\n\tShowWater       {}\n{}}}\n",
+            "// SpaceEngine-rs user settings (overrides of the install's config/main-def.cfg)\nVersion \"{}\"\nSettings\n{{\n\tStarMagnLimit   {}\n\tPointOverbright {}\n\tPointScale      {}\n\tStarColorSaturation {}\n\tPointDesaturation {}\n\tStarColorShift  {}\n\tSunIllumSaturation {}\n\tIllumSaturationAuto {}\n\tStarPointMethod {}\n\tMotionBlurLength {}\n\tPointFlareBright {}\n\tPointFlareDecay {}\n\tLinkScaleToScreenRes {}\n\tFOV             {}\n\tAutoHorizon     {}\n\tShowOrbits      {}\n\tLabelsMode      {}\n\tShowMarkers     {}\n\tStarNameMagn    {}\n\tFPS             {}\n\tTextMode        {}\n\tMusic           {}\n\tMusicVolume     {}\n\tSoundVolume     {}\n\tLanguage        \"{}\"\n\tSkin            \"{}\"\n\tEnableSelfEmission {}\n\tSelfEmissionBright {}\n\tShowWater       {}\n{}}}\n",
             env!("CARGO_PKG_VERSION"),
             self.mag_limit,
             self.star_overbright,
@@ -202,6 +205,9 @@ impl Snapshot {
             b(self.illum_saturation_auto),
             self.star_points,
             self.blur_length,
+            self.flare.0,
+            self.flare.1,
+            b(self.flare.2),
             self.fov,
             b(self.auto_horizon),
             b(self.orbits),
@@ -369,6 +375,9 @@ fn load_settings(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeDat
             f("SunIllumSaturation", &mut stars.illum_saturation);
             bo("IllumSaturationAuto", &mut stars.illum_saturation_auto);
             f("MotionBlurLength", &mut stars.blur_length);
+            f("PointFlareBright", &mut stars.flare_bright);
+            f("PointFlareDecay", &mut stars.flare_decay);
+            bo("LinkScaleToScreenRes", &mut stars.link_screen_res);
             if let Some(m) = b.f64("StarPointMethod") {
                 stars.point_style = crate::stars::PointStyle::from_method(m as u32);
             }

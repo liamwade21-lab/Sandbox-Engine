@@ -204,6 +204,9 @@ fn settings_window(
                     ui.add(egui::Slider::new(&mut stars.mag_limit, 0.0..=16.0).text(i18n.tr("Star mag limit")));
                     ui.add(egui::Slider::new(&mut stars.overbright, -3.0..=6.0).text(i18n.tr("Stars overbright")));
                     ui.add(egui::Slider::new(&mut stars.point_scale, 0.25..=4.0).text(i18n.tr("Points scale")));
+                    ui.checkbox(&mut stars.link_screen_res, i18n.tr("Link points scale with window resolution"));
+                    ui.add(egui::Slider::new(&mut stars.flare_bright, 0.0..=4.0).text(i18n.tr("Flare bright")));
+                    ui.add(egui::Slider::new(&mut stars.flare_decay, 0.1..=10.0).logarithmic(true).text(i18n.tr("Flare decay")));
                     ui.add(egui::Slider::new(&mut stars.saturation, 0.0..=3.0).text(i18n.tr("Stars color saturation")));
                     ui.add(egui::Slider::new(&mut stars.desaturation, 0.0..=1.0).text(i18n.tr("Desaturate dim stars")));
                     ui.add(egui::Slider::new(&mut stars.color_shift, -1.0..=1.0).text(i18n.tr("Stars color shift")));

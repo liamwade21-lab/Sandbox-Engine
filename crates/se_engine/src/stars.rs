@@ -44,6 +44,8 @@ pub struct StarParams {
     /// camera, pc) within w pc. Every other star stays drawn however close it is (SE hides only the
     /// barycentre pseudo-star, `star_point.glsl`); w = 0 hides nothing.
     pub hide: Vec4,
+    /// SE's flare wing (`star_sprite.glsl` Param3): x flareBright, y flareDecay ([`flare_params`]).
+    pub flare: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -187,6 +189,11 @@ pub struct StarSettings {
     pub blur_length: f32,
     /// Window height / 1080 (SE's `LinkScaleToScreenRes`), kept up to date by `track_screen_scale`.
     pub screen_scale: f32,
+    /// `LinkScaleToScreenRes`: point sizes follow the window height (1x at 1080 rows), else 1x.
+    pub link_screen_res: bool,
+    /// `PointFlareBright` / `PointFlareDecay` (main-def.cfg, 1): the points' flare wing.
+    pub flare_bright: f32,
+    pub flare_decay: f32,
     /// SE's zoom brightness `(FOV / DefaultFOV)^-1.5` (FUN_140572300): zooming in works like a
     /// telescope and shows fainter stars. Kept up to date from the camera by `track_zoom`.
     pub zoom: f32,
@@ -218,6 +225,9 @@ impl Default for StarSettings {
             point_style: PointStyle::default(),
             blur_length: 1.0,
             screen_scale: 1.0,
+            link_screen_res: true,
+            flare_bright: 1.0,
+            flare_decay: 1.0,
             zoom: 1.0,
             mag_limit_reset: 7.0,
             galaxy_mag_limit: 7.0,
@@ -295,7 +305,7 @@ pub const STAR_BRIGHT_MIN: f32 = 0.03;
 /// SE's `LinkScaleToScreenRes`: point sizes follow the window height (1x at 1080 rows).
 fn track_screen_scale(windows: Query<&Window, With<bevy::window::PrimaryWindow>>, mut s: ResMut<StarSettings>) {
     let Some(w) = windows.iter().next() else { return };
-    let k = (w.resolution.physical_height() as f32 / 1080.0).max(0.1);
+    let k = if s.link_screen_res { (w.resolution.physical_height() as f32 / 1080.0).max(0.1) } else { 1.0 };
     if (s.screen_scale - k).abs() > 1e-4 {
         s.screen_scale = k;
     }
@@ -443,7 +453,16 @@ pub fn uniforms_for(cam_rel_pc: Vec3, s: &StarSettings) -> StarParams {
         prev_view: Mat4::IDENTITY,
         tint: Vec4::ONE,
         hide: Vec4::ZERO,
+        flare: flare_params(s),
     }
+}
+
+/// SE's flare wing of the points (FUN_1404c51a0, uploaded as `star_sprite.glsl` / `star_point.glsl`
+/// Param3 by every point draw, FUN_1404591a0 / FUN_14047d1c0 / FUN_140541e10): flareBright =
+/// 0.002 x PointFlareBright / PointFlareDecay, flareDecay = 0.125 / PointFlareDecay.
+pub fn flare_params(s: &StarSettings) -> Vec4 {
+    let decay = s.flare_decay.max(1e-3);
+    Vec4::new(0.002 * s.flare_bright / decay, 0.125 / decay, 0.0, 0.0)
 }
 
 /// `StarParams::params` of SE's star sprite (`star_sprite.glsl` Param): magnitude limit (raised by
@@ -630,6 +649,20 @@ fn update_star_uniforms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flare_wing_params() {
+        // main-def's PointFlareBright / PointFlareDecay 1: SE's 0.002 and 0.125.
+        let s = StarSettings::default();
+        assert_eq!(flare_params(&s), Vec4::new(0.002, 0.125, 0.0, 0.0));
+        let s = StarSettings { flare_bright: 2.0, flare_decay: 0.5, ..StarSettings::default() };
+        let f = flare_params(&s);
+        assert!((f.x - 0.008).abs() < 1e-7 && (f.y - 0.25).abs() < 1e-7);
+        // A star of brightness 116 at 2 sigma^2 = 0.83 px^2: the wing reaches ~27.6 px, the Gaussian 3.
+        let b = 116.0f32;
+        let flare_r2 = (0.002 * 500.0 * b * 0.83 - 1.0) / 0.125;
+        assert!((flare_r2.sqrt() - 27.6).abs() < 0.1 && flare_r2 > (500.0 * b).ln() * 0.83);
+    }
 
     fn at_fov(fov: f32) -> StarSettings {
         StarSettings { zoom: (fov / crate::camera::DEFAULT_FOV_DEG).powf(-1.5), ..Default::default() }
