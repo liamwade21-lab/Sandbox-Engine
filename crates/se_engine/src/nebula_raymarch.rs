@@ -1,40 +1,119 @@
 //! Ray-marched nebulae: the `CustomModel`s of `models/custom/*.cfg` (`se_core::custom_model`,
 //! docs/formats/nebula_raymarch.md). SE draws every catalog nebula without a named sprite model this way.
 //!
-//! SE's shader (`nebula_raymarch.glsl`) is in the encrypted `Shaders.pak`; `galaxy_nebula_raymarch.wesl`
-//! is the port's own ray marcher driven by the same parameters: two density fields, dust and emitting
-//! gas (the `(dust gas)` pairs of the script), each the near-zero level of a signed sum of shapes
-//! (`NebulaForm*`) and spiral noises; the dust scatters the light of a star and the ambient light with a
-//! two-lobe Henyey-Greenstein phase function and absorbs, the gas glows in up to three colours whose weight
-//! falls off from a centre (`Emission_gas_N_*`).
+//! `galaxy_nebula_raymarch.wesl` is SE's `nebula_raymarch.glsl` translated: the script's keys fill SE's
+//! uniform block `CustomModelUniforms2` (`uFlags`, `uIntData`, `uFloatData[39]`, laid out by
+//! `nebula_raymarch_uniforms.glh`, here `FLAGS` and `FLOATS`), and the draw's own uniforms (`uShapeDims`,
+//! `uRandomize`, `uParamsImg`) come from the nebula as in SE's custom-model draw (FUN_1404877f0,
+//! FUN_140488a20).
 //!
 //! Like the elliptical galaxies (`ellipticals.rs`), a sphere around the model is drawn at infinity and the
 //! fragment shader marches along the view ray, so the volume works from outside and from inside.
 
 use std::sync::Arc;
 
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
+};
 use bevy::shader::ShaderRef;
 use bevy::window::PrimaryWindow;
 use se_core::custom_model::{BaseShape, CustomModel, CustomModelSet};
 
 use crate::camera::FlyCamera;
 use crate::data::SeData;
-use crate::galaxies::{GalaxyFarMaterial, angular_px, model_fade};
-use crate::graphics::GraphicsSettings;
+use crate::galaxies::{GalaxyFarMaterial, angular_px, se_bright_term, se_glow_bright};
 use crate::nebulae::{NebulaSettings, NebulaState, ResidentNebulae, update_nebulae};
 
 /// Volumes drawn at once (the largest on screen).
 const MAX_VOLUMES: usize = 4;
-/// Uniform slots (vec4) per model; must match `galaxy_nebula_raymarch.wesl`.
-pub const SLOTS: usize = 52;
-/// Display brightness per unit of `Bright` (SE's `hdrNebulaRaymarchBright` is 0.03 in its own units; this is
-/// matched by eye to SE's Spirograph Nebula at 3 radii).
-const GAIN: f32 = 0.02;
+/// `uFloatData` vec4s of SE's `CustomModelUniforms2`; must match `galaxy_nebula_raymarch.wesl`.
+pub const FLOAT_SLOTS: usize = 39;
+
+/// `uFlags.x` bits, bit `i` = `1 << i` (nebula_raymarch_uniforms.glh).
+const FLAGS: [&str; 23] = [
+    "Single_star",
+    "Render_star",
+    "Render_star_bloom",
+    "Gas_emission_enabled",
+    "Emission_gas_1",
+    "Emission_gas_2",
+    "Emission_gas_3",
+    "NebScaleAbsBoth",
+    "NebScaleAbsX",
+    "NebScaleAbsY",
+    "NebulaFormPlane",
+    "NebulaFormDsk",
+    "NebulaFormCyl",
+    "NebulaFormSph",
+    "NebulaFormCapsule",
+    "NebulaFormTorus",
+    "NebulaFormSpir",
+    "NebulaFormNoise",
+    "NebulaFormFBMNoise",
+    "NebulaFormSpirNoise",
+    "NebulaFormSpirIQNoise",
+    "NebulaFormSpirNoise3D",
+    "NebulaMapTwist",
+];
+
+/// `uFloatData`: (key, vec4, first component, components) (nebula_raymarch_uniforms.glh). Every shipped
+/// model sets every key.
+#[rustfmt::skip]
+const FLOATS: &[(&str, usize, usize, usize)] = &[
+    ("NebulaFormSpirParam", 0, 0, 4),
+    ("sum_transparency_break", 1, 0, 3), ("Internal_scale", 1, 3, 1),
+    ("Light_Color_11", 2, 0, 3), ("td_break_value", 2, 3, 1),
+    ("Ambient_Light_Color_11", 3, 0, 3), ("Light_intensivity", 3, 3, 1),
+    ("Star_position", 4, 0, 3), ("Light_radius_single_star", 4, 3, 1),
+    ("Nebula_emission_color_1", 5, 0, 3), ("Ambient_Light_intensivity", 5, 3, 1),
+    ("Emission_gas_1_direction", 6, 0, 3), ("star_empty_sphere_radius", 6, 3, 1),
+    ("Emission_gas_1_coef_0", 7, 0, 3), ("Star_field_scale", 7, 3, 1),
+    ("Nebula_emission_color_2", 8, 0, 3), ("Star_light_coef_1", 8, 3, 1),
+    ("Emission_gas_2_direction", 9, 0, 3), ("Star_light_coef_2", 9, 3, 1),
+    ("Emission_gas_2_coef_0", 10, 0, 3), ("Bloom_light_coef_1", 10, 3, 1),
+    ("Nebula_emission_color_3", 11, 0, 3), ("Bloom_light_coef_2", 11, 3, 1),
+    ("Emission_gas_3_direction", 12, 0, 3), ("Dust_volume_height", 12, 3, 1),
+    ("Emission_gas_3_coef_0", 13, 0, 3), ("dust_absorption_factor", 13, 3, 1),
+    ("NebulaCentPos", 14, 0, 3), ("dust_scattering_factor", 14, 3, 1),
+    ("NebulaFormPlaneXYZ", 15, 0, 3), ("Dust_volume_density_factor", 15, 3, 1),
+    ("NebulaFormDskParam", 16, 0, 3), ("Albedo", 16, 3, 1),
+    ("NebulaFormCapsulePos_1", 17, 0, 3), ("Forward_scattering_g", 17, 3, 1),
+    ("NebulaFormCapsulePos_2", 18, 0, 3), ("Backward_scattering_g", 18, 3, 1),
+    ("NebScaleCoef", 19, 0, 2), ("SpirNoiseNudge", 19, 2, 2),
+    ("SpirNoiseAmount", 20, 0, 2), ("SpirNoiseIter", 20, 2, 2),
+    ("SpirNoiseCoef", 21, 0, 2), ("Nudge_3D_2", 21, 2, 2),
+    ("Noise_amount_3D_2", 22, 0, 2), ("Frequency_iteration_count_3D_2", 22, 2, 2),
+    ("SpirNoise3DCoef_2", 23, 0, 2), ("NebulaFormPlaneSign", 23, 2, 2),
+    ("NebulaFormDskSign", 24, 0, 2), ("NebulaFormCylSign", 24, 2, 2),
+    ("NebulaFormCylParam", 25, 0, 2), ("NebulaFormSphSign", 25, 2, 2),
+    ("NebulaFormCapsuleSign", 26, 0, 2), ("NebulaFormTorusSign", 26, 2, 2),
+    ("NebulaFormSpirSign", 27, 0, 2), ("NebulaFormNoiseSign", 27, 2, 2),
+    ("NebulaFormFBMNoiseSign", 28, 0, 2), ("NebulaFormSpirNoiseSign", 28, 2, 2),
+    ("NebulaFormSpirIQNoiseSign", 29, 0, 2), ("NebulaFormSpirNoise3DSign", 29, 2, 2),
+    ("NebulaMapThickCoef", 30, 0, 2), ("HG_mix_coef", 30, 2, 1), ("Gas_volume_height", 30, 3, 1),
+    ("gas_scattering_factor", 31, 0, 1), ("gas_density_factor", 31, 1, 1),
+    ("Emission_gas_1_coef_1", 31, 2, 1), ("Emission_gas_1_coef_2", 31, 3, 1),
+    ("Emission_gas_1_coef_3", 32, 0, 1), ("Emission_gas_2_coef_1", 32, 1, 1),
+    ("Emission_gas_2_coef_2", 32, 2, 1), ("Emission_gas_2_coef_3", 32, 3, 1),
+    ("Emission_gas_3_coef_1", 33, 0, 1), ("Emission_gas_3_coef_2", 33, 1, 1),
+    ("Emission_gas_3_coef_3", 33, 2, 1), ("Emission_intensivity_coef", 33, 3, 1),
+    ("NebScale", 34, 0, 1), ("NebulaFormPlaneHeight", 34, 1, 1),
+    ("NebulaFormSphRad", 34, 2, 1), ("NebulaFormCapsuleRadius", 34, 3, 1),
+    ("NebulaFormTorusRadius_1", 35, 0, 1), ("NebulaFormTorusRadius_2", 35, 1, 1),
+    ("NebulaFormNoiseCoef1", 35, 2, 1), ("NebulaFormNoiseCoef2", 35, 3, 1),
+    ("NebulaFormFBMNoiseCoef", 36, 0, 1), ("NebulaFormSpirNoiseCoef1", 36, 1, 1),
+    ("NebulaFormSpirNoiseCoef2", 36, 2, 1), ("NebulaFormSpirNoiseCoef3", 36, 3, 1),
+    ("NebulaFormSpirIQNoiseCoef1", 37, 0, 1), ("NebulaFormSpirIQNoiseCoef2", 37, 1, 1),
+    ("NebulaFormSpirIQNoiseCoef3", 37, 2, 1), ("NebulaFormSpirIQNoiseCoef4", 37, 3, 1),
+    ("NebulaFormSpirNoise3DCoef", 38, 0, 1), ("NebulaMapTwistCoef1", 38, 1, 1),
+    ("NebulaMapTwistCoef2", 38, 2, 1),
+];
 
 /// Which catalog nebula is ray-marched with which model (filled by `nebulae::setup_nebulae`).
 #[derive(Resource, Default, Clone)]
@@ -51,13 +130,27 @@ pub struct RaymarchParams {
     pub rot0: Vec4,
     pub rot1: Vec4,
     pub rot2: Vec4,
-    pub p: [Vec4; SLOTS],
+    /// x: 0 box, 1 sphere, 2 cylinder; yzw: `uShapeDims` (`BaseShapeDims`)
+    pub shape: Vec4,
+    /// xyz: `Scale`, w: radius of the drawn sphere (nebula radii)
+    pub scale: Vec4,
+    /// xyz: `uRandomize` (the nebula's `Randomize` + the model's)
+    pub rnd: Vec4,
+    /// x: colour brightness, y: alpha brightness (`uParamsImg.zw`)
+    pub img: Vec4,
+    /// x: `uFlags.x`, y: `Raymarch_step_count` (`uIntData[0].x`)
+    pub ints: UVec4,
+    pub f: [Vec4; FLOAT_SLOTS],
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct RaymarchMaterial {
     #[uniform(0)]
     pub u: RaymarchParams,
+    /// SE's `IqNoiseTex` (`blackholes::noise_texture`).
+    #[texture(1)]
+    #[sampler(2)]
+    pub noise: Handle<Image>,
 }
 
 impl Material for RaymarchMaterial {
@@ -88,122 +181,42 @@ impl Material for RaymarchMaterial {
     }
 }
 
-/// Factor applied to internal positions before the forms are evaluated. `NebScale` reads as a divisor
-/// for the Spirograph Nebula's model (its shell then has SE's size) but must multiply for models whose
-/// tori and capsules would otherwise lie outside their bounding shape (the Omega Nebula's `Diff 1
-/// JackDole`); SE's shader is encrypted, so the port divides unless that puts the largest enabled form
-/// outside the bounding shape.
-fn form_scale(m: &CustomModel) -> f64 {
-    let ns = m.num("NebScale");
-    if ns <= 0.0 {
-        return 1.0;
+/// Packs a model's keys into SE's `uFlags` / `uIntData` (`ints`) and `uFloatData` (`f`).
+pub fn pack(m: &CustomModel) -> (UVec4, [Vec4; FLOAT_SLOTS]) {
+    let mut flags = 0u32;
+    for (i, k) in FLAGS.iter().enumerate() {
+        if m.flag(k) {
+            flags |= 1 << i;
+        }
     }
-    let mut size: f64 = 0.0;
-    if m.flag("NebulaFormSph") {
-        size = size.max(m.num("NebulaFormSphRad"));
+    let mut f = [Vec4::ZERO; FLOAT_SLOTS];
+    for &(k, slot, c, n) in FLOATS {
+        let v: Vec<f64> = match n {
+            1 => vec![m.num(k)],
+            2 => m.pair(k).to_vec(),
+            3 => m.v3(k).to_vec(),
+            _ => m.v4(k).to_vec(),
+        };
+        for (j, x) in v.into_iter().enumerate() {
+            f[slot][c + j] = x as f32;
+        }
     }
-    if m.flag("NebulaFormTorus") {
-        size = size.max(0.5 * (m.num("NebulaFormTorusRadius_1") + m.num("NebulaFormTorusRadius_2")));
-    }
-    if m.flag("NebulaFormCapsule") {
-        size = size.max(m.num("NebulaFormCapsuleRadius"));
-    }
-    if m.flag("NebulaFormCyl") {
-        size = size.max(m.pair("NebulaFormCylParam")[0]);
-    }
-    if m.flag("NebulaFormDsk") {
-        size = size.max(m.v3("NebulaFormDskParam")[0]);
-    }
-    let bound = m.dims.iter().fold(0.0f64, |a, &d| a.max(d.abs()));
-    if size * ns <= bound { 1.0 / ns } else { ns }
+    // A model without Internal_scale falls back to its largest dimension.
+    f[1].w = m.internal_scale() as f32;
+    (UVec4::new(flags, m.num("Raymarch_step_count").max(1.0) as u32, 0, 0), f)
 }
 
-/// Packs a model into the uniform slots (layout in `galaxy_nebula_raymarch.wesl`).
-/// `gain`: brightness; `fade`: the model's fade-in (scales the dust's opacity).
-pub fn pack(m: &CustomModel, steps: f32, gain: f32, fade: f32) -> [Vec4; SLOTS] {
-    let f = |v: f64| v as f32;
-    let v3 = |k: &str| {
-        let a = m.v3(k);
-        Vec3::new(f(a[0]), f(a[1]), f(a[2]))
-    };
-    let pair = |k: &str| {
-        let a = m.pair(k);
-        Vec2::new(f(a[0]), f(a[1]))
-    };
-    let on = |k: &str| if m.flag(k) { 1.0 } else { 0.0 };
-    let form = |k: &str, extra: f32| {
-        let s = pair(&format!("{k}Sign"));
-        Vec4::new(s.x, s.y, on(k), extra)
-    };
-    let mut p = [Vec4::ZERO; SLOTS];
-    let shape = match m.shape {
-        BaseShape::Box => 0.0,
-        BaseShape::Sphere => 1.0,
-        BaseShape::Cylinder => 2.0,
-    };
-    p[0] = Vec4::new(shape, f(m.dims[0]), f(m.dims[1]), f(m.dims[2]));
-    p[1] = Vec3::new(f(m.scale[0]), f(m.scale[1]), f(m.scale[2])).extend(f(m.internal_scale()));
-    p[2] = Vec4::new(steps, f(m.num("td_break_value")), f(m.bound_radius()), gain);
-    p[3] = v3("sum_transparency_break").extend(fade);
-    p[4] = Vec4::new(on("Dust_enabled"), f(m.num("Dust_volume_height")), f(m.num("dust_absorption_factor")), f(m.num("dust_scattering_factor")));
-    p[5] = Vec4::new(f(m.num("Dust_volume_density_factor")), f(m.num("Albedo")), f(m.num("Forward_scattering_g")), f(m.num("Backward_scattering_g")));
-    p[6] = Vec4::new(f(m.num("HG_mix_coef")), on("Gas_emission_enabled"), f(m.num("Gas_volume_height")), f(m.num("gas_scattering_factor")));
-    p[7] = Vec4::new(f(m.num("gas_density_factor")), f(m.num("Emission_intensivity_coef")), f(form_scale(m)), on("NebulaMapTwist"));
-    p[8] = (v3("Light_Color_11") * f(m.num("Light_intensivity"))).extend(f(m.num("Light_radius_single_star")));
-    p[9] = (v3("Ambient_Light_Color_11") * f(m.num("Ambient_Light_intensivity"))).extend(on("Single_star"));
-    p[10] = v3("Star_position").extend(f(m.num("star_empty_sphere_radius")));
-    p[11] = Vec4::new(on("Render_star"), f(m.num("Star_light_coef_1")), f(m.num("Star_light_coef_2")), on("Render_star_bloom"));
-    p[12] = Vec4::new(f(m.num("Bloom_light_coef_1")), f(m.num("Bloom_light_coef_2")), f(m.num("NebulaMapTwistCoef1")), f(m.num("NebulaMapTwistCoef2")));
-    let mut c3 = Vec4::ZERO;
-    for i in 0..3 {
-        let g = format!("Emission_gas_{}", i + 1);
-        p[13 + i * 3] = v3(&format!("Nebula_emission_color_{}", i + 1)).extend(on(&g));
-        p[14 + i * 3] = v3(&format!("{g}_direction")).extend(f(m.num(&format!("{g}_coef_1"))));
-        p[15 + i * 3] = v3(&format!("{g}_coef_0")).extend(f(m.num(&format!("{g}_coef_2"))));
-        c3[i] = f(m.num(&format!("{g}_coef_3")));
-    }
-    p[22] = c3;
-    p[23] = pair("NebScaleCoef").extend(0.0).extend(0.0) + Vec4::new(0.0, 0.0, pair("NebulaMapThickCoef").x, pair("NebulaMapThickCoef").y);
-    p[24] = pair("SpirNoiseNudge").extend(0.0).extend(0.0) + Vec4::new(0.0, 0.0, pair("SpirNoiseAmount").x, pair("SpirNoiseAmount").y);
-    p[25] = pair("SpirNoiseIter").extend(0.0).extend(0.0) + Vec4::new(0.0, 0.0, pair("SpirNoiseCoef").x, pair("SpirNoiseCoef").y);
-    p[26] = pair("Nudge_3D_2").extend(0.0).extend(0.0) + Vec4::new(0.0, 0.0, pair("Noise_amount_3D_2").x, pair("Noise_amount_3D_2").y);
-    p[27] = pair("Frequency_iteration_count_3D_2").extend(0.0).extend(0.0)
-        + Vec4::new(0.0, 0.0, pair("SpirNoise3DCoef_2").x, pair("SpirNoise3DCoef_2").y);
-    p[28] = v3("NebulaCentPos").extend(0.0);
-    p[29] = form("NebulaFormPlane", f(m.num("NebulaFormPlaneHeight")));
-    p[30] = v3("NebulaFormPlaneXYZ").extend(0.0);
-    p[31] = form("NebulaFormDsk", 0.0);
-    p[32] = v3("NebulaFormDskParam").extend(0.0);
-    p[33] = form("NebulaFormCyl", 0.0);
-    p[34] = pair("NebulaFormCylParam").extend(0.0).extend(0.0);
-    p[35] = form("NebulaFormSph", f(m.num("NebulaFormSphRad")));
-    p[36] = form("NebulaFormCapsule", f(m.num("NebulaFormCapsuleRadius")));
-    p[37] = v3("NebulaFormCapsulePos_1").extend(0.0);
-    p[38] = v3("NebulaFormCapsulePos_2").extend(0.0);
-    p[39] = form("NebulaFormTorus", 0.0);
-    p[40] = Vec4::new(f(m.num("NebulaFormTorusRadius_1")), f(m.num("NebulaFormTorusRadius_2")), 0.0, 0.0);
-    p[41] = form("NebulaFormSpir", 0.0);
-    let s = m.v4("NebulaFormSpirParam");
-    p[42] = Vec4::new(f(s[0]), f(s[1]), f(s[2]), f(s[3]));
-    p[43] = form("NebulaFormNoise", 0.0);
-    p[44] = Vec4::new(f(m.num("NebulaFormNoiseCoef1")), f(m.num("NebulaFormNoiseCoef2")), 0.0, 0.0);
-    p[45] = form("NebulaFormFBMNoise", f(m.num("NebulaFormFBMNoiseCoef")));
-    p[46] = form("NebulaFormSpirNoise", 0.0);
-    p[47] = Vec4::new(f(m.num("NebulaFormSpirNoiseCoef1")), f(m.num("NebulaFormSpirNoiseCoef2")), f(m.num("NebulaFormSpirNoiseCoef3")), 0.0);
-    p[48] = form("NebulaFormSpirIQNoise", 0.0);
-    p[49] = Vec4::new(
-        f(m.num("NebulaFormSpirIQNoiseCoef1")),
-        f(m.num("NebulaFormSpirIQNoiseCoef2")),
-        f(m.num("NebulaFormSpirIQNoiseCoef3")),
-        f(m.num("NebulaFormSpirIQNoiseCoef4")),
-    );
-    p[50] = form("NebulaFormSpirNoise3D", f(m.num("NebulaFormSpirNoise3DCoef")));
-    p
+/// The nebula's draw factor (FUN_140488a20, custom models of nebulae): the size fade-in
+/// `clamp((px - 4) / 3)` times SE's brightness term (`clamp(NebulaBrightMin coef(NebulaMagnLimit) L / d^2 -
+/// NebulaBrightMin)`, as for the sprite models), `px` the nebula's own radius on screen.
+fn draw_fade(px: f64, bright: f32) -> f32 {
+    ((px as f32 - 4.0) / 3.0).clamp(0.0, 1.0) * bright
 }
 
 #[derive(Resource, Default)]
 struct Volumes {
     mesh: Handle<Mesh>,
+    noise: Handle<Image>,
     slots: Vec<(Entity, Handle<RaymarchMaterial>)>,
 }
 
@@ -225,12 +238,12 @@ fn update_volumes(
     data: Res<SeData>,
     assign: Res<RaymarchAssign>,
     settings: Res<NebulaSettings>,
-    gfx: Res<GraphicsSettings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     st: Option<Res<NebulaState>>,
     mut resident: ResMut<ResidentNebulae>,
     mut vols: ResMut<Volumes>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<RaymarchMaterial>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
@@ -246,9 +259,10 @@ fn update_volumes(
     if settings.enabled {
         for (n, m) in assign.model_of.iter().enumerate() {
             let (Some(m), Some(rec)) = (m, cat.nebulae.get(n)) else { continue };
-            let r = rec.radius_pc * assign.set.models[*m].bound_radius();
-            let px = angular_px(r, (rec.pos_pc - cam_pc).length(), focal);
-            let fade = model_fade(px, settings.build_px as f64);
+            let d = (rec.pos_pc - cam_pc).length();
+            let px = angular_px(rec.radius_pc, d, focal);
+            let m_app = rec.abs_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
+            let fade = draw_fade(px, se_bright_term(settings.mag_limit, m_app as f32, settings.bright_min, settings.bright_min));
             if fade > 0.0 {
                 wanted.push((px, n, *m, fade));
             }
@@ -260,10 +274,33 @@ fn update_volumes(
 
     if vols.mesh == Handle::default() {
         vols.mesh = meshes.add(Sphere::new(1.03).mesh().ico(3).expect("icosphere"));
+        let texels: Vec<u8> = crate::blackholes::noise_texture(0x1A_9E37).into_iter().flatten().collect();
+        let size = Extent3d { width: 16, height: 16, depth_or_array_layers: 1 };
+        let mut noise = Image::new(size, TextureDimension::D2, texels, TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD);
+        noise.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            mag_filter: ImageFilterMode::Linear,
+            min_filter: ImageFilterMode::Linear,
+            ..default()
+        });
+        vols.noise = images.add(noise);
     }
     while vols.slots.len() < wanted.len() {
         let mat = mats.add(RaymarchMaterial {
-            u: RaymarchParams { center_rel: Vec4::ZERO, rot0: Vec4::X, rot1: Vec4::Y, rot2: Vec4::Z, p: [Vec4::ZERO; SLOTS] },
+            u: RaymarchParams {
+                center_rel: Vec4::ZERO,
+                rot0: Vec4::X,
+                rot1: Vec4::Y,
+                rot2: Vec4::Z,
+                shape: Vec4::ZERO,
+                scale: Vec4::ONE,
+                rnd: Vec4::ZERO,
+                img: Vec4::ZERO,
+                ints: UVec4::ZERO,
+                f: [Vec4::ZERO; FLOAT_SLOTS],
+            },
+            noise: vols.noise.clone(),
         });
         let e = commands
             .spawn((Mesh3d(vols.mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
@@ -272,7 +309,10 @@ fn update_volumes(
     }
 
     let mut far = far_mats.get_mut(&st.far_handle());
-    let quality = gfx.quality.volume_resolution.clamp(0.1, 1.0);
+    // SE's colour brightness (FUN_1404877f0, drawn straight to the frame): model Bright x 10 x
+    // DAT_14080b5a4 (GlowBrightMin x coef(GlowMagnLimit)) x the draw factor x hdrNebulaRaymarchBright; the
+    // alpha brightness is the draw factor.
+    let glow = 10.0 * se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.raymarch_bright);
     for (i, (e, mat)) in vols.slots.iter().enumerate() {
         let Some(&(_, n, m, fade)) = wanted.get(i) else {
             if let Ok(mut v) = vis.get_mut(*e) {
@@ -282,18 +322,26 @@ fn update_volumes(
         };
         let rec = &cat.nebulae[n];
         let model = &assign.set.models[m];
-        // SE marches `Raymarch_step_count` steps at its volumetric resolution; the port renders at full
-        // resolution and spends the quality on steps instead.
-        let steps = (model.num("Raymarch_step_count") as f32).max(32.0) * (0.5 + quality);
-        let gain = model.bright as f32 * GAIN * fade;
         let inv = Mat3::from_quat(rec.orientation.inverse().as_quat());
+        let (ints, f) = pack(model);
+        let shape = match model.shape {
+            BaseShape::Box => 0.0,
+            BaseShape::Sphere => 1.0,
+            BaseShape::Cylinder => 2.0,
+        };
+        let v3 = |a: [f64; 3]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32);
         if let Some(mut mm) = mats.get_mut(mat) {
             mm.u = RaymarchParams {
                 center_rel: (rec.pos_pc - cam_pc).as_vec3().extend(rec.radius_pc as f32),
                 rot0: inv.x_axis.extend(0.0),
                 rot1: inv.y_axis.extend(0.0),
                 rot2: inv.z_axis.extend(0.0),
-                p: pack(model, steps, gain, fade),
+                shape: Vec4::new(shape, model.dims[0] as f32, model.dims[1] as f32, model.dims[2] as f32),
+                scale: v3(model.scale).extend(model.bound_radius() as f32),
+                rnd: (Vec3::from(rec.randomize) + v3(model.v3("Randomize"))).extend(0.0),
+                img: Vec4::new(model.bright as f32 * glow * fade, fade, 0.0, 0.0),
+                ints,
+                f,
             };
         }
         if let Ok(mut v) = vis.get_mut(*e) {
@@ -314,20 +362,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packs_pairs_and_forms() {
+    fn packs_ses_uniform_block() {
         let set = CustomModelSet::new(vec![(
             "a.cfg".into(),
             "CustomModel \"x\" { UseForType \"Nebula/SNR\" BaseShape \"sphere\" BaseShapeDims (10 10 10) Internal_scale 10 \
-             NebulaFormSph true NebulaFormSphSign (0.5 -1) NebulaFormSphRad 7 SpirNoiseNudge (6.7 10) \
-             Emission_gas_2 true Nebula_emission_color_2 (1 0.5 0) Emission_gas_2_coef_3 2 }"
+             Raymarch_step_count 86 NebulaFormSph true NebulaFormSphSign (0.5 -1) NebulaFormSphRad 7 SpirNoiseNudge (6.7 10) \
+             Emission_gas_2 true Nebula_emission_color_2 (1 0.5 0) Emission_gas_2_coef_3 2 NebulaMapTwist true }"
                 .into(),
         )]);
-        let p = pack(&set.models[0], 100.0, 1.0, 1.0);
-        assert_eq!(p[0], Vec4::new(1.0, 10.0, 10.0, 10.0));
-        assert_eq!(p[35], Vec4::new(0.5, -1.0, 1.0, 7.0));
-        assert_eq!(p[24], Vec4::new(6.7, 10.0, 0.0, 0.0));
-        assert_eq!(p[16], Vec4::new(1.0, 0.5, 0.0, 1.0));
-        assert_eq!(p[22].y, 2.0);
-        assert_eq!(p[2].z, 1.0);
+        let (ints, f) = pack(&set.models[0]);
+        // NebulaFormSph 0x2000, Emission_gas_2 0x20, NebulaMapTwist 0x400000.
+        assert_eq!(ints, UVec4::new(0x2000 | 0x20 | 0x40_0000, 86, 0, 0));
+        assert_eq!(f[25].zw(), Vec2::new(0.5, -1.0));
+        assert_eq!(f[34].z, 7.0);
+        assert_eq!(f[19].zw(), Vec2::new(6.7, 10.0));
+        assert_eq!(f[8].xyz(), Vec3::new(1.0, 0.5, 0.0));
+        assert_eq!(f[32].w, 2.0);
+        assert_eq!(f[1].w, 10.0);
+    }
+
+    #[test]
+    fn nebulae_fade_in_from_four_pixels() {
+        assert_eq!(draw_fade(4.0, 1.0), 0.0);
+        assert!((draw_fade(5.5, 1.0) - 0.5).abs() < 1e-6);
+        assert_eq!(draw_fade(30.0, 0.25), 0.25);
     }
 }

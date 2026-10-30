@@ -291,6 +291,8 @@ pub struct NebulaRecord {
     pub source: String,
     /// Procedural nebulae: raw draw of the sprite-model pool pick (`pool[type][roll % len]`).
     pub model_roll: Option<u32>,
+    /// `Randomize` (FUN_140172400): added to the ray-marched model's own as the shader's `uRandomize`.
+    pub randomize: [f32; 3],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -883,6 +885,7 @@ impl Catalog {
             orientation,
             source: source.to_string(),
             model_roll: None,
+            randomize: b.vec3("Randomize").map_or([0.0; 3], |v| v.map(|x| x as f32)),
             names,
         };
         let idx = self.nebulae.len() as u32;

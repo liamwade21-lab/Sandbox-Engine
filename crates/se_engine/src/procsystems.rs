@@ -663,6 +663,7 @@ fn nebula_record(cat: &Catalog, g: u32, n: &proc_galsys::ProcNebula, frame: Gala
         orientation: frame.rot * DQuat::from_xyzw(q[1] as f64, q[2] as f64, q[3] as f64, q[0] as f64).normalize(),
         source: "procedural".into(),
         model_roll: n.model_roll,
+        randomize: [0.0; 3],
     }
 }
 

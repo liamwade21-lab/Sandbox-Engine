@@ -80,6 +80,8 @@ pub struct NebulaSettings {
     pub glow_mag_limit: f32,
     pub glow_bright_min: f32,
     pub sprite_bright: f32,
+    /// `hdrNebulaRaymarchBright` (0.03): the ray-marched models' brightness (`nebula_raymarch.rs`).
+    pub raymarch_bright: f32,
 }
 
 impl Default for NebulaSettings {
@@ -97,6 +99,7 @@ impl Default for NebulaSettings {
             glow_mag_limit: 7.0,
             glow_bright_min: 0.006,
             sprite_bright: 0.06,
+            raymarch_bright: 0.03,
         };
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         if let Some(v) = get("SE_NEB_FAR") {
@@ -325,6 +328,7 @@ fn setup_nebulae(
         num("GlowMagnLimit", &mut settings.glow_mag_limit);
         num("GlowBrightMin", &mut settings.glow_bright_min);
         num("hdrNebulaSpriteBright", &mut settings.sprite_bright);
+        num("hdrNebulaRaymarchBright", &mut settings.raymarch_bright);
     }
     let vfs = data.vfs.clone();
     let cat = data.catalog.clone();
