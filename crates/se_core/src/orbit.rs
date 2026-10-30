@@ -79,8 +79,14 @@ impl KeplerOrbit {
             inclination: b.f64("Inclination").unwrap_or(0.0).to_radians(),
             ascending_node: b.f64_any(&["AscendingNode", "PositionAngle"]).unwrap_or(0.0).to_radians(),
             epoch: b.f64("Epoch").unwrap_or(crate::time::J2000),
-            // `PeriodDays` is the unit-suffixed alias of `Period` (years).
-            period: b.f64("Period").map(|y| y * SECONDS_PER_YEAR).or_else(|| b.f64("PeriodDays").map(|d| d * SECONDS_PER_DAY)).unwrap_or(0.0),
+            // `PeriodDays` is the unit-suffixed alias of `Period` (years); `MeanMotion` (deg/day) gives
+            // it too, and is how SE's catalogs time hyperbolic orbits ('Oumuamua).
+            period: b
+                .f64("Period")
+                .map(|y| y * SECONDS_PER_YEAR)
+                .or_else(|| b.f64("PeriodDays").map(|d| d * SECONDS_PER_DAY))
+                .or_else(|| b.f64("MeanMotion").filter(|&n| n > 0.0).map(|n| 360.0 / n * SECONDS_PER_DAY))
+                .unwrap_or(0.0),
             analytic_model: b.str("AnalyticModel").map(str::to_string),
             separation: b.f64("Separation").map_or(0.0, |a| a * METERS_PER_AU),
             ..Default::default()
@@ -92,10 +98,11 @@ impl KeplerOrbit {
             _ => RefPlane::Ecliptic,
         };
         let e = o.eccentricity;
+        // SE writes a hyperbolic orbit's semi-major axis negative; here it is kept positive.
         o.semi_major_axis = if let Some(a) = b.f64("SemiMajorAxis") {
-            a * METERS_PER_AU
+            a.abs() * METERS_PER_AU
         } else if let Some(a) = b.f64("SemiMajorAxisKm") {
-            a * 1000.0
+            a.abs() * 1000.0
         } else if let Some(q) = b.f64("PericenterDistKm") {
             let q = q * 1000.0;
             if (e - 1.0).abs() < 1e-9 { q } else { q / (1.0 - e).abs() }
@@ -276,6 +283,22 @@ mod tests {
         let o = KeplerOrbit::from_block(doc.sub("Orbit").unwrap()).unwrap();
         assert!((o.semi_major_axis - 329_115_316.0).abs() < 1.0);
         assert!((o.period - 1.09648307 * SECONDS_PER_DAY).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hyperbolic_orbit_with_negative_axis_and_mean_motion() {
+        // 'Oumuamua as SE's catalog has it.
+        let doc = sc::parse(
+            "Orbit { Epoch 2458059.5 MeanMotion 0.6802 SemiMajorAxis -1.2798 Eccentricity 1.19951 \
+             Inclination 122.69 AscendingNode 24.599 ArgOfPericenter 241.70 MeanAnomaly 36.425 }",
+        );
+        let o = KeplerOrbit::from_block(doc.sub("Orbit").unwrap()).unwrap();
+        assert!((o.semi_major_axis / METERS_PER_AU - 1.2798).abs() < 1e-9);
+        assert!((o.mean_motion().to_degrees() * SECONDS_PER_DAY - 0.6802).abs() < 1e-9);
+        // Outbound at the epoch, about 1.5 AU from the Sun, and farther a year on.
+        let r0 = o.position_at(2458059.5).length() / METERS_PER_AU;
+        let r1 = o.position_at(2458059.5 + 365.0).length() / METERS_PER_AU;
+        assert!(r0 > 1.0 && r0 < 2.0 && r1 > r0 + 2.0, "{r0} {r1}");
     }
 
     #[test]
