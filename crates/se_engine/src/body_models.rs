@@ -14,7 +14,7 @@ use se_core::vfs::Vfs;
 
 use crate::data::SeData;
 use crate::models::{LoadedModel, build_model_meshes};
-use crate::ship_assets::{HullDefaults, HullMaterial, HullUniform, surface_hapke};
+use crate::ship_assets::{self as se_engine_ship, HullDefaults, HullMaterial, HullPart, HullUniform, surface_hapke};
 use crate::system::{AmbientLighting, BodyLighting, SystemBody, SystemMember};
 use crate::terrain::BodyAttached;
 use crate::universe::{MeterScale, ScaleAnchor, UOrientation, UPosition, UniverseSet};
@@ -22,6 +22,8 @@ use crate::universe::{MeterScale, ScaleAnchor, UOrientation, UPosition, Universe
 enum ModelState {
     Pending,
     Loading(Task<Option<LoadedModel>>),
+    /// A catalog spacecraft's design (`.sss` ship), built as a ship is: metres, pivot at the origin.
+    LoadingShip(Task<Option<se_engine_ship::LoadedShip>>),
     Ready(Vec<(Entity, Handle<HullMaterial>)>),
     Failed,
 }
@@ -64,6 +66,52 @@ fn set_lights(u: &mut HullUniform, light: &BodyLighting, ambient: f32) {
     u.ambient.x = ambient;
 }
 
+/// Spawns a model's parts following `entity`'s body: scaled by `scale` (the body's radius for a
+/// normalized model, 1 for metres), offset by `center` in the body frame, with the body's Lambert /
+/// Hapke mix and opposition spots when given.
+#[allow(clippy::too_many_arguments)]
+fn spawn_parts(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    mats: &mut Assets<HullMaterial>,
+    images: &mut Assets<Image>,
+    defaults: &HullDefaults,
+    entity: Entity,
+    body: &SystemBody,
+    light: &BodyLighting,
+    ambient: f32,
+    parts: Vec<HullPart>,
+    scale: f64,
+    center: DVec3,
+    hapke: Option<(f32, Vec4)>,
+) -> Vec<(Entity, Handle<HullMaterial>)> {
+    let mut out = Vec::new();
+    for p in parts {
+        let mut u = p.u;
+        if let Some((lerp, h)) = hapke {
+            (u.ambient.y, u.hapke) = (lerp, h);
+        }
+        set_lights(&mut u, light, ambient);
+        let mat = mats.add(p.tex.into_material(images, defaults, u));
+        let e = commands
+            .spawn((
+                SystemMember,
+                BodyAttached { body: entity, center },
+                Mesh3d(meshes.add(p.mesh)),
+                MeshMaterial3d(mat.clone()),
+                UPosition(body.pos),
+                UOrientation(body.orient),
+                ScaleAnchor(body.pos),
+                MeterScale(DVec3::splat(scale)),
+                Transform::IDENTITY,
+                Visibility::Hidden,
+            ))
+            .id();
+        out.push((e, mat));
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update_body_models(
     mut commands: Commands,
@@ -82,9 +130,37 @@ fn update_body_models(
             ModelState::Pending if resolved => {
                 let vfs: Arc<Vfs> = data.vfs.clone();
                 let r = model.model_ref.clone();
-                let shift = defaults.thermal_shift;
-                model.state =
-                    ModelState::Loading(AsyncComputeTaskPool::get().spawn(async move { build_model_meshes(&vfs, &r, shift) }));
+                let (shift, bright) = (defaults.thermal_shift, defaults.model_bright);
+                // SE builds catalog spacecraft from their ship designs ("Initializing static ships",
+                // seSpacecraft::LoadStaticShip).
+                let spacecraft = matches!(body.obj, ObjectRef::Body(i) if data.catalog.bodies.get(i as usize)
+                    .is_some_and(|b| b.tag == se_core::catalog::BodyTag::Spacecraft));
+                model.state = if spacecraft && r.to_ascii_lowercase().ends_with(".sss") {
+                    ModelState::LoadingShip(AsyncComputeTaskPool::get().spawn(async move {
+                        let design = se_core::ship::ShipDesign::load(&vfs, &r)?;
+                        se_engine_ship::build_ship(&vfs, &design, shift, bright)
+                    }))
+                } else {
+                    ModelState::Loading(AsyncComputeTaskPool::get().spawn(async move { build_model_meshes(&vfs, &r, shift) }))
+                };
+            }
+            ModelState::LoadingShip(task) => {
+                if let Some(result) = check_ready(task) {
+                    model.state = match result {
+                        Some(ship) => {
+                            // The pivot sits `clearance` above the hull's lowest point, which stands on
+                            // the fixed position.
+                            let center = DVec3::new(0.0, ship.clearance, 0.0);
+                            let parts = spawn_parts(&mut commands, &mut meshes, &mut mats, &mut images, &defaults, entity, body, light, ambient.0, ship.groups, 1.0, center, None);
+                            info!("loaded spacecraft model {} ({} parts)", model.model_ref, parts.len());
+                            ModelState::Ready(parts)
+                        }
+                        None => {
+                            warn!("failed to load spacecraft model {}", model.model_ref);
+                            ModelState::Failed
+                        }
+                    };
+                }
             }
             ModelState::Loading(task) => {
                 if let Some(result) = check_ready(task) {
@@ -94,32 +170,8 @@ fn update_body_models(
                                 ObjectRef::Body(i) => data.catalog.bodies.get(i as usize).and_then(|b| b.block.sub("Surface")),
                                 _ => None,
                             };
-                            let (lerp, hapke) = surface_hapke(surface);
-                            let mut parts = Vec::new();
-                            for p in loaded.parts {
-                                let mut u = p.u;
-                                (u.ambient.y, u.hapke) = (lerp, hapke);
-                                set_lights(&mut u, light, ambient.0);
-                                let mat = mats.add(p.tex.into_material(&mut images, &defaults, u));
-                                let e = commands
-                                    .spawn((
-                                        SystemMember,
-                                        BodyAttached {
-                                            body: entity,
-                                            center: DVec3::ZERO,
-                                        },
-                                        Mesh3d(meshes.add(p.mesh)),
-                                        MeshMaterial3d(mat.clone()),
-                                        UPosition(body.pos),
-                                        UOrientation(body.orient),
-                                        ScaleAnchor(body.pos),
-                                        MeterScale(DVec3::splat(body.radius_m)),
-                                        Transform::IDENTITY,
-                                        Visibility::Hidden,
-                                    ))
-                                    .id();
-                                parts.push((e, mat));
-                            }
+                            let hapke = surface_hapke(surface);
+                            let parts = spawn_parts(&mut commands, &mut meshes, &mut mats, &mut images, &defaults, entity, body, light, ambient.0, loaded.parts, body.radius_m, DVec3::ZERO, Some(hapke));
                             info!("loaded model {} ({} parts)", model.model_ref, parts.len());
                             ModelState::Ready(parts)
                         }
