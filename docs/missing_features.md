@@ -104,19 +104,19 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 84 have been fixed since (listed at the end); the tables count the 157 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 85 have been fixed since (listed at the end); the tables count the 156 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 69 | 65 | 20 |
+| Gaps | 1 | 2 | 69 | 64 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 51 | 76 | 30 |
+| Gaps | 50 | 76 | 30 |
 
 | Area | Kept |
 |---|---|
-| 01 Stars | 16 |
+| 01 Stars | 15 |
 | 02 Star clusters | 12 |
 | 03 Galaxies and nebulae | 14 |
 | 04 Planet surfaces | 10 |
@@ -806,15 +806,6 @@ pseudo lens flare: SE's preset also draws lens dirt and a starburst (DirtTexture
 - SE evidence: Flares.pak *pseudo.cfg keys; exe RaysTexture, DirtTexture
 - Port: crates/se_engine/assets/shaders/pseudo_flare.wesl, crates/se_engine/src/lensflare.rs:495-514
 - Check: SE hdr_combine.glsl:231-240 samples LensDirt and a rotated LensRays texture, multiplies ghosts+halo by (rays + dirt) and mixes a bloom dirt mask by DirtBright, with Default pseudo.cfg setting RaysTexture LensRays2 and DirtTexture; port's pseudo pass (lensflare.rs:499-505, pseudo_flare.wesl) passes only ghosts, halo, chromaticism and lens colour, with no dirt or rays anywhere
-
-### 01-023 · Stars
-
-CenterOf ignored: SE ties a star or black hole to the centre of a galaxy or nebula (134 supermassive holes in BlackHoles.sc, SS 433 in the Manatee Nebula, Crab Pulsar's barycentre in the Crab Nebula); port uses only the star's own RA/Dec/Dist
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: Catalogs.pak stars/BlackHoles.sc CenterOf, stars/NeutronStars-custom.sc CenterOf "Crab Nebula"
-- Port: none
-- Check: SE star parser FUN_140476e90:274-283,875-890 reads CenterOf, sets flag 0x20 and queues the name to tie the star to that object instead of its own coordinates (134 uses in BlackHoles.sc, Crab Pulsar, SpaceEngine.sc); port has no CenterOf handling (only listed in docs/formats/sc_vocabulary.md), so holes whose own Dist differs from their galaxy's (NGC 1023* 10.57 vs 9.7 Mpc, TON 618* 5.59 vs 3.31 Gpc) sit outside their galaxy
 
 ### 01-021 · Stars
 
@@ -1570,6 +1561,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **01-015** (Stars, fixed 2026-10-29): procedural star blocks pop in: SE fades newly generated blocks of stars in over StarFadeDuration 0.5 s; port s... Fix: New blocks of procedural stars fade in as SE's do (FUN_14048dd70: a block's brightness factor rises by dt / StarFadeDuration a frame from 0 once it is ready, capped at 1; StarFadeDuration 0.5 s read from main-def.cfg, at least 1 ms): a finished octree node is drawn with its own copy of the shared star material whose colour multiplier (tint) runs 0 -> 1, then switches to the shared material (procstars.rs stream_nodes, stars::block_fade_seconds).
 - **01-016** (Stars, fixed 2026-10-30): star magnitude limit and zoom: in SE, zooming works like a telescope and raises the stars' limiting magnitude ... Fix: Zoom works like a telescope as in SE: its camera keeps a zoom factor (FOV / DefaultFOV)^-1.5 (FUN_140572300, seCamera +0x1390; DefaultFOV 45 read into +0x1360 by FUN_140280ec0) that multiplies the brightness coefficients of stars, planets and clusters every frame (FUN_1404c51a0, mono view only); StarSettings.zoom follows the camera and star_params raises the shader's limit by 2.5 log10(zoom) (catalog, procedural, cluster and planet points). Loading follows the zoomed limit: SE keeps a star node while its brightest star could show under the coefficient capped at magnitude 20 (FUN_1404a0e80, FUN_1404c4610) and, under StarFrustumClipFOV 30 (main-def.cfg), only inside the frustum (FUN_14047b670), so StarOctree::wanted_nodes reaches 10^(0.2 dm) further inside the view cone (at most 512 extra nodes a level; all around at most 2x without a cone) and cluster nodes use the zoomed limit inside the cone. The camera toolbar shows SE's 'Mag limit' = StarMagnLimit + 1.0587 ln(zoom) (FUN_1404c27c0; typing sets the limit back, FUN_14024d6e0); SE's keys ] / [ (IncAll/DecAllMagnCoef, +-0.1), Ctrl+] / [ (stars), P (ResetAllMagnCoef) from its key table FUN_1405ba8f0 with a splash message; the ship's warp boost moved from [ ] to SE's Alt+= / Alt+-. Zoomed in, procedural galaxies, clusters and nebulae are promoted only inside the view (all around they grew past the size thresholds and cost 80 ms frames). Checked against the tutorial's 'Mag limit' numbers (internal 7.7-9.4 for 10 at FOV 10-30; port 7.6-9.36); at 0.2 deg the frame median is 7 ms, worst 18 ms. Not ported: galaxy and nebula points brightening with zoom, separate planet/galaxy limits (Shift and Ctrl+Shift keys).
 - **01-019** (Stars, fixed 2026-10-30): catalog key Remove ignored: star .sc files use Remove "name" (24 times) before redefining a system, but the po... Fix: `Remove "name"` drops a star like `RemoveStar` (SE's star reader FUN_140475fb0 matches both), so the HIPPARCOS entries the star catalogs remove before redefining a system (24 lines, e.g. Stars-bin.sc's BET1/BET2 Cyg before Albireo's components) are no longer drawn beside the new components.
+- **01-023** (Stars, fixed 2026-10-30): CenterOf ignored: SE ties a star or black hole to the centre of a galaxy or nebula (134 supermassive holes in ... Fix: `CenterOf` ties a star to the centre of the galaxy, nebula or cluster it names, whatever its own RA/Dec/Dist (SE's star parser FUN_140476e90 sets flag 0x20 and queues the name): applied when positions resolve after every catalog has loaded, so BlackHoles.sc's 134 supermassive holes sit in their galaxies (NGC 1023* was 0.9 Mpc off, TON 618* 2.3 Gpc) and the Crab Pulsar's system in the Crab Nebula; components without their own position follow as before.
 - **02-001** (Star clusters, fixed 2026-10-28): Catalog cluster far sprite: SE draws every catalog (and extragalactic catalog) cluster as a star-like particle... Fix: Catalog clusters are SE's star-like particle (`procsystems.rs` setup, `galaxy_far.wesl` ptype 4), coloured by `Color` or SE's default by type, open clusters at 0.25; `Color (0 0 0)` draws none. Omega Cen shows from Earth.
 - **02-002** (Star clusters, fixed 2026-10-28): Far-to-near switch rule: SE renders member stars once the cluster's angular radius exceeds 8 px (x max(1, heig... Fix: Member stars from 8 px x max(1, h/1080) of radius (`clusters::members_range_pc`, also for procedural promotion); every cluster particle fades out from 1 to 100 px x h/1080. Not done: SE's brightness cut on members (d^2 ClusterBrightMin < K L).
 - **02-003** (Star clusters, fixed 2026-10-29): Member-star LOD octree: SE gives each cluster a 5-level star octree (nodes "SC cluster-level-node", root half-... Fix: Cluster member octree (clusters.rs): SE's structure (FUN_140543c70 / FUN_140540220 / FUN_1401d7300): five levels below a root cube of half-size the cluster radius, level d holding one of SE's five equal-probability bands of Mv ~ N(3, 6) from -8 to 30 (-8, -1.5, 1.8, 4.7, 8.2, 25); a node loads while the camera is inside its sphere or its band's brightest star seen from the sphere's edge is above the star magnitude limit (StarMagnLimit + PointOverbright), at most 16384 stars per node, brighter nodes first, so faint members appear as you approach and big globulars reach millions of stars around the camera; counts scale with StarDensityInCluster. Not done: SE's own per-node star counts and member generator (CreateClusterBlock, FUN_1401d6c60) are not decoded, so band populations come from the port's Salpeter/turn-off model and Plummer profile.

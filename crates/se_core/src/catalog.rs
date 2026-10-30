@@ -827,6 +827,21 @@ impl Catalog {
     /// components without RA/Dec take their parent's position; orbit periods are derived
     /// from parent masses.
     fn resolve_from(&mut self, s0: usize, b0: usize) {
+        // SE ties a star (a galaxy's central black hole, the Crab Pulsar) to the centre of a galaxy,
+        // nebula or cluster named by `CenterOf`, whatever its own coordinates (FUN_140476e90).
+        for i in s0..self.stars.len() {
+            let Some(target) = self.stars[i].block.str("CenterOf") else { continue };
+            let pos = match self.find(target) {
+                Some(ObjectRef::Galaxy(g)) => Some(self.galaxies[g as usize].pos_pc),
+                Some(ObjectRef::Nebula(n)) => Some(self.nebulae[n as usize].pos_pc),
+                Some(ObjectRef::Cluster(c)) => Some(self.clusters[c as usize].pos_pc),
+                _ => None,
+            };
+            if let Some(p) = pos {
+                self.stars[i].pos_pc = p;
+                self.stars[i].has_position = true;
+            }
+        }
         // Propagate positions down the hierarchy (a few passes handle nesting).
         for _ in 0..6 {
             let mut changed = false;
@@ -1207,6 +1222,21 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
         assert!(p.age_gyr > 0.0 && p.age_gyr < 3.5);
         assert_eq!(c.clusters[1].color, Some([0.0; 3]));
         assert!(c.clusters[2].age_gyr > 0.0 && c.clusters[2].age_gyr <= 13.0);
+    }
+
+    #[test]
+    fn center_of_puts_a_star_at_its_galaxy() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            "Galaxy \"NGC 1023\" { Type \"SB0\" RA 2.67 Dec 39.06 Dist 9.7e6 Radius 15000 }
+             Star \"NGC 1023*\" { RA 2.67 Dec 39.06 Dist 1.057e7 Class \"X\" CenterOf \"NGC 1023\" }
+",
+            "c.sc",
+        );
+        c.finalize();
+        let Some(ObjectRef::Star(s)) = c.find("NGC 1023*") else { panic!() };
+        let Some(ObjectRef::Galaxy(g)) = c.find("NGC 1023") else { panic!() };
+        assert!((c.stars[s as usize].pos_pc - c.galaxies[g as usize].pos_pc).length() < 1e-6);
     }
 
     #[test]
