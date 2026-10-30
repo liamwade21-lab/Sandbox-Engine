@@ -288,6 +288,9 @@ pub struct SurfaceParams {
     /// `SpecBrightIce` / `RoughnessIce` when the catalog sets them ([`ice_spec_default`] otherwise).
     pub spec_bright_ice: Option<f64>,
     pub roughness_ice: Option<f64>,
+    /// `RingsWinter` (FUN_14046f840, record +0x118c): how much the hemisphere the rings shade fades
+    /// (planet.glsl's "rings winter"); `None` when absent (SE's -1e38 sentinel: no effect).
+    pub rings_winter: Option<f64>,
     pub spec_bright_water: f64,
     pub color_sea: Option<[f64; 3]>,
     pub color_shelf: Option<[f64; 3]>,
@@ -310,6 +313,7 @@ impl SurfaceParams {
             diff_map_alpha_ice: b.str("DiffMapAlpha") == Some("Ice"),
             spec_bright_ice: b.f64("SpecBrightIce"),
             roughness_ice: b.f64("RoughnessIce"),
+            rings_winter: b.f64("RingsWinter"),
             spec_bright_water: b.f64("SpecBrightWater").unwrap_or(0.0),
             color_sea: b.vec3("colorSea"),
             color_shelf: b.vec3("colorShelf"),

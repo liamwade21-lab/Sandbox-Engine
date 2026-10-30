@@ -91,7 +91,8 @@ pub struct PlanetUniform {
     pub eclipse: EclipseUniform,
     /// Own rings: x inner, y outer radius (planet radii), z opacity, w 0 none / 0.5 untextured / 1 textured.
     pub ring: Vec4,
-    /// xyz: ring plane normal (render orientation).
+    /// xyz: ring plane normal (render orientation); w: SE's rings winter strength, `RingsWinter` x
+    /// the rings' mean radius over the planet's (FUN_1404ae4a0), 0 without rings or the key.
     pub ring_normal: Vec4,
     /// Node position on its cube face for metre-scale soil textures: xy the node corner
     /// (m, modulo `SOIL_WRAP_M`), z the node edge length (m); w the split distance in node edges,
@@ -1716,7 +1717,13 @@ fn update_terrain(
             .find(|r| r.body == body_entity)
             .and_then(|r| ring_mats.get(&r.material))
             .map(|m| (m.texture.clone(), m.u.geom.truncate().extend(if m.u.params.z > 0.5 { 1.0 } else { 0.5 })));
-        let ring_normal = (body.orient * DVec3::Y).as_vec3().extend(0.0);
+        // SE's rings winter: `RingsWinter` x MeanRadius / R (the ring's inner and outer radius here
+        // are in planet radii; MeanRadius is taken as their middle).
+        let winter = match (&ring, terrain.surface.rings_winter) {
+            (Some((_, g)), Some(w)) => (w * 0.5 * (g.x + g.y) as f64) as f32,
+            _ => 0.0,
+        };
+        let ring_normal = (body.orient * DVec3::Y).as_vec3().extend(winter);
         // Poll finished builds.
         let shadow = terrain.layers.as_ref().and_then(|l| terrain.shadow_clouds(l));
         let thermal = thermal_uniform(terrain, light);

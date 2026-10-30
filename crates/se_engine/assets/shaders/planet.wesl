@@ -2004,6 +2004,14 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             rough = mix(rough, so.n.w, fade);
         }
     }
+    // SE's "rings winter" (planet.glsl RINGS, light 0): on the hemisphere the rings shade, the
+    // surface colour fades by tan(the sun's elevation over the ring plane) x the strength.
+    if planet.ring_normal.w > 0.0 {
+        let cos_phi = min(abs(g_sun_body.y), 0.9999);
+        let lt = smoothstep(0.0, 0.6, abs(bdir.y)) * step(g_sun_body.y * bdir.y, 0.0);
+        let st = clamp(cos_phi / sqrt(1.0 - cos_phi * cos_phi) * planet.ring_normal.w, 0.0, 1.0);
+        albedo *= 1.0 - lt * st;
+    }
 
     // Sun light reaching the surface (reddened through the atmosphere) and sky light.
     let terminator = horizon_shadow(in.height, dot(up, l));
