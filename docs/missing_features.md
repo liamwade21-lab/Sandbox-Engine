@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 236 kept after checking (61 of them amended), 1 refuted. 116 have been fixed since (listed at the end); the tables count the 120 still open. 5 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 212 kept after checking (53 of them amended), 1 refuted. 116 have been fixed since (listed at the end); the tables count the 96 still open. 29 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 45 | 55 | 20 |
+| Gaps | 0 | 0 | 36 | 43 | 17 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 33 | 64 | 23 |
+| Gaps | 23 | 54 | 19 |
 
 | Area | Kept |
 |---|---|
@@ -123,7 +123,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 05 Atmospheres, rings, comets | 9 |
 | 06 Procedural generation | 12 |
 | 07 Camera and time | 5 |
-| 08 Interface | 24 |
+| 08 Interface | 0 |
 | 09 Graphics and settings | 14 |
 | 10 Scripts, audio, spacecraft | 27 |
 
@@ -347,87 +347,6 @@ Session state: SE saves the planetarium state (MoveMode, BindMode, RefBody/RefPa
 - SE evidence: save/save-def.cfg Planetarium block; LastMode
 - Port: crates/se_engine/src/camera.rs:199-214; crates/se_engine/src/settings.rs:44-62
 - Check: save/save-def.cfg has LastMode and a Planetarium block (MoveMode 1, BindMode 1, RefBody "Saturn", RefParent "Sun", AbsPosition/RelPosition, Orientation, Velocity, TimeScale, Date); port place_at_start (camera.rs:199-214) always places the camera 4 radii from cfg.start_at (default "Earth", only changeable by the --start CLI arg, config.rs:52) and settings.rs Snapshot persists only display/audio/graphics settings, no camera, binding or time state
-
-### 08-026 · Interface
-
-Screenshots: SE F11 saves without the interface and Ctrl+F11 with it, into its screenshots/ folder in ScreenshotFormat (jpg by default, also png/dds/tga/tif); port F11 always captures the whole window including the egui interface, as PNG to Pictures/SpaceEngine-rs, with no Ctrl+F11 variant or format option
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: eng-gui "Screenshot without GUI" "Screenshot with GUI"; tutorial "Pressing [Ctrl]+[F11] takes a screenshot with SpaceEngine's interface"; strings "screenshots/"
-- Port: crates/se_engine/src/hud.rs:50-65
-- Check: Exe has "Screenshot without GUI"/"Screenshot with GUI" actions, "screenshots/" folder and ScreenshotFormat "jpg" default, and tut-04-camera.se says Ctrl+F11 includes the interface, while port hud.rs:50-65 spawns Screenshot::primary_window() (egui included) as PNG into Pictures/SpaceEngine-rs; the "on-screen message" claim is unproven (ScreenshotComplete looks like an event name, no message string found).
-
-### 08-028 · Interface
-
-Seizure warning: SE shows a seizure warning dialog at startup (ShowSeizureWarning true, menu/warning.txt); port shows none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg Interface ShowSeizureWarning; Scripts.pak menu/warning.txt; eng-gui "Seizure Warning"
-- Port: none
-- Check: main-def.cfg Interface ShowSeizureWarning true ("show seizure warning at startup", referenced by FUN_14000ce00) and Scripts.pak menu/warning.txt holds the red "Seizure Warning" page ending "Press Esc to continue"; grep of crates/, README and docs for seizure/warning.txt/epilep finds nothing.
-
-### 08-018 · Interface
-
-Markers overlay: SE has a Markers switch (ShowMarkers, off by default) with per-type ShowMarkers* for bodies, stars, clusters, nebulae and galaxies, drawn as MarkersSize 7 px filled discs placed in front of the body (body_mark.glsl); port has no marker switch or star/DSO markers and instead always draws a 4 px hollow ring at each labelled system body, which SE does not show by default
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: body_mark.glsl:20-43; main-def.cfg ShowMarkers*, MarkersSize
-- Port: crates/se_engine/src/overlay.rs:311-313
-- Check: body_mark.glsl:20-43 draws a filled smoothstep-edged disc pushed 1.1 radii toward the viewer, and main-def.cfg:565,737-750 has MarkersSize 7 and ShowMarkers (default false) with per-type switches incl. stars/clusters/nebulae/galaxies; port overlay.rs:311-313 always strokes a 4 px (7 px selected) ring at every labelled non-star body with no marker setting (OverlaySettings has none), so with SE defaults the port shows rings SE does not
-
-### 08-019 · Interface
-
-Orbit filters and marks: SE has orbits off by default with per-type switches (ships, planets, moons, dwarf planets, dwarf moons, asteroids, comets, suns, barycenters), Crop orbits, orbit point marks (OrbitMarksMode off/selection/all), fading trails (OrbitTrailsLength) and major/minor line thickness; port shows orbits by default, picks them by its own size/distance rules (minor bodies only when selected) and draws thin uniform lines with no options, trails or marks
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: main-def.cfg ShowOrbits*, OrbitMarksMode; eng-gui "Crop orbits" "Orbit marks"
-- Port: crates/se_engine/src/overlay.rs:118-136
-- Check: main-def.cfg:708-721 has OrbitMarksMode 1, OrbitTrailsLength, OrbitMajor/MinorThickness, ShowOrbits false plus nine per-type switches, eng-gui "Crop orbits" "Orbit marks"; port draw_orbits (overlay.rs:104-151) uses fixed size/distance rules, minor bodies only when selected, 1 px uniform-alpha gizmo lines, no marks/crop/per-type options, and its orbits default on (overlay.rs:36) while SE's default off
-
-### 08-022 · Interface
-
-Object filters: SE switches each class on/off (catalog/procedural galaxies, clusters, nebulae, stars, planets, procedural planets of catalog stars, spacecraft, atmospheres, clouds, water, aurora, comet tails, accretion disks, jets) from the Filters toolbar with cycling messages ("Real stars only", "All planets"...); port only has procedural galaxies/clusters/nebulae checkboxes
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: main-def.cfg ObjectFilters 664-688; eng-gui "Real & Procedural planets" "Procedural stars only"
-- Port: crates/se_engine/src/procsystems.rs:169-171
-- Check: main-def.cfg ObjectFilters 664-686 lists 19 Show* switches and the locale has the cycling messages ("Real stars only", "Procedural stars only", "All planets", "Real & Procedural planets"); the port's only object-class switches are the three procedural deep-sky checkboxes in procsystems.rs:169-171 (all other checkboxes are orbits/labels/flares/physics), no atmosphere/cloud/water/aurora/tail/disk/jet or catalog/procedural star/planet toggles.
-
-### 08-025 · Interface
-
-Locations dialog: SE's dialog (F6) has Current / Featured / My locations / Journey log tabs, picture thumbnails ("Load location to update picture"), an info pane, rename, share via copy URL / BB code / html / script code, paste from clipboard, import/export and the se:// protocol, visit/game/system dates; port's Places window is a filtered list with save and delete
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: rtti sePlacesBrowser seSLSortMode; eng-gui "Featured locations" "My locations" "Copy URL to clipboard" "Paste from clipboard" "Rename" "Register se:// protocol"
-- Port: crates/se_engine/src/hud.rs:401-473
-- Check: Locale has "Current", "Featured locations", "My locations", "Journey log", "Rename", "Load location to update picture", "Copy URL/BB code/html code to clipboard", "Paste from clipboard", "Import"/"Export", "Register se:// protocol" and the tutorial opens Locations with [F6]; port's Places window (hud.rs:401-473) is one filtered list with jump, save-current and delete of user places, no tabs, thumbnails, info pane, rename, clipboard sharing, import/export or se:// handling (grep finds no clipboard/se:// code).
-
-### 08-027 · Interface
-
-Display units: SE formats values in the user's units (Units: large distances ly or pc, so kly/Mly/Gly by default; medium AU or light-hours; small km/miles/nautical miles; temperature K/°C/°F; star temperature; pressure atm/bar/psi/inHg/mmHg/Pa) chosen in "Units of measurement"; port uses one fixed format that switches to kpc/Mpc/Gpc above 1000 ly and offers no unit choice
-
-- Status: differs, effort **M**, auditor confidence high
-- SE evidence: main-def.cfg Units 578-615; eng-gui "kly" "Mly" "Gly" "Units of measurement"
-- Port: crates/se_core/src/units.rs:32-51
-- Check: main-def.cfg Units 578-612 has UnitDistLarge/Medium/Small, UnitTemperature, UnitStarTemperature, UnitPressure and the exe has "Units of measurement", "Celsius", "Fahrenheit", "Pound per square inch", "Inch of Hg", "nautical mile"; port units.rs:32-51 has one fixed formatter switching to kpc/Mpc/Gpc above 1000 ly, hud.rs:280 hardcodes °C, and no unit setting exists anywhere in crates/.
-
-### 08-023 · Interface
-
-Solar system chart: SE's chart (F8) compares bodies in modes by radius/mass/density/temperature or a system map (ChartDisplayMode 4), with hierarchical layout (planets beside their star, moons below, barycenters as blue diamonds with blue links, green planet links), lit rotatable 3D bodies (ChartLightingAngle 35), toggles for stars/planets/dwarf planets/moons/dwarf moons/asteroids/comets/barycenters, min/max diameter/mass/density/temperature, zoom/scroll by mouse and WASD; port's F6 chart draws planets as flat dots on a log-distance line with moons listed below, no modes or options
-
-- Status: differs, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg SolarSystemChart 636-651; rtti seChartMode cmFilterMode; tut-06-system-chart strings; eng-gui "Min diameter" "Lighting angle"
-- Port: crates/se_engine/src/browser.rs:238-319
-- Check: tut-06-system-chart.se (opened with [F8]) describes the hierarchical scheme, mouse zoom/scroll, right-drag rotation of bodies, Size/Mass modes, the Stars checkbox, blue barycenter diamonds and green planet links, and main-def.cfg 636-648 has ChartDisplayMode 0-4, Chart* toggles and ChartLightingAngle; port browser.rs:238-319 (bound to F6, which is SE's Locations key) draws only planets/dwarf planets >=400 km as flat coloured circles on a log-distance line with up to 9 moons >=100 km listed below, no stars, barycenters, modes, options or zoom (the WASD detail is not evidenced, rest stands).
-
-### 08-024 · Interface
-
-Wiki window: SE's wiki has tabs (General, Physical, Orbital, Atmospheric...) with full physical, orbital, atmosphere and life data, a rotatable 3D preview, a status line ("Real object"/"Procedural (generated) object"), discovery fields (Pioneer name, Discovery date, Discovery method), an editable description ("Enter description here") and wiki export; port's wiki shows only the DB description or a distance/radius/parent summary (some physical/orbital numbers appear in the Selection panel instead, and Pioneer/Date are parsed in locale.rs but never shown)
-
-- Status: partial, effort **L**, auditor confidence high, amended by the checker
-- SE evidence: rtti seWiki seWikiPageMode seWikiExportDialog; eng-gui "General" "Physical" "Orbital" "Atmospheric" "Pioneer name" "Discovery method"; tutorial "switch to the Physical tab", "rotate the planet preview"
-- Port: crates/se_engine/src/wiki.rs:71-134
-- Check: Locale has the wiki fields ("Status", "Real object", "Procedural (generated) object", "Pioneer name", "Discovery date", "Discovery method" with its method list, "General"/"Physical"/"Orbital"/"Atmospheric", "Enter description here", export scopes) and the tutorial confirms the Physical tab and rotatable preview; port wiki.rs:71-134 shows only the DB description or distance/radius/parent, but the separate Selection panel (hud.rs:232-345) already shows mass, Teff/Mv, average/day/night temperature, a/e/P, rotation period and day lines, and locale.rs parses Pioneer/Date without displaying them, so the gap is the tabbed layout, atmosphere/life data, 3D preview, status/discovery lines, editable description and export rather than all object data.
 
 ### 09-006 · Graphics and settings
 
@@ -747,114 +666,6 @@ Navigation script commands: SE scripts can use Horizon, Track/Untrack, MoveMode,
 - Port: crates/se_engine/src/scripting.rs:568-580
 - Check: The convert() in se_script.rs:482 maps "stopfly" to Op::StopMotion, which scripting.rs:445-449 runs (stops velocity, travel and flight), so StopFly works; Track/Untrack (scripting.rs:568) and Horizon, MoveMode, Speed, Fly, Turn, StopTurn, StopRotation, GotoURL and User*Control (Op::Other, scripting.rs:577) are logged and skipped, as the exe command table in docs/formats/se_script.md:164-181 lists them
 
-### 08-030 · Interface
-
-Journey log: SE records visited objects automatically (seJournalBrowser, journal.cfg, JournalSize 100) and lists them in the Locations dialog; port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: rtti seJournalBrowser; main-def.cfg JournalSize; strings "journal.cfg"
-- Port: none
-- Check: Exe has seJournalBrowser RTTI, "Journey log" next to "Locations"/"My locations", journal.cfg, ConfigFileJournal and main-def.cfg JournalSize 100 ("maximum size of the Journey log"); port has only shipped/user Places (data.rs:35-53, README) and no journal/visited/history code in crates/.
-
-### 08-032 · Interface
-
-Planet vectors: SE can draw a body's rotation axis, prime meridian, orbital velocity vector and direction to parent (ShowPlanetVectors and four switches); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowPlanetVectors ShowPlanetRotationAxis ShowPlanetPrimeMeridian ShowPlanetVelocityVector ShowPlanetParentVector
-- Port: none
-- Check: main-def.cfg:697-701 ShowPlanetVectors + ShowPlanetRotationAxis/PrimeMeridian/VelocityVector/ParentVector registered in exe (FUN_1400169e0, FUN_140016a20) with locale strings "Vectors" "Rotation axis" "Prime meridian" "Velocity vector" "Direction to parent"; port grep of crates/ for axis/meridian/vector drawing in overlay.rs, hud.rs finds nothing (rotation.rs only computes orientation)
-
-### 08-033 · Interface
-
-Camera velocity vector: SE can mark the direction of motion on screen (ShowVelocityVector, VelocityPointerColor); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowVelocityVector; skin VelocityPointerColor
-- Port: none
-- Check: main-def.cfg:691 ShowVelocityVector registered by FUN_140016b60, skin colour VelocityPointerColor read in FUN_14036a560 and widget name "VelocityVector" in strings_utf16; port has no velocity marker in overlay.rs/hud.rs/ship.rs (only the selection pointer per README)
-
-### 08-034 · Interface
-
-Object context menu: SE offers a context menu on the selection with Parent, Satellites and Add to locations; port has none
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: strings_utf16 "Context menu" "Parent" "Satellites" "Add to locations"
-- Port: none
-- Check: FUN_14024cb10 builds the "Context menu" window with "Parent", "Satellites", "Add to locations" entries; port has no egui context_menu/secondary-click on the selection (parent is a plain label hud.rs:263, children a collapsible list, place saving lives only in the hud save dialog hud.rs:462)
-
-### 08-038 · Interface
-
-GUI scaling: SE scales the interface by a GUIScale percent on top of optional Windows DPI scaling (GUIScaleDPI), set in interface settings; port follows the OS DPI implicitly via bevy_egui but has no scale percent or DPI toggle (partial)
-
-- Status: missing, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: main-def.cfg GUIScale GUIScaleDPI; eng-gui "Interface scaling" "Use system DPI"
-- Port: none
-- Check: SE main-def.cfg:535-536 GUIScaleDPI/GUIScale and strings "Interface scaling", "Use system DPI" confirmed; port has no scale setting, but bevy_egui 0.43 already multiplies by the window's OS scale factor, so DPI scaling happens implicitly (not switchable)
-
-### 08-040 · Interface
-
-FPS meter graph: SE can show an FPS or frame-time graph with target/min/max values (fps_meter.glsl, ShowFPSMeter, ShowFrametimeMeter) and a skin-coloured FPS counter; port only has the "N fps" label in the top bar
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: fps_meter.glsl; main-def.cfg DebugOverlay ShowFPSMeter ShowFrametimeMeter; strings_utf16 "Tgt FPS: %i" "Max FPS"
-- Port: crates/se_engine/src/hud.rs:183
-- Check: SE fps_meter.glsl (graph texture, Params data head/FPS/target), DebugOverlay ShowFPSMeter/ShowFrametimeMeter and strings "Tgt FPS: %i", "Max/Min FPS", "Tgt/Max/Min time" confirmed; port has only hud.rs:183 "{:.0} fps" label and an env-var frame-time log file (system.rs:104), no graph
-
-### 08-029 · Interface
-
-Star browser filter options: SE's filter dialog has Sun/Planet/Moon counts, system main star and parent sun filters, atmosphere pressure classes, volatiles classes, min/max diameter, mass, density and temperature, life origin, subglacial and aerial biomes, Ignore planemo, Ignore asteroids and comets and "Add to locations"; port's filter has object kind, catalog/procedural systems, star type, class, temperature class, arid/non-arid, atmosphere yes/no, life, life type, marine/terrestrial biome, radius range and a found count
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: eng-gui "Sun count" "System's main star" "Ignore planemo" "Ignore asteroids and comets" "Min mass"; tutorial "change the 'Sun count' to 3"
-- Port: crates/se_engine/src/star_search.rs:681-718
-- Check: Exe strings confirm "System's main star", "Object's parent sun", "Sun count"/"Planet count"/"Moon count", "Ignore planemo", "Ignore asteroids and comets", "Min/Max diameter/temperature/mass/density", "Add to locations"; but port star_search.rs:593-600 already shows a found count, and its filter (681-718) also has catalog/procedural systems, star type and unicellular/multicellular life type, which the gap omitted.
-
-### 08-031 · Interface
-
-Localization coverage: port translates only strings routed through i18n.tr; top bar ("rate", "velocity", "near:"), selection lines ("Teff", "mass ... Earth", "children"), help, Graphics, Ships and most Settings labels are fixed English or not SE keys, and object names are never taken from the *-db.cfg translations; SE translates every UI string and object name in 27 languages
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: data/locale/*-gui.cfg, *-db.cfg
-- Port: crates/se_engine/src/hud.rs:173-183,256-321; crates/se_engine/src/graphics.rs:217
-- Check: SE ships 27 *-gui.cfg (keys are the English UI strings, e.g. rus-gui.cfg "Console") and 25 *-db.cfg; port i18n.rs routes only some labels through tr (hud.rs:173-181 "rate"/"velocity"/"near:", hud.rs:256-321 "Teff"/"rotation period"/"children", help text hud.rs:477, graphics.rs:219-237 sliders, ship.rs:1203-1250 are literals) and Locale::object_name (se_core/locale.rs:184) is used only in tests while Catalog::display_name returns the raw catalog name, so object names are never translated outside the wiki heading
-
-### 08-035 · Interface
-
-Console window: SE has an in-game console (seConsole) with a command line and script error output ("Unknown command", "Error in line"); port has none
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seConsole; eng-gui "Console" "Unknown command" "Error in line"
-- Port: none
-- Check: rtti seConsole, eng-gui keys "Console" "Error in line" "Unknown command" "Unknown variable" (strings_utf16:2543-2548) and a bindable "Console" action in def_*controller.cfg; port only takes dev commands from CLI args/scripts (camera.rs:896 logs "unknown command" to the log) and has no in-game command-line window
-
-### 08-037 · Interface
-
-Music player window: SE has a player (play/pause/stop, previous/next, playlist, repeat track/playlist, in-order/random/context playing, volume, "[Playing] - " status); port only has the M and N keys
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seMusicPlayer; eng-gui "Music player" "Playlist" "Repeat playlist" "Context playing"
-- Port: crates/se_engine/src/music.rs
-- Check: SE strings_utf16:3050-3067 list the player (Play/Pause/Stop, Previous/Next track, Playlist, No repeat/Repeat track/Repeat playlist, Play in order/Play random/Context playing, Volume, "[Playing] - ") and rtti seMusicPlayer; port music.rs only has M toggle, N skip, fixed shuffle, and a volume that is saved but has no UI (set_volume is dead code)
-
-### 08-039 · Interface
-
-Fade transitions: SE fades overlays (orbits, markers, labels) in 0.2 s and out 0.35 s and fades+slides windows (WidgetFadeIn/Out, WidgetSlideIn/Out); port toggles overlays instantly and its egui windows only get egui's default 0.2 s fade with no slide (partial)
-
-- Status: missing, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: main-def.cfg OverlayFadeIn OverlayFadeOut WidgetFadeIn WidgetFadeOut WidgetSlideIn WidgetSlideOut
-- Port: crates/se_engine/src/overlay.rs:114,284
-- Check: SE main-def.cfg:551-556 fade/slide durations confirmed; port overlays switch instantly (overlay.rs:114 `if !settings.orbits return`, :284 labels), but its 13 egui::Window panels already fade in over egui 0.36's default animation_time 0.2 s (Area fade_in=true, Window fade_out=true), so only the overlay fades, the slide and SE's 0.35 s fade-out timing are missing
-
-### 08-036 · Interface
-
-Event finder: SE's tool searches eclipses, transits, occultations and alignments (event type, precision, time step, start date, bodies table); port has none
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: rtti seEventFinder; eng-gui "Event finder" "Eclipse#event_finder" "Transit#event_finder"
-- Port: none
-- Check: SE has the window (rtti seEventFinder; strings_utf16:2353-2375 "Event finder", "Event type", "Precision", "Time step", "Start date", Alignment/Ordered alignment/Eclipse/Transit/Occultation, "Add object", "Being eclipsed"...); port has eclipse shadow rendering (eclipse.wesl) but no event search anywhere in crates/ or README
-
 ### 09-009 · Graphics and settings
 
 Screenshot formats: SE saves screenshots as jpg (default, JpegQuality 95), png, dds, tga or tif (ScreenshotFormat, "Screenshots format"), optionally with alpha (SaveAlpha, "Save transparency"), numbered scr%05i in screenshots/ (UserScreenshotsSubDir). Port writes PNG only, named by a millisecond timestamp
@@ -1110,33 +921,6 @@ Timing and loader modes: SE switches between real-time and fixed frame-time simu
 - Port: crates/se_engine/src/universe.rs:131-134
 - Check: The exe has the UTF-16 strings "Real time mode"/"Frame time mode" and "Immediate/Interleaved/Asynchronous loading mode" (strings_utf16.txt:2998-3003; they are in the other *-gui.cfg locales, not in eng-gui.cfg), TimingMode/LoaderMode are bindable actions (controller cfgs, default Shift+\ in the auditor's default-key table) and main-def.cfg:477 has LoaderMode 0/1/2; the port's advance_time (universe.rs:131-134) always uses the real frame delta and has no fixed-frame-time or loader-mode switch
 
-### 08-041 · Interface
-
-Eclipse totality mask: SE can draw the full-solar-eclipse phase mask overlay (ShowEclipseMask); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowEclipseMask; eng-gui "Eclipse totality mask"
-- Port: none
-- Check: SE has main-def.cfg:702 ShowEclipseMask (default false), the overlay-filter string "Eclipse totality mask" in strings_utf16:2712 among the grid/vector overlays, and control action ToggleEclipseMask (strings_utf16:4190); the port only renders eclipse shadows (README "Eclipses and shadows") and has no mask, totality or eclipse overlay in overlay.rs/hud.rs/settings.rs.
-
-### 08-043 · Interface
-
-Bottom info HUD option: SE can draw an old-style info HUD at the bottom of the screen when the bottom toolbars are hidden (BottomInfoHUD, off by default); the port always shows its own top info bar (date, rate, velocity, nearest, fps) and has neither SE's bottom toolbars nor this option
-
-- Status: missing, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: main-def.cfg Interface BottomInfoHUD
-- Port: none
-- Check: main-def.cfg:547 BottomInfoHUD (default false, "draw old style bottom HUD when bottom toolbars are hidden") is confirmed, but the port is not without an info HUD: hud.rs:155-205 always draws its own top bar with date, time rate, velocity, nearest object and fps, and it has no bottom toolbars for the option to depend on.
-
-### 08-042 · Interface
-
-Debug toolbox: SE has a debug window with debug screens (Performance, Memory, Loader, Camera), histogram, bloom/depth/impostor/env-map views, octree/quadtree/bounding-box overlays, wireframe and level limits; port has none (env vars only)
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg DebugOverlay 754-793; rtti seDebugToolbox; strings_utf16 "Debug toolbox" "Show Star octree"
-- Port: none
-- Check: strings_utf16:1155-1245 confirm the "Debug toolbox" window (rtti seDebugToolbox) with Performance/Memory/Loader/Camera screens, FPS meter, histogram, Wireframe, bloom/depth/impostor/envmap views, Land quadtree and Star/Galaxy/Cluster octree views, BBoxes and LandLimLevel/StarLimLevel/GalLimLevel, matching main-def.cfg DebugOverlay 754-791; the port has only a plain fps number in the top bar (hud.rs:183) and SE_* env toggles, with no debug window, overlay or wireframe.
-
 ### 09-018 · Graphics and settings
 
 Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / interleaved / asynchronous), MaxThreads, MultithreadedStartup, PreloadShaders / PreloadShipTextures, TimingStrategy 1 (time budget MaxTimePerFrame 10 ms, MaxTimePerFrameClean) and a "Frame timing mode" (real time vs fixed frame time, Export RealTime/RealTimeFPS for recording); port is fixed at SE's defaults (asynchronous task-pool loading, MaxTilesPerFrame tile budget, real-time stepping) with none of the alternatives selectable
@@ -1245,6 +1029,198 @@ Universe map (F1/M) missing: map centred on the selection or current position wi
 
 - Status: missing, effort **L**, auditor confidence high
 - SE evidence: main-def.cfg UniverseMap 651-664; star_map_mark/line/point.glsl; galaxy_map_mark/line/point.glsl; map_sphere.glsl; rtti seMapMode; tut-05-univ-map strings
+- Port: none
+
+### 08-018 · Interface (deferred 2026-10-30)
+
+Markers overlay: SE has a Markers switch (ShowMarkers, off by default) with per-type ShowMarkers* for bodies, stars, clusters, nebulae and galaxies, drawn as MarkersSize 7 px filled discs placed in front of the body (body_mark.glsl); port has no marker switch or star/DSO markers and instead always draws a 4 px hollow ring at each labelled system body, which SE does not show by default
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: body_mark.glsl:20-43; main-def.cfg ShowMarkers*, MarkersSize
+- Port: crates/se_engine/src/overlay.rs:311-313
+
+### 08-019 · Interface (deferred 2026-10-30)
+
+Orbit filters and marks: SE has orbits off by default with per-type switches (ships, planets, moons, dwarf planets, dwarf moons, asteroids, comets, suns, barycenters), Crop orbits, orbit point marks (OrbitMarksMode off/selection/all), fading trails (OrbitTrailsLength) and major/minor line thickness; port shows orbits by default, picks them by its own size/distance rules (minor bodies only when selected) and draws thin uniform lines with no options, trails or marks
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg ShowOrbits*, OrbitMarksMode; eng-gui "Crop orbits" "Orbit marks"
+- Port: crates/se_engine/src/overlay.rs:118-136
+
+### 08-022 · Interface (deferred 2026-10-30)
+
+Object filters: SE switches each class on/off (catalog/procedural galaxies, clusters, nebulae, stars, planets, procedural planets of catalog stars, spacecraft, atmospheres, clouds, water, aurora, comet tails, accretion disks, jets) from the Filters toolbar with cycling messages ("Real stars only", "All planets"...); port only has procedural galaxies/clusters/nebulae checkboxes
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg ObjectFilters 664-688; eng-gui "Real & Procedural planets" "Procedural stars only"
+- Port: crates/se_engine/src/procsystems.rs:169-171
+
+### 08-023 · Interface (deferred 2026-10-30)
+
+Solar system chart: SE's chart (F8) compares bodies in modes by radius/mass/density/temperature or a system map (ChartDisplayMode 4), with hierarchical layout (planets beside their star, moons below, barycenters as blue diamonds with blue links, green planet links), lit rotatable 3D bodies (ChartLightingAngle 35), toggles for stars/planets/dwarf planets/moons/dwarf moons/asteroids/comets/barycenters, min/max diameter/mass/density/temperature, zoom/scroll by mouse and WASD; port's F6 chart draws planets as flat dots on a log-distance line with moons listed below, no modes or options
+
+- Status: differs, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg SolarSystemChart 636-651; rtti seChartMode cmFilterMode; tut-06-system-chart strings; eng-gui "Min diameter" "Lighting angle"
+- Port: crates/se_engine/src/browser.rs:238-319
+
+### 08-024 · Interface (deferred 2026-10-30)
+
+Wiki window: SE's wiki has tabs (General, Physical, Orbital, Atmospheric...) with full physical, orbital, atmosphere and life data, a rotatable 3D preview, a status line ("Real object"/"Procedural (generated) object"), discovery fields (Pioneer name, Discovery date, Discovery method), an editable description ("Enter description here") and wiki export; port's wiki shows only the DB description or a distance/radius/parent summary (some physical/orbital numbers appear in the Selection panel instead, and Pioneer/Date are parsed in locale.rs but never shown)
+
+- Status: partial, effort **L**, auditor confidence high
+- SE evidence: rtti seWiki seWikiPageMode seWikiExportDialog; eng-gui "General" "Physical" "Orbital" "Atmospheric" "Pioneer name" "Discovery method"; tutorial "switch to the Physical tab", "rotate the planet preview"
+- Port: crates/se_engine/src/wiki.rs:71-134
+
+### 08-025 · Interface (deferred 2026-10-30)
+
+Locations dialog: SE's dialog (F6) has Current / Featured / My locations / Journey log tabs, picture thumbnails ("Load location to update picture"), an info pane, rename, share via copy URL / BB code / html / script code, paste from clipboard, import/export and the se:// protocol, visit/game/system dates; port's Places window is a filtered list with save and delete
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: rtti sePlacesBrowser seSLSortMode; eng-gui "Featured locations" "My locations" "Copy URL to clipboard" "Paste from clipboard" "Rename" "Register se:// protocol"
+- Port: crates/se_engine/src/hud.rs:401-473
+
+### 08-026 · Interface (deferred 2026-10-30)
+
+Screenshots: SE F11 saves without the interface and Ctrl+F11 with it, into its screenshots/ folder in ScreenshotFormat (jpg by default, also png/dds/tga/tif); port F11 always captures the whole window including the egui interface, as PNG to Pictures/SpaceEngine-rs, with no Ctrl+F11 variant or format option
+
+- Status: differs, effort **S**, auditor confidence high
+- SE evidence: eng-gui "Screenshot without GUI" "Screenshot with GUI"; tutorial "Pressing [Ctrl]+[F11] takes a screenshot with SpaceEngine's interface"; strings "screenshots/"
+- Port: crates/se_engine/src/hud.rs:50-65
+
+### 08-027 · Interface (deferred 2026-10-30)
+
+Display units: SE formats values in the user's units (Units: large distances ly or pc, so kly/Mly/Gly by default; medium AU or light-hours; small km/miles/nautical miles; temperature K/°C/°F; star temperature; pressure atm/bar/psi/inHg/mmHg/Pa) chosen in "Units of measurement"; port uses one fixed format that switches to kpc/Mpc/Gpc above 1000 ly and offers no unit choice
+
+- Status: differs, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg Units 578-615; eng-gui "kly" "Mly" "Gly" "Units of measurement"
+- Port: crates/se_core/src/units.rs:32-51
+
+### 08-028 · Interface (deferred 2026-10-30)
+
+Seizure warning: SE shows a seizure warning dialog at startup (ShowSeizureWarning true, menu/warning.txt); port shows none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg Interface ShowSeizureWarning; Scripts.pak menu/warning.txt; eng-gui "Seizure Warning"
+- Port: none
+
+### 08-029 · Interface (deferred 2026-10-30)
+
+Star browser filter options: SE's filter dialog has Sun/Planet/Moon counts, system main star and parent sun filters, atmosphere pressure classes, volatiles classes, min/max diameter, mass, density and temperature, life origin, subglacial and aerial biomes, Ignore planemo, Ignore asteroids and comets and "Add to locations"; port's filter has object kind, catalog/procedural systems, star type, class, temperature class, arid/non-arid, atmosphere yes/no, life, life type, marine/terrestrial biome, radius range and a found count
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: eng-gui "Sun count" "System's main star" "Ignore planemo" "Ignore asteroids and comets" "Min mass"; tutorial "change the 'Sun count' to 3"
+- Port: crates/se_engine/src/star_search.rs:681-718
+
+### 08-030 · Interface (deferred 2026-10-30)
+
+Journey log: SE records visited objects automatically (seJournalBrowser, journal.cfg, JournalSize 100) and lists them in the Locations dialog; port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: rtti seJournalBrowser; main-def.cfg JournalSize; strings "journal.cfg"
+- Port: none
+
+### 08-031 · Interface (deferred 2026-10-30)
+
+Localization coverage: port translates only strings routed through i18n.tr; top bar ("rate", "velocity", "near:"), selection lines ("Teff", "mass ... Earth", "children"), help, Graphics, Ships and most Settings labels are fixed English or not SE keys, and object names are never taken from the *-db.cfg translations; SE translates every UI string and object name in 27 languages
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: data/locale/*-gui.cfg, *-db.cfg
+- Port: crates/se_engine/src/hud.rs:173-183,256-321; crates/se_engine/src/graphics.rs:217
+
+### 08-032 · Interface (deferred 2026-10-30)
+
+Planet vectors: SE can draw a body's rotation axis, prime meridian, orbital velocity vector and direction to parent (ShowPlanetVectors and four switches); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowPlanetVectors ShowPlanetRotationAxis ShowPlanetPrimeMeridian ShowPlanetVelocityVector ShowPlanetParentVector
+- Port: none
+
+### 08-033 · Interface (deferred 2026-10-30)
+
+Camera velocity vector: SE can mark the direction of motion on screen (ShowVelocityVector, VelocityPointerColor); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowVelocityVector; skin VelocityPointerColor
+- Port: none
+
+### 08-034 · Interface (deferred 2026-10-30)
+
+Object context menu: SE offers a context menu on the selection with Parent, Satellites and Add to locations; port has none
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: strings_utf16 "Context menu" "Parent" "Satellites" "Add to locations"
+- Port: none
+
+### 08-035 · Interface (deferred 2026-10-30)
+
+Console window: SE has an in-game console (seConsole) with a command line and script error output ("Unknown command", "Error in line"); port has none
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: rtti seConsole; eng-gui "Console" "Unknown command" "Error in line"
+- Port: none
+
+### 08-036 · Interface (deferred 2026-10-30)
+
+Event finder: SE's tool searches eclipses, transits, occultations and alignments (event type, precision, time step, start date, bodies table); port has none
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: rtti seEventFinder; eng-gui "Event finder" "Eclipse#event_finder" "Transit#event_finder"
+- Port: none
+
+### 08-037 · Interface (deferred 2026-10-30)
+
+Music player window: SE has a player (play/pause/stop, previous/next, playlist, repeat track/playlist, in-order/random/context playing, volume, "[Playing] - " status); port only has the M and N keys
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: rtti seMusicPlayer; eng-gui "Music player" "Playlist" "Repeat playlist" "Context playing"
+- Port: crates/se_engine/src/music.rs
+
+### 08-038 · Interface (deferred 2026-10-30)
+
+GUI scaling: SE scales the interface by a GUIScale percent on top of optional Windows DPI scaling (GUIScaleDPI), set in interface settings; port follows the OS DPI implicitly via bevy_egui but has no scale percent or DPI toggle (partial)
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: main-def.cfg GUIScale GUIScaleDPI; eng-gui "Interface scaling" "Use system DPI"
+- Port: none
+
+### 08-039 · Interface (deferred 2026-10-30)
+
+Fade transitions: SE fades overlays (orbits, markers, labels) in 0.2 s and out 0.35 s and fades+slides windows (WidgetFadeIn/Out, WidgetSlideIn/Out); port toggles overlays instantly and its egui windows only get egui's default 0.2 s fade with no slide (partial)
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg OverlayFadeIn OverlayFadeOut WidgetFadeIn WidgetFadeOut WidgetSlideIn WidgetSlideOut
+- Port: crates/se_engine/src/overlay.rs:114,284
+
+### 08-040 · Interface (deferred 2026-10-30)
+
+FPS meter graph: SE can show an FPS or frame-time graph with target/min/max values (fps_meter.glsl, ShowFPSMeter, ShowFrametimeMeter) and a skin-coloured FPS counter; port only has the "N fps" label in the top bar
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: fps_meter.glsl; main-def.cfg DebugOverlay ShowFPSMeter ShowFrametimeMeter; strings_utf16 "Tgt FPS: %i" "Max FPS"
+- Port: crates/se_engine/src/hud.rs:183
+
+### 08-041 · Interface (deferred 2026-10-30)
+
+Eclipse totality mask: SE can draw the full-solar-eclipse phase mask overlay (ShowEclipseMask); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowEclipseMask; eng-gui "Eclipse totality mask"
+- Port: none
+
+### 08-042 · Interface (deferred 2026-10-30)
+
+Debug toolbox: SE has a debug window with debug screens (Performance, Memory, Loader, Camera), histogram, bloom/depth/impostor/env-map views, octree/quadtree/bounding-box overlays, wireframe and level limits; port has none (env vars only)
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg DebugOverlay 754-793; rtti seDebugToolbox; strings_utf16 "Debug toolbox" "Show Star octree"
+- Port: none
+
+### 08-043 · Interface (deferred 2026-10-30)
+
+Bottom info HUD option: SE can draw an old-style info HUD at the bottom of the screen when the bottom toolbars are hidden (BottomInfoHUD, off by default); the port always shows its own top info bar (date, rate, velocity, nearest, fps) and has neither SE's bottom toolbars nor this option
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: main-def.cfg Interface BottomInfoHUD
 - Port: none
 
 ### 09-012 · Graphics and settings (deferred 2026-10-30)

@@ -51,8 +51,11 @@ deferred_path = os.path.join(AUD, "deferred.txt")
 if os.path.exists(deferred_path):
     for line in open(deferred_path, encoding="utf-8"):
         f = fields(line.rstrip("\n"))
-        if len(f) >= 2 and f[0] in gaps:
-            deferred[f[0]] = f[1]
+        # `08-*` defers a whole area.
+        ids = [g for g in gaps if g.startswith(f[0][:-1])] if f and f[0].endswith("*") else f[:1]
+        for gid in ids if len(f) >= 2 else []:
+            if gid in gaps:
+                deferred.setdefault(gid, f[1])
 if "--check" in sys.argv:
     print(f"{len(gaps)} gaps, {len(checks)} verdicts, {len(missing)} missing (tickets {sorted({m[:2] for m in missing})})")
     sys.exit(0)

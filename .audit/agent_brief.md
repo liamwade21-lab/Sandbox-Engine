@@ -19,7 +19,8 @@ done and written up. `README.md` "Status" and `docs/` describe the port.
 ## Rules
 - Vulkan only. VR and the editors are out of scope. Don't defeat DRM.
 - Don't work on the gaps in `.audit/deferred.txt` (deferred by the owner), even where they touch
-  your files.
+  your files; `08-*` there means the whole Interface area. Adding a control for a setting your
+  own work needs to an existing window is fine.
 - Never run SpaceEngine itself and never take over the screen. Running the port is fine.
 - Never write SE's files to disk, not even into scratch folders: read them in memory (the
   install's loose files, or paks through `se_core::vfs`) and print only the lines you need.
