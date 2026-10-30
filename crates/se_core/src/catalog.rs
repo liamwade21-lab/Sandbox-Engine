@@ -53,6 +53,34 @@ impl StarRecord {
             .filter(|l| *l > 0.0)
             .unwrap_or_else(|| star::lum_from_abs_mag(self.abs_mag) * 10f64.powf(-0.4 * star::bolometric_correction(self.teff)))
     }
+
+    /// The star's ellipsoid semi-axes (+Y the pole) relative to `radius_km`, read as SE's object
+    /// parser does (FUN_140468860): `Dimensions` (km) or `DimensionsSol` (solar radii) diameters
+    /// over the largest one, else `Oblateness` (the polar flattening, or a flattening per axis).
+    pub fn shape(&self) -> [f64; 3] {
+        let b = &self.block;
+        if let Some(d) = b.vec3("Dimensions").or_else(|| b.vec3("DimensionsSol")) {
+            let max = d[0].max(d[1]).max(d[2]);
+            if max > 0.0 {
+                return d.map(|x| (x / max).clamp(0.01, 1.0));
+            }
+        }
+        if let Some(f) = b.vec3("Oblateness") {
+            return f.map(|x| (1.0 - x).clamp(0.01, 1.0));
+        }
+        [1.0, (1.0 - b.f64("Oblateness").unwrap_or(0.0)).clamp(0.01, 1.0), 1.0]
+    }
+}
+
+/// A star's radius (km) from its `Dimensions` (km) or `DimensionsSol` (solar radii) diameters: half
+/// the largest (FUN_140468860).
+fn radius_from_dimensions(b: &Block) -> Option<f64> {
+    let (d, unit) = match b.vec3("Dimensions") {
+        Some(d) => (d, 1.0),
+        None => (b.vec3("DimensionsSol")?, SOLAR_RADIUS_KM),
+    };
+    let max = d[0].max(d[1]).max(d[2]);
+    (max > 0.0).then_some(0.5 * max * unit)
 }
 
 #[derive(Debug, Clone)]
@@ -471,6 +499,8 @@ impl Catalog {
             r
         } else if let Some(r) = b.f64_any(&["RadSol", "RadiusSol"]) {
             r * SOLAR_RADIUS_KM
+        } else if let Some(r) = radius_from_dimensions(b) {
+            r
         } else {
             match class.kind {
                 StarKind::NeutronStar => 12.0,
@@ -1277,6 +1307,23 @@ Remove \"BET2 Cyg\"
         let r = c.bodies[1].radius_km;
         assert!((m[1] * r - 190.6).abs() < 1e-6 && m[2] > m[0] && m[0] > m[1], "{m:?}");
         assert_eq!(c.bodies[2].shape(), [1.0; 3]);
+    }
+
+    #[test]
+    fn star_shapes() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            "Star \"Achernar\" { RA 1 Dec 2 Dist 40 Class \"B6V\" AbsMagn -1.46 DimensionsSol (11.4, 7.3, 11.4) }
+\
+             Star \"Altair\" { RA 3 Dec 4 Dist 5 Class \"A7V\" AbsMagn 2.22 RadSol 2.03 Oblateness 0.197 }
+",
+            "s.sc",
+        );
+        let a = c.find("Achernar").and_then(|r| if let ObjectRef::Star(i) = r { Some(&c.stars[i as usize]) } else { None }).unwrap();
+        assert!((a.radius_km - 5.7 * SOLAR_RADIUS_KM).abs() < 1.0, "{}", a.radius_km);
+        assert!((a.shape()[1] - 7.3 / 11.4).abs() < 1e-9 && a.shape()[0] == 1.0, "{:?}", a.shape());
+        let b = c.find("Altair").and_then(|r| if let ObjectRef::Star(i) = r { Some(&c.stars[i as usize]) } else { None }).unwrap();
+        assert!((b.shape()[1] - 0.803).abs() < 1e-9 && (b.radius_km - 2.03 * SOLAR_RADIUS_KM).abs() < 1.0);
     }
 
     #[test]

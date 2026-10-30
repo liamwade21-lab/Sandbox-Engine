@@ -578,6 +578,7 @@ fn spawn_system_members(
         let star = matches!(obj, ObjectRef::Star(_));
         let shape = match obj {
             ObjectRef::Body(i) => DVec3::from_array(cat.bodies[i as usize].shape()),
+            ObjectRef::Star(i) => DVec3::from_array(cat.stars[i as usize].shape()),
             _ => DVec3::ONE,
         };
         let mut ec = commands.spawn((
