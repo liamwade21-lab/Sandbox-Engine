@@ -347,6 +347,20 @@ struct EngineEffectSettings {
     bright: f32,
 }
 
+/// main-def.cfg `Physics` `PhysicsTick` (0.015 s): SE advances every ship in steps of this times the
+/// time rate (FUN_1401f2f80 calls the ship step FUN_140537060 with `PhysicsTick x rate`, the timer's
+/// +0x17a8 x +0x1780, once per step of the frame). The port keeps the steps frame-locked (as many as
+/// it takes, none longer) so the flown ship and the chase camera move every frame.
+#[derive(Resource)]
+struct PhysicsTick(f64);
+
+impl FromWorld for PhysicsTick {
+    fn from_world(world: &mut World) -> Self {
+        let cfg = world.get_resource::<crate::config::EngineConfig>();
+        Self(cfg.and_then(|c| crate::stars::main_def_f64(c, "PhysicsTick")).unwrap_or(0.015).clamp(0.001, 0.1))
+    }
+}
+
 impl FromWorld for EngineEffectSettings {
     fn from_world(world: &mut World) -> Self {
         let cfg = world.get_resource::<crate::config::EngineConfig>();
@@ -386,6 +400,7 @@ impl Plugin for ShipPlugin {
             .init_resource::<EngineSoundCache>()
             .init_resource::<FlightKeys>()
             .init_resource::<EngineEffectSettings>()
+            .init_resource::<PhysicsTick>()
             .add_message::<ShipCommand>()
             .add_systems(Startup, (load_library, make_plume_mesh))
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
@@ -1352,6 +1367,7 @@ fn gravity_at(bodies: &[BodyInfo], pos: UPos) -> DVec3 {
 #[allow(clippy::too_many_arguments)]
 fn ship_physics(
     time: Res<Time>,
+    tick: Res<PhysicsTick>,
     sim: Res<SimTime>,
     data: Res<SeData>,
     mut flight: ResMut<Flight>,
@@ -1688,7 +1704,9 @@ fn ship_physics(
     let sync = flight.sync_velocity;
     let mut aero_accel = DVec3::ZERO;
     if !skip_integration {
-        let n = ((ship_dt / 0.05).ceil() as usize).clamp(1, 32);
+        // Steps no longer than SE's PhysicsTick times the ship's time rate.
+        let rate = ship_dt / dt;
+        let n = ((ship_dt / (tick.0 * rate)).ceil() as usize).clamp(1, 64);
         let h = ship_dt / n as f64;
         for _ in 0..n {
             let mut a = a_thrust;

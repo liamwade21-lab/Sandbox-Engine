@@ -886,8 +886,8 @@ mod tests {
         // exp(-c r/R) with c = 9.26: P(c r/R < 2.3) of a Gamma(3) is 0.41 inside a quarter radius.
         let inner = stars.iter().filter(|s| s.offset.length() < 43.96 * 0.25).count() as f64;
         assert!((inner / n - 0.41).abs() < 0.06, "{inner} of {n}");
-        // Its brightest band is giants.
-        assert!(stars[1..].iter().all(|s| s.class.lum() <= 6));
+        // Its brightest band is giants, a few of them SE's carbon and S-type stars.
+        assert!(stars[1..].iter().all(|s| s.class.lum() <= 6 || s.class.kind() == se_core::star::StarKind::Carbon));
         let id = NodeId { cluster: 0, level: 0, cell: [0; 3] }.member(3);
         assert_eq!(info_of(&m.rsc, id, &stars[3]).name, "RSC 8514-0-0-0-3");
     }

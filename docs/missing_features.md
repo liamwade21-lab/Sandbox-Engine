@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 193 have been fixed since (listed at the end); the tables count the 18 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 194 have been fixed since (listed at the end); the tables count the 17 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 4 | 9 | 5 |
+| Gaps | 0 | 0 | 4 | 9 | 4 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 1 | 11 | 6 |
+| Gaps | 0 | 11 | 6 |
 
 | Area | Kept |
 |---|---|
@@ -125,7 +125,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 1 |
-| 10 Scripts, audio, spacecraft | 5 |
+| 10 Scripts, audio, spacecraft | 4 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
 
@@ -281,15 +281,6 @@ Stereoscopic 3D (non-VR): SE renders left/right eyes for cross-eye/parallel, hor
 - SE evidence: 3D_anaglyph.glsl:20-27; 3D_interlace.glsl; main-def.cfg Projection StereoscopicMode StereoInterlaced StereoSwapEyes StereoIPD StereoConvergence Anaglyph*Hue LinkStereobaseTo*; eng-gui "Stereoscopic 3D" "Cross eye" "Anaglyph" "Active (shutter)" "Interlaced" "Swap left/right" "Stereobase" "Convergence" "Left lens color"; def_generic_controller.cfg ToggleStereo3D CamIncStereobase
 - Port: crates/se_core/src/places.rs:125
 - Check: main-def.cfg Projection 354-383 (StereoscopicMode 0-6, StereoInterlaced, StereoSwapEyes, StereoIPD, StereoConvergence, AnaglyphLeft/RightHue, LinkStereobaseTo*), shaders re/se_shaders/3D_anaglyph.glsl and 3D_interlace.glsl, exe UI strings "Stereoscopic 3D"/"Cross eye"/"Anaglyph"/"Active (shutter)"/"Swap left/right"/"Left lens color" (strings_utf16.txt:3234-3268), def_generic_controller.cfg ToggleStereo3D/Cam*Stereobase; port grep for stereo/anaglyph/interlace finds only places.rs/se_script.rs carrying Stereobase through unused
-
-### 10-035 · Scripts, audio, spacecraft
-
-Physics stepping and gravity source: SE integrates ships on a fixed PhysicsTick of 0.015 s and pulls the ship toward its reference body (RefBodyID); the port uses variable substeps of up to 0.05 s cut from the frame time (ship time = frame dt times the sim rate, clamped to 10x) and sums the gravity of every body in the system
-
-- Status: differs, effort **S**, auditor confidence low, amended by the checker
-- SE evidence: main-def.cfg Physics PhysicsTick; docs/formats/spacecraft.md "Gravity acts from the reference body"
-- Port: crates/se_engine/src/ship.rs:746-750,721-735
-- Check: main-def.cfg Physics PhysicsTick 0.015 ("physics iteration time") and docs/formats/spacecraft.md:73-74 (gravity from RefBodyID) back the SE side, although no decompile shows the tick loop; the port does not take one whole-frame step: it splits ship_dt (frame dt * rate clamped 0.01-10) into ceil(dt/0.05) equal substeps of up to 0.05 s (ship.rs:886-889) and sums gravity_at over every SystemBody (ship.rs:720-733, documented in spacecraft.md:127-129)
 
 ### 10-030 · Scripts, audio, spacecraft
 
@@ -741,6 +732,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **10-032** (Scripts, audio, spacecraft, fixed 2026-10-30): Script locale and utility commands: SetLocale, PrintTranslations, ExportLocale and ImportLocale (CheckLoc.se),... Fix: SE (command table): DisplayMode FUN_140553a50 (cubemap, fisheye, cylinder; crosseye, verpair, horpair, anaglyph, shutter stereo modes), SetLocale FUN_1405537b0 ('Localization not found'), ReloadConstellations FUN_140551c40, PrintVars FUN_140557b40 (HTML table of config variables), plus developer tools PrintTranslations, ExportLocale/ImportLocale, PrintNames, PrintFont/ExportFont, PrintTexCacheLog, DBSort, OptimizeSM, ToggleStereoscopic3D, DebugGen, Rebuild. Port: DisplayMode sets the projection mode (stereo names warn and fall back to perspective), SetLocale switches the interface language through I18n, ReloadConstellations reads the constellations again, PrintVars logs the script-reachable settings as an HTML table. Checked: test script (fish eye, Russian, reload logged twice, PrintVars rows, warnings). Not ported: the stereo modes (09-017) and the developer tools listed (localisation export/import, font and texture-cache dumps, DBSort, OptimizeSM, DebugGen, Rebuild).
 - **10-033** (Scripts, audio, spacecraft, fixed 2026-10-30): Thermal hull glow: materials with TempMap/TempMapMaxTemp (4) and the design's RadTemp (25 designs, radiators u... Fix: SE: ship.glsl THERM: surfTemp = TempMap.r x ThermalParams.x (RadTemp), colour from the PlanckFunction texture at log(surfTemp + ThermalParams.y) x 0.188 + 0.1316, x ThermalParams.z x 500. Port (already in with the hull material merge, efb5949; verified by the main session): ship_assets.rs loads TempMap for RadTemp designs, hull_uniform sets THERM and ThermalParams (RadTemp kK, ThermalEmissionShift, 1), ship.wesl adds planck(log(temp + shift) x 0.188 + 0.1316) x 500 from blackholes::planck_table. TempMapMaxTemp is SE's PBR path only (10-027).
 - **10-034** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, SystemID, RefBodyID, TargetShipID... Fix: SE: spacecraft.cfg (seSpacecraftsList::SaveSpacecraftsConfig FUN_1401f5510, block writer FUN_1405339e0: Spacecraft "name" { ShipID SystemID RefBodyID TargetID TargetShipID Model UnivPos Orientation Velocity AngVelocity WarpBoost FuelQuantity PropellantQuantity RadHeat DockedShipID DockedPort HUDMode PhysMode Autopilot }; ReadShipsConfig FUN_1401f56c0 skips blocks without ShipID). Port: ship/persist.rs writes %APPDATA%/SpaceEngine-rs/spacecraft.cfg on exit with SE's keys (ShipID, RefBodyID, Model, UnivPos in the port's fixed-point coordinates, Orientation, Velocity m/s, AngVelocity, WarpBoost, plus Mine and Piloted), rebuilds the ships on the next start (spawn_built), flies the piloted one again, and lets an idle ship park again once its RefBodyID body exists; scripted runs and --start skip it (SE_SHIPS_FILE test override). Checked: build two Apollo Eagles, exit, restore, re-save (ids, models, flags, RefBodyID Earth kept), unit round trip. Not kept: SystemID, targets, fuel/propellant/heat, docking, HUDMode, PhysMode, autopilot.
+- **10-035** (Scripts, audio, spacecraft, fixed 2026-10-30): Physics stepping and gravity source: SE integrates ships on a fixed PhysicsTick of 0.015 s and pulls the ship ... Fix: SE: main-def Physics PhysicsTick (0x140855128, copied to the timer +0x17a8); the ship update FUN_1401f2f80 runs the ship step FUN_140537060 with dt = PhysicsTick x the time rate (+0x1780) once per step (+0x17a0 steps). Port: ship.rs integrates in steps no longer than PhysicsTick x the ship's time rate, frame-locked (SE's per-frame step count was not found; whole ticks would make the chase camera judder at high frame rates). Not changed: gravity is still summed over the system's bodies (SE's single-reference-body gravity is in spacecraft.md but no decompile confirms it; FUN_140537060's gravity path was not traced)
 
 ## Refuted by the checkers
 
