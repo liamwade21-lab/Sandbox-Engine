@@ -104,19 +104,19 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 185 have been fixed since (listed at the end); the tables count the 26 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 186 have been fixed since (listed at the end); the tables count the 25 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 7 | 10 | 9 |
+| Gaps | 0 | 0 | 7 | 10 | 8 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 3 | 14 | 9 |
+| Gaps | 2 | 14 | 9 |
 
 | Area | Kept |
 |---|---|
-| 01 Stars | 1 |
+| 01 Stars | 0 |
 | 02 Star clusters | 1 |
 | 03 Galaxies and nebulae | 3 |
 | 04 Planet surfaces | 2 |
@@ -290,15 +290,6 @@ PBR ship materials: with EnableShipPBR true (default), materials with MaterialPB
 
 
 ## Visibility 1: obscure
-
-### 01-025 · Stars
-
-black hole settings: Black hole quality (BlackHoleQuality 0-4), Black hole update interval and BlackHoleWarpRadius are missing; the port has a fixed quality and SE_NO_BLACKHOLES only
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg WarpRendering BlackHoleQuality, BlackHoleWarpRadius; exe "Black hole quality", "Black hole update interval"
-- Port: crates/se_engine/src/blackholes.rs
-- Check: main-def.cfg:187/189 has BlackHoleQuality 3 (0-4) and BlackHoleWarpRadius 100 and strings_utf16.txt:2826/2828 has "Black hole quality"/"Black hole update interval", while the port's blackholes.rs uses a fixed MAX_STEPS 220 in its lens shader and a hard-coded influence radius (blackholes.rs:250-262); neither settings.rs nor config.rs reads any of these, and SE_NO_BLACKHOLES (README:40) is the only switch.
 
 ### 02-017 · Star clusters
 
@@ -643,6 +634,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **01-021** (Stars, fixed 2026-10-30): point source settings: SE's Graphics "Point sources" group has Points scale (PointScale), Link points scale wi... Fix: SE: main-def PointRendering LinkScaleToScreenRes true (1x at 1080p), PointFlareBright 1, PointFlareDecay 1 (FUN_1400137f0 / FUN_140013860); FUN_1404c51a0 turns them into flareBright = 0.002 x PointFlareBright / PointFlareDecay (DAT_1408298cc) and flareDecay = 0.125 / PointFlareDecay (DAT_14082c208), which every point draw uploads as star_point.glsl / star_sprite.glsl Param3.xy (FUN_1404591a0 for the star_point and star_sprite programs, FUN_14047d1c0, FUN_140541e10, FUN_140544bd0): sprite size max(ln(500 b) 2 sigma^2, (flareBright 500 b 2 sigma^2 - 1) / flareDecay), colour (exp(-r^2/2 sigma^2) + smoothstep(1, 0, r^2/size) flareBright 2 sigma^2 / (flareDecay r^2 + 1)) x colour x b. Port: stars.rs StarSettings link_screen_res / flare_bright / flare_decay, StarParams.flare (flare_params), stars.wesl draws SE's flare wing on every point (stars, catalog and procedural fields, planet points), the earlier note that SE's decay was CosmHorizon (01-001) was wrong for these draws; Settings > Graphics > Point sources gains Link points scale with window resolution, Flare bright and Flare decay, saved in settings.cfg. Not ported: Planet points style (PlanetPointMethod: the port's planet points have no motion blur); SE has no separate overbright keys (no such key in its key table). Checked: unit test flare_wing_params (Sirius from Earth: wing out to ~28 px against the Gaussian's 3).
 - **01-022** (Stars, fixed 2026-10-30): pseudo lens flare: SE's preset also draws lens dirt and a starburst (DirtTexture, DirtBright, DirtDispersal, R... Fix: SE: hdr_combine.glsl FLARES: ghosts (GhostsCount, GhostsDispersal, fade /1 - i x dispersal/^2, weight (1 - /0.5 - offset/ sqrt2)^10 x smoothstep(0, 5.5, luma)) and a halo (HaloRadius, (1 - /v/)^5 x HaloBright x 0.33) read from the bloom mip chain at GhostsBlur / HaloBlur levels with chromatic offsets (Chromaticism x frame texel), times (LensRays x 3 + LensDirt); the frame plus bloom is mixed toward the bloom at DirtDispersal levels by dirt x DirtBright, per channel, then the flare is added. FUN_14026c610 reads `<Name> pseudo.cfg` and clears RaysTexture/DirtTexture first (Clean lens has no dirt). Ported: se_bloom.wesl combine_flares (bloom.rs: reads the frame, writes the other target, so the dirt mix is per channel as in SE), uniforms in SeBloom set by lensflare.rs from the preset (ghost/halo bright x PseudoFlareBright); se_core parse_pseudo leaves missing textures empty. Replaces the frame-based pseudo_flare.wesl pass (deleted), which had no dirt or rays and used a lens colour texture SE's shader does not. Port choices: LensRaysMatr not decoded, John Chapman's camera-rotation angle used (rays turn with the camera); viewport scale 1. The pass runs whenever EnablePseudoFlares is on, as in SE (it ran only while a sun was flared). Checked: sunset halo with the rays pattern (r_sunset_b.png), amplified x30 debug view of halo, ghosts and dirt (pseudo_x30_debug.png); no veil on the Sun-behind-limb view (r_limb108.png).
 - **01-023** (Stars, fixed 2026-10-30): CenterOf ignored: SE ties a star or black hole to the centre of a galaxy or nebula (134 supermassive holes in ... Fix: `CenterOf` ties a star to the centre of the galaxy, nebula or cluster it names, whatever its own RA/Dec/Dist (SE's star parser FUN_140476e90 sets flag 0x20 and queues the name): applied when positions resolve after every catalog has loaded, so BlackHoles.sc's 134 supermassive holes sit in their galaxies (NGC 1023* was 0.9 Mpc off, TON 618* 2.3 Gpc) and the Crab Pulsar's system in the Crab Nebula; components without their own position follow as before.
+- **01-025** (Stars, fixed 2026-10-30): black hole settings: Black hole quality (BlackHoleQuality 0-4), Black hole update interval and BlackHoleWarpRa... Fix: SE: BlackHoleQuality (var DAT_140d8dea0, FUN_1400091b0; main-def 3, 0-4): 0 makes the renderers draw holes without the warp (FUN_1404d4100 / FUN_1404dd010), and FUN_14018a6f0 sets the environment-map updates: 4 all faces every frame, 3 a face per frame, 2 the whole map every 1 s, 0-1 every 5 s, 0.2 s once the camera moved 500 km, at once at time rates of 10x or more, quality 1 while time is stopped; BlackHoleWarpRadius was already read. Port: BlackHoleSettings.quality from main-def, quality 0 disables the lens (as SE_NO_BLACKHOLES), env_interval schedules the map at SE's rates (3 keeps the rolling faces with the 10%-distance restart). Checked: unit test, Cygnus X-1 A renders as before at the default 3. 'Black hole update interval' is a GUI label with no config key of its own.
 - **01-026** (Stars, fixed 2026-10-30): catalog star flags ForceAppMagn (use the given system AppMagn instead of the sum of its components) and Hidden... Fix: SE: the star parser FUN_140476e90 reads Hidden (flag 0x4000000) and ForceAppMagn (flag 0x20000000), and fills the visual luminosity from Lum/Luminosity then AbsMagn, using AppMagn with Dist only when neither is given (sentinel -1e38). Port: StarRecord::hidden / force_app_magn; Hidden stars (the main menu's Menu Star) are left out of the starfield, black holes, labels, star browser, star search and the nearest-system pick; catalog magnitudes now follow SE's order (Lum before AppMagn, ForceAppMagn puts AppMagn first: W1-26 -8.9 not +4.4, KY Cyg keeps its AppMagn); Catalog::forced_system_offsets scales a ForceAppMagn system's components so their summed light matches its AppMagn (BET Sco, SIG Ori, ETA Car), as SE draws a distant system as one point. Checked: unit test force_app_magn_and_hidden, example appmagn_check lists the offsets (ETA Car A drawn -7.6 not -11.9), starfield builds 130089 stars.
 - **01-027** (Stars, fixed 2026-10-30): planet points: SE moves a point-like planet's sprite towards its sunlit crescent by phase*radius (OffsetToCres... Fix: SE: star_point.glsl / star_sprite.glsl OffsetToCrescent (PLANET): the point of a point-like body moves in the view plane towards its star by phase x radius, phase = 1 - acos(body.star seen from the camera)/pi. Port: system.rs crescent_shift adds that offset (camera orientation, brightest star) to the batched body sprites after the existing pull in front of the body, scaled into render space with the body. Checked: unit test crescent_shift_follows_the_phase (none with the star behind the camera, half a radius at 90 degrees, turns with the camera); Venus from Earth still drawn at the screen centre.
 - **02-001** (Star clusters, fixed 2026-10-28): Catalog cluster far sprite: SE draws every catalog (and extragalactic catalog) cluster as a star-like particle... Fix: Catalog clusters are SE's star-like particle (`procsystems.rs` setup, `galaxy_far.wesl` ptype 4), coloured by `Color` or SE's default by type, open clusters at 0.25; `Color (0 0 0)` draws none. Omega Cen shows from Earth.

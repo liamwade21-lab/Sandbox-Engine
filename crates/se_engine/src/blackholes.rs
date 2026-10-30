@@ -114,11 +114,15 @@ pub struct BlackHoleSettings {
     pub warp_precision: f64,
     /// `EnvmapDimensions` (512): environment map face size, pixels.
     pub env_size: u32,
+    /// `BlackHoleQuality` (3; 0 disabled .. 4 ultra): 0 draws no warp effect (the renderers' flag in
+    /// FUN_1404d4100 / FUN_1404dd010), the rest set how often the environment map is redrawn
+    /// (`env_interval`).
+    pub quality: i32,
 }
 
 impl Default for BlackHoleSettings {
     fn default() -> Self {
-        Self { disk_bright: 10_000.0, jet_bright: 10_000.0, warp_radius: 100.0, warp_precision: 0.5, env_size: 512 }
+        Self { disk_bright: 10_000.0, jet_bright: 10_000.0, warp_radius: 100.0, warp_precision: 0.5, env_size: 512, quality: 3 }
     }
 }
 
@@ -126,6 +130,25 @@ impl BlackHoleSettings {
     fn warp_step(&self) -> f64 {
         0.2 * 10f64.powf(1.0 - self.warp_precision.clamp(0.0, 1.0))
     }
+}
+
+/// How often the environment map around a lensed hole is redrawn (FUN_14018a6f0), from the quality
+/// in effect (time stopped counts as 1): `None` at 3 and 4 (4 every frame, 3 a face per frame), else
+/// the whole map every 1 s (2) or 5 s (0-1), every 0.2 s once the camera has moved 500 km since the
+/// last one, and at once while time runs 10x or faster.
+fn env_interval(quality: i32, moved_km: f64, rate: f64) -> Option<f64> {
+    if quality >= 3 {
+        return None;
+    }
+    Some(if rate.abs() >= 10.0 {
+        0.0
+    } else if moved_km >= 500.0 {
+        0.2
+    } else if quality == 2 {
+        1.0
+    } else {
+        5.0
+    })
 }
 
 fn load_settings(cfg: Res<crate::config::EngineConfig>, mut s: ResMut<BlackHoleSettings>) {
@@ -137,6 +160,7 @@ fn load_settings(cfg: Res<crate::config::EngineConfig>, mut s: ResMut<BlackHoleS
         warp_radius: get("BlackHoleWarpRadius").unwrap_or(d.warp_radius),
         warp_precision: get("WarpPrecision").unwrap_or(d.warp_precision),
         env_size: get("EnvmapDimensions").map_or(d.env_size, |v| (v as u32).clamp(64, 2048)),
+        quality: get("BlackHoleQuality").map_or(d.quality, |v| (v as i32).clamp(0, 4)),
     };
 }
 
@@ -602,6 +626,7 @@ fn update_lens(
     mut lensed: ResMut<LensedHoles>,
     mut surfaces: ResMut<LensedStars>,
     mut frame: Local<u32>,
+    (time, mut last_env): (Res<Time>, Local<Option<(f64, se_core::upos::UPos)>>),
 ) {
     env.want = false;
     env.restart = false;
@@ -609,7 +634,7 @@ fn update_lens(
     lensed.0.clear();
     surfaces.0.clear();
     let Some((cam_e, has_lens)) = cams.iter().next() else { return };
-    if std::env::var_os("SE_NO_BLACKHOLES").is_some() {
+    if settings.quality == 0 || std::env::var_os("SE_NO_BLACKHOLES").is_some() {
         return;
     }
     let cat = &data.catalog;
@@ -727,12 +752,30 @@ fn update_lens(
     *frame = frame.wrapping_add(1);
     env.want = want_env;
     env.hole_dist_m = nearest_m;
-    // A stale map restarts here, so its six faces (rendered before the main view this frame) are
-    // already the ones the lens reads.
-    if want_env && !env.cams.is_empty() && !env_current(&env, &cam) {
-        env.restart = true;
-        env.valid = 0;
-        env.origin = Some(cam.pos);
+    // A restarted map renders its six faces before the main view this frame, so the lens already
+    // reads them. At quality 4 every frame; at 3 when the camera has moved 10% of its distance to the
+    // hole, the faces rolling one per frame between; below that at SE's intervals, frozen between.
+    if want_env && !env.cams.is_empty() {
+        let quality = if sim.paused || sim.rate == 0.0 { 1 } else { settings.quality };
+        let now = time.elapsed_secs_f64();
+        let restart = match last_env.map(|(t, p)| (now - t, cam.pos.delta_m(p).length() * 1e-3)) {
+            _ if quality >= 4 || env.valid == 0 => true,
+            None => true,
+            Some((age, moved_km)) => match env_interval(quality, moved_km, sim.rate) {
+                None => !env_current(&env, &cam),
+                Some(dt) => {
+                    env.paused = true;
+                    age >= dt
+                }
+            },
+        };
+        if restart {
+            env.restart = true;
+            env.paused = false;
+            env.valid = 0;
+            env.origin = Some(cam.pos);
+            *last_env = Some((now, cam.pos));
+        }
     }
     let rot = bevy::math::DMat3::from_quat(cam.rot);
     let env_ok = want_env && !env.cams.is_empty() && (env.restart || env.valid == 0b11_1111);
@@ -1005,6 +1048,16 @@ fn lens_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn environment_map_follows_black_hole_quality() {
+        assert_eq!(env_interval(4, 0.0, 1.0), None);
+        assert_eq!(env_interval(3, 1e6, 1.0), None);
+        assert_eq!(env_interval(2, 0.0, 1.0), Some(1.0));
+        assert_eq!(env_interval(1, 0.0, 1.0), Some(5.0));
+        assert_eq!(env_interval(0, 600.0, 1.0), Some(0.2));
+        assert_eq!(env_interval(2, 0.0, -10.0), Some(0.0));
+    }
 
     #[test]
     fn planck_table_scale() {
