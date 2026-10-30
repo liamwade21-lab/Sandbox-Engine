@@ -13,6 +13,8 @@ pub struct EngineConfig {
     pub height: u32,
     /// Object to start at (catalog name).
     pub start_at: String,
+    /// `--start` was given: the saved session (`session.rs`) is not restored.
+    pub start_given: bool,
     /// Save a screenshot to this path after `screenshot_frames` frames, then exit.
     pub screenshot: Option<PathBuf>,
     pub screenshot_frames: u32,
@@ -33,6 +35,7 @@ impl EngineConfig {
             width: 1600,
             height: 900,
             start_at: "Earth".into(),
+            start_given: false,
             screenshot: None,
             screenshot_frames: 120,
             commands: Vec::new(),
@@ -49,7 +52,10 @@ impl EngineConfig {
                         cfg.height = h.parse().unwrap_or(cfg.height);
                     }
                 }
-                "--start" => cfg.start_at = args.next().unwrap_or(cfg.start_at),
+                "--start" => {
+                    cfg.start_at = args.next().unwrap_or(cfg.start_at);
+                    cfg.start_given = true;
+                }
                 "--screenshot" => cfg.screenshot = args.next().map(PathBuf::from),
                 "--frames" => cfg.screenshot_frames = args.next().and_then(|s| s.parse().ok()).unwrap_or(120),
                 "--run" => {

@@ -65,26 +65,14 @@ fn hud_keys(
     mut sim: ResMut<SimTime>,
     mut egui: EguiContexts,
     mut gfx: ResMut<crate::graphics::GraphicsUi>,
-    (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<I18n>),
+    (mut msg, i18n, shots): (ResMut<crate::messages::Messages>, Res<I18n>, Res<crate::screenshot::ScreenshotSettings>),
 ) {
     if egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false) {
         return;
     }
     if keys.just_pressed(KeyCode::F11) {
-        // Screenshots go to <Pictures>/SpaceEngine-rs/se_<date>.png.
-        let dir = std::env::var_os("USERPROFILE")
-            .map(|p| std::path::PathBuf::from(p).join("Pictures").join("SpaceEngine-rs"))
-            .unwrap_or_else(|| std::path::PathBuf::from("screenshots"));
-        let _ = std::fs::create_dir_all(&dir);
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let path = dir.join(format!("se_{stamp}.png"));
-        info!("screenshot -> {}", path.display());
-        commands
-            .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
-            .observe(bevy::render::view::screenshot::save_to_disk(path));
+        // SE's format and numbering, in <Pictures>/SpaceEngine-rs/ (screenshot.rs).
+        crate::screenshot::take(&mut commands, &shots);
     }
     // SE's keys (its default binds): Ctrl+` the interface, F3 Find object (Shift+F3 is the Star
     // browser's search), F4 Settings, Ctrl+F4 graphics, F7 Locations, I the wiki. F1 (SE's universe
@@ -264,7 +252,7 @@ pub(crate) fn object_kind(data: &SeData, r: ObjectRef, i18n: &I18n, classes: Opt
 }
 
 /// SE's overlay filters: orbits, labels (off / brief / detail) and markers, each switched per kind.
-fn overlay_filters(ui: &mut egui::Ui, overlay: &mut crate::overlay::OverlaySettings, i18n: &I18n) {
+pub(crate) fn overlay_filters(ui: &mut egui::Ui, overlay: &mut crate::overlay::OverlaySettings, i18n: &I18n) {
     use crate::overlay::MarkerKind as K;
     ui.checkbox(&mut overlay.orbits, i18n.tr("orbits"));
     let modes = ["Off", "brief", "detail"];
@@ -359,13 +347,11 @@ fn draw_hud(
     data: Res<SeData>,
     time: Res<Time>,
     mut script_ui: ResMut<crate::scripting::ScriptUi>,
-    mut i18n: ResMut<I18n>,
+    i18n: Res<I18n>,
     mut gfx_ui: ResMut<crate::graphics::GraphicsUi>,
     mut thermal: Local<Option<(ObjectRef, se_core::climate::display::Model)>>,
-    (mut browser, mut skin, mut msg): (ResMut<crate::browser::BrowserState>, ResMut<crate::skin::Skin>, ResMut<crate::messages::Messages>),
-    (mut music, mut sound, terrains, clusters): (
-        Option<ResMut<crate::music::MusicState>>,
-        ResMut<crate::sound::SoundSettings>,
+    (mut browser, mut msg): (ResMut<crate::browser::BrowserState>, ResMut<crate::messages::Messages>),
+    (terrains, clusters): (
         Query<(&crate::system::SystemBody, &crate::terrain::Terrain)>,
         Option<Res<crate::clusters::ClusterField>>,
     ),
@@ -746,91 +732,6 @@ fn draw_hud(
                 });
             }
         });
-    }
-
-    if hud.show_settings {
-        let mut open = true;
-        // Language choice: applied after the window closure, which borrows `i18n`.
-        let mut pick_lang: Option<String> = None;
-        let mut open_graphics = false;
-        egui::Window::new(crate::skin::title(ctx, &i18n.tr("Settings"))).open(&mut open).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(i18n.tr("Language"));
-                egui::ComboBox::from_id_salt("ui_language")
-                    .selected_text(i18n.name_of(i18n.lang()))
-                    .show_ui(ui, |ui| {
-                        for (code, name) in &i18n.languages {
-                            if ui.selectable_label(code == i18n.lang(), name).clicked() {
-                                pick_lang = Some(code.clone());
-                            }
-                        }
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.label(i18n.tr("Interface skin"));
-                egui::ComboBox::from_id_salt("ui_skin").selected_text(skin.name.clone()).show_ui(ui, |ui| {
-                    for name in skin.available.clone() {
-                        if ui.selectable_label(name == skin.name, &name).clicked() {
-                            skin.name = name;
-                        }
-                    }
-                });
-            });
-            ui.separator();
-            ui.add(egui::Slider::new(&mut stars.mag_limit, 0.0..=16.0).text(i18n.tr("Star mag limit")));
-            ui.add(egui::Slider::new(&mut stars.overbright, -3.0..=6.0).text(i18n.tr("Stars overbright")));
-            ui.add(egui::Slider::new(&mut stars.point_scale, 0.25..=4.0).text(i18n.tr("Points scale")));
-            ui.add(egui::Slider::new(&mut stars.saturation, 0.0..=3.0).text(i18n.tr("Stars color saturation")));
-            ui.add(egui::Slider::new(&mut stars.desaturation, 0.0..=1.0).text(i18n.tr("Desaturate dim stars")));
-            ui.add(egui::Slider::new(&mut stars.color_shift, -1.0..=1.0).text(i18n.tr("Stars color shift")));
-            ui.horizontal(|ui| {
-                let auto = stars.illum_saturation_auto;
-                ui.add_enabled(!auto, egui::Slider::new(&mut stars.illum_saturation, 0.0..=2.0).text(i18n.tr("Illumination saturation")));
-                ui.checkbox(&mut stars.illum_saturation_auto, i18n.tr("Auto"));
-            });
-            ui.horizontal(|ui| {
-                ui.label(i18n.tr("Star points style"));
-                egui::ComboBox::from_id_salt("star_points").selected_text(i18n.tr(stars.point_style.label())).show_ui(ui, |ui| {
-                    for p in crate::stars::PointStyle::ALL {
-                        ui.selectable_value(&mut stars.point_style, p, i18n.tr(p.label()));
-                    }
-                });
-            });
-            if stars.point_style != crate::stars::PointStyle::Sprites {
-                ui.add(egui::Slider::new(&mut stars.blur_length, 0.25..=4.0).logarithmic(true).text(i18n.tr("motion blur length")));
-            }
-            ui.add(egui::Slider::new(&mut cam.fov_deg, crate::camera::MIN_FOV_DEG..=crate::camera::MAX_FOV_DEG).logarithmic(true).text(i18n.tr("field of view")));
-            ui.checkbox(&mut cam.auto_horizon, i18n.tr("Auto horizon on planets"));
-            ui.separator();
-            // SE's Sound settings: volumes 0..100.
-            if let Some(m) = music.as_mut() {
-                ui.checkbox(&mut m.enabled, i18n.tr("Music"));
-                let mut v = (m.volume * 100.0).round();
-                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).text(i18n.tr("Music volume"))).changed() {
-                    m.volume = v / 100.0;
-                }
-            }
-            let mut v = (sound.volume * 100.0).round();
-            if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).text(i18n.tr("Sound effects"))).changed() {
-                sound.volume = v / 100.0;
-            }
-            ui.separator();
-            overlay_filters(ui, &mut overlay, &i18n);
-            ui.checkbox(&mut overlay.selection_pointer, i18n.tr("Selection pointer"));
-            ui.checkbox(&mut overlay.show_fps, i18n.tr("Show FPS"));
-            ui.add(egui::Slider::new(&mut overlay.star_label_mag, -2.0..=6.0).text(i18n.tr("star name magnitude limit")));
-            ui.separator();
-            if ui.button(i18n.tr("Graphics")).clicked() {
-                open_graphics = true;
-            }
-        });
-        hud.show_settings = open;
-        if open_graphics {
-            gfx_ui.open = !gfx_ui.open;
-        }
-        if let Some(code) = pick_lang {
-            i18n.set_language(&data.vfs, &code);
-        }
     }
 
     if hud.show_places {
