@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 89 have been fixed since (listed at the end); the tables count the 152 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 90 have been fixed since (listed at the end); the tables count the 151 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 66 | 63 | 20 |
+| Gaps | 1 | 2 | 65 | 63 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 49 | 75 | 28 |
+| Gaps | 48 | 75 | 28 |
 
 | Area | Kept |
 |---|---|
@@ -121,7 +121,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 03 Galaxies and nebulae | 14 |
 | 04 Planet surfaces | 10 |
 | 05 Atmospheres, rings, comets | 14 |
-| 06 Procedural generation | 14 |
+| 06 Procedural generation | 13 |
 | 07 Camera and time | 6 |
 | 08 Interface | 26 |
 | 09 Graphics and settings | 16 |
@@ -479,15 +479,6 @@ Planetshine: SE's EnablePlanetShine (PlanetShineMode, PlanetShineBright, PlanetS
 - SE evidence: main-def.cfg PlanetRendering EnablePlanetShine..PlanetShinePickPerFrame; strings_utf16 "Planet shine" "Planet shine brightness" TogglePlanetShine; rings.glsl:66 HostLightIndex
 - Port: none
 - Check: main-def.cfg:105-109 EnablePlanetShine..PlanetShinePickPerFrame and the HostLightIndex branch in rings.glsl:20,66 / rings_raymarch.glsl check out, and the port has no planetshine (grep finds none); but night sides are not fully black (terrain.rs:1443 sets a constant ambient of 0.015, used at planet.wesl:1171), and unlit ring faces are not black (rings.wesl shows the back face by sunlight passing through the ring).
-
-### 06-011 · Procedural generation
-
-Planet class words use designed thresholds instead of SE's: procgen temperature frigid<130/cold<240/cool<273/temperate<310/warm<350/hot<600 K, pressure 1e-7/1e-3/0.1/10/500 atm, terra size 1e-3/0.05/0.5/2/10 Me, Neptune 6/12/30/60, Jupiter 30/150/1000/2500 Me, glacial/superglacial from ice cover; SE (already ported in surface_gen/climate) uses >1000/500/330/250/170/90 K from the temperature model, 1e-6/1e-3/0.1/10/1000 atm, 0.002/0.02/0.2/2/10 Me, Neptunes 4/10/25/62.5 Me, Jupiters 0.2/0.5/2.5/12.5 MJ, volatiles from ocean depth vs BumpHeight and never assigns glacial; the Star browser search even classifies catalog bodies with the designed temperature thresholds
-
-- Status: differs, effort **S**, auditor confidence high
-- SE evidence: FUN_14025f1c0; FUN_1404caaa0; FUN_1404cabf0; FUN_140505680; docs/formats/surface_params.md "Body classes"
-- Port: crates/se_core/src/procgen/mod.rs:293-363; crates/se_engine/src/star_search.rs:285
-- Check: Exe constants read from SpaceEngine.exe confirm SE's thresholds (FUN_1404caaa0 pressure 1e-6/1e-3/0.1/10/1000; FUN_1404cabf0 terra 0.002/0.02/0.2/2/10, Neptune 4/10/25/62.5, Jupiter 63.6/158.9/794.6/3972.9 Me = 0.2/0.5/2.5/12.5 MJ; FUN_140505680 depth 0.1/0.9 BumpHeight) and surface_gen.rs:322/399 already has them, while procgen/mod.rs:293-363 uses its own "designed" thresholds and star_search.rs:285 calls procgen::temperature_class for catalog bodies
 
 ### 06-006 · Procedural generation
 
@@ -1562,6 +1553,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **06-003** (Procedural generation, fixed 2026-10-29): Procedural bodies bypass SE's body-completion chain that the port already has for catalog bodies: SE runs bulk... Fix: Procedural planets and moons go through SE's completion chain (procgen `emit_body`): they are written as SE's system generator leaves them (class, mass, radius, orbit, rotation, life, rings, aurora), so like any catalog body without them SE's chain (climate::complete: bulk composition, albedo, tidal heating, volcanism, atmosphere/greenhouse/ocean solve, look, temperature model and class word) and SE's surface generator (surface_gen) give them their atmosphere, ocean, clouds, surface and class. Not done: their rotation is still the port's (SE's derived spin is not written back into the rotation model), life is still the port's decision, and asteroids keep the designed blocks.
 - **06-004** (Procedural generation, fixed 2026-10-29): No multiple-star procedural systems: SE splits ~50% of systems into binaries, 11% of those into triples, 22% i... Fix: Procedural stars become SE's multiple systems (procgen/se_multiple.rs, from seSolarSystem::CreateProcedural FUN_1404f7c40 and the binary branch of FUN_1404f9210): A/B with ProbBinaryStar 0.5 (0.95 for luminosity code 10), A and B again with ProbTripleStar 0.11 and their halves with ProbQuadrupleStar 0.22 (up to 8 stars, SE's suffixes A..BBB), sub-splits capped at 0.3 of the component's sphere of influence; companion white dwarfs / neutron stars / black holes (ProbCompanionWD/NS/BH, SE's mass draws, a too-old primary reset to the mass whose lifetime is the age), brown-dwarf companions (ProbBrownDwarf, x0.2 after each), else the light split by SE's mass-luminosity law (FUN_1401dd880); separations log-normal up to the cap (tn(log10 cap/1.84, 2.5, -2, log10 cap) AU, at least 2.5 radii), e = tn(0.5,0.5,0,0.89) damped for close pairs, a random barycentre plane; planets per component (rand%10+5 slots inside sphere of influence periapsis/(sqrt(q/0.05)+1)) and circumbinary planets of the root barycentre (FUN_14050a890 inner edge 3 apoapses). The engine adds such a star as a barycentre (system.rs materialize_star, procgen::is_multiple) with component Star/Barycenter records and the stars' total mass; the planet search lists the components. Not decoded: SE's class tables and star physics (component temperatures, radii and classes from the port's main-sequence relations; remnant temperatures the port's), the split-decision streams.
 - **06-008** (Procedural generation, fixed 2026-10-30): No comets in procedural systems: SE gives each single non-remnant star u%100+100 (100-199) comets on eccentric... Fix: SE: FUN_1404f9210 gives a single star u%100+100 comets (+0x1d40; 0 for brown dwarfs, lum code 7 letter >= 7, or system flag 0x8000). FUN_1404fc9b0: R = inner planet-zone edge (FUN_14050a890), q = tn_d(U(5,10)R, sigma (outer-R/4)/3, R/4, 2 outer - R/4), Q = tn_d(1.2 SOI, 0.8 SOI/3, 0.4 SOI, 2 SOI) (FUN_140441b80), e = clamp((Q-q)/(Q+q), 0, 0.9999), a = q/(1-e), inc/node/argp/M uniform +-pi; none if 2 outer - R/4 > 0.4 SOI. Name star + "C" + n. Body FUN_140502710 on seeds n*0x21ad+sys*0x2244 / sys*0xc49+n*0x1938: mass 10^U(-20,-8.6) MJ, density tn(500,100,200,3000) -> radius (FUN_1404c8990), albedo tn(0.04,0.01,0.01,0.1), rotation tn(2,1.5,0.1,20) h, tail values FUN_140486280; period with the comet mass. Ported: crates/se_core/src/procgen/se_comets.rs (generator, tail defaults, tail particles), se_layout keeps the comet count it already drew, mod.rs emits `Comet "<star>C<n>"` blocks (Mass, Radius, Albedo, rotation, AbsMagn, SlopeParam, CometTail, Orbit tilted like the planets). Checked: tests (100-199 comets per single star, q/Q ranges, tail defaults, parse into the catalog); Altair gets 157 comets (generated in 3 ms), AltairC119 at perihelion 2006-10-17 shows its tail (proc_altair_c119.png). Not ported: comets of multiple-star components (FUN_1404f9210:614-652, count from a pow() formula), the orbit stream state (the port seeds its own; SE uses whatever its thread RNG holds after the planets), and the composition/0x1210/0x1214 draws (FUN_1401aa500, FUN_14050a5f0, FUN_14050a520) that sit between the body draws on stream b.
+- **06-011** (Procedural generation, fixed 2026-10-30): Planet class words use designed thresholds instead of SE's: procgen temperature frigid<130/cold<240/cool<273/t... Fix: Procedural class words use SE's thresholds through the functions already ported in surface_gen: temperature > 1000/500/330/250/170/90 K (temp_class), pressure 1e-6/1e-3/0.1/10/1000 atm (atmo_class, FUN_1404caaa0), size 0.002/0.02/0.2/2/10 Me, Neptunes 4/10/25/62.5 Me, Jupiters 0.2/0.5/2.5/12.5 MJ (size_class, FUN_1404cabf0); the star browser's search classifies with them too. Not ported: the volatiles word still comes from ocean/ice cover (SE: ocean depth against BumpHeight, FUN_140505680, and no glacial), because the generator's bodies carry no ocean depth.
 - **07-001** (Camera and time, fixed 2026-10-28): Startup field of view: SE starts at FOV 45 deg (Controls FOV 45, DefaultFOV 45); port's camera and projection ... Fix: The camera starts at SE's 45 degrees (and the `fov` command defaults to it).
 - **07-002** (Camera and time, fixed 2026-10-28): Time-rate steps: SE's L/K (and the toolbar buttons) step the rate through 1, 3, 10, 30, 100, 300... (two press... Fix: K/L and the top bar's << / >> step the rate through 1, 3, 10, 30, ... (`hud::rate_step`).
 - **07-003** (Camera and time, fixed 2026-10-28): Go to arrival distance: SE arrives 4 radii from the centre (25,513 km for Earth, velocity set to 2,551 km/s, p... Fix: Go to arrives 4 radii from the centre (`GOTO_RADII`).
