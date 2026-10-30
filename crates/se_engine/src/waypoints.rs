@@ -236,6 +236,17 @@ fn draw_waypoints(
         if r_px > max_px {
             continue;
         }
+        // Hidden behind its parent body (SE draws the shapes in the scene, under the bodies); the
+        // selection pointer still shows where it is.
+        if let Some(p) = w.parent {
+            let to_body = eph.position(p, sim.jd).delta_m(cam.pos);
+            if behind_sphere(pos.delta_m(cam.pos), to_body, eph.radius_m(p)) {
+                if selected {
+                    ticks(&painter, c, r_px);
+                }
+                continue;
+            }
+        }
         let line = premul(w.color, wps.opacity);
         let fill = premul(w.color_empty, wps.opacity);
         let stroke = egui::Stroke::new(w.line_width.max(0.5), line);
@@ -271,6 +282,22 @@ fn draw_waypoints(
         }
     }
     Ok(())
+}
+
+/// Whether the sphere at `centre` (radius `r`) hides the point `p` (both from the camera, m).
+pub fn behind_sphere(p: DVec3, centre: DVec3, r: f64) -> bool {
+    if r <= 0.0 || centre.length() <= r {
+        return false;
+    }
+    let len2 = p.length_squared().max(1e-30);
+    let t = (centre.dot(p) / len2).clamp(0.0, 1.0);
+    let miss2 = (p * t - centre).length_squared();
+    if miss2 >= r * r {
+        return false;
+    }
+    // Where the line of sight enters the sphere, as a fraction of the way to the point.
+    let t_in = t - ((r * r - miss2).sqrt() / len2.sqrt());
+    t_in < 1.0
 }
 
 /// The selection pointer's colour (as the overlay's).
@@ -341,6 +368,17 @@ mod tests {
         assert_eq!((c.r(), c.b(), c.a()), (255, 26, 64));
         let c = premul([0.5, 0.0, 0.5, 1.0], 0.5);
         assert_eq!((c.r(), c.a()), (64, 128));
+    }
+
+    #[test]
+    fn occlusion_by_the_parent() {
+        let body = DVec3::new(0.0, 0.0, -100.0);
+        // Straight behind the body, in front of it, and beside it.
+        assert!(behind_sphere(DVec3::new(0.0, 0.0, -200.0), body, 10.0));
+        assert!(!behind_sphere(DVec3::new(0.0, 0.0, -50.0), body, 10.0));
+        assert!(!behind_sphere(DVec3::new(30.0, 0.0, -200.0), body, 10.0));
+        // On the near surface's side of the body, still in front of it.
+        assert!(!behind_sphere(DVec3::new(0.0, 0.0, -89.0), body, 10.0));
     }
 
     #[test]

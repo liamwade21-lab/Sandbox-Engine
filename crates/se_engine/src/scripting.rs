@@ -66,6 +66,8 @@ const ENGINE_VERSION: u32 = 991;
 const DIRECTION_TOLERANCE: f64 = 0.01;
 /// `Control|SetTime`: a date change bigger than the clock's own step by this much (days, 1 min).
 const SET_TIME_JUMP_D: f64 = 1.0 / 1440.0;
+/// The navigation toolbar's date as SE's `GUI|LeftClick` names it (tut-03).
+const DATE_WIDGET: &str = "Navigation toolbar|Date";
 /// The time keys a script's `UserTimeControl "Disabled"` swallows (Space, L, K, J, \).
 const TIME_KEYS: [KeyCode; 5] = [KeyCode::Space, KeyCode::KeyL, KeyCode::KeyK, KeyCode::KeyJ, KeyCode::Backslash];
 
@@ -78,7 +80,8 @@ impl Plugin for ScriptingPlugin {
             .init_resource::<ScriptUi>()
             .add_systems(Startup, queue_cli_script)
             .add_systems(PreUpdate, swallow_time_keys.after(bevy::input::InputSystems))
-            .add_systems(Update, run_script)
+            // Idle, the runner takes no part in the frame (it borrows many settings).
+            .add_systems(Update, run_script.run_if(|r: Res<ScriptRunner>| r.running() || r.pending.is_some() || r.stop))
             .add_systems(EguiPrimaryContextPass, (draw_captions, draw_scripts_window).in_set(crate::skin::UiSet::Draw));
     }
 }
@@ -481,17 +484,7 @@ fn run_script(
             runner.frames.push(frame);
         }
     }
-    if runner.stop {
-        runner.stop = false;
-        runner.end_effects(&mut cam, &mut dialogs.gui, &mut vars.waypoints);
-        if runner.hid_hud {
-            dialogs.hud.hidden = false;
-            runner.hid_hud = false;
-        }
-        info!("script {} stopped", runner.name);
-        return;
-    }
-    if runner.frames.is_empty() {
+    if runner.frames.is_empty() && !runner.stop {
         return;
     }
     let aspect = windows.single().map(|w| (w.width() / w.height().max(1.0)) as f64).unwrap_or(16.0 / 9.0);
@@ -507,6 +500,23 @@ fn run_script(
         quit: false,
         ended: false,
     };
+    if runner.stop {
+        runner.stop = false;
+        // The port's choice: a script stopped by hand gives back the settings its first SaveVars
+        // kept, as its RestoreVars would have (the port saves settings as they change).
+        if let Some(saved) = runner.saved.first().cloned() {
+            for (k, v) in saved {
+                runner.set_var(&mut cx, &k, v);
+            }
+        }
+        runner.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
+        if runner.hid_hud {
+            cx.dialogs.hud.hidden = false;
+            runner.hid_hud = false;
+        }
+        info!("script {} stopped", runner.name);
+        return;
+    }
     runner.step(&mut cx, time.delta_secs_f64());
     if cx.ended {
         runner.frames.clear();
@@ -916,7 +926,7 @@ impl ScriptRunner {
         let max_wait = items.iter().filter_map(|i| i.trig.max_wait_time).fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.min(b))));
         let kinds: Vec<String> = items.iter().map(|i| i.trig.kind.clone()).collect();
         for it in &items {
-            if trigger_class(&it.trig.kind) == Class::Unsupported {
+            if trigger_class(&it.trig) == Class::Unsupported {
                 let kind = it.trig.kind.clone();
                 self.warn_once(
                     &format!("trig:{kind}"),
@@ -992,7 +1002,7 @@ impl ScriptRunner {
                         // Test runs: which waits the port could watch.
                         let kinds: Vec<String> = items
                             .iter()
-                            .map(|i| format!("{}{}", i.trig.kind, if trigger_class(&i.trig.kind) == Class::Unsupported { " (unsupported)" } else { "" }))
+                            .map(|i| format!("{}{}", i.trig.kind, if trigger_class(&i.trig) == Class::Unsupported { " (unsupported)" } else { "" }))
                             .collect();
                         info!("script wait line {}: {} -> {} after {el:.1} s", self.cur_line, kinds.join(" + "), if ok { "met" } else { "ended" });
                     }
@@ -1476,9 +1486,12 @@ enum Check {
 
 /// The trigger kinds the port can watch (exe strings `Control|Rotate` .. `Input|Custom`). The
 /// universe map and system chart controls, panel pins, clicks inside dialogs and input
-/// bindings have no counterpart and time out.
-fn trigger_class(kind: &str) -> Class {
-    match kind.to_ascii_lowercase().as_str() {
+/// bindings have no counterpart and time out; of the clicks, the navigation toolbar's date is
+/// the port's too.
+fn trigger_class(t: &Trigger) -> Class {
+    let date_click = t.dialog.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(DATE_WIDGET));
+    match t.kind.to_ascii_lowercase().as_str() {
+        "gui|leftclick" if date_click => Class::Supported,
         "loadingcomplete" | "screenshotcomplete" | "entermenu" | "enterplanetarium" | "entersingleplayer" | "time"
         | "object|select" | "object|approach" | "object|see" | "control|goto" | "control|gotocenter" | "control|move"
         | "control|rotate" | "control|orbit" | "control|changespeed" | "control|settimerate" | "control|pausetime"
@@ -1764,6 +1777,10 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
             it.seen_open |= open;
             if t.kind.eq_ignore_ascii_case("gui|open") { yes(open && it.seen_closed) } else { yes(!open && it.seen_open) }
         }
+        // A click on the navigation toolbar's date opens its field.
+        "gui|leftclick" if t.dialog.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(DATE_WIDGET)) => {
+            yes(cx.dialogs.hud.date_edit.is_some())
+        }
         // An object picked in the dialog: the selection changed while it is open.
         "gui|selectobject" => {
             let Some(open) = t.dialog.as_deref().and_then(|d| cx.dialogs.is_open(d)) else { return Check::Unsupported };
@@ -1796,7 +1813,8 @@ fn draw_captions(
             .map(|[x, y]| egui::pos2(screen.width() * x as f32, screen.height() * y as f32))
             .or(gui.message_pos_pix.map(|[x, y]| egui::pos2(x as f32, y as f32)));
         let max_width = match placed {
-            Some(p) => (screen.right() - p.x - 16.0).clamp(240.0, 680.0),
+            // Inside the screen, with the frame's margins.
+            Some(p) => (screen.right() - p.x - 48.0).clamp(240.0, 680.0),
             None => 680.0,
         };
         let area = egui::Area::new(egui::Id::new("script_caption"));

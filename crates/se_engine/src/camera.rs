@@ -1013,8 +1013,17 @@ fn run_commands(
     mut search: ResMut<crate::star_search::SearchState>,
     (mut stars, mut spin): (ResMut<crate::stars::StarSettings>, Local<f64>),
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
+    (wps, mut wait_wp): (Option<Res<crate::waypoints::Waypoints>>, Local<usize>),
 ) {
     let active_root = active.root;
+    // `waitwp N`: hold the queue until a script has defined N waypoints.
+    if *wait_wp > 0 {
+        if wps.as_ref().is_some_and(|w| w.list.len() >= *wait_wp) {
+            *wait_wp = 0;
+        } else {
+            return;
+        }
+    }
     // `spin DEG`: dev turn about the view's up axis, DEG degrees per second at a nominal 200 frames/s.
     if *spin != 0.0 {
         let r = cam.rot * DQuat::from_rotation_y((*spin / 200.0).to_radians());
@@ -1072,6 +1081,7 @@ fn run_commands(
             }
         }
         "wait" => q.wait_frames = arg.parse().unwrap_or(1),
+        "waitwp" => *wait_wp = arg.parse().unwrap_or(1),
         "rate" => sim.rate = arg.parse().unwrap_or(1.0),
         "pause" => sim.paused = true,
         "fly" => *fly = arg.parse().unwrap_or(0.0),
@@ -1108,6 +1118,14 @@ fn run_commands(
                     p.get(5).copied().unwrap_or(0.0),
                 );
                 sim.jd = dt.to_jd();
+            }
+        }
+        // vel X Y Z: a push of the free-flight velocity (km/s, camera axes), as a held movement key
+        // gives (script `Control|Move` triggers watch it).
+        "vel" => {
+            let v: Vec<f64> = arg.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if v.len() == 3 {
+                cam.velocity = cam.rot * DVec3::new(v[0], v[1], v[2]) * 1000.0;
             }
         }
         "move" => {

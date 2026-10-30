@@ -34,6 +34,8 @@ pub const HIGHLIGHT_COLOR: [f32; 4] = [1.0, 0.2, 0.2, 1.0];
 pub const HIGHLIGHT_FREQ: f64 = 4.0;
 /// main-def.cfg `WidgetSlideIn` / `WidgetSlideOut` (s).
 const SLIDE_S: f32 = 0.2;
+/// A hidden toolbar slides back in with the pointer this close to its screen edge (px; the port's).
+const EDGE_PX: f32 = 12.0;
 /// main-def.cfg `OverlayFadeOut` / `OverlayFadeIn` (s): the screen fades' default times.
 pub const FADE_OUT_S: f64 = 0.35;
 pub const FADE_IN_S: f64 = 0.2;
@@ -143,7 +145,9 @@ impl ScriptGui {
         TOOLBARS.iter().position(|(n, _)| n.eq_ignore_ascii_case(name))
     }
 
-    pub fn update(&mut self, dt: f64) {
+    /// Advances the highlight, the fade and the toolbar slides; `reveal` marks hidden toolbars the
+    /// pointer has come up to (SE's auto-hide panels slide back in under the mouse).
+    pub fn update(&mut self, dt: f64, reveal: [bool; 4]) {
         if let Some(h) = &mut self.highlight {
             h.elapsed += dt;
             if h.expired() {
@@ -158,7 +162,8 @@ impl ScriptGui {
         }
         for i in 0..4 {
             let step = dt as f32 / SLIDE_S;
-            self.slide[i] = if self.toolbars[i] { (self.slide[i] + step).min(1.0) } else { (self.slide[i] - step).max(0.0) };
+            let out = self.toolbars[i] && !reveal[i];
+            self.slide[i] = if out { (self.slide[i] + step).min(1.0) } else { (self.slide[i] - step).max(0.0) };
         }
     }
 
@@ -331,9 +336,22 @@ fn draw_gui(
     cams: Query<&Camera, With<MainCamera>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    gui.update(time.delta_secs_f64());
-    // Toolbars slide off their screen edges (main left, filters right, the two bottom ones down).
     let screen = ctx.content_rect();
+    // A hidden toolbar comes back while the pointer is at its screen edge or over it (SE's
+    // auto-hide panels, FUN_1402536d0's mode).
+    let pointer = ctx.pointer_latest_pos();
+    let mut reveal = [false; 4];
+    for (i, (_, id)) in TOOLBARS.iter().enumerate() {
+        let (Some(p), Some(r)) = (pointer, ctx.memory(|m| m.area_rect(egui::Id::new(*id)))) else { continue };
+        let edge = match i {
+            0 => p.x <= screen.left() + EDGE_PX && p.y >= r.top() && p.y <= r.bottom(),
+            1 => p.x >= screen.right() - EDGE_PX && p.y >= r.top() && p.y <= r.bottom(),
+            _ => p.y >= screen.bottom() - EDGE_PX && p.x >= r.left() && p.x <= r.right(),
+        };
+        reveal[i] = gui.toolbars[i] && (edge || (gui.slide[i] < 1.0 && r.expand(EDGE_PX).contains(p)));
+    }
+    gui.update(time.delta_secs_f64(), reveal);
+    // Toolbars slide off their screen edges (main left, filters right, the two bottom ones down).
     for (i, (_, id)) in TOOLBARS.iter().enumerate() {
         let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new(*id));
         let s = gui.slide[i];
@@ -419,7 +437,7 @@ mod tests {
     fn untimed_highlight_ends_with_the_wait() {
         let mut gui = ScriptGui::default();
         gui.highlight = ActiveHighlight::new(&Highlight { widget: "Message box".into(), ..Default::default() });
-        gui.update(10.0);
+        gui.update(10.0, [false; 4]);
         assert!(gui.highlight.is_some());
         gui.wait_ended();
         assert!(gui.highlight.is_none());
@@ -429,16 +447,20 @@ mod tests {
     fn toolbars_slide_and_fades_run() {
         let mut gui = ScriptGui::default();
         gui.toolbars[2] = true;
-        gui.update(0.1);
+        gui.update(0.1, [false; 4]);
         assert!((gui.slide[2] - 0.5).abs() < 1e-5 && gui.slide[0] == 0.0);
         gui.start_fade(true, Some(2.0), None);
-        gui.update(1.0);
+        gui.update(1.0, [false; 4]);
         assert!((gui.fade.as_ref().unwrap().alpha() - 0.5).abs() < 1e-5);
-        gui.update(1.0);
+        gui.update(1.0, [false; 4]);
         gui.start_fade(false, Some(0.5), None);
-        gui.update(0.6);
+        gui.update(0.6, [false; 4]);
         assert!(gui.fade.is_none());
         assert_eq!(se_widget_name("Main toolbar", "Find"), "Main toolbar|Find object");
         assert_eq!(ScriptGui::toolbar_index("navigation toolbar"), Some(2));
+        // The pointer at its edge brings a hidden toolbar back.
+        assert_eq!(gui.slide[2], 1.0);
+        gui.update(0.1, [false, false, true, false]);
+        assert!((gui.slide[2] - 0.5).abs() < 1e-5);
     }
 }
