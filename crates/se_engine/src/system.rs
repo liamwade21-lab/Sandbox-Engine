@@ -1341,8 +1341,10 @@ fn update_sprites(
         let dist = delta.length().max(1.0);
         let (render_pos, _) = space.map(delta);
         let pull = 1.0 - (2.0 * body.radius_m / dist).min(0.5) as f32;
+        let shift = crescent_shift(cam.rot, delta * pull as f64, light.star_pos.delta_m(cam.pos), body.radius_m, light.star_radius_m > 0.0);
         let rgb = s.rgb.map(|x| x * fade);
-        push_star(&mut p, &mut d, &mut c, &mut i, (render_pos * pull).to_array(), rgb, m_app);
+        let anchor = render_pos * pull + (shift * (render_pos.length() as f64 / dist)).as_vec3();
+        push_star(&mut p, &mut d, &mut c, &mut i, anchor.to_array(), rgb, m_app);
     }
     if p.is_empty() {
         push_star(&mut p, &mut d, &mut c, &mut i, [0.0; 3], [0.0; 3], 99.0);
@@ -1350,6 +1352,21 @@ fn update_sprites(
     if let Some(mut mesh) = meshes.get_mut(&batch.mesh) {
         *mesh = build_sprite_mesh(p, d, c, i);
     }
+}
+
+/// SE's OffsetToCrescent (`star_point.glsl` / `star_sprite.glsl` PLANET): a point-like body's
+/// sprite moves towards its sunlit side by phase x radius in the view plane, the phase being
+/// 1 - (the angle between the body and its star seen from the camera) / pi. `body` and `star` are
+/// relative to the camera (m), `rot` the camera's orientation; the result is a world offset (m).
+fn crescent_shift(rot: DQuat, body: DVec3, star: DVec3, radius_m: f64, lit: bool) -> DVec3 {
+    let inv = rot.inverse();
+    let (v, s) = (inv * body, inv * star);
+    if !lit || s.length_squared() == 0.0 || v.length_squared() == 0.0 {
+        return DVec3::ZERO;
+    }
+    let phase = 1.0 - v.angle_between(s) / std::f64::consts::PI;
+    let Some(dir) = bevy::math::DVec2::new(s.x - v.x, s.y - v.y).try_normalize() else { return DVec3::ZERO };
+    rot * (dir * phase * radius_m).extend(0.0)
 }
 
 /// SE's star sprite modulation (`star_sprite.glsl` MODULATE): the glare is drawn over the bodies and
@@ -1657,6 +1674,23 @@ impl Material for StarSurfaceMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crescent_shift_follows_the_phase() {
+        let r = 1000.0;
+        // Camera looking down -Z at a body 1e9 m ahead.
+        let body = DVec3::new(0.0, 0.0, -1e9);
+        // Star behind the camera: full phase, no shift.
+        assert!(crescent_shift(DQuat::IDENTITY, body, DVec3::new(0.0, 0.0, 1e12), r, true).length() < 1e-6);
+        // Star beside the body on screen (90 degrees away): half a radius towards it.
+        let s = crescent_shift(DQuat::IDENTITY, body, DVec3::new(1e12, 0.0, 0.0), r, true);
+        assert!((s - DVec3::new(0.5 * r, 0.0, 0.0)).length() < 1e-3, "{s:?}");
+        // The shift turns with the camera, and is none without a star.
+        let q = DQuat::from_rotation_y(0.3);
+        let t = crescent_shift(q, q * body, q * DVec3::new(1e12, 0.0, 0.0), r, true);
+        assert!((t - q * s).length() < 1e-3, "{t:?}");
+        assert_eq!(crescent_shift(DQuat::IDENTITY, body, DVec3::new(1e12, 0.0, 0.0), r, false), DVec3::ZERO);
+    }
 
     #[test]
     fn planet_light_fades_by_magnitude() {
