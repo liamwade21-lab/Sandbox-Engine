@@ -330,6 +330,9 @@ pub struct Catalog {
     resolved: (usize, usize),
 }
 
+/// The source of a record [`Catalog::unload_generated`] emptied.
+pub const UNLOADED_SOURCE: &str = "unloaded";
+
 fn key(name: &str) -> String {
     name.trim().to_lowercase()
 }
@@ -1207,6 +1210,62 @@ impl Catalog {
         out
     }
 
+    /// Drop the generated stars and bodies (source [`crate::climate::PROCEDURAL_SOURCE`]) of the
+    /// system under `root`, as SE frees a planetary system beyond `CacheSizeSolarSystems`: their
+    /// names and child links go, and their records become hidden, positionless placeholders, so
+    /// every other object keeps its index. Generating the system again adds it anew. Returns how
+    /// many objects went.
+    pub fn unload_generated(&mut self, root: &str) -> usize {
+        let src = crate::climate::PROCEDURAL_SOURCE;
+        let gone: std::collections::HashSet<ObjectRef> = self
+            .system_members(root)
+            .into_iter()
+            .filter(|m| match *m {
+                ObjectRef::Star(i) => self.stars[i as usize].source == src,
+                ObjectRef::Body(i) => self.bodies[i as usize].source == src,
+                _ => false,
+            })
+            .collect();
+        if gone.is_empty() {
+            return 0;
+        }
+        self.names.retain(|_, r| !gone.contains(r));
+        self.exact.retain(|_, r| !gone.contains(r));
+        for v in self.children.values_mut() {
+            v.retain(|r| !gone.contains(r));
+        }
+        self.children.retain(|_, v| !v.is_empty());
+        let placeholder = sc::parse("Hidden true");
+        for r in &gone {
+            match *r {
+                ObjectRef::Star(i) => {
+                    let s = &mut self.stars[i as usize];
+                    s.names = vec![String::new()];
+                    s.parent = None;
+                    s.has_position = false;
+                    s.orbit = None;
+                    s.radius_km = 0.0;
+                    s.mass_kg = 0.0;
+                    s.source = UNLOADED_SOURCE.to_string();
+                    s.block = placeholder.clone();
+                }
+                ObjectRef::Body(i) => {
+                    let b = &mut self.bodies[i as usize];
+                    b.names = vec![String::new()];
+                    b.parent = String::new();
+                    b.class = None;
+                    b.radius_km = 0.0;
+                    b.mass_kg = 0.0;
+                    b.orbit = None;
+                    b.source = UNLOADED_SOURCE.to_string();
+                    b.block = placeholder.clone();
+                }
+                _ => {}
+            }
+        }
+        gone.len()
+    }
+
     /// The top-level system root (star/barycenter with no parent) for an object.
     pub fn system_root(&self, r: ObjectRef) -> Option<u32> {
         let mut cur = r;
@@ -1287,6 +1346,31 @@ Planet "Test b" { ParentBody "Alpha Centauri B" Radius 6000 Mass 1
 Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 22655 AppMagn 2.68
   Quat ( 0.5012805 -0.0873325 0.7087535 0.4886301 ) }
 "#;
+
+    #[test]
+    fn unloads_a_generated_system() {
+        let mut c = Catalog::new();
+        c.load_sc(SYSTEM, "test.sc");
+        c.resolve();
+        let gen_src = crate::climate::PROCEDURAL_SOURCE;
+        c.load_sc("Planet \"Gen c\" { ParentBody \"Alpha Centauri B\" Radius 3000 Mass 0.5 Orbit { SemiMajorAxis 0.1 } }\nMoon \"Gen c I\" { ParentBody \"Gen c\" Radius 500 Orbit { SemiMajorAxis 0.001 } }\n", gen_src);
+        c.finalize();
+        let (n_stars, n_bodies) = (c.stars.len(), c.bodies.len());
+        assert_eq!(c.system_members("Alpha Centauri").len(), 5);
+        // Only the generated objects go; indices stay, so the catalog's own planet is still found.
+        assert_eq!(c.unload_generated("Alpha Centauri"), 2);
+        assert_eq!((c.stars.len(), c.bodies.len()), (n_stars, n_bodies));
+        assert_eq!(c.find("Gen c"), None);
+        assert_eq!(c.find("Gen c I"), None);
+        assert!(matches!(c.find("Test b"), Some(ObjectRef::Body(_))));
+        assert_eq!(c.system_members("Alpha Centauri").len(), 3);
+        assert_eq!(c.unload_generated("Alpha Centauri"), 0);
+        // Generating it again adds it anew.
+        c.load_sc("Planet \"Gen c\" { ParentBody \"Alpha Centauri B\" Radius 3000 Mass 0.5 Orbit { SemiMajorAxis 0.1 } }\n", gen_src);
+        c.finalize();
+        assert!(c.find("Gen c").is_some());
+        assert_eq!(c.system_members("Alpha Centauri").len(), 4);
+    }
 
     #[test]
     fn hierarchy_and_lookup() {

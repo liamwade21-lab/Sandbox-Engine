@@ -743,8 +743,13 @@ impl ScriptRunner {
                 cx.cam.turn_vel = DVec3::ZERO;
                 self.turn = None;
             }
-            Op::Speed(v) => cx.cam.speed = clamp_speed(*v),
-            Op::MoveMode(m) => self.warn_once("movemode", format!("MoveMode {m} has no counterpart in the port, skipping (line {})", cmd.line)),
+            // In Spacecraft / Aircraft mode a tenth of it as the acceleration (FUN_140561a40).
+            Op::Speed(v) => cx.cam.assign_velocity(*v),
+            // SE's script MoveMode (FUN_140561bb0 -> FUN_1405c4fb0): 1-3 the camera's movement modes.
+            Op::MoveMode(m) => match crate::camera::MoveMode::from_number(*m as u8) {
+                Some(mode) => cx.cam.set_move_mode(mode),
+                None => self.warn_once("movemode", format!("MoveMode {m} (piloting a spacecraft) is not supported in scripts, skipping (line {})", cmd.line)),
+            },
             Op::UserControl { kind, mode, limits } => self.user_control(cx, *kind, *mode, limits),
             Op::GotoUrl(u) => self.warn_once("gotourl", format!("GotoURL \"{u}\": se:// locations are not supported, skipping (line {})", cmd.line)),
             Op::HighlightWidget(h) => cx.dialogs.gui.highlight = ActiveHighlight::new(h),
@@ -1150,7 +1155,7 @@ impl ScriptRunner {
         }
         if let Some(m) = &self.move_limit {
             if let Some(kms) = m.limits.speed_kms {
-                cx.cam.speed = cx.cam.speed.min(clamp_speed(kms * 1000.0));
+                cx.cam.speed = cx.cam.speed.min(clamp_speed(cx.cam.move_mode.assigned(kms * 1000.0)));
             }
             if let Some(c) = m.center {
                 let eph = Ephemeris::new(cx.cat());
