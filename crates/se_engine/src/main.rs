@@ -44,7 +44,10 @@ mod messages;
 mod script_gui;
 mod script_vars;
 mod scripting;
+mod screenshot;
+mod session;
 mod settings;
+mod settings_window;
 mod ship;
 mod ship_assets;
 mod skin;
@@ -149,6 +152,8 @@ fn main() {
         ship::ShipPlugin,
     ))
     // Sky overlays: coordinate grids and constellations.
-    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin));
+    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin))
+    // Settings window, screenshots and the saved session.
+    .add_plugins((settings_window::SettingsWindowPlugin, screenshot::ScreenshotPlugin, session::SessionPlugin));
     app.run();
 }

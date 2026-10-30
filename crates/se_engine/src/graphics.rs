@@ -1,26 +1,31 @@
-//! Graphics quality presets (SE's `config/preset-potato|low|medium|high|ultra.cfg`, read at runtime) and
-//! the Graphics window, which also holds the lens flare settings.
+//! Graphics quality presets: SE's `config/preset-potato|low|medium|high|ultra.cfg`, read whole at runtime
+//! (FUN_140288db0 loads the chosen file over the settings), and the first-run choice by video memory.
 //!
 //! Preset keys the port maps: `MSAALevel`, `FXAA`, `AnisotropyLevel` (planet surface textures), `LandLOD`
-//! and `LandTargetRes` (terrain subdivision), `MaxTilesPerFrame` (terrain tiles started per frame) and
-//! `VolumResolution` (ray-march steps of the nebula volumes). The others drive SE features the port draws
-//! differently (render scale, texture compression, impostors, environment maps) and are kept only for
-//! display.
+//! and `LandTargetRes` (terrain subdivision), `MaxTilesPerFrame` (terrain tiles started per frame),
+//! `VolumResolution` (ray-march steps of the nebula volumes), `StarPointMethod` (star points) and
+//! `WarpPrecision` (black hole ray-march step). The others (VideoMemorySize, TextureCompress,
+//! PlanetPointMethod, PlanetShineMode, AuroraQuality, ShipEngineQuality, BlackHoleQuality,
+//! ShipWarpQuality, the TextureRendering resolutions and environment maps, the loader time limits) drive
+//! SE features the port draws differently; they are kept as read ([`Quality::keys`]), saved with the
+//! settings and shown in the Graphics settings.
 
 use bevy::anti_alias::fxaa::Fxaa;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy_egui::egui;
 
 use crate::camera::MainCamera;
 use crate::config::EngineConfig;
-use crate::lensflare::{FlarePresets, LensFlareSettings};
 use crate::surface_tex::SurfaceTextures;
 
 pub const PRESET_NAMES: [&str; 5] = ["Potato", "Low", "Medium", "High", "Ultra"];
 
-/// The mapped values of one preset.
+/// Keys read into [`Quality`]'s own fields (the rest go to [`Quality::keys`]).
+const MAPPED: [&str; 9] =
+    ["MSAALevel", "FXAA", "AnisotropyLevel", "LandLOD", "LandTargetRes", "MaxTilesPerFrame", "VolumResolution", "StarPointMethod", "WarpPrecision"];
+
+/// The values of one preset.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Quality {
     pub msaa: u32,
@@ -30,12 +35,40 @@ pub struct Quality {
     pub land_target_res: f32,
     pub max_tiles_per_frame: u32,
     pub volume_resolution: f32,
+    /// `StarPointMethod` (1 sprites, 2 motion blur, 3 motion and rotation blur).
+    pub star_points: u32,
+    /// `WarpPrecision` (black holes' ray-march step).
+    pub warp_precision: f32,
+    /// The preset's other keys and values, as written (`"true"`, `"0.85"`, ...), in file order.
+    pub keys: Vec<(String, String)>,
 }
 
 impl Default for Quality {
     /// `preset-high.cfg`.
     fn default() -> Self {
-        Self { msaa: 0, fxaa: true, anisotropy: 16, land_lod: 0.0, land_target_res: 1080.0, max_tiles_per_frame: 4, volume_resolution: 0.5 }
+        Self {
+            msaa: 0,
+            fxaa: true,
+            anisotropy: 16,
+            land_lod: 0.0,
+            land_target_res: 1080.0,
+            max_tiles_per_frame: 4,
+            volume_resolution: 0.5,
+            star_points: 2,
+            warp_precision: 0.8,
+            keys: Vec::new(),
+        }
+    }
+}
+
+/// A script value as a config file writes it.
+fn value_text(v: &se_core::sc::Value) -> Option<String> {
+    use se_core::sc::Value;
+    match v {
+        Value::Num(x) => Some(x.to_string()),
+        Value::Ident(s) => Some(s.clone()),
+        Value::Str(s) => Some(format!("\"{s}\"")),
+        Value::Tuple(_) => None,
     }
 }
 
@@ -66,7 +99,39 @@ impl Quality {
         if let Some(v) = num("VolumResolution") {
             q.volume_resolution = v as f32;
         }
+        if let Some(v) = num("StarPointMethod") {
+            q.star_points = v.clamp(1.0, 3.0) as u32;
+        }
+        if let Some(v) = num("WarpPrecision") {
+            q.warp_precision = v as f32;
+        }
+        // Every other leaf key, in file order (blocks are SE's groups: Memory, RenderingQuality, ...).
+        fn walk(b: &se_core::sc::Block, out: &mut Vec<(String, String)>) {
+            for item in &b.items {
+                if let Some(inner) = &item.block {
+                    walk(inner, out);
+                } else if let (false, Some(v)) = (MAPPED.contains(&item.key.as_str()), item.args.first().and_then(value_text)) {
+                    match out.iter_mut().find(|(k, _)| *k == item.key) {
+                        Some(slot) => slot.1 = v,
+                        None => out.push((item.key.clone(), v)),
+                    }
+                }
+            }
+        }
+        walk(&doc, &mut q.keys);
         q
+    }
+
+    /// The preset as config lines (`\tKey value`), the mapped keys first.
+    pub fn cfg_lines(&self) -> String {
+        let mut out = format!(
+            "\tMSAALevel         {}\n\tFXAA              {}\n\tAnisotropyLevel   {}\n\tLandLOD           {}\n\tLandTargetRes     {}\n\tMaxTilesPerFrame  {}\n\tVolumResolution   {}\n\tStarPointMethod   {}\n\tWarpPrecision     {}\n",
+            self.msaa, self.fxaa, self.anisotropy, self.land_lod, self.land_target_res, self.max_tiles_per_frame, self.volume_resolution, self.star_points, self.warp_precision
+        );
+        for (k, v) in &self.keys {
+            out += &format!("\t{k} {v}\n");
+        }
+        out
     }
 
     /// Terrain split distance factor: SE's `LandLOD` is a power of two of the detail. SE's split
@@ -79,6 +144,39 @@ impl Quality {
     }
 }
 
+/// FUN_14030b0e0's "optimal config" on a hardware or version change: the preset for the video memory
+/// (MB): up to 2 GB Potato, 3 GB Low, 4 GB Medium, else High.
+pub fn optimal_preset(vram_mb: u64) -> &'static str {
+    match vram_mb {
+        ..=2048 => "Potato",
+        ..=3072 => "Low",
+        ..=4096 => "Medium",
+        _ => "High",
+    }
+}
+
+/// The largest adapter's video memory in MB, from the display adapters' registry entries (Windows;
+/// the port has no other way to ask without a new dependency).
+pub fn video_memory_mb() -> Option<u64> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let out = std::process::Command::new("reg")
+        .args(["query", r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}", "/s", "/v", "HardwareInformation.qwMemorySize"])
+        .output()
+        .ok()?;
+    parse_vram(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The largest `REG_QWORD 0x...` in `reg query` output, in MB.
+fn parse_vram(text: &str) -> Option<u64> {
+    text.lines()
+        .filter(|l| l.contains("qwMemorySize"))
+        .filter_map(|l| l.split_whitespace().last().and_then(|h| u64::from_str_radix(h.trim_start_matches("0x"), 16).ok()))
+        .max()
+        .map(|b| b / (1024 * 1024))
+}
+
 /// The active quality and the presets of the install.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct GraphicsSettings {
@@ -86,11 +184,18 @@ pub struct GraphicsSettings {
     pub preset: String,
     pub quality: Quality,
     pub presets: Vec<(String, Quality)>,
+    /// Set when a preset is picked: its star point method then replaces the user's (SE loads the
+    /// whole file over the settings).
+    pub picked: bool,
+    /// Set when the user's saved Graphics block was read. Preset keys that override main-def.cfg
+    /// (`WarpPrecision`) apply only after a pick or this load, as SE's main-user.cfg does; scripted
+    /// runs skip the user's settings and keep main-def's values.
+    pub loaded: bool,
 }
 
 impl Default for GraphicsSettings {
     fn default() -> Self {
-        Self { preset: "High".into(), quality: Quality::default(), presets: Vec::new() }
+        Self { preset: "High".into(), quality: Quality::default(), presets: Vec::new(), picked: false, loaded: false }
     }
 }
 
@@ -100,6 +205,12 @@ impl GraphicsSettings {
             self.preset = n.clone();
             self.quality = q.clone();
         }
+    }
+
+    /// A preset chosen by the user (or by the first-run choice): applied with all its keys.
+    pub fn pick_preset(&mut self, name: &str) {
+        self.apply_preset(name);
+        self.picked = true;
     }
 }
 
@@ -116,6 +227,7 @@ impl Default for TerrainQuality {
     }
 }
 
+/// The graphics settings opened from the toolbar or Ctrl+F4 (the settings window's Graphics tab).
 #[derive(Resource, Default)]
 pub struct GraphicsUi {
     pub open: bool,
@@ -129,9 +241,6 @@ impl Plugin for GraphicsPlugin {
             .init_resource::<TerrainQuality>()
             .init_resource::<GraphicsUi>()
             .add_systems(Startup, load_presets)
-            // Drawn in egui's pass with the other windows (in `Update` it ran outside the pass, and
-            // panicked when open on the first frame).
-            .add_systems(bevy_egui::EguiPrimaryContextPass, graphics_window.in_set(crate::skin::UiSet::Draw))
             .add_systems(Update, apply_quality);
     }
 }
@@ -153,20 +262,31 @@ fn load_presets(cfg: Res<EngineConfig>, mut gs: ResMut<GraphicsSettings>) {
 
 fn apply_quality(
     mut commands: Commands,
-    gs: Res<GraphicsSettings>,
+    mut gs: ResMut<GraphicsSettings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut terrain: ResMut<TerrainQuality>,
     mut camera: Query<(Entity, &mut Msaa, Has<Fxaa>), With<MainCamera>>,
     surface: Option<Res<SurfaceTextures>>,
     mut images: ResMut<Assets<Image>>,
+    (mut stars, holes): (ResMut<crate::stars::StarSettings>, Option<ResMut<crate::blackholes::BlackHoleSettings>>),
     mut last_aniso: Local<Option<u16>>,
 ) {
-    let q = &gs.quality;
+    let q = gs.quality.clone();
     let h = windows.iter().next().map(|w| w.resolution.physical_height() as f32).unwrap_or(1080.0);
     terrain.split_scale = q.terrain_split_scale(h);
     terrain.tiles_per_frame = (q.max_tiles_per_frame as usize * 2).max(1);
     if !gs.is_changed() && last_aniso.is_some() == surface.is_some() {
         return;
+    }
+    if gs.picked || gs.loaded {
+        if gs.picked {
+            stars.point_style = crate::stars::PointStyle::from_method(q.star_points);
+        }
+        if let Some(mut b) = holes {
+            b.warp_precision = q.warp_precision as f64;
+        }
+        gs.picked = false;
+        gs.loaded = false;
     }
     for (e, mut msaa, has_fxaa) in &mut camera {
         let want = match q.msaa {
@@ -202,103 +322,6 @@ fn apply_quality(
     }
 }
 
-fn graphics_window(
-    mut contexts: bevy_egui::EguiContexts,
-    mut ui_state: ResMut<GraphicsUi>,
-    mut gs: ResMut<GraphicsSettings>,
-    mut lens: ResMut<LensFlareSettings>,
-    flare_presets: Option<Res<FlarePresets>>,
-    mut bloom: ResMut<crate::bloom::BloomSettings>,
-    mut display: ResMut<crate::display::DisplaySettings>,
-) {
-    if !ui_state.open {
-        return;
-    }
-    let Ok(ctx) = contexts.ctx_mut() else { return };
-    let mut open = true;
-    let mut pick: Option<String> = None;
-    let mut q = gs.quality.clone();
-    let mut l = lens.clone();
-    let mut b = bloom.clone();
-    egui::Window::new(crate::skin::title(ctx, "Graphics")).open(&mut open).default_width(320.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Quality preset");
-            egui::ComboBox::from_id_salt("gfx_preset").selected_text(gs.preset.as_str()).show_ui(ui, |ui| {
-                for (n, _) in &gs.presets {
-                    if ui.selectable_label(*n == gs.preset, n.as_str()).clicked() {
-                        pick = Some(n.clone());
-                    }
-                }
-            });
-        });
-        // SE's Display settings: window mode and vertical synchronization.
-        let mut d = display.clone();
-        egui::ComboBox::from_label("Window mode").selected_text(["Windowed", "Fullscreen window", "Fullscreen"][d.fullscreen as usize]).show_ui(ui, |ui| {
-            for (v, name) in ["Windowed", "Fullscreen window", "Fullscreen"].into_iter().enumerate() {
-                ui.selectable_value(&mut d.fullscreen, v as u8, name);
-            }
-        });
-        egui::ComboBox::from_label("Vertical synchronization").selected_text(["Disabled", "Enabled", "Auto"][d.vsync as usize]).show_ui(ui, |ui| {
-            for (v, name) in ["Disabled", "Enabled", "Auto"].into_iter().enumerate() {
-                ui.selectable_value(&mut d.vsync, v as u8, name);
-            }
-        });
-        if d != *display {
-            *display = d;
-        }
-        egui::ComboBox::from_label("MSAA").selected_text(format!("{}x", q.msaa.max(1))).show_ui(ui, |ui| {
-            for v in [0u32, 2, 4, 8] {
-                ui.selectable_value(&mut q.msaa, v, format!("{}x", v.max(1)));
-            }
-        });
-        ui.checkbox(&mut q.fxaa, "FXAA");
-        ui.add(egui::Slider::new(&mut q.anisotropy, 0..=16).text("anisotropic filtering"));
-        ui.add(egui::Slider::new(&mut q.land_lod, -3.0..=1.0).step_by(0.5).text("landscape LOD"));
-        ui.add(egui::Slider::new(&mut q.max_tiles_per_frame, 1..=16).text("terrain tiles per frame"));
-        ui.add(egui::Slider::new(&mut q.volume_resolution, 0.1..=1.0).text("volumetric quality"));
-        ui.separator();
-        ui.label("Bloom");
-        ui.checkbox(&mut b.enabled, "bloom");
-        ui.add(egui::Slider::new(&mut b.bright, 0.0..=2.0).text("bloom brightness"));
-        ui.add(egui::Slider::new(&mut b.threshold, 0.0..=10.0).text("bloom threshold"));
-        ui.separator();
-        ui.label("Lens flares");
-        ui.checkbox(&mut l.flares, "lens flares");
-        ui.checkbox(&mut l.ghosts, "lens ghosts");
-        ui.checkbox(&mut l.pseudo, "pseudo lens flares");
-        ui.add(egui::Slider::new(&mut l.scale, 0.1..=3.0).text("flare size"));
-        ui.add(egui::Slider::new(&mut l.bright, 0.0..=3.0).text("flare brightness"));
-        ui.add(egui::Slider::new(&mut l.pseudo_bright, 0.0..=3.0).text("pseudo flare brightness"));
-        if let Some(p) = &flare_presets {
-            let mut combo = |label: &str, value: &mut String, names: Vec<&String>| {
-                egui::ComboBox::from_label(label).selected_text(value.as_str()).show_ui(ui, |ui| {
-                    for n in names {
-                        if ui.selectable_label(n == value, n.as_str()).clicked() {
-                            *value = n.clone();
-                        }
-                    }
-                });
-            };
-            combo("flare style", &mut l.flare_preset, p.flares.keys().collect());
-            combo("ghost style", &mut l.ghost_preset, p.ghosts.keys().collect());
-            combo("pseudo flare style", &mut l.pseudo_preset, p.pseudo.keys().collect());
-        }
-    });
-    ui_state.open = open;
-    if let Some(n) = pick {
-        gs.apply_preset(&n);
-    } else if q != gs.quality {
-        gs.quality = q;
-        gs.preset = "Custom".into();
-    }
-    if l != *lens {
-        *lens = l;
-    }
-    if b != *bloom {
-        *bloom = b;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +335,25 @@ mod tests {
         assert!((q.terrain_split_scale(960.0) - 0.25).abs() < 1e-12);
         assert!((Quality::default().terrain_split_scale(720.0) - 1.0).abs() < 1e-12);
         assert!((Quality::default().terrain_split_scale(2160.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn keeps_every_preset_key_and_round_trips() {
+        let text = "Memory\n{\n\tVideoMemorySize 4096\n}\nRenderingQuality\n{\n\tFXAA true\n\tTextureCompress false\n}\nPointRendering\n{\n\tStarPointMethod 3\n}\nWarpRendering\n{\n\tWarpPrecision 0.6\n}\n";
+        let q = Quality::from_cfg(text, &Quality::default());
+        assert_eq!((q.star_points, q.warp_precision), (3, 0.6));
+        assert_eq!(q.keys, vec![("VideoMemorySize".to_string(), "4096".to_string()), ("TextureCompress".to_string(), "false".to_string())]);
+        let again = Quality::from_cfg(&format!("Graphics\n{{\n{}}}\n", q.cfg_lines()), &Quality::default());
+        assert_eq!(again, q);
+    }
+
+    #[test]
+    fn preset_by_video_memory() {
+        assert_eq!(optimal_preset(2048), "Potato");
+        assert_eq!(optimal_preset(3000), "Low");
+        assert_eq!(optimal_preset(4096), "Medium");
+        assert_eq!(optimal_preset(16304), "High");
+        let reg = "    HardwareInformation.qwMemorySize    REG_QWORD    0x20000000\r\n    HardwareInformation.qwMemorySize    REG_QWORD    0x3faf00000\r\n";
+        assert_eq!(parse_vram(reg), Some(16303));
     }
 }

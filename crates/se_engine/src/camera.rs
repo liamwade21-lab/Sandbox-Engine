@@ -22,7 +22,7 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseSc
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
-use bevy::render::view::{ColorGrading, ColorGradingGlobal};
+use bevy::render::view::ColorGrading;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
 use se_core::catalog::ObjectRef;
@@ -253,16 +253,9 @@ impl Plugin for CameraPlugin {
 fn spawn_camera(mut commands: Commands) {
     // SE's bloom (bloom.rs), set from `BloomSettings` (env SE_NO_BLOOM turns it off).
     let bloom = crate::bloom::SeBloom::default();
-    // SE's default image (main-def.cfg): HDR photo mode with the "AgX" tone shader, which scales
-    // by 0.75 before the AgX curve (hdrt_AgX_tone.glh; Bevy's AgX is the same transform as a LUT),
-    // then the final colour correction (color_correction.rs). `SE_TONEMAP=aces` restores the
-    // port's earlier ACES look.
-    let (tonemapping, grading) = if std::env::var("SE_TONEMAP").is_ok_and(|v| v.eq_ignore_ascii_case("aces")) {
-        (Tonemapping::AcesFitted, ColorGrading::default())
-    } else {
-        let global = ColorGradingGlobal { exposure: 0.75f32.log2(), ..default() };
-        (Tonemapping::AgX, ColorGrading { global, ..default() })
-    };
+    // SE's tone shaders (main-def.cfg `ToneMappingShader`) and final colour correction run in
+    // color_correction.rs; Bevy's pass only applies the exposure (exposure.rs), linearly.
+    let (tonemapping, grading) = (Tonemapping::Linear, ColorGrading::default());
     commands.spawn((
         Camera3d::default(),
         Camera {
