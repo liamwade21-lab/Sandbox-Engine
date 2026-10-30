@@ -15,6 +15,7 @@ use crate::lensflare::LensFlareSettings;
 use crate::music::MusicState;
 use crate::overlay::{KindSet, MarkerKind, OverlaySettings, SkySwitches};
 use crate::stars::StarSettings;
+use crate::switches::RenderSwitches;
 
 pub struct SettingsPlugin;
 
@@ -64,6 +65,8 @@ struct Snapshot {
     kinds: [KindSet; 3],
     /// SE's constellation and grid switches ([`SkySwitches::KEYS`]).
     sky: [bool; 12],
+    /// SE's switches for what is drawn around planets ([`RenderSwitches::KEYS`]).
+    render: [bool; 9],
     star_label_mag: f32,
     show_fps: bool,
     info_full: bool,
@@ -109,6 +112,7 @@ impl Snapshot {
             markers: o.markers,
             kinds: [o.orbit_kinds, o.label_kinds, o.marker_kinds],
             sky: o.sky.saved(),
+            render: RenderSwitches::default().saved(),
             star_label_mag: o.star_label_mag,
             show_fps: o.show_fps,
             info_full: o.info_full,
@@ -160,6 +164,9 @@ impl Snapshot {
         for (key, on) in SkySwitches::KEYS.iter().zip(self.sky) {
             out += &format!("\t{key} {on}\n");
         }
+        for (key, on) in RenderSwitches::KEYS.iter().zip(self.render) {
+            out += &format!("\t{key} {on}\n");
+        }
         out
     }
 
@@ -208,8 +215,9 @@ struct Saved {
 }
 
 impl Saved {
-    fn capture(&self, s: &StarSettings, o: &OverlaySettings, cam: &FlyCamera, audio: (Option<&MusicState>, f32), ui: (&str, &str), g: (&GraphicsSettings, &LensFlareSettings, &BloomSettings, &crate::display::DisplaySettings)) -> Snapshot {
+    fn capture(&self, s: &StarSettings, o: &OverlaySettings, cam: &FlyCamera, audio: (Option<&MusicState>, f32), ui: (&str, &str), g: (&GraphicsSettings, &LensFlareSettings, &BloomSettings, &crate::display::DisplaySettings), r: &RenderSwitches) -> Snapshot {
         let mut snap = Snapshot::capture(s, o, cam, audio, ui, g);
+        snap.render = r.saved();
         if let Some(m) = self.keep_music {
             snap.music = m;
         }
@@ -231,6 +239,7 @@ fn load_settings(
     data: Res<SeData>,
     (mut gfx, mut lens, mut bloom, mut skin, mut sound): (ResMut<GraphicsSettings>, ResMut<LensFlareSettings>, ResMut<BloomSettings>, ResMut<crate::skin::Skin>, ResMut<crate::sound::SoundSettings>),
     display: Res<crate::display::DisplaySettings>,
+    mut switches: ResMut<RenderSwitches>,
 ) {
     if scripted(&cfg) {
         return;
@@ -294,6 +303,11 @@ fn load_settings(
                     o.sky.set_var(key, on);
                 }
             }
+            for key in RenderSwitches::KEYS {
+                if let Some(on) = b.bool(key) {
+                    switches.set_var(key, on);
+                }
+            }
             f("StarNameMagn", &mut overlay.star_label_mag);
             bo("FPS", &mut overlay.show_fps);
             if let Some(m) = b.f64("TextMode") {
@@ -332,7 +346,7 @@ fn load_settings(
         keep_music: no_music.then_some(saved_music),
         keep_lang: lang_forced.then(|| saved_lang.clone().unwrap_or_else(|| se_core::locale::DEFAULT_LANG.to_string())),
     };
-    saved.last = saved.capture(&stars, &overlay, &cam, (music.as_deref(), sound.volume), (i18n.lang(), &skin.name), (&gfx, &lens, &bloom, &display));
+    saved.last = saved.capture(&stars, &overlay, &cam, (music.as_deref(), sound.volume), (i18n.lang(), &skin.name), (&gfx, &lens, &bloom, &display), &switches);
     commands.insert_resource(saved);
 }
 
@@ -346,6 +360,7 @@ fn save_when_changed(
     i18n: Res<I18n>,
     (gfx, lens, bloom, skin, sound): (Res<GraphicsSettings>, Res<LensFlareSettings>, Res<BloomSettings>, Res<crate::skin::Skin>, Res<crate::sound::SoundSettings>),
     display: Res<crate::display::DisplaySettings>,
+    switches: Res<RenderSwitches>,
 ) {
     let Some(mut saved) = saved else { return };
     saved.timer += time.delta_secs();
@@ -353,7 +368,7 @@ fn save_when_changed(
         return;
     }
     saved.timer = 0.0;
-    let now = saved.capture(&stars, &overlay, &cam, (music.as_deref(), sound.volume), (i18n.lang(), &skin.name), (&gfx, &lens, &bloom, &display));
+    let now = saved.capture(&stars, &overlay, &cam, (music.as_deref(), sound.volume), (i18n.lang(), &skin.name), (&gfx, &lens, &bloom, &display), &switches);
     if now != saved.last {
         let path = settings_path();
         if let Some(dir) = path.parent() {

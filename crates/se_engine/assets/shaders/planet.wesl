@@ -1447,30 +1447,36 @@ fn tile_uv(rect: vec4<f32>, uv: vec2<f32>) -> vec2<f32> {
     return t * (252.0 / 256.0) + vec2<f32>(2.0 / 256.0);
 }
 
-// Shadow of the planet's own rings: where the ray towards the star crosses the
-// ring plane, the ring's opacity there. `p` is in planet radii from the centre.
+// Shadow of the planet's own rings, SE's RingsShadow (rings_common.glh, planet.glsl:1059-1073): where
+// the ray towards the star crosses the ring plane (the point's own spot when it does not, which lies
+// inside the rings), the light the ring lets through on that slant path, `(1 - density) ^ (1 / cosPhi)`
+// with the density `RingsParams.z x alpha` (ring.z: the ring's `PlanetShadow`), anti-aliased at the ring's
+// edges by the derivatives and fading out at equinox. `p` is in planet radii from the centre.
 fn ring_shadow(p: vec3<f32>, l: vec3<f32>) -> f32 {
     if planet.ring.w < 0.25 {
         return 1.0;
     }
     let nrm = normalize(planet.ring_normal.xyz);
-    let denom = dot(l, nrm);
-    if abs(denom) < 1e-5 {
+    let ly = dot(l, nrm);
+    let py = dot(p, nrm);
+    let along = min(py / select(ly, 1e-12, abs(ly) < 1e-12), 0.0);
+    let proj = p - l * along;
+    let tex_u = (length(proj - nrm * dot(proj, nrm)) - planet.ring.x) / (planet.ring.y - planet.ring.x);
+    let fw = fwidth(tex_u * 2.0);
+    // Off the rings the smoothing is 0.
+    if tex_u <= 0.0 || tex_u >= 1.0 {
         return 1.0;
     }
-    let t = -dot(p, nrm) / denom;
-    if t <= 0.0 {
-        return 1.0;
-    }
-    let u = (length(p + l * t) - planet.ring.x) / (planet.ring.y - planet.ring.x);
-    if u < 0.0 || u > 1.0 {
-        return 1.0;
-    }
+    let u = tex_u;
+    let smoothing = clamp(min(u, 1.0 - u) / max(fw, 1e-12), 0.0, 1.0);
     var a = 0.6;
     if planet.ring.w > 0.75 {
         a = textureSampleLevel(ring_tex, ring_smp, vec2<f32>(u, 0.75), 0.0).a;
     }
-    return 1.0 - clamp(a * planet.ring.z, 0.0, 1.0) * 0.95;
+    let density = clamp(planet.ring.z * a, 0.0, 1.0);
+    let cos_phi = abs(ly);
+    let opacity = (1.0 - pow(1.0 - density, 1.0 / max(cos_phi, 0.333))) * smoothing * smoothstep(0.001, 0.003, cos_phi);
+    return 1.0 - opacity;
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ mod corona;
 mod data;
 mod exposure;
 mod display;
+mod eclipse;
 mod ellipticals;
 mod galaxies;
 mod graphics;
@@ -47,6 +48,7 @@ mod sound;
 mod splash;
 mod stars;
 mod surface_tex;
+mod switches;
 mod system;
 mod sysbrowser;
 mod terrain;
@@ -118,6 +120,7 @@ fn main() {
         comets::CometsPlugin,
         corona::CoronaPlugin,
         aurora::AuroraPlugin,
+        eclipse::EclipsePlugin,
         lensflare::LensFlarePlugin,
     ))
     // Interface and audio.
@@ -138,6 +141,6 @@ fn main() {
         ship::ShipPlugin,
     ))
     // Sky overlays: coordinate grids and constellations.
-    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin));
+    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin));
     app.run();
 }
