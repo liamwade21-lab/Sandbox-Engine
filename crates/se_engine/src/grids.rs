@@ -168,8 +168,12 @@ pub(crate) fn draw_grids(
         }
     }
     if geographic > 0.0 {
+        // SE multiplies all four channels by ShowGridGeographic^2 and fades the line itself by the
+        // body's size (Width.z), drawn premultiplied (FUN_1404c7460).
         let c = skin.rgba(COLOR_KEYS[3], DEFAULT_COLORS[3]);
-        let rgb = [c[0] * geographic, c[1] * geographic, c[2] * geographic];
+        let k = geographic * geographic;
+        let rgb = [c[0] * k, c[1] * k, c[2] * k];
+        mesh.premultiplied = true;
         for b in bodies.iter().filter(|b| !b.star && b.radius_m > 0.0 && b.px_radius > GEO_MIN_PX) {
             let size = crate::overlay::smoothstep(0.0, 1.0, ((b.px_radius - GEO_MIN_PX) / GEO_MIN_PX) as f32);
             let centre = b.pos.delta_m(cam.pos);
@@ -180,11 +184,12 @@ pub(crate) fn draw_grids(
                     let n = DVec3::new(v.x, v.z, -v.y);
                     let p = centre + b.orient * (n * b.shape * b.radius_m);
                     let facing = (b.orient * (n / b.shape)).dot(-p) > 0.0;
-                    (view.local(p), if facing { c[3] * geographic } else { 0.0 })
+                    (view.local(p), if facing { c[3] * k } else { 0.0 })
                 }));
                 mesh.polyline(&view, &pts, rgb, size);
             }
         }
+        mesh.premultiplied = false;
     }
     let painter = ctx.layer_painter(overlay_layer());
     if !mesh.mesh.is_empty() {

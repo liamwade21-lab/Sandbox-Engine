@@ -71,8 +71,11 @@ pub const AERO_CHORD: f64 = 0.189941;
 pub const AERO_SPAN: f64 = 2.8956;
 /// Coefficient scale (DAT_1406d5100).
 pub const AERO_SCALE: f64 = 100.0;
-/// Largest force per unit coefficient factor, `min(0.55 q, 1e5)` (DAT_1406d5448).
+/// Largest dynamic pressure factor of the side and vertical forces and of the moments,
+/// `min(0.55 q, 1e5)` (DAT_1406d5448; XMM10 at 14051d4e1 in FUN_14051cde0).
 pub const AERO_FORCE_CAP: f64 = 1e5;
+/// The same for the force along the nose, `min(0.55 q, 1e8)` (DAT_1406d55d0; XMM2 there).
+pub const AERO_AXIAL_CAP: f64 = 1e8;
 /// Moments of inertia the executable gives every ship (ctor FUN_140524610; `ReadSchemeScript`
 /// scales them by mass / 18000 using the default mass, so they never change).
 pub const AERO_INERTIA: [f64; 3] = [800.0, 1755.0, 130.0];
@@ -237,12 +240,14 @@ pub fn aero_step(i: &AeroInput) -> AeroOutput {
         + c[8] * 50.0 * da)
         * 0.01;
     let c_w1 = (((w2 * cl_b + c[5] * beta + b2v * 0.782_145_686_794_956_7 * -w1) - c[9] * 0.1 * dr) + c[7] * 0.01 * da) * 0.01;
-    let f = (q * AERO_AREA).min(AERO_FORCE_CAP);
+    // The force along the nose has its own, far higher, cap.
+    let f_axial = (q * AERO_AREA).min(AERO_AXIAL_CAP);
+    let f = f_axial.min(AERO_FORCE_CAP);
     let (sa, ca) = alpha.sin_cos();
     out.accel = DVec3::new(
         (dr * 0.1914 - beta * c[4] - da * 0.0225) * AERO_SCALE * f / i.mass_kg,
         (drag * sa + lift * ca) * f / i.mass_kg,
-        -(sa * lift - drag * ca) * f / i.mass_kg,
+        -(sa * lift - drag * ca) * f_axial / i.mass_kg,
     );
     let [i0, i1, i2] = AERO_INERTIA;
     let m = AERO_ANG_ACCEL_MAX;
@@ -257,6 +262,9 @@ pub fn aero_step(i: &AeroInput) -> AeroOutput {
 pub const R_GAS: f64 = 8.31447;
 /// Pascal per atmosphere (DAT_1406d5c38).
 pub const PA_PER_ATM: f64 = 101_325.0;
+
+/// Floor of the air temperature (K, DAT_1406d55e0 in FUN_1402555e0).
+pub const MIN_AIR_TEMPERATURE: f64 = 20.0;
 
 /// What the atmosphere state at an altitude needs (the parameters FUN_140259df0 reads).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -282,34 +290,27 @@ pub struct AtmoState {
 }
 
 impl AtmoParams {
-    /// Scale height (m) at temperature `t`.
-    fn scale_height(&self, t: f64) -> f64 {
-        R_GAS * t / (self.molar_mass * 1e-3 * self.gravity.max(1e-6))
+    /// Scale height (m) of the surface temperature, `R T0 / (g mu)`.
+    pub fn scale_height(&self) -> f64 {
+        R_GAS * self.t0_k / (self.molar_mass * 1e-3 * self.gravity.max(1e-6))
     }
 
-    /// State at `altitude_m` (FUN_140259df0's profile): a polytropic layer from the surface up to
-    /// the 0.2 atm level when the surface pressure exceeds 0.2 atm, isothermal above it (and
-    /// throughout a thinner atmosphere); density from the ideal gas law, the speed of sound
-    /// `sqrt(gamma R T / mu)` with `gamma = 1 / (1 - a)`.
+    /// State at `altitude_m` (FUN_140259df0): the pressure falls off as one exponential,
+    /// `P0 exp(-h / H)` with the scale height `H` of the surface temperature (its `expf` calls);
+    /// the temperature is polytropic, `T0 (1 - a h / H)`, down to the 0.2 atm level and constant
+    /// above it, never under 20 K; density from the ideal gas law, the speed of sound
+    /// `sqrt(gamma R T / mu)` with `gamma = 1 / (1 - a)`. Assumed: SE reads the temperature off its
+    /// gas tables (FUN_1402555e0), the polytrope stands in for them.
     pub fn state(&self, altitude_m: f64) -> AtmoState {
         if self.p0_atm <= 0.0 || self.molar_mass <= 0.0 || self.t0_k <= 0.0 || altitude_m > self.height_m {
             return AtmoState::default();
         }
         let h = altitude_m.max(0.0);
         let a = self.adiabat.clamp(0.01, 0.9);
-        let h0 = self.scale_height(self.t0_k);
-        let (p, t) = if self.p0_atm < 0.2 {
-            (self.p0_atm * (-h / h0).exp(), self.t0_k)
-        } else {
-            let h02 = (1.0 - (0.2 / self.p0_atm).powf(a)) * h0 / a;
-            if h <= h02 {
-                let tr = (1.0 - a * h / h0).max(1e-6);
-                (self.p0_atm * tr.powf(1.0 / a), self.t0_k * tr)
-            } else {
-                let t02 = self.t0_k * (0.2 / self.p0_atm).powf(a);
-                (0.2 * (-(h - h02) / self.scale_height(t02)).exp(), t02)
-            }
-        };
+        let hs = self.scale_height();
+        let p = self.p0_atm * (-h / hs).exp();
+        let h_cold = if self.p0_atm > 0.2 { -(0.2 / self.p0_atm).ln() * hs } else { 0.0 };
+        let t = (self.t0_k * (1.0 - a * h.min(h_cold) / hs)).max(MIN_AIR_TEMPERATURE);
         let mu = self.molar_mass * 1e-3;
         let gamma = 1.0 / (1.0 - a);
         AtmoState {
@@ -427,10 +428,17 @@ mod tests {
         };
         // Five times the drag coefficient at Mach 1.
         assert!((d(1.0) / d(0.5) - 5.0).abs() < 0.01, "{} {}", d(1.0), d(0.5));
-        // At sea level and Mach 5 the force factor is capped at 1e5.
+        // At sea level and Mach 5 the factor of the axial force is 0.55 q (its cap is 1e8)...
         let o = aero_step(&input(AeroModel::Arrow, v(5.0)));
-        let want = 0.0254 * (4.0 * (-0.5f64 * 1600.0).exp() + 1.0) * 100.0 * AERO_FORCE_CAP / 100_000.0;
+        let q = 0.5 * 1.2 * (340.0f64 * 5.0).powi(2);
+        let want = 0.0254 * (4.0 * (-0.5f64 * 1600.0).exp() + 1.0) * 100.0 * (0.55 * q) / 100_000.0;
         assert!((o.accel.z - want).abs() < 1e-6, "{o:?}");
+        // ... while the side and vertical forces stop at 1e5.
+        let mut i = input(AeroModel::Arrow, DVec3::new(100.0, 0.0, -1700.0));
+        let side = |i: &AeroInput| aero_step(i).accel.x;
+        let s5 = side(&i);
+        i.density *= 2.0;
+        assert!(0.55 * 0.5 * 1.2 * 1700.0 * 1700.0 > AERO_FORCE_CAP && (side(&i) - s5).abs() < 1e-9, "{s5}");
     }
 
     #[test]
@@ -439,8 +447,11 @@ mod tests {
         let s = p.state(0.0);
         assert!((s.density - 1.23).abs() < 0.02, "{s:?}");
         assert!((s.sound_speed - 333.0).abs() < 5.0, "{s:?}");
+        // One exponential: 0.028 atm at 30 km, at the temperature of the 0.2 atm level.
         let hi = p.state(30_000.0);
-        assert!(hi.density < s.density * 0.05 && hi.density > 0.0, "{hi:?}");
+        assert!((hi.pressure_atm - (-30_000.0 / p.scale_height()).exp()).abs() < 1e-12, "{hi:?}");
+        assert!((hi.pressure_atm - 0.028).abs() < 0.002, "{hi:?}");
+        assert!((hi.temperature_k - 288.0 * (1.0 - 0.25 * 5f64.ln())).abs() < 1e-9, "{hi:?}");
         assert_eq!(p.state(200_000.0), AtmoState::default());
         assert!((composition_molar_mass([("N2", 78.0), ("O2", 21.0), ("Ar", 1.0)]).unwrap() - 28.96).abs() < 0.05);
     }

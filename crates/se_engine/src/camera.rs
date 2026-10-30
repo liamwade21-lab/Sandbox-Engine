@@ -244,14 +244,13 @@ fn spawn_camera(mut commands: Commands) {
     // SE's bloom (bloom.rs), set from `BloomSettings` (env SE_NO_BLOOM turns it off).
     let bloom = crate::bloom::SeBloom::default();
     // SE's default image (main-def.cfg): HDR photo mode with the "AgX" tone shader, which scales
-    // by 0.75 before the AgX curve (hdrt_AgX_tone.glh), then `Saturation 1.5` as a vibrance
-    // (hsl.glh `ColorCorrentionLDR`: 1 + 0.5 (1 - saturation)). Bevy's AgX is the same transform
-    // as a LUT; its saturation is uniform, so the vibrance is taken at a typical ground colour's
-    // saturation (0.3). `SE_TONEMAP=aces` restores the port's earlier ACES look.
+    // by 0.75 before the AgX curve (hdrt_AgX_tone.glh; Bevy's AgX is the same transform as a LUT),
+    // then the final colour correction (color_correction.rs). `SE_TONEMAP=aces` restores the
+    // port's earlier ACES look.
     let (tonemapping, grading) = if std::env::var("SE_TONEMAP").is_ok_and(|v| v.eq_ignore_ascii_case("aces")) {
         (Tonemapping::AcesFitted, ColorGrading::default())
     } else {
-        let global = ColorGradingGlobal { exposure: 0.75f32.log2(), post_saturation: 1.0 + 0.5 * (1.0 - 0.3), ..default() };
+        let global = ColorGradingGlobal { exposure: 0.75f32.log2(), ..default() };
         (Tonemapping::AgX, ColorGrading { global, ..default() })
     };
     commands.spawn((

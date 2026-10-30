@@ -192,6 +192,13 @@ pub struct StarSettings {
     pub zoom: f32,
     /// `StarMagnLimit` as loaded at startup, which SE's ResetAllMagnCoef (P) goes back to.
     pub mag_limit_reset: f32,
+    /// `GalaxyMagnLimit` / `NebulaMagnLimit` / `GlowMagnLimit` (main-def.cfg, 7): the deep-sky limits,
+    /// read by `galaxies.rs` / `nebulae.rs` (far sprites' reference flux; the glow limit scales the sprite
+    /// models, `galaxies::se_glow_bright`), and their startup values for ResetAllMagnCoef.
+    pub galaxy_mag_limit: f32,
+    pub nebula_mag_limit: f32,
+    pub glow_mag_limit: f32,
+    pub dso_mag_limit_reset: [f32; 3],
     /// SE's `StarFrustumClipFOV` (degrees, main-def.cfg): under this field of view SE loads the
     /// stars inside the view frustum only (FUN_14047b670), so zooming in loads fainter stars there.
     pub clip_fov: f32,
@@ -213,6 +220,10 @@ impl Default for StarSettings {
             screen_scale: 1.0,
             zoom: 1.0,
             mag_limit_reset: 7.0,
+            galaxy_mag_limit: 7.0,
+            nebula_mag_limit: 7.0,
+            glow_mag_limit: 7.0,
+            dso_mag_limit_reset: [7.0; 3],
             clip_fov: 30.0,
         }
     }
@@ -389,19 +400,20 @@ fn build_catalog_starfield(
         (Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 6));
     let mut count = 0;
     for s in &cat.stars {
-        if s.barycenter || !s.has_position || s.class.kind == StarKind::BlackHole {
+        if s.barycenter || !s.has_position {
             continue;
         }
+        // A black hole shines only by its accretion disk's `Luminosity` (blackholes.rs).
+        let (rgb, abs_mag) = if s.class.kind == StarKind::BlackHole {
+            match crate::blackholes::disk_light(s) {
+                Some(l) => l,
+                None => continue,
+            }
+        } else {
+            (star_render_color(s.class.kind, s.teff), s.abs_mag as f32)
+        };
         let p = s.pos_pc.as_vec3();
-        push_star(
-            &mut positions,
-            &mut sdata,
-            &mut corners,
-            &mut indices,
-            [p.x, p.y, p.z],
-            star_render_color(s.class.kind, s.teff),
-            s.abs_mag as f32,
-        );
+        push_star(&mut positions, &mut sdata, &mut corners, &mut indices, [p.x, p.y, p.z], rgb, abs_mag);
         count += 1;
     }
     info!("catalog starfield: {count} stars");
@@ -458,8 +470,11 @@ fn track_zoom(cam: Res<FlyCamera>, mut s: ResMut<StarSettings>) {
 /// SE's magnitude limit keys: `]` / `[` raise or lower every limit by 0.1 (IncAllMagnCoef /
 /// DecAllMagnCoef), Ctrl+`]` / `[` the stars' alone (IncStarMagnCoef / DecStarMagnCoef), and P
 /// resets them to the startup values (ResetAllMagnCoef). The port has one limit for stars and
-/// planets, so both act on it; Shift (galaxies) and Ctrl+Shift (planets) are left unbound. Each
-/// shows the "Mag limit" as a splash message (its wording here is assumed).
+/// planets, so both act on it; Shift+`]` / `[` change the galaxies' and nebulae' limits
+/// (`GalaxyMagnLimit`, `NebulaMagnLimit`, `GlowMagnLimit`; "Galaxies magnitude limit"), which `]` / `[`
+/// raise too;
+/// Ctrl+Shift (planets) is left unbound. Each shows the limit as a splash message (its wording
+/// here is assumed).
 fn mag_limit_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut egui: bevy_egui::EguiContexts,
@@ -474,7 +489,7 @@ fn mag_limit_keys(
     let shift = held(KeyCode::ShiftLeft, KeyCode::ShiftRight);
     let ctrl = held(KeyCode::ControlLeft, KeyCode::ControlRight);
     let alt = held(KeyCode::AltLeft, KeyCode::AltRight);
-    if shift || alt {
+    if alt || (shift && ctrl) {
         return;
     }
     let step = match (keys.just_pressed(KeyCode::BracketRight), keys.just_pressed(KeyCode::BracketLeft)) {
@@ -482,11 +497,28 @@ fn mag_limit_keys(
         (false, true) => -MAG_LIMIT_STEP,
         _ => 0.0,
     };
+    let dso = |v: f32| (v + step).clamp(MAG_LIMIT_MIN, MAG_LIMIT_MAX);
+    if shift {
+        if step == 0.0 {
+            return;
+        }
+        s.galaxy_mag_limit = dso(s.galaxy_mag_limit);
+        s.nebula_mag_limit = dso(s.nebula_mag_limit);
+        s.glow_mag_limit = dso(s.glow_mag_limit);
+        msg.show(format!("{}: {:.1}", i18n.tr("Galaxies magnitude limit"), s.galaxy_mag_limit));
+        return;
+    }
     let name = if ctrl { "Star mag limit" } else { "Mag limit" };
     if step != 0.0 {
         s.mag_limit = (s.mag_limit + step).clamp(MAG_LIMIT_MIN, MAG_LIMIT_MAX);
+        if !ctrl {
+            s.galaxy_mag_limit = dso(s.galaxy_mag_limit);
+            s.nebula_mag_limit = dso(s.nebula_mag_limit);
+            s.glow_mag_limit = dso(s.glow_mag_limit);
+        }
     } else if keys.just_pressed(KeyCode::KeyP) && !ctrl {
         s.mag_limit = s.mag_limit_reset;
+        [s.galaxy_mag_limit, s.nebula_mag_limit, s.glow_mag_limit] = s.dso_mag_limit_reset;
     } else {
         return;
     }
@@ -503,6 +535,7 @@ fn update_sprite_blur(
     settings: Res<StarSettings>,
     active: Res<crate::system::ActiveSystem>,
     data: Res<SeData>,
+    lensed: Option<Res<crate::blackholes::LensedHoles>>,
     mut blur: ResMut<SpriteBlur>,
     mut stars: ResMut<Assets<StarMaterial>>,
     mut far: ResMut<Assets<crate::galaxies::GalaxyFarMaterial>>,
@@ -534,7 +567,18 @@ fn update_sprite_blur(
     blur.delta = delta.as_vec3().extend(0.0);
     blur.prev_view = Mat4::from_quat(prev_rot.as_quat()).inverse();
     // The active system's star (all components of a catalog system share its position in the fields).
-    let hide = active.root.and_then(|r| data.catalog.stars.get(r as usize)).map(|s| (s.pos_pc - pos).as_vec3());
+    // A system without bodies (a lone black hole, whose disk shines as a field point) draws nothing
+    // itself, so its point stays until the lens draws the disk.
+    let lensed = |r: &u32| {
+        lensed.as_ref().is_some_and(|l| {
+            l.0.iter().any(|&h| data.catalog.system_root(se_core::catalog::ObjectRef::Star(h)).unwrap_or(h) == *r)
+        })
+    };
+    let hide = active
+        .root
+        .filter(|r| !active.bodies.is_empty() || lensed(r))
+        .and_then(|r| data.catalog.stars.get(r as usize))
+        .map(|s| (s.pos_pc - pos).as_vec3());
     let eps_abs = (pos.length() as f32 * 4.0e-7).max(HIDE_EPS_PC);
     for (_, m) in stars.iter_mut() {
         let u = &mut m.uniforms;

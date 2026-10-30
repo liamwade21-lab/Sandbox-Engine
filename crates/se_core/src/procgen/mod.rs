@@ -7,16 +7,20 @@
 //! chain then gives planets and moons their composition, atmosphere, ocean and clouds.
 //!
 //! The architecture is SE's ([`se_layout`]): planet slots, spacing, types, masses, radii,
-//! dwarf planets with their asteroid belts and the number of moons. Moon orbits and the
-//! asteroids' sizes are still designed here, on the port's own SplitMix64 streams. The
-//! generator is a pure function of `(star, seed)`; see `docs/procgen.md`.
+//! dwarf planets with their asteroid belts, the number of moons and a single star's comets
+//! ([`se_comets`]). Moon orbits and the asteroids' sizes are still designed here, on the port's
+//! own SplitMix64 streams. The generator is a pure function of `(star, seed)`; see
+//! `docs/procgen.md`.
 
 use std::fmt::Write as _;
 
 use glam::DVec3;
 
+mod se_comets;
 mod se_layout;
 mod se_multiple;
+
+pub use se_comets::{comet_name, tail_defaults, tail_particles, CometTail, CometTailGiven, TailParticle};
 
 use crate::star::StarKind;
 use crate::surface_gen::{bulk, BULK_NAMES};
@@ -190,16 +194,22 @@ pub fn generate_system_sc(star: &StarParams, seed: u64) -> String {
 /// Like [`generate_system_sc`] but also returns per-body summaries. A procedural star may become
 /// SE's multiple system ([`is_multiple`]).
 pub fn generate_system(star: &StarParams, seed: u64) -> GeneratedSystem {
-    generate(star, seed, true)
+    generate(star, seed, true, true)
+}
+
+/// [`generate_system`] without writing out the comets (the same planets): for the star browser's
+/// search, which scans thousands of systems and never lists comets.
+pub fn generate_system_for_search(star: &StarParams, seed: u64) -> GeneratedSystem {
+    generate(star, seed, true, false)
 }
 
 /// The planets SE generates for a catalog star without catalog bodies: the star stays as the
 /// catalog has it (SE splits only its procedural stars).
 pub fn generate_planets(star: &StarParams, seed: u64) -> GeneratedSystem {
-    generate(star, seed, false)
+    generate(star, seed, false, true)
 }
 
-fn generate(star: &StarParams, seed: u64, multiples: bool) -> GeneratedSystem {
+fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> GeneratedSystem {
     let ctx = Ctx::new(star);
     let mut rng = Rng::from_name(seed, &star.name);
     let seed32 = system_seed(star, seed);
@@ -215,8 +225,11 @@ fn generate(star: &StarParams, seed: u64, multiples: bool) -> GeneratedSystem {
     let multiple = if big_black_hole(star) || !multiples { None } else { se_multiple::build(&se_root(star, &ctx), seed32) };
     match multiple {
         None => {
-            let (planets, asteroids) = se_bodies(&mut rng, star, &ctx, seed32);
+            let (planets, asteroids, se_comets) = se_bodies(&mut rng, star, &ctx, seed32);
             host_bodies(&mut rng, &ctx, planets, asteroids, &mut sc, &mut out.bodies);
+            if comets {
+                host_comets(&ctx, &se_comets, &mut sc, &mut out.bodies);
+            }
         }
         Some(comps) => {
             out.root_mass_sol = Some(comps[0].star.mass_sol);
@@ -248,7 +261,7 @@ fn generate(star: &StarParams, seed: u64, multiples: bool) -> GeneratedSystem {
                 let sys = se_layout::place(&c.star, c.idx, c.slots, c.soi_au, &inner, seed32, n0, &mut budget);
                 n0 += sys.planets.len() as u32;
                 let mut hrng = rng.fork(0x51_0000 + c.idx as u64);
-                let (planets, asteroids) = bodies_from(&mut hrng, &hctx, &sys);
+                let (planets, asteroids, _) = bodies_from(&mut hrng, &hctx, &sys);
                 host_bodies(&mut hrng, &hctx, planets, asteroids, &mut sc, &mut out.bodies);
             }
         }
@@ -320,6 +333,73 @@ fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: 
     for a in &asteroids {
         emit_body(sc, a);
         summaries.push(a.summary());
+    }
+}
+
+/// A single star's comets ([`se_comets`]) into `sc`, as SE's generator leaves them: mass, radius,
+/// albedo, rotation, magnitude, tail and orbit (with SE's period, which counts the comet's mass).
+fn host_comets(ctx: &Ctx, comets: &[se_comets::SeComet], sc: &mut String, summaries: &mut Vec<BodySummary>) {
+    if comets.is_empty() {
+        return;
+    }
+    let _ = writeln!(sc, "\n// {}: {} comet(s)", ctx.name, comets.len());
+    for (i, k) in comets.iter().enumerate() {
+        let name = comet_name(&ctx.name, i + 1);
+        let t = &k.tail;
+        let _ = writeln!(sc, "\nComet \"{}\"\n{{", name);
+        let _ = writeln!(sc, "\tParentBody     \"{}\"", ctx.name);
+        let _ = writeln!(sc, "\tMass           {}\t// Earth masses", num(k.mass_me));
+        let _ = writeln!(sc, "\tRadius         {}\t// km", num(k.radius_km));
+        let _ = writeln!(sc, "\tAlbedoBond     {}", num(k.albedo));
+        let _ = writeln!(sc, "\tAlbedoGeom     {}", num(k.albedo * 1.2));
+        let _ = writeln!(sc, "\tRotationPeriod {}\t// hours", num(k.rot_h));
+        let _ = writeln!(sc, "\tObliquity      {}", num(k.obliq_deg));
+        let _ = writeln!(sc, "\tEqAscendNode   {}", num(k.eq_node_deg));
+        let _ = writeln!(sc, "\tAbsMagn        {}", num(t.abs_magn as f64));
+        let _ = writeln!(sc, "\tSlopeParam     {}", num(t.slope_param as f64));
+        let _ = writeln!(sc, "\tCometTail\n\t{{");
+        let _ = writeln!(sc, "\t\tMaxLength   {}\t// AU", num(t.max_length_km as f64 / 149_597_870.7));
+        let _ = writeln!(sc, "\t\tGasToDust   {}", num(t.gas_to_dust as f64));
+        let _ = writeln!(sc, "\t\tParticles   {}", t.particles);
+        let _ = writeln!(sc, "\t\tGasBright   {}", num(t.gas_bright as f64));
+        let _ = writeln!(sc, "\t\tDustBright  {}", num(t.dust_bright as f64));
+        let c3 = |c: [f32; 3]| format!("({} {} {})", num(c[0] as f64), num(c[1] as f64), num(c[2] as f64));
+        let _ = writeln!(sc, "\t\tGasColor    {}", c3(t.gas_color));
+        let _ = writeln!(sc, "\t\tDustColor   {}", c3(t.dust_color));
+        let _ = writeln!(sc, "\t}}");
+        let _ = writeln!(sc, "\tOrbit\n\t{{");
+        let _ = writeln!(sc, "\t\tRefPlane        \"Ecliptic\"");
+        let _ = writeln!(sc, "\t\tSemiMajorAxis   {}\t// AU", num(k.a_au));
+        let _ = writeln!(sc, "\t\tPeriod          {}\t// years", num(k.period_days / 365.25));
+        let _ = writeln!(sc, "\t\tEccentricity    {}", num(k.ecc));
+        let _ = writeln!(sc, "\t\tInclination     {}", num(k.inc_deg));
+        let _ = writeln!(sc, "\t\tAscendingNode   {}", num(k.node_deg));
+        let _ = writeln!(sc, "\t\tArgOfPericenter {}", num(k.argp_deg));
+        let _ = writeln!(sc, "\t\tMeanAnomaly     {}", num(k.ma_deg));
+        let _ = writeln!(sc, "\t}}\n}}");
+        let t_eq = t_eq(ctx.lum, k.a_au, k.ecc, k.albedo);
+        summaries.push(BodySummary {
+            name,
+            tag: "Comet",
+            parent: ctx.name.clone(),
+            class: "Comet".to_string(),
+            class_desc: "Comet".to_string(),
+            mass_me: k.mass_me,
+            radius_km: k.radius_km,
+            a_au: k.a_au,
+            ecc: k.ecc,
+            helio_a_au: k.a_au,
+            t_eq_k: t_eq,
+            t_surf_k: t_eq,
+            pressure_atm: 0.0,
+            albedo_bond: k.albedo,
+            tidally_locked: false,
+            has_atmosphere: false,
+            has_ocean: false,
+            has_life: false,
+            life: None,
+            has_rings: false,
+        });
     }
 }
 
@@ -399,31 +479,19 @@ pub fn planet_name(star: &str, n: usize) -> String {
 // Classification words (SE: temperature / atmosphere / volatiles / bulk)
 // ---------------------------------------------------------------------------------------
 
-/// Temperature class word from the mean surface temperature in kelvin.
-/// Words are SE's (torrid, hot, warm, temperate, cool, cold, frigid); thresholds are designed.
+/// Temperature class word from the mean surface temperature in kelvin, by SE's thresholds
+/// (> 1000 torrid, > 500 hot, > 330 warm, > 250 temperate, > 170 cool, > 90 cold, else frigid;
+/// `surface_gen::temp_class`).
 pub fn temperature_class(t_k: f64) -> &'static str {
-    match t_k {
-        t if t < 130.0 => "frigid",
-        t if t < 240.0 => "cold",
-        t if t < 273.0 => "cool",
-        t if t < 310.0 => "temperate",
-        t if t < 350.0 => "warm",
-        t if t < 600.0 => "hot",
-        _ => "torrid",
-    }
+    const W: [&str; 7] = ["torrid", "hot", "warm", "temperate", "cool", "cold", "frigid"];
+    W[crate::surface_gen::temp_class(t_k as f32) as usize]
 }
 
-/// Atmosphere class word from the surface pressure in atm (airless, infrabaric, hypobaric,
-/// mesobaric, hyperbaric, ultrabaric). Words are SE's; thresholds are designed.
+/// Atmosphere class word from the surface pressure in atm, by SE's thresholds (FUN_1404caaa0:
+/// 1e-6, 1e-3, 0.1, 10 and 1000 atm; `surface_gen::atmo_class`).
 pub fn pressure_class(p_atm: f64) -> &'static str {
-    match p_atm {
-        p if p < 1e-7 => "airless",
-        p if p < 1e-3 => "infrabaric",
-        p if p < 0.1 => "hypobaric",
-        p if p < 10.0 => "mesobaric",
-        p if p < 500.0 => "hyperbaric",
-        _ => "ultrabaric",
-    }
+    const W: [&str; 6] = ["airless", "infrabaric", "hypobaric", "mesobaric", "hyperbaric", "ultrabaric"];
+    W[crate::surface_gen::atmo_class(crate::surface_gen::bulk::TERRA, p_atm as f32).clamp(0, 5) as usize]
 }
 
 /// Volatiles class word from the liquid-ocean and ice coverage fractions.
@@ -446,29 +514,15 @@ pub fn volatile_class(ocean_cover: f64, ice_cover: f64) -> &'static str {
     }
 }
 
-/// Size prefix (micro, mini, sub, "", super, mega) for a bulk class and mass in Earth
-/// masses. SE's size words exist in its locale files; the mass limits here are designed.
+/// Size prefix (micro, mini, sub, "", super, mega) for a bulk class and mass in Earth masses, by
+/// SE's limits (FUN_1404cabf0: terras 0.002/0.02/0.2/2/10, Neptunes 4/10/25/62.5, Jupiters
+/// 0.2/0.5/2.5/12.5 Jupiter masses; `surface_gen::size_class`).
 pub fn size_prefix(bulk: &str, mass_me: f64) -> &'static str {
-    let pick = |limits: [f64; 5]| -> &'static str {
-        const W: [&str; 6] = ["micro", "mini", "sub", "", "super", "mega"];
-        W[limits.iter().take_while(|l| mass_me >= **l).count()]
-    };
+    const W: [&str; 6] = ["micro", "mini", "sub", "", "super", "mega"];
     match bulk {
-        "Terra" | "Ferria" | "Carbonia" | "Aquaria" | "Chthonia" => pick([1e-3, 0.05, 0.5, 2.0, 10.0]),
-        "Neptune" => match mass_me {
-            m if m < 6.0 => "mini",
-            m if m < 12.0 => "sub",
-            m if m < 30.0 => "",
-            m if m < 60.0 => "super",
-            _ => "mega",
-        },
-        "Jupiter" => match mass_me {
-            m if m < 30.0 => "mini",
-            m if m < 150.0 => "sub",
-            m if m < 1000.0 => "",
-            m if m < 2500.0 => "super",
-            _ => "mega",
-        },
+        "Terra" | "Ferria" | "Carbonia" | "Aquaria" | "Chthonia" | "Neptune" | "Jupiter" => {
+            W[crate::surface_gen::size_class(crate::surface_gen::bulk_of(bulk), mass_me as f32).clamp(0, 5) as usize]
+        }
         _ => "",
     }
 }
@@ -1030,16 +1084,17 @@ fn se_root(sp: &StarParams, c: &Ctx) -> se_multiple::Root {
 
 /// Planets (sorted outward) and belt asteroids of a single star from SE's layout
 /// ([`se_layout`]), as bodies the port's physics then completes.
-fn se_bodies(rng: &mut Rng, sp: &StarParams, c: &Ctx, seed: u32) -> (Vec<Body>, Vec<Body>) {
+fn se_bodies(rng: &mut Rng, sp: &StarParams, c: &Ctx, seed: u32) -> (Vec<Body>, Vec<Body>, Vec<se_comets::SeComet>) {
     if big_black_hole(sp) {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let sys = se_layout::layout(&se_star(sp, c), seed);
     bodies_from(rng, c, &sys)
 }
 
-/// SE's planets and asteroids of one host as bodies, their orbits tilted onto a random plane.
-fn bodies_from(rng: &mut Rng, c: &Ctx, sys: &se_layout::SeSystem) -> (Vec<Body>, Vec<Body>) {
+/// SE's planets and asteroids of one host as bodies, their orbits (and its comets') tilted onto a
+/// random plane.
+fn bodies_from(rng: &mut Rng, c: &Ctx, sys: &se_layout::SeSystem) -> (Vec<Body>, Vec<Body>, Vec<se_comets::SeComet>) {
     let sys_inc = rng.range(-1.0, 1.0).acos().to_degrees();
     let sys_node = rng.range(0.0, 360.0);
     let planets: Vec<Body> = sys
@@ -1103,7 +1158,15 @@ fn bodies_from(rng: &mut Rng, c: &Ctx, sys: &se_layout::SeSystem) -> (Vec<Body>,
             }
         })
         .collect();
-    (planets, asteroids)
+    let comets = sys
+        .comets
+        .iter()
+        .map(|k| {
+            let (inc_deg, node_deg) = tilt_normal(sys_inc, sys_node, k.inc_deg, k.node_deg);
+            se_comets::SeComet { inc_deg, node_deg, argp_deg: k.argp_deg.rem_euclid(360.0), ma_deg: k.ma_deg.rem_euclid(360.0), ..k.clone() }
+        })
+        .collect();
+    (planets, asteroids, comets)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2221,6 +2284,23 @@ mod tests {
     use super::*;
     use crate::catalog::{BodyTag, Catalog, ObjectRef};
 
+    #[test]
+    fn class_words_use_ses_thresholds() {
+        assert_eq!(temperature_class(260.0), "temperate");
+        assert_eq!(temperature_class(249.0), "cool");
+        assert_eq!(temperature_class(95.0), "cold");
+        assert_eq!(temperature_class(1001.0), "torrid");
+        assert_eq!(pressure_class(1.0), "mesobaric");
+        assert_eq!(pressure_class(5e-7), "airless");
+        assert_eq!(pressure_class(2e-6), "infrabaric");
+        // Earth, Saturn, Jupiter, Neptune and a 0.01 Me body.
+        assert_eq!(size_prefix("Terra", 1.0), "");
+        assert_eq!(size_prefix("Jupiter", 95.2), "sub");
+        assert_eq!(size_prefix("Jupiter", 317.8), "");
+        assert_eq!(size_prefix("Neptune", 17.1), "");
+        assert_eq!(size_prefix("Terra", 0.01), "mini");
+    }
+
     fn sun_like(name: &str) -> StarParams {
         StarParams {
             name: name.to_string(),
@@ -2336,7 +2416,7 @@ mod tests {
                 }
                 assert!(matches!(
                     b.tag,
-                    BodyTag::Planet | BodyTag::DwarfPlanet | BodyTag::Moon | BodyTag::DwarfMoon | BodyTag::Asteroid
+                    BodyTag::Planet | BodyTag::DwarfPlanet | BodyTag::Moon | BodyTag::DwarfMoon | BodyTag::Asteroid | BodyTag::Comet
                 ));
             }
         }
@@ -2574,5 +2654,33 @@ mod tests {
             }
         }
         assert!(checked > 20);
+    }
+
+    #[test]
+    fn single_stars_get_se_comets() {
+        let s = sun_like("RS 8514-491-6-169551-68");
+        let mut checked = 0;
+        for seed in 0..30u64 {
+            if is_multiple(&s, seed) {
+                continue;
+            }
+            let g = generate_system(&s, seed);
+            let cat = load_generated(&s, &g);
+            let comets: Vec<_> = cat.bodies.iter().filter(|b| b.tag == BodyTag::Comet).collect();
+            assert!((100..200).contains(&comets.len()), "seed {seed}: {}", comets.len());
+            assert_eq!(comets[0].names[0], format!("{}C1", s.name));
+            for b in &comets {
+                let o = b.orbit.as_ref().unwrap();
+                assert!(o.eccentricity > 0.5 && o.eccentricity < 1.0);
+                let tail = CometTailGiven::from_body_block(&b.block);
+                assert!(tail.max_length_au.unwrap() > 0.0 && tail.particles.unwrap() >= 1000);
+            }
+            checked += 1;
+        }
+        assert!(checked > 5);
+        // None around a brown dwarf.
+        let bd = StarParams { mass_sol: 0.05, lum_bol: 1e-5, teff: 1200.0, radius_sol: 0.1, kind: StarKind::BrownDwarf, ..sun_like("BD") };
+        let g = generate_planets(&bd, 3);
+        assert!(!g.bodies.iter().any(|b| b.tag == "Comet"));
     }
 }

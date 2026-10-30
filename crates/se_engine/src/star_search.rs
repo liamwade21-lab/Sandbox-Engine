@@ -312,7 +312,7 @@ fn catalog_stars(cat: &Catalog, root: u32) -> Vec<StarFacts> {
 /// components of a multiple system, else the star itself).
 fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3) -> (Vec<BodyFacts>, Vec<StarFacts>) {
     let (params, seed) = proc_system_input(&procedural_star_record(info, pos_pc));
-    let g = se_core::procgen::generate_system(&params, seed);
+    let g = se_core::procgen::generate_system_for_search(&params, seed);
     let stars = if g.stars.is_empty() {
         vec![StarFacts { name: info.name.clone(), class: SpectralClass::parse(&info.class) }]
     } else {

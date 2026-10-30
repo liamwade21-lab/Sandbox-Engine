@@ -8,6 +8,7 @@ pub mod body_params;
 pub mod catalog;
 pub mod classname;
 pub mod climate;
+pub mod cluster_stars;
 pub mod coords;
 pub mod custom_model;
 pub mod dds;

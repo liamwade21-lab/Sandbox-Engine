@@ -283,11 +283,12 @@ impl Plugin for ShipPlugin {
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
             .add_systems(
                 Update,
-                (ship_commands, ship_input, finish_ship_loading, sync_hold, start_engine_sounds, update_engine_sounds).chain(),
+                (ship_commands, ship_input, finish_ship_loading, sync_hold, start_engine_sounds).chain(),
             )
             .add_systems(
                 PostUpdate,
-                (ship_physics, ship_camera, update_ship_visuals)
+                // Plumes and sounds after the physics, which adds the programs' RCS and turn commands.
+                (ship_physics, ship_camera, update_ship_visuals, update_engine_sounds)
                     .chain()
                     .in_set(UniverseSet::Camera)
                     .after(crate::camera::travel_and_move)
@@ -346,17 +347,42 @@ fn body_velocity(eph: &Ephemeris, obj: ObjectRef, sim: &SimTime) -> DVec3 {
 }
 
 /// Velocity of the frame a ship at `pos` is "at rest" in: the body's orbital velocity, plus
-/// its rotation (so the surface is stationary) when the ship is within one body radius of it,
-/// and zero beyond 100 radii.
+/// its rotation (so the surface is stationary) up to one radius of altitude, faded out by two;
+/// the orbital part fades out between 50 and 100 radii (far from every body the universe frame
+/// is used: the planets' orbital speeds mean nothing there). The fades keep the frame continuous,
+/// so the warp, which multiplies the velocity relative to it, never turns a switch into a jump.
 fn reference_velocity(eph: &Ephemeris, obj: ObjectRef, body_pos: UPos, radius: f64, pos: UPos, sim: &SimTime) -> DVec3 {
     let rel = pos.delta_m(body_pos);
-    let altitude = rel.length() - radius;
-    if altitude > 100.0 * radius {
-        // Far from every body: the universe frame (the planets' orbital speeds mean nothing here).
+    let (_, fade, spin) = frame_terms(rel.length() - radius, radius);
+    if fade <= 0.0 {
         return DVec3::ZERO;
     }
-    let v = body_velocity(eph, obj, sim);
-    if altitude < radius { v + body_spin(eph, obj, sim).cross(rel) } else { v }
+    let spin_v = if spin > 0.0 { body_spin(eph, obj, sim).cross(rel) * spin } else { DVec3::ZERO };
+    (body_velocity(eph, obj, sim) + spin_v) * fade
+}
+
+/// A body's share of the blended frame at altitude `alt` over it (radius `r`): its weight
+/// (inverse square altitude), the fade of its orbital velocity (1 below 50 radii, 0 beyond 100)
+/// and of its rotation (1 below one radius, 0 beyond two).
+fn frame_terms(alt: f64, r: f64) -> (f64, f64, f64) {
+    let r = r.max(1.0);
+    let w = 1.0 / alt.max(1e-3 * r).powi(2);
+    let fade = ((100.0 * r - alt) / (50.0 * r)).clamp(0.0, 1.0);
+    let spin = ((2.0 * r - alt) / r).clamp(0.0, 1.0);
+    (w, fade, spin)
+}
+
+/// The frame the warp drive multiplies velocities against when the player warps: every body's
+/// [`reference_velocity`] weighted by inverse square altitude, so it changes smoothly where the
+/// nearest body changes (`parts`: altitude, radius, frame velocity of each body).
+fn blend_frames(parts: impl IntoIterator<Item = (f64, f64, DVec3)>) -> DVec3 {
+    let (mut sum, mut wsum) = (DVec3::ZERO, 0.0);
+    for (alt, r, v) in parts {
+        let (w, ..) = frame_terms(alt, r);
+        sum += v * w;
+        wsum += w;
+    }
+    if wsum > 0.0 { sum / wsum } else { DVec3::ZERO }
 }
 
 /// Angular velocity of a body (rad per simulated second, universe frame).
@@ -609,6 +635,7 @@ fn ship_input(
         if keys.just_pressed(KeyCode::Escape) && flight.active {
             flight.active = false;
             flight.throttle = 0.0;
+            stop_programs(&mut flight);
         } else if keys.just_pressed(KeyCode::Enter) && flight.ship.is_some() {
             flight.active = !flight.active;
             if !flight.active {
@@ -678,8 +705,7 @@ fn ship_input(
     }
     if keys.just_pressed(KeyCode::KeyZ) {
         if alt {
-            // ShipStopWarpDrive.
-            flight.warp_on = false;
+            stop_warp_drive(&mut flight);
         } else if shift {
             // ShipSyncVelocity.
             flight.sync_velocity = !flight.sync_velocity;
@@ -708,6 +734,8 @@ fn ship_input(
     flight.input.boost_turn = shift;
     flight.input.brake = keys.pressed(KeyCode::Backspace);
     if flight.input.brake {
+        // The port's brake: it takes over from any program.
+        stop_programs(&mut flight);
         flight.throttle = 0.0;
     }
 
@@ -837,6 +865,33 @@ fn take_flight_keys(hold: Res<FlightHold>, mut keys: ResMut<ButtonInput<KeyCode>
     }
 }
 
+/// ShipStopWarpDrive (Alt+Z): the drive off, and a Warp to target program with it (it would
+/// engage the drive again).
+fn stop_warp_drive(flight: &mut Flight) {
+    flight.warp_on = false;
+    if flight.autopilot.is_some_and(|a| a.program == Program::WarpTo) {
+        flight.autopilot = None;
+        flight.throttle = 0.0;
+    }
+}
+
+/// Ends the autopilot and every hold (leaving the pilot's seat, braking): nothing keeps driving
+/// the engines or the warp drive it engaged.
+fn stop_programs(flight: &mut Flight) {
+    if let Some(a) = flight.autopilot.take() {
+        if a.program != Program::RotateTo {
+            flight.throttle = 0.0;
+        }
+        if a.program == Program::WarpTo {
+            flight.warp_on = false;
+        }
+    }
+    flight.attitude = Attitude::Free;
+    flight.kill_rotation = false;
+    flight.sync_velocity = false;
+    flight.hold_altitude = None;
+}
+
 fn notify(flight: &mut Flight, text: String, now: f64) {
     flight.info.notice = text;
     flight.info.notice_until = now + 3.0;
@@ -908,9 +963,9 @@ fn finish_ship_loading(
             let emissive = g.emissive.map(|i| images.add(i)).unwrap_or_else(|| black.clone());
             let mat = hull_mats.add(ShipSurfaceMaterial {
                 u: ShipUniform {
-                    sun_dir: Vec4::new(0.0, 1.0, 0.0, 1.0),
-                    sun_color: Vec4::ONE,
-                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.07),
+                    light_dir: [Vec4::new(0.0, 1.0, 0.0, 1.0), Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+                    light_color: [Vec4::ONE, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.0),
                     emis: Vec4::new(g.emis[0], g.emis[1], g.emis[2], g.cutoff),
                 },
                 diffuse,
@@ -1065,6 +1120,10 @@ fn ship_physics(
     });
     flight.info.target = flight.target.map_or(String::new(), |t| data.catalog.display_name(t).to_string());
     flight.info.target_distance = target.map_or(f64::NAN, |t| t.1.length());
+    if !flight.active {
+        // Programs run only while the ship is piloted (the Ships window's Leave, `flight off`).
+        stop_programs(&mut flight);
+    }
     match (flight.autopilot, target) {
         (Some(mut ap), Some((_, to_target, rel_vel, radius))) => {
             let i = ProgramInput {
@@ -1203,10 +1262,11 @@ fn ship_physics(
     // --- Hold altitude (H) ---------------------------------------------------------------------
     if let (Some(h0), Some(b)) = (flight.hold_altitude, refb) {
         // Vertical speed towards the held altitude, gravity compensated, with the hover engines
-        // or RCS (and the main engines when the nose points up or down).
+        // or RCS (and the main engines when the nose points up or down). Altitude, vertical and
+        // velocity frame all of the reference body, as the held altitude (the HUD's).
         let up = upos.0.delta_m(b.pos).normalize_or(DVec3::Y);
         let vz = (ship.vel - ref_vel).dot(up);
-        let vz_want = ((h0 - altitude) * 0.5).clamp(-100.0, 100.0);
+        let vz_want = hold_climb_rate(h0, body_altitude(b, upos.0));
         let g_up = if flight.gravity { gravity_at(&infos, upos.0).dot(up) } else { 0.0 };
         let a_up = (vz_want - vz) - g_up;
         let l = urot.0.inverse() * (up * a_up);
@@ -1272,7 +1332,16 @@ fn ship_physics(
     // the autopilot warps there.
     let warp_frame = match (flight.autopilot, target) {
         (Some(a), Some((t, ..))) if a.program == Program::WarpTo => body_velocity(&eph, t, &sim),
-        _ => ref_vel,
+        _ => blend_frames(infos.iter().map(|b| {
+            let alt = upos.0.delta_m(b.pos).length() - b.radius;
+            // Only bodies within 100 radii have a frame velocity (and are worth an ephemeris lookup).
+            let v = if frame_terms(alt, b.radius).1 > 0.0 {
+                reference_velocity(&eph, b.obj, b.pos, b.radius, upos.0, &sim)
+            } else {
+                DVec3::ZERO
+            };
+            (alt, b.radius, v)
+        })),
     };
     let speed = (vel - ref_vel).length().max((vel - warp_frame).length());
     let wmax = design.warp_boost_log;
@@ -1407,13 +1476,7 @@ fn ship_physics(
     flight.info.speed_rel = speed_rel;
     flight.info.speed_eff = speed_rel * boost;
     flight.info.nearest = refb_end.map_or(near_name, |b| data.catalog.display_name(b.obj).to_string());
-    flight.info.altitude = match refb_end {
-        Some(b) => {
-            let rel = pos.delta_m(b.pos);
-            rel.length() - b.radius - ground_at(b, rel)
-        }
-        None => altitude_end,
-    };
+    flight.info.altitude = refb_end.map_or(altitude_end, |b| body_altitude(b, pos));
     flight.info.g = g_vec.length();
     flight.info.aero = match aero0 {
         Some((o, st, v_air)) => AeroInfo {
@@ -1476,6 +1539,17 @@ fn nearest_state<'a>(
         }
         None => (None, DVec3::ZERO, String::new(), f64::INFINITY),
     }
+}
+
+/// Altitude of `pos` over the (terrain) surface of `b`.
+fn body_altitude(b: &BodyInfo, pos: UPos) -> f64 {
+    let rel = pos.delta_m(b.pos);
+    rel.length() - b.radius - ground_at(b, rel)
+}
+
+/// Vertical speed (m/s) Hold altitude asks for at altitude `h` to come back to `h0`.
+fn hold_climb_rate(h0: f64, h: f64) -> f64 {
+    ((h0 - h) * 0.5).clamp(-100.0, 100.0)
 }
 
 /// Height of the rendered surface of `b` at the given position relative to its centre.
@@ -1565,35 +1639,41 @@ fn update_ship_visuals(
     time: Res<Time>,
     data: Res<SeData>,
     flight: Res<Flight>,
+    fade: Res<crate::system::LightingFade>,
+    ambient: Res<crate::system::AmbientLighting>,
+    star_settings: Res<crate::stars::StarSettings>,
     ships: Query<(&Ship, &UPosition, &UOrientation, &ShipVisuals)>,
-    bodies: Query<&SystemBody>,
+    bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
     mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
     mut tfs: Query<(&mut Transform, &mut Visibility)>,
 ) {
     let cat = &data.catalog;
     for (ship, pos, _rot, vis) in &ships {
-        // Brightest star of the system by irradiance.
-        let mut best: Option<(f64, DVec3, Vec3)> = None;
-        for b in bodies.iter().filter(|b| b.star) {
+        // SE lights a ship like a body (FUN_1404bf5c0, called for ships with kind 7 from
+        // FUN_1401f2b10): its up to MAX_LIGHTS stars of the most flux, faded and normalised to the
+        // brightest, each dimmed by the bodies eclipsing it (ship.glsl ECL).
+        let mut stars: Vec<(f64, &SystemBody, Vec3)> = Vec::new();
+        for (b, _) in bodies.iter().filter(|b| b.0.star) {
             let ObjectRef::Star(i) = b.obj else { continue };
             let s = &cat.stars[i as usize];
-            let to = b.pos.delta_m(pos.0);
-            let d = to.length().max(1.0);
+            let d = b.pos.delta_m(pos.0).length().max(1.0);
             let flux = se_core::star::lum_from_abs_mag(s.abs_mag) / (d / METERS_PER_AU).powi(2);
-            if best.is_none_or(|(bf, _, _)| flux > bf) {
-                let c = crate::stars::star_render_color(s.class.kind, s.teff);
-                best = Some((flux, to / d, Vec3::from_array(c)));
-            }
+            let c = Vec3::from_array(crate::stars::star_render_color(s.class.kind, s.teff));
+            stars.push((flux, b, crate::system::illum_color(c, s.teff as f32, &star_settings)));
         }
-        let (dir, color, intensity) = match best {
-            Some((flux, d, c)) => (d.as_vec3(), c, (flux.powf(0.15) as f32).clamp(0.3, 6.0)),
-            None => (Vec3::Y, Vec3::ONE, 0.3),
-        };
+        stars.sort_by(|a, b| b.0.total_cmp(&a.0));
+        stars.truncate(4);
+        let k = fade.planet_intensities(&stars.iter().map(|s| (s.0, true)).collect::<Vec<_>>());
+        let (mut dirs, mut colors) = ([Vec4::ZERO; 4], [Vec4::ZERO; 4]);
+        for (i, ((_, b, c), k)) in stars.iter().zip(&k).enumerate() {
+            let shadow = crate::system::sun_sprite_tint(b, pos.0, &bodies);
+            dirs[i] = b.pos.delta_m(pos.0).normalize_or(DVec3::Y).as_vec3().extend(1.0);
+            colors[i] = (*c * *k * shadow).extend(1.0);
+        }
         for h in &vis.hull {
             if let Some(mut m) = hull_mats.get_mut(h) {
-                m.u.sun_dir = dir.extend(intensity);
-                m.u.sun_color = color.extend(1.0);
+                (m.u.light_dir, m.u.light_color, m.u.tint.w) = (dirs, colors, ambient.0);
             }
         }
 
@@ -1899,5 +1979,93 @@ mod tests {
         assert_eq!(find_design(&lib, "shut").unwrap().id, "Shuttle");
         assert!(find_design(&lib, "nope").is_none());
         assert!(find_design(&lib, "").is_none());
+    }
+    #[test]
+    fn warp_frame_is_continuous() {
+        // Orbital frame in full below 50 radii, none beyond 100; rotation to one radius, gone by two.
+        assert_eq!(frame_terms(40.0, 1.0).1, 1.0);
+        assert!((frame_terms(75.0, 1.0).1 - 0.5).abs() < 1e-12);
+        assert_eq!(frame_terms(100.0, 1.0).1, 0.0);
+        assert_eq!(frame_terms(0.5, 1.0).2, 1.0);
+        assert_eq!(frame_terms(2.0, 1.0).2, 0.0);
+        // Crossing from one body to another 1000 km away the blended frame never jumps.
+        let (va, vb, r, gap) = (DVec3::new(0.0, 1000.0, 0.0), DVec3::new(0.0, -1000.0, 0.0), 1000.0, 1.0e6);
+        let mut last: Option<DVec3> = None;
+        for k in 0..=995 {
+            let x = 2000.0 + k as f64 * 1000.0;
+            let v = blend_frames([(x - r, r, va), (gap - x - r, r, vb)]);
+            if let Some(l) = last {
+                assert!((v - l).length() < 20.0, "{k}: {l:?} -> {v:?}");
+            }
+            last = Some(v);
+        }
+        // Each body's frame rules close to it.
+        assert!((blend_frames([(10.0, r, va), (1e5, r, vb)]) - va).length() < 1.0);
+    }
+
+    #[test]
+    fn hold_altitude_measures_from_the_reference_body() {
+        let b = BodyInfo {
+            entity: Entity::PLACEHOLDER,
+            obj: ObjectRef::Body(0),
+            pos: UPos::from_meters(DVec3::new(1e7, 0.0, 0.0)),
+            orient: DQuat::IDENTITY,
+            radius: 6.371e6,
+            gm: 0.0,
+            terrain: None,
+        };
+        let p = UPos::from_meters(DVec3::new(1e7 + 6.371e6 + 5000.0, 0.0, 0.0));
+        assert!((body_altitude(&b, p) - 5000.0).abs() < 1e-6);
+        assert_eq!(hold_climb_rate(5000.0, body_altitude(&b, p)), 0.0);
+        assert_eq!(hold_climb_rate(5000.0, 4990.0), 5.0);
+        assert_eq!(hold_climb_rate(5000.0, 9000.0), -100.0);
+    }
+
+    #[test]
+    fn leaving_the_seat_and_stopping_the_warp_end_the_programs() {
+        let mut f = Flight { autopilot: Some(Autopilot::new(Program::WarpTo)), warp_on: true, throttle: 1.0, ..default() };
+        stop_warp_drive(&mut f);
+        assert!(!f.warp_on && f.autopilot.is_none() && f.throttle == 0.0);
+        // Fly to target uses no warp: Alt+Z leaves it running.
+        f.autopilot = Some(Autopilot::new(Program::FlyTo));
+        stop_warp_drive(&mut f);
+        assert!(f.autopilot.is_some());
+        f.attitude = Attitude::Prograde;
+        f.hold_altitude = Some(1000.0);
+        f.sync_velocity = true;
+        f.throttle = 1.0;
+        stop_programs(&mut f);
+        assert!(f.autopilot.is_none() && f.attitude == Attitude::Free && f.hold_altitude.is_none() && !f.sync_velocity);
+        assert_eq!(f.throttle, 0.0);
+    }
+
+    #[test]
+    fn thrusters_follow_the_turn_command_the_programs_write() {
+        let ship = Ship {
+            design: Arc::new(ShipDesign::default()),
+            vel: DVec3::ZERO,
+            ang_vel: DVec3::ZERO,
+            engine: 0.0,
+            warp: 0.0,
+            clearance: 1.0,
+            radius: 1.0,
+            landed: None,
+        };
+        // A nose thruster blowing to +x pushes the nose left: it fires for a left yaw.
+        let spec = PlumeSpec {
+            group: EffectGroup::Thruster,
+            kind: "Ion".into(),
+            color: [1.0; 3],
+            pos: Vec3::new(5.0, 0.0, -10.0),
+            dir: Vec3::X,
+            x_axis: Vec3::Y,
+            size: Vec3::ONE,
+            brightness: 1.0,
+            sound: None,
+            volume: 0.02,
+        };
+        let yaw = |y: f64| ShipInput { turn: DVec3::new(0.0, y, 0.0), ..default() };
+        assert!((plume_level(&spec, &ship, &yaw(1.0)) - 0.8).abs() < 1e-6);
+        assert_eq!(plume_level(&spec, &ship, &yaw(-1.0)), 0.0);
     }
 }

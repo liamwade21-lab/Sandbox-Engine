@@ -1043,7 +1043,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
     } = input;
     // Heights.
     let height = layers.bump.as_ref().and_then(|bl| {
-        let anc = key.ancestor_at(key.level.min(bl.max_level));
+        let anc = bl.source(key);
         let path = bl.tile_path(anc);
         let cached = caches.heights.lock().ok()?.get(&path).cloned();
         let tile = match cached {
@@ -1406,7 +1406,7 @@ pub struct BodyAttached {
 fn layer_rect(layer: Option<&TileLayer>, key: TileKey) -> (Option<String>, Vec4) {
     match layer {
         Some(l) => {
-            let anc = key.ancestor_at(key.level.min(l.max_level));
+            let anc = l.source(key);
             let (u, v, s) = key.rect_in(anc);
             (Some(l.tile_path(anc)), Vec4::new(u as f32, v as f32, s as f32, 1.0))
         }

@@ -194,7 +194,7 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
   ring of `N(300, 100) sqrt(M/M_J)` bodies (at most 1000) also counts in SE; the port does not generate
   those bodies. SE's moon generator (FUN_1404fdc90, about 1350 lines) is not ported, so the port places
   SE's number of moons with its own rules (below).
-* **Not generated**: SE's 100-199 comets per star.
+* **Comets**: SE's 100-199 comets per single star that is not a brown dwarf (`procgen/se_comets.rs`), named `<star>C<n>`; not yet for stars in multiple systems.
 * **Assumed**: the star's C/O (0.55) and metallicity factor (`10^[Fe/H]`), which SE's octree draws. The
   star's seed is the port's (the port's stars are not SE's octree stars), so a system follows SE's rules
   without matching SE's system for the same star. SE's draws inside FUN_1405045a0 / FUN_140504070 /
