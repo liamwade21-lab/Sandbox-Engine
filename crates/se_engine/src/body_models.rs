@@ -48,25 +48,9 @@ impl Plugin for BodyModelsPlugin {
     }
 }
 
-/// SE's Hapke settings of a catalog body's `Surface` (as the terrain reads them): the
-/// Hapke-to-Lambert mix (`Hapke` or `Lommel`, 0 Lambert) and `HapkeParams` (SpotBright, 1 / SpotWidth,
-/// SpotBrightCB, 1 / SpotWidthCB).
-fn body_hapke(data: &SeData, body: &SystemBody) -> (f32, Vec4) {
-    let se_core::catalog::ObjectRef::Body(i) = body.obj else {
-        return (0.0, Vec4::ZERO);
-    };
-    let s = data.catalog.bodies[i as usize].block.sub("Surface");
-    let f = |k: &str| s.and_then(|s| s.f64(k)).unwrap_or(0.0) as f32;
-    let inv = |w: f32| if w > 0.0 { 1.0 / w } else { 0.0 };
-    let (bw, cw) = (f("SpotWidth"), f("SpotWidthCB"));
-    let mix = s.and_then(|s| s.f64("Hapke").or_else(|| s.f64("Lommel"))).unwrap_or(0.0) as f32;
-    (mix, Vec4::new(if bw > 0.0 { f("SpotBright") } else { 0.0 }, inv(bw), if cw > 0.0 { f("SpotBrightCB") } else { 0.0 }, inv(cw)))
-}
-
 fn update_body_models(
     mut commands: Commands,
     data: Res<SeData>,
-    ambient: Res<crate::system::AmbientLighting>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<ModelMaterial>>,
@@ -87,26 +71,17 @@ fn update_body_models(
                     model.state = match result {
                         Some(loaded) => {
                             let mut parts = Vec::new();
-                            let (hapke_mix, hapke) = body_hapke(&data, body);
-                            for (mesh, maps) in loaded.parts {
-                                let has_normal = maps.normal.is_some();
-                                let mut add = |img: Option<Image>, fallback: fn() -> Image| images.add(img.unwrap_or_else(fallback));
+                            for (mesh, image) in loaded.parts {
+                                let texture = images.add(image.unwrap_or_else(crate::models::white_texture));
                                 let mat = mats.add(ModelMaterial {
                                     u: ModelUniform {
                                         sun_dir: light.sun_dir.extend(light.sun_intensity),
                                         sun_color: light.sun_color.extend(1.0),
-                                        base_color: maps.diff_scale.extend(ambient.0),
+                                        base_color: Vec4::new(1.0, 1.0, 1.0, 0.02),
                                         light_dir: light.extra_uniforms(false).0,
                                         light_color: light.extra_uniforms(false).1,
-                                        spec: maps.spec,
-                                        detail: maps.detail,
-                                        hapke,
-                                        params: Vec4::new(hapke_mix, if has_normal { 1.0 } else { 0.0 }, 0.0, 0.0),
                                     },
-                                    texture: add(maps.diffuse, crate::models::white_texture),
-                                    normal: add(maps.normal, crate::models::flat_normal_texture),
-                                    det_diff: add(maps.det_diff, crate::models::white_texture),
-                                    det_norm: add(maps.det_norm, crate::models::flat_normal_texture),
+                                    texture,
                                 });
                                 let e = commands
                                     .spawn((
@@ -150,7 +125,6 @@ fn update_body_models(
                             m.u.sun_dir = light.sun_dir.extend(light.sun_intensity);
                             m.u.sun_color = light.sun_color.extend(1.0);
                             (m.u.light_dir, m.u.light_color) = light.extra_uniforms(false);
-                            m.u.base_color.w = ambient.0;
                         }
                     }
                 }

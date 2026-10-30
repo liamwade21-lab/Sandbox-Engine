@@ -54,29 +54,12 @@ pub struct CfgScript {
 }
 
 /// One `Material "name" { ... }` preset from a `.sml` file, with texture paths resolved
-/// to VFS paths (`None` if the map is not set or cannot be found). The keys are those of SE's
-/// model shader (ship.glsl): `DiffColor` (the colour, or the map's tint) or `DiffColorScale`,
-/// `SpecColor` / `SpecPower`, a `NormMap` or a `BumpMap` of `BumpHeight`, and the detail maps
-/// `DetDiffMap` / `DetBumpMap` tiled `DetDiffScale` / `DetBumpScale` times over the UVs, mixed in
-/// by `DetDiffMag` / `DetBumpMag`, the bump `DetBumpHeight` high.
+/// to VFS paths (`None` if the map is not set or cannot be found).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MaterialPreset {
     pub name: String,
     pub diff_map: Option<String>,
     pub norm_map: Option<String>,
-    pub bump_map: Option<String>,
-    pub bump_height: Option<f64>,
-    pub diff_color: Option<[f64; 3]>,
-    pub diff_color_scale: Option<[f64; 3]>,
-    pub spec_color: Option<[f64; 3]>,
-    pub spec_power: Option<f64>,
-    pub det_diff_map: Option<String>,
-    pub det_bump_map: Option<String>,
-    pub det_diff_scale: Option<f64>,
-    pub det_bump_scale: Option<f64>,
-    pub det_diff_mag: Option<f64>,
-    pub det_bump_mag: Option<f64>,
-    pub det_bump_height: Option<f64>,
 }
 
 /// Fully resolved model, as used by the renderer.
@@ -105,17 +88,9 @@ pub struct ModelScript {
     pub textures: Vec<(String, String)>,
     /// `(material name, VFS path of NormMap texture)` for every material with a normal map.
     pub normal_maps: Vec<(String, String)>,
-    /// The `.sml` presets of the materials found, texture paths resolved.
-    pub presets: Vec<MaterialPreset>,
 }
 
 impl ModelScript {
-    /// The `.sml` preset of the object material index `index`, if any.
-    pub fn preset_for_material(&self, index: usize) -> Option<&MaterialPreset> {
-        let name = self.materials.get(index)?;
-        self.presets.iter().find(|p| p.name.eq_ignore_ascii_case(name))
-    }
-
     /// Diffuse texture VFS path for the object material index `index`, if any.
     pub fn diffuse_for_material(&self, index: usize) -> Option<&str> {
         let name = self.materials.get(index)?;
@@ -185,26 +160,10 @@ pub fn parse_material_presets(src: &str) -> Vec<MaterialPreset> {
         .filter_map(|m| {
             let name = first_str(m)?.to_owned();
             let blk = m.block.as_ref();
-            let s = |k: &str| blk.and_then(|b| b.str(k)).map(str::to_owned);
-            let f = |k: &str| blk.and_then(|b| b.f64(k));
-            let v = |k: &str| blk.and_then(|b| b.vec3(k));
             Some(MaterialPreset {
                 name,
-                diff_map: s("DiffMap"),
-                norm_map: s("NormMap"),
-                bump_map: s("BumpMap"),
-                bump_height: f("BumpHeight"),
-                diff_color: v("DiffColor"),
-                diff_color_scale: v("DiffColorScale"),
-                spec_color: v("SpecColor"),
-                spec_power: f("SpecPower"),
-                det_diff_map: s("DetDiffMap"),
-                det_bump_map: s("DetBumpMap"),
-                det_diff_scale: f("DetDiffScale"),
-                det_bump_scale: f("DetBumpScale"),
-                det_diff_mag: f("DetDiffMag"),
-                det_bump_mag: f("DetBumpMag"),
-                det_bump_height: f("DetBumpHeight"),
+                diff_map: blk.and_then(|b| b.str("DiffMap")).map(str::to_owned),
+                norm_map: blk.and_then(|b| b.str("NormMap")).map(str::to_owned),
             })
         })
         .collect()
@@ -258,12 +217,12 @@ pub fn load_material_presets(vfs: &Vfs) -> Vec<MaterialPreset> {
     for file in vfs.list_ext("textures/planets/Asteroids", "sml") {
         let Ok(src) = vfs.read_string(&file) else { continue };
         for mut p in parse_material_presets(&src) {
-            let resolve = |t: Option<String>| t.and_then(|t| resolve_relative(&file, &t, "textures", |c| vfs.exists(c)));
-            p.diff_map = resolve(p.diff_map);
-            p.norm_map = resolve(p.norm_map);
-            p.bump_map = resolve(p.bump_map);
-            p.det_diff_map = resolve(p.det_diff_map);
-            p.det_bump_map = resolve(p.det_bump_map);
+            p.diff_map = p
+                .diff_map
+                .and_then(|t| resolve_relative(&file, &t, "textures", |c| vfs.exists(c)));
+            p.norm_map = p
+                .norm_map
+                .and_then(|t| resolve_relative(&file, &t, "textures", |c| vfs.exists(c)));
             out.push(p);
         }
     }
@@ -318,7 +277,6 @@ pub fn load_model_script(vfs: &Vfs, model_ref: &str) -> Option<ModelScript> {
             if let Some(n) = &p.norm_map {
                 out.normal_maps.push((mat.clone(), n.clone()));
             }
-            out.presets.push(p.clone());
         }
     }
     out.materials = cfg.materials;
@@ -405,27 +363,6 @@ Material	"Asteroid_Eros"
         assert_eq!(p[1].name, "Asteroid_Eros");
         assert_eq!(p[1].diff_map.as_deref(), Some("asteroids/Eros_albedo.png"));
         assert_eq!(p[1].norm_map.as_deref(), Some("asteroids/Eros_normal.png"));
-    }
-
-    #[test]
-    fn presets_parse_colours_and_detail_maps() {
-        let p = parse_material_presets(
-            "Material \"Comet_67P\"\n{\n DiffColorScale (0.10 0.10 0.10)\n SpecColor (0.25 0.25 0.25)\n SpecPower 120.0\n \
-             DetDiffMap \"asteroids/LavaFlow002_COL.png\"\n DetBumpMap \"asteroids/LavaFlow002_DISP.png\"\n DetDiffScale 512\n \
-             DetBumpScale 512\n DetDiffMag 0.75\n DetBumpMag 0.5\n DetBumpHeight 8.0\n}\n\
-             Material \"Asteroid_2014MU69\"\n{\n DiffColor (0.1 0.1 0.1)\n BumpMap \"asteroids/2014MU69_bump.png\"\n BumpHeight 8.0\n}\n",
-        );
-        let c = &p[0];
-        assert_eq!((c.diff_color_scale, c.diff_color), (Some([0.1, 0.1, 0.1]), None));
-        assert_eq!((c.spec_color, c.spec_power), (Some([0.25, 0.25, 0.25]), Some(120.0)));
-        assert_eq!(c.det_diff_map.as_deref(), Some("asteroids/LavaFlow002_COL.png"));
-        assert_eq!(c.det_bump_map.as_deref(), Some("asteroids/LavaFlow002_DISP.png"));
-        assert_eq!((c.det_diff_scale, c.det_bump_scale), (Some(512.0), Some(512.0)));
-        assert_eq!((c.det_diff_mag, c.det_bump_mag, c.det_bump_height), (Some(0.75), Some(0.5), Some(8.0)));
-        assert_eq!((p[1].bump_map.as_deref(), p[1].bump_height), (Some("asteroids/2014MU69_bump.png"), Some(8.0)));
-        let s = ModelScript { materials: vec!["comet_67p".into()], presets: p.clone(), ..Default::default() };
-        assert_eq!(s.preset_for_material(0).map(|p| p.name.as_str()), Some("Comet_67P"));
-        assert!(s.preset_for_material(1).is_none());
     }
 
     #[test]
