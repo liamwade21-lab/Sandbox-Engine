@@ -46,6 +46,12 @@ agents can call Ghidra at once.
   `data/` and `.pak` files (the port's `se_core::vfs` reads paks).
 
 ## Build, test, run
+Render passes: never add a full-screen pass that flips the main textures (`post_process_write`,
+Bevy's `FullscreenMaterial`). An extra flip made every few frames show a wrong image (a flicker);
+write back into the same main texture through a scratch texture as `color_correction.rs` does.
+After any render change, capture ~30 consecutive frames of a paused, still view (`shot PATH`
+runs one per frame) and check they are identical.
+
 Use your own target dir (given in your prompt; it is pre-seeded so only the port's crates
 rebuild) and the `agent` profile (release optimisation without LTO, incremental: about a
 minute a rebuild instead of six). Never build into the main checkout's `target/`.
