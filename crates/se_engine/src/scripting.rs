@@ -743,7 +743,8 @@ impl ScriptRunner {
                 cx.cam.turn_vel = DVec3::ZERO;
                 self.turn = None;
             }
-            Op::Speed(v) => cx.cam.speed = clamp_speed(*v),
+            // In Spacecraft / Aircraft mode a tenth of it as the acceleration (FUN_140561a40).
+            Op::Speed(v) => cx.cam.assign_velocity(*v),
             // SE's script MoveMode (FUN_140561bb0 -> FUN_1405c4fb0): 1-3 the camera's movement modes.
             Op::MoveMode(m) => match crate::camera::MoveMode::from_number(*m as u8) {
                 Some(mode) => cx.cam.set_move_mode(mode),
@@ -1154,7 +1155,7 @@ impl ScriptRunner {
         }
         if let Some(m) = &self.move_limit {
             if let Some(kms) = m.limits.speed_kms {
-                cx.cam.speed = cx.cam.speed.min(clamp_speed(kms * 1000.0));
+                cx.cam.speed = cx.cam.speed.min(clamp_speed(cx.cam.move_mode.assigned(kms * 1000.0)));
             }
             if let Some(c) = m.center {
                 let eph = Ephemeris::new(cx.cat());

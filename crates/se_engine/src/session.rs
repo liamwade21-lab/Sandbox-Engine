@@ -157,15 +157,23 @@ pub(crate) fn save_on_exit(
     let cat = &data.catalog;
     let rot = cam.rot.normalize();
     let piloting = flight.is_some_and(|f| f.active && f.ship.is_some());
+    // SE's MoveMode: 4 while a spacecraft is flown (FUN_1401be6b0), which comes back as Free mode.
+    let move_mode = if piloting { 4 } else { cam.move_mode.number() };
+    // The Velocity scale goes with the mode written: x100 for 2 and 3, else the camera's assigned
+    // velocity (an acceleration back into one; flying a ship sets Free mode, so this is a guard).
+    let speed = match (move_mode, cam.move_mode.inertial()) {
+        (2 | 3, _) => cam.speed * SAVE_ACCEL_SCALE,
+        (_, true) => cam.speed * crate::camera::MODE_SPEED_FACTOR,
+        _ => cam.speed,
+    };
     let s = Session {
-        // SE's MoveMode: 4 while a spacecraft is flown (FUN_1401be6b0).
-        move_mode: if piloting { 4 } else { cam.move_mode.number() },
+        move_mode,
         bind_mode: cam.bind_mode(),
         // SE's RefBody: the body the camera is bound to, else the selection.
         ref_body: cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string()).unwrap_or_default(),
         pos: [cam.pos.x, cam.pos.y, cam.pos.z],
         rot: [rot.w, rot.x, rot.y, rot.z],
-        speed_pc: cam.speed * if cam.move_mode.inertial() { SAVE_ACCEL_SCALE } else { 1.0 } / se_core::units::METERS_PER_PC,
+        speed_pc: speed / se_core::units::METERS_PER_PC,
         rate: sim.rate,
         jd: sim.jd,
     };

@@ -524,7 +524,8 @@ fn input_controls(
     mut preset_notches: Local<f32>,
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
     (mut msg, i18n, mut last_sel): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, Local<Option<ObjectRef>>),
-    mut last_rot: Local<Option<DQuat>>,
+    // The camera's rotation when the Aircraft velocity was last turned, and that frame's number.
+    (mut last_rot, frames): (Local<Option<(DQuat, u32)>>, Res<bevy::diagnostic::FrameCount>),
 ) {
     let (egui_pointer, egui_keys) = egui
         .ctx_mut()
@@ -626,6 +627,7 @@ fn input_controls(
         }
     }
     if egui_keys {
+        *last_rot = None;
         return;
     }
     let plus = keys.just_pressed(KeyCode::NumpadAdd) || keys.just_pressed(KeyCode::Equal);
@@ -729,10 +731,15 @@ fn input_controls(
         }
     }
     // Aircraft: SE keeps the velocity in the camera frame, so it turns as the camera turns.
-    if let (MoveMode::Aircraft, Some(prev)) = (cam.move_mode, *last_rot) {
-        cam.velocity = aircraft_turn(prev, cam.rot, cam.velocity);
+    // Only from the previous frame: after frames this system skipped (typing, flying a ship) the
+    // rotation meanwhile is not applied at once.
+    let frame = frames.0;
+    if let (MoveMode::Aircraft, Some((prev, f))) = (cam.move_mode, *last_rot) {
+        if f.wrapping_add(1) == frame {
+            cam.velocity = aircraft_turn(prev, cam.rot, cam.velocity);
+        }
     }
-    *last_rot = Some(cam.rot);
+    *last_rot = Some((cam.rot, frame));
 
     if keys.just_pressed(KeyCode::KeyG) && !alt {
         if let Some(t) = cam.selected {
@@ -817,15 +824,21 @@ fn move_mode_keys(
     mut cam: ResMut<FlyCamera>,
     flight: Option<ResMut<crate::ship::Flight>>,
     mut egui: EguiContexts,
-    (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>),
+    (mut msg, i18n, mut was_flying): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, Local<bool>),
 ) {
+    let mut flight = flight;
+    let piloting = flight.as_ref().is_some_and(|f| f.active);
+    // SE flies a spacecraft in Free mode (FUN_1401f6aa0 sets it), however the flight began: key 4,
+    // Enter, F or the Ships window.
+    if piloting && !*was_flying {
+        cam.set_move_mode(MoveMode::Free);
+    }
+    *was_flying = piloting;
     let typing = egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false);
     let mods = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight];
     if typing || keys.any_pressed(mods) {
         return;
     }
-    let mut flight = flight;
-    let piloting = flight.as_ref().is_some_and(|f| f.active);
     for (k, mode) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3].into_iter().zip(MoveMode::ALL) {
         if !keys.just_pressed(k) || (mode == cam.move_mode && !piloting) {
             continue;
@@ -1307,7 +1320,7 @@ fn run_commands(
                 q.click = Some(Vec2::new(v[0], v[1]));
             }
         }
-        "speed" => cam.speed = clamp_speed(arg.parse::<f64>().unwrap_or(100.0) * 1000.0),
+        "speed" => cam.assign_velocity(arg.parse::<f64>().unwrap_or(100.0) * 1000.0),
         "fov" => cam.fov_deg = arg.parse().unwrap_or(DEFAULT_FOV_DEG),
         // zoomto DEG: animate the FOV there over ZoomTime, as the middle button and Home do.
         "zoomto" => cam.fov_target = arg.parse::<f32>().ok().map(|f| f.clamp(MIN_FOV_DEG, MAX_FOV_DEG)),

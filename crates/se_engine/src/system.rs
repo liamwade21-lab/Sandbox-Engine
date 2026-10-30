@@ -528,7 +528,14 @@ fn select_active_system(
                 // Beyond SE's CacheSizeSolarSystems the least recently entered systems are freed;
                 // entering one again generates it anew (the same, from its seed).
                 let cap = memory.as_ref().map_or(64, |m| m.solar_systems);
-                let keep = [Some(root), active.root].into_iter().flatten().collect::<Vec<_>>();
+                // Never the systems the camera still refers to: its selection, the object it is
+                // bound to or flying to, and the earlier selections (Backspace).
+                let refs = cam.selected.into_iter().chain(cam.follow.map(|f| f.target)).chain(cam.travel.as_ref().map(|t| t.target)).chain(cam.history.iter().copied());
+                let keep = [Some(root), active.root]
+                    .into_iter()
+                    .flatten()
+                    .chain(refs.filter(|r| matches!(r, ObjectRef::Star(_) | ObjectRef::Body(_))).filter_map(|r| cat_mut.system_root(r)))
+                    .collect::<Vec<_>>();
                 for old in systems_to_unload(entered, generated.len(), cap, &keep) {
                     let name = cat_mut.stars[old as usize].names[0].clone();
                     let n = cat_mut.unload_generated(&name);
@@ -818,7 +825,8 @@ fn needs_system(cat: &se_core::catalog::Catalog, idx: u32) -> bool {
 }
 
 /// The generated systems to free when `count` are kept and the cache holds `cap`: the least
-/// recently entered first, never one in `keep` (the one entered and the one being left).
+/// recently entered first, never one in `keep` (the one entered, the one being left and those the
+/// camera's selection, binding, flight and selection history are in).
 fn systems_to_unload(entered: &std::collections::VecDeque<u32>, count: usize, cap: usize, keep: &[u32]) -> Vec<u32> {
     entered.iter().copied().filter(|r| !keep.contains(r)).take(count.saturating_sub(cap)).collect()
 }
