@@ -32,16 +32,19 @@
 mod air;
 mod autopilot;
 mod engine_sound;
+pub mod hud;
+mod manager;
+pub mod warp;
 
 use std::sync::Arc;
 
-use bevy::camera::visibility::NoFrustumCulling;
+use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::math::{DQuat, DVec2, DVec3};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass};
 use se_core::catalog::ObjectRef;
 use se_core::ephemeris::Ephemeris;
 use se_core::ship::aero::{AeroInput, aero_step};
@@ -90,12 +93,20 @@ pub struct ShipLibrary {
     pub designs: Vec<Arc<ShipDesign>>,
 }
 
-/// State of the Ships window.
+/// State of the Ships window (the ships manager, `manager.rs`).
 #[derive(Resource, Default)]
 pub struct ShipUi {
     pub show: bool,
+    /// The design picked in the Build menu, and its filter.
     pub selected: usize,
     pub filter: String,
+    pub tab: manager::Tab,
+    pub build_menu: bool,
+    /// The Build menu's class tab.
+    pub class: usize,
+    /// The ship picked in the list, and its nickname being edited.
+    pub picked: Option<Entity>,
+    pub nick: String,
 }
 
 /// Script and UI requests (`ship NAME`, `throttle X`, ...).
@@ -146,6 +157,10 @@ pub struct FlightInfo {
     /// Target name and distance from its centre (m).
     pub target: String,
     pub target_distance: f64,
+    /// Velocity the warp drive multiplies (relative to its frame, universe axes, m/s).
+    pub warp_vel: DVec3,
+    /// SE's ship panel and the HUD's pointers.
+    pub panel: hud::PanelInfo,
 }
 
 #[derive(Resource)]
@@ -192,6 +207,12 @@ pub struct Flight {
     pub hold_altitude: Option<f64>,
     /// The Physics key `Aero` (main-def.cfg: true).
     pub aero: bool,
+    /// The HUD mode (Ctrl+1 .. Ctrl+5).
+    pub hud: hud::HudMode,
+    /// Control remotely: the ship is flown, the camera stays where it is.
+    pub remote: bool,
+    /// Last build number given ([`Ship::serial`]).
+    pub next_serial: u32,
 }
 
 impl Default for Flight {
@@ -225,6 +246,9 @@ impl Default for Flight {
             sync_velocity: false,
             hold_altitude: None,
             aero: true,
+            hud: hud::HudMode::default(),
+            remote: false,
+            next_serial: 0,
         }
     }
 }
@@ -261,6 +285,24 @@ pub struct Ship {
     pub clearance: f64,
     pub radius: f64,
     pub landed: Option<Landed>,
+    /// SE's Nickname (ships manager), empty for none.
+    pub nickname: String,
+    /// One of the player's ships ("My ships"), or another's ("Other ships").
+    pub mine: bool,
+    /// Build number, the ship's number in the manager and the script commands.
+    pub serial: u32,
+    /// Where an idle ship holds station ([`park_ships`]).
+    pub parked: Option<Parked>,
+}
+
+/// An idle ship's place relative to the body it holds station at: in the body's turning frame
+/// close to it (`turning`), else in fixed axes.
+#[derive(Clone, Copy, Debug)]
+pub struct Parked {
+    pub body: Entity,
+    pub local_pos: DVec3,
+    pub local_rot: DQuat,
+    pub turning: bool,
 }
 
 /// The ship rests on a body and turns with it.
@@ -322,7 +364,7 @@ pub struct ShipPlugin;
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
         add_hull_material(app);
-        app.add_plugins(MaterialPlugin::<PlumeMaterial>::default())
+        app.add_plugins((MaterialPlugin::<PlumeMaterial>::default(), warp::WarpPlugin))
             .init_resource::<Flight>()
             .insert_resource(ShipUi { show: std::env::var_os("SE_SHIPS_WINDOW").is_some(), ..default() })
             .init_resource::<ShipLibrary>()
@@ -341,7 +383,7 @@ impl Plugin for ShipPlugin {
             .add_systems(
                 PostUpdate,
                 // Plumes and sounds after the physics, which adds the programs' RCS and turn commands.
-                (ship_physics, ship_camera, update_ship_visuals, update_engine_sounds)
+                (park_ships, ship_physics, ship_camera, update_ship_visuals, update_engine_sounds)
                     .chain()
                     .in_set(UniverseSet::Camera)
                     .after(crate::camera::travel_and_move)
@@ -351,7 +393,10 @@ impl Plugin for ShipPlugin {
                 PostUpdate,
                 ship_near_plane.in_set(UniverseSet::Camera).after(crate::camera::sync_camera_transform),
             )
-            .add_systems(EguiPrimaryContextPass, (draw_ship_window, draw_flight_hud).in_set(crate::skin::UiSet::Draw));
+            .add_systems(
+                EguiPrimaryContextPass,
+                (manager::draw_ship_window, hud::draw_hud_pointers, hud::draw_flight_hud).in_set(crate::skin::UiSet::Draw),
+            );
     }
 }
 
@@ -460,26 +505,79 @@ fn ship_commands(
     mut cam: ResMut<FlyCamera>,
     time: Res<Time>,
     bodies: Query<&SystemBody>,
-    ships: Query<(Entity, &UPosition, &Ship)>,
+    mut ships: Query<(Entity, &UPosition, &mut Ship)>,
     hull_defaults: Res<HullDefaults>,
 ) {
+    let (mut teleports, mut nicknames) = (Vec::new(), Vec::new());
     for msg in reader.read() {
         let arg = msg.arg.trim();
         match msg.verb.as_str() {
             "ship" => {
-                let design = if arg.is_empty() {
-                    lib.designs.first().cloned()
-                } else {
-                    find_design(&lib, arg)
+                // `ship NAME` builds a ship and takes control of it; the ships manager's actions:
+                // `ship build|fleet|other NAME`, `ship take|remote|teleport|destroy SHIP`,
+                // `ship destroyall`, `ship nick SHIP TEXT` (SHIP: its number or nickname).
+                let (sub, rest) = arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim()));
+                let (action, name) = match manager::Action::parse(sub) {
+                    Some(a) => (a, rest),
+                    None => (manager::Action::Fly, arg),
                 };
-                let Some(design) = design else {
-                    warn!("ship: no design matching '{arg}'");
-                    continue;
-                };
-                for (e, ..) in &ships {
-                    commands.entity(e).despawn();
+                match action {
+                    a @ (manager::Action::Fly | manager::Action::Build | manager::Action::Fleet | manager::Action::Other) => {
+                        let design = if name.is_empty() { lib.designs.first().cloned() } else { find_design(&lib, name) };
+                        let Some(design) = design else {
+                            warn!("ship: no design matching '{name}'");
+                            continue;
+                        };
+                        let count = if a == manager::Action::Fleet { manager::FLEET_SIZE } else { 1 };
+                        for i in 0..count {
+                            let place = if a == manager::Action::Fly { Placement::Pilot } else { Placement::Ahead(i) };
+                            let mine = a != manager::Action::Other;
+                            spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design.clone(), hull_defaults.thermal_shift, place, mine);
+                        }
+                    }
+                    manager::Action::DestroyAll => {
+                        for (e, _, s) in &ships {
+                            if s.mine {
+                                commands.entity(e).despawn();
+                                if flight.ship == Some(e) {
+                                    flight.ship = None;
+                                    flight.active = false;
+                                }
+                            }
+                        }
+                    }
+                    a => {
+                        let (who, text) = if a == manager::Action::Nick { rest.split_once(' ').map_or((rest, ""), |(w, t)| (w, t.trim())) } else { (rest, "") };
+                        let Some(e) = manager::find_ship(ships.iter().map(|(e, _, s)| (e, s)), who) else {
+                            warn!("ship {sub}: no ship '{who}'");
+                            continue;
+                        };
+                        match a {
+                            manager::Action::Take | manager::Action::Remote => {
+                                if let Ok((_, _, s)) = ships.get(e) {
+                                    let design = s.design.clone();
+                                    take_control(&mut flight, &mut cam, e, &design, a == manager::Action::Remote);
+                                }
+                            }
+                            manager::Action::Teleport => {
+                                if let Ok((_, _, s)) = ships.get(e) {
+                                    let (p, r, v) = place_ahead(&cam, &data, &sim, &bodies, &s.design, 0);
+                                    commands.entity(e).insert((UPosition(p), UOrientation(r)));
+                                    teleports.push((e, v));
+                                }
+                            }
+                            manager::Action::Destroy => {
+                                commands.entity(e).despawn();
+                                if flight.ship == Some(e) {
+                                    flight.ship = None;
+                                    flight.active = false;
+                                }
+                            }
+                            manager::Action::Nick => nicknames.push((e, text.to_string())),
+                            _ => {}
+                        }
+                    }
                 }
-                spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design, hull_defaults.thermal_shift);
             }
             "throttle" => {
                 // `throttle X` (signed: main, or retro below 0), `throttle main|retro|hover X` (0..1).
@@ -579,8 +677,16 @@ fn ship_commands(
                     "aero" => flight.aero = on,
                     "sync" => flight.sync_velocity = on,
                     "killrot" => flight.kill_rotation = on,
+                    "hud" => {
+                        if let Some(m) = hud::HudMode::parse(rest) {
+                            flight.hud = m;
+                        }
+                    }
                     "holdalt" => flight.hold_altitude = if on { Some(flight.info.altitude) } else { None },
-                    _ => flight.active = flight.ship.is_some() && !matches!(arg, "off" | "0" | "false"),
+                    _ => {
+                        flight.active = flight.ship.is_some() && !matches!(arg, "off" | "0" | "false");
+                        flight.remote = false;
+                    }
                 }
             }
             "unship" => {
@@ -593,10 +699,55 @@ fn ship_commands(
             _ => {}
         }
     }
+    for (e, v) in teleports {
+        if let Ok((_, _, mut s)) = ships.get_mut(e) {
+            s.vel = v;
+            s.landed = None;
+            s.parked = None;
+            s.ang_vel = DVec3::ZERO;
+        }
+    }
+    for (e, t) in nicknames {
+        if let Ok((_, _, mut s)) = ships.get_mut(e) {
+            s.nickname = t;
+        }
+    }
 }
 
-/// Places `design` so that its first chase camera coincides with the free camera, at rest
-/// relative to the nearest body, and enters flight mode.
+/// Where a new ship goes: in the pilot's seat (its first chase camera at the free camera), or
+/// built ahead of the camera, the `i`-th of a fleet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Placement {
+    Pilot,
+    Ahead(usize),
+}
+
+/// Velocity of the frame a ship at `pos` is at rest in: that of the body with the nearest surface.
+fn rest_velocity(data: &SeData, sim: &SimTime, bodies: &Query<&SystemBody>, pos: UPos) -> DVec3 {
+    let eph = Ephemeris::new(&data.catalog);
+    bodies
+        .iter()
+        .min_by(|a, b| {
+            let da = a.pos.delta_m(pos).length() - a.radius_m;
+            let db = b.pos.delta_m(pos).length() - b.radius_m;
+            da.total_cmp(&db)
+        })
+        .map(|b| reference_velocity(&eph, b.obj, b.pos, b.radius_m, pos, sim))
+        .unwrap_or(DVec3::ZERO)
+}
+
+/// Position, orientation and rest velocity of the `i`-th ship built ahead of the camera (SE's
+/// Build and Teleport here): facing the camera's way, a few lengths ahead, a fleet in a V.
+fn place_ahead(cam: &FlyCamera, data: &SeData, sim: &SimTime, bodies: &Query<&SystemBody>, design: &ShipDesign, i: usize) -> (UPos, DQuat, DVec3) {
+    let preset = design.default_camera();
+    let orient = (cam.rot * preset.rot.inverse()).normalize();
+    let local = manager::fleet_offset(i, design.length_m);
+    let pos = cam.pos.offset_m(cam.rot * local);
+    (pos, orient, rest_velocity(data, sim, bodies, pos))
+}
+
+/// Builds `design` at `place`, at rest relative to the nearest body; in the pilot's seat it
+/// enters flight mode.
 #[allow(clippy::too_many_arguments)]
 fn spawn_ship(
     commands: &mut Commands,
@@ -607,6 +758,8 @@ fn spawn_ship(
     bodies: &Query<&SystemBody>,
     design: Arc<ShipDesign>,
     thermal_shift: f32,
+    place: Placement,
+    mine: bool,
 ) {
     let full = match ShipDesign::load(&data.vfs, &design.path) {
         Some(d) => Arc::new(d),
@@ -615,64 +768,69 @@ fn spawn_ship(
             return;
         }
     };
-    let preset = full.default_camera();
-    let local_cam = preset.pos;
-    let orient = (cam.rot * preset.rot.inverse()).normalize();
-    let pos = cam.pos.offset_m(-(orient * local_cam));
-    let eph = Ephemeris::new(&data.catalog);
-    let vel = bodies
-        .iter()
-        .min_by(|a, b| {
-            let da = a.pos.delta_m(pos).length() - a.radius_m;
-            let db = b.pos.delta_m(pos).length() - b.radius_m;
-            da.total_cmp(&db)
-        })
-        .map(|b| reference_velocity(&eph, b.obj, b.pos, b.radius_m, pos, sim))
-        .unwrap_or(DVec3::ZERO);
+    let (pos, orient, vel) = match place {
+        Placement::Pilot => {
+            let preset = full.default_camera();
+            let orient = (cam.rot * preset.rot.inverse()).normalize();
+            let pos = cam.pos.offset_m(-(orient * preset.pos));
+            (pos, orient, rest_velocity(data, sim, bodies, pos))
+        }
+        Placement::Ahead(i) => place_ahead(cam, data, sim, bodies, &full, i),
+    };
 
     let vfs = data.vfs.clone();
     let d2 = full.clone();
     let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift) });
+    flight.next_serial += 1;
+    let ship = Ship {
+        design: full.clone(),
+        vel,
+        ang_vel: DVec3::ZERO,
+        main: 0.0,
+        retro: 0.0,
+        hover: 0.0,
+        warp: 0.0,
+        clearance: full.length_m * 0.1,
+        radius: full.length_m * 0.5,
+        landed: None,
+        nickname: String::new(),
+        mine,
+        serial: flight.next_serial,
+        parked: None,
+    };
     let id = commands
-        .spawn((
-            Ship {
-                design: full.clone(),
-                vel,
-                ang_vel: DVec3::ZERO,
-                main: 0.0,
-                retro: 0.0,
-                hover: 0.0,
-                warp: 0.0,
-                clearance: full.length_m * 0.1,
-                radius: full.length_m * 0.5,
-                landed: None,
-            },
-            ShipLoading(task),
-            ShipVisuals::default(),
-            UPosition(pos),
-            UOrientation(orient),
-            Transform::IDENTITY,
-            Visibility::Visible,
-        ))
+        .spawn((ship, ShipLoading(task), ShipVisuals::default(), UPosition(pos), UOrientation(orient), Transform::IDENTITY, Visibility::Visible))
         .id();
-    flight.ship = Some(id);
+    if place == Placement::Pilot {
+        take_control(flight, cam, id, &full, false);
+        info!("flying {} ({} modules)", full.name, full.modules.len());
+    } else {
+        info!("built {} ({} modules)", full.name, full.modules.len());
+    }
+}
+
+/// SE's Take control / Control remotely: fly `ship`, from its chase camera or from where the
+/// camera is.
+fn take_control(flight: &mut Flight, cam: &mut FlyCamera, e: Entity, design: &ShipDesign, remote: bool) {
+    if flight.ship != Some(e) {
+        stop_programs(flight);
+        flight.stop_engines();
+        flight.warp_on = false;
+        flight.warp_cmd = design.warp_boost_log;
+        flight.cam_mode = 0;
+        flight.zoom = 1.0;
+        flight.orbit_dist = design.length_m * 1.3;
+        flight.input = ShipInput::default();
+        flight.autopilot = None;
+    }
+    flight.ship = Some(e);
     flight.active = true;
-    flight.stop_engines();
-    flight.warp_on = false;
-    flight.warp_cmd = full.warp_boost_log;
-    flight.cam_mode = 0;
-    flight.zoom = 1.0;
-    flight.orbit_dist = full.length_m * 1.3;
-    flight.input = ShipInput::default();
-    flight.autopilot = None;
-    flight.attitude = Attitude::Free;
-    flight.kill_rotation = false;
-    flight.sync_velocity = false;
-    flight.hold_altitude = None;
-    cam.travel = None;
-    cam.follow = None;
-    cam.velocity = DVec3::ZERO;
-    info!("flying {} ({} modules)", full.name, full.modules.len());
+    flight.remote = remote;
+    if !remote {
+        cam.travel = None;
+        cam.follow = None;
+        cam.velocity = DVec3::ZERO;
+    }
 }
 
 fn ship_input(
@@ -704,12 +862,14 @@ fn ship_input(
             stop_programs(&mut flight);
         } else if keys.just_pressed(KeyCode::Enter) && flight.ship.is_some() {
             flight.active = !flight.active;
+            flight.remote = false;
             if !flight.active {
                 flight.stop_engines();
             }
         } else if keys.just_pressed(KeyCode::KeyF) && flight.ship.is_some() && !flight.active && !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight]) {
             // F only enters: in flight it is SE's ShipMoveDown.
             flight.active = true;
+            flight.remote = false;
         }
     }
     flight.input = ShipInput::default();
@@ -811,6 +971,7 @@ fn ship_input(
     flight.input.turn = (flight.input.turn + flight.script_turn).clamp(DVec3::splat(-1.0), DVec3::ONE);
     flight.input.boost_turn = shift;
 
+    hud::hud_keys(&keys, &mut flight);
     if keys.just_pressed(KeyCode::KeyU) && plain {
         // ShipFlightAssist.
         flight.assist = !flight.assist;
@@ -1049,6 +1210,7 @@ fn finish_ship_loading(
                 Transform::IDENTITY,
                 Visibility::Inherited,
                 NoFrustumCulling,
+                RenderLayers::layer(warp::SHIP_LAYER),
             ));
         }
         for (i, spec) in loaded.plumes.iter().enumerate() {
@@ -1065,6 +1227,7 @@ fn finish_ship_loading(
                         tf,
                         Visibility::Hidden,
                         NoFrustumCulling,
+                        RenderLayers::layer(warp::SHIP_LAYER),
                     ))
                     .id();
                 (e, material)
@@ -1142,6 +1305,7 @@ fn ship_physics(
     let design = ship.design.clone();
     let eph = Ephemeris::new(&data.catalog);
     let now = time.elapsed_secs_f64();
+    let ang_vel0 = ship.ang_vel;
 
     let infos: Vec<BodyInfo> = body_q
         .iter()
@@ -1553,6 +1717,7 @@ fn ship_physics(
     let speed_rel = (vel - ref_vel_end).length();
     let g_vec = gravity_at(&infos, pos);
     flight.info.speed_rel = speed_rel;
+    flight.info.warp_vel = vel - warp_frame;
     flight.info.speed_eff = speed_rel * boost;
     flight.info.nearest = refb_end.map_or(near_name, |b| data.catalog.display_name(b.obj).to_string());
     flight.info.altitude = refb_end.map_or(altitude_end, |b| body_altitude(b, pos));
@@ -1571,12 +1736,94 @@ fn ship_physics(
         },
         None => AeroInfo::default(),
     };
+    // SE's ship panel and the HUD's pointers, in the reference body's frame.
+    let mut panel = hud::PanelInfo::default();
+    if let Some(b) = refb_end {
+        let r = pos.delta_m(b.pos);
+        let body_v = body_velocity(&eph, b.obj, &sim);
+        let spin = body_spin(&eph, b.obj, &sim);
+        let atmo = b.terrain.and_then(|t| t.atmosphere.as_ref()).map(|a| a.top_radius_m(b.radius) - b.radius);
+        let axis = b.orient * DVec3::Y;
+        panel.body_rows(r, vel, body_v, body_v + spin.cross(r), b.gm, axis, b.radius, atmo, design.length_m);
+    }
+    let non_grav = a_thrust + aero_accel;
+    panel.grav = g_vec.length();
+    panel.thrust = a_thrust.length();
+    panel.total = (non_grav + if flight.gravity { g_vec } else { DVec3::ZERO }).length();
+    panel.g_force = non_grav.length() / hud::G0;
+    panel.ang_vel = ship.ang_vel.length();
+    panel.ang_accel = (ship.ang_vel - ang_vel0).length() / ship_dt;
+    panel.boost = boost;
+    panel.boost_cmd = if flight.warp_on { 10f64.powf(flight.warp_cmd.min(wmax)) } else { 1.0 };
+    panel.arrival = (flight.info.target_distance.is_finite() && speed_rel * boost > 0.0).then(|| flight.info.target_distance / (speed_rel * boost));
+    panel.nose = urot.0 * DVec3::NEG_Z;
+    panel.ref_vel = vel - ref_vel_end;
+    panel.to_target = target.map(|t| t.1);
+    panel.target_vel = target.map_or(DVec3::ZERO, |t| t.2);
+    panel.warp_vel = vel - warp_frame;
+    flight.info.panel = panel;
     if let Some(n) = notice {
         flight.info.notice = n;
         flight.info.notice_until = now + 4.0;
     } else if ship.landed.is_some() && flight.info.notice_until < now {
         flight.info.notice = "Landed".to_string();
         flight.info.notice_until = now + 0.5;
+    }
+}
+
+/// Ships nobody flies hold station: a landed one stays where it stands on its body, any other
+/// keeps its place relative to the body with the nearest surface when it was left (turning with it
+/// within two radii, as the frame the warp uses), rebuilt from the body every frame so it follows
+/// the body at any time rate (SE goes on simulating them; not ported). Engines and warp off.
+fn park_ships(
+    sim: Res<SimTime>,
+    data: Res<SeData>,
+    flight: Res<Flight>,
+    body_q: Query<(Entity, &SystemBody)>,
+    mut ships: Query<(Entity, &mut Ship, &mut UPosition, &mut UOrientation)>,
+) {
+    let eph = Ephemeris::new(&data.catalog);
+    for (e, mut ship, mut upos, mut urot) in &mut ships {
+        if flight.ship == Some(e) {
+            if ship.parked.is_some() {
+                ship.parked = None;
+            }
+            continue;
+        }
+        (ship.main, ship.retro, ship.hover, ship.warp, ship.ang_vel) = (0.0, 0.0, 0.0, 0.0, DVec3::ZERO);
+        if let Some(l) = ship.landed {
+            if let Some((_, b)) = body_q.iter().find(|(be, _)| *be == l.body) {
+                upos.0 = b.pos.offset_m(b.orient * l.local_pos);
+                urot.0 = (b.orient * l.local_rot).normalize();
+                ship.vel = body_velocity(&eph, b.obj, &sim) + body_spin(&eph, b.obj, &sim).cross(upos.0.delta_m(b.pos));
+                continue;
+            }
+            ship.landed = None;
+        }
+        let place = ship.parked.and_then(|pk| body_q.iter().find(|(be, _)| *be == pk.body).map(|(_, b)| (pk, b)));
+        let (pk, b) = match place {
+            Some(x) => x,
+            None => {
+                let p = upos.0;
+                let Some((be, b)) = body_q
+                    .iter()
+                    .min_by(|a, b| (a.1.pos.delta_m(p).length() - a.1.radius_m).total_cmp(&(b.1.pos.delta_m(p).length() - b.1.radius_m)))
+                else {
+                    continue;
+                };
+                let rel = p.delta_m(b.pos);
+                let turning = rel.length() - b.radius_m < 2.0 * b.radius_m;
+                let frame = if turning { b.orient } else { DQuat::IDENTITY };
+                let pk = Parked { body: be, local_pos: frame.inverse() * rel, local_rot: frame.inverse() * urot.0, turning };
+                ship.parked = Some(pk);
+                (pk, b)
+            }
+        };
+        let frame = if pk.turning { b.orient } else { DQuat::IDENTITY };
+        upos.0 = b.pos.offset_m(frame * pk.local_pos);
+        urot.0 = (frame * pk.local_rot).normalize();
+        let spin = if pk.turning { body_spin(&eph, b.obj, &sim).cross(frame * pk.local_pos) } else { DVec3::ZERO };
+        ship.vel = body_velocity(&eph, b.obj, &sim) + spin;
     }
 }
 
@@ -1651,7 +1898,7 @@ fn ship_camera(
     bodies: Query<(&SystemBody, &Terrain)>,
     mut cam: ResMut<FlyCamera>,
 ) {
-    if !flight.active {
+    if !flight.active || flight.remote {
         return;
     }
     let Some((ship, pos, rot)) = flight.ship.and_then(|e| ships.get(e).ok()) else { return };
@@ -1696,7 +1943,7 @@ fn ship_near_plane(
     cam: Res<FlyCamera>,
     mut proj: Query<&mut Projection, With<MainCamera>>,
 ) {
-    if !flight.active {
+    if !flight.active || flight.remote {
         return;
     }
     let Some((ship, pos)) = flight.ship.and_then(|e| ships.get(e).ok()) else { return };
@@ -1721,7 +1968,7 @@ fn update_ship_visuals(
     fade: Res<crate::system::LightingFade>,
     ambient: Res<crate::system::AmbientLighting>,
     star_settings: Res<crate::stars::StarSettings>,
-    ships: Query<(&Ship, &UPosition, &UOrientation, &ShipVisuals)>,
+    ships: Query<(Entity, &Ship, &UPosition, &UOrientation, &ShipVisuals)>,
     bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
     mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
@@ -1730,7 +1977,9 @@ fn update_ship_visuals(
     mut vis_q: Query<&mut Visibility>,
 ) {
     let cat = &data.catalog;
-    for (ship, pos, rot, vis) in &ships {
+    for (entity, ship, pos, rot, vis) in &ships {
+        // Only the flown ship takes the pilot's thruster and turn commands.
+        let input = if flight.ship == Some(entity) { flight.input } else { ShipInput::default() };
         // The camera in ship space, to tell when it is inside an exhaust box.
         let cam_ship = (rot.0.inverse() * cam.pos.delta_m(pos.0)).as_vec3();
         // SE lights a ship like a body (FUN_1404bf5c0, called for ships with kind 7 from
@@ -1769,7 +2018,7 @@ fn update_ship_visuals(
         let t = time.elapsed_secs_f64();
         for p in &vis.plumes {
             let Some((entity, material)) = &p.draw else { continue };
-            let level = plume_level(&p.spec, ship, &flight.input);
+            let level = plume_level(&p.spec, ship, &input);
             let show = level > 0.0;
             if let Ok(mut v) = vis_q.get_mut(*entity) {
                 let want = if show { Visibility::Inherited } else { Visibility::Hidden };
@@ -1814,226 +2063,6 @@ fn plume_level(s: &PlumeSpec, ship: &Ship, input: &ShipInput) -> f32 {
         EffectGroup::Other => 0.0,
     }
     .clamp(0.0, 1.0)
-}
-
-// ------------------------------------------------------------------------------------
-// Interface
-// ------------------------------------------------------------------------------------
-
-fn draw_ship_window(
-    mut contexts: EguiContexts,
-    mut ui_state: ResMut<ShipUi>,
-    lib: Res<ShipLibrary>,
-    mut flight: ResMut<Flight>,
-    hud: Res<crate::hud::HudState>,
-    mut writer: MessageWriter<ShipCommand>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    if hud.hidden {
-        return Ok(());
-    }
-    egui::Area::new(egui::Id::new("ships_button"))
-        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 36.0])
-        .show(ctx, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            if ui.button(if flight.active { "Ships (flying)" } else { "Ships" }).clicked() {
-                ui_state.show = !ui_state.show;
-            }
-        });
-    if !ui_state.show {
-        return Ok(());
-    }
-    let mut open = true;
-    egui::Window::new(crate::skin::title(ctx, "Ships")).open(&mut open).default_width(340.0).default_pos([320.0, 60.0]).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Filter");
-            ui.text_edit_singleline(&mut ui_state.filter);
-        });
-        let filter = ui_state.filter.to_ascii_lowercase();
-        let mut chosen: Option<usize> = None;
-        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-            for (i, d) in lib.designs.iter().enumerate() {
-                if !filter.is_empty() && !d.name.to_ascii_lowercase().contains(&filter) {
-                    continue;
-                }
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(ui_state.selected == i, &d.name).clicked() {
-                        chosen = Some(i);
-                    }
-                    ui.weak(format!("{}  {} m", d.class, d.length_m.round()));
-                });
-            }
-        });
-        if let Some(i) = chosen {
-            ui_state.selected = i;
-        }
-        if let Some(d) = lib.designs.get(ui_state.selected) {
-            ui.separator();
-            ui.heading(&d.name);
-            ui.label(format!("{} | {} | {}", d.class, d.faction, d.pack));
-            ui.label(format!("length {} m, mass {:.3e} kg", d.length_m.round(), d.mass_kg));
-            ui.label(format!(
-                "main {:.1}  retro {:.1}  hover {:.1}  RCS {:.1} m/s²",
-                d.main_engines, d.retro_engines, d.hover_engines, d.corr_engines
-            ));
-            ui.label(format!(
-                "turn {:.4} rad/s²  warp up to 10^{:.0}{}",
-                d.turn_engines,
-                d.warp_boost_log,
-                if d.can_warp() { "" } else { " (no warp drive)" }
-            ));
-            ui.label(format!("aerodynamic model: {}", d.aero.name()));
-            ui.horizontal(|ui| {
-                if ui.button("Fly").clicked() {
-                    writer.write(ShipCommand { verb: "ship".into(), arg: d.id.clone() });
-                }
-                if flight.ship.is_some() {
-                    if ui.button(if flight.active { "Leave (Esc)" } else { "Enter (F)" }).clicked() {
-                        writer.write(ShipCommand {
-                            verb: "flight".into(),
-                            arg: if flight.active { "off".into() } else { "on".into() },
-                        });
-                    }
-                    if ui.button("Remove ship").clicked() {
-                        writer.write(ShipCommand { verb: "unship".into(), arg: String::new() });
-                    }
-                }
-            });
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut flight.gravity, "Gravity");
-            ui.checkbox(&mut flight.collisions, "Collisions");
-            ui.checkbox(&mut flight.assist, "Flight assist");
-            ui.checkbox(&mut flight.aero, "Aerodynamics");
-        });
-        ui.weak("= / - main engines (Shift retro, Ctrl hover, Alt warp), W/S/A/D/R/F or arrows thrusters, keypad 8/2/4/6 + Q/E turn, V camera, Esc leaves");
-        ui.weak("5-0 / End holds, Num5 kill rotation, T target, P reference body, C / G / Shift+G / Alt+G autopilot");
-    });
-    if !open {
-        ui_state.show = false;
-    }
-    Ok(())
-}
-
-fn draw_flight_hud(
-    mut contexts: EguiContexts,
-    flight: Res<Flight>,
-    time: Res<Time>,
-    ships: Query<&Ship>,
-    hud: Res<crate::hud::HudState>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    if !flight.active || hud.hidden {
-        return Ok(());
-    }
-    let Some(ship) = flight.ship.and_then(|e| ships.get(e).ok()) else { return Ok(()) };
-    let d = &ship.design;
-    let info = &flight.info;
-    let n_chase = d.chase_cameras().len();
-    let mode = flight.cam_mode.min(n_chase);
-    let cam_name = if mode < n_chase { format!("chase {}/{}", mode + 1, n_chase) } else { "orbit".to_string() };
-    egui::Area::new(egui::Id::new("flight_hud"))
-        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -14.0])
-        .interactable(false)
-        .show(ctx, |ui| {
-            egui::Frame::new().fill(egui::Color32::from_black_alpha(150)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new(format!("{}  ({})", d.name, d.class)).strong().size(16.0));
-                    let speed = if ship.warp > 0.05 {
-                        format!("{}  (warp {})", format_speed(info.speed_eff), format_speed(info.speed_rel))
-                    } else {
-                        format_speed(info.speed_rel)
-                    };
-                    ui.label(egui::RichText::new(format!("speed {speed}")).monospace());
-                    let warp = if !d.can_warp() {
-                        "no warp drive".to_string()
-                    } else if flight.warp_on || ship.warp > 0.05 {
-                        format!("warp ON 10^{:.1} (set {:.0}, max {:.0})", ship.warp, flight.warp_cmd, d.warp_boost_log)
-                    } else {
-                        format!("warp off (set {:.0}, max {:.0})", flight.warp_cmd, d.warp_boost_log)
-                    };
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "main {:.0}% retro {:.0}% hover {:.0}% (set {:.0}/{:.0}/{:.0})   {}",
-                            ship.main * 100.0,
-                            ship.retro * 100.0,
-                            ship.hover * 100.0,
-                            flight.main_cmd * 100.0,
-                            flight.retro_cmd * 100.0,
-                            flight.hover_cmd * 100.0,
-                            warp
-                        ))
-                        .monospace(),
-                    );
-                    let alt = if info.altitude.is_finite() { format_distance(info.altitude) } else { "-".to_string() };
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} ({}): altitude {}   g {:.3} m/s²",
-                            info.nearest,
-                            flight.ref_mode.label(),
-                            alt,
-                            info.g
-                        ))
-                        .monospace(),
-                    );
-                    if !info.target.is_empty() {
-                        let dist = if info.target_distance.is_finite() { format_distance(info.target_distance) } else { "-".to_string() };
-                        ui.label(egui::RichText::new(format!("target {}: distance {}", info.target, dist)).monospace());
-                    }
-                    let mut programs = Vec::new();
-                    if let Some(ap) = flight.autopilot {
-                        programs.push(format!("Autopilot: {} - {}", ap.program.label(), ap.stage.label()));
-                    }
-                    if flight.attitude != Attitude::Free {
-                        programs.push(format!("Orientation: {}", flight.attitude.label()));
-                    }
-                    if flight.kill_rotation {
-                        programs.push("Kill rotation".to_string());
-                    }
-                    if flight.sync_velocity {
-                        programs.push("Sync velocity".to_string());
-                    }
-                    if let Some(h) = flight.hold_altitude {
-                        programs.push(format!("Hold altitude {}", format_distance(h)));
-                    }
-                    if !programs.is_empty() {
-                        ui.label(egui::RichText::new(programs.join("   ")).color(egui::Color32::from_rgb(140, 220, 255)).monospace());
-                    }
-                    let a = &info.aero;
-                    if a.active {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "air {}  Mach {:.2}  dyn. pressure {:.2} kPa  attack {:+.1}°  sideslip {:+.1}°  aero accel {:.2} m/s²",
-                                format_speed(a.air_speed),
-                                a.mach,
-                                a.q * 1e-3,
-                                a.alpha.to_degrees(),
-                                a.beta.to_degrees(),
-                                a.accel
-                            ))
-                            .monospace(),
-                        );
-                        ui.weak(format!(
-                            "air density {:.4} kg/m³  speed of sound {}  model {}",
-                            a.density,
-                            format_speed(a.sound_speed),
-                            d.aero.name()
-                        ));
-                    }
-                    if info.notice_until > time.elapsed_secs_f64() && !info.notice.is_empty() {
-                        ui.label(egui::RichText::new(&info.notice).color(egui::Color32::from_rgb(255, 200, 80)).strong());
-                    }
-                    ui.weak(format!(
-                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F arrows thrusters  keypad/Q/E turn  U assist {}  V camera [{}]  Alt+=/- warp  Alt+Z stop warp  Esc leave",
-                        if flight.assist { "on" } else { "off" },
-                        cam_name
-                    ));
-                    ui.weak("5-0 End holds  Num5 kill rot.  H hold alt.  Shift+Z sync vel.  T target  P ref body  C rotate  G go  Shift+G fly  Alt+G warp");
-                });
-            });
-        });
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2158,6 +2187,10 @@ mod tests {
             clearance: 1.0,
             radius: 1.0,
             landed: None,
+            nickname: String::new(),
+            mine: true,
+            serial: 1,
+            parked: None,
         };
         // A nose thruster blowing to +x pushes the nose left: it fires for a left yaw.
         let spec = PlumeSpec {
