@@ -134,6 +134,8 @@ struct Snapshot {
     /// `Brightness`, `Contrast`, `Saturation`, `Gamma`.
     bcsg: [f32; 4],
     dithering: bool,
+    /// `Sharpness`.
+    sharpness: f32,
     /// `EnableSelfEmission`, `SelfEmissionBright`.
     self_emission: (bool, f32),
     show_water: bool,
@@ -188,6 +190,7 @@ impl Snapshot {
             tone: fi.tone_name().to_string(),
             bcsg: l.color.iter().next().map(|c| c.values()).unwrap_or(ColorCorrection::default().values()),
             dithering: fi.dithering,
+            sharpness: fi.sharpness,
             self_emission: l.planets.0.as_ref().map_or((true, 1.0), |e| (e.enabled, e.bright)),
             show_water: l.planets.1.as_ref().is_none_or(|w| w.show),
             shots: (**shots).clone(),
@@ -263,8 +266,8 @@ impl Snapshot {
         let [br, co, sa, ga] = self.bcsg;
         let s = &self.shots;
         format!(
-            "PostEffects\n{{\n\tPhotoMode         {}\n\tExposureComp      {}\n\tToneMappingShader \"{}\"\n\tBrightness        {br}\n\tContrast          {co}\n\tSaturation        {sa}\n\tGamma             {ga}\n\tDithering         {}\n}}\nExport\n{{\n\tScreenshotFormat  \"{}\"\n\tJpegQuality       {}\n\tSaveAlpha         {}\n\tSkyboxFormat      \"{}\"\n}}\n",
-            self.photo_mode, self.exposure_comp, self.tone, self.dithering, s.format, s.jpeg_quality, s.save_alpha, self.skybox_format
+            "PostEffects\n{{\n\tPhotoMode         {}\n\tExposureComp      {}\n\tToneMappingShader \"{}\"\n\tBrightness        {br}\n\tContrast          {co}\n\tSaturation        {sa}\n\tGamma             {ga}\n\tDithering         {}\n\tSharpness         {}\n}}\nExport\n{{\n\tScreenshotFormat  \"{}\"\n\tJpegQuality       {}\n\tSaveAlpha         {}\n\tSkyboxFormat      \"{}\"\n}}\n",
+            self.photo_mode, self.exposure_comp, self.tone, self.dithering, self.sharpness, s.format, s.jpeg_quality, s.save_alpha, self.skybox_format
         )
     }
 
@@ -523,6 +526,7 @@ fn load_post(p: &se_core::sc::Block, live: &mut Live, commands: &mut Commands) {
         live.post.2.tone = t;
     }
     live.post.2.dithering = p.bool("Dithering").unwrap_or(live.post.2.dithering);
+    live.post.2.sharpness = p.f64("Sharpness").map_or(live.post.2.sharpness, |v| (v as f32).clamp(0.0, 1.0));
     let d = ColorCorrection::default().values();
     let v = |k: &str, i: usize| p.f64(k).map_or(d[i], |x| x as f32);
     commands.insert_resource(PendingColor([v("Brightness", 0), v("Contrast", 1), v("Saturation", 2), v("Gamma", 3)]));

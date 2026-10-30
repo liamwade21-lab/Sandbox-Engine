@@ -194,6 +194,7 @@ fn settings_window(
                         ui.add(egui::Slider::new(&mut v[2], 0.0..=3.0).text(i18n.tr("Saturation")));
                         ui.add(egui::Slider::new(&mut v[3], 0.2..=3.0).text(i18n.tr("Gamma")));
                     }
+                    ui.add(egui::Slider::new(&mut f.sharpness, 0.0..=1.0).text(i18n.tr("Sharpness")));
                     ui.checkbox(&mut f.dithering, i18n.tr("Dithering"));
                     ui.checkbox(&mut b.enabled, i18n.tr("Bloom"));
                     ui.add(egui::Slider::new(&mut b.bright, 0.0..=2.0).text(i18n.tr("Bloom brightness")));
