@@ -270,7 +270,7 @@ fn galaxy_code(cat: &Catalog, galaxy: &str) -> u32 {
 
 /// The catalog cluster an `RC` name stands for: a promoted procedural cluster of that name, or the
 /// galaxy's catalog cluster of that index.
-fn cluster_of_rc(cat: &Catalog, rc: &str) -> Option<usize> {
+pub fn cluster_of_rc(cat: &Catalog, rc: &str) -> Option<usize> {
     if let Some(ObjectRef::Cluster(i)) = cat.find(rc) {
         return Some(i as usize);
     }
@@ -569,63 +569,112 @@ fn member_name_in_command(cmd: &str) -> Option<&str> {
     cs::parse_member_name(name).is_some().then_some(name)
 }
 
-/// Turns `RSC ...` member names mentioned by a command or the search box into catalog stars, so
-/// `goto`, selection and the search box work on them: the member's node is generated on the spot.
-/// A procedural `RC` cluster is first made a catalog cluster by `procsystems` (the Milky Way's once
-/// its emission map exists): a scripted command waits for it.
+/// Frames the search box's text must stay unchanged before an `RSC` name in it is resolved (so a
+/// name being typed does not add every prefix's member).
+const SEARCH_SETTLE_FRAMES: u32 = 30;
+
+/// State of [`resolve_member_names`].
+#[derive(Default)]
+struct MemberResolver {
+    /// Lower-cased names already resolved or given up on.
+    tried: HashSet<String>,
+    /// Frames a scripted command has waited for its procedural cluster.
+    held: u32,
+    /// The search box's text and for how many frames it has stayed so.
+    search: (String, u32),
+    /// Member builds in flight: (lower-cased name, the member's catalog record).
+    tasks: Vec<(String, Task<Option<se_core::catalog::StarRecord>>)>,
+}
+
+/// Turns `RSC ...` member names mentioned by a command or the search box (once it stops changing)
+/// into catalog stars, so `goto`, selection and the search box work on them: the member's node is
+/// generated in the background. A procedural `RC` cluster is first made a catalog cluster by
+/// `procsystems` (the Milky Way's once its emission map exists); a scripted command waits for both.
 fn resolve_member_names(
     mut data: ResMut<SeData>,
     hud: Option<Res<crate::hud::HudState>>,
     mut queue: ResMut<CommandQueue>,
     field: Option<Res<ClusterField>>,
-    mut tried: Local<HashSet<String>>,
-    mut held: Local<u32>,
+    mut st: Local<MemberResolver>,
 ) {
     let Some(field) = field else { return };
+    let st = &mut *st;
+    // Finished builds become catalog stars.
+    let mut i = 0;
+    while i < st.tasks.len() {
+        let Some(rec) = check_ready(&mut st.tasks[i].1) else {
+            i += 1;
+            continue;
+        };
+        // The task is finished: dropping it cancels nothing.
+        drop(st.tasks.swap_remove(i));
+        if let Some(rec) = rec.filter(|r| data.catalog.find(&r.names[0]).is_none()) {
+            let name = rec.names[0].clone();
+            let idx = crate::system::promote_star(data.catalog_mut(), rec);
+            info!("{name} -> catalog star {idx}");
+        }
+    }
     // (name, from a scripted command)
     let mut names: Vec<(String, bool)> = Vec::new();
     if let Some(n) = queue.queue.front().and_then(|c| member_name_in_command(c)) {
         names.push((n.to_string(), true));
     }
-    if let Some(h) = hud.as_ref().filter(|h| cs::parse_member_name(&h.search).is_some()) {
-        names.push((h.search.trim().to_string(), false));
+    if let Some(h) = hud.as_ref() {
+        let text = h.search.trim();
+        if text == st.search.0 {
+            st.search.1 = st.search.1.saturating_add(1);
+        } else {
+            st.search = (text.to_string(), 0);
+        }
+        if st.search.1 == SEARCH_SETTLE_FRAMES && cs::parse_member_name(text).is_some() {
+            names.push((text.to_string(), false));
+        }
     }
     let mut hold = false;
     for (name, scripted) in names {
         let key = name.to_ascii_lowercase();
-        if data.catalog.find(&name).is_some() || tried.contains(&key) {
+        if data.catalog.find(&name).is_some() {
+            continue;
+        }
+        if st.tasks.iter().any(|(k, _)| *k == key) {
+            hold |= scripted;
+            continue;
+        }
+        if st.tried.contains(&key) {
             continue;
         }
         let Some((rc, level, node, index)) = cs::parse_member_name(&name) else { continue };
         let Some(ci) = cluster_of_rc(&data.catalog, &rc) else {
-            if scripted && *held < 3000 {
+            if scripted && st.held < 3000 {
                 hold = true;
             } else if scripted {
-                tried.insert(key);
+                st.tried.insert(key);
                 warn!("star cluster of {name} not found");
             }
             continue;
         };
-        tried.insert(key);
+        st.tried.insert(key.clone());
         let centres = field.centres.clone().unwrap_or_else(|| centre_names(&data.catalog));
-        let Some(model) = build_model(&model_input(&data.catalog, ci, &centres), field.density) else { continue };
-        let Some(cell) = cs::node_cell(level, node).filter(|_| level < model.levels()) else { continue };
-        let id = NodeId { cluster: ci, level, cell };
-        let Some((_, stars)) = build_node(&model, id) else { continue };
-        let Some(m) = stars.get(index as usize) else {
-            warn!("{name}: the node has {} stars", stars.len());
-            continue;
-        };
-        let info = info_of(&model.rsc, id.member(index as usize), m);
-        let rec = member_record(&info, data.catalog.clusters[ci].pos_pc + m.offset, m);
-        let i = crate::system::promote_star(data.catalog_mut(), rec);
-        info!("{} -> catalog star {i}", info.name);
+        let (input, density, pos_pc) = (model_input(&data.catalog, ci, &centres), field.density, data.catalog.clusters[ci].pos_pc);
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            let model = build_model(&input, density)?;
+            let cell = cs::node_cell(level, node).filter(|_| level < model.levels())?;
+            let id = NodeId { cluster: ci, level, cell };
+            let (_, stars) = build_node(&model, id)?;
+            let Some(m) = stars.get(index as usize) else {
+                warn!("{name}: the node has {} stars", stars.len());
+                return None;
+            };
+            Some(member_record(&info_of(&model.rsc, id.member(index as usize), m), pos_pc + m.offset, m))
+        });
+        st.tasks.push((key, task));
+        hold |= scripted;
     }
     if hold {
-        *held += 1;
+        st.held += 1;
         queue.wait_frames = queue.wait_frames.max(2);
     } else {
-        *held = 0;
+        st.held = 0;
     }
 }
 
@@ -746,7 +795,8 @@ fn build_node(model: &Model, id: NodeId) -> NodeBuilt {
             let half = model.node_half(id.level);
             let centre = model.node_centre(id);
             let (lo, hi) = (model.edges[id.level as usize], model.edges[id.level as usize + 1]);
-            for _ in 0..cs::node_tries(id.level, model.factor) {
+            let leaf = (id.level + 1 == LEVELS).then_some(nucleus);
+            for _ in 0..cs::node_tries(id.level, model.factor, leaf) {
                 if stars.len() >= NODE_CAP {
                     break;
                 }
@@ -755,7 +805,13 @@ fn build_node(model: &Model, id: NodeId) -> NodeBuilt {
                 if x2 > 1.0 || rng.f64() > (-model.k * x2.sqrt()).exp() {
                     continue;
                 }
-                stars.push(star(p, cs::dense_member(&mut rng, nucleus, model.age, lo, hi)));
+                let m = match leaf {
+                    Some(_) => cs::leaf_member(&mut rng, nucleus, model.age, lo, hi),
+                    None => Some(cs::dense_member(&mut rng, nucleus, model.age, lo, hi)),
+                };
+                if let Some(m) = m {
+                    stars.push(star(p, m));
+                }
             }
         }
     }
@@ -805,12 +861,12 @@ mod tests {
 
     #[test]
     fn open_cluster_fills_its_light() {
-        // Pozzo 1: 44.5 L_sun in the root, each member at most half of it.
-        let m = model(record("Open", 4.83 - 2.5 * 44.5f64.log10(), 0.88, 1.5, 0.15)).unwrap();
+        // Pozzo 1: 114 L_sun in the root, each member at most half of it.
+        let m = model(record("Open", 4.83 - 2.5 * 114.2f64.log10(), 0.88, 1.5, 0.15)).unwrap();
         assert_eq!(m.levels(), 1);
         let (_, stars) = build_node(&m, NodeId { cluster: 0, level: 0, cell: [0; 3] }).unwrap();
         let sum: f64 = stars.iter().map(|s| se_core::star::lum_from_abs_mag(s.abs_mag as f64)).sum();
-        assert!(sum >= 44.5 && sum < 44.5 * 1.5, "{sum} from {}", stars.len());
+        assert!(sum >= 114.2 && sum < 114.2 * 1.5, "{sum} from {}", stars.len());
         assert!(stars.iter().all(|s| s.offset.length() <= 0.88 + 1e-9));
         assert!(model(ClusterRecord { no_members: true, ..record("Open", -3.6, 2.3, 0.5, 0.13) }).is_none());
         assert!(model(record("Part", -5.0, 300.0, 1.5, 0.1)).is_none());

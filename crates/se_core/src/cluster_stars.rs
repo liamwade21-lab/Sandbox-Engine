@@ -53,11 +53,16 @@ pub fn count_factor(lum: f64, density: f64) -> f64 {
 }
 
 /// Points a globular or nucleus node at `level` tries (FUN_140543c70): the factor times the band
-/// table's `1e5 / (level + 1)^3` (FUN_1401d7300). The leaf level's extra share
-/// (x 1/(1 - 0.45 - 3e-5) globular, 1/(1 - 0.6 - 0.01) nucleus) goes to objects of luminosity 0
-/// (class 0x6800, FUN_1401d63b0's first branch) and to remnants, none of which draw, so it is left out.
-pub fn node_tries(level: u8, factor: f64) -> usize {
-    (factor * 1e5 / ((level as f64 + 1.0).powi(3))) as usize
+/// table's `1e5 / (level + 1)^3` (FUN_1401d7300), at the deepest level (`leaf` = Some(nucleus))
+/// times `1/(1 - 0.45 - 3e-5)` globular, `1/(1 - 0.6 - 0.01)` nucleus (`0x140807fdc`/`0x140807f5c`),
+/// the room for [`leaf_member`]'s luminosity-0 objects.
+pub fn node_tries(level: u8, factor: f64, leaf: Option<bool>) -> usize {
+    let extra = match leaf {
+        Some(true) => 1.0 / (1.0 - 0.6 - 0.01),
+        Some(false) => 1.0 / (1.0 - 0.45 - 3e-5),
+        None => 1.0,
+    };
+    (factor * 1e5 / ((level as f64 + 1.0).powi(3)) * extra) as usize
 }
 
 /// Concentration of a globular or nucleus cluster's `exp(-c r/R)` profile (FUN_14053a760):
@@ -305,13 +310,14 @@ pub fn open_member(rng: &mut Rng, cluster_age: f64) -> Member {
 }
 
 /// A member of a globular (`nucleus` false) or nucleus cluster in the magnitude band `[lo, hi]`
-/// (FUN_1401d63b0): [Fe/H] N(-1, 0.25); a main-sequence star of Mv `tn(3, 6, lo, hi)`; the age is the
+/// (FUN_1401d63b0): [Fe/H] N(-1, 0.25); a main-sequence star of Mv `tn(0, 6, lo, hi)` (the mean is
+/// `0x140808174`, which nothing writes; the band edges use 3); the age is the
 /// cluster's +- N(0, 0.01) Gyr (nucleus: 70 % a uniform share of the star's lifetime, else a young
 /// N(0, 0.01)). A star whose lifetime is over is a giant of Mv `tn(1, 1, lo, hi)`, unless the band
 /// reaches past Mv 11.5 and the star is older than 1.1 lifetimes: then a remnant of its mass.
 pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Member {
     let feh = normal(rng, -1.0, 0.25);
-    let mv = trunc_normal(rng, 3.0, 6.0, lo, hi);
+    let mv = trunc_normal(rng, 0.0, 6.0, lo, hi);
     let c = ms_class(rng, mv);
     let (teff, lb) = light(c, mv);
     let mass = mass_of(c, lb);
@@ -333,11 +339,41 @@ pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi:
     if age < t_end || hi < 11.5 {
         let (teff_g, lb_g) = light(g, mv_g);
         let mass_g = mass_of(g, lb_g);
-        let age = age.min(lifetime(mass_g, g).min(t_end));
+        // SE then sets the age to the giant's lifetime or 1.1 MS lifetimes, the shorter.
+        let age = lifetime(mass_g, g).min(t_end);
         return member(mv_g, teff_g, mass_g, age, feh, g);
     }
     let (r, mv_r, teff_r) = remnant(rng, mass, true);
     member(mv_r.unwrap_or(mv), teff_r, mass, age, feh, r)
+}
+
+/// A member of the deepest octree level (FUN_1401d63b0 with its leaf flag): 45 % (globular) / 60 %
+/// (nucleus) of the draws are objects of luminosity 0 (class 0x6800, radius 1 AU), which draw nothing
+/// (`None`); then a share 0.0333 / 0.14 of the rest (`0x1408300f8` / `0x1408300fc`, summed at start-up)
+/// are remnants of a mass `tn(8, 3, 3, 100)` (black holes: 3e-5 / 0.01), `tn(2.22, 0.39, 1.44, 3)`
+/// (neutron stars: 2.5e-4 / 0.03) or `tn(1, 0.5, 0.56, 1.44)` (white dwarfs: 0.033 / 0.1)
+/// (FUN_1401d8060), magnitudes their own (FUN_1401d5fe0); the others are [`dense_member`]s.
+pub fn leaf_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Option<Member> {
+    let share = if nucleus { 0.6 } else { 0.45 };
+    let u = rng.f64();
+    if u < share {
+        return None;
+    }
+    let x = (u - share) / (1.0 - share);
+    let (bh, ns, wd) = if nucleus { (0.01, 0.03, 0.1) } else { (3e-5, 2.5e-4, 0.033) };
+    if x > bh + ns + wd {
+        return Some(dense_member(rng, nucleus, cluster_age, lo, hi));
+    }
+    let mass = if x < bh {
+        trunc_normal(rng, 8.0, 3.0, 3.0, 100.0)
+    } else if x < bh + ns {
+        trunc_normal(rng, 2.22, 0.39, 1.44, 3.0)
+    } else {
+        trunc_normal(rng, 1.0, 0.5, 0.56, 1.44)
+    };
+    let (c, mv, teff) = remnant(rng, mass, true);
+    let feh = normal(rng, -1.0, 0.25);
+    Some(member(mv.unwrap_or(15.0), teff, mass, cluster_age.clamp(AGE_MIN, AGE_MAX), feh, c))
 }
 
 /// The black hole SE makes the first member of a globular cluster older than 10 Myr, or of a
@@ -436,8 +472,10 @@ mod tests {
         // Omega Cen: L 1.1e6 -> the factor's cap 5; root 5e5 tries, level 4 4000 per node.
         let f = count_factor(1.1e6, 1.0);
         assert_eq!(f, 5.0);
-        assert_eq!(node_tries(0, f), 500_000);
-        assert_eq!(node_tries(4, f), 4000);
+        assert_eq!(node_tries(0, f, None), 500_000);
+        assert_eq!(node_tries(4, f, None), 4000);
+        assert_eq!(node_tries(4, f, Some(false)), 7273);
+        assert_eq!(node_tries(4, f, Some(true)), 10_256);
         assert_eq!(count_factor(10.0, 1.0), 0.01);
         assert!((concentration(1.61) - 9.263).abs() < 0.01);
         assert_eq!(concentration(0.1), 5.0);
@@ -487,6 +525,14 @@ mod tests {
         // The faint band keeps its dwarfs.
         let dwarfs = (0..200).filter(|_| dense_member(&mut rng, false, 11.0, 8.19, 25.3).class.lum() == 7).count();
         assert!(dwarfs > 150, "{dwarfs}");
+        // The leaf level: 45 % nothing, 3.3 % of the rest remnants (mostly white dwarfs).
+        let leaf: Vec<Option<Member>> = (0..20_000).map(|_| leaf_member(&mut rng, false, 11.0, 8.19, 25.3)).collect();
+        let none = leaf.iter().filter(|m| m.is_none()).count() as f64 / 20_000.0;
+        let wd = leaf.iter().flatten().filter(|m| m.class.kind() == StarKind::WhiteDwarf).count() as f64 / 20_000.0;
+        assert!((none - 0.45).abs() < 0.02 && (wd - 0.55 * 0.033).abs() < 0.006, "{none} {wd}");
+        // Each band's main-sequence draws centre on SE's mean 0, not 3: the leaf band starts at its edge.
+        let mv: f64 = (0..2000).map(|_| trunc_normal(&mut rng, 0.0, 6.0, 8.19, 25.3)).sum::<f64>() / 2000.0;
+        assert!((mv - 10.95).abs() < 0.2, "{mv}");
     }
 
     #[test]

@@ -152,8 +152,11 @@ pub struct ClusterRecord {
     pub source: String,
 }
 
-/// SE's `ClusterGenerator`/`StarGenerator` values used to complete catalog clusters (main-def.cfg).
-const CLUSTER_CAT_MAX_APP_MAGN: f64 = 8.1;
+/// SE's `ClusterGenerator`/`StarGenerator` values used to complete catalog clusters. The catalog cap
+/// is the compiled default of `ClusterCatMaxAppMagn`, 7.1 (`DAT_14075f798`), not main-def.cfg's 8.1:
+/// SE turns it into its brightness constant once, in a static initializer (FUN_140011160), before the
+/// config is read.
+const CLUSTER_CAT_MAX_APP_MAGN: f64 = 7.1;
 const STAR_DENSITY_IN_CLUSTER: f64 = 1.0;
 
 /// SE's cluster types (`FUN_140483080`).
@@ -209,7 +212,7 @@ fn complete_cluster(b: &Block, kind: ClusterType, name: &str, dist_pc: f64) -> (
         .unwrap_or_else(|| {
             let l = match kind {
                 // Open clusters without a magnitude: 10 R^3 x density, never brighter than
-                // ClusterCatMaxAppMagn seen from the Sun (Pozzo 1: about 45 Lsun).
+                // ClusterCatMaxAppMagn seen from the Sun (Pozzo 1: about 114 Lsun).
                 ClusterType::Open | ClusterType::Part => {
                     let l = (10.0 * radius.powi(3) * STAR_DENSITY_IN_CLUSTER).clamp(1000.0, 2.0e5);
                     l.min(dist_pc * dist_pc * (-(CLUSTER_CAT_MAX_APP_MAGN + 0.2) / 1.0587362).exp())
@@ -1191,9 +1194,9 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
              Galaxy \"M 31\" { Type \"Sb\" RA 0.7 Dec 41 Dist 778000 GlobClusters 450 }\n",
             "c.sc",
         );
-        // Pozzo 1: L = min(1000, 336^2 exp(-8.3/1.0587362)) = 44.5 Lsun, an open cluster's young age.
+        // Pozzo 1: L = min(1000, 336^2 exp(-7.3/1.0587362)) = 114.2 Lsun, an open cluster's young age.
         let p = &c.clusters[0];
-        assert!((p.abs_mag - (4.83 - 2.5 * 44.5f64.log10())).abs() < 0.02, "{}", p.abs_mag);
+        assert!((p.abs_mag - (4.83 - 2.5 * 114.2f64.log10())).abs() < 0.02, "{}", p.abs_mag);
         assert!(p.age_gyr > 0.0 && p.age_gyr < 3.5);
         assert!((0.5..=2.5).contains(&p.cen_pow) && !p.no_members);
         assert_eq!(c.clusters[1].color, Some([0.0; 3]));

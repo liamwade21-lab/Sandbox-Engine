@@ -829,8 +829,13 @@ fn resolve_names(
     }
     let mut hold = false;
     for (name, scripted) in names {
-        // A cluster member's `RSC` name needs its `RC` cluster (`clusters::resolve_member_names`).
-        let name = se_core::cluster_stars::parse_member_name(&name).map_or(name, |(rc, ..)| rc);
+        // A cluster member's `RSC` name needs its `RC` cluster (`clusters::resolve_member_names`),
+        // unless that is a catalog cluster or already promoted.
+        let name = match se_core::cluster_stars::parse_member_name(&name) {
+            Some((rc, ..)) if crate::clusters::cluster_of_rc(&data.catalog, &rc).is_some() => continue,
+            Some((rc, ..)) => rc,
+            None => name,
+        };
         if !is_proc_name(&name) || data.catalog.find(&name).is_some() {
             continue;
         }
