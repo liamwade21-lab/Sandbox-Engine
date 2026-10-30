@@ -371,7 +371,7 @@ pub struct SkyUniform {
     pub light_dir: [Vec4; SKY_EXTRA_LIGHTS],
     pub light_irradiance: [Vec4; SKY_EXTRA_LIGHTS],
     /// The body's rings for their shadow on the sky (SE's RingsParams): x inner, y outer radius
-    /// (planet radii), z `Opacity`, w 1 when drawn (rings and `AtmoRingsShadow`), 0.5 untextured.
+    /// (planet radii), z `PlanetShadow`, w 1 when drawn (rings and `AtmoRingsShadow`), 0.5 untextured.
     pub ring: Vec4,
     /// x the planet's radius over the shell's (top) radius, y the eclipse intensity (SE's
     /// AmbientColor.a), z SE's `AtmoDistanceLimit` in shell radii (0 none), w 1 with `AtmoExtinction`.
@@ -623,13 +623,14 @@ pub fn sky_shadow_update(
     }
 }
 
-/// SE's atmosphere at a distance (FUN_14044fe70): the height drawn, at least `AtmoMinWidthPix` on
-/// screen (`min_width_m`, the pixels' size at the eye's distance) but at most 0.05 of the radius
-/// beyond the true `height_m`, eased back to the true height as the planet leaves the middle of the
+/// SE's atmosphere at a distance (FUN_14044fe70:338-343): once the true `height_m` is below
+/// `AtmoMinWidthPix` on screen (`min_width_m`, the pixels' size at the eye's distance), the height
+/// drawn is that width capped at 0.05 of the radius (so a tall atmosphere, Titan's or Pluto's, is
+/// drawn thinner from afar), eased back to the true height as the planet leaves the middle of the
 /// view (`cos_view`, the cosine between the view direction and the eye's position from the planet:
 /// -1 straight ahead); and SE's brightness for it, `(height / drawn) ^ 0.25`.
 pub fn widened_height(height_m: f64, radius_m: f64, min_width_m: f64, cos_view: f64) -> (f64, f64) {
-    let widened = if height_m <= min_width_m { min_width_m.min(radius_m * 0.05).max(height_m) } else { height_m };
+    let widened = if height_m <= min_width_m { min_width_m.min(radius_m * 0.05) } else { height_m };
     let k = (1.0 + cos_view).clamp(0.0, 1.0);
     let drawn = (height_m - widened) * k + widened;
     (drawn, (height_m / drawn.max(1e-9)).powf(0.25))
@@ -663,5 +664,9 @@ mod tests {
         assert_eq!(widened_height(100e3, 6371e3, 50e3, -1.0), (100e3, 1.0));
         // Halfway: halfway between.
         assert_eq!(widened_height(100e3, 6371e3, 300e3, -0.5).0, 200e3);
+        // Titan (200 km over 2575 km) from afar: drawn at 0.05 R, thinner and brighter.
+        let (h, b) = widened_height(200e3, 2575e3, 400e3, -1.0);
+        assert_eq!(h, 2575e3 * 0.05);
+        assert!(b > 1.0);
     }
 }

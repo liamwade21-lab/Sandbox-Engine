@@ -15,9 +15,10 @@ import super::eclipse::{EclipseLight, eclipse_shadow, eclipse_value};
 struct Ring {
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
-    /// x inner radius / planet radius, y outer / planet radius, z Opacity, w Brightness.
+    /// x inner radius / planet radius, y outer / planet radius, z the shadow density on the planet
+    /// (PlanetShadow), w Brightness.
     geom: vec4<f32>,
-    /// x FrontBright, y BackBright, z has texture, w PlanetShadow.
+    /// x FrontBright, y BackBright, z has texture, w unused.
     params: vec4<f32>,
     /// SE's DensityParams: Density (front, back), Opacity, SelfShadow.
     density: vec4<f32>,
@@ -162,8 +163,9 @@ fn ring_scatter(in: VertexOut, l: vec3<f32>, sun: vec3<f32>, front: vec4<f32>, b
 
 // What reaches the ring point of light `k` (0 the main star) from direction `l`: the planet's shadow
 // as an eclipse of the light by the planet's disc (rings.glsl: EclipseValue of the light's and the
-// planet's angular radii, the light's direction stretched by SE's Oblateness for a flattened planet,
-// times the catalog's PlanetShadow), then the moons' and other bodies' eclipses (ECL,
+// planet's angular radii, the light's direction stretched by SE's Oblateness for a flattened planet;
+// the catalog's PlanetShadow is the rings' shadow on the planet, not this), then the moons' and
+// other bodies' eclipses (ECL,
 // EclipseShadowAuto x AmbientColor.a), and none edge-on.
 fn ring_shadow(in: VertexOut, k: i32, l: vec3<f32>) -> f32 {
     let e = ring.eclipse[k];
@@ -176,7 +178,7 @@ fn ring_shadow(in: VertexOut, k: i32, l: vec3<f32>) -> f32 {
     let cos_a = dot(l, pixel_dir) / sqrt(max(1.0 + (obl * obl - 1.0) * ly * ly, 1e-12));
     let caster = asin(clamp(in.planet_radius * inv, 0.0, 1.0));
     let planet = clamp(1.0 - eclipse_value(max(e.info.x, 1e-7), caster, acos(clamp(cos_a, 0.0, 1.0))), 0.0, 1.0);
-    var shadow = mix(1.0, planet, ring.params.w);
+    var shadow = planet;
     if e.info.y > 0.5 {
         let p = (in.world_pos - in.centre) / in.planet_radius;
         shadow *= 1.0 - ring.hapke2.w * eclipse_shadow(e, p, l);

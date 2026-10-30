@@ -27,10 +27,11 @@ use crate::universe::{MeterScale, UOrientation, UPosition, UniverseSet};
 pub struct RingUniform {
     pub sun_dir: Vec4,
     pub sun_color: Vec4,
-    /// x inner radius / planet radius, y outer / planet radius, z `Opacity` (SE's RingsParams.z, the
-    /// density of the rings' shadow on the planet, which terrain.rs reads from here), w `Brightness`.
+    /// x inner radius / planet radius, y outer / planet radius, z the density of the rings' shadow on
+    /// the planet and its sky ([`planet_shadow`], SE's RingsParams.z; terrain.rs reads it from here),
+    /// w `Brightness`.
     pub geom: Vec4,
-    /// x `FrontBright`, y `BackBright`, z has texture, w `PlanetShadow`.
+    /// x `FrontBright`, y `BackBright`, z has texture, w unused.
     pub params: Vec4,
     /// SE's DensityParams: `Density` (lit and back rows), `Opacity`, `SelfShadow`.
     pub density: Vec4,
@@ -252,6 +253,15 @@ fn procedural_ring_image(p: &RingsParams, seed: u64) -> Image {
 
 const RING_DETAIL_NOISE_SCALE: f32 = 0.0005;
 
+/// The density of the rings' shadow on their planet and its sky (SE's RingsParams.z, the ring's
+/// +0x1b58, FUN_14044fe70 / FUN_1404ae4a0): the catalog's `PlanetShadow` (or its alias `Shadow`,
+/// FUN_14046cef0). Without one SE derives it (FUN_140508600) from the `Density` as `Density` x 1, or
+/// x 0.5 for the thin rings it draws 20 % of the time (`U < 0.2` on its loader's random stream; the
+/// port draws it from the ring's seed).
+fn planet_shadow(block: &se_core::sc::Block, density: f64, seed: u64) -> f64 {
+    block.f64("PlanetShadow").or_else(|| block.f64("Shadow")).unwrap_or_else(|| density * if hash1(0x5_4AD0, seed) < 0.2 { 0.5 } else { 1.0 })
+}
+
 /// Spawn rings for a body if its catalog block defines them.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_rings(
@@ -268,7 +278,8 @@ pub fn spawn_rings(
     if body_block.bool("NoRings").unwrap_or(false) {
         return None;
     }
-    let p = RingsParams::from_block(body_block.sub("Rings")?);
+    let block = body_block.sub("Rings")?;
+    let p = RingsParams::from_block(block);
     if p.outer_radius_km <= p.inner_radius_km || radius_m <= 0.0 {
         return None;
     }
@@ -289,13 +300,8 @@ pub fn spawn_rings(
         u: RingUniform {
             sun_dir: Vec4::new(0.0, 1.0, 0.0, 1.0),
             sun_color: Vec4::ONE,
-            geom: Vec4::new(inner, outer, p.opacity.clamp(0.0, 1.0) as f32, p.brightness.max(0.0) as f32),
-            params: Vec4::new(
-                p.front_bright.max(0.0) as f32,
-                p.back_bright.max(0.0) as f32,
-                if has_tex { 1.0 } else { 0.0 },
-                p.planet_shadow.clamp(0.0, 1.0) as f32,
-            ),
+            geom: Vec4::new(inner, outer, planet_shadow(block, p.density, seed).clamp(0.0, 1.0) as f32, p.brightness.max(0.0) as f32),
+            params: Vec4::new(p.front_bright.max(0.0) as f32, p.back_bright.max(0.0) as f32, if has_tex { 1.0 } else { 0.0 }, 0.0),
             density: Vec4::new(p.density as f32, p.density as f32, p.opacity as f32, p.self_shadow as f32).max(Vec4::ZERO),
             hapke: Vec4::new(spot(p.spot_bright, p.spot_width), inv(p.spot_width), p.hapke.clamp(0.0, 1.0) as f32, spot(p.spot_bright_cb, p.spot_width_cb)),
             // main-def.cfg `RingDetailNoiseScale` 0.0005: noise features that fraction of the ring's
@@ -395,5 +401,18 @@ mod tests {
         let c = host_light(0.5, 2.0, Vec3::new(1.0, 0.5, 0.0), Vec3::ONE, 1.0);
         assert!(c.z == 0.0 && (c.y / c.x - 0.5).abs() < 1e-6);
         assert_eq!(host_light(0.5, 0.9, Vec3::ONE, Vec3::ONE, 1.0), Vec3::ZERO);
+    }
+
+    #[test]
+    fn planet_shadow_from_the_catalog_or_density() {
+        let rings = |s: &str| se_core::sc::parse(s).sub("Rings").cloned().unwrap();
+        // Neptune's PlanetShadow, not its Opacity; SE's `Shadow` alias.
+        assert_eq!(planet_shadow(&rings("Rings\n{\n\tOpacity 0.15\n\tPlanetShadow 0.05\n}\n"), 0.15, 1), 0.05);
+        assert_eq!(planet_shadow(&rings("Rings\n{\n\tShadow 0.3\n}\n"), 1.0, 1), 0.3);
+        // Without one: the Density, halved for the thin fifth.
+        let derived: Vec<f64> = (0..400).map(|s| planet_shadow(&rings("Rings\n{\n\tDensity 0.4\n}\n"), 0.4, s)).collect();
+        assert!(derived.iter().all(|&v| v == 0.4 || v == 0.2));
+        let thin = derived.iter().filter(|&&v| v == 0.2).count();
+        assert!((40..120).contains(&thin), "{thin}");
     }
 }

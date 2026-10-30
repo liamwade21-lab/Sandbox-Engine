@@ -3,7 +3,7 @@
 // so the shell works in "scaled space" where translation and scale are both multiplied by k.
 // Each light is shadowed per fragment as SE's sky.glsl does it (RINGS, ECL): by the rings where the
 // ray towards it crosses their plane (RingsShadow) and by the eclipse casters (EclipseShadowFar at the
-// surface point below the shell fragment, times the eclipse intensity), so a moon's shadow is a dark
+// shell point, the top of the atmosphere, times the eclipse intensity), so a moon's shadow is a dark
 // patch on the atmosphere and the horizon stays bright in totality.
 
 import bevy_pbr::render::mesh_view_bindings::view;
@@ -25,7 +25,7 @@ struct SkyUniform {
     // irradiance like `sun_irradiance`.
     light_dir: array<vec4<f32>, 3>,
     light_irradiance: array<vec4<f32>, 3>,
-    // The rings (SE's RingsParams): x inner, y outer radius (planet radii), z Opacity, w 1 textured,
+    // The rings (SE's RingsParams): x inner, y outer radius (planet radii), z PlanetShadow, w 1 textured,
     // 0.5 untextured, 0 no shadow.
     ring: vec4<f32>,
     // x planet radius / shell radius, y eclipse intensity (SE's AmbientColor.a), z SE's
@@ -150,9 +150,10 @@ fn light_shadow(in: VertexOut, k: i32, pt: vec3<f32>, l: vec3<f32>, ll: vec3<f32
     var s = ring_shadow(pt * shape, ll);
     let e = sky.eclipse[k];
     if e.info.y > 0.5 {
-        // The surface point under the shell point (SE's FragPos at Radiuses.w), in planet radii.
+        // The shell point itself, at the top of the atmosphere (SE's FragPos at Radiuses.w, the shell's
+        // radius, sky.glsl:186-188), in planet radii.
         let off = in.axis0 * pt.x + in.axis1 * pt.y + in.axis2 * pt.z;
-        s *= 1.0 - sky.shadow.y * eclipse_shadow(e, normalize(off), l);
+        s *= 1.0 - sky.shadow.y * eclipse_shadow(e, off / (c0 * sky.shadow.x), l);
     }
     return s;
 }

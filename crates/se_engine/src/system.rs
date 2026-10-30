@@ -1401,8 +1401,8 @@ pub(crate) fn update_sky_shells(
             .max_by(|a, b| a.w.total_cmp(&b.w))
             .unwrap_or(Vec4::ZERO);
 
-        // SE's atmosphere at a distance: the drawn height widened to AtmoMinWidthPix, its light dimmed
-        // to match; the eye's distance for the scattering capped at AtmoDistanceLimit radii.
+        // SE's atmosphere at a distance: the drawn height set to AtmoMinWidthPix (at most 0.05 R), its
+        // light scaled to match; the eye's distance for the scattering capped at AtmoDistanceLimit radii.
         let gpu = terrain.and_then(|t| t.atmosphere.as_ref());
         let (mut bright, mut atm, mut top_m) = (1.0f32, None, None);
         if let Some(gpu) = gpu {
@@ -1413,7 +1413,7 @@ pub(crate) fn update_sky_shells(
             let forward = cam.rot * DVec3::NEG_Z;
             let cos_view = forward.dot(cam.pos.delta_m(body.pos) / d);
             let (drawn, b) = crate::atmosphere::widened_height(height, body.radius_m, min_width, cos_view);
-            if drawn > height * 1.000_1 {
+            if (drawn - height).abs() > height * 1e-4 {
                 let wide = gpu.with_height(body.radius_m, drawn);
                 atm = Some(wide.uniform());
                 top_m = Some(wide.top_radius_m(body.radius_m));

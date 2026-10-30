@@ -24,6 +24,7 @@ struct Body {
     entity: Entity,
     pos: UPos,
     radius_m: f64,
+    star: bool,
 }
 
 /// SE's sky and ring shaders only need casters while the body is drawn as more than a point.
@@ -43,18 +44,23 @@ impl Plugin for EclipsePlugin {
     }
 }
 
-/// The light source of a light seen from `lit` in direction `dir`: of the bodies (a star, or a planet
-/// for planet shine) lying that way, the farthest, as any other there is in front of it (a moon
-/// eclipsing it).
+/// The light source of a light seen from `lit` in direction `dir`, of the bodies lying that way (within
+/// 0.26 degrees): a star when there is one (the nearest to the direction; a moon in front of it, or a
+/// body behind it, is not the light), else the planet of planet shine, the largest one there.
 fn light_source(bodies: &[Body], lit: &Body, dir: Vec3) -> Option<Body> {
     let dir = dir.as_dvec3().normalize_or(DVec3::Y);
-    bodies
+    let cone: Vec<(f64, f64, &Body)> = bodies
         .iter()
         .filter(|b| b.entity != lit.entity)
-        .map(|b| (b.pos.delta_m(lit.pos), b))
-        .filter(|(d, _)| d.normalize_or(DVec3::ZERO).dot(dir) > 0.999_99)
-        .max_by(|a, b| a.0.length_squared().total_cmp(&b.0.length_squared()))
-        .map(|(_, b)| *b)
+        .filter_map(|b| {
+            let d = b.pos.delta_m(lit.pos);
+            let len = d.length().max(1.0);
+            let cos = d.dot(dir) / len;
+            (cos > 0.999_99).then_some((cos, b.radius_m / len, b))
+        })
+        .collect();
+    let star = cone.iter().filter(|c| c.2.star).max_by(|a, b| a.0.total_cmp(&b.0));
+    star.or_else(|| cone.iter().max_by(|a, b| a.1.total_cmp(&b.1))).map(|c| *c.2)
 }
 
 /// The casters of light `src` on the body `lit`, `extent_m` its reach from its centre (its rings' outer
@@ -102,30 +108,43 @@ fn shadow_reach(w: DVec3, to_src: DVec3, rs: f64, rc: f64, extent: f64) -> Optio
     (perp <= extent + rc + t * a_s.tan()).then(|| (rc / w.length().max(1.0), w))
 }
 
-/// The reach of a body's shadow receivers: its rings' outer edge, else the top of its atmosphere (SE's
-/// Radiuses), else its surface.
-fn receiver_extent(radius_m: f64, rings_outer: Option<f64>) -> f64 {
-    rings_outer.unwrap_or(radius_m * 1.1).max(radius_m * 1.1)
+/// What receives a body's shadows beyond its surface: its sky shell (the top radius drawn, `m`) or its
+/// rings (their outer radius in planet radii).
+#[derive(Clone, Copy)]
+enum Reach {
+    Sky(f64),
+    Rings(f32),
+}
+
+/// The reach of a body's shadow receivers from its centre (m): its rings' outer edge, the top of its
+/// atmosphere as drawn (SE's Radiuses; a widened shell, Pluto's 1.25 R), at least its surface.
+fn receiver_extent(radius_m: f64, reach: impl Iterator<Item = Reach>) -> f64 {
+    reach
+        .map(|r| match r {
+            Reach::Sky(m) => m,
+            Reach::Rings(k) => k as f64 * radius_m,
+        })
+        .fold(radius_m, f64::max)
 }
 
 pub fn update_eclipse_casters(
     mut commands: Commands,
     all: Query<(Entity, &SystemBody)>,
     mut lit: Query<(&SystemBody, &BodyLighting, Option<&mut EclipseCasters>)>,
-    skies: Query<&crate::system::SkyOf>,
+    skies: Query<(&crate::system::SkyOf, &crate::universe::MeterScale)>,
     rings: Query<&crate::rings::Rings>,
     ring_mats: Res<Assets<crate::rings::RingMaterial>>,
 ) {
     // Only the bodies whose sky or rings read them.
-    let receivers: Vec<(Entity, Option<f32>)> = skies
+    let receivers: Vec<(Entity, Reach)> = skies
         .iter()
-        .map(|s| (s.body, None))
-        .chain(rings.iter().map(|r| (r.body, ring_mats.get(&r.material).map(|m| m.u.geom.y))))
+        .map(|(s, scale)| (s.body, Reach::Sky(scale.0.max_element())))
+        .chain(rings.iter().filter_map(|r| ring_mats.get(&r.material).map(|m| (r.body, Reach::Rings(m.u.geom.y)))))
         .collect();
     if receivers.is_empty() {
         return;
     }
-    let bodies: Vec<Body> = all.iter().map(|(entity, b)| Body { entity, pos: b.pos, radius_m: b.radius_m }).collect();
+    let bodies: Vec<Body> = all.iter().map(|(entity, b)| Body { entity, pos: b.pos, radius_m: b.radius_m, star: b.star }).collect();
     let mut done: Vec<Entity> = Vec::new();
     for &(entity, _) in &receivers {
         if done.contains(&entity) {
@@ -136,9 +155,8 @@ pub fn update_eclipse_casters(
         if b.star || b.px_radius < MIN_PX_RADIUS {
             continue;
         }
-        let me = Body { entity, pos: b.pos, radius_m: b.radius_m };
-        let outer = receivers.iter().filter(|r| r.0 == entity).find_map(|r| r.1).map(|k| k as f64 * b.radius_m);
-        let extent = receiver_extent(b.radius_m, outer);
+        let me = Body { entity, pos: b.pos, radius_m: b.radius_m, star: false };
+        let extent = receiver_extent(b.radius_m, receivers.iter().filter(|r| r.0 == entity).map(|r| r.1));
         let mut set = EclipseCasters::default();
         // The main light is the star at `star_pos`; the others are found by their direction.
         let main = bodies.iter().find(|s| s.pos == light.star_pos && s.entity != entity).copied();
@@ -203,6 +221,21 @@ mod tests {
         assert!((half - 0.5).abs() < 1e-9, "{half}");
         // Tiny lights use the squared ratio.
         assert!((eclipse_value(0.0005, 0.0001, 0.0) - 0.04).abs() < 1e-9);
+    }
+
+    #[test]
+    fn light_source_is_the_star() {
+        let body = |i: u32, x: f64, r: f64, star: bool| Body { entity: Entity::from_raw_u32(i).unwrap(), pos: UPos::from_meters(DVec3::new(x, 0.0, 0.0)), radius_m: r, star };
+        let lit = body(0, 0.0, 6e6, false);
+        // A moon in front of the star and a planet far behind it, all in the light's direction.
+        let bodies = [lit, body(1, 4e8, 1.7e6, false), body(2, 1.5e11, 7e8, true), body(3, 8e11, 7e7, false)];
+        assert_eq!(light_source(&bodies, &lit, Vec3::X).map(|b| b.entity), Some(bodies[2].entity));
+        // Planet shine: the largest planet there, not one beyond it.
+        let shine = [lit, body(1, 4e8, 1.7e6, false), body(3, 8e11, 7e7, false)];
+        assert_eq!(light_source(&shine, &lit, Vec3::X).map(|b| b.entity), Some(shine[1].entity));
+        // The receiver reaches the sky's top or the rings' edge, at least the surface.
+        assert_eq!(receiver_extent(6e6, [Reach::Sky(7.5e6), Reach::Rings(2.0)].into_iter()), 1.2e7);
+        assert_eq!(receiver_extent(6e6, std::iter::empty()), 6e6);
     }
 
     #[test]

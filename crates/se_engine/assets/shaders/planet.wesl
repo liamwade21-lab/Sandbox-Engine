@@ -1450,7 +1450,7 @@ fn tile_uv(rect: vec4<f32>, uv: vec2<f32>) -> vec2<f32> {
 // Shadow of the planet's own rings, SE's RingsShadow (rings_common.glh, planet.glsl:1059-1073): where
 // the ray towards the star crosses the ring plane (the point's own spot when it does not, which lies
 // inside the rings), the light the ring lets through on that slant path, `(1 - density) ^ (1 / cosPhi)`
-// with the density `RingsParams.z x alpha` (ring.z: the ring's `Opacity`), anti-aliased at the ring's
+// with the density `RingsParams.z x alpha` (ring.z: the ring's `PlanetShadow`), anti-aliased at the ring's
 // edges by the derivatives and fading out at equinox. `p` is in planet radii from the centre.
 fn ring_shadow(p: vec3<f32>, l: vec3<f32>) -> f32 {
     if planet.ring.w < 0.25 {
