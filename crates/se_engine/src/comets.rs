@@ -231,7 +231,10 @@ fn spawn_tails(
         // seeds a stream by the comet's name.
         let seed = fnv1a(&b.names[0]);
         let mut rng = SeRng::new(seed, seed.rotate_left(16) ^ 0x9e37_79b9);
-        let tail = tail_defaults(&mut rng, &given, b.mass_kg / EARTH_MASS_KG, ecc);
+        // SE derives a comet's missing mass from its radius at 500 kg/m^3 before the tail defaults
+        // (FUN_140503b60, then FUN_140486280): West, Hyakutake and ISON give only a radius.
+        let mass_kg = if b.mass_kg > 0.0 { b.mass_kg } else { 4.0 / 3.0 * std::f64::consts::PI * (b.radius_km * 1000.0).powi(3) * 500.0 };
+        let tail = tail_defaults(&mut rng, &given, mass_kg / EARTH_MASS_KG, ecc);
         let q_m = orbit.map_or(0.0, |o| if (o.eccentricity - 1.0).abs() < 1e-9 { o.semi_major_axis } else { o.semi_major_axis * (1.0 - o.eccentricity).abs() });
         let material = materials.add(CometMaterial { u: CometTailUniform::default() });
         let part = commands

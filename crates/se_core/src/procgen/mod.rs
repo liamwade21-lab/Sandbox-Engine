@@ -194,16 +194,22 @@ pub fn generate_system_sc(star: &StarParams, seed: u64) -> String {
 /// Like [`generate_system_sc`] but also returns per-body summaries. A procedural star may become
 /// SE's multiple system ([`is_multiple`]).
 pub fn generate_system(star: &StarParams, seed: u64) -> GeneratedSystem {
-    generate(star, seed, true)
+    generate(star, seed, true, true)
+}
+
+/// [`generate_system`] without writing out the comets (the same planets): for the star browser's
+/// search, which scans thousands of systems and never lists comets.
+pub fn generate_system_for_search(star: &StarParams, seed: u64) -> GeneratedSystem {
+    generate(star, seed, true, false)
 }
 
 /// The planets SE generates for a catalog star without catalog bodies: the star stays as the
 /// catalog has it (SE splits only its procedural stars).
 pub fn generate_planets(star: &StarParams, seed: u64) -> GeneratedSystem {
-    generate(star, seed, false)
+    generate(star, seed, false, true)
 }
 
-fn generate(star: &StarParams, seed: u64, multiples: bool) -> GeneratedSystem {
+fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> GeneratedSystem {
     let ctx = Ctx::new(star);
     let mut rng = Rng::from_name(seed, &star.name);
     let seed32 = system_seed(star, seed);
@@ -219,9 +225,11 @@ fn generate(star: &StarParams, seed: u64, multiples: bool) -> GeneratedSystem {
     let multiple = if big_black_hole(star) || !multiples { None } else { se_multiple::build(&se_root(star, &ctx), seed32) };
     match multiple {
         None => {
-            let (planets, asteroids, comets) = se_bodies(&mut rng, star, &ctx, seed32);
+            let (planets, asteroids, se_comets) = se_bodies(&mut rng, star, &ctx, seed32);
             host_bodies(&mut rng, &ctx, planets, asteroids, &mut sc, &mut out.bodies);
-            host_comets(&ctx, &comets, &mut sc, &mut out.bodies);
+            if comets {
+                host_comets(&ctx, &se_comets, &mut sc, &mut out.bodies);
+            }
         }
         Some(comps) => {
             out.root_mass_sol = Some(comps[0].star.mass_sol);
