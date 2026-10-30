@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 150 have been fixed since (listed at the end); the tables count the 61 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 151 have been fixed since (listed at the end); the tables count the 60 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 17 | 29 | 15 |
+| Gaps | 0 | 0 | 17 | 29 | 14 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 12 | 35 | 14 |
+| Gaps | 11 | 35 | 14 |
 
 | Area | Kept |
 |---|---|
@@ -124,7 +124,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 06 Procedural generation | 7 |
 | 07 Camera and time | 4 |
 | 08 Interface | 0 |
-| 09 Graphics and settings | 14 |
+| 09 Graphics and settings | 13 |
 | 10 Scripts, audio, spacecraft | 18 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
@@ -615,15 +615,6 @@ Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / i
 - Port: crates/se_engine/src/graphics.rs:164
 - Check: Port already behaves as SE's defaults (LoaderMode 2 asynchronous via AsyncComputeTaskPool in every builder, TimingStrategy 0 tile-count budget from MaxTilesPerFrame in graphics.rs:164, RealTime true), so only the selectable alternatives are missing; the UI strings are exe strings (strings_utf16.txt:2997-3003), not eng-gui.cfg, and RealTime/RealTimeFPS belong to Export (frame-time mode matters for video recording)
 
-### 09-019 · Graphics and settings
-
-Log file: SE writes system/se.log with optional time and thread stamps (LogTimeStamp, LogThreadStamp) and filters catalog and CSV loading messages (CatalogLogLevel 0-4 combined with each catalog's LogLevel, CsvLogLevel, CsvPatchWarning). Port prints Bevy log lines to the console only, with no log file and no catalog log levels
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg Log 501-525; SpaceEngine/system/se.log
-- Port: none
-- Check: SE exe strings "se.log" (strings_ascii.txt:26401), LogTimeStamp, CatalogLogLevel and main-def.cfg Log 501-525 (LogTimeStamp, LogThreadStamp, CatalogLogLevel 0-4, CsvLogLevel, CsvPatchWarning); port main.rs uses DefaultPlugins' default LogPlugin (console only), no log file writer anywhere (only the opt-in SE_FRAMETIME_LOG frame-time file in system.rs:104), and catalog LogLevel keys are not used
-
 ### 09-017 · Graphics and settings
 
 Stereoscopic 3D (non-VR): SE renders left/right eyes for cross-eye/parallel, horizontal or vertical stereopairs (optionally anamorphic interlaced, 3D_interlace.glsl), active shutter glasses, or anaglyph with chosen lens hues (3D_anaglyph.glsl, AnaglyphLeftHue/RightHue), with swap eyes, interpupillary distance, convergence, a stereobase that is saved with locations, Inc/Dec/Next/Prev/Reset stereobase keys, and links between stereobase and camera speed or time scale. Port has none (a place's Stereobase is only carried through, default 1.0, never used)
@@ -1069,6 +1060,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **09-002** (Graphics and settings, fixed 2026-10-29): Window and display settings: SE starts as a maximized window (Maximized true) and remembers its size and posit... Fix: Window and display (`display.rs`): the window opens maximized or at its saved size and place (SE's Display WindowSizeX/Y, WindowPosX/Y, Maximized, kept from winit while windowed), FullScreen 0 windowed / 1 fullscreen window / 2 exclusive fullscreen, VSync 0 off / 1 on / 2 auto (adaptive), Alt+Enter fullscreen, Shift+Enter next display, Ctrl+Enter minimize, Graphics window "Window mode" and "Vertical synchronization"; saved in the settings file's Display block. Not done: ScreenResX/Y, RefreshRate (exclusive fullscreen keeps the display's mode) and AspectRatio.
 - **09-003** (Graphics and settings, fixed 2026-10-30): Exposure compensation: SE lets the user brighten or darken the whole image in photographic stops (ExposureComp... Fix: SE's exposure compensation: ExposureComp is stored negated (FUN_140011e60 registers it -42..4, step 0.25; main-def.cfg MinExposureComp -4 / MaxExposureComp 42 bound the shown value), so +1 shown doubles the image; `.` / `,` step it by 0.25 stop and `/` resets it (IncExposure / DecExposure / ResetExposure in SE's key table FUN_1405ba8f0; FUN_1404c6000 adds the step and shows the splash), applied on top of the camera's tone-mapping exposure (exposure.rs). Assumed: the repeat while held (0.35 s, then every 0.05 s; SE's comes from its input system). Not ported: typing it on the Camera toolbar and applying a place's Exposure.
 - **09-005** (Graphics and settings, fixed 2026-10-30): Final colour correction: SE applies ColorCorrentionLDR after tone mapping with Brightness, Contrast, Saturatio... Fix: SE: hdr_final.glsl applies hsl.glh ColorCorrentionLDR to the tone-mapped (linear: hdrt_AgX_tone.glh agx_eotf returns pow(v, 2.2)) image with bcsg = (Brightness - 1, Contrast, Saturation - 1, 1 / Gamma): contrast around 0.5 plus brightness, vibrance mix(luma, c, 1 + (S - 1)(1 - (max - min))), gamma; DITHERING by RenderingQuality Dithering. Ported: color_correction.rs ColorCorrection, a pass after Bevy's tonemapping (color_correction.wesl) that writes back into the same main texture through a scratch texture (a FullscreenMaterial / post_process_write flip made every few frames show a wrong image, a visible flicker; found 2026-10-30), settings from main-def.cfg; Dithering false turns Bevy's DebandDither off; camera.rs drops its uniform post_saturation 1.35 stand-in. Checked: Earth, Orion Nebula, Betelgeuse against the release build (.audit/work/colorcorr/cmp.jpg): means within 2 levels, vivid colours slightly less saturated, greys slightly more. Not ported: a settings UI for the four values (09-006) and main-user.cfg overrides (09-016); SE's own 4-level noise dither (Bevy's deband dither kept).
+- **09-019** (Graphics and settings, fixed 2026-10-30): Log file: SE writes system/se.log with optional time and thread stamps (LogTimeStamp, LogThreadStamp) and filt... Fix: SE: main-def.cfg Log (LogTimeStamp false, LogThreadStamp true, CatalogLogLevel 2, CsvLogLevel 1, CsvPatchWarning true); system/se.log has a version line, STARTING, then '[MT] ' / '[NN] ' stamped lines with 'ERROR: ' / 'WARNING: ' prefixes. Port: log_file.rs adds a tracing layer (LogPlugin custom_layer) writing se.log in %APPDATA%/SpaceEngine-rs (never the install) in that format, with the time and thread stamps from main-def.cfg; the catalog loader's warnings follow CatalogLogLevel / CsvLogLevel (0 silences them). Not ported: each catalog's own LogLevel cap and CsvPatchWarning (the port's loader reports only problems, no per-object messages). Checked: unit test reads_main_def_and_formats_like_se; a run writes se.log with [MT] / [00] lines and '[MT] WARNING: catalog: ...'.
 - **10-002** (Scripts, audio, spacecraft, fixed 2026-10-29): Music transitions and title: SE cross-fades tracks (MixDurationGUI 2 s, MixDurationLoop 5 s, MixDurationContex... Fix: Music as SE's Sound settings: consecutive tracks cross-fade over MixDurationLoop 5 s (the next starts 5 s before the end, from the Ogg length), N cross-fades over MixDurationGUI 2 s, M fades out over 2 s, each new track's title shows as an on-screen message (MusicShowTitle), default MusicVolume 20 of 100, saved as SE's 0..100 MusicVolume (Settings "Music volume"). Not done: SE's repeat/order modes and the context mode (left out with 10-001).
 - **10-003** (Scripts, audio, spacecraft, fixed 2026-10-29): Interface sound effects: SE loads data/sounds/menu/button.ogg and menu.ogg (SDL_mixer) for GUI clicks and menu... Fix: Interface sounds (`sound.rs`): SE's data/sounds/menu/button.ogg on clicks of buttons, check boxes and list entries and menu.ogg when a drop-down opens (from egui's click events), at SoundVolume 30 of 100 (Settings "Sound effects", saved as SoundVolume). Assumed: which widgets sound. Not done: SetAudioDevice.
 - **10-004** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship sounds: every EngineEffect has a looping Sound and Volume (156 effects: Starship_engine, Starship_thruste... Fix: SE: FUN_1402a8ed0 reads each EngineEffect's `Sound`, `SoundVolume`/`Volume` (Volume wins); defaults: volume 1, thrusters 0.02; sound by group (FUN_1405693a0): Main/Retro `Shuttle_engine.ogg`, Hover `Shuttle_hover.ogg`, Thruster `Shuttle_thruster.ogg`, Hyper `Starship_warp.ogg`. Playback is SDL_mixer: `seSound::FadeIn/FadeOut` (FUN_140567f30/FUN_140568060, Mix_FadeInChannelTimed/Mix_FadeOutChannel), channel volume (FUN_140567eb0, Mix_Volume) at `SoundVolume`. No positional calls are imported (no Mix_SetPosition/SetDistance/SetPanning): no distance attenuation or panning. Ported: `EngineEffect::sound_file`, `sound_candidates`, thruster default 0.02 (se_core ship.rs); `PlumeSpec.sound/volume`; `ship/engine_sound.rs` plays one looping voice per sound file of the flown ship: volume = SoundVolume x min(1, sum of Volume x effect level), the level that sizes the plume (spooled engine, RCS/turn command, warp fraction), faded over 0.3 s; silent outside flight mode. Checked: unit tests (defaults, voice mixing); logs show "ship sounds: 3 voices" (Shuttle) and 2 (Dragonfly), files read from data/sounds/spacecraft. Not ported / assumed: SE's per-effect channels and its fade times for ship sounds were not traced (the code that calls FadeIn for engines was not found); summing effect volumes stands in for SDL_mixer's channel mixing.

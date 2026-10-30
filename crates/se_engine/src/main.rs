@@ -27,6 +27,7 @@ mod galaxies;
 mod graphics;
 mod grids;
 mod lensflare;
+mod log_file;
 mod color_correction;
 mod nebula_raymarch;
 mod nebulae;
@@ -71,8 +72,11 @@ fn main() {
     let display = display::startup_settings(&cfg);
 
     let mut app = App::new();
+    // Before the plugins: the log file reads SE's Log settings from the install.
+    app.insert_resource(cfg.clone());
     app.add_plugins(
         DefaultPlugins
+            .set(bevy::log::LogPlugin { custom_layer: log_file::layer, ..default() })
             .set(RenderPlugin {
                 // The port targets Vulkan only.
                 render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {

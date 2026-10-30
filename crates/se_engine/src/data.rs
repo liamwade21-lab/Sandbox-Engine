@@ -111,7 +111,9 @@ impl Plugin for DataPlugin {
             catalog.nebulae.len(),
             t.elapsed()
         );
-        for w in catalog.warnings.iter().take(5) {
+        // SE's CatalogLogLevel / CsvLogLevel (log_file.rs) decide which loader messages are logged.
+        let log = app.world().get_resource::<crate::log_file::CatalogLog>().map(|c| c.0).unwrap_or_default();
+        for w in catalog.warnings.iter().filter(|w| log.logs_catalog(w.split(':').next().unwrap_or(""))).take(5) {
             warn!("catalog: {w}");
         }
         // Saved places shipped with SpaceEngine (plus the user's own, if present).
