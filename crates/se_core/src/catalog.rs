@@ -357,7 +357,9 @@ impl Catalog {
     /// [`Catalog::load_sc`] for a script already parsed (off the main thread, say).
     pub fn load_doc(&mut self, doc: sc::Block, source: &str) {
         for item in doc.items {
-            if item.key == "RemoveStar" {
+            // SE's star reader treats `Remove` as `RemoveStar` (FUN_140475fb0), used before a
+            // system is redefined (Albireo's BET1/BET2 Cyg).
+            if item.key == "RemoveStar" || item.key == "Remove" {
                 for n in item.names() {
                     self.remove_star(&n);
                 }
@@ -1205,6 +1207,15 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
         assert!(p.age_gyr > 0.0 && p.age_gyr < 3.5);
         assert_eq!(c.clusters[1].color, Some([0.0; 3]));
         assert!(c.clusters[2].age_gyr > 0.0 && c.clusters[2].age_gyr <= 13.0);
+    }
+
+    #[test]
+    fn remove_drops_a_star_like_remove_star() {
+        let mut c = Catalog::new();
+        c.load_sc("Star \"BET2 Cyg\" { RA 19.5 Dec 27.9 Dist 120 Class \"B8V\" }
+Remove \"BET2 Cyg\"
+", "c.sc");
+        assert_eq!(c.find("BET2 Cyg"), None);
     }
 
     #[test]

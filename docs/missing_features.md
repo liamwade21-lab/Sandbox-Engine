@@ -104,19 +104,19 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 83 have been fixed since (listed at the end); the tables count the 158 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 84 have been fixed since (listed at the end); the tables count the 157 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 69 | 66 | 20 |
+| Gaps | 1 | 2 | 69 | 65 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 52 | 76 | 30 |
+| Gaps | 51 | 76 | 30 |
 
 | Area | Kept |
 |---|---|
-| 01 Stars | 17 |
+| 01 Stars | 16 |
 | 02 Star clusters | 12 |
 | 03 Galaxies and nebulae | 14 |
 | 04 Planet surfaces | 10 |
@@ -788,15 +788,6 @@ Warp bubble effect: while the warp drive runs, SE renders an Alcubierre warp bub
 
 
 ## Visibility 2: niche
-
-### 01-019 · Stars
-
-catalog key Remove ignored: star .sc files use Remove "name" (24 times) before redefining a system, but the port only honours RemoveStar, so the HIPPARCOS entries stay as duplicates next to the new components (Albireo: csv Albireo and BET2 Cyg are still drawn besides Albireo Aa/Ac/B, the csv one 18 pc in front)
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: Catalogs.pak stars/Stars-bin.sc:662-663 Remove "BET1 Cyg"/"BET2 Cyg", stars/ExoPlanetsSuns-bin.sc:238-678
-- Port: crates/se_core/src/catalog.rs:255-261
-- Check: SE's star reader FUN_140475fb0:364-420 matches tag "Remove" exactly like "RemoveStar" (same 0x7fff removal record), and 24 Remove lines exist in stars/*.sc (Stars-bin.sc:662-663 BET1/BET2 Cyg); port load_sc (catalog.rs:255) only matches "RemoveStar", and add_star (catalog.rs:385-397) does not patch a csv star with a StarBarycenter, so csv "Albireo/BET1 Cyg" (100.5 pc) and "BET2 Cyg" stay beside the 118.2 pc barycentre
 
 ### 01-020 · Stars
 
@@ -1578,6 +1569,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **01-007** (Stars, fixed 2026-10-29): star lighting of planets: SE fades a light source's effect on planets between apparent magnitude -7 and -5 (ri... Fix: Starlight on planets as SE sets it up (FUN_1404bb110 thresholds, FUN_1404bf5c0 lights): each star's flux at the body (L_sun/AU^2) fades linearly between PlanetLightingFadeBeginMagn -7 and EndMagn -5 (the flux of that apparent magnitude, SE's FUN_1401df4c0 at 1 AU) and is then normalised as (F / max(F_begin, F_brightest))^0.35, so a planet under a star brighter than -7 is lit at 1 wherever it is (Neptune 1.0, was 0.36) and a body with no star is unlit (was lit at 1.0); rings drop a star fainter than RingsLightingFadeEndMagn -10 (SE never reads RingsLightingFadeBeginMagn); values read from main-def.cfg (system.rs LightingFade). Light colour per FUN_1404d6970: the star's colour (brightest channel 1) pulled towards its luma sqrt(.299r^2+.587g^2+.114b^2) by SunIllumSaturation (0.5, range 0-2) or, with IllumSaturationAuto (default on), SE's temperature curve FUN_1401a5270 (colour mode 2: 0.87 at 2000 K, 0 near 6000 K, 0.45 at 10000 K, 0.75 above 18700 K); both settings persisted under SE's keys and shown in Settings. Planet sprite magnitudes now use the physical flux. Not ported: SE's brightness factor for stars under 2000 K, colour mode 3's curve, and lighting by several stars (01-006).
 - **01-015** (Stars, fixed 2026-10-29): procedural star blocks pop in: SE fades newly generated blocks of stars in over StarFadeDuration 0.5 s; port s... Fix: New blocks of procedural stars fade in as SE's do (FUN_14048dd70: a block's brightness factor rises by dt / StarFadeDuration a frame from 0 once it is ready, capped at 1; StarFadeDuration 0.5 s read from main-def.cfg, at least 1 ms): a finished octree node is drawn with its own copy of the shared star material whose colour multiplier (tint) runs 0 -> 1, then switches to the shared material (procstars.rs stream_nodes, stars::block_fade_seconds).
 - **01-016** (Stars, fixed 2026-10-30): star magnitude limit and zoom: in SE, zooming works like a telescope and raises the stars' limiting magnitude ... Fix: Zoom works like a telescope as in SE: its camera keeps a zoom factor (FOV / DefaultFOV)^-1.5 (FUN_140572300, seCamera +0x1390; DefaultFOV 45 read into +0x1360 by FUN_140280ec0) that multiplies the brightness coefficients of stars, planets and clusters every frame (FUN_1404c51a0, mono view only); StarSettings.zoom follows the camera and star_params raises the shader's limit by 2.5 log10(zoom) (catalog, procedural, cluster and planet points). Loading follows the zoomed limit: SE keeps a star node while its brightest star could show under the coefficient capped at magnitude 20 (FUN_1404a0e80, FUN_1404c4610) and, under StarFrustumClipFOV 30 (main-def.cfg), only inside the frustum (FUN_14047b670), so StarOctree::wanted_nodes reaches 10^(0.2 dm) further inside the view cone (at most 512 extra nodes a level; all around at most 2x without a cone) and cluster nodes use the zoomed limit inside the cone. The camera toolbar shows SE's 'Mag limit' = StarMagnLimit + 1.0587 ln(zoom) (FUN_1404c27c0; typing sets the limit back, FUN_14024d6e0); SE's keys ] / [ (IncAll/DecAllMagnCoef, +-0.1), Ctrl+] / [ (stars), P (ResetAllMagnCoef) from its key table FUN_1405ba8f0 with a splash message; the ship's warp boost moved from [ ] to SE's Alt+= / Alt+-. Zoomed in, procedural galaxies, clusters and nebulae are promoted only inside the view (all around they grew past the size thresholds and cost 80 ms frames). Checked against the tutorial's 'Mag limit' numbers (internal 7.7-9.4 for 10 at FOV 10-30; port 7.6-9.36); at 0.2 deg the frame median is 7 ms, worst 18 ms. Not ported: galaxy and nebula points brightening with zoom, separate planet/galaxy limits (Shift and Ctrl+Shift keys).
+- **01-019** (Stars, fixed 2026-10-30): catalog key Remove ignored: star .sc files use Remove "name" (24 times) before redefining a system, but the po... Fix: `Remove "name"` drops a star like `RemoveStar` (SE's star reader FUN_140475fb0 matches both), so the HIPPARCOS entries the star catalogs remove before redefining a system (24 lines, e.g. Stars-bin.sc's BET1/BET2 Cyg before Albireo's components) are no longer drawn beside the new components.
 - **02-001** (Star clusters, fixed 2026-10-28): Catalog cluster far sprite: SE draws every catalog (and extragalactic catalog) cluster as a star-like particle... Fix: Catalog clusters are SE's star-like particle (`procsystems.rs` setup, `galaxy_far.wesl` ptype 4), coloured by `Color` or SE's default by type, open clusters at 0.25; `Color (0 0 0)` draws none. Omega Cen shows from Earth.
 - **02-002** (Star clusters, fixed 2026-10-28): Far-to-near switch rule: SE renders member stars once the cluster's angular radius exceeds 8 px (x max(1, heig... Fix: Member stars from 8 px x max(1, h/1080) of radius (`clusters::members_range_pc`, also for procedural promotion); every cluster particle fades out from 1 to 100 px x h/1080. Not done: SE's brightness cut on members (d^2 ClusterBrightMin < K L).
 - **02-003** (Star clusters, fixed 2026-10-29): Member-star LOD octree: SE gives each cluster a 5-level star octree (nodes "SC cluster-level-node", root half-... Fix: Cluster member octree (clusters.rs): SE's structure (FUN_140543c70 / FUN_140540220 / FUN_1401d7300): five levels below a root cube of half-size the cluster radius, level d holding one of SE's five equal-probability bands of Mv ~ N(3, 6) from -8 to 30 (-8, -1.5, 1.8, 4.7, 8.2, 25); a node loads while the camera is inside its sphere or its band's brightest star seen from the sphere's edge is above the star magnitude limit (StarMagnLimit + PointOverbright), at most 16384 stars per node, brighter nodes first, so faint members appear as you approach and big globulars reach millions of stars around the camera; counts scale with StarDensityInCluster. Not done: SE's own per-node star counts and member generator (CreateClusterBlock, FUN_1401d6c60) are not decoded, so band populations come from the port's Salpeter/turn-off model and Plummer profile.
