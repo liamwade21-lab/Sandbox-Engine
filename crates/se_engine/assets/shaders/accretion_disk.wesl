@@ -1,24 +1,34 @@
 // SpaceEngine's volumetric accretion disk and jets (gr_intersection.glh: DiskProperties,
-// JetProperties, ShellFbm, VolumeStep, IntegrationStep), used by blackhole_lens.wesl.
+// JetProperties, ShellFbm, VolumeStep, IntegrationStep) and the light-bent surface of a neutron
+// star or white dwarf (StarSurface), used by blackhole_lens.wesl.
 //
-// SE works in units of its render sphere (DistortionRadius); here every length is in
-// Schwarzschild radii (SE's Rg, r_s = 1). SE's sphere-unit expressions reduce to these:
-// rho * invGravRadius -> rho, 1300 * r * gravRadius * distRadCorr -> 1.3 r,
-// 1e-3 * rayDistance * invGravRadius -> 1e-3 * path length. Densities keep SE's per-sphere-unit
-// scale; the step length is multiplied by gravS (= Rg / sphere radius) where SE integrates.
+// SE works in units of its render sphere (DistortionRadius); here every length is in units of
+// SE's gravRadius (the Schwarzschild radius Rg, r_s = 1; the star's radius for a white dwarf).
+// SE's sphere-unit expressions reduce to these: rho * invGravRadius -> rho,
+// 1300 * r * gravRadius * distRadCorr -> 1.3 r, 1e-3 * rayDistance * invGravRadius -> 1e-3 * path
+// length. Densities keep SE's per-sphere-unit scale; the step length is multiplied by gravS
+// (= gravRadius / sphere radius) where SE integrates.
 
 const PI: f32 = 3.14159265359;
 
 struct Hole {
-    // xyz: unit view-space direction camera -> hole, w: camera distance (r_s).
+    // xyz: unit view-space direction camera -> hole, w: camera distance (units).
     dir_d: vec4<f32>,
-    // xyz: disk normal (spin axis, SE's +y), w: inner radius (r_s); <= 0: no disk.
+    // xyz: disk normal (spin axis, SE's +y), w: inner radius (units); <= 0: no disk.
     axis_in: vec4<f32>,
-    // xyz: disk x axis, w: outer radius (r_s).
+    // xyz: disk x axis, w: outer radius (units).
     xref_out: vec4<f32>,
-    // x: influence radius (rad), y: gravS (Rg / render sphere radius), z: KerrSpin,
+    // x: influence radius (rad), y: gravS (gravRadius / render sphere radius), z: KerrSpin,
     // w: volumBright (ImpParams.z).
     params: vec4<f32>,
+    // MetricParams: KerrSpin, KerrCharge and their squares.
+    metric: vec4<f32>,
+    // StarParams: surface temperature (K), surface radius (units; 0: a black hole), equator
+    // v/c, starTime (0..256).
+    star: vec4<f32>,
+    // x: KerrM (DiskParams5.w: 1, Rg / R for a white dwarf), y: invGravRadius (render sphere
+    // radius in units), z: warpStep, w: starRotAng (rad).
+    gr: vec4<f32>,
     // x: diskTemp (K), y: TwistMagn, z: 1 disk volume + 2 jets, w: disk animation time (0..1).
     disk1: vec4<f32>,
     // x: tempShift, y: diskBright, z: diskDensity, w: volume step length (r_s).
@@ -27,11 +37,11 @@ struct Hole {
     disk3: vec4<f32>,
     // xyz: OctaveDistortion, w: OctaveScale.
     disk4: vec4<f32>,
-    // x: DiskNoiseContrast, y: DiskOuterSpin, z: DiskTempContrast, w: bounding radius (r_s).
+    // x: DiskNoiseContrast, y: DiskOuterSpin, z: DiskTempContrast, w: bounding radius (units).
     disk5: vec4<f32>,
     // x, y: jet start / end temperature, z: ShadowContrast, w: ShadowLength.
     jet1: vec4<f32>,
-    // x, y: jet start / end radius (r_s), z: jet length (r_s), w: JetVelocity (c).
+    // x, y: jet start / end radius (units), z: jet length (units), w: JetVelocity (c).
     jet2: vec4<f32>,
     // x: jet brightness, y: jet density, z: JetDistortion, w: JetThickness.
     jet3: vec4<f32>,
@@ -297,7 +307,7 @@ struct VolRay {
     volume_steps: i32,
 };
 
-// DopplerGravShiftedEmission: `rho` distance from the hole, `eye` camera distance (r_s).
+// DopplerGravShiftedEmission: `rho` distance from the hole, `eye` camera distance (units).
 fn shifted_emission(h: Hole, rho: f32, eye: f32, ray_dir: vec3<f32>, velocity: vec3<f32>, temp_in: f32) -> vec3<f32> {
     var one_plus_z = (rho * (eye - 1.0)) / (eye * max(rho - 1.0, 1.0e-3));
     one_plus_z = one_plus_z * (1.0 + dot(ray_dir, velocity)) * inverseSqrt(max(1.0 - dot(velocity, velocity), 1.0e-3));
@@ -305,7 +315,7 @@ fn shifted_emission(h: Hole, rho: f32, eye: f32, ray_dir: vec3<f32>, velocity: v
 }
 
 // VolumeStep + IntegrationStep at disk-frame position `pos`, ray direction `ray_dir`, step
-// `dt` (r_s), at path length `ray_dist` and emission time `time` (0..1 loop).
+// `dt` (units), at path length `ray_dist` and emission time `time` (0..1 loop).
 fn volume_step(h: Hole, pos: vec3<f32>, ray_dir: vec3<f32>, dt: f32, ray_dist: f32, time: f32, vr: ptr<function, VolRay>) {
     if (*vr).volume_steps > MAX_VOLUME_STEPS {
         return;
@@ -333,4 +343,31 @@ fn volume_step(h: Hole, pos: vec3<f32>, ray_dir: vec3<f32>, dt: f32, ray_dist: f
     (*vr).color = (*vr).color + emiss * (1.0 - ext) * (*vr).transm;
     (*vr).transm = (*vr).transm * ext;
     (*vr).sigma = (*vr).sigma + dts * prop.density;
+}
+
+// StarSurface (STAR define: neutron stars and white dwarfs): the surface at unit normal `n`
+// (disk frame) seen along `ray_dir`. Gravitational shift with SE's starR = starRadius /
+// starRadiusScale, Doppler shift of the equator speed, Fbm temperature spots drifting with
+// starTime, poles 1.25x hotter, the pattern turned by starRotAng; the caller applies
+// volumBright (SE: rayProp.color *= volumBright).
+fn star_surface(h: Hole, n: vec3<f32>, ray_dir: vec3<f32>) -> vec3<f32> {
+    let eye = h.dir_d.w;
+    let star_r = h.star.y / h.gr.x;
+    var one_plus_z = sqrt(max((star_r * (eye - 1.0)) / (eye * (star_r - 1.0)), 1.0e-6));
+    let eq = vec3<f32>(n.z, 0.0, n.x);
+    var cost = 0.0;
+    if dot(eq, eq) > 1.0e-12 {
+        cost = dot(ray_dir, normalize(eq));
+    }
+    let v = h.star.z;
+    one_plus_z = one_plus_z * (1.0 - v * cost) * inverseSqrt(max(1.0 - v * v, 1.0e-6));
+    let ca = cos(h.gr.w);
+    let sa = sin(h.gr.w);
+    var p = vec3<f32>(n.x * ca + n.z * sa, n.y, -n.x * sa + n.z * ca);
+    let lat = abs(p.y);
+    p.y = lat * lat - h.star.w + step(0.0, n.y);
+    var temp = h.star.x * (fbm(p * 4.0) * 0.3 + 0.7);
+    temp = mix(h.star.x * 1.25, temp, clamp(lat * 4.0 - 0.5, 0.0, 1.0));
+    temp = temp * pow(max(one_plus_z, 1.0e-3), -1.25) * 0.75;
+    return thermal_emission(temp, h.disk2.x);
 }

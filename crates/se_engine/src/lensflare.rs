@@ -221,7 +221,7 @@ impl Plugin for LensFlarePlugin {
         app.add_plugins((MaterialPlugin::<FlareMaterial>::default(), FullscreenMaterialPlugin::<PseudoFlarePass>::default()))
             .init_resource::<LensFlareSettings>()
             .add_systems(Startup, load_presets)
-            .add_systems(PostUpdate, update_flares.after(UniverseSet::Camera));
+            .add_systems(PostUpdate, update_flares.after(UniverseSet::Camera).after(crate::blackholes::LensSet));
     }
 }
 
@@ -384,6 +384,7 @@ fn update_flares(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<FlareMaterial>>,
     camera: Query<(Entity, Option<&PseudoFlarePass>), With<MainCamera>>,
+    lensed: Option<Res<crate::blackholes::LensedHoles>>,
 ) {
     let Some(presets) = presets else { return };
     let (w, h) = windows.iter().next().map(|w| (w.width(), w.height())).unwrap_or((1600.0, 900.0));
@@ -401,6 +402,11 @@ fn update_flares(
     let mut sources: Vec<(f64, Source)> = Vec::new();
     for (b, _) in bodies.iter().filter(|(b, _)| b.star) {
         let ObjectRef::Star(i) = b.obj else { continue };
+        // A neutron star or white dwarf the black-hole lens draws: SE flares it after the GR
+        // pass, here the flare would be lensed into a ring.
+        if lensed.as_ref().is_some_and(|l| l.0.contains(&i)) {
+            continue;
+        }
         let st = &cat.stars[i as usize];
         let rel = b.pos.delta_m(cam.pos);
         let dist = rel.length();
