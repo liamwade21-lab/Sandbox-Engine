@@ -24,6 +24,7 @@ use crate::lensflare::LensFlareSettings;
 use crate::overlay::{MarkerKind, OverlaySettings, SkySwitches};
 use crate::procgalaxies::ProcSettings;
 use crate::stars::{PointStyle, StarSettings};
+use crate::switches::RenderSwitches;
 use crate::universe::SimTime;
 use crate::waypoints::Waypoints;
 
@@ -40,6 +41,7 @@ pub struct Settings<'w, 's> {
     /// Inserted at startup by their plugins.
     pub clusters: Option<ResMut<'w, ClusterSettings>>,
     pub exposure: Option<ResMut<'w, ExposureComp>>,
+    pub switches: Option<ResMut<'w, RenderSwitches>>,
     /// SE's `Brightness`/`Contrast`/`Saturation`/`Gamma` (FUN_140326220) live on the camera.
     pub color: Query<'w, 's, &'static mut ColorCorrection, With<MainCamera>>,
 }
@@ -85,6 +87,18 @@ pub const SCALARS: &[&str] = &[
     "showprocnebulae",
     "showcatclusters",
     "exposurecomp",
+    "showatmospheres",
+    "showclouds",
+    "showaurora",
+    "showcomettails",
+    "showeclipsemask",
+    "enableeclipses",
+    "atmoringsshadow",
+    "atmoextinction",
+    "enableplanetshine",
+    "atmominwidthpix",
+    "atmodistancelimit",
+    "aurorabright",
     "brightness",
     "contrast",
     "saturation",
@@ -115,6 +129,7 @@ struct View<'a> {
     wps: &'a Waypoints,
     clusters: Option<&'a ClusterSettings>,
     exposure: Option<&'a ExposureComp>,
+    switches: Option<&'a RenderSwitches>,
     color: Option<&'a ColorCorrection>,
     cam: &'a FlyCamera,
     sim: &'a SimTime,
@@ -166,6 +181,18 @@ impl View<'_> {
             "showcatclusters" => b(self.clusters?.show_cat),
             // SE keeps ExposureComp negated: +1 shown (twice as bright) is -1 (exposure.rs).
             "exposurecomp" => -self.exposure?.stops as f64,
+            "showatmospheres" => b(self.switches?.atmospheres),
+            "showclouds" => b(self.switches?.clouds),
+            "showaurora" => b(self.switches?.aurora),
+            "showcomettails" => b(self.switches?.comet_tails),
+            "showeclipsemask" => b(self.switches?.eclipse_mask),
+            "enableeclipses" => b(self.switches?.eclipses),
+            "atmoringsshadow" => b(self.switches?.sky_rings_shadows),
+            "atmoextinction" => b(self.switches?.atmo_extinction),
+            "enableplanetshine" => b(self.switches?.planet_shine),
+            "atmominwidthpix" => self.switches?.atmo_min_width_px as f64,
+            "atmodistancelimit" => self.switches?.atmo_distance_limit as f64,
+            "aurorabright" => self.switches?.aurora_bright as f64,
             "brightness" => cc(|v| v.x + 1.0)?,
             "contrast" => cc(|v| v.y)?,
             "saturation" => cc(|v| v.z + 1.0)?,
@@ -192,6 +219,7 @@ impl Settings<'_, '_> {
             wps: &self.waypoints,
             clusters: self.clusters.as_deref(),
             exposure: self.exposure.as_deref(),
+            switches: self.switches.as_deref(),
             color: self.color.single().ok(),
             cam,
             sim,
@@ -254,6 +282,25 @@ impl Settings<'_, '_> {
                 Some(e) => e.set(-v as f32),
                 None => return false,
             },
+            // switches.rs (rings, skies and eclipses): the planet drawing switches.
+            "showatmospheres" | "showclouds" | "showaurora" | "showcomettails" | "showeclipsemask" | "enableeclipses" | "atmoringsshadow"
+            | "atmoextinction" | "enableplanetshine" | "atmominwidthpix" | "atmodistancelimit" | "aurorabright" => {
+                let Some(sw) = self.switches.as_mut() else { return false };
+                match k.as_str() {
+                    "showatmospheres" => sw.atmospheres = on,
+                    "showclouds" => sw.clouds = on,
+                    "showaurora" => sw.aurora = on,
+                    "showcomettails" => sw.comet_tails = on,
+                    "showeclipsemask" => sw.eclipse_mask = on,
+                    "enableeclipses" => sw.eclipses = on,
+                    "atmoringsshadow" => sw.sky_rings_shadows = on,
+                    "atmoextinction" => sw.atmo_extinction = on,
+                    "enableplanetshine" => sw.planet_shine = on,
+                    "atmominwidthpix" => sw.atmo_min_width_px = v as f32,
+                    "atmodistancelimit" => sw.atmo_distance_limit = v as f32,
+                    _ => sw.aurora_bright = v as f32,
+                }
+            }
             "brightness" | "contrast" | "saturation" | "gamma" => {
                 let Ok(mut c) = self.color.single_mut() else { return false };
                 let v4 = &mut c.bcsg;
@@ -297,7 +344,7 @@ fn all_names() -> impl Iterator<Item = String> {
 pub fn default_value(name: &str) -> Option<f64> {
     let (stars, overlay, bloom, lens) = (StarSettings::default(), OverlaySettings::default(), BloomSettings::default(), LensFlareSettings::default());
     let (gfx, proc, wps) = (GraphicsSettings::default(), ProcSettings::default(), Waypoints::default());
-    let (exposure, color, clusters) = (ExposureComp::default(), ColorCorrection::default(), ClusterSettings { show_cat: true });
+    let (exposure, color, clusters, switches) = (ExposureComp::default(), ColorCorrection::default(), ClusterSettings { show_cat: true }, RenderSwitches::default());
     let (cam, sim) = (FlyCamera::default(), SimTime { rate: 1.0, ..SimTime::default() });
     let view = View {
         stars: &stars,
@@ -309,6 +356,7 @@ pub fn default_value(name: &str) -> Option<f64> {
         wps: &wps,
         clusters: Some(&clusters),
         exposure: Some(&exposure),
+        switches: Some(&switches),
         color: Some(&color),
         cam: &cam,
         sim: &sim,
