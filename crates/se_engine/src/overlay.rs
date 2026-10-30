@@ -890,6 +890,9 @@ pub(crate) struct PrimLines {
     rows: [(f32, f32); 5],
     /// The viewport with a margin; pieces wholly off one side of it are left out.
     clip: egui::Rect,
+    /// SE's premultiplied line path (`glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`, as for the
+    /// geographic grid, FUN_1404c7460): colour `bright g rgb` over alpha `bright g a`.
+    pub premultiplied: bool,
 }
 
 impl PrimLines {
@@ -901,7 +904,7 @@ impl PrimLines {
         let px = 1.0 / pixels_per_point.max(0.1);
         let rows = [(-r_max * px, 0.0), (-r_mid * px, g), (0.0, 1.0), (r_mid * px, g), (r_max * px, 0.0)];
         let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(vp.x, vp.y)).expand(8.0);
-        Self { mesh: egui::Mesh::default(), rows, clip }
+        Self { mesh: egui::Mesh::default(), rows, clip, premultiplied: false }
     }
 
     /// A camera-space polyline with an alpha per point (0 where it is hidden), in `rgb` x `bright`.
@@ -944,8 +947,8 @@ impl PrimLines {
             let base = mesh.vertices.len() as u32;
             let (p, a) = pts[j];
             for &(u, g) in &self.rows {
-                let alpha = (g * a).clamp(0.0, 1.0);
-                let ch = |v: f32| ((bright * g * v * alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+                let (alpha, k) = if self.premultiplied { ((bright * g * a).clamp(0.0, 1.0), bright * g) } else { ((g * a).clamp(0.0, 1.0), bright * g * (g * a).clamp(0.0, 1.0)) };
+                let ch = |v: f32| ((k * v).clamp(0.0, 1.0) * 255.0).round() as u8;
                 let col = egui::Color32::from_rgba_premultiplied(ch(rgb[0]), ch(rgb[1]), ch(rgb[2]), (alpha * 255.0).round() as u8);
                 mesh.colored_vertex(p + normal * u, col);
             }
