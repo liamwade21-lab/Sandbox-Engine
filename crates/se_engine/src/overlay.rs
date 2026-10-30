@@ -1,6 +1,8 @@
 //! Navigation overlay: orbit lines, object labels and markers, and click-to-select. What is drawn
 //! follows SE's overlay filters (main-def.cfg `ShowOrbits*`, `LabelsMode`, `ShowLabels*`,
 //! `ShowMarkers*`), in the interface skin's colours (`Info*Color`, `BodySelectedOrbitColor`).
+//! Also the switches, keys, fades and line drawing shared by the sky overlays
+//! ([`crate::constellations`], [`crate::grids`]).
 
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
@@ -190,13 +192,161 @@ pub struct OverlaySettings {
     pub show_fps: bool,
     /// The selection's full info table (SE's `TextMode` 2), else the brief one (1).
     pub info_full: bool,
+    /// Constellations and coordinate grids.
+    pub sky: SkySwitches,
+}
+
+/// SE's sky overlay switches: OverlayFilters `ShowConstellations` (master), `ShowConstelLines`,
+/// `ShowConstelBoundaries`, `ShowConstelLabels`, `ShowConstelDrawings`, `ShowGrids` (master of the
+/// celestial grids), `ShowGridEquatorial/Ecliptic/Galactic/Geographic`, Interface
+/// `FullConstellationNames` and `ConstelBordersAtInf`; and the per-constellation switches behind the
+/// script variables `ConstLines<Abbr>`, `ConstBoundary<Abbr>`, `ConstLabel<Abbr>`, `ConstLinesAll`,
+/// `ConstLinesZodiac`, ... (FUN_140263e60, FUN_140260970).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkySwitches {
+    pub constellations: bool,
+    pub constel_lines: bool,
+    pub constel_boundaries: bool,
+    pub constel_labels: bool,
+    /// SE 0.991 ships no constellation art, so this draws nothing.
+    pub constel_drawings: bool,
+    pub full_names: bool,
+    pub borders_at_inf: bool,
+    pub grids: bool,
+    pub grid_equatorial: bool,
+    pub grid_ecliptic: bool,
+    pub grid_galactic: bool,
+    pub grid_geographic: bool,
+    /// Per constellation (bit = index in [`crate::constellations::IAU`]): lines, boundaries, labels.
+    pub per_constel: [u128; 3],
+    /// The zodiacal constellations (Constellations.cfg `Zodiacal`), set when the file is loaded.
+    pub zodiac: u128,
+}
+
+/// The per-constellation switches' script variable prefixes, in [`SkySwitches::per_constel`] order.
+const PER_CONSTEL_VARS: [&str; 3] = ["constlines", "constboundary", "constlabel"];
+
+impl Default for SkySwitches {
+    /// main-def.cfg: `ShowConstellations false` with lines, boundaries and names on and drawings off,
+    /// `ShowGrids false` with `ShowGridEquatorial true`, the others off; `FullConstellationNames true`,
+    /// `ConstelBordersAtInf true`. Every constellation's own switches start on.
+    fn default() -> Self {
+        let all = (1u128 << crate::constellations::IAU.len()) - 1;
+        Self {
+            constellations: false,
+            constel_lines: true,
+            constel_boundaries: true,
+            constel_labels: true,
+            constel_drawings: false,
+            full_names: true,
+            borders_at_inf: true,
+            grids: false,
+            grid_equatorial: true,
+            grid_ecliptic: false,
+            grid_galactic: false,
+            grid_geographic: false,
+            per_constel: [all; 3],
+            zodiac: 0,
+        }
+    }
+}
+
+impl SkySwitches {
+    /// SE's keys of the switches, as saved in the settings.
+    pub const KEYS: [&'static str; 12] = [
+        "ShowConstellations",
+        "ShowConstelLines",
+        "ShowConstelBoundaries",
+        "ShowConstelLabels",
+        "ShowConstelDrawings",
+        "FullConstellationNames",
+        "ConstelBordersAtInf",
+        "ShowGrids",
+        "ShowGridEquatorial",
+        "ShowGridEcliptic",
+        "ShowGridGalactic",
+        "ShowGridGeographic",
+    ];
+
+    /// A switch by its key (any case).
+    pub fn switch_mut(&mut self, key: &str) -> Option<&mut bool> {
+        Some(match key.to_ascii_lowercase().as_str() {
+            "showconstellations" => &mut self.constellations,
+            "showconstellines" => &mut self.constel_lines,
+            "showconstelboundaries" => &mut self.constel_boundaries,
+            "showconstellabels" => &mut self.constel_labels,
+            "showconsteldrawings" => &mut self.constel_drawings,
+            "fullconstellationnames" => &mut self.full_names,
+            "constelbordersatinf" => &mut self.borders_at_inf,
+            "showgrids" => &mut self.grids,
+            "showgridequatorial" => &mut self.grid_equatorial,
+            "showgridecliptic" => &mut self.grid_ecliptic,
+            "showgridgalactic" => &mut self.grid_galactic,
+            "showgridgeographic" => &mut self.grid_geographic,
+            _ => return None,
+        })
+    }
+
+    pub fn switch(&self, key: &str) -> Option<bool> {
+        let mut s = *self;
+        s.switch_mut(key).map(|v| *v)
+    }
+
+    /// The switches in [`SkySwitches::KEYS`] order (what the settings save).
+    pub fn saved(&self) -> [bool; 12] {
+        Self::KEYS.map(|k| self.switch(k).unwrap_or(false))
+    }
+
+    /// Whether constellation `i`'s lines (0), boundary (1) or label (2) are switched on.
+    pub fn constel(&self, part: usize, i: usize) -> bool {
+        self.per_constel[part] & (1 << i) != 0
+    }
+
+    /// A script variable of these switches (any case): the switch keys, and `ConstLines<Abbr>`,
+    /// `ConstLinesAll`, `ConstLinesZodiac` and their `ConstBoundary*`, `ConstLabel*` twins.
+    pub fn var(&self, key: &str) -> Option<bool> {
+        if let Some(v) = self.switch(key) {
+            return Some(v);
+        }
+        let (part, mask) = self.constel_var(key)?;
+        Some(self.per_constel[part] & mask == mask)
+    }
+
+    /// Sets a script variable (see [`SkySwitches::var`]); false when it is not one of these. Setting
+    /// `ConstLinesAll` switches every constellation's lines, `ConstLinesZodiac` the zodiacal ones'.
+    pub fn set_var(&mut self, key: &str, on: bool) -> bool {
+        if let Some(v) = self.switch_mut(key) {
+            *v = on;
+            return true;
+        }
+        let Some((part, mask)) = self.constel_var(key) else { return false };
+        if on {
+            self.per_constel[part] |= mask;
+        } else {
+            self.per_constel[part] &= !mask;
+        }
+        true
+    }
+
+    /// (part, constellations) of a `ConstLines*` / `ConstBoundary*` / `ConstLabel*` variable.
+    fn constel_var(&self, key: &str) -> Option<(usize, u128)> {
+        let k = key.to_ascii_lowercase();
+        let (part, rest) = PER_CONSTEL_VARS.iter().enumerate().find_map(|(p, pre)| Some((p, k.strip_prefix(pre)?)))?;
+        let mask = match rest {
+            "all" => (1u128 << crate::constellations::IAU.len()) - 1,
+            "zodiac" => self.zodiac,
+            abbr => 1 << crate::constellations::IAU.iter().position(|(a, _)| a.eq_ignore_ascii_case(abbr))?,
+        };
+        Some((part, mask))
+    }
 }
 
 impl Default for OverlaySettings {
     /// SE's defaults (main-def.cfg): no orbits (`ShowOrbits false`), labels (`LabelsMode 0`), markers
     /// (`ShowMarkers false`) or frame rate (`FPS false`), and its per-kind switches. For scripted runs
     /// (which skip the saved settings): env `SE_SHOW_FPS=1` shows the frame rate anyway, and
-    /// `SE_OVERLAY` switches overlays on, e.g. `orbits,labels=2,markers,ShowLabelsGalaxies`.
+    /// `SE_OVERLAY` switches overlays on, e.g. `orbits,labels=2,markers,ShowLabelsGalaxies`, and the
+    /// sky's (`constellations`, `grids`, `ShowGridEcliptic`, `ShowConstelBoundaries=0`, ...).
     fn default() -> Self {
         use MarkerKind::*;
         let mut s = Self {
@@ -210,6 +360,7 @@ impl Default for OverlaySettings {
             selection_pointer: true,
             show_fps: std::env::var_os("SE_SHOW_FPS").is_some(),
             info_full: true,
+            sky: SkySwitches::default(),
         };
         for w in std::env::var("SE_OVERLAY").unwrap_or_default().split(',') {
             match w.trim() {
@@ -217,9 +368,17 @@ impl Default for OverlaySettings {
                 "markers" => s.markers = true,
                 "labels" => s.labels_mode = 1,
                 "labels=2" => s.labels_mode = 2,
+                "constellations" => s.sky.constellations = true,
+                "grids" => s.sky.grids = true,
                 key => {
+                    let (key, on) = match key.split_once('=') {
+                        Some((k, v)) => (k, v != "0" && !v.eq_ignore_ascii_case("false")),
+                        None => (key, true),
+                    };
                     if let Some((set, kind)) = kind_filter(&mut s, &key.to_ascii_lowercase()) {
-                        set.set(kind, true);
+                        set.set(kind, on);
+                    } else {
+                        s.sky.set_var(key, on);
                     }
                 }
             }
@@ -258,29 +417,148 @@ impl Plugin for OverlayPlugin {
         app.init_resource::<OverlaySettings>()
             .init_resource::<ScreenMarkers>()
             .init_resource::<ClickState>()
+            .init_resource::<SkyFade>()
+            .add_systems(Startup, load_sky_config)
             .add_systems(PostUpdate, compute_markers.after(UniverseSet::FloatingOrigin).before(TransformSystems::Propagate))
             .add_systems(
                 EguiPrimaryContextPass,
                 (draw_orbits, draw_labels, draw_selection_pointer).chain().in_set(crate::skin::UiSet::Draw),
             )
-            .add_systems(Update, (overlay_keys, pick_on_click));
+            .add_systems(Update, (overlay_keys, pick_on_click, fade_sky.after(overlay_keys)));
+    }
+}
+
+/// SE's main-def.cfg values for the sky overlays (Interface `ConstelBordersRadius`,
+/// `ConstelBordersFadeStart/End`, `ConstelLinesFadeStart/End`, `OverlayFadeIn/Out`; Display
+/// `LinesWidth`), read from the install.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct SkyConfig {
+    /// The boundaries' sphere around the Sun when not at infinity, parsecs.
+    pub borders_radius_pc: f64,
+    /// Boundaries and names fade out between these distances from the Sun, parsecs.
+    pub borders_fade: (f64, f64),
+    /// Lines fade out between these distances from the Sun, parsecs.
+    pub lines_fade: (f64, f64),
+    /// A switch's fade in and out, seconds (seSmoothSwitch).
+    pub fade_in_s: f32,
+    pub fade_out_s: f32,
+    /// prim_line.glsl's `Width.x`: the lines' Gaussian `exp(-r^2 / LinesWidth)`, r in pixels.
+    pub lines_width: f32,
+}
+
+impl Default for SkyConfig {
+    /// main-def.cfg's values.
+    fn default() -> Self {
+        Self {
+            borders_radius_pc: 10.0,
+            borders_fade: (200.0, 800.0),
+            lines_fade: (4000.0, 10000.0),
+            fade_in_s: 0.2,
+            fade_out_s: 0.35,
+            lines_width: 1.5,
+        }
+    }
+}
+
+fn load_sky_config(mut commands: Commands, cfg: Res<crate::config::EngineConfig>) {
+    let mut c = SkyConfig::default();
+    if let Ok(text) = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")) {
+        let doc = se_core::sc::parse(&text);
+        let f = |key: &str| doc.find_deep(key).and_then(|i| i.f64());
+        c.borders_radius_pc = f("ConstelBordersRadius").unwrap_or(c.borders_radius_pc);
+        c.borders_fade = (f("ConstelBordersFadeStart").unwrap_or(c.borders_fade.0), f("ConstelBordersFadeEnd").unwrap_or(c.borders_fade.1));
+        c.lines_fade = (f("ConstelLinesFadeStart").unwrap_or(c.lines_fade.0), f("ConstelLinesFadeEnd").unwrap_or(c.lines_fade.1));
+        c.fade_in_s = f("OverlayFadeIn").map_or(c.fade_in_s, |v| v as f32);
+        c.fade_out_s = f("OverlayFadeOut").map_or(c.fade_out_s, |v| v as f32);
+        c.lines_width = f("LinesWidth").filter(|v| *v > 0.0).map_or(c.lines_width, |v| v as f32);
+    }
+    commands.insert_resource(c);
+}
+
+/// The sky switches' smooth values (SE's seSmoothSwitch, value at +0x14): each moves linearly to 1
+/// over `OverlayFadeIn` when switched on and to 0 over `OverlayFadeOut` when off; SE draws with
+/// the value squared.
+#[derive(Resource, Debug, Clone)]
+pub struct SkyFade {
+    pub constellations: f32,
+    pub constel: [f32; 3],
+    pub grids: f32,
+    /// Equatorial, ecliptic, galactic, geographic.
+    pub grid: [f32; 4],
+    /// Per constellation: lines, boundaries, labels.
+    pub per_constel: [Vec<f32>; 3],
+}
+
+impl Default for SkyFade {
+    fn default() -> Self {
+        let n = crate::constellations::IAU.len();
+        Self { constellations: 0.0, constel: [0.0; 3], grids: 0.0, grid: [0.0; 4], per_constel: [vec![1.0; n], vec![1.0; n], vec![1.0; n]] }
+    }
+}
+
+/// One step of a smooth switch towards `on`.
+pub(crate) fn fade_step(v: f32, on: bool, dt: f32, cfg: &SkyConfig) -> f32 {
+    if on { (v + dt / cfg.fade_in_s.max(1e-3)).min(1.0) } else { (v - dt / cfg.fade_out_s.max(1e-3)).max(0.0) }
+}
+
+fn fade_sky(time: Res<Time>, settings: Res<OverlaySettings>, cfg: Option<Res<SkyConfig>>, mut fade: ResMut<SkyFade>) {
+    let cfg = cfg.as_deref().copied().unwrap_or_default();
+    let (dt, s) = (time.delta_secs(), &settings.sky);
+    let f = &mut *fade;
+    f.constellations = fade_step(f.constellations, s.constellations, dt, &cfg);
+    for (v, on) in f.constel.iter_mut().zip([s.constel_lines, s.constel_boundaries, s.constel_labels]) {
+        *v = fade_step(*v, on, dt, &cfg);
+    }
+    f.grids = fade_step(f.grids, s.grids, dt, &cfg);
+    for (v, on) in f.grid.iter_mut().zip([s.grid_equatorial, s.grid_ecliptic, s.grid_galactic, s.grid_geographic]) {
+        *v = fade_step(*v, on, dt, &cfg);
+    }
+    for (part, values) in f.per_constel.iter_mut().enumerate() {
+        for (i, v) in values.iter_mut().enumerate() {
+            *v = fade_step(*v, s.constel(part, i), dt, &cfg);
+        }
     }
 }
 
 /// SE's overlay keys: O orbits, ' labels (off, brief, detail), Ctrl+' markers, ; the selection
-/// pointer.
+/// pointer; X constellations, Shift+X their lines, Ctrl+X boundaries, Alt+X names, Ctrl+; the
+/// celestial grids, Alt+; the geographic grid (key table FUN_1405ba8f0: ToggleConstellations,
+/// ToggleConstLines/Boundaries/Labels, ToggleCelGrids, ToggleGeoGrids). X cuts the throttle while a
+/// ship is piloted, so it leaves the constellations alone then.
 fn overlay_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut settings: ResMut<OverlaySettings>,
     mut egui: EguiContexts,
     mut msg: ResMut<crate::messages::Messages>,
     i18n: Res<crate::i18n::I18n>,
+    flight: Option<Res<crate::ship::Flight>>,
 ) {
     if egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false) {
         return;
     }
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    let mods = ctrl || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::AltLeft, KeyCode::AltRight]);
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    let mods = ctrl || shift || alt;
+    let sky = &mut settings.sky;
+    let piloting = flight.is_some_and(|f| f.active);
+    let x = match (shift, ctrl, alt) {
+        (false, false, false) => Some((&mut sky.constellations, "Constellations")),
+        (true, false, false) => Some((&mut sky.constel_lines, "Constellation lines")),
+        (false, true, false) => Some((&mut sky.constel_boundaries, "Constellation boundaries")),
+        (false, false, true) => Some((&mut sky.constel_labels, "Constellation names")),
+        _ => None,
+    };
+    if let (Some((switch, name)), true) = (x, keys.just_pressed(KeyCode::KeyX) && !piloting) {
+        *switch = !*switch;
+        msg.switch(&i18n, name, *switch);
+    }
+    let sky = &mut settings.sky;
+    if keys.just_pressed(KeyCode::Semicolon) && !shift && ctrl != alt {
+        let (switch, name) = if ctrl { (&mut sky.grids, "Celestial grids") } else { (&mut sky.grid_geographic, "Geographic grid") };
+        *switch = !*switch;
+        msg.switch(&i18n, name, *switch);
+    }
     if keys.just_pressed(KeyCode::KeyO) && !mods {
         settings.orbits = !settings.orbits;
         msg.switch(&i18n, "Orbits", settings.orbits);
@@ -330,30 +608,35 @@ fn color_key(data: &SeData, obj: ObjectRef, kind: MarkerKind) -> &'static str {
     }
 }
 
-/// The overlay's layer, below the windows: orbit lines, then labels and markers.
-fn overlay_layer() -> egui::LayerId {
+/// The overlay's layer, below the windows: the sky's grids and constellations, orbit lines, then
+/// labels and markers.
+pub(crate) fn overlay_layer() -> egui::LayerId {
     egui::LayerId::new(egui::Order::Background, egui::Id::new("overlay"))
 }
 
 /// The camera's pinhole projection in logical pixels.
-struct View {
+pub(crate) struct View {
     inv: DQuat,
-    focal: f64,
+    pub focal: f64,
     centre: (f64, f64),
 }
 
 impl View {
-    fn new(cam: &FlyCamera, vp: Vec2) -> Self {
+    pub fn new(cam: &FlyCamera, vp: Vec2) -> Self {
         let focal = vp.y as f64 * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
         Self { inv: cam.rot.inverse(), focal, centre: (vp.x as f64 * 0.5, vp.y as f64 * 0.5) }
     }
 
     /// Camera space: x right, y up, -z ahead.
-    fn local(&self, p: DVec3) -> DVec3 {
+    pub fn local(&self, p: DVec3) -> DVec3 {
         self.inv * p
     }
+    /// A point ahead of the camera (camera space) on the screen, if it is in front.
+    pub fn project(&self, v: DVec3) -> Option<egui::Pos2> {
+        (-v.z > 1e-6 * v.length()).then(|| self.screen(v))
+    }
 
-    fn screen(&self, v: DVec3) -> egui::Pos2 {
+    pub fn screen(&self, v: DVec3) -> egui::Pos2 {
         let d = (-v.z).max(1e-30);
         let x = (self.centre.0 + self.focal * v.x / d).clamp(-1e7, 1e7);
         let y = (self.centre.1 - self.focal * v.y / d).clamp(-1e7, 1e7);
@@ -370,7 +653,7 @@ const ORBIT_POINTS: usize = 256;
 /// Across an orbit line (fractions of its half-width, twice the thickness): SE's `exp(-27 u^2)`.
 const ORBIT_BAND: [(f32, f32); 7] = [(-0.32, 0.0), (-0.2, 0.34), (-0.1, 0.76), (0.0, 1.0), (0.1, 0.76), (0.2, 0.34), (0.32, 0.0)];
 
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -382,7 +665,7 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// (Earth's path round the Sun is the Earth-Moon barycentre's). Bodies' discs hide the lines behind
 /// them; an orbit fades in as it grows past a few pixels on screen (assumed).
 #[allow(clippy::too_many_arguments)]
-fn draw_orbits(
+pub(crate) fn draw_orbits(
     mut contexts: EguiContexts,
     settings: Res<OverlaySettings>,
     data: Res<SeData>,
@@ -480,7 +763,7 @@ fn draw_orbits(
 /// Splits a camera-space polyline (with an alpha per point) into its runs in front of the camera,
 /// cut where they come within 0.6 degrees of the camera's plane (projected within 100 focal lengths
 /// of the centre).
-fn clip_runs(points: &[(DVec3, f32)]) -> Vec<Vec<(DVec3, f32)>> {
+pub(crate) fn clip_runs(points: &[(DVec3, f32)]) -> Vec<Vec<(DVec3, f32)>> {
     const NEAR: f64 = 1e-2;
     let ahead = |v: DVec3| -v.z > NEAR * v.length();
     let mut runs = Vec::new();
@@ -534,6 +817,203 @@ fn add_band(mesh: &mut egui::Mesh, pts: &[(egui::Pos2, f32)], color: egui::Color
                 mesh.add_triangle(prev + c + 1, base + c + 1, base + c);
             }
         }
+    }
+}
+
+/// The cone round the view direction holding the screen (with a margin), for culling the sky's
+/// paths before projecting them.
+pub(crate) struct ViewCone {
+    fwd: DVec3,
+    half: f64,
+}
+
+impl ViewCone {
+    pub fn new(cam: &FlyCamera, view: &View) -> Self {
+        let corner = (view.centre.0 * view.centre.0 + view.centre.1 * view.centre.1).sqrt();
+        Self { fwd: cam.rot * DVec3::NEG_Z, half: (corner / view.focal).atan() + 0.03 }
+    }
+
+    /// Whether a cone of half-angle `r` round `axis` (unit) can reach the screen.
+    pub fn sees(&self, axis: DVec3, r: f64) -> bool {
+        let lim = self.half + r;
+        lim >= std::f64::consts::PI || self.fwd.dot(axis) > lim.cos()
+    }
+}
+
+/// A path of directions on the sky (universe frame), with the cone round every few segments so
+/// that the parts out of view can be skipped.
+pub(crate) struct SkyPath {
+    pub pts: Vec<DVec3>,
+    /// Per piece of [`SkyPath::PIECE`] segments: the cone's axis and half-angle.
+    pieces: Vec<(DVec3, f64)>,
+}
+
+impl SkyPath {
+    const PIECE: usize = 8;
+
+    pub fn new(pts: Vec<DVec3>) -> Self {
+        let pieces = (0..pts.len().saturating_sub(1))
+            .step_by(Self::PIECE)
+            .map(|s| {
+                let p = &pts[s..=(s + Self::PIECE).min(pts.len() - 1)];
+                let axis = p.iter().fold(DVec3::ZERO, |a, v| a + v.normalize_or_zero()).normalize_or(DVec3::Z);
+                (axis, p.iter().map(|v| axis.angle_between(*v)).fold(0.0, f64::max))
+            })
+            .collect();
+        Self { pts, pieces }
+    }
+
+    /// The point ranges of the path that may show (consecutive pieces joined).
+    pub fn visible(&self, cone: &ViewCone) -> Vec<std::ops::Range<usize>> {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        for (k, &(axis, r)) in self.pieces.iter().enumerate() {
+            if !cone.sees(axis, r) {
+                continue;
+            }
+            let (s, e) = (k * Self::PIECE, ((k + 1) * Self::PIECE + 1).min(self.pts.len()));
+            match out.last_mut() {
+                Some(last) if last.end == s + 1 => last.end = e,
+                _ => out.push(s..e),
+            }
+        }
+        out
+    }
+}
+
+/// SE's prim_line.glsl lines (constellations, grids): across a line the Gaussian
+/// `g = exp(-r^2 / LinesWidth)` (r in physical pixels, out to where it falls to 1/256), blended
+/// `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` with colour `bright g rgb` and alpha `g a`; in egui's
+/// premultiplied terms, colour `bright g rgb clamp(g a)` over alpha `clamp(g a)`.
+pub(crate) struct PrimLines {
+    pub mesh: egui::Mesh,
+    /// Across the line: (offset in logical pixels, g).
+    rows: [(f32, f32); 5],
+    /// The viewport with a margin; pieces wholly off one side of it are left out.
+    clip: egui::Rect,
+}
+
+impl PrimLines {
+    pub fn new(lines_width: f32, pixels_per_point: f32, vp: Vec2) -> Self {
+        let w = lines_width.max(0.05);
+        let r_max = (256f32.ln() * w).sqrt();
+        let r_mid = 0.4 * r_max;
+        let g = (-r_mid * r_mid / w).exp();
+        let px = 1.0 / pixels_per_point.max(0.1);
+        let rows = [(-r_max * px, 0.0), (-r_mid * px, g), (0.0, 1.0), (r_mid * px, g), (r_max * px, 0.0)];
+        let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(vp.x, vp.y)).expand(8.0);
+        Self { mesh: egui::Mesh::default(), rows, clip }
+    }
+
+    /// A camera-space polyline with an alpha per point (0 where it is hidden), in `rgb` x `bright`.
+    pub fn polyline(&mut self, view: &View, pts: &[(DVec3, f32)], rgb: [f32; 3], bright: f32) {
+        let c = self.clip;
+        let off = |a: egui::Pos2, b: egui::Pos2| {
+            (a.x < c.min.x && b.x < c.min.x) || (a.x > c.max.x && b.x > c.max.x) || (a.y < c.min.y && b.y < c.min.y) || (a.y > c.max.y && b.y > c.max.y)
+        };
+        for run in clip_runs(pts) {
+            let screen: Vec<(egui::Pos2, f32)> = run.iter().map(|&(v, a)| (view.screen(v), a)).collect();
+            let mut piece: Vec<(egui::Pos2, f32)> = Vec::new();
+            for w in screen.windows(2) {
+                if (w[0].1 <= 0.0 && w[1].1 <= 0.0) || off(w[0].0, w[1].0) {
+                    self.band(&piece, rgb, bright);
+                    piece.clear();
+                    continue;
+                }
+                if piece.is_empty() {
+                    piece.push(w[0]);
+                }
+                piece.push(w[1]);
+            }
+            self.band(&piece, rgb, bright);
+        }
+    }
+
+    fn band(&mut self, pts: &[(egui::Pos2, f32)], rgb: [f32; 3], bright: f32) {
+        if pts.len() < 2 {
+            return;
+        }
+        let rows = self.rows.len() as u32;
+        let mesh = &mut self.mesh;
+        let mut normal = egui::vec2(0.0, 1.0);
+        for j in 0..pts.len() {
+            let d = pts[(j + 1).min(pts.len() - 1)].0 - pts[j.saturating_sub(1)].0;
+            if d.length_sq() > 1e-6 {
+                let d = d.normalized();
+                normal = egui::vec2(-d.y, d.x);
+            }
+            let base = mesh.vertices.len() as u32;
+            let (p, a) = pts[j];
+            for &(u, g) in &self.rows {
+                let alpha = (g * a).clamp(0.0, 1.0);
+                let ch = |v: f32| ((bright * g * v * alpha).clamp(0.0, 1.0) * 255.0).round() as u8;
+                let col = egui::Color32::from_rgba_premultiplied(ch(rgb[0]), ch(rgb[1]), ch(rgb[2]), (alpha * 255.0).round() as u8);
+                mesh.colored_vertex(p + normal * u, col);
+            }
+            if j > 0 {
+                let prev = base - rows;
+                for r in 0..rows - 1 {
+                    mesh.add_triangle(prev + r, prev + r + 1, base + r);
+                    mesh.add_triangle(prev + r + 1, base + r + 1, base + r);
+                }
+            }
+        }
+    }
+}
+
+/// The system's resolved bodies (discs over a pixel), which hide what is behind them: each as its
+/// centre relative to the camera and the map of camera-relative vectors into the space where its
+/// ellipsoid is the unit sphere (an oblate Earth's surface at mid latitudes lies well inside its
+/// equatorial sphere).
+pub(crate) struct Occluders(Vec<Occluder>);
+
+struct Occluder {
+    centre: DVec3,
+    inv: DQuat,
+    scale: DVec3,
+    /// The direction to the centre and the cosine of the cone round it holding the ellipsoid (-2
+    /// from inside its bounding sphere): rays outside it miss.
+    axis: DVec3,
+    cone_cos: f64,
+}
+
+impl Occluders {
+    pub fn new<'a>(bodies: impl Iterator<Item = &'a SystemBody>, cam: &FlyCamera) -> Self {
+        let list = bodies
+            .filter(|b| b.px_radius > 1.0 && b.radius_m > 0.0)
+            .map(|b| {
+                let centre = b.pos.delta_m(cam.pos);
+                let (dist, bound) = (centre.length(), b.radius_m * b.shape.max_element());
+                let cone_cos = if dist > bound { (1.0 - (bound / dist).powi(2)).sqrt() } else { -2.0 };
+                Occluder { centre, inv: b.orient.inverse(), scale: 1.0 / (b.shape * b.radius_m), axis: centre / dist.max(1e-30), cone_cos }
+            })
+            .collect();
+        Self(list)
+    }
+
+    /// Whether the ray from the camera to `p` (camera-relative, metres) meets a body before `p`.
+    /// From inside an ellipsoid (the ground under sea level), what points below the camera's own
+    /// level is hidden.
+    pub fn hides(&self, p: DVec3) -> bool {
+        let d = p.length();
+        let dir = p / d.max(1e-30);
+        self.0.iter().any(|o| {
+            if dir.dot(o.axis) < o.cone_cos {
+                return false;
+            }
+            let (ad, ac) = (o.inv * dir * o.scale, o.inv * o.centre * o.scale);
+            let (a, b, cc) = (ad.length_squared(), ad.dot(ac), ac.length_squared() - 1.0);
+            if cc < 0.0 {
+                return b > 0.0;
+            }
+            let disc = b * b - a * cc;
+            let t = (b - disc.max(0.0).sqrt()) / a;
+            disc > 0.0 && t > 0.0 && t < d
+        })
+    }
+
+    /// Whether a direction from the camera (any length) meets a body.
+    pub fn hides_dir(&self, dir: DVec3) -> bool {
+        !self.0.is_empty() && self.hides(dir.normalize_or(DVec3::Z) * 1e30)
     }
 }
 

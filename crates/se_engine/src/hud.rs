@@ -270,6 +270,10 @@ fn overlay_filters(ui: &mut egui::Ui, overlay: &mut crate::overlay::OverlaySetti
         }
     });
     ui.checkbox(&mut overlay.markers, i18n.tr("markers"));
+    ui.checkbox(&mut overlay.sky.constellations, i18n.tr("Constellations"));
+    ui.indent("constellation_switches", |ui| constellation_switches(ui, &mut overlay.sky, i18n));
+    ui.checkbox(&mut overlay.sky.grids, i18n.tr("Celestial grids"));
+    ui.indent("grid_switches", |ui| grid_switches(ui, &mut overlay.sky, i18n));
     ui.collapsing(i18n.tr("Filter objects"), |ui| {
         egui::Grid::new("overlay_kinds").striped(true).show(ui, |ui| {
             ui.label("");
@@ -312,6 +316,25 @@ fn overlay_filters(ui: &mut egui::Ui, overlay: &mut crate::overlay::OverlaySetti
             }
         });
     });
+}
+
+/// SE's constellation switches (Filters toolbar "Constellations": lines, boundaries, names, art) and
+/// the Interface setting `FullConstellationNames`.
+fn constellation_switches(ui: &mut egui::Ui, sky: &mut crate::overlay::SkySwitches, i18n: &I18n) {
+    ui.checkbox(&mut sky.constel_lines, i18n.tr("Constellation lines"));
+    ui.checkbox(&mut sky.constel_boundaries, i18n.tr("Constellation boundaries"));
+    ui.checkbox(&mut sky.constel_labels, i18n.tr("Constellation names"));
+    // SE 0.991 has the switch but ships no constellation art.
+    ui.add_enabled(false, egui::Checkbox::new(&mut sky.constel_drawings, i18n.tr("Constellation art")));
+    ui.checkbox(&mut sky.full_names, i18n.tr("Full constellation names"));
+}
+
+/// SE's grid switches (Filters toolbar "Celestial grids").
+fn grid_switches(ui: &mut egui::Ui, sky: &mut crate::overlay::SkySwitches, i18n: &I18n) {
+    ui.checkbox(&mut sky.grid_equatorial, i18n.tr("Equatorial grid"));
+    ui.checkbox(&mut sky.grid_ecliptic, i18n.tr("Ecliptic grid"));
+    ui.checkbox(&mut sky.grid_galactic, i18n.tr("Galactic grid"));
+    ui.checkbox(&mut sky.grid_geographic, i18n.tr("Geographic grid"));
 }
 
 /// Whether the pointer is over the interface (egui's windows, toolbars and the info table), so a
@@ -400,6 +423,17 @@ fn draw_hud(
                     overlay.labels_mode = labels as u8;
                 }
                 filter(ui, &mut overlay.markers, "Markers");
+                // SE's constellations and grids buttons; their switches on a right click.
+                let sky = |ui: &mut egui::Ui, on: &mut bool, label: &str| {
+                    let r = ui.add(egui::Button::selectable(*on, i18n.tr(label)).min_size(egui::vec2(96.0, 0.0)));
+                    if r.clicked() {
+                        *on = !*on;
+                    }
+                    r
+                };
+                sky(ui, &mut overlay.sky.constellations, "Constellations")
+                    .context_menu(|ui| constellation_switches(ui, &mut overlay.sky, &i18n));
+                sky(ui, &mut overlay.sky.grids, "Celestial grids").context_menu(|ui| grid_switches(ui, &mut overlay.sky, &i18n));
                 filter(ui, &mut overlay.selection_pointer, "Selection pointer");
                 filter(ui, &mut overlay.info_full, "Full info");
                 filter(ui, &mut overlay.show_fps, "FPS");
@@ -857,6 +891,7 @@ fn draw_hud(
             ui.label("Space: pause time    K/L: time slower/faster    J: reverse    \\: real time    Ctrl+\\: current time    Click the date to type one");
             ui.label("Ctrl+`: hide interface    F3: find object    Shift+F3: star browser    F4: settings    F7: locations    F8: chart    I: wiki");
             ui.label("O: orbits    ': labels (brief, detail, off)    Ctrl+': markers    ;: selection pointer");
+            ui.label("X: constellations (Shift/Ctrl/Alt+X: lines/boundaries/names)    Ctrl+;: celestial grids    Alt+;: geographic grid");
             ui.label("F11: screenshot (Pictures/SpaceEngine-rs)    M: music on/off    N: next track");
         });
     }
