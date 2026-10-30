@@ -1268,8 +1268,19 @@ fn run_commands(
                     .filter_map(|r| match r {
                         ObjectRef::Body(i) => {
                             let b = &cat.bodies[i as usize];
-                            let parent_is_star = matches!(cat.find(&b.parent), Some(ObjectRef::Star(_)));
-                            (parent_is_star).then(|| (b.orbit.as_ref().map(|o| o.semi_major_axis).unwrap_or(0.0), r))
+                            let a = |o: Option<&se_core::orbit::KeplerOrbit>| o.map(|o| o.semi_major_axis).unwrap_or(0.0);
+                            match cat.find(&b.parent) {
+                                // A binary planet counts once, by its primary, at its barycentre's orbit.
+                                Some(ObjectRef::Star(s)) if se_core::climate::planet_barycentre(cat, s) => {
+                                    let heaviest = cat.children_of(&b.parent).iter().all(|c| match c {
+                                        ObjectRef::Body(j) => cat.bodies[*j as usize].mass_kg <= b.mass_kg,
+                                        _ => true,
+                                    });
+                                    heaviest.then(|| (a(cat.stars[s as usize].orbit.as_ref()), r))
+                                }
+                                Some(ObjectRef::Star(_)) => Some((a(b.orbit.as_ref()), r)),
+                                _ => None,
+                            }
                         }
                         _ => None,
                     })

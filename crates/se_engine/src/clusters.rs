@@ -685,9 +685,9 @@ pub fn member_record(info: &ProcStarInfo, pos_pc: DVec3, m: &MemberStar) -> se_c
     let mut rec = crate::system::procedural_star_record(info, pos_pc);
     if m.mass > 0.0 {
         rec.mass_kg = m.mass as f64 * se_core::units::SOLAR_MASS_KG;
-        if rec.class.kind == se_core::star::StarKind::BlackHole {
-            // SE's radius `M x 4.245e-6` solar radii (FUN_14053a760, FUN_1401d5fe0).
-            rec.radius_km = m.mass as f64 * 4.245e-6 * se_core::units::SOLAR_RADIUS_KM;
+        // A remnant's radius follows its mass (FUN_14053a760, FUN_1401d5fe0).
+        if let Some(r) = se_core::procgen::se_stars::remnant_radius_km(rec.class.kind, m.mass as f64) {
+            rec.radius_km = r;
         }
     }
     for (key, v) in [("Age", m.age_gyr), ("FeH", m.feh)] {

@@ -75,7 +75,10 @@ Verified against `SpaceEngine/save/places-def.cfg`, `data/locale/*-db.cfg` and e
 ## Which stars get planets
 
 Every star, as in SE (`seSolarSystem::CreateProcedural`, FUN_1404f7c40), except black holes of 400 or
-more solar masses, which SE hands to another generator (FUN_1404fb950, not ported). SE also hands
+more solar masses, which get SE's supermassive black hole system instead (FUN_1404fb950,
+`procgen/se_smbh.rs`): `int(3 log10 M)` stars (at most 50) named `<hole> S<n>`, born together
+`tn(50, 20, 1, 200)` Myr ago, on random orbits between `max(R + 1 AU, 0.0017 cbrt(2 M/14.536 Me))` and
+500 times that (`e = tn(0.5, 0.5, 0, 0.89)`). SE also hands
 planemos (luminosity code 12) to another generator. The star's luminosity class and spectral type come
 from `StarParams::class` (`climate::star_class_bits`), or are inferred from its kind, radius and
 temperature.
@@ -195,9 +198,13 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
   those bodies. SE's moon generator (FUN_1404fdc90, about 1350 lines) is not ported, so the port places
   SE's number of moons with its own rules (below).
 * **Comets**: SE's 100-199 comets per single star that is not a brown dwarf (`procgen/se_comets.rs`), named `<star>C<n>`; not yet for stars in multiple systems.
-* **Assumed**: the star's C/O (0.55) and metallicity factor (`10^[Fe/H]`), which SE's octree draws. The
-  star's seed is the port's (the port's stars are not SE's octree stars), so a system follows SE's rules
-  without matching SE's system for the same star. SE's draws inside FUN_1405045a0 / FUN_140504070 /
+* **Star**: the engine passes the star's age, [Fe/H] (SE's record +0x44, in dex) and C/O as SE's star
+  generator draws them (`procgen::se_stars`, FUN_1401d63b0): [Fe/H] `N(0.1 - 0.4503 x, 0.07)` and C/O
+  `N(1 - 0.6755 x, 0.1699)` at `x` galaxy radii from the centre, age `U` times the lifetime (10%
+  newborn); remnants `N(1.5, 0.25)` and C/O `N(1.5, 0.17)`; masses from SE's mass-luminosity inverse
+  (FUN_1401dd9f0), remnant radii from FUN_1401d5fe0. The system seed is SE's position hash
+  (FUN_140510f40). The port's stars are not SE's octree stars, so a system follows SE's rules without
+  matching SE's system for the same star. SE's draws inside FUN_1405045a0 / FUN_140504070 /
   FUN_1404ca7e0 are not replicated.
 
 ## Bodies
@@ -241,12 +248,15 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
 * **Ocean / terrain**: `Surface.BumpHeight = 19.5 km (9.81/g)^0.8 x U(0.7, 1.4)` (1.5-60);
   `Ocean.Height = BumpOffset = BumpHeight (0.15 + 0.65 f)` for cover `f`, or 1.2-3 x BumpHeight for global
   oceans; salinity 1.5-6 % NaCl. (Earth: 19.475 / 10.896 km.)
-* **Life**: needs liquid ocean, 268 K <= T_s <= 332 K, 0.3-6 atm, age > 0.5 Gyr: 35 % (20 % around
-  active M dwarfs); multicellular if age > 2 Gyr (60 %), O2 8-32 % if age > 2.4 Gyr, `Biome "Marine"` or
-  `"Marine/Terrestrial"`, 6 % `Exotic` class.
-* **Rings**: gas giants 10 % (40 % if > 60 Me and T_eq < 400 K), ice giants 25 %; inner 1.15-1.5 R, outer
-  capped at 0.95 x Roche limit (`2.456 R (rho_p/0.9)^(1/3)`); 25 % of the cold ones are bright
-  Saturn-like, others faint. Moons stay outside 1.2 x the outer ring radius. Other bodies get `NoRings`.
+* **Life**: SE's life generator (`procgen/se_life.rs`, FUN_1404faf40 and FUN_1404c9d90) runs on the
+  completed system (`procgen::apply_life_to_doc`, in the engine's background generation job and the
+  star browser's scan, from the bodies' completions): origin by volatiles class (ProbLifeOrg*/Exo*),
+  panspermia, and the stages from the system age (LifeOrgAge*/LifeExoAge*), with marine, terrestrial,
+  subglacial and aerial biomes. `BodySummary` carries no life.
+* **Rings**: SE's ring roll for every planet, moon and asteroid (`procgen/se_rings.rs`, FUN_140508600):
+  60% (5% when tidally locked) above 1e-7 Earth masses and below `80 + 220 (log10 M + 5)/4.4` K (at most
+  300 K); SE's shape, E-like, thin, narrow, sparse and contrast styles. Moons stay outside 1.2 x the main
+  ring (`EdgeRadius`). Planets without rings get `NoRings`.
 * **Aurora**: giants 85 %, atmosphered rocky planets (> 0.05 atm, > 0.3 Me) 40 %.
 * **Rotation**: unlocked: rocky 6-60 h (12 % slow 60-1500 h), gas giants 8.5-18 h, envelope planets 13-21 h,
   small bodies 2.5-40 h; 2 % retrograde; hot thick-CO2 worlds 50 % slow (1500-6000 h, mostly retrograde).
@@ -266,6 +276,16 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
   inclined, 50 % retrograde) beyond the regular ones. Hill rule: regular moons need apocenter < 0.24 R_Hill,
   everything < 0.45 R_Hill (test: < 0.5). Planets inside 0.1 AU keep each moon with probability 0.15.
   Moon composition: icy beyond the snow line (inner two rock-rich half the time), rocky inside.
+  **Masses** are SE's (`procgen/se_moons.rs`, FUN_140501990): 95% of placed moons (0.5% of captured ones)
+  are Moon-type, `M/M_J 10^N(-1.7, 1)` around planets above 7 Me (ProbMassiveMoonGasGiant 5%: x10,
+  ProbBinaryGasGiant 0.1%: `tn(0.2, 0.3, 0.01, 1) M`), `0.3 M 10^tn(-1.7, 1, -5.2, -0.5)` below, times
+  a zone factor peaking about 20 planet radii out; the rest weigh `10^tn(-7.5, 2.5, -11, -5.2)` Me.
+* **Binary planets** (FUN_1404fdc90): a moon of at least 1/50 of its planet's mass makes a `Barycenter`
+  in the planet's orbit with both bodies about it (the moon's eccentricity, the pair's period); up to a ratio of 20
+  it takes the planet's name and the pair are `a`/`b`, else it is `<planet>-<n>.1` with the moon
+  `<planet>.1`. With ProbBinaryPlanetMoons (0.4) moons beyond 3 separations stay about the barycentre.
+  The completion heats and despins each of the pair with the other as host at their separation
+  (`climate::binary_partner`), and caps a generated body's tidal heating as SE does (FUN_1405099c0).
 
 ## Classification words (`BodySummary::class_desc`)
 
@@ -291,8 +311,8 @@ sphere of influence, inner limit, spacing, eccentricities, inclinations, types, 
 radius, dwarf planets, asteroid belts, moon counts). Planets and moons also get SE's completion chain
 (composition, atmosphere, ocean, clouds, temperature) when the engine loads them.
 
-Designed here: moon orbits and sizes, asteroid sizes, the port-side physics the emitter still writes
-(rotation, tidal locking, rings, aurora), the node-id packing of `procedural_star_name` and the `.S`/`.N`
+Designed here: moon orbits (SE's masses), asteroid sizes, the port-side physics the emitter still writes
+(rotation, tidal locking, aurora), the node-id packing of `procedural_star_name` and the `.S`/`.N`
 moon-name interpretation.
 
 ## Tests (`cargo test -p se_core procgen`)

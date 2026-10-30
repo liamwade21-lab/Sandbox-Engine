@@ -310,9 +310,23 @@ fn catalog_stars(cat: &Catalog, root: u32) -> Vec<StarFacts> {
 
 /// Facts of a procedural star's system, generated as on arrival: its bodies and its stars (SE's
 /// components of a multiple system, else the star itself).
-fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3) -> (Vec<BodyFacts>, Vec<StarFacts>) {
-    let (params, seed) = proc_system_input(&procedural_star_record(info, pos_pc));
+fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3, tables: Option<&Arc<se_core::climate::ClimateTables>>) -> (Vec<BodyFacts>, Vec<StarFacts>) {
+    let mut rec = procedural_star_record(info, pos_pc);
+    let (params, seed) = proc_system_input(&rec);
     let g = se_core::procgen::generate_system_for_search(&params, seed);
+    // SE's life, as on arrival: its life generator on the completed system (system.rs `generate`).
+    let mut lives = std::collections::HashMap::new();
+    if let Some(t) = tables {
+        rec.barycenter = g.root_mass_sol.is_some();
+        let mut doc = se_core::sc::parse(&g.sc);
+        se_core::procgen::apply_life_to_doc(&[rec], t.clone(), g.root_mass_sol, &mut doc, se_core::time::J2000);
+        for it in &doc.items {
+            if let (Some(name), Some(l)) = (it.name(), it.block().and_then(|b| b.sub("Life"))) {
+                let s = |k: &str| l.str(k).unwrap_or_default().to_string();
+                lives.insert(name.to_string(), (s("Class"), s("Type"), s("Biome")));
+            }
+        }
+    }
     let stars = if g.stars.is_empty() {
         vec![StarFacts { name: info.name.clone(), class: SpectralClass::parse(&info.class) }]
     } else {
@@ -327,16 +341,17 @@ fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3) -> (Vec<BodyFacts>, Vec
                 "Moon" | "DwarfMoon" => true,
                 _ => return None,
             };
+            let life = lives.remove(&b.name);
             Some(BodyFacts {
                 temp: b.class_desc.split_whitespace().next().and_then(temp_word),
-                name: b.name,
                 moon,
                 class: b.class,
-                desc: b.class_desc,
+                desc: if life.is_some() { format!("{} with life", b.class_desc) } else { b.class_desc },
+                name: b.name,
                 radius_km: b.radius_km,
                 atmosphere: b.has_atmosphere,
                 ocean: b.has_ocean,
-                life: b.life.map(|l| (l.class.to_string(), l.kind.to_string(), l.biome.to_string())),
+                life,
             })
         })
         .collect();
@@ -390,13 +405,14 @@ fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc
             });
         }
     }
+    let tables = cat.climate.clone();
     drop(cat);
     for (d, _, p) in cands.into_iter() {
         let Some((pos, info)) = p else { continue };
         if scan.cancel.load(Ordering::Relaxed) {
             return;
         }
-        let (bodies, stars) = procedural_system(&info, pos);
+        let (bodies, stars) = procedural_system(&info, pos, tables.as_ref());
         push(SystemRow {
             name: info.name.clone(),
             pos_pc: pos,

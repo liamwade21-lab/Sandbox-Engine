@@ -2079,12 +2079,21 @@ pub fn catalog_thermal(cat: &crate::catalog::Catalog, i: usize, flux: f64, green
         .or_else(|| b.orbit.as_ref().filter(|_| moon).map(|o| o.inclination))
         .unwrap_or(0.0) as f32;
     let rotation_days = b.rotation.period_seconds().map_or(1.0, |s| (s / 86_400.0) as f32);
-    let star_parent = matches!(cat.find(&b.parent), Some(ObjectRef::Star(_)));
-    let tidal = match (cat.find(&b.parent), b.orbit.as_ref()) {
-        (Some(ObjectRef::Body(p)), Some(o)) if o.eccentricity < 1.0 => {
-            let host = cat.bodies[p as usize].mass_kg / crate::units::EARTH_MASS_KG;
-            let a_au = o.semi_major_axis / crate::units::METERS_PER_AU;
-            o.eccentricity.powi(2) * crate::climate::tidal_k(radius_km, a_au, host, 600.0) * crate::climate::small_body_taper(radius_km)
+    let star_parent = matches!(cat.find(&b.parent), Some(ObjectRef::Star(s)) if !crate::climate::planet_barycentre(cat, s));
+    // A moon heated by its planet, or one of a binary planet's pair by its partner at their
+    // separation (as the completion, `climate::catalog_body_in`); a generated body's is capped.
+    let host = match (crate::climate::binary_partner(cat, i), cat.find(&b.parent)) {
+        (Some(partner), _) => Some(partner),
+        (None, Some(ObjectRef::Body(p))) => b.orbit.as_ref().map(|o| (cat.bodies[p as usize].mass_kg / crate::units::EARTH_MASS_KG, o.semi_major_axis / crate::units::METERS_PER_AU)),
+        _ => None,
+    };
+    let tidal = match (host, b.orbit.as_ref()) {
+        (Some((host_me, a_au)), Some(o)) if o.eccentricity < 1.0 => {
+            let mut w = o.eccentricity.powi(2) * crate::climate::tidal_k(radius_km, a_au, host_me, 600.0);
+            if b.source == crate::climate::PROCEDURAL_SOURCE {
+                w = w.min(crate::climate::tidal_heat_cap_w(mass_earth, t_surf));
+            }
+            w * crate::climate::small_body_taper(radius_km)
         }
         _ => 0.0,
     };
