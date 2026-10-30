@@ -79,7 +79,7 @@ pub struct CoronaUniform {
     pub bright: Vec4,
     /// SE's `Shape`: (RayDensity, RayCurvature, Scale, SinFreq).
     pub shape: Vec4,
-    /// `EyePos.w` of the three planes.
+    /// xyz: `EyePos.w` of the three planes, w: the star's radius over the corona's.
     pub phase: Vec4,
 }
 
@@ -205,7 +205,7 @@ fn spawn_coronas(
                 color: color.extend(0.0),
                 bright: BRIGHT,
                 shape: Vec4::new(keys.ray_density as f32, keys.ray_curv as f32, SCALE, SIN_FREQ),
-                phase: Vec4::new(p[0], p[1], p[2], 0.0),
+                phase: Vec4::new(p[0], p[1], p[2], (body.radius_m / 1000.0 / keys.radius_km) as f32),
             },
         });
         let mesh = mesh.get_or_insert_with(|| meshes.add(planes_mesh())).clone();
@@ -247,11 +247,11 @@ fn update_coronas(
         anchor.0 = b.pos;
         orient.0 = b.orient;
         let p = corona.keys.phases(sim.jd - PHASE_EPOCH_JD);
-        let phase = Vec4::new(p[0], p[1], p[2], 0.0);
-        if mats.get(&corona.material).is_some_and(|m| m.u.phase != phase)
+        if let Some(m) = mats.get(&corona.material)
+            && m.u.phase.truncate() != Vec3::from_array(p)
             && let Some(mut m) = mats.get_mut(&corona.material)
         {
-            m.u.phase = phase;
+            m.u.phase = Vec3::from_array(p).extend(m.u.phase.w);
         }
     }
 }
