@@ -25,3 +25,9 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     c = pow(max(c, vec3<f32>(1e-6)), cc.bcsg.www);
     return vec4<f32>(c, src.a);
 }
+
+// The corrected frame copied back into the main texture.
+@fragment
+fn blit(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(scene, scene_sampler, in.uv);
+}
