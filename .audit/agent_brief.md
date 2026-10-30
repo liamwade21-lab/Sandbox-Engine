@@ -49,6 +49,9 @@ agents can call Ghidra at once.
 Render passes: never add a full-screen pass that flips the main textures (`post_process_write`,
 Bevy's `FullscreenMaterial`). An extra flip made every few frames show a wrong image (a flicker);
 write back into the same main texture through a scratch texture as `color_correction.rs` does.
+A pass that reads the main texture must also be ordered against the passes that flip it (bloom's
+`SeBloomSet`, FXAA, SMAA): unordered, it reads the other texture on some frames (the flicker of
+2026-10-30).
 Planet surface tiles load slowly while other agents build: give planet views at least 1000
 frames before comparing them, or a half-loaded planet looks like a regression.
 After any render change, capture ~30 consecutive frames of a paused, still view (`shot PATH`
