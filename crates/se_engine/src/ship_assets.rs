@@ -195,6 +195,9 @@ pub struct PlumeSpec {
     /// Width, height, length in metres.
     pub size: Vec3,
     pub brightness: f32,
+    /// Looping sound of the effect (cfg `Sound` or the group's default) and its `Volume`.
+    pub sound: Option<String>,
+    pub volume: f32,
 }
 
 pub struct LoadedShip {
@@ -455,6 +458,8 @@ pub fn build_ship(vfs: &Vfs, design: &ShipDesign) -> Option<LoadedShip> {
                 x_axis: xa.as_vec3(),
                 size: e.size.as_vec3(),
                 brightness: (e.brightness_hdr as f32).max(0.1),
+                sound: e.sound_file().map(str::to_owned),
+                volume: e.volume as f32,
             });
         }
     }
