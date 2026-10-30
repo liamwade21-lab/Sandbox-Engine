@@ -257,6 +257,9 @@ pub struct Catalog {
     pub nebulae: Vec<NebulaRecord>,
     /// Lower-cased name -> object (every alias is indexed).
     names: HashMap<String, ObjectRef>,
+    /// Names two objects share but for case ("Kepler-34 b" the planet, "Kepler-34 B" the star),
+    /// exactly as written; `find` tries these first, as SE keeps such objects apart.
+    exact: HashMap<String, ObjectRef>,
     /// Lower-cased parent name -> child bodies/stars.
     children: HashMap<String, Vec<ObjectRef>>,
     pub warnings: Vec<String>,
@@ -380,7 +383,16 @@ impl Catalog {
 
     fn register(&mut self, names: &[String], r: ObjectRef) {
         for n in names {
-            self.names.insert(key(n), r);
+            let k = key(n);
+            if let Some(&old) = self.names.get(&k)
+                && old != r
+            {
+                if let Some(o) = self.names_of(old).iter().find(|o| key(o) == k) {
+                    self.exact.insert(o.trim().to_string(), old);
+                }
+                self.exact.insert(n.trim().to_string(), r);
+            }
+            self.names.insert(k, r);
         }
     }
 
@@ -399,6 +411,7 @@ impl Catalog {
                 self.names.remove(&key(n));
             }
         }
+        self.exact.retain(|_, r| *r != ObjectRef::Star(i));
         self.stars[i as usize].names = names;
     }
 
@@ -615,6 +628,13 @@ impl Catalog {
                     };
                     if take {
                         self.names.insert(k, ObjectRef::Body(idx));
+                    } else if let Some(&old) = self.names.get(&k) {
+                        // Taken under another spelling ("Kepler-34 B" the star): keep both apart.
+                        let other = self.names_of(old).iter().find(|o| key(o) == k).map(|o| o.trim().to_string());
+                        if let Some(o) = other.filter(|o| o != n.trim()) {
+                            self.exact.insert(o, old);
+                            self.exact.insert(n.trim().to_string(), ObjectRef::Body(idx));
+                        }
                     }
                 }
                 self.bodies.push(rec);
@@ -979,7 +999,7 @@ impl Catalog {
     }
 
     pub fn find(&self, name: &str) -> Option<ObjectRef> {
-        self.names.get(&key(name)).copied()
+        self.exact.get(name.trim()).or_else(|| self.names.get(&key(name))).copied()
     }
 
     /// Append a star created at runtime (e.g. a procedural star the observer
@@ -1047,14 +1067,19 @@ impl Catalog {
     }
 
     pub fn display_name(&self, r: ObjectRef) -> &str {
+        self.names_of(r).first().map(String::as_str).unwrap_or("?")
+    }
+
+    /// Every name of `r`.
+    pub fn names_of(&self, r: ObjectRef) -> &[String] {
         let names = match r {
-            ObjectRef::Star(i) => &self.stars[i as usize].names,
-            ObjectRef::Body(i) => &self.bodies[i as usize].names,
-            ObjectRef::Galaxy(i) => &self.galaxies[i as usize].names,
-            ObjectRef::Cluster(i) => &self.clusters[i as usize].names,
-            ObjectRef::Nebula(i) => &self.nebulae[i as usize].names,
+            ObjectRef::Star(i) => self.stars.get(i as usize).map(|s| &s.names),
+            ObjectRef::Body(i) => self.bodies.get(i as usize).map(|s| &s.names),
+            ObjectRef::Galaxy(i) => self.galaxies.get(i as usize).map(|s| &s.names),
+            ObjectRef::Cluster(i) => self.clusters.get(i as usize).map(|s| &s.names),
+            ObjectRef::Nebula(i) => self.nebulae.get(i as usize).map(|s| &s.names),
         };
-        names.first().map(String::as_str).unwrap_or("?")
+        names.map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn children_of(&self, name: &str) -> &[ObjectRef] {
@@ -1180,6 +1205,20 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
         assert!(p.age_gyr > 0.0 && p.age_gyr < 3.5);
         assert_eq!(c.clusters[1].color, Some([0.0; 3]));
         assert!(c.clusters[2].age_gyr > 0.0 && c.clusters[2].age_gyr <= 13.0);
+    }
+
+    #[test]
+    fn names_differing_only_in_case_stay_apart() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            "Star \"Kepler-34 B\" { RA 19.75 Dec 44.65 Dist 1499 Class \"G\" }\n\
+             Planet \"Kepler-34 b\" { ParentBody \"Kepler-34 B\" Radius 52000 }\n",
+            "c.sc",
+        );
+        assert!(matches!(c.find("Kepler-34 B"), Some(ObjectRef::Star(_))));
+        assert!(matches!(c.find("Kepler-34 b"), Some(ObjectRef::Body(_))));
+        // Any other spelling still finds one of them.
+        assert!(c.find("kepler-34 b").is_some());
     }
 
     #[test]
