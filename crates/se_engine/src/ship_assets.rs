@@ -317,20 +317,35 @@ pub fn surface_hapke(surface: Option<&se_core::sc::Block>) -> (f32, Vec4) {
     )
 }
 
-/// Uniform block of [`PlumeMaterial`] (`Plume` in `ship_plume.wesl`).
+/// Uniform block of [`PlumeMaterial`] (`Plume` in `ship_plume.wesl`; SE's `ShipEngineUniforms`).
 #[derive(Clone, Copy, Debug, ShaderType, Default)]
 pub struct PlumeUniform {
-    /// rgb colour, w intensity.
+    /// rgb: the effect `Color` times the level and brightness factor ([`engine_brightness`]).
     pub color: Vec4,
-    /// x: level 0..1, y: time, z: seed.
+    /// x: engine type ([`engine_type`]), y: time (s), z: integration step ([`engine_step`]),
+    /// w: 1 while the camera is inside the box.
     pub params: Vec4,
 }
 
-/// Additive exhaust glow.
+/// Additive ray-marched exhaust volume (`ship_engines.glsl`).
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(PlumeMaterialKey)]
 pub struct PlumeMaterial {
     #[uniform(0)]
     pub u: PlumeUniform,
+}
+
+/// Pipeline key: from outside, the box's front faces are drawn (the hull in front of the exhaust
+/// hides it, the hull behind does not); with the camera inside, its back faces.
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+pub struct PlumeMaterialKey {
+    inside: bool,
+}
+
+impl From<&PlumeMaterial> for PlumeMaterialKey {
+    fn from(m: &PlumeMaterial) -> Self {
+        Self { inside: m.u.params.w > 0.5 }
+    }
 }
 
 impl Material for PlumeMaterial {
@@ -351,52 +366,55 @@ impl Material for PlumeMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-            Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
-            Mesh::ATTRIBUTE_UV_0.at_shader_location(2),
-        ])?;
+        use bevy::render::render_resource::Face;
+        let vertex_layout = layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
-        descriptor.primitive.cull_mode = None;
+        descriptor.primitive.cull_mode = Some(if key.bind_group_data.inside { Face::Front } else { Face::Back });
         Ok(())
     }
 }
 
-/// Teardrop plume along +Z (nozzle at z=0 with radius ~0.55, tip at z=1), unit width.
+/// The exhaust shapes SE has a `ship_<Type>_engine.glh` density for (the engine shader list
+/// FUN_1401f4e10 builds); an effect of another `Type` (e.g. `Hyper`) is not drawn
+/// (FUN_14048d180 skips an index of -1).
+pub const ENGINE_TYPES: [&str; 8] = ["Fusion", "Chemical", "Ion", "Ion2", "Aerospike", "Sphere", "Square", "SuperDraco_1atm"];
+
+/// Index of an effect `Type` in [`ENGINE_TYPES`] (`ship_plume.wesl`'s `params.x`).
+pub fn engine_type(kind: &str) -> Option<usize> {
+    ENGINE_TYPES.iter().position(|t| t.eq_ignore_ascii_case(kind))
+}
+
+/// The ray-march step in box units for `ShipEngineQuality` 0..3 (FUN_14048d180: 0.2, 0.1, 0.05,
+/// 0.02; main-def.cfg's default is 2).
+pub fn engine_step(quality: i32) -> f32 {
+    match quality {
+        i32::MIN..=0 => 0.2,
+        1 => 0.1,
+        2 => 0.05,
+        _ => 0.02,
+    }
+}
+
+/// The exhaust brightness factor of an effect at `level` (FUN_14048d180):
+/// `clamp(15 sqrt(level), 0, 20)` times `hdrShipEnginesBright` and the effect's `BrightnessHDR`.
+pub fn engine_brightness(level: f32, engines_bright: f32, effect_bright: f32) -> f32 {
+    (level.max(0.0).sqrt() * 15.0).clamp(0.0, 20.0) * engines_bright * effect_bright
+}
+
+/// An engine effect's box: the nozzle on its z = +1 face, `size` the half extents (SE's
+/// `Size`), reaching `2 size.z` along the exhaust. Returns the translation, rotation and scale in
+/// ship space (FUN_14048d180: scale, shift by `-size.z`, rotate, move to `Pos`).
+pub fn plume_box(pos: Vec3, dir: Vec3, x_axis: Vec3, size: Vec3) -> Transform {
+    // Box -z along the exhaust, +x along the effect's x axis.
+    let rot = plume_rotation(dir, x_axis) * Quat::from_rotation_x(std::f32::consts::PI);
+    Transform { translation: pos + dir.normalize_or(Vec3::Z) * size.z, rotation: rot, scale: size.max(Vec3::splat(1e-3)) }
+}
+
+/// The unit box `[-1, 1]^3` the exhaust is marched in.
 pub fn plume_mesh() -> Mesh {
-    const SEGS: usize = 14;
-    const RINGS: usize = 12;
-    let radius = |t: f32| (1.0 - t) * (0.55 + 0.9 * t.sqrt());
-    let mut pos = Vec::new();
-    let mut nrm = Vec::new();
-    let mut uv = Vec::new();
-    for r in 0..=RINGS {
-        let t = r as f32 / RINGS as f32;
-        let rad = radius(t);
-        let slope = (radius((t + 0.01).min(1.0)) - radius((t - 0.01).max(0.0))) / 0.02;
-        for s in 0..=SEGS {
-            let a = s as f32 / SEGS as f32 * std::f32::consts::TAU;
-            let (sa, ca) = a.sin_cos();
-            pos.push([ca * rad, sa * rad, t]);
-            nrm.push(Vec3::new(ca, sa, -slope).normalize().to_array());
-            uv.push([t, s as f32 / SEGS as f32]);
-        }
-    }
-    let mut idx = Vec::new();
-    for r in 0..RINGS {
-        for s in 0..SEGS {
-            let a = (r * (SEGS + 1) + s) as u32;
-            let b = a + (SEGS + 1) as u32;
-            idx.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
-        }
-    }
-    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_indices(Indices::U32(idx))
+    Cuboid::new(2.0, 2.0, 2.0).mesh().build()
 }
 
 // ------------------------------------------------------------------------------------
@@ -422,8 +440,9 @@ pub struct PlumeSpec {
     pub dir: Vec3,
     /// Local transform basis: x axis hint (so flat plumes keep their orientation).
     pub x_axis: Vec3,
-    /// Width, height, length in metres.
+    /// `Size`: the half width, half height and half length of the exhaust box in metres.
     pub size: Vec3,
+    /// `BrightnessHDR`.
     pub brightness: f32,
     /// Looping sound of the effect (cfg `Sound` or the group's default) and its `Volume`.
     pub sound: Option<String>,
@@ -753,7 +772,7 @@ pub fn build_ship(vfs: &Vfs, design: &ShipDesign, thermal_shift: f32) -> Option<
                 dir: dir.as_vec3(),
                 x_axis: xa.as_vec3(),
                 size: e.size.as_vec3(),
-                brightness: (e.brightness_hdr as f32).max(0.1),
+                brightness: e.brightness_hdr as f32,
                 sound: e.sound_file().map(str::to_owned),
                 volume: e.volume as f32,
             });
@@ -881,10 +900,27 @@ mod tests {
     }
 
     #[test]
-    fn plume_mesh_is_closed_teardrop() {
+    fn plume_box_starts_at_the_nozzle() {
+        let size = Vec3::new(7.0, 7.0, 300.0);
+        let dir = Vec3::new(0.0, 0.0, 1.0);
+        let tf = plume_box(Vec3::new(0.0, 53.7, 37.6), dir, Vec3::X, size);
+        // The z = +1 face is at the nozzle, z = -1 2 size.z down the exhaust.
+        assert!((tf.transform_point(Vec3::Z) - Vec3::new(0.0, 53.7, 37.6)).length() < 1e-3);
+        assert!((tf.transform_point(-Vec3::Z) - Vec3::new(0.0, 53.7, 637.6)).length() < 1e-2);
+        assert!((tf.transform_point(Vec3::X) - tf.translation - Vec3::X * 7.0).length() < 1e-3);
         let m = plume_mesh();
-        assert!(m.count_vertices() > 100);
-        let tip = m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| p[2]).fold(0.0f32, f32::max);
-        assert!((tip - 1.0).abs() < 1e-6);
+        let ext = m.attribute(Mesh::ATTRIBUTE_POSITION).unwrap().as_float3().unwrap().iter().map(|p| p[2]).fold(0.0f32, f32::max);
+        assert!((ext - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn engine_constants_match_the_executable() {
+        assert_eq!(engine_type("Fusion"), Some(0));
+        assert_eq!(engine_type("superdraco_1atm"), Some(7));
+        assert_eq!(engine_type("Hyper"), None);
+        assert_eq!([engine_step(0), engine_step(1), engine_step(2), engine_step(3)], [0.2, 0.1, 0.05, 0.02]);
+        assert_eq!(engine_brightness(1.0, 1.0, 1.0), 15.0);
+        assert_eq!(engine_brightness(4.0, 1.0, 2.0), 40.0);
+        assert_eq!(engine_brightness(0.0, 1.0, 1.0), 0.0);
     }
 }

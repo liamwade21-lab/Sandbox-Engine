@@ -54,7 +54,7 @@ use crate::camera::{FlightHold, FlyCamera, MainCamera, look_rotation};
 use crate::data::SeData;
 use crate::ship_assets::{
     HullDefaults, HullMaterial, LoadedShip, PlumeMaterial, PlumeSpec, PlumeUniform, add_hull_material, build_ship,
-    plume_mesh, plume_rotation,
+    engine_brightness, engine_step, engine_type, plume_box, plume_mesh,
 };
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
@@ -251,11 +251,37 @@ pub struct Landed {
 struct ShipLoading(Task<Option<LoadedShip>>);
 
 struct PlumeInstance {
-    entity: Entity,
-    material: Handle<PlumeMaterial>,
+    /// The exhaust box and its material; `None` for a `Type` SE has no exhaust shape for (`Hyper`).
+    draw: Option<(Entity, Handle<PlumeMaterial>)>,
+    /// Ship space to the box's `[-1, 1]^3` frame.
+    to_box: bevy::math::Affine3A,
     spec: PlumeSpec,
-    base_scale: Vec3,
-    visible: bool,
+    /// Offset of the effect's noise time (s), SE's per-effect phase.
+    phase: f32,
+}
+
+/// main-def.cfg `ShipEngineQuality` (the exhaust ray-march step) and `hdrShipEnginesBright`.
+#[derive(Resource, Clone, Copy)]
+struct EngineEffectSettings {
+    step: f32,
+    bright: f32,
+}
+
+impl FromWorld for EngineEffectSettings {
+    fn from_world(world: &mut World) -> Self {
+        let cfg = world.get_resource::<crate::config::EngineConfig>();
+        let key = |k: &str| cfg.and_then(|c| crate::stars::main_def_f64(c, k));
+        Self {
+            step: engine_step(key("ShipEngineQuality").unwrap_or(2.0) as i32),
+            bright: key("hdrShipEnginesBright").unwrap_or(1.0) as f32,
+        }
+    }
+}
+
+/// SE's per-effect phase of the exhaust noise (FUN_1402a8ed0: effect index * 0x414a, in units of
+/// 1 / 7314.7 day), wrapped to the 256 s period of its time.
+fn effect_phase(i: usize) -> f32 {
+    ((i as f64 * 16714.0 * 86400.0 / 7314.7) % 256.0) as f32
 }
 
 #[derive(Component, Default)]
@@ -279,6 +305,7 @@ impl Plugin for ShipPlugin {
             .init_resource::<AirCache>()
             .init_resource::<EngineSoundCache>()
             .init_resource::<FlightKeys>()
+            .init_resource::<EngineEffectSettings>()
             .add_message::<ShipCommand>()
             .add_systems(Startup, (load_library, make_plume_mesh))
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
@@ -941,6 +968,7 @@ fn finish_ship_loading(
     mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
     hull_defaults: Res<HullDefaults>,
+    engine_fx: Res<EngineEffectSettings>,
     plume_mesh: Option<Res<PlumeMesh>>,
     mut loading: Query<(Entity, &mut ShipLoading, &mut Ship, &mut ShipVisuals)>,
     mut flight: ResMut<Flight>,
@@ -974,32 +1002,24 @@ fn finish_ship_loading(
             ));
         }
         for (i, spec) in loaded.plumes.iter().enumerate() {
-            let rot = plume_rotation(spec.dir, spec.x_axis);
-            let base_scale = Vec3::new(spec.size.x * 0.5, spec.size.y * 0.5, spec.size.z);
-            let intensity = spec.brightness
-                * match spec.kind.as_str() {
-                    "Fusion" | "Chemical" => 3.0,
-                    "Aerospike" => 2.5,
-                    "Hyper" => 2.0,
-                    _ => 1.6,
-                };
-            let material = plume_mats.add(PlumeMaterial {
-                u: PlumeUniform {
-                    color: Vec4::new(spec.color[0] * 3.0, spec.color[1] * 3.0, spec.color[2] * 3.0, intensity),
-                    params: Vec4::new(0.0, 0.0, i as f32, 0.0),
-                },
+            let tf = plume_box(spec.pos, spec.dir, spec.x_axis, spec.size);
+            let draw = engine_type(&spec.kind).map(|kind| {
+                let material = plume_mats.add(PlumeMaterial {
+                    u: PlumeUniform { color: Vec4::ZERO, params: Vec4::new(kind as f32, 0.0, engine_fx.step, 0.0) },
+                });
+                let e = commands
+                    .spawn((
+                        ChildOf(entity),
+                        Mesh3d(plume_mesh.0.clone()),
+                        MeshMaterial3d(material.clone()),
+                        tf,
+                        Visibility::Hidden,
+                        NoFrustumCulling,
+                    ))
+                    .id();
+                (e, material)
             });
-            let e = commands
-                .spawn((
-                    ChildOf(entity),
-                    Mesh3d(plume_mesh.0.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform { translation: spec.pos, rotation: rot, scale: base_scale * 1e-3 },
-                    Visibility::Hidden,
-                    NoFrustumCulling,
-                ))
-                .id();
-            visuals.plumes.push(PlumeInstance { entity: e, material, spec: spec.clone(), base_scale, visible: false });
+            visuals.plumes.push(PlumeInstance { draw, to_box: tf.compute_affine().inverse(), spec: spec.clone(), phase: effect_phase(i) });
         }
         info!(
             "ship {} built: {} meshes, {} vertices, {} plumes, {} modules unresolved",
@@ -1638,10 +1658,14 @@ fn update_ship_visuals(
     bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
     mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
-    mut tfs: Query<(&mut Transform, &mut Visibility)>,
+    engine_fx: Res<EngineEffectSettings>,
+    cam: Res<FlyCamera>,
+    mut vis_q: Query<&mut Visibility>,
 ) {
     let cat = &data.catalog;
-    for (ship, pos, _rot, vis) in &ships {
+    for (ship, pos, rot, vis) in &ships {
+        // The camera in ship space, to tell when it is inside an exhaust box.
+        let cam_ship = (rot.0.inverse() * cam.pos.delta_m(pos.0)).as_vec3();
         // SE lights a ship like a body (FUN_1404bf5c0, called for ships with kind 7 from
         // FUN_1401f2b10): its up to MAX_LIGHTS stars of the most flux, faded and normalised to the
         // brightest, each dimmed by the bodies eclipsing it (ship.glsl ECL).
@@ -1664,30 +1688,35 @@ fn update_ship_visuals(
             colors[i] = (*c * *k * shadow).extend(1.0);
         }
         for h in &vis.hull {
-            if let Some(mut m) = hull_mats.get_mut(h) {
-                (m.u.light_dir, m.u.light_color, m.u.ambient.x) = (dirs, colors, ambient.0);
+            // Only a change re-prepares the material's bind group.
+            let same = hull_mats.get(h).is_some_and(|m| m.u.light_dir == dirs && m.u.light_color == colors && m.u.ambient.x == ambient.0);
+            if !same {
+                if let Some(mut m) = hull_mats.get_mut(h) {
+                    (m.u.light_dir, m.u.light_color, m.u.ambient.x) = (dirs, colors, ambient.0);
+                }
             }
         }
 
-        // Plume levels from the commands.
-        let t = time.elapsed_secs();
+        // Exhaust: the box is fixed, the level sets its brightness (FUN_14048d180, which skips a
+        // level of 0); the noise time runs with a 256 s period.
+        let t = time.elapsed_secs_f64();
         for p in &vis.plumes {
+            let Some((entity, material)) = &p.draw else { continue };
             let level = plume_level(&p.spec, ship, &flight.input);
-            let show = level > 0.02;
-            if let Ok((mut tf, mut v)) = tfs.get_mut(p.entity) {
+            let show = level > 0.0;
+            if let Ok(mut v) = vis_q.get_mut(*entity) {
                 let want = if show { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != want {
                     *v = want;
                 }
-                if show {
-                    let l = level.powf(0.8);
-                    tf.scale = Vec3::new(p.base_scale.x * (0.5 + 0.5 * l), p.base_scale.y * (0.5 + 0.5 * l), p.base_scale.z * l);
-                }
             }
-            if show || p.visible {
-                if let Some(mut m) = plume_mats.get_mut(&p.material) {
-                    m.u.params.x = level;
-                    m.u.params.y = t;
+            if show {
+                if let Some(mut m) = plume_mats.get_mut(material) {
+                    let c = p.to_box.transform_point3(cam_ship);
+                    m.u.params.w = if c.abs().max_element() < 1.05 { 1.0 } else { 0.0 };
+                    let k = engine_brightness(level, engine_fx.bright, p.spec.brightness);
+                    m.u.color = (Vec3::from_array(p.spec.color) * k).extend(0.0);
+                    m.u.params.y = ((t + p.phase as f64) % 256.0) as f32;
                 }
             }
         }
