@@ -168,10 +168,12 @@ pub fn parse_flare_set(text: &str) -> FlareSet {
     set
 }
 
-/// Parses a `pseudo.cfg` script; missing keys keep `Default pseudo.cfg`'s values.
+/// Parses a `pseudo.cfg` script; missing numbers keep `Default pseudo.cfg`'s values. The texture names
+/// start empty, as SE clears them before reading the script (FUN_14026c610), so a preset without a
+/// `DirtTexture` (`Clean lens`) has no lens dirt.
 pub fn parse_pseudo(text: &str) -> PseudoFlare {
     let toks = tokens(text);
-    let mut p = PseudoFlare::default();
+    let mut p = PseudoFlare { rays_texture: String::new(), dirt_texture: String::new(), ..PseudoFlare::default() };
     for w in toks.windows(2) {
         let Tok::Word(k) = &w[0] else { continue };
         match &w[1] {
@@ -236,7 +238,9 @@ Flare { (0.2, 0.25, 0.3)   0.015   0.2     34.0    34.0    0.9     0.0     -3.5 
     fn parses_pseudo_flares() {
         let p = parse_pseudo("RaysTexture  \"LensRays.*\"\nGhostsCount 7\nChromaticism 1.5 // comment\n");
         assert_eq!((p.rays_texture.as_str(), p.ghosts_count, p.chromaticism), ("LensRays.*", 7, 1.5));
-        assert_eq!(p.dirt_texture, "LensDust.*");
+        // `Clean lens pseudo.cfg` comments its DirtTexture out: no dirt.
+        assert_eq!(p.dirt_texture, "");
+        assert_eq!(parse_pseudo("DirtTexture \"LensDust.*\"\n").dirt_texture, "LensDust.*");
         assert_eq!(preset_of("textures/flares/Clean lens pseudo.cfg"), Some(("Clean lens", "pseudo")));
         assert_eq!(preset_of("Anamorphic.png"), None);
     }

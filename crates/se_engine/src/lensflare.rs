@@ -4,54 +4,41 @@
 //! diffraction spikes, `LensFlarePreset`) and the ghosts (`LensGhostPreset`). Each sprite sits on the
 //! line from the sun through the screen centre and interpolates its brightness, size and angle
 //! between the "centre" and "edge" values by how far the sun is from the centre. A third layer, the
-//! "pseudo lens flare" (`PseudoFlarePreset`), is a screen-space pass that mirrors the bright parts of
-//! the frame into ghosts and a halo (`assets/shaders/pseudo_flare.wesl`).
+//! "pseudo lens flare" (`PseudoFlarePreset`), is screen-space: ghosts and a halo of the bloom, the
+//! starburst and lens dirt (`hdr_combine.glsl`, drawn by bloom.rs's combine from [`SeBloom`]).
 //!
-//! A flare fades with the sun's apparent magnitude (`LensFlareFadeBeginMagn` -30 .. `EndMagn` -14) and
-//! with the part of its disc hidden by the bodies of the system.
+//! A flare fades with the sun's apparent magnitude (`LensFlareFadeBeginMagn` -30 .. `EndMagn` -14) and is
+//! scaled by the frame itself at the sun (`lens_flare.glsl`): bloom.rs reads the frame (small suns) or
+//! the bloom (large ones, `LensFlareSmallMethodRadius` 5 .. `LargeMethodRadius` 8 px) at its centre
+//! before drawing the sprites, so whatever is drawn over the sun (bodies, terrain, clouds, rings,
+//! ships) hides the flare and the atmosphere's extinction dims and reddens it.
 
 use std::collections::BTreeMap;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::NoFrustumCulling;
-use bevy::core_pipeline::fullscreen_material::{FullscreenMaterial, FullscreenMaterialPlugin};
 use bevy::image::{ImageSampler, ImageSamplerDescriptor};
-use bevy::math::DVec3;
-use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
-use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
-use bevy::render::RenderApp;
-use bevy::render::extract_component::ExtractComponent;
-use bevy::render::render_resource::{
-    AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension,
-    TextureFormat,
-};
-use bevy::shader::ShaderRef;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use se_core::catalog::ObjectRef;
 use se_core::lens_flare::{FlareSet, PseudoFlare, parse_flare_set, parse_pseudo, preset_of};
 use se_core::vfs::Vfs;
 
+use crate::bloom::{FlareDraw, LensTextures, MAX_FLARE_SOURCES, SeBloom};
 use crate::camera::{FlyCamera, MainCamera};
 use crate::config::EngineConfig;
 use crate::data::SeData;
-use crate::stars::star_render_color;
 use crate::system::SystemBody;
-use crate::terrain::disc_overlap;
 use crate::universe::UniverseSet;
 
 const FLARE_DIR: &str = "textures/flares";
-/// Disc radius (px) around which a sun's flare goes out (the old star sprite's largest glare radius;
-/// SE switches between its frame and bloom samples by the sun's size, `LensFlareLargeMethodRadius`).
-const SUN_DISC_FADE_PX: f64 = 40.0;
-/// Suns flared at once.
-const MAX_SOURCES: usize = 4;
-/// Scene brightness of a flare sprite of brightness 1 (HDR, before tone mapping).
-const FLARE_GAIN: f32 = 8.0;
 /// Extra gain of the ghost layer: its atlas tiles are dim (peak 0.13) yet SE shows the ghosts clearly.
 const GHOST_GAIN: f32 = 3.0;
+/// The bloom level read for a large sun: 7 - log2(screen height / sun radius), 0..5 (FUN_1402698e0).
+const BLOOM_LEVEL_BASE: f64 = 7.0;
+const BLOOM_LEVEL_MAX: f64 = 5.0;
 
-/// The `PointRendering` / `Lighting` keys of `config/main-def.cfg` that drive the flares.
+/// The `PointRendering` / `Lighting` / `PostEffects` keys of `config/main-def.cfg` that drive the flares.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct LensFlareSettings {
     pub flares: bool,
@@ -65,6 +52,12 @@ pub struct LensFlareSettings {
     pub pseudo_preset: String,
     pub fade_begin_mag: f64,
     pub fade_end_mag: f64,
+    /// `LensFlareSmallMethodRadius` / `LensFlareLargeMethodRadius`: sun radii (px) up to which the flare
+    /// reads the frame, and from which it reads the bloom.
+    pub small_method_px: f64,
+    pub large_method_px: f64,
+    /// `BloomDynamicRange`: the limit of the frame sample (`Params2.w`).
+    pub frame_limit: f32,
 }
 
 impl Default for LensFlareSettings {
@@ -81,6 +74,9 @@ impl Default for LensFlareSettings {
             pseudo_preset: "Default".into(),
             fade_begin_mag: -30.0,
             fade_end_mag: -14.0,
+            small_method_px: 5.0,
+            large_method_px: 8.0,
+            frame_limit: 50.0,
         }
     }
 }
@@ -126,6 +122,15 @@ impl LensFlareSettings {
         if let Some(v) = num("LensFlareFadeEndMagn") {
             s.fade_end_mag = v;
         }
+        if let Some(v) = num("LensFlareSmallMethodRadius") {
+            s.small_method_px = v;
+        }
+        if let Some(v) = num("LensFlareLargeMethodRadius") {
+            s.large_method_px = v;
+        }
+        if let Some(v) = num("BloomDynamicRange") {
+            s.frame_limit = v as f32;
+        }
         s
     }
 }
@@ -138,8 +143,6 @@ pub struct FlarePresets {
     pub pseudo: BTreeMap<String, PseudoFlare>,
     /// Atlas textures by lower-case file stem, with their size in pixels.
     textures: BTreeMap<String, (Handle<Image>, Vec2)>,
-    /// `lenscolor_harb.png` sampled at 16 points (the pseudo flare's colour along the radius).
-    lens_color: [Vec4; 16],
 }
 
 impl FlarePresets {
@@ -149,90 +152,17 @@ impl FlarePresets {
     }
 }
 
-/// A sprite layer: its mesh, rebuilt every frame, and its material.
-#[derive(Component)]
-struct FlareLayer {
-    ghosts: bool,
-    mesh: Handle<Mesh>,
-    material: Handle<FlareMaterial>,
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub struct FlareMaterial {
-    #[texture(0)]
-    #[sampler(1)]
-    pub atlas: Handle<Image>,
-}
-
-impl Material for FlareMaterial {
-    fn vertex_shader() -> ShaderRef {
-        "shaders/lens_flare.wesl".into()
-    }
-    fn fragment_shader() -> ShaderRef {
-        "shaders/lens_flare.wesl".into()
-    }
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Add
-    }
-    fn depth_bias(&self) -> f32 {
-        // After every other transparent layer (galaxies use up to 3e15): flares are in the lens.
-        1.0e16
-    }
-    fn specialize(
-        _pipeline: &MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-            Mesh::ATTRIBUTE_UV_0.at_shader_location(1),
-            Mesh::ATTRIBUTE_COLOR.at_shader_location(2),
-        ])?;
-        descriptor.vertex.buffers = vec![vertex_layout];
-        descriptor.primitive.cull_mode = None;
-        Ok(())
-    }
-}
-
-/// Camera component of the pseudo lens flare pass. Layout must match `pseudo_flare.wesl`.
-#[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Default, Debug)]
-#[extract_app(RenderApp)]
-pub struct PseudoFlarePass {
-    /// x: ghost count, y: ghost dispersal, z: ghost brightness, w: ghost blur
-    pub ghosts: Vec4,
-    /// x: halo radius, y: halo brightness, z: halo blur, w: chromatic distortion
-    pub halo: Vec4,
-    /// x: overall brightness, y: width / height, z: brightness cap of the source, w: unused
-    pub params: Vec4,
-    pub lens_color: [Vec4; 16],
-}
-
-impl FullscreenMaterial for PseudoFlarePass {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/pseudo_flare.wesl".into()
-    }
-}
-
 pub struct LensFlarePlugin;
 
 impl Plugin for LensFlarePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MaterialPlugin::<FlareMaterial>::default(), FullscreenMaterialPlugin::<PseudoFlarePass>::default()))
-            .init_resource::<LensFlareSettings>()
+        app.init_resource::<LensFlareSettings>()
             .add_systems(Startup, load_presets)
             .add_systems(PostUpdate, update_flares.after(UniverseSet::Camera));
     }
 }
 
-fn load_presets(
-    mut commands: Commands,
-    cfg: Res<EngineConfig>,
-    data: Res<SeData>,
-    mut images: ResMut<Assets<Image>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<FlareMaterial>>,
-) {
+fn load_presets(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeData>, mut images: ResMut<Assets<Image>>) {
     if let Ok(text) = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")) {
         commands.insert_resource(LensFlareSettings::from_main_def(&text));
     }
@@ -243,20 +173,6 @@ fn load_presets(
         presets.ghosts.len(),
         presets.pseudo.len()
     );
-    for ghosts in [false, true] {
-        let mesh = meshes.add(Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default()));
-        let material = mats.add(FlareMaterial { atlas: Handle::default() });
-        commands.spawn((
-            Mesh3d(mesh.clone()),
-            MeshMaterial3d(material.clone()),
-            Transform::IDENTITY,
-            Visibility::Hidden,
-            NoFrustumCulling,
-            // Seen by the main camera only (not by the black-hole environment cameras).
-            crate::blackholes::MAIN_VIEW_ONLY,
-            FlareLayer { ghosts, mesh, material },
-        ));
-    }
     commands.insert_resource(presets);
 }
 
@@ -277,20 +193,12 @@ fn read_presets(vfs: &Vfs, images: &mut Assets<Image>) -> FlarePresets {
             }
         }
     }
-    p.lens_color = [Vec4::ONE; 16];
     for path in vfs.list_ext(FLARE_DIR, "png") {
         let Ok(bytes) = vfs.read(&path) else { continue };
         let Ok(img) = image::load_from_memory(&bytes) else { continue };
         let rgba = img.to_rgba8();
         let (w, h) = rgba.dimensions();
         let stem = path.rsplit('/').next().unwrap_or(&path).split('.').next().unwrap_or("").to_ascii_lowercase();
-        if stem == "lenscolor_harb" {
-            p.lens_color = std::array::from_fn(|i| {
-                let x = ((i as f32 + 0.5) / 16.0 * w as f32) as u32;
-                let c = rgba.get_pixel(x.min(w - 1), 0).0;
-                Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, 255.0) / 255.0
-            });
-        }
         let mut image = Image::new(
             Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             TextureDimension::D2,
@@ -305,12 +213,12 @@ fn read_presets(vfs: &Vfs, images: &mut Assets<Image>) -> FlarePresets {
 }
 
 /// A sun on screen: its position in screen units (x scaled by the aspect, y up, half-height = 1),
-/// colour, and flare strength (magnitude fade times the visible part of its disc).
+/// flare strength (the magnitude fade) and its probe texel.
 #[derive(Clone, Copy, Debug)]
 struct Source {
     pos: Vec2,
-    color: Vec3,
     strength: f32,
+    index: u32,
 }
 
 /// Fade of a sun's flare with its apparent magnitude: 1 at `begin` or brighter, 0 at `end`.
@@ -318,33 +226,26 @@ fn magnitude_fade(mag: f64, begin: f64, end: f64) -> f32 {
     ((end - mag) / (end - begin)).clamp(0.0, 1.0) as f32
 }
 
-/// Photosphere brightness on screen (`star_surface.wesl` at the disc centre).
-const PHOTOSPHERE_LUMA: f64 = crate::system::STAR_SURFACE_BRIGHT as f64;
+/// SE's `smoothstep(e0, e1, x)` (FUN_140029820).
+fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    (3.0 - 2.0 * t) * t * t
+}
 
-/// SE scales a flare by the frame's brightness at the sun, `smoothstep(3, 10, luma)` of the bloom
-/// around it (`lens_flare.glsl`): a point-like sun there is its saturated glare, a close one its
-/// photosphere, so the flare goes out as the disc (`disc_px` radius) outgrows the glare sprite
-/// (`glare_px`), whose light spreads over the disc's area.
-fn disc_fade(disc_px: f64, glare_px: f64) -> f32 {
-    let luma = PHOTOSPHERE_LUMA + (10.0 - PHOTOSPHERE_LUMA) * (glare_px / disc_px.max(1e-6)).powi(2);
-    let t = ((luma - 3.0) / 7.0).clamp(0.0, 1.0);
-    (t * t * (3.0 - 2.0 * t)) as f32
+/// What the probe pass reads for a sun of radius `r_px` on a screen `height_px` tall (FUN_1402698e0
+/// and FUN_1404e6240): the bloom level `clamp(7 - log2(height / r), 0, 5)` and the frame-to-bloom mix
+/// `smoothstep(small, large, r)`.
+fn probe_method(r_px: f64, height_px: f64, small: f64, large: f64) -> (f32, f32) {
+    let level = (BLOOM_LEVEL_BASE - (height_px / r_px.max(1e-6)).log2()).clamp(0.0, BLOOM_LEVEL_MAX);
+    (level as f32, smoothstep(small, large, r_px) as f32)
 }
 
 /// Appends the sprites of `set` for one sun (two triangles each). `aspect` is width / height.
-fn push_sprites(
-    set: &FlareSet,
-    atlas_size: Vec2,
-    src: &Source,
-    s: &LensFlareSettings,
-    aspect: f32,
-    ghost_falloff: bool,
-    mesh: &mut (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>),
-) {
+fn push_sprites(set: &FlareSet, atlas_size: Vec2, src: &Source, s: &LensFlareSettings, aspect: f32, ghost_falloff: bool, out: &mut Vec<f32>) {
     // 0 with the sun at the screen centre, 1 at an edge.
     let t = (src.pos.x.abs() / aspect).max(src.pos.y.abs()).min(1.0);
     for e in &set.elements {
-        let bright = (e.bright[0] + (e.bright[1] - e.bright[0]) * t) * set.bright_all * s.bright * src.strength * FLARE_GAIN;
+        let bright = (e.bright[0] + (e.bright[1] - e.bright[0]) * t) * set.bright_all * s.bright * src.strength;
         if bright <= 0.0 {
             continue;
         }
@@ -355,20 +256,45 @@ fn push_sprites(
         let angle = (e.angle[0] + (e.angle[1] - e.angle[0]) * t).to_radians();
         let centre = src.pos * (1.0 - e.position);
         let rot = Mat2::from_angle(angle);
-        let base = mesh.0.len() as u32;
         let [x, y, w, h] = e.rect;
-        let col = (Vec3::from_array(e.color) * src.color * bright).extend(1.0).to_array();
-        for (cx, cy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let col = Vec3::from_array(e.color) * bright;
+        let corner = |cx: f32, cy: f32| {
             let p = centre + rot * Vec2::new(cx * half, cy * half * e.aspect);
-            mesh.0.push([p.x / aspect, p.y, 0.0]);
             // Atlas rows run down the image; the sprite's +y is up.
             let u = (x + (cx + 1.0) * 0.5 * w) / atlas_size.x;
             let v = (y + (1.0 - cy) * 0.5 * h) / atlas_size.y;
-            mesh.1.push([u, v]);
-            mesh.2.push(col);
+            [p.x / aspect, p.y, u, v, col.x, col.y, col.z, src.index as f32]
+        };
+        let c = [corner(-1.0, -1.0), corner(1.0, -1.0), corner(-1.0, 1.0), corner(1.0, 1.0)];
+        for k in [0, 1, 2, 2, 1, 3] {
+            out.extend_from_slice(&c[k]);
         }
-        mesh.3.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
     }
+}
+
+/// `LensRaysMatr`: the starburst turns with the camera. SE's matrix was not decoded; this is the
+/// angle of John Chapman's pseudo lens flare, which hdr_combine.glsl follows (camera right . z plus
+/// camera forward . y).
+fn rays_matrix(rot: bevy::math::DQuat) -> Vec4 {
+    let right = rot * bevy::math::DVec3::X;
+    let fwd = rot * bevy::math::DVec3::NEG_Z;
+    let a = (right.z + fwd.y) as f32;
+    let (s, c) = a.sin_cos();
+    Vec4::new(c, s, -s, c)
+}
+
+/// The pseudo lens flare's part of [`SeBloom`] (`hdr_combine.glsl` BrightParams, BlurParams,
+/// FlareParams); off without a preset.
+fn pseudo_uniform(b: &mut SeBloom, p: Option<&PseudoFlare>, bright: f32, aspect: f32, lens: &LensTextures, rays: Vec4) {
+    let Some(p) = p else {
+        b.flare_bright = Vec4::ZERO;
+        return;
+    };
+    b.flare_bright = Vec4::new(p.ghosts_bright * bright, p.halo_bright * bright, p.dirt_bright, 1.0);
+    b.flare_blur = Vec4::new(p.ghosts_blur, p.halo_blur, p.dirt_dispersal, 1.0);
+    b.flare_shape = Vec4::new(p.ghosts_dispersal, p.ghosts_count as f32, p.halo_radius, p.chromaticism);
+    b.lens = Vec4::new(aspect, lens.dirt.is_some() as u32 as f32, lens.rays.is_some() as u32 as f32, 0.0);
+    b.rays = rays;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -379,27 +305,20 @@ fn update_flares(
     data: Res<SeData>,
     cam: Res<FlyCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
-    mut layers: Query<(&FlareLayer, &mut Visibility)>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<FlareMaterial>>,
-    camera: Query<(Entity, Option<&PseudoFlarePass>), With<MainCamera>>,
+    bodies: Query<&SystemBody>,
+    mut camera: Query<(Entity, Option<&mut FlareDraw>, Option<&mut SeBloom>), With<MainCamera>>,
+    mut lens: ResMut<LensTextures>,
 ) {
     let Some(presets) = presets else { return };
+    let Ok((cam_entity, draw, bloom)) = camera.single_mut() else { return };
     let (w, h) = windows.iter().next().map(|w| (w.width(), w.height())).unwrap_or((1600.0, 900.0));
     let aspect = w / h.max(1.0);
     let tan_half = (cam.fov_deg * 0.5).to_radians().tan() as f64;
     let inv = cam.rot.inverse();
     let cat = &data.catalog;
 
-    // Occluders: every body of the system with a size (and whether it has a sea).
-    let occluders: Vec<(DVec3, f64, bool)> = bodies
-        .iter()
-        .filter(|(b, _)| !b.star && b.radius_m > 0.0)
-        .map(|(b, t)| (b.pos.delta_m(cam.pos), b.radius_m, t.is_some_and(|t| t.has_ocean)))
-        .collect();
-    let mut sources: Vec<(f64, Source)> = Vec::new();
-    for (b, _) in bodies.iter().filter(|(b, _)| b.star) {
+    let mut sources: Vec<(f64, Vec2, f32, Vec4)> = Vec::new();
+    for b in bodies.iter().filter(|b| b.star) {
         let ObjectRef::Star(i) = b.obj else { continue };
         let st = &cat.stars[i as usize];
         let rel = b.pos.delta_m(cam.pos);
@@ -412,108 +331,66 @@ fn update_flares(
         if fade <= 0.0 {
             continue;
         }
-        // Part of the disc hidden by the bodies in front of it.
-        let ang_r = (b.radius_m / dist).asin();
-        let mut dir = rel / dist;
-        let mut visible = 1.0;
-        for &(o, r_o, sea) in &occluders {
-            let d_o = o.length();
-            if d_o <= r_o {
-                // On low ground inside the body's sphere: its horizon plane hides the lower sky.
-                let up = -o / d_o.max(1e-9);
-                let cos_z = dir.dot(up);
-                if cos_z < 0.0 {
-                    visible = 0.0;
-                } else if sea {
-                    // Under the sea the star shows in Snell's window, raised by refraction and
-                    // dimmed along its path through the water above.
-                    let sin_t = (1.0 - cos_z * cos_z).max(0.0).sqrt() / 1.333;
-                    let cos_t = (1.0 - sin_t * sin_t).sqrt();
-                    dir = (up * cos_t + (dir - up * cos_z).normalize_or_zero() * sin_t).normalize();
-                    visible *= (-0.03 * (r_o - d_o) / cos_t).exp();
-                }
-                continue;
-            }
-            if d_o >= dist {
-                continue;
-            }
-            let sep = (o / d_o).angle_between(dir);
-            visible *= 1.0 - disc_overlap(ang_r.max(1e-9), (r_o / d_o).asin(), sep);
-        }
-        if visible <= 0.0 {
-            continue;
-        }
         // Screen position; the sun's disc must touch the screen.
-        let v = inv * dir;
+        let v = inv * (rel / dist);
         if v.z >= 0.0 {
             continue;
         }
         let sx = v.x / -v.z / tan_half;
         let sy = v.y / -v.z / tan_half;
-        let r_scr = ang_r.tan() / tan_half;
+        let r_scr = (b.radius_m / dist).asin().tan() / tan_half;
         if sx.abs() - r_scr > aspect as f64 || sy.abs() - r_scr > 1.0 {
             continue;
         }
-        let disc = disc_fade(r_scr * h as f64 * 0.5, SUN_DISC_FADE_PX);
-        if disc <= 0.0 {
-            continue;
-        }
-        let color = Vec3::from_array(star_render_color(st.class.kind, st.teff));
-        let color = color / color.max_element().max(1e-3);
-        sources.push((mag, Source { pos: Vec2::new(sx as f32, sy as f32), color, strength: fade * visible as f32 * disc }));
+        let r_px = r_scr * h as f64 * 0.5;
+        let (level, mix) = probe_method(r_px, h as f64, settings.small_method_px, settings.large_method_px);
+        let uv = Vec2::new(((sx / aspect as f64 + 1.0) * 0.5) as f32, ((1.0 - sy) * 0.5) as f32);
+        sources.push((mag, Vec2::new(sx as f32, sy as f32), fade, Vec4::new(uv.x, uv.y, level, mix)));
     }
     sources.sort_by(|a, b| a.0.total_cmp(&b.0));
-    sources.truncate(MAX_SOURCES);
+    sources.truncate(MAX_FLARE_SOURCES);
 
-    for (layer, mut vis) in &mut layers {
-        let (on, set) = if layer.ghosts {
+    let mut fd = FlareDraw { count: sources.len() as u32, frame_limit: settings.frame_limit, ..default() };
+    for (k, s) in sources.iter().enumerate() {
+        fd.sources[k] = s.3;
+    }
+    for ghosts in [false, true] {
+        let (on, set) = if ghosts {
             (settings.ghosts, presets.ghosts.get(&settings.ghost_preset))
         } else {
             (settings.flares, presets.flares.get(&settings.flare_preset))
         };
-        let atlas = set.and_then(|s| presets.atlas(&s.texture));
-        let (Some(set), Some((tex, size)), true, false) = (set, atlas, on, sources.is_empty()) else {
-            *vis = Visibility::Hidden;
-            continue;
-        };
-        let mut m = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (_, src) in &sources {
-            let gain = if layer.ghosts { GHOST_GAIN } else { 1.0 };
-            push_sprites(set, *size, &Source { strength: src.strength * gain, ..*src }, &settings, aspect, layer.ghosts, &mut m);
+        let (Some(set), true) = (set, on) else { continue };
+        let Some((tex, size)) = presets.atlas(&set.texture) else { continue };
+        let mut verts = Vec::new();
+        for (k, s) in sources.iter().enumerate() {
+            let gain = if ghosts { GHOST_GAIN } else { 1.0 };
+            let src = Source { pos: s.1, strength: s.2 * gain, index: k as u32 };
+            push_sprites(set, *size, &src, &settings, aspect, ghosts, &mut verts);
         }
-        if let Some(mat) = mats.get(&layer.material)
-            && mat.atlas != *tex
-            && let Some(mut mat) = mats.get_mut(&layer.material)
-        {
-            mat.atlas = tex.clone();
+        if !verts.is_empty() {
+            fd.batches.push((tex.id(), verts));
         }
-        if let Some(mut mesh) = meshes.get_mut(&layer.mesh) {
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.0);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.1);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, m.2);
-            mesh.insert_indices(Indices::U32(m.3));
+    }
+    match draw {
+        Some(mut d) => *d = fd,
+        None => {
+            commands.entity(cam_entity).insert(fd);
         }
-        *vis = Visibility::Visible;
     }
 
-    // Pseudo lens flare: only while a sun is flared, so the pass costs nothing otherwise.
-    let Ok((cam_entity, pass)) = camera.single() else { return };
-    let pseudo = presets.pseudo.get(&settings.pseudo_preset);
-    match (settings.pseudo && !sources.is_empty(), pseudo) {
-        (true, Some(p)) => {
-            let strength = sources.iter().map(|(_, s)| s.strength).fold(0.0, f32::max);
-            let u = PseudoFlarePass {
-                ghosts: Vec4::new(p.ghosts_count as f32, p.ghosts_dispersal, p.ghosts_bright, p.ghosts_blur),
-                halo: Vec4::new(p.halo_radius, p.halo_bright, p.halo_blur, p.chromaticism),
-                params: Vec4::new(settings.pseudo_bright * strength, aspect, 50.0, 0.0),
-                lens_color: presets.lens_color,
-            };
-            commands.entity(cam_entity).insert(u);
-        }
-        _ => {
-            if pass.is_some() {
-                commands.entity(cam_entity).remove::<PseudoFlarePass>();
-            }
+    // The pseudo lens flare's preset and textures.
+    let pseudo = presets.pseudo.get(&settings.pseudo_preset).filter(|_| settings.pseudo);
+    let tex = |name: Option<&String>| name.filter(|n| !n.is_empty()).and_then(|n| presets.atlas(n)).map(|t| t.0.id());
+    let want = LensTextures { dirt: tex(pseudo.map(|p| &p.dirt_texture)), rays: tex(pseudo.map(|p| &p.rays_texture)) };
+    if *lens != want {
+        *lens = want;
+    }
+    if let Some(mut b) = bloom {
+        let mut u = *b;
+        pseudo_uniform(&mut u, pseudo, settings.pseudo_bright, aspect, &lens, rays_matrix(cam.rot));
+        if *b != u {
+            *b = u;
         }
     }
 }
@@ -521,14 +398,19 @@ fn update_flares(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bloom::FLARE_VERTEX_FLOATS;
     use se_core::lens_flare::FlareElement;
 
     #[test]
-    fn disc_fade_goes_out_as_the_disc_outgrows_the_glare() {
-        assert_eq!(disc_fade(4.0, 40.0), 1.0);
-        assert_eq!(disc_fade(40.0, 40.0), 1.0);
-        assert!(disc_fade(80.0, 40.0) > 0.0 && disc_fade(80.0, 40.0) < 1.0);
-        assert_eq!(disc_fade(120.0, 40.0), 0.0);
+    fn probe_reads_the_frame_for_small_suns_and_the_bloom_for_large_ones() {
+        let (l, m) = probe_method(4.0, 900.0, 5.0, 8.0);
+        assert_eq!((l, m), (0.0, 0.0));
+        let (_, m) = probe_method(6.5, 900.0, 5.0, 8.0);
+        assert!((m - 0.5).abs() < 1e-6);
+        // A sun 56 px across on a 900 px screen: level 7 - log2(16) = 3.
+        let (l, m) = probe_method(56.25, 900.0, 5.0, 8.0);
+        assert_eq!((l, m), (3.0, 1.0));
+        assert_eq!(probe_method(2000.0, 900.0, 5.0, 8.0).0, 5.0);
     }
 
     #[test]
@@ -537,6 +419,12 @@ mod tests {
         assert_eq!(magnitude_fade(-13.0, -30.0, -14.0), 0.0);
         // The Sun from Earth.
         assert!((magnitude_fade(-26.74, -30.0, -14.0) - 0.796).abs() < 0.01);
+    }
+
+    #[test]
+    fn settings_read_the_method_radii() {
+        let s = LensFlareSettings::from_main_def("PostEffects { LensFlareSmallMethodRadius 4 LensFlareLargeMethodRadius 9 BloomDynamicRange 40 }");
+        assert_eq!((s.small_method_px, s.large_method_px, s.frame_limit), (4.0, 9.0, 40.0));
     }
 
     #[test]
@@ -552,17 +440,32 @@ mod tests {
             rect: [0.0, 0.0, 64.0, 64.0],
         };
         let set = FlareSet { scale_all: 0.1, bright_all: 1.0, texture: String::new(), elements: vec![e(0.0), e(1.0), e(2.0)] };
-        let src = Source { pos: Vec2::new(0.8, 0.4), color: Vec3::ONE, strength: 1.0 };
-        let mut m = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        push_sprites(&set, Vec2::splat(64.0), &src, &LensFlareSettings::default(), 2.0, false, &mut m);
+        let src = Source { pos: Vec2::new(0.8, 0.4), strength: 1.0, index: 2 };
+        let mut v = Vec::new();
+        push_sprites(&set, Vec2::splat(64.0), &src, &LensFlareSettings::default(), 2.0, false, &mut v);
+        let n = 6 * FLARE_VERTEX_FLOATS;
+        assert_eq!(v.len(), 3 * n);
         let centre = |k: usize| {
-            let q = &m.0[k * 4..k * 4 + 4];
-            Vec2::new(q.iter().map(|p| p[0]).sum::<f32>() / 4.0, q.iter().map(|p| p[1]).sum::<f32>() / 4.0)
+            let q = &v[k * n..(k + 1) * n];
+            let (mut x, mut y) = (0.0, 0.0);
+            for c in q.chunks(FLARE_VERTEX_FLOATS) {
+                x += c[0];
+                y += c[1];
+            }
+            Vec2::new(x, y) / 6.0
         };
         // At the sun (x in NDC: 0.8 / aspect), at the centre, and mirrored.
         assert!((centre(0) - Vec2::new(0.4, 0.4)).length() < 1e-5);
         assert!(centre(1).length() < 1e-5);
         assert!((centre(2) + Vec2::new(0.4, 0.4)).length() < 1e-5);
-        assert_eq!(m.3.len(), 18);
+        // Every vertex names its sun's probe texel.
+        assert!(v.chunks(FLARE_VERTEX_FLOATS).all(|c| c[7] == 2.0));
+    }
+
+    #[test]
+    fn rays_matrix_is_a_rotation() {
+        let m = rays_matrix(bevy::math::DQuat::from_rotation_y(0.7));
+        assert!((m.x * m.w - m.y * m.z - 1.0).abs() < 1e-5);
+        assert_eq!(rays_matrix(bevy::math::DQuat::IDENTITY), Vec4::new(1.0, 0.0, 0.0, 1.0));
     }
 }

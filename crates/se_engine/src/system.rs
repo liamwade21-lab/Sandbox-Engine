@@ -613,7 +613,7 @@ fn spawn_system_members(
                 ec.insert((
                     Mesh3d(sphere.clone()),
                     MeshMaterial3d(surf_mats.add(StarSurfaceMaterial {
-                        u: StarSurfaceUniform::new(rgb, s.teff.max(500.0) as f32, &surf),
+                        u: StarSurfaceUniform::new(s.teff.max(500.0) as f32, &surf),
                         noise,
                     })),
                     StarSphere,
@@ -1475,7 +1475,7 @@ use bevy::shader::ShaderRef;
 /// fills for stars (`surface_gen::star_surface`, named as tg_common.glh's `sun*` defines).
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct StarSurfaceUniform {
-    /// rgb the star's colour at its Teff, w HDR intensity.
+    /// rgb SE's surface brightness at the disc centre's mean temperature, w 1.
     pub color: Vec4,
     /// x Teff (K), y SE's limb darkening amount, z SE's spot temperature (relative to Teff).
     pub temp: Vec4,
@@ -1495,20 +1495,60 @@ pub struct StarSurfaceUniform {
 /// value SE uploads is not decoded, so the full effect is assumed.
 const STAR_LIMB_DARKENING: f32 = 1.0;
 
-/// The photosphere's brightness at the disc centre (times the star's colour), on the port's HDR
-/// scale, where SE multiplies its Planck table by `hdrStarSurfaceBright` (that table's scale is not
-/// decoded). `lensflare.rs` assumes the same value.
-pub const STAR_SURFACE_BRIGHT: f32 = 2.0;
+/// main-def.cfg `hdrStarSurfaceBright` (HDR photo mode, the port's only mode).
+pub const HDR_STAR_SURFACE_BRIGHT: f64 = 2000.0;
+
+/// SE's Planck table colour of a blackbody at `t` K: the spectrum from 380 to 780 nm in 5 nm steps
+/// through the CIE 1931 matching functions (multi-lobe Gaussian fit) to linear sRGB, scaled so that
+/// B(555 nm, 5700 K) = 1.
+pub fn planck_table_rgb(t: f64) -> [f64; 3] {
+    let lobe = |l: f64, mu: f64, s1: f64, s2: f64| {
+        let x = (l - mu) / if l < mu { s1 } else { s2 };
+        (-0.5 * x * x).exp()
+    };
+    let planck = |lm: f64, t: f64| 1.191_042_805_64e-16 / (lm.powi(5) * ((0.014_387_751_9 / (lm * t)).exp() - 1.0));
+    let n = 1.0 / planck(555e-9, 5700.0);
+    let mut xyz = [0.0; 3];
+    for k in 0..81 {
+        let l = 380.0 + 5.0 * k as f64;
+        let b = planck(l * 1e-9, t) * n;
+        xyz[0] += b * (1.056 * lobe(l, 599.8, 37.9, 31.0) + 0.362 * lobe(l, 442.0, 16.0, 26.7) - 0.065 * lobe(l, 501.1, 20.4, 26.2));
+        xyz[1] += b * (0.821 * lobe(l, 568.8, 46.9, 40.5) + 0.286 * lobe(l, 530.9, 16.3, 31.1));
+        xyz[2] += b * (1.217 * lobe(l, 437.0, 11.8, 36.0) + 0.681 * lobe(l, 459.0, 26.0, 13.8));
+    }
+    let [x, y, z] = xyz;
+    [
+        (3.2406 * x - 1.5372 * y - 0.4986 * z).max(0.0),
+        (-0.9689 * x + 1.8758 * y + 0.0415 * z).max(0.0),
+        (0.0557 * x - 0.2040 * y + 1.0570 * z).max(0.0),
+    ]
+}
+
+/// SE's star surface brightness in HDR mode (FUN_1404c4090, uploaded as SurfParams4.w by
+/// FUN_1404ae4a0, planet.glsl:1310): hdrStarSurfaceBright x 10^((3 - 2s) s^2 (5931.23 / T + 2.37526
+/// - 0.852509 ln T)), s = clamp((T - 1200) / 300, 0, 1), T clamped to 808.86..1e5 K; it multiplies the
+/// Planck table colour. SE adds an offset lerped from renderer +0x35c0 / +0x35c4, which only its
+/// constructor and FUN_140258200 set (to 0).
+pub fn star_surface_gain(teff: f64) -> f64 {
+    let t = teff.clamp(808.86, 1.0e5);
+    let s = ((t - 1200.0) / 300.0).clamp(0.0, 1.0);
+    HDR_STAR_SURFACE_BRIGHT * 10f64.powf((3.0 - 2.0 * s) * s * s * (5931.23 / t + 2.375_26 - 0.852_509 * t.ln()))
+}
 
 impl StarSurfaceUniform {
-    pub fn new(rgb: [f32; 3], teff: f32, g: &se_core::surface_gen::SurfaceGen) -> Self {
+    pub fn new(teff: f32, g: &se_core::surface_gen::SurfaceGen) -> Self {
         use se_core::surface_gen as sg;
         let v = |i: usize| g.v(i);
         // GlowMapSun's spotTemp: sunGranBotTemp x clamp(1.27944 x 0.999889^Teff, 0.1, 0.95), so
         // umbrae are darker on hotter stars.
         let spot = v(sg::TROPIC_LATITUDE) * (1.27944 * 0.999889f32.powf(teff)).clamp(0.1, 0.95);
+        // SE's brightness at the disc centre's mean temperature (`star_surface.wesl` tc); the shader
+        // carries it to each pixel's temperature.
+        let (bot, top) = (v(sg::TROPIC_LATITUDE) as f64, v(sg::ICECAP_LATITUDE) as f64);
+        let tc = teff as f64 * 1.1 * (bot + (top - bot) * 0.3);
+        let rgb = planck_table_rgb(tc).map(|c| (c * star_surface_gain(teff as f64)) as f32);
         Self {
-            color: Vec4::new(rgb[0], rgb[1], rgb[2], STAR_SURFACE_BRIGHT),
+            color: Vec4::new(rgb[0], rgb[1], rgb[2], 1.0),
             temp: Vec4::new(teff, STAR_LIMB_DARKENING, spot, 0.0),
             randomize: Vec4::new(v(0), v(1), v(2), 0.0),
             gran: Vec4::new(v(sg::COLOR_DIST_FREQ), v(sg::HILLS_MAGN), v(sg::HILLS_FREQ), v(sg::CRACKS_OCTAVES).clamp(0.0, 15.0)),
@@ -1517,6 +1557,28 @@ impl StarSurfaceUniform {
             spots: Vec4::new(v(sg::MARE_DENSITY).max(0.0).sqrt(), v(sg::MARE_FREQ), v(sg::MONTES_FREQ), 0.0),
             spots2: Vec4::new(v(sg::CLIMATE_POLE), v(sg::CLIMATE_TROPIC), 0.0, 0.0),
         }
+    }
+}
+
+#[cfg(test)]
+mod star_surface_tests {
+    use super::*;
+
+    fn luma(t: f64, teff: f64) -> f64 {
+        let c = planck_table_rgb(t);
+        (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) * star_surface_gain(teff)
+    }
+
+    #[test]
+    fn star_discs_follow_ses_brightness_chain() {
+        // The Sun: about 7.1 at the disc centre (1.1 Teff), 2.3 at the limb (0.86 Teff).
+        assert!((luma(5778.0 * 1.1, 5778.0) - 7.11).abs() < 0.05, "{}", luma(5778.0 * 1.1, 5778.0));
+        assert!((luma(5778.0 * 0.86, 5778.0) - 2.3).abs() < 0.1);
+        assert!((luma(3000.0 * 1.1, 3000.0) - 5.54).abs() < 0.05);
+        assert!((luma(30000.0 * 1.1, 30000.0) - 2.10).abs() < 0.05);
+        // The table is 1 at 555 nm and 5700 K, so a solar blackbody is near white.
+        let c = planck_table_rgb(5778.0 * 1.1);
+        assert!(c[0] / c[2] > 0.95 && c[0] / c[2] < 1.15);
     }
 }
 

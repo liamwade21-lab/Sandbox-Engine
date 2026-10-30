@@ -282,32 +282,201 @@ impl LifeParams {
     }
 }
 
-/// Stellar `Corona` block. Units are as stored in the catalog (the radius is not
-/// converted here; check against the engine before using it physically).
+/// Stellar `Corona` block (FUN_14046bfc0 / FUN_140468860 read it into the body at +0x1cdc..+0x1cec).
+/// A key the block leaves out is `None` and gets SE's per-star default ([`Corona::resolve`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CoronaParams {
-    /// `Radius` as stored in the catalog (e.g. `4.0159e+008`). Default 0.
-    pub radius: f64,
-    /// `Period`, catalog time units of the ray pulsation. Default 0.
-    pub period: f64,
-    /// `Brightness`, multiplier (dimensionless). Default 1.0.
-    pub brightness: f64,
-    /// `RayDensity`, number of rays per unit angle. Default 0.
-    pub ray_density: f64,
-    /// `RayCurv`, ray curvature (dimensionless). Default 0.
-    pub ray_curv: f64,
+    /// `Radius`, km: the half-size of the corona planes (Eta Carinae A: 4.0159e8 km, 5.8 star radii).
+    pub radius_km: Option<f64>,
+    /// `Period` of the ray pattern, years (SE keeps days: x 365.24218985, DAT_1406d51f0).
+    pub period_yr: Option<f64>,
+    /// `Brightness`, multiplier.
+    pub brightness: Option<f64>,
+    /// `RayDensity`: the angular frequency of the rays (`Shape.x` of corona_plane_proc.glsl).
+    pub ray_density: Option<f64>,
+    /// `RayCurv`: how fast the rays change along the radius (`Shape.y`).
+    pub ray_curv: Option<f64>,
 }
 
 impl CoronaParams {
     pub fn from_block(b: &Block) -> Self {
         Self {
-            radius: b.f64("Radius").unwrap_or(0.0),
-            period: b.f64("Period").unwrap_or(0.0),
-            brightness: b.f64("Brightness").unwrap_or(1.0),
-            ray_density: b.f64("RayDensity").unwrap_or(0.0),
-            ray_curv: b.f64("RayCurv").unwrap_or(0.0),
+            radius_km: b.f64("Radius"),
+            period_yr: b.f64("Period"),
+            brightness: b.f64("Brightness"),
+            ray_density: b.f64("RayDensity"),
+            ray_curv: b.f64("RayCurv"),
         }
     }
+}
+
+/// SE's days per catalog year of `Period` (DAT_1406d51f0).
+pub const CORONA_DAYS_PER_YEAR: f64 = 365.242_189_85;
+
+/// What SE's corona defaults read of a star (FUN_140507070): the class word's luminosity code
+/// (bits 11-14) and letter (bits 7-10), the radius, the temperature (+0x1248) and the mass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoronaStar {
+    pub lum: u32,
+    pub letter: u32,
+    pub radius_km: f64,
+    pub teff: f64,
+    pub mass_earth: f64,
+}
+
+impl CoronaStar {
+    /// The class word fields FUN_140507070 tests, from a parsed class: luminosity codes 0 hypergiant,
+    /// 1 Ia, 3 Ib, 4 II, 5 III, 6 IV, 7 V (brown dwarfs are V with the letters L/T/Y, 7..9), 8 VI,
+    /// 9 carbon, 10 Wolf-Rayet, 11 remnants (letter 12 neutron star, 13 black hole, below 12 white
+    /// dwarfs). Inferred from how FUN_140507070, FUN_1401df100 and FUN_1404cb030 branch on them;
+    /// SE's class parser was not traced.
+    pub fn class_code(sc: &crate::star::SpectralClass) -> (u32, u32) {
+        use crate::star::{LumClass, StarKind};
+        let letter = match sc.letter {
+            'O' | 'W' => 0,
+            'B' => 1,
+            'A' => 2,
+            'F' => 3,
+            'G' => 4,
+            'K' => 5,
+            'M' | 'C' | 'S' => 6,
+            'L' => 7,
+            'T' => 8,
+            'Y' => 9,
+            _ => 4,
+        };
+        match sc.kind {
+            StarKind::WhiteDwarf => (11, 0),
+            StarKind::NeutronStar => (11, 12),
+            StarKind::BlackHole => (11, 13),
+            StarKind::WolfRayet => (10, 0),
+            StarKind::Carbon => (9, 6),
+            StarKind::BrownDwarf => (7, letter.max(7)),
+            StarKind::Subdwarf => (8, letter),
+            StarKind::Normal => {
+                let lum = match sc.lum_class {
+                    LumClass::Hypergiant => 0,
+                    LumClass::Ia => 1,
+                    LumClass::Ib => 3,
+                    LumClass::II => 4,
+                    LumClass::III => 5,
+                    LumClass::IV => 6,
+                    LumClass::V => 7,
+                    LumClass::VI => 8,
+                    LumClass::VII => 11,
+                };
+                (lum, letter)
+            }
+        }
+    }
+}
+
+/// A star's corona with every key resolved, as FUN_1405481c0 draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Corona {
+    pub radius_km: f64,
+    pub period_days: f64,
+    pub brightness: f64,
+    pub ray_density: f64,
+    pub ray_curv: f64,
+}
+
+/// SE's `rnd_tn(mean, sigma, lo, hi)`: a normal draw, redrawn until it falls inside `lo..=hi`.
+fn rnd_tn(gauss: &mut impl FnMut(f64, f64) -> f64, mean: f64, sigma: f64, lo: f64, hi: f64) -> f64 {
+    for _ in 0..32 {
+        let v = gauss(mean, sigma);
+        if (lo..=hi).contains(&v) {
+            return v;
+        }
+    }
+    mean.clamp(lo, hi)
+}
+
+impl Corona {
+    /// SE's corona of a star (FUN_140507070): the catalog's `Corona` keys, and for those it leaves
+    /// out SE's random defaults (`gauss(mean, sigma)` gives the normal draws). `None` with
+    /// `NoCorona` (body flag bit 14) and for black holes, which FUN_140507070 marks `NoCorona`.
+    /// - `Radius` 5.5 star radii (4.5..6.5).
+    /// - `RayDensity` 3.5 sqrt(Teff / 5880) and `RayCurv` 15 / sqrt(g / 28) clamped to 3..180 (g in
+    ///   Earth gravities, the Sun's being 28), so hot stars get dense rays and dense stars straight
+    ///   ones; remnants 35 and 150, Wolf-Rayet stars 25 and 20.
+    /// - `Brightness` 0.5; Wolf-Rayet stars 1, neutron stars 1.5.
+    /// - `Period` 10 days, 1 day for brown dwarfs, 10 days x radius / 37.5 million km for giants and
+    ///   carbon stars, 0.01 days for white dwarfs and 1e-4 for neutron stars.
+    pub fn resolve(given: Option<&CoronaParams>, no_corona: bool, star: &CoronaStar, gauss: &mut impl FnMut(f64, f64) -> f64) -> Option<Self> {
+        if no_corona || (star.lum == 11 && star.letter == 13) || star.teff < 879.339 {
+            // FUN_1404c07f0 gives 0 below 879.339 K, so FUN_1405481c0 draws nothing there.
+            return None;
+        }
+        let g = given.cloned().unwrap_or_default();
+        let radius_km = g.radius_km.unwrap_or_else(|| rnd_tn(gauss, 5.5, 0.3, 4.5, 6.5) * star.radius_km);
+        let remnant = star.lum == 11;
+        let wolf_rayet = star.lum == 10;
+        let ray_density = g.ray_density.unwrap_or_else(|| {
+            if remnant {
+                rnd_tn(gauss, 3.5, 0.5, 2.0, 5.0) * 10.0
+            } else if wolf_rayet {
+                rnd_tn(gauss, 25.0, 2.0, 15.0, 35.0)
+            } else {
+                rnd_tn(gauss, 3.5, 0.5, 2.0, 5.0) * (star.teff.max(0.0) / 5880.0).sqrt()
+            }
+        });
+        let ray_curv = g.ray_curv.unwrap_or_else(|| {
+            if remnant {
+                rnd_tn(gauss, 15.0, 2.0, 9.0, 21.0) * 10.0
+            } else if wolf_rayet {
+                rnd_tn(gauss, 20.0, 2.0, 10.0, 30.0)
+            } else {
+                // FUN_1404dcbf0: surface gravity in Earth's (mass / (radius / 6371 km)^2).
+                let g_earth = star.mass_earth / (star.radius_km / 6371.0).powi(2);
+                (rnd_tn(gauss, 15.0, 2.0, 9.0, 21.0) / (g_earth / 28.0).max(1e-12).sqrt()).clamp(3.0, 180.0)
+            }
+        });
+        let neutron = remnant && star.letter == 12;
+        let brightness = g.brightness.unwrap_or(if neutron {
+            1.5
+        } else if wolf_rayet {
+            1.0
+        } else {
+            0.5
+        });
+        let period_days = match g.period_yr {
+            Some(p) => p * CORONA_DAYS_PER_YEAR,
+            None => {
+                let p = rnd_tn(gauss, 10.0, 3.0, 0.5, 50.0);
+                if star.lum <= 5 || star.lum == 9 {
+                    p * star.radius_km / 3.75e7
+                } else if remnant {
+                    p * if neutron { 1.0e-5 } else { 1.0e-3 }
+                } else if star.lum == 7 && star.letter >= 7 {
+                    p * 0.1
+                } else {
+                    p
+                }
+            }
+        };
+        Some(Self { radius_km, period_days, brightness, ray_density, ray_curv })
+    }
+
+    /// The animation phase of the three corona planes (FUN_1405481c0's `EyePos.w`): the time in
+    /// periods times 0.001, 0.0012365131 and 0.0007631217, wrapped to 0..1 and scaled by 10000.
+    pub fn phases(&self, days: f64) -> [f32; 3] {
+        let cycles = days / self.period_days.max(1e-12);
+        [0.001, 0.001_236_513_1, 0.000_763_121_7].map(|k| {
+            let t = cycles * k;
+            ((t - t.floor()) * 10000.0) as f32
+        })
+    }
+}
+
+/// FUN_1404c07f0: the corona's brightness for a star temperature,
+/// 10^(0.163017 - 1960.37/T + 5603960/T^2 - 7.60241e9/T^3), with T capped at 1e5 K and 0 below 879.339 K.
+pub fn corona_temperature_bright(teff: f64) -> f64 {
+    if teff < 879.339 {
+        return 0.0;
+    }
+    let t = teff.min(1.0e5);
+    10f64.powf(0.163_017 - 1960.37 / t + 5_603_960.0 / (t * t) - 7.602_41e9 / (t * t * t))
 }
 
 /// `CometTail` block. Colours are linear RGB; lengths are in the catalog's units.
@@ -439,6 +608,7 @@ pub struct BodyExtras {
     pub no_life: bool,
     pub no_comet_tail: bool,
     pub no_accretion_disk: bool,
+    pub no_corona: bool,
 }
 
 impl BodyExtras {
@@ -462,6 +632,7 @@ impl BodyExtras {
             no_life: flag(b, "NoLife"),
             no_comet_tail: flag(b, "NoCometTail"),
             no_accretion_disk: flag(b, "NoAccretionDisk"),
+            no_corona: flag(b, "NoCorona"),
         }
     }
 }
@@ -638,9 +809,10 @@ NoAurora
         );
         let x = BodyExtras::from_body_block(&b);
         let c = x.corona.unwrap();
-        assert!((c.radius - 4.0159e8).abs() < 1.0);
-        assert_eq!(c.brightness, 1.4504);
-        assert_eq!(c.ray_density, 0.0);
+        assert!((c.radius_km.unwrap() - 4.0159e8).abs() < 1.0);
+        assert_eq!(c.brightness, Some(1.4504));
+        assert_eq!(c.ray_density, None);
+        assert!(!x.no_corona);
         let t = x.comet_tail.unwrap();
         assert_eq!(t.gas_color, [0.003, 0.009, 0.015]);
         assert_eq!(t.particles, 2500);
@@ -649,5 +821,67 @@ NoAurora
         assert_eq!(d.brightness, 0.5);
         assert_eq!(d.inner_radius_km, 137_000.0);
         assert!(x.no_comet_tail);
+    }
+
+    /// The mean of every draw, so the defaults come out at SE's central values.
+    fn mean(m: f64, _s: f64) -> f64 {
+        m
+    }
+
+    fn sun() -> CoronaStar {
+        CoronaStar { lum: 7, letter: 4, radius_km: 695_700.0, teff: 5880.0, mass_earth: 332_946.0 }
+    }
+
+    #[test]
+    fn corona_defaults_follow_the_star() {
+        let c = Corona::resolve(None, false, &sun(), &mut mean).unwrap();
+        assert!((c.radius_km - 5.5 * 695_700.0).abs() < 1.0);
+        assert_eq!((c.period_days, c.brightness, c.ray_density), (10.0, 0.5, 3.5));
+        // The Sun's gravity is 28 Earth's (FUN_1404dcbf0's normalisation).
+        assert!((c.ray_curv - 15.0).abs() < 0.1, "{}", c.ray_curv);
+        // A giant: period with the radius, straight rays capped at 180.
+        let giant = CoronaStar { lum: 4, letter: 6, radius_km: 6.0e8, teff: 3500.0, mass_earth: 5.0e6 };
+        let g = Corona::resolve(None, false, &giant, &mut mean).unwrap();
+        assert!((g.period_days - 160.0).abs() < 1e-6);
+        assert_eq!(g.ray_curv, 180.0);
+        // Wolf-Rayet, brown dwarf, neutron star.
+        let wr = Corona::resolve(None, false, &CoronaStar { lum: 10, letter: 0, ..sun() }, &mut mean).unwrap();
+        assert_eq!((wr.ray_density, wr.ray_curv, wr.brightness), (25.0, 20.0, 1.0));
+        let bd = Corona::resolve(None, false, &CoronaStar { letter: 8, teff: 1200.0, ..sun() }, &mut mean).unwrap();
+        assert!((bd.period_days - 1.0).abs() < 1e-9);
+        let ns = Corona::resolve(None, false, &CoronaStar { lum: 11, letter: 12, ..sun() }, &mut mean).unwrap();
+        assert_eq!((ns.ray_density, ns.ray_curv, ns.brightness), (35.0, 150.0, 1.5));
+        assert!((ns.period_days - 1.0e-4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn corona_keys_and_switches() {
+        let b = parse("Corona { Radius 4.0159e+008 Period 0.031437 Brightness 1.4504 RayDensity 17.244 RayCurv 3.9393 }\n");
+        let x = BodyExtras::from_body_block(&b);
+        let c = Corona::resolve(x.corona.as_ref(), x.no_corona, &sun(), &mut mean).unwrap();
+        assert_eq!((c.radius_km, c.brightness, c.ray_density, c.ray_curv), (4.0159e8, 1.4504, 17.244, 3.9393));
+        assert!((c.period_days - 0.031437 * CORONA_DAYS_PER_YEAR).abs() < 1e-9);
+        let off = BodyExtras::from_body_block(&parse("NoCorona true\n"));
+        assert!(off.no_corona);
+        assert!(Corona::resolve(None, true, &sun(), &mut mean).is_none());
+        // Black holes and stars below 879 K have none.
+        assert!(Corona::resolve(None, false, &CoronaStar { lum: 11, letter: 13, ..sun() }, &mut mean).is_none());
+        assert!(Corona::resolve(None, false, &CoronaStar { teff: 800.0, ..sun() }, &mut mean).is_none());
+        // Out-of-range draws are redrawn, then fall back to the mean.
+        let c = Corona::resolve(None, false, &sun(), &mut |_m: f64, _s: f64| 100.0).unwrap();
+        assert!((c.radius_km - 5.5 * 695_700.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn corona_phase_and_temperature_brightness() {
+        let c = Corona { radius_km: 1.0, period_days: 10.0, brightness: 0.5, ray_density: 3.5, ray_curv: 15.0 };
+        // 10 phase units per period on the first plane.
+        let p = c.phases(10.0);
+        assert!((p[0] - 10.0).abs() < 1e-3 && (p[1] - 12.365_131).abs() < 1e-3);
+        // Wrapped every 1000 periods.
+        assert!((c.phases(15_000.0)[0] - 5000.0).abs() < 1e-2);
+        assert!((corona_temperature_bright(5880.0) - 0.9).abs() < 0.01);
+        assert!(corona_temperature_bright(3000.0) < corona_temperature_bright(20000.0));
+        assert_eq!(corona_temperature_bright(800.0), 0.0);
     }
 }

@@ -10,9 +10,16 @@
 //!
 //! The chain also gives the interface its blurred background ([`GuiBackdrop`], SE's gui.glsl
 //! `BackTex`): the blurred third level, tone-mapped into an image that `skin.rs` adds to every window.
+//!
+//! Between the chain and the combine come SE's lens flares (`lens_flare.glsl`, see `lensflare.rs`):
+//! a probe pass reads the frame and the chain at each sun ([`FlareDraw`]), and the flare sprites
+//! drawn after it are scaled by that colour, so whatever covers or reddens the sun dims and tints its
+//! flare. The combine also adds SE's pseudo lens flare (`hdr_combine.glsl` FLARES): ghosts and a halo
+//! of the bloom, modulated by the lens dirt and starburst textures, and the dirt's bloom mask.
 
 use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
+use bevy::mesh::VertexBufferLayout;
 use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::extract_component::{
@@ -20,9 +27,9 @@ use bevy::render::extract_component::{
 };
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::texture::GpuImage;
+use bevy::render::texture::{FallbackImage, GpuImage};
 use bevy::window::PrimaryWindow;
-use bevy::render::render_resource::binding_types::{sampler, texture_2d, uniform_buffer};
+use bevy::render::render_resource::binding_types::{self, sampler, texture_2d, uniform_buffer};
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, ViewQuery};
 use bevy::render::texture::{CachedTexture, TextureCache};
@@ -34,6 +41,40 @@ const LEVELS: u32 = 6;
 const FORMAT: TextureFormat = TextureFormat::Rg11b10Ufloat;
 /// The main texture of an HDR view.
 const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+/// Suns whose flares are drawn at once (one probe texel each).
+pub const MAX_FLARE_SOURCES: usize = 4;
+/// Floats per flare sprite vertex: NDC xy, atlas uv, rgb, source index.
+pub const FLARE_VERTEX_FLOATS: usize = 8;
+
+/// The lens flares of a view, built by `lensflare.rs` each frame.
+#[derive(Component, ExtractComponent, Clone, Default, Debug)]
+#[extract_app(RenderApp)]
+pub struct FlareDraw {
+    /// Per sun (`lens_flare.glsl` `SunScreenPos`, `Params2`): xy its screen position (uv, y down),
+    /// z the bloom level read, w the frame (0) to bloom (1) mix.
+    pub sources: [Vec4; MAX_FLARE_SOURCES],
+    pub count: u32,
+    /// The frame sample's brightness limit (`Params2.w`, BloomDynamicRange).
+    pub frame_limit: f32,
+    /// Sprite batches: the atlas and its vertices ([`FLARE_VERTEX_FLOATS`] each, six per sprite).
+    pub batches: Vec<(AssetId<Image>, Vec<f32>)>,
+}
+
+/// The probe pass's uniform. Layout must match `lens_flare.wesl`.
+#[derive(Clone, Copy, ShaderType)]
+struct ProbeUniform {
+    sources: [Vec4; MAX_FLARE_SOURCES],
+    /// x: frame brightness limit.
+    params: Vec4,
+}
+
+/// The pseudo lens flare's dirt (`DirtTexture`) and starburst (`RaysTexture`) images.
+#[derive(Resource, ExtractResource, Clone, Default, Debug, PartialEq)]
+#[extract_app(RenderApp)]
+pub struct LensTextures {
+    pub dirt: Option<AssetId<Image>>,
+    pub rays: Option<AssetId<Image>>,
+}
 const BACKDROP_FORMAT: TextureFormat = TextureFormat::Rgba8UnormSrgb;
 /// The chain level the interface's background is read from (1/8 of the frame, blurred: about SE's
 /// `BackgroundBluriness` 3.5 mip levels).
@@ -60,17 +101,36 @@ fn size_backdrop(backdrop: Res<GuiBackdrop>, windows: Query<&Window, With<Primar
     }
 }
 
-/// SE's bloom settings on the camera (main-def.cfg `PostEffects`).
-#[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Debug)]
+/// SE's bloom settings on the camera (main-def.cfg `PostEffects`), with the pseudo lens flare's
+/// (`hdr_combine.glsl` uniforms, set by `lensflare.rs`). Layout must match `se_bloom.wesl`.
+#[derive(Component, ExtractComponent, Clone, Copy, ShaderType, Debug, PartialEq)]
 #[extract_app(RenderApp)]
 pub struct SeBloom {
     /// x: BloomBright, y: BloomThreshold, z: FrameDynamicRange, w: BloomDynamicRange.
     pub params: Vec4,
+    /// `BrightParams` yzw: x GhostsBright, y HaloBright (both times PseudoFlareBright), z DirtBright,
+    /// w 1 while the pseudo lens flare is on.
+    pub flare_bright: Vec4,
+    /// `BlurParams`: x GhostsBlur, y HaloBlur, z DirtDispersal (mip levels), w viewport scale.
+    pub flare_blur: Vec4,
+    /// `FlareParams`: x GhostsDispersal, y GhostsCount, z HaloRadius, w Chromaticism.
+    pub flare_shape: Vec4,
+    /// x screen width / height, y 1 with a dirt texture, z 1 with a rays texture.
+    pub lens: Vec4,
+    /// `LensRaysMatr` by columns (xy, zw).
+    pub rays: Vec4,
 }
 
 impl Default for SeBloom {
     fn default() -> Self {
-        Self { params: Vec4::new(0.5, 0.0, 65535.0, 50.0) }
+        Self {
+            params: Vec4::new(0.5, 0.0, 65535.0, 50.0),
+            flare_bright: Vec4::ZERO,
+            flare_blur: Vec4::new(1.0, 2.0, 3.5, 1.0),
+            flare_shape: Vec4::new(0.39, 5.0, 0.75, 2.2),
+            lens: Vec4::new(16.0 / 9.0, 0.0, 0.0, 0.0),
+            rays: Vec4::new(1.0, 0.0, 0.0, 1.0),
+        }
     }
 }
 
@@ -106,10 +166,12 @@ impl Plugin for SeBloomPlugin {
         app.init_resource::<BloomSettings>()
             .add_systems(Startup, init_backdrop)
             .add_systems(PostUpdate, (apply_settings, size_backdrop));
-        app.add_plugins((
+        app.init_resource::<LensTextures>().add_plugins((
             ExtractComponentPlugin::<SeBloom>::default(),
             UniformComponentPlugin::<SeBloom>::default(),
+            ExtractComponentPlugin::<FlareDraw>::default(),
             ExtractResourcePlugin::<GuiBackdrop>::default(),
+            ExtractResourcePlugin::<LensTextures>::default(),
         ));
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
@@ -123,12 +185,23 @@ impl Plugin for SeBloomPlugin {
 struct BloomPipelines {
     layout: BindGroupLayoutDescriptor,
     sampler: Sampler,
+    /// Trilinear, for the fractional levels the flares read.
+    sampler_mip: Sampler,
     down_first: CachedRenderPipelineId,
     down: CachedRenderPipelineId,
     blur_h: CachedRenderPipelineId,
     blur_v: CachedRenderPipelineId,
     combine: CachedRenderPipelineId,
     backdrop: CachedRenderPipelineId,
+    /// The combine with the pseudo lens flare: chain, sampler, uniform, dirt, rays, frame.
+    flares_layout: BindGroupLayoutDescriptor,
+    combine_flares: CachedRenderPipelineId,
+    /// Frame, chain, sampler, probe uniform.
+    probe_layout: BindGroupLayoutDescriptor,
+    probe: CachedRenderPipelineId,
+    /// Atlas, sampler, probe texture.
+    sprite_layout: BindGroupLayoutDescriptor,
+    sprite: CachedRenderPipelineId,
 }
 
 fn init_pipelines(
@@ -157,8 +230,37 @@ fn init_pipelines(
         address_mode_v: AddressMode::ClampToEdge,
         ..Default::default()
     });
+    let sampler_mip = render_device.create_sampler(&SamplerDescriptor {
+        min_filter: FilterMode::Linear,
+        mag_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Linear,
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+    let tex = || texture_2d(TextureSampleType::Float { filterable: true });
+    let flares_layout = BindGroupLayoutDescriptor::new(
+        "se_bloom_flares_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (tex(), binding_types::sampler(SamplerBindingType::Filtering), uniform_buffer::<SeBloom>(true), tex(), tex(), tex()),
+        ),
+    );
+    let probe_layout = BindGroupLayoutDescriptor::new(
+        "lens_flare_probe_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (tex(), tex(), binding_types::sampler(SamplerBindingType::Filtering), uniform_buffer::<ProbeUniform>(false)),
+        ),
+    );
+    let sprite_layout = BindGroupLayoutDescriptor::new(
+        "lens_flare_sprite_layout",
+        &BindGroupLayoutEntries::sequential(ShaderStages::FRAGMENT, (tex(), binding_types::sampler(SamplerBindingType::Filtering), tex())),
+    );
     let shader: Handle<Shader> = asset_server.load("shaders/se_bloom.wesl");
-    let queue = |entry: &'static str, format: TextureFormat, blend: Option<BlendState>| {
+    let flare_shader: Handle<Shader> = asset_server.load("shaders/lens_flare.wesl");
+    let probe_shader: Handle<Shader> = asset_server.load("shaders/lens_flare_probe.wesl");
+    let queue = |shader: &Handle<Shader>, layout: &BindGroupLayoutDescriptor, entry: &'static str, format: TextureFormat, blend: Option<BlendState>| {
         pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some(format!("se_bloom_{entry}").into()),
             layout: vec![layout.clone()],
@@ -176,24 +278,54 @@ fn init_pipelines(
         color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
         alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
     };
+    let sprite = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
+        label: Some("lens_flare_sprite".into()),
+        layout: vec![sprite_layout.clone()],
+        vertex: VertexState {
+            shader: flare_shader.clone(),
+            entry_point: Some("sprite_vertex".into()),
+            buffers: vec![VertexBufferLayout::from_vertex_formats(
+                VertexStepMode::Vertex,
+                [VertexFormat::Float32x2, VertexFormat::Float32x2, VertexFormat::Float32x4],
+            )],
+            ..default()
+        },
+        fragment: Some(FragmentState {
+            shader: flare_shader.clone(),
+            entry_point: Some("sprite_fragment".into()),
+            targets: vec![Some(ColorTargetState { format: HDR_FORMAT, blend: Some(add), write_mask: ColorWrites::ALL })],
+            ..default()
+        }),
+        ..default()
+    });
     let pipelines = BloomPipelines {
-        down_first: queue("down_first", FORMAT, None),
-        down: queue("down", FORMAT, None),
-        blur_h: queue("blur_h", FORMAT, None),
-        blur_v: queue("blur_v", FORMAT, None),
-        combine: queue("combine", HDR_FORMAT, Some(add)),
-        backdrop: queue("backdrop", BACKDROP_FORMAT, None),
+        down_first: queue(&shader, &layout, "down_first", FORMAT, None),
+        down: queue(&shader, &layout, "down", FORMAT, None),
+        blur_h: queue(&shader, &layout, "blur_h", FORMAT, None),
+        blur_v: queue(&shader, &layout, "blur_v", FORMAT, None),
+        combine: queue(&shader, &layout, "combine", HDR_FORMAT, Some(add)),
+        backdrop: queue(&shader, &layout, "backdrop", BACKDROP_FORMAT, None),
+        // Reads the frame and writes the other target: hdr_combine's per-channel dirt mix.
+        combine_flares: queue(&shader, &flares_layout, "combine_flares", HDR_FORMAT, None),
+        probe: queue(&probe_shader, &probe_layout, "probe", HDR_FORMAT, None),
+        sprite,
         layout,
+        flares_layout,
+        probe_layout,
+        sprite_layout,
         sampler,
+        sampler_mip,
     };
     commands.insert_resource(pipelines);
 }
 
-/// The bloom chain (`a`) and the horizontal-blur scratch chain (`b`) of a view.
+/// The bloom chain (`a`), the horizontal-blur scratch chain (`b`) and the lens flare probe (one
+/// texel per sun) of a view.
 #[derive(Component)]
 struct BloomTextures {
     a: CachedTexture,
     b: CachedTexture,
+    probe: CachedTexture,
     levels: u32,
 }
 
@@ -223,24 +355,46 @@ fn prepare_textures(
         };
         let a = cache.get(&device, desc("se_bloom_a"));
         let b = cache.get(&device, desc("se_bloom_b"));
-        commands.entity(entity).insert(BloomTextures { a, b, levels });
+        let probe = cache.get(
+            &device,
+            TextureDescriptor {
+                label: Some("lens_flare_probe"),
+                size: Extent3d { width: MAX_FLARE_SOURCES as u32, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+        );
+        commands.entity(entity).insert(BloomTextures { a, b, probe, levels });
     }
+}
+
+/// Little-endian bytes of a float slice (vertex data).
+fn f32_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn se_bloom(
-    view: ViewQuery<(&ExtractedCamera, &ViewTarget, &BloomTextures, &DynamicUniformIndex<SeBloom>, &SeBloom)>,
+    view: ViewQuery<(&ExtractedCamera, &ViewTarget, &BloomTextures, &DynamicUniformIndex<SeBloom>, &SeBloom, Option<&FlareDraw>)>,
     pipelines: Res<BloomPipelines>,
     pipeline_cache: Res<PipelineCache>,
     uniforms: Res<ComponentUniforms<SeBloom>>,
     backdrop: Option<Res<GuiBackdrop>>,
+    lens: Option<Res<LensTextures>>,
+    fallback: Res<FallbackImage>,
     gpu_images: Res<RenderAssets<GpuImage>>,
     mut ctx: RenderContext,
 ) {
-    let (camera, target, tex, index, settings) = view.into_inner();
+    let (camera, target, tex, index, settings, flares) = view.into_inner();
     let backdrop = backdrop.and_then(|b| gpu_images.get(&b.image));
     let bloom = settings.params.x > 0.0;
-    if !(bloom || backdrop.is_some()) || !camera.hdr || target.main_texture_format() != HDR_FORMAT {
+    let pseudo = settings.flare_bright.w > 0.0;
+    let flares = flares.filter(|f| f.count > 0 && f.batches.iter().any(|b| !b.1.is_empty()));
+    if !(bloom || pseudo || flares.is_some() || backdrop.is_some()) || !camera.hdr || target.main_texture_format() != HDR_FORMAT {
         return;
     }
     let (Some(binding), Some(down_first), Some(down), Some(blur_h), Some(blur_v), Some(combine), Some(backdrop_pipe)) = (
@@ -254,6 +408,9 @@ fn se_bloom(
     ) else {
         return;
     };
+    let combine_flares = pipeline_cache.get_render_pipeline(pipelines.combine_flares);
+    let probe_pipe = pipeline_cache.get_render_pipeline(pipelines.probe);
+    let sprite_pipe = pipeline_cache.get_render_pipeline(pipelines.sprite);
     let layout = pipeline_cache.get_bind_group_layout(&pipelines.layout);
     let device = ctx.render_device().clone();
     let group = |src: &TextureView| {
@@ -298,8 +455,115 @@ fn se_bloom(
     if let Some(gpu) = backdrop {
         pass(&gpu.texture_view, backdrop_pipe, &a[BACKDROP_LEVEL.min(a.len() - 1)]);
     }
-    // 3. Added to the frame.
-    if bloom {
+    // Lens flares: the frame and the chain at each sun, then the sprites scaled by it (SE draws them
+    // after the bloom textures are made, so they are not bloomed themselves).
+    if let (Some(fd), Some(probe_pipe), Some(sprite_pipe)) = (flares, probe_pipe, sprite_pipe) {
+        let probe_view = tex.probe.texture.create_view(&TextureViewDescriptor::default());
+        let u = ProbeUniform { sources: fd.sources, params: Vec4::new(fd.frame_limit, 0.0, 0.0, 0.0) };
+        let mut ub = encase::UniformBuffer::new(Vec::<u8>::new());
+        if ub.write(&u).is_ok() {
+            let buffer = device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("lens_flare_probe_uniform"),
+                contents: &ub.into_inner(),
+                usage: BufferUsages::UNIFORM,
+            });
+            let layout = pipeline_cache.get_bind_group_layout(&pipelines.probe_layout);
+            let bind = device.create_bind_group(
+                "lens_flare_probe_group",
+                &layout,
+                &BindGroupEntries::sequential((&scene, &full_a, &pipelines.sampler_mip, buffer.as_entire_binding())),
+            );
+            let mut p = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("lens_flare_probe"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &probe_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations::default(),
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(probe_pipe);
+            p.set_bind_group(0, &bind, &[]);
+            p.draw(0..3, 0..1);
+        }
+        let layout = pipeline_cache.get_bind_group_layout(&pipelines.sprite_layout);
+        let draws: Vec<(BindGroup, Buffer, u32)> = fd
+            .batches
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .filter_map(|(atlas, v)| {
+                let atlas = gpu_images.get(*atlas)?;
+                let bind = device.create_bind_group(
+                    "lens_flare_sprite_group",
+                    &layout,
+                    &BindGroupEntries::sequential((&atlas.texture_view, &pipelines.sampler, &probe_view)),
+                );
+                let buffer = device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: Some("lens_flare_sprites"),
+                    contents: &f32_bytes(v),
+                    usage: BufferUsages::VERTEX,
+                });
+                Some((bind, buffer, (v.len() / FLARE_VERTEX_FLOATS) as u32))
+            })
+            .collect();
+        if !draws.is_empty() {
+            let mut p = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("lens_flare_sprites"),
+                color_attachments: &[Some(target.get_unsampled_color_attachment())],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(sprite_pipe);
+            for (bind, buffer, n) in &draws {
+                p.set_bind_group(0, bind, &[]);
+                p.set_vertex_buffer(0, *buffer.slice(..));
+                p.draw(0..*n, 0..1);
+            }
+        }
+    }
+    // 3. Added to the frame: with the pseudo lens flare, the frame is read and the result written to
+    // the other target (SE mixes the frame plus bloom towards the dirt mask per channel); otherwise
+    // the bloom is blended on.
+    if let Some(flare_combine) = combine_flares.filter(|_| pseudo) {
+        let layout = pipeline_cache.get_bind_group_layout(&pipelines.flares_layout);
+        let image = |id: Option<AssetId<Image>>| id.and_then(|i| gpu_images.get(i)).unwrap_or(&fallback.d2);
+        let (dirt, rays) = lens.as_deref().map(|l| (l.dirt, l.rays)).unwrap_or_default();
+        let post = target.post_process_write();
+        let bind = device.create_bind_group(
+            "se_bloom_flares_group",
+            &layout,
+            &BindGroupEntries::sequential((
+                &full_a,
+                &pipelines.sampler_mip,
+                binding.clone(),
+                &image(dirt).texture_view,
+                &image(rays).texture_view,
+                post.source,
+            )),
+        );
+        let mut p = encoder.begin_render_pass(&RenderPassDescriptor {
+            label: Some("se_bloom_combine_flares"),
+            color_attachments: &[Some(RenderPassColorAttachment {
+                view: post.destination,
+                depth_slice: None,
+                resolve_target: None,
+                ops: Operations::default(),
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        p.set_pipeline(flare_combine);
+        p.set_bind_group(0, &bind, &[index.index()]);
+        p.draw(0..3, 0..1);
+    } else if bloom {
         let bind = group(&full_a);
         let mut p = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("se_bloom_combine"),

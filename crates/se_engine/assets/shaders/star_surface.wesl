@@ -9,7 +9,8 @@ import bevy_pbr::render::mesh_functions::get_world_from_local;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 
 struct StarSurface {
-    // rgb the star's colour at its Teff, w HDR intensity
+    // rgb SE's surface brightness (Planck table x hdrStarSurfaceBright x FUN_1404c4090's gain) at the
+    // disc centre's mean temperature, w 1
     color: vec4<f32>,
     // x Teff (K), y SE's limb darkening amount (SurfParams1.y), z SE's spotTemp (relative), w unused
     temp: vec4<f32>,
@@ -329,8 +330,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     tk *= mix(0.86, 1.1, mix(1.0, mu, star.temp.y));
     tk = max(tk, 100.0);
     // A blackbody at tk at 610 / 550 / 465 nm (SE samples its Planck texture), relative to the disc
-    // centre's mean temperature, where the star's colour and the port's photosphere brightness
-    // apply (SE's Planck table scale times hdrStarSurfaceBright is not decoded).
+    // centre's mean temperature, where system.rs evaluates SE's brightness chain.
     let tc = ts * 1.1 * mix(star.gran2.y, star.gran2.z, GRAN_MEAN);
     let c = vec3<f32>(23587.0, 26160.0, 30942.0);
     let ratio = exp(c * (1.0 / tc - 1.0 / tk)) * (1.0 - exp(-c / tc)) / (1.0 - exp(-c / tk));
