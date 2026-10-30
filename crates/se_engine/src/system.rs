@@ -927,7 +927,7 @@ fn update_bodies(
 /// SE's colour of a star's light on its planets (FUN_1404d6970): the star's colour, brightest channel
 /// 1, pulled towards its luma by the illumination saturation: `SunIllumSaturation`, or with
 /// `IllumSaturationAuto` [`auto_illum_saturation`] of the star's temperature.
-fn illum_color(c: Vec3, teff: f32, s: &StarSettings) -> Vec3 {
+pub(crate) fn illum_color(c: Vec3, teff: f32, s: &StarSettings) -> Vec3 {
     let c = c / c.max_element().max(1e-3);
     let sat = if s.illum_saturation_auto { auto_illum_saturation(teff) } else { s.illum_saturation };
     let luma = Vec3::splat((0.299 * c.x * c.x + 0.587 * c.y * c.y + 0.114 * c.z * c.z).sqrt());
@@ -1312,7 +1312,7 @@ fn update_sprites(
 /// SE's star sprite modulation (`star_sprite.glsl` MODULATE): the glare is drawn over the bodies and
 /// skies, scaled by the part of the star's disc no body hides and coloured by the atmospheres the
 /// line of sight crosses (a star behind a planet's limb is hidden whole, not cut by the planet).
-fn sun_sprite_tint(star: &SystemBody, cam: UPos, occluders: &Query<(&SystemBody, Option<&crate::terrain::Terrain>)>) -> Vec3 {
+pub(crate) fn sun_sprite_tint(star: &SystemBody, cam: UPos, occluders: &Query<(&SystemBody, Option<&crate::terrain::Terrain>)>) -> Vec3 {
     let rel = star.pos.delta_m(cam);
     let dist = rel.length();
     if dist <= star.radius_m {

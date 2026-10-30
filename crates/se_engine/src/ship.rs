@@ -963,9 +963,9 @@ fn finish_ship_loading(
             let emissive = g.emissive.map(|i| images.add(i)).unwrap_or_else(|| black.clone());
             let mat = hull_mats.add(ShipSurfaceMaterial {
                 u: ShipUniform {
-                    sun_dir: Vec4::new(0.0, 1.0, 0.0, 1.0),
-                    sun_color: Vec4::ONE,
-                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.07),
+                    light_dir: [Vec4::new(0.0, 1.0, 0.0, 1.0), Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+                    light_color: [Vec4::ONE, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
+                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.0),
                     emis: Vec4::new(g.emis[0], g.emis[1], g.emis[2], g.cutoff),
                 },
                 diffuse,
@@ -1639,35 +1639,41 @@ fn update_ship_visuals(
     time: Res<Time>,
     data: Res<SeData>,
     flight: Res<Flight>,
+    fade: Res<crate::system::LightingFade>,
+    ambient: Res<crate::system::AmbientLighting>,
+    star_settings: Res<crate::stars::StarSettings>,
     ships: Query<(&Ship, &UPosition, &UOrientation, &ShipVisuals)>,
-    bodies: Query<&SystemBody>,
+    bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
     mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
     mut tfs: Query<(&mut Transform, &mut Visibility)>,
 ) {
     let cat = &data.catalog;
     for (ship, pos, _rot, vis) in &ships {
-        // Brightest star of the system by irradiance.
-        let mut best: Option<(f64, DVec3, Vec3)> = None;
-        for b in bodies.iter().filter(|b| b.star) {
+        // SE lights a ship like a body (FUN_1404bf5c0, called for ships with kind 7 from
+        // FUN_1401f2b10): its up to MAX_LIGHTS stars of the most flux, faded and normalised to the
+        // brightest, each dimmed by the bodies eclipsing it (ship.glsl ECL).
+        let mut stars: Vec<(f64, &SystemBody, Vec3)> = Vec::new();
+        for (b, _) in bodies.iter().filter(|b| b.0.star) {
             let ObjectRef::Star(i) = b.obj else { continue };
             let s = &cat.stars[i as usize];
-            let to = b.pos.delta_m(pos.0);
-            let d = to.length().max(1.0);
+            let d = b.pos.delta_m(pos.0).length().max(1.0);
             let flux = se_core::star::lum_from_abs_mag(s.abs_mag) / (d / METERS_PER_AU).powi(2);
-            if best.is_none_or(|(bf, _, _)| flux > bf) {
-                let c = crate::stars::star_render_color(s.class.kind, s.teff);
-                best = Some((flux, to / d, Vec3::from_array(c)));
-            }
+            let c = Vec3::from_array(crate::stars::star_render_color(s.class.kind, s.teff));
+            stars.push((flux, b, crate::system::illum_color(c, s.teff as f32, &star_settings)));
         }
-        let (dir, color, intensity) = match best {
-            Some((flux, d, c)) => (d.as_vec3(), c, (flux.powf(0.15) as f32).clamp(0.3, 6.0)),
-            None => (Vec3::Y, Vec3::ONE, 0.3),
-        };
+        stars.sort_by(|a, b| b.0.total_cmp(&a.0));
+        stars.truncate(4);
+        let k = fade.planet_intensities(&stars.iter().map(|s| (s.0, true)).collect::<Vec<_>>());
+        let (mut dirs, mut colors) = ([Vec4::ZERO; 4], [Vec4::ZERO; 4]);
+        for (i, ((_, b, c), k)) in stars.iter().zip(&k).enumerate() {
+            let shadow = crate::system::sun_sprite_tint(b, pos.0, &bodies);
+            dirs[i] = b.pos.delta_m(pos.0).normalize_or(DVec3::Y).as_vec3().extend(1.0);
+            colors[i] = (*c * *k * shadow).extend(1.0);
+        }
         for h in &vis.hull {
             if let Some(mut m) = hull_mats.get_mut(h) {
-                m.u.sun_dir = dir.extend(intensity);
-                m.u.sun_color = color.extend(1.0);
+                (m.u.light_dir, m.u.light_color, m.u.tint.w) = (dirs, colors, ambient.0);
             }
         }
 
