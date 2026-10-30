@@ -37,7 +37,7 @@ use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
     ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
-    ModelParams, SpriteAtlas, SpriteBuffers, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
+    ModelParams, SORT_PX, SpriteAtlas, SpriteBuffers, SpriteOrder, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
     se_bright_term, se_glow_bright, setup_galaxies, sprite_vertex, update_galaxies,
 };
 
@@ -63,7 +63,7 @@ pub struct NebulaSettings {
     pub enabled: bool,
     /// Far-sprite brightness; the 3D model is calibrated to the same mean surface brightness.
     pub brightness: f32,
-    /// Multiplier on SE's model emission; defaults to `galaxies::MODEL_EXPOSURE`.
+    /// Extra multiplier on SE's model emission; 1 = SE.
     pub model_brightness: f32,
     /// Multiplier on SE's dust strength (absBright = the model's `Transparency`); 1 = SE.
     pub dust_strength: f32,
@@ -87,7 +87,7 @@ impl Default for NebulaSettings {
         let mut s = Self {
             enabled: true,
             brightness: 0.8,
-            model_brightness: crate::galaxies::MODEL_EXPOSURE,
+            model_brightness: 1.0,
             dust_strength: 1.0,
             build_px: 4.0,
             max_models: 4,
@@ -113,8 +113,7 @@ impl Default for NebulaSettings {
 }
 
 struct BuiltNebula {
-    em: SpriteBuffers,
-    dust: SpriteBuffers,
+    buf: SpriteBuffers,
     sprites: usize,
 }
 
@@ -177,8 +176,8 @@ fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
     let data = generate(&vfs, &textures, &def)?;
     let ms = def.model_scale();
     let scale = DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc;
-    let mut em = SpriteBuffers::default();
-    let mut dust = SpriteBuffers::default();
+    // Emission and dust in generation order, one mesh (sorted per view by `SpriteOrder`).
+    let mut buf = SpriteBuffers::default();
     for s in &data.sprites {
         let local = DVec3::new(s.pos[0] as f64, s.pos[1] as f64, s.pos[2] as f64) * scale;
         let off = orientation * local;
@@ -186,14 +185,9 @@ fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
         let layer = s.layer();
         let info = [size_pc as f32, s.atlas_tile() as f32, s.lod_rand as f32 / 255.0, layer as u8 as f32];
         let pos = [off.x as f32, off.y as f32, off.z as f32];
-        let d = sprite_vertex(s.color, s.brightness);
-        if layer == SpriteLayer::Absorption {
-            dust.push(pos, d, info);
-        } else {
-            em.push(pos, d, info);
-        }
+        buf.push(pos, sprite_vertex(s.color, s.brightness), info);
     }
-    Some(BuiltNebula { sprites: data.sprites.len(), em, dust })
+    Some(BuiltNebula { sprites: data.sprites.len(), buf })
 }
 
 enum SlotState {
@@ -203,8 +197,9 @@ enum SlotState {
 }
 
 struct Ready {
-    entities: [Entity; 2],
-    mats: [Handle<GalaxyModelMaterial>; 2],
+    entity: Entity,
+    mat: Handle<GalaxyModelMaterial>,
+    order: SpriteOrder,
 }
 
 struct Slot {
@@ -518,9 +513,7 @@ fn spawn_build(st: &mut NebulaState, vfs: &Arc<Vfs>, rec: &NebulaRecord, n: usiz
 
 fn despawn_slot(commands: &mut Commands, slot: Slot) {
     if let SlotState::Ready(r) = slot.state {
-        for e in r.entities {
-            commands.entity(e).despawn();
-        }
+        commands.entity(r.entity).despawn();
     }
 }
 
@@ -636,28 +629,17 @@ pub(crate) fn update_nebulae(
             continue;
         };
         info!("nebula model {}: {} sprites", cat.nebulae[slot.nebula].names[0], built.sprites);
-        let mut mk = |buf: SpriteBuffers, dust: bool| {
-            let mat = model_mats.add(GalaxyModelMaterial {
-                uniforms: ModelParams {
-                    center_rel: Vec4::ZERO,
-                    params: Vec4::new(1.0, 2.0, 0.0, 0.0),
-                    params2: Vec4::new(if dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
-                },
-                atlas: st.atlas.handle.clone(),
-                dust,
-            });
-            (mat, meshes.add(buf.into_mesh()))
-        };
-        let (m_em, mesh_em) = mk(built.em, false);
-        let (m_du, mesh_du) = mk(built.dust, true);
-        let mut spawn = |mesh: Handle<Mesh>, mat: &Handle<GalaxyModelMaterial>| {
-            commands
-                .spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
-                .id()
-        };
-        let e0 = spawn(mesh_em, &m_em);
-        let e1 = spawn(mesh_du, &m_du);
-        slot.state = SlotState::Ready(Ready { entities: [e0, e1], mats: [m_em, m_du] });
+        let mat = model_mats.add(GalaxyModelMaterial {
+            uniforms: ModelParams { center_rel: Vec4::ZERO, params: Vec4::new(1.0, 2.0, 0.0, 0.0), params2: Vec4::ZERO },
+            atlas: st.atlas.handle.clone(),
+        });
+        let centres = built.buf.centres();
+        let mesh = meshes.add(built.buf.into_mesh());
+        let entity = commands
+            .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
+            .id();
+        // SE sorts nebula models too (FUN_1402b3020 -> FUN_140334b10, FUN_140334e90).
+        slot.state = SlotState::Ready(Ready { entity, mat, order: SpriteOrder::new(centres, mesh) });
     }
     st.slots.retain(|s| !matches!(s.state, SlotState::Failed));
     let mut i = 0;
@@ -675,8 +657,8 @@ pub(crate) fn update_nebulae(
     let gs = nebula_far_settings(&settings);
     let mut far_u = far_uniforms(cam_pc.as_vec3(), &gs);
     let mut n_res = 0;
-    for slot in &st.slots {
-        let SlotState::Ready(ready) = &slot.state else { continue };
+    for slot in st.slots.iter_mut() {
+        let SlotState::Ready(ready) = &mut slot.state else { continue };
         let rec = &cat.nebulae[slot.nebula];
         let def = &st.models.models()[st.model_of[slot.nebula].unwrap()];
         let d = (rec.pos_pc - cam_pc).length();
@@ -691,15 +673,14 @@ pub(crate) fn update_nebulae(
         let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright);
         let k_em = glow * def.brightness * settings.model_brightness * b;
         let k_dust = settings.dust_strength * def.transparency * b;
-        for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
-            if let Some(mut m) = model_mats.get_mut(mat) {
-                m.uniforms.center_rel = center_rel;
-                m.uniforms.params = Vec4::new(k_em, 2.0, if dust { k_dust } else { 0.0 }, 0.0);
-            }
-            if let Ok(mut v) = vis.get_mut(*e) {
-                *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
-            }
+        if let Some(mut m) = model_mats.get_mut(&ready.mat) {
+            m.uniforms.center_rel = center_rel;
+            m.uniforms.params = Vec4::new(k_em, 2.0, k_dust, 0.0);
         }
+        if let Ok(mut v) = vis.get_mut(ready.entity) {
+            *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+        }
+        ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
         if n_res < 8 && fade > 0.0 {
             far_u.resident[n_res] = Vec4::new(slot.nebula as f32, fade, 0.0, 0.0);
             n_res += 1;

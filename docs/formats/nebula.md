@@ -142,15 +142,13 @@ which is what the stored values describe.
   for all nebulae in two background tasks at start-up (brightest first); until then a type colour is used.
   The stored `sumColor` is **not** usable for this (it disagrees with the generated colour for most models).
 * **Near volume**: when the angular radius exceeds `build_px` (4 px) the model is built on the async pool
-  (at most 4 resident, least recently wanted evicted) and drawn with `galaxy_model.wesl`: emission as
-  `AlphaMode::Add` (premultiplied, alpha 0) and dust with SE's `ONE, ONE_MINUS_SRC_ALPHA` blend
-  (`AlphaMode::Premultiplied`, output `(-dust colour * emBright, Transparency) * coverage`, see galaxy_model.md
-  section 11). Sprite colour and intensity are clamped to 0..1 like SE's vertex bytes. The far sprite cross-fades
+  (at most 4 resident, least recently wanted evicted) and drawn with `galaxy_model.wesl`: emission and dust in
+  one mesh sorted far to near (FUN_1402b3020 -> FUN_140334b10 / FUN_140334e90), SE's `ONE, ONE_MINUS_SRC_ALPHA`
+  blend (dust outputs `(-dust colour * emBright, Transparency) * coverage`, see galaxy_model.md section 11). Sprite colour and intensity are clamped to 0..1 like SE's vertex bytes. The far sprite cross-fades
   out through `model_fade`. Brightness follows SE's nebula draw (FUN_1402b3020): `emBright = GlowBrightMin *
   exp((GlowMagnLimit + 0.2) / 1.0587) * hdrNebulaSpriteBright * Brightness * b`, `absBright = Transparency * b`,
-  `b = clamp(NebulaBrightMin * exp((NebulaMagnLimit - m) / 1.0587) - NebulaBrightMin, 0, 1)` (m apparent), times
-  the galaxies' free factor `MODEL_EXPOSURE` (`SE_NEB_MODEL`), see galaxy_model.md section 11.
-* **Ordering and daylight**: draw order far < emission < dust, all with a huge positive `depth_bias` and a
+  `b = clamp(NebulaBrightMin * exp((NebulaMagnLimit - m) / 1.0587) - NebulaBrightMin, 0, 1)` (m apparent).
+* **Ordering and daylight**: draw order far sprites < model sprites, all with a huge positive `depth_bias` and a
   symmetric padded AABB (see galaxy_model.md section 11) so the atmosphere sky shell cannot erase them; they
   fade with the shared `SkyFade` resource written by the galaxy renderer.
 * Defaults: far brightness 0.8, model brightness 1.0, dust 1 (= SE). The reference magnitude is SE's

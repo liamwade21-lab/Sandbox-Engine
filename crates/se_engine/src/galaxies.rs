@@ -185,7 +185,7 @@ impl Material for GalaxyPlaneMaterial {
     }
 }
 
-/// Material for the sprites of one 3D galaxy model (emission or dust layer).
+/// Material for the sprites of one 3D galaxy or nebula model (emission, dust and bulge in one mesh).
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct GalaxyModelMaterial {
     #[uniform(0)]
@@ -193,7 +193,6 @@ pub struct GalaxyModelMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub atlas: Handle<Image>,
-    pub dust: bool,
 }
 
 impl Material for GalaxyModelMaterial {
@@ -204,10 +203,10 @@ impl Material for GalaxyModelMaterial {
         "shaders/galaxy_model.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
-        // SE draws both layers with glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA) (FUN_14029bdf0): Bevy's
-        // Premultiplied. Emission returns alpha 0 (purely additive, kept on Add); dust returns
-        // (-colour, absBright), which darkens and subtracts its colour.
-        if self.dust { AlphaMode::Premultiplied } else { AlphaMode::Add }
+        // SE draws all layers in one call with glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA) (FUN_14029bdf0,
+        // FUN_140334e90): Bevy's Premultiplied. Emission and bulge return alpha 0 (additive); dust returns
+        // (-colour, absBright), which darkens what was drawn before it and subtracts its colour.
+        AlphaMode::Premultiplied
     }
     fn depth_bias(&self) -> f32 {
         // Transparent items sort by the view-space depth of their mesh AABB centre plus this bias; our
@@ -215,8 +214,8 @@ impl Material for GalaxyModelMaterial {
         // before everything else transparent but the stars: an atmosphere's sky shell, drawn over
         // them, lets them through by its transmittance and hides them in a bright sky (`sky.wesl`).
         // Depth testing against the opaque bodies still hides the galaxy behind them. Order: far
-        // sprites, model emission, dust.
-        if self.dust { -2.0e15 } else { -3.0e15 }
+        // sprites, model sprites (sorted far to near inside the mesh, see `SpriteOrder`), front texture.
+        -3.0e15
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -247,7 +246,7 @@ pub struct GalaxySettings {
     pub enabled: bool,
     /// Global brightness of far sprites; 3D models are calibrated to the same surface brightness.
     pub far_brightness: f32,
-    /// Multiplier on SE's model emission ([`se_glow_bright`]); defaults to [`MODEL_EXPOSURE`].
+    /// Extra multiplier on SE's model emission ([`se_glow_bright`]); 1 = SE.
     pub model_brightness: f32,
     /// SE's model brightness chain (main-def.cfg): `GlowMagnLimit` (follows the `]` / `[` keys),
     /// `GlowBrightMin`, `hdrGalaxySpriteBright` and `GalaxyFrontTexBright`.
@@ -281,7 +280,7 @@ impl Default for GalaxySettings {
         Self {
             enabled: true,
             far_brightness: 1.5,
-            model_brightness: MODEL_EXPOSURE,
+            model_brightness: 1.0,
             glow_mag_limit: 7.0,
             glow_bright_min: 0.006,
             sprite_bright: 0.03,
@@ -428,12 +427,18 @@ impl SpriteBuffers {
         self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
+    /// Each sprite's centre (one per quad).
+    pub(crate) fn centres(&self) -> Vec<[f32; 3]> {
+        self.positions.iter().step_by(4).copied().collect()
+    }
+
+    /// The mesh keeps its main-world copy: `SpriteOrder` swaps its index buffer.
     pub(crate) fn into_mesh(mut self) -> Mesh {
         pad_aabb(&mut self.positions);
         self.data.extend([[0.0; 4]; 2]);
         self.info.extend([[0.0; 4]; 2]);
         self.corners.extend([[0.0; 2]; 2]);
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
             .with_inserted_attribute(ATTR_MODEL_DATA, self.data)
             .with_inserted_attribute(ATTR_MODEL_INFO, self.info)
@@ -443,8 +448,8 @@ impl SpriteBuffers {
 }
 
 struct BuiltModel {
-    em: SpriteBuffers,
-    dust: SpriteBuffers,
+    /// Emission, dust and bulge sprites in generation order (SE's VBO order before sorting).
+    buf: SpriteBuffers,
     map: Option<DensityMap>,
     sprites: usize,
     plane: Option<FrontPlane>,
@@ -514,8 +519,7 @@ fn build_model(inp: BuildInput) -> Option<BuiltModel> {
     // scale by Radius * SpriteOblZ, convert to the port frame (disk normal -Z), rotate.
     let ms = def.model_scale();
     let scale = DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc;
-    let mut em = SpriteBuffers::default();
-    let mut dust = SpriteBuffers::default();
+    let mut buf = SpriteBuffers::default();
     for s in &data.sprites {
         let local = DVec3::new(s.pos[0] as f64, s.pos[1] as f64, s.pos[2] as f64) * scale;
         let off = orientation * se_to_port(map_mode, local);
@@ -524,24 +528,16 @@ fn build_model(inp: BuildInput) -> Option<BuiltModel> {
         let info = [size_pc as f32, s.atlas_tile() as f32, s.lod_rand as f32 / 255.0, layer as u8 as f32];
         let pos = [off.x as f32, off.y as f32, off.z as f32];
         let mut d = sprite_vertex(s.color, s.brightness);
-        match layer {
-            SpriteLayer::Emission => em.push(pos, d, info),
-            SpriteLayer::Absorption => dust.push(pos, d, info),
-            // SE's VBO holds em, abs, bulge in generation order, bucketed into BBoxRes^3 cells by
-            // SortVertexesToTree (FUN_140332910); the cell draw order was not traced. Drawing the bulge after
-            // all dust hid the dust lane across the centre from the Sun, so the bulge stays with the emission
-            // and all dust is drawn over it. `SE_GAL_BULGE` scales it for comparisons (1 = SE).
-            SpriteLayer::Bulge => {
-                d[3] *= bulge_gain;
-                em.push(pos, d, info);
-            }
+        // `SE_GAL_BULGE` scales the bulge for comparisons (1 = SE).
+        if layer == SpriteLayer::Bulge {
+            d[3] *= bulge_gain;
         }
+        buf.push(pos, d, info);
     }
     let plane = tex.front_texture.as_deref().and_then(|name| front_plane(&vfs, name));
     Some(BuiltModel {
         sprites: data.sprites.len(),
-        em,
-        dust,
+        buf,
         map: data.emission_map,
         plane,
     })
@@ -554,13 +550,66 @@ pub(crate) fn sprite_vertex(color: [f32; 3], intensity: f32) -> [f32; 4] {
     [c[0], c[1], c[2], intensity.clamp(0.0, 1.0)]
 }
 
-/// The one free factor on SE's sprite-model brightness chain (galaxies and nebulae): it stands for the
-/// parts that were not decoded (the per-frame multipliers at renderer +0x35ac / +0x35b8 and galaxy +0xa4,
-/// the BBoxRes cell draw order, SE's HDR exposure and tone curve against the port's AgX). Chosen so the
-/// view from the Sun toward Sgr A* (FOV 45 and 10) keeps the band unsaturated with brown dust lanes, as
-/// before the port of the chain; at 1 the bulge behind the lane went orange/red. `SE_GAL_MODEL` /
-/// `SE_NEB_MODEL` override it.
-pub(crate) const MODEL_EXPOSURE: f32 = 0.5;
+/// Back-to-front draw order of a sprite model: triangle indices of the quads sorted by the squared
+/// distance of their centres from `eye`, farthest first (SE: FUN_140333a30 with the descending quicksort
+/// FUN_140334190; one draw for emission, dust and bulge, FUN_140334e90).
+pub(crate) fn back_to_front(centres: &[[f32; 3]], eye: [f32; 3]) -> Vec<u32> {
+    let mut order: Vec<(f32, u32)> = centres
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let d = [c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2], i as u32)
+        })
+        .collect();
+    order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
+    let mut idx = Vec::with_capacity(order.len() * 6);
+    for (_, i) in order {
+        let b = i * 4;
+        idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+    idx
+}
+
+/// SE sorts a galaxy model when it is larger than this (radius, px; the flag set around 0x14029bfe9).
+pub(crate) const SORT_PX: f64 = 10.0;
+
+/// The draw order of one resident sprite model. SE rebuilds it per view; the port re-sorts on the async
+/// pool when the camera has moved by more than 2% of its distance to the model centre, and swaps the
+/// index buffer in when the job is done (one upload per re-sort, none per frame).
+pub(crate) struct SpriteOrder {
+    centres: Arc<Vec<[f32; 3]>>,
+    mesh: Handle<Mesh>,
+    sorted_eye: Option<Vec3>,
+    task: Option<(Vec3, Task<Vec<u32>>)>,
+}
+
+impl SpriteOrder {
+    pub(crate) fn new(centres: Vec<[f32; 3]>, mesh: Handle<Mesh>) -> Self {
+        Self { centres: Arc::new(centres), mesh, sorted_eye: None, task: None }
+    }
+
+    /// `eye`: the camera relative to the model centre (pc, universe frame); `sort`: the model is drawn
+    /// large enough for SE to sort it.
+    pub(crate) fn update(&mut self, eye: Vec3, sort: bool, meshes: &mut Assets<Mesh>) {
+        if let Some((at, task)) = self.task.as_mut() {
+            if let Some(idx) = check_ready(task) {
+                if let Some(mut m) = meshes.get_mut(&self.mesh) {
+                    m.insert_indices(Indices::U32(idx));
+                }
+                self.sorted_eye = Some(*at);
+                self.task = None;
+            }
+            return;
+        }
+        let moved = self.sorted_eye.map_or(f32::INFINITY, |p| p.distance(eye));
+        if !sort || moved <= 0.02 * eye.length() {
+            return;
+        }
+        let (centres, e) = (self.centres.clone(), eye.to_array());
+        self.task = Some((eye, AsyncComputeTaskPool::get().spawn(async move { back_to_front(&centres, e) })));
+    }
+}
 
 /// SE's magnitude-limit coefficient (FUN_1404c4610): a limit `m` is `exp((m + 0.2) / 1.0587)`
 /// (DAT_1406d4204 = 0.2, DAT_1406d46a8 = 1.0587362).
@@ -744,8 +793,9 @@ enum SlotState {
 }
 
 struct ReadyModel {
-    entities: [Entity; 2],
-    mats: [Handle<GalaxyModelMaterial>; 2],
+    entity: Entity,
+    mat: Handle<GalaxyModelMaterial>,
+    order: SpriteOrder,
     /// The front texture's disc: entity, material.
     plane: Option<(Entity, Handle<GalaxyPlaneMaterial>)>,
     sprites: usize,
@@ -1304,35 +1354,26 @@ pub(crate) fn update_galaxies(
                 density.sun_value = density.relative_emission(m);
             }
         }
-        let mk = |buf: SpriteBuffers, dust: bool, mats: &mut Assets<GalaxyModelMaterial>, meshes: &mut Assets<Mesh>| {
-            let mat = mats.add(GalaxyModelMaterial {
-                uniforms: ModelParams {
-                    center_rel: Vec4::ZERO,
-                    params: Vec4::new(1.0, MODEL_MIN_PX, 0.0, 0.0),
-                    params2: Vec4::new(if dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
-                },
-                atlas: st.atlas.clone(),
-                dust,
-            });
-            let mesh = meshes.add(buf.into_mesh());
-            (mat, mesh)
-        };
-        let (m_em, mesh_em) = mk(built.em, false, &mut model_mats, &mut meshes);
-        let (m_du, mesh_du) = mk(built.dust, true, &mut model_mats, &mut meshes);
-        let spawn = |commands: &mut Commands, mesh: Handle<Mesh>, mat: &Handle<GalaxyModelMaterial>| {
-            commands
-                .spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::IDENTITY,
-                    Visibility::Hidden,
-                    NoFrustumCulling,
-                    GalaxyEntity,
-                ))
-                .id()
-        };
-        let e0 = spawn(&mut commands, mesh_em, &m_em);
-        let e1 = spawn(&mut commands, mesh_du, &m_du);
+        let mat = model_mats.add(GalaxyModelMaterial {
+            uniforms: ModelParams {
+                center_rel: Vec4::ZERO,
+                params: Vec4::new(1.0, MODEL_MIN_PX, 0.0, 0.0),
+                params2: Vec4::ZERO,
+            },
+            atlas: st.atlas.clone(),
+        });
+        let centres = built.buf.centres();
+        let mesh = meshes.add(built.buf.into_mesh());
+        let entity = commands
+            .spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(mat.clone()),
+                Transform::IDENTITY,
+                Visibility::Hidden,
+                NoFrustumCulling,
+                GalaxyEntity,
+            ))
+            .id();
         let plane = built.plane.map(|fp| {
             let mat = plane_mats.add(GalaxyPlaneMaterial {
                 uniforms: PlaneParams { center_rel: Vec4::ZERO, axis_x: Vec4::ZERO, axis_y: Vec4::ZERO, params: Vec4::ZERO },
@@ -1351,8 +1392,9 @@ pub(crate) fn update_galaxies(
             (e, mat)
         });
         slot.state = SlotState::Ready(ReadyModel {
-            entities: [e0, e1],
-            mats: [m_em, m_du],
+            entity,
+            mat,
+            order: SpriteOrder::new(centres, mesh),
             plane,
             sprites: built.sprites,
             map,
@@ -1383,8 +1425,8 @@ pub(crate) fn update_galaxies(
     far_u.params2.z = gain;
     far_u.params2.w = VISION_CAP;
     let mut n_res = 0;
-    for slot in &st.slots {
-        let SlotState::Ready(ready) = &slot.state else { continue };
+    for slot in st.slots.iter_mut() {
+        let SlotState::Ready(ready) = &mut slot.state else { continue };
         let rec = &cat.galaxies[slot.galaxy];
         let def = &st.models.models()[st.model_of[slot.galaxy].unwrap()];
         let d = (rec.pos_pc - cam_pc).length();
@@ -1393,26 +1435,29 @@ pub(crate) fn update_galaxies(
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
 
         // SE's brightness chain (FUN_14029bdf0 / FUN_140299fe0): emBright = se_glow_bright x model
-        // Brightness x the galaxy's +0x74 (catalog ModelBright) x fades (p3 = 1 - px 1e-7 and the
-        // per-frame multipliers at renderer +0x35ac / +0x35b8 / galaxy +0xa4 are 1 in a plain view);
-        // absBright = Transparency x p1 (fade-in x bright_term, both 1 for a resolved galaxy brighter
-        // than the limit). The model fade `center_rel.w` stands in for the fade-in.
+        // Brightness x the galaxy's +0x74 (catalog ModelBright) x p3 (1 - px 1e-7) x renderer +0x35ac
+        // (deep-sky extinction inside an atmosphere, FUN_14044fe70; 1 in space) x +0x35b8 (1) x galaxy
+        // +0xa4 (the show/hide fader, 1 in steady state); absBright = Transparency x p1, p1 = fade-in x
+        // bright_term. The model fade `center_rel.w` stands in for the fade-in.
         let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright)
             * settings.model_brightness
             * rec.model_bright as f32;
+        // bright_term: DAT_14080b5a0 = GalaxyBrightMin x coef(GalaxyMagnLimit) x the intergalactic-vision
+        // gain (FUN_1404c4610, FUN_1404c51a0).
         let m_app = rec.vis_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
-        let bright = se_bright_term(settings.mag_ref - MAG_REF_OFFSET, m_app as f32, 1.0, settings.bright_min);
+        let limit = settings.mag_ref - MAG_REF_OFFSET;
+        let bright = se_bright_term(limit, m_app as f32, settings.bright_min * gain, settings.bright_min);
         let fade = if bright > 0.0 { fade } else { 0.0 };
         let center_rel = center_rel.truncate().extend(fade);
         let k_emission = glow * def.brightness;
         let k_dust = settings.dust_strength * def.transparency * bright;
-        // The front texture (galaxy_plane.glsl): EyePos.w = p2 x GalaxyFrontTexBright, drawn with the
-        // sprites at full strength.
+        // The front texture (galaxy_plane.glsl): EyePos.w = p2 x GalaxyFrontTexBright, p2 = p1 x the chain
+        // without the model's Brightness (FUN_140299fe0:189).
         if let Some((e, mat)) = &ready.plane {
             let unit_pc = rec.radius_pc * def.model_scale().x as f64;
             let axis_x = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(unit_pc, 0.0, 0.0));
             let axis_y = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(0.0, unit_pc, 0.0));
-            let k_plane = glow * settings.front_tex_bright;
+            let k_plane = glow * settings.front_tex_bright * bright;
             if let Some(mut m) = plane_mats.get_mut(mat) {
                 m.uniforms = PlaneParams {
                     center_rel,
@@ -1425,16 +1470,15 @@ pub(crate) fn update_galaxies(
                 *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
             }
         }
-        for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
-            if let Some(mut m) = model_mats.get_mut(mat) {
-                m.uniforms.center_rel = center_rel;
-                // The dust colour is subtracted at the emission brightness (SE: Color.rgb *= emBright).
-                m.uniforms.params = Vec4::new(k_emission, MODEL_MIN_PX, if dust { k_dust } else { 0.0 }, 0.0);
-            }
-            if let Ok(mut v) = vis.get_mut(*e) {
-                *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
-            }
+        if let Some(mut m) = model_mats.get_mut(&ready.mat) {
+            m.uniforms.center_rel = center_rel;
+            // The dust colour is subtracted at the emission brightness (SE: Color.rgb *= emBright).
+            m.uniforms.params = Vec4::new(k_emission, MODEL_MIN_PX, k_dust, 0.0);
         }
+        if let Ok(mut v) = vis.get_mut(ready.entity) {
+            *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+        }
+        ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
         if n_res < 8 && fade > 0.0 {
             far_u.resident[n_res] = Vec4::new(slot.galaxy as f32, fade, 0.0, 0.0);
             n_res += 1;
@@ -1451,7 +1495,7 @@ pub(crate) fn update_galaxies(
 
 fn despawn_slot(commands: &mut Commands, slot: Slot) {
     if let SlotState::Ready(r) = slot.state {
-        for e in r.entities.into_iter().chain(r.plane.map(|p| p.0)) {
+        for e in std::iter::once(r.entity).chain(r.plane.map(|p| p.0)) {
             commands.entity(e).despawn();
         }
     }
@@ -1466,6 +1510,12 @@ mod tests {
         // SE uploads clamp(colour) and min(1, intensity) as bytes; the model Brightness multiplies emBright.
         assert_eq!(sprite_vertex([0.08, 0.24, 1.7], 5.5), [0.08, 0.24, 1.0, 1.0]);
         assert_eq!(sprite_vertex([1.0, 0.5, -0.2], 0.25), [1.0, 0.5, 0.0, 0.25]);
+    }
+
+    #[test]
+    fn sprites_sort_far_to_near() {
+        let c = [[0.0, 0.0, 1.0], [0.0, 0.0, 5.0], [0.0, 0.0, -3.0]];
+        assert_eq!(back_to_front(&c, [0.0; 3]), vec![4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 0, 1, 2, 0, 2, 3]);
     }
 
     #[test]

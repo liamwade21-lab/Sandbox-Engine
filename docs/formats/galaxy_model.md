@@ -472,26 +472,28 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
 * **Sprites**: camera-facing billboards at infinity with a random in-plane rotation; size in pixels is
   `size_pc / d * focal` (min 1.5 px, area-weighted flux below that). Sprites larger than 250 px fade out
   (gone at 875 px) so the part of the galaxy around the camera never covers the screen. Atlas =
-  `sprites_gal.png` (box-filtered to 512^2, R8, 4x4 tiles). Emission: premultiplied additive
-  (`AlphaMode::Add`, shader alpha 0). Dust: SE's blend `ONE, ONE_MINUS_SRC_ALPHA` (`AlphaMode::Premultiplied`),
-  shader returns `(-colour * emBright * w, absBright * w)` with `w = I * tile * fade`, as galaxy_model.glsl: it
-  darkens by `absBright` and subtracts the dust colour (`absParticleColor`) at the emission brightness; Bevy's
-  tonemapper clamps negative results to 0. Vertex colour and intensity are clamped to 0..1 like SE's bytes
-  (`sprite_vertex`; the Milky Way's absorption intensities reach 5.5 unclamped). The bulge stays in the emission mesh
-  (SE keeps em, abs, bulge order inside each BBoxRes cell, but drawing it after all dust hid the lane across the
-  centre), so all dust is drawn over all emission.
+  `sprites_gal.png` (box-filtered to 512^2, R8, 4x4 tiles). One mesh per model holds emission, dust and bulge,
+  drawn in one call with SE's blend `ONE, ONE_MINUS_SRC_ALPHA` (`AlphaMode::Premultiplied`, FUN_140334e90): emission
+  and bulge return `(colour * emBright * w, 0)` (additive), dust `(-colour * emBright * w, absBright * w)` with
+  `w = I * tile * fade`, as galaxy_model.glsl: it darkens what was drawn before it by `absBright` and subtracts the
+  dust colour (`absParticleColor`); Bevy's tonemapper clamps negative results to 0. Vertex colour and intensity are
+  clamped to 0..1 like SE's bytes (`sprite_vertex`; the Milky Way's absorption intensities reach 5.5 unclamped).
+  **Draw order**: SE sorts the sprites by distance from the camera, farthest first (FUN_140333a30, descending
+  quicksort FUN_140334190) for models over 10 px; `SpriteOrder` does that on the async pool (`back_to_front`) and
+  swaps the index buffer in when the camera has moved more than 2% of its distance to the model, so dust only
+  darkens what lies behind it (no per-frame upload; frame times equal the baseline).
 * **Reddening**: SE's `Reddening = 1 - d / 4.227e9 pc * (1, 2, 4)` (FUN_140299fe0) multiplies the far sprites,
   model sprites and front texture (clamped to 0..1).
 * **Brightness (SE's chain, FUN_14029bdf0 / FUN_140299fe0 / FUN_1404c4610 / FUN_1404c4ae0)**: `emBright =
   GlowBrightMin * exp((GlowMagnLimit + 0.2) / 1.0587) * hdrGalaxySpriteBright * Brightness * ModelBright` (0.162 x
-  Brightness at SE's defaults), `absBright = Transparency * bright_term`, `bright_term = clamp(exp((GalaxyMagnLimit -
-  m) / 1.0587) - GalaxyBrightMin, 0, 1)` (m the apparent magnitude; 0 hides the model), front texture `emBright /
-  Brightness * GalaxyFrontTexBright`. Everything is read from main-def.cfg; GlowMagnLimit follows `]` / `[`. One free
-  factor, `MODEL_EXPOSURE = 0.5` (`SE_GAL_MODEL`), stands for what was not decoded (renderer +0x35ac / +0x35b8, galaxy
-  +0xa4, cell draw order, SE's HDR exposure and tone curve against AgX): chosen so the view from the Sun toward Sgr A*
-  keeps an unsaturated band with brown lanes (at 1 the bulge behind the lane turned orange/red). The model is no
-  longer calibrated to the far sprite, so the hand-over at 6..16 px changes brightness (SE's points and models are not
-  matched either). Far sprites: `K_far = 1.5`, `m_ref = GalaxyMagnLimit + 0.5 = 7.5` (Shift+`]`/`[` change the limit),
+  Brightness at SE's defaults), `absBright = Transparency * bright_term`, `bright_term = clamp(GalaxyBrightMin *
+  exp((GalaxyMagnLimit - m) / 1.0587) * gain - GalaxyBrightMin, 0, 1)` (m the apparent magnitude, gain the
+  intergalactic vision; 0 hides the model; FUN_1404c4610, FUN_1404c51a0), front texture `emBright / Brightness *
+  GalaxyFrontTexBright * bright_term`. Everything is read from main-def.cfg; GlowMagnLimit follows `]` / `[`. The other
+  factors of the exe's chain are 1 in a steady view from space: renderer +0x35ac (deep-sky extinction inside an
+  atmosphere, FUN_14044fe70, not ported), +0x35b8 (reset to 1 each frame), galaxy +0xa4 (show/hide fader). No free
+  factor. The model is no longer calibrated to the far sprite, so the hand-over at 6..16 px changes brightness (SE's
+  points and models are not matched either). Far sprites: `K_far = 1.5`, `m_ref = GalaxyMagnLimit + 0.5 = 7.5` (Shift+`]`/`[` change the limit),
   `dust_strength = 1` (= SE). `AutoGalaxyMagnitude` and `ShowCatGalaxies` are read
   from main-def.cfg. Quasars are drawn as galaxies of their `Type` (SE only flags them, 0x800).
   Env overrides for tuning: `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`, `SE_GAL_BUILD`.
