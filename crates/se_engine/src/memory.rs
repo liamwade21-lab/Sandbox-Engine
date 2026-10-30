@@ -28,9 +28,15 @@ impl Plugin for MemoryPlugin {
     }
 }
 
-fn size_atmosphere_cache(limits: Res<MemoryLimits>, cache: Option<ResMut<crate::atmosphere::AtmosphereCache>>) {
+fn size_atmosphere_cache(limits: Res<MemoryLimits>, cfg: Res<EngineConfig>, cache: Option<ResMut<crate::atmosphere::AtmosphereCache>>) {
     if let Some(mut c) = cache {
         c.set_cap(limits.atmo_models);
+        // main-def.cfg `AtmoAnalyticTransm` (true): how SE generates a model without an .atm file.
+        let analytic = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg"))
+            .ok()
+            .and_then(|t| se_core::sc::parse(&t).find_deep("AtmoAnalyticTransm").and_then(|i| i.args.first().and_then(|a| a.as_bool())))
+            .unwrap_or(true);
+        c.set_analytic_transm(analytic);
     }
 }
 

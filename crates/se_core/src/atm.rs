@@ -63,6 +63,16 @@ pub struct AtmTables {
 }
 
 impl AtmTables {
+    /// The tables as an `.atm` file (header, inscatter, transmittance, irradiance).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let p = &self.params;
+        let header = [
+            p.radius_ground, p.radius_top, p.rayleigh_h, p.mie_h, p.rayleigh_beta[0], p.rayleigh_beta[1], p.rayleigh_beta[2], p.mie_sca_beta[0], p.mie_sca_beta[1],
+            p.mie_sca_beta[2], p.mie_ext_beta[0], p.mie_ext_beta[1], p.mie_ext_beta[2], p.mie_g, p.mie_fade,
+        ];
+        header.iter().chain(&self.inscatter).chain(&self.transmittance).chain(&self.irradiance).flat_map(|f| f.to_le_bytes()).collect()
+    }
+
     pub fn parse(bytes: &[u8]) -> Result<Self, AtmError> {
         if bytes.len() != FILE_SIZE {
             return Err(AtmError::BadSize(bytes.len()));
@@ -117,5 +127,6 @@ mod tests {
         assert_eq!(t.params.radius_top, 6420.0);
         assert_eq!(t.inscatter.len(), INSCATTER_FLOATS);
         assert!(AtmTables::parse(&bytes[1..]).is_err());
+        assert_eq!(t.to_bytes(), bytes);
     }
 }

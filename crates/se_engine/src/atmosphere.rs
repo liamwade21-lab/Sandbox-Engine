@@ -58,27 +58,75 @@ pub struct AtmosphereCache {
     cap: usize,
     used: std::collections::HashMap<String, u64>,
     tick: u64,
+    /// SE's `AtmoAnalyticTransm` for the models it generates.
+    analytic_transm: bool,
 }
 
 impl AtmosphereCache {
-    /// Start parsing every `models/atmospheres/*.atm` in the background (once).
+    /// Start parsing every `models/atmospheres/*.atm` in the background (once), then generating the
+    /// tables of every model of the `models/atmospheres/*.cfg` scripts that has no `.atm` file, as SE's
+    /// `seAtmosphereModelCache` does (`se_core::atm_gen`, about 12 s a model). Generated tables are
+    /// cached in the port's own folder (`%APPDATA%/SpaceEngine-rs/cache/atmospheres`), never the install.
     pub fn start_preload(&mut self, vfs: std::sync::Arc<Vfs>) {
         if std::mem::replace(&mut self.started, true) {
             return;
         }
+        let analytic = self.analytic_transm;
         self.preload = Some(AsyncComputeTaskPool::get().spawn(async move {
-            vfs.list_ext("models/atmospheres", "atm")
+            let mut out: Vec<(String, AtmTables)> = vfs
+                .list_ext("models/atmospheres", "atm")
                 .into_iter()
                 .filter_map(|path| {
                     let name = path.rsplit('/').next()?.strip_suffix(".atm")?.to_ascii_lowercase();
                     Some((name, AtmTables::parse(&vfs.read(&path).ok()?).ok()?))
                 })
-                .collect()
+                .collect();
+            let models: Vec<(String, AtmParams)> = vfs
+                .list_ext("models/atmospheres", "cfg")
+                .into_iter()
+                .filter_map(|p| vfs.read_string(&p).ok())
+                .flat_map(|t| se_core::atm_gen::parse_models(&t))
+                .collect();
+            // The port's folder (settings.rs `user_file`; this file is also built into atmo_demo).
+            let dir = std::env::var_os("APPDATA").map_or_else(|| std::path::PathBuf::from("cache"), |p| std::path::PathBuf::from(p).join("SpaceEngine-rs").join("cache")).join("atmospheres");
+            for (name, params) in models {
+                let key = name.to_ascii_lowercase();
+                if out.iter().any(|(n, _)| *n == key) {
+                    continue;
+                }
+                let file = dir.join(format!("{name}.atm"));
+                if let Some(t) = std::fs::read(&file).ok().and_then(|b| AtmTables::parse(&b).ok()).filter(|t| t.params == params) {
+                    out.push((key, t));
+                    continue;
+                }
+                info!("Generating atmosphere model \"{name}\"");
+                let t = se_core::atm_gen::generate(&params, analytic);
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let _ = std::fs::write(&file, t.to_bytes());
+                }
+                out.push((key, t));
+            }
+            out
         }));
+    }
+
+    /// SE's `AtmoAnalyticTransm` (main-def.cfg) for generated models.
+    pub fn set_analytic_transm(&mut self, on: bool) {
+        self.analytic_transm = on;
     }
 
     pub fn get_or_load(&mut self, vfs: &Vfs, model: &str, images: &mut Assets<Image>) -> Option<AtmosphereGpu> {
         let name = model.to_ascii_lowercase();
+        // A model being generated in the background is not there yet: no warning, no negative entry.
+        if !self.models.contains_key(&name) && self.preload.is_some() && vfs.read(&format!("models/atmospheres/{model}.atm")).is_err() {
+            return None;
+        }
+        if !self.models.contains_key(&name) {
+            if let Some(i) = self.parsed.iter().position(|(n, _)| *n == name) {
+                let (_, t) = self.parsed.swap_remove(i);
+                self.models.insert(name.clone(), Some(upload_tables(t, images)));
+            }
+        }
         let gpu = self.models.entry(name.clone()).or_insert_with(|| load_atmosphere(vfs, model, images)).clone();
         self.touch(name);
         gpu

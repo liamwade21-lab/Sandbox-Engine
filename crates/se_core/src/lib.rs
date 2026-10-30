@@ -3,6 +3,7 @@
 //! reused by tools.
 
 pub mod atm;
+pub mod atm_gen;
 pub mod biomes;
 pub mod body_params;
 pub mod catalog;
