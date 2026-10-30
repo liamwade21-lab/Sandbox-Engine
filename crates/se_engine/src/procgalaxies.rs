@@ -370,12 +370,12 @@ fn stream_nodes(
     }
     if frame_no % 300 == 0 {
         info!(
-            "procgalaxies: {} of {} nodes ready, {} galaxies ({} sprites), adaptive gain {:.1}, applied {:.1}",
+            "procgalaxies: {} of {} nodes ready, {} galaxies ({} sprites), sky coverage {:.2e}, gain {:.1}",
             field.loaded_nodes,
             field.nodes.len(),
             field.loaded_galaxies,
             field.drawn_sprites,
-            gs.adaptive_gain,
+            gs.coverage,
             gs.gain
         );
     }
@@ -477,21 +477,15 @@ pub fn ensure_galaxy(data: &mut SeData, field: &mut ProcGalaxyField, pools: &[u3
     Some(ObjectRef::Galaxy(i))
 }
 
-/// The 3000th brightest galaxy (catalog and procedural) is made to look like a magnitude-7 one at least (a clearly
-/// visible sprite at gain 1): SE's "intergalactic vision" (`AutoGalaxyMagnitude`) raises the galaxy
-/// magnitude limit when nothing bright is near. `galaxies.rs` applies it only far from every bright catalog galaxy.
-const GAIN_COUNT: usize = 3000;
-const GAIN_REF_MAG: f32 = 7.0;
-
+/// The sky covered by the drawn procedural galaxies (`galaxies::sky_coverage`, those not in the catalog
+/// yet), for SE's intergalactic vision; `galaxies.rs` adds the catalog galaxies and eases the sum.
 #[derive(Default)]
 struct AutoGainState {
     task: Option<Task<f32>>,
-    catalog: Option<Arc<Vec<(DVec3, f32)>>>,
 }
 
 fn auto_gain(
     cam: Res<FlyCamera>,
-    data: Res<SeData>,
     settings: Res<ProcSettings>,
     field: Option<Res<ProcGalaxyField>>,
     gs: Option<ResMut<GalaxyState>>,
@@ -499,18 +493,14 @@ fn auto_gain(
 ) {
     let (Some(field), Some(mut gs)) = (field, gs) else { return };
     if let Some(task) = st.task.as_mut() {
-        if let Some(m) = check_ready(task) {
-            gs.adaptive_gain = 10f32.powf(0.4 * (m - GAIN_REF_MAG)).clamp(1.0, 3000.0);
+        if let Some(c) = check_ready(task) {
+            gs.proc_coverage = c;
             st.task = None;
         }
     }
-    if st.task.is_some() || field.frame_no % 20 != 5 {
+    if st.task.is_some() || field.frame_no % 10 != 5 {
         return;
     }
-    let catalog = st
-        .catalog
-        .get_or_insert_with(|| Arc::new(data.catalog.galaxies.iter().map(|g| (g.pos_pc, g.vis_mag as f32)).collect()))
-        .clone();
     let nodes: Vec<Arc<Vec<ProcGalaxy>>> = if settings.galaxies {
         field
             .nodes
@@ -523,17 +513,17 @@ fn auto_gain(
     } else {
         Vec::new()
     };
+    let promoted: std::collections::HashSet<(GalNodeKey, u32)> = field.promoted.keys().copied().collect();
     let cam_pc = cam.pos.to_parsecs();
     st.task = Some(AsyncComputeTaskPool::get().spawn(async move {
-        let mag = |abs: f32, d: f64| abs + 5.0 * ((d.max(1.0) as f32).log10() - 1.0);
-        let mut mags: Vec<f32> = catalog.iter().map(|(p, m)| mag(*m, (*p - cam_pc).length())).collect();
-        for n in &nodes {
-            mags.extend(n.iter().map(|g| mag(g.vis_abs_mag(), (g.pos_pc - cam_pc).length())));
+        let mut c = 0.0;
+        for g in nodes.iter().flat_map(|n| n.iter()) {
+            let d = (g.pos_pc - cam_pc).length();
+            if !promoted.contains(&(g.node, g.index)) && proc_galaxy::app_mag(g.lum, d as f32) <= GALAXY_MAG_CULL {
+                c += crate::galaxies::sky_coverage(g.display_radius_pc(), d);
+            }
         }
-        if mags.len() <= GAIN_COUNT {
-            return GAIN_REF_MAG;
-        }
-        *mags.select_nth_unstable_by(GAIN_COUNT, |a, b| a.total_cmp(b)).1
+        c as f32
     }));
 }
 

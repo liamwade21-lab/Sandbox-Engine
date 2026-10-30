@@ -2076,11 +2076,12 @@ fn update_terrain(
             .collect();
         requests.sort();
         requests.dedup();
-        // Start loads (nearest first).
+        // Start loads: SE's PlanetReverseLoading puts the deepest nodes first, then nearest first.
         requests.sort_by(|a, b| {
             let da = (a.center_dir() * terrain.radius - cam_body).length();
             let db = (b.center_dir() * terrain.radius - cam_body).length();
-            da.total_cmp(&db)
+            let by_level = if quality.reverse_loading { b.level.cmp(&a.level) } else { std::cmp::Ordering::Equal };
+            by_level.then(da.total_cmp(&db))
         });
         // SE's generator for this body: grids come back a few frames after they are asked for.
         let generator = (layers.bump.is_none() && !terrain.gen_failed && terrain.proc.se.is_some() && !terrain.proc.kind.is_giant())

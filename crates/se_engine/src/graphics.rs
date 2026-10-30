@@ -219,11 +219,21 @@ impl GraphicsSettings {
 pub struct TerrainQuality {
     pub split_scale: f64,
     pub tiles_per_frame: usize,
+    /// main-def.cfg `PlanetReverseLoading` (true, Graphics "Fast landscape loading"): the deepest
+    /// wanted nodes load first, then the coarser ones; else nearest first.
+    pub reverse_loading: bool,
 }
 
 impl Default for TerrainQuality {
     fn default() -> Self {
-        Self { split_scale: 1.0, tiles_per_frame: 8 }
+        Self { split_scale: 1.0, tiles_per_frame: 8, reverse_loading: true }
+    }
+}
+
+fn load_terrain_options(cfg: Res<crate::config::EngineConfig>, mut q: ResMut<TerrainQuality>) {
+    let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
+    if let Some(v) = se_core::sc::parse(&text).find_deep("PlanetReverseLoading").and_then(|i| i.bool()) {
+        q.reverse_loading = v;
     }
 }
 
@@ -239,6 +249,7 @@ impl Plugin for GraphicsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GraphicsSettings>()
             .init_resource::<TerrainQuality>()
+            .add_systems(Startup, load_terrain_options)
             .init_resource::<GraphicsUi>()
             .add_systems(Startup, load_presets)
             .add_systems(Update, apply_quality);

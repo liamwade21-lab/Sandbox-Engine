@@ -185,6 +185,8 @@ pub struct Flight {
     pub cam_mode: usize,
     /// Chase camera distance factor.
     pub zoom: f64,
+    /// The chase or cockpit view turned by SE's held look keys (ShipLookBack .. ShipLookDown).
+    pub look: DQuat,
     pub orbit_yaw: f64,
     pub orbit_pitch: f64,
     pub orbit_dist: f64,
@@ -207,6 +209,13 @@ pub struct Flight {
     pub hold_altitude: Option<f64>,
     /// The Physics key `Aero` (main-def.cfg: true).
     pub aero: bool,
+    /// SE's cheats `FTL` ("Unlimited velocity", false: no speed of light cap outside warp,
+    /// FUN_140537060) and `God` ("Invulnerability", true: with it off a crash destroys the ship,
+    /// "Destroying spacecraft", FUN_14051b720 / FUN_140537060).
+    pub ftl: bool,
+    pub god: bool,
+    /// The flown ship crashed without invulnerability: it is destroyed on the next command pass.
+    pub wrecked: bool,
     /// The HUD mode (Ctrl+1 .. Ctrl+5).
     pub hud: hud::HudMode,
     /// Control remotely: the ship is flown, the camera stays where it is.
@@ -230,6 +239,7 @@ impl Default for Flight {
             collisions: true,
             cam_mode: 0,
             zoom: 1.0,
+            look: DQuat::IDENTITY,
             orbit_yaw: 0.6,
             orbit_pitch: 0.3,
             orbit_dist: 100.0,
@@ -246,6 +256,9 @@ impl Default for Flight {
             sync_velocity: false,
             hold_altitude: None,
             aero: true,
+            ftl: false,
+            god: true,
+            wrecked: false,
             hud: hud::HudMode::default(),
             remote: false,
             next_serial: 0,
@@ -509,6 +522,13 @@ fn ship_commands(
     hull_defaults: Res<HullDefaults>,
 ) {
     let (mut teleports, mut nicknames) = (Vec::new(), Vec::new());
+    if std::mem::take(&mut flight.wrecked) {
+        if let Some(e) = flight.ship.take() {
+            info!("Destroying spacecraft");
+            commands.entity(e).despawn();
+            flight.active = false;
+        }
+    }
     for msg in reader.read() {
         let arg = msg.arg.trim();
         match msg.verb.as_str() {
@@ -532,7 +552,8 @@ fn ship_commands(
                         for i in 0..count {
                             let place = if a == manager::Action::Fly { Placement::Pilot } else { Placement::Ahead(i) };
                             let mine = a != manager::Action::Other;
-                            spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design.clone(), hull_defaults.thermal_shift, place, mine);
+                            let look = (hull_defaults.thermal_shift, hull_defaults.model_bright);
+                            spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design.clone(), look, place, mine);
                         }
                     }
                     manager::Action::DestroyAll => {
@@ -757,7 +778,8 @@ fn spawn_ship(
     cam: &mut FlyCamera,
     bodies: &Query<&SystemBody>,
     design: Arc<ShipDesign>,
-    thermal_shift: f32,
+    // SE's ThermalEmissionShift and hdrShipModelBright (ship_assets::HullDefaults).
+    (thermal_shift, model_bright): (f32, f32),
     place: Placement,
     mine: bool,
 ) {
@@ -780,7 +802,7 @@ fn spawn_ship(
 
     let vfs = data.vfs.clone();
     let d2 = full.clone();
-    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift) });
+    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift, model_bright) });
     flight.next_serial += 1;
     let ship = Ship {
         design: full.clone(),
@@ -972,6 +994,29 @@ fn ship_input(
     flight.input.boost_turn = shift;
 
     hud::hud_keys(&keys, &mut flight);
+    // SE's view keys (key table FUN_1405ba8f0 entries 189-193, 218, 219): while Ctrl + keypad 5 / 4 / 6 /
+    // 8 / 2 are held the chase or cockpit view looks back / left / right / up / down (ShipLookBack ..
+    // ShipLookDown); Alt+O is the orbit view (ShipViewOrbit), Alt+C centres it on the ship (ShipCenter).
+    let look = |k: KeyCode| ctrl && keys.pressed(k);
+    flight.look = if look(KeyCode::Numpad5) {
+        DQuat::from_rotation_y(std::f64::consts::PI)
+    } else if look(KeyCode::Numpad4) {
+        DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad6) {
+        DQuat::from_rotation_y(-std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad8) {
+        DQuat::from_rotation_x(std::f64::consts::FRAC_PI_2)
+    } else if look(KeyCode::Numpad2) {
+        DQuat::from_rotation_x(-std::f64::consts::FRAC_PI_2)
+    } else {
+        DQuat::IDENTITY
+    };
+    if alt && keys.just_pressed(KeyCode::KeyO) {
+        flight.cam_mode = n_chase;
+    }
+    if alt && keys.just_pressed(KeyCode::KeyC) {
+        (flight.orbit_yaw, flight.orbit_pitch) = (0.0, 0.3);
+    }
     if keys.just_pressed(KeyCode::KeyU) && plain {
         // ShipFlightAssist.
         flight.assist = !flight.assist;
@@ -1259,7 +1304,7 @@ struct BodyInfo<'a> {
     terrain: Option<&'a Terrain>,
 }
 
-fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
+pub(crate) fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
     let m = match obj {
         ObjectRef::Body(i) => data.catalog.bodies.get(i as usize).map(|b| b.mass_kg).unwrap_or(0.0),
         ObjectRef::Star(i) => data.catalog.stars.get(i as usize).map(|s| s.mass_kg).unwrap_or(0.0),
@@ -1651,7 +1696,7 @@ fn ship_physics(
                 }
             }
             vel += a * h;
-            if ship.warp == 0.0 && vel.length() > SPEED_OF_LIGHT {
+            if ship.warp == 0.0 && !flight.ftl && vel.length() > SPEED_OF_LIGHT {
                 vel *= SPEED_OF_LIGHT / vel.length();
             }
             pos = pos.offset_m((warp_frame + (vel - warp_frame) * boost) * h);
@@ -1685,6 +1730,8 @@ fn ship_physics(
             if vn < 0.0 {
                 if -vn >= CRASH_SPEED {
                     notice = Some(format!("CRASH: impact at {}", format_speed(-vn)));
+                    // Without invulnerability (SE's God cheat off) the crash destroys the ship.
+                    flight.wrecked |= !flight.god;
                 }
                 v_rel -= up * vn;
             }
@@ -1908,7 +1955,7 @@ fn ship_camera(
     let (cp, cr) = if mode < chase.len() {
         let c = &chase[mode];
         let local = c.pos * flight.zoom;
-        (pos.0.offset_m(rot.0 * local), (rot.0 * c.rot).normalize())
+        (pos.0.offset_m(rot.0 * local), (rot.0 * c.rot * flight.look).normalize())
     } else {
         let dir = DQuat::from_rotation_y(flight.orbit_yaw) * DQuat::from_rotation_x(-flight.orbit_pitch) * DVec3::Z;
         let world_dir = rot.0 * dir;

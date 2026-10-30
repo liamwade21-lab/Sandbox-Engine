@@ -494,7 +494,7 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   atmosphere, FUN_14044fe70, not ported), +0x35b8 (reset to 1 each frame), galaxy +0xa4 (show/hide fader). No free
   factor. The model is no longer calibrated to the far sprite, so the hand-over at 6..16 px changes brightness (SE's
   points and models are not matched either). Far sprites: `K_far = 1.5`, `m_ref = GalaxyMagnLimit + 0.5 = 7.5` (Shift+`]`/`[` change the limit),
-  `dust_strength = 1` (= SE). `AutoGalaxyMagnitude` and `ShowCatGalaxies` are read
+  `dust_strength = 1` (= SE). `AutoGalaxyMagnitude`, `AutoGalaxyMagnSpeed` and `ShowCatGalaxies` are read
   from main-def.cfg. Quasars are drawn as galaxies of their `Type` (SE only flags them, 0x800).
   Env overrides for tuning: `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`, `SE_GAL_BUILD`.
 * **Sort order**: Bevy sorts transparent items by the view depth of the mesh AABB centre plus
@@ -532,9 +532,13 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   shell replaces the background and a multiplicative dust sprite would otherwise darken the blue sky. The
   fade reads `SkyShell` / `SkyMaterial` (sun direction, shell centre and radius) read-only. Residual: from
   orbit, dust still multiplies the lit atmosphere limb in directions where dust sprites exist.
-* **Intergalactic vision** (SE `AutoGalaxyMagnitude`): all galaxies are brightened by
-  `(d_nearest_bright / 3 Mpc)^2` (clamped to 1..5000, smoothed in log space; bright = M < -17) so the sky stays
-  populated far from every galaxy. `SE_GAL_AUTO=0` disables it.
+* **Intergalactic vision** (SE `AutoGalaxyMagnitude`, FUN_140299fe0 / FUN_1404c51a0): every drawn galaxy adds
+  the sky it covers, `0.01 R^2 / max(d^2 - R^2, 100)` (parsecs), the sum is eased at `AutoGalaxyMagnSpeed`
+  (`1 - exp(-dt speed)`, starting from 1e6) and the galaxy brightness is multiplied by
+  `max(1, 1 / (coverage + e^-14.356739 coef(GalaxyMagnLimit)))`: 1 inside a galaxy, up to the brightness of a
+  magnitude-15 limit (1912 at the default 7) in empty space. The port sums the catalog galaxies every frame and the
+  drawn procedural ones every 10 frames; SE sums the galaxies its draw loop visits (whether frustum-culled ones
+  count was not traced). `SE_GAL_AUTO=0` disables it.
 * **Handedness**: the SE-to-port model mapping is the identity (see 7.2); `SE_GAL_MAP=1..5` selects the
   alternative flips used for the calibration. `SE_GAL_NODEPTH=1` disables the depth test (debugging).
 * **Known artifact**: at ground level a thin black depth sliver (not from the galaxy code; it disappears with

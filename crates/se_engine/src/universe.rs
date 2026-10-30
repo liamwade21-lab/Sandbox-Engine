@@ -113,8 +113,48 @@ pub enum UniverseSet {
     FloatingOrigin,
 }
 
+/// SE's frame timing (main-def Export `RealTime` true, `RealTimeFPS` 60; key TimingMode, Shift+Backslash,
+/// "Real time mode" / "Frame time mode"): in real time mode everything advances by the frame's real
+/// duration, in frame time mode by 1 / RealTimeFPS per frame (motion then follows the frame rate, as
+/// for video capture). Bevy's `TimeUpdateStrategy` carries it to every system.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct TimingMode {
+    pub real_time: bool,
+    pub fps: f64,
+}
+
+impl Default for TimingMode {
+    fn default() -> Self {
+        Self { real_time: true, fps: 60.0 }
+    }
+}
+
+fn load_timing(cfg: Res<crate::config::EngineConfig>, mut mode: ResMut<TimingMode>) {
+    let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
+    let doc = se_core::sc::parse(&text);
+    if let Some(v) = doc.find_deep("RealTime").and_then(|i| i.bool()) {
+        mode.real_time = v;
+    }
+    if let Some(v) = doc.find_deep("RealTimeFPS").and_then(|i| i.f64()).filter(|v| *v > 0.0) {
+        mode.fps = v;
+    }
+}
+
+fn apply_timing(mode: Res<TimingMode>, mut commands: Commands) {
+    if mode.is_changed() {
+        commands.insert_resource(if mode.real_time {
+            bevy::time::TimeUpdateStrategy::Automatic
+        } else {
+            bevy::time::TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f64(1.0 / mode.fps.max(1.0)))
+        });
+    }
+}
+
 impl Plugin for UniversePlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<TimingMode>()
+            .add_systems(Startup, load_timing)
+            .add_systems(PreUpdate, apply_timing);
         app.init_resource::<SimTime>()
             .init_resource::<ScaledSpace>()
             .configure_sets(

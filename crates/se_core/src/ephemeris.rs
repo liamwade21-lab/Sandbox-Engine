@@ -80,6 +80,10 @@ impl<'a> Ephemeris<'a> {
                     return UPos::ZERO;
                 }
                 let base = self.position_depth(pr, jd, depth + 1);
+                if let Some([lon, lat, dist_km]) = b.fixed_pos_polar() {
+                    let dir = DVec3::from_array(crate::se_script::polar_dir(lon, lat));
+                    return base.offset_m(self.orientation(pr, jd) * dir * (dist_km * 1e3));
+                }
                 match &b.orbit {
                     Some(o) => match self.moon_theory_offset(o, jd) {
                         Some(off) => base.offset_m(off),
@@ -127,6 +131,9 @@ impl<'a> Ephemeris<'a> {
                 let parent = self.catalog.find(&b.parent).filter(|p| *p != r);
                 // SE's IgnoreMoonsRotationIAU (main-def.cfg, true): a moon's IAU model gives way to
                 // tidal locking.
+                if let (Some([lon, lat, _]), Some(p), RotationLock::Tidal) = (b.fixed_pos_polar(), parent, b.lock) {
+                    return fixed_frame(self.orientation(p, jd), lon, lat, &b.block);
+                }
                 let moon_iau = matches!(b.rotation, RotationModel::Iau(_)) && matches!(parent, Some(ObjectRef::Body(_)));
                 let locked = match b.lock {
                     RotationLock::MoonDe => self.moon_de(jd).or_else(|| parent.and_then(|p| self.tidal_lock(r, p, jd))),
@@ -217,10 +224,56 @@ fn frame_from_normal(normal: DVec3, hint: DVec3) -> DQuat {
     DQuat::from_mat3(&DMat3::from_cols(x, y, z))
 }
 
+/// The frame of a `TidalLocked` body at `FixedPosPolar` (lon, lat) on a parent turned by `parent`:
+/// SE derives its up vector (+Y) from the position ("up vector automatically derived from FixedPos
+/// coordinates"); +Z points south along the parent's surface, and the catalog's `RotationOffset`
+/// (azimuth, degrees), `Obliquity` and `EqAscendNode` (tilt adjustments, degrees) turn it. The order
+/// and signs of those three are assumed (the tilts are a few degrees at most).
+fn fixed_frame(parent: DQuat, lon: f64, lat: f64, b: &crate::sc::Block) -> DQuat {
+    let up = parent * DVec3::from_array(crate::se_script::polar_dir(lon, lat));
+    let pole = parent * DVec3::Y;
+    let north = (pole - up * pole.dot(up)).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
+    let east = north.cross(up);
+    let local = DQuat::from_mat3(&DMat3::from_cols(east, up, -north));
+    let deg = |k: &str| b.f64(k).unwrap_or(0.0).to_radians();
+    (local
+        * DQuat::from_rotation_y(-deg("RotationOffset"))
+        * DQuat::from_rotation_x(deg("Obliquity"))
+        * DQuat::from_rotation_z(deg("EqAscendNode")))
+    .normalize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::units::METERS_PER_AU;
+
+    #[test]
+    fn fixed_position_turns_with_its_parent_and_stands_upright() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            "StarBarycenter \"Sys\" { RA 1 Dec 2 Dist 10 }\n\
+             Star \"Sys A\" { ParentBody \"Sys\" Class \"G2V\" MassSol 1 }\n\
+             Planet \"P\" { ParentBody \"Sys A\" Radius 1700 Mass 0.01 RotationPeriod 10\n Orbit { SemiMajorAxis 1 Eccentricity 0 } }\n\
+             Spacecraft \"L\" { ParentBody \"P\" TidalLocked true RotationOffset 90 FixedPosPolar (23.47 0.67 1695.5) }\n",
+            "t.sc",
+        );
+        let eph = Ephemeris::new(&c);
+        let (p, l) = (c.find("P").unwrap(), c.find("L").unwrap());
+        for jd in [2_451_545.0, 2_451_545.2] {
+            let rel = eph.position(l, jd).delta_m(eph.position(p, jd));
+            assert!((rel.length() - 1_695_500.0).abs() < 1.0, "{}", rel.length());
+            // On the parent's surface at its (lon, lat), whatever the parent's rotation.
+            let local = eph.orientation(p, jd).inverse() * rel.normalize();
+            let want = DVec3::from_array(crate::se_script::polar_dir(23.47, 0.67));
+            assert!(local.dot(want) > 0.999_999, "{local} {want}");
+            // Up (+Y) is the local vertical; +Z points south, turned 90 degrees by RotationOffset.
+            let o = eph.orientation(l, jd);
+            assert!((o * DVec3::Y).dot(rel.normalize()) > 0.999_999);
+            let pole = eph.orientation(p, jd) * DVec3::Y;
+            assert!((o * DVec3::Z).dot(pole).abs() < 1e-6, "turned off south: {}", (o * DVec3::Z).dot(pole));
+        }
+    }
 
     #[test]
     fn tidally_locked_moon_faces_its_planet() {

@@ -307,6 +307,8 @@ fn find_design_path(vfs: &Vfs, reference: &str) -> Option<String> {
     let with_ext = if r.to_ascii_lowercase().ends_with(".sss") { r.clone() } else { format!("{r}.sss") };
     let candidates = [
         with_ext.clone(),
+        // Catalogs give models relative to models/ ("spacecraft/real/ApolloEagle.sss").
+        join_path("models", &with_ext),
         join_path("models/spacecraft", &with_ext),
         join_path("models/spacecraft/default", &with_ext),
         join_path("models/spacecraft/real", &with_ext),

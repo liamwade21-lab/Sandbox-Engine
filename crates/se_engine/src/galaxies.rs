@@ -268,11 +268,11 @@ pub struct GalaxySettings {
     pub mag_ref: f32,
     /// Far sprites with a peak intensity below this are skipped.
     pub cull: f32,
-    /// "Intergalactic vision" (SE `AutoGalaxyMagnitude`): raise the brightness of all galaxies as the
-    /// nearest bright galaxy gets farther than `auto_d0_pc`, by `(d / d0)^2`, up to `auto_max`.
+    /// "Intergalactic vision" (SE `AutoGalaxyMagnitude`): raise the brightness of all galaxies when
+    /// little of the sky is covered by galaxies (`intergalactic_gain`).
     pub auto_gain: bool,
-    pub auto_d0_pc: f32,
-    pub auto_max: f32,
+    /// `AutoGalaxyMagnSpeed` (10): the rate (1/s) the sky coverage behind the gain is eased at.
+    pub auto_speed: f32,
 }
 
 impl Default for GalaxySettings {
@@ -293,8 +293,7 @@ impl Default for GalaxySettings {
             mag_ref: 7.5,
             cull: 0.003,
             auto_gain: true,
-            auto_d0_pc: 3.0e6,
-            auto_max: 5000.0,
+            auto_speed: 10.0,
         }
     }
 }
@@ -839,8 +838,10 @@ pub(crate) struct GalaxyState {
     /// Catalog galaxies whose 3D model is fading in this frame (`(catalog index, fade)`); the streamed
     /// procedural far sprites of `procgalaxies.rs` hide behind them.
     pub(crate) resident: Vec<(usize, f32)>,
-    /// Gain asked for by `procgalaxies.rs` so that a few hundred galaxies stay visible in intergalactic space.
-    pub(crate) adaptive_gain: f32,
+    /// Sky coverage of the drawn procedural galaxies (`sky_coverage`), summed by `procgalaxies.rs`.
+    pub(crate) proc_coverage: f32,
+    /// The total sky coverage eased at `AutoGalaxyMagnSpeed` (SE renderer +0x35d0; 1e6 when off).
+    pub(crate) coverage: f32,
 }
 
 impl GalaxyState {
@@ -963,6 +964,25 @@ pub(crate) fn vision(inten: f32, gain: f32, px: f32, cap: f32) -> f32 {
     inten.max(boosted.min(cap))
 }
 
+/// SE's eased sky coverage while the intergalactic vision is off or has just started (FUN_1404c51a0).
+pub(crate) const COVERAGE_OFF: f32 = 1.0e6;
+
+/// The part of the sky a galaxy of radius `r_pc` covers from `d_pc` away, as SE sums it for the
+/// intergalactic vision (FUN_140299fe0, renderer +0x35cc): `0.01 R^2 / max(d^2 - R^2, 100)` (parsecs).
+pub(crate) fn sky_coverage(r_pc: f64, d_pc: f64) -> f64 {
+    let r2 = r_pc * r_pc;
+    0.01 * r2 / (d_pc * d_pc - r2).max(100.0)
+}
+
+/// SE's intergalactic-vision gain (FUN_1404c51a0, `AutoGalaxyMagnitude`) from the eased sky
+/// `coverage`: `1 / (coverage + e^-14.356739 coef(GalaxyMagnLimit))`, at least 1. The second term
+/// is `coef(limit) / coef(15)`, so in empty space the galaxies look as under a limit of magnitude
+/// 15; inside a galaxy the coverage is large and the gain 1. It multiplies the galaxy brightness
+/// coefficient (DAT_14080b5a0 = GalaxyBrightMin x coef(limit) x gain).
+pub(crate) fn intergalactic_gain(coverage: f32, limit: f32) -> f32 {
+    (1.0 / (coverage + (-14.356_739f32).exp() * se_magn_coef(limit))).max(1.0)
+}
+
 /// Minimum radius (px) of a 3D model's sprites. Smaller than the far sprites' `min_px`:
 /// widening them spreads a distant model's light until it disappears into the background.
 const MODEL_MIN_PX: f32 = 1.5;
@@ -1034,6 +1054,7 @@ pub(crate) fn setup_galaxies(
         if std::env::var_os("SE_GAL_AUTO").is_none() {
             settings.auto_gain = flag("AutoGalaxyMagnitude").unwrap_or(settings.auto_gain);
         }
+        settings.auto_speed = num("AutoGalaxyMagnSpeed").unwrap_or(settings.auto_speed);
         settings.enabled &= flag("ShowCatGalaxies").unwrap_or(true);
     }
     let vfs = data.vfs.clone();
@@ -1152,7 +1173,8 @@ pub(crate) fn setup_galaxies(
         milky_way,
         gain: 1.0,
         resident: Vec::new(),
-        adaptive_gain: 1.0,
+        proc_coverage: 0.0,
+        coverage: COVERAGE_OFF,
     };
     if let Some(g) = milky_way {
         let rec = &cat.galaxies[g];
@@ -1263,34 +1285,17 @@ pub(crate) fn update_galaxies(
 
     // ---- which galaxies want a model ------------------------------------------------------
     let mut wanted: Vec<(f64, usize)> = Vec::new();
-    // Distance to the nearest bright galaxy, and how far outside every galaxy the camera is
-    // (in radii of the closest one), for the intergalactic-vision gain.
-    let mut nearest_bright = f64::INFINITY;
-    let mut outside = f64::INFINITY;
-    for rec in cat.galaxies.iter() {
-        let d = (rec.pos_pc - cam_pc).length();
-        outside = outside.min(d / rec.radius_pc.max(1.0));
-        if rec.vis_mag < -17.0 {
-            nearest_bright = nearest_bright.min((d - rec.radius_pc).max(0.0));
-        }
+    // Intergalactic vision: the sky covered by the catalog galaxies and the streamed procedural ones,
+    // eased at AutoGalaxyMagnSpeed (FUN_1404c51a0: 1 - exp(-dt speed)).
+    if settings.auto_gain {
+        let covered = st.proc_coverage as f64
+            + cat.galaxies.iter().map(|rec| sky_coverage(rec.radius_pc, (rec.pos_pc - cam_pc).length())).sum::<f64>();
+        let k = 1.0 - (-time.delta_secs() * settings.auto_speed).exp();
+        st.coverage += (covered as f32 - st.coverage) * k.clamp(0.0, 1.0);
+    } else {
+        st.coverage = COVERAGE_OFF;
     }
-    let target_gain = if settings.auto_gain && nearest_bright.is_finite() {
-        ((nearest_bright / settings.auto_d0_pc as f64).powi(2)).clamp(1.0, settings.auto_max as f64) as f32
-    } else {
-        1.0
-    };
-    // Adaptive exposure from the procedural galaxy streamer (never dims). Like SpaceEngine's
-    // intergalactic vision it starts as soon as the camera leaves a galaxy, not only in the
-    // voids between groups: from one to two radii out of the closest galaxy.
-    let target_gain = if settings.auto_gain {
-        let w = smoothstep(1.0, 2.0, outside) as f32;
-        target_gain.max(st.adaptive_gain.powf(w))
-    } else {
-        target_gain
-    };
-    // Smooth in log space (about 0.3 s time constant).
-    let k = (time.delta_secs() * 3.0).min(1.0);
-    st.gain = (st.gain.ln() + (target_gain.ln() - st.gain.ln()) * k).exp();
+    st.gain = intergalactic_gain(st.coverage, settings.mag_ref - MAG_REF_OFFSET);
     let gain = st.gain;
     if settings.enabled {
         for (g, rec) in cat.galaxies.iter().enumerate() {
@@ -1527,6 +1532,20 @@ mod tests {
         // One magnitude more on the limit: x exp(1 / 1.0587) = 2.57.
         let r = se_glow_bright(8.0, 0.006, 0.03) / se_glow_bright(7.0, 0.006, 0.03);
         assert!((r - 2.572).abs() < 1e-2, "{r}");
+    }
+
+    #[test]
+    fn intergalactic_vision_follows_the_sky_coverage() {
+        // Inside a 25 kpc galaxy: 0.01 R^2 / 100 = 62500, no gain.
+        assert_eq!(intergalactic_gain(sky_coverage(25e3, 8e3) as f32, 7.0), 1.0);
+        // Empty space: the limit rises from 7 to 15, coef(15) / coef(7) = exp(8 / 1.0587) = 1912.
+        let empty = intergalactic_gain(0.0, 7.0);
+        assert!((empty - 1912.0).abs() < 5.0, "{empty}");
+        assert_eq!(intergalactic_gain(0.0, 15.0), 1.0);
+        // Two radii out of it: 0.01 / 3 of sky -> 1 / (0.00333 + 0.000523) = 259.
+        let near = intergalactic_gain(sky_coverage(25e3, 50e3) as f32, 7.0);
+        assert!((near - 259.4).abs() < 1.0, "{near}");
+        assert_eq!(intergalactic_gain(COVERAGE_OFF, 7.0), 1.0);
     }
 
     #[test]

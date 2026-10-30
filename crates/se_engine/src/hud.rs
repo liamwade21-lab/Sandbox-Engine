@@ -63,6 +63,7 @@ fn hud_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut hud: ResMut<HudState>,
     mut sim: ResMut<SimTime>,
+    mut timing: ResMut<crate::universe::TimingMode>,
     mut egui: EguiContexts,
     mut gfx: ResMut<crate::graphics::GraphicsUi>,
     (mut msg, i18n, shots, mut shot_no): (ResMut<crate::messages::Messages>, Res<I18n>, Res<crate::screenshot::ScreenshotSettings>, ResMut<crate::screenshot::ScreenshotNumber>),
@@ -123,6 +124,10 @@ fn hud_keys(
         // SE's CurrentTime: the system clock's date, the rate untouched.
         sim.jd = SimTime::default().jd;
         msg.show(i18n.tr("Current time"));
+    } else if keys.just_pressed(KeyCode::Backslash) && shift {
+        // SE's TimingMode (Shift+Backslash): real time or fixed frame time (universe.rs).
+        timing.real_time = !timing.real_time;
+        msg.show(i18n.tr(if timing.real_time { "Real time mode" } else { "Frame time mode" }));
     } else if keys.just_pressed(KeyCode::Backslash) && !shift {
         sim.rate = 1.0;
         msg.show(i18n.tr("Time reset"));

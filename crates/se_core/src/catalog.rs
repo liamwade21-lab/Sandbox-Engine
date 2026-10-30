@@ -137,6 +137,12 @@ pub struct BodyRecord {
 }
 
 impl BodyRecord {
+    /// `FixedPosPolar (lon lat dist)`: a body fixed on its parent (degrees, and km from the parent's
+    /// centre), turning with it, as SE's catalog spacecraft (ApolloLandingSites.sc's landers).
+    pub fn fixed_pos_polar(&self) -> Option<[f64; 3]> {
+        self.block.vec3("FixedPosPolar")
+    }
+
     /// SE draws a body as an ellipsoid: its semi-axes in the body frame (+Y the pole) relative to
     /// `radius_km`, from `Dimensions` (diameters, km) or `Oblateness` (the polar flattening, or a
     /// flattening per axis).
@@ -396,6 +402,13 @@ impl Catalog {
             }
         }
         cat.resolve();
+        // Catalog spacecraft (`Model "spacecraft/....sss"`) without a radius take half their design's
+        // `Length` (SE builds them as static ships, "Initializing static ships").
+        for b in cat.bodies.iter_mut().filter(|b| b.tag == BodyTag::Spacecraft && b.radius_km <= 0.0) {
+            if let Some(d) = b.block.str("Model").and_then(|m| crate::ship::ShipDesign::load_header(vfs, m)) {
+                b.radius_km = d.length_m * 0.5e-3;
+            }
+        }
         cat
     }
 
