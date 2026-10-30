@@ -87,7 +87,7 @@ pub struct BiomeUniform {
     /// x: biomes enabled, y: soils enabled, z: vegetation enabled, w: number of soils.
     pub flags: Vec4,
     /// SE climate parameters ([`climate_uniform`]); `climate[4].w` 0 when unused.
-    pub climate: [Vec4; 9],
+    pub climate: [Vec4; CLIMATE_VECS],
     /// xyz: the preset's `ColorVary` (linear), the colour the ground darkens towards over
     /// planet-wide patches; w: 1 to apply it (0 for asteroids, whose colour shader leaves it out).
     pub color_vary: Vec4,
@@ -101,13 +101,20 @@ pub struct BiomeUniform {
     pub giant: [Vec4; 5],
 }
 
+/// Vec4s in [`BiomeUniform::climate`] (and `planet.wesl` `Biomes`).
+pub const CLIMATE_VECS: usize = 12;
+
 /// SE's climate parameters for `planet.wesl` (heights as fractions of `BumpHeight`):
 /// 0 (seaLevel, snowLevel, icecapLatitude, icecapHeight), 1 (climatePole, climateTropic,
 /// climateEquator, tropicLatitude), 2 (tropicWidth, heightTempGrad, humidity, beachWidth),
 /// 3 (steppe min/max, grass min/max), 4 (forest min/max, BumpHeight m, 1), 5 (colorDistMagn,
 /// colorDistFreq, height of the reference radius, base of the lowland/upland bands); worlds
-/// without an ocean rise from the reference radius (height 0 there: SE's `BumpOffset` is 0).
-pub fn climate_uniform(g: &se_core::surface_gen::SurfaceGen, bump_m: f64, ocean: bool, tidal_lock: bool) -> [Vec4; 9] {
+/// without an ocean rise from the reference radius (height 0 there: SE's `BumpOffset` is 0);
+/// 6 (Randomize, 1 tidally locked / -1), 7 (hillsFreq, hillsMagn, generator, craterSqrtDensity),
+/// 8 (drivenDarkening, venusMagn), and for the airless colour (tg_selena_color, tg_asteroid_color):
+/// 9 (craterFreq, craterOctaves, craterRayedFactor, cracksFreq), 10 (cracksOctaves, and the
+/// generator's hillsFraction and hills2Fraction thresholds, mainFreq).
+pub fn climate_uniform(g: &se_core::surface_gen::SurfaceGen, bump_m: f64, ocean: bool, tidal_lock: bool) -> [Vec4; CLIMATE_VECS] {
     use se_core::surface_gen as sg;
     let v = |i: usize| g.v(i);
     [
@@ -130,6 +137,13 @@ pub fn climate_uniform(g: &se_core::surface_gen::SurfaceGen, bump_m: f64, ocean:
             v(sg::CRATER_DENSITY).max(0.0).sqrt(),
         ),
         Vec4::new(v(sg::DRIVEN_DARKENING), v(sg::VENUS_MAGN), 0.0, 0.0),
+        Vec4::new(v(sg::CRATER_FREQ), v(sg::CRATER_OCTAVES), v(sg::CRATER_RAYED_FACTOR), v(sg::CRACKS_FREQ)),
+        {
+            // The generator's cumulative thresholds (se_core::tg::uniforms hillsParams.zw).
+            let t = sg::landform_thresholds(g).unwrap_or([0.0; 5]);
+            Vec4::new(v(sg::CRACKS_OCTAVES), t[1], t[2], v(sg::MAIN_FREQ))
+        },
+        Vec4::ZERO,
     ]
 }
 
@@ -648,5 +662,29 @@ pub fn body_info(cat: &se_core::catalog::Catalog, b: &BodyRecord, temperature_k:
             .sub("Surface")
             .and_then(se_core::biomes::surf_style)
             .unwrap_or_else(|| (se_core::proc_surface::name_seed(b.names.first().map_or("", |s| s.as_str())) % 10_000) as f64 / 10_000.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_core::surface_gen as sg;
+
+    #[test]
+    fn climate_uniform_carries_the_airless_colour_parameters() {
+        let mut g = sg::SurfaceGen { p: [sg::UNSET; sg::N_PARAMS], color: None, classes: Default::default() };
+        g.p[sg::CRATER_FREQ] = 12.0;
+        g.p[sg::CRATER_OCTAVES] = 9.0;
+        g.p[sg::CRATER_RAYED_FACTOR] = 0.4;
+        g.p[sg::CRACKS_FREQ] = 0.7;
+        g.p[sg::CRACKS_OCTAVES] = 3.0;
+        g.p[sg::MAIN_FREQ] = 1.5;
+        let c = climate_uniform(&g, 5000.0, false, false);
+        assert_eq!(c.len(), CLIMATE_VECS);
+        assert_eq!(c[9], Vec4::new(12.0, 9.0, 0.4, 0.7));
+        assert_eq!((c[10].x, c[10].w), (3.0, 1.5));
+        // Unset slots read 0, as the shader expects (no rays, no cracks).
+        let none = climate_uniform(&sg::SurfaceGen { p: [sg::UNSET; sg::N_PARAMS], color: None, classes: Default::default() }, 1.0, false, false);
+        assert_eq!((none[9].z, none[10].x), (0.0, 0.0));
     }
 }

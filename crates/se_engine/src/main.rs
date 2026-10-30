@@ -9,6 +9,7 @@ mod aurora;
 mod blackholes;
 mod bloom;
 mod body_models;
+mod brown_dwarf;
 mod browser;
 mod star_search;
 mod camera;

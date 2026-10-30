@@ -68,7 +68,8 @@ pub struct PlanetUniform {
     pub rect_clouds: Vec4,
     /// rgb fallback albedo; w ambient.
     pub base_color: Vec4,
-    /// x glow brightness, y water specular, z cloud opacity, w unused.
+    /// x glow brightness (self-emission included), y water specular, z cloud opacity, w water
+    /// roughness.
     pub params: Vec4,
     /// rgb deep ocean colour; w: 1 = body has an ocean.
     pub ocean_sea: Vec4,
@@ -107,12 +108,98 @@ pub struct PlanetUniform {
     /// coverage, z the sun heating at the subsolar point (thousand K ^ 4), w 1 for a giant.
     pub thermal: Vec4,
     /// x 1 / (pi (R* / d)^2), the star's surface radiance per its irradiance here; y the star's
-    /// temperature (K); z SE's ThermalEmissionShift (thousand K).
+    /// temperature (K); z SE's ThermalEmissionShift (thousand K); w the self-emission scale
+    /// ([`SelfEmission::scale`]).
     pub thermal2: Vec4,
     /// The further stars ([`BodyLighting::extra_uniforms`]): xyz direction, w 1 when used.
     pub light_dir: [Vec4; MAX_LIGHTS - 1],
     /// Their rgb light, intensity included.
     pub light_color: [Vec4; MAX_LIGHTS - 1],
+    /// SE's GlowColor: rgb the catalog's tint of the glow map, w its mode (1 "Night": off where
+    /// light reaches the ground, 0 "Permanent").
+    pub glow: Vec4,
+    /// SE's ice glint (planet.glsl AICE): x SpecBrightIce, y RoughnessIce, z 1 when the colour map's
+    /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint); w SE's WaterSurfColor.a, the
+    /// water display level ([`WaterDisplay`]).
+    pub ice: Vec4,
+}
+
+/// SE's water filter (main-def.cfg ObjectFilters `ShowWater`, key `ToggleWater`): seas and lakes fade
+/// out and in (planet.glsl's WaterSurfColor.a "water on/off animation" scales the water mask), here
+/// over SE's OverlayFadeOut / OverlayFadeIn seconds.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct WaterDisplay {
+    pub show: bool,
+    /// The shown share, 0..1, following `show`.
+    pub level: f32,
+    pub fade_in_s: f32,
+    pub fade_out_s: f32,
+}
+
+impl Default for WaterDisplay {
+    fn default() -> Self {
+        Self { show: true, level: 1.0, fade_in_s: 0.2, fade_out_s: 0.35 }
+    }
+}
+
+impl WaterDisplay {
+    /// Moves `level` towards `show` over `dt` seconds.
+    pub fn step(&mut self, dt: f32) {
+        self.level = if self.show {
+            (self.level + dt / self.fade_in_s.max(1e-3)).min(1.0)
+        } else {
+            (self.level - dt / self.fade_out_s.max(1e-3)).max(0.0)
+        };
+    }
+}
+
+fn animate_water_display(time: Res<Time>, mut water: ResMut<WaterDisplay>) {
+    let target = if water.show { 1.0 } else { 0.0 };
+    if water.level != target {
+        water.step(time.delta_secs());
+    }
+}
+
+/// SE's self-emission settings (main-def.cfg `EnableSelfEmission`, `SelfEmissionBright`; key
+/// `ToggleSelfEmission`, GUI "Self-emission" / "Self-emission brightness"): city lights, lava and
+/// thermal glow of planets (FUN_1404acdd0 drops the EMIS/THERM paths when off; FUN_1404bb110 scales
+/// GlowColor and SurfParams4.w by the brightness).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct SelfEmission {
+    pub enabled: bool,
+    pub bright: f32,
+}
+
+impl Default for SelfEmission {
+    fn default() -> Self {
+        Self { enabled: true, bright: 1.0 }
+    }
+}
+
+impl SelfEmission {
+    /// The factor on glow maps and thermal emission.
+    pub fn scale(&self) -> f32 {
+        if self.enabled { self.bright.max(0.0) } else { 0.0 }
+    }
+}
+
+fn load_surface_settings(mut commands: Commands, cfg: Res<crate::config::EngineConfig>) {
+    let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
+    let def = se_core::sc::parse(&text);
+    let d = SelfEmission::default();
+    commands.insert_resource(SelfEmission {
+        enabled: def.find_deep("EnableSelfEmission").and_then(|i| i.bool()).unwrap_or(d.enabled),
+        bright: def.find_deep("SelfEmissionBright").and_then(|i| i.f64()).map_or(d.bright, |v| v as f32),
+    });
+    let w = WaterDisplay::default();
+    let show = def.find_deep("ShowWater").and_then(|i| i.bool()).unwrap_or(w.show);
+    let f = |k: &str, d: f32| def.find_deep(k).and_then(|i| i.f64()).map_or(d, |v| v as f32);
+    commands.insert_resource(WaterDisplay {
+        show,
+        level: if show { 1.0 } else { 0.0 },
+        fade_in_s: f("OverlayFadeIn", w.fade_in_s),
+        fade_out_s: f("OverlayFadeOut", w.fade_out_s),
+    });
 }
 
 /// SE's `ThermalEmissionShift` (main-def.cfg 0), in thousand K.
@@ -315,6 +402,10 @@ pub struct PlanetMaterial {
     /// The sample layers' relief (normal, roughness, height), sampled with the samples' sampler.
     #[texture(24, dimension = "2d_array")]
     pub sample_relief: Handle<Image>,
+    /// SE's 64^3 `Noise3DSampler` (read with `textureLoad`), for the cellular noises of the airless
+    /// colour (tg_selena_color), matched to the height generator's.
+    #[texture(25, dimension = "3d")]
+    pub noise: Handle<Image>,
 }
 
 /// Pipeline key: the water surface is drawn from both sides with its own entry points.
@@ -502,6 +593,8 @@ pub struct Terrain {
     frame: u64,
     last_sun: Vec4,
     last_ambient: f32,
+    last_emission: SelfEmission,
+    last_water: f32,
     last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
@@ -645,6 +738,8 @@ impl Terrain {
             frame: 0,
             last_sun: Vec4::ZERO,
             last_ambient: 0.0,
+            last_emission: SelfEmission::default(),
+            last_water: 1.0,
             last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
             last_eclipse: EclipseUniform::default(),
@@ -766,9 +861,26 @@ fn detail_height(proc: &ProcSurface, dir: DVec3, start_scale: f64, finest_scale:
     h
 }
 
-/// Fallback albedo by SpaceEngine planet class.
-/// A node's normal map (`n` x `n` RGBA8: normal, shore code) followed by its mip chain, each level
-/// the 2x2 mean of the one above (normals renormalised). Returns the data and the level count.
+/// A normal map texel's rgb: the surface normal `n`'s departure from the smooth sphere's `up`
+/// (body frame), each component square-root encoded (`sign(d) sqrt|d|`, -1..1 to 0..255). A smooth
+/// body's map is then exactly flat, where whole normals in 8 bits quantised the sphere's own
+/// curvature into a grid that showed near the terminator (04-014), and gentle slopes keep finer
+/// steps than steep ones. planet.wesl `ground_normal` decodes it.
+fn encode_normal_offset(n: DVec3, up: DVec3) -> [u8; 3] {
+    encode_offset((n - up).as_vec3())
+}
+
+fn encode_offset(d: Vec3) -> [u8; 3] {
+    d.to_array().map(|c| ((c.signum() * c.abs().sqrt() * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8)
+}
+
+fn decode_normal_offset(rgb: [u8; 3]) -> Vec3 {
+    let e = Vec3::from_array(rgb.map(|c| c as f32 / 127.5 - 1.0));
+    e * e.abs()
+}
+
+/// A node's normal map (`n` x `n` RGBA8: normal offset, shore code) followed by its mip chain, each
+/// level the 2x2 mean of the one above. Returns the data and the level count.
 fn with_mips(level0: Vec<u8>, n: usize) -> (Vec<u8>, u32) {
     let mut all = level0;
     let (mut start, mut m, mut levels) = (0, n, 1);
@@ -777,14 +889,13 @@ fn with_mips(level0: Vec<u8>, n: usize) -> (Vec<u8>, u32) {
         let mut next = Vec::with_capacity(m2 * m2 * 4);
         for y in 0..m2 {
             for x in 0..m2 {
-                let (mut nrm, mut a) = (Vec3::ZERO, 0.0);
+                let (mut off, mut a) = (Vec3::ZERO, 0.0);
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let k = start + ((2 * y + dy).min(m - 1) * m + (2 * x + dx).min(m - 1)) * 4;
-                    nrm += Vec3::new(all[k] as f32, all[k + 1] as f32, all[k + 2] as f32) / 127.5 - 1.0;
+                    off += decode_normal_offset([all[k], all[k + 1], all[k + 2]]);
                     a += all[k + 3] as f32;
                 }
-                let nn = nrm.normalize_or_zero();
-                next.extend(nn.to_array().map(|c| ((c * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8));
+                next.extend(encode_offset(off * 0.25));
                 next.push((a / 4.0).round() as u8);
             }
         }
@@ -796,6 +907,7 @@ fn with_mips(level0: Vec<u8>, n: usize) -> (Vec<u8>, u32) {
     (all, levels)
 }
 
+/// Fallback albedo by SpaceEngine planet class.
 fn class_color(class: &str) -> Vec3 {
     match class.to_ascii_lowercase().as_str() {
         "terra" => Vec3::new(0.45, 0.42, 0.36),
@@ -863,6 +975,8 @@ pub struct DefaultTextures {
     pub black: Handle<Image>,
     /// 1x1x1 3D texture standing in for absent scattering tables.
     pub black3d: Handle<Image>,
+    /// SE's 64^3 noise texture ([`PlanetMaterial::noise`]).
+    pub noise3d: Handle<Image>,
 }
 
 struct DecodedTexture {
@@ -890,8 +1004,12 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<PlanetMaterial>::default())
             .add_plugins(MaterialPlugin::<CloudMaterial>::default())
+            .add_plugins(crate::brown_dwarf::BrownDwarfPlugin)
             .init_resource::<TileCaches>()
-            .add_systems(Startup, make_default_textures)
+            .init_resource::<SelfEmission>()
+            .init_resource::<WaterDisplay>()
+            .add_systems(Startup, (make_default_textures, load_surface_settings))
+            .add_systems(Update, animate_water_display)
             .add_systems(
                 PostUpdate,
                 // After update_terrain, so the camera collides with this frame's nodes.
@@ -929,10 +1047,19 @@ fn make_default_textures(mut commands: Commands, mut images: ResMut<Assets<Image
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
+    let n = se_core::tg::NOISE3D_SIZE as u32;
+    let noise3d = Image::new(
+        Extent3d { width: n, height: n, depth_or_array_layers: n },
+        TextureDimension::D3,
+        se_core::tg::noise3d(),
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     commands.insert_resource(DefaultTextures {
         white: images.add(solid_image([255, 255, 255, 255])),
         black: images.add(solid_image([0, 0, 0, 255])),
         black3d: images.add(black3d),
+        noise3d: images.add(noise3d),
     });
 }
 
@@ -1209,7 +1336,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
                 if nn.dot(p) < 0.0 {
                     nn = -nn;
                 }
-                data.extend(nn.to_array().map(|c| ((c * 0.5 + 0.5) * 255.0).round().clamp(0.0, 255.0) as u8));
+                data.extend(encode_normal_offset(nn, p.normalize()));
                 data.push(((0.5 + 0.5 * (h / SHORE_CODE_M).tanh()) * 255.0).round() as u8);
             }
         }
@@ -1519,7 +1646,7 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain)>,
-    ambient: Res<crate::system::AmbientLighting>,
+    (ambient, emission, water_display): (Res<crate::system::AmbientLighting>, Res<SelfEmission>, Res<WaterDisplay>),
     nodes: Query<&TerrainNode>,
     clouds_q: Query<&CloudNode>,
     mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
@@ -1619,7 +1746,7 @@ fn update_terrain(
                 rect_clouds: rcl,
                 base_color: terrain.base_color.extend(ambient.0),
                 params: Vec4::new(
-                    s.glow_bright as f32 * 1.5,
+                    s.glow_bright as f32 * 1.5 * emission.scale(),
                     terrain.water_spec.0,
                     shadow.map_or(0.0, |i| terrain.clouds[i].opacity.min(1.0)),
                     terrain.water_spec.1,
@@ -1692,10 +1819,19 @@ fn update_terrain(
                 thermal2: {
                     let d = light.star_pos.delta_m(body.pos).length().max(1.0);
                     let omega = (light.star_radius_m / d).powi(2).max(1e-30);
-                    Vec4::new((1.0 / (std::f64::consts::PI * omega)) as f32, light.star_teff, THERMAL_EMISSION_SHIFT, 0.0)
+                    Vec4::new((1.0 / (std::f64::consts::PI * omega)) as f32, light.star_teff, THERMAL_EMISSION_SHIFT, emission.scale())
                 },
                 light_dir: extra_dir,
                 light_color: extra_color,
+                glow: Vec3::from_array(s.glow_color.map(|c| c as f32)).extend(if s.glow_permanent { 0.0 } else { 1.0 }),
+                ice: Vec4::new(
+                    s.spec_bright_ice
+                        .unwrap_or_else(|| se_core::planet_tiles::ice_spec_default(terrain.surf_gen.classes.surface, terrain.atmosphere.is_some()))
+                        as f32,
+                    s.roughness_ice.unwrap_or(se_core::planet_tiles::ROUGHNESS_ICE_DEFAULT) as f32,
+                    if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
+                    water_display.level,
+                ),
             };
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             let ground = PlanetMaterial {
@@ -1715,6 +1851,7 @@ fn update_terrain(
                 soil_norm: surface_tex.soil_norm.clone(),
                 soil_rhao: surface_tex.soil_rhao.clone(),
                 sample_relief: surface_tex.sample_relief.clone(),
+                noise: defaults.noise3d.clone(),
             };
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
             let ground_u = ground.u;
@@ -1989,10 +2126,13 @@ fn update_terrain(
         }
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
-        if terrain.last_ambient != ambient.0 {
+        if terrain.last_ambient != ambient.0 || terrain.last_emission != *emission || terrain.last_water != water_display.level {
             terrain.last_ambient = ambient.0;
+            terrain.last_emission = *emission;
+            terrain.last_water = water_display.level;
             terrain.last_sun = Vec4::ZERO;
         }
+        let glow_bright = terrain.surface.glow_bright as f32 * 1.5 * emission.scale();
         let eclipse = terrain.eclipse;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
@@ -2010,6 +2150,9 @@ fn update_terrain(
                                 (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
                                 m.u.base_color.w = ambient.0;
                                 m.u.eclipse = eclipse;
+                                m.u.params.x = glow_bright;
+                                m.u.thermal2.w = emission.scale();
+                                m.u.ice.w = water_display.level;
                             }
                         }
                     }
@@ -2340,5 +2483,57 @@ impl Material for CloudMaterial {
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_offset_is_flat_on_a_smooth_sphere() {
+        let up = DVec3::new(0.3, 0.8, -0.52).normalize();
+        assert!(decode_normal_offset(encode_normal_offset(up, up)).length() < 1e-4);
+    }
+
+    #[test]
+    fn normal_offset_round_trips_finer_on_gentle_slopes() {
+        let up = DVec3::new(0.0, 1.0, 0.0);
+        for (tilt, tol) in [(0.01, 0.002), (0.1, 0.004), (0.6, 0.02)] {
+            let n = DVec3::new(tilt, 1.0, 0.0).normalize();
+            let back = (up.as_vec3() + decode_normal_offset(encode_normal_offset(n, up))).normalize();
+            assert!((back - n.as_vec3()).length() < tol, "tilt {tilt}: {back} vs {n}");
+        }
+    }
+
+    #[test]
+    fn water_display_fades_over_se_overlay_times() {
+        let mut w = WaterDisplay { show: false, ..Default::default() };
+        w.step(0.175);
+        assert!((w.level - 0.5).abs() < 1e-5, "{}", w.level);
+        w.step(1.0);
+        assert_eq!(w.level, 0.0);
+        w.show = true;
+        w.step(0.1);
+        assert!((w.level - 0.5).abs() < 1e-5);
+        w.step(1.0);
+        assert_eq!(w.level, 1.0);
+    }
+
+    #[test]
+    fn self_emission_scale() {
+        assert_eq!(SelfEmission::default().scale(), 1.0);
+        assert_eq!(SelfEmission { enabled: true, bright: 2.5 }.scale(), 2.5);
+        assert_eq!(SelfEmission { enabled: false, bright: 2.5 }.scale(), 0.0);
+    }
+
+    #[test]
+    fn normal_offset_mips_average() {
+        let flat = encode_offset(Vec3::ZERO);
+        let level0: Vec<u8> = (0..4).flat_map(|_| [flat[0], flat[1], flat[2], 200]).collect();
+        let (all, levels) = with_mips(level0, 2);
+        assert_eq!(levels, 2);
+        assert!(decode_normal_offset([all[16], all[17], all[18]]).length() < 1e-4);
+        assert_eq!(all[19], 200);
     }
 }
