@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 172 have been fixed since (listed at the end); the tables count the 39 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 173 have been fixed since (listed at the end); the tables count the 38 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 9 | 18 | 12 |
+| Gaps | 0 | 0 | 9 | 18 | 11 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 6 | 23 | 10 |
+| Gaps | 5 | 23 | 10 |
 
 | Area | Kept |
 |---|---|
@@ -122,7 +122,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 04 Planet surfaces | 3 |
 | 05 Atmospheres, rings, comets | 3 |
 | 06 Procedural generation | 6 |
-| 07 Camera and time | 3 |
+| 07 Camera and time | 2 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 7 |
 | 10 Scripts, audio, spacecraft | 9 |
@@ -416,15 +416,6 @@ Atmosphere table generation: SE generates scattering tables on the GPU (ag_*.gls
 - SE evidence: exe "Generating atmosphere model \"%s\"" FUN_14044a760; strings seAtmosphereModelCache::Precompute; ag_*.glsl; main-def.cfg AtmoHalfPrecision AtmoAnalyticTransm AtmoFixHorizon
 - Port: crates/se_engine/src/atmosphere.rs:262-278
 - Check: FUN_14044ad90 loads "<model>.atm" via LoadBinary FUN_14044b650 if the file exists and otherwise (when precompute is enabled) queues task 6 whose handler RecreateModel FUN_14044a760 reads the model from atmospheres.cfg, logs "Generating atmosphere model" and runs the ag_*.glsl precompute and SaveBinary FUN_14044b060; the stock Atmospheres.pak ships .atm files for all 13 uncommented atmospheres.cfg models, and main-def.cfg says AtmoHalfPrecision/AtmoAnalyticTransm/AtmoFixHorizon apply only after "remove cache", so changing them does not by itself regenerate; the port (atmosphere.rs:262-278) only loads shipped .atm files and never reads atmospheres.cfg (no RayleighBeta/MieScaBeta hit in crates/)
-
-### 07-022 · Camera and time
-
-Timing and loader modes: SE switches between real-time and fixed frame-time simulation (TimingMode, Shift+\, "Real time mode" / "Frame time mode", used for video capture) and asynchronous loading (LoaderMode, "Asynchronous loading mode"); port always advances by real frame time
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: FUN_1405ba8f0 TimingMode = Shift+\; eng-gui "Real time mode" "Frame time mode" "Asynchronous loading mode"
-- Port: crates/se_engine/src/universe.rs:131-134
-- Check: The exe has the UTF-16 strings "Real time mode"/"Frame time mode" and "Immediate/Interleaved/Asynchronous loading mode" (strings_utf16.txt:2998-3003; they are in the other *-gui.cfg locales, not in eng-gui.cfg), TimingMode/LoaderMode are bindable actions (controller cfgs, default Shift+\ in the auditor's default-key table) and main-def.cfg:477 has LoaderMode 0/1/2; the port's advance_time (universe.rs:131-134) always uses the real frame delta and has no fixed-frame-time or loader-mode switch
 
 ### 09-018 · Graphics and settings
 
@@ -856,6 +847,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **07-016** (Camera and time, fixed 2026-10-29): Secondary camera commands: SE has Go to object's centre (Ctrl+G, into galaxies, nebulae, barycentres), Horizon... Fix: Ctrl+G goes to the selection's centre, End (script Horizon) levels the view to the selection's horizon in CenterTime, Ctrl+Numpad 5/4/6/8/2 look back/left/right/up/down, Numpad 5 (script StopRotation) stops turning, Home resets the zoom, middle click zooms to ZoomFOV 20 and back.
 - **07-018** (Camera and time, fixed 2026-10-29): Controls settings: SE has a Controls settings tab with per-action Key 1 / Key 2 rebinding (seKeyBind, "<Press ... Fix: FOV range MinFOV 1 arcsec to MaxFOV 120 degrees, and PgUp/PgDn, Home and middle-click zooms animate over ZoomTime 0.25 s (logarithmically).
 - **07-021** (Camera and time, fixed 2026-10-30): Navigation script commands: SE scripts can use Horizon, Track/Untrack, MoveMode, Speed (pc/s), Fly, Turn/StopT... Fix: Same work as 10-029 (camera commands) and 10-009 (input locks); see those notes for the SE functions. Ported: Horizon (typed), Track/Untrack (already working), Speed (pc/s), Fly, Turn/StopTurn, StopFly, StopRotation, User{Move,Rotation,Time}Control locks; MoveMode and GotoURL are parsed and logged. Checked: unit tests; `triggers.se` and the tutorial runs (tut-00/01 lock and free movement and time). Not ported: GotoURL se:// locations, MoveMode semantics.
+- **07-022** (Camera and time, fixed 2026-10-30): Timing and loader modes: SE switches between real-time and fixed frame-time simulation (TimingMode, Shift+\, "... Fix: SE: key TimingMode (Shift+Backslash, key table FUN_1405ba8f0) toggles 'Real time mode' / 'Frame time mode' (main-def Export RealTime true 'velocity not depend on FPS', RealTimeFPS 60, used when recording); LoaderMode 0 immediate / 1 interleaved / 2 asynchronous (main-def 2). Port: universe.rs TimingMode (RealTime, RealTimeFPS from main-def), applied to every system through Bevy's TimeUpdateStrategy (Automatic, or ManualDuration 1/RealTimeFPS per frame); hud.rs Shift+Backslash toggles it with SE's messages (plain Backslash still resets the rate, Ctrl+Backslash the current time). Not ported: the immediate and interleaved loader modes (the port always loads asynchronously, SE's default). Checked: build and a run.
 - **08-002** (Interface, fixed 2026-10-29): Interface skin: SE draws a skinned GUI (Skins.pak, 25 skins, default "Flat Blue": textured widgets from interf... Fix: SE's interface skins (`skin.rs`): the chosen `* skin.cfg` (Settings "Interface skin", saved as `Skin`, default Flat Blue, all 25 listed) sets egui's visuals from the colours its texture gives the dialog, button, slider and edit widgets (TextureHSL, WinColor*), its TextColor*, DialogShadowWidth, DialogHeaderCapital (window titles in capitals), ObjectInfoColor and Info*Color (info table); windows show the blurred frame behind them (gui.glsl BLUR_BACKGROUND: the bloom chain's blurred 1/8 level, tone-mapped, BackgroundBrightness of it added); SE's NotoSans font for English too. Not done: the textured 9-slice widget frames and the texture's toolbar icons (egui draws flat widgets), menu buttons (no main menu).
 - **08-003** (Interface, fixed 2026-10-29): Toolbars: SE has four toolbars (Main left: icons opening every tool window; Filters right: object and overlay ... Fix: SE's four toolbars: main (tool windows) bottom left, filters on the right, navigation (date, rate, Go to/Center/Clear) and camera (nearest body, velocity, FOV, star magnitude limit) along the bottom; the top bar is gone. Not done: SE's icons and hints, auto-hide (Lock*Panel), exposure/photo mode and planet/galaxy magnitude limits.
 - **08-004** (Interface, fixed 2026-10-28): Default overlay state: SE starts with orbits off (ShowOrbits false), labels off (LabelsMode 0), markers off, s... Fix: Orbits, labels, star names and the FPS readout start off as in SE; "Show FPS" in Settings (saved as `FPS`) or env `SE_SHOW_FPS=1` shows the frame rate.
