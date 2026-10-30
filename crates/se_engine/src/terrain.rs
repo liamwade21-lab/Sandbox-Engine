@@ -1779,8 +1779,8 @@ fn update_terrain(
         let shadow = terrain.layers.as_ref().and_then(|l| terrain.shadow_clouds(l));
         let thermal = thermal_uniform(terrain, light);
         let keys: Vec<TileKey> = terrain.nodes.keys().copied().collect();
+        let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
         for key in keys {
-            let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
             let slot = terrain.nodes.get_mut(&key).unwrap();
             let NodeState::Loading(task) = &mut slot.state else { continue };
             let Some(build) = check_ready(task) else { continue };
@@ -2248,9 +2248,12 @@ fn update_terrain(
         }
     }
     // SE's CacheSizeLandNode: the nodes of all planets together; beyond it the least recently used
-    // ones go first (only nodes unused for STALE_FRAMES, never a root or one still loading).
+    // ones go first (only nodes unused for STALE_FRAMES, never a root or one still loading). The
+    // port keeps at most LAND_NODES_MAX whatever the setting: its resident nodes cost it time every
+    // frame, and main-def.cfg's 10000 took a surface flight from ~50 to ~280 ms a frame.
     let total: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.len()).sum();
-    if total > memory.land_nodes {
+    let cap = memory.land_nodes.min(LAND_NODES_MAX);
+    if total > cap {
         let mut stale: Vec<(u64, Entity, TileKey)> = bodies
             .iter()
             .flat_map(|(e, _, _, t, _)| {
@@ -2261,7 +2264,7 @@ fn update_terrain(
             })
             .collect();
         stale.sort_unstable_by_key(|s| std::cmp::Reverse(s.0));
-        for (_, e, k) in stale.into_iter().take(evict_count(total, memory.land_nodes)) {
+        for (_, e, k) in stale.into_iter().take(evict_count(total, cap)) {
             let Ok((_, _, _, mut terrain, _)) = bodies.get_mut(e) else { continue };
             terrain.node_heights.remove(&k);
             terrain.node_hrange.remove(&k);
@@ -2275,6 +2278,9 @@ fn update_terrain(
         }
     }
 }
+
+/// The port's ceiling on resident terrain nodes (its earlier per-planet eviction threshold).
+const LAND_NODES_MAX: usize = 1250;
 
 /// A node unused for this many frames may be evicted.
 const STALE_FRAMES: u64 = 30;
