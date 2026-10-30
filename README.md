@@ -61,8 +61,13 @@ window, which lists the ones shipped in `data/scripts` (menu scene, tutorials). 
 `SyncRot`, `Free`, `Orbit`/`StopOrbit`, `FOV`, `SpeedKm`, `TimeScale`, `Date`, `StopTime`/`StartTime`, `Wait`,
 `WaitTrigger` (+ `BeginMultiTrigger`/`EndMultiTrigger`) for the camera, selection, time and distance events,
 `ShowMessage`/`WaitMessage`/`Print` (shown as an on-screen caption), `Set`/`SetForce`/`WaitVar`/`SaveVars`/`RestoreVars`/
-`Interpolate`, `If`/`Else`/`Loop`, `Run`. Tutorial widget commands (`HighlightWidget`, `ShowDialog`, `UserMoveControl`, ...),
-waypoints and sounds are logged once and skipped, and triggers on GUI actions the port lacks time out after 4 s.
+`Interpolate`, `If`/`Else`/`Loop`, `Run`, and SE's `Get`/`Reset` on about 60 settings (point sources, overlays and filters, grids,
+bloom and flares, the feature switches, magnitude limits, colour correction, exposure). Also `Waypoint`/`DeleteWaypoint` (drawn at
+their size, selectable, with approach triggers), the tutorial GUI hooks (`HighlightWidget` blinking, message-box position,
+`HideAllToolbars`, screen fades), input locks (`UserMoveControl`/`UserRotationControl`/`UserTimeControl` Disabled or Limited,
+released when the script ends), music commands, the camera commands `Fly`, `Turn`/`StopTurn`, `StopFly`, `StopRotation`, `Speed`,
+`Horizon`, `CheckVersion`, and `Goto`'s flight profile (`AccelTime`/`DecelTime`/`AccelPower`/`DecelPower`, `GotoSpeed`). Triggers
+on GUI the port lacks (universe map, system chart, dialog clicks) time out after 4 s; all eight tutorials run to the end.
 Scripted runs (`--script`) do not read or write the saved settings. Env `SE_SCRIPTS_WINDOW=1` opens the Scripts window at start.
 
 Tests (engine-independent core, about 190 tests):
