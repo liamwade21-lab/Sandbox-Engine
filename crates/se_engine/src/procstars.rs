@@ -134,7 +134,7 @@ pub struct ProcStarSet;
 impl Plugin for ProcStarsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NearestProcStar>()
-            .add_systems(Startup, setup_field)
+            .add_systems(Startup, (load_star_generator, setup_field))
             .add_systems(
                 PostUpdate,
                 (follow_galaxy, stream_nodes, position_nodes, find_nearest)
@@ -288,8 +288,28 @@ impl ProcStarField {
     }
 }
 
+/// SE's `StarGenerator` limits (main-def.cfg): procedural stars brighter than `StarMaxAppMagn` as
+/// seen from the Sun, or nearer to it than `StarMinDistNormal`, are left to the catalogs
+/// (FUN_1405945e0 keeps the magnitude as a brightness coefficient and the distances squared).
+#[derive(Clone, Copy, Debug)]
+struct StarGenLimits {
+    max_app_mag: f64,
+    min_dist_pc: f64,
+}
+
+static STAR_GEN: std::sync::OnceLock<StarGenLimits> = std::sync::OnceLock::new();
+
+fn star_gen() -> StarGenLimits {
+    *STAR_GEN.get_or_init(|| StarGenLimits { max_app_mag: 10.0, min_dist_pc: 2.5 })
+}
+
+fn load_star_generator(cfg: Res<crate::config::EngineConfig>) {
+    let get = |k: &str, d: f64| crate::stars::main_def_f64(&cfg, k).unwrap_or(d);
+    let _ = STAR_GEN.set(StarGenLimits { max_app_mag: get("StarMaxAppMagn", 10.0), min_dist_pc: get("StarMinDistNormal", 2.5) });
+}
+
 /// The stars of one node, without those the real catalogs already provide (bright-from-Earth
-/// stars near the Sun).
+/// stars and the Sun's neighbourhood).
 fn node_stars(
     octree: &StarOctree,
     frame: GalaxyFrame,
@@ -299,9 +319,10 @@ fn node_stars(
     keep: &dyn Fn(DVec3) -> bool,
 ) -> Vec<ProcStar> {
     let sun_model = frame.to_model(DVec3::ZERO);
+    let lim = star_gen();
     let exclude = move |p: DVec3, m: f64| {
         let d = (p - sun_model).length().max(0.01);
-        milky_way && d < 2_500.0 && m + 5.0 * (d / 10.0).log10() < 8.5
+        milky_way && (d < lim.min_dist_pc || m + 5.0 * (d / 10.0).log10() < lim.max_app_mag)
     };
     octree.generate_where(key, density, &exclude, keep)
 }

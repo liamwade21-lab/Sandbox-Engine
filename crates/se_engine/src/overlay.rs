@@ -14,7 +14,7 @@ use se_core::proc_galaxy::ProcGalaxy;
 use se_core::units::METERS_PER_PC;
 
 use crate::camera::{CommandQueue, FlyCamera, MainCamera};
-use crate::clusters::{ClusterField, member_info};
+use crate::clusters::ClusterField;
 use crate::data::SeData;
 use crate::galaxies::{GalaxySettings, GalaxyState, far_mag_limits, profile_type};
 use crate::procgalaxies::{ProcGalaxyField, promote_galaxy};
@@ -1044,6 +1044,8 @@ fn compute_markers(
     cams: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mut markers: ResMut<ScreenMarkers>,
     mut sky_cache: Local<(u32, Vec<(ObjectRef, f32)>)>,
+    // 02-014: SE's ShowCatClusters / ShowProcClusters also hide the clusters' labels and markers.
+    (cluster_filter, proc_settings): (Res<crate::clusters::ClusterSettings>, Res<crate::procgalaxies::ProcSettings>),
 ) {
     markers.items.clear();
     let Ok((camera, _)) = cams.single() else { return };
@@ -1137,7 +1139,7 @@ fn compute_markers(
             }
         }
         if wanted(MarkerKind::Cluster) {
-            for (i, c) in cat.clusters.iter().enumerate() {
+            for (i, c) in cat.clusters.iter().enumerate().filter(|(_, c)| cluster_filter.shows(c, proc_settings.clusters)) {
                 dso(ObjectRef::Cluster(i as u32), c.pos_pc, c.radius_pc, c.abs_mag);
             }
         }
@@ -1205,7 +1207,13 @@ fn draw_labels(
         }
         let p = egui::pos2(m.screen.x, m.screen.y);
         let color = skin.kind(color_key(&data, m.obj, m.kind));
-        if marker {
+        if marker && m.kind == MarkerKind::Cluster {
+            // 02-013: SE marks star clusters with diamonds ("green diamonds highlight star clusters",
+            // the tutorial's locale text), in the skin's cluster colour.
+            let h = MARKER_PX * 0.5;
+            let pts = vec![p + egui::vec2(0.0, -h), p + egui::vec2(h, 0.0), p + egui::vec2(0.0, h), p + egui::vec2(-h, 0.0)];
+            painter.add(egui::Shape::closed_line(pts, egui::Stroke::new(1.0, color)));
+        } else if marker {
             painter.circle_stroke(p, MARKER_PX * 0.5, egui::Stroke::new(1.0, color));
         }
         if label {
@@ -1314,6 +1322,7 @@ fn pick_in_sky(
     clusters: Option<&ClusterField>,
     galaxies: Option<&ProcGalaxyField>,
     galaxy_mag_limits: [f64; 4],
+    cluster_shown: &dyn Fn(&se_core::catalog::ClusterRecord) -> bool,
 ) -> Option<Picked> {
     let cat = &data.catalog;
     let cos_max = (PICK_PX * rad_per_px).cos();
@@ -1346,9 +1355,9 @@ fn pick_in_sky(
         }
     }
     if let Some(clusters) = clusters {
-        for (p, m, ci, k) in clusters.members(cat) {
+        for (p, m, id) in clusters.members(cat).filter(|(_, m, _)| !m.hidden) {
             if let Some(d) = near_ray(p) {
-                offer(app(m.drawn_mag as f64, d), &|| Picked::Proc(member_info(cat, ci, k, m), p));
+                offer(app(m.abs_mag as f64, d), &|| Picked::Proc(clusters.member_info(cat, id, m), p));
             }
         }
     }
@@ -1387,8 +1396,12 @@ fn pick_in_sky(
         };
         (g.pos_pc, g.display_radius_pc(), Some((g.vis_abs_mag() as f64, ptype)), Hit::Gal(g))
     });
-    let clusters =
-        cat.clusters.iter().enumerate().map(|(i, c)| (c.pos_pc, c.radius_pc, None, Hit::Obj(ObjectRef::Cluster(i as u32))));
+    let clusters = cat
+        .clusters
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| cluster_shown(c))
+        .map(|(i, c)| (c.pos_pc, c.radius_pc, None, Hit::Obj(ObjectRef::Cluster(i as u32))));
     let nebulae = cat.nebulae.iter().enumerate().map(|(i, n)| (n.pos_pc, n.radius_pc, None, Hit::Obj(ObjectRef::Nebula(i as u32))));
     let best = catalog_galaxies
         .chain(proc_galaxies)
@@ -1422,7 +1435,12 @@ fn pick_on_click(
     cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     star_settings: Res<StarSettings>,
     (field, clusters, mut galaxies): (Option<Res<ProcStarField>>, Option<Res<ClusterField>>, Option<ResMut<ProcGalaxyField>>),
-    (gal_settings, gal_state): (Res<GalaxySettings>, Option<Res<GalaxyState>>),
+    (gal_settings, gal_state, cluster_filter, proc_settings): (
+        Res<GalaxySettings>,
+        Option<Res<GalaxyState>>,
+        Res<crate::clusters::ClusterSettings>,
+        Res<crate::procgalaxies::ProcSettings>,
+    ),
     mut script: ResMut<CommandQueue>,
 ) {
     let over_ui = egui.ctx_mut().map(|c| crate::hud::pointer_over_ui(c)).unwrap_or(false);
@@ -1472,6 +1490,7 @@ fn pick_on_click(
             gal_state.map_or(1.0, |s| s.gain),
             window.resolution.physical_height() as f64 * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan(),
         ),
+        &|c| cluster_filter.shows(c, proc_settings.clusters),
     );
     match picked {
         Some(Picked::Object(o)) => cam.selected = Some(o),

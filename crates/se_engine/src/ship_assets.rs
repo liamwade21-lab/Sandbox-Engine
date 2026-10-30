@@ -35,10 +35,10 @@ use se_core::vfs::Vfs;
 /// Uniform block of [`ShipSurfaceMaterial`] (`Ship` in `ship.wesl`).
 #[derive(Clone, Copy, Debug, ShaderType, Default)]
 pub struct ShipUniform {
-    /// xyz: unit direction towards the star; w: star intensity.
-    pub sun_dir: Vec4,
-    /// rgb: star colour.
-    pub sun_color: Vec4,
+    /// xyz: unit direction towards each of up to 4 lights (SE's `MAX_LIGHTS`); w: 1 for a light in use.
+    pub light_dir: [Vec4; 4],
+    /// rgb: each light's colour times its intensity and eclipse shadow.
+    pub light_color: [Vec4; 4],
     /// rgb: diffuse tint; w: ambient level.
     pub tint: Vec4,
     /// rgb: emissive colour times brightness; w: alpha cut-off (negative: opaque).

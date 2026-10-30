@@ -1,5 +1,5 @@
-// Spacecraft hull material: Lambert diffuse from the system's star, a small ambient
-// term, an emissive map (windows, lights) and optional alpha cut-out (frame lattices).
+// Spacecraft hull material (SE's ship.glsl): Lambert diffuse from up to 4 lights, the ambient
+// level, an emissive map (windows, lights) and optional alpha cut-out (frame lattices).
 // Textures are sRGB, so sampling gives linear colour. Two-sided: the normal is
 // flipped on back faces.
 
@@ -7,10 +7,10 @@ import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_lo
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 
 struct Ship {
-    // xyz: unit direction towards the star; w: star intensity
-    sun_dir: vec4<f32>,
-    // rgb: star colour
-    sun_color: vec4<f32>,
+    // xyz: unit direction towards each light; w: 1 for a light in use
+    light_dir: array<vec4<f32>, 4>,
+    // rgb: light colour * intensity * eclipse shadow
+    light_color: array<vec4<f32>, 4>,
     // rgb: diffuse tint; w: ambient level
     tint: vec4<f32>,
     // rgb: emissive colour * brightness; w: alpha cut-off (negative = opaque)
@@ -57,12 +57,14 @@ fn fragment(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) v
     if !front {
         n = -n;
     }
-    let l = normalize(ship.sun_dir.xyz);
-    let ndl = max(dot(n, l), 0.0);
     let albedo = tex.rgb * ship.tint.rgb;
-    let sun = ship.sun_color.rgb * ship.sun_dir.w * ndl;
-    // Faint hemispheric fill so the night side is not pure black.
-    let fill = ship.tint.w * (0.6 + 0.4 * (0.5 + 0.5 * dot(n, l)));
+    // FragColor = (AmbientParams.x * diffColor + sum of LightColor[i] * cosI * diffColor).
+    var lit = vec3<f32>(ship.tint.w);
+    for (var i = 0; i < 4; i++) {
+        if ship.light_dir[i].w > 0.5 {
+            lit += ship.light_color[i].rgb * max(dot(n, normalize(ship.light_dir[i].xyz)), 0.0);
+        }
+    }
     let emissive = textureSample(emis_tex, emis_smp, in.uv).rgb * ship.emis.rgb;
-    return vec4<f32>(albedo * (sun + vec3<f32>(fill)) + emissive, 1.0);
+    return vec4<f32>(albedo * lit + emissive, 1.0);
 }

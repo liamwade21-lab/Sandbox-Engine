@@ -479,31 +479,19 @@ pub fn planet_name(star: &str, n: usize) -> String {
 // Classification words (SE: temperature / atmosphere / volatiles / bulk)
 // ---------------------------------------------------------------------------------------
 
-/// Temperature class word from the mean surface temperature in kelvin.
-/// Words are SE's (torrid, hot, warm, temperate, cool, cold, frigid); thresholds are designed.
+/// Temperature class word from the mean surface temperature in kelvin, by SE's thresholds
+/// (> 1000 torrid, > 500 hot, > 330 warm, > 250 temperate, > 170 cool, > 90 cold, else frigid;
+/// `surface_gen::temp_class`).
 pub fn temperature_class(t_k: f64) -> &'static str {
-    match t_k {
-        t if t < 130.0 => "frigid",
-        t if t < 240.0 => "cold",
-        t if t < 273.0 => "cool",
-        t if t < 310.0 => "temperate",
-        t if t < 350.0 => "warm",
-        t if t < 600.0 => "hot",
-        _ => "torrid",
-    }
+    const W: [&str; 7] = ["torrid", "hot", "warm", "temperate", "cool", "cold", "frigid"];
+    W[crate::surface_gen::temp_class(t_k as f32) as usize]
 }
 
-/// Atmosphere class word from the surface pressure in atm (airless, infrabaric, hypobaric,
-/// mesobaric, hyperbaric, ultrabaric). Words are SE's; thresholds are designed.
+/// Atmosphere class word from the surface pressure in atm, by SE's thresholds (FUN_1404caaa0:
+/// 1e-6, 1e-3, 0.1, 10 and 1000 atm; `surface_gen::atmo_class`).
 pub fn pressure_class(p_atm: f64) -> &'static str {
-    match p_atm {
-        p if p < 1e-7 => "airless",
-        p if p < 1e-3 => "infrabaric",
-        p if p < 0.1 => "hypobaric",
-        p if p < 10.0 => "mesobaric",
-        p if p < 500.0 => "hyperbaric",
-        _ => "ultrabaric",
-    }
+    const W: [&str; 6] = ["airless", "infrabaric", "hypobaric", "mesobaric", "hyperbaric", "ultrabaric"];
+    W[crate::surface_gen::atmo_class(crate::surface_gen::bulk::TERRA, p_atm as f32).clamp(0, 5) as usize]
 }
 
 /// Volatiles class word from the liquid-ocean and ice coverage fractions.
@@ -526,29 +514,15 @@ pub fn volatile_class(ocean_cover: f64, ice_cover: f64) -> &'static str {
     }
 }
 
-/// Size prefix (micro, mini, sub, "", super, mega) for a bulk class and mass in Earth
-/// masses. SE's size words exist in its locale files; the mass limits here are designed.
+/// Size prefix (micro, mini, sub, "", super, mega) for a bulk class and mass in Earth masses, by
+/// SE's limits (FUN_1404cabf0: terras 0.002/0.02/0.2/2/10, Neptunes 4/10/25/62.5, Jupiters
+/// 0.2/0.5/2.5/12.5 Jupiter masses; `surface_gen::size_class`).
 pub fn size_prefix(bulk: &str, mass_me: f64) -> &'static str {
-    let pick = |limits: [f64; 5]| -> &'static str {
-        const W: [&str; 6] = ["micro", "mini", "sub", "", "super", "mega"];
-        W[limits.iter().take_while(|l| mass_me >= **l).count()]
-    };
+    const W: [&str; 6] = ["micro", "mini", "sub", "", "super", "mega"];
     match bulk {
-        "Terra" | "Ferria" | "Carbonia" | "Aquaria" | "Chthonia" => pick([1e-3, 0.05, 0.5, 2.0, 10.0]),
-        "Neptune" => match mass_me {
-            m if m < 6.0 => "mini",
-            m if m < 12.0 => "sub",
-            m if m < 30.0 => "",
-            m if m < 60.0 => "super",
-            _ => "mega",
-        },
-        "Jupiter" => match mass_me {
-            m if m < 30.0 => "mini",
-            m if m < 150.0 => "sub",
-            m if m < 1000.0 => "",
-            m if m < 2500.0 => "super",
-            _ => "mega",
-        },
+        "Terra" | "Ferria" | "Carbonia" | "Aquaria" | "Chthonia" | "Neptune" | "Jupiter" => {
+            W[crate::surface_gen::size_class(crate::surface_gen::bulk_of(bulk), mass_me as f32).clamp(0, 5) as usize]
+        }
         _ => "",
     }
 }
@@ -2309,6 +2283,23 @@ fn emit_body(out: &mut String, b: &Body) {
 mod tests {
     use super::*;
     use crate::catalog::{BodyTag, Catalog, ObjectRef};
+
+    #[test]
+    fn class_words_use_ses_thresholds() {
+        assert_eq!(temperature_class(260.0), "temperate");
+        assert_eq!(temperature_class(249.0), "cool");
+        assert_eq!(temperature_class(95.0), "cold");
+        assert_eq!(temperature_class(1001.0), "torrid");
+        assert_eq!(pressure_class(1.0), "mesobaric");
+        assert_eq!(pressure_class(5e-7), "airless");
+        assert_eq!(pressure_class(2e-6), "infrabaric");
+        // Earth, Saturn, Jupiter, Neptune and a 0.01 Me body.
+        assert_eq!(size_prefix("Terra", 1.0), "");
+        assert_eq!(size_prefix("Jupiter", 95.2), "sub");
+        assert_eq!(size_prefix("Jupiter", 317.8), "");
+        assert_eq!(size_prefix("Neptune", 17.1), "");
+        assert_eq!(size_prefix("Terra", 0.01), "mini");
+    }
 
     fn sun_like(name: &str) -> StarParams {
         StarParams {
