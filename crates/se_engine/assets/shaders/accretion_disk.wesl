@@ -1,136 +1,336 @@
-// Accretion-disk emission model, used by blackhole_lens.wesl.
+// SpaceEngine's volumetric accretion disk and jets (gr_intersection.glh: DiskProperties,
+// JetProperties, ShellFbm, VolumeStep, IntegrationStep), used by blackhole_lens.wesl.
 //
-// All radii are in Schwarzschild radii (r_s = 1). The disk is an infinitely thin
-// annulus in the hole's equatorial plane; the lens shader finds where each
-// (curved) light ray crosses that plane and asks this module for the radiance
-// of the gas at that point.
+// SE works in units of its render sphere (DistortionRadius); here every length is in
+// Schwarzschild radii (SE's Rg, r_s = 1). SE's sphere-unit expressions reduce to these:
+// rho * invGravRadius -> rho, 1300 * r * gravRadius * distRadCorr -> 1.3 r,
+// 1e-3 * rayDistance * invGravRadius -> 1e-3 * path length. Densities keep SE's per-sphere-unit
+// scale; the step length is multiplied by gravS (= Rg / sphere radius) where SE integrates.
 
 const PI: f32 = 3.14159265359;
-const TAU: f32 = 6.28318530718;
 
-// ---------------------------------------------------------------------------
-// Noise
-
-fn hash21(p: vec2<f32>) -> f32 {
-    var q = fract(p * vec2<f32>(0.1031, 0.1030));
-    q = q + dot(q, q.yx + 33.33);
-    return fract((q.x + q.y) * q.x);
-}
-
-// Periodic value noise: x wraps with period `period` (an integer number of cells).
-fn vnoise(p: vec2<f32>, period: f32) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let s = f * f * (3.0 - 2.0 * f);
-    let x0 = i.x - period * floor(i.x / period);
-    let x1 = (i.x + 1.0) - period * floor((i.x + 1.0) / period);
-    let a = hash21(vec2<f32>(x0, i.y));
-    let b = hash21(vec2<f32>(x1, i.y));
-    let c = hash21(vec2<f32>(x0, i.y + 1.0));
-    let d = hash21(vec2<f32>(x1, i.y + 1.0));
-    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
-}
-
-// Turbulence in (azimuth, ln r): three octaves, streaky along the orbit.
-fn disk_turbulence(psi: f32, ln_r: f32) -> f32 {
-    let a = psi / TAU;
-    var n = 0.0;
-    var amp = 0.5;
-    var nphi = 28.0;
-    var nr = 9.0;
-    var norm = 0.0;
-    for (var o = 0; o < 3; o = o + 1) {
-        let p = vec2<f32>(a * nphi, ln_r * nr + f32(o) * 17.3);
-        n = n + amp * vnoise(p, nphi);
-        norm = norm + amp;
-        amp = amp * 0.5;
-        nphi = nphi * 2.0;
-        nr = nr * 1.9;
-    }
-    return n / norm;
-}
-
-// ---------------------------------------------------------------------------
-// Colour
-
-// Linear sRGB colour of a black body, normalised so the largest channel is 1
-// (Tanner Helland's fit, valid roughly 1000 K - 40000 K).
-fn blackbody(temp: f32) -> vec3<f32> {
-    let t = clamp(temp, 1000.0, 40000.0) / 100.0;
-    var c: vec3<f32>;
-    if t <= 66.0 {
-        c.x = 1.0;
-        c.y = 0.390081579 * log(t) - 0.631841444;
-    } else {
-        c.x = 1.292936186 * pow(t - 60.0, -0.1332047592);
-        c.y = 1.129890861 * pow(t - 60.0, -0.0755148492);
-    }
-    if t >= 66.0 {
-        c.z = 1.0;
-    } else if t <= 19.0 {
-        c.z = 0.0;
-    } else {
-        c.z = 0.543206789 * log(t - 10.0) - 1.196254089;
-    }
-    c = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
-    // sRGB -> linear
-    return pow(c, vec3<f32>(2.2));
-}
-
-// ---------------------------------------------------------------------------
-// Disk
-
-// Shakura-Sunyaev / Novikov-Thorne-like temperature run, normalised to 1 at its
-// peak (r = 1.36 r_in).
-fn disk_temperature_profile(r: f32, r_in: f32) -> f32 {
-    let x = r_in / r;
-    return pow(x, 0.75) * pow(max(1.0 - sqrt(x), 0.0), 0.25) / 0.4878;
-}
-
-struct DiskSample {
-    // Radiance (linear HDR) already weighted by the cell's opacity.
-    rgb: vec3<f32>,
-    // Opacity of the gas at this crossing (0..1).
-    alpha: f32,
+struct Hole {
+    // xyz: unit view-space direction camera -> hole, w: camera distance (r_s).
+    dir_d: vec4<f32>,
+    // xyz: disk normal (spin axis, SE's +y), w: inner radius (r_s); <= 0: no disk.
+    axis_in: vec4<f32>,
+    // xyz: disk x axis, w: outer radius (r_s).
+    xref_out: vec4<f32>,
+    // x: influence radius (rad), y: gravS (Rg / render sphere radius), z: KerrSpin,
+    // w: volumBright (ImpParams.z).
+    params: vec4<f32>,
+    // x: diskTemp (K), y: TwistMagn, z: 1 disk volume + 2 jets, w: disk animation time (0..1).
+    disk1: vec4<f32>,
+    // x: tempShift, y: diskBright, z: diskDensity, w: volume step length (r_s).
+    disk2: vec4<f32>,
+    // x, y: inner / outer thickness (r_s), z: DetailScaleR, w: DetailScaleV.
+    disk3: vec4<f32>,
+    // xyz: OctaveDistortion, w: OctaveScale.
+    disk4: vec4<f32>,
+    // x: DiskNoiseContrast, y: DiskOuterSpin, z: DiskTempContrast, w: bounding radius (r_s).
+    disk5: vec4<f32>,
+    // x, y: jet start / end temperature, z: ShadowContrast, w: ShadowLength.
+    jet1: vec4<f32>,
+    // x, y: jet start / end radius (r_s), z: jet length (r_s), w: JetVelocity (c).
+    jet2: vec4<f32>,
+    // x: jet brightness, y: jet density, z: JetDistortion, w: JetThickness.
+    jet3: vec4<f32>,
+    // rgb: LightColor, w: frame / environment blend factor.
+    light: vec4<f32>,
 };
 
-// Emission of the disk gas at radius `r` and azimuth `psi`, seen with total
-// frequency shift `g` (Doppler x gravitational; g > 1 is blue-shifted).
-//   t_peak:   colour temperature (K) at the hottest ring
-//   bright:   overall brightness multiplier
-//   contrast: turbulence contrast (catalog DiskNoiseContrast)
-//   anim:     animation phase (seconds)
-fn disk_sample(r: f32, psi: f32, g: f32, r_in: f32, r_out: f32, t_peak: f32, bright: f32, contrast: f32, anim: f32) -> DiskSample {
-    var s: DiskSample;
-    s.rgb = vec3<f32>(0.0);
-    s.alpha = 0.0;
-    if r <= r_in || r >= r_out {
-        return s;
+// SE's Planck table (FUN_1401a60d0): 4096 RGB radiances, log-spaced in temperature.
+@group(0) @binding(3) var planck_tex: texture_2d<f32>;
+// SE's NoiseIqMap: 16 x 16 random texture with G, A = R, B shifted by (11, 5).
+@group(0) @binding(4) var noise_tex: texture_2d<f32>;
+@group(0) @binding(5) var noise_sampler: sampler;
+
+// Accretion disk optical density multipliers for R, G, B.
+const DISK_OPTICAL_DENSITY: vec3<f32> = vec3<f32>(0.7, 0.85, 1.0);
+const VOLUMETRIC_STOP: f32 = 12.0;
+const MAX_VOLUME_STEPS: i32 = 256;
+const SPEED_OF_LIGHT: f32 = 16000.0;
+
+fn linearstep(e0: f32, e1: f32, x: f32) -> f32 {
+    return clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+}
+
+// GLSL smoothstep by its formula, so that SE's reversed edges (e0 > e1) are well defined.
+fn sstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = linearstep(e0, e1, x);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn transmission(sigma: f32) -> vec3<f32> {
+    return sstep(VOLUMETRIC_STOP, 0.0, sigma) * exp(-sigma * DISK_OPTICAL_DENSITY);
+}
+
+// texture(PlanckFunction, log(temp * 0.001 + tempShift) * 0.188 + 0.1316), GL_LINEAR, clamped.
+fn thermal_emission(temp: f32, shift: f32) -> vec3<f32> {
+    let x = log(max(temp, 1.0) * 0.001 + shift) * 0.188 + 0.1316;
+    let p = clamp(x * 4096.0 - 0.5, 0.0, 4095.0);
+    let i = i32(floor(p));
+    let a = textureLoad(planck_tex, vec2<i32>(i, 0), 0).rgb;
+    let b = textureLoad(planck_tex, vec2<i32>(min(i + 1, 4095), 0), 0).rgb;
+    return mix(a, b, p - floor(p));
+}
+
+fn wrap16(v: vec2<f32>) -> vec2<f32> {
+    return v - 16.0 * floor(v / 16.0);
+}
+
+// ---------------------------------------------------------------------------
+// Noise (gr_intersection.glh)
+
+// Angular shift of the shell at radius r at time t (looped 0..1; integer multiples of the
+// texture period, so the loop is seamless).
+fn radial_angle(t: f32, r: f32) -> f32 {
+    let velocity = ceil(524288.0 / (r * r * r + 1.0));
+    return 16.0 * velocity * t;
+}
+
+fn sample_noise(p_in: vec2<f32>, shell: f32, scale: f32, t: f32, outer_spin: f32) -> vec2<f32> {
+    var p = p_in;
+    p.x = p.x + scale * radial_angle(t, shell / scale);
+    p.x = p.x * round(1.0 + shell / scale * outer_spin);
+    let ip = floor(p);
+    var f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    let uv = wrap16(ip + vec2<f32>(11.0, 5.0) * shell) + f;
+    return textureSampleLevel(noise_tex, noise_sampler, uv * 0.0625 + 0.03125, 0.0).xz;
+}
+
+fn shell_noise(p_in: vec3<f32>, t: f32, scale: f32, outer_spin: f32) -> vec2<f32> {
+    let p = p_in * scale;
+    let shell = floor(p.x);
+    let r0 = sample_noise(p.yz, shell, scale, t, outer_spin);
+    let r1 = sample_noise(p.yz, shell + 1.0, scale, t, outer_spin);
+    return mix(r0, r1, fract(p.x));
+}
+
+// `ray_dist`: path length from the camera (r_s), fades out the octaves finer than a pixel.
+fn shell_fbm(h: Hole, p_in: vec3<f32>, t: f32, ray_dist: f32) -> f32 {
+    var p = p_in;
+    var sum = vec3<f32>(0.0);
+    let w = 1.0e-3 * ray_dist;
+    var amplitude = 1.0;
+    var scale = 1.0;
+    for (var i = 0; i < 3; i = i + 1) {
+        var k = linearstep(1.0, 0.5, w * scale);
+        if i == 0 {
+            k = linearstep(1.0, 0.5, 0.05 * w * scale);
+        }
+        sum = sum + amplitude * vec3<f32>(shell_noise(p, t, scale, h.disk5.y) * k, 1.0);
+        p = p + sum.xyx * h.disk4.xyz / scale;
+        scale = scale * 3.0;
+        amplitude = amplitude * h.disk4.w;
     }
-    let prof = disk_temperature_profile(r, r_in);
-    let t_emit = t_peak * prof;
+    let q = sum.x / sum.z;
+    return 3.0 * mix(1.0, q * q * q * q, h.disk5.x);
+}
 
-    // Keplerian shear: inner gas laps the outer gas, which stretches the noise
-    // into spiral streaks. Slowed down enormously for visibility.
-    let omega = 0.7071 * pow(r, -1.5);
-    let psi_t = psi - omega * anim * 6.0;
-    let ln_r = log(r);
-    let n = disk_turbulence(psi_t, ln_r);
-    let clump = 1.0 + contrast * 1.6 * (n - 0.5) * 2.0;
-    let rings = 1.0;
+// Fast LUT based 3D noise.
+fn noise3(x: vec3<f32>) -> vec2<f32> {
+    let ip = floor(x);
+    var p = fract(x);
+    p = p * p * (3.0 - 2.0 * p);
+    let uv = wrap16(ip.xy + vec2<f32>(11.0, 5.0) * ip.z) + p.xy;
+    let res = textureSampleLevel(noise_tex, noise_sampler, uv * 0.0625 + 0.03125, 0.0);
+    return mix(res.yw, res.xz, vec2<f32>(p.z));
+}
 
-    // Bolometric surface brightness ~ T^4 would be far too contrasty for display;
-    // use a compressed power and the beaming law I_obs = g^3 I_emit.
-    let g3 = g * g * g;
-    let intensity = 7.0 * bright * prof * prof * max(clump, 0.05) * rings * g3;
+fn fbm(x_in: vec3<f32>) -> f32 {
+    var x = x_in;
+    var sum = vec2<f32>(0.0);
+    var ampl = 1.0;
+    for (var i = 0; i < 3; i = i + 1) {
+        sum = sum + ampl * noise3(x);
+        x = x + 1.4 * sum.xyx * vec3<f32>(0.7, 0.6, 1.3);
+        ampl = ampl * 0.74;
+        x = x * 4.0;
+    }
+    return sum.x;
+}
 
-    let t_obs = g * t_emit;
-    s.rgb = blackbody(t_obs) * intensity;
+// ---------------------------------------------------------------------------
+// Bounding volume
 
-    // Opacity: fades at both edges.
-    let fin = smoothstep(0.0, 0.12, r / r_in - 1.0);
-    let fout = 1.0 - smoothstep(0.7, 1.0, (r - r_in) / (r_out - r_in));
-    let thin = mix(1.0, 0.4, smoothstep(r_in * 2.0, r_out, r));
-    s.alpha = 0.92 * thin * fin * fout * clamp(0.55 + 0.9 * n, 0.0, 1.0);
-    return s;
+fn sd_capped_cylinder(p: vec3<f32>, hr: f32, hh: f32) -> f32 {
+    let d = abs(vec2<f32>(length(p.xz), p.y)) - vec2<f32>(hr, hh);
+    return min(max(d.x, d.y), 0.0) + length(max(d, vec2<f32>(0.0)));
+}
+
+fn dot2(v: vec2<f32>) -> f32 {
+    return dot(v, v);
+}
+
+fn sd_capped_cone(p: vec3<f32>, hh: f32, r1: f32, r2: f32) -> f32 {
+    let q = vec2<f32>(length(p.xz), p.y);
+    let k1 = vec2<f32>(r2, hh);
+    let k2 = vec2<f32>(r2 - r1, 2.0 * hh);
+    let ca = vec2<f32>(q.x - min(q.x, select(r2, r1, q.y < 0.0)), abs(q.y) - hh);
+    let cb = q - k1 + k2 * clamp(dot(k1 - q, k2) / dot2(k2), 0.0, 1.0);
+    let s = select(1.0, -1.0, cb.x < 0.0 && ca.y < 0.0);
+    return s * sqrt(min(dot2(ca), dot2(cb)));
+}
+
+// sdBoundingVolume: the disk's cylinder and the two jet cones (disk frame, y = normal).
+fn sd_bounding(h: Hole, p_in: vec3<f32>) -> f32 {
+    var p = p_in;
+    p.y = abs(p.y);
+    var sdf = 1.0e10;
+    if h.disk2.z > 0.0 {
+        sdf = sd_capped_cylinder(p, h.xref_out.w * 0.95, max(h.disk3.x, h.disk3.y));
+    }
+    if h.jet3.y > 0.0 {
+        let len = h.jet2.z;
+        let thickness = 2.0 * h.jet3.w * h.jet2.x;
+        let jsdf = abs(sd_capped_cone(p - vec3<f32>(0.0, 0.5 * len, 0.0), 0.5 * len, h.jet2.x + thickness, 1.25 * h.jet2.y + thickness)) - 2.0 * thickness;
+        sdf = min(sdf, jsdf);
+    }
+    return sdf;
+}
+
+// ---------------------------------------------------------------------------
+// Disk and jet gas
+
+struct VolProps {
+    density: f32,
+    temp: f32,
+    emission: f32,
+    gradient: f32,
+    // Disk frame.
+    velocity: vec3<f32>,
+};
+
+fn no_props() -> VolProps {
+    return VolProps(0.0, 0.0, 0.0, 0.0, vec3<f32>(0.0));
+}
+
+fn average_disk_density(h: Hole, pos: vec3<f32>, rho: f32) -> f32 {
+    let thickness = mix(h.disk3.x, h.disk3.y, clamp((rho - 1.0) / h.xref_out.w, 0.0, 1.0));
+    let hgt = pos.y / thickness;
+    let outer = sstep(h.xref_out.w * 0.95, 0.0, rho);
+    return sstep(1.0, 0.0, abs(hgt)) * linearstep(h.axis_in.w, h.axis_in.w * 1.2, rho) * outer;
+}
+
+// DiskProperties: an alpha-disk (alpha = 1) with Keplerian shear and shell noise.
+fn disk_properties(h: Hole, pos: vec3<f32>, time: f32, ray_dist: f32) -> VolProps {
+    var prop = no_props();
+    if h.disk2.z <= 0.0 {
+        return prop;
+    }
+    let rho = length(pos);
+    let r = (1.25 + 0.8 * h.params.z) * rho;
+    prop.density = average_disk_density(h, pos, rho);
+    if prop.density < 1.0e-4 {
+        return prop;
+    }
+    // v/c = sqrt(Rg / 2(R - Rg)).
+    let beta = inverseSqrt(max(2.0 * (r - 1.0), 1.0e-3));
+    let rr = 0.75 * sqrt(r) * h.disk3.z;
+    let teta0 = atan2(pos.x, pos.z);
+    let hh = pos.y * h.disk3.w;
+    let teta = teta0 * (8.0 / PI) + beta * (1.0 + 0.02 * h.disk1.y - 1.3 * r);
+    let turbulence = shell_fbm(h, vec3<f32>(rr, teta, hh), time, ray_dist);
+
+    let f = 1.0 - 1.73205 * inverseSqrt(r);
+    let rpow = pow(r, -0.65);
+    var temp = 5.1293 * pow(max(f, 0.0), 0.3) * rpow;
+    let dens = rpow * linearstep(1.0, 3.0, r);
+    if r < 4.32 {
+        temp = linearstep(1.0, 4.32, r);
+    }
+    // Gradient shadows: the noise a shadow length further out.
+    if r > 12.0 {
+        let sl = h.jet1.w;
+        let rg = r + sl;
+        let rrg = 0.75 * sqrt(rg) * h.disk3.z;
+        let tetag = teta0 * (8.0 / PI) + beta * (1.0 + 0.02 * h.disk1.y - 1.3 * rg);
+        prop.gradient = smoothstep(12.0, 30.0, r) * (shell_fbm(h, vec3<f32>(rrg, tetag, hh), time, ray_dist) - turbulence) / (turbulence * sl + 1.0e-4);
+    }
+    prop.density = abs(5.0e-4 * dens * prop.density * turbulence * h.disk2.z);
+    prop.temp = mix(1.0, turbulence, h.disk5.z) * temp * h.disk1.x;
+    prop.velocity = normalize(vec3<f32>(-pos.z, 0.0, pos.x)) * beta;
+    prop.emission = h.disk2.y;
+    return prop;
+}
+
+fn jet_properties(h: Hole, pos: vec3<f32>, time: f32) -> VolProps {
+    var prop = no_props();
+    let jet_density = h.jet3.y;
+    let jet_length = h.jet2.z;
+    if jet_density <= 0.0 {
+        return prop;
+    }
+    var pj = -sign(pos.y) * pos;
+    let jet_rad = mix(h.jet2.x, h.jet2.y, abs(pos.y) / jet_length);
+    if dot(pj.xz, pj.xz) > (1.5 * jet_rad) * (1.5 * jet_rad) {
+        return prop;
+    }
+    let r = max(length(pj), 1.0e-4);
+    // Rotation angle 0.15 pi / speed (unbounded where log(0.85 r) = 0; kept finite).
+    let speed = log(r * 0.85) * 0.075;
+    let a = 0.15 * PI / select(min(speed, -1.0e-4), max(speed, 1.0e-4), speed >= 0.0) + time * 2480.0;
+    let ca = cos(a);
+    let sa = sin(a);
+    pj = vec3<f32>(pj.x * ca + pj.z * sa, pj.y, -pj.x * sa + pj.z * ca);
+    let inv_y = 1.0 / (abs(pj.y) + 0.1);
+    let noise_pos = 0.1 * pj * vec3<f32>(10.0 * inv_y, 2.0, 10.0 * inv_y) + vec3<f32>(0.0, time * 1024.0, 0.0);
+    let distort = fbm(noise_pos) * clamp(exp(pj.y * 0.025), 0.0, 0.5);
+    let sd_jet = sd_capped_cylinder(pj, jet_rad, jet_length) - h.jet3.z * jet_rad * linearstep(1.7, 5.0, abs(pj.y)) * abs(distort);
+    var jets = sstep(h.jet3.w * jet_rad, 0.0, abs(sd_jet)) * inv_y;
+    jets = jets * linearstep(jet_length, 0.0, abs(pos.y));
+    prop.density = linearstep(0.5, 1.0, abs(pj.y)) * linearstep(1.2, 1.5, r) * pow(r, -0.75) * jets * jet_density;
+    prop.temp = mix(h.jet1.x, h.jet1.y, 2.0 * abs(pos.y) / jet_length);
+    prop.velocity = vec3<f32>(0.0, sign(pos.y), 0.0) * h.jet2.w;
+    prop.emission = h.jet3.x;
+    return prop;
+}
+
+// Accumulated volume along a ray (SE's RayProperties).
+struct VolRay {
+    color: vec3<f32>,
+    transm: vec3<f32>,
+    sigma: f32,
+    steps: i32,
+    volume_steps: i32,
+};
+
+// DopplerGravShiftedEmission: `rho` distance from the hole, `eye` camera distance (r_s).
+fn shifted_emission(h: Hole, rho: f32, eye: f32, ray_dir: vec3<f32>, velocity: vec3<f32>, temp_in: f32) -> vec3<f32> {
+    var one_plus_z = (rho * (eye - 1.0)) / (eye * max(rho - 1.0, 1.0e-3));
+    one_plus_z = one_plus_z * (1.0 + dot(ray_dir, velocity)) * inverseSqrt(max(1.0 - dot(velocity, velocity), 1.0e-3));
+    return thermal_emission(temp_in / max(one_plus_z, 1.0e-3), h.disk2.x);
+}
+
+// VolumeStep + IntegrationStep at disk-frame position `pos`, ray direction `ray_dir`, step
+// `dt` (r_s), at path length `ray_dist` and emission time `time` (0..1 loop).
+fn volume_step(h: Hole, pos: vec3<f32>, ray_dir: vec3<f32>, dt: f32, ray_dist: f32, time: f32, vr: ptr<function, VolRay>) {
+    if (*vr).volume_steps > MAX_VOLUME_STEPS {
+        return;
+    }
+    var prop = disk_properties(h, pos, time, ray_dist);
+    if (h.disk1.z >= 2.0) {
+        let jp = jet_properties(h, pos, time);
+        if jp.density > prop.density {
+            prop = jp;
+        }
+    }
+    if prop.density < 1.0e-3 {
+        return;
+    }
+    if prop.density > 0.4 {
+        (*vr).volume_steps = (*vr).volume_steps + 1;
+    }
+    let r = length(pos);
+    let illum = prop.density * (1.0 + clamp(h.jet1.z * prop.gradient, -1.0, 1.0)) * h.light.rgb / (100.0 + r * r);
+    let temp = pow(2.0e14 * length(illum) + pow(prop.temp, 4.0), 0.25);
+    let emiss = shifted_emission(h, r, h.dir_d.w, ray_dir, prop.velocity, temp) * prop.emission + illum;
+    // Densities are per render-sphere unit, steps in r_s.
+    let dts = dt * h.params.y;
+    let ext = exp(-dts * prop.density * DISK_OPTICAL_DENSITY);
+    (*vr).color = (*vr).color + emiss * (1.0 - ext) * (*vr).transm;
+    (*vr).transm = (*vr).transm * ext;
+    (*vr).sigma = (*vr).sigma + dts * prop.density;
 }

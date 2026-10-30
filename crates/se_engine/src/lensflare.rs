@@ -252,6 +252,8 @@ fn load_presets(
             Transform::IDENTITY,
             Visibility::Hidden,
             NoFrustumCulling,
+            // Seen by the main camera only (not by the black-hole environment cameras).
+            crate::blackholes::MAIN_VIEW_ONLY,
             FlareLayer { ghosts, mesh, material },
         ));
     }

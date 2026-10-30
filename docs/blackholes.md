@@ -1,135 +1,146 @@
-# Black holes: lensing and accretion disks
+# Black holes: lensing, volumetric accretion disks and jets
 
-Code: `crates/se_engine/src/blackholes.rs` (`BlackHolesPlugin`),
-shaders `assets/shaders/blackhole_lens.wesl` and `assets/shaders/accretion_disk.wesl`.
+Code: `crates/se_engine/src/blackholes.rs` (`BlackHolesPlugin`), `blackhole_params.rs` (SE's disk
+keys and defaults), shaders `assets/shaders/blackhole_lens.wesl` and
+`assets/shaders/accretion_disk.wesl`. SE's own: `einstein.glsl`, `gr_geodesic.glh`,
+`gr_intersection.glh`; CPU side FUN_140270900 (uniforms), FUN_140507690 (disk defaults),
+FUN_14046c410 (`AccretionDisk` keys), FUN_1404d6710 (render sphere).
 
 ## Approach
 
-Everything is **one HDR post-process on the main camera**, built on Bevy's
-`FullscreenMaterial` (`bevy::core_pipeline::fullscreen_material`). It runs in
-`Core3dSystems::EarlyPostProcess`, i.e. after all opaque/transparent geometry (stars,
-planets, galaxies, overlays) and *before* bloom and tone mapping, so the photon ring and the
-beamed side of the disk bloom naturally. The pass reads the finished scene colour and writes
-the lensed result.
-
-There is no disk mesh: the disk is raytraced in the same pass, so it is lensed by the same
-geometry as the background ("Interstellar" look: the far side of the disk appears above and
-below the shadow, the near side passes in front of it).
+Everything is **one HDR post-process on the main camera** (`lens_pass`, a custom pass in
+`Core3dSystems::EarlyPostProcess`, after all geometry and before bloom and tone mapping), SE's
+einstein.glsl in its single-pass "COMPUTE + RENDER" mode. For each pixel near a hole the camera
+ray is traced through the Schwarzschild geometry; like SE's `EvaluateIntersections`, the straight
+chord of every integration step is ray-marched through the disk and jet volume; the escaping ray
+is then looked up in the frame or the environment map (`Skybox()`).
 
 ### CPU side (`update_lens`, `PostUpdate`, after `UniverseSet::Camera`)
 
-* All catalog stars with `class.kind == StarKind::BlackHole` (class `X`, non barycentre) are
-  collected once (re-collected when the star count changes, e.g. procedural stars).
-  Black holes have `radius_km == 0`, so `system.rs` never spawns a `SystemBody` for them; this
-  plugin therefore evaluates them directly from the catalog + `Ephemeris` (orbital position,
-  rotation model) and does not depend on `ActiveSystem`.
-* Schwarzschild radius `r_s = 2GM/c^2 = 2.95325 km * M/Msun` from `mass_kg` (10 Msun if the
-  catalog has none).
-* Holes closer than 2 pc (catalog position) are tested every frame. A hole is kept if the
-  angular size of its effect region is >= 1.5 px (so Sgr A* is only active within ~a few
-  hundred AU, a 20 Msun hole within a few AU, etc.). Up to 4 holes, largest on screen first.
-* Per hole the shader gets (view space): unit direction, distance in `r_s`, disk normal,
-  disk reference axis, inner/outer radius (`r_s`), brightness, colour temperature, turbulence
-  contrast, and the angular radius of its influence region
-  (`max(16 theta_E, shadow, disk)`, `theta_E = sqrt(2 r_s / D)`).
-* When nothing is in range the `BlackHoleLens` component is removed from the camera, so the
-  pass costs nothing.
-* `SE_NO_BLACKHOLES=1` disables the plugin (debugging).
+* All catalog stars with `class.kind == StarKind::BlackHole` are collected once (re-collected
+  when the star count changes, e.g. materialised procedural stars). Black holes have no
+  `SystemBody`; this plugin evaluates them from the catalog + `Ephemeris`.
+* `Rg` = Schwarzschild radius, 2.95325 km per solar mass (SE: 8.87005e-6 km per Earth mass,
+  FUN_1404dcd30); 10 Msun if the catalog has no mass. Lengths below are in Rg.
+* Disk and jets: `params::of_star` = SE's key parser (FUN_14046c410: AU keys after km keys,
+  `Thickness` sets both, `Exposure` = `Brightness`, `Lum`, `LumBol`, kg/s accretion) and SE's
+  defaults (FUN_140507690, black hole branch): a hole without the tag gets a disk with
+  probability 0.2, holes over 400 Msun always; temperature N(6000, 700) K (stellar),
+  N(4000, 600) below 1e5 Msun, N(10000, 1500) above; `InnerRadius` 1.01 R, `OuterRadius`
+  30 x inner (no disk at or below 2000 K); `InnerThickness` (0.25..1) x 0.2 R, `OuterThickness`
+  inner x (18 h + 2) and at least 0.55 R, h = clamp((T - 3000)/7000)^2; accretion rate, density,
+  `Luminosity`, `LuminosityBol` from SE's formulas; `TwistMagn` 2500, `DetailScaleR` 6,
+  `DetailScaleV` 6 - 5h, octave distortion (0.5, 0.35, 0.2), octave scale 0.5, noise contrast 1,
+  temperature contrast 0.15, outer spin 0.04; jets start 1.5 R, end 5 x start, length 30 x
+  start, temperatures T and 0.75 T, velocity 0.1 + 0.75h, density h^3 1e-4 x disk density,
+  thickness 0.3, distortion 0.4. `KerrSpin` default: N(0.5, 0.15) cut to 0..0.9999 up to
+  1000 Msun, 0.5 sqrt(u) + 0.4999 above (FUN_1405045a0). SE draws from its thread RNG seeded per
+  star record; the port seeds from the name, so the draws differ.
+* Uniforms (FUN_140270900, default "hdr" mode): render sphere = max(`BlackHoleWarpRadius` Rg,
+  outer radius, jet length) (FUN_1404d6710), gravS = Rg / sphere radius (SE integrates
+  densities per sphere unit); diskDensity = `Density` x Rg(km) x 6.4e7; temperatures clamped to
+  80000 K; jet brightness `JetBrightness` x hdrAccretionJetBright / hdrAccretionDiskBright;
+  LightColor = normalised Planck colour at 0.8 T x `Brightness` x `LightingBright` x 0.01;
+  volumBright = hdrAccretionDiskBright x 10^(6984.51/T + 1.22651 - 0.803771 ln T) x
+  1 / (1 - (1 - min(diskDensity 1e-6, 1))^sqrt2) x `Brightness`^-0.8; warpStep =
+  0.2 x 10^(1 - `WarpPrecision`); march step = warpStep x min(1, max thickness); disk animation
+  = frac(t / (135 x 6 pi Rg / (c / sqrt2))) (FUN_1404e5340). Config keys read from main-def.cfg:
+  hdrAccretionDiskBright, hdrAccretionJetBright, BlackHoleWarpRadius, WarpPrecision,
+  EnvmapDimensions.
+* Holes closer than 2 pc (catalog position) are tested every frame; a hole is lensed when its
+  region (several Einstein radii, the shadow, the disk and jet volume) is >= 1.5 px. Up to 4
+  holes, largest on screen first. With none in range the `BlackHoleLens` component is removed
+  and the environment cameras are switched off, so nothing is spent.
+* `SE_NO_BLACKHOLES=1` disables the plugin; `SE_BH_DEBUG=1` logs the first hole's uniforms;
+  `SE_BH_ENVTEST=1` shows the environment map instead of the frame.
 
-### Disk parameters
+### Lookup textures
 
-From `stars[i].block.sub("AccretionDisk")` via `AccretionDiskParams` (a hole without the
-block, or with `NoAccretionDisk`, gets lensing only):
+* SE's PlanckFunction (FUN_1401a60d0, `planck_table`): 4096 entries, T = 1000 exp(i/4096/0.188
+  - 0.7) (497 K .. 101 kK), the Planck spectrum at 380..780 nm in 5 nm steps against the CIE 1931
+  colour matching functions (Wyman-Sloan-Shirley fit here, SE has the table), relative to the
+  555 nm radiance of a 5700 K body, through the sRGB matrix (PlanckColorSystem 1), raised by
+  1000^(1 - (T - 500)/1500) below 2000 K. Read as `texture(PlanckFunction, log(T/1000) x 0.188 +
+  0.1316)`.
+* SE's NoiseIqMap: 16 x 16 random R, B with G, A the R, B of the texel (-11, -5) away (iq's
+  layered noise), repeat sampling (`noise_texture`).
 
-| catalog key | use |
-|---|---|
-| `InnerRadius` (AU) / `InnerRadiusKm` | inner edge, clamped to `max(ISCO(KerrSpin), 2 r_s)` |
-| `OuterRadius` (AU) / `OuterRadiusKm` | outer edge; default 60 r_s |
-| `Temperature` (K) | compressed to a display colour temperature `4000*(T/1e4)^0.3`, 3500..14000 K (default 1e5 K) |
-| `Brightness` | `Brightness^0.1` clamped to 0.35..2 (catalog values range 1e-6..2500) |
-| `DiskNoiseContrast` | turbulence contrast (default 0.7) |
-| `KerrSpin` | only the ISCO radius (Bardeen formula) |
+### Light transport (blackhole_lens.wesl, accretion_disk.wesl)
 
-Disk plane: equatorial plane of the hole's rotation model (`Ephemeris::orientation * +Y`,
-this is how Sgr A* gets `Obliquity 24 / EqAscendNode 100`). Holes without a rotation model
-(pole = ecliptic north) get a deterministic tilt of 30-70 degrees from a hash of the name.
+* Geodesic: in the plane of observer, hole and ray (Schwarzschild, r_s = 1),
+  `u'' + u = 3/2 u^2`, RK4 in the polar angle; steps 0.3 / 0.12 / 0.05 rad by u. `u >= 1`:
+  captured. Outbound beyond twice the volume's reach: the remaining sweep is added analytically
+  and the direction at infinity looked up.
+* Volume (gr_intersection.glh line by line, in Rg): each RK4 chord is marched on a lattice of
+  the step length (blue-noise jitter replaced by interleaved gradient noise), empty space skipped
+  with SE's bounding SDF (disk cylinder + jet cones). `DiskProperties`: alpha-disk temperature
+  5.1293 f^0.3 r^-0.65 (f = 1 - sqrt(3/r), r = (1.25 + 0.8 KerrSpin) rho), density
+  r^-0.65 linearstep(1, 3, r) x vertical/inner/outer profiles, Keplerian v = (2(r - 1))^-1/2,
+  shell noise (`ShellFbm`, 3 octaves, octave LOD by path length, Keplerian rotation of each shell
+  quantised to loop seamlessly), gradient shadows beyond r = 12. `JetProperties`: rotating,
+  noise-distorted capped cylinders. `VolumeStep`: illumination density x (1 +/- shadow) x
+  LightColor / (100 + r^2), temperature (2e14 |illum| + T^4)^1/4, Planck emission at T / (1 + z)
+  with SE's (1 + z) = rho (D - 1) / (D (rho - 1)) x (1 + n.v) / sqrt(1 - v^2), extinction with
+  optical density (0.7, 0.85, 1.0) per channel, stop at optical depth 12, at most 512 march / 256
+  dense steps.
+* Sky (`Skybox()`): the frame where the escaping ray lands on screen, SE's screen-edge blend
+  zone, and the environment map beyond it and for every ray behind the camera; within 3..10 Rg
+  of the hole the environment map takes over entirely (blendFactor = smoothstep(3, 10, D)).
+  Then `SkyBlueShift`: the sky seen from deep in the well is blue-shifted and brightened by
+  (1 - 1/D)^-2. Captured rays are black. Result: sky x transmission(sigma) + emission x
+  volumBright.
+* 4 rotated-grid background samples for pixels with impact parameter < 14 Rg (shadow edge,
+  photon ring); the volume is traced on the centre ray only. The background sub-samples use a
+  separate volume-free trace (keeping the shader small matters: the inlined volume code made
+  one view 200x slower).
 
-### Light transport (blackhole_lens.wesl)
+### Environment map (SE's EnvMap, seEnvMapManager)
 
-For each pixel of a hole's region the camera ray is traced **backwards** in the plane spanned
-by observer, hole and ray (Schwarzschild, units `r_s = 1`):
+Six cameras (`EnvFaceCam`, orders -1..-6, HDR, no tone mapping, no MSAA) render the scene into
+six `EnvmapDimensions`-sized cube faces along the world axes from the main camera's position.
+They are spawned on first use, render all six faces when the map is (re)started and one face per
+frame after that, and are switched off while no hole is lensed. The map is rebuilt when the
+camera has moved by 10% of its distance to the hole. The lens flare quads are on render layer 1
+(`MAIN_VIEW_ONLY`), which only the main camera sees.
 
-```
-u = 1/r,   u'' + u = 3/2 u^2,    (u')^2 + u^2 (1 - u) = 1/b^2   (conserved)
-```
+### Seen from afar
 
-* Start: `u0 = 1/D`, `u' = u0 sqrt(1-u0) cot(alpha)` (alpha = angle between ray and the
-  direction to the hole), RK4 in the polar angle phi.
-* Step size: 0.3 rad for u < 0.02, 0.12 for u < 0.06, 0.05 near the hole; the step is
-  shortened to land exactly on disk-plane crossings (phi_c + k pi).
-* `u >= 1` -> captured (the black shadow, critical impact parameter 3 sqrt(3)/2 r_s).
-* Outbound with `u < 0.5/r_out` (at least 2 outer radii away): stop and add the remaining
-  sweep to infinity analytically, `asin(u/sqrt(K))` with a first-order correction of the
-  `u^3` term (`K = u'^2 + u^2(1-u)`); the direction at infinity is then
-  `cos(phi_end) e1 + sin(phi_end) e2` and is looked up in the scene colour (bilinear).
-  Lookups that land off screen are mirror-reflected and faded to black beyond 2.4x the screen
-  half-size or behind the camera.
-* Each disk-plane crossing with `r_in < r < r_out` adds emission:
-  * temperature profile `T ~ x^(3/4) (1 - sqrt(x))^(1/4)`, `x = r_in/r`, normalised to its peak
-    at 1.36 r_in (Novikov-Thorne-like), emissivity ~ T^2 (compressed for display);
-  * frequency shift of Keplerian gas, exact for circular geodesics:
-    `g = sqrt(1 - 3/(2r)) / (1 - Omega L_z/E)`, `Omega = sqrt(1/(2 r^3))`, `L_z/E` from the
-    photon's impact parameter and orbital-plane orientation. Surface brightness scales as
-    `g^3`, colour temperature as `g` (blackbody colour), so the approaching side is brighter
-    and bluer, the receding side dimmer and redder, and the inner edge is gravitationally
-    redshifted;
-  * animated turbulence (3 octaves of periodic value noise in azimuth x ln r) sheared by the
-    Keplerian angular velocity (slowed down 6x for readability);
-  * opacity `<= 0.92`, thinning outwards, so secondary images show through.
-  Emission is accumulated front to back with the remaining transmission; the lensed
-  background is attenuated by it.
-* 4 rotated-grid samples for pixels with impact parameter < 9 r_s (shadow edge, photon ring,
-  inner disk), 1 sample elsewhere.
-
-Cost (RTX 5080): 150-270 fps with the hole filling a third of the screen; the worst case seen
-(camera at 4.6 r_s, hole + disk covering the whole screen) is ~65 fps. Rays far from the hole
-finish in about 10 integration steps.
+A black hole whose `AccretionDisk` has a catalogued `Luminosity` is a point in the catalog
+star field (`disk_light`, stars.rs): absolute magnitude 4.83 - 2.5 log10(L), blackbody colour at
+the disk temperature (SE adds the disk luminosity to its system's light, FUN_14050ed10). The
+star fields no longer hide the active system's point when that system has no bodies (a lone
+hole).
 
 ## Test commands
 
 ```
-SE_NO_MUSIC=1 ./target/debug/spaceengine-rs.exe --run \
-  "date 2026-10-26 12:00; pause; goto Cygnus X-1 A 400; wait 10; move 0 4500000 0; look Cygnus X-1 A; wait 90" \
-  --screenshot out.png --frames 200
+SE_NO_MUSIC=1 spaceengine-rs.exe --run "date 2026-10-26 12:00; pause; goto Cygnus X-1 A 400; wait 10; move 0 4500000 0; look Cygnus X-1 A; wait 90" --screenshot out.png --frames 200
 ```
 
-(`goto "Cygnus X-1"` lands on the barycentre, ~0.1 AU from the hole; use the `A` component.
-`goto` + `move` + `look` is an easy way to pick the inclination. `--frames 200`: with fewer
-frames the screenshot of heavy views can be taken before the scene has settled.)
-Other targets: `Sagittarius A*` (disk, distance in km: try `300000000` then `move` 3e12 m
-sideways), `Gaia BH3 B` / `Gaia BH1 B` (no disk: Einstein ring only).
+Others: `goto XTE J1859+226 A 300` (all-default disk, camera inside it), `goto Sagittarius A*
+300000000` + `move 0 1000000000000 0` (catalog "realistic" disk), `goto Gaia BH1 B 600` (lensing
+and the environment map), `search 300 bh` then `rs NAME` (procedural holes, e.g.
+`RS 10-581-646-511-10000`), `galactic 1000; look Sagittarius A*; fov 2` (Sgr A* as a point).
+
+Cost (RTX 5080, shared): about +1.2 ms per frame with a disk filling the screen, +0.6 ms for
+lensing with the environment map; nothing without a hole in range.
 
 ## Limitations
 
-* **Screen-space lensing**: only what is already in the frame can be lensed. Objects between
-  the camera and the hole (e.g. the companion star of a binary when it is in front) are lensed
-  as if they were at infinity, and several catalog companions sit at the same position as the
-  hole, so their sprite shows up as an Einstein ring. Content behind the camera or outside the
-  view is replaced by mirrored screen content that fades out; the deep interior of the
-  Einstein ring therefore shows a darkened, reflected sky rather than the true rear sky.
-* Schwarzschild (non-rotating) geometry for the lensing; `KerrSpin` only moves the ISCO.
-  No frame dragging, no flattened shadow, no jets (`Jet*` keys ignored), no `Twist*`,
-  `Precession`/`Nutation` (SS 433), `DiskOuterSpin`.
-* The disk is infinitely thin (thickness keys ignored) and its emission is an artistic
-  mapping of the physical temperature/brightness catalog values, not a radiative transfer
-  solution. Disk plane is the equatorial plane of the rotation model, not the orbital plane
-  of a binary companion.
-* Per-ray precision is f32: the effect is only active while its region is >= 1.5 px (about
-  `D < 6e5 r_s`), which keeps relative angles well inside f32 precision.
-* Rays that circle the photon sphere more than ~1.3 times (220 steps) are treated as
-  captured, so higher-order photon-ring images are absent.
-* Several holes in view: each pixel is lensed by the single hole whose region contains it
-  most deeply; overlapping regions are not composed.
-* Very large magnification of 1-px-wide features (thin overlay lines, tiny sprites) near the
-  Einstein ring shows texel staircases, because the screen has no more resolution than the
-  frame buffer.
+* Schwarzschild geometry: `KerrSpin` only enters the disk physics (r scaling) and SE's Kerr-
+  Newman metric (flattened, shifted shadow, frame dragging, `KerrCharge`) is not ported.
+* Single full-resolution pass, one volume sample per pixel; SE's "high" quality computes the
+  disk at low resolution and upsamples it bicubically (smoother, less aliasing of the finest
+  noise octave close to the inner edge).
+* Particle jets (`accretion_jet.glsl`, FUN_140483370) are not ported: SE draws them only for
+  neutron stars and black holes that carry a `CometTail { Particles N }` block, which no catalog
+  object has.
+* Environment map: other renderers size sprites in pixels of the view (galaxy model sprites,
+  star points), so the 90-degree faces differ slightly from the main view and faint seams can
+  appear at face edges in the lensed sky. Content between the camera and the hole is lensed as
+  if it were at infinity (SE does the same outside its WARP mode).
+* Several holes in view: each pixel is lensed by the single hole whose region contains it most
+  deeply; overlapping regions are not composed.
+* `disk_light` uses only catalogued `Luminosity`; the defaults derived from the accretion rate
+  are not shown as points (how SE feeds them to the distant point is not decoded).
+* `Precession`, `PrecessionPeriod`, `NutationPeriod` (SS 433) are not read by SE either.

@@ -389,19 +389,20 @@ fn build_catalog_starfield(
         (Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 4), Vec::with_capacity(n * 6));
     let mut count = 0;
     for s in &cat.stars {
-        if s.barycenter || !s.has_position || s.class.kind == StarKind::BlackHole {
+        if s.barycenter || !s.has_position {
             continue;
         }
+        // A black hole shines only by its accretion disk's `Luminosity` (blackholes.rs).
+        let (rgb, abs_mag) = if s.class.kind == StarKind::BlackHole {
+            match crate::blackholes::disk_light(s) {
+                Some(l) => l,
+                None => continue,
+            }
+        } else {
+            (star_render_color(s.class.kind, s.teff), s.abs_mag as f32)
+        };
         let p = s.pos_pc.as_vec3();
-        push_star(
-            &mut positions,
-            &mut sdata,
-            &mut corners,
-            &mut indices,
-            [p.x, p.y, p.z],
-            star_render_color(s.class.kind, s.teff),
-            s.abs_mag as f32,
-        );
+        push_star(&mut positions, &mut sdata, &mut corners, &mut indices, [p.x, p.y, p.z], rgb, abs_mag);
         count += 1;
     }
     info!("catalog starfield: {count} stars");
@@ -534,7 +535,12 @@ fn update_sprite_blur(
     blur.delta = delta.as_vec3().extend(0.0);
     blur.prev_view = Mat4::from_quat(prev_rot.as_quat()).inverse();
     // The active system's star (all components of a catalog system share its position in the fields).
-    let hide = active.root.and_then(|r| data.catalog.stars.get(r as usize)).map(|s| (s.pos_pc - pos).as_vec3());
+    // A system without bodies (a lone black hole, whose disk shines as a field point) draws nothing.
+    let hide = active
+        .root
+        .filter(|_| !active.bodies.is_empty())
+        .and_then(|r| data.catalog.stars.get(r as usize))
+        .map(|s| (s.pos_pc - pos).as_vec3());
     let eps_abs = (pos.length() as f32 * 4.0e-7).max(HIDE_EPS_PC);
     for (_, m) in stars.iter_mut() {
         let u = &mut m.uniforms;
