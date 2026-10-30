@@ -377,12 +377,12 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The bloom pass (Core3d): it reads the main texture and flips it, so the other passes that read
 /// it are ordered against this set.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SeBloomSet;
 
+#[allow(clippy::too_many_arguments)]
 fn se_bloom(
     view: ViewQuery<(&ExtractedCamera, &ViewTarget, &BloomTextures, &DynamicUniformIndex<SeBloom>, &SeBloom, Option<&FlareDraw>)>,
     pipelines: Res<BloomPipelines>,

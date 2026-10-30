@@ -107,7 +107,9 @@ impl Plugin for ColorCorrectionPlugin {
         render_app
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(Render, prepare_scratch.in_set(RenderSystems::PrepareResources))
-            .add_systems(Core3d, color_correction.after(tonemapping).after(bevy::anti_alias::fxaa::fxaa).after(bevy::anti_alias::smaa::smaa).in_set(Core3dSystems::PostProcess));
+            // SE's tone shader runs here, before its FXAA (fxaa.glsl works on the finished image); ordered
+            // against FXAA / SMAA, which flip the main texture this pass reads.
+            .add_systems(Core3d, color_correction.after(tonemapping).before(bevy::anti_alias::fxaa::fxaa).before(bevy::anti_alias::smaa::smaa).in_set(Core3dSystems::PostProcess));
     }
 }
 
