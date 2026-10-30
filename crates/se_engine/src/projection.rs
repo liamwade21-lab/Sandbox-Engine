@@ -274,8 +274,15 @@ pub struct ProjFaces(pub [Handle<Image>; 6]);
 struct Rig {
     views: Vec<(Entity, Handle<Image>)>,
     res: u32,
-    /// The main camera's layers before it was emptied (`None`: it had none).
-    main_layers: Option<Option<RenderLayers>>,
+    /// The main camera's layers before it was emptied, given back when the projection goes off.
+    main_layers: Option<RenderLayers>,
+}
+
+/// The layers the main camera shows: its own (`ship/warp.rs` sets them once at start, the scene and
+/// the ship layer; that system and this one are not ordered), always with the ship's layer, so the
+/// ship is never lost to a projection mode saved on at start.
+fn scene_layers(main: Option<&RenderLayers>) -> RenderLayers {
+    main.cloned().unwrap_or_default().with(crate::ship::warp::SHIP_LAYER)
 }
 
 fn load_settings(cfg: Res<crate::config::EngineConfig>, mut s: ResMut<ProjectionSettings>) {
@@ -300,8 +307,10 @@ fn apply_projection(
     mut scene: ResMut<SceneLayers>,
     windows: Query<&Window, With<PrimaryWindow>>,
     main: Query<(Entity, Option<&RenderLayers>, Option<&ProjUniform>), (With<MainCamera>, Without<CaptureView>)>,
+    mut frames: Local<u32>,
 ) {
     let Ok((cam, layers, uniform)) = main.single() else { return };
+    *frames = frames.saturating_add(1);
     let on = settings.mode != 0;
     if !on {
         if rig.views.is_empty() && rig.main_layers.is_none() {
@@ -311,21 +320,20 @@ fn apply_projection(
         rig.views.clear();
         let mut ec = commands.entity(cam);
         ec.remove::<(ProjUniform, ProjFaces)>();
-        match rig.main_layers.take() {
-            Some(Some(l)) => {
-                ec.insert(l);
-            }
-            Some(None) => {
-                ec.remove::<RenderLayers>();
-            }
-            None => {}
+        if let Some(l) = rig.main_layers.take() {
+            ec.insert(l);
         }
         scene.0 = None;
         return;
     }
     if rig.main_layers.is_none() {
-        rig.main_layers = Some(layers.cloned());
-        scene.0 = Some(layers.cloned().unwrap_or_default());
+        // At start, give `ship/warp.rs` its frame to put its layers on the camera first.
+        if layers.is_none() && *frames < 3 {
+            return;
+        }
+        let l = scene_layers(layers);
+        rig.main_layers = Some(l.clone());
+        scene.0 = Some(l);
         commands.entity(cam).insert(RenderLayers::layer(EMPTY_LAYER));
     }
     let res = settings.cube_face_res.clamp(FACE_RES_RANGE.0, FACE_RES_RANGE.1);
@@ -333,7 +341,7 @@ fn apply_projection(
         crate::capture::despawn_views(&mut commands, &mut images, &rig.views);
         rig.views = (0..6)
             .map(|i| {
-                let v = CaptureView { rel: crate::capture::face_rotation(i), fov: Some(std::f32::consts::FRAC_PI_2), post: Post::HDR };
+                let v = CaptureView { rel: crate::capture::face_rotation(i), fov: Some(std::f32::consts::FRAC_PI_2), post: Post::HDR, fixed: None };
                 crate::capture::spawn_view(&mut commands, &mut images, UVec2::splat(res), v, -40 - i as isize, false)
             })
             .collect();

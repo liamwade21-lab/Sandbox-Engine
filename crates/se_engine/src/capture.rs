@@ -8,9 +8,12 @@
 //!
 //! Cube faces use the DDS / Direct3D cubemap convention in the camera's frame (+X right, +Y up, +Z
 //! ahead), so each face is an upright picture: +X looks right, +Y up (its top edge behind the camera),
-//! +Z ahead. SE's skybox export (FUN_1402b49c0) writes the faces as `sky_<face>.<ext>` (`pos_x`,
-//! `neg_x`, `neg_y`, `pos_y`, `pos_z`, `neg_z`) into `export/`, or all six into `sky_cubemap.dds` for
-//! its "dds cubemap" format; the port writes into `<Pictures>/SpaceEngine-rs/export/`.
+//! +Z ahead. SE's skybox export (FUN_1402b49c0) renders the six GL cube faces in attachment order
+//! (FUN_1403278f0 -> FUN_1402fdea0 face i: +X, -X, +Y, -Y, +Z, -Z) and writes face i as
+//! `sky_<name i>.<ext>` from its table `pos_x`, `neg_x`, `neg_y`, `pos_y`, `pos_z`, `neg_z` (so the +Y face
+//! is `neg_y`) into `export/`, or all six into `sky_cubemap.dds` for its "dds cubemap" format; the port
+//! keeps that table and writes into `<Pictures>/SpaceEngine-rs/export/`. The orientation of SE's face
+//! images (its cube camera matrices, the row order of its glReadPixels) was not traced.
 
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +61,9 @@ pub struct CaptureView {
     /// Vertical field of view (rad); `None` follows the main camera.
     pub fov: Option<f32>,
     pub post: Post,
+    /// A fixed world rotation instead of following the main camera (the HD screenshot's tiles, which
+    /// must all show the view as it was when the tool started).
+    pub fixed: Option<Quat>,
 }
 
 /// While `projection.rs` hides the scene from the main camera, the layers it showed (what the views
@@ -76,8 +82,9 @@ pub const FACES: [(Vec3, Vec3); 6] = [
     (Vec3::Z, Vec3::Y),
 ];
 
-/// SE's face file names (FUN_1402b49c0's table), for [`FACES`] in order.
-pub const FACE_NAMES: [&str; 6] = ["pos_x", "neg_x", "pos_y", "neg_y", "pos_z", "neg_z"];
+/// SE's face file names (FUN_1402b49c0's table at 0x140677710), for [`FACES`] (= GL attachment order)
+/// in order: SE names the +Y face `neg_y` and the -Y face `pos_y`.
+pub const FACE_NAMES: [&str; 6] = ["pos_x", "neg_x", "neg_y", "pos_y", "pos_z", "neg_z"];
 
 /// The rotation of a face camera from the main camera.
 pub fn face_rotation(face: usize) -> Quat {
@@ -182,7 +189,7 @@ fn follow_main(
     let Projection::Perspective(mp) = proj else { return };
     let layers = scene.0.clone().or_else(|| layers.cloned()).unwrap_or_default();
     for (e, v, mut vtf, mut vproj, vl, vcc, vbloom) in &mut views {
-        let rot = tf.rotation * v.rel;
+        let rot = v.fixed.unwrap_or(tf.rotation) * v.rel;
         if vtf.rotation != rot || vtf.translation != Vec3::ZERO {
             vtf.rotation = rot;
             vtf.translation = Vec3::ZERO;
@@ -402,6 +409,8 @@ struct SkyboxJob {
     views: Vec<(Entity, Handle<Image>)>,
     grabs: Grabs,
     frames: u32,
+    /// Frames before the read: longer when the stars were loaded in a view cone only.
+    settle: u32,
     requested: bool,
 }
 
@@ -421,6 +430,8 @@ pub fn skybox_face_res(s: &SkyboxSettings) -> u32 {
 
 /// Frames a view renders before it is read: the bloom chain and temporal state settle.
 pub const SETTLE_FRAMES: u32 = 4;
+/// Frames before the read when the stars were loaded in the view cone only.
+pub const CONE_SETTLE_FRAMES: u32 = 120;
 /// Longest wait for the terrain (frames), then the capture goes on anyway.
 pub const LOAD_TIMEOUT: u32 = 1800;
 
@@ -433,6 +444,7 @@ fn run_skybox(
     settings: Res<SkyboxSettings>,
     main: Query<Option<&SeBloom>, With<MainCamera>>,
     terrains: Query<&crate::terrain::Terrain>,
+    (stars, cam): (Res<crate::stars::StarSettings>, Res<FlyCamera>),
     (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>),
 ) {
     if std::mem::take(&mut req.0) && state.0.is_none() {
@@ -442,20 +454,24 @@ fn run_skybox(
         let post = Post { bloom, correct: s.color_correction };
         let views = (0..6)
             .map(|i| {
-                let v = CaptureView { rel: face_rotation(i), fov: Some(std::f32::consts::FRAC_PI_2), post };
+                let v = CaptureView { rel: face_rotation(i), fov: Some(std::f32::consts::FRAC_PI_2), post, fixed: None };
                 spawn_view(&mut commands, &mut images, UVec2::splat(res), v, -70 - i as isize, s.save_alpha)
             })
             .collect();
         info!("exporting the skybox: {} faces of {res} px, {}", if s.cylindrical { "cylindrical from" } else { "6" }, s.format);
         msg.show(i18n.tr("Generating"));
-        state.0 = Some(SkyboxJob { settings: s, res, views, grabs: Grabs::new(6), frames: 0, requested: false });
+        // Zoomed in, the stars and deep sky were loaded in the view cone only: give them time to load
+        // all around (`sky_all_around`).
+        let coned = stars.view_cone(&cam, 1.0).is_some();
+        let settle = if coned { CONE_SETTLE_FRAMES } else { SETTLE_FRAMES };
+        state.0 = Some(SkyboxJob { settings: s, res, views, grabs: Grabs::new(6), frames: 0, settle, requested: false });
         return;
     }
     let Some(job) = state.0.as_mut() else { return };
     job.frames += 1;
     if !job.requested {
         let loading = terrain_loading(&terrains) > 0 && job.frames < LOAD_TIMEOUT;
-        if job.frames >= SETTLE_FRAMES && !loading {
+        if job.frames >= job.settle && !loading {
             for (i, (_, h)) in job.views.iter().enumerate() {
                 job.grabs.request(&mut commands, i, h.clone());
             }
@@ -478,6 +494,19 @@ fn run_skybox(
     });
 }
 
+/// While cube faces render (a projection mode or the skybox export), stars and deep-sky objects load
+/// all around the camera, not only in the main camera's cone (`StarSettings::view_cone`).
+fn sky_all_around(
+    state: Res<SkyboxState>,
+    proj: Res<crate::projection::ProjectionSettings>,
+    mut stars: ResMut<crate::stars::StarSettings>,
+) {
+    let on = state.0.is_some() || proj.mode != 0;
+    if stars.all_around != on {
+        stars.all_around = on;
+    }
+}
+
 /// Decode the read-back faces and write them as `s` says.
 fn save_skybox(s: &SkyboxSettings, res: u32, faces: &[Vec<u8>]) -> std::io::Result<()> {
     let dir = export_folder();
@@ -493,7 +522,7 @@ fn save_skybox(s: &SkyboxSettings, res: u32, faces: &[Vec<u8>]) -> std::io::Resu
         crate::screenshot::encode(&path, ext, 95, &to_picture(w, h, &px, alpha, depth))?;
         info!("skybox -> {}", path.display());
     } else if cube_dds {
-        let pics: Vec<Picture> = decoded.iter().map(|f| to_picture(res, res, f, true, depth)).collect();
+        let pics: Vec<Picture> = decoded.iter().map(|f| to_picture(res, res, f, s.save_alpha, depth)).collect();
         let path = dir.join("sky_cubemap.dds");
         std::fs::write(&path, crate::screenshot::dds_cube(&pics))?;
         info!("skybox -> {}", path.display());
@@ -588,7 +617,7 @@ impl Plugin for CapturePlugin {
             .init_resource::<SkyboxState>()
             .add_systems(Startup, load_skybox_format)
             .add_systems(PreUpdate, capture_commands)
-            .add_systems(Update, run_skybox)
+            .add_systems(Update, (run_skybox, sky_all_around).chain())
             .add_systems(PostUpdate, follow_main.after(UniverseSet::Camera).before(TransformSystems::Propagate));
     }
 }

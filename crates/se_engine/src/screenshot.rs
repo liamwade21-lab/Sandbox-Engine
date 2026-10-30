@@ -369,13 +369,14 @@ fn dds_data(pic: &Picture, depth: Depth) -> Vec<u8> {
     }
 }
 
-/// A cubemap DDS of six faces (+X, -X, +Y, -Y, +Z, -Z) of one size and depth: SE's "dds cubemap".
+/// A cubemap DDS of six faces (+X, -X, +Y, -Y, +Z, -Z) of one size and depth: SE's "dds cubemap"
+/// (opaque X8R8G8B8 unless the faces have alpha; the 16-bit and float formats always carry it).
 pub fn dds_cube(faces: &[Picture]) -> Vec<u8> {
     let Some(f0) = faces.first() else { return Vec::new() };
     let depth = f0.depth();
-    let mut out = dds_header(f0.w, f0.h, depth, true, true);
+    let mut out = dds_header(f0.w, f0.h, depth, f0.alpha, true);
     for f in faces {
-        out.extend(dds_data(&f.with_alpha(), depth));
+        out.extend(dds_data(f, depth));
     }
     out
 }
@@ -529,7 +530,8 @@ struct HiresJob {
     alpha: bool,
     path: PathBuf,
     settings: ScreenshotSettings,
-    restore: (bool, f32),
+    /// Time paused, LandLOD and the camera's input locks before the job.
+    restore: (bool, f32, crate::camera::InputLocks),
 }
 
 #[derive(Resource, Default)]
@@ -562,8 +564,8 @@ fn run_hires(
     mut state: ResMut<HiresState>,
     settings: Res<HiresSettings>,
     shots: Res<ScreenshotSettings>,
-    (cam, mut sim, mut gfx, mut stars): (
-        Res<crate::camera::FlyCamera>,
+    (mut cam, mut sim, mut gfx, mut stars): (
+        ResMut<crate::camera::FlyCamera>,
         ResMut<crate::universe::SimTime>,
         ResMut<crate::graphics::GraphicsSettings>,
         ResMut<crate::stars::StarSettings>,
@@ -594,7 +596,9 @@ fn run_hires(
         let win = windows.iter().next().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
         let fov = hires_fov(cam.fov_deg.to_radians(), win, s.target.x as f32 / s.target.y as f32);
         // No bloom: spread over each tile's own pixels it would show the tile edges.
-        let view = CaptureView { rel: Quat::IDENTITY, fov: Some(fov), post: Post { bloom: false, correct: true } };
+        // Every tile shows the view as it is now.
+        let fixed = Some(cam.rot.as_quat());
+        let view = CaptureView { rel: Quat::IDENTITY, fov: Some(fov), post: Post { bloom: false, correct: true }, fixed };
         let view = crate::capture::spawn_view(&mut commands, &mut images, tile, view, -60, shots.save_alpha);
         let dir = folder().join("screenshots-hd");
         let _ = std::fs::create_dir_all(&dir);
@@ -603,9 +607,17 @@ fn run_hires(
             "Starting high-resolution screenshot rendering: {} x {}, {} x {} tiles of {} x {}",
             s.target.x, s.target.y, grid.x, grid.y, tile.x, tile.y
         );
-        // Time stops and the landscape takes the screenshot LOD while the tiles render (FUN_140221d70).
-        let restore = (sim.paused, gfx.quality.land_lod);
+        // Time stops, the landscape takes the screenshot LOD and the camera's movement and rotation are
+        // locked while the tiles render (FUN_140221d70 sets the UserMoveControl / UserRotationControl
+        // flags DAT_1419d5ae5..6), so the tiles line up.
+        let restore = (sim.paused, gfx.quality.land_lod, cam.locks);
         sim.paused = true;
+        cam.locks.movement = true;
+        cam.locks.rotation = true;
+        cam.velocity = bevy::math::DVec3::ZERO;
+        cam.turn_vel = bevy::math::DVec3::ZERO;
+        cam.travel = None;
+        cam.fov_target = None;
         gfx.quality.land_lod = s.land_lod;
         state.0 = Some(HiresJob {
             target: s.target,
@@ -683,7 +695,7 @@ fn run_hires(
     let Some(save) = finish else { return };
     let job = state.0.take().expect("job");
     crate::capture::despawn_views(&mut commands, &mut images, std::slice::from_ref(&job.view));
-    (sim.paused, gfx.quality.land_lod) = job.restore;
+    (sim.paused, gfx.quality.land_lod, cam.locks) = job.restore;
     if !save {
         return;
     }
