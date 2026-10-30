@@ -144,7 +144,7 @@ fn settings_window(
                 });
                 group(ui, "Quality", &i18n, |ui| {
                     ui.add(egui::Slider::new(&mut q.anisotropy, 0..=16).text(i18n.tr("Anisotropic filtering")));
-                    ui.add(egui::Slider::new(&mut q.land_lod, -3.0..=1.0).step_by(0.5).text(i18n.tr("Landscape LOD")));
+                    ui.add(egui::Slider::new(&mut q.land_lod, -2.0..=2.0).step_by(0.5).text(i18n.tr("Landscape LOD")));
                     ui.add(egui::Slider::new(&mut q.max_tiles_per_frame, 1..=16).text(i18n.tr("Terrain tiles per frame")));
                     ui.collapsing(i18n.tr("Other preset values"), |ui| {
                         for (k, v) in &q.keys {
