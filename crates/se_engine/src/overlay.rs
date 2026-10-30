@@ -672,6 +672,8 @@ pub(crate) fn draw_orbits(
     bodies: Query<&SystemBody>,
     cams: Query<&Camera, With<MainCamera>>,
     mut members: Local<(Option<u32>, Vec<ObjectRef>)>,
+    ships: Query<(Entity, &crate::ship::Ship, &crate::universe::UPosition)>,
+    flight: Res<crate::ship::Flight>,
 ) -> Result {
     if !settings.orbits {
         return Ok(());
@@ -751,10 +753,98 @@ pub(crate) fn draw_orbits(
             add_band(&mut mesh, &screen, color, 2.0 * width);
         }
     }
+    // SE's ship trajectories (ShowOrbitsShips, "View ship trajectory"): each flying ship's conic about
+    // the body pulling it hardest, the flown one in the selected-orbit colour (ShipSelectedOrbitColor;
+    // its value is not in the skin, so BodySelectedOrbitColor's is used).
+    if settings.orbit_kinds.has(MarkerKind::Ship) {
+        let pulls: Vec<(se_core::upos::UPos, f64, f64)> = bodies
+            .iter()
+            .filter(|b| b.radius_m > 0.0)
+            .map(|b| (b.pos, se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m), b.radius_m))
+            .collect();
+        for (entity, ship, pos) in &ships {
+            if ship.landed.is_some() || ship.parked.is_some() {
+                continue;
+            }
+            let Some(&(bpos, mu, radius)) = pulls.iter().max_by(|a, b| {
+                let g = |p: &(se_core::upos::UPos, f64, f64)| p.1 / pos.0.delta_m(p.0).length_squared().max(1.0);
+                g(a).total_cmp(&g(b))
+            }) else {
+                continue;
+            };
+            let Some(obj) = bodies.iter().find(|b| b.pos == bpos).map(|b| b.obj) else { continue };
+            // The body's own velocity, from its ephemeris a second either side.
+            let dt = 1.0 / 86_400.0;
+            let body_vel = eph.position(obj, sim.jd + dt).delta_m(eph.position(obj, sim.jd - dt)) / 2.0;
+            let (r, v) = (pos.0.delta_m(bpos), ship.vel - body_vel);
+            let Some(conic) = ship_conic(r, v, mu, radius, ORBIT_POINTS) else { continue };
+            let base = bpos.delta_m(cam.pos);
+            let flown = flight.ship == Some(entity);
+            let color = if flown { skin.selected_orbit } else { skin.kind(MarkerKind::Ship.skin_key()) };
+            let width = if flown { ORBIT_MAJOR_PX } else { ORBIT_MINOR_PX } * px;
+            let points: Vec<(DVec3, f32)> = conic
+                .iter()
+                .map(|&(p, f)| {
+                    let at = base + p;
+                    (view.local(at), if hidden(at) { 0.0 } else { 1.0 - ORBIT_TRAILS * (1.0 - f * f) })
+                })
+                .collect();
+            for run in clip_runs(&points) {
+                let screen: Vec<(egui::Pos2, f32)> = run.iter().map(|&(v, a)| (view.screen(v), a)).collect();
+                add_band(&mut mesh, &screen, color, 2.0 * width);
+            }
+        }
+    }
     if !mesh.is_empty() {
         ctx.layer_painter(overlay_layer()).add(egui::Shape::mesh(mesh));
     }
     Ok(())
+}
+
+/// A ship's conic about a body of gravitational parameter `mu` and radius `radius` from its relative
+/// position `r` and velocity `v`: points relative to the body with the trail fraction `f` (0 just ahead
+/// of the ship, 1 just behind it, as [`draw_orbits`]). A bound orbit closes; an escape path runs out
+/// to 20 times its periapsis (or the body's radius) on either side of the ship.
+pub(crate) fn ship_conic(r: DVec3, v: DVec3, mu: f64, radius: f64, n: usize) -> Option<Vec<(DVec3, f32)>> {
+    let rl = r.length();
+    let h = r.cross(v);
+    if mu <= 0.0 || rl <= 0.0 || h.length_squared() <= 0.0 {
+        return None;
+    }
+    let e_vec = v.cross(h) / mu - r / rl;
+    let e = e_vec.length();
+    let p = h.length_squared() / mu;
+    let pa = if e > 1e-9 { e_vec / e } else { r / rl };
+    let qa = h.normalize().cross(pa);
+    let at = |th: f64| pa * th.cos() + qa * th.sin();
+    let nu = r.dot(qa).atan2(r.dot(pa));
+    let mut pts = Vec::with_capacity(n + 1);
+    if e < 1.0 {
+        for k in 0..=n {
+            let th = nu + std::f64::consts::TAU * k as f64 / n as f64;
+            pts.push((at(th) * (p / (1.0 + e * th.cos())), k as f32 / n as f32));
+        }
+    } else {
+        // Out to r_max on the incoming and outgoing legs.
+        let r_max = 20.0 * (p / (1.0 + e)).max(radius);
+        let th_max = ((p / r_max - 1.0) / e).clamp(-1.0, 1.0).acos();
+        let (lo, hi) = (-th_max, th_max);
+        if nu <= lo || nu >= hi {
+            return None;
+        }
+        // From the ship on to the outgoing end, then back from the incoming end to the ship.
+        let ahead = ((n as f64) * (hi - nu) / (hi - lo)).ceil().max(1.0) as usize;
+        for k in 0..=ahead {
+            let th = nu + (hi - nu) * k as f64 / ahead as f64;
+            pts.push((at(th) * (p / (1.0 + e * th.cos())), 0.5 * k as f32 / ahead as f32));
+        }
+        let behind = n.saturating_sub(ahead).max(1);
+        for k in 0..=behind {
+            let th = lo + (nu - lo) * k as f64 / behind as f64;
+            pts.push((at(th) * (p / (1.0 + e * th.cos())), 0.5 + 0.5 * k as f32 / behind as f32));
+        }
+    }
+    Some(pts)
 }
 
 /// Splits a camera-space polyline (with an alpha per point) into its runs in front of the camera,
@@ -1517,6 +1607,24 @@ fn pick_on_click(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ship_conics() {
+        let mu: f64 = 3.986e14;
+        // A circular orbit at 7000 km: every point on the circle, starting at the ship.
+        let r = DVec3::new(7.0e6, 0.0, 0.0);
+        let v = DVec3::new(0.0, 0.0, (mu / 7.0e6).sqrt());
+        let c = ship_conic(r, v, mu, 6.371e6, 64).unwrap();
+        assert!((c[0].0 - r).length() < 1.0 && c[0].1 == 0.0 && c[64].1 == 1.0);
+        assert!(c.iter().all(|(p, _)| (p.length() - 7.0e6).abs() < 1.0));
+        // An escape path: through the ship, within 20 periapses, fractions rising from it.
+        let c = ship_conic(r, v * 1.6, mu, 6.371e6, 64).unwrap();
+        assert!((c[0].0 - r).length() < 1.0);
+        assert!(c.iter().all(|(p, _)| p.length() <= 20.0 * 7.0e6 * 1.001));
+        assert!(c.windows(2).all(|w| w[1].1 >= w[0].1));
+        // Falling straight down has no conic to draw.
+        assert!(ship_conic(r, -r, mu, 6.371e6, 64).is_none());
+    }
 
     #[test]
     fn lines_behind_the_camera_are_cut() {

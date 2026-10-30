@@ -1261,7 +1261,7 @@ struct BodyInfo<'a> {
     terrain: Option<&'a Terrain>,
 }
 
-fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
+pub(crate) fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
     let m = match obj {
         ObjectRef::Body(i) => data.catalog.bodies.get(i as usize).map(|b| b.mass_kg).unwrap_or(0.0),
         ObjectRef::Star(i) => data.catalog.stars.get(i as usize).map(|s| s.mass_kg).unwrap_or(0.0),
