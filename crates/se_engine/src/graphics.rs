@@ -187,11 +187,15 @@ pub struct GraphicsSettings {
     /// Set when a preset is picked: its star point method then replaces the user's (SE loads the
     /// whole file over the settings).
     pub picked: bool,
+    /// Set when the user's saved Graphics block was read. Preset keys that override main-def.cfg
+    /// (`WarpPrecision`) apply only after a pick or this load, as SE's main-user.cfg does; scripted
+    /// runs skip the user's settings and keep main-def's values.
+    pub loaded: bool,
 }
 
 impl Default for GraphicsSettings {
     fn default() -> Self {
-        Self { preset: "High".into(), quality: Quality::default(), presets: Vec::new(), picked: false }
+        Self { preset: "High".into(), quality: Quality::default(), presets: Vec::new(), picked: false, loaded: false }
     }
 }
 
@@ -274,14 +278,15 @@ fn apply_quality(
     if !gs.is_changed() && last_aniso.is_some() == surface.is_some() {
         return;
     }
-    if gs.picked {
+    if gs.picked || gs.loaded {
+        if gs.picked {
+            stars.point_style = crate::stars::PointStyle::from_method(q.star_points);
+        }
+        if let Some(mut b) = holes {
+            b.warp_precision = q.warp_precision as f64;
+        }
         gs.picked = false;
-        stars.point_style = crate::stars::PointStyle::from_method(q.star_points);
-    }
-    if let Some(mut b) = holes
-        && b.warp_precision != q.warp_precision as f64
-    {
-        b.warp_precision = q.warp_precision as f64;
+        gs.loaded = false;
     }
     for (e, mut msaa, has_fxaa) in &mut camera {
         let want = match q.msaa {

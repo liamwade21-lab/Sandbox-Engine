@@ -65,14 +65,14 @@ fn hud_keys(
     mut sim: ResMut<SimTime>,
     mut egui: EguiContexts,
     mut gfx: ResMut<crate::graphics::GraphicsUi>,
-    (mut msg, i18n, shots): (ResMut<crate::messages::Messages>, Res<I18n>, Res<crate::screenshot::ScreenshotSettings>),
+    (mut msg, i18n, shots, mut shot_no): (ResMut<crate::messages::Messages>, Res<I18n>, Res<crate::screenshot::ScreenshotSettings>, ResMut<crate::screenshot::ScreenshotNumber>),
 ) {
     if egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false) {
         return;
     }
     if keys.just_pressed(KeyCode::F11) {
         // SE's format and numbering, in <Pictures>/SpaceEngine-rs/ (screenshot.rs).
-        crate::screenshot::take(&mut commands, &shots);
+        crate::screenshot::take(&mut commands, &shots, &mut shot_no);
     }
     // SE's keys (its default binds): Ctrl+` the interface, F3 Find object (Shift+F3 is the Star
     // browser's search), F4 Settings, Ctrl+F4 graphics, F7 Locations, I the wiki. F1 (SE's universe

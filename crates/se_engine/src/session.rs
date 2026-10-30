@@ -125,7 +125,7 @@ fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<Fl
     info!("restored the session from {}", save_path().display());
 }
 
-fn save_on_exit(mut exits: MessageReader<AppExit>, cfg: Res<EngineConfig>, data: Res<SeData>, cam: Res<FlyCamera>, sim: Res<SimTime>) {
+pub(crate) fn save_on_exit(mut exits: MessageReader<AppExit>, cfg: Res<EngineConfig>, data: Res<SeData>, cam: Res<FlyCamera>, sim: Res<SimTime>) {
     if exits.read().count() == 0 || crate::settings::scripted(&cfg) || cfg.start_given {
         return;
     }
@@ -145,7 +145,7 @@ fn save_on_exit(mut exits: MessageReader<AppExit>, cfg: Res<EngineConfig>, data:
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    match std::fs::write(&path, s.to_cfg()) {
+    match crate::settings::write_atomic(&path, &s.to_cfg()) {
         Ok(()) => info!("saved the session to {}", path.display()),
         Err(e) => warn!("cannot save the session to {}: {e}", path.display()),
     }

@@ -34,7 +34,8 @@ impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ResetRequest>()
             .add_systems(PostStartup, load_settings)
-            .add_systems(Update, (apply_pending_color, save_when_changed, reset_settings).chain());
+            .add_systems(Update, (apply_pending_color, save_when_changed, reset_settings).chain())
+            .add_systems(Last, restart_after_reset.after(crate::session::save_on_exit));
     }
 }
 
@@ -337,7 +338,12 @@ fn load_settings(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeDat
     let gpu_now = live.adapter.as_ref().map(|a| a.name.clone()).unwrap_or_default();
     let saved_gpu = doc.as_ref().and_then(|d| d.sub("Graphics")).and_then(|g| g.str("GPU").map(str::to_string));
     let saved_version = doc.as_ref().and_then(|d| d.str("Version").map(str::to_string));
-    let changed = doc.is_none() || saved_gpu.as_deref() != Some(gpu_now.as_str()) || saved_version.as_deref() != Some(env!("CARGO_PKG_VERSION"));
+    // A file from an older port has neither key: not a change (its saved preset stays), but it is
+    // rewritten at once so they are there from then on.
+    let changed = doc.is_none()
+        || saved_gpu.as_deref().is_some_and(|g| g != gpu_now)
+        || saved_version.as_deref().is_some_and(|v| v != env!("CARGO_PKG_VERSION"));
+    let rewrite = changed || saved_version.is_none() || saved_gpu.is_none();
     if let Some(doc) = &doc {
         if let Some(b) = doc.sub("Settings") {
             let f = |k: &str, v: &mut f32| {
@@ -473,7 +479,7 @@ fn load_settings(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeDat
         keep_lang: lang_forced.then(|| saved_lang.clone().unwrap_or_else(|| se_core::locale::DEFAULT_LANG.to_string())),
     };
     saved.last = saved.capture(&live);
-    if changed {
+    if rewrite {
         // A first run or a hardware / version change writes the file at once (SE's "Creating user
         // config file", "Performing full update of the config file").
         saved.last.gpu.push('\0');
@@ -512,13 +518,26 @@ fn save_when_changed(time: Res<Time>, saved: Option<ResMut<Saved>>, live: Live) 
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match std::fs::write(&path, now.to_cfg()) {
+        match write_atomic(&path, &now.to_cfg()) {
             Ok(()) => debug!("saved settings to {}", path.display()),
             Err(e) => warn!("cannot save settings to {}: {e}", path.display()),
         }
         saved.last = now;
     }
 }
+
+/// Writes `text` to `<path>.tmp`, then renames it over `path`, so a crash mid-write never leaves a
+/// truncated file.
+pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Set by "Reset settings": the port starts again once this one has saved its session and is exiting.
+#[derive(Resource)]
+struct RestartOnExit;
 
 /// "Reset settings": the user file goes, and the port restarts on main-def.cfg's values (SE restarts too).
 fn reset_settings(mut commands: Commands, mut req: ResMut<ResetRequest>, mut exit: MessageWriter<AppExit>) {
@@ -533,11 +552,19 @@ fn reset_settings(mut commands: Commands, mut req: ResMut<ResetRequest>, mut exi
     {
         warn!("cannot remove {}: {e}", path.display());
     }
+    commands.insert_resource(RestartOnExit);
+    exit.write(AppExit::Success);
+}
+
+/// The new process starts after the session was written (`session.rs`, also in `Last`).
+fn restart_after_reset(restart: Option<Res<RestartOnExit>>) {
+    if restart.is_none() {
+        return;
+    }
     match std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(std::env::args_os().skip(1)).spawn()) {
         Ok(_) => info!("settings reset; restarting"),
         Err(e) => warn!("settings reset; cannot restart: {e}"),
     }
-    exit.write(AppExit::Success);
 }
 
 /// The `Graphics` block: a preset name, then its values (a "Custom" preset keeps the individual ones).
@@ -567,6 +594,7 @@ fn load_graphics(g: &se_core::sc::Block, gfx: &mut GraphicsSettings, lens: &mut 
         q.keys.retain(|(k, _)| preset_keys.contains(k));
     }
     gfx.quality = q;
+    gfx.loaded = true;
     let f = |k: &str, v: &mut f32| {
         if let Some(x) = g.f64(k) {
             *v = x as f32;

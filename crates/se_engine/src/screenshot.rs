@@ -33,7 +33,7 @@ pub struct ScreenshotPlugin;
 
 impl Plugin for ScreenshotPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ScreenshotSettings>().add_systems(Startup, load_settings);
+        app.init_resource::<ScreenshotSettings>().init_resource::<ScreenshotNumber>().add_systems(Startup, load_settings);
     }
 }
 
@@ -66,19 +66,29 @@ fn next_number<'a>(names: impl Iterator<Item = &'a str>) -> u32 {
         .map_or(0, |m| m + 1)
 }
 
-/// The next free `scr%05i.<ext>` path in `dir`.
-pub fn next_path(dir: &Path, ext: &str) -> PathBuf {
-    let names: Vec<String> = std::fs::read_dir(dir)
-        .map(|it| it.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
-        .unwrap_or_default();
-    dir.join(format!("scr{:05}.{ext}", next_number(names.iter().map(String::as_str))))
+/// The number of the next screenshot: the folder is scanned once, then counted up per press, so two
+/// presses before the first capture arrives still get two numbers.
+#[derive(Resource, Default)]
+pub struct ScreenshotNumber(Option<u32>);
+
+impl ScreenshotNumber {
+    fn next(&mut self, dir: &Path) -> u32 {
+        let n = *self.0.get_or_insert_with(|| {
+            let names: Vec<String> = std::fs::read_dir(dir)
+                .map(|it| it.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default();
+            next_number(names.iter().map(String::as_str))
+        });
+        self.0 = Some(n + 1);
+        n
+    }
 }
 
 /// Takes a screenshot of the window and saves it in SE's format (F11).
-pub fn take(commands: &mut Commands, settings: &ScreenshotSettings) {
+pub fn take(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut ScreenshotNumber) {
     let dir = folder();
     let _ = std::fs::create_dir_all(&dir);
-    let path = next_path(&dir, &settings.format);
+    let path = dir.join(format!("scr{:05}.{}", number.next(&dir), settings.format));
     let s = settings.clone();
     info!("screenshot -> {}", path.display());
     commands.spawn(Screenshot::primary_window()).observe(move |ev: On<ScreenshotCaptured>| {
@@ -222,6 +232,10 @@ mod tests {
     fn numbers_after_the_last_screenshot() {
         assert_eq!(next_number(["a.png", "scr00004.jpg", "scr00012.png", "scr1.png"].into_iter()), 13);
         assert_eq!(next_number(std::iter::empty()), 0);
+        // Counted up per press without waiting for the files.
+        let mut n = ScreenshotNumber::default();
+        let empty = PathBuf::from("no such folder");
+        assert_eq!((n.next(&empty), n.next(&empty)), (0, 1));
     }
 
     /// Writes a gradient in every format into `SE_SHOT_TEST_DIR` (to open in other programs).
