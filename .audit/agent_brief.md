@@ -19,6 +19,8 @@ done and written up. `README.md` "Status" and `docs/` describe the port.
 ## Rules
 - Vulkan only. VR and the editors are out of scope. Don't defeat DRM.
 - Never run SpaceEngine itself and never take over the screen. Running the port is fine.
+- Never write SE's files to disk, not even into scratch folders: read them in memory (the
+  install's loose files, or paks through `se_core::vfs`) and print only the lines you need.
 - Don't install software. Don't ask the user anything; make the call, note it.
 - Don't edit `README.md`, `.audit/fixed.txt` or `docs/missing_features.md`, and stay out of the
   files your prompt says belong to someone else. The main session merges and writes the docs.

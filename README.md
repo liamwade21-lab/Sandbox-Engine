@@ -99,6 +99,9 @@ cargo test -p se_core
 | Shift+F3 / F8 or 0 | star browser (nearest stars, and the search for planets, moons and stars by parameters; also the main toolbar's Search button) / system chart of the current system |
 | F4 / Ctrl+F4 / F7 | settings / graphics settings / locations |
 | O / ' / Ctrl+' / ; | orbits / labels (brief, detail, off) / markers / selection pointer; each kind of object can be switched in Settings > Filter objects |
+| X / Shift+X / Ctrl+X / Alt+X | constellations / their lines / boundaries / names (right click the Constellations button for the switches) |
+| Ctrl+; / Alt+; | celestial grids (equatorial by default; ecliptic and galactic on the Celestial grids button's right click) / a planet's geographic grid |
+| Shift+. / Shift+, (`>` / `<`) | SE's ambient lighting up / down in steps of 0.05 (none by default), so dark bodies can be seen |
 
 ### Flight mode (spacecraft)
 
@@ -108,15 +111,20 @@ starts. Ship data comes from SpaceEngine's `ShipsModels.pak`; see `docs/formats/
 
 | Input | Action |
 |---|---|
-| Enter or F | toggle flight mode (needs a ship) |
+| Enter (or F outside flight) | toggle flight mode (needs a ship) |
 | Esc | leave flight mode; the free camera stays where the chase camera was and the ship keeps drifting |
-| W / S | raise / lower the main-engine throttle (S below zero is retro thrust); X cuts it, Z is full |
+| W / S | raise / lower the main-engine throttle (S below zero is retro thrust); X cuts it |
+| Z / Alt+Z / Shift+Z | stop the engines (and any autopilot program) / stop the warp drive / sync velocity with the reference body |
 | A / D, R / F | RCS strafe left/right, up/down (`CorrEngines`, `HoverEngines`) |
 | Arrow keys, Q / E | pitch and yaw, roll (`TurnEngines`); Shift is ×10 |
 | Mouse drag | turn the ship (chase views) or orbit it (orbit view); wheel zooms the camera |
-| T | toggle rotation damping (on by default: with no input the spin is braked at `TurnEngines`) |
+| U / Numpad 5 | flight assist (rotation damping, on by default) / kill rotation |
+| 5 / 6 / 7 / 8 / 9 / 0, End | hold prograde / retrograde / radial / antiradial / normal up / normal down, horizon (relative to the reference body) |
+| H | hold altitude |
+| T / P | select the camera's selection as the target / cycle the reference body (nearest, strongest gravity, the target) |
+| C / Shift+G / Alt+G / G | autopilot: rotate to / fly to / warp to / go to (fly or warp) the target; Z stops it |
 | Backspace | brake: match the velocity of the nearest body (the autopilot uses the retro or RCS acceleration) |
-| H | engage / disengage the warp drive (ships with a `Warpdrive` or `Hyperdrive`); PageUp/PageDown or Alt+`=` / Alt+`-` (SE's keys) change the target boost |
+| PageUp / PageDown, Alt+`=` / Alt+`-` | warp drive (ships with a `Warpdrive` or `Hyperdrive`): engage and raise the target boost / lower it, stopping at 0 |
 | V | cycle the design's `Behind` chase cameras and the free orbit camera |
 
 Engines are accelerations in m/s² (not thrust), warp multiplies velocity by 10^boost with the boost capped as the
@@ -199,12 +207,18 @@ Key rendering decisions:
 - **Nearby stars.** The active system is the one whose real star is nearest: components of a multiple system are measured where they orbit, not at the barycentre. Only the active system's own point is hidden in the star fields; every other star near the camera stays drawn (SE hides only the barycentre).
 - **Thermal glow and giants.** Hot worlds glow by SE's thermal model (hot Jupiters and lava worlds on their night side); procedural gas and ice giants use SE's cloud-band generator with its stripes, turbulence and cyclones, coloured from SE's giant palettes.
 - **Stars and black holes.** Star surfaces as SE builds them: each star's granulation, flows and sunspots come from SE's surface generator (granule size by surface gravity, so red giants show a few huge convection cells and dwarfs fine granulation; spots with umbra, penumbra and filaments in a latitude band, larger on cooler dwarfs), evaluated per pixel with SE's `GlowMapSun` and coloured as a blackbody, with SE's limb darkening as temperature (0.86x at the limb to 1.1x at the centre). Black holes with Schwarzschild lensing of the scene and a raytraced, Doppler-beamed accretion disk (`docs/blackholes.md`).
+- **Lighting.** As in SE, a body is lit by up to four lights: the stars of a multiple system (each in its own colour,
+  faded by its magnitude and scaled to the brightest, with its own ring and eclipse shadows on surfaces, clouds, skies
+  and rings) and planet shine, the light nearby planets and moons reflect (earthshine on the Moon's night side, Jupiter's
+  moons on its night side). The terminator is SE's sharp, height-aware horizon shadow, so peaks catch the light past it,
+  and SE's ambient lighting (none by default, `>` / `<`) lifts dark bodies.
 - **Eclipses and shadows.** Soft umbra and penumbra from up to four occluders per body, on terrain, clouds and the sky (the sky's sun disc is masked by the eclipsing body); atmospheres turn a lunar umbra red. Rings cast their shadow on the planet.
 - **Coronae and auroras.** Streamered coronae around resolved stars (visible around the Moon at totality), correct from any distance including inside them; auroral ovals from the catalog `Aurora` blocks, on the night side.
 - **Comets.** Coma plus ion and dust tails that grow towards perihelion.
-- **Spacecraft and flight mode.** The 29 shipped designs (merged module meshes, DXT/PNG textures, emissive maps, frame cut-outs, engine plumes) fly with Newtonian physics in f64: engine accelerations from the design, gravity of the whole system, a warp drive whose speed is limited by altitude, terrain contact, chase and orbit cameras, a flight HUD (see Flight mode above).
+- **Spacecraft and flight mode.** The 29 shipped designs (merged module meshes, DXT/PNG textures, emissive maps, frame cut-outs, engine plumes) fly with Newtonian physics in f64: engine accelerations from the design, gravity of the whole system, a warp drive whose speed is limited by altitude, terrain contact, chase and orbit cameras, a flight HUD (see Flight mode above). SE's aerodynamic models (none, shuttle, arrow; its coefficient table read from the exe) act in atmospheres, with Mach and dynamic pressure on the HUD; attitude holds (prograde to normal, horizon), hold altitude, sync velocity and an autopilot that rotates to, flies to or warps to a target in SE's stages; engine, thruster, hover and warp sounds play by thrust.
 - **Scripts.** SpaceEngine `.se` scripts (the main-menu scene and the tutorials) run through `--script` or the Scripts window (`docs/formats/se_script.md`).
 - **Reference tools.** The wiki (object descriptions from the locale database), the star browser and the system chart. The star browser's Search tab (main toolbar "Search", or Shift+F3) is SE's search: it scans up to 10,000 systems within a radius (catalog and procedural, generating each system as a visit would), and its Filter settings pick planets or moons by class, temperature, water, atmosphere, life (organic or exotic, unicellular or multicellular, marine or terrestrial), radius and catalog or procedural systems; the last column counts the matches, lists them on hover and selects them in turn on click. With "Star" as the object it lists the nearest 10,000 stars of a type (black hole, neutron star, white dwarf, brown dwarf, giant, or a spectral class) without generating planets. The procedural star field holds neutron stars and black holes as SE's does (4% and 2% of its white-dwarf slots).
+- **Constellations and grids.** SE's constellation lines between the real stars (so their shapes change when you travel), IAU boundaries and names (full or abbreviated), and the equatorial, ecliptic and galactic grids with SE's labels plus a planet's geographic grid; all off by default, with SE's keys and fades.
 - **Selection pointer.** SE's: four cyan ticks turning around the selection, outside its disc, and a hollow triangle at the screen's edge pointing to a selection off screen (Settings > "Selection pointer").
 - **Procedural galaxies' brightness.** SE has no galaxies at the octree's level 0 (M -32 to -28); the port dropped them, and draws the others (whose 50 kpc radius cap packs their light into too small a disc) at the surface brightness of SE's radius law, as SE does.
 - **Star points style.** SE's `StarPointMethod` (Settings > "Star points style"): sprites, sprites with motion blur (SE's default) or with motion and rotation blur. The blur stretches each star and point-like galaxy along its path on screen over the last 1/60 s of camera motion (and turning), spreading its light along the trail; `MotionBlurLength` scales it.
@@ -216,7 +230,7 @@ Key rendering decisions:
 
 ### Not yet implemented
 
-- **Gameplay.** Everything beyond flying one ship: docking, fuel and heat, aerodynamics (`Aerodynamics`, `AeroModel`), damage, sounds, hull specular/normal/heat maps.
+- **Gameplay.** Everything beyond flying one ship: docking, fuel and heat, aircraft control surfaces, damage, hull specular/normal/heat maps.
 
 See `docs/` for the reverse-engineering notes: formats, frames, procedural rules,
 atmosphere and galaxy specifications.
