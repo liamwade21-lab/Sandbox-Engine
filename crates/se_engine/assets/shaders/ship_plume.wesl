@@ -1,8 +1,9 @@
 // Engine exhaust: SE's ship_engines.glsl. Each engine effect is a box ([-1, 1]^3 in its own
 // frame, the nozzle on the z = +1 face, the exhaust towards -z); the fragment ray-marches the
 // view ray through the box (up to 128 steps of ScaleStep.w) summing the density of the engine's
-// type (the ship_*_engine.glh files), times the colour. Only the back faces are drawn, so the
-// march also works with the camera inside the box. Output alpha is 0 so that AlphaMode::Add
+// type (the ship_*_engine.glh files), times the colour. From outside the box its front faces are
+// drawn (the hull in front hides the exhaust, the hull behind it does not); with the camera inside,
+// its back faces, the march starting at the camera. Output alpha is 0 so that AlphaMode::Add
 // (premultiplied) adds colour only.
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, get_local_from_world, mesh_position_local_to_world};

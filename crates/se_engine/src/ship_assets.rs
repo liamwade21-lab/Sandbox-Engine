@@ -47,6 +47,8 @@ pub mod hull_flags {
     pub const DETDIF: u32 = 16;
     pub const DETNRM: u32 = 32;
     pub const THERM: u32 = 64;
+    /// `TwoSided`: drawn without back-face culling (not a shader switch).
+    pub const TWOSIDED: u32 = 128;
 }
 
 /// Uniform block of [`HullMaterial`] (`Hull` in `ship.wesl`; SE's `ShipUniforms`).
@@ -114,11 +116,12 @@ pub struct HullMaterial {
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct HullMaterialKey {
     cutout: bool,
+    two_sided: bool,
 }
 
 impl From<&HullMaterial> for HullMaterialKey {
     fn from(m: &HullMaterial) -> Self {
-        Self { cutout: m.u.flags.x & hull_flags::ATRNS != 0 }
+        Self { cutout: m.u.flags.x & hull_flags::ATRNS != 0, two_sided: m.u.flags.x & hull_flags::TWOSIDED != 0 }
     }
 }
 
@@ -145,7 +148,10 @@ impl Material for HullMaterial {
             Mesh::ATTRIBUTE_TANGENT.at_shader_location(3),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
-        descriptor.primitive.cull_mode = None;
+        // Back faces are culled unless the material is `TwoSided`.
+        if key.bind_group_data.two_sided {
+            descriptor.primitive.cull_mode = None;
+        }
         Ok(())
     }
 }
@@ -180,7 +186,8 @@ impl FromWorld for HullDefaults {
         HullDefaults {
             white: images.add(flat_texture([255, 255, 255, 255])),
             black: images.add(flat_texture([0, 0, 0, 255])),
-            flat_normal: images.add(flat_raw([128, 128, 255, 255])),
+            // 127 is 0 after ship.glsl's 2 v - NORM_ONE.
+            flat_normal: images.add(flat_raw([127, 127, 255, 255])),
             planck: images.add(planck),
             thermal_shift,
         }
@@ -285,6 +292,9 @@ pub fn hull_uniform(mat: &ShipMaterial, tex: &HullTextures, rad_temp: f64, shift
     }
     if tex.temperature.is_some() && rad_temp > 0.0 {
         flags |= THERM;
+    }
+    if mat.two_sided {
+        flags |= TWOSIDED;
     }
     let v3 = |c: [f32; 3], w: f32| Vec4::new(c[0], c[1], c[2], w);
     let e = mat.emis_bright;
@@ -528,11 +538,12 @@ pub fn object_tangents(stored: &[[f32; 4]], pos: &[[f32; 3]], nrm: &[[f32; 3]], 
 }
 
 /// SE's bump_to_norm.glsl (seTextureGenerator::ConvertToNormalMap, FUN_1402fd4e0): a height
-/// map (red channel, times `scale`) to a normal map, the average of the four corner normals
-/// around each texel; alpha keeps the height.
-pub fn bump_to_normal(rgba: &[u8], w: u32, h: u32, scale: f32) -> Vec<u8> {
+/// map (`heights` 0..1, times `scale`) to a normal map, the average of the four corner normals
+/// around each texel; alpha keeps the height. SE reads the height from an R8/R16 texture swizzled
+/// to alpha; the install's bump maps are all greyscale (L8/L16), read here at full precision.
+pub fn bump_to_normal(heights: &[f32], w: u32, h: u32, scale: f32) -> Vec<u8> {
     let (wi, hi) = (w as i64, h as i64);
-    let hgt = |x: i64, y: i64| rgba[((y.rem_euclid(hi) * wi + x.rem_euclid(wi)) * 4) as usize] as f32 / 255.0 * scale;
+    let hgt = |x: i64, y: i64| heights[(y.rem_euclid(hi) * wi + x.rem_euclid(wi)) as usize] * scale;
     let mut out = vec![0u8; (w * h * 4) as usize];
     for y in 0..hi {
         for x in 0..wi {
@@ -548,7 +559,7 @@ pub fn bump_to_normal(rgba: &[u8], w: u32, h: u32, scale: f32) -> Vec<u8> {
                 (c.x * 255.0).round() as u8,
                 (c.y * 255.0).round() as u8,
                 (c.z * 255.0).round() as u8,
-                rgba[o],
+                (heights[o / 4] * 255.0).round() as u8,
             ]);
         }
     }
@@ -559,16 +570,24 @@ pub fn bump_to_normal(rgba: &[u8], w: u32, h: u32, scale: f32) -> Vec<u8> {
 /// chain, at most `max_dim` pixels on a side.
 fn load_map(vfs: &Vfs, path: &str, kind: MapKind, max_dim: u32) -> Option<Image> {
     let bytes = vfs.read(path).ok()?;
-    let (mut w, mut h, mut rgba) = if path.to_ascii_lowercase().ends_with(".dds") {
+    let dds = path.to_ascii_lowercase().ends_with(".dds");
+    let (mut w, mut h, mut rgba) = if let MapKind::Height(scale) = kind {
+        // Heights from the grey (red) channel, 16-bit PNGs at full precision.
+        let (w, h, heights): (u32, u32, Vec<f32>) = if dds {
+            let d = decode_dds(&bytes).ok()?;
+            (d.width, d.height, d.rgba.chunks_exact(4).map(|p| p[0] as f32 / 255.0).collect())
+        } else {
+            let img = image::load_from_memory(&bytes).ok()?.to_luma16();
+            (img.width(), img.height(), img.into_raw().into_iter().map(|v| v as f32 / 65535.0).collect())
+        };
+        (w, h, bump_to_normal(&heights, w, h, scale))
+    } else if dds {
         let d = decode_dds(&bytes).ok()?;
         (d.width, d.height, d.rgba)
     } else {
         let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
         (img.width(), img.height(), img.into_raw())
     };
-    if let MapKind::Height(scale) = kind {
-        rgba = bump_to_normal(&rgba, w, h, scale);
-    }
     while w > max_dim || h > max_dim {
         rgba = box_down(&rgba, w, h);
         w = (w / 2).max(1);
@@ -875,13 +894,10 @@ mod tests {
     #[test]
     fn bump_to_normal_matches_se() {
         // Flat: straight up, height kept in alpha.
-        let flat = bump_to_normal(&[100; 4 * 4 * 4], 4, 4, 2.0);
+        let flat = bump_to_normal(&[100.0 / 255.0; 4 * 4], 4, 4, 2.0);
         assert_eq!(&flat[0..4], &[128, 128, 255, 100]);
         // Height rising along +x tilts SE's normal towards +y (pc - pl in the y slot).
-        let mut ramp = vec![0u8; 4 * 1 * 4];
-        for x in 0..4 {
-            ramp[x * 4] = (x * 60) as u8;
-        }
+        let ramp: Vec<f32> = (0..4).map(|x| x as f32 * 60.0 / 255.0).collect();
         let n = bump_to_normal(&ramp, 4, 1, 1.0);
         let px = &n[4..8];
         assert!(px[1] > 140 && (px[0] as i32 - 128).abs() <= 1, "{px:?}");

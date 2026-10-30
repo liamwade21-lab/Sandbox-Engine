@@ -22,8 +22,8 @@
 //! instead of the user: `camera.rs` checks [`FlightHold`] and leaves the camera alone.
 //!
 //! Keys are SE's ship bindings (key table FUN_1405ba8f0): = / - (keypad + / -) main engines +/-,
-//! with Shift the retro engines, with Ctrl the hover engines (three separate levels), W/S/A/D/R/F the
-//! thrusters, keypad 8/2/4/6 and Q/E turn (the port adds the arrows), 5-0 Prograde .. Normal Down, End
+//! with Shift the retro engines, with Ctrl the hover engines (three separate levels), W/S/A/D/R/F (arrows,
+//! keypad 1/0) the thrusters, keypad 8/2/4/6 and Q/E (keypad 7/9) turn, 5-0 Prograde .. Normal Down, End
 //! Horizon, Num5 Kill rotation, U Flight assist, Z Stop engines, Alt+Z Stop warp drive, Shift+Z
 //! Sync velocity, H Hold altitude, T Select target, P Select reference body, C Rotate to target,
 //! Shift+G Fly to target, Alt+G Warp to target, G Fly or warp to target, Alt+= / Alt+- (and
@@ -108,14 +108,13 @@ pub struct ShipCommand {
 /// Player input gathered in `Update`, consumed by the physics in `PostUpdate`.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ShipInput {
-    /// RCS translation, each axis -1..1 (x right, y up).
+    /// Thruster (RCS) translation, each axis -1..1 (x right, y up, z forward).
     pub rcs: DVec3,
     /// Torque command per local axis (x pitch up, y yaw left, z roll left), -1..1.
     pub turn: DVec3,
     /// Mouse turning request for this frame (pixels).
     pub mouse: DVec2,
     pub boost_turn: bool,
-    pub brake: bool,
 }
 
 /// Aerodynamic numbers of the last frame (SE's ship panel: Mach, Dynamic pressure, Air velocity,
@@ -334,6 +333,7 @@ impl Plugin for ShipPlugin {
             .add_message::<ShipCommand>()
             .add_systems(Startup, (load_library, make_plume_mesh))
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
+            .add_systems(Update, disable_egui_keyboard_zoom)
             .add_systems(
                 Update,
                 (ship_commands, ship_input, finish_ship_loading, sync_hold, start_engine_sounds).chain(),
@@ -754,7 +754,7 @@ fn ship_input(
 
     // Engine groups (SE's key table FUN_1405ba8f0): = / - (or the keypad's + / -) raise and lower
     // the main engines, with Shift the retro engines, with Ctrl the hover engines (with Alt the
-    // warp drive, below). Z is SE's Stop engines (ShipStopEngines), X the port's cut.
+    // warp drive, below). Z is SE's Stop engines (ShipStopEngines).
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
@@ -773,9 +773,6 @@ fn ship_input(
         };
         *cmd = (*cmd + d).clamp(0.0, 1.0);
     }
-    if keys.just_pressed(KeyCode::KeyX) && plain {
-        flight.stop_engines();
-    }
     if keys.just_pressed(KeyCode::KeyZ) {
         if alt {
             stop_warp_drive(&mut flight);
@@ -793,29 +790,26 @@ fn ship_input(
         }
     }
 
-    // Thrusters (ShipMoveForward..Down: W/S, A/D, R/F) and roll (ShipTurnCW/CCW: E/Q) are bound
-    // without modifiers in SE's key table, so Shift+A (atmospheres) and the like leave them alone.
-    let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f64 - keys.pressed(neg) as i32 as f64;
-    let letter = |pos: KeyCode, neg: KeyCode| if plain { axis(pos, neg) } else { 0.0 };
-    // Ctrl + keypad are SE's ShipLook* views.
-    let pad = |pos: KeyCode, neg: KeyCode| if !ctrl && !alt { axis(pos, neg) } else { 0.0 };
-    flight.input.rcs = DVec3::new(letter(KeyCode::KeyD, KeyCode::KeyA), letter(KeyCode::KeyR, KeyCode::KeyF), letter(KeyCode::KeyW, KeyCode::KeyS));
-    // Rotation: the keypad's 8/2/4/6 (SE) or the arrows pitch and yaw (Shift turns faster), Q/E roll.
+    // SE's key table (FUN_1405ba8f0): the thrusters ShipMoveForward/Back/Left/Right are W/S/A/D or
+    // the arrows, ShipMoveUp/Down R/F or the keypad's 1/0; ShipTurnUp/Down/Left/Right the keypad's
+    // 8/2/4/6 (Ctrl + keypad are the ShipLook views), ShipTurnCCW/CW Q/E or the keypad's 7/9. The
+    // letters are bound without modifiers, so Shift+A (atmospheres) and the like leave them alone.
+    let down = |letter: KeyCode, alt_key: KeyCode| ((plain && keys.pressed(letter)) || keys.pressed(alt_key)) as i32 as f64;
+    let pad = |k: KeyCode| (!ctrl && !alt && keys.pressed(k)) as i32 as f64;
+    flight.input.rcs = DVec3::new(
+        down(KeyCode::KeyD, KeyCode::ArrowRight) - down(KeyCode::KeyA, KeyCode::ArrowLeft),
+        down(KeyCode::KeyR, KeyCode::Numpad1) - down(KeyCode::KeyF, KeyCode::Numpad0),
+        down(KeyCode::KeyW, KeyCode::ArrowUp) - down(KeyCode::KeyS, KeyCode::ArrowDown),
+    );
+    // Rotation (Shift turns faster).
     flight.input.turn = DVec3::new(
-        axis(KeyCode::ArrowUp, KeyCode::ArrowDown) + pad(KeyCode::Numpad8, KeyCode::Numpad2),
-        axis(KeyCode::ArrowLeft, KeyCode::ArrowRight) + pad(KeyCode::Numpad4, KeyCode::Numpad6),
-        letter(KeyCode::KeyQ, KeyCode::KeyE),
-    )
-    .clamp(DVec3::splat(-1.0), DVec3::ONE);
+        pad(KeyCode::Numpad8) - pad(KeyCode::Numpad2),
+        pad(KeyCode::Numpad4) - pad(KeyCode::Numpad6),
+        down(KeyCode::KeyQ, KeyCode::Numpad7) - down(KeyCode::KeyE, KeyCode::Numpad9),
+    );
     flight.input.rcs = (flight.input.rcs + flight.script_rcs).clamp(DVec3::splat(-1.0), DVec3::ONE);
     flight.input.turn = (flight.input.turn + flight.script_turn).clamp(DVec3::splat(-1.0), DVec3::ONE);
     flight.input.boost_turn = shift;
-    flight.input.brake = keys.pressed(KeyCode::Backspace) && plain;
-    if flight.input.brake {
-        // The port's brake: it takes over from any program.
-        stop_programs(&mut flight);
-        flight.stop_engines();
-    }
 
     if keys.just_pressed(KeyCode::KeyU) && plain {
         // ShipFlightAssist.
@@ -919,8 +913,17 @@ fn ship_input(
             flight.warp_on = false;
         }
     }
-    if flight.input.brake {
-        flight.warp_on = false;
+}
+
+/// Ctrl+= / Ctrl+- are SE's hover engine keys (and the camera's): egui's keyboard zoom, on by
+/// default, would scale the whole interface with them. Turned off once the context exists.
+fn disable_egui_keyboard_zoom(mut egui: EguiContexts, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    if let Ok(ctx) = egui.ctx_mut() {
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        *done = true;
     }
 }
 
@@ -1312,7 +1315,7 @@ fn ship_physics(
                 let c = cmd[k];
                 if c != 0.0 {
                     w[k] += c * alpha * ship_dt;
-                } else if flight.assist || input.brake {
+                } else if flight.assist {
                     let step = alpha * ship_dt;
                     w[k] = if w[k].abs() <= step { 0.0 } else { w[k] - step * w[k].signum() };
                 }
@@ -1453,7 +1456,7 @@ fn ship_physics(
     }
 
     // --- Integration -----------------------------------------------------------------------------
-    let sync = flight.sync_velocity || input.brake;
+    let sync = flight.sync_velocity;
     let mut aero_accel = DVec3::ZERO;
     if !skip_integration {
         let n = ((ship_dt / 0.05).ceil() as usize).clamp(1, 32);
@@ -1904,7 +1907,7 @@ fn draw_ship_window(
             ui.checkbox(&mut flight.assist, "Flight assist");
             ui.checkbox(&mut flight.aero, "Aerodynamics");
         });
-        ui.weak("= / - main engines (Shift retro, Ctrl hover, Alt warp), W/S/A/D/R/F thrusters, keypad or arrows + Q/E turn, V camera, Esc leaves");
+        ui.weak("= / - main engines (Shift retro, Ctrl hover, Alt warp), W/S/A/D/R/F or arrows thrusters, keypad 8/2/4/6 + Q/E turn, V camera, Esc leaves");
         ui.weak("5-0 / End holds, Num5 kill rotation, T target, P reference body, C / G / Shift+G / Alt+G autopilot");
     });
     if !open {
@@ -2022,7 +2025,7 @@ fn draw_flight_hud(
                         ui.label(egui::RichText::new(&info.notice).color(egui::Color32::from_rgb(255, 200, 80)).strong());
                     }
                     ui.weak(format!(
-                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F thrusters  keypad/arrows/Q/E turn  U assist {}  V camera [{}]  Alt+=/- warp  Alt+Z stop warp  Esc leave",
+                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F arrows thrusters  keypad/Q/E turn  U assist {}  V camera [{}]  Alt+=/- warp  Alt+Z stop warp  Esc leave",
                         if flight.assist { "on" } else { "off" },
                         cam_name
                     ));

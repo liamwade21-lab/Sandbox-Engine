@@ -134,28 +134,27 @@ fn planck(u: f32) -> vec3<f32> {
 // Opaque materials: no discard in this entry point, so the depth test stays early (hull meshes
 // have many overlapping layers).
 @fragment
-fn fragment(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    return shade(in, front, textureSample(diff_tex, diff_smp, in.uv));
+fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
+    return shade(in, textureSample(diff_tex, diff_smp, in.uv));
 }
 
 // ATRNS materials (DiffMapAlpha "Transp"): alpha test at 0.5.
 @fragment
-fn fragment_cutout(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+fn fragment_cutout(in: VertexOut) -> @location(0) vec4<f32> {
     let diff = textureSample(diff_tex, diff_smp, in.uv);
     if diff.a < 0.5 {
         discard;
     }
-    return shade(in, front, diff);
+    return shade(in, diff);
 }
 
 // `diff_map`: the diffuse colour in rgb, transparency or specular power in alpha.
-fn shade(in: VertexOut, front: bool, diff_map: vec4<f32>) -> vec4<f32> {
+fn shade(in: VertexOut, diff_map: vec4<f32>) -> vec4<f32> {
     var diff = vec4<f32>(correct(diff_map.rgb, hull.corrections.x) * hull.diff_scale.rgb + hull.diff_const.rgb, diff_map.a);
 
-    var normal = normalize(in.world_normal);
-    if !front {
-        normal = -normal;
-    }
+    // ship.glsl flips the normal of back faces only under ALPHA_TRANSP, which SE never defines;
+    // back faces are culled unless the material is TwoSided.
+    let normal = normalize(in.world_normal);
 
     // Normal map (and detail normal map) in tangent space, expanded to [-1, 1].
     var bump = textureSample(norm_tex, norm_smp, in.uv).xyz;

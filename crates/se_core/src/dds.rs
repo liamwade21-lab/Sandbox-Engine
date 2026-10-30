@@ -114,11 +114,13 @@ enum Block {
     Bc5,
 }
 
-/// Rebuilds the z of a unit normal from 8-bit x and y (`2 v - 1`), as `0.5 z + 0.5` in 8 bits.
+/// Rebuilds the z of a unit normal from 8-bit x and y, expanded as ship.glsl does (`2 v - NORM_ONE`,
+/// so 127 is 0), stored so that the same expansion gives z back.
 fn bc5_z(x: u8, y: u8) -> u8 {
-    let (x, y) = (x as f32 / 127.5 - 1.0, y as f32 / 127.5 - 1.0);
+    let e = |v: u8| (2.0 * v as f32 - 254.0) / 255.0;
+    let (x, y) = (e(x), e(y));
     let z = (1.0 - x * x - y * y).clamp(0.0, 1.0).sqrt();
-    ((z * 0.5 + 0.5) * 255.0).round() as u8
+    ((255.0 * z + 254.0) * 0.5).round() as u8
 }
 
 fn decode_blocks(data: &[u8], w: usize, h: usize, kind: Block) -> Result<Vec<u8>, DdsError> {
@@ -307,9 +309,9 @@ mod tests {
         d.extend_from_slice(&[128, 128, 0, 0, 0, 0, 0, 0]);
         d.extend_from_slice(&[255, 255, 0, 0, 0, 0, 0, 0]);
         let img = decode_dds(&d).unwrap();
-        assert_eq!(&img.rgba[0..4], &[128, 255, 128, 255]);
-        // A flat normal (0, 0) has z = 1.
-        assert_eq!(bc5_z(128, 128), 255);
+        assert_eq!(&img.rgba[0..4], &[128, 255, 127, 255]);
+        // A flat normal (127, 127 expand to 0) has z = 1.
+        assert_eq!(bc5_z(127, 127), 255);
     }
 
     #[test]
