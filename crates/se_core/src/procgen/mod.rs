@@ -180,6 +180,7 @@ pub struct BodySummary {
     pub tidally_locked: bool,
     pub has_atmosphere: bool,
     pub has_ocean: bool,
+    /// SE's life needs the completed system ([`apply_life_to_doc`]); always none here.
     pub has_life: bool,
     pub life: Option<Life>,
     pub has_rings: bool,
@@ -302,17 +303,27 @@ pub fn apply_life(cat: &mut crate::catalog::Catalog, root: u32, jd: f64) -> usiz
     se_life::apply(cat, root, seed, jd)
 }
 
+pub use se_life::apply_to_doc as apply_life_to_doc;
+
 /// SE's system seed of a star record (FUN_140510f40): a hash of the position SE stores, from the
-/// catalog's coordinates ([`crate::system_gen::system_seed`]) or, for a procedural star, its
-/// universe position.
+/// catalog's coordinates ([`crate::system_gen::system_seed`]) or, for a procedural star or a
+/// record without them (a component under a barycentre), its universe position.
 pub fn se_system_seed(rec: &crate::catalog::StarRecord) -> u32 {
-    if rec.source == "procedural" { position_seed(rec.pos_pc) } else { crate::system_gen::system_seed(&rec.block) }
+    match rec.source.as_str() {
+        "procedural" => position_seed(rec.pos_pc),
+        _ => match crate::system_gen::system_seed(&rec.block) {
+            0 => position_seed(rec.pos_pc),
+            s => s,
+        },
+    }
 }
 
-/// SE's position hash (FUN_140510f40) of a universe position in parsecs: each coordinate as f32
-/// read in units of 2^-32 pc, `x 0x28842 - z 0x2309fb + y 0xe35ad`.
+/// SE's position hash (FUN_140510f40:55-59) of a universe position in parsecs: each coordinate's
+/// middle 32 bits of SE's fixed-point position (`(int << 16) | frac >> 48`, i.e. the coordinate in
+/// units of 2^-32 pc), `x 0x28842 - z 0x2309fb + y 0xe35ad`. Only catalog stars pass through the
+/// star loader's f32 ([`crate::system_gen::system_seed`]); a procedural star keeps full precision.
 pub fn position_seed(pos_pc: DVec3) -> u32 {
-    let c = |v: f64| ((v as f32) as f64 * 4_294_967_296.0).floor() as i64 as u32;
+    let c = |v: f64| (v * 4_294_967_296.0).floor() as i64 as u32;
     c(pos_pc.x).wrapping_mul(0x28842).wrapping_add(c(pos_pc.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(pos_pc.y).wrapping_mul(0xe35ad))
 }
 
@@ -917,15 +928,14 @@ impl Body {
             }
             Kind::Small => cap(format!("{} asteroid", temperature_class(self.t_surf))),
             _ => {
-                let life = if self.life.is_some() { " with life" } else { "" };
+                // "with life" comes from SE's life generator on the completed system.
                 cap(format!(
-                    "{} {} {} {}{}{}",
+                    "{} {} {} {}{}",
                     temperature_class(self.t_surf),
                     pressure_class(self.pressure()),
                     volatile_class(self.ocean_cover, self.ice_cover),
                     size,
-                    bulk,
-                    life
+                    bulk
                 ))
             }
         }
@@ -950,8 +960,8 @@ impl Body {
             tidally_locked: self.locked,
             has_atmosphere: self.atm.is_some(),
             has_ocean: self.ocean.is_some(),
-            has_life: self.life.is_some(),
-            life: self.life.clone(),
+            has_life: false,
+            life: None,
             has_rings: self.rings.is_some(),
         }
     }
@@ -1280,10 +1290,17 @@ fn physics_moon(rng: &mut Rng, c: &Ctx, m: &mut Body, planet: &Body) {
     let planet_mass_kg = planet.mass_me * EARTH_MASS_KG;
     m.orbit_period_s = orbital_period_s(m.a_au, planet_mass_kg);
     m.helio_a = planet.a_au;
-    if m.kind == Kind::Small {
-        small_body_physics(rng, c, m);
-    } else {
-        physics_solid(rng, c, m, c.regime == Regime::Neutron);
+    match m.kind {
+        Kind::Small => small_body_physics(rng, c, m),
+        Kind::GasGiant | Kind::Envelope => {
+            // At its planet's distance from the star; SE's size and class stay.
+            let (a, se) = (m.a_au, (m.radius_km, m.class, m.kind, m.tag));
+            m.a_au = planet.a_au;
+            physics_giant(rng, c, m);
+            m.a_au = a;
+            (m.radius_km, m.class, m.kind, m.tag) = se;
+        }
+        _ => physics_solid(rng, c, m, c.regime == Regime::Neutron),
     }
     let pole = Some((planet.obliq, planet.eq_node));
     assign_rotation(rng, c, m, planet_mass_kg, m.a_au, pole);
@@ -1448,10 +1465,9 @@ fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<Planet
     for (b, name, a, argp, other) in [(&mut *p, p_name, sep * ms / mt, s_argp + 180.0, ms), (&mut s, s_name, sep * mp / mt, s_argp, mp)] {
         b.name = name;
         b.parent = bary.clone();
-        // Circular: the engine's completion reads tidal heating from a body's own orbit, which
-        // for a binary component is its distance to the barycentre, not to its partner, so any
-        // eccentricity would heat it a hundred million times too much (SE keeps the moon's e).
-        (b.a_au, b.ecc, b.inc, b.node, b.argp) = (a, 0.0, inc, node, argp.rem_euclid(360.0));
+        // The moon's eccentricity, as SE copies it (the completion heats each with its partner as
+        // host, `climate::binary_partner`).
+        (b.a_au, b.ecc, b.inc, b.node, b.argp) = (a, ecc, inc, node, argp.rem_euclid(360.0));
         b.ref_plane = "Ecliptic";
         b.orbit_period_s = period;
         b.period_given = true;
@@ -2221,6 +2237,18 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
         let moon_type = if m.irregular { r.uniform(1.0) < 0.005 } else { r.uniform(1.0) >= 0.05 };
         let factor = if m.irregular { 1.0 } else { se_moons::zone_factor(&zone, (m.a_au * AU_KM / p.radius_km) as f32) };
         m.mass_me = if moon_type { se_moons::moon_mass(&mut r, p.mass_me as f32, icy_dry, factor) } else { se_moons::small_moon_mass(&mut r) } as f64;
+        // A giant-sized moon (a ProbBinaryGasGiant partner) takes SE's composition and radius for
+        // its mass, as a planet's (FUN_1401aa500, FUN_1404df8a0): a Neptune or a Jupiter.
+        if m.mass_me > 1.0 {
+            let t_eq = crate::climate::equilibrium_temps((c.lum / (p.a_au * p.a_au).max(1e-12)) as f32, 0.0, None).0;
+            let (comp, class) = crate::climate::procedural_composition(&mut r, 1, m.mass_me as f32, t_eq, false, 0.55, c.feh as f32);
+            if class == bulk::JUPITER || class == bulk::NEPTUNE {
+                m.radius_km = crate::climate::procedural_radius_km(&comp, m.mass_me as f32, t_eq) as f64;
+                (m.tag, m.kind, m.class) = (Tag::Moon, if class == bulk::JUPITER { Kind::GasGiant } else { Kind::Envelope }, BULK_NAMES[class as usize]);
+                m.se_comp = Some(comp);
+                continue;
+            }
+        }
         m.radius_km = solid_radius_km(m.mass_me, m.wmf, m.cmf);
         let round = m.radius_km >= 200.0;
         (m.tag, m.kind, m.class) = if round { (Tag::Moon, Kind::Solid, "") } else { (Tag::DwarfMoon, Kind::Small, "Asteroid") };
@@ -2649,6 +2677,19 @@ mod tests {
     }
 
     #[test]
+    fn position_seeds_keep_full_precision() {
+        assert_eq!(position_seed(DVec3::ZERO), 0);
+        // 20,000 stars 0.1 pc apart near 8 kpc and in a galaxy 20 Mpc away keep distinct seeds.
+        for base in [DVec3::new(8000.0, 20.0, -300.0), DVec3::new(2e7, 3e6, -1e6)] {
+            let mut r = Rng::new(base.x as u64);
+            let mut seeds: Vec<u32> = (0..20_000).map(|_| position_seed(base + DVec3::new(r.range(0.0, 50.0), r.range(0.0, 50.0), r.range(0.0, 50.0)))).collect();
+            seeds.sort_unstable();
+            seeds.dedup();
+            assert!(seeds.len() > 19_900, "{} distinct at {base}", seeds.len());
+        }
+    }
+
+    #[test]
     fn rings_and_binary_planets() {
         // SE's ring roll rings cold bodies of every kind; its moon masses make binary planets.
         let (mut ringed_solid, mut ringed_giant, mut binaries, mut close) = (0, 0, 0, 0);
@@ -2683,6 +2724,18 @@ mod tests {
                     })
                     .collect();
                 assert!(periods[0] > 0.0 && (periods[0] - periods[1]).abs() < 1e-6 * periods[0], "{bc}: {periods:?}");
+                // The completion heats each with its partner at their separation.
+                let idx = |n: &str| match cat.find(n) {
+                    Some(ObjectRef::Body(i)) => i as usize,
+                    other => panic!("{n} {other:?}"),
+                };
+                let (pa, pb) = (idx(&members[0].name), idx(&members[1].name));
+                let (m_part, sep) = crate::climate::binary_partner(&cat, pa).expect("partner");
+                // (The script keeps six digits.)
+                assert!((m_part - members[1].mass_me).abs() < 1e-4 * m_part, "{bc}: {m_part} {}", members[1].mass_me);
+                assert!((sep - (members[0].a_au + members[1].a_au)).abs() < 1e-4 * sep, "{bc}: {sep}");
+                assert!(crate::climate::binary_partner(&cat, pb).is_some_and(|(m, s)| (m - members[0].mass_me).abs() < 1e-4 * m && (s - sep).abs() < 1e-4 * sep));
+                assert!(crate::climate::planet_barycentre(&cat, k));
                 assert!(members[0].mass_me >= members[1].mass_me && members[0].mass_me <= 50.0 * members[1].mass_me);
             }
         }

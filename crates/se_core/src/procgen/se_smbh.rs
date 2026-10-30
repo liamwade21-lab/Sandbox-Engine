@@ -122,7 +122,7 @@ fn group_member(r: &mut SeRng, age_gyr: f64) -> SmbhStar {
     let mv = r.gauss(3.0, 4.0) as f64;
     let t = ms_teff(mv);
     let l = lum_bol(mv, t);
-    let m = se_stars::mass_from_lum(l, letter_of(t));
+    let m = se_stars::mass_from_lum(l, 7, letter_of(t));
     if lifetime(m, 7) > draw.age_gyr {
         let r_km = star::radius_from_lum_teff(l, t) * crate::units::SOLAR_RADIUS_KM;
         return blank(format!("{}V", crate::star_octree::ms_class_name(t)), m, l, t, r_km);
@@ -130,14 +130,14 @@ fn group_member(r: &mut SeRng, age_gyr: f64) -> SmbhStar {
     let mv = r.gauss(1.0, 1.0) as f64;
     let t = 3500.0 + r.uniform(1700.0) as f64;
     let l = lum_bol(mv, t);
-    let m = se_stars::mass_from_lum(l, letter_of(t));
+    let m = se_stars::mass_from_lum(l, 5, letter_of(t));
     if lifetime(m, 5) > draw.age_gyr {
         let letter = if t < 3900.0 { "M" } else if t < 5200.0 { "K" } else { "G" };
         let r_km = star::radius_from_lum_teff(l, t) * crate::units::SOLAR_RADIUS_KM;
         return blank(format!("{letter}{} III", r.int(10)), m, l, t, r_km);
     }
     let mv = r.gauss(14.0, 0.83) as f64;
-    let m = se_stars::white_dwarf_mass(se_stars::mass_from_lum(lum_bol(mv, 6000.0), 4));
+    let m = se_stars::white_dwarf_mass(se_stars::mass_from_lum(lum_bol(mv, 6000.0), 7, 4));
     let t = 5000.0 + (r.uniform(1.0) as f64).powi(2) * 25_000.0;
     let r_km = se_stars::white_dwarf_radius_sol(m) * crate::units::SOLAR_RADIUS_KM;
     let l = (r_km / crate::units::SOLAR_RADIUS_KM).powi(2) * (t / 5772.0).powi(4);

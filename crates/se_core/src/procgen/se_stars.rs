@@ -9,11 +9,12 @@ use crate::surface_gen::SeRng;
 pub const MAX_AGE_GYR: f64 = 12.87;
 const MIN_AGE_GYR: f64 = 1e-4;
 
-/// Mass (solar) of a star of bolometric luminosity `l_bol` (solar) and spectral type `letter`
-/// (O = 0 .. M = 6, L 7, T 8, Y 9), FUN_1401dd9f0 for stars that are not remnants: the inverse of
-/// SE's mass-luminosity law, clamped to 0.0767-180 for O-M, 0.012-0.0767 for L and T, 0.003-0.03
-/// for Y.
-pub fn mass_from_lum(l_bol: f64, letter: u32) -> f64 {
+/// Mass (solar) of a star of bolometric luminosity `l_bol` (solar), luminosity code `lum_code`
+/// ([`crate::climate::star_class_bits`]) and spectral type `letter` (O = 0 .. M = 6, L 7, T 8,
+/// Y 9), FUN_1401dd9f0 for stars that are not remnants: the inverse of SE's mass-luminosity law,
+/// for luminosity codes below 9 (class bits below 0x4800) clamped to 0.0767-180 for O-M,
+/// 0.012-0.0767 for L and T, 0.003-0.03 for Y.
+pub fn mass_from_lum(l_bol: f64, lum_code: u32, letter: u32) -> f64 {
     let l = l_bol.max(1e-12);
     let m = if l > 36_109.844 {
         l / 1800.0
@@ -27,9 +28,36 @@ pub fn mass_from_lum(l_bol: f64, letter: u32) -> f64 {
         (l / 1237.633).powf(0.165_813_7)
     };
     match letter {
+        _ if lum_code >= 9 => m,
         0..=6 => m.clamp(0.0767, 180.0),
         7 | 8 => m.clamp(0.012, 0.0767),
         _ => m.clamp(0.003, 0.03),
+    }
+}
+
+/// A solitary remnant's mass (solar), as SE draws it (FUN_1401d63b0, then FUN_1401d5fe0): white
+/// dwarf `tn(1, 0.5, 0.56, 1.44)`, neutron star `tn(2.22, 0.39, 1.44, 3)`, black hole
+/// `tn(8, 3, 3, 100)`; `None` for other stars.
+pub fn remnant_mass(r: &mut SeRng, kind: crate::star::StarKind) -> Option<f64> {
+    use crate::star::StarKind;
+    let (mean, sigma, lo, hi) = match kind {
+        StarKind::WhiteDwarf => (1.0, 0.5, 0.56, 1.44),
+        StarKind::NeutronStar => (2.22, 0.39, 1.44, 3.0),
+        StarKind::BlackHole => (8.0, 3.0, 3.0, 100.0),
+        _ => return None,
+    };
+    Some(r.tnormal(mean, sigma, lo, hi) as f64)
+}
+
+/// A remnant's radius (km) for its mass (FUN_1401d5fe0); `None` for other stars.
+pub fn remnant_radius_km(kind: crate::star::StarKind, mass_sol: f64) -> Option<f64> {
+    use crate::star::StarKind;
+    let r_sun = crate::units::SOLAR_RADIUS_KM;
+    match kind {
+        StarKind::WhiteDwarf => Some(white_dwarf_radius_sol(mass_sol) * r_sun),
+        StarKind::NeutronStar => Some(neutron_star_radius_km(mass_sol)),
+        StarKind::BlackHole => Some(black_hole_radius_sol(mass_sol) * r_sun),
+        _ => None,
     }
 }
 
@@ -107,15 +135,17 @@ mod tests {
 
     #[test]
     fn mass_law_inverts_ses_luminosities() {
-        assert!((mass_from_lum(1.0, 4) - 1.0).abs() < 1e-9);
+        assert!((mass_from_lum(1.0, 7, 4) - 1.0).abs() < 1e-9);
         // L = 1.4 M^3.5 + 0.00303 (55 - M) at 10 Msun is 4428; the inverse gives ~ 10.
-        let m = mass_from_lum(4428.0, 1);
+        let m = mass_from_lum(4428.0, 7, 1);
         assert!((m - 10.0).abs() < 1.0, "{m}");
         // Red giants of 60 Lsun come out about 3 Msun, as in SE.
-        assert!((mass_from_lum(60.0, 5) - 3.0).abs() < 0.2);
-        assert_eq!(mass_from_lum(1e-6, 6), 0.0767);
-        assert_eq!(mass_from_lum(1e-9, 8), 0.012);
-        assert!((mass_from_lum(1e-6, 8) - 0.0311).abs() < 1e-3);
+        assert!((mass_from_lum(60.0, 5, 5) - 3.0).abs() < 0.2);
+        assert_eq!(mass_from_lum(1e-6, 7, 6), 0.0767);
+        // White dwarfs and Wolf-Rayet stars (codes 9, 10) are not clamped.
+        assert!(mass_from_lum(1e-6, 9, 6) < 0.05);
+        assert_eq!(mass_from_lum(1e-9, 7, 8), 0.012);
+        assert!((mass_from_lum(1e-6, 7, 8) - 0.0311).abs() < 1e-3);
     }
 
     #[test]

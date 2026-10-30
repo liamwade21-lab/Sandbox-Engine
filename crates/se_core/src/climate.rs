@@ -938,6 +938,9 @@ pub struct BodyIn {
     /// The catalog's `Interior` composition (fractions in SE's order: hydrogen, helium, ices,
     /// silicates, carbides, metals), which SE keeps instead of drawing one.
     pub composition: Option<[f32; 6]>,
+    /// A body SE's system generator made: its tidal heating is capped (FUN_1405099c0 with its last
+    /// argument 0), where catalog bodies' is not.
+    pub procedural: bool,
 }
 
 /// What SE's completion fills in.
@@ -1328,9 +1331,15 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
         }
     }
 
-    // Tidal heating (FUN_1405099c0).
+    // Tidal heating (FUN_1405099c0). For a generated body SE lowers the eccentricity until the
+    // heating is at most `(T/32 K)^4 M 5e-12` W, T 500 K for a body above 200 K, else 50 K (its
+    // surface temperature then; the equilibrium one here).
     if let Some((a_au, _, _, host)) = b.orbit {
-        out.tidal_heat_w = (ecc * ecc * tidal_k(rad, a_au, host as f64, out.tidal_q) * small_body_taper(rad)) as f32;
+        let mut heat = ecc * ecc * tidal_k(rad, a_au, host as f64, out.tidal_q);
+        if b.procedural {
+            heat = heat.min(tidal_heat_cap_w(m, out.t_eq));
+        }
+        out.tidal_heat_w = (heat * small_body_taper(rad)) as f32;
     }
 
     // Volcanism and internal heat (FUN_140512d50).
@@ -1855,6 +1864,45 @@ pub fn atmosphere_look(seed_a: u32, c: &Completion, arid: bool, life: bool) -> O
 /// completion) and x(1 + e^2/2) / (1 - e) (mode 2, read by the temperature model). For a planet
 /// that is periapsis and the time-averaged distance a (1 + e^2/2). Also returns the object whose
 /// position stands for the star.
+/// Star record `s` is a barycentre of planets (a binary planet's, from SE's moon generator), not of
+/// stars.
+pub fn planet_barycentre(cat: &crate::catalog::Catalog, s: u32) -> bool {
+    use crate::catalog::ObjectRef;
+    let st = &cat.stars[s as usize];
+    st.barycenter && !st.names.iter().any(|n| cat.children_of(n).iter().any(|c| matches!(c, ObjectRef::Star(_))))
+}
+
+/// Body `i` as one of a binary planet's pair: its partner's mass (Earth masses) and the pair's
+/// separation (AU), from its own distance to their barycentre. SE heats and despins each with the
+/// other as host (FUN_1405099c0); the barycentre's total mass at the body's distance from it would
+/// overheat it by `(M_total / M_partner)^10`.
+pub fn binary_partner(cat: &crate::catalog::Catalog, i: usize) -> Option<(f64, f64)> {
+    use crate::catalog::ObjectRef;
+    let b = &cat.bodies[i];
+    let Some(ObjectRef::Star(s)) = cat.find(&b.parent) else { return None };
+    if !planet_barycentre(cat, s) {
+        return None;
+    }
+    let mut pair: Vec<usize> = cat
+        .children_of(&b.parent)
+        .iter()
+        .filter_map(|c| match c {
+            ObjectRef::Body(j) => Some(*j as usize),
+            _ => None,
+        })
+        .collect();
+    pair.sort_by(|&x, &y| cat.bodies[y].mass_kg.total_cmp(&cat.bodies[x].mass_kg));
+    pair.truncate(2);
+    let other = match pair[..] {
+        [p, q] if p == i => q,
+        [p, q] if q == i => p,
+        _ => return None,
+    };
+    let (m, mo) = (b.mass_kg, cat.bodies[other].mass_kg);
+    let a_au = b.orbit.as_ref()?.semi_major_axis / crate::units::METERS_PER_AU;
+    (mo > 0.0).then(|| (mo / crate::units::EARTH_MASS_KG, a_au * (m + mo) / mo))
+}
+
 pub fn reference_distances_au(cat: &crate::catalog::Catalog, i: usize) -> Option<(f64, f64, crate::catalog::ObjectRef)> {
     use crate::catalog::{BodyTag, ObjectRef};
     let b = &cat.bodies[i];
@@ -2024,7 +2072,11 @@ pub fn catalog_body_in(cat: &crate::catalog::Catalog, i: usize, light: &StarLigh
         } else {
             std::f64::consts::TAU * (o.semi_major_axis.powi(3) / (crate::units::G * light.parent_mass_earth * crate::units::EARTH_MASS_KG)).sqrt()
         };
-        (a_au, o.eccentricity, period_s / 86_400.0, light.parent_mass_earth as f32)
+        // One of a binary planet's pair takes its partner, at their separation, as its host.
+        match binary_partner(cat, i) {
+            Some((partner_me, sep_au)) => (sep_au, o.eccentricity, period_s / 86_400.0, partner_me as f32),
+            None => (a_au, o.eccentricity, period_s / 86_400.0, light.parent_mass_earth as f32),
+        }
     });
     let rot = blk.sub("Rotation");
     let given = |key: &str| blk.f64(key).is_some() || rot.is_some_and(|r| r.f64(key).is_some());
@@ -2045,7 +2097,7 @@ pub fn catalog_body_in(cat: &crate::catalog::Catalog, i: usize, light: &StarLigh
         orbit,
         orbit_incl_deg: b.orbit.as_ref().map_or(0.0, |o| o.inclination.to_degrees()),
         orbit_angles_drawn: [moon && angles.0.is_none(), moon && angles.1.is_none()],
-        star_parent: matches!(cat.find(&b.parent), Some(crate::catalog::ObjectRef::Star(_))),
+        star_parent: matches!(cat.find(&b.parent), Some(crate::catalog::ObjectRef::Star(s)) if !planet_barycentre(cat, s)),
         obliquity_deg: blk.f64("Obliquity").or_else(|| rot.and_then(|r| r.f64("Obliquity"))),
         eq_node_given: given("EqAscendNode") || given("EquatorAscNode"),
         rotation_days: if given("RotationPeriod") { b.rotation.period_seconds().map(|s| s / 86_400.0) } else { None },
@@ -2053,7 +2105,19 @@ pub fn catalog_body_in(cat: &crate::catalog::Catalog, i: usize, light: &StarLigh
         no_ocean: blk.bool("NoOcean").unwrap_or(false),
         no_clouds: blk.bool("NoClouds").unwrap_or(false),
         composition: interior_composition(blk),
+        procedural: b.source == PROCEDURAL_SOURCE,
     })
+}
+
+/// The catalog source of bodies loaded from SE's system generator (`procgen`); SE caps their tidal
+/// heating ([`tidal_heat_cap_w`]).
+pub const PROCEDURAL_SOURCE: &str = "procgen";
+
+/// SE's cap on a generated body's tidal heating (FUN_1405099c0): `(T/32 K)^4 M 5e-12` W with T
+/// 500 K for a body warmer than 200 K, else 50 K.
+pub fn tidal_heat_cap_w(mass_earth: f32, t_k: f32) -> f64 {
+    let t_cap: f64 = if t_k > 200.0 { 500.0 } else { 50.0 };
+    (t_cap * 0.031_25).powi(4) * mass_earth as f64 * 5.972_365_131_085_89e24 * 5e-12
 }
 
 /// SE's names for the six composition parts, in its order.

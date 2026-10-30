@@ -365,17 +365,30 @@ fn nearest_catalog_star(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f6
         .min_by(|a, b| a.1.total_cmp(&b.1))
 }
 
-/// A generator's output, its script parsed, and how long both took.
-type Generated = (se_core::procgen::GeneratedSystem, se_core::sc::Block, std::time::Duration);
+/// A generator's output, its script parsed (with SE's life), how long that took, and the bodies
+/// with life.
+type Generated = (se_core::procgen::GeneratedSystem, se_core::sc::Block, std::time::Duration, usize);
 
-/// Generate a star's planetary system (with SE's component stars when `multiples`) and parse it.
+/// Generate a star's planetary system (with SE's component stars when `multiples`), parse it and
+/// run SE's life generator on it (FUN_1404faf40), with the system's seed (its root's).
 fn generate(cat: &se_core::catalog::Catalog, star: u32, multiples: bool) -> impl FnOnce() -> Generated + Send + 'static {
-    let (params, seed) = proc_system_input(&cat.stars[star as usize]);
+    let (mut params, seed) = proc_system_input(&cat.stars[star as usize]);
+    let root = cat.system_root(ObjectRef::Star(star)).unwrap_or(star);
+    params.se_seed = Some(se_core::procgen::se_system_seed(&cat.stars[root as usize]));
+    let stars: Vec<_> = std::iter::once(root)
+        .chain(cat.system_members(&cat.stars[root as usize].names[0]).into_iter().filter_map(|m| match m {
+            ObjectRef::Star(i) => Some(i),
+            _ => None,
+        }))
+        .map(|i| cat.stars[i as usize].clone())
+        .collect();
+    let tables = cat.climate.clone();
     move || {
         let t = std::time::Instant::now();
         let g = if multiples { se_core::procgen::generate_system(&params, seed) } else { se_core::procgen::generate_planets(&params, seed) };
-        let doc = se_core::sc::parse(&g.sc);
-        (g, doc, t.elapsed())
+        let mut doc = se_core::sc::parse(&g.sc);
+        let living = tables.map_or(0, |tab| se_core::procgen::apply_life_to_doc(&stars, tab, g.root_mass_sol, &mut doc, se_core::time::J2000));
+        (g, doc, t.elapsed(), living)
     }
 }
 
@@ -786,16 +799,13 @@ fn needs_system(cat: &se_core::catalog::Catalog, idx: u32) -> bool {
 
 /// Load a star's generated planetary system (with SE's component stars for a procedural star)
 /// into the catalog.
-fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took): Generated) {
+fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took, living): Generated) {
     let t = std::time::Instant::now();
-    cat.load_doc(doc, "procgen");
+    cat.load_doc(doc, se_core::climate::PROCEDURAL_SOURCE);
     if let Some(m) = g.root_mass_sol {
         cat.stars[idx as usize].mass_kg = m * se_core::units::SOLAR_MASS_KG;
     }
     cat.finalize();
-    // SE's life generator runs once the system's bodies are complete (FUN_1404faf40).
-    let root = cat.system_root(ObjectRef::Star(idx)).unwrap_or(idx);
-    let living = se_core::procgen::apply_life(cat, root, se_core::time::J2000);
     let name = &cat.stars[idx as usize].names[0];
     info!(
         "generated system for {name} in {took:.0?}, loaded in {:.0?} ({} stars, {} bodies, {} binary planets, {living} with life)",
@@ -842,10 +852,7 @@ pub fn proc_system_input(st: &se_core::catalog::StarRecord) -> (se_core::procgen
     // The star's own age, [Fe/H] and C/O when its record gives them (procedural stars carry SE's
     // draws, `procedural_star_record`), and SE's position seed (06-015).
     let given = |k: &str| st.block.f64(k).filter(|v| v.is_finite());
-    let se_seed = match se_core::procgen::se_system_seed(st) {
-        0 => se_core::procgen::position_seed(st.pos_pc),
-        s => s,
-    };
+    let se_seed = se_core::procgen::se_system_seed(st);
     let params = se_core::procgen::StarParams {
         name: st.names[0].clone(),
         mass_sol,
@@ -869,36 +876,35 @@ pub fn procedural_star_record(s: &crate::procstars::ProcStarInfo, pos_pc: DVec3)
     let teff = s.teff as f64;
     let abs_mag = s.abs_mag as f64;
     let lum_bol = star::lum_from_abs_mag(abs_mag) * 10f64.powf(-0.4 * star::bolometric_correction(teff));
-    // SE's star physics (procgen::se_stars): mass from light (FUN_1401dd9f0), remnant masses and
-    // radii (FUN_1401d5fe0; solitary neutron stars and black holes take SE's companion laws), and
-    // the age, [Fe/H] and C/O its generator draws by the star's place in its galaxy (FUN_1401d63b0).
-    // The draws use a stream of the star's name (assumed).
+    // SE's star physics (procgen::se_stars), drawn on a stream of the star's name (assumed):
+    // - mass from light (FUN_1401dd9f0; a giant's from its giant light, as FUN_1401d63b0 sets it
+    //   after FUN_1401d70c0), and a giant's age at the end of its lifetime (FUN_1401d63b0:194-200);
+    // - solitary white dwarfs, neutron stars and black holes alike: SE's mass laws, radii for the
+    //   mass and the remnant draws (FUN_1401d63b0:46-56, FUN_1401d5fe0);
+    // - [Fe/H] and C/O by the star's place in its galaxy (FUN_1401d63b0); cluster members (`RSC`)
+    //   draw a cluster's (FUN_1401d6c60), their age and [Fe/H] coming from `clusters::member_record`.
     use se_core::procgen::se_stars as ss;
     let h = se_core::proc_surface::name_seed(&s.name);
     let mut r = se_core::surface_gen::SeRng::new(h as u32, (h >> 32) as u32);
     let (lum_code, letter, _) = se_core::climate::star_class_bits(&class);
-    let r_sun = se_core::units::SOLAR_RADIUS_KM;
-    let (mass_sol, radius_km) = match class.kind {
-        StarKind::WhiteDwarf => {
-            let m = ss::white_dwarf_mass(ss::mass_from_lum(lum_bol, 4));
-            (m, ss::white_dwarf_radius_sol(m) * r_sun)
-        }
-        StarKind::NeutronStar => {
-            let m = r.tnormal(2.22, 0.39, 1.44, 3.0) as f64;
-            (m, ss::neutron_star_radius_km(m))
-        }
-        StarKind::BlackHole => {
-            let m = r.tnormal(8.0, 3.0, 3.0, 100.0) as f64;
-            (m, ss::black_hole_radius_sol(m) * r_sun)
-        }
-        _ => (ss::mass_from_lum(lum_bol, letter), star::radius_from_lum_teff(lum_bol, teff) * r_sun),
+    let remnant = ss::remnant_mass(&mut r, class.kind);
+    let (mass_sol, radius_km) = match remnant {
+        Some(m) => (m, ss::remnant_radius_km(class.kind, m).unwrap_or(0.0)),
+        None => (ss::mass_from_lum(lum_bol, lum_code, letter), star::radius_from_lum_teff(lum_bol, teff) * se_core::units::SOLAR_RADIUS_KM),
     };
-    let draw = match class.kind {
-        StarKind::NeutronStar | StarKind::BlackHole => ss::remnant_star(&mut r),
-        _ => {
-            let x = crate::procstars::galaxy_radius_fraction(pos_pc).unwrap_or(2.0 / 3.0);
-            ss::field_star(&mut r, x, se_core::climate::star_lifetime_gyr(mass_sol as f32, lum_code) as f64)
+    let lifetime = se_core::climate::star_lifetime_gyr(mass_sol as f32, lum_code) as f64;
+    let draw = if remnant.is_some() {
+        ss::remnant_star(&mut r)
+    } else {
+        let x = crate::procstars::galaxy_radius_fraction(pos_pc).unwrap_or(2.0 / 3.0);
+        let mut d = ss::field_star(&mut r, x, lifetime);
+        if s.name.starts_with("RSC ") {
+            d = ss::group_star(&mut r, d.age_gyr);
         }
+        if lum_code <= 6 {
+            d.age_gyr = lifetime.min(ss::MAX_AGE_GYR);
+        }
+        d
     };
     let block = se_core::sc::parse(&format!("Age {}\nFeH {}\nCtoO {}\n", draw.age_gyr, draw.feh, draw.c_to_o));
     se_core::catalog::StarRecord {

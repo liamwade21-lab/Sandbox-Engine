@@ -146,22 +146,26 @@ impl Plugin for ProcStarsPlugin {
     }
 }
 
-/// Centre (universe frame, pc) and radius (pc) of the galaxy whose stars the field streams; set
-/// with the field and on each galaxy switch. Read by [`galaxy_radius_fraction`].
-static FIELD_GALAXY: std::sync::RwLock<Option<(DVec3, f64)>> = std::sync::RwLock::new(None);
+/// Centre (universe frame, pc) and radius (pc) of every galaxy the field has streamed stars of
+/// (the Milky Way from start-up, others as the camera enters them); read by
+/// [`galaxy_radius_fraction`].
+static FIELD_GALAXIES: std::sync::RwLock<Vec<(DVec3, f64)>> = std::sync::RwLock::new(Vec::new());
 
-fn set_field_galaxy(center_pc: DVec3, radius_pc: f64) {
-    if let Ok(mut g) = FIELD_GALAXY.write() {
-        *g = Some((center_pc, radius_pc));
+fn register_field_galaxy(center_pc: DVec3, radius_pc: f64) {
+    if let Ok(mut g) = FIELD_GALAXIES.write() {
+        if radius_pc > 0.0 && !g.iter().any(|&(c, _)| c == center_pc) {
+            g.push((center_pc, radius_pc));
+        }
     }
 }
 
-/// A star's distance from the centre of the field's galaxy in galaxy radii, which SE's star
-/// generator reads for its metallicity and C/O (FUN_1401d63b0; SE scales each axis by the
-/// galaxy model's extent, assumed spherical here). `None` before the field is set up.
+/// A star's distance from the centre of its own galaxy (the streamed galaxy it lies deepest in)
+/// in galaxy radii, which SE's star generator reads for its metallicity and C/O (FUN_1401d63b0;
+/// SE scales each axis by the galaxy model's extent, assumed spherical here). A star's galaxy is
+/// registered before any of its stars exist, so the value does not depend on where the camera
+/// is. `None` before the field is set up.
 pub fn galaxy_radius_fraction(pos_pc: DVec3) -> Option<f64> {
-    let (c, r) = (*FIELD_GALAXY.read().ok()?)?;
-    (r > 0.0).then(|| pos_pc.distance(c) / r)
+    FIELD_GALAXIES.read().ok()?.iter().map(|&(c, r)| pos_pc.distance(c) / r).min_by(f64::total_cmp)
 }
 
 /// Procedural star name in SpaceEngine's "RS" style, from the node address.
@@ -187,7 +191,7 @@ fn setup_field(
         rot: g.orientation,
     };
     let sun_model = frame.to_model(DVec3::ZERO);
-    set_field_galaxy(g.pos_pc, g.radius_pc);
+    register_field_galaxy(g.pos_pc, g.radius_pc);
     let density = milky_way_density(g);
     let octree = StarOctree::new(0, g.radius_pc, settings.faint_limit() as f64);
     info!(
@@ -257,7 +261,7 @@ impl ProcStarField {
             rot: rec.orientation,
         };
         self.octree = StarOctree::new(if mw { 0 } else { galaxy_seed(&rec.names[0]) }, rec.radius_pc, mag_limit);
-        set_field_galaxy(rec.pos_pc, rec.radius_pc);
+        register_field_galaxy(rec.pos_pc, rec.radius_pc);
         self.density = density;
         self.code = (!mw).then(|| rec.names[0].strip_prefix("RG ").map(str::to_string).unwrap_or_else(|| g.to_string()));
         self.pending = None;

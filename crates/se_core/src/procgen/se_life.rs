@@ -302,18 +302,54 @@ pub fn apply(cat: &mut Catalog, root: u32, seed: u32, jd: f64) -> usize {
     let mut n = 0;
     for (i, lives) in ids.into_iter().zip(generate(seed, &inputs)) {
         n += !lives.is_empty() as usize;
-        for l in lives {
-            let mut text = format!("Class \"{}\"\n", if l.exotic { "Exotic" } else { "Organic" });
-            if !l.biome.is_empty() || l.multicellular {
-                text += &format!("Type \"{}\"\n", if l.multicellular { "Multicellular" } else { "Unicellular" });
-            }
-            if !l.biome.is_empty() {
-                text += &format!("Biome \"{}\"\n", l.biome);
-            }
-            if l.panspermia {
-                text += "Panspermia true\n";
-            }
-            cat.bodies[i].block.items.push(crate::sc::Item { key: "Life".into(), args: Vec::new(), block: Some(crate::sc::parse(&text)), line: 0 });
+        cat.bodies[i].block.items.extend(lives.iter().map(life_item));
+    }
+    n
+}
+
+/// A body's `Life { Class Type Biome [Panspermia] }` item.
+fn life_item(l: &LifeOut) -> crate::sc::Item {
+    let mut text = format!("Class \"{}\"\n", if l.exotic { "Exotic" } else { "Organic" });
+    if !l.biome.is_empty() || l.multicellular {
+        text += &format!("Type \"{}\"\n", if l.multicellular { "Multicellular" } else { "Unicellular" });
+    }
+    if !l.biome.is_empty() {
+        text += &format!("Biome \"{}\"\n", l.biome);
+    }
+    if l.panspermia {
+        text += "Panspermia true\n";
+    }
+    crate::sc::Item { key: "Life".into(), args: Vec::new(), block: Some(crate::sc::parse(&text)), line: 0 }
+}
+
+/// [`apply`] for a generated system before it joins the engine's catalog (off the main thread, and
+/// for the star browser): `stars` are the system's star records, root first (its mass set to
+/// `root_mass_sol` for a multiple system), `doc` the generator's parsed script, which gets the
+/// `Life` items. Returns the bodies with life.
+pub fn apply_to_doc(stars: &[crate::catalog::StarRecord], tables: std::sync::Arc<crate::climate::ClimateTables>, root_mass_sol: Option<f64>, doc: &mut crate::sc::Block, jd: f64) -> usize {
+    let Some(root) = stars.first() else { return 0 };
+    let mut cat = Catalog::new();
+    cat.climate = Some(tables);
+    for s in stars {
+        cat.add_star_record(s.clone());
+    }
+    if let Some(m) = root_mass_sol {
+        cat.stars[0].mass_kg = m * crate::units::SOLAR_MASS_KG;
+    }
+    let b0 = cat.bodies.len();
+    cat.load_doc(doc.clone(), crate::climate::PROCEDURAL_SOURCE);
+    cat.finalize();
+    let n = apply(&mut cat, 0, super::se_system_seed(root), jd);
+    let lives: std::collections::HashMap<&str, Vec<&crate::sc::Item>> = cat.bodies[b0..]
+        .iter()
+        .filter_map(|b| {
+            let items: Vec<_> = b.block.items.iter().filter(|i| i.key == "Life").collect();
+            (!items.is_empty()).then(|| (b.names[0].as_str(), items))
+        })
+        .collect();
+    for it in doc.items.iter_mut() {
+        if let (Some(items), Some(blk)) = (it.name().and_then(|n| lives.get(n)), it.block.as_mut()) {
+            blk.items.extend(items.iter().map(|&i| i.clone()));
         }
     }
     n
@@ -380,9 +416,14 @@ mod tests {
             let mut cat = Catalog::new();
             cat.climate = Some(tables.clone());
             cat.load_sc(&format!("Star \"{name}\" {{ RA 1 Dec 2 Dist 10 Class \"G2V\" MassSol 1 Age 4.6 }}"), "s.sc");
-            cat.load_sc(&g.sc, "g.sc");
+            let star = cat.stars[0].clone();
+            cat.load_doc(crate::sc::parse(&g.sc), crate::climate::PROCEDURAL_SOURCE);
             cat.finalize();
-            living += crate::procgen::apply_life(&mut cat, 0, crate::time::J2000);
+            let here = crate::procgen::apply_life(&mut cat, 0, crate::time::J2000);
+            // Off the main thread on the parsed script (the engine's path): the same life.
+            let mut doc = crate::sc::parse(&g.sc);
+            assert_eq!(apply_to_doc(&[star], tables.clone(), None, &mut doc, crate::time::J2000), here, "{name}");
+            living += here;
             for b in &cat.bodies {
                 for l in b.block.all("Life").filter_map(|i| i.block()) {
                     let key = format!("{} {} {}", l.str("Class").unwrap_or(""), l.str("Type").unwrap_or(""), l.str("Biome").unwrap_or(""));

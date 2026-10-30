@@ -249,10 +249,10 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
   `Ocean.Height = BumpOffset = BumpHeight (0.15 + 0.65 f)` for cover `f`, or 1.2-3 x BumpHeight for global
   oceans; salinity 1.5-6 % NaCl. (Earth: 19.475 / 10.896 km.)
 * **Life**: SE's life generator (`procgen/se_life.rs`, FUN_1404faf40 and FUN_1404c9d90) runs on the
-  loaded system (`procgen::apply_life`, from the bodies' completions): origin by volatiles class
-  (ProbLifeOrg*/Exo*), panspermia, and the stages from the system age (LifeOrgAge*/LifeExoAge*), with
-  marine, terrestrial, subglacial and aerial biomes. The `BodySummary` life the star browser searches
-  is still the port's estimate (liquid ocean, 268-332 K, 0.3-6 atm).
+  completed system (`procgen::apply_life_to_doc`, in the engine's background generation job and the
+  star browser's scan, from the bodies' completions): origin by volatiles class (ProbLifeOrg*/Exo*),
+  panspermia, and the stages from the system age (LifeOrgAge*/LifeExoAge*), with marine, terrestrial,
+  subglacial and aerial biomes. `BodySummary` carries no life.
 * **Rings**: SE's ring roll for every planet, moon and asteroid (`procgen/se_rings.rs`, FUN_140508600):
   60% (5% when tidally locked) above 1e-7 Earth masses and below `80 + 220 (log10 M + 5)/4.4` K (at most
   300 K); SE's shape, E-like, thin, narrow, sparse and contrast styles. Moons stay outside 1.2 x the main
@@ -281,9 +281,11 @@ FUN_140501f60 / FUN_140504e10 (planet type and mass), FUN_1401aa500 / FUN_1404df
   ProbBinaryGasGiant 0.1%: `tn(0.2, 0.3, 0.01, 1) M`), `0.3 M 10^tn(-1.7, 1, -5.2, -0.5)` below, times
   a zone factor peaking about 20 planet radii out; the rest weigh `10^tn(-7.5, 2.5, -11, -5.2)` Me.
 * **Binary planets** (FUN_1404fdc90): a moon of at least 1/50 of its planet's mass makes a `Barycenter`
-  in the planet's orbit with both bodies about it (circular, with the pair's period); up to a ratio of 20
+  in the planet's orbit with both bodies about it (the moon's eccentricity, the pair's period); up to a ratio of 20
   it takes the planet's name and the pair are `a`/`b`, else it is `<planet>-<n>.1` with the moon
   `<planet>.1`. With ProbBinaryPlanetMoons (0.4) moons beyond 3 separations stay about the barycentre.
+  The completion heats and despins each of the pair with the other as host at their separation
+  (`climate::binary_partner`), and caps a generated body's tidal heating as SE does (FUN_1405099c0).
 
 ## Classification words (`BodySummary::class_desc`)
 

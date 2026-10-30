@@ -72,6 +72,7 @@ fn catalog_class_dominates_the_composition() {
         no_ocean: false,
         no_clouds: false,
         composition: None,
+        procedural: false,
     };
     for (class, top) in [(bulk::TERRA, part::SILICATE), (bulk::FERRIA, part::IRON), (bulk::CARBONIA, part::CARBON)] {
         let (c, got) = bulk_composition(&mk(class), 255.0).unwrap();
@@ -132,6 +133,7 @@ fn proxima(names: &str, mass_earth: f32, radius_earth: f32, a_au: f64, e: f64, p
         no_ocean: false,
         no_clouds: false,
         composition: None,
+        procedural: false,
     }
 }
 

@@ -196,7 +196,9 @@ pub(crate) fn object_kind(data: &SeData, r: ObjectRef, i18n: &I18n, classes: Opt
         ObjectRef::Star(i) => {
             let s = &c.stars[i as usize];
             if s.barycenter {
-                return i18n.tr("Star system").to_string();
+                // A binary planet's barycentre (SE's moon generator) is no star system.
+                let kind = if se_core::climate::planet_barycentre(c, i) { "Barycenter" } else { "Star system" };
+                return i18n.tr(kind).to_string();
             }
             let mass = (s.mass_kg > 0.0).then(|| s.mass_kg / se_core::units::SOLAR_MASS_KG);
             let kind = i18n.tr(se_core::classname::star_type(&s.class, mass));
