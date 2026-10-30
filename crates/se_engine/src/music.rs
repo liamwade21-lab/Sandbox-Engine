@@ -356,9 +356,15 @@ fn music_driver(
                 continue;
             }
         };
-        if let Some((e, _)) = playing {
-            if let Ok((_, mut t, _)) = tracks.get_mut(e) {
+        // Every track still playing fades out, a paused one too (N after a script's PauseMusic
+        // must not leave it counted as playing).
+        for (_, mut t, sink) in &mut tracks {
+            if t.rate >= 0.0 || t.hold {
+                t.hold = false;
                 t.rate = -1.0 / mix.max(0.01);
+                if let Some(s) = sink {
+                    s.play();
+                }
             }
         }
         let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);

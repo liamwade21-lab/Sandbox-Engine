@@ -80,12 +80,22 @@ pub struct FlyCamera {
 /// `movement` is set the user cannot move the camera (movement keys, mouse orbit and zoom, Go to,
 /// Land, Follow / Rotate with / Free binding: FUN_140595be0, FUN_1405986f0, FUN_140597720), and
 /// while `rotation` is set not turn it (mouse look, turn keys, Center, Horizon, Track). Script
-/// commands still move it. The scripting runner sets them and clears them when a script ends
-/// (FUN_140221b10).
+/// commands still move it. `UserMoveControl "Limited"` sets the same flag (FUN_140552c30:414) with
+/// limits instead of a full stop: the keys and mouse still move the camera inside them, but Go to,
+/// Land and binding are refused (`limited`). The scripting runner sets them and clears them when a
+/// script ends (FUN_140221b10).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct InputLocks {
     pub movement: bool,
     pub rotation: bool,
+    pub limited: bool,
+}
+
+impl InputLocks {
+    /// SE's movement flag: Go to, Land, binding and a script's Goto / Follow / Free are refused.
+    pub fn travel(&self) -> bool {
+        self.movement || self.limited
+    }
 }
 
 impl Default for FlyCamera {
@@ -129,7 +139,7 @@ impl FlyCamera {
     /// Bind the camera to `target` (SE's FollowObject / SyncRotObject), or free it (`None`). Refused
     /// while a script locks movement (FUN_1405986f0).
     pub fn bind(&mut self, target: Option<ObjectRef>, sync: bool, eph: &Ephemeris, jd: f64) {
-        if self.locks.movement {
+        if self.locks.travel() {
             return;
         }
         self.follow = target.map(|t| Follow::new(t, sync, eph, jd));
@@ -369,7 +379,7 @@ const GOTO_SPEED_DIVISOR: f64 = 10.0;
 /// flight lasts log10(start / arrival distance) seconds plus a second to speed up and brake, from
 /// `CenterTime` up to `LongGotoTime` 20 s; G again during a flight is the "fast Go to" of
 /// `FastGotoTime` 3 s; Center turns in `CenterTime` 1.5 s.
-const GOTO_SPEED: f64 = 10.0;
+pub(crate) const GOTO_SPEED: f64 = 10.0;
 const LONG_GOTO_TIME: f64 = 20.0;
 const FAST_GOTO_TIME: f64 = 3.0;
 const CENTER_TIME: f64 = 1.5;
@@ -638,12 +648,12 @@ fn input_controls(
     // Binding: Shift+D free, Shift+F follow, Shift+R rotate with the selection.
     if shift && !ctrl && !alt {
         let eph = Ephemeris::new(&data.catalog);
-        if keys.just_pressed(KeyCode::KeyD) && cam.follow.is_some() && !locks.movement {
+        if keys.just_pressed(KeyCode::KeyD) && cam.follow.is_some() && !locks.travel() {
             cam.bind(None, false, &eph, sim.jd);
             msg.show(i18n.tr("Free binding to object"));
         }
         for (k, sync, text) in [(KeyCode::KeyF, false, "Follow object"), (KeyCode::KeyR, true, "Rotate with object")] {
-            if let (true, Some(t), false) = (keys.just_pressed(k), cam.selected, locks.movement) {
+            if let (true, Some(t), false) = (keys.just_pressed(k), cam.selected, locks.travel()) {
                 cam.bind(Some(t), sync, &eph, sim.jd);
                 msg.show(format!("{}: {}", i18n.tr(text), data.catalog.display_name(t)));
             }
@@ -755,7 +765,7 @@ pub fn start_horizon(cam: &mut FlyCamera, target: ObjectRef) {
 
 /// SE's Land on object (Shift+G): planets, moons, asteroids and comets only.
 pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
-    if !matches!(target, ObjectRef::Body(_)) || cam.locks.movement {
+    if !matches!(target, ObjectRef::Body(_)) || cam.locks.travel() {
         return;
     }
     cam.velocity = DVec3::ZERO;
@@ -765,7 +775,7 @@ pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
 
 /// Go to `target` (refused while a script locks movement).
 pub fn start_travel(cam: &mut FlyCamera, target: ObjectRef, distance: Option<f64>) {
-    if cam.locks.movement {
+    if cam.locks.travel() {
         return;
     }
     cam.velocity = DVec3::ZERO;

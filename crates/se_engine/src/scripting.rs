@@ -57,7 +57,6 @@ const AUTO_MESSAGE_S: f64 = 4.0;
 const LOADING_SETTLE_S: f64 = 1.0;
 const MAX_OPS_PER_FRAME: usize = 4000;
 const MAX_CALL_DEPTH: usize = 8;
-const DEFAULT_GOTO_S: f64 = 4.0;
 const DEFAULT_FOV: f32 = 60.0;
 /// The engine version scripts check with `CheckVersion` (SE 0.991).
 const ENGINE_VERSION: u32 = 991;
@@ -213,16 +212,13 @@ struct Flight {
     duration: f64,
     /// Bind with SyncRot on arrival (a Goto to a latitude and longitude), else Follow.
     sync: bool,
-    /// `AccelTime`/`DriftTime`/`DecelTime`/`AccelPower`/`DecelPower`; without them the flight
-    /// eases in and out (smoothstep).
-    profile: Option<Profile>,
+    profile: Profile,
 }
 
-/// A Goto's flight profile (FUN_140563f30 reads the keys; the flight time is their sum, as its
-/// `local_1ac + local_1a8 + local_1a4`): progress grows as a power `pa` of time while speeding up,
-/// evenly while drifting, and as a power `pd` of the time left while braking, with the speed
-/// continuous between the phases. The curve shapes are the port's (SE's integrator was not
-/// traced); a power of 1 is a constant speed.
+/// A script Goto's timing (FUN_140563f30). A bare Goto speeds up for 1 s, drifts 0 s and brakes
+/// for 1 s; `Time T` makes the speeding up and the braking T/2 each (FUN_140571db0); `AccelTime`,
+/// `DriftTime`, `DecelTime` override, and the flight lasts their sum. The curves' powers default
+/// to the `GotoSpeed` setting (FUN_140015720; main-def.cfg 10).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Profile {
     accel: f64,
@@ -233,39 +229,37 @@ struct Profile {
 }
 
 impl Profile {
-    /// SE's defaults for unset keys (FUN_140563f30: 1 s to speed up, none drifting, 1 s braking);
-    /// the powers default to 2.
-    fn from_args(a: &GotoArgs) -> Option<Self> {
-        let any = a.accel_time.is_some() || a.drift_time.is_some() || a.decel_time.is_some() || a.accel_power.is_some() || a.decel_power.is_some();
-        any.then(|| Self {
-            accel: a.accel_time.unwrap_or(1.0).max(0.0),
+    fn from_args(a: &GotoArgs) -> Self {
+        let half = a.time.map(|t| t.max(0.0) * 0.5);
+        Self {
+            accel: a.accel_time.or(half).unwrap_or(1.0).max(0.0),
             drift: a.drift_time.unwrap_or(0.0).max(0.0),
-            decel: a.decel_time.unwrap_or(1.0).max(0.0),
-            pa: a.accel_power.unwrap_or(2.0).max(1e-3),
-            pd: a.decel_power.unwrap_or(2.0).max(1e-3),
-        })
+            decel: a.decel_time.or(half).unwrap_or(1.0).max(0.0),
+            pa: a.accel_power.unwrap_or(crate::camera::GOTO_SPEED).max(1e-3),
+            pd: a.decel_power.unwrap_or(crate::camera::GOTO_SPEED).max(1e-3),
+        }
     }
 
     fn total(&self) -> f64 {
         self.accel + self.drift + self.decel
     }
 
-    /// Progress 0..1 at the fraction `t` of the flight (stretched over the flight's duration).
+    /// Progress 0..1 `t` seconds into the flight (FUN_14056b1e0): each phase covers its share of
+    /// the flight time; speeding up follows (t / accel)^pa, drifting is even, braking follows
+    /// 1 - (1 - u)^pd over the braking time.
     fn progress(&self, t: f64) -> f64 {
         let total = self.total();
         if total <= 0.0 {
             return 1.0;
         }
-        let (a, d, c) = (self.accel / total, self.drift / total, self.decel / total);
-        // Drift speed v: v (a / pa + d + c / pd) = 1.
-        let v = 1.0 / (a / self.pa + d + c / self.pd);
-        let t = t.clamp(0.0, 1.0);
+        let (a, d, c) = (self.accel, self.drift, self.decel);
         let s = if t < a {
-            v * a / self.pa * (t / a).powf(self.pa)
-        } else if t <= a + d {
-            v * a / self.pa + v * (t - a)
+            (t / a).powf(self.pa) * a / total
+        } else if t < a + d {
+            t / total
         } else if c > 0.0 {
-            1.0 - v * c / self.pd * ((1.0 - t) / c).powf(self.pd)
+            let u = (1.0 - (t - a - d) / c).clamp(0.0, 1.0);
+            (1.0 - u.powf(self.pd)) * c / total + (a + d) / total
         } else {
             1.0
         };
@@ -309,8 +303,10 @@ pub struct ScriptRunner {
     print: Option<(String, Option<f64>)>,
     logged: HashSet<String>,
     unsupported_vars: Vec<String>,
-    /// Settings' values before the script first changed them, for `Reset`.
-    defaults: HashMap<String, f64>,
+    /// A menu scene's start: the user's settings, given back when it ends.
+    menu_slot: Option<HashMap<String, Value>>,
+    /// The script paused the music (`PauseMusic` without a `ResumeMusic` yet).
+    music_paused: bool,
     /// The saved script variables (`LessonPassed`) were read.
     loaded_persistent: bool,
     hid_hud: bool,
@@ -425,22 +421,25 @@ fn queue_cli_script(cfg: Res<EngineConfig>, mut runner: ResMut<ScriptRunner>, mu
 
 // ---- execution context -------------------------------------------------------------
 
-struct Cx<'a, 'w, 'd> {
+struct Cx<'a, 'w, 's, 'd> {
     cam: &'a mut FlyCamera,
     sim: &'a mut SimTime,
     data: &'a SeData,
-    vars: &'a mut Settings<'w>,
+    vars: &'a mut Settings<'w, 's>,
     dialogs: &'a mut Dialogs<'d>,
     music: &'a mut ScriptMusic,
     /// `--script-auto`: waits for the user end after this many seconds (`SE_SCRIPT_AUTO_S`, else 8).
     auto: Option<f64>,
+    /// Saved script variables (`LessonPassed`) may be read and written: not in test runs
+    /// (`--script`, `--run`), which leave the user's files alone (`settings::scripted`).
+    persist: bool,
     aspect: f64,
     quit: bool,
     /// The script ended (finished or `CheckVersion` stopped it): undo its effects.
     ended: bool,
 }
 
-impl<'a> Cx<'a, '_, '_> {
+impl<'a> Cx<'a, '_, '_, '_> {
     fn cat(&self) -> &'a Catalog {
         let data: &'a SeData = self.data;
         &data.catalog
@@ -465,26 +464,8 @@ fn run_script(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if let Some(path) = runner.pending.take() {
-        runner.end_effects(&mut cam, &mut dialogs.gui, &mut vars.waypoints);
-        runner.stop = false;
-        if !runner.loaded_persistent {
-            runner.loaded_persistent = true;
-            for (k, v) in crate::script_vars::load_persistent() {
-                runner.vars.insert(k, Value::Num(v));
-            }
-        }
-        if let Some(frame) = load_frame(&data, &path) {
-            runner.name = frame.name.clone();
-            // The main-menu background scene is a bare scene: hide the interface.
-            if frame.name.to_ascii_lowercase().contains("scripts/menu/") && !dialogs.hud.hidden {
-                dialogs.hud.hidden = true;
-                runner.hid_hud = true;
-            }
-            runner.frames.push(frame);
-        }
-    }
-    if runner.frames.is_empty() && !runner.stop {
+    let pending = runner.pending.take();
+    if runner.frames.is_empty() && !runner.stop && pending.is_none() {
         return;
     }
     let aspect = windows.single().map(|w| (w.width() / w.height().max(1.0)) as f64).unwrap_or(16.0 / 9.0);
@@ -496,33 +477,57 @@ fn run_script(
         dialogs: &mut dialogs,
         music: &mut music,
         auto: cfg.script_auto.then(|| std::env::var("SE_SCRIPT_AUTO_S").ok().and_then(|v| v.parse().ok()).unwrap_or(AUTO_TRIGGER_S)),
+        persist: !crate::settings::scripted(&cfg),
         aspect,
         quit: false,
         ended: false,
     };
-    if runner.stop {
-        runner.stop = false;
-        // The port's choice: a script stopped by hand gives back the settings its first SaveVars
-        // kept, as its RestoreVars would have (the port saves settings as they change).
-        if let Some(saved) = runner.saved.first().cloned() {
-            for (k, v) in saved {
-                runner.set_var(&mut cx, &k, v);
-            }
+    if let Some(path) = pending {
+        // Another script replaces a running one as if it had been stopped.
+        if runner.running() {
+            runner.finish(&mut cx, true);
         }
         runner.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
-        if runner.hid_hud {
-            cx.dialogs.hud.hidden = false;
-            runner.hid_hud = false;
+        runner.stop = false;
+        if !runner.loaded_persistent && cx.persist {
+            runner.loaded_persistent = true;
+            for (k, v) in crate::script_vars::load_persistent() {
+                runner.vars.insert(k, Value::Num(v));
+            }
         }
+        if let Some(frame) = load_frame(&data, &path) {
+            runner.name = frame.name.clone();
+            // The main-menu background scene is a bare scene: hide the interface. SE runs it in
+            // the main menu's own variable slot (main-def `EnableVariableSlots`), so its settings
+            // never reach the game's; the port keeps the user's values and gives them back when
+            // the scene ends.
+            if frame.name.to_ascii_lowercase().contains("scripts/menu/") {
+                if !cx.dialogs.hud.hidden {
+                    cx.dialogs.hud.hidden = true;
+                    runner.hid_hud = true;
+                }
+                let mut slot = runner.snapshot_vars(&cx);
+                // The scene's time-lapse and field of view are its own, not settings to give back.
+                slot.retain(|k, _| k != "timescale" && k != "fov");
+                runner.menu_slot = Some(slot);
+            }
+            runner.frames.push(frame);
+        }
+        if runner.frames.is_empty() {
+            return;
+        }
+    }
+    if runner.stop {
+        runner.stop = false;
+        runner.finish(&mut cx, true);
         info!("script {} stopped", runner.name);
         return;
     }
     runner.step(&mut cx, time.delta_secs_f64());
     if cx.ended {
-        runner.frames.clear();
         let name = std::mem::take(&mut runner.name);
         let status = std::mem::take(&mut runner.status);
-        runner.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
+        runner.finish(&mut cx, false);
         (runner.name, runner.status) = (name, status);
     }
     if cx.quit {
@@ -531,6 +536,26 @@ fn run_script(
 }
 
 impl ScriptRunner {
+    /// A script ended, by itself or `stopped` by hand. A menu scene gives the user's settings
+    /// back; a script stopped by hand gives back what its first SaveVars kept, as its RestoreVars
+    /// would have (the port's choice: it saves settings as they change); music a script paused
+    /// plays again; then SE's own cleanup ([`Self::end_effects`]) and the interface comes back.
+    fn finish(&mut self, cx: &mut Cx, stopped: bool) {
+        let restore = self.menu_slot.take().or_else(|| if stopped { self.saved.first().cloned() } else { None });
+        for (k, v) in restore.unwrap_or_default() {
+            self.set_var(cx, &k, v);
+        }
+        if std::mem::take(&mut self.music_paused) {
+            cx.music.requests.push(MusicRequest::Resume { mix: crate::music::MIX_SCRIPT_S });
+        }
+        self.frames.clear();
+        self.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
+        if self.hid_hud {
+            cx.dialogs.hud.hidden = false;
+            self.hid_hud = false;
+        }
+    }
+
     fn step(&mut self, cx: &mut Cx, dt: f64) {
         self.guard_user_input(cx, dt);
         self.step_inner(cx, dt);
@@ -648,7 +673,7 @@ impl ScriptRunner {
                 }
             }
             // FUN_1405986f0 / FUN_140598810 / FUN_140597720 do nothing while movement is locked.
-            Op::Follow | Op::SyncRot if !cx.cam.locks.movement => {
+            Op::Follow | Op::SyncRot if !cx.cam.locks.travel() => {
                 if let Some(sel) = cx.cam.selected {
                     let eph = Ephemeris::new(cx.cat());
                     let sync = matches!(cmd.op, Op::SyncRot);
@@ -656,11 +681,11 @@ impl ScriptRunner {
                     cx.cam.follow = Some(Follow::new(sel, sync, &eph, eph_jd));
                 }
             }
-            Op::Free if !cx.cam.locks.movement => cx.cam.follow = None,
+            Op::Free if !cx.cam.locks.travel() => cx.cam.follow = None,
             Op::Follow | Op::SyncRot | Op::Free => {}
             Op::GotoLocation(loc) => self.goto_location(cx, loc),
             // FUN_140563f30: "Camera movement is limited, ignoring Goto command".
-            Op::Goto(_) if cx.cam.locks.movement => {
+            Op::Goto(_) if cx.cam.locks.travel() => {
                 warn!("script {}, line {}: camera movement is limited, ignoring Goto command", self.name, cmd.line);
             }
             Op::Goto(args) => self.start_goto(cx, args, cmd.line),
@@ -759,22 +784,28 @@ impl ScriptRunner {
             Op::PlayMusic { file, crossfade } => {
                 let mix = crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32);
                 cx.music.requests.push(MusicRequest::Play { file: file.clone(), mix });
+                self.music_paused = false;
             }
-            Op::PauseMusic { crossfade } => cx.music.requests.push(MusicRequest::Pause { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) }),
-            Op::ResumeMusic { crossfade } => cx.music.requests.push(MusicRequest::Resume { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) }),
+            Op::PauseMusic { crossfade } => {
+                cx.music.requests.push(MusicRequest::Pause { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) });
+                self.music_paused = true;
+            }
+            Op::ResumeMusic { crossfade } => {
+                cx.music.requests.push(MusicRequest::Resume { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) });
+                self.music_paused = false;
+            }
             Op::Get(name) => match self.get_var(cx, name) {
                 Some(v) => info!("script {}: {name} = {v}", self.name),
                 None => info!("script {}: {name} is not set", self.name),
             },
-            Op::Reset(name) => {
-                let k = name.to_ascii_lowercase();
-                match self.defaults.get(&k).copied() {
-                    Some(v) => self.set_var(cx, name, Value::Num(v)),
-                    None => {
-                        self.vars.remove(&k);
-                    }
+            // FUN_14054f320: back to the variable's registered default (the port's defaults);
+            // a script variable without a counterpart is forgotten.
+            Op::Reset(name) => match crate::script_vars::default_value(name) {
+                Some(v) => self.set_var(cx, name, Value::Num(v)),
+                None => {
+                    self.vars.remove(&name.to_ascii_lowercase());
                 }
-            }
+            },
             Op::TimeScale(x) => cx.sim.rate = *x,
             Op::SetDate(jd) => cx.sim.jd = *jd,
             Op::StopTime => cx.sim.paused = true,
@@ -1030,17 +1061,14 @@ impl ScriptRunner {
     fn set_var(&mut self, cx: &mut Cx, name: &str, value: Value) {
         let k = name.to_ascii_lowercase();
         if let Some(v) = value.as_f64() {
-            let before = cx.vars.get(cx.cam, cx.sim, &k);
             if cx.vars.set(cx.cam, cx.sim, &k, v) {
-                if let Some(b) = before {
-                    self.defaults.entry(k).or_insert(b);
-                }
                 return;
             }
         }
         let persistent = crate::script_vars::PERSISTENT.contains(&k.as_str());
+        let changed = self.vars.get(&k) != Some(&value);
         self.store_var(name, k.clone(), value);
-        if persistent {
+        if persistent && changed && cx.persist {
             let saved: Vec<(String, f64)> =
                 crate::script_vars::PERSISTENT.iter().filter_map(|p| self.vars.get(*p).and_then(Value::as_f64).map(|v| (p.to_string(), v))).collect();
             crate::script_vars::save_persistent(&saved);
@@ -1070,7 +1098,9 @@ impl ScriptRunner {
         match kind {
             InputKind::Move => {
                 cx.cam.locks.movement = mode == LockMode::Disabled;
-                if mode == LockMode::Disabled {
+                // "Limited" raises SE's movement flag too (FUN_140552c30:414), with limits.
+                cx.cam.locks.limited = mode == LockMode::Limited;
+                if mode != LockMode::Free {
                     cx.cam.velocity = DVec3::ZERO;
                     cx.cam.travel = None;
                 }
@@ -1332,7 +1362,7 @@ impl ScriptRunner {
         cx.cam.follow = None;
         cx.cam.velocity = DVec3::ZERO;
         let profile = Profile::from_args(a);
-        let duration = a.time.or(profile.map(|p| p.total())).unwrap_or(DEFAULT_GOTO_S).max(0.0);
+        let duration = profile.total();
         // SE binds a Goto to a point on the surface with SyncRot, any other with Follow (FUN_140563f30).
         let sync = a.lat.is_some() || a.lon.is_some();
         self.flight = Some(Flight { target, start_local, start_rot, end_local, end_rot, elapsed: 0.0, duration, sync, profile });
@@ -1344,10 +1374,7 @@ impl ScriptRunner {
         let Some(f) = &mut self.flight else { return };
         f.elapsed += dt;
         let t = if f.duration <= 0.0 { 1.0 } else { (f.elapsed / f.duration).clamp(0.0, 1.0) };
-        let s = match f.profile {
-            Some(p) => p.progress(t),
-            None => smooth(t),
-        };
+        let s = f.profile.progress(f.elapsed);
         let jd = cx.sim.jd;
         let eph = Ephemeris::new(&cx.data.catalog);
         let q = eph.orientation(f.target, jd);
@@ -1957,22 +1984,29 @@ mod tests {
 
     #[test]
     fn flight_profile() {
-        let a = GotoArgs { accel_time: Some(1.0), decel_time: Some(1.0), drift_time: Some(2.0), ..Default::default() };
-        let p = Profile::from_args(&a).unwrap();
-        assert_eq!(p.total(), 4.0);
-        assert_eq!((p.progress(0.0), p.progress(1.0)), (0.0, 1.0));
-        // Symmetric: half way at the middle; monotonic.
-        assert!((p.progress(0.5) - 0.5).abs() < 1e-12);
+        // A bare Goto: 1 s speeding up, 1 s braking, powers from GotoSpeed (FUN_140563f30).
+        let p = Profile::from_args(&GotoArgs::default());
+        assert_eq!((p.accel, p.drift, p.decel, p.pa), (1.0, 0.0, 1.0, crate::camera::GOTO_SPEED));
+        assert_eq!(p.total(), 2.0);
+        // `Time T` splits into T/2 + T/2 (FUN_140571db0); explicit keys win.
+        let p = Profile::from_args(&GotoArgs { time: Some(3.0), decel_time: Some(0.5), ..Default::default() });
+        assert_eq!((p.accel, p.decel, p.total()), (1.5, 0.5, 2.0));
+        assert_eq!(Profile::from_args(&GotoArgs { time: Some(0.0), ..Default::default() }).progress(0.0), 1.0);
+        // FUN_14056b1e0: each phase reaches its share of the progress at its end.
+        let p = Profile::from_args(&GotoArgs { accel_time: Some(1.0), drift_time: Some(2.0), decel_time: Some(1.0), ..Default::default() });
+        assert_eq!((p.progress(0.0), p.progress(4.0)), (0.0, 1.0));
+        assert!((p.progress(1.0) - 0.25).abs() < 1e-12 && (p.progress(3.0) - 0.75).abs() < 1e-12);
+        // Speeding up as (t / a)^10: almost still for half the phase.
+        assert!(p.progress(0.5) < 1e-3);
         let mut last = 0.0;
-        for i in 1..=100 {
+        for i in 1..=400 {
             let s = p.progress(i as f64 / 100.0);
             assert!(s >= last);
             last = s;
         }
-        // Cruising at constant speed: equal steps in the drift.
-        let (s1, s2, s3) = (p.progress(0.4), p.progress(0.5), p.progress(0.6));
+        // Even while drifting.
+        let (s1, s2, s3) = (p.progress(1.5), p.progress(2.0), p.progress(2.5));
         assert!(((s2 - s1) - (s3 - s2)).abs() < 1e-12);
-        assert!(Profile::from_args(&GotoArgs::default()).is_none());
     }
 
     #[test]

@@ -2,19 +2,23 @@
 //! `Interpolate`, `WaitVar`, `SaveVars`, `RestoreVars`: FUN_14055ac90 .. FUN_14055a4f0).
 //!
 //! SE's script variables are its config variables (registered with FUN_1405a4a00), so a script
-//! reads and writes the same values as the settings dialogs. [`Settings`] maps the names the
-//! shipped scripts use (`tutorials/DefaultSettings.se` and the tutorials) onto the port's own
-//! settings resources; names with no counterpart in the port stay script variables (kept by
-//! the runner, readable by `if`/`WaitVar`).
+//! reads and writes the same values as the settings dialogs, and `Reset` (FUN_14055a8d0 ->
+//! FUN_14054f320) puts one back to its registered default. [`Settings`] maps the names the
+//! shipped scripts use (`tutorials/DefaultSettings.se`, `menu/Scene1.se` and the tutorials) onto
+//! the port's own settings; names with no counterpart in the port stay script variables (kept
+//! by the runner, readable by `if`/`WaitVar`).
 //!
 //! `LessonPassed` (written with `SetForce` at the end of each tutorial) is SE's saved tutorial
-//! progress; the port keeps it in its user folder (`script-vars.cfg`).
+//! progress; the port keeps it in its user folder (`script-vars.cfg`), except in test runs.
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::bloom::BloomSettings;
-use crate::camera::FlyCamera;
+use crate::camera::{FlyCamera, MainCamera};
+use crate::clusters::ClusterSettings;
+use crate::color_correction::ColorCorrection;
+use crate::exposure::ExposureComp;
 use crate::graphics::GraphicsSettings;
 use crate::lensflare::LensFlareSettings;
 use crate::overlay::{MarkerKind, OverlaySettings, SkySwitches};
@@ -25,7 +29,7 @@ use crate::waypoints::Waypoints;
 
 /// The settings a script can reach.
 #[derive(SystemParam)]
-pub struct Settings<'w> {
+pub struct Settings<'w, 's> {
     pub stars: ResMut<'w, StarSettings>,
     pub overlay: ResMut<'w, OverlaySettings>,
     pub bloom: ResMut<'w, BloomSettings>,
@@ -33,6 +37,11 @@ pub struct Settings<'w> {
     pub gfx: ResMut<'w, GraphicsSettings>,
     pub proc: ResMut<'w, ProcSettings>,
     pub waypoints: ResMut<'w, Waypoints>,
+    /// Inserted at startup by their plugins.
+    pub clusters: Option<ResMut<'w, ClusterSettings>>,
+    pub exposure: Option<ResMut<'w, ExposureComp>>,
+    /// SE's `Brightness`/`Contrast`/`Saturation`/`Gamma` (FUN_140326220) live on the camera.
+    pub color: Query<'w, 's, &'static mut ColorCorrection, With<MainCamera>>,
 }
 
 /// Names (lower case) of the scalar settings mapped below, for `SaveVars`.
@@ -41,6 +50,9 @@ pub const SCALARS: &[&str] = &[
     "labelsmode",
     "showmarkers",
     "starmagnlimit",
+    "galaxymagnlimit",
+    "nebulamagnlimit",
+    "glowmagnlimit",
     "pointoverbright",
     "pointscale",
     "pointdesaturation",
@@ -71,6 +83,12 @@ pub const SCALARS: &[&str] = &[
     "showprocgalaxies",
     "showprocclusters",
     "showprocnebulae",
+    "showcatclusters",
+    "exposurecomp",
+    "brightness",
+    "contrast",
+    "saturation",
+    "gamma",
     "waypointsopacity",
     "showlabelswaypoints",
 ];
@@ -86,16 +104,35 @@ fn b(v: bool) -> f64 {
     v as u8 as f64
 }
 
-impl Settings<'_> {
-    /// A setting's value by its SE name (any case); `None` when the port has no such setting.
-    pub fn get(&self, cam: &FlyCamera, sim: &SimTime, name: &str) -> Option<f64> {
-        let k = name.to_ascii_lowercase();
-        let (s, o) = (&*self.stars, &*self.overlay);
-        Some(match k.as_str() {
+/// Read-only access to every mapped setting: the live ones or the port's defaults.
+struct View<'a> {
+    stars: &'a StarSettings,
+    overlay: &'a OverlaySettings,
+    bloom: &'a BloomSettings,
+    lens: &'a LensFlareSettings,
+    gfx: &'a GraphicsSettings,
+    proc: &'a ProcSettings,
+    wps: &'a Waypoints,
+    clusters: Option<&'a ClusterSettings>,
+    exposure: Option<&'a ExposureComp>,
+    color: Option<&'a ColorCorrection>,
+    cam: &'a FlyCamera,
+    sim: &'a SimTime,
+}
+
+impl View<'_> {
+    fn get(&self, k: &str) -> Option<f64> {
+        let (s, o) = (self.stars, self.overlay);
+        // SE's `bcsg`: brightness - 1, contrast, saturation - 1, 1 / gamma.
+        let cc = |f: fn(Vec4) -> f32| self.color.map(|c| f(c.bcsg) as f64);
+        Some(match k {
             "showorbits" => b(o.orbits),
             "labelsmode" => o.labels_mode as f64,
             "showmarkers" => b(o.markers),
             "starmagnlimit" => s.mag_limit as f64,
+            "galaxymagnlimit" => s.galaxy_mag_limit as f64,
+            "nebulamagnlimit" => s.nebula_mag_limit as f64,
+            "glowmagnlimit" => s.glow_mag_limit as f64,
             "pointoverbright" => s.overbright as f64,
             "pointscale" => s.point_scale as f64,
             "pointdesaturation" => s.desaturation as f64,
@@ -105,9 +142,9 @@ impl Settings<'_> {
             "illumsaturationauto" => b(s.illum_saturation_auto),
             "starpointmethod" => s.point_style.method() as f64,
             "motionblurlength" => s.blur_length as f64,
-            "timescale" => sim.rate,
-            "fov" => cam.fov_deg as f64,
-            "autohorizon" => b(cam.auto_horizon),
+            "timescale" => self.sim.rate,
+            "fov" => self.cam.fov_deg as f64,
+            "autohorizon" => b(self.cam.auto_horizon),
             "showselectionpointer" => b(o.selection_pointer),
             "fps" => b(o.show_fps),
             "textmode" => if o.info_full { 2.0 } else { 1.0 },
@@ -126,13 +163,44 @@ impl Settings<'_> {
             "showprocgalaxies" => b(self.proc.galaxies),
             "showprocclusters" => b(self.proc.clusters),
             "showprocnebulae" => b(self.proc.nebulae),
-            "waypointsopacity" => self.waypoints.opacity as f64,
-            "showlabelswaypoints" => b(self.waypoints.labels),
+            "showcatclusters" => b(self.clusters?.show_cat),
+            // SE keeps ExposureComp negated: +1 shown (twice as bright) is -1 (exposure.rs).
+            "exposurecomp" => -self.exposure?.stops as f64,
+            "brightness" => cc(|v| v.x + 1.0)?,
+            "contrast" => cc(|v| v.y)?,
+            "saturation" => cc(|v| v.z + 1.0)?,
+            "gamma" => cc(|v| 1.0 / v.w.max(1e-6))?,
+            "waypointsopacity" => self.wps.opacity as f64,
+            "showlabelswaypoints" => b(self.wps.labels),
             f => match o.sky.var(f) {
                 Some(on) => b(on),
                 None => kind_filter_get(o, f)?,
             },
         })
+    }
+}
+
+impl Settings<'_, '_> {
+    fn view<'a>(&'a self, cam: &'a FlyCamera, sim: &'a SimTime) -> View<'a> {
+        View {
+            stars: &self.stars,
+            overlay: &self.overlay,
+            bloom: &self.bloom,
+            lens: &self.lens,
+            gfx: &self.gfx,
+            proc: &self.proc,
+            wps: &self.waypoints,
+            clusters: self.clusters.as_deref(),
+            exposure: self.exposure.as_deref(),
+            color: self.color.single().ok(),
+            cam,
+            sim,
+        }
+    }
+
+    /// A setting's value by its SE name (any case); `None` when the port has no such setting.
+    pub fn get(&self, cam: &FlyCamera, sim: &SimTime, name: &str) -> Option<f64> {
+        self.view(cam, sim).get(&name.to_ascii_lowercase())
     }
 
     /// Sets a setting by its SE name; false when the port has no such setting.
@@ -145,6 +213,9 @@ impl Settings<'_> {
             "labelsmode" => o.labels_mode = v.clamp(0.0, 2.0) as u8,
             "showmarkers" => o.markers = on,
             "starmagnlimit" => s.mag_limit = v as f32,
+            "galaxymagnlimit" => s.galaxy_mag_limit = v as f32,
+            "nebulamagnlimit" => s.nebula_mag_limit = v as f32,
+            "glowmagnlimit" => s.glow_mag_limit = v as f32,
             "pointoverbright" => s.overbright = v as f32,
             "pointscale" => s.point_scale = v as f32,
             "pointdesaturation" => s.desaturation = v as f32,
@@ -175,6 +246,24 @@ impl Settings<'_> {
             "showprocgalaxies" => self.proc.galaxies = on,
             "showprocclusters" => self.proc.clusters = on,
             "showprocnebulae" => self.proc.nebulae = on,
+            "showcatclusters" => match self.clusters.as_mut() {
+                Some(c) => c.show_cat = on,
+                None => return false,
+            },
+            "exposurecomp" => match self.exposure.as_mut() {
+                Some(e) => e.set(-v as f32),
+                None => return false,
+            },
+            "brightness" | "contrast" | "saturation" | "gamma" => {
+                let Ok(mut c) = self.color.single_mut() else { return false };
+                let v4 = &mut c.bcsg;
+                match k.as_str() {
+                    "brightness" => v4.x = v as f32 - 1.0,
+                    "contrast" => v4.y = v as f32,
+                    "saturation" => v4.z = v as f32 - 1.0,
+                    _ => v4.w = 1.0 / (v as f32).max(1e-3),
+                }
+            }
             // SE's WaypointsOpacity runs 0..1 (FUN_140014d10).
             "waypointsopacity" => self.waypoints.opacity = v.clamp(0.0, 1.0) as f32,
             "showlabelswaypoints" => self.waypoints.labels = on,
@@ -193,9 +282,38 @@ impl Settings<'_> {
 
     /// Every mapped setting's value, for `SaveVars`.
     pub fn snapshot(&self, cam: &FlyCamera, sim: &SimTime) -> Vec<(String, f64)> {
-        let names = SCALARS.iter().map(|s| s.to_string()).chain(SkySwitches::KEYS.iter().map(|k| k.to_ascii_lowercase())).chain(kind_filter_names());
-        names.filter_map(|n| self.get(cam, sim, &n).map(|v| (n, v))).collect()
+        let view = self.view(cam, sim);
+        all_names().filter_map(|n| view.get(&n).map(|v| (n, v))).collect()
     }
+}
+
+/// Every mapped setting's name (lower case).
+fn all_names() -> impl Iterator<Item = String> {
+    SCALARS.iter().map(|s| s.to_string()).chain(SkySwitches::KEYS.iter().map(|k| k.to_ascii_lowercase())).chain(kind_filter_names())
+}
+
+/// The value `Reset` puts a setting back to: the port's default for it (SE resets a variable to
+/// its registered default, FUN_14054f320). `None` for names the port has no setting for.
+pub fn default_value(name: &str) -> Option<f64> {
+    let (stars, overlay, bloom, lens) = (StarSettings::default(), OverlaySettings::default(), BloomSettings::default(), LensFlareSettings::default());
+    let (gfx, proc, wps) = (GraphicsSettings::default(), ProcSettings::default(), Waypoints::default());
+    let (exposure, color, clusters) = (ExposureComp::default(), ColorCorrection::default(), ClusterSettings { show_cat: true });
+    let (cam, sim) = (FlyCamera::default(), SimTime { rate: 1.0, ..SimTime::default() });
+    let view = View {
+        stars: &stars,
+        overlay: &overlay,
+        bloom: &bloom,
+        lens: &lens,
+        gfx: &gfx,
+        proc: &proc,
+        wps: &wps,
+        clusters: Some(&clusters),
+        exposure: Some(&exposure),
+        color: Some(&color),
+        cam: &cam,
+        sim: &sim,
+    };
+    view.get(&name.to_ascii_lowercase())
 }
 
 /// `ShowOrbits<Kind>` / `ShowLabels<Kind>` / `ShowMarkers<Kind>` (lower case).
@@ -214,7 +332,7 @@ fn kind_filter_get(o: &OverlaySettings, key: &str) -> Option<f64> {
 // ---- saved tutorial progress -------------------------------------------------------
 
 /// Script variables SE saves with its config; the port writes them to `script-vars.cfg` in its
-/// user folder.
+/// user folder. Test runs (`--script`, `--run`: `settings::scripted`) neither read nor write it.
 pub const PERSISTENT: &[&str] = &["lessonpassed"];
 
 fn vars_path() -> std::path::PathBuf {
@@ -277,5 +395,18 @@ mod tests {
         crate::overlay::kind_filter(&mut o, "showorbitscomets").unwrap().0.set(MarkerKind::Comet, false);
         assert_eq!(kind_filter_get(&o, "showorbitscomets"), Some(0.0));
         assert!(kind_filter_get(&o, "showsomething").is_none());
+    }
+
+    #[test]
+    fn reset_values_are_the_defaults() {
+        assert_eq!(default_value("ShowOrbits"), default_value("showorbits"));
+        assert_eq!(default_value("TimeScale"), Some(1.0));
+        assert_eq!(default_value("WaypointsOpacity"), Some(1.0));
+        // ColorCorrection's default saturation is main-def's 1.5; exposure 0 stops.
+        assert!((default_value("Saturation").unwrap() - 1.5).abs() < 1e-6);
+        assert_eq!(default_value("ExposureComp"), Some(0.0));
+        assert_eq!(default_value("NoSuchSetting"), None);
+        // Every name SaveVars lists has a default.
+        assert!(all_names().all(|n| default_value(&n).is_some()), "{:?}", all_names().find(|n| default_value(n).is_none()));
     }
 }
