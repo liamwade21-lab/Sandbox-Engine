@@ -300,6 +300,7 @@ fn update_tails(
     sim: Res<SimTime>,
     cam: Res<FlyCamera>,
     settings: Res<CometSettings>,
+    switches: Res<crate::switches::RenderSwitches>,
     windows: Query<&Window>,
     cams: Query<&Projection, With<MainCamera>>,
     mut owners: Query<(&SystemBody, &BodyLighting, &mut Tail)>,
@@ -318,7 +319,10 @@ fn update_tails(
         let r_m = away.length();
         let len_km = tail_length_km(&tail.tail, r_m);
         let d_cam = body.pos.delta_m(cam.pos).length().max(1.0);
-        let shown = tail.enabled && tail.tail.particles > 0 && light.sun_intensity > 0.0 && len_km * 1000.0 / d_cam * px_per_rad >= MIN_TAIL_PX;
+        // SE's ShowCometTails switch (Shift+Ctrl+C) hides every tail.
+        let shown = switches.comet_tails
+            && tail.enabled
+            && tail.tail.particles > 0 && light.sun_intensity > 0.0 && len_km * 1000.0 / d_cam * px_per_rad >= MIN_TAIL_PX;
         if !shown || (!tail.built && builds >= BUILDS_PER_FRAME) {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;

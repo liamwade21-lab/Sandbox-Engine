@@ -275,8 +275,9 @@ pub(crate) fn disc_overlap(rs: f64, ro: f64, d: f64) -> f64 {
 }
 
 /// Finds the bodies whose shadow (umbra or penumbra) can reach each resolved
-/// terrain body, largest apparent size first.
+/// terrain body, largest apparent size first. None with SE's eclipses switch off (Ctrl+L).
 fn update_eclipses(
+    switches: Res<crate::switches::RenderSwitches>,
     mut set: ParamSet<(
         Query<(&SystemBody, Option<&Terrain>)>,
         Query<(&SystemBody, &BodyLighting, &mut Terrain)>,
@@ -291,7 +292,7 @@ fn update_eclipses(
     for (body, light, mut terrain) in &mut set.p1() {
         let mut e = EclipseUniform::default();
         let star_dist = light.star_pos.delta_m(body.pos).length();
-        if body.px_radius > 0.5 && light.star_radius_m > 0.0 && star_dist > 0.0 {
+        if switches.eclipses && body.px_radius > 0.5 && light.star_radius_m > 0.0 && star_dist > 0.0 {
             let a_s = (light.star_radius_m / star_dist).min(1.0).asin();
             let mut found: Vec<(f64, Vec4)> = Vec::new();
             for &(obj, pos, r_o, atm) in &occluders {
@@ -1648,7 +1649,12 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain)>,
-    (ambient, emission, water_display): (Res<crate::system::AmbientLighting>, Res<SelfEmission>, Res<WaterDisplay>),
+    (ambient, emission, water_display, switches): (
+        Res<crate::system::AmbientLighting>,
+        Res<SelfEmission>,
+        Res<WaterDisplay>,
+        Res<crate::switches::RenderSwitches>,
+    ),
     nodes: Query<&TerrainNode>,
     clouds_q: Query<&CloudNode>,
     mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
@@ -1764,7 +1770,7 @@ fn update_terrain(
                     .unwrap_or(Vec3::new(0.15, 0.48, 0.46))
                     .extend(120.0),
                 atm_flags: Vec4::new(
-                    if terrain.atmosphere.is_some() { 1.0 } else { 0.0 },
+                    if terrain.atmosphere.is_some() && switches.atmospheres { 1.0 } else { 0.0 },
                     ATM_SUN_SCALE,
                     scatter_rel(terrain.atm_bright),
                     terrain.day_ambient,
@@ -2113,10 +2119,11 @@ fn update_terrain(
             if let NodeState::Ready(e, c) = &slot.state {
                 let want = visible.binary_search(key).is_ok();
                 for &e in std::iter::once(e).chain(c) {
-                    let want = match clouds_q.get(e).ok().and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
+                    let cloud = clouds_q.get(e).ok();
+                    let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
                         Some(v) => v.binary_search(key).is_ok(),
                         None => want,
-                    };
+                    } && (cloud.is_none() || switches.clouds);
                     let v = if want { Visibility::Visible } else { Visibility::Hidden };
                     if let Ok(mut vis) = vis_q.get_mut(e) {
                         if *vis != v {
@@ -2128,7 +2135,13 @@ fn update_terrain(
         }
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
-        if terrain.last_ambient != ambient.0 || terrain.last_emission != *emission || terrain.last_water != water_display.level {
+        // SE's atmospheres switch (Shift+A) also takes the aerial perspective off the ground and clouds.
+        let atm_on = if terrain.atmosphere.is_some() && switches.atmospheres { 1.0 } else { 0.0 };
+        if terrain.last_ambient != ambient.0
+            || terrain.last_emission != *emission
+            || terrain.last_water != water_display.level
+            || switches.is_changed()
+        {
             terrain.last_ambient = ambient.0;
             terrain.last_emission = *emission;
             terrain.last_water = water_display.level;
@@ -2155,6 +2168,7 @@ fn update_terrain(
                                 m.u.params.x = glow_bright;
                                 m.u.thermal2.w = emission.scale();
                                 m.u.ice.w = water_display.level;
+                                m.u.atm_flags.x = atm_on;
                             }
                         }
                     }
@@ -2164,6 +2178,7 @@ fn update_terrain(
                             m.u.sun_color = light.sun_color.extend(1.0);
                             (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
                             m.u.eclipse = eclipse;
+                            m.u.atm_flags.x = atm_on;
                         }
                     }
                 }
