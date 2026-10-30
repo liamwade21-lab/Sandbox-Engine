@@ -36,7 +36,7 @@ impl Plugin for AuroraPlugin {
 
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct AuroraUniform {
-    /// xyz: unit direction to the star (render frame).
+    /// xyz: unit direction to the star (render frame), w: SE's `AuroraBright`.
     pub sun_dir: Vec4,
     /// rgb: lower-edge colour, w: brightness.
     pub bottom: Vec4,
@@ -207,10 +207,12 @@ fn update_auroras(
     bodies: Query<(&SystemBody, &BodyLighting)>,
     mut auroras: Query<(&AuroraOf, &mut UPosition, &mut UOrientation, &mut ScaleAnchor, &mut Visibility)>,
     mut mats: ResMut<Assets<AuroraMaterial>>,
+    switches: Res<crate::switches::RenderSwitches>,
 ) {
     for (aurora, mut pos, mut rot, mut anchor, mut vis) in &mut auroras {
         let Ok((b, light)) = bodies.get(aurora.body) else { continue };
-        let show = b.px_radius > 3.0;
+        // SE's ShowAurora filter (ToggleAurora).
+        let show = b.px_radius > 3.0 && switches.aurora;
         let v = if show { Visibility::Visible } else { Visibility::Hidden };
         if *vis != v {
             *vis = v;
@@ -221,7 +223,8 @@ fn update_auroras(
         pos.0 = b.pos;
         rot.0 = b.orient;
         anchor.0 = b.pos;
-        let sun = light.sun_dir.extend(0.0);
+        // SE's AuroraBright scales every aurora (main-def.cfg PlanetRendering).
+        let sun = light.sun_dir.extend(switches.aurora_bright);
         if mats.get(&aurora.material).is_some_and(|m| (m.u.sun_dir - sun).length() > 1e-3) {
             if let Some(mut m) = mats.get_mut(&aurora.material) {
                 m.u.sun_dir = sun;

@@ -220,7 +220,7 @@ fn build_node(key: GalNodeKey, pools: [u32; 17], cam: DVec3) -> BuiltNode {
         let rec = galaxy_record(g);
         let ptype = profile_type(&rec);
         let normal = if ptype == 1 { (rec.orientation * DVec3::NEG_Z).as_vec3() } else { Vec3::ZERO };
-        let col = type_color(&rec.kind, false);
+        let col = type_color(&rec.kind);
         let rel = (g.pos_pc - center).as_vec3();
         let id = sprite_id(key, g.index);
         let base = p.len() as u32;

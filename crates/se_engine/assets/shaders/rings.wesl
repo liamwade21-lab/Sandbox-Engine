@@ -3,29 +3,38 @@
 // phase function and an opposition spot, its back row (BackMap) forward-scatters with a Mie lobe
 // (g = -0.95, so dusty rings brighten backlit); both become optical densities in a slab whose
 // density falls off as exp(-3 |height|), marched in 8 steps along the view with SE's self-shadow
-// towards the Sun (dimming the face turned from it). A radial detail noise (RingDetailNoiseScale)
-// breaks up close views. Premultiplied output.
+// towards the Sun (dimming the face turned from it). Each star is shadowed by the planet (an eclipse
+// of its disc by the planet's, flattened as the planet) and by the moons' eclipses; the planet lights
+// its rings too (SE's host light). A radial detail noise (RingDetailNoiseScale) breaks up close
+// views. Premultiplied output.
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
+import super::eclipse::{EclipseLight, eclipse_shadow, eclipse_value};
 
 struct Ring {
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
-    /// x inner radius / planet radius, y outer / planet radius, z detail noise frequency, w Brightness.
+    /// x inner radius / planet radius, y outer / planet radius, z the shadow density on the planet
+    /// (PlanetShadow), w Brightness.
     geom: vec4<f32>,
-    /// x FrontBright, y BackBright, z has texture, w PlanetShadow.
+    /// x FrontBright, y BackBright, z has texture, w unused.
     params: vec4<f32>,
     /// SE's DensityParams: Density (front, back), Opacity, SelfShadow.
     density: vec4<f32>,
     /// x SpotBright, y 1 / SpotWidth, z Hapke, w SpotBrightCB.
     hapke: vec4<f32>,
-    /// x 1 / SpotWidthCB.
+    /// x 1 / SpotWidthCB, y detail noise frequency, z SE's Oblateness.g (1 / the polar semi-axis),
+    /// w the eclipse intensity (AmbientColor.a).
     hapke2: vec4<f32>,
+    /// The planet's own light on its rings (HostLightIndex): rgb at the rings' outer edge, w 1 when on.
+    host: vec4<f32>,
     /// The further stars (SE's rings shaders loop over NLights): xyz direction, w 1 when used;
     /// rgb their light, intensity included.
     light_dir: array<vec4<f32>, 3>,
     light_color: array<vec4<f32>, 3>,
+    /// Each light's eclipse casters (the main star first).
+    eclipse: array<EclipseLight, 4>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> ring: Ring;
@@ -63,6 +72,7 @@ fn vertex(v: Vertex) -> VertexOut {
 }
 
 const TO_GRAY = vec3<f32>(0.299, 0.587, 0.114);
+const PI: f32 = 3.14159265359;
 
 // SE's RingsLambertBRDF: mu is the cosine of the phase angle.
 fn lambert(mu: f32) -> f32 {
@@ -117,30 +127,18 @@ fn detail_noise(x: f32) -> f32 {
     return sum * 0.85 / 2.4;
 }
 
-// The light of a star in direction `l` (light `sun`) the slab scatters towards the viewer, before
-// `Brightness`, and in w the slab's transparency along the view: SE's march with the planet's
-// shadow, the Hapke and Mie phase functions and self-shadowing.
-fn ring_scatter(in: VertexOut, l: vec3<f32>, sun: vec3<f32>, front: vec4<f32>, back: vec4<f32>, od0: vec4<f32>) -> vec4<f32> {
+// The light `sun` from direction `l` (already shadowed) the slab scatters towards the viewer, before
+// `Brightness`, and in w the slab's transparency along the view: SE's march with the Hapke and Mie
+// phase functions and self-shadowing. `transp_out`: the transparency per row (front, back, opacity).
+fn ring_scatter(in: VertexOut, l: vec3<f32>, sun: vec3<f32>, front: vec4<f32>, back: vec4<f32>, od0: vec4<f32>, transp_out: ptr<function, vec3<f32>>) -> vec4<f32> {
     let v = normalize(-in.world_pos);
     let n = normalize(in.normal);
     let nv = dot(n, v);
     let nl = dot(n, l);
     let mu = clamp(dot(l, v), -0.999999, 0.999999);
 
-    // Planet shadow: does the ray towards the star hit the planet? (softened at its edge)
-    let oc = in.world_pos - in.centre;
-    let b = dot(oc, l);
-    let c = dot(oc, oc) - in.planet_radius * in.planet_radius;
-    let disc = b * b - c;
-    var shadow = 1.0;
-    if b < 0.0 && disc > 0.0 {
-        shadow = 1.0 - smoothstep(0.0, 0.04, sqrt(disc) / in.planet_radius) * ring.params.w;
-    }
-    shadow *= smoothstep(0.0, 0.01, abs(nl));
-
-    let light = sun * shadow;
-    let lit = light * front.rgb * (ring.params.x * hapke(mu) * lambert(mu));
-    let dusty = light * back.rgb * (ring.params.y * mie(mu, -0.95));
+    let lit = sun * front.rgb * (ring.params.x * hapke(mu) * lambert(mu));
+    let dusty = sun * back.rgb * (ring.params.y * mie(mu, -0.95));
     // Heights on the viewer's side are positive; the march runs from +1 down to -CAP.
     let ey = max(abs(nv), 1e-4);
     let ly = nl * sign(nv);
@@ -159,7 +157,53 @@ fn ring_scatter(in: VertexOut, l: vec3<f32>, sun: vec3<f32>, front: vec4<f32>, b
         col += (lit * (1.0 - ext.x) * transp.x + dusty * (1.0 - ext.y) * transp.y) * self_shadow;
         transp *= ext;
     }
+    *transp_out = transp;
     return vec4<f32>(col, transp.z);
+}
+
+// What reaches the ring point of light `k` (0 the main star) from direction `l`: the planet's shadow
+// as an eclipse of the light by the planet's disc (rings.glsl: EclipseValue of the light's and the
+// planet's angular radii, the light's direction stretched by SE's Oblateness for a flattened planet;
+// the catalog's PlanetShadow is the rings' shadow on the planet, not this), then the moons' and
+// other bodies' eclipses (ECL,
+// EclipseShadowAuto x AmbientColor.a), and none edge-on.
+fn ring_shadow(in: VertexOut, k: i32, l: vec3<f32>) -> f32 {
+    let e = ring.eclipse[k];
+    let oc = in.centre - in.world_pos;
+    let inv = inverseSqrt(max(dot(oc, oc), 1e-30));
+    let pixel_dir = oc * inv;
+    let n = normalize(in.normal);
+    let ly = dot(l, n);
+    let obl = ring.hapke2.z;
+    let cos_a = dot(l, pixel_dir) / sqrt(max(1.0 + (obl * obl - 1.0) * ly * ly, 1e-12));
+    let caster = asin(clamp(in.planet_radius * inv, 0.0, 1.0));
+    let planet = clamp(1.0 - eclipse_value(max(e.info.x, 1e-7), caster, acos(clamp(cos_a, 0.0, 1.0))), 0.0, 1.0);
+    var shadow = planet;
+    if e.info.y > 0.5 {
+        let p = (in.world_pos - in.centre) / in.planet_radius;
+        shadow *= 1.0 - ring.hapke2.w * eclipse_shadow(e, p, l);
+    }
+    return shadow * smoothstep(0.0, 0.01, abs(ly));
+}
+
+// SE's host light (HostLightIndex, rings.glsl): the planet lighting its rings, falling off as the
+// inverse square from the outer edge (HapkeParams2.z = outer / inner radius), by the planet's phase
+// seen from the ring point (a Lambert sphere's, Chi the angle at the planet between the main star and
+// the point) and its disc's size; Mie with g = -0.7, no self-shadow. Without self-shadow the march
+// sums to `1 - transparency` per row (`transp`, the main march's).
+fn host_scatter(in: VertexOut, l0: vec3<f32>, front: vec4<f32>, back: vec4<f32>, transp: vec3<f32>) -> vec3<f32> {
+    let oc = in.centre - in.world_pos;
+    let dist = max(length(oc), 1e-30);
+    let pixel_dir = oc / dist;
+    let dist_corr = ring.geom.y * in.planet_radius / dist;
+    let cos_chi = clamp(-dot(pixel_dir, l0), -0.999999, 0.999999);
+    let chi = acos(cos_chi);
+    let ang = asin(clamp(in.planet_radius / dist, 0.0, 0.999999));
+    let shine = dist_corr * dist_corr * ((1.0 - chi / PI) * cos_chi + sqrt(1.0 - cos_chi * cos_chi) / PI) * clamp(PI - ang - chi, 0.0, 1.0);
+    let mu = clamp(dot(pixel_dir, normalize(-in.world_pos)), -0.999999, 0.999999);
+    let lit = front.rgb * (ring.params.x * hapke(mu) * lambert(mu)) * (1.0 - transp.x);
+    let dusty = back.rgb * (ring.params.y * mie(mu, -0.7)) * (1.0 - transp.y);
+    return ring.host.rgb * shine * (lit + dusty);
 }
 
 @fragment
@@ -179,7 +223,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     front = vec4<f32>(front.rgb * front.a, front.a);
 
     // Radial detail where its finest octave is resolved (SE fades it by distance; assumed here).
-    let rad = r * ring.geom.z;
+    let rad = r * ring.hapke2.y;
     let detail = 1.0 - smoothstep(0.3, 1.0, fwidth(rad * 4.9));
     if detail > 0.0 {
         let m = detail_noise(rad);
@@ -192,13 +236,19 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // x front scattering, y back scattering, z opacity, w self-shadow.
     let d = clamp(1.0 - vec4<f32>(dot(front.rgb, TO_GRAY), dot(back.rgb, TO_GRAY), front.a, front.a) * ring.density, vec4<f32>(0.01), vec4<f32>(1.0));
     let od0 = -log(d) / (2.0 * FALLOFF_INTEGRAL);
-    let lit = ring_scatter(in, l, sun, front, back, od0);
+    var transp = vec3<f32>(1.0);
+    var transp_x = vec3<f32>(1.0);
+    let lit = ring_scatter(in, l, sun * ring_shadow(in, 0, l), front, back, od0, &transp);
     var col = lit.rgb;
     for (var i = 0; i < 3; i++) {
         if ring.light_dir[i].w < 0.5 {
             break;
         }
-        col += ring_scatter(in, normalize(ring.light_dir[i].xyz), ring.light_color[i].rgb, front, back, od0).rgb;
+        let lx = normalize(ring.light_dir[i].xyz);
+        col += ring_scatter(in, lx, ring.light_color[i].rgb * ring_shadow(in, i + 1, lx), front, back, od0, &transp_x).rgb;
+    }
+    if ring.host.w > 0.5 {
+        col += host_scatter(in, l, front, back, transp);
     }
     col *= ring.geom.w;
     let alpha = 1.0 - lit.w;

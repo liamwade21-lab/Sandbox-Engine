@@ -20,11 +20,13 @@ mod corona;
 mod data;
 mod exposure;
 mod display;
+mod eclipse;
 mod ellipticals;
 mod galaxies;
 mod graphics;
 mod grids;
 mod lensflare;
+mod color_correction;
 mod nebula_raymarch;
 mod nebulae;
 mod hud;
@@ -37,6 +39,8 @@ mod procsystems;
 mod procstars;
 mod rings;
 mod messages;
+mod script_gui;
+mod script_vars;
 mod scripting;
 mod settings;
 mod ship;
@@ -46,11 +50,13 @@ mod sound;
 mod splash;
 mod stars;
 mod surface_tex;
+mod switches;
 mod system;
 mod sysbrowser;
 mod terrain;
 mod terrain_gen;
 mod universe;
+mod waypoints;
 mod wiki;
 
 use bevy::prelude::*;
@@ -89,7 +95,7 @@ fn main() {
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(cfg)
     // Core: game data, simulation clock / floating origin, observer.
-    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, exposure::ExposurePlugin))
+    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin))
     // Deep sky (Bevy plugin tuples are limited to 15 entries, hence the groups).
     .add_plugins((
         stars::StarsPlugin,
@@ -117,6 +123,7 @@ fn main() {
         comets::CometsPlugin,
         corona::CoronaPlugin,
         aurora::AuroraPlugin,
+        eclipse::EclipsePlugin,
         lensflare::LensFlarePlugin,
     ))
     // Interface and audio.
@@ -137,6 +144,6 @@ fn main() {
         ship::ShipPlugin,
     ))
     // Sky overlays: coordinate grids and constellations.
-    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin));
+    .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin));
     app.run();
 }

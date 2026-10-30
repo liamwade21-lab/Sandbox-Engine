@@ -194,13 +194,20 @@ fn setup(mut commands: Commands, data: Res<SeData>, mut meshes: ResMut<Assets<Me
 }
 
 /// The `Show*` switches of the procedural deep sky, next to the Settings window.
-fn settings_window(mut contexts: EguiContexts, hud: Res<HudState>, mut settings: ResMut<ProcSettings>, field: Option<Res<ProcGalaxyField>>) -> Result {
+fn settings_window(
+    mut contexts: EguiContexts,
+    hud: Res<HudState>,
+    mut settings: ResMut<ProcSettings>,
+    mut clusters: ResMut<crate::clusters::ClusterSettings>,
+    field: Option<Res<ProcGalaxyField>>,
+) -> Result {
     if !hud.show_settings || hud.hidden {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
     egui::Window::new(crate::skin::title(ctx, "Procedural deep sky")).default_pos([320.0, 40.0]).show(ctx, |ui| {
         ui.checkbox(&mut settings.galaxies, "Procedural galaxies (ShowProcGalaxies)");
+        ui.checkbox(&mut clusters.show_cat, "Catalog star clusters (ShowCatClusters)");
         ui.checkbox(&mut settings.clusters, "Procedural star clusters (ShowProcClusters)");
         ui.checkbox(&mut settings.nebulae, "Procedural nebulae (ShowProcNebulae)");
         if let Some(f) = field {
@@ -289,6 +296,7 @@ fn gen_input(g: u32, cat: &Catalog, gs: &GalaxyState, ns: &NebulaState, density:
         home,
         catalog_clusters: cc,
         catalog_nebulae: cn,
+        glob_clusters: cat.glob_clusters.get(&g).copied(),
     };
     let use_map = is_mw && density.has_map() && model_scale.is_some();
     let emission: Arc<dyn EmissionMap + Send + Sync> = if use_map { Arc::new(MapEmission { density: density.clone(), dims }) } else { Arc::new(AnalyticSpiral) };
@@ -579,9 +587,11 @@ fn sync_materials(
     ns: Option<Res<NebulaState>>,
     resident: Res<ResidentNebulae>,
     settings: Res<ProcSettings>,
+    clusters: Option<Res<crate::clusters::ClusterSettings>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
 ) {
     let (Some(sys), Some(gs), Some(ns)) = (sys, gs, ns) else { return };
+    let show_cat = clusters.is_none_or(|c| c.show_cat);
     let mut zero_hidden = |mat: &Handle<GalaxyFarMaterial>, src: Handle<GalaxyFarMaterial>, on: bool, res: &[(usize, f32)]| {
         let Some(mut u) = far_mats.get(&src).map(|m| m.uniforms) else { return };
         u.cam_pos = Vec4::ZERO;
@@ -605,7 +615,7 @@ fn sync_materials(
         }
     };
     zero_hidden(&sys.clu_mat, gs.far_handle(), settings.clusters, &[]);
-    zero_hidden(&sys.cat_clu_mat, gs.far_handle(), true, &[]);
+    zero_hidden(&sys.cat_clu_mat, gs.far_handle(), show_cat, &[]);
     zero_hidden(&sys.neb_mat, ns.far_handle(), settings.nebulae, &resident.0);
 }
 
@@ -615,7 +625,8 @@ fn sync_materials(
 
 fn cluster_record(cat: &Catalog, g: u32, c: &proc_galsys::ProcCluster, frame: GalaxyFrame) -> ClusterRecord {
     let kind = match c.class {
-        ClusterClass::Globular | ClusterClass::Kern => "Globular",
+        ClusterClass::Globular => "Globular",
+        ClusterClass::Kern => "Kern",
         ClusterClass::Open => "Open",
     };
     let pos = frame.center_pc + frame.rot * DVec3::new(c.pos[0] as f64, c.pos[1] as f64, c.pos[2] as f64);
@@ -627,7 +638,8 @@ fn cluster_record(cat: &Catalog, g: u32, c: &proc_galsys::ProcCluster, frame: Ga
         radius_pc: c.radius_pc as f64,
         abs_mag: proc_galsys::abs_mag_of_lum(c.lum) as f64,
         age_gyr: c.age_gyr as f64,
-        n_stars: None,
+        cen_pow: c.cen_pow as f64,
+        no_members: false,
         color: None,
         source: "procedural".into(),
     }
@@ -817,6 +829,13 @@ fn resolve_names(
     }
     let mut hold = false;
     for (name, scripted) in names {
+        // A cluster member's `RSC` name needs its `RC` cluster (`clusters::resolve_member_names`),
+        // unless that is a catalog cluster or already promoted.
+        let name = match se_core::cluster_stars::parse_member_name(&name) {
+            Some((rc, ..)) if crate::clusters::cluster_of_rc(&data.catalog, &rc).is_some() => continue,
+            Some((rc, ..)) => rc,
+            None => name,
+        };
         if !is_proc_name(&name) || data.catalog.find(&name).is_some() {
             continue;
         }
