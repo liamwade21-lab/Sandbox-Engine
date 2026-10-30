@@ -158,7 +158,7 @@ impl Plugin for LensFlarePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LensFlareSettings>()
             .add_systems(Startup, load_presets)
-            .add_systems(PostUpdate, update_flares.after(UniverseSet::Camera));
+            .add_systems(PostUpdate, update_flares.after(UniverseSet::Camera).after(crate::blackholes::LensSet));
     }
 }
 

@@ -1,21 +1,23 @@
-//! Black holes: gravitational lensing, volumetric accretion disks and jets.
+//! Black holes, neutron stars and white dwarfs: gravitational lensing, the light-bent star
+//! surface, volumetric accretion disks and jets.
 //!
 //! Everything is a single HDR post-process on the main camera (see
 //! `assets/shaders/blackhole_lens.wesl` and `docs/blackholes.md`), SE's einstein.glsl in its
-//! single-pass mode. Each frame this module finds the catalog black holes that are big enough
-//! on screen to matter, converts them to camera-space uniforms (direction, distance in
-//! Schwarzschild radii, disk frame, SE's DiskParams/JetParams) and attaches them to the camera
-//! as a [`BlackHoleLens`] component. The shader traces light rays through the Schwarzschild
-//! geometry and ray-marches the disk and jet gas along them.
+//! single-pass mode. Each frame this module finds the catalog black holes, neutron stars and
+//! white dwarfs (SE's class-11 stars, all drawn by its GR shader) whose render sphere is big
+//! enough on screen to matter, converts them to camera-space uniforms (direction, distance in
+//! SE's gravRadius, disk frame, SE's MetricParams/StarParams/DiskParams/JetParams) and attaches
+//! them to the camera as a [`BlackHoleLens`] component. The shader traces light rays through the
+//! Kerr-Newman geometry and ray-marches the disk and jet gas along them.
 //!
 //! Black holes are not spawned as `SystemBody` entities (their catalog radius is 0), so this
-//! plugin evaluates them straight from the catalog and ephemeris.
+//! plugin evaluates them straight from the catalog and ephemeris. The ordinary sphere and corona
+//! of a neutron star or white dwarf are hidden while the lens draws its surface.
 
 #[path = "blackhole_params.rs"]
 pub mod params;
 
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::RenderLayers;
 use bevy::core_pipeline::{Core3d, Core3dSystems, FullscreenShader};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::math::DVec3;
@@ -42,11 +44,17 @@ use params::DiskParams;
 /// Maximum number of simultaneously lensed black holes.
 const MAX_HOLES: usize = 4;
 /// Schwarzschild radius per solar mass, km (SE: 8.87005e-6 km per Earth mass, FUN_1404dcd30).
-const RS_PER_MSUN_KM: f64 = 2.953_25;
+const RS_PER_MSUN_KM: f64 = params::RG_PER_MSUN_KM;
 /// Mass assumed for catalog black holes that have none.
 const DEFAULT_MASS_SUN: f64 = 10.0;
 /// Smallest on-screen influence radius (pixels) worth a lens pass.
 const MIN_REGION_PX: f64 = 1.5;
+/// Influence region of a hole in radii of its render sphere: the shader fades to the untouched
+/// frame over the outer 30% of the region, and nothing changes outside the sphere.
+const REGION_PER_SPHERE: f64 = 1.45;
+/// SE's StarParams.x limit (DAT_1406d5c18) and the disk temperature limit (DAT_1406d5c2c), K.
+const STAR_TEMP_MAX: f64 = 60_000.0;
+const DISK_TEMP_MAX: f64 = 80_000.0;
 /// SE's density scale: `Density x Rg(km) x 6.4e7` (_DAT_1406d5c90, FUN_140270900).
 const DENSITY_SCALE: f64 = 6.4e7;
 /// Entries of SE's Planck table (FUN_1401a60d0).
@@ -61,6 +69,14 @@ pub struct HoleUniform {
     pub axis_in: Vec4,
     pub xref_out: Vec4,
     pub params: Vec4,
+    /// SE's MetricParams: KerrSpin, KerrCharge, their squares.
+    pub metric: Vec4,
+    /// SE's StarParams: surface temperature, radius (units; 0 for a hole), equator v/c, and
+    /// starTime (DiskParams1.z).
+    pub star: Vec4,
+    /// KerrM (DiskParams5.w), invGravRadius (Radiuses.w), warpStep (Params.y), starRotAng
+    /// (DiskParams2.w).
+    pub gr: Vec4,
     pub disk1: Vec4,
     pub disk2: Vec4,
     pub disk3: Vec4,
@@ -164,33 +180,48 @@ struct EnvCapture {
     restart: bool,
 }
 
-/// Catalog star indices of the holes the lens draws this frame (their disks are on screen as
-/// volumes, so the star field leaves out their points).
+/// Catalog star indices of the black holes and neutron stars the lens draws this frame (their
+/// disks are on screen as volumes, so the star field leaves out their points; their light is bent
+/// strongly, so the lens flares leave out the neutron stars). White dwarfs bend light by Rg / R,
+/// too little to matter, and are not listed.
 #[derive(Resource, Default)]
 pub struct LensedHoles(pub Vec<u32>);
+
+/// Catalog star indices of the neutron stars and white dwarfs whose surface the lens draws this
+/// frame.
+#[derive(Resource, Default)]
+struct LensedStars(Vec<u32>);
+
+/// The systems that fill [`LensedHoles`] each frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LensSet;
 
 /// Marks an environment-map camera (face index).
 #[derive(Component)]
 struct EnvFaceCam(usize);
 
-/// Render layer of world-space geometry that belongs to the main view only (the lens flare
-/// quads): the main camera sees layers 0 and 1, the environment cameras layer 0.
-pub const MAIN_VIEW_ONLY: RenderLayers = RenderLayers::layer(1);
-
-fn main_camera_layers(mut commands: Commands, cams: Query<Entity, (With<MainCamera>, Without<RenderLayers>)>) {
-    for e in &cams {
-        commands.entity(e).insert(RenderLayers::from_layers(&[0, 1]));
-    }
-}
-
-/// Static, camera independent description of one catalog black hole.
+/// Static, camera independent description of one catalog black hole, neutron star or white
+/// dwarf.
 struct BhInfo {
     star: u32,
+    kind: params::Remnant,
     /// Catalog position (parsecs); only meaningful if `has_pos`.
     pos_pc: DVec3,
     has_pos: bool,
-    rs_km: f64,
+    /// SE's gravRadius (FUN_140270900): the Schwarzschild radius, the star's radius for a white
+    /// dwarf (km). Every length the shader sees is in these units.
+    unit_km: f64,
+    /// KerrM = starRadiusScale: 1, Rg / R for a white dwarf.
+    kerr_m: f64,
+    /// `KerrSpin`, `KerrCharge` (body +0x122c, +0x1230).
     spin: f64,
+    charge: f64,
+    /// Surface radius (km; 0 for a hole), `Teff` (K) and `RotationPeriod` (h; 0 if none).
+    radius_km: f64,
+    teff: f64,
+    rot_period_h: f64,
+    /// SE's render sphere, km (FUN_1404d6710).
+    sphere_km: f64,
     disk: Option<DiskParams>,
     /// Disk normal used when the catalog gives no rotation model.
     default_axis: DVec3,
@@ -210,12 +241,24 @@ impl Plugin for BlackHolesPlugin {
             .init_resource::<BlackHoleSettings>()
             .init_resource::<EnvCapture>()
             .init_resource::<LensedHoles>()
+            .init_resource::<LensedStars>()
             .add_systems(Startup, (load_settings, init_images).chain())
             .add_systems(
                 PostUpdate,
-                (update_lens, update_env_cams).chain().after(UniverseSet::Camera).before(UniverseSet::FloatingOrigin),
+                (update_lens, update_env_cams)
+                    .chain()
+                    .in_set(LensSet)
+                    .after(UniverseSet::Camera)
+                    .before(UniverseSet::FloatingOrigin),
             )
-            .add_systems(Update, main_camera_layers)
+            // After the systems that show star spheres and coronae (they run before the floating
+            // origin), before visibility is propagated.
+            .add_systems(
+                PostUpdate,
+                hide_lensed_stars
+                    .after(UniverseSet::FloatingOrigin)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            )
             .add_plugins((
                 ExtractComponentPlugin::<BlackHoleLens>::default(),
                 UniformComponentPlugin::<BlackHoleLens>::default(),
@@ -337,29 +380,85 @@ fn init_images(mut commands: Commands, mut images: ResMut<Assets<Image>>, settin
 // ---------------------------------------------------------------------------
 // Catalog holes
 
-/// Collect every catalog black hole and derive its disk parameters.
-fn build_list(cat: &se_core::catalog::Catalog) -> Vec<BhInfo> {
+/// SE's render sphere (FUN_1404d6710), km: `DistortionRadiusKm` / `DistortionRadiusAU` when the
+/// catalog gives one; otherwise `BlackHoleWarpRadius` Rg, at least the star's radius (3 R for a
+/// white dwarf), widened to the disk's outer radius and the jet length.
+pub fn render_sphere_km(kind: params::Remnant, radius_km: f64, rg_km: f64, warp_radius: f64, distortion_km: Option<f64>, disk: Option<&DiskParams>) -> f64 {
+    if let Some(d) = distortion_km.filter(|d| *d > 0.0) {
+        return d;
+    }
+    let base = match kind {
+        params::Remnant::WhiteDwarf => (3.0 * radius_km).max(rg_km * warp_radius),
+        _ => radius_km.max(rg_km * warp_radius),
+    };
+    disk.map_or(base, |d| base.max(d.outer_km).max(d.jet_length_km))
+}
+
+/// SE's StarParams.z, the surface's equator speed in c (FUN_140270900): `R 2 pi / (RotationPeriod
+/// x 6378.14 x 86400) / 299792448` with R in km, a literal port: it comes out near 1e-9, so SE's
+/// Doppler shift of the rotating surface is negligible.
+pub fn equator_speed(radius_km: f64, period_h: f64) -> f64 {
+    if !(period_h > 0.0) {
+        return 0.0;
+    }
+    radius_km * std::f64::consts::TAU / (period_h * 6378.140_136_718_75 * 86_400.0) / 299_792_448.0
+}
+
+/// SE's starTime (DiskParams1.z): the surface spots loop over `1000 sqrt(R / km)` seconds, in
+/// 256 steps.
+pub fn star_time(sim_s: f64, radius_km: f64) -> f64 {
+    (sim_s / (1000.0 * radius_km.max(1e-6).sqrt())).rem_euclid(1.0) * 256.0
+}
+
+/// Collect every catalog black hole, neutron star and white dwarf and derive its disk parameters.
+fn build_list(cat: &se_core::catalog::Catalog, warp_radius: f64) -> Vec<BhInfo> {
     let mut out = Vec::new();
     for (i, s) in cat.stars.iter().enumerate() {
-        // A hole whose parent never resolved has no real position (it would sit on the Sun).
-        if s.barycenter || !s.has_position || s.class.kind != StarKind::BlackHole {
+        // A star whose parent never resolved has no real position (it would sit on the Sun).
+        let Some(kind) = params::Remnant::of(s.class.kind) else { continue };
+        if s.barycenter || !s.has_position {
             continue;
         }
+        let hole = kind == params::Remnant::BlackHole;
         let mass_sun = if s.mass_kg > 0.0 { s.mass_kg / SOLAR_MASS_KG } else { DEFAULT_MASS_SUN };
         let name = &s.names[0];
-        let rs_km = RS_PER_MSUN_KM * mass_sun;
+        let rg_km = RS_PER_MSUN_KM * mass_sun;
+        let radius_km = if hole { 0.0 } else { s.radius_km.max(1e-3) };
         let spin = s
             .block
             .f64("KerrSpin")
-            .map(f64::abs)
-            .unwrap_or_else(|| params::default_spin(mass_sun, &mut params::SeRng::from_name(&format!("{name}/spin"))));
-        let disk = params::of_star(&s.block, name, mass_sun);
+            .unwrap_or_else(|| params::default_spin(kind, mass_sun, &mut params::SeRng::from_name(&format!("{name}/spin"))));
+        let charge = s.block.f64("KerrCharge").unwrap_or(0.0);
+        let disk = params::of_star(&s.block, name, kind, mass_sun, radius_km);
+        let distortion = [s.block.f64("DistortionRadiusKm"), s.block.f64("DistortionRadiusAU").map(|v| v * 149_597_870.7)]
+            .into_iter()
+            .rev()
+            .find_map(|v| v);
+        let r_sphere = if hole { rg_km } else { radius_km };
+        let sphere_km = render_sphere_km(kind, r_sphere, rg_km, warp_radius, distortion, disk.as_ref());
+        // FUN_140270900: a white dwarf's metric is scaled so that its radius is the unit.
+        let (unit_km, kerr_m) = if kind == params::Remnant::WhiteDwarf { (radius_km, rg_km / radius_km) } else { (rg_km, 1.0) };
         let seed = se_core::proc_surface::name_seed(name);
         // Deterministic tilt for holes without a rotation model: 30-70 degrees off the pole.
         let tilt = (30.0 + 40.0 * hash_unit(seed, 1)).to_radians();
         let az = std::f64::consts::TAU * hash_unit(seed, 2);
         let default_axis = DVec3::new(tilt.sin() * az.cos(), tilt.cos(), tilt.sin() * az.sin());
-        out.push(BhInfo { star: i as u32, pos_pc: s.pos_pc, has_pos: s.has_position, rs_km, spin, disk, default_axis });
+        out.push(BhInfo {
+            star: i as u32,
+            kind,
+            pos_pc: s.pos_pc,
+            has_pos: s.has_position,
+            unit_km,
+            kerr_m,
+            spin,
+            charge,
+            radius_km,
+            teff: s.teff,
+            rot_period_h: s.block.f64("RotationPeriod").unwrap_or(0.0),
+            sphere_km,
+            disk,
+            default_axis,
+        });
     }
     out
 }
@@ -376,7 +475,7 @@ pub fn disk_light(s: &se_core::catalog::StarRecord) -> Option<([f32; 3], f32)> {
     }
     let lum = s.block.sub("AccretionDisk").and_then(|b| params::DiskKeys::parse(b).luminosity)?;
     let mass_sun = if s.mass_kg > 0.0 { s.mass_kg / SOLAR_MASS_KG } else { DEFAULT_MASS_SUN };
-    let dk = params::of_star(&s.block, &s.names[0], mass_sun)?;
+    let dk = params::of_star(&s.block, &s.names[0], params::Remnant::BlackHole, mass_sun, 0.0)?;
     if !(lum > 0.0) {
         return None;
     }
@@ -389,21 +488,35 @@ pub fn disk_light(s: &se_core::catalog::StarRecord) -> Option<([f32; 3], f32)> {
 /// 808.86..1e5 K), times `1 / (1 - (1 - d)^(1/cos(pi/4)))` for the disk's opacity
 /// `d = clamp(diskDensity x 1e-6)` and `Brightness^-0.8`.
 pub fn volume_brightness(hdr_bright: f64, temp: f64, disk_density: f64, brightness: f64) -> f64 {
-    let t = temp.clamp(808.859_985, 1.0e5);
-    let k = 10f64.powf(6984.509_77 / t + 1.226_510_05 - 0.803_771_019 * t.ln());
     let d = (disk_density * 1.0e-6).clamp(1.0e-12, 1.0);
     let opacity = 1.0 / (1.0 - (1.0 - d).powf(1.0 / std::f64::consts::FRAC_PI_4.cos()));
-    hdr_bright * k * opacity * brightness.max(1e-30).powf(-0.8)
+    hdr_bright * temperature_exposure(temp) * opacity * brightness.max(1e-30).powf(-0.8)
 }
 
-/// The disk and jet uniforms of a hole (FUN_140270900's DiskParams1-5, JetParams1-3,
-/// LightColor), in Schwarzschild radii.
-fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, rs_km: f64, set: &BlackHoleSettings, sim_s: f64) {
-    let rs = rs_km;
-    // SE's render sphere (FUN_1404d6710): BlackHoleWarpRadius Rg, the disk and the jets.
-    let sphere_km = (rs * set.warp_radius).max(dk.outer_km).max(dk.jet_length_km);
-    let grav_s = rs / sphere_km;
-    let temp = dk.temperature.min(80_000.0);
+/// The temperature factor of SE's volumBright, `10^(6984.51/T + 1.22651 - 0.803771 ln T)` (T
+/// clamped to 808.86..1e5 K); alone (times hdrAccretionDiskBright) when no disk is drawn.
+pub fn temperature_exposure(temp: f64) -> f64 {
+    let t = temp.clamp(808.859_985, 1.0e5);
+    10f64.powf(6984.509_77 / t + 1.226_510_05 - 0.803_771_019 * t.ln())
+}
+
+/// SE's StarParams.x: `Teff` (body +0x1248), raised to the disk's temperature when the disk is
+/// hotter (FUN_140507690, not for holes), at most 60000 K.
+fn star_temperature(info: &BhInfo, disk: Option<&DiskParams>) -> f64 {
+    let mut t = info.teff.max(0.0);
+    if info.kind != params::Remnant::BlackHole {
+        if let Some(d) = disk {
+            t = t.max(d.temperature);
+        }
+    }
+    t.min(STAR_TEMP_MAX)
+}
+
+/// The disk and jet uniforms (FUN_140270900's DiskParams1-5, JetParams1-3, LightColor), in
+/// units of `info.unit_km`.
+fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, info: &BhInfo, set: &BlackHoleSettings, sim_s: f64) {
+    let rs = info.unit_km;
+    let temp = dk.temperature.min(DISK_TEMP_MAX);
     let thick_in = dk.inner_thick_km / rs;
     let thick_out = dk.outer_thick_km / rs;
     let disk_density = dk.density * rs * DENSITY_SCALE;
@@ -413,8 +526,13 @@ fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, rs_km: f64, set: &BlackHol
     let (jet_len, jet_r0, jet_r1) = (dk.jet_length_km / rs, dk.jet_start_radius_km / rs, dk.jet_end_radius_km / rs);
     let jets_on = jet_len > 0.0 && jet_density > 0.0;
     let flags = if disk_on { 1.0 } else { 0.0 } + if jets_on { 2.0 } else { 0.0 };
-    // Disk animation loop: 135 orbits of 6 pi Rg / (c / sqrt 2) (FUN_1404e5340), 256 steps.
-    let period = 6.0 * std::f64::consts::PI * rs / (std::f64::consts::FRAC_1_SQRT_2 * 299_792.458);
+    // Disk animation loop: 135 orbits of 6 pi Rg / (c / sqrt 2) (FUN_1404e5340), 256 steps; for a
+    // white dwarf the Kepler period at the inner edge around one solar mass.
+    let period = if info.kind == params::Remnant::WhiteDwarf {
+        (dk.inner_km / 149_597_870.7).powi(3).sqrt() * 31_556_925.203
+    } else {
+        6.0 * std::f64::consts::PI * rs / (std::f64::consts::FRAC_1_SQRT_2 * 299_792.458)
+    };
     let loop_s = period * 135.0;
     let anim = (sim_s / loop_s).rem_euclid(1.0);
     let step = set.warp_step() * thick_in.max(thick_out).min(1.0);
@@ -427,8 +545,9 @@ fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, rs_km: f64, set: &BlackHol
 
     u.axis_in.w = if disk_on || jets_on { inner as f32 } else { 0.0 };
     u.xref_out.w = outer as f32;
-    u.params.y = grav_s as f32;
-    u.params.w = volume_brightness(set.disk_bright, temp, disk_density, dk.brightness) as f32;
+    // volumBright's temperature is the hotter of the disk and the star's surface.
+    let t_exp = temp.max(star_temperature(info, Some(dk)));
+    u.params.w = volume_brightness(set.disk_bright, t_exp, disk_density, dk.brightness) as f32;
     u.disk1 = Vec4::new(temp as f32, dk.twist as f32, flags, anim as f32);
     u.disk2 = Vec4::new(0.0, dk.brightness as f32, if disk_on { disk_density as f32 } else { 0.0 }, step as f32);
     u.disk3 = Vec4::new(thick_in as f32, thick_out as f32, dk.detail_r as f32, dk.detail_v as f32);
@@ -453,11 +572,13 @@ fn update_lens(
     mut list: ResMut<BhList>,
     mut env: ResMut<EnvCapture>,
     mut lensed: ResMut<LensedHoles>,
+    mut surfaces: ResMut<LensedStars>,
     mut frame: Local<u32>,
 ) {
     env.want = false;
     env.restart = false;
     lensed.0.clear();
+    surfaces.0.clear();
     let Some((cam_e, has_lens)) = cams.iter().next() else { return };
     if std::env::var_os("SE_NO_BLACKHOLES").is_some() {
         return;
@@ -465,7 +586,7 @@ fn update_lens(
     let cat = &data.catalog;
     if list.n_stars != cat.stars.len() {
         list.n_stars = cat.stars.len();
-        list.list = build_list(cat);
+        list.list = build_list(cat, settings.warp_radius);
     }
     let (w, h) = windows.iter().next().map(|w| (w.width() as f64, w.height() as f64)).unwrap_or((1280.0, 720.0));
     let tan_y = (cam.fov_deg.to_radians() as f64 * 0.5).tan();
@@ -476,8 +597,15 @@ fn update_lens(
     let eph = Ephemeris::new(cat);
     let ecl_north = se_core::coords::ecliptic_to_universe(DVec3::Z);
     let sim_s = (sim.jd - 2_451_545.0) * 86_400.0;
+    // Test override of every lensed object's KerrSpin and KerrCharge: SE_BH_KERR="a,q".
+    let kerr_test = std::env::var("SE_BH_KERR").ok().map(|v| {
+        let mut it = v.split(',').map(|x| x.trim().parse::<f64>().unwrap_or(0.0));
+        (it.next().unwrap_or(0.0), it.next().unwrap_or(0.0))
+    });
+    // Test view: SE_BH_EDGE=1 turns every spin axis to the screen's up direction.
+    let edge_test = std::env::var_os("SE_BH_EDGE").is_some();
 
-    let mut found: Vec<(f64, HoleUniform)> = Vec::new();
+    let mut found: Vec<(f64, HoleUniform, u32, params::Remnant)> = Vec::new();
     let mut nearest_m = f64::INFINITY;
     let mut want_env = false;
     for info in &list.list {
@@ -487,48 +615,68 @@ fn update_lens(
         let obj = ObjectRef::Star(info.star);
         let delta = eph.position(obj, sim.jd).delta_m(cam.pos);
         let dist = delta.length();
-        let d_rs = dist / (info.rs_km * 1e3);
-        if d_rs < 1.5 || dist <= 0.0 {
+        let d_rs = dist / (info.unit_km * 1e3);
+        // Nothing to trace from inside the horizon or the star.
+        let star_r = info.radius_km / info.unit_km;
+        let floor = if info.kind == params::Remnant::BlackHole { 1.5 } else { star_r * 1.001 };
+        if d_rs < floor || dist <= 0.0 {
+            continue;
+        }
+        // SE draws its GR impostor over the render sphere; outside it nothing changes.
+        let sphere = info.sphere_km / info.unit_km;
+        let region = if d_rs * 0.999 <= sphere * REGION_PER_SPHERE {
+            std::f64::consts::PI
+        } else {
+            (REGION_PER_SPHERE * (sphere / d_rs).asin()).min(std::f64::consts::PI)
+        };
+        if region < MIN_REGION_PX * px_ang {
             continue;
         }
         let mut u = HoleUniform::default();
         if let Some(dk) = &info.disk {
-            disk_uniform(&mut u, dk, info.rs_km, &settings, sim_s);
-        }
-        let bound = u.disk5.w as f64;
-        // Angular reach of the effect: several Einstein radii, the shadow, the disk and jets.
-        let theta_e = (2.0 / d_rs).sqrt();
-        let mut region = (16.0 * theta_e).max((12.0 / d_rs).min(1.5));
-        if bound > 0.0 {
-            let ang = if d_rs <= bound * 1.1 { std::f64::consts::PI } else { 1.3 * (bound / d_rs).asin() };
-            region = region.max(ang);
-        }
-        if d_rs < 8.0 {
-            region = std::f64::consts::PI;
-        }
-        region = region.min(std::f64::consts::PI);
-        if region < MIN_REGION_PX * px_ang {
-            continue;
+            disk_uniform(&mut u, dk, info, &settings, sim_s);
         }
         let dir = (inv_rot * (delta / dist)).as_vec3();
         let orient = eph.orientation(obj, sim.jd);
         let pole = (orient * DVec3::Y).normalize();
-        let axis_w = if pole.dot(ecl_north) > 0.999_999 { info.default_axis } else { pole };
-        let axis = (inv_rot * axis_w.normalize()).normalize();
-        let helper = if axis.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
-        let xref = axis.cross(helper).normalize();
+        let mut axis_w = if pole.dot(ecl_north) > 0.999_999 { info.default_axis } else { pole }.normalize();
+        if edge_test {
+            // Test view: the spin axis along the screen's up direction (seen edge-on).
+            let (up, d) = (cam.rot * DVec3::Y, delta / dist);
+            axis_w = (up - d * up.dot(d)).normalize();
+        }
+        // The disk frame's x axis is fixed in the world (not turning with the camera).
+        let helper = if axis_w.y.abs() < 0.9 { DVec3::Y } else { DVec3::X };
+        let xref_w = axis_w.cross(helper).normalize();
+        let axis = (inv_rot * axis_w).normalize();
+        let xref = (inv_rot * xref_w).normalize();
+        // starRotAng: the prime meridian's angle about the axis in the disk frame (x, z).
+        let meridian = orient * DVec3::X;
+        let rot_ang = meridian.dot(axis_w.cross(xref_w)).atan2(meridian.dot(xref_w));
+        let (spin, charge) = kerr_test.unwrap_or((info.spin, info.charge));
         u.dir_d = dir.extend(d_rs as f32);
         u.axis_in = axis.as_vec3().extend(u.axis_in.w);
         u.xref_out = xref.as_vec3().extend(u.xref_out.w);
         u.params.x = region as f32;
-        u.params.z = info.spin as f32;
+        u.params.y = (1.0 / sphere) as f32;
+        u.params.z = spin as f32;
+        u.metric = Vec4::new(spin as f32, charge as f32, (spin * spin) as f32, (charge * charge) as f32);
+        let t_star = star_temperature(info, info.disk.as_ref());
+        if info.disk.is_none() {
+            // No disk: diskTemp is the star's temperature, volumBright its exposure alone.
+            u.disk1.x = t_star as f32;
+            u.params.w = (settings.disk_bright * temperature_exposure(t_star)) as f32;
+        }
+        if info.kind != params::Remnant::BlackHole {
+            u.star = Vec4::new(t_star as f32, star_r as f32, equator_speed(info.radius_km, info.rot_period_h) as f32, star_time(sim_s, info.radius_km) as f32);
+        }
+        u.gr = Vec4::new(info.kerr_m as f32, sphere as f32, settings.warp_step() as f32, rot_ang as f32);
         // blendFactor: frame vs environment map, smoothstep(3, 10, distance in Rg).
         let s = ((d_rs - 3.0) / 7.0).clamp(0.0, 1.0);
         u.light.w = (s * s * (3.0 - 2.0 * s)) as f32;
         nearest_m = nearest_m.min(dist);
         want_env |= reaches_env(dir.as_dvec3(), region, d_rs, tan_x, tan_y, px_ang);
-        found.push((region / px_ang, u));
-        lensed.0.push(info.star);
+        found.push((region / px_ang, u, info.star, info.kind));
     }
 
     if found.is_empty() {
@@ -538,6 +686,15 @@ fn update_lens(
         return;
     }
     found.sort_by(|a, b| b.0.total_cmp(&a.0));
+    found.truncate(MAX_HOLES);
+    for &(_, _, star, kind) in &found {
+        if kind != params::Remnant::WhiteDwarf {
+            lensed.0.push(star);
+        }
+        if kind != params::Remnant::BlackHole {
+            surfaces.0.push(star);
+        }
+    }
     *frame = frame.wrapping_add(1);
     env.want = want_env;
     env.hole_dist_m = nearest_m;
@@ -557,13 +714,59 @@ fn update_lens(
         sky2: rot.z_axis.as_vec3().extend(0.0),
         holes: [HoleUniform::default(); MAX_HOLES],
     };
-    for (slot, (_, hole)) in lens.holes.iter_mut().zip(found.iter()) {
+    for (slot, (_, hole, _, _)) in lens.holes.iter_mut().zip(found.iter()) {
         *slot = *hole;
     }
     if *frame % 120 == 1 && std::env::var_os("SE_BH_DEBUG").is_some() {
         info!("black hole lens: {:?}", lens.holes[0]);
     }
     commands.entity(cam_e).insert(lens);
+}
+
+/// The lens draws a lensed neutron star's or white dwarf's surface itself (SE draws these stars
+/// only with its GR shader, FUN_1404d4100, and their glow after it): their ordinary sphere and
+/// corona are hidden meanwhile. A neutron star bends light strongly, so anything of it left in
+/// the frame would be bent into a ring around it: its point sprite's glare is hidden too once the
+/// surface is half a pixel wide (the lensed surface, and the bloom of it, then show the star; a
+/// smaller star keeps its sprite, whose ghost ring falls outside SE's integration sphere or into
+/// the glare), and the lens flares leave it out (lensflare.rs reads `LensedHoles`).
+#[allow(clippy::type_complexity)]
+fn hide_lensed_stars(
+    surfaces: Res<LensedStars>,
+    lensed: Res<LensedHoles>,
+    bodies: Query<&crate::system::SystemBody>,
+    mut spheres: Query<(&crate::system::SystemBody, &mut Visibility), With<crate::system::StarSphere>>,
+    mut coronas: Query<
+        (&crate::universe::UPosition, &mut Visibility),
+        (With<MeshMaterial3d<crate::corona::CoronaMaterial>>, Without<crate::system::StarSphere>, Without<crate::system::BodySprite>),
+    >,
+    mut sprites: Query<(&crate::system::BodySprite, &mut Visibility), Without<crate::system::StarSphere>>,
+) {
+    if surfaces.0.is_empty() {
+        return;
+    }
+    let mut hidden = Vec::new();
+    for (b, mut vis) in &mut spheres {
+        if let ObjectRef::Star(i) = b.obj
+            && surfaces.0.contains(&i)
+        {
+            *vis = Visibility::Hidden;
+            hidden.push((b.pos, lensed.0.contains(&i)));
+        }
+    }
+    if hidden.is_empty() {
+        return;
+    }
+    for (p, mut vis) in &mut coronas {
+        if hidden.iter().any(|h| h.0 == p.0) {
+            *vis = Visibility::Hidden;
+        }
+    }
+    for (s, mut vis) in &mut sprites {
+        if bodies.get(s.owner).is_ok_and(|b| b.px_radius >= 0.5 && hidden.contains(&(b.pos, true))) {
+            *vis = Visibility::Hidden;
+        }
+    }
 }
 
 /// Some ray the lens bends can take its sky from the environment map: near the hole (the
@@ -809,6 +1012,36 @@ mod tests {
         // A thin disk is brightened by about 1 / (sqrt2 d).
         let thin = volume_brightness(1e4, 6000.0, 1000.0, 1.0) / k;
         assert!((thin * 1.0e-3 * std::f64::consts::SQRT_2 - 1.0).abs() < 0.01, "{thin}");
+        assert!((temperature_exposure(6000.0) * 1e4 / k - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn render_sphere_follows_se() {
+        use params::Remnant;
+        // FUN_1404d6710: 100 Rg (BlackHoleWarpRadius), at least R; 3 R for a white dwarf.
+        let rg = RS_PER_MSUN_KM * 1.4;
+        assert!((render_sphere_km(Remnant::NeutronStar, 12.0, rg, 100.0, None, None) - 100.0 * rg).abs() < 1e-9);
+        assert!((render_sphere_km(Remnant::WhiteDwarf, 7000.0, 2.95, 100.0, None, None) - 21_000.0).abs() < 1e-9);
+        assert!((render_sphere_km(Remnant::BlackHole, 29.5, 29.5, 100.0, None, None) - 2950.0).abs() < 1e-9);
+        // A catalog DistortionRadius wins, even over the disk.
+        assert_eq!(render_sphere_km(Remnant::BlackHole, 29.5, 29.5, 100.0, Some(5.0e7), None), 5.0e7);
+        // The disk and the jets widen it.
+        let keys = params::DiskKeys { temperature: Some(6000.0), outer_km: Some(1.0e5), ..Default::default() };
+        let d = params::resolve(Some(&keys), false, Remnant::BlackHole, 10.0, 29.5, 29.5, &mut params::SeRng::from_name("x")).unwrap();
+        assert!((render_sphere_km(Remnant::BlackHole, 29.5, 29.5, 100.0, None, Some(&d)) - 1.0e5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn star_surface_params() {
+        // SE's equator speed formula comes out tiny even for a millisecond pulsar.
+        let v = equator_speed(10.0, 9.306_349_528e-6);
+        assert!(v > 0.0 && v < 1e-6, "{v}");
+        assert_eq!(equator_speed(10.0, 0.0), 0.0);
+        // starTime loops over 1000 sqrt(R) s in 256 steps.
+        let r = 10.0_f64;
+        let period = 1000.0 * r.sqrt();
+        assert!((star_time(0.25 * period, r) - 64.0).abs() < 1e-6);
+        assert!((star_time(1.25 * period, r) - star_time(0.25 * period, r)).abs() < 1e-6);
     }
 
 }

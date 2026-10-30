@@ -1,18 +1,19 @@
-// Black-hole gravitational lensing + volumetric accretion disk and jets, as an HDR
-// post-process (SE's einstein.glsl + gr_geodesic.glh + gr_intersection.glh, single-pass
-// "COMPUTE + RENDER" mode).
+// Gravitational lensing by black holes, neutron stars and white dwarfs, with the volumetric
+// accretion disk and jets, as an HDR post-process (SE's einstein.glsl + gr_geodesic.glh +
+// gr_intersection.glh, KERR_NEWMAN_METRIC, single-pass "COMPUTE + RENDER" mode).
 //
-// For every pixel near a black hole the (reversed) light ray is traced through the
-// Schwarzschild geometry in the plane spanned by the observer, the hole and the ray,
-// integrating   u'' + u = 3/2 u^2   (u = r_s / r, derivative w.r.t. the polar angle phi in
-// that plane). Like SE's EvaluateIntersections, each step's straight chord is ray-marched
-// through the disk and jet volume (accretion_disk.wesl). The ray then either falls through
-// the horizon (black shadow) or escapes, and its direction at infinity is looked up in the
-// rendered frame or, off screen and close to the hole, in the environment map (Skybox()).
-// The pass runs before bloom and tone mapping.
+// For every pixel near such an object the (reversed) light ray is traced like SE's
+// TraceGeodesic: straight up to SE's integration sphere, inside it a Hamiltonian geodesic of
+// the Kerr-Newman metric in Kerr-Schild coordinates (spin KerrSpin, charge KerrCharge; the
+// flattened, shifted shadow and frame dragging of a spinning hole), then straight again. Like
+// SE's EvaluateIntersections, each step's straight chord is ray-marched through the disk and jet
+// volume (accretion_disk.wesl) and tested against the star's surface (STAR). The ray then
+// either falls through the horizon (black shadow), hits the star, or escapes, and its direction
+// is looked up in the rendered frame or, off screen and close to the hole, in the environment
+// map (Skybox()). The pass runs before bloom and tone mapping.
 
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
-import super::accretion_disk::{Hole, VolRay, PI, VOLUMETRIC_STOP, volume_step, sd_bounding, transmission, linearstep, sstep};
+import super::accretion_disk::{Hole, VolRay, VOLUMETRIC_STOP, SPEED_OF_LIGHT, volume_step, sd_bounding, star_surface, transmission, linearstep, sstep};
 
 struct Lens {
     // x,y: tan(fov/2) in x and y, z: frame counter (noise animation), w: hole count.
@@ -37,8 +38,10 @@ struct Lens {
 @group(0) @binding(10) var env_pz: texture_2d<f32>;
 @group(0) @binding(11) var env_nz: texture_2d<f32>;
 
-const MAX_STEPS: i32 = 220;
 const MAX_MARCH: i32 = 512;
+// gr_geodesic.glh: max_scale, the numerical derivative eps.
+const MAX_SCALE: f32 = 100.0;
+const GEO_EPS: f32 = 0.02;
 
 struct Trace {
     // Disk/jet emission accumulated along the ray (before volumBright).
@@ -47,11 +50,15 @@ struct Trace {
     sigma: f32,
     // Direction (view space) at which the ray leaves to infinity.
     dir: vec3<f32>,
+    // Fell through the horizon (SE: passParam 1).
     captured: bool,
+    // Hit the star's surface; `surface` is its emission (before volumBright).
+    hit: bool,
+    surface: vec3<f32>,
 };
 
-fn accel(u: f32) -> f32 {
-    return 1.5 * u * u - u;
+fn empty_trace(d: vec3<f32>) -> Trace {
+    return Trace(vec3<f32>(0.0), 0.0, d, false, false, vec3<f32>(0.0));
 }
 
 // Disk frame of SE's shader: x = reference axis, y = spin axis, z = y x x (the gas then
@@ -62,30 +69,154 @@ fn to_disk(h: Hole, v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(dot(v, x), dot(v, n), dot(v, cross(n, x)));
 }
 
-// Ray-march one straight chord (positions relative to the hole, view space, r_s) through the
-// disk and jet volume. `s0`: path length at `a`; `next`: path length of the next sample of
-// the marching lattice (kept across chords like SE's rayProp.dist).
-fn march_chord(h: Hole, a: vec3<f32>, b: vec3<f32>, s0: f32, next: ptr<function, f32>, vr: ptr<function, VolRay>) {
-    let seg = b - a;
-    let len = length(seg);
+fn from_disk(h: Hole, v: vec3<f32>) -> vec3<f32> {
+    let n = h.axis_in.xyz;
+    let x = h.xref_out.xyz;
+    return v.x * x + v.y * n + v.z * cross(n, x);
+}
+
+// SphereIntersection (entry, exit distances; 1e6 for a miss), with the closest-approach form
+// of the discriminant so that a camera far outside keeps its precision.
+fn sphere_hit(ro: vec3<f32>, rd: vec3<f32>, r: f32) -> vec2<f32> {
+    let b = dot(ro, rd);
+    let perp = ro - b * rd;
+    let h2 = r * r - dot(perp, perp);
+    if h2 < 0.0 {
+        return vec2<f32>(1.0e6);
+    }
+    let s = sqrt(h2);
+    return vec2<f32>(-s - b, s - b);
+}
+
+// ---------------------------------------------------------------------------
+// Kerr-Newman metric in Kerr-Schild coordinates (gr_geodesic.glh): g = eta + f l l with
+// l = (1, k), coordinates q = (t, x, y, z) = (t, X, Z, Y) of the disk frame in units of
+// M = gravRadius / 2, mass KerrM, spin a = KerrA, charge^2 = KerrQ2.
+
+fn kerr_r2(h: Hole, p: vec3<f32>) -> f32 {
+    let a2 = h.metric.z;
+    let rho = dot(p, p) - a2;
+    return abs(0.5 * (rho + sqrt(rho * rho + 4.0 * a2 * p.z * p.z)));
+}
+
+fn kerr_k(h: Hole, p: vec3<f32>) -> vec4<f32> {
+    let a = h.metric.x;
+    let a2 = h.metric.z;
+    let r2 = kerr_r2(h, p);
+    let r = sqrt(r2);
+    let inv = 1.0 / (r2 + a2 + 1.0e-5);
+    let k = vec3<f32>((r * p.x - a * p.y) * inv, (r * p.y + a * p.x) * inv, p.z / (r + 1.0e-5));
+    let f = r2 * (2.0 * h.gr.x * r - h.metric.w) / (r2 * r2 + a2 * p.z * p.z + 1.0e-5);
+    return vec4<f32>(k, f);
+}
+
+// L(qt, G(q)) = qt . G qt.
+fn kn_lagrangian(h: Hole, v: vec4<f32>, pos: vec3<f32>) -> f32 {
+    let k = kerr_k(h, pos);
+    let l = v.x + dot(k.xyz, v.yzw);
+    return -v.x * v.x + dot(v.yzw, v.yzw) + k.w * l * l;
+}
+
+// G qt (ToMomentum before normalising).
+fn kn_lower(h: Hole, v: vec4<f32>, pos: vec3<f32>) -> vec4<f32> {
+    let k = kerr_k(h, pos);
+    let l = v.x + dot(k.xyz, v.yzw);
+    return vec4<f32>(-v.x, v.yzw) + k.w * l * vec4<f32>(1.0, k.xyz);
+}
+
+// Ginv p, SE's inverse: eta + f / |k|^2 (k.p - p0) (1, -k).
+fn kn_raise(h: Hole, p: vec4<f32>, pos: vec3<f32>) -> vec4<f32> {
+    let k = kerr_k(h, pos);
+    let s = k.w / dot(k.xyz, k.xyz) * (dot(k.xyz, p.yzw) - p.x);
+    return vec4<f32>(-p.x, p.yzw) + s * vec4<f32>(1.0, -k.xyz);
+}
+
+// GeodesicRay: position q, its derivative qt, momentum p.
+struct Geo {
+    q: vec4<f32>,
+    qt: vec4<f32>,
+    p: vec4<f32>,
+};
+
+// GetTimeStep: longer steps far out, shorter near the ring singularity; 0 (captured) inside
+// r = 1.1 unless the spin makes the hole naked.
+fn kn_time_step(h: Hole, g: Geo) -> f32 {
+    let r = sqrt(kerr_r2(h, g.q.yzw));
+    let dt1 = clamp(inverseSqrt(dot(g.p, g.p)), 0.1, 4.0);
+    var dt = (h.gr.z * 0.8333 + 0.4) * dt1 * mix(0.06, 20.0, max(r - 1.0, 0.0) / 120.0);
+    if r < 1.0 {
+        dt = dt * (0.05 + 0.95 * r * r * r);
+    }
+    if r < 1.1 && h.metric.x < 1.0 {
+        return 0.0;
+    }
+    return dt;
+}
+
+// One step of TraceGeodesic: p += HamiltonianGradient dt (forward differences of the
+// Lagrangian at fixed qt = Ginv p), q += 2 qt dt.
+fn kn_advance(h: Hole, g: ptr<function, Geo>, dt: f32) {
+    let pos = (*g).q.yzw;
+    let qt = kn_raise(h, (*g).p, pos);
+    let h0 = dot((*g).p, qt);
+    let delta = GEO_EPS * max(length(pos), 1.0e-4);
+    let lx = kn_lagrangian(h, qt, pos + vec3<f32>(delta, 0.0, 0.0));
+    let ly = kn_lagrangian(h, qt, pos + vec3<f32>(0.0, delta, 0.0));
+    let lz = kn_lagrangian(h, qt, pos + vec3<f32>(0.0, 0.0, delta));
+    (*g).p = (*g).p + vec4<f32>(0.0, (vec3<f32>(lx, ly, lz) - h0) / delta) * dt;
+    (*g).q = (*g).q + 2.0 * qt * dt;
+    (*g).qt = qt;
+}
+
+// SE's integration sphere (M units) and step amplification: max_distance = clamp(2 |ro|,
+// 100, 300), dt_amplify = 1 + 0.1 (max_distance / 100 - 1), at most invGravRadius.
+fn kn_reach(h: Hole, ro: vec3<f32>) -> vec2<f32> {
+    let reach = clamp(2.0 * length(ro), MAX_SCALE, 3.0 * MAX_SCALE);
+    return vec2<f32>(min(reach, h.gr.y), 1.0 + 0.1 * (reach / MAX_SCALE - 1.0));
+}
+
+fn kn_start(h: Hole, ro: vec3<f32>, rd: vec3<f32>) -> Geo {
+    var g: Geo;
+    g.q = vec4<f32>(0.0, ro.x, ro.z, ro.y);
+    g.qt = 2.0 * vec4<f32>(1.0, rd.x, rd.z, rd.y);
+    g.p = normalize(kn_lower(h, g.qt, g.q.yzw));
+    return g;
+}
+
+// The surface of the star along a chord from `a` (units, disk frame) in direction `dir` over
+// `len`: the entry distance, or -1 (StarSurface's SphereIntersection test).
+fn star_entry(h: Hole, a: vec3<f32>, dir: vec3<f32>, len: f32) -> f32 {
+    if h.star.y <= 0.0 {
+        return -1.0;
+    }
+    let t = sphere_hit(a, dir, h.star.y).x;
+    if t > 1.0e5 || t < 0.0 || t >= len {
+        return -1.0;
+    }
+    return t;
+}
+
+// Ray-march one straight chord (disk frame, units) through the disk and jet volume
+// (VolumetricIntegration). `s0`: path length at `a`; `t0`, `t1`: SE's timeSegment (light time in
+// M units, negative); `next`: path length of the next sample of the marching lattice (kept
+// across chords like SE's rayProp.dist).
+fn march_chord(h: Hole, a: vec3<f32>, dir: vec3<f32>, len: f32, s0: f32, t0: f32, t1: f32, next: ptr<function, f32>, vr: ptr<function, VolRay>) {
     if len <= 0.0 {
         return;
     }
-    let dir = to_disk(h, seg / len);
-    let o = to_disk(h, a);
     let step = h.disk2.w;
+    let c = SPEED_OF_LIGHT * h.gr.x;
     var t = *next - s0;
     loop {
         if t >= len || (*vr).steps >= MAX_MARCH || (*vr).sigma > VOLUMETRIC_STOP {
             break;
         }
         (*vr).steps = (*vr).steps + 1;
-        let p = o + dir * t;
+        let p = a + dir * t;
         let sd = sd_bounding(h, p);
         if sd < 0.0 {
-            // Emission time: the disk loop phase minus the light travel time (SE's
-            // rayProp.time / SPEED_OF_LIGHT, geodesic units of M = r_s / 2).
-            let time = fract(h.disk1.w - 2.0 * (s0 + t) / 16000.0);
+            // Emission time: the disk loop phase plus the (negative) light time.
+            let time = fract(h.disk1.w + mix(t0, t1, t / len) / c);
             volume_step(h, p, dir, step, s0 + t, time, vr);
             t = t + step;
         } else {
@@ -95,32 +226,9 @@ fn march_chord(h: Hole, a: vec3<f32>, b: vec3<f32>, s0: f32, next: ptr<function,
     *next = s0 + t;
 }
 
+// TraceGeodesic with the volume and the star's surface (the centre ray of a pixel).
 fn trace_ray(h: Hole, d: vec3<f32>, jitter: f32) -> Trace {
-    var res: Trace;
-    res.emission = vec3<f32>(0.0);
-    res.sigma = 0.0;
-    res.dir = d;
-    res.captured = false;
-
-    let c = h.dir_d.xyz;
-    let dist = h.dir_d.w;
-    let e1 = -c;
-    let cosa = dot(d, c);
-    let t = d - cosa * c;
-    var sina = length(t);
-    var e2: vec3<f32>;
-    if sina < 1.0e-6 {
-        sina = 1.0e-6;
-        let helper = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(c.y) > 0.9);
-        e2 = normalize(cross(c, helper));
-    } else {
-        e2 = t / sina;
-    }
-
-    let u0 = 1.0 / dist;
-    var u = u0;
-    var w = u0 * sqrt(max(1.0 - u0, 1.0e-4)) * cosa / sina;
-
+    var res = empty_trace(d);
     let vol = h.disk1.z > 0.0;
     var vr: VolRay;
     vr.color = vec3<f32>(0.0);
@@ -130,159 +238,154 @@ fn trace_ray(h: Hole, d: vec3<f32>, jitter: f32) -> Trace {
     vr.volume_steps = 0;
     var next = jitter * h.disk2.w;
     var s = 0.0;
-    var p_prev = dist * e1;
 
-    // Stop integrating once outbound and beyond twice the volume's reach.
-    let u_stop = min(0.02, 0.5 / max(h.disk5.w, 1.0));
+    // Camera in geodesic units (M), disk frame.
+    let ro_cam = to_disk(h, -h.dir_d.xyz) * (2.0 * h.dir_d.w);
+    let rd_init = to_disk(h, d);
+    let reach = kn_reach(h, ro_cam);
+    let maxd = reach.x;
+    var t_in = sphere_hit(ro_cam, rd_init, maxd);
+    if t_in.x < 0.0 && t_in.y < 0.0 {
+        t_in = vec2<f32>(1.0e6);
+    }
+    var ro = ro_cam;
+    var time = 0.0;
+    if t_in.x >= 0.0 {
+        // Outside: the straight part up to the sphere (the whole ray when it misses it).
+        if vol {
+            march_chord(h, ro_cam * 0.5, rd_init, t_in.x * 0.5, s, 0.0, -t_in.x, &next, &vr);
+        }
+        if t_in.x >= 1.0e6 {
+            res.emission = vr.color;
+            res.sigma = vr.sigma;
+            return res;
+        }
+        s = t_in.x * 0.5;
+        let b = dot(ro_cam, rd_init);
+        ro = (ro_cam - b * rd_init) - (-t_in.x - b) * rd_init;
+        time = t_in.x;
+    }
 
-    var phi = 0.0;
-    var captured = false;
-    var escaped = false;
-    for (var i = 0; i < MAX_STEPS; i = i + 1) {
-        if u >= 1.0 {
-            captured = true;
+    var g = kn_start(h, ro, rd_init);
+    var rd = rd_init;
+    var rd0 = rd_init;
+    var r0 = ro;
+    var minl = 1.0e10;
+    var dist = 1.0e10;
+    var t_end = -time;
+    let max_steps = select(256, 1500, h.metric.x > 1.0);
+    for (var i = 0; i < max_steps; i = i + 1) {
+        let dt = reach.y * kn_time_step(h, g);
+        if dt <= 0.0 {
+            res.captured = true;
             break;
         }
-        // Outbound and far enough from the turning point for the asymptotic formula.
-        if w < 0.0 && u < u_stop && w * w > 16.0 * abs(u * u * u) {
-            escaped = true;
+        let t_a = -g.q.x - time;
+        kn_advance(h, &g, dt);
+        rd0 = rd;
+        rd = normalize(g.qt.ywz);
+        let r1 = g.q.ywz;
+        t_end = -g.q.x - time;
+        dist = length(r1);
+        minl = min(minl, dist);
+        if dist >= maxd {
+            // Fix the direction discontinuity at the sphere.
+            let td2 = sphere_hit(r1, rd, maxd);
+            let delta = distance(r1, r0);
+            let lerp = clamp((delta + td2.y) / max(delta, 1.0e-6), 0.0, 1.0);
+            rd = mix(rd, rd0, 1.0 - lerp);
+        }
+        // EvaluateIntersections on the chord r0 -> r1 (geodesic units -> units: x 0.5).
+        let seg = r1 - r0;
+        let seg_len = length(seg);
+        if seg_len > 0.0 {
+            let sd = seg / seg_len;
+            if vol {
+                march_chord(h, r0 * 0.5, sd, seg_len * 0.5, s, t_a, t_end, &next, &vr);
+            }
+            let e = star_entry(h, r0 * 0.5, sd, seg_len * 0.5);
+            if e >= 0.0 {
+                res.hit = true;
+                res.surface = star_surface(h, normalize(r0 * 0.5 + sd * e), sd);
+                break;
+            }
+            s = s + seg_len * 0.5;
+        }
+        r0 = r1;
+        if vr.sigma > VOLUMETRIC_STOP || dist >= maxd {
             break;
-        }
-        var h_step = 0.05;
-        if u < 0.02 {
-            h_step = 0.3;
-        } else if u < 0.06 {
-            h_step = 0.12;
-        }
-        // RK4 on (u, w)
-        let k1u = w;
-        let k1w = accel(u);
-        let k2u = w + 0.5 * h_step * k1w;
-        let k2w = accel(u + 0.5 * h_step * k1u);
-        let k3u = w + 0.5 * h_step * k2w;
-        let k3w = accel(u + 0.5 * h_step * k2u);
-        let k4u = w + h_step * k3w;
-        let k4w = accel(u + h_step * k3u);
-        u = u + h_step / 6.0 * (k1u + 2.0 * k2u + 2.0 * k3u + k4u);
-        w = w + h_step / 6.0 * (k1w + 2.0 * k2w + 2.0 * k3w + k4w);
-        phi = phi + h_step;
-
-        if vol && u > 1.0e-6 && vr.steps < MAX_MARCH && vr.sigma <= VOLUMETRIC_STOP {
-            let p = (cos(phi) * e1 + sin(phi) * e2) / u;
-            march_chord(h, p_prev, p, s, &next, &vr);
-            s = s + length(p - p_prev);
-            p_prev = p;
         }
     }
+    if !res.hit && !res.captured && dist >= maxd && vol {
+        // Escaped: the straight rest of the ray.
+        march_chord(h, r0 * 0.5, rd, 0.5e5, s, t_end, t_end - 1.0e5, &next, &vr);
+    }
+    // Avoid a sharp transition at the sphere.
+    rd = mix(rd_init, rd, sstep(maxd, 0.0, minl));
     res.emission = vr.color;
     res.sigma = vr.sigma;
-    if !captured && !escaped {
-        // Ran out of steps while circling the photon sphere: treat as captured.
-        captured = true;
-    }
-    if captured {
-        res.captured = true;
-        return res;
-    }
-    // Remaining sweep to infinity: flat-space arcsine plus the first-order
-    // correction of the u^3 term in (du/dphi)^2 = K - u^2 + u^3. The last (large)
-    // step may overshoot u = 0 slightly; the odd extension handles that.
-    let ua = abs(u);
-    let k = w * w + ua * ua * (1.0 - ua);
-    var rem = asin(clamp(ua * inverseSqrt(max(k, 1.0e-20)), 0.0, 1.0));
-    let q2 = w * w - ua * ua * ua;
-    if q2 > 4.0 * ua * ua * ua {
-        let q = sqrt(q2);
-        rem = rem - (0.5 * ua * ua / q + q - sqrt(k));
-    }
-    let phi_end = phi + select(-rem, rem, u >= 0.0);
-    res.dir = cos(phi_end) * e1 + sin(phi_end) * e2;
+    res.dir = from_disk(h, rd);
     return res;
 }
 
 // The same geodesic without the volume (background sub-samples).
 fn trace_geodesic(h: Hole, d: vec3<f32>) -> Trace {
-    var res: Trace;
-    res.emission = vec3<f32>(0.0);
-    res.sigma = 0.0;
-    res.dir = d;
-    res.captured = false;
-
-    let c = h.dir_d.xyz;
-    let dist = h.dir_d.w;
-    let e1 = -c;
-    let cosa = dot(d, c);
-    let t = d - cosa * c;
-    var sina = length(t);
-    var e2: vec3<f32>;
-    if sina < 1.0e-6 {
-        sina = 1.0e-6;
-        let helper = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(c.y) > 0.9);
-        e2 = normalize(cross(c, helper));
-    } else {
-        e2 = t / sina;
-    }
-
-    let u0 = 1.0 / dist;
-    var u = u0;
-    var w = u0 * sqrt(max(1.0 - u0, 1.0e-4)) * cosa / sina;
-
-    // Stop integrating once outbound and beyond twice the volume's reach.
-    let u_stop = min(0.02, 0.5 / max(h.disk5.w, 1.0));
-
-    var phi = 0.0;
-    var captured = false;
-    var escaped = false;
-    for (var i = 0; i < MAX_STEPS; i = i + 1) {
-        if u >= 1.0 {
-            captured = true;
-            break;
-        }
-        // Outbound and far enough from the turning point for the asymptotic formula.
-        if w < 0.0 && u < u_stop && w * w > 16.0 * abs(u * u * u) {
-            escaped = true;
-            break;
-        }
-        var h_step = 0.05;
-        if u < 0.02 {
-            h_step = 0.3;
-        } else if u < 0.06 {
-            h_step = 0.12;
-        }
-        // RK4 on (u, w)
-        let k1u = w;
-        let k1w = accel(u);
-        let k2u = w + 0.5 * h_step * k1w;
-        let k2w = accel(u + 0.5 * h_step * k1u);
-        let k3u = w + 0.5 * h_step * k2w;
-        let k3w = accel(u + 0.5 * h_step * k2u);
-        let k4u = w + h_step * k3w;
-        let k4w = accel(u + h_step * k3u);
-        u = u + h_step / 6.0 * (k1u + 2.0 * k2u + 2.0 * k3u + k4u);
-        w = w + h_step / 6.0 * (k1w + 2.0 * k2w + 2.0 * k3w + k4w);
-        phi = phi + h_step;
-    }
-    if !captured && !escaped {
-        // Ran out of steps while circling the photon sphere: treat as captured.
-        captured = true;
-    }
-    if captured {
-        res.captured = true;
+    var res = empty_trace(d);
+    let ro_cam = to_disk(h, -h.dir_d.xyz) * (2.0 * h.dir_d.w);
+    let rd_init = to_disk(h, d);
+    let reach = kn_reach(h, ro_cam);
+    let maxd = reach.x;
+    let t_in = sphere_hit(ro_cam, rd_init, maxd);
+    if t_in.y < 0.0 || t_in.x >= 1.0e6 {
         return res;
     }
-    // Remaining sweep to infinity: flat-space arcsine plus the first-order
-    // correction of the u^3 term in (du/dphi)^2 = K - u^2 + u^3. The last (large)
-    // step may overshoot u = 0 slightly; the odd extension handles that.
-    let ua = abs(u);
-    let k = w * w + ua * ua * (1.0 - ua);
-    var rem = asin(clamp(ua * inverseSqrt(max(k, 1.0e-20)), 0.0, 1.0));
-    let q2 = w * w - ua * ua * ua;
-    if q2 > 4.0 * ua * ua * ua {
-        let q = sqrt(q2);
-        rem = rem - (0.5 * ua * ua / q + q - sqrt(k));
+    var ro = ro_cam;
+    if t_in.x >= 0.0 {
+        let b = dot(ro_cam, rd_init);
+        ro = (ro_cam - b * rd_init) - (-t_in.x - b) * rd_init;
     }
-    let phi_end = phi + select(-rem, rem, u >= 0.0);
-    res.dir = cos(phi_end) * e1 + sin(phi_end) * e2;
+    var g = kn_start(h, ro, rd_init);
+    var rd = rd_init;
+    var rd0 = rd_init;
+    var r0 = ro;
+    var minl = 1.0e10;
+    let max_steps = select(256, 1500, h.metric.x > 1.0);
+    for (var i = 0; i < max_steps; i = i + 1) {
+        let dt = reach.y * kn_time_step(h, g);
+        if dt <= 0.0 {
+            res.captured = true;
+            break;
+        }
+        kn_advance(h, &g, dt);
+        rd0 = rd;
+        rd = normalize(g.qt.ywz);
+        let r1 = g.q.ywz;
+        let dist = length(r1);
+        minl = min(minl, dist);
+        if dist >= maxd {
+            let td2 = sphere_hit(r1, rd, maxd);
+            let delta = distance(r1, r0);
+            let lerp = clamp((delta + td2.y) / max(delta, 1.0e-6), 0.0, 1.0);
+            rd = mix(rd, rd0, 1.0 - lerp);
+        }
+        let seg = r1 - r0;
+        let seg_len = length(seg);
+        if seg_len > 0.0 {
+            let sd = seg / seg_len;
+            let e = star_entry(h, r0 * 0.5, sd, seg_len * 0.5);
+            if e >= 0.0 {
+                res.hit = true;
+                res.surface = star_surface(h, normalize(r0 * 0.5 + sd * e), sd);
+                break;
+            }
+        }
+        r0 = r1;
+        if dist >= maxd {
+            break;
+        }
+    }
+    rd = mix(rd_init, rd, sstep(maxd, 0.0, minl));
+    res.dir = from_disk(h, rd);
     return res;
 }
 
@@ -354,7 +457,8 @@ fn sample_env(v: vec3<f32>) -> vec3<f32> {
 fn sky_blue_shift(h: Hole, c_in: vec3<f32>) -> vec3<f32> {
     let eye = h.dir_d.w;
     let fade = sstep(1.0, 0.9, eye * h.params.y);
-    let one_plus_z = inverseSqrt(max(1.0 - fade / eye, 1.0e-3));
+    // gravRadius * starRadiusScale / EyeDist: KerrM / distance in units.
+    let one_plus_z = inverseSqrt(max(1.0 - h.gr.x * fade / eye, 1.0e-3));
     let z2 = one_plus_z * one_plus_z;
     let flux = z2 * z2;
     let shift = (one_plus_z - 1.0) * 2.0;
@@ -465,23 +569,27 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let b0 = h.dir_d.w * sina;
     var bg = vec3<f32>(0.0);
     if b0 < 14.0 || h.dir_d.w < 20.0 {
-        // 4 rotated-grid samples for a crisp, anti-aliased shadow edge and photon ring.
+        // 4 rotated-grid samples for a crisp, anti-aliased shadow edge, photon ring and star
+        // limb (the sky, or the star's surface behind the centre ray's volume).
         var offs = array<vec2<f32>, 4>(
             vec2<f32>(-0.125, -0.375), vec2<f32>(0.375, -0.125),
             vec2<f32>(0.125, 0.375), vec2<f32>(-0.375, 0.125));
         for (var s = 0; s < 4; s = s + 1) {
             let d = view_dir(px + offs[s], dims);
             let ts = trace_geodesic(h, d);
-            if !ts.captured {
+            if ts.hit {
+                bg = bg + ts.surface * h.params.w;
+            } else if !ts.captured {
                 bg = bg + sky(h, ts.dir, d, dims);
             }
         }
         bg = bg * 0.25;
+    } else if tc.hit {
+        bg = tc.surface * h.params.w;
     } else if !tc.captured {
         bg = sky(h, tc.dir, d0, dims);
     }
-    var colour = bg * trans + emission;
-    // Keep NaN / overflow out of the frame (bloom would spread it over the screen).
+    var colour = bg * trans + emission;    // Keep NaN / overflow out of the frame (bloom would spread it over the screen).
     if any(colour != colour) {
         colour = vec3<f32>(0.0);
     }
