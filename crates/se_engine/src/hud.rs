@@ -337,6 +337,102 @@ fn grid_switches(ui: &mut egui::Ui, sky: &mut crate::overlay::SkySwitches, i18n:
 
 /// Whether the pointer is over the interface (egui's windows, toolbars and the info table), so a
 /// click there does not also pick the object behind it.
+/// A body's `Life` blocks for SE's life rows ("Life forms", "Life biomes", "Life origin"): the class and
+/// type ("Organic multicellular"), the biomes ("marine, terrestrial") and the origin, `Panspermia true`
+/// or else "Abiogenesis" (SE's flags 0x4000 / 0x8000, FUN_1404eb190). The rows' wording is assumed
+/// from SE's strings; several blocks (organic and exotic life) are joined with "; ".
+fn life_lines(block: &se_core::sc::Block, i18n: &I18n) -> Option<(String, String, String)> {
+    let (mut forms, mut biomes, mut origins) = (Vec::new(), Vec::new(), Vec::new());
+    for l in block.all("Life").filter_map(|i| i.block()) {
+        let class = l.str("Class").unwrap_or("Organic");
+        let kind = l.str("Type").map(|t| i18n.tr(&t.to_ascii_lowercase()).to_string());
+        forms.push(match kind {
+            Some(k) => format!("{} {k}", i18n.tr(class)),
+            None => i18n.tr(class).to_string(),
+        });
+        if let Some(b) = l.str("Biome") {
+            biomes.push(b.split('/').map(|x| i18n.tr(&x.trim().to_ascii_lowercase()).to_string()).collect::<Vec<_>>().join(", "));
+        }
+        origins.push(i18n.tr(if l.bool("Panspermia").unwrap_or(false) { "Panspermia" } else { "Abiogenesis" }).to_string());
+    }
+    if forms.is_empty() {
+        return None;
+    }
+    origins.dedup();
+    Some((forms.join("; "), biomes.join("; "), origins.join("; ")))
+}
+
+/// The mass of a catalog object (a barycentre's: its members', not the star default it carries).
+fn object_mass(cat: &se_core::catalog::Catalog, r: ObjectRef) -> f64 {
+    match r {
+        ObjectRef::Body(p) => cat.bodies[p as usize].mass_kg,
+        ObjectRef::Star(p) => {
+            let s = &cat.stars[p as usize];
+            if !s.barycenter {
+                return s.mass_kg;
+            }
+            let name = s.names.first().map_or("", String::as_str);
+            cat.children_of(name).iter().map(|&c| if c == r { 0.0 } else { object_mass(cat, c) }).sum()
+        }
+        _ => 0.0,
+    }
+}
+
+/// SE's Hill and influence sphere radii of a body (FUN_14050f090): from its orbit and its parent's
+/// mass; the members of a binary (a barycentre parent) take their barycentre's (SE copies the
+/// parent's for its binary companion; that every member does here is assumed).
+fn sphere_radii(cat: &se_core::catalog::Catalog, b: &se_core::catalog::BodyRecord) -> Option<(f64, f64)> {
+    let o = b.orbit.as_ref()?;
+    let parent = cat.find(&b.parent)?;
+    if let ObjectRef::Star(p) = parent
+        && cat.stars[p as usize].barycenter
+    {
+        let bary = &cat.stars[p as usize];
+        let bo = bary.orbit.as_ref()?;
+        let host = cat.find(bary.parent.as_deref()?)?;
+        return se_core::orbit::hill_influence_radii(bo.semi_major_axis, bo.eccentricity, object_mass(cat, parent), object_mass(cat, host));
+    }
+    se_core::orbit::hill_influence_radii(o.semi_major_axis, o.eccentricity, b.mass_kg, object_mass(cat, parent))
+}
+
+/// SE's "Orbital resonances" (FUN_140514760): every sibling on an elliptic orbit of a kind SE
+/// compares (FUN_1404e95b0: planets and dwarf planets together, moons with moons, asteroids with
+/// asteroids, comets with asteroids and comets; the kind mapping is assumed) whose period makes a
+/// resonance with this body's ([`se_core::orbit::resonance`]), as "name (p:q)".
+fn orbital_resonances(cat: &se_core::catalog::Catalog, i: usize) -> String {
+    use se_core::catalog::BodyTag as T;
+    let b = &cat.bodies[i];
+    let Some(o) = b.orbit.as_ref().filter(|o| o.eccentricity < 1.0 && o.period > 0.0) else { return String::new() };
+    let group = |t: T| match t {
+        T::Planet | T::DwarfPlanet => 0,
+        T::Moon | T::DwarfMoon => 1,
+        T::Asteroid => 2,
+        T::Comet => 3,
+        T::Spacecraft => 4,
+    };
+    let comparable = |t: T| match (group(b.tag), group(t)) {
+        (3, g) => g == 2 || g == 3,
+        (4, _) | (_, 4) => false,
+        (a, g) => a == g,
+    };
+    let mut out = Vec::new();
+    for &r in cat.children_of(&b.parent) {
+        let ObjectRef::Body(j) = r else { continue };
+        if j as usize == i {
+            continue;
+        }
+        let s = &cat.bodies[j as usize];
+        let Some(so) = s.orbit.as_ref().filter(|so| so.eccentricity < 1.0 && so.period > 0.0) else { continue };
+        if !comparable(s.tag) {
+            continue;
+        }
+        if let Some((p, q)) = se_core::orbit::resonance(so.period / o.period) {
+            out.push(format!("{} ({p}:{q})", cat.display_name(r).replace('|', "/")));
+        }
+    }
+    out.join(", ")
+}
+
 pub fn pointer_over_ui(ctx: &egui::Context) -> bool {
     ctx.is_pointer_over_egui()
 }
@@ -355,7 +451,7 @@ fn draw_hud(
     mut script_ui: ResMut<crate::scripting::ScriptUi>,
     i18n: Res<I18n>,
     mut gfx_ui: ResMut<crate::graphics::GraphicsUi>,
-    mut thermal: Local<Option<(ObjectRef, se_core::climate::display::Model)>>,
+    (mut thermal, mut resonances): (Local<Option<(ObjectRef, se_core::climate::display::Model)>>, Local<Option<(ObjectRef, String)>>),
     (mut browser, mut msg): (ResMut<crate::browser::BrowserState>, ResMut<crate::messages::Messages>),
     (terrains, clusters): (
         Query<(&crate::system::SystemBody, &crate::terrain::Terrain)>,
@@ -672,6 +768,25 @@ fn draw_hud(
                         line(ui, "Semimajor axis", format_distance(o.semi_major_axis));
                         line(ui, "Eccentricity", format!("{:.4}", o.eccentricity));
                         line(ui, "Orbital period", format!("{:.3} d", o.period / 86_400.0));
+                        if resonances.as_ref().is_none_or(|(r, _)| *r != sel) {
+                            *resonances = Some((sel, orbital_resonances(cat, i as usize)));
+                        }
+                        if let Some((_, text)) = resonances.as_ref().filter(|(_, t)| !t.is_empty()) {
+                            line(ui, "Orbital resonances", text.clone());
+                        }
+                        if let Some((hill, influence)) = sphere_radii(cat, b) {
+                            line(ui, "Hill / influence sphere radius", format!("{} / {}", format_distance(hill), format_distance(influence)));
+                        }
+                    }
+                    if b.mass_kg > 0.0 {
+                        line(ui, "Roche limit for satellites", format_distance(se_core::orbit::roche_limit_for_satellites(b.mass_kg)));
+                    }
+                    if let Some((forms, biomes, origin)) = life_lines(&b.block, &i18n) {
+                        line(ui, "Life forms", forms);
+                        if !biomes.is_empty() {
+                            line(ui, "Life biomes", biomes);
+                        }
+                        line(ui, "Life origin", origin);
                     }
                     if let Some(p) = b.rotation.period_seconds() {
                         line(ui, "Rotation period", format!("{:.3} h", p / 3600.0));

@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 192 have been fixed since (listed at the end); the tables count the 19 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 193 have been fixed since (listed at the end); the tables count the 18 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 5 | 9 | 5 |
+| Gaps | 0 | 0 | 4 | 9 | 5 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 1 | 11 | 7 |
+| Gaps | 1 | 11 | 6 |
 
 | Area | Kept |
 |---|---|
@@ -121,7 +121,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 03 Galaxies and nebulae | 2 |
 | 04 Planet surfaces | 2 |
 | 05 Atmospheres, rings, comets | 2 |
-| 06 Procedural generation | 6 |
+| 06 Procedural generation | 5 |
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 1 |
@@ -167,15 +167,6 @@ Procedural star names do not follow SE's numbering: SE (FUN_1401c0180) names Mil
 - SE evidence: save/places-def.cfg:436,468; exe strings "%i-%i-%I64d-%i", "RS" names
 - Port: crates/se_engine/src/procstars.rs:140-142; crates/se_core/src/procgen/mod.rs:255-274
 - Check: FUN_1401c0180 formats Milky Way stars as L"RS %i-%i-%i-%I64d-%i" (galaxy 8514, a second field param[6] e.g. 491, octree level, 64-bit node, index; RSC/RSN variants for cluster/nebula stars), so the gap's "RS 8514-<level>-<node>-<index>" drops a field; the port's proc_star_name (procstars.rs:140) writes "RS <level>-<x>-<y>-<z>-<index>" and procgen::procedural_star_name treats "8514-491" as a galaxy code with a Morton node id, so SE names still don't resolve
-
-### 06-017 · Procedural generation
-
-Info panel lacks SE's derived body data: the composed class description ("Cold arid terra with life", built from the PlanetClassOrder* order and gender forms; the port computes the temperature word internally for surface generation but only shows "Tag (Class)"), ESI, internal-structure layers (Metallic core, Silicate/Carbide mantle, Water/icy envelope, Ice VI/VII, H, He), orbital resonances, Hill/influence sphere radius, Roche limit for satellites (the port computes one only for procedural rings), small-body dynamical group (Aten..Damocloid, also exported as asteroid Class) and life origin
-
-- Status: missing, effort **L**, auditor confidence medium, amended by the checker
-- SE evidence: eng-gui "ESI", "Internal structure", "Metallic core", "Orbital resonances", "Hill / influence sphere radius", "Roche limit for satellites", "Life origin"; exe table 0x140687090 (FUN_1401c1aa0, used by FUN_1404eb190 export); eng-gui PlanetClassOrderTemp..Life
-- Port: none (procgen/mod.rs:672 describe() only for procedural summaries; crates/se_engine/src/hud.rs:92-110 shows tag and bulk only)
-- Check: The strings exist in the exe (re/strings_utf16.txt "Metallic core", "Hill / influence sphere radius", "Roche limit for satellites", "Cubewano"; PlanetClassOrder* in strings_ascii; dynamical-group table 0x140687090 via FUN_1401c1aa0 used by FUN_1404eb190), not in eng-gui.cfg, which is only a 5 KB header; the port's Selection window (hud.rs:230-310) shows only the tag/raw class, mass, temperature, orbit and day lines; it computes temperature class words (surface_gen.rs TEMP_NAMES) and a Roche limit (procgen/mod.rs:1383, rings only) internally but never shows them; visibility raised because the composed class line appears every time a planet is selected
 
 
 ## Visibility 2: niche
@@ -664,6 +655,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **06-011** (Procedural generation, fixed 2026-10-30): Planet class words use designed thresholds instead of SE's: procgen temperature frigid<130/cold<240/cool<273/t... Fix: Procedural class words use SE's thresholds through the functions already ported in surface_gen: temperature > 1000/500/330/250/170/90 K (temp_class), pressure 1e-6/1e-3/0.1/10/1000 atm (atmo_class, FUN_1404caaa0), size 0.002/0.02/0.2/2/10 Me, Neptunes 4/10/25/62.5 Me, Jupiters 0.2/0.5/2.5/12.5 MJ (size_class, FUN_1404cabf0); the star browser's search classifies with them too. Not ported: the volatiles word still comes from ocean/ice cover (SE: ocean depth against BumpHeight, FUN_140505680, and no glacial), because the generator's bodies carry no ocean depth.
 - **06-014** (Procedural generation, fixed 2026-10-30): Supermassive black hole systems missing: SE builds a dedicated system for any black hole of 400+ solar masses ... Fix: SE: FUN_1404f7c40 sends a black hole >= 400 Msun to FUN_1404fb950 (CreateSupermassiveBlackHoleSystem): n = int(3 log10 M) <= 50 stars named "S<k>" ("%d" with "S" inserted, 0x1406bd48c/0x140687dec); system age tn(50,20,1,200) x 0.001 Gyr; orbits MA/argp/node/inc = U x 2pi, e = tn(0.5,0.5,0,0.89) (FUN_140441b80), a = inner/(1-e) + rand % int(outer/(1+e) - inner/(1-e)) AU with inner = max(R_AU + 1, 0.0017085 cbrt(2 M_e/14.536)), outer = 500 inner; period with both masses; star seeds seed*0x71e981 + k*0x7aee1d / seed*0x45de81 + k*0x1523da; stars from FUN_1401d6c60 (M_V N(3,4), else giant N(1,1), else WD N(14,0.83); [Fe/H] N(-0.125,0.07), C/O N(0.662,0.17)). Ported: `procgen/se_smbh.rs`, emitted as `Star "<hole> S<k>"` with orbit, Age, FeH, CtoO; is_multiple stays false. Works for catalog holes with no catalog members (generate_planets path) and procedural ones. Checked: unit test (19 for Sgr A*'s 4.31e6, orbit limits, 60-90% main sequence), exotic_stars test (500 Msun -> 8 stars loading with orbits); in the port `goto Mrk 335*` logs "21 stars" and `.audit/work/procgen/smbh_s3.png` shows S3 (A8V, 1.83 Msun, 0.053 Gyr). Assumed: MS temperature for a magnitude from the port's relation, giants 3500-5200 K (SE's class tables FUN_1401da080 not decoded); no WR/carbon conversions; orbit draws on the hole's seeds. Not done: Sgr A* itself (its catalog SagittariusA.sc already has S-stars, so system.rs `generated_system_star` gives it no generated system; SE's behaviour there was not checked). Catalog big holes sit in galaxy cores, where the port renders the view white (pre-existing, not this change).
 - **06-016** (Procedural generation, fixed 2026-10-30): StarGenerator settings not honoured: SE drops procedural stars brighter than StarMaxAppMagn 10 seen from the S... Fix: SE's StarGenerator limits are read from main-def.cfg: procedural Milky Way stars brighter than StarMaxAppMagn (10) as seen from the Sun, at any distance, or nearer to it than StarMinDistNormal (2.5 pc), are left to the catalogs (FUN_1405945e0), replacing the port's hard-coded magnitude 8.5 within 2.5 kpc. Not ported: the separate minimum distances of brown dwarfs (2 pc) and remnants (3 pc), which the generator's exclusion test cannot tell apart, and StarDensityInGalaxy/InCluster (both 1 by default).
+- **06-017** (Procedural generation, fixed 2026-10-30): Info panel lacks SE's derived body data: the composed class description ("Cold arid terra with life", built fr... Fix: SE: Hill / influence sphere radii FUN_14050f090 (a(1-e) cbrt(m/3M), a (m/M)^0.4, body +0x1d50/+0x1d54, shown by the info table FUN_1403a8350 row 0xf), Roche limit for satellites 2190.056 km x (M/0.0123)^(1/3) (row 0x10), Orbital resonances FUN_140514760 with FUN_140442050 (p, q < 11 within 1%) and the sibling filter FUN_1404e95b0, Life rows from the Life block flags (FUN_1404eb190: class, type, biomes, Panspermia/Abiogenesis). Port: hud.rs Selection window rows, se_core::orbit::{hill_influence_radii, roche_limit_for_satellites, resonance}; binary members show their barycentre's spheres (assumed). The composed class description was already there. Still open: internal structure layers, the small-body dynamical group (classifier not found; only the name table 0x140687090), ESI (not in SE 0.991)
 - **06-019** (Procedural generation, fixed 2026-10-30): Moon names only partly match: SE numbers moons in three series: plain "<planet>.<n>" (type 5), "<planet>.D<n>"... Fix: SE: FUN_1404fdc90's naming loop numbers a planet's moons in three counters from 1: '<planet>.<n>' for type 5 (Moon), '<planet>.D<n>' (L"D" at 0x1406c5280) for the other types (type 7 DwarfMoon), '<planet>.S<n>' for bodies with flag 0x2000 of +0x11c0, which only its last moon stage sets (type 8 Asteroid moons, after the planet's +0x1d38 count). Port: procgen names Moons '.<n>' and DwarfMoons '.D<n>' (was '.S<n>'), in the single-planet and binary-planet paths; docs/procgen.md updated; binary planets already take letters (06-010). Not ported: the S series, as the port does not generate SE's stage-3 asteroid moons. Checked: statistics_sun_like asserts the forms over 200 systems.
 - **07-001** (Camera and time, fixed 2026-10-28): Startup field of view: SE starts at FOV 45 deg (Controls FOV 45, DefaultFOV 45); port's camera and projection ... Fix: The camera starts at SE's 45 degrees (and the `fov` command defaults to it).
 - **07-002** (Camera and time, fixed 2026-10-28): Time-rate steps: SE's L/K (and the toolbar buttons) step the rate through 1, 3, 10, 30, 100, 300... (two press... Fix: K/L and the top bar's << / >> step the rate through 1, 3, 10, 30, ... (`hud::rate_step`).

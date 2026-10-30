@@ -212,6 +212,56 @@ impl KeplerOrbit {
     }
 }
 
+/// SE's Hill and influence sphere radii (FUN_14050f090, the info panel's "Hill / influence sphere
+/// radius"): `a (1 - e) cbrt(m / 3M)` and the Laplace sphere `a (m / M)^0.4` (the Hill radius when that
+/// is not positive), in `a`'s unit. None without both masses.
+pub fn hill_influence_radii(a: f64, e: f64, m: f64, parent_m: f64) -> Option<(f64, f64)> {
+    if m <= 0.0 || parent_m <= 0.0 || a <= 0.0 {
+        return None;
+    }
+    let q = m / parent_m;
+    let hill = (q / 3.0).cbrt() * a * (1.0 - e);
+    let influence = q.powf(0.4) * a;
+    Some((hill, if influence > 0.0 { influence } else { hill }))
+}
+
+/// SE's "Roche limit for satellites" (the info panel, FUN_1403a8350): the rigid-body limit for
+/// satellites as dense as the Moon, `2190.056 km x (M / 0.0123 Earth masses)^(1/3)` (1.26 lunar
+/// radii around the Moon), in metres.
+pub fn roche_limit_for_satellites(mass_kg: f64) -> f64 {
+    let m_earth = mass_kg / crate::units::EARTH_MASS_KG;
+    2_190.056 * 1000.0 * (m_earth / 0.0123).cbrt()
+}
+
+/// SE's orbital resonance of a period ratio (FUN_140442050): for denominators 100, 300, 500, 700
+/// and 900, the five numerators around `ratio x d`, reduced; the first `p:q` with both under 11
+/// within 1% (`|ratio - p/q| <= 0.01 |ratio + p/q|`). Single precision, as SE.
+pub fn resonance(ratio: f64) -> Option<(u32, u32)> {
+    let r = ratio as f32;
+    for d in [100i32, 300, 500, 700, 900] {
+        let n0 = (d as f32 * r).round() as i32;
+        if n0 < 1 {
+            break;
+        }
+        for k in -2..=2 {
+            let n = n0 + k;
+            let (mut a, mut b) = (n, d);
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            let g = a.max(1);
+            let (p, q) = (n / g, d / g);
+            if p < 11 && q < 11 && q > 0 {
+                let f = p as f32 / q as f32;
+                if (r - f).abs() <= (f + r).abs() * 0.01 {
+                    return Some((p.max(0) as u32, q as u32));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Solve `M = E - e sin E` for E.
 pub fn solve_kepler_elliptic(m: f64, e: f64) -> f64 {
     let m = (m + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
@@ -245,6 +295,26 @@ pub fn solve_kepler_hyperbolic(m: f64, e: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resonances_follow_se() {
+        // Pluto and Neptune (247.9 / 164.8 years), Io and Europa, none for an irrational ratio.
+        assert_eq!(resonance(164.8 / 247.9), Some((2, 3)));
+        assert_eq!(resonance(3.551 / 1.769), Some((2, 1)));
+        assert_eq!(resonance(std::f64::consts::PI), None);
+        assert_eq!(resonance(0.001), None);
+    }
+
+    #[test]
+    fn spheres_and_roche_limit_follow_se() {
+        // The Earth around the Sun: Hill sphere about 1.5 million km, influence sphere about 0.92.
+        let (hill, infl) = hill_influence_radii(1.496e11, 0.0167, 5.972e24, 1.989e30).unwrap();
+        assert!((hill / 1e9 - 1.47).abs() < 0.02, "{hill}");
+        assert!((infl / 1e9 - 0.925).abs() < 0.01, "{infl}");
+        assert_eq!(hill_influence_radii(1.0, 0.0, 0.0, 1.0), None);
+        // Earth: 9,480 km (1.26 Earth radii x (5.51 / 3.34)^(1/3)).
+        assert!((roche_limit_for_satellites(crate::units::EARTH_MASS_KG) / 1000.0 - 9_484.0).abs() < 10.0);
+    }
+
     use super::*;
     use crate::sc;
 
