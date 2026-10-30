@@ -104,21 +104,21 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 93 have been fixed since (listed at the end); the tables count the 148 still open.
+242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 101 have been fixed since (listed at the end); the tables count the 140 still open.
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 64 | 61 | 20 |
+| Gaps | 1 | 2 | 57 | 60 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 46 | 74 | 28 |
+| Gaps | 41 | 71 | 28 |
 
 | Area | Kept |
 |---|---|
 | 01 Stars | 11 |
 | 02 Star clusters | 12 |
-| 03 Galaxies and nebulae | 14 |
+| 03 Galaxies and nebulae | 6 |
 | 04 Planet surfaces | 10 |
 | 05 Atmospheres, rings, comets | 14 |
 | 06 Procedural generation | 12 |
@@ -273,51 +273,6 @@ Member star names: SE names them RSC <galaxy>-<cluster>-<level>-<node>-<index> (
 - Port: crates/se_engine/src/clusters.rs:89-99
 - Check: FUN_1401c0180 formats L"RSC %i-%i-%i-%I64d-%i" and the 8-number form, and the %u scanf variants in re/strings_utf16.txt:747-748 show the parse-back; the port's clusters.rs:94 uses format!("{cluster} #{k}") and nothing in crates/ handles "RSC" (only RS field-star names exist), and SE-compatible names need SE's member octree level/node ids.
 
-### 03-002 · Galaxies and nebulae
-
-Dust of galaxy and nebula sprite models: SE absorption sprites output (-colour*emBright*fade, absBright*fade) with blend ONE, ONE_MINUS_SRC_ALPHA (darken by absBright x the model's Transparency and subtract the dust colour); port instead uses its own Beer-Lambert multiply exp(-tau*desaturated tint*6) with ad-hoc global strengths (0.35 galaxies, 0.06 nebulae "deliberately weak"), so dust strength and colour differ: nebula dust (Horsehead, Barnard) is near-invisible while the edge-on Milky Way lane renders as a dark brown band; main-def.cfg ColorAbsorption is not read by the port
-
-- Status: differs, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: galaxy_model.glsl:64-69; nebula_model.glsl (same, texture .a); FUN_14029bdf0 glBlendFunc(1,0x303); main-def.cfg ColorAbsorption
-- Port: crates/se_engine/assets/shaders/galaxy_model.wesl:113-118; galaxies.rs:229 dust_strength; docs/formats/nebula.md section 7
-- Check: Code difference confirmed: galaxy_model.glsl:64-69 and nebula_model.glsl:60-65,77 output (-rgb*emBright*fade, absBright*fade) drawn with glBlendFunc(1,0x303) (FUN_14029bdf0:194), while galaxy_model.wesl:113-118 uses exp(-tau*desaturated tint*6) multiply with global strengths 0.35/0.06 (galaxies.rs:227, nebulae.rs:66, nebula.md:176 "deliberately weak"); but the M42 "near-black bands" claim is not shown by the auditor's runs (r1_orion_crop shows no such band; r1_mw does show a dark brown edge-on lane), and ColorAbsorption feeds DAT_14082c21e/21f read in FUN_1404877f0 (seCustomModel::Draw), not the galaxy sprite shader, so its role here is unproven
-
-### 03-007 · Galaxies and nebulae
-
-Nebula NoModel key ignored: SE gives catalog nebulae with `NoModel true` no model (M 43 and Sh2-279 Running Man, which are drawn by the Orion Nebula model); port gives them a pooled ray-marched model, so a stray striped orange sphere sits on the Running Man Nebula next to M 42
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: FUN_140172400 ("NoModel" -> model index 0xfffe); Catalogs.pak nebulae/SpriteAstro.sc M 43, Sh2-279 NoModel true
-- Port: crates/se_engine/src/nebulae.rs:327-329 (pooled raymarch for every nebula without a named model)
-- Check: FUN_140172400:462-464 reads "NoModel" and sets model index 0xfffe, and SpriteAstro.sc gives M 43 and Sh2-279 `NoModel true` ("implemented as a part of M 42 model"); the port's NebulaRecord (se_core/src/catalog.rs:131) has no such field, nothing in crates/ reads NoModel, and nebulae.rs:327-329 falls back to custom.pooled() for every nebula without a named model (run .audit/work/03/r3_sh2279.png).
-
-### 03-008 · Galaxies and nebulae
-
-Nebula sprite atlas: SE nebula sprite models sample their own atlas sprites_neb.png (Common.pak, 1024x1024 single-channel greyscale, 4x4 tiles of filamentary cloud shapes, used as coverage); port draws nebula sprite models with the galaxy atlas sprites_gal.png, so nebula texture detail differs
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: nebula_model.glsl:76 (texture(...).a); FUN_140168bd0 "sprites_neb.*"; Common.pak sprites_neb.png
-- Port: crates/se_engine/src/galaxies.rs:714 (only sprites_gal.png loaded, shared with nebulae.rs)
-- Check: FUN_140168bd0:177-181 loads "sprites_neb." next to sprites_gal, and nebula_model.glsl:76 samples the texture as coverage; the port loads only textures/common/sprites_gal.png (galaxies.rs:714) and nebulae.rs reuses that SpriteAtlas; but Common.pak sprites_neb.png is a 1024^2 8-bit greyscale (PNG colour type 0, mode L) 4x4 tile set of filamentary clouds, not an alpha-channel image.
-
-### 03-010 · Galaxies and nebulae
-
-Galaxy redshift: SE multiplies galaxy sprites and the front plane by Reddening = (1-x, 1-2x, 1-4x), x = distance / 4.227e9 pc, which reddens and dims distant galaxies (blue gone near 1 Gpc, green near 2 Gpc); port tints only far sprites with a 5500 K Planck spectrum shifted by z at constant luminance (about 10% redder at 1 Gpc), and 3D models are not tinted
-
-- Status: differs, effort **S**, auditor confidence medium
-- SE evidence: FUN_140299fe0 (param_1[4..6] = 1 - d/4.227e9 * (1,2,4); constants 0x14075eb8c, 0x1406d523c); galaxy_model.glsl:72; galaxy_plane.glsl:57
-- Port: crates/se_engine/assets/shaders/galaxy_far.wesl:117-130 (redshift_tint); galaxy_model.wesl (none)
-- Check: FUN_140299fe0:251-254 computes param_1[4..6] = 1 - d/DAT_14075eb8c * (1, 2, DAT_1406d523c) with bytes 0x4f7bf2e7 = 4.227e9 and 0x40800000 = 4.0, and galaxy_model.glsl:72 / galaxy_plane.glsl:57 multiply colour by Reddening.rgb (dimming, not luminance-preserving); the port only has redshift_tint() in galaxy_far.wesl:120-127 (5500 K Planck shift normalised to constant luminance) and galaxy_model.wesl has no reddening.
-
-### 03-003 · Galaxies and nebulae
-
-Galaxy sprite-model shading and brightness: SE fades a sprite when the eye is within 1.5 sprite radii (clamp(dist/spriteSize-0.5)) and scales models by hdr/realGalaxySpriteBright x ModelBright x pst Brightness (BrightZoom); port fades sprites by on-screen size (250-875 px) with edge-faded quads, enlarges sub-pixel sprites to a minimum radius, dims all bulge sprites to 0.3 (BULGE_GAIN) and calibrates model brightness to its analytic far sprite, so the inside-galaxy look (local clumps, bulge glare, overall model brightness) differs
-
-- Status: differs, effort **M**, auditor confidence medium
-- SE evidence: galaxy_model.glsl:39-57; FUN_14029bdf0 BrightZoom; main-def.cfg hdrGalaxySpriteBright 0.03, realGalaxySpriteBright 0.01
-- Port: crates/se_engine/assets/shaders/galaxy_model.wesl:61-69,108; crates/se_engine/src/galaxies.rs:960 (BULGE_GAIN), 1193 (calibration)
-- Check: galaxy_model.glsl:39,56 fades by clamp(dist/spriteSize-0.5) (gone inside 0.5 sprite radii) vs galaxy_model.wesl:61-69 screen-size fade between big_px 250 and 875 px plus MODEL_MIN_PX enlargement and edge-faded quads; BULGE_GAIN 0.3 (galaxies.rs:960) and far-sprite calibration (galaxies.rs:1187-1195) have no SE counterpart; SE emBright comes from FUN_140299fe0 fade x galaxy+0xa4 and renderer factors (FUN_14029bdf0:152-154), the hdr/realGalaxySpriteBright cvars being read in FUN_1404c4ae0, so the brightness chain differs even if the exact cvar wiring is indirect
-
 ### 03-004 · Galaxies and nebulae
 
 Far galaxies and model LOD: SE draws unresolved galaxies as star-like point sprites (StarPoint/StarSprite programs built in the galaxy init) and fades the real sprite model in between 2 and 5 px radius for every such galaxy (model cache CacheSizeGalModels 64); port draws every galaxy as an analytic-profile elliptical billboard (de Vaucouleurs / disc+bulge / irregular) until 6-16 px and keeps at most 6 models (MAX_SLOTS 8), so in groups and clusters most resolved galaxies stay smooth blobs without structure
@@ -345,15 +300,6 @@ Ray-marched nebula shader is a reimplementation that differs from the decrypted 
 - Port: crates/se_engine/assets/shaders/galaxy_nebula_raymarch.wesl; docs/formats/nebula_raymarch.md section 4; run .audit/work/03/r3_m43.png
 - Check: Emission, erosion and tone-curve differences confirmed (nebula_raymarch.glsl:26-36 abs(1-1.2*noise) erosion of bound and star cavity, 65 e*colour*coef_1*exp(-e^coef_2*coef_3), 75 smootherstep curve and separate OutTransm vs galaxy_nebula_raymarch.wesl:237-250 smooth edge/bubble fades, 287 coef_3*exp(-max(r-dir.w,0)/c0.w), 387 plain output), but "port has no dithering" is wrong: the port jitters the first sample per pixel (wesl:333-334,354); SE instead dithers density and step length (Dithering_func_1/2 with hash and DitherNoiseTex), and the striping on the Running Man in r3_m43.png is not shown to be step banding
 
-### 03-009 · Galaxies and nebulae
-
-Nebula sprite-model brightness and residency: port calibrates each model to the AbsMagn-based far sprite, so compact planetaries saturate to white close up (M 57 at 3e13 km) while faint ones (Abell 33, Manatee) are nearly invisible, keeps at most 4 resident models, and draws distant shell nebulae as a soft disc; SE scales models by hdrNebulaSpriteBright 0.06 / realNebulaSpriteBright 0.02 x model Brightness with NebulaBrightMin/GlowBrightMin cut-offs
-
-- Status: differs, effort **M**, auditor confidence medium
-- SE evidence: main-def.cfg hdrNebulaSpriteBright, realNebulaSpriteBright, NebulaBrightMin, GlowBrightMin, CacheSizeNebModelsVRAM
-- Port: crates/se_engine/src/nebulae.rs:617; docs/formats/nebula.md sections 6-7; run .audit/work/03/r1_m57.png
-- Check: Port calibrates model scale to the AbsMagn far-sprite surface brightness (nebulae.rs:613-617), caps residency at 4 (nebulae.rs:68, max 8), and docs/formats/nebula.md section 7 itself lists the M57 white saturation, near-invisible Abell 33/Manatee and soft-disc shell sprites (confirmed in .audit/work/03/r1_m57.png, white-cored blob); SE keys hdrNebulaSpriteBright 0.06 / realNebulaSpriteBright 0.02 / NebulaBrightMin 0.03 / GlowBrightMin 0.006 exist (main-def.cfg 173,175,253,275) and are read by FUN_1400125e0/FUN_14027a6a0, none is read by the port; exact SE application of the factors was not traced, so medium confidence.
-
 ### 03-011 · Galaxies and nebulae
 
 Intergalactic vision algorithm: SE sums the sky coverage of drawn galaxies (R^2/(d^2-R^2) per galaxy) and eases a brightness factor 1/(a + b*coverage) at AutoGalaxyMagnSpeed (1-exp(-dt*speed)); port sets the gain so the 3000th brightest galaxy looks magnitude 7 (cap 3000), blended in from 1 to 2 galaxy radii out, with a fixed 0.3 s smoothing and AutoGalaxyMagnSpeed not read
@@ -362,15 +308,6 @@ Intergalactic vision algorithm: SE sums the sky coverage of drawn galaxies (R^2/
 - SE evidence: FUN_1404c51a0, FUN_140299fe0 (+0x35cc accumulator); main-def.cfg AutoGalaxyMagnitude, AutoGalaxyMagnSpeed 10
 - Port: crates/se_engine/src/procgalaxies.rs:452-475; crates/se_engine/src/galaxies.rs:1045-1061
 - Check: FUN_140299fe0:144-152 accumulates R^2/max(d^2-R^2, eps) into +0x35cc per drawn galaxy and FUN_1404c51a0:78-90 eases it with 1-exp(-dt*speed) and sets brightness 1/(a + b*coverage) clamped >= 1; the port instead derives gain from the 3000th-brightest galaxy mapped to mag 7 (procgalaxies.rs:452-475, clamp 1..3000), blends by smoothstep(1,2 radii) and smooths with a fixed k = 3*dt (galaxies.rs:1050-1058), and AutoGalaxyMagnSpeed appears nowhere in crates/.
-
-### 03-012 · Galaxies and nebulae
-
-Galaxy/nebula display controls: SE has galaxy and DSO magnitude limits (GalaxyMagnLimit, NebulaMagnLimit, GlowMagnLimit), galaxy brightness up/down, an Intergalactic vision toggle and catalog-object filters (ShowCatGalaxies, ShowCatNebulae: "Real galaxies only / All galaxies", "Real nebulae only / All nebulae", "Galaxies disabled/enabled"); port exposes only the ShowProc* checkboxes and env vars
-
-- Status: missing, effort **M**, auditor confidence medium
-- SE evidence: locale *-gui.cfg keys "Galaxies magnitude limit", "Increase galaxies brightness", "DSO magnitude limit", "Intergalactic vision", "Real galaxies only"; main-def.cfg 167-177, 666-671
-- Port: crates/se_engine/src/procsystems.rs:169; galaxies.rs:241-266 (env only)
-- Check: Locale keys "Galaxies magnitude limit", "DSO magnitude limit", "Increase/Decrease galaxies brightness", "Intergalactic vision", "Real galaxies only", "All galaxies", "Real nebulae only", "All nebulae", "Galaxies disabled" exist (fra-gui.cfg 1268-1466; eng-gui.cfg is only a 5 KB stub) and main-def.cfg 167-177, 666-670 hold GalaxyMagnLimit/NebulaMagnLimit/GlowMagnLimit/AutoGalaxyMagnitude/ShowCatGalaxies/ShowCatNebulae; the port's only deep-sky UI is the three ShowProc* checkboxes (procsystems.rs:169-171), hud.rs/graphics.rs sliders cover stars and flares only, and galaxy brightness/auto gain are env-only (galaxies.rs:241-266).
 
 ### 04-009 · Planet surfaces
 
@@ -806,15 +743,6 @@ Galaxy GlobClusters key: SE uses a catalog galaxy's GlobClusters value (25 galax
 - SE evidence: FUN_14016bef0 key GlobClusters, FUN_14049cf40 line 132
 - Port: crates/se_core/src/proc_galsys.rs:470-486
 - Check: SE: FUN_14016bef0:550-555 reads GlobClusters into loader +0x8c, which is runtime galaxy +0x64 (same 0x28 shift as Type +0x30->+8 and Lum +0x44->+0x1c), and FUN_14049cf40:132-158 computes the count from luminosity only when that field is < 0; 25 catalog galaxies set it (M 31 450, M 87 14660, LMC 50, Sag dSph 0, M 32 0 ...); port proc_galsys.rs:470-486 always uses the luminosity/size formula and no crate reads GlobClusters
-
-### 03-016 · Galaxies and nebulae
-
-Quasars: SE reads `Quasar` catalog entries as galaxies of their Type with a quasar flag (0x800) and draws them like galaxies; port draws them as bluish point sprites (profile 3) and excludes them from elliptical volumes and intergalactic vision
-
-- Status: differs, effort **S**, auditor confidence low
-- SE evidence: FUN_14016b430 ("Quasar" -> FUN_14016bef0, flag /= 0x800); Catalogs.pak galaxies/BlackholeHosts.sc (22 Quasar, Type Sb/E2)
-- Port: crates/se_engine/src/galaxies.rs:309,324-326; ellipticals.rs:146
-- Check: FUN_14016b430 parses Quasar blocks with the same FUN_14016bef0 as Galaxy and only ORs flag 0x800 (exe strings use it as the "Quasar" type label); BlackholeHosts.sc quasars carry Type Sb/E0/E2 and Radius like galaxies, and SE shaders have no quasar-specific galaxy path, while port galaxies.rs:309 gives them profile 3 point sprites with a fixed blue colour (type_color), and skips them in ellipticals.rs:146, galaxies.rs:1036 and procsystems.rs:213; how SE uses 0x800 when drawing stays unproven, so confidence remains low
 
 ### 03-013 · Galaxies and nebulae
 
@@ -1500,7 +1428,15 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **02-004** (Star clusters, fixed 2026-10-28): Catalog defaults for missing keys: SE draws age N(11,3) Gyr for globulars (152 of 154 in Globular.sc have no A... Fix: Missing age, radius and magnitude come from SE's ranges (`catalog::complete_cluster`: globular age N(11,3), open N(0.15,0.1) ...), seeded by the cluster's name instead of SE's random stream.
 - **02-005** (Star clusters, fixed 2026-10-28): Luminosity of open clusters without magnitude (1113 of 1298 catalog clusters): SE uses L = 10*R^3*StarDensityI... Fix: Open clusters without a magnitude use SE's L = clamp(10 R^3, 1000, 2e5) capped at ClusterCatMaxAppMagn 8.1 seen from the Sun (Pozzo 1: 44.5 L_sun).
 - **03-001** (Galaxies and nebulae, fixed 2026-10-29): Galaxy front-texture plane: SE draws each sprite-model galaxy's full-resolution FrontTexture (`<name>.png`, 20... Fix: Sprite-model galaxies draw their FrontTexture (with mipmaps) as a disc over the sprites (`galaxy_plane.wesl`, after SE's galaxy_plane.glsl: faded within a model unit of the eye and edge-on, colour ^ 1/DSOGamma, premultiplied so its dust lanes hide the sprites behind); M 51's arms and pink knots, the Milky Way's bar and arms from outside. The disc takes 70% of a face-on model's calibrated brightness and the sprites the rest (port calibration; SE draws both at the model's brightness in units the port does not reproduce).
+- **03-002** (Galaxies and nebulae, fixed 2026-10-30): Dust of galaxy and nebula sprite models: SE absorption sprites output (-colour*emBright*fade, absBright*fade) ... Fix: SE: galaxy_model.glsl:64-69 / nebula_model.glsl:60-65 output absorption sprites as (-rgb * emBright * fade, absBright * fade) x atlas coverage; emission, dust and bulge are drawn in one call sorted far to near (FUN_140334e90, FUN_140333a30) with glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA) (FUN_14029bdf0:194, FUN_1402b3020:295); absBright = model Transparency x p1 (galaxies) or x b (nebulae), see 03-003. Vertex colour/intensity are bytes: clamp(colour), min(1, intensity). Ported: one AlphaMode::Premultiplied mesh per model; galaxy_model.wesl returns (-colour * emBright * w, absBright * w) for dust (layer 1) and (colour * emBright * w, 0) otherwise; sprites sorted far to near (`SpriteOrder`, 03-003), so dust only darkens what lies behind it. Dust colour = absParticleColor (Milky Way (0.08, 0.24, 0.48), Transparency 0.5); `dust_strength` multiplier default 1. Intensities clamped to 1 (MW absorption reached 5.5). Checked: s12.jpg (base / v5): Sgr A* lanes orange-brown without the black core, M 31 lanes fainter than before, M 42 dark dust patches with red rims (the dust colour subtracted from the pink emission). Not ported: ColorAbsorption is not read (its use in this shader is unproven).
+- **03-003** (Galaxies and nebulae, fixed 2026-10-30): Galaxy sprite-model shading and brightness: SE fades a sprite when the eye is within 1.5 sprite radii (clamp(d... Fix: SE (decoded): emBright = DAT_14080b5a4 x hdrGalaxySpriteBright (renderer +0x35ec = FUN_1404c4ae0 +0x4c, PhotoMode 0) x model Brightness x galaxy +0x74 (ModelBright) x p3 x [+0x35b8] x [+0x35ac] x galaxy +0xa4 (FUN_14029bdf0:152-154, 209-214); DAT_14080b5a4 = GlowBrightMin x exp((GlowMagnLimit + 0.2) / 1.0587) (FUN_1404c4610, 0.2 / 1.0587362 at 0x1406d4204 / 0x1406d46a8) = 0.006 x 898 x 0.03 = 0.162. absBright = Transparency x p1, p1 = clamp((px - 2) / 3) x bright_term x galaxy +0xa4, bright_term = clamp(GalaxyBrightMin x coef(GalaxyMagnLimit) x vision gain x L / d^2 - GalaxyBrightMin, 0, 1) (FUN_140299fe0, DAT_14080b5a0 from FUN_1404c4610 / FUN_1404c51a0). Front texture: EyePos.w = p2 x GalaxyFrontTexBright, p2 including p1. +0x35ac = deep-sky extinction inside an atmosphere (FUN_14044fe70), +0x35b8 = 1 every frame, galaxy +0xa4 = show/hide fader: all 1 in a steady view from space. Draw (decoded by the review): emission, dust and bulge in one call (FUN_140334e90), sprites sorted by camera distance, farthest first (FUN_140333a30, quicksort FUN_140334190), for spirals over 10 px. Ported: `se_glow_bright`, `se_magn_coef`, `se_bright_term` (galaxies.rs), keys from main-def.cfg; emission = se_glow_bright x Brightness x ModelBright, dust alpha = Transparency x bright_term, front texture x bright_term; no free factor (MODEL_EXPOSURE removed). One premultiplied mesh per model; `SpriteOrder` re-sorts it far-to-near on the async pool (`back_to_front`) when the camera moved > 2% of its distance and the model is over 10 px, then swaps the index buffer. Bulge gain 1, vertex bytes clamped (`sprite_vertex`). Assumed [I]: L / d^2 = exp(-(m + 0.2) / 1.0587), m the apparent magnitude (units not traced). Not ported: the atmosphere extinction (+0x35ac), realGalaxySpriteBright (PhotoMode 1/2); the far-sprite to model hand-over now changes brightness (SE's are not matched either); MODEL_MIN_PX area weighting and edge-faded quads stay (anti-aliasing). Checked: .audit/work/galaxies/s12.jpg (base / v5: sgr45, sgr10, sgr2, mwout, m31, orion): mottled orange-brown lane with foreground glow, no black core; M 31 lanes fainter (only dust in front of emission darkens it). Frame times against agentseed in the same session: Sgr A* FOV 45 6.46 ms vs 6.61 / 6.75, intergalactic 4.10 vs 4.62 / 4.11 (ftn / ftb / ftb2). Unit tests se_model_brightness_chain, sprites_sort_far_to_near.
+- **03-007** (Galaxies and nebulae, fixed 2026-10-30): Nebula NoModel key ignored: SE gives catalog nebulae with `NoModel true` no model (M 43 and Sh2-279 Running Ma... Fix: SE: FUN_140172400:462-464 reads `NoModel` and sets model index 0xfffe; Catalogs.pak nebulae/SpriteAstro.sc gives it to M 43 and Sh2-279 (Running Man), "implemented as a part of M 42 model". Ported: `nebulae.rs::no_model_names` re-parses the catalog nebulae's own .sc sources (NebulaRecord has no field for it and procsystems.rs builds that struct, so catalog.rs was not touched) and gives those nebulae no sprite model, no ray-marched model and no far sprite. Log: "2 NoModel". Checked: base_runman.png (striped orange sphere on the Running Man) vs fin_runman.png (gone; only the M 42 model around). Not ported: whether SE still draws a far point for NoModel nebulae is not traced (assumed not).
+- **03-008** (Galaxies and nebulae, fixed 2026-10-30): Nebula sprite atlas: SE nebula sprite models sample their own atlas sprites_neb.png (Common.pak, 1024x1024 sin... Fix: SE: FUN_140168bd0:177-181 loads `sprites_neb.*` next to `sprites_gal.*`; nebula_model.glsl:76 multiplies by texture(...).a (Common.pak sprites_neb.png: 1024^2 8-bit grey, 4x4 filamentary tiles, i.e. coverage). Ported: `galaxies::load_atlas(vfs, path)` loads either atlas (box-filtered to 512^2, R8, per-tile means); `setup_nebulae` gives the nebula materials, their calibration and far colours the nebula atlas (falls back to sprites_gal with a warning). Checked: fin_orion.png (filamentary dust/emission texture on M 42) vs base_orion.png.
+- **03-009** (Galaxies and nebulae, fixed 2026-10-30): Nebula sprite-model brightness and residency: port calibrates each model to the AbsMagn-based far sprite, so c... Fix: SE: FUN_1402b3020 draws nebula models with emBright = DAT_14080b5a4 (GlowBrightMin x coef(GlowMagnLimit)) x Brightness x hdrNebulaSpriteBright 0.06 (+0x35f0) x [+0x35ac] x b, absBright = Transparency x b, b = clamp(NebulaBrightMin x coef(NebulaMagnLimit) x L / d^2 - NebulaBrightMin, 0, 1) x fade-in; sprites sorted far to near (FUN_140334b10, FUN_140334e90); CacheSizeNebModelsVRAM. Ported: nebulae.rs uses that chain (se_glow_bright with hdrNebulaSpriteBright, se_bright_term with NebulaBrightMin and the nebula's apparent magnitude) and the galaxies' sorted single mesh (`SpriteOrder`); the AbsMagn calibration is gone. Not ported: residency stays at 4 models; the far sprite of shell nebulae is still a soft disc; L / d^2 units assumed as in 03-003. Checked: v5_orion.png against base_orion.png (s12.jpg).
+- **03-010** (Galaxies and nebulae, fixed 2026-10-30): Galaxy redshift: SE multiplies galaxy sprites and the front plane by Reddening = (1-x, 1-2x, 1-4x), x = distan... Fix: SE: FUN_140299fe0:251-254 sets Reddening = 1 - d / 4.227e9 pc x (1, 2, 4) (DAT_14075eb8c = 4.227e9, DAT_1406d523c = 4); galaxy_model.glsl:72 and galaxy_plane.glsl:57 multiply the colour by it (dims and reddens; blue gone near 1 Gpc, green near 2 Gpc). Ported: `redshift_tint` in galaxy_far.wesl (far sprites of catalog and procedural galaxies, nebulae, clusters) is now SE's ramp clamped to 0..1 (was a luminance-preserving 5500 K Planck shift); galaxy_model.wesl and galaxy_plane.wesl apply the same ramp from the model centre's distance. Checked: shader review; at catalog distances (< 100 Mpc) the factor is > 0.9 so the views do not change; procedural galaxies at Gpc distances fade to red and vanish beyond ~4 Gpc. Not ported: SE passes one value per galaxy; the far shader evaluates it per vertex (same thing).
+- **03-012** (Galaxies and nebulae, fixed 2026-10-30): Galaxy/nebula display controls: SE has galaxy and DSO magnitude limits (GalaxyMagnLimit, NebulaMagnLimit, Glow... Fix: SE: main-def.cfg GalaxyMagnLimit 7, NebulaMagnLimit 7, GlowMagnLimit 7, AutoGalaxyMagnitude true, ObjectFilters ShowCatGalaxies/ShowCatNebulae; keys `]`/`[` all limits (IncAllMagnCoef), Ctrl stars, Shift galaxies, P reset (FUN_1405ba8f0); locale "Galaxies magnitude limit". Ported: StarSettings.galaxy_mag_limit / nebula_mag_limit (read from main-def.cfg at startup in setup_galaxies, reset values for P); Shift+`]`/`[` change both, `]`/`[` change them with the stars, P resets; `sync_mag_limit` maps them to the far sprites' and models' reference magnitude (mag_ref = limit + 0.5, i.e. unchanged at 7; procedural galaxies and ellipticals follow). AutoGalaxyMagnitude sets the intergalactic-vision switch (SE_GAL_AUTO still wins); ShowCatGalaxies / ShowCatNebulae false hide catalog galaxies (far sprites and models) / nebulae. Checked: build, unit test nebula_limit_and_filter_reach_the_far_sprites; keys not exercised in a run (no key injection in the dev commands). Not ported: GlowMagnLimit (models stay tied to the far-sprite limit so the hand-over does not pop), separate galaxy brightness keys, GUI entries for the limits / Intergalactic vision / Real-or-All filters (hud.rs, procsystems.rs belong to others), saving the limits in the user settings file, the filter on ray-marched nebulae.
 - **03-014** (Galaxies and nebulae, fixed 2026-10-29): Fade-in of new procedural galaxy blocks: SE fades newly generated galaxy blocks in over StarFadeDuration (0.5 ... Fix: New blocks of procedural galaxies fade in the same way over StarFadeDuration (SE's 'blocks of stars and galaxies'): each new node gets its own copy of the far-sprite material, kept in step with the shared one by sync_material, with FarParams.cam_pos.w = 1 - fade scaling the brightness gain in galaxy_far.wesl (0 for all other far sprites), then rejoins the shared material (procgalaxies.rs).
+- **03-016** (Galaxies and nebulae, fixed 2026-10-30): Quasars: SE reads `Quasar` catalog entries as galaxies of their Type with a quasar flag (0x800) and draws them... Fix: SE: FUN_14016b430 parses `Quasar` blocks with the galaxy reader FUN_14016bef0 and only ORs flag 0x800; BlackholeHosts.sc quasars carry Type Sb/E0/E2 and Radius like galaxies; no SE shader has a quasar path. Ported: `profile_type` / `type_color` ignore the quasar flag (profile and colour from Type, like any galaxy; was a bluish point, profile 3); quasars count for intergalactic vision again and E-type quasars get elliptical volumes (ellipticals.rs). Checked: unit test quasars_use_their_galaxy_type. Not ported: procsystems.rs:247/457 and procstars.rs:642 still skip quasars for clusters/nebulae/stars inside them (files owned by others); what SE does with flag 0x800 when drawing remains unproven.
 - **04-001** (Planet surfaces, fixed 2026-10-29): Hapke shading and opposition surge on airless bodies: SE lights the ground with HapkeBRDF (catalog Surface key... Fix: SE's HapkeBRDF (terrain_pbr.glh) on the direct light, mixed in by Surface Hapke (or Lommel), with SpotBright/SpotWidth and the CB spot; the full Moon is evenly lit.
 - **04-002** (Planet surfaces, fixed 2026-10-29): Oblate and triaxial bodies: SE draws bodies as ellipsoids from the catalog Oblateness (Saturn 0.098, Jupiter 0... Fix: `BodyRecord::shape` (Dimensions, Oblateness scalar or per axis): terrain, cloud and aurora meshes, the body sphere and the sky shell are drawn as the ellipsoid (the shell turns with the body and works in its own frame); ground clearance, terrain LOD, shore and surface placement work through the shape. Not done: asteroid models and the eclipse/ring shadows stay spherical.
 - **04-003** (Planet surfaces, fixed 2026-10-29): Surface tint keys ModulateColor and ModulateBright: SE multiplies the surface colour by the catalog Surface Mo... Fix: The colour map takes Surface ModulateColor x ModulateBright (`PlanetUniform.modulate`).
