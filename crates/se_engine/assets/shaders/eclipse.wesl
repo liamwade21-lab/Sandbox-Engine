@@ -83,7 +83,9 @@ fn eclipse_shadow(e: EclipseLight, p: vec3<f32>, l: vec3<f32>) -> f32 {
 }
 
 // Starlight reaching `p` (lit-body radii, relative to its centre) from direction `l` through one
-// light's casters: SE's EclipseShadowFar on the surface and clouds, Shadow *= 1 - eclipse.
+// light's casters: SE's EclipseShadowFar on the surface and clouds, Shadow *= 1 - eclipse, the
+// eclipse kept to the hemisphere facing the light (planet.glsl:1083, step(0, lightPos . FragPos) on
+// the ellipsoid positions; `p` and `l` are the true ones here).
 fn eclipse_light(e: EclipseLight, p: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(1.0 - eclipse_shadow(e, p, l));
+    return vec3<f32>(1.0 - eclipse_shadow(e, p, l) * step(0.0, dot(l, p)));
 }
