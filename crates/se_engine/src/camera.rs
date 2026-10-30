@@ -1300,6 +1300,25 @@ fn run_commands(
                 None => warn!("command target not found: {name}"),
             }
         }
+        // `bodypos NAME X Y Z [DX DY DZ]`: the camera at km X, Y (along the pole), Z in the body's own
+        // frame, looking along DX DY DZ (body frame; default at the centre), the pole up.
+        "bodypos" => {
+            let words: Vec<&str> = arg.split_whitespace().collect();
+            let nums: Vec<f64> = words.iter().rev().map_while(|w| w.parse().ok()).collect::<Vec<_>>().into_iter().rev().collect();
+            let name = words[..words.len() - nums.len()].join(" ");
+            match (find(&name), nums.len()) {
+                (Some(r), 3 | 6) => {
+                    let eph = Ephemeris::new(cat);
+                    let q = eph.orientation(r, sim.jd);
+                    let p = DVec3::new(nums[0], nums[1], nums[2]) * 1000.0;
+                    let look = if nums.len() == 6 { DVec3::new(nums[3], nums[4], nums[5]) } else { -p };
+                    cam.pos = eph.position(r, sim.jd).offset_m(q * p);
+                    cam.rot = look_rotation(q * look, q * DVec3::Y);
+                    cam.selected = Some(r);
+                }
+                _ => warn!("bodypos: expected NAME X Y Z [DX DY DZ], got {arg}"),
+            }
+        }
         "wait" => q.wait_frames = arg.parse().unwrap_or(1),
         "waitwp" => *wait_wp = arg.parse().unwrap_or(1),
         "rate" => sim.rate = arg.parse().unwrap_or(1.0),

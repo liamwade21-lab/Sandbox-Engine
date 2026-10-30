@@ -2,6 +2,8 @@
 //! SpaceEngine's 2-row radial ring textures (row 1 = lit side colour, row 0 =
 //! transmitted / dusty colour, alpha = optical density).
 
+use std::sync::Arc;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -47,6 +49,11 @@ pub struct RingUniform {
     pub light_color: [Vec4; MAX_LIGHTS - 1],
     /// Each light's eclipse casters ([`crate::eclipse::EclipseCasters`]).
     pub eclipse: [EclipseLight; MAX_LIGHTS],
+    /// The volumetric rings' share (`rings3d.rs`, SE's Fade3DParams and RingsParams.z): x 0.95
+    /// `VolumDrawDist`, y the half thickness (planet radii), z 1 when `VolumetricRings` is on: the
+    /// flat ring is drawn only that far from the eye and fades out within two half thicknesses of
+    /// its plane.
+    pub fade3d: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -93,13 +100,19 @@ impl Material for RingMaterial {
 pub struct Rings {
     pub body: Entity,
     pub material: Handle<RingMaterial>,
+    pub params: RingsParams,
+    pub texture: Handle<Image>,
+    /// Each texel's front and back alpha (`rings3d::texture_alphas`).
+    pub alpha: Arc<Vec<[f32; 2]>>,
+    /// The draw SE takes for a missing `Thickness` (from the ring's seed).
+    pub thickness_draw: f64,
 }
 
 pub struct RingsPlugin;
 
 impl Plugin for RingsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<RingMaterial>::default()).add_systems(
+        app.add_plugins((MaterialPlugin::<RingMaterial>::default(), crate::rings3d::Rings3DPlugin)).add_systems(
             PostUpdate,
             update_rings.after(crate::eclipse::update_eclipse_casters).before(UniverseSet::FloatingOrigin),
         );
@@ -284,11 +297,9 @@ pub fn spawn_rings(
         return None;
     }
     let seed = (p.inner_radius_km.to_bits() ^ p.outer_radius_km.to_bits().rotate_left(17)) ^ (radius_m.to_bits() >> 7);
-    let tex = p
-        .texture_path()
-        .and_then(|path| load_ring_texture(vfs, &path))
-        .or_else(|| Some(procedural_ring_image(&p, seed)))
-        .map(|img| images.add(img));
+    let img = p.texture_path().and_then(|path| load_ring_texture(vfs, &path)).unwrap_or_else(|| procedural_ring_image(&p, seed));
+    let alpha = crate::rings3d::texture_alphas(&img);
+    let tex = Some(images.add(img));
     let has_tex = tex.is_some();
     let r_km = radius_m / 1000.0;
     let inner = (p.inner_radius_km / r_km) as f32;
@@ -309,7 +320,7 @@ pub fn spawn_rings(
             hapke2: Vec4::new(inv(p.spot_width_cb), 1.0 / RING_DETAIL_NOISE_SCALE, 1.0, 1.0),
             ..Default::default()
         },
-        texture: tex.unwrap_or(white),
+        texture: tex.clone().unwrap_or_else(|| white.clone()),
     });
     let e = commands
         .spawn((
@@ -317,6 +328,10 @@ pub fn spawn_rings(
             Rings {
                 body: body_entity,
                 material: material.clone(),
+                params: p.clone(),
+                texture: tex.unwrap_or(white),
+                alpha,
+                thickness_draw: hash1(0x7_41C, seed),
             },
             Mesh3d(meshes.add(annulus(inner, outer, 720, 8))),
             MeshMaterial3d(material),
@@ -349,7 +364,7 @@ fn host_light(albedo: f64, outer_radii: f32, planet_rgb: Vec3, star: Vec3, brigh
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_rings(
+pub(crate) fn update_rings(
     bodies: Query<(&SystemBody, &BodyLighting, Option<&EclipseCasters>)>,
     mut rings: Query<(&Rings, &mut UPosition, &mut UOrientation, &mut Visibility)>,
     mut materials: ResMut<Assets<RingMaterial>>,

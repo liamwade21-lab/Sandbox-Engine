@@ -37,10 +37,11 @@ Counts are from `docs/formats/sc_vocabulary.md` (13 blocks). "Default" is the va
 | MeanRadius | 1 | number | km | radius of the densest part, used by RingsWinter effect (comment in Saturn) | `106000` |
 | EdgeRadius | 4 | number | km | outer edge of the dense part (Saturn comment: skips E ring) | `137000` |
 | ChartRadius | 2 | number | km | outer radius shown in chart/map mode | `137000` |
-| Thickness | 6 | number | km (Saturn comment says `// km`) | vertical ring thickness | `0.15`, `10` |
-| RocksMaxSize | 5 | number | km (Saturn comment) | largest particle radius/size | `0.008` (8 m) |
-| RocksSpacing | 2 | int | unknown (inferred: particle spacing) | spacing between rock sprites | `1000` |
-| DustDrawDist | 1 | number | unknown | distance after which dust is drawn | `1854.6` |
+| Thickness | 6 | number | km, half the slab (SE's shaders use `2 x` as the full thickness) | the 3D rings' slab; default `5e-6 U(0.25, 1)` of the mean radius, 0.0125-25 km (FUN_140508600) | `0.15`, `10` |
+| RocksMaxSize | 5 | number | km | the 3D rings' cell size (one rock at most per cell, `RingRockScale` x this); default 0.04 `Thickness` | `0.008` (8 m) |
+| RocksSpacing | 2 | number | multiplier | the rocks' spread in their cells, `RocksSpacing / alpha^2` (no rocks above `RingRockMaxSpacing`); default 1 | `1000` |
+| DustDrawDist | 1 | number | none | not read by SE 0.991 (its parser FUN_14046cef0 knows `VolumDrawDist`) | `1854.6` |
+| VolumDrawDist | 0 | number | km | the 3D rings are drawn within this distance of the ring volume, the dust fading out at 0.95 of it; default the least of 20000 km, the inner radius, 3000 `Thickness` and twice the width | |
 | Density | 11 | number | dimensionless optical depth scale; 1e-4 to 10 | ring density multiplier | `1.0`, `1e-4` |
 | Opacity | 9 | number | 0 to 1 (1e-4 to 1 seen) | overall opacity multiplier | `1.0`, `0.003` |
 | SelfShadow | 5 | number | 0 to 1 | strength of ring-on-ring shadowing | `1.0` |
@@ -53,7 +54,7 @@ Counts are from `docs/formats/sc_vocabulary.md` (13 blocks). "Default" is the va
 | SpotWidth | 2 | number | radians (inferred; 0.015 = 0.86 deg) | angular width of the opposition spot, SH term | `0.015` |
 | SpotBrightCB | 2 | number | multiplier | opposition spot amplitude, coherent-backscatter (CB) term (comment: "x5 to match photos") | `1.95` |
 | SpotWidthCB | 2 | number | radians (inferred) | angular width of CB spot; Saturn comment says it includes the Sun's angular width | `0.00245` |
-| RotationPeriod | 1 | number | hours (inferred, unconfirmed) | period of the ring's rotating pattern | `6.2864` |
+| RotationPeriod | 1 | number | hours (FUN_14046cef0 divides by 24) | the ring frame's period; default the Kepler period halfway between `InnerRadius` and `EdgeRadius` | `6.2864` |
 | frequency | 4 | number | noise frequency (1/km or 1/planet radius, unknown) | procedural ring noise frequency | `6000`, `157.93` |
 | densityScale | 4 | number | multiplier | procedural density noise scale | `6` |
 | densityOffset | 4 | number | additive | procedural density noise offset | `-1.4504` |
@@ -105,3 +106,34 @@ rings (`frequency`, `density*`, `colorContrast`).
 
 VFS path for a catalog texture: `textures/planets/<stem>.png` (relative to the data dir, as
 used by `crate::vfs`).
+
+## Volumetric rings (3D)
+
+With `VolumetricRings` (main-def.cfg `PlanetRendering`, true) SE adds a second pass (FUN_1404e2bd0,
+`rings_raymarch.glsl`) when the camera is within `VolumDrawDist` of the ring volume (the annulus
+`InnerRadius`-`OuterRadius`, `Thickness` above and below the plane). The flat ring then draws only
+fragments at least 0.95 `VolumDrawDist` from the eye and fades out within two `Thickness` of the
+plane (rings.glsl `Fade3DParams`, `RingsParams.z`).
+
+- **Subrings** (FUN_1402e9c50): `max(256, texture width)` equal subrings, at least five
+  `RocksMaxSize` wide, a multiple of 256 (SE's float `floor`), at most the GPU's texture size. Subring
+  `i` reads texel `i` of the texture's last row (front) and first row (back), clamped to the width,
+  and stores in its `MarchMap` (4 rows x subrings, RGBA32F):
+  - row 2: inner and outer radius (+ `SubringInner/OuterRadiusAdjust`), `sqrt(front alpha) x Thickness`
+    and `back alpha x Thickness`;
+  - row 3: `sqrt(front alpha)` (the share of the slab with rocks), back alpha, front alpha, and
+    `1 / max(front alpha, 1e-5)^2` (times `RocksSpacing` in the shader: the rocks' spread);
+  - rows 0 and 1, each frame the time moves (FUN_1402e9830): the cosine and sine (split in two floats)
+    of `frac(t x rate) 2 pi -+ SubringLayerRotationAdjust` (55 degrees), `rate = 1 / RotationPeriod -
+    1 / P(r)` per day, `P` the Kepler period at the subring's middle (planet mass in Earth masses x
+    3.0034894e-6 solar masses, years x 365.24219); odd layers of cells use row 1.
+- **Uniforms** (block `Rings3DUniforms` at 0x1419bfb10, 0x710 bytes): the scale is
+  `RingRockScale x RocksMaxSize` km per cell; `FadeParams` = `0.5 / tan(px / f)` cells for
+  `RingRocksFadeStartSizePix` (3) and `...EndSizePix` (1.5), `f` the focal length in pixels
+  (`height / (2 tan(fov / 2))`, DAT_1419d5ab8), and 0.95 and 1 `VolumDrawDist`; `LightingParams` =
+  `Brightness x hdrRingDustBright x FrontBright / BackBright` for the dust and
+  `Brightness x hdrRingRocksBright` (5) for the rocks; `DensityParams.w` = `Opacity x SelfShadow`;
+  `DetailParams` = `OuterRadius x RingDetailNoiseScale`, `0.05 x scale / f`.
+- **Rocks** use `DefaultRingsRockTexture` (`SnowSE001`, `textures/terrain/materials/*_COL/_NORM/_RHAO.dds`)
+  with triplanar PBR (GGX), positions as emulated doubles. The port's version is `rings3d.rs` /
+  `rings3d.wesl`.

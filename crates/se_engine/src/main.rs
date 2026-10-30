@@ -43,6 +43,7 @@ mod projection;
 mod procsystems;
 mod procstars;
 mod rings;
+mod rings3d;
 mod messages;
 mod script_gui;
 mod script_vars;

@@ -19,7 +19,8 @@ pub struct RingsParams {
     pub thickness_km: f64,
     pub rocks_max_size_km: f64,
     pub rocks_spacing: f64,
-    pub dust_draw_dist: f64,
+    /// `VolumDrawDist` (km): the 3D rings are drawn within this distance of the ring volume.
+    pub volum_draw_dist_km: f64,
     pub density: f64,
     pub opacity: f64,
     pub self_shadow: f64,
@@ -56,7 +57,7 @@ impl Default for RingsParams {
             thickness_km: 0.0,
             rocks_max_size_km: 0.0,
             rocks_spacing: 0.0,
-            dust_draw_dist: 0.0,
+            volum_draw_dist_km: 0.0,
             density: 1.0,
             opacity: 1.0,
             self_shadow: 1.0,
@@ -98,7 +99,7 @@ impl RingsParams {
             thickness_km: b.f64("Thickness").unwrap_or(d.thickness_km),
             rocks_max_size_km: b.f64("RocksMaxSize").unwrap_or(d.rocks_max_size_km),
             rocks_spacing: b.f64("RocksSpacing").unwrap_or(d.rocks_spacing),
-            dust_draw_dist: b.f64("DustDrawDist").unwrap_or(d.dust_draw_dist),
+            volum_draw_dist_km: b.f64("VolumDrawDist").unwrap_or(d.volum_draw_dist_km),
             density: b.f64("Density").unwrap_or(d.density),
             opacity: b.f64("Opacity").unwrap_or(d.opacity),
             self_shadow: b.f64("SelfShadow").unwrap_or(d.self_shadow),
@@ -124,6 +125,31 @@ impl RingsParams {
         }
     }
 
+    /// The ring volume as SE fills the keys a block leaves out (FUN_140508600, the same rules the
+    /// generated rings follow, `procgen::se_rings`): `Thickness` (half the slab, km) `5e-6 U(0.25, 1)`
+    /// of the mean radius (0.0125-25 km), `RocksMaxSize` 0.04 of it, `RocksSpacing` 1, `VolumDrawDist`
+    /// the least of 20000 km, the inner radius, 3000 thicknesses and twice the ring's width, and the
+    /// `RotationPeriod` (hours in the catalog, days here) the Kepler period halfway to the edge.
+    /// `u` is the draw in [0, 1) SE takes for the thickness; `mass_earth` the planet's mass.
+    pub fn volume(&self, mass_earth: f64, u: f64) -> RingVolume {
+        let (inner, outer) = (self.inner_radius_km, self.outer_radius_km);
+        let edge = self.edge_radius_km.unwrap_or(outer);
+        let mean = self.mean_radius_km.unwrap_or((edge - inner) * 0.333 + inner);
+        let thickness = if self.thickness_km > 0.0 { self.thickness_km } else { ((u * 0.75 + 0.25) * 5e-6 * mean).clamp(0.0125, 25.0) };
+        let rocks = if self.rocks_max_size_km > 0.0 { self.rocks_max_size_km } else { thickness * 0.04 };
+        let spacing = if self.rocks_spacing > 0.0 { self.rocks_spacing } else { 1.0 };
+        let draw = if self.volum_draw_dist_km > 0.0 {
+            self.volum_draw_dist_km
+        } else {
+            (thickness * 3000.0).min(inner.min(20_000.0)).min((outer - inner) * 2.0)
+        };
+        let period = match self.rotation_period {
+            Some(h) if h != 0.0 => h / 24.0,
+            _ => kepler_period_days((edge + inner) * 0.5, mass_earth),
+        };
+        RingVolume { thickness_km: thickness, rocks_max_size_km: rocks, rocks_spacing: spacing, volum_draw_dist_km: draw, rotation_period_days: period }
+    }
+
     /// VFS path of the ring texture, relative to the data dir, e.g.
     /// `textures/planets/Saturn-rings.png`. The catalog's `.*` wildcard becomes
     /// `.png`, the only extension in Rings.pak. Returns `None` without a `Texture` key.
@@ -135,6 +161,24 @@ impl RingsParams {
         };
         Some(format!("textures/planets/{file}"))
     }
+}
+
+/// The ring volume's values ([`RingsParams::volume`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RingVolume {
+    pub thickness_km: f64,
+    pub rocks_max_size_km: f64,
+    pub rocks_spacing: f64,
+    pub volum_draw_dist_km: f64,
+    pub rotation_period_days: f64,
+}
+
+/// SE's orbital period at `r_km` around a planet of `mass_earth` (FUN_140508600 and the subring
+/// rates of FUN_1402e9c50): `sqrt(a^3 x 1.000003 / M)` years, `a` in AU, `M` in solar masses
+/// (Earth masses x 3.0034894e-6).
+pub fn kepler_period_days(r_km: f64, mass_earth: f64) -> f64 {
+    let a = r_km * 3.240_779_289_444_365e-14 / 4.848_136_811_095_36e-6;
+    (a * a * a * 1.000_003_003_489_382_5 / (mass_earth.max(1e-12) * 3.003_489_382_535_917_7e-6)).sqrt() * 365.242_189_85
 }
 
 #[cfg(test)]
@@ -189,6 +233,30 @@ mod tests {
         assert_eq!(r.spot_width_cb, 0.00245);
         assert_eq!(r.rotation_period, None);
         assert_eq!(r.front_color, None);
+        // Saturn's volume: its own thickness and rocks, SE's spacing and draw distance (3000 x 0.15 km),
+        // and the Kepler period halfway to the edge (100,770 km: 2 pi sqrt(r^3 / GM) = 9.1 hours).
+        let v = r.volume(95.16, 0.5);
+        assert_eq!((v.thickness_km, v.rocks_max_size_km, v.rocks_spacing), (0.15, 0.008, 1.0));
+        assert!((v.volum_draw_dist_km - 450.0).abs() < 1e-9);
+        assert!((v.rotation_period_days * 24.0 - 9.06).abs() < 0.05, "{}", v.rotation_period_days);
+    }
+
+    #[test]
+    fn missing_volume_keys_follow_se() {
+        let b = rings_block("Rings {
+ InnerRadius 1000
+ OuterRadius 1200
+ VolumDrawDist 50
+ RotationPeriod 12
+}
+");
+        let v = RingsParams::from_block(&b).volume(1.0, 1.0);
+        // Mean radius 1000 + 0.333 x 200 = 1066.6 km: thickness 5e-6 x mean, at least 0.0125 km.
+        assert_eq!(v.thickness_km, 0.0125);
+        assert_eq!(v.rocks_max_size_km, 0.0125 * 0.04);
+        assert_eq!((v.volum_draw_dist_km, v.rotation_period_days), (50.0, 0.5));
+        // The Moon's distance around the Earth: about 27.3 days.
+        assert!((kepler_period_days(384_400.0, 1.0 + 1.0 / 81.3) - 27.3).abs() < 0.2);
     }
 
     #[test]

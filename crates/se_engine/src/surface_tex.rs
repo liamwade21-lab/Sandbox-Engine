@@ -281,6 +281,17 @@ fn relief_layer(vfs: &Vfs, name: &str) -> Option<(u32, u32, Vec<u8>)> {
     Some((w, h, out))
 }
 
+/// SE's ring rock maps (`DefaultRingsRockTexture`, rings3d.rs): one-layer arrays of the material's
+/// `_COL`, `_NORM` and `_RHAO` maps, as the soils load them.
+pub(crate) fn rock_maps(vfs: &Vfs, name: &str) -> [Image; 3] {
+    let names = [name.to_string()];
+    [
+        bc_image(load_bc(vfs, &names, "COL", b"DXT1", &[0x10, 0x84, 0x10, 0x84, 0, 0, 0, 0]), TextureFormat::Bc1RgbaUnormSrgb),
+        bc_image(load_bc(vfs, &names, "NORM", b"ATI2", &[128, 128, 0, 0, 0, 0, 0, 0, 128, 128, 0, 0, 0, 0, 0, 0]), TextureFormat::Bc5RgUnorm),
+        bc_image(load_bc(vfs, &names, "RHAO", b"DXT1", &[0x1F, 0xCC, 0x1F, 0xCC, 0, 0, 0, 0]), TextureFormat::Bc1RgbaUnorm),
+    ]
+}
+
 /// One soil map per name (`<base>_<suffix>.dds`, the name being SE's `<base>_COL`), as the
 /// file's own BC blocks; a missing or unexpected file becomes `neutral` blocks.
 fn load_bc(vfs: &Vfs, names: &[String], suffix: &str, fourcc: &[u8; 4], neutral: &[u8]) -> BcArray {

@@ -96,11 +96,12 @@ fn settings_window(
         ResMut<crate::display::DisplaySettings>,
     ),
     (mut exposure, mut photo, mut fi, mut cc): (ResMut<ExposureComp>, ResMut<PhotoMode>, ResMut<FinalImage>, Query<&mut ColorCorrection, With<MainCamera>>),
-    (mut emission, mut water, mut shots, mut reset): (
+    (mut emission, mut water, mut shots, mut reset, mut rings): (
         Option<ResMut<crate::terrain::SelfEmission>>,
         Option<ResMut<crate::terrain::WaterDisplay>>,
         ResMut<crate::screenshot::ScreenshotSettings>,
         ResMut<crate::settings::ResetRequest>,
+        ResMut<crate::rings3d::RingSettings>,
     ),
     (mut proj, mut sky, mut sky_req, mut hires_ui): (
         ResMut<crate::projection::ProjectionSettings>,
@@ -144,6 +145,7 @@ fn settings_window(
     let (mut export, mut open_hires) = (false, false);
     let mut em = emission.as_deref().copied();
     let mut wa = water.as_deref().map(|w| w.show);
+    let mut vr = rings.volumetric;
     let bcsg0 = cc.iter().next().map(|c| c.values());
     let mut bcsg = bcsg0;
     let WindowState { tab, confirm_reset: confirm, .. } = &mut *state;
@@ -267,6 +269,8 @@ fn settings_window(
                     if let Some(w) = wa.as_mut() {
                         ui.checkbox(w, i18n.tr("Water"));
                     }
+                    // SE's VolumetricRings (main-def.cfg PlanetRendering), rings3d.rs.
+                    ui.checkbox(&mut vr, i18n.tr("Volumetric rings"));
                 });
                 group(ui, "Volumetrics", &i18n, |ui| {
                     ui.add(egui::Slider::new(&mut q.volume_resolution, 0.1..=1.0).text(i18n.tr("Volumetric quality")));
@@ -415,6 +419,9 @@ fn settings_window(
         && w != cur.show
     {
         cur.show = w;
+    }
+    if vr != rings.volumetric {
+        rings.volumetric = vr;
     }
     if let (Some(v), true) = (bcsg, bcsg != bcsg0) {
         for mut c in &mut cc {

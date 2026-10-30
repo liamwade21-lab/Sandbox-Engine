@@ -35,6 +35,9 @@ struct Ring {
     light_color: array<vec4<f32>, 3>,
     /// Each light's eclipse casters (the main star first).
     eclipse: array<EclipseLight, 4>,
+    /// The volumetric rings' share (rings3d.wesl): x 0.95 VolumDrawDist, y the half thickness (planet
+    /// radii), z 1 when on.
+    fade3d: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> ring: Ring;
@@ -256,5 +259,13 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
 
     // Soft inner and outer edges, and none edge-on.
     let edge = clamp(min(r, 1.0 - r) / max(fwidth(r * 3.0), 1e-6), 0.0, 1.0) * smoothstep(0.0, 0.01, abs(nv));
-    return vec4<f32>(col, alpha) * edge;
+    // SE's rings.glsl with the 3D rings on: nothing nearer than 0.95 VolumDrawDist (the 3D pass draws
+    // that), faded out within two half thicknesses of the ring plane.
+    var fade3d = 1.0;
+    if ring.fade3d.z > 0.5 {
+        let eye_dist = length(in.world_pos) / in.planet_radius;
+        let eye_height = abs(dot(in.centre, n)) / in.planet_radius;
+        fade3d = step(ring.fade3d.x, eye_dist) * smoothstep(ring.fade3d.y, 2.0 * ring.fade3d.y, eye_height);
+    }
+    return vec4<f32>(col, alpha) * edge * fade3d;
 }
