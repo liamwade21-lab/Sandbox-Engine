@@ -842,7 +842,7 @@ impl Plugin for GalaxiesPlugin {
         .insert_resource(GalaxySettings::from_env())
         .init_resource::<GalaxyDensity>()
         .add_systems(Startup, setup_galaxies)
-        .add_systems(PostUpdate, update_galaxies.after(UniverseSet::FloatingOrigin));
+        .add_systems(PostUpdate, (sync_mag_limit, update_galaxies).chain().after(UniverseSet::FloatingOrigin));
     }
 }
 
@@ -916,6 +916,25 @@ pub(crate) const VISION_CAP: f32 = 1.0;
 /// Mean surface brightness it can raise a 3D galaxy model to.
 pub(crate) const VISION_CAP_MODEL: f32 = 0.05;
 
+/// The port's far-sprite reference magnitude at SE's limiting magnitude: `mag_ref = limit + 0.5`
+/// (7.5 at the default `GalaxyMagnLimit` / `NebulaMagnLimit` 7).
+pub(crate) const MAG_REF_OFFSET: f32 = 0.5;
+
+/// SE's `main-def.cfg`, parsed (deep-sky display keys are read from it at startup).
+pub(crate) fn main_def_doc(cfg: &crate::config::EngineConfig) -> Option<se_core::sc::Block> {
+    let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).ok()?;
+    Some(se_core::sc::parse(&text))
+}
+
+/// `GalaxyMagnLimit` (the `]` / `[` keys, `stars::mag_limit_keys`) -> the reference magnitude of the
+/// galaxy far sprites and models (procedural galaxies and ellipticals read the same setting).
+fn sync_mag_limit(stars: Res<crate::stars::StarSettings>, mut gs: ResMut<GalaxySettings>) {
+    let m = stars.galaxy_mag_limit + MAG_REF_OFFSET;
+    if (gs.mag_ref - m).abs() > 1e-6 {
+        gs.mag_ref = m;
+    }
+}
+
 pub(crate) fn far_uniforms(cam_pc: Vec3, s: &GalaxySettings) -> FarParams {
     FarParams {
         cam_pos: cam_pc.extend(0.0),
@@ -933,12 +952,27 @@ pub(crate) fn far_uniforms(cam_pc: Vec3, s: &GalaxySettings) -> FarParams {
 pub(crate) fn setup_galaxies(
     mut commands: Commands,
     data: Res<SeData>,
-    settings: Res<GalaxySettings>,
+    mut settings: ResMut<GalaxySettings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut density: ResMut<GalaxyDensity>,
+    (cfg, mut stars): (Res<crate::config::EngineConfig>, ResMut<crate::stars::StarSettings>),
 ) {
+    // SE's deep-sky display keys (main-def.cfg): limits, intergalactic vision, catalog filter.
+    if let Some(doc) = main_def_doc(&cfg) {
+        let num = |k: &str| doc.find_deep(k).and_then(|i| i.f64()).map(|v| v as f32);
+        let flag = |k: &str| doc.find_deep(k).and_then(|i| i.bool());
+        stars.galaxy_mag_limit = num("GalaxyMagnLimit").unwrap_or(stars.galaxy_mag_limit);
+        stars.nebula_mag_limit = num("NebulaMagnLimit").unwrap_or(stars.nebula_mag_limit);
+        stars.dso_mag_limit_reset = [stars.galaxy_mag_limit, stars.nebula_mag_limit];
+        settings.mag_ref = stars.galaxy_mag_limit + MAG_REF_OFFSET;
+        // SE_GAL_AUTO (testing) wins over AutoGalaxyMagnitude.
+        if std::env::var_os("SE_GAL_AUTO").is_none() {
+            settings.auto_gain = flag("AutoGalaxyMagnitude").unwrap_or(settings.auto_gain);
+        }
+        settings.enabled &= flag("ShowCatGalaxies").unwrap_or(true);
+    }
     let vfs = data.vfs.clone();
     let cat = data.catalog.clone();
 
@@ -1331,6 +1365,10 @@ pub(crate) fn update_galaxies(
 
     // ---- per-frame uniforms ---------------------------------------------------------------
     let mut far_u = far_uniforms(cam_pc.as_vec3(), &settings);
+    if !settings.enabled {
+        // `ShowCatGalaxies false`: no catalog galaxy is drawn.
+        far_u.params.x = 0.0;
+    }
     far_u.params2.z = gain;
     far_u.params2.w = VISION_CAP;
     let mut n_res = 0;

@@ -473,13 +473,22 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   `size_pc / d * focal` (min 1.5 px, area-weighted flux below that). Sprites larger than 250 px fade out
   (gone at 875 px) so the part of the galaxy around the camera never covers the screen. Atlas =
   `sprites_gal.png` (box-filtered to 512^2, R8, 4x4 tiles). Emission: premultiplied additive
-  (`AlphaMode::Add`, shader alpha 0). Dust: `AlphaMode::Multiply` (Bevy 0.20 blend `dst*src.rgb +
-  dst*(1-src.a)`), shader returns `(exp(-tau * k_rgb), 1)` with `tau = I0 * tile * dust_strength *
-  Transparency` and a reddening-biased `k_rgb`.
+  (`AlphaMode::Add`, shader alpha 0). Dust: SE's blend `ONE, ONE_MINUS_SRC_ALPHA` (`AlphaMode::Premultiplied`),
+  shader returns `(-colour * K_emission * w, Transparency * dust_strength * w)` with `w = I * tile * fade`, as
+  galaxy_model.glsl: it darkens by `Transparency` and subtracts the dust colour (`absParticleColor`) at the emission
+  brightness; Bevy's tonemapper clamps negative results to 0. Vertex colour and intensity are clamped to 0..1 like
+  SE's bytes (`sprite_vertex`; the Milky Way's absorption intensities reach 5.5 unclamped). Known issue: the port's
+  calibrated emission seen from inside the Milky Way is far above 1, so the subtraction turns the over-range white
+  orange/red with black lanes toward Sagittarius (SE's look is brown lanes on a soft glow, as with `SE_GAL_MODEL=0.2`):
+  the exposure (SE's brightness chain, gap 03-003) is the missing part.
+* **Reddening**: SE's `Reddening = 1 - d / 4.227e9 pc * (1, 2, 4)` (FUN_140299fe0) multiplies the far sprites,
+  model sprites and front texture (clamped to 0..1).
 * **Calibration**: per model `K_emission = SB_target / S_raw`, `S_raw = sum(I0 * lum * tile_mean *
   (2 size)^2) / pi` (generator output, face-on mean) and `SB_target = K_far * 10^(0.4 (m_ref - M)) * 100 /
   (pi (R Radius.x)^2 focal_ref^2)`, so the model and the far sprite have the same mean surface brightness
-  (no pop when the far sprite fades out). Defaults: `K_far = 1.5`, `m_ref = 7.5`, `dust_strength = 0.35`.
+  (no pop when the far sprite fades out). Defaults: `K_far = 1.5`, `m_ref = GalaxyMagnLimit + 0.5 = 7.5`
+  (Shift+`]`/`[` change the limit), `dust_strength = 1` (= SE). `AutoGalaxyMagnitude` and `ShowCatGalaxies` are read
+  from main-def.cfg. Quasars are drawn as galaxies of their `Type` (SE only flags them, 0x800).
   Env overrides for tuning: `SE_GAL_FAR`, `SE_GAL_MODEL`, `SE_GAL_DUST`, `SE_GAL_BUILD`.
 * **Sort order**: Bevy sorts transparent items by the view depth of the mesh AABB centre plus
   `depth_bias`. The atmosphere sky shell shader returns alpha 1 with premultiplied blending, i.e. it
@@ -528,5 +537,5 @@ Implemented in `GalaxiesPlugin`; shaders `assets/shaders/galaxy_far.wesl` and `g
   the galaxy model: they were procedural supergiants/OB stars generated in the dense bulge by
   `se_core::star_octree` (no age model). `DensityModel::young_fraction` now restricts stars brighter than M = -2 to
   the disk population, so the bulge keeps only old stars. Separately the model's bulge sprites (layer `Bulge`) are
-  drawn with a display gain of 0.3 (`SE_GAL_BULGE`), which turns the face-on core from a white disc into a warm glow;
-  the disc calibration is unaffected.
+  drawn at full strength as in SE (no per-layer gain; `SE_GAL_BULGE` scales them for comparisons), with SE's clamped
+  vertex intensities.

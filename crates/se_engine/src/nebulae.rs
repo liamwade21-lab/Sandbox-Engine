@@ -37,7 +37,7 @@ use se_core::vfs::Vfs;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, FOCAL_REF, GalaxyFarMaterial, GalaxyModelMaterial, GalaxySettings,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, FOCAL_REF, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
     ModelParams, SpriteAtlas, SpriteBuffers, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
     setup_galaxies, sprite_vertex, update_galaxies,
 };
@@ -72,6 +72,8 @@ pub struct NebulaSettings {
     pub build_px: f32,
     /// Maximum resident models.
     pub max_models: usize,
+    /// Reference magnitude of the far sprites and models: SE's `NebulaMagnLimit` + `MAG_REF_OFFSET`.
+    pub mag_ref: f32,
 }
 
 impl Default for NebulaSettings {
@@ -83,6 +85,7 @@ impl Default for NebulaSettings {
             dust_strength: 1.0,
             build_px: 4.0,
             max_models: 4,
+            mag_ref: 7.0 + MAG_REF_OFFSET,
         };
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         if let Some(v) = get("SE_NEB_FAR") {
@@ -260,7 +263,21 @@ impl Plugin for NebulaePlugin {
         app.init_resource::<NebulaSettings>()
             .init_resource::<ResidentNebulae>()
             .add_systems(Startup, setup_nebulae.after(setup_galaxies))
-            .add_systems(PostUpdate, update_nebulae.after(update_galaxies));
+            .add_systems(PostUpdate, (sync_mag_limit, update_nebulae).chain().after(update_galaxies));
+    }
+}
+
+/// The galaxy far-sprite settings the nebula far sprites are drawn with (soft profile, own limit).
+fn nebula_far_settings(s: &NebulaSettings) -> GalaxySettings {
+    let far_brightness = if s.enabled { s.brightness } else { 0.0 };
+    GalaxySettings { far_brightness, min_px: 2.0, cull: 0.002, mag_ref: s.mag_ref, ..GalaxySettings::default() }
+}
+
+/// `NebulaMagnLimit` (the `]` / `[` keys, `stars::mag_limit_keys`) -> the nebulae's reference magnitude.
+fn sync_mag_limit(stars: Res<crate::stars::StarSettings>, mut ns: ResMut<NebulaSettings>) {
+    let m = stars.nebula_mag_limit + MAG_REF_OFFSET;
+    if (ns.mag_ref - m).abs() > 1e-6 {
+        ns.mag_ref = m;
     }
 }
 
@@ -287,12 +304,17 @@ fn profile_color(rec: &NebulaRecord) -> [f32; 3] {
 fn setup_nebulae(
     mut commands: Commands,
     data: Res<SeData>,
-    settings: Res<NebulaSettings>,
+    mut settings: ResMut<NebulaSettings>,
+    cfg: Res<crate::config::EngineConfig>,
     gal_atlas: Res<SpriteAtlas>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    // `ShowCatNebulae false` (main-def.cfg ObjectFilters) hides the catalog nebulae.
+    if let Some(doc) = main_def_doc(&cfg) {
+        settings.enabled &= doc.find_deep("ShowCatNebulae").and_then(|i| i.bool()).unwrap_or(true);
+    }
     let vfs = data.vfs.clone();
     let cat = data.catalog.clone();
     // SE's nebula models sample their own atlas (nebula_model.glsl, `sprites_neb.*` in FUN_140168bd0):
@@ -441,7 +463,7 @@ fn setup_nebulae(
         .with_inserted_attribute(ATTR_FAR_SHAPE, shape)
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
-    let gs = GalaxySettings { far_brightness: settings.brightness, min_px: 2.0, cull: 0.002, ..GalaxySettings::default() };
+    let gs = nebula_far_settings(&settings);
     let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
     let far_mesh = meshes.add(mesh);
     let mut color_queue: Vec<usize> = (0..n).filter(|&i| model_of[i].is_some() && vert_of[i].is_some()).collect();
@@ -635,7 +657,7 @@ pub(crate) fn update_nebulae(
     }
 
     // per-frame uniforms
-    let gs = GalaxySettings { far_brightness: settings.brightness, min_px: 2.0, cull: 0.002, ..GalaxySettings::default() };
+    let gs = nebula_far_settings(&settings);
     let mut far_u = far_uniforms(cam_pc.as_vec3(), &gs);
     let mut n_res = 0;
     for slot in &st.slots {
@@ -672,5 +694,21 @@ pub(crate) fn update_nebulae(
     }
     if let Some(mut m) = far_mats.get_mut(&st.far) {
         m.uniforms = far_u;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nebula_limit_and_filter_reach_the_far_sprites() {
+        let mut s = NebulaSettings { mag_ref: 9.0 + MAG_REF_OFFSET, ..NebulaSettings::default() };
+        let gs = nebula_far_settings(&s);
+        assert_eq!(gs.mag_ref, 9.5);
+        assert_eq!(gs.far_brightness, s.brightness);
+        // ShowCatNebulae false: nothing is drawn.
+        s.enabled = false;
+        assert_eq!(nebula_far_settings(&s).far_brightness, 0.0);
     }
 }
