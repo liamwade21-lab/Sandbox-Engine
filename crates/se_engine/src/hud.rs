@@ -239,8 +239,10 @@ pub(crate) fn object_kind(data: &SeData, r: ObjectRef, i18n: &I18n, classes: Opt
             format!("{} {} ({k})", cap(word.split('#').next().unwrap_or(word)), i18n.tr("galaxy"))
         }
         ObjectRef::Cluster(i) => {
-            let k = c.clusters[i as usize].kind.to_ascii_lowercase();
-            let t = if k.starts_with('g') { "globular#star_cluster_type" } else { "open#star_cluster_type" };
+            // SE has two words: a galactic nucleus (`Kern`) cluster is a globular one (02-012).
+            use se_core::catalog::ClusterType;
+            let open = matches!(ClusterType::parse(&c.clusters[i as usize].kind), ClusterType::Open | ClusterType::Part);
+            let t = if open { "open#star_cluster_type" } else { "globular#star_cluster_type" };
             let word = i18n.tr(t);
             format!("{} {}", cap(word.split('#').next().unwrap_or(word)), i18n.tr("star cluster"))
         }
@@ -359,7 +361,12 @@ fn draw_hud(
     mut gfx_ui: ResMut<crate::graphics::GraphicsUi>,
     mut thermal: Local<Option<(ObjectRef, se_core::climate::display::Model)>>,
     (mut browser, mut skin, mut msg): (ResMut<crate::browser::BrowserState>, ResMut<crate::skin::Skin>, ResMut<crate::messages::Messages>),
-    (mut music, mut sound, terrains): (Option<ResMut<crate::music::MusicState>>, ResMut<crate::sound::SoundSettings>, Query<(&crate::system::SystemBody, &crate::terrain::Terrain)>),
+    (mut music, mut sound, terrains, clusters): (
+        Option<ResMut<crate::music::MusicState>>,
+        ResMut<crate::sound::SoundSettings>,
+        Query<(&crate::system::SystemBody, &crate::terrain::Terrain)>,
+        Option<Res<crate::clusters::ClusterField>>,
+    ),
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if hud.hidden {
@@ -690,6 +697,24 @@ fn draw_hud(
                     line(ui, "Absolute magnitude", format!("{:.2}", g.abs_mag));
                     let dpc = (dist / METERS_PER_PC).max(1e-12);
                     line(ui, "Apparent magnitude", format!("{:.2}", g.abs_mag + 5.0 * (dpc / 10.0).log10()));
+                }
+                // Star clusters (02-012): magnitudes, luminosity, age and the generated members' count
+                // (SE's "Number of stars", "Fly inside to count stars" before they exist, FUN_14038a450).
+                ObjectRef::Cluster(i) => {
+                    let c = &cat.clusters[i as usize];
+                    let dpc = (dist / METERS_PER_PC).max(1e-12);
+                    line(ui, "Absolute magnitude", format!("{:.2}", c.abs_mag));
+                    line(ui, "Apparent magnitude", format!("{:.2}", c.abs_mag + 5.0 * (dpc / 10.0).log10()));
+                    let lum = se_core::star::lum_from_abs_mag(c.abs_mag);
+                    line(ui, "Luminosity", if lum >= 1e4 { format!("{lum:.3e} Sun") } else { format!("{lum:.1} Sun") });
+                    line(ui, "Age", format!("{:.3} billion years", c.age_gyr));
+                    match clusters.as_ref().and_then(|f| f.member_count(i as usize)).filter(|n| *n > 0) {
+                        Some(n) => line(ui, "Number of stars", n.to_string()),
+                        None if !c.no_members => {
+                            ui.label(egui::RichText::new(i18n.tr("Fly inside to count stars")).size(13.0));
+                        }
+                        None => {}
+                    }
                 }
                 _ => {}
             }

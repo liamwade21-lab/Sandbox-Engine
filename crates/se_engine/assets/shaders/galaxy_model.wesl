@@ -5,8 +5,13 @@
 // corner = quad corner. Each sprite is a camera-facing billboard with a random in-plane
 // rotation, drawn at infinity (like the starfield) so only directions matter.
 //
-// Emission: output (rgb, 0) with additive blending.
-// Dust:     output (transmittance, 1) with AlphaMode::Multiply (dst * src.rgb).
+// One mesh per model holds emission, dust and bulge, sorted far to near (SpriteOrder, as SE's
+// FUN_140333a30), drawn with SE's blend (galaxy_model.glsl / nebula_model.glsl, glBlendFunc(ONE,
+// ONE_MINUS_SRC_ALPHA) in FUN_140334e90, Bevy's AlphaMode::Premultiplied):
+// Emission and bulge: output (rgb * emBright, 0), i.e. additive.
+// Dust:     output (-rgb * emBright, absBright) * coverage: darkens what is behind by absBright and
+//           subtracts the dust colour (the tonemapper clamps the result at 0).
+// Both are multiplied by SE's Reddening (1 - x, 1 - 2x, 1 - 4x), x = distance / 4.227e9 pc (FUN_140299fe0).
 
 import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_pbr::render::mesh_functions::get_world_from_local;
@@ -14,11 +19,19 @@ import bevy_pbr::render::mesh_functions::get_world_from_local;
 struct ModelParams {
     // xyz: galaxy centre relative to the camera (pc), w: model fade (0..1)
     center_rel: vec4<f32>,
-    // x: brightness (emission) / optical depth scale (dust), y: min sprite radius (px), zw unused
+    // x: emission brightness (emBright), y: min sprite radius (px), z: absorption strength (absBright), w unused
     params: vec4<f32>,
-    // x: mode (0 emission, 1 dust)
+    // unused
     params2: vec4<f32>,
 };
+
+// SE's reddening distance (DAT_14075eb8c, pc: about c / H0).
+const REDDEN_PC: f32 = 4.227e9;
+
+fn reddening(d_pc: f32) -> vec3<f32> {
+    let x = d_pc / REDDEN_PC;
+    return clamp(vec3<f32>(1.0) - x * vec3<f32>(1.0, 2.0, 4.0), vec3<f32>(0.0), vec3<f32>(1.0));
+}
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> model: ModelParams;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var atlas: texture_2d<f32>;
@@ -38,6 +51,8 @@ struct VertexOut {
     @location(1) uv: vec2<f32>,
     @location(2) tile: f32,
     @location(3) weight: f32,
+    // Sprite layer: 0 emission, 1 dust, 2 bulge (SE's layer byte VertexData.w: 0 marks dust).
+    @location(4) @interpolate(flat) layer: f32,
 };
 
 fn hidden() -> VertexOut {
@@ -47,6 +62,7 @@ fn hidden() -> VertexOut {
     o.uv = vec2<f32>(0.0);
     o.tile = 0.0;
     o.weight = 0.0;
+    o.layer = 0.0;
     return o;
 }
 
@@ -90,10 +106,12 @@ fn vertex(v: Vertex) -> VertexOut {
 
     var o: VertexOut;
     o.clip = clip;
-    o.color = v.data.rgb;
+    // Reddening of the whole model by its centre's distance (SE passes one value per galaxy).
+    o.color = v.data.rgb * model.params.x * reddening(length(model.center_rel.xyz));
     o.uv = v.corner;
     o.tile = v.info.y;
-    o.weight = v.data.w * small * small * big * model.center_rel.w * model.params.x;
+    o.weight = v.data.w * small * small * big * model.center_rel.w;
+    o.layer = v.info.w;
     return o;
 }
 
@@ -106,14 +124,9 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let uv = (vec2<f32>(col, row) + q) * 0.25;
     // Fade the quad edge to zero so huge near sprites never show their rectangular outline.
     let edge = 1.0 - smoothstep(0.75, 1.0, max(abs(in.uv.x), abs(in.uv.y)));
-    let tex = textureSample(atlas, atlas_sampler, uv).r * edge;
-    if model.params2.x < 0.5 {
-        return vec4<f32>(in.color * (tex * in.weight), 0.0);
+    let w = textureSample(atlas, atlas_sampler, uv).r * edge * in.weight;
+    if abs(in.layer - 1.0) > 0.5 {
+        return vec4<f32>(in.color * w, 0.0);
     }
-    // Dust: Beer-Lambert extinction with a per-channel coefficient (blue is absorbed most).
-    let tau = tex * in.weight;
-    // The tint (0.08, 0.24, 0.48) is made less saturated: grey dust with a reddening bias.
-    let c = in.color / max(max(in.color.r, in.color.g), max(in.color.b, 1e-4));
-    let transmit = exp(-tau * mix(vec3<f32>(1.0), c, 0.5) * 6.0);
-    return vec4<f32>(transmit, 1.0);
+    return vec4<f32>(-in.color * w, clamp(model.params.z * w, 0.0, 1.0));
 }

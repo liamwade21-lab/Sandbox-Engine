@@ -158,9 +158,16 @@ struct EnvCapture {
     /// Camera position the faces were rendered at, and the distance to the lensed hole then.
     origin: Option<se_core::upos::UPos>,
     hole_dist_m: f64,
-    /// Set by `update_lens`: a hole is lensed this frame.
+    /// Set by `update_lens`: some lensed ray can reach the environment map this frame.
     want: bool,
+    /// Set by `update_lens`: the faces are stale, so all six render this frame.
+    restart: bool,
 }
+
+/// Catalog star indices of the holes the lens draws this frame (their disks are on screen as
+/// volumes, so the star field leaves out their points).
+#[derive(Resource, Default)]
+pub struct LensedHoles(pub Vec<u32>);
 
 /// Marks an environment-map camera (face index).
 #[derive(Component)]
@@ -202,6 +209,7 @@ impl Plugin for BlackHolesPlugin {
         app.init_resource::<BhList>()
             .init_resource::<BlackHoleSettings>()
             .init_resource::<EnvCapture>()
+            .init_resource::<LensedHoles>()
             .add_systems(Startup, (load_settings, init_images).chain())
             .add_systems(
                 PostUpdate,
@@ -444,9 +452,12 @@ fn update_lens(
     cams: Query<(Entity, Has<BlackHoleLens>), With<MainCamera>>,
     mut list: ResMut<BhList>,
     mut env: ResMut<EnvCapture>,
+    mut lensed: ResMut<LensedHoles>,
     mut frame: Local<u32>,
 ) {
     env.want = false;
+    env.restart = false;
+    lensed.0.clear();
     let Some((cam_e, has_lens)) = cams.iter().next() else { return };
     if std::env::var_os("SE_NO_BLACKHOLES").is_some() {
         return;
@@ -468,6 +479,7 @@ fn update_lens(
 
     let mut found: Vec<(f64, HoleUniform)> = Vec::new();
     let mut nearest_m = f64::INFINITY;
+    let mut want_env = false;
     for info in &list.list {
         if info.has_pos && info.pos_pc.distance(cam_pc) > 2.0 {
             continue;
@@ -514,7 +526,9 @@ fn update_lens(
         let s = ((d_rs - 3.0) / 7.0).clamp(0.0, 1.0);
         u.light.w = (s * s * (3.0 - 2.0 * s)) as f32;
         nearest_m = nearest_m.min(dist);
+        want_env |= reaches_env(dir.as_dvec3(), region, d_rs, tan_x, tan_y, px_ang);
         found.push((region / px_ang, u));
+        lensed.0.push(info.star);
     }
 
     if found.is_empty() {
@@ -525,10 +539,17 @@ fn update_lens(
     }
     found.sort_by(|a, b| b.0.total_cmp(&a.0));
     *frame = frame.wrapping_add(1);
-    env.want = true;
+    env.want = want_env;
     env.hole_dist_m = nearest_m;
+    // A stale map restarts here, so its six faces (rendered before the main view this frame) are
+    // already the ones the lens reads.
+    if want_env && !env.cams.is_empty() && !env_current(&env, &cam) {
+        env.restart = true;
+        env.valid = 0;
+        env.origin = Some(cam.pos);
+    }
     let rot = bevy::math::DMat3::from_quat(cam.rot);
-    let env_ok = env.valid == 0b11_1111 && env_current(&env, &cam);
+    let env_ok = want_env && !env.cams.is_empty() && (env.restart || env.valid == 0b11_1111);
     let mut lens = BlackHoleLens {
         view: Vec4::new(tan_x as f32, tan_y as f32, (*frame % 4096) as f32, found.len().min(MAX_HOLES) as f32),
         sky0: rot.x_axis.as_vec3().extend(if env_ok { 1.0 } else { 0.0 }),
@@ -545,6 +566,18 @@ fn update_lens(
     commands.entity(cam_e).insert(lens);
 }
 
+/// Some ray the lens bends can take its sky from the environment map: near the hole (the
+/// blendFactor is below 1 under 10 Rg), when the bent region reaches a screen edge (rays leave the
+/// frame), or when the shadow is large enough that its photon ring, which sees the whole sky, is
+/// more than a few pixels wide.
+fn reaches_env(dir: DVec3, region: f64, d_rs: f64, tan_x: f64, tan_y: f64, px_ang: f64) -> bool {
+    if d_rs < 10.0 || dir.z >= 0.0 || 2.6 / d_rs > 4.0 * px_ang {
+        return true;
+    }
+    let (ax, ay) = ((dir.x / -dir.z).abs().atan(), (dir.y / -dir.z).abs().atan());
+    region >= tan_x.atan() - ax || region >= tan_y.atan() - ay
+}
+
 /// The environment faces still show the sky from here: the camera has moved less than 10% of
 /// its distance to the hole since they were rendered.
 fn env_current(env: &EnvCapture, cam: &FlyCamera) -> bool {
@@ -557,7 +590,6 @@ fn update_env_cams(
     mut commands: Commands,
     mut env: ResMut<EnvCapture>,
     images: Option<Res<BlackHoleImages>>,
-    cam: Res<FlyCamera>,
     main: Query<&Projection, (With<MainCamera>, Without<EnvFaceCam>)>,
     mut faces: Query<(&EnvFaceCam, &mut Camera, &mut Transform, &mut Projection)>,
 ) {
@@ -592,11 +624,7 @@ fn update_env_cams(
         }
         return;
     }
-    let restart = !env_current(&env, &cam);
-    if restart {
-        env.valid = 0;
-        env.origin = Some(cam.pos);
-    }
+    let restart = env.restart;
     let near = main.iter().next().and_then(|p| if let Projection::Perspective(p) = p { Some(p.near) } else { None });
     let next = env.next;
     for (face, mut c, mut tf, mut proj) in &mut faces {

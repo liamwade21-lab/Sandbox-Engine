@@ -10,11 +10,13 @@
 //! * **Far field**: one billboard per catalog nebula at infinity, drawn with the galaxy far-sprite shader
 //!   (a second `GalaxyFarMaterial` instance, soft profile), coloured by the model's stored `sumColor`.
 //! * **Near volume**: when the angular radius exceeds `build_px` or the camera is inside, the model is built
-//!   on the async pool and drawn with the galaxy model shader (emission `Add` + dust `Multiply`).
+//!   on the async pool and drawn with the galaxy model shader (emission `Add` + dust with SE's
+//!   `ONE, ONE_MINUS_SRC_ALPHA`), using the nebula atlas `sprites_neb.png` (FUN_140168bd0).
+//! * Catalog nebulae with `NoModel true` (M 43, Sh2-279: part of the M 42 model) get no model and no
+//!   sprite (FUN_140172400 sets model index 0xfffe).
 //! * Like the galaxies, everything sorts after all other transparent items and fades out in daylight.
 
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
@@ -34,10 +36,26 @@ use se_core::vfs::Vfs;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, FOCAL_REF, GalaxyFarMaterial, GalaxyModelMaterial, GalaxySettings,
-    ModelParams, SpriteAtlas, SpriteBuffers, angular_px, far_uniforms, model_fade, pad_aabb, setup_galaxies,
-    update_galaxies,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
+    ModelParams, SORT_PX, SpriteAtlas, SpriteBuffers, SpriteOrder, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
+    se_bright_term, se_glow_bright, setup_galaxies, sprite_vertex, update_galaxies,
 };
+
+/// Names (lower case) of the catalog nebulae marked `NoModel true` in their `.sc` source: SE gives them
+/// model index 0xfffe (FUN_140172400), i.e. nothing is drawn for them (M 43 and Sh2-279 are part of the
+/// M 42 model).
+fn no_model_names(vfs: &Vfs, sources: &HashSet<&str>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for src in sources {
+        let Ok(text) = vfs.read_string(src) else { continue };
+        for item in se_core::sc::parse(&text).items.iter().filter(|i| i.key == "Nebula") {
+            if item.block.as_ref().and_then(|b| b.bool("NoModel")) == Some(true) {
+                out.extend(item.names().into_iter().map(|n| n.to_lowercase()));
+            }
+        }
+    }
+    out
+}
 
 /// User-tweakable nebula settings.
 #[derive(Resource, Debug, Clone)]
@@ -45,14 +63,23 @@ pub struct NebulaSettings {
     pub enabled: bool,
     /// Far-sprite brightness; the 3D model is calibrated to the same mean surface brightness.
     pub brightness: f32,
-    /// Extra multiplier on the model emission.
+    /// Extra multiplier on SE's model emission; 1 = SE.
     pub model_brightness: f32,
-    /// Dust optical-depth scale.
+    /// Multiplier on SE's dust strength (absBright = the model's `Transparency`); 1 = SE.
     pub dust_strength: f32,
     /// Build a model when the angular radius exceeds this many pixels.
     pub build_px: f32,
     /// Maximum resident models.
     pub max_models: usize,
+    /// Reference magnitude of the far sprites: SE's `NebulaMagnLimit` + `MAG_REF_OFFSET`.
+    pub mag_ref: f32,
+    /// SE's model brightness chain (main-def.cfg, see `galaxies::se_glow_bright`): `NebulaMagnLimit`,
+    /// `NebulaBrightMin`, `GlowMagnLimit`, `GlowBrightMin`, `hdrNebulaSpriteBright`.
+    pub mag_limit: f32,
+    pub bright_min: f32,
+    pub glow_mag_limit: f32,
+    pub glow_bright_min: f32,
+    pub sprite_bright: f32,
 }
 
 impl Default for NebulaSettings {
@@ -61,9 +88,15 @@ impl Default for NebulaSettings {
             enabled: true,
             brightness: 0.8,
             model_brightness: 1.0,
-            dust_strength: 0.06,
+            dust_strength: 1.0,
             build_px: 4.0,
             max_models: 4,
+            mag_ref: 7.0 + MAG_REF_OFFSET,
+            mag_limit: 7.0,
+            bright_min: 0.03,
+            glow_mag_limit: 7.0,
+            glow_bright_min: 0.006,
+            sprite_bright: 0.06,
         };
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         if let Some(v) = get("SE_NEB_FAR") {
@@ -80,9 +113,7 @@ impl Default for NebulaSettings {
 }
 
 struct BuiltNebula {
-    em: SpriteBuffers,
-    dust: SpriteBuffers,
-    s_raw: f32,
+    buf: SpriteBuffers,
     sprites: usize,
 }
 
@@ -92,7 +123,6 @@ struct BuildInput {
     def: GalaxyModelDef,
     orientation: DQuat,
     radius_pc: f64,
-    tile_mean: [f32; 16],
 }
 
 /// Loads a nebula texture. Like the exe, the absorption channel is the *last* channel of the image, so an
@@ -132,7 +162,7 @@ fn nebula_color(vfs: &Vfs, textures: &[String], def: &GalaxyModelDef, tile_mean:
     let data = generate(vfs, textures, def)?;
     let mut c = [0.0f64; 3];
     for s in data.sprites.iter().filter(|s| s.layer() != SpriteLayer::Absorption) {
-        let w = (s.brightness * tile_mean[s.atlas_tile() as usize]) as f64 * (s.size as f64).powi(2);
+        let w = (s.brightness.clamp(0.0, 1.0) * tile_mean[s.atlas_tile() as usize]) as f64 * (s.size as f64).powi(2);
         for k in 0..3 {
             c[k] += s.color[k] as f64 * w;
         }
@@ -142,13 +172,12 @@ fn nebula_color(vfs: &Vfs, textures: &[String], def: &GalaxyModelDef, tile_mean:
 }
 
 fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
-    let BuildInput { vfs, textures, def, orientation, radius_pc, tile_mean } = inp;
+    let BuildInput { vfs, textures, def, orientation, radius_pc } = inp;
     let data = generate(&vfs, &textures, &def)?;
     let ms = def.model_scale();
     let scale = DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc;
-    let mut em = SpriteBuffers::default();
-    let mut dust = SpriteBuffers::default();
-    let mut cover = 0.0f64;
+    // Emission and dust in generation order, one mesh (sorted per view by `SpriteOrder`).
+    let mut buf = SpriteBuffers::default();
     for s in &data.sprites {
         let local = DVec3::new(s.pos[0] as f64, s.pos[1] as f64, s.pos[2] as f64) * scale;
         let off = orientation * local;
@@ -156,17 +185,9 @@ fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
         let layer = s.layer();
         let info = [size_pc as f32, s.atlas_tile() as f32, s.lod_rand as f32 / 255.0, layer as u8 as f32];
         let pos = [off.x as f32, off.y as f32, off.z as f32];
-        let d = [s.color[0], s.color[1], s.color[2], s.brightness * def.brightness];
-        if layer == SpriteLayer::Absorption {
-            dust.push(pos, d, info);
-        } else {
-            em.push(pos, d, info);
-            let lum = 0.2126 * s.color[0] + 0.7152 * s.color[1] + 0.0722 * s.color[2];
-            let side = 2.0 * s.size as f64;
-            cover += (d[3] * lum) as f64 * tile_mean[s.atlas_tile() as usize] as f64 * side * side;
-        }
+        buf.push(pos, sprite_vertex(s.color, s.brightness), info);
     }
-    Some(BuiltNebula { sprites: data.sprites.len(), em, dust, s_raw: (cover / PI) as f32 })
+    Some(BuiltNebula { sprites: data.sprites.len(), buf })
 }
 
 enum SlotState {
@@ -176,9 +197,9 @@ enum SlotState {
 }
 
 struct Ready {
-    entities: [Entity; 2],
-    mats: [Handle<GalaxyModelMaterial>; 2],
-    s_raw: f32,
+    entity: Entity,
+    mat: Handle<GalaxyModelMaterial>,
+    order: SpriteOrder,
 }
 
 struct Slot {
@@ -241,7 +262,23 @@ impl Plugin for NebulaePlugin {
         app.init_resource::<NebulaSettings>()
             .init_resource::<ResidentNebulae>()
             .add_systems(Startup, setup_nebulae.after(setup_galaxies))
-            .add_systems(PostUpdate, update_nebulae.after(update_galaxies));
+            .add_systems(PostUpdate, (sync_mag_limit, update_nebulae).chain().after(update_galaxies));
+    }
+}
+
+/// The galaxy far-sprite settings the nebula far sprites are drawn with (soft profile, own limit).
+fn nebula_far_settings(s: &NebulaSettings) -> GalaxySettings {
+    let far_brightness = if s.enabled { s.brightness } else { 0.0 };
+    GalaxySettings { far_brightness, min_px: 2.0, cull: 0.002, mag_ref: s.mag_ref, ..GalaxySettings::default() }
+}
+
+/// `NebulaMagnLimit` (the `]` / `[` keys, `stars::mag_limit_keys`) -> the nebulae's reference magnitude.
+fn sync_mag_limit(stars: Res<crate::stars::StarSettings>, mut ns: ResMut<NebulaSettings>) {
+    let m = stars.nebula_mag_limit + MAG_REF_OFFSET;
+    if (ns.mag_ref - m).abs() > 1e-6 || ns.glow_mag_limit != stars.glow_mag_limit {
+        ns.mag_ref = m;
+        ns.mag_limit = stars.nebula_mag_limit;
+        ns.glow_mag_limit = stars.glow_mag_limit;
     }
 }
 
@@ -268,13 +305,40 @@ fn profile_color(rec: &NebulaRecord) -> [f32; 3] {
 fn setup_nebulae(
     mut commands: Commands,
     data: Res<SeData>,
-    settings: Res<NebulaSettings>,
-    atlas: Res<SpriteAtlas>,
+    mut settings: ResMut<NebulaSettings>,
+    cfg: Res<crate::config::EngineConfig>,
+    gal_atlas: Res<SpriteAtlas>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
+    // `ShowCatNebulae false` (main-def.cfg ObjectFilters) hides the catalog nebulae.
+    if let Some(doc) = main_def_doc(&cfg) {
+        settings.enabled &= doc.find_deep("ShowCatNebulae").and_then(|i| i.bool()).unwrap_or(true);
+        let num = |k: &str, v: &mut f32| {
+            if let Some(x) = doc.find_deep(k).and_then(|i| i.f64()) {
+                *v = x as f32;
+            }
+        };
+        num("NebulaMagnLimit", &mut settings.mag_limit);
+        num("NebulaBrightMin", &mut settings.bright_min);
+        num("GlowMagnLimit", &mut settings.glow_mag_limit);
+        num("GlowBrightMin", &mut settings.glow_bright_min);
+        num("hdrNebulaSpriteBright", &mut settings.sprite_bright);
+    }
     let vfs = data.vfs.clone();
     let cat = data.catalog.clone();
+    // SE's nebula models sample their own atlas (nebula_model.glsl, `sprites_neb.*` in FUN_140168bd0):
+    // 4x4 filamentary cloud tiles, used as coverage.
+    let atlas = match load_atlas(&vfs, "textures/common/sprites_neb.png") {
+        Some((img, tile_mean)) => SpriteAtlas { handle: images.add(img), tile_mean },
+        None => {
+            warn!("sprites_neb.png not found; nebula models use the galaxy atlas");
+            gal_atlas.clone()
+        }
+    };
+    let sources: HashSet<&str> = cat.nebulae.iter().map(|r| r.source.as_str()).collect();
+    let no_model = no_model_names(&vfs, &sources);
     let mut defs: Vec<GalaxyModelDef> = Vec::new();
     for p in vfs.list_ext("models/nebulae", "pst") {
         match vfs.read_string(&p).map(|t| parse_pst_kind(&t, "NebulaModel")) {
@@ -308,7 +372,14 @@ fn setup_nebulae(
     let force = std::env::var("SE_NEB_FORCE").ok().and_then(|v| v.split_once('=').map(|(a, b)| (a.trim().to_string(), b.trim().to_string())));
     let mut model_of = Vec::with_capacity(cat.nebulae.len());
     let mut with_model = 0;
+    let mut hidden = 0;
     for rec in &cat.nebulae {
+        if rec.names.iter().any(|n| no_model.contains(&n.to_lowercase())) {
+            model_of.push(None);
+            raymarch_of.push(None);
+            hidden += 1;
+            continue;
+        }
         let mut pick = None;
         let mut raymarch = custom.named(&rec.names);
         for n in rec.names.iter().filter(|_| raymarch.is_none()) {
@@ -343,9 +414,10 @@ fn setup_nebulae(
         raymarch_of.push(raymarch);
     }
     info!(
-        "nebulae: {} ray-marched models, {} catalog nebulae ray-marched",
+        "nebulae: {} ray-marched models, {} catalog nebulae ray-marched, {} NoModel",
         custom.models.len(),
-        raymarch_of.iter().flatten().count()
+        raymarch_of.iter().flatten().count(),
+        hidden
     );
     commands.insert_resource(crate::nebula_raymarch::RaymarchAssign { set: custom, model_of: raymarch_of });
     info!(
@@ -366,6 +438,9 @@ fn setup_nebulae(
     let mut vert_of = vec![None; n];
     for (i, rec) in cat.nebulae.iter().enumerate() {
         if !rec.abs_mag.is_finite() || !rec.radius_pc.is_finite() || rec.radius_pc <= 0.0 {
+            continue;
+        }
+        if rec.names.iter().any(|n| no_model.contains(&n.to_lowercase())) {
             continue;
         }
         let mut col = model_of[i]
@@ -399,7 +474,7 @@ fn setup_nebulae(
         .with_inserted_attribute(ATTR_FAR_SHAPE, shape)
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
-    let gs = GalaxySettings { far_brightness: settings.brightness, min_px: 2.0, cull: 0.002, ..GalaxySettings::default() };
+    let gs = nebula_far_settings(&settings);
     let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
     let far_mesh = meshes.add(mesh);
     let mut color_queue: Vec<usize> = (0..n).filter(|&i| model_of[i].is_some() && vert_of[i].is_some()).collect();
@@ -412,7 +487,7 @@ fn setup_nebulae(
         textures: Arc::new(textures),
         pools,
         model_of,
-        atlas: atlas.clone(),
+        atlas,
         far,
         slots: Vec::new(),
         failed: HashSet::new(),
@@ -431,7 +506,6 @@ fn spawn_build(st: &mut NebulaState, vfs: &Arc<Vfs>, rec: &NebulaRecord, n: usiz
         def: st.models.models()[mi].clone(),
         orientation: rec.orientation,
         radius_pc: rec.radius_pc,
-        tile_mean: st.atlas.tile_mean,
     };
     let task = AsyncComputeTaskPool::get().spawn(async move { build_nebula(input) });
     st.slots.push(Slot { nebula: n, state: SlotState::Loading(task), last_wanted: now });
@@ -439,9 +513,7 @@ fn spawn_build(st: &mut NebulaState, vfs: &Arc<Vfs>, rec: &NebulaRecord, n: usiz
 
 fn despawn_slot(commands: &mut Commands, slot: Slot) {
     if let SlotState::Ready(r) = slot.state {
-        for e in r.entities {
-            commands.entity(e).despawn();
-        }
+        commands.entity(r.entity).despawn();
     }
 }
 
@@ -557,28 +629,17 @@ pub(crate) fn update_nebulae(
             continue;
         };
         info!("nebula model {}: {} sprites", cat.nebulae[slot.nebula].names[0], built.sprites);
-        let mut mk = |buf: SpriteBuffers, dust: bool| {
-            let mat = model_mats.add(GalaxyModelMaterial {
-                uniforms: ModelParams {
-                    center_rel: Vec4::ZERO,
-                    params: Vec4::new(1.0, 2.0, 0.0, 0.0),
-                    params2: Vec4::new(if dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
-                },
-                atlas: st.atlas.handle.clone(),
-                dust,
-            });
-            (mat, meshes.add(buf.into_mesh()))
-        };
-        let (m_em, mesh_em) = mk(built.em, false);
-        let (m_du, mesh_du) = mk(built.dust, true);
-        let mut spawn = |mesh: Handle<Mesh>, mat: &Handle<GalaxyModelMaterial>| {
-            commands
-                .spawn((Mesh3d(mesh), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
-                .id()
-        };
-        let e0 = spawn(mesh_em, &m_em);
-        let e1 = spawn(mesh_du, &m_du);
-        slot.state = SlotState::Ready(Ready { entities: [e0, e1], mats: [m_em, m_du], s_raw: built.s_raw });
+        let mat = model_mats.add(GalaxyModelMaterial {
+            uniforms: ModelParams { center_rel: Vec4::ZERO, params: Vec4::new(1.0, 2.0, 0.0, 0.0), params2: Vec4::ZERO },
+            atlas: st.atlas.handle.clone(),
+        });
+        let centres = built.buf.centres();
+        let mesh = meshes.add(built.buf.into_mesh());
+        let entity = commands
+            .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
+            .id();
+        // SE sorts nebula models too (FUN_1402b3020 -> FUN_140334b10, FUN_140334e90).
+        slot.state = SlotState::Ready(Ready { entity, mat, order: SpriteOrder::new(centres, mesh) });
     }
     st.slots.retain(|s| !matches!(s.state, SlotState::Failed));
     let mut i = 0;
@@ -593,32 +654,33 @@ pub(crate) fn update_nebulae(
     }
 
     // per-frame uniforms
-    let gs = GalaxySettings { far_brightness: settings.brightness, min_px: 2.0, cull: 0.002, ..GalaxySettings::default() };
+    let gs = nebula_far_settings(&settings);
     let mut far_u = far_uniforms(cam_pc.as_vec3(), &gs);
     let mut n_res = 0;
-    for slot in &st.slots {
-        let SlotState::Ready(ready) = &slot.state else { continue };
+    for slot in st.slots.iter_mut() {
+        let SlotState::Ready(ready) = &mut slot.state else { continue };
         let rec = &cat.nebulae[slot.nebula];
         let def = &st.models.models()[st.model_of[slot.nebula].unwrap()];
         let d = (rec.pos_pc - cam_pc).length();
         let px = angular_px(rec.radius_pc, d, focal);
         let fade = if settings.enabled { model_fade(px, settings.build_px as f64) } else { 0.0 };
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
-        // Same mean surface brightness as the far sprite.
-        let r = rec.radius_pc * def.radius[0] as f64;
-        let flux = 10f64.powf(0.4 * (gs.mag_ref as f64 - rec.abs_mag)) * 100.0;
-        let target = settings.brightness as f64 * flux / (PI * r * r * FOCAL_REF * FOCAL_REF);
-        let k_em = if ready.s_raw > 0.0 { (target / ready.s_raw as f64) as f32 * settings.model_brightness } else { 0.0 };
-        let k_dust = settings.dust_strength * def.transparency;
-        for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
-            if let Some(mut m) = model_mats.get_mut(mat) {
-                m.uniforms.center_rel = center_rel;
-                m.uniforms.params = Vec4::new(if dust { k_dust } else { k_em }, 2.0, 0.0, 0.0);
-            }
-            if let Ok(mut v) = vis.get_mut(*e) {
-                *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
-            }
+        // SE's nebula draw (FUN_1402b3020): emBright = DAT_14080b5a4 (GlowBrightMin x the GlowMagnLimit
+        // coefficient) x model Brightness x hdrNebulaSpriteBright (+0x35f0) x b, absBright = Transparency x b,
+        // b = clamp(NebulaBrightMin coef(NebulaMagnLimit) L / d^2 - NebulaBrightMin, 0, 1) x fade-in.
+        let m_app = rec.abs_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
+        let b = se_bright_term(settings.mag_limit, m_app as f32, settings.bright_min, settings.bright_min);
+        let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright);
+        let k_em = glow * def.brightness * settings.model_brightness * b;
+        let k_dust = settings.dust_strength * def.transparency * b;
+        if let Some(mut m) = model_mats.get_mut(&ready.mat) {
+            m.uniforms.center_rel = center_rel;
+            m.uniforms.params = Vec4::new(k_em, 2.0, k_dust, 0.0);
         }
+        if let Ok(mut v) = vis.get_mut(ready.entity) {
+            *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+        }
+        ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
         if n_res < 8 && fade > 0.0 {
             far_u.resident[n_res] = Vec4::new(slot.nebula as f32, fade, 0.0, 0.0);
             n_res += 1;
@@ -629,5 +691,21 @@ pub(crate) fn update_nebulae(
     }
     if let Some(mut m) = far_mats.get_mut(&st.far) {
         m.uniforms = far_u;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nebula_limit_and_filter_reach_the_far_sprites() {
+        let mut s = NebulaSettings { mag_ref: 9.0 + MAG_REF_OFFSET, ..NebulaSettings::default() };
+        let gs = nebula_far_settings(&s);
+        assert_eq!(gs.mag_ref, 9.5);
+        assert_eq!(gs.far_brightness, s.brightness);
+        // ShowCatNebulae false: nothing is drawn.
+        s.enabled = false;
+        assert_eq!(nebula_far_settings(&s).far_brightness, 0.0);
     }
 }
