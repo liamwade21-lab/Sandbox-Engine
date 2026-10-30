@@ -204,14 +204,14 @@ pub struct AuroraOval {
     pub width_km: f64,
     /// Number of concentric rings.
     pub rings: u32,
-    /// Brightness multiplier (dimensionless).
-    pub bright: f64,
-    /// Flash frequency (catalog units, flashes per unit time). Default 0.
-    pub flash_freq: f64,
-    /// Drift speed of the aurora pattern (catalog units). Default 0.
-    pub move_speed: f64,
-    /// Particle count of the effect. Default 0.
-    pub particles: u32,
+    /// Brightness multiplier (dimensionless). `None`: SE's default (aurora.rs).
+    pub bright: Option<f64>,
+    /// Flash frequency: SE's flash phase runs at this many units per second. `None`: SE's default.
+    pub flash_freq: Option<f64>,
+    /// Drift of the pattern with the star's direction. `None`: SE's default.
+    pub move_speed: Option<f64>,
+    /// Sprite particles of the oval. `None`: SE's default by body class.
+    pub particles: Option<u32>,
 }
 
 impl AuroraOval {
@@ -223,10 +223,10 @@ impl AuroraOval {
             radius_km: b.f64(&k("Radius")).unwrap_or(0.0),
             width_km: b.f64(&k("Width")).unwrap_or(0.0),
             rings: b.f64(&k("Rings")).unwrap_or(0.0) as u32,
-            bright: b.f64(&k("Bright")).unwrap_or(1.0),
-            flash_freq: b.f64(&k("FlashFreq")).unwrap_or(0.0),
-            move_speed: b.f64(&k("MoveSpeed")).unwrap_or(0.0),
-            particles: b.f64(&k("Particles")).unwrap_or(0.0) as u32,
+            bright: b.f64(&k("Bright")),
+            flash_freq: b.f64(&k("FlashFreq")),
+            move_speed: b.f64(&k("MoveSpeed")),
+            particles: b.f64(&k("Particles")).map(|n| n.max(0.0) as u32),
         }
     }
 }
@@ -235,10 +235,10 @@ impl AuroraOval {
 pub struct AuroraParams {
     /// `Height`, km of the aurora layer above the surface. Default 0.
     pub height_km: f64,
-    /// `TopColor`, RGB of the upper edge of the curtain. Default (0, 0, 0).
-    pub top_color: [f64; 3],
-    /// `BottomColor`, RGB of the lower edge of the curtain. Default (0, 0, 0).
-    pub bottom_color: [f64; 3],
+    /// `TopColor`, the upper edge's multiplier. `None`: SE's default by body class.
+    pub top_color: Option<[f64; 3]>,
+    /// `BottomColor`, the lower edge's colour. `None`: SE's default by body class.
+    pub bottom_color: Option<[f64; 3]>,
     /// Northern oval, from `North*` keys.
     pub north: AuroraOval,
     /// Southern oval, from `South*` keys.
@@ -249,8 +249,8 @@ impl AuroraParams {
     pub fn from_block(b: &Block) -> Self {
         Self {
             height_km: b.f64("Height").unwrap_or(0.0),
-            top_color: b.vec3("TopColor").unwrap_or([0.0; 3]),
-            bottom_color: b.vec3("BottomColor").unwrap_or([0.0; 3]),
+            top_color: b.vec3("TopColor"),
+            bottom_color: b.vec3("BottomColor"),
             north: AuroraOval::from_block(b, "North"),
             south: AuroraOval::from_block(b, "South"),
         }
@@ -756,14 +756,15 @@ NoAurora
 
         let au = AuroraParams::from_block(b.sub("Aurora").unwrap());
         assert_eq!(au.height_km, 100.0);
-        assert_eq!(au.bottom_color, [0.0, 1.0, 0.0]);
+        assert_eq!(au.bottom_color, Some([0.0, 1.0, 0.0]));
         assert_eq!(au.north.lat_deg, 82.0);
         assert_eq!(au.north.lon_deg, -113.0);
         assert_eq!(au.north.rings, 3);
-        assert_eq!(au.north.bright, 0.3);
+        assert_eq!(au.north.bright, Some(0.3));
         assert_eq!(au.south.lat_deg, -63.0);
         assert_eq!(au.south.rings, 2);
-        assert_eq!(au.south.bright, 1.0);
+        assert_eq!(au.south.bright, None);
+        assert_eq!(au.north.particles, None);
     }
 
     #[test]
