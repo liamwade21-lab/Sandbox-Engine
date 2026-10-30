@@ -27,6 +27,16 @@ const AGE_MAX: f64 = 12.87;
 const AGE_MIN: f64 = 1e-4;
 /// Luminosity class of remnants and its neutron star / black hole types (class word fields).
 const LUM_REMNANT: u16 = 11;
+/// Luminosity classes of SE's carbon / zirconium stars and Wolf-Rayet stars.
+const LUM_CARBON: u16 = 9;
+const LUM_WOLF_RAYET: u16 = 10;
+/// SE's subtype names (FUN_1401dc7c0).
+const WD_TYPES: [&str; 12] = ["DA", "DB", "DO", "DQ", "DZ", "DC", "DX", "DAB", "DAO", "DAZ", "DBZ", "WD"];
+const CARBON_TYPES: [&str; 8] = ["MS", "S", "SC", "C-R", "C-N", "C-J", "C-H", "C-Hd"];
+const WR_TYPES: [&str; 4] = ["WN", "WN/C", "WC", "WO"];
+/// main-def.cfg `ProbWolfRayetStar` (0x14075f824) and `ProbCarbonStar` (0x14075f820).
+const PROB_WOLF_RAYET: f64 = 0.05;
+const PROB_CARBON: f64 = 0.08;
 const TYPE_NS: u16 = 12;
 const TYPE_BH: u16 = 13;
 
@@ -89,8 +99,10 @@ pub fn blob_point(rng: &mut Rng, k: f64) -> [f64; 3] {
 }
 
 /// SE's star class word (`star+0x24`): luminosity class << 11 | spectral type << 7 | subclass x10.
-/// Luminosity classes 0 hypergiant .. 7 V, 11 remnant; types 0..9 O..Y, remnants' 0..5 white dwarfs,
-/// 12 neutron star, 13 black hole.
+/// Luminosity classes 0 hypergiant .. 7 V, 9 carbon and zirconium stars (types MS, S, SC, C-R, C-N,
+/// C-J, C-H, C-Hd), 10 Wolf-Rayet (WN, WN/C, WC, WO; subclass to 11.9), 11 remnant; types 0..9 O..Y,
+/// remnants' 0..11 white dwarfs (DA, DB, DO, DQ, DZ, DC, DX, DAB, DAO, DAZ, DBZ, WD), 12 neutron star,
+/// 13 black hole (SE's class text, FUN_1401dc7c0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct ClassWord(pub u16);
 
@@ -110,6 +122,8 @@ impl ClassWord {
     }
     pub fn kind(self) -> StarKind {
         match (self.lum(), self.ty()) {
+            (LUM_CARBON, _) => StarKind::Carbon,
+            (LUM_WOLF_RAYET, _) => StarKind::WolfRayet,
             (LUM_REMNANT, TYPE_NS) => StarKind::NeutronStar,
             (LUM_REMNANT, TYPE_BH) => StarKind::BlackHole,
             (LUM_REMNANT, _) => StarKind::WhiteDwarf,
@@ -125,10 +139,14 @@ impl ClassWord {
             StarKind::WhiteDwarf => 'D',
             StarKind::NeutronStar => 'Q',
             StarKind::BlackHole => 'X',
+            StarKind::WolfRayet => 'W',
+            StarKind::Carbon if self.ty() < 3 => 'S',
+            StarKind::Carbon => 'C',
             _ => b"OBAFGKMLTY"[self.ty().min(9) as usize] as char,
         };
         let lum_class = match (kind, self.lum()) {
             (StarKind::WhiteDwarf, _) => LumClass::VII,
+            (StarKind::Carbon, _) => LumClass::III,
             (_, 0) => LumClass::Hypergiant,
             (_, 1) => LumClass::Ia,
             (_, 2 | 3) => LumClass::Ib,
@@ -147,8 +165,9 @@ impl ClassWord {
         match self.kind() {
             StarKind::NeutronStar => "Q".into(),
             StarKind::BlackHole => "X".into(),
-            // SE's white dwarf types 0..5 (the order of the letters is assumed).
-            StarKind::WhiteDwarf => format!("D{}{sub}", ["A", "B", "C", "O", "Q", "Z"][self.ty().min(5) as usize]),
+            StarKind::WhiteDwarf => format!("{}{sub}", WD_TYPES[self.ty().min(11) as usize]),
+            StarKind::Carbon => format!("{}{sub}", CARBON_TYPES[self.ty().min(7) as usize]),
+            StarKind::WolfRayet => format!("{}{sub}", WR_TYPES[self.ty().min(3) as usize]),
             _ => {
                 let lum = ["Ia+", "Ia", "Iab", "Ib", "II", "III", "IV", "V", "VI"][self.lum().min(8) as usize];
                 format!("{}{sub}{lum}", b"OBAFGKMLTY"[self.ty().min(9) as usize] as char)
@@ -278,6 +297,40 @@ fn remnant(rng: &mut Rng, mass: f64, own_mag: bool) -> (ClassWord, Option<f64>, 
     (c, own_mag.then_some(mv), teff)
 }
 
+/// SE's Wolf-Rayet conversion (FUN_1401d7190): a main-sequence or brighter O star no older than
+/// 1 Myr is, with `ProbWolfRayetStar`, a WN, WN/C, WC or WO star (type `(u % 305) / 100`, subclass
+/// `u % 120`).
+pub fn wolf_rayet(rng: &mut Rng, c: ClassWord, age: f64) -> ClassWord {
+    if age <= 0.001 && c.lum() <= 7 && c.ty() == 0 && rng.f64() <= PROB_WOLF_RAYET {
+        let t = (rng.next_u64() % 305 / 100) as u16;
+        let sub = (rng.next_u64() % 120) as u16;
+        return ClassWord((0xa0 | t) << 7 | sub);
+    }
+    c
+}
+
+/// SE's carbon / zirconium conversion (FUN_1401d70c0): a giant (class III or brighter) of type G or
+/// later whose `x6` (SE's star+0x18: `N(1, 0.17)` in dense clusters, `N(0.66, 0.17)` in open ones)
+/// is at least 0.8 is, with `ProbCarbonStar`, one of SE's eight carbon and S-type classes.
+pub fn carbon(rng: &mut Rng, c: ClassWord, x6: f64) -> ClassWord {
+    if x6 >= 0.8 && c.lum() <= 5 && c.ty() >= 4 && rng.f64() <= PROB_CARBON {
+        let t = (rng.next_u64() & 7) as u16;
+        let sub = (rng.next_u64() % 100) as u16;
+        return ClassWord((0x90 | t) << 7 | sub);
+    }
+    c
+}
+
+/// A member whose class may have been converted: its light and mass for the class (SE recomputes
+/// them, FUN_1401de170).
+fn converted(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, old: ClassWord, c: ClassWord) -> Member {
+    if c == old {
+        return member(mv, teff, mass, age, feh, c);
+    }
+    let (teff, lb) = light(c, mv);
+    member(mv, teff, mass_of(c, lb), age, feh, c)
+}
+
 fn member(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, class: ClassWord) -> Member {
     Member { abs_mag: mv as f32, teff: teff as f32, mass: mass as f32, age_gyr: age as f32, feh: feh as f32, class }
 }
@@ -288,21 +341,23 @@ fn member(mv: f64, teff: f64, mass: f64, age: f64, feh: f64, class: ClassWord) -
 /// the giant's mass.
 pub fn open_member(rng: &mut Rng, cluster_age: f64) -> Member {
     let feh = normal(rng, -0.125_165_79, 0.07);
-    let _ = normal(rng, 0.662_251_3, 0.169_864_37);
+    let x6 = normal(rng, 0.662_251_3, 0.169_864_37);
     let age = (cluster_age + normal(rng, 0.0, 0.01)).clamp(AGE_MIN, AGE_MAX);
     let mv = normal(rng, 3.0, 4.0);
     let c = ms_class(rng, mv);
     let (teff, lb) = light(c, mv);
     let mass = mass_of(c, lb);
     if lifetime(mass, c) > age {
-        return member(mv, teff, mass, age, feh, c);
+        let w = wolf_rayet(rng, c, age);
+        return converted(mv, teff, mass, age, feh, c, w);
     }
     let mv_g = normal(rng, 1.0, 1.0);
     let g = giant_class(rng, mv_g);
     let (teff_g, lb_g) = light(g, mv_g);
     let mass_g = mass_of(g, lb_g);
     if lifetime(mass_g, g) > age {
-        return member(mv_g, teff_g, mass_g, age, feh, g);
+        let k = carbon(rng, g, x6);
+        return converted(mv_g, teff_g, mass_g, age, feh, g, k);
     }
     let mv_r = normal(rng, 14.0, 0.83);
     let (r, _, teff_r) = remnant(rng, mass_g, false);
@@ -317,6 +372,8 @@ pub fn open_member(rng: &mut Rng, cluster_age: f64) -> Member {
 /// reaches past Mv 11.5 and the star is older than 1.1 lifetimes: then a remnant of its mass.
 pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi: f64) -> Member {
     let feh = normal(rng, -1.0, 0.25);
+    // SE's star+0x18 for cluster stars (FUN_1401d6fe0 of 0), read by the carbon test.
+    let x6 = normal(rng, 1.0, 0.169_864_37);
     let mv = trunc_normal(rng, 0.0, 6.0, lo, hi);
     let c = ms_class(rng, mv);
     let (teff, lb) = light(c, mv);
@@ -334,14 +391,16 @@ pub fn dense_member(rng: &mut Rng, nucleus: bool, cluster_age: f64, lo: f64, hi:
     }
     .clamp(AGE_MIN, AGE_MAX);
     if t_ms > age {
-        return member(mv, teff, mass, age, feh, c);
+        let w = wolf_rayet(rng, c, age);
+        return converted(mv, teff, mass, age, feh, c, w);
     }
     if age < t_end || hi < 11.5 {
         let (teff_g, lb_g) = light(g, mv_g);
         let mass_g = mass_of(g, lb_g);
         // SE then sets the age to the giant's lifetime or 1.1 MS lifetimes, the shorter.
         let age = lifetime(mass_g, g).min(t_end);
-        return member(mv_g, teff_g, mass_g, age, feh, g);
+        let k = carbon(rng, g, x6);
+        return converted(mv_g, teff_g, mass_g, age, feh, g, k);
     }
     let (r, mv_r, teff_r) = remnant(rng, mass, true);
     member(mv_r.unwrap_or(mv), teff_r, mass, age, feh, r)
@@ -514,14 +573,40 @@ mod tests {
     }
 
     #[test]
+    fn wolf_rayet_and_carbon_conversions_follow_se() {
+        let mut rng = Rng(11);
+        let o_star = ClassWord::new(7, 0, 50);
+        let wr: Vec<ClassWord> = (0..20_000).map(|_| wolf_rayet(&mut rng, o_star, 0.0005)).filter(|c| *c != o_star).collect();
+        assert!((800..1200).contains(&wr.len()), "{}", wr.len());
+        assert!(wr.iter().all(|c| c.kind() == StarKind::WolfRayet && c.ty() <= 3 && c.sub() < 120));
+        // Too old, or not an O star: never.
+        assert_eq!(wolf_rayet(&mut rng, o_star, 0.002), o_star);
+        assert_eq!(wolf_rayet(&mut rng, ClassWord::new(7, 1, 0), 0.0005), ClassWord::new(7, 1, 0));
+        // Carbon: G-M giants with star+0x18 >= 0.8; not dwarfs, not K giants below 0.8.
+        let k_giant = ClassWord::new(5, 5, 20);
+        let n = (0..20_000).filter(|_| carbon(&mut rng, k_giant, 0.9) != k_giant).count();
+        assert!((1300..1900).contains(&n), "{n}");
+        assert_eq!(carbon(&mut rng, k_giant, 0.7), k_giant);
+        assert_eq!(carbon(&mut rng, ClassWord::new(7, 5, 20), 0.9), ClassWord::new(7, 5, 20));
+        // SE's names.
+        assert_eq!(ClassWord((0xa0 | 2) << 7 | 55).name(), "WC5.5");
+        assert_eq!(ClassWord((0x90 | 4) << 7 | 30).name(), "C-N3");
+        assert_eq!(ClassWord::new(11, 3, 70).name(), "DQ7");
+    }
+
+    #[test]
     fn old_globular_bright_members_are_giants() {
         // In an 11 Gyr globular every member of the two brightest bands has left the main sequence.
+        // A few are SE's carbon and S-type stars (ProbCarbonStar of the G-M giants).
         let mut rng = Rng(7);
-        for _ in 0..200 {
+        let mut carbon_stars = 0;
+        for _ in 0..1000 {
             let m = dense_member(&mut rng, false, 11.0, -1.49, 1.79);
-            assert!(m.class.lum() <= 6, "{:?}", m.class.name());
+            carbon_stars += (m.class.kind() == StarKind::Carbon) as usize;
+            assert!(m.class.lum() <= 6 || m.class.kind() == StarKind::Carbon, "{:?}", m.class.name());
             assert!(m.abs_mag >= -1.49 && m.abs_mag <= 1.79);
         }
+        assert!((20..120).contains(&carbon_stars), "{carbon_stars}");
         // The faint band keeps its dwarfs.
         let dwarfs = (0..200).filter(|_| dense_member(&mut rng, false, 11.0, 8.19, 25.3).class.lum() == 7).count();
         assert!(dwarfs > 150, "{dwarfs}");
