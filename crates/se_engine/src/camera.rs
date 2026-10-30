@@ -72,6 +72,30 @@ pub struct FlyCamera {
     pub fov_target: Option<f32>,
     /// Earlier selections, for Backspace (SE's SelectPrevObject).
     pub history: Vec<ObjectRef>,
+    /// Script input locks (`UserMoveControl`, `UserRotationControl`).
+    pub locks: InputLocks,
+}
+
+/// SE's script input locks (FUN_140552c30 sets DAT_1419d5ae6, FUN_140552900 DAT_1419d5ae5): while
+/// `movement` is set the user cannot move the camera (movement keys, mouse orbit and zoom, Go to,
+/// Land, Follow / Rotate with / Free binding: FUN_140595be0, FUN_1405986f0, FUN_140597720), and
+/// while `rotation` is set not turn it (mouse look, turn keys, Center, Horizon, Track). Script
+/// commands still move it. `UserMoveControl "Limited"` sets the same flag (FUN_140552c30:414) with
+/// limits instead of a full stop: the keys and mouse still move the camera inside them, but Go to,
+/// Land and binding are refused (`limited`). The scripting runner sets them and clears them when a
+/// script ends (FUN_140221b10).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct InputLocks {
+    pub movement: bool,
+    pub rotation: bool,
+    pub limited: bool,
+}
+
+impl InputLocks {
+    /// SE's movement flag: Go to, Land, binding and a script's Goto / Follow / Free are refused.
+    pub fn travel(&self) -> bool {
+        self.movement || self.limited
+    }
 }
 
 impl Default for FlyCamera {
@@ -97,6 +121,7 @@ impl Default for FlyCamera {
             turn_vel: DVec3::ZERO,
             fov_target: None,
             history: Vec::new(),
+            locks: InputLocks::default(),
         }
     }
 }
@@ -111,8 +136,12 @@ impl FlyCamera {
         }
     }
 
-    /// Bind the camera to `target` (SE's FollowObject / SyncRotObject), or free it (`None`).
+    /// Bind the camera to `target` (SE's FollowObject / SyncRotObject), or free it (`None`). Refused
+    /// while a script locks movement (FUN_1405986f0).
     pub fn bind(&mut self, target: Option<ObjectRef>, sync: bool, eph: &Ephemeris, jd: f64) {
+        if self.locks.travel() {
+            return;
+        }
         self.follow = target.map(|t| Follow::new(t, sync, eph, jd));
     }
 }
@@ -350,7 +379,7 @@ const GOTO_SPEED_DIVISOR: f64 = 10.0;
 /// flight lasts log10(start / arrival distance) seconds plus a second to speed up and brake, from
 /// `CenterTime` up to `LongGotoTime` 20 s; G again during a flight is the "fast Go to" of
 /// `FastGotoTime` 3 s; Center turns in `CenterTime` 1.5 s.
-const GOTO_SPEED: f64 = 10.0;
+pub(crate) const GOTO_SPEED: f64 = 10.0;
 const LONG_GOTO_TIME: f64 = 20.0;
 const FAST_GOTO_TIME: f64 = 3.0;
 const CENTER_TIME: f64 = 1.5;
@@ -425,15 +454,21 @@ fn input_controls(
         cursor.visible = false;
         let d = motion.delta.as_dvec2() * cam.mouse_sensitivity * (cam.fov_deg as f64 / 60.0);
         let pivot = cam.follow.map(|f| f.target).or(cam.selected);
+        let locks = cam.locks;
+        let look = (left && !right) || pivot.is_none();
         if d != bevy::math::DVec2::ZERO {
             if left && !right && shift {
                 let fov = cam.fov_deg as f64 * (motion.delta.y as f64 * 0.005).exp();
                 cam.fov_deg = fov.clamp(MIN_FOV_DEG as f64, MAX_FOV_DEG as f64) as f32;
                 cam.fov_target = None;
-            } else if (left && !right) || pivot.is_none() {
-                cam.rot = turn(cam.rot, -d.x, -d.y);
-                cam.travel = None;
-            } else if let Some(p) = pivot {
+            } else if look {
+                // A script's UserRotationControl "Disabled" stops looking around.
+                if !locks.rotation {
+                    cam.rot = turn(cam.rot, -d.x, -d.y);
+                    cam.travel = None;
+                }
+            } else if let (false, Some(p)) = (locks.movement, pivot) {
+                // Orbiting and zooming move the camera: not while movement is locked.
                 let eph = Ephemeris::new(&data.catalog);
                 let center = eph.position(p, sim.jd);
                 let off = cam.pos.delta_m(center);
@@ -510,11 +545,16 @@ fn input_controls(
     let held = |a: KeyCode, b: KeyCode| (keys.pressed(a) || keys.pressed(b)) as i32 as f64;
     let num = |k: KeyCode| (keys.pressed(k) && !ctrl) as i32 as f64;
     let fov_k = (cam.fov_deg as f64 / DEFAULT_FOV_DEG as f64).min(1.0);
-    let turn_in = DVec3::new(
-        (num(KeyCode::Numpad8) - num(KeyCode::Numpad2)) * TURN_KEY_RATE * fov_k,
-        (num(KeyCode::Numpad4) - num(KeyCode::Numpad6)) * TURN_KEY_RATE * fov_k,
-        (held(KeyCode::KeyQ, KeyCode::Numpad7) - held(KeyCode::KeyE, KeyCode::Numpad9)) * ROLL_KEY_RATE,
-    );
+    let locks = cam.locks;
+    let turn_in = if locks.rotation {
+        DVec3::ZERO
+    } else {
+        DVec3::new(
+            (num(KeyCode::Numpad8) - num(KeyCode::Numpad2)) * TURN_KEY_RATE * fov_k,
+            (num(KeyCode::Numpad4) - num(KeyCode::Numpad6)) * TURN_KEY_RATE * fov_k,
+            (held(KeyCode::KeyQ, KeyCode::Numpad7) - held(KeyCode::KeyE, KeyCode::Numpad9)) * ROLL_KEY_RATE,
+        )
+    };
     let tau = if turn_in != DVec3::ZERO { TURN_ACCEL_S } else { TURN_DECEL_S } / 3.0;
     cam.turn_vel = cam.turn_vel + (turn_in - cam.turn_vel) * (1.0 - (-dt / tau).exp());
     if turn_in == DVec3::ZERO && cam.turn_vel.length() < 1e-3 {
@@ -530,7 +570,7 @@ fn input_controls(
         cam.travel = None;
     }
     // Look back / left / right / up / down (Ctrl+Numpad 5/4/6/8/2).
-    if ctrl {
+    if ctrl && !locks.rotation {
         let look = [
             (KeyCode::Numpad5, DQuat::from_rotation_y(std::f64::consts::PI)),
             (KeyCode::Numpad4, DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
@@ -552,6 +592,9 @@ fn input_controls(
     dir.z += mv(KeyCode::KeyS, KeyCode::ArrowDown) - mv(KeyCode::KeyW, KeyCode::ArrowUp);
     dir.x += mv(KeyCode::KeyD, KeyCode::ArrowRight) - mv(KeyCode::KeyA, KeyCode::ArrowLeft);
     dir.y += mv(KeyCode::KeyR, KeyCode::Numpad1) - mv(KeyCode::KeyF, KeyCode::Numpad0);
+    if locks.movement {
+        dir = DVec3::ZERO;
+    }
     if keys.just_pressed(KeyCode::KeyZ) && plain {
         cam.velocity = DVec3::ZERO;
         cam.travel = None;
@@ -593,24 +636,24 @@ fn input_controls(
             start_center(&mut cam, t);
         }
     }
-    if keys.just_pressed(KeyCode::End) && plain {
+    if keys.just_pressed(KeyCode::End) && plain && !locks.rotation {
         if let Some(t) = cam.selected.or(cam.follow.map(|f| f.target)) {
             start_horizon(&mut cam, t);
         }
     }
-    if keys.just_pressed(KeyCode::KeyT) && plain && (cam.track || cam.selected.is_some()) {
+    if keys.just_pressed(KeyCode::KeyT) && plain && !locks.rotation && (cam.track || cam.selected.is_some()) {
         cam.track = !cam.track;
         msg.show(format!("{}: {}", i18n.tr("Track object"), i18n.tr(if cam.track { "enabled" } else { "disabled" })));
     }
     // Binding: Shift+D free, Shift+F follow, Shift+R rotate with the selection.
     if shift && !ctrl && !alt {
         let eph = Ephemeris::new(&data.catalog);
-        if keys.just_pressed(KeyCode::KeyD) && cam.follow.is_some() {
+        if keys.just_pressed(KeyCode::KeyD) && cam.follow.is_some() && !locks.travel() {
             cam.bind(None, false, &eph, sim.jd);
             msg.show(i18n.tr("Free binding to object"));
         }
         for (k, sync, text) in [(KeyCode::KeyF, false, "Follow object"), (KeyCode::KeyR, true, "Rotate with object")] {
-            if let (true, Some(t)) = (keys.just_pressed(k), cam.selected) {
+            if let (true, Some(t), false) = (keys.just_pressed(k), cam.selected, locks.travel()) {
                 cam.bind(Some(t), sync, &eph, sim.jd);
                 msg.show(format!("{}: {}", i18n.tr(text), data.catalog.display_name(t)));
             }
@@ -706,6 +749,10 @@ fn level_rotation(rot: DQuat, up: DVec3) -> DQuat {
 /// SE's Center: turn to the target in `CenterTime`. Handled in `travel_and_move` as a travel that
 /// only rotates; the camera stays bound to the object it follows.
 pub fn start_center(cam: &mut FlyCamera, target: ObjectRef) {
+    // SE's Center is refused while a script locks rotation (FUN_140563cf0).
+    if cam.locks.rotation {
+        return;
+    }
     let start_rot = cam.rot;
     cam.travel = Some(Travel { target, kind: TravelKind::Center, start_off: None, start_rot, end_distance: -1.0, elapsed: 0.0, duration: CENTER_TIME, set_speed: false });
 }
@@ -718,7 +765,7 @@ pub fn start_horizon(cam: &mut FlyCamera, target: ObjectRef) {
 
 /// SE's Land on object (Shift+G): planets, moons, asteroids and comets only.
 pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
-    if !matches!(target, ObjectRef::Body(_)) {
+    if !matches!(target, ObjectRef::Body(_)) || cam.locks.travel() {
         return;
     }
     cam.velocity = DVec3::ZERO;
@@ -726,7 +773,11 @@ pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
     cam.travel = Some(Travel { target, kind: TravelKind::Land, start_off: None, start_rot, end_distance: LAND_ALTITUDE_M, elapsed: 0.0, duration: -1.0, set_speed: true });
 }
 
+/// Go to `target` (refused while a script locks movement).
 pub fn start_travel(cam: &mut FlyCamera, target: ObjectRef, distance: Option<f64>) {
+    if cam.locks.travel() {
+        return;
+    }
     cam.velocity = DVec3::ZERO;
     cam.travel = Some(Travel {
         target,
@@ -971,8 +1022,17 @@ fn run_commands(
     mut search: ResMut<crate::star_search::SearchState>,
     (mut stars, mut spin): (ResMut<crate::stars::StarSettings>, Local<f64>),
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
+    (wps, mut wait_wp): (Option<Res<crate::waypoints::Waypoints>>, Local<usize>),
 ) {
     let active_root = active.root;
+    // `waitwp N`: hold the queue until a script has defined N waypoints.
+    if *wait_wp > 0 {
+        if wps.as_ref().is_some_and(|w| w.list.len() >= *wait_wp) {
+            *wait_wp = 0;
+        } else {
+            return;
+        }
+    }
     // `spin DEG`: dev turn about the view's up axis, DEG degrees per second at a nominal 200 frames/s.
     if *spin != 0.0 {
         let r = cam.rot * DQuat::from_rotation_y((*spin / 200.0).to_radians());
@@ -1030,6 +1090,7 @@ fn run_commands(
             }
         }
         "wait" => q.wait_frames = arg.parse().unwrap_or(1),
+        "waitwp" => *wait_wp = arg.parse().unwrap_or(1),
         "rate" => sim.rate = arg.parse().unwrap_or(1.0),
         "pause" => sim.paused = true,
         "fly" => *fly = arg.parse().unwrap_or(0.0),
@@ -1066,6 +1127,14 @@ fn run_commands(
                     p.get(5).copied().unwrap_or(0.0),
                 );
                 sim.jd = dt.to_jd();
+            }
+        }
+        // vel X Y Z: a push of the free-flight velocity (km/s, camera axes), as a held movement key
+        // gives (script `Control|Move` triggers watch it).
+        "vel" => {
+            let v: Vec<f64> = arg.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            if v.len() == 3 {
+                cam.velocity = cam.rot * DVec3::new(v[0], v[1], v[2]) * 1000.0;
             }
         }
         "move" => {

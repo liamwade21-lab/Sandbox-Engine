@@ -39,6 +39,8 @@ mod procsystems;
 mod procstars;
 mod rings;
 mod messages;
+mod script_gui;
+mod script_vars;
 mod scripting;
 mod settings;
 mod ship;
@@ -54,6 +56,7 @@ mod sysbrowser;
 mod terrain;
 mod terrain_gen;
 mod universe;
+mod waypoints;
 mod wiki;
 
 use bevy::prelude::*;

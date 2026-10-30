@@ -3,15 +3,22 @@
 //! `se_core::se_script` parses a script into a flat command list; [`ScriptRunner`]
 //! executes it over frames: instant commands run back to back within a frame, while
 //! `Wait`, `WaitTrigger`, `WaitMessage` and `WaitVar` block the script until their
-//! condition holds. `Goto` flights, `Orbit`, `FOV` and `Interpolate` run as effects
-//! alongside the script. Camera moves reuse the free-flight camera
+//! condition holds. `Goto` flights, `Orbit`, `Fly`, `Turn`, `FOV` and `Interpolate` run as
+//! effects alongside the script. Camera moves reuse the free-flight camera
 //! ([`crate::camera::FlyCamera`]) and its `Follow` binding, selection is
-//! `FlyCamera::selected`, and time commands drive [`SimTime`].
+//! `FlyCamera::selected` (or a script waypoint, [`crate::waypoints`]), time commands drive
+//! [`SimTime`], settings go through [`crate::script_vars`], the tutorial interface hooks
+//! through [`crate::script_gui`] and music through [`crate::music::ScriptMusic`].
 //!
-//! Commands the port has no equivalent for (tutorial widgets, dialogs, sounds, input
-//! locks, waypoints) are logged once and skipped. Triggers that wait for GUI actions
-//! the port does not have give up after a few seconds so tutorials keep flowing;
-//! the "Skip step" button ends any wait early.
+//! `User*Control` locks the user's movement and rotation ([`crate::camera::InputLocks`]) and
+//! time controls (the time keys are swallowed and other changes undone) until the script
+//! frees them or ends. When a script ends SE resets its interface, waypoints and locks
+//! (FUN_14054d240, FUN_140221b10), and so does the port.
+//!
+//! Commands the port has no equivalent for are logged once and skipped. Triggers that wait
+//! for GUI actions the port does not have (the universe map and system chart controls,
+//! panel pins, clicks inside dialogs) give up after a few seconds so tutorials keep
+//! flowing; the "Skip step" button ends any wait early.
 //!
 //! The Scripts window (HUD) lists the scripts shipped in `data/scripts` and runs one.
 
@@ -25,18 +32,20 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use se_core::catalog::{BodyTag, Catalog, ObjectRef};
 use se_core::ephemeris::Ephemeris;
 use se_core::sc::Value;
-use se_core::se_script::{self, Command, GotoArgs, Location, MarkupLine, MultiMode, Op, Script, Trigger, VarWait};
+use se_core::se_script::{self, Command, ControlLimits, GotoArgs, InputKind, LockMode, Location, MarkupLine, MultiMode, Op, Script, Trigger, VarWait};
 use se_core::places::PC_M;
 use se_core::upos::UPos;
 
-use crate::camera::{Follow, FlyCamera, clamp_speed, look_rotation};
+use crate::camera::{Follow, FlyCamera, TravelKind, clamp_speed, look_rotation};
 use crate::config::EngineConfig;
 use crate::data::SeData;
 use crate::hud::HudState;
 use crate::i18n::I18n;
-use crate::overlay::OverlaySettings;
-use crate::stars::StarSettings;
+use crate::music::{MusicRequest, ScriptMusic};
+use crate::script_gui::{ActiveHighlight, Dialogs, ScriptGui};
+use crate::script_vars::Settings;
 use crate::universe::SimTime;
+use crate::waypoints::Waypoints;
 
 /// Triggers on GUI actions the port lacks give up after this many seconds.
 const UNSUPPORTED_WAIT_S: f64 = 4.0;
@@ -48,18 +57,40 @@ const AUTO_MESSAGE_S: f64 = 4.0;
 const LOADING_SETTLE_S: f64 = 1.0;
 const MAX_OPS_PER_FRAME: usize = 4000;
 const MAX_CALL_DEPTH: usize = 8;
-const DEFAULT_GOTO_S: f64 = 4.0;
 const DEFAULT_FOV: f32 = 60.0;
+/// The engine version scripts check with `CheckVersion` (SE 0.991).
+const ENGINE_VERSION: u32 = 991;
+/// `Control|Move` matches a `Direction` when every component of the movement's direction is
+/// within 1% of it (FUN_140275dd0: |d - n| <= 0.01 |d + n|), plus rounding.
+const DIRECTION_TOLERANCE: f64 = 0.01;
+/// `Control|SetTime`: a date change bigger than the clock's own step by this much (days, 1 min).
+const SET_TIME_JUMP_D: f64 = 1.0 / 1440.0;
+/// The navigation toolbar's date as SE's `GUI|LeftClick` names it (tut-03).
+const DATE_WIDGET: &str = "Navigation toolbar|Date";
+/// The time keys a script's `UserTimeControl "Disabled"` swallows (Space, L, K, J, \).
+const TIME_KEYS: [KeyCode; 5] = [KeyCode::Space, KeyCode::KeyL, KeyCode::KeyK, KeyCode::KeyJ, KeyCode::Backslash];
 
 pub struct ScriptingPlugin;
 
 impl Plugin for ScriptingPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ScriptRunner>()
+        app.add_plugins((crate::waypoints::WaypointsPlugin, crate::script_gui::ScriptGuiPlugin))
+            .init_resource::<ScriptRunner>()
             .init_resource::<ScriptUi>()
             .add_systems(Startup, queue_cli_script)
-            .add_systems(Update, run_script)
+            .add_systems(PreUpdate, swallow_time_keys.after(bevy::input::InputSystems))
+            // Idle, the runner takes no part in the frame (it borrows many settings).
+            .add_systems(Update, run_script.run_if(|r: Res<ScriptRunner>| r.running() || r.pending.is_some() || r.stop))
             .add_systems(EguiPrimaryContextPass, (draw_captions, draw_scripts_window).in_set(crate::skin::UiSet::Draw));
+    }
+}
+
+/// While a script disables the user's time controls, their keys never reach the HUD.
+fn swallow_time_keys(runner: Res<ScriptRunner>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+    if runner.time_guard.as_ref().is_some_and(|g| g.locked) {
+        for k in TIME_KEYS {
+            keys.reset(k);
+        }
     }
 }
 
@@ -92,7 +123,6 @@ struct LoopState {
 /// Camera and time state when a trigger started waiting; triggers compare against it.
 #[derive(Clone)]
 struct Snapshot {
-    pos: UPos,
     rot: DQuat,
     fov: f32,
     speed: f64,
@@ -100,22 +130,75 @@ struct Snapshot {
     paused: bool,
     jd: f64,
     selected: Option<ObjectRef>,
+    /// The selected waypoint's name.
+    selected_wp: Option<String>,
     travel: bool,
     following: bool,
     rotating: bool,
+    track: bool,
 }
 
 struct TrigState {
     trig: Trigger,
     snap: Snapshot,
     done: bool,
+    /// `Control|Move`: the user's movement since the trigger started (m), as SE sums it.
+    moved: DVec3,
+    /// `GUI|Open` / `GUI|Close`: the dialog has been seen closed / open since the start.
+    seen_closed: bool,
+    seen_open: bool,
+    /// `Control|SetTime`: the date last frame.
+    prev_jd: f64,
 }
 
 enum Blocked {
     Seconds(f64),
     Triggers { mode: MultiMode, items: Vec<TrigState>, elapsed: f64, max_wait: Option<f64> },
-    Message { elapsed: f64 },
+    /// `then_stop`: the script ends after the Ok (`CheckVersion` for another version).
+    Message { elapsed: f64, then_stop: bool },
     Var { name: String, wait: VarWait, elapsed: f64 },
+}
+
+/// A `Fly` or `Turn`: a speed along or about a camera axis, eased to its target.
+#[derive(Clone, Copy)]
+struct Motion {
+    /// Port camera axes (x right, y up, z back).
+    axis: DVec3,
+    cur: f64,
+    target: f64,
+    /// Change per second.
+    rate: f64,
+}
+
+impl Motion {
+    fn new(axis: DVec3, from: f64, target: f64, fade: f64) -> Self {
+        let rate = if fade > 0.0 { (target - from).abs() / fade } else { f64::INFINITY };
+        Self { axis, cur: from, target, rate }
+    }
+
+    /// Advances the speed; false once it has stopped.
+    fn step(&mut self, dt: f64) -> bool {
+        let d = self.target - self.cur;
+        self.cur = if d.abs() <= self.rate * dt { self.target } else { self.cur + d.signum() * self.rate * dt };
+        !(self.cur == 0.0 && self.target == 0.0)
+    }
+}
+
+/// A script's `UserTimeControl`: `locked` ("Disabled") holds the rate and pause state the script
+/// last set; "Limited" keeps the user's changes inside `TimeRange` / `TimeRateRange`.
+#[derive(Clone)]
+struct TimeGuard {
+    locked: bool,
+    rate: f64,
+    paused: bool,
+    limits: ControlLimits,
+}
+
+/// A script's `UserMoveControl "Limited"`.
+#[derive(Clone)]
+struct MoveLimit {
+    center: Option<ObjectRef>,
+    limits: ControlLimits,
 }
 
 /// A `Goto` flight, expressed in the target body's frame so it follows the body.
@@ -129,6 +212,59 @@ struct Flight {
     duration: f64,
     /// Bind with SyncRot on arrival (a Goto to a latitude and longitude), else Follow.
     sync: bool,
+    profile: Profile,
+}
+
+/// A script Goto's timing (FUN_140563f30). A bare Goto speeds up for 1 s, drifts 0 s and brakes
+/// for 1 s; `Time T` makes the speeding up and the braking T/2 each (FUN_140571db0); `AccelTime`,
+/// `DriftTime`, `DecelTime` override, and the flight lasts their sum. The curves' powers default
+/// to the `GotoSpeed` setting (FUN_140015720; main-def.cfg 10).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Profile {
+    accel: f64,
+    drift: f64,
+    decel: f64,
+    pa: f64,
+    pd: f64,
+}
+
+impl Profile {
+    fn from_args(a: &GotoArgs) -> Self {
+        let half = a.time.map(|t| t.max(0.0) * 0.5);
+        Self {
+            accel: a.accel_time.or(half).unwrap_or(1.0).max(0.0),
+            drift: a.drift_time.unwrap_or(0.0).max(0.0),
+            decel: a.decel_time.or(half).unwrap_or(1.0).max(0.0),
+            pa: a.accel_power.unwrap_or(crate::camera::GOTO_SPEED).max(1e-3),
+            pd: a.decel_power.unwrap_or(crate::camera::GOTO_SPEED).max(1e-3),
+        }
+    }
+
+    fn total(&self) -> f64 {
+        self.accel + self.drift + self.decel
+    }
+
+    /// Progress 0..1 `t` seconds into the flight (FUN_14056b1e0): each phase covers its share of
+    /// the flight time; speeding up follows (t / accel)^pa, drifting is even, braking follows
+    /// 1 - (1 - u)^pd over the braking time.
+    fn progress(&self, t: f64) -> f64 {
+        let total = self.total();
+        if total <= 0.0 {
+            return 1.0;
+        }
+        let (a, d, c) = (self.accel, self.drift, self.decel);
+        let s = if t < a {
+            (t / a).powf(self.pa) * a / total
+        } else if t < a + d {
+            t / total
+        } else if c > 0.0 {
+            let u = (1.0 - (t - a - d) / c).clamp(0.0, 1.0);
+            (1.0 - u.powf(self.pd)) * c / total + (a + d) / total
+        } else {
+            1.0
+        };
+        s.clamp(0.0, 1.0)
+    }
 }
 
 struct Anim {
@@ -157,12 +293,22 @@ pub struct ScriptRunner {
     saved: Vec<HashMap<String, Value>>,
     flight: Option<Flight>,
     orbit: Option<(DVec3, f64)>,
+    fly: Option<Motion>,
+    turn: Option<Motion>,
+    time_guard: Option<TimeGuard>,
+    move_limit: Option<MoveLimit>,
     fov_anim: Option<Anim>,
     interps: Vec<Interp>,
     pub caption: Option<Caption>,
     print: Option<(String, Option<f64>)>,
     logged: HashSet<String>,
     unsupported_vars: Vec<String>,
+    /// A menu scene's start: the user's settings, given back when it ends.
+    menu_slot: Option<HashMap<String, Value>>,
+    /// The script paused the music (`PauseMusic` without a `ResumeMusic` yet).
+    music_paused: bool,
+    /// The saved script variables (`LessonPassed`) were read.
+    loaded_persistent: bool,
     hid_hud: bool,
     cur_line: u32,
     // UI -> runner requests
@@ -189,12 +335,25 @@ impl ScriptRunner {
         self.building = None;
         self.flight = None;
         self.orbit = None;
+        self.fly = None;
+        self.turn = None;
+        self.time_guard = None;
+        self.move_limit = None;
         self.fov_anim = None;
         self.interps.clear();
         self.caption = None;
         self.print = None;
         self.saved.clear();
         self.status.clear();
+    }
+
+    /// What SE undoes when a script ends or is stopped (FUN_14054d240, FUN_140221b10): input
+    /// locks, the tutorial interface state and the waypoints.
+    fn end_effects(&mut self, cam: &mut FlyCamera, gui: &mut ScriptGui, wps: &mut Waypoints) {
+        self.reset();
+        cam.locks = Default::default();
+        gui.reset();
+        wps.clear();
     }
 
     fn warn_once(&mut self, key: &str, msg: String) {
@@ -262,21 +421,32 @@ fn queue_cli_script(cfg: Res<EngineConfig>, mut runner: ResMut<ScriptRunner>, mu
 
 // ---- execution context -------------------------------------------------------------
 
-struct Cx<'a> {
+struct Cx<'a, 'w, 's, 'd> {
     cam: &'a mut FlyCamera,
     sim: &'a mut SimTime,
     data: &'a SeData,
-    overlay: &'a mut OverlaySettings,
-    stars: &'a mut StarSettings,
-    auto: bool,
+    vars: &'a mut Settings<'w, 's>,
+    dialogs: &'a mut Dialogs<'d>,
+    music: &'a mut ScriptMusic,
+    /// `--script-auto`: waits for the user end after this many seconds (`SE_SCRIPT_AUTO_S`, else 8).
+    auto: Option<f64>,
+    /// Saved script variables (`LessonPassed`) may be read and written: not in test runs
+    /// (`--script`, `--run`), which leave the user's files alone (`settings::scripted`).
+    persist: bool,
     aspect: f64,
     quit: bool,
+    /// The script ended (finished or `CheckVersion` stopped it): undo its effects.
+    ended: bool,
 }
 
-impl<'a> Cx<'a> {
+impl<'a> Cx<'a, '_, '_, '_> {
     fn cat(&self) -> &'a Catalog {
         let data: &'a SeData = self.data;
         &data.catalog
+    }
+
+    fn wps(&self) -> &Waypoints {
+        &self.vars.waypoints
     }
 }
 
@@ -288,36 +458,14 @@ fn run_script(
     mut runner: ResMut<ScriptRunner>,
     mut cam: ResMut<FlyCamera>,
     mut sim: ResMut<SimTime>,
-    mut overlay: ResMut<OverlaySettings>,
-    mut stars: ResMut<StarSettings>,
-    mut hud: ResMut<HudState>,
+    mut vars: Settings,
+    mut dialogs: Dialogs,
+    mut music: ResMut<ScriptMusic>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if let Some(path) = runner.pending.take() {
-        runner.reset();
-        runner.stop = false;
-        if let Some(frame) = load_frame(&data, &path) {
-            runner.name = frame.name.clone();
-            // The main-menu background scene is a bare scene: hide the interface.
-            if frame.name.to_ascii_lowercase().contains("scripts/menu/") && !hud.hidden {
-                hud.hidden = true;
-                runner.hid_hud = true;
-            }
-            runner.frames.push(frame);
-        }
-    }
-    if runner.stop {
-        runner.stop = false;
-        runner.reset();
-        if runner.hid_hud {
-            hud.hidden = false;
-            runner.hid_hud = false;
-        }
-        info!("script {} stopped", runner.name);
-        return;
-    }
-    if runner.frames.is_empty() {
+    let pending = runner.pending.take();
+    if runner.frames.is_empty() && !runner.stop && pending.is_none() {
         return;
     }
     let aspect = windows.single().map(|w| (w.width() / w.height().max(1.0)) as f64).unwrap_or(16.0 / 9.0);
@@ -325,20 +473,100 @@ fn run_script(
         cam: &mut cam,
         sim: &mut sim,
         data: &data,
-        overlay: &mut overlay,
-        stars: &mut stars,
-        auto: cfg.script_auto,
+        vars: &mut vars,
+        dialogs: &mut dialogs,
+        music: &mut music,
+        auto: cfg.script_auto.then(|| std::env::var("SE_SCRIPT_AUTO_S").ok().and_then(|v| v.parse().ok()).unwrap_or(AUTO_TRIGGER_S)),
+        persist: !crate::settings::scripted(&cfg),
         aspect,
         quit: false,
+        ended: false,
     };
+    if let Some(path) = pending {
+        // Another script replaces a running one as if it had been stopped.
+        if runner.running() {
+            runner.finish(&mut cx, true);
+        }
+        runner.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
+        runner.stop = false;
+        if !runner.loaded_persistent && cx.persist {
+            runner.loaded_persistent = true;
+            for (k, v) in crate::script_vars::load_persistent() {
+                runner.vars.insert(k, Value::Num(v));
+            }
+        }
+        if let Some(frame) = load_frame(&data, &path) {
+            runner.name = frame.name.clone();
+            // The main-menu background scene is a bare scene: hide the interface. SE runs it in
+            // the main menu's own variable slot (main-def `EnableVariableSlots`), so its settings
+            // never reach the game's; the port keeps the user's values and gives them back when
+            // the scene ends.
+            if frame.name.to_ascii_lowercase().contains("scripts/menu/") {
+                if !cx.dialogs.hud.hidden {
+                    cx.dialogs.hud.hidden = true;
+                    runner.hid_hud = true;
+                }
+                let mut slot = runner.snapshot_vars(&cx);
+                // The scene's time-lapse and field of view are its own, not settings to give back.
+                slot.retain(|k, _| k != "timescale" && k != "fov");
+                runner.menu_slot = Some(slot);
+            }
+            runner.frames.push(frame);
+        }
+        if runner.frames.is_empty() {
+            return;
+        }
+    }
+    if runner.stop {
+        runner.stop = false;
+        runner.finish(&mut cx, true);
+        info!("script {} stopped", runner.name);
+        return;
+    }
     runner.step(&mut cx, time.delta_secs_f64());
+    if cx.ended {
+        let name = std::mem::take(&mut runner.name);
+        let status = std::mem::take(&mut runner.status);
+        runner.finish(&mut cx, false);
+        (runner.name, runner.status) = (name, status);
+    }
     if cx.quit {
         exit.write(AppExit::Success);
     }
 }
 
 impl ScriptRunner {
-    fn step(&mut self, cx: &mut Cx, mut dt: f64) {
+    /// A script ended, by itself or `stopped` by hand. A menu scene gives the user's settings
+    /// back; a script stopped by hand gives back what its first SaveVars kept, as its RestoreVars
+    /// would have (the port's choice: it saves settings as they change); music a script paused
+    /// plays again; then SE's own cleanup ([`Self::end_effects`]) and the interface comes back.
+    fn finish(&mut self, cx: &mut Cx, stopped: bool) {
+        let restore = self.menu_slot.take().or_else(|| if stopped { self.saved.first().cloned() } else { None });
+        for (k, v) in restore.unwrap_or_default() {
+            self.set_var(cx, &k, v);
+        }
+        if std::mem::take(&mut self.music_paused) {
+            cx.music.requests.push(MusicRequest::Resume { mix: crate::music::MIX_SCRIPT_S });
+        }
+        self.frames.clear();
+        self.end_effects(cx.cam, &mut cx.dialogs.gui, &mut cx.vars.waypoints);
+        if self.hid_hud {
+            cx.dialogs.hud.hidden = false;
+            self.hid_hud = false;
+        }
+    }
+
+    fn step(&mut self, cx: &mut Cx, dt: f64) {
+        self.guard_user_input(cx, dt);
+        self.step_inner(cx, dt);
+        // What the script itself set this frame is what the time lock holds.
+        if let Some(g) = &mut self.time_guard {
+            g.rate = cx.sim.rate;
+            g.paused = cx.sim.paused;
+        }
+    }
+
+    fn step_inner(&mut self, cx: &mut Cx, mut dt: f64) {
         if self.blocked.is_none() {
             // A click on "Skip step" / "Ok" with nothing to skip must not leak into the next wait.
             self.skip = false;
@@ -352,6 +580,9 @@ impl ScriptRunner {
                 }
                 self.blocked = None;
                 dt = 0.0;
+                if cx.ended {
+                    return;
+                }
             }
             let Some(fr) = self.frames.last_mut() else { return };
             if fr.pc >= fr.script.commands.len() {
@@ -362,6 +593,7 @@ impl ScriptRunner {
                     self.status = "finished".into();
                     self.caption = None;
                     self.print = None;
+                    cx.ended = true;
                     return;
                 }
                 continue;
@@ -384,7 +616,16 @@ impl ScriptRunner {
         self.cur_line = cmd.line;
         let eph_jd = cx.sim.jd;
         match &cmd.op {
-            Op::CheckVersion(_) => {}
+            // FUN_140565510: a script for another version stops behind a message box.
+            Op::CheckVersion(v) => {
+                if *v != ENGINE_VERSION {
+                    let text = format!("This script was designed for a different version of SpaceEngine ({v}, this is {ENGINE_VERSION})");
+                    warn!("script {}: {text}", self.name);
+                    self.caption = Some(Caption { lines: se_script::markup_lines(&text), ack: true });
+                    self.ack = false;
+                    self.blocked = Some(Blocked::Message { elapsed: 0.0, then_stop: true });
+                }
+            }
             Op::Run(p) => {
                 if self.frames.len() >= MAX_CALL_DEPTH {
                     self.warn_once("run-depth", format!("Run \"{p}\" nested too deeply (line {})", cmd.line));
@@ -403,19 +644,36 @@ impl ScriptRunner {
                     f.loops.clear();
                 }
             }
-            Op::Select(name) => match resolve_object(cx.cat(), name) {
-                Some(r) => cx.cam.selected = Some(r),
-                None => self.warn_once(&format!("sel:{name}"), format!("object not found: \"{name}\" (line {})", cmd.line)),
-            },
-            Op::Unselect => cx.cam.selected = None,
+            // A waypoint of that name first, then the catalog.
+            Op::Select(name) => {
+                if let Some(w) = cx.wps().find(name).map(|w| w.name.clone()) {
+                    cx.cam.selected = None;
+                    cx.vars.waypoints.selected = Some(w);
+                } else {
+                    match resolve_object(cx.cat(), name) {
+                        Some(r) => {
+                            cx.cam.selected = Some(r);
+                            cx.vars.waypoints.selected = None;
+                        }
+                        None => self.warn_once(&format!("sel:{name}"), format!("object not found: \"{name}\" (line {})", cmd.line)),
+                    }
+                }
+            }
+            Op::Unselect => {
+                cx.cam.selected = None;
+                cx.vars.waypoints.selected = None;
+            }
             Op::Center { .. } => {
-                if let Some(sel) = cx.cam.selected {
-                    let eph = Ephemeris::new(cx.cat());
-                    let d = eph.position(sel, eph_jd).delta_m(cx.cam.pos);
+                // FUN_140563cf0 refuses while the user's rotation is locked.
+                if cx.cam.locks.rotation {
+                    self.warn_once("center-locked", format!("camera rotation is limited, ignoring Center command (line {})", cmd.line));
+                } else if let Some(pos) = selection_pos(cx) {
+                    let d = pos.delta_m(cx.cam.pos);
                     cx.cam.rot = look_rotation(d, cx.cam.rot * DVec3::Y);
                 }
             }
-            Op::Follow | Op::SyncRot => {
+            // FUN_1405986f0 / FUN_140598810 / FUN_140597720 do nothing while movement is locked.
+            Op::Follow | Op::SyncRot if !cx.cam.locks.travel() => {
                 if let Some(sel) = cx.cam.selected {
                     let eph = Ephemeris::new(cx.cat());
                     let sync = matches!(cmd.op, Op::SyncRot);
@@ -423,8 +681,13 @@ impl ScriptRunner {
                     cx.cam.follow = Some(Follow::new(sel, sync, &eph, eph_jd));
                 }
             }
-            Op::Free => cx.cam.follow = None,
+            Op::Free if !cx.cam.locks.travel() => cx.cam.follow = None,
+            Op::Follow | Op::SyncRot | Op::Free => {}
             Op::GotoLocation(loc) => self.goto_location(cx, loc),
+            // FUN_140563f30: "Camera movement is limited, ignoring Goto command".
+            Op::Goto(_) if cx.cam.locks.travel() => {
+                warn!("script {}, line {}: camera movement is limited, ignoring Goto command", self.name, cmd.line);
+            }
             Op::Goto(args) => self.start_goto(cx, args, cmd.line),
             Op::Fov { fov, time } => {
                 let to = fov.unwrap_or(DEFAULT_FOV as f64);
@@ -443,8 +706,106 @@ impl ScriptRunner {
             Op::StopMotion => {
                 cx.cam.velocity = DVec3::ZERO;
                 cx.cam.travel = None;
+                cx.cam.turn_vel = DVec3::ZERO;
                 self.flight = None;
+                self.fly = None;
+                self.turn = None;
             }
+            // `Horizon`: level the view to the selection's horizon (SE's Horizon object, End).
+            Op::Horizon => {
+                if let Some(sel) = cx.cam.selected {
+                    crate::camera::start_horizon(cx.cam, sel);
+                }
+            }
+            // SE's camera axes are x left, y down, z ahead: the port's with every axis reversed.
+            Op::Fly { axis, speed, fade } => {
+                let dir = -DVec3::from_array(*axis).normalize_or(DVec3::Z);
+                let from = self.fly.map_or(0.0, |f| f.cur);
+                self.fly = Some(Motion::new(dir, from, *speed, *fade));
+            }
+            Op::StopFly { fade } => {
+                if let Some(f) = &mut self.fly {
+                    *f = Motion::new(f.axis, f.cur, 0.0, *fade);
+                }
+            }
+            // `Turn` about the axis as `Orbit` takes it (camera axes).
+            Op::Turn { axis, speed, fade } => {
+                let a = DVec3::from_array(*axis).normalize_or(DVec3::Y);
+                let from = self.turn.map_or(0.0, |t| t.cur);
+                self.turn = Some(Motion::new(a, from, *speed, *fade));
+            }
+            Op::StopTurn { fade } => {
+                if let Some(t) = &mut self.turn {
+                    *t = Motion::new(t.axis, t.cur, 0.0, *fade);
+                }
+            }
+            Op::StopRotation => {
+                cx.cam.turn_vel = DVec3::ZERO;
+                self.turn = None;
+            }
+            Op::Speed(v) => cx.cam.speed = clamp_speed(*v),
+            Op::MoveMode(m) => self.warn_once("movemode", format!("MoveMode {m} has no counterpart in the port, skipping (line {})", cmd.line)),
+            Op::UserControl { kind, mode, limits } => self.user_control(cx, *kind, *mode, limits),
+            Op::GotoUrl(u) => self.warn_once("gotourl", format!("GotoURL \"{u}\": se:// locations are not supported, skipping (line {})", cmd.line)),
+            Op::HighlightWidget(h) => cx.dialogs.gui.highlight = ActiveHighlight::new(h),
+            Op::SetWidgetStyle { widget, pos, pos_pix, visible } => {
+                if widget.eq_ignore_ascii_case("Message box") {
+                    if pos.is_some() || pos_pix.is_some() {
+                        cx.dialogs.gui.message_pos = *pos;
+                        cx.dialogs.gui.message_pos_pix = *pos_pix;
+                    }
+                    if *visible == Some(false) {
+                        self.caption = None;
+                    }
+                } else {
+                    self.warn_once(&format!("style:{widget}"), format!("SetWidgetStyle \"{widget}\": only the message box can be styled, skipping (line {})", cmd.line));
+                }
+            }
+            Op::ShowDialog { dialog, tab } => {
+                if !cx.dialogs.set_open(dialog, true, tab.as_deref()) {
+                    self.warn_once(&format!("dlg:{dialog}"), format!("dialog \"{dialog}\" has no counterpart in the port (line {})", cmd.line));
+                }
+            }
+            Op::HideDialog(dialog) => {
+                cx.dialogs.set_open(dialog, false, None);
+            }
+            Op::HideAllDialogs => cx.dialogs.hide_all(),
+            Op::HideAllToolbars => cx.dialogs.gui.toolbars = [true; 4],
+            // SE's main menu is not ported; its tutorial list is the Scripts window.
+            Op::OpenMenu(m) => {
+                if m.to_ascii_lowercase().contains("tutorial") {
+                    cx.dialogs.scripts.show = true;
+                } else {
+                    self.warn_once(&format!("menu:{m}"), format!("menu \"{m}\" has no counterpart in the port (line {})", cmd.line));
+                }
+            }
+            Op::CloseMenu => {}
+            Op::ScreenFade { out, time, color } => cx.dialogs.gui.start_fade(*out, *time, *color),
+            Op::PlayMusic { file, crossfade } => {
+                let mix = crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32);
+                cx.music.requests.push(MusicRequest::Play { file: file.clone(), mix });
+                self.music_paused = false;
+            }
+            Op::PauseMusic { crossfade } => {
+                cx.music.requests.push(MusicRequest::Pause { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) });
+                self.music_paused = true;
+            }
+            Op::ResumeMusic { crossfade } => {
+                cx.music.requests.push(MusicRequest::Resume { mix: crossfade.map_or(crate::music::MIX_SCRIPT_S, |c| c as f32) });
+                self.music_paused = false;
+            }
+            Op::Get(name) => match self.get_var(cx, name) {
+                Some(v) => info!("script {}: {name} = {v}", self.name),
+                None => info!("script {}: {name} is not set", self.name),
+            },
+            // FUN_14054f320: back to the variable's registered default (the port's defaults);
+            // a script variable without a counterpart is forgotten.
+            Op::Reset(name) => match crate::script_vars::default_value(name) {
+                Some(v) => self.set_var(cx, name, Value::Num(v)),
+                None => {
+                    self.vars.remove(&name.to_ascii_lowercase());
+                }
+            },
             Op::TimeScale(x) => cx.sim.rate = *x,
             Op::SetDate(jd) => cx.sim.jd = *jd,
             Op::StopTime => cx.sim.paused = true,
@@ -458,14 +819,23 @@ impl ScriptRunner {
             Op::BeginMultiTrigger(mode) => self.building = Some((*mode, Vec::new())),
             Op::WaitTrigger(t) => {
                 if let Some(name) = &t.object {
-                    if resolve_object(cx.cat(), name).is_none() {
+                    if find_target(cx, name).is_none() && !t.kind.to_ascii_lowercase().starts_with("gui|") {
                         self.warn_once(
                             &format!("trigobj:{name}"),
-                            format!("trigger object \"{name}\" is not in the catalog (waypoints are not supported), it times out (line {})", cmd.line),
+                            format!("trigger object \"{name}\" is neither in the catalog nor a waypoint, it times out (line {})", cmd.line),
                         );
                     }
                 }
-                let state = TrigState { trig: (**t).clone(), snap: snapshot(cx), done: false };
+                let snap = snapshot(cx);
+                let state = TrigState {
+                    trig: (**t).clone(),
+                    done: false,
+                    moved: DVec3::ZERO,
+                    seen_closed: false,
+                    seen_open: false,
+                    prev_jd: snap.jd,
+                    snap,
+                };
                 match &mut self.building {
                     Some((_, items)) => items.push(state),
                     None => self.block_on_triggers(MultiMode::And, vec![state]),
@@ -482,7 +852,7 @@ impl ScriptRunner {
             Op::WaitMessage(t) => {
                 self.caption = Some(Caption { lines: se_script::markup_lines(t), ack: true });
                 self.ack = false;
-                self.blocked = Some(Blocked::Message { elapsed: 0.0 });
+                self.blocked = Some(Blocked::Message { elapsed: 0.0, then_stop: false });
                 self.status = "waiting for Ok".into();
             }
             Op::HideMessage => self.caption = None,
@@ -492,7 +862,7 @@ impl ScriptRunner {
             Op::Set { name, value, .. } => self.set_var(cx, name, value.clone()),
             Op::WaitVar { name, wait } => {
                 if !self.var_satisfied(cx, name, wait) {
-                    if !is_live_var(name) {
+                    if !self.is_live_var(cx, name) {
                         self.warn_once(&format!("wv:{name}"), format!("cannot observe \"{name}\" in the port, WaitVar times out (line {})", cmd.line));
                     }
                     self.blocked = Some(Blocked::Var { name: name.clone(), wait: wait.clone(), elapsed: 0.0 });
@@ -560,24 +930,22 @@ impl ScriptRunner {
                 }
                 self.jump(*end + 1);
             }
-            Op::Waypoint { .. } | Op::ClearWaypoints | Op::DeleteWaypoint(_) => {
-                self.warn_once("waypoint", format!("waypoints are not supported, skipping (line {})", cmd.line))
+            Op::Waypoint(w) => {
+                let cat = cx.cat();
+                if let Err(e) = cx.vars.waypoints.define(w, cat) {
+                    self.warn_once(&format!("wp:{}", w.name), format!("{e} (line {})", cmd.line));
+                }
             }
+            Op::DeleteWaypoint(n) => {
+                if !cx.vars.waypoints.delete(n) {
+                    self.warn_once(&format!("wpdel:{n}"), format!("DeleteWaypoint: no waypoint \"{n}\" (line {})", cmd.line));
+                }
+            }
+            Op::ClearWaypoints => cx.vars.waypoints.clear(),
             Op::Track => cx.cam.track = cx.cam.selected.is_some(),
             Op::Untrack => cx.cam.track = false,
-            // `Horizon`: level the view to the selection's horizon (SE's Horizon object, End).
-            Op::Other(item) if item.key.eq_ignore_ascii_case("horizon") => {
-                if let Some(sel) = cx.cam.selected {
-                    crate::camera::start_horizon(cx.cam, sel);
-                }
-            }
-            Op::Other(item) if item.key.eq_ignore_ascii_case("stoprotation") => cx.cam.turn_vel = DVec3::ZERO,
-            // `SpeedKm X`: set the assigned velocity (km/s).
-            Op::Other(item) if item.key.eq_ignore_ascii_case("speedkm") => {
-                if let Some(v) = item.f64() {
-                    cx.cam.speed = clamp_speed(v * 1000.0);
-                }
-            }
+            // The port has no menu or game modes: the planetarium is all there is.
+            Op::Other(item) if matches!(item.key.to_ascii_lowercase().as_str(), "enterplanetarium" | "continuesession") => {}
             Op::Other(item) => {
                 let key = item.key.to_ascii_lowercase();
                 self.warn_once(&key, format!("command \"{}\" is not supported, skipping (first at line {})", item.key, cmd.line));
@@ -589,7 +957,7 @@ impl ScriptRunner {
         let max_wait = items.iter().filter_map(|i| i.trig.max_wait_time).fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.min(b))));
         let kinds: Vec<String> = items.iter().map(|i| i.trig.kind.clone()).collect();
         for it in &items {
-            if trigger_class(&it.trig.kind) == Class::Unsupported {
+            if trigger_class(&it.trig) == Class::Unsupported {
                 let kind = it.trig.kind.clone();
                 self.warn_once(
                     &format!("trig:{kind}"),
@@ -611,11 +979,15 @@ impl ScriptRunner {
                 *left -= dt;
                 *left <= 0.0 || skip
             }
-            Blocked::Message { elapsed } => {
+            Blocked::Message { elapsed, then_stop } => {
                 *elapsed += dt;
-                if ack || skip || (cx.auto && *elapsed >= AUTO_MESSAGE_S) {
+                if ack || skip || cx.auto.is_some_and(|a| *elapsed >= a * AUTO_MESSAGE_S / AUTO_TRIGGER_S) {
                     if let Some(c) = &mut self.caption {
                         c.ack = false;
+                    }
+                    if *then_stop {
+                        info!("script {} stopped: made for another version", self.name);
+                        cx.ended = true;
                     }
                     true
                 } else {
@@ -624,10 +996,14 @@ impl ScriptRunner {
             }
             Blocked::Var { name, wait, elapsed } => {
                 *elapsed += dt;
-                skip
+                let done = skip
                     || self.var_satisfied(cx, name, wait)
-                    || (!is_live_var(name) && *elapsed >= UNSUPPORTED_WAIT_S)
-                    || (cx.auto && *elapsed >= AUTO_TRIGGER_S)
+                    || (!self.is_live_var(cx, name) && *elapsed >= UNSUPPORTED_WAIT_S)
+                    || cx.auto.is_some_and(|a| *elapsed >= a);
+                if done {
+                    cx.dialogs.gui.wait_ended();
+                }
+                done
             }
             Blocked::Triggers { mode, items, elapsed, max_wait } => {
                 *elapsed += dt;
@@ -636,17 +1012,33 @@ impl ScriptRunner {
                     if it.done {
                         continue;
                     }
-                    it.done = match check_trigger(&it.trig, &it.snap, cx, el) {
-                        Check::Yes => true,
-                        Check::No => false,
-                        Check::Unsupported => el >= UNSUPPORTED_WAIT_S,
-                    };
+                    let check = check_trigger(it, cx, el, dt);
+                    // ActivationDelay: the trigger counts only after that long.
+                    let active = it.trig.activation_delay.is_none_or(|d| el >= d);
+                    it.done = active
+                        && match check {
+                            Check::Yes => true,
+                            Check::No => false,
+                            Check::Unsupported => el >= UNSUPPORTED_WAIT_S,
+                        };
                 }
                 let ok = match mode {
                     MultiMode::And => items.iter().all(|i| i.done),
                     MultiMode::Or => items.iter().any(|i| i.done),
                 };
-                ok || skip || max_wait.is_some_and(|m| el >= m) || (cx.auto && el >= AUTO_TRIGGER_S)
+                let done = ok || skip || max_wait.is_some_and(|m| el >= m) || cx.auto.is_some_and(|a| el >= a);
+                if done {
+                    cx.dialogs.gui.wait_ended();
+                    if cx.auto.is_some() {
+                        // Test runs: which waits the port could watch.
+                        let kinds: Vec<String> = items
+                            .iter()
+                            .map(|i| format!("{}{}", i.trig.kind, if trigger_class(&i.trig) == Class::Unsupported { " (unsupported)" } else { "" }))
+                            .collect();
+                        info!("script wait line {}: {} -> {} after {el:.1} s", self.cur_line, kinds.join(" + "), if ok { "met" } else { "ended" });
+                    }
+                }
+                done
             }
         };
         if !done {
@@ -658,43 +1050,34 @@ impl ScriptRunner {
     // ---- variables ----
 
     fn get_var(&self, cx: &Cx, name: &str) -> Option<f64> {
-        let k = name.to_ascii_lowercase();
-        match k.as_str() {
-            "showorbits" => Some(cx.overlay.orbits as u8 as f64),
-            "labelsmode" => Some(cx.overlay.labels_mode as f64),
-            "showmarkers" => Some(cx.overlay.markers as u8 as f64),
-            "starmagnlimit" => Some(cx.stars.mag_limit as f64),
-            "timescale" => Some(cx.sim.rate),
-            "fov" => Some(cx.cam.fov_deg as f64),
-            // ShowConstellations, ShowGrid*, ConstLines<Abbr>, ...
-            _ => cx.overlay.sky.var(&k).map(|on| on as u8 as f64).or_else(|| self.vars.get(&k).and_then(Value::as_f64)),
-        }
+        cx.vars.get(cx.cam, cx.sim, name).or_else(|| self.vars.get(&name.to_ascii_lowercase()).and_then(Value::as_f64))
+    }
+
+    /// Whether `name` is one of the port's settings (so a `WaitVar` on it can be met).
+    fn is_live_var(&self, cx: &Cx, name: &str) -> bool {
+        cx.vars.get(cx.cam, cx.sim, name).is_some()
     }
 
     fn set_var(&mut self, cx: &mut Cx, name: &str, value: Value) {
         let k = name.to_ascii_lowercase();
-        let n = value.as_f64();
-        match (k.as_str(), n) {
-            ("showorbits", Some(v)) => cx.overlay.orbits = v != 0.0,
-            ("labelsmode", Some(v)) => cx.overlay.labels_mode = v.clamp(0.0, 2.0) as u8,
-            ("showmarkers", Some(v)) => cx.overlay.markers = v != 0.0,
-            ("starmagnlimit", Some(v)) => cx.stars.mag_limit = v as f32,
-            ("timescale", Some(v)) => cx.sim.rate = v,
-            ("fov", Some(v)) => cx.cam.fov_deg = v as f32,
-            // The constellation and grid switches.
-            (f, Some(v)) if cx.overlay.sky.set_var(f, v != 0.0) => {}
-            // SE's per-kind filters: ShowOrbitsPlanets, ShowLabelsStars, ShowMarkersGalaxies, ...
-            (f, Some(v)) if f.starts_with("show") => match crate::overlay::kind_filter(cx.overlay, f) {
-                Some((set, kind)) => set.set(kind, v != 0.0),
-                None => self.store_var(name, k.clone(), value),
-            },
-            _ => self.store_var(name, k.clone(), value),
+        if let Some(v) = value.as_f64() {
+            if cx.vars.set(cx.cam, cx.sim, &k, v) {
+                return;
+            }
+        }
+        let persistent = crate::script_vars::PERSISTENT.contains(&k.as_str());
+        let changed = self.vars.get(&k) != Some(&value);
+        self.store_var(name, k.clone(), value);
+        if persistent && changed && cx.persist {
+            let saved: Vec<(String, f64)> =
+                crate::script_vars::PERSISTENT.iter().filter_map(|p| self.vars.get(*p).and_then(Value::as_f64).map(|v| (p.to_string(), v))).collect();
+            crate::script_vars::save_persistent(&saved);
         }
     }
 
     /// A variable the port does not act on, kept for scripts to read back.
     fn store_var(&mut self, name: &str, k: String, value: Value) {
-        if !is_live_var(&k) && !self.vars.contains_key(&k) && !IGNORED_VARS.contains(&k.as_str()) {
+        if !self.vars.contains_key(&k) && !IGNORED_VARS.contains(&k.as_str()) {
             self.unsupported_vars.push(name.to_string());
         }
         self.vars.insert(k, value);
@@ -702,15 +1085,84 @@ impl ScriptRunner {
 
     fn snapshot_vars(&self, cx: &Cx) -> HashMap<String, Value> {
         let mut m = self.vars.clone();
-        for k in LIVE_VARS {
-            if let Some(v) = self.get_var(cx, k) {
-                m.insert((*k).to_string(), Value::Num(v));
-            }
-        }
-        for k in crate::overlay::SkySwitches::KEYS {
-            m.insert(k.to_ascii_lowercase(), Value::Num(cx.overlay.sky.var(k).unwrap_or(false) as u8 as f64));
+        for (k, v) in cx.vars.snapshot(cx.cam, cx.sim) {
+            m.insert(k, Value::Num(v));
         }
         m
+    }
+
+    // ---- input locks ----
+
+    /// `UserMoveControl` / `UserRotationControl` / `UserTimeControl` / `UserStereobaseControl`.
+    fn user_control(&mut self, cx: &mut Cx, kind: InputKind, mode: LockMode, limits: &ControlLimits) {
+        match kind {
+            InputKind::Move => {
+                cx.cam.locks.movement = mode == LockMode::Disabled;
+                // "Limited" raises SE's movement flag too (FUN_140552c30:414), with limits.
+                cx.cam.locks.limited = mode == LockMode::Limited;
+                if mode != LockMode::Free {
+                    cx.cam.velocity = DVec3::ZERO;
+                    cx.cam.travel = None;
+                }
+                self.move_limit = (mode == LockMode::Limited).then(|| MoveLimit {
+                    center: limits.center.as_deref().and_then(|c| resolve_object(cx.cat(), c)),
+                    limits: limits.clone(),
+                });
+            }
+            InputKind::Rotation => {
+                cx.cam.locks.rotation = mode == LockMode::Disabled;
+                if mode == LockMode::Disabled {
+                    cx.cam.turn_vel = DVec3::ZERO;
+                }
+            }
+            InputKind::Time => {
+                self.time_guard = (mode != LockMode::Free).then(|| TimeGuard {
+                    locked: mode == LockMode::Disabled,
+                    rate: cx.sim.rate,
+                    paused: cx.sim.paused,
+                    limits: limits.clone(),
+                });
+                // "Limited" puts the rate inside its range at once (FUN_140552330).
+                if let (LockMode::Limited, Some((a, b))) = (mode, limits.rate_range) {
+                    cx.sim.rate = cx.sim.rate.clamp(a, b);
+                }
+            }
+            InputKind::Stereobase => {
+                self.warn_once("stereobase", "UserStereobaseControl: the port has no stereoscopic view, ignored".into());
+            }
+        }
+    }
+
+    /// Undoes what the user changed against the script's locks.
+    fn guard_user_input(&mut self, cx: &mut Cx, _dt: f64) {
+        if let Some(g) = &self.time_guard {
+            if g.locked {
+                cx.sim.rate = g.rate;
+                cx.sim.paused = g.paused;
+            } else {
+                if let Some((a, b)) = g.limits.rate_range {
+                    cx.sim.rate = cx.sim.rate.clamp(a, b);
+                }
+                if let Some((a, b)) = g.limits.time_range {
+                    cx.sim.jd = cx.sim.jd.clamp(a, b);
+                }
+            }
+        }
+        if let Some(m) = &self.move_limit {
+            if let Some(kms) = m.limits.speed_kms {
+                cx.cam.speed = cx.cam.speed.min(clamp_speed(kms * 1000.0));
+            }
+            if let Some(c) = m.center {
+                let eph = Ephemeris::new(cx.cat());
+                let p = eph.position(c, cx.sim.jd);
+                let max = m.limits.dist_km.map(|k| k * 1000.0).or(m.limits.dist_rad.map(|r| r * eph.radius_m(c)));
+                let off = cx.cam.pos.delta_m(p);
+                if let Some(max) = max.filter(|m| off.length() > *m) {
+                    cx.cam.pos = p.offset_m(off.normalize_or(DVec3::Z) * max);
+                    cx.cam.velocity = DVec3::ZERO;
+                }
+            }
+        }
     }
 
     fn var_satisfied(&self, cx: &Cx, name: &str, wait: &VarWait) -> bool {
@@ -762,6 +1214,22 @@ impl ScriptRunner {
         self.update_flight(cx, dt);
         if self.flight.is_none() {
             self.update_orbit(cx, dt);
+        }
+        // `Fly`: along a camera axis; the follow binding carries the camera on with its body.
+        if let Some(f) = &mut self.fly {
+            let alive = f.step(dt);
+            cx.cam.pos = cx.cam.pos.offset_m(cx.cam.rot * f.axis * (f.cur * dt));
+            if !alive {
+                self.fly = None;
+            }
+        }
+        // `Turn`: about a camera axis, in degrees per second.
+        if let Some(t) = &mut self.turn {
+            let alive = t.step(dt);
+            cx.cam.rot = (cx.cam.rot * DQuat::from_axis_angle(t.axis, t.cur.to_radians() * dt)).normalize();
+            if !alive {
+                self.turn = None;
+            }
         }
     }
 
@@ -878,7 +1346,14 @@ impl ScriptRunner {
         .max(radius * 1.0001);
         let end_local = dir * dist;
         let oriented = a.yaw.is_some() || a.pitch.is_some() || a.roll.is_some();
-        let end_rot = if oriented && !a.center {
+        // FUN_140563f30: "Camera rotation is limited, ignoring Center option in Goto command".
+        let center = a.center && !cx.cam.locks.rotation;
+        if a.center && cx.cam.locks.rotation {
+            warn!("script {}, line {line}: camera rotation is limited, ignoring Center option in Goto command", self.name);
+        }
+        let end_rot = if cx.cam.locks.rotation && !oriented {
+            start_rot
+        } else if oriented && !center {
             horizon_rotation(dir, a.yaw.unwrap_or(0.0), a.pitch.unwrap_or(0.0), a.roll.unwrap_or(0.0))
         } else {
             look_rotation(-end_local, DVec3::Y)
@@ -886,10 +1361,11 @@ impl ScriptRunner {
         cx.cam.travel = None;
         cx.cam.follow = None;
         cx.cam.velocity = DVec3::ZERO;
-        let duration = a.time.unwrap_or(DEFAULT_GOTO_S).max(0.0);
+        let profile = Profile::from_args(a);
+        let duration = profile.total();
         // SE binds a Goto to a point on the surface with SyncRot, any other with Follow (FUN_140563f30).
         let sync = a.lat.is_some() || a.lon.is_some();
-        self.flight = Some(Flight { target, start_local, start_rot, end_local, end_rot, elapsed: 0.0, duration, sync });
+        self.flight = Some(Flight { target, start_local, start_rot, end_local, end_rot, elapsed: 0.0, duration, sync, profile });
         // Zero-time flights land immediately, so following commands see the result.
         self.update_flight(cx, 0.0);
     }
@@ -898,7 +1374,7 @@ impl ScriptRunner {
         let Some(f) = &mut self.flight else { return };
         f.elapsed += dt;
         let t = if f.duration <= 0.0 { 1.0 } else { (f.elapsed / f.duration).clamp(0.0, 1.0) };
-        let s = smooth(t);
+        let s = f.profile.progress(f.elapsed);
         let jd = cx.sim.jd;
         let eph = Ephemeris::new(&cx.data.catalog);
         let q = eph.orientation(f.target, jd);
@@ -932,15 +1408,9 @@ fn sun_position(cat: &Catalog, jd: f64) -> UPos {
     cat.find("Sun").map(|s| Ephemeris::new(cat).position(s, jd)).unwrap_or(UPos::ZERO)
 }
 
-/// Variables mirrored by live port settings.
-const LIVE_VARS: &[&str] = &["showorbits", "labelsmode", "starmagnlimit", "timescale", "fov"];
-
-/// Variables that only affect SpaceEngine's GUI feedback; setting them is not worth a report.
+/// Variables that only affect SpaceEngine's GUI feedback, or the saved tutorial progress;
+/// setting them is not worth a report.
 const IGNORED_VARS: &[&str] = &["silentvarchange", "lessonpassed"];
-
-fn is_live_var(name: &str) -> bool {
-    LIVE_VARS.contains(&name.to_ascii_lowercase().as_str())
-}
 
 fn smooth(t: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
@@ -948,7 +1418,8 @@ fn smooth(t: f64) -> f64 {
 
 fn snapshot(cx: &Cx) -> Snapshot {
     Snapshot {
-        pos: cx.cam.pos,
+        selected_wp: cx.wps().selected.clone(),
+        track: cx.cam.track,
         rot: cx.cam.rot,
         fov: cx.cam.fov_deg,
         speed: cx.cam.speed,
@@ -982,16 +1453,53 @@ fn horizon_rotation(up: DVec3, yaw: f64, pitch: f64, roll: f64) -> DQuat {
 
 /// SpaceEngine object paths look like `Earth-Moon|Earth`; resolve by the full name,
 /// then by the last path component, then earlier ones.
-fn resolve_object(cat: &Catalog, name: &str) -> Option<ObjectRef> {
+pub(crate) fn resolve_object(cat: &Catalog, name: &str) -> Option<ObjectRef> {
     if let Some(r) = cat.find(name) {
         return Some(r);
     }
     name.rsplit('|').find_map(|part| cat.find(part.trim()))
 }
 
+/// What a script names: a catalog object or one of its waypoints.
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Object(ObjectRef),
+    /// Position and radius (m).
+    Waypoint(UPos, f64),
+}
+
+/// Waypoints first (scripts name them explicitly), then the catalog.
+fn find_target(cx: &Cx, name: &str) -> Option<Target> {
+    if let Some(w) = cx.wps().find(name) {
+        let (p, r) = Waypoints::place(w, &Ephemeris::new(cx.cat()), cx.sim.jd);
+        return Some(Target::Waypoint(p, r));
+    }
+    resolve_object(cx.cat(), name).map(Target::Object)
+}
+
+impl Target {
+    /// Position, radius (m) and the body's orientation (for latitudes).
+    fn place(self, eph: &Ephemeris, jd: f64) -> (UPos, f64, DQuat) {
+        match self {
+            Target::Object(r) => (eph.position(r, jd), eph.radius_m(r).max(1.0), eph.orientation(r, jd)),
+            Target::Waypoint(p, r) => (p, r, DQuat::IDENTITY),
+        }
+    }
+}
+
+/// Where the selection is: the catalog object or the selected waypoint.
+fn selection_pos(cx: &Cx) -> Option<UPos> {
+    let eph = Ephemeris::new(cx.cat());
+    match (cx.cam.selected, cx.wps().selected()) {
+        (Some(s), _) => Some(eph.position(s, cx.sim.jd)),
+        (None, Some(w)) => Some(Waypoints::place(w, &eph, cx.sim.jd).0),
+        _ => None,
+    }
+}
+
 // ---- triggers ----------------------------------------------------------------------
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Class {
     Supported,
     Unsupported,
@@ -1003,23 +1511,48 @@ enum Check {
     Unsupported,
 }
 
-fn trigger_class(kind: &str) -> Class {
-    match kind.to_ascii_lowercase().as_str() {
+/// The trigger kinds the port can watch (exe strings `Control|Rotate` .. `Input|Custom`). The
+/// universe map and system chart controls, panel pins, clicks inside dialogs and input
+/// bindings have no counterpart and time out; of the clicks, the navigation toolbar's date is
+/// the port's too.
+fn trigger_class(t: &Trigger) -> Class {
+    let date_click = t.dialog.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(DATE_WIDGET));
+    match t.kind.to_ascii_lowercase().as_str() {
+        "gui|leftclick" if date_click => Class::Supported,
         "loadingcomplete" | "screenshotcomplete" | "entermenu" | "enterplanetarium" | "entersingleplayer" | "time"
-        | "object|select" | "object|approach" | "object|see" | "control|goto" | "control|move" | "control|rotate"
-        | "control|orbit" | "control|changespeed" | "control|settimerate" | "control|pausetime"
-        | "control|resumetime" | "control|reversetime" | "control|changefov" | "control|center" | "control|follow"
-        | "control|land" | "control|stopmove" | "control|syncrot" => Class::Supported,
+        | "object|select" | "object|approach" | "object|see" | "control|goto" | "control|gotocenter" | "control|move"
+        | "control|rotate" | "control|orbit" | "control|changespeed" | "control|settimerate" | "control|pausetime"
+        | "control|resumetime" | "control|reversetime" | "control|settime" | "control|setcurrenttime"
+        | "control|changefov" | "control|resetfov" | "control|center" | "control|follow" | "control|syncrot"
+        | "control|free" | "control|track" | "control|untrack" | "control|horizon" | "control|land"
+        | "control|stopmove" | "control|stoprotate" | "gui|open" | "gui|close"
+        | "gui|selectobject" => Class::Supported,
         _ => Class::Unsupported,
     }
+}
+
+/// `Control|Move`'s direction test (FUN_140275dd0): the movement direction `n` (SE camera axes)
+/// matches `d` when |d_i - n_i| <= 0.01 |d_i + n_i| on every axis (plus rounding).
+fn direction_matches(d: [f64; 3], n: DVec3) -> bool {
+    let n = n.to_array();
+    (0..3).all(|i| (d[i] - n[i]).abs() <= DIRECTION_TOLERANCE * (d[i] + n[i]).abs() + 1e-6)
+}
+
+/// Camera longitude and latitude over a body (degrees, the port's body frame as `Goto`'s).
+fn lon_lat(local: DVec3) -> (f64, f64) {
+    let d = local.normalize_or(DVec3::Z);
+    ((-d.z).atan2(d.x).to_degrees(), d.y.clamp(-1.0, 1.0).asin().to_degrees())
 }
 
 fn in_range(v: f64, r: (f64, f64)) -> bool {
     v >= r.0.min(r.1) && v <= r.0.max(r.1)
 }
 
+/// Whether an object is of a trigger's `Type`. SE also filters by class (`"Planet|Temperate|Terra"`);
+/// the port checks the first part only.
 fn type_matches(cat: &Catalog, r: ObjectRef, ty: &str) -> bool {
-    match (r, ty.to_ascii_lowercase().as_str()) {
+    let base = ty.split('|').next().unwrap_or(ty).trim().to_ascii_lowercase();
+    match (r, base.as_str()) {
         (_, "selection") => true,
         (ObjectRef::Body(i), t) => {
             let tag = cat.bodies[i as usize].tag;
@@ -1055,65 +1588,95 @@ fn outside(v: f64, r: (f64, f64)) -> bool {
     v < r.0.min(r.1) || v > r.0.max(r.1)
 }
 
-fn check_trigger(t: &Trigger, snap: &Snapshot, cx: &Cx, elapsed: f64) -> Check {
+fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
     let yes = |b: bool| if b { Check::Yes } else { Check::No };
     let cat = cx.cat();
     let eph = Ephemeris::new(cat);
     let jd = cx.sim.jd;
     let cam = &*cx.cam;
+    let (t, snap) = (&it.trig, &it.snap);
+    let prev_jd = std::mem::replace(&mut it.prev_jd, jd);
+    // The user's own movement this frame (velocity, so a followed body's motion does not count).
+    it.moved += cam.velocity * dt;
     match t.kind.to_ascii_lowercase().as_str() {
         "loadingcomplete" => yes(elapsed >= LOADING_SETTLE_S),
         "screenshotcomplete" | "entermenu" | "enterplanetarium" | "entersingleplayer" => Check::Yes,
+        // FUN_140276ca0: Mode CROSSED / EARLIER / LATER against `Time`, INRANGE / OUTRANGE
+        // against `TimeRange`.
         "time" => {
-            let Some(target) = t.time_jd else { return Check::Yes };
             let mode = t.mode.as_deref().unwrap_or("later").to_ascii_lowercase();
-            yes(match mode.as_str() {
-                "earlier" => jd <= target,
-                "crossed" => (snap.jd < target) != (jd < target),
-                _ => jd >= target,
-            })
+            match (mode.as_str(), t.time_range, t.time_jd) {
+                ("inrange", Some(r), _) => yes(in_range(jd, r)),
+                ("outrange", Some(r), _) => yes(!in_range(jd, r)),
+                (_, _, Some(target)) => yes(match mode.as_str() {
+                    "earlier" => jd <= target,
+                    "crossed" => (snap.jd < target) != (jd < target),
+                    _ => jd >= target,
+                }),
+                _ => Check::Yes,
+            }
         }
-        "object|select" => match &t.object {
-            Some(name) => match resolve_object(cat, name) {
-                Some(want) => yes(cam.selected == Some(want) && snap.selected != cam.selected),
-                None => Check::Unsupported,
-            },
-            None => yes(cam.selected.is_some() && snap.selected != cam.selected),
-        },
+        "object|select" => {
+            let changed = snap.selected != cam.selected || snap.selected_wp != cx.wps().selected;
+            match (&t.object, &t.ty) {
+                (Some(name), _) => match find_target(cx, name) {
+                    Some(Target::Object(want)) => yes(cam.selected == Some(want) && changed),
+                    Some(Target::Waypoint(..)) => {
+                        let sel = cx.wps().selected().map(|w| w.name.as_str());
+                        yes(changed && sel.is_some_and(|s| cx.wps().find(name).is_some_and(|w| w.name == s)))
+                    }
+                    None => Check::Unsupported,
+                },
+                (None, Some(ty)) => yes(changed && cam.selected.is_some_and(|s| type_matches(cat, s, ty))),
+                (None, None) => yes(changed && (cam.selected.is_some() || cx.wps().selected.is_some())),
+            }
+        }
         "object|approach" => {
-            let obj = match (&t.object, &t.ty) {
-                (Some(name), _) => match resolve_object(cat, name) {
+            let target = match (&t.object, &t.ty) {
+                (Some(name), _) => match find_target(cx, name) {
                     Some(r) => Some(r),
                     None => return Check::Unsupported,
                 },
-                (None, Some(ty)) if ty.eq_ignore_ascii_case("selection") => cam.selected,
+                (None, Some(ty)) if ty.eq_ignore_ascii_case("selection") => cam.selected.map(Target::Object),
                 (None, Some(ty)) => {
                     let near = cat.find(&cam.nearest_name);
-                    near.filter(|r| type_matches(cat, *r, ty))
+                    near.filter(|r| type_matches(cat, *r, ty)).map(Target::Object)
                 }
-                (None, None) => cam.selected,
+                (None, None) => cam.selected.map(Target::Object),
             };
-            let Some(obj) = obj else { return Check::No };
-            let d = eph.position(obj, jd).delta_m(cam.pos).length();
-            let radius = eph.radius_m(obj).max(1.0);
+            let Some(target) = target else { return Check::No };
+            let (pos, radius, q) = target.place(&eph, jd);
+            let off = cam.pos.delta_m(pos);
+            let d = off.length();
+            // LonLatRange (lon0, lon1, lat0, lat1): where over the body the camera is.
+            if let Some([lo0, lo1, la0, la1]) = t.lonlat_range {
+                let (lon, lat) = lon_lat(q.inverse() * off);
+                if !in_range(lon, (lo0, lo1)) || !in_range(lat, (la0, la1)) {
+                    return Check::No;
+                }
+            }
             if let Some(r) = t.range_rad {
                 return yes(in_range(d / radius, r));
             }
             if let Some(r) = t.range_km {
                 return yes(in_range((d - radius).max(0.0) / 1000.0, r));
             }
+            if let Some(r) = t.range {
+                // parsecs
+                return yes(in_range(d / PC_M, r));
+            }
             yes(d / radius < 10.0)
         }
         "object|see" => {
-            let obj = match &t.object {
-                Some(n) => match resolve_object(cat, n) {
+            let target = match &t.object {
+                Some(n) => match find_target(cx, n) {
                     Some(r) => Some(r),
                     None => return Check::Unsupported,
                 },
-                None => cam.selected,
+                None => cam.selected.map(Target::Object),
             };
-            let Some(obj) = obj else { return Check::No };
-            let local = cam.rot.inverse() * eph.position(obj, jd).delta_m(cam.pos);
+            let Some(target) = target else { return Check::No };
+            let local = cam.rot.inverse() * target.place(&eph, jd).0.delta_m(cam.pos);
             if local.z >= 0.0 {
                 return Check::No;
             }
@@ -1125,29 +1688,48 @@ fn check_trigger(t: &Trigger, snap: &Snapshot, cx: &Cx, elapsed: f64) -> Check {
                 None => yes((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)),
             }
         }
-        "control|goto" => {
-            let started = cam.travel.is_some() && !snap.travel;
-            let type_ok = match (&t.ty, cam.travel.as_ref()) {
-                (Some(ty), Some(tr)) => type_matches(cat, tr.target, ty),
-                _ => true,
+        // A Go to started (to `Object`, or to an object of `Type`); GotoCenter is Ctrl+G's.
+        "control|goto" | "control|gotocenter" => {
+            let Some(tr) = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Goto && !snap.travel) else { return Check::No };
+            let center_ok = !t.kind.eq_ignore_ascii_case("control|gotocenter") || (tr.end_distance > 0.0 && tr.end_distance <= 10.0);
+            let object_ok = match &t.object {
+                Some(n) => resolve_object(cat, n) == Some(tr.target),
+                None => true,
             };
-            yes(started && type_ok)
+            let type_ok = t.ty.as_ref().is_none_or(|ty| type_matches(cat, tr.target, ty));
+            yes(center_ok && object_ok && type_ok)
         }
+        // FUN_140275dd0: the user's movement summed since the start, within RangeKm (or Range in
+        // parsecs), while moving along Direction (SE's camera axes: x left, y down, z ahead).
         "control|move" => {
-            let d_km = cam.pos.delta_m(snap.pos).length() / 1000.0;
-            match t.range_km {
-                Some(r) => yes(in_range(d_km, r)),
-                None => yes(d_km > 1.0),
+            let v = cam.velocity;
+            if v.length_squared() == 0.0 {
+                return Check::No;
+            }
+            if let Some(d) = t.direction {
+                let n = -(cam.rot.inverse() * v).normalize();
+                if !direction_matches(d, n) {
+                    return Check::No;
+                }
+            }
+            let d_m = it.moved.length();
+            match (t.range_km, t.range) {
+                (Some(r), _) => yes(d_m / 1000.0 >= r.0.min(r.1) && d_m / 1000.0 < r.0.max(r.1)),
+                (None, Some(r)) => yes(d_m / PC_M >= r.0.min(r.1) && d_m / PC_M < r.0.max(r.1)),
+                (None, None) => Check::Yes,
             }
         }
         "control|rotate" | "control|orbit" => {
-            let (y, p, _) = rotation_since(snap, cam.rot);
+            let (y, p, r) = rotation_since(snap, cam.rot);
             let mut tests = Vec::new();
-            if let Some(r) = t.yaw_range {
-                tests.push(outside(y, r));
+            if let Some(rg) = t.yaw_range {
+                tests.push(outside(y, rg));
             }
-            if let Some(r) = t.pitch_range {
-                tests.push(outside(p, r));
+            if let Some(rg) = t.pitch_range {
+                tests.push(outside(p, rg));
+            }
+            if let Some(rg) = t.roll_range {
+                tests.push(outside(r, rg));
             }
             if tests.is_empty() {
                 tests.push(y.abs() > 5.0 || p.abs() > 5.0);
@@ -1173,17 +1755,66 @@ fn check_trigger(t: &Trigger, snap: &Snapshot, cx: &Cx, elapsed: f64) -> Check {
         "control|pausetime" => yes(cx.sim.paused && !snap.paused),
         "control|resumetime" => yes(!cx.sim.paused && snap.paused),
         "control|reversetime" => yes(cx.sim.rate * snap.rate < 0.0),
-        "control|changefov" => yes((cam.fov_deg - snap.fov).abs() > 0.5),
+        // The date set by hand: a jump the clock's own step does not explain.
+        "control|settime" => {
+            let step = if cx.sim.paused { 0.0 } else { cx.sim.rate * dt / 86400.0 };
+            yes(((jd - prev_jd) - step).abs() > SET_TIME_JUMP_D)
+        }
+        // Ctrl+\: the date jumps to the system clock's.
+        "control|setcurrenttime" => {
+            let now = SimTime::default().jd;
+            yes((jd - now).abs() < SET_TIME_JUMP_D && (snap.jd - now).abs() >= SET_TIME_JUMP_D)
+        }
+        "control|changefov" => match t.range {
+            Some(r) => yes(in_range(cam.fov_deg as f64, r)),
+            None => yes((cam.fov_deg - snap.fov).abs() > 0.5),
+        },
+        // Home: back to the default field of view.
+        "control|resetfov" => {
+            let def = crate::camera::DEFAULT_FOV_DEG;
+            yes((cam.fov_target == Some(def) || (cam.fov_deg - def).abs() < 0.01) && (snap.fov - def).abs() >= 0.01)
+        }
         "control|center" => {
+            if cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Center) && !snap.travel {
+                return Check::Yes;
+            }
             let Some(sel) = cam.selected else { return Check::No };
             let to = eph.position(sel, jd).delta_m(cam.pos);
             let fwd = cam.rot * DVec3::NEG_Z;
             yes(fwd.angle_between(to) < 3f64.to_radians())
         }
+        "control|horizon" => yes(cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Horizon) && !snap.travel),
         "control|follow" => yes(cam.follow.is_some() && !snap.following),
-        "control|land" => yes(cam.nearest_surface < 100.0),
         "control|syncrot" => yes(cam.bind_mode() == 2 && !snap.rotating),
+        "control|free" => yes(cam.follow.is_none() && snap.following),
+        "control|track" => yes(cam.track && !snap.track),
+        "control|untrack" => yes(!cam.track && snap.track),
+        // Land on object (Shift+G) started, or the camera is down.
+        "control|land" => {
+            let landing = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Land);
+            let object_ok = |r: ObjectRef| t.object.as_ref().is_none_or(|n| resolve_object(cat, n) == Some(r));
+            yes(landing.is_some_and(|tr| object_ok(tr.target)) || cam.nearest_surface < 100.0)
+        }
         "control|stopmove" => yes(cam.velocity.length() < 1e-3 && cam.travel.is_none()),
+        "control|stoprotate" => yes(cam.turn_vel == DVec3::ZERO),
+        // The port's windows by SE's names: opened (or closed) since the trigger started.
+        "gui|open" | "gui|close" => {
+            let Some(open) = t.dialog.as_deref().and_then(|d| cx.dialogs.is_open(d)) else { return Check::Unsupported };
+            it.seen_closed |= !open;
+            it.seen_open |= open;
+            if t.kind.eq_ignore_ascii_case("gui|open") { yes(open && it.seen_closed) } else { yes(!open && it.seen_open) }
+        }
+        // A click on the navigation toolbar's date opens its field.
+        "gui|leftclick" if t.dialog.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(DATE_WIDGET)) => {
+            yes(cx.dialogs.hud.date_edit.is_some())
+        }
+        // An object picked in the dialog: the selection changed while it is open.
+        "gui|selectobject" => {
+            let Some(open) = t.dialog.as_deref().and_then(|d| cx.dialogs.is_open(d)) else { return Check::Unsupported };
+            let changed = cam.selected.is_some() && cam.selected != snap.selected;
+            let object_ok = t.object.as_ref().is_none_or(|n| resolve_object(cat, n) == cam.selected);
+            yes(open && changed && object_ok)
+        }
         _ => Check::Unsupported,
     }
 }
@@ -1194,22 +1825,38 @@ fn draw_captions(
     mut contexts: EguiContexts,
     mut runner: ResMut<ScriptRunner>,
     i18n: Res<I18n>,
+    gui: Res<ScriptGui>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if let Some(cap) = runner.caption.clone() {
         let blocked_on_trigger = matches!(runner.blocked, Some(Blocked::Triggers { .. } | Blocked::Var { .. }));
         let mut ack = false;
         let mut skip = false;
-        egui::Area::new(egui::Id::new("script_caption"))
-            .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -36.0])
-            .show(ctx, |ui| {
+        // SetWidgetStyle "Message box" { Pos (x, y) }: the box's top-left corner at that fraction
+        // of the screen (PosPix: pixels); else bottom centre.
+        let screen = ctx.content_rect();
+        let placed = gui
+            .message_pos
+            .map(|[x, y]| egui::pos2(screen.width() * x as f32, screen.height() * y as f32))
+            .or(gui.message_pos_pix.map(|[x, y]| egui::pos2(x as f32, y as f32)));
+        let max_width = match placed {
+            // Inside the screen, with the frame's margins.
+            Some(p) => (screen.right() - p.x - 48.0).clamp(240.0, 680.0),
+            None => 680.0,
+        };
+        let area = egui::Area::new(egui::Id::new("script_caption"));
+        let area = match placed {
+            Some(p) => area.fixed_pos(p),
+            None => area.anchor(egui::Align2::CENTER_BOTTOM, [0.0, -36.0]),
+        };
+        let shown = area.show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(egui::Color32::from_black_alpha(205))
                     .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 110, 150)))
                     .corner_radius(6.0)
                     .inner_margin(egui::Margin::same(12))
                     .show(ui, |ui| {
-                        ui.set_max_width(680.0);
+                        ui.set_max_width(max_width);
                         for line in &cap.lines {
                             let text = egui::RichText::new(&line.text).color(egui::Color32::from_gray(235));
                             ui.label(if line.big { text.size(26.0).strong() } else { text.size(15.0) });
@@ -1225,6 +1872,7 @@ fn draw_captions(
                         });
                     });
             });
+        crate::script_gui::mark_named(ctx, "Message box", shown.response.rect);
         if cap.ack && !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             ack = true;
         }
@@ -1316,4 +1964,66 @@ fn draw_scripts_window(
 
 fn short_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_direction_needs_the_same_axis() {
+        // W flies along SE's +z (ahead); a slight sideways drift fails, as in FUN_140275dd0.
+        assert!(direction_matches([0.0, 0.0, 1.0], DVec3::new(0.0, 0.0, 1.0)));
+        assert!(direction_matches([0.0, 0.0, 1.0], DVec3::new(1e-9, 0.0, 1.0)));
+        assert!(!direction_matches([0.0, 0.0, 1.0], DVec3::new(0.1, 0.0, 0.995)));
+        assert!(!direction_matches([0.0, 0.0, -1.0], DVec3::new(0.0, 0.0, 1.0)));
+        // The port's camera moving forward (-z) is SE's +z.
+        let v = DVec3::NEG_Z * 500.0;
+        assert!(direction_matches([0.0, 0.0, 1.0], -(DQuat::IDENTITY.inverse() * v).normalize()));
+    }
+
+    #[test]
+    fn flight_profile() {
+        // A bare Goto: 1 s speeding up, 1 s braking, powers from GotoSpeed (FUN_140563f30).
+        let p = Profile::from_args(&GotoArgs::default());
+        assert_eq!((p.accel, p.drift, p.decel, p.pa), (1.0, 0.0, 1.0, crate::camera::GOTO_SPEED));
+        assert_eq!(p.total(), 2.0);
+        // `Time T` splits into T/2 + T/2 (FUN_140571db0); explicit keys win.
+        let p = Profile::from_args(&GotoArgs { time: Some(3.0), decel_time: Some(0.5), ..Default::default() });
+        assert_eq!((p.accel, p.decel, p.total()), (1.5, 0.5, 2.0));
+        assert_eq!(Profile::from_args(&GotoArgs { time: Some(0.0), ..Default::default() }).progress(0.0), 1.0);
+        // FUN_14056b1e0: each phase reaches its share of the progress at its end.
+        let p = Profile::from_args(&GotoArgs { accel_time: Some(1.0), drift_time: Some(2.0), decel_time: Some(1.0), ..Default::default() });
+        assert_eq!((p.progress(0.0), p.progress(4.0)), (0.0, 1.0));
+        assert!((p.progress(1.0) - 0.25).abs() < 1e-12 && (p.progress(3.0) - 0.75).abs() < 1e-12);
+        // Speeding up as (t / a)^10: almost still for half the phase.
+        assert!(p.progress(0.5) < 1e-3);
+        let mut last = 0.0;
+        for i in 1..=400 {
+            let s = p.progress(i as f64 / 100.0);
+            assert!(s >= last);
+            last = s;
+        }
+        // Even while drifting.
+        let (s1, s2, s3) = (p.progress(1.5), p.progress(2.0), p.progress(2.5));
+        assert!(((s2 - s1) - (s3 - s2)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fly_speed_eases() {
+        let mut m = Motion::new(DVec3::NEG_Z, 0.0, 100.0, 2.0);
+        assert!(m.step(1.0));
+        assert!((m.cur - 50.0).abs() < 1e-9);
+        m.step(5.0);
+        assert_eq!(m.cur, 100.0);
+        let mut stop = Motion::new(m.axis, m.cur, 0.0, 0.0);
+        assert!(!stop.step(0.016));
+    }
+
+    #[test]
+    fn lon_lat_over_a_body() {
+        let d = se_core::se_script::polar_dir(30.0, 70.0);
+        let (lon, lat) = lon_lat(DVec3::from_array(d) * 5.0);
+        assert!((lon - 30.0).abs() < 1e-9 && (lat - 70.0).abs() < 1e-9);
+    }
 }
