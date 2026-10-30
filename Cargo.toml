@@ -20,3 +20,11 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Release optimisation without LTO, built in parallel and incrementally: for the quick rebuilds of
+# feature work (`cargo build --profile agent`); `release` stays the build that is played.
+[profile.agent]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
