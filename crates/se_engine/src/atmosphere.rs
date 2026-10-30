@@ -53,6 +53,11 @@ pub struct AtmosphereCache {
     preload: Option<Task<Vec<(String, AtmTables)>>>,
     parsed: Vec<(String, AtmTables)>,
     started: bool,
+    /// SE's `CacheSizeAtmoModels` (0: no limit, main-def.cfg's value): beyond it the least
+    /// recently asked-for models are dropped (their bodies keep their handles).
+    cap: usize,
+    used: std::collections::HashMap<String, u64>,
+    tick: u64,
 }
 
 impl AtmosphereCache {
@@ -73,10 +78,30 @@ impl AtmosphereCache {
     }
 
     pub fn get_or_load(&mut self, vfs: &Vfs, model: &str, images: &mut Assets<Image>) -> Option<AtmosphereGpu> {
-        self.models
-            .entry(model.to_ascii_lowercase())
-            .or_insert_with(|| load_atmosphere(vfs, model, images))
-            .clone()
+        let name = model.to_ascii_lowercase();
+        let gpu = self.models.entry(name.clone()).or_insert_with(|| load_atmosphere(vfs, model, images)).clone();
+        self.touch(name);
+        gpu
+    }
+
+    /// Mark `name` as just used and drop the least recently used others beyond the cache size.
+    fn touch(&mut self, name: String) {
+        self.tick += 1;
+        self.used.insert(name.clone(), self.tick);
+        if self.cap == 0 {
+            return;
+        }
+        while self.models.len() > self.cap {
+            let used = &self.used;
+            let Some(old) = self.models.keys().filter(|k| **k != name).min_by_key(|k| used.get(*k).copied().unwrap_or(0)).cloned() else { break };
+            self.models.remove(&old);
+            self.used.remove(&old);
+        }
+    }
+
+    /// Set the cache size (memory.rs, from `CacheSizeAtmoModels`).
+    pub fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
     }
 }
 
@@ -85,10 +110,15 @@ fn upload_preloaded(mut cache: ResMut<AtmosphereCache>, mut images: ResMut<Asset
         cache.preload = None;
         cache.parsed = list;
     }
+    // With a cache size, preloading stops once it is full (it would only push models out).
+    if cache.cap > 0 && cache.models.len() >= cache.cap {
+        cache.parsed.clear();
+    }
     if let Some((name, t)) = cache.parsed.pop() {
         if !cache.models.contains_key(&name) {
             let gpu = upload_tables(t, &mut images);
-            cache.models.insert(name, Some(gpu));
+            cache.models.insert(name.clone(), Some(gpu));
+            cache.touch(name);
         }
     }
 }

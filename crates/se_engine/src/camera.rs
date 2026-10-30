@@ -7,7 +7,8 @@
 //! R/F (Numpad 1/0) up/down, Q/E (Numpad 7/9) roll, Numpad 4/6/8/2 turn, Numpad 5 stops turning,
 //! Z stops moving. Left-drag looks around, right-drag orbits the followed (or selected) object,
 //! left+right drag zooms towards it, Shift+left drag changes the FOV, middle click zooms to
-//! `ZoomFOV` and back, PgUp/PgDn zoom, Home resets the zoom. The mouse wheel or +/- change the
+//! `ZoomFOV` and back, PgUp/PgDn zoom while held, Home resets the zoom. 1/2/3 switch the movement
+//! mode (Free, Spacecraft, Aircraft: [`MoveMode`]), 4 flies the current spacecraft. The mouse wheel or +/- change the
 //! assigned velocity (Ctrl: next velocity preset). G goes to the selection (Ctrl+G to its centre,
 //! Shift+G lands on it), C centres it, End levels the view to its horizon, T tracks it, Ctrl+Numpad
 //! 5/4/6/8/2 look back/left/right/up/down. Shift+D / Shift+F / Shift+R: free, follow or rotate with
@@ -74,6 +75,22 @@ pub struct FlyCamera {
     pub history: Vec<ObjectRef>,
     /// Script input locks (`UserMoveControl`, `UserRotationControl`).
     pub locks: InputLocks,
+    /// SE's movement mode (keys 1-3).
+    pub move_mode: MoveMode,
+    /// Spacecraft / Aircraft mode: the movement keys' thrust (camera frame, each axis -1..1),
+    /// ramped in over MoveKeyAccel and out over MoveKeyDecel.
+    pub thrust: DVec3,
+    /// FOV animation (SE's camera +0x1468 / +0x1470 / +0x1478 / +0x1480, FUN_14056ad80): from,
+    /// to and the time it has run.
+    pub zoom_anim: Option<ZoomAnim>,
+}
+
+/// One FOV animation over `ZoomTime`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoomAnim {
+    pub from: f32,
+    pub to: f32,
+    pub elapsed: f64,
 }
 
 /// SE's script input locks (FUN_140552c30 sets DAT_1419d5ae6, FUN_140552900 DAT_1419d5ae5): while
@@ -95,6 +112,74 @@ impl InputLocks {
     /// SE's movement flag: Go to, Land, binding and a script's Goto / Follow / Free are refused.
     pub fn travel(&self) -> bool {
         self.movement || self.limited
+    }
+}
+
+/// SE's camera movement mode (`MoveMode`, camera +0x140c, DAT_1419d5adc; keys 1-3 in the key table
+/// FUN_1405ba8f0, MoveModeFree..MoveModeAircraft; script `MoveMode`). SE's camera update FUN_140576090
+/// only differs in how the movement keys act: in Free mode they set the velocity (the camera stops
+/// when they are let go), in Spacecraft and Aircraft mode they give an acceleration and the velocity
+/// stays (inertia). The Spacecraft velocity is kept in the universe frame, the Aircraft one in the
+/// camera's (FUN_14057a740 turns it between the two on a switch), so an aircraft's flight turns
+/// with its nose. Turning, roll and the auto horizon are the same in all three. `MoveMode 4` (key 4,
+/// FUN_1405b9420) is piloting a spacecraft: the port's ship flight (`ship.rs`); SE then sets Free
+/// mode (FUN_1401f6aa0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MoveMode {
+    #[default]
+    Free,
+    Spacecraft,
+    Aircraft,
+}
+
+impl MoveMode {
+    pub const ALL: [MoveMode; 3] = [MoveMode::Free, MoveMode::Spacecraft, MoveMode::Aircraft];
+
+    /// SE's number (save.cfg and script `MoveMode`).
+    pub fn number(self) -> u8 {
+        match self {
+            MoveMode::Free => 1,
+            MoveMode::Spacecraft => 2,
+            MoveMode::Aircraft => 3,
+        }
+    }
+
+    pub fn from_number(n: u8) -> Option<MoveMode> {
+        MoveMode::ALL.into_iter().find(|m| m.number() == n)
+    }
+
+    /// The splash on a switch (eng-gui "Free mode" / "Spacecraft mode" / "Aircraft mode").
+    pub fn label(self) -> &'static str {
+        match self {
+            MoveMode::Free => "Free mode",
+            MoveMode::Spacecraft => "Spacecraft mode",
+            MoveMode::Aircraft => "Aircraft mode",
+        }
+    }
+
+    /// Whether the assigned value is an acceleration (the toolbar's "Acceleration", FUN_1405b94a0).
+    pub fn inertial(self) -> bool {
+        self != MoveMode::Free
+    }
+
+    /// What a velocity becomes as this mode's assigned value: SE's Go to and the console's velocity
+    /// commands set a tenth of it as the acceleration (DAT_1406d47e8 0.1, FUN_1405c9c80, FUN_140561a40).
+    pub fn assigned(self, velocity: f64) -> f64 {
+        if self.inertial() { velocity / MODE_SPEED_FACTOR } else { velocity }
+    }
+}
+
+/// SE's factor between the assigned velocity and the acceleration of the inertial modes
+/// (DAT_1406d4ec0 = 10, FUN_14057a740): entering Spacecraft or Aircraft mode divides it, leaving
+/// multiplies it back.
+pub const MODE_SPEED_FACTOR: f64 = 10.0;
+
+/// An assigned acceleration as SE's toolbar writes it (m/s², km/s², ...).
+pub fn format_acceleration(a: f64) -> String {
+    let s = se_core::units::format_speed(a);
+    match s.strip_suffix("/s") {
+        Some(head) => format!("{head}/s²"),
+        None => format!("{s}/s"),
     }
 }
 
@@ -122,6 +207,9 @@ impl Default for FlyCamera {
             fov_target: None,
             history: Vec::new(),
             locks: InputLocks::default(),
+            move_mode: MoveMode::Free,
+            thrust: DVec3::ZERO,
+            zoom_anim: None,
         }
     }
 }
@@ -143,6 +231,31 @@ impl FlyCamera {
             return;
         }
         self.follow = target.map(|t| Follow::new(t, sync, eph, jd));
+    }
+
+    /// Switch the movement mode (FUN_14057a740): leaving Spacecraft or Aircraft mode multiplies the
+    /// assigned value by [`MODE_SPEED_FACTOR`] back into a velocity, entering one divides it into an
+    /// acceleration. The velocity carries over (the port keeps it in the universe frame in every
+    /// mode, so SE's turn between the Spacecraft and Aircraft frames needs nothing here).
+    pub fn set_move_mode(&mut self, mode: MoveMode) {
+        if mode == self.move_mode {
+            return;
+        }
+        if self.move_mode.inertial() {
+            self.speed *= MODE_SPEED_FACTOR;
+        }
+        if mode.inertial() {
+            self.speed /= MODE_SPEED_FACTOR;
+        }
+        self.speed = clamp_speed(self.speed);
+        self.thrust = DVec3::ZERO;
+        self.move_mode = mode;
+    }
+
+    /// Set the assigned value from a velocity (Go to's arrival speed): a tenth of it as the
+    /// acceleration in the inertial modes (FUN_1405c9c80).
+    pub fn assign_velocity(&mut self, v: f64) {
+        self.speed = clamp_speed(self.move_mode.assigned(v));
     }
 }
 
@@ -240,7 +353,7 @@ impl Plugin for CameraPlugin {
                 click: None,
             })
             .add_systems(Startup, (spawn_camera, place_at_start))
-            .add_systems(Update, (run_commands, input_controls.run_if(not_in_flight), screenshot_and_exit))
+            .add_systems(Update, (run_commands, move_mode_keys, input_controls.run_if(not_in_flight), screenshot_and_exit))
             .add_systems(
                 PostUpdate,
                 (update_nearest, travel_and_move, sync_camera_transform)
@@ -411,6 +524,7 @@ fn input_controls(
     mut preset_notches: Local<f32>,
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
     (mut msg, i18n, mut last_sel): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, Local<Option<ObjectRef>>),
+    mut last_rot: Local<Option<DQuat>>,
 ) {
     let (egui_pointer, egui_keys) = egui
         .ctx_mut()
@@ -523,12 +637,11 @@ fn input_controls(
             clamp_speed(cam.speed * if plus { WHEEL_STEP } else { 1.0 / WHEEL_STEP })
         };
     }
-    // Zoom (SE's ZoomIn / ZoomOut / ResetZoom), animated over ZoomTime.
-    if keys.just_pressed(KeyCode::PageUp) {
-        cam.fov_target = Some((cam.fov_target.unwrap_or(cam.fov_deg) / 1.25).max(MIN_FOV_DEG));
-    }
-    if keys.just_pressed(KeyCode::PageDown) {
-        cam.fov_target = Some((cam.fov_target.unwrap_or(cam.fov_deg) * 1.25).min(MAX_FOV_DEG));
+    // Zoom: SE's ZoomIn / ZoomOut (PgUp / PgDn) narrow or widen the FOV while held, but not while a
+    // zoom animation runs; ResetZoom (Home) animates back to the default FOV over ZoomTime.
+    let zoom_dir = keys.pressed(KeyCode::PageDown) as i32 - keys.pressed(KeyCode::PageUp) as i32;
+    if zoom_dir != 0 && cam.fov_target.is_none() {
+        cam.fov_deg = zoom_key_step(cam.fov_deg, zoom_dir, dt);
     }
     if keys.just_pressed(KeyCode::Home) && plain {
         cam.fov_target = Some(DEFAULT_FOV_DEG);
@@ -593,19 +706,33 @@ fn input_controls(
         cam.travel = None;
     }
     let speed = cam.speed;
-    let target_vel = if dir != DVec3::ZERO {
+    if dir != DVec3::ZERO {
         cam.travel = None;
-        cam.rot * dir.normalize() * speed
-    } else {
-        DVec3::ZERO
-    };
+    }
     // Exponential approach: ~95% of the change within MoveKeyAccel / MoveKeyDecel.
     let tau = if dir != DVec3::ZERO { MOVE_ACCEL_S } else { MOVE_DECEL_S } / 3.0;
     let a = 1.0 - (-dt / tau).exp();
-    cam.velocity = cam.velocity + (target_vel - cam.velocity) * a;
-    if cam.velocity.length() < speed * 1e-4 && dir == DVec3::ZERO {
-        cam.velocity = DVec3::ZERO;
+    if cam.move_mode.inertial() {
+        // Spacecraft / Aircraft: the keys accelerate the camera by the assigned acceleration and the
+        // velocity stays when they are let go (FUN_140576090 adds dt * the input to it each frame).
+        cam.thrust = cam.thrust + (dir.normalize_or_zero() - cam.thrust) * a;
+        if dir == DVec3::ZERO && cam.thrust.length() < 1e-3 {
+            cam.thrust = DVec3::ZERO;
+        }
+        let accel = cam.rot * cam.thrust * speed;
+        cam.velocity += accel * dt;
+    } else {
+        let target_vel = cam.rot * dir.normalize_or_zero() * speed;
+        cam.velocity = cam.velocity + (target_vel - cam.velocity) * a;
+        if cam.velocity.length() < speed * 1e-4 && dir == DVec3::ZERO {
+            cam.velocity = DVec3::ZERO;
+        }
     }
+    // Aircraft: SE keeps the velocity in the camera frame, so it turns as the camera turns.
+    if let (MoveMode::Aircraft, Some(prev)) = (cam.move_mode, *last_rot) {
+        cam.velocity = aircraft_turn(prev, cam.rot, cam.velocity);
+    }
+    *last_rot = Some(cam.rot);
 
     if keys.just_pressed(KeyCode::KeyG) && !alt {
         if let Some(t) = cam.selected {
@@ -673,21 +800,99 @@ fn input_controls(
     }
 }
 
+/// An Aircraft-mode velocity after the camera turned from `prev` to `rot`: the same in the camera's
+/// frame (SE keeps it there, FUN_140576090 mode 3).
+pub fn aircraft_turn(prev: DQuat, rot: DQuat, v: DVec3) -> DVec3 {
+    rot * (prev.inverse() * v)
+}
+
+/// SE's movement mode keys (key table FUN_1405ba8f0, MoveModeFree..MoveModeGame on 1-4): 1-3 set
+/// the Free, Spacecraft or Aircraft mode with its splash (FUN_1405c7f80, FUN_1405c8050,
+/// FUN_1405c80f0), leaving a spacecraft being flown first (they clear the piloted ship); 4 flies the
+/// current spacecraft (FUN_1405b9420 -> FUN_1401f6aa0), which needs one (the Ships window), and SE
+/// then is in Free mode. Ctrl+1-5 are the flight HUD modes (ship/hud.rs) and 5-0 the flight
+/// attitudes and the auto horizon, so only plain 1-4 are taken here.
+fn move_mode_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut cam: ResMut<FlyCamera>,
+    flight: Option<ResMut<crate::ship::Flight>>,
+    mut egui: EguiContexts,
+    (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>),
+) {
+    let typing = egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false);
+    let mods = [KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight];
+    if typing || keys.any_pressed(mods) {
+        return;
+    }
+    let mut flight = flight;
+    let piloting = flight.as_ref().is_some_and(|f| f.active);
+    for (k, mode) in [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3].into_iter().zip(MoveMode::ALL) {
+        if !keys.just_pressed(k) || (mode == cam.move_mode && !piloting) {
+            continue;
+        }
+        if let Some(f) = flight.as_mut().filter(|f| f.active) {
+            f.active = false;
+            f.remote = false;
+            f.stop_engines();
+        }
+        cam.set_move_mode(mode);
+        msg.show(i18n.tr(mode.label()));
+    }
+    if keys.just_pressed(KeyCode::Digit4) {
+        if let Some(f) = flight.as_mut().filter(|f| f.ship.is_some() && !f.active) {
+            f.active = true;
+            f.remote = false;
+            cam.set_move_mode(MoveMode::Free);
+        }
+    }
+}
+
 /// SE's home address (main-def.cfg Controls, cycled with Shift+H), from the world outwards.
 const HOME_ADDRESS: [&str; 4] = ["Earth", "Sun", "Solar System", "Milky Way"];
 
 /// Go to object's centre stops this far from it (m).
 const GOTO_CENTER_M: f64 = 1.0;
 
-/// Zoom towards `fov_target`, logarithmically, ~95% of the way in `ZoomTime`.
+/// SE's ZoomIn / ZoomOut step (FUN_1405b8ba0 / FUN_1405b8b10 -> FUN_14056b0c0): the FOV times
+/// 1 / 1.02 or 1.02 (DAT_1406d4ab0, DAT_1406d4b30) each frame the key is held, within MinFOV..MaxFOV.
+/// SE steps once a frame; the port steps at that rate for 60 frames a second, whatever its frame rate.
+const ZOOM_KEY_FACTOR: f64 = 1.02;
+const ZOOM_KEY_FPS: f64 = 60.0;
+
+/// The FOV after holding a zoom key for `dt` seconds (`dir` +1 widens, -1 narrows).
+pub fn zoom_key_step(fov: f32, dir: i32, dt: f64) -> f32 {
+    let f = fov as f64 * ZOOM_KEY_FACTOR.powf(dir as f64 * dt * ZOOM_KEY_FPS);
+    f.clamp(MIN_FOV_DEG as f64, MAX_FOV_DEG as f64) as f32
+}
+
+/// SE's FOV animation (FUN_14056ad80): over `ZoomTime` the FOV goes from `from` to `to` as
+/// from + (to - from) * (t / ZoomTime)^p, p = 0.5 when narrowing (fast at first) and 2 when
+/// widening (DAT_1406d4990, DAT_1406d4c60).
+pub fn zoom_anim_fov(a: &ZoomAnim) -> f32 {
+    let t = (a.elapsed / ZOOM_TIME_S).clamp(0.0, 1.0);
+    let p = if a.from < a.to { 2.0 } else { 0.5 };
+    (a.from as f64 + (a.to as f64 - a.from as f64) * t.powf(p)) as f32
+}
+
+/// Animate to `fov_target` (set by the middle button, Home and scripts) over `ZoomTime`; a new
+/// target starts a new animation from the current FOV.
 fn zoom_step(cam: &mut FlyCamera, dt: f64) {
-    let Some(to) = cam.fov_target else { return };
-    let a = 1.0 - (-dt * 3.0 / ZOOM_TIME_S).exp();
-    let l = (cam.fov_deg as f64).ln() + ((to as f64).ln() - (cam.fov_deg as f64).ln()) * a;
-    cam.fov_deg = l.exp() as f32;
-    if (cam.fov_deg / to - 1.0).abs() < 1e-3 {
+    let Some(to) = cam.fov_target else {
+        cam.zoom_anim = None;
+        return;
+    };
+    let mut a = match cam.zoom_anim {
+        Some(a) if a.to == to => a,
+        _ => ZoomAnim { from: cam.fov_deg, to, elapsed: 0.0 },
+    };
+    a.elapsed += dt;
+    cam.fov_deg = zoom_anim_fov(&a);
+    if a.elapsed >= ZOOM_TIME_S {
         cam.fov_deg = to;
         cam.fov_target = None;
+        cam.zoom_anim = None;
+    } else {
+        cam.zoom_anim = Some(a);
     }
 }
 
@@ -900,7 +1105,7 @@ pub fn travel_and_move(
                 // As in SpaceEngine, Go to sets the assigned velocity to a tenth of the arrival
                 // distance per second, so flying on afterwards approaches the target instead of
                 // rushing past it at the speed used to get there.
-                cam.speed = clamp_speed(end_d / GOTO_SPEED_DIVISOR);
+                cam.assign_velocity(end_d / GOTO_SPEED_DIVISOR);
             }
             let start_off = *tr.start_off.get_or_insert_with(|| cam.pos.delta_m(target_pos));
             let start_d = start_off.length().max(end_d * 1.0001);
@@ -962,7 +1167,7 @@ fn land_step(cam: &mut FlyCamera, tr: &mut Travel, eph: &Ephemeris, jd: f64, bod
         tr.duration = goto_time(alt0, tr.end_distance);
         if tr.set_speed {
             // Walking pace on arrival (assumed).
-            cam.speed = clamp_speed(10.0);
+            cam.assign_velocity(10.0);
         }
     }
     let t = (tr.elapsed / tr.duration).clamp(0.0, 1.0);
@@ -1104,6 +1309,14 @@ fn run_commands(
         }
         "speed" => cam.speed = clamp_speed(arg.parse::<f64>().unwrap_or(100.0) * 1000.0),
         "fov" => cam.fov_deg = arg.parse().unwrap_or(DEFAULT_FOV_DEG),
+        // zoomto DEG: animate the FOV there over ZoomTime, as the middle button and Home do.
+        "zoomto" => cam.fov_target = arg.parse::<f32>().ok().map(|f| f.clamp(MIN_FOV_DEG, MAX_FOV_DEG)),
+        // movemode N: SE's movement mode 1 Free, 2 Spacecraft, 3 Aircraft (keys 1-3).
+        "movemode" => {
+            if let Some(m) = arg.parse::<u8>().ok().and_then(MoveMode::from_number) {
+                cam.set_move_mode(m);
+            }
+        }
         // points N: SE's StarPointMethod (1 sprites, 2 motion blur, 3 motion and rotation blur).
         "points" => stars.point_style = crate::stars::PointStyle::from_method(arg.parse().unwrap_or(2)),
         "colorshift" => stars.color_shift = arg.parse().unwrap_or(0.0),
@@ -1463,5 +1676,56 @@ Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 
         step(&mut world, 200);
         assert!(world.resource::<FlyCamera>().follow.is_some());
         assert!((offset(&world, planet) - before).length() < 1.0);
+    }
+
+    #[test]
+    fn move_modes_switch_like_se() {
+        let mut cam = FlyCamera { speed: 1000.0, ..default() };
+        // Entering an inertial mode makes a tenth of the velocity the acceleration, leaving it undoes that.
+        cam.set_move_mode(MoveMode::Spacecraft);
+        assert_eq!((cam.move_mode, cam.speed), (MoveMode::Spacecraft, 100.0));
+        cam.set_move_mode(MoveMode::Aircraft);
+        assert_eq!(cam.speed, 100.0);
+        cam.set_move_mode(MoveMode::Free);
+        assert_eq!(cam.speed, 1000.0);
+        // Go to's arrival speed is a tenth as an acceleration.
+        cam.set_move_mode(MoveMode::Spacecraft);
+        cam.assign_velocity(2.5e6);
+        assert_eq!(cam.speed, 2.5e5);
+        assert_eq!(MoveMode::ALL.map(MoveMode::number), [1, 2, 3]);
+        assert_eq!(MoveMode::from_number(4), None);
+        assert_eq!(MoveMode::from_number(3), Some(MoveMode::Aircraft));
+        assert_eq!(format_acceleration(9.8), "9.8 m/s²");
+        assert_eq!(format_acceleration(2.0e4), "20.000 km/s²");
+    }
+
+    #[test]
+    fn aircraft_velocity_turns_with_the_view() {
+        let prev = look_rotation(DVec3::X, DVec3::Y);
+        let rot = (prev * DQuat::from_rotation_y(0.5)).normalize();
+        let v = prev * DVec3::new(0.0, 0.0, -100.0);
+        let w = aircraft_turn(prev, rot, v);
+        assert!((w - rot * DVec3::new(0.0, 0.0, -100.0)).length() < 1e-9);
+    }
+
+    #[test]
+    fn zoom_like_se() {
+        // Narrowing is fast at first (t^0.5), widening slow at first (t^2); both end at ZoomTime.
+        let mut a = ZoomAnim { from: 45.0, to: 20.0, elapsed: ZOOM_TIME_S * 0.25 };
+        assert!((zoom_anim_fov(&a) - 32.5).abs() < 1e-4);
+        a.elapsed = ZOOM_TIME_S;
+        assert_eq!(zoom_anim_fov(&a), 20.0);
+        let b = ZoomAnim { from: 20.0, to: 45.0, elapsed: ZOOM_TIME_S * 0.5 };
+        assert!((zoom_anim_fov(&b) - 26.25).abs() < 1e-4);
+        let mut cam = FlyCamera { fov_target: Some(20.0), ..default() };
+        for _ in 0..20 {
+            zoom_step(&mut cam, 1.0 / 60.0);
+        }
+        assert_eq!((cam.fov_deg, cam.fov_target, cam.zoom_anim), (20.0, None, None));
+        // The zoom keys: 1.02 a frame at 60 frames a second, within MinFOV..MaxFOV.
+        assert!((zoom_key_step(45.0, 1, 1.0 / 60.0) - 45.9).abs() < 1e-4);
+        assert!((zoom_key_step(45.0, -1, 1.0) - 45.0 / 1.02f32.powi(60)).abs() < 1e-3);
+        assert_eq!(zoom_key_step(119.0, 1, 1.0), MAX_FOV_DEG);
+        assert_eq!(zoom_key_step(MIN_FOV_DEG, -1, 1.0), MIN_FOV_DEG);
     }
 }

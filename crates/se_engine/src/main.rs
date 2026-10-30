@@ -28,6 +28,7 @@ mod graphics;
 mod grids;
 mod lensflare;
 mod log_file;
+mod memory;
 mod color_correction;
 mod nebula_raymarch;
 mod nebulae;
@@ -103,7 +104,7 @@ fn main() {
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(cfg)
     // Core: game data, simulation clock / floating origin, observer.
-    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin))
+    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, memory::MemoryPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin))
     // Deep sky (Bevy plugin tuples are limited to 15 entries, hence the groups).
     .add_plugins((
         stars::StarsPlugin,

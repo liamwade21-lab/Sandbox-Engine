@@ -530,7 +530,12 @@ fn draw_hud(
                     ui.label(format!("{} ({})", cam.nearest_name, format_distance(cam.nearest_surface)));
                 }
                 ui.separator();
-                let v = ui.label(format!("{} {}", i18n.tr("velocity"), format_speed(cam.speed)));
+                // SE's toolbar shows the assigned acceleration in Spacecraft and Aircraft mode (FUN_1405b94a0).
+                let v = ui.label(if cam.move_mode.inertial() {
+                    format!("{} {}", i18n.tr("acceleration"), crate::camera::format_acceleration(cam.speed))
+                } else {
+                    format!("{} {}", i18n.tr("velocity"), format_speed(cam.speed))
+                });
                 crate::script_gui::tag("Navigation toolbar|Current velocity", v.clone());
                 crate::script_gui::tag("Navigation toolbar|Assigned velocity", v);
                 ui.separator();

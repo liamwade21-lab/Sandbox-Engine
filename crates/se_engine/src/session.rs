@@ -6,7 +6,10 @@
 //!
 //! Not ported: SE's first start from save-def.cfg (Saturn, Follow mode; its `RelPosition` encoding is not
 //! decoded), so with no save the port starts by Earth as before. Scripted runs and `--start` neither read
-//! nor write the save. `MoveMode` is always 1 (spectator; flying a ship is not restored).
+//! nor write the save. `MoveMode` is the camera's movement mode (1 Free, 2 Spacecraft, 3 Aircraft) or 4 while a
+//! spacecraft is flown (FUN_1401be6b0); SE then restores the piloted ship by its `Spacecraft` id
+//! (FUN_1401beaa0), which the port cannot (its ships are made in the Ships window each session), so a
+//! saved 4 comes back as Free mode, as SE does for an unknown spacecraft id.
 
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
@@ -34,12 +37,15 @@ fn save_path() -> std::path::PathBuf {
 /// The saved state.
 #[derive(Debug, Clone, PartialEq)]
 struct Session {
+    /// SE's `MoveMode` 1-4.
+    move_mode: u8,
     bind_mode: u8,
     ref_body: String,
     pos: [i128; 3],
     /// (w, x, y, z), as SE's places.
     rot: [f64; 4],
-    /// Assigned speed, parsecs per second (SE's `Velocity`).
+    /// Assigned speed, parsecs per second (SE's `Velocity`; in Spacecraft and Aircraft mode SE writes
+    /// the assigned acceleration times 100, FUN_1401be6b0, and reads it back times 0.01, FUN_1401beaa0).
     speed_pc: f64,
     rate: f64,
     jd: f64,
@@ -52,7 +58,8 @@ impl Session {
         let [w, x, y, z] = self.rot;
         let [px, py, pz] = self.pos.map(format_fixed);
         format!(
-            "// SpaceEngine-rs planetarium state\nLastMode    0\nPlanetarium\n{{\n\tMoveMode    1\n\tBindMode    {}\n\tRefBody     \"{}\"\n\tAbsPosition ({px} {py} {pz})\n\tOrientation ({w:?} {x:?} {y:?} {z:?})\n\tVelocity    {:?}\n\tTimeScale   {:?}\n\tTime        {}\n\tDate        \"{}\"\n}}\n",
+            "// SpaceEngine-rs planetarium state\nLastMode    0\nPlanetarium\n{{\n\tMoveMode    {}\n\tBindMode    {}\n\tRefBody     \"{}\"\n\tAbsPosition ({px} {py} {pz})\n\tOrientation ({w:?} {x:?} {y:?} {z:?})\n\tVelocity    {:?}\n\tTimeScale   {:?}\n\tTime        {}\n\tDate        \"{}\"\n}}\n",
+            self.move_mode,
             self.bind_mode,
             self.ref_body,
             self.speed_pc,
@@ -64,7 +71,7 @@ impl Session {
 
     /// Reads the `Planetarium` block; `None` when the position, orientation or time is missing.
     fn parse(text: &str) -> Option<Session> {
-        let mut s = Session { bind_mode: 0, ref_body: String::new(), pos: [0; 3], rot: [1.0, 0.0, 0.0, 0.0], speed_pc: 0.0, rate: 1.0, jd: 0.0 };
+        let mut s = Session { move_mode: 1, bind_mode: 0, ref_body: String::new(), pos: [0; 3], rot: [1.0, 0.0, 0.0, 0.0], speed_pc: 0.0, rate: 1.0, jd: 0.0 };
         let (mut has_pos, mut has_rot, mut has_time) = (false, false, false);
         for line in text.lines() {
             let line = line.split("//").next().unwrap_or("").trim();
@@ -72,6 +79,7 @@ impl Session {
             let rest = rest.trim();
             let list = || rest.trim_matches(|c| c == '(' || c == ')').split([' ', ',', '\t']).filter(|t| !t.is_empty()).collect::<Vec<_>>();
             match key {
+                "MoveMode" => s.move_mode = rest.parse::<u8>().ok().filter(|m| (1..=4).contains(m)).unwrap_or(1),
                 "BindMode" => s.bind_mode = rest.parse::<u8>().unwrap_or(0).min(2),
                 "RefBody" => s.ref_body = rest.trim_matches('"').to_string(),
                 "AbsPosition" => {
@@ -117,7 +125,13 @@ fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<Fl
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.follow = None;
-    cam.speed = crate::camera::clamp_speed(s.speed_pc * se_core::units::METERS_PER_PC);
+    let mode = crate::camera::MoveMode::from_number(s.move_mode).unwrap_or_else(|| {
+        warn!("the saved spacecraft cannot be flown again; continuing in Free mode");
+        crate::camera::MoveMode::Free
+    });
+    cam.set_move_mode(mode);
+    let scale = if mode.inertial() { SAVE_ACCEL_SCALE.recip() } else { 1.0 };
+    cam.speed = crate::camera::clamp_speed(s.speed_pc * scale * se_core::units::METERS_PER_PC);
     cam.selected = cat.find(&s.ref_body);
     if let (Some(r), 1..) = (cam.selected, s.bind_mode) {
         cam.bind(Some(r), s.bind_mode == 2, &se_core::ephemeris::Ephemeris::new(cat), s.jd);
@@ -125,19 +139,33 @@ fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<Fl
     info!("restored the session from {}", save_path().display());
 }
 
-pub(crate) fn save_on_exit(mut exits: MessageReader<AppExit>, cfg: Res<EngineConfig>, data: Res<SeData>, cam: Res<FlyCamera>, sim: Res<SimTime>) {
+/// SE's save.cfg `Velocity` in the inertial modes: the assigned acceleration times this
+/// (DAT_1406d5100; read back times DAT_1406d4698 0.01).
+const SAVE_ACCEL_SCALE: f64 = 100.0;
+
+pub(crate) fn save_on_exit(
+    mut exits: MessageReader<AppExit>,
+    cfg: Res<EngineConfig>,
+    data: Res<SeData>,
+    cam: Res<FlyCamera>,
+    sim: Res<SimTime>,
+    flight: Option<Res<crate::ship::Flight>>,
+) {
     if exits.read().count() == 0 || crate::settings::scripted(&cfg) || cfg.start_given {
         return;
     }
     let cat = &data.catalog;
     let rot = cam.rot.normalize();
+    let piloting = flight.is_some_and(|f| f.active && f.ship.is_some());
     let s = Session {
+        // SE's MoveMode: 4 while a spacecraft is flown (FUN_1401be6b0).
+        move_mode: if piloting { 4 } else { cam.move_mode.number() },
         bind_mode: cam.bind_mode(),
         // SE's RefBody: the body the camera is bound to, else the selection.
         ref_body: cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string()).unwrap_or_default(),
         pos: [cam.pos.x, cam.pos.y, cam.pos.z],
         rot: [rot.w, rot.x, rot.y, rot.z],
-        speed_pc: cam.speed / se_core::units::METERS_PER_PC,
+        speed_pc: cam.speed * if cam.move_mode.inertial() { SAVE_ACCEL_SCALE } else { 1.0 } / se_core::units::METERS_PER_PC,
         rate: sim.rate,
         jd: sim.jd,
     };
@@ -158,6 +186,7 @@ mod tests {
     #[test]
     fn session_round_trips() {
         let s = Session {
+            move_mode: 3,
             bind_mode: 2,
             ref_body: "Saturn".into(),
             pos: [-123_456_789_012_345_678_901_234_567, 42, 1 << 100],
@@ -170,5 +199,9 @@ mod tests {
         assert_eq!(back, s);
         assert!(s.to_cfg().contains("Date        \"2026."));
         assert_eq!(Session::parse("Planetarium\n{\n\tBindMode 1\n}\n"), None);
+        assert!(s.to_cfg().contains("MoveMode    3\n"));
+        // A bad MoveMode falls back to Free mode.
+        let bad = s.to_cfg().replace("MoveMode    3", "MoveMode    7");
+        assert_eq!(Session::parse(&bad).unwrap().move_mode, 1);
     }
 }

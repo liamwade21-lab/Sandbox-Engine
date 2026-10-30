@@ -744,7 +744,11 @@ impl ScriptRunner {
                 self.turn = None;
             }
             Op::Speed(v) => cx.cam.speed = clamp_speed(*v),
-            Op::MoveMode(m) => self.warn_once("movemode", format!("MoveMode {m} has no counterpart in the port, skipping (line {})", cmd.line)),
+            // SE's script MoveMode (FUN_140561bb0 -> FUN_1405c4fb0): 1-3 the camera's movement modes.
+            Op::MoveMode(m) => match crate::camera::MoveMode::from_number(*m as u8) {
+                Some(mode) => cx.cam.set_move_mode(mode),
+                None => self.warn_once("movemode", format!("MoveMode {m} (piloting a spacecraft) is not supported in scripts, skipping (line {})", cmd.line)),
+            },
             Op::UserControl { kind, mode, limits } => self.user_control(cx, *kind, *mode, limits),
             Op::GotoUrl(u) => self.warn_once("gotourl", format!("GotoURL \"{u}\": se:// locations are not supported, skipping (line {})", cmd.line)),
             Op::HighlightWidget(h) => cx.dialogs.gui.highlight = ActiveHighlight::new(h),
