@@ -143,7 +143,7 @@ fn update_volumes(
     let mut wanted: Vec<(f64, usize, f32)> = Vec::new();
     if settings.enabled {
         for (g, rec) in cat.galaxies.iter().enumerate() {
-            if rec.quasar || profile_type(rec) != 0 || gs.has_model(g) {
+            if profile_type(rec) != 0 || gs.has_model(g) {
                 continue;
             }
             let px = angular_px(rec.radius_pc, (rec.pos_pc - cam_pc).length(), focal);
@@ -201,7 +201,7 @@ fn update_volumes(
             * boost
             * settings.model_brightness as f64
             * fade as f64;
-        let col = type_color(&rec.kind, false);
+        let col = type_color(&rec.kind);
         let inv = Mat3::from_quat(rec.orientation.inverse().as_quat());
         if let Some(mut m) = mats.get_mut(mat) {
             m.u = VolumeParams {
