@@ -11,6 +11,11 @@
 //!
 //! Keys: `M` toggles music, `N` skips to the next track (ignored while egui has keyboard focus).
 //! Setting `SE_NO_MUSIC` in the environment starts with music disabled.
+//!
+//! Scripts ([`ScriptMusic`]): `PlayMusic "file.ogg" { CrossfadeDuration }` (FUN_14055dd30) cross-fades
+//! to that track over `MixDurationScript` 1 s unless told otherwise, `PauseMusic` / `ResumeMusic`
+//! (FUN_14055dc00, FUN_14055dad0) fade the track out and pause it, or resume and fade it in. When
+//! a script's track ends the shuffled playlist carries on.
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,6 +35,8 @@ pub const DEFAULT_VOLUME: f32 = 0.2;
 /// SE's `MixDurationLoop` and `MixDurationGUI` (s).
 const MIX_LOOP_S: f32 = 5.0;
 const MIX_GUI_S: f32 = 2.0;
+/// main-def.cfg `MixDurationScript` (s): a script's `PlayMusic` cross-fade.
+pub const MIX_SCRIPT_S: f32 = 1.0;
 /// SE's `MusicShowTitle`.
 const SHOW_TITLE: bool = true;
 
@@ -46,6 +53,7 @@ impl Plugin for MusicPlugin {
             current: None,
         })
         .init_resource::<MusicQueue>()
+        .init_resource::<ScriptMusic>()
         .add_systems(Startup, load_library)
         .add_systems(Update, (music_keys, music_driver).chain());
     }
@@ -68,6 +76,35 @@ pub struct MusicTrack {
     gain: f32,
     rate: f32,
     length: Option<f32>,
+    /// `PauseMusic`: fading out to a pause (kept, not removed) or paused.
+    hold: bool,
+}
+
+/// What a script asks the music player to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MusicRequest {
+    /// Cross-fade to `file` (a name in `music/`) over `mix` s.
+    Play { file: String, mix: f32 },
+    Pause { mix: f32 },
+    Resume { mix: f32 },
+}
+
+/// Requests from the scripting runner, handled by the music driver.
+#[derive(Resource, Debug, Default)]
+pub struct ScriptMusic {
+    pub requests: Vec<MusicRequest>,
+}
+
+/// The VFS path of a track a script names: `music/<name>` (any case), or a track of that name
+/// anywhere under `music/`.
+fn find_track(vfs: &Vfs, name: &str) -> Option<String> {
+    let name = name.replace('\\', "/");
+    let file = file_name(&name);
+    let direct = format!("{MUSIC_DIR}/{}", name.trim_start_matches("music/"));
+    if vfs.exists(&direct) {
+        return Some(direct);
+    }
+    vfs.list_ext(MUSIC_DIR, "ogg").into_iter().find(|p| file_name(p).eq_ignore_ascii_case(file))
 }
 
 /// Track list and shuffle bookkeeping (internal).
@@ -203,23 +240,87 @@ fn music_driver(
     mut state: ResMut<MusicState>,
     mut queue: ResMut<MusicQueue>,
     mut tracks: Query<(Entity, &mut MusicTrack, Option<&mut AudioSink>)>,
-    (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>),
+    (mut msg, i18n, mut script): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, ResMut<ScriptMusic>),
 ) {
     let dt = time.delta_secs();
-    // Fades; a track faded out (or finished) is removed.
+    // Script requests (dropped while music is off).
+    for req in std::mem::take(&mut script.requests) {
+        if !state.enabled {
+            continue;
+        }
+        match req {
+            MusicRequest::Pause { mix } => {
+                for (_, mut t, _) in &mut tracks {
+                    if t.rate >= 0.0 && !t.hold {
+                        t.hold = true;
+                        t.rate = -1.0 / mix.max(0.01);
+                    }
+                }
+            }
+            MusicRequest::Resume { mix } => {
+                for (_, mut t, sink) in &mut tracks {
+                    if t.hold {
+                        t.hold = false;
+                        t.rate = 1.0 / mix.max(0.01);
+                        if let Some(s) = sink {
+                            s.play();
+                        }
+                    }
+                }
+            }
+            MusicRequest::Play { file, mix } => {
+                let Some(path) = find_track(&data.vfs, &file) else {
+                    warn!("music: script track \"{file}\" not found in {MUSIC_DIR}/");
+                    continue;
+                };
+                let bytes = match data.vfs.read(&path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("music: cannot read {path}: {e}");
+                        continue;
+                    }
+                };
+                for (_, mut t, sink) in &mut tracks {
+                    t.hold = false;
+                    t.rate = -1.0 / mix.max(0.01);
+                    if let Some(s) = sink {
+                        s.play();
+                    }
+                }
+                let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
+                if SHOW_TITLE {
+                    let title = name.strip_suffix(".ogg").unwrap_or(&name);
+                    msg.show(format!("{}: {title}", i18n.tr("Music")));
+                }
+                state.current = Some(name);
+                // The playlist must not cross-fade over it at once.
+                queue.skip = false;
+                return;
+            }
+        }
+    }
+    // Fades; a track faded out (or finished) is removed, a paused one kept.
     let mut playing = None;
     for (e, mut t, sink) in &mut tracks {
-        if !state.enabled && t.rate >= 0.0 {
+        if !state.enabled && (t.rate >= 0.0 || t.hold) {
             t.rate = -1.0 / MIX_GUI_S;
+            t.hold = false;
         }
         t.gain = (t.gain + t.rate * dt).clamp(0.0, 1.0);
         let Some(mut sink) = sink else {
-            if t.rate >= 0.0 {
+            if t.rate >= 0.0 || t.hold {
                 playing = Some((e, f32::INFINITY));
             }
             continue;
         };
         sink.set_volume(Volume::Linear(state.volume * t.gain));
+        if t.hold {
+            if t.gain <= 0.0 && !sink.is_paused() {
+                sink.pause();
+            }
+            playing = Some((e, f32::INFINITY));
+            continue;
+        }
         if sink.empty() || (t.rate < 0.0 && t.gain <= 0.0) {
             commands.entity(e).despawn();
             continue;
@@ -255,21 +356,18 @@ fn music_driver(
                 continue;
             }
         };
-        if let Some((e, _)) = playing {
-            if let Ok((_, mut t, _)) = tracks.get_mut(e) {
+        // Every track still playing fades out, a paused one too (N after a script's PauseMusic
+        // must not leave it counted as playing).
+        for (_, mut t, sink) in &mut tracks {
+            if t.rate >= 0.0 || t.hold {
+                t.hold = false;
                 t.rate = -1.0 / mix.max(0.01);
+                if let Some(s) = sink {
+                    s.play();
+                }
             }
         }
-        let length = ogg_length(&bytes);
-        let handle = assets.add(AudioSource { bytes: Arc::from(bytes) });
-        let name = file_name(&path).to_string();
-        let gain = if mix > 0.0 { 0.0 } else { 1.0 };
-        commands.spawn((
-            AudioPlayer(handle),
-            PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
-            MusicTrack { gain, rate: 1.0 / mix.max(0.01), length },
-        ));
-        info!("music: playing {name}");
+        let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
         if SHOW_TITLE {
             let title = name.strip_suffix(".ogg").unwrap_or(&name);
             msg.show(format!("{}: {title}", i18n.tr("Music")));
@@ -278,6 +376,21 @@ fn music_driver(
         state.current = Some(name);
         return;
     }
+}
+
+/// Starts a track, fading in over `mix` s; returns its file name.
+fn spawn_track(commands: &mut Commands, assets: &mut Assets<AudioSource>, state: &MusicState, bytes: Vec<u8>, path: &str, mix: f32) -> String {
+    let length = ogg_length(&bytes);
+    let handle = assets.add(AudioSource { bytes: Arc::from(bytes) });
+    let name = file_name(path).to_string();
+    let gain = if mix > 0.0 { 0.0 } else { 1.0 };
+    commands.spawn((
+        AudioPlayer(handle),
+        PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
+        MusicTrack { gain, rate: 1.0 / mix.max(0.01), length, hold: false },
+    ));
+    info!("music: playing {name}");
+    name
 }
 
 #[cfg(test)]

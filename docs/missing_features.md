@@ -104,63 +104,30 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 92 have been fixed since (listed at the end); the tables count the 149 still open.
+242 gaps reported by the auditors, 212 kept after checking (53 of them amended), 1 refuted. 116 have been fixed since (listed at the end); the tables count the 96 still open. 29 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 65 | 61 | 20 |
+| Gaps | 0 | 0 | 36 | 43 | 17 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 47 | 74 | 28 |
+| Gaps | 23 | 54 | 19 |
 
 | Area | Kept |
 |---|---|
 | 01 Stars | 11 |
-| 02 Star clusters | 12 |
-| 03 Galaxies and nebulae | 14 |
+| 02 Star clusters | 2 |
+| 03 Galaxies and nebulae | 6 |
 | 04 Planet surfaces | 10 |
-| 05 Atmospheres, rings, comets | 14 |
+| 05 Atmospheres, rings, comets | 9 |
 | 06 Procedural generation | 12 |
-| 07 Camera and time | 6 |
-| 08 Interface | 26 |
-| 09 Graphics and settings | 16 |
-| 10 Scripts, audio, spacecraft | 28 |
+| 07 Camera and time | 5 |
+| 08 Interface | 0 |
+| 09 Graphics and settings | 14 |
+| 10 Scripts, audio, spacecraft | 27 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
-
-
-## Visibility 5: obvious at once
-
-### 08-001 · Interface
-
-Main menu: SE opens in its main menu (3D scene background from menu/Scene1.se when Use3Dmenu, else Menu.pak skybox menu0-3; logo, version line; buttons Continue / Planetarium / Flight simulator / Settings / Tools / Credits / Exit with sub-menus, tutorials list, credits.txt, faq.txt; Esc returns to it); port starts straight in the simulation with no menu (Scene1.se runs only from its Scripts window)
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: Scripts.pak menu/MainMenu.cfg; Menu.pak menu0-3*.jpg; main-def.cfg Use3Dmenu; rtti seMainMenu
-- Port: none
-- Check: Scripts.pak has menu/MainMenu.cfg, credits.txt, faq.txt, Scene1.se, Menu.pak has menu0-3 skyboxes, main-def.cfg:538 Use3Dmenu true, rtti seMainMenu, strings "Planetarium"/"Flight simulator"/"Continue"; the port has no menu state anywhere (no Escape handler outside ship.rs:487, no menu strings in crates/), it starts in the simulation and only plays scripts/menu/Scene1.se via --script or the Scripts window (scripting.rs:300 just hides the HUD for it).
-
-
-## Visibility 4: common activities
-
-### 08-007 · Interface
-
-Universe map (F1/M) missing: map centred on the selection or current position with a zoom slider from moons to the cosmic web, grid on the galactic plane with drop lines to objects (star_map_line), star marks coloured by temperature (pink for black holes/planemos), galaxy/cluster/nebula marks, clip-sphere fade, orbits and asteroids/comets as dots, exploration mode (overlays hidden, Density slider), MapShowProcedural/Grid/Lines, MapLabelsMode, MapPointOverbright, map renders of galaxies/nebulae (galaxy_model_map, nebula_model_map), time flow, Center/Close buttons
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg UniverseMap 651-664; star_map_mark/line/point.glsl; galaxy_map_mark/line/point.glsl; map_sphere.glsl; rtti seMapMode; tut-05-univ-map strings
-- Port: none
-- Check: main-def.cfg UniverseMap 651-661 (MapExploreMode, MapShowProcedural/Grid/Lines, MapLabelsMode, MapDensity, MapPointOverbright), shaders star_map_mark/line/point, galaxy_map_*, galaxy_model_map, nebula_model_map, map_sphere exist (star_map_mark.glsl:42 magenta for marks without colour), tutorial "Open the map by pressing [F1] or the [M] key", rtti seMapMode; port has no map mode at all (F1 = help hud.rs:66, M = music music.rs:183, galaxies.rs map_mode is only a coordinate mapping)
-
-### 10-001 · Scripts, audio, spacecraft
-
-Context music: in SE's default context mode (MusicOrderMode 2) the track is picked from music/context.cfg for where you are: Object entries first (Earth, Moon, Mars, Saturn, Europa, Pluto, Betelgeuse, NGC 501, M 42, Sirius), then the most specific Class filter for the selected/nearest object (planet class + temperature/volatiles/life subclasses, star types, BlackHole, NeutronStar, Galaxy, Nebula, Cluster, Asteroid, Comet) falling back to more general ones, plus the mode classes MainMenu, Credits, MapMode, ChartMode; it switches when the context changes, but not before MinTrackPlayingTime 20 s. Port shuffles the union of all Class tracks with no regard to location, never uses Object entries or the mode classes
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: data/music/context.cfg header and 66 entries; main-def.cfg Sound MusicOrderMode, MinTrackPlayingTime, MixDurationContext; exe MusicClassSelector, MusicObjectSelector (FUN_140397fb0)
-- Port: crates/se_engine/src/music.rs:113-139
-- Check: context.cfg has the 4 mode classes, 54 Class and 12 Object entries (incl. Sirius A/B) with the most-specific-first filter rules in its header, main-def.cfg Sound MusicOrderMode 2 / MinTrackPlayingTime 20, and FUN_140397fb0 (seMusicPlayer::LoadConfig) references MusicClassSelector/MusicObjectSelector; port music.rs track_pool() just unions every non-MainMenu/Credits Class file list into one shuffled pool, ignores Object entries and never looks at the camera's location or mode
 
 
 ## Visibility 3: specific features
@@ -201,24 +168,6 @@ lens flare occlusion: SE scales each flare by the real frame/bloom brightness at
 - Port: crates/se_engine/src/lensflare.rs:392-459
 - Check: lens_flare.glsl:137-161 samples FrameTex/BloomTex at the sun's screen position (mixing between them by sun size) and scales the flare by that colour, so anything drawn over the sun dims or tints it; the port's lensflare.rs:391-459 only tests body spheres (plus a horizon plane and sea when inside one) analytically, and lens_flare.wesl samples nothing from the frame, so terrain, clouds, rings, ships and atmospheric extinction or reddening do not affect it
 
-### 02-008 · Star clusters
-
-Radial profile and CenPow: SE uses the CenPow key (158 catalog clusters, procedural N(1.5,0.3) in [0.5,2.5]) as concentration: exponential profile exp(-c r/R) with c = clamp(7.3*sqrt(CenPow),5,30) for globular/nucleus, Gaussian blob with k = 1/CenPow for open; port ignores CenPow (not parsed; proc_galsys draws it and discards it) and uses one Plummer profile with a = 0.5R/1.305
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: FUN_14053a760, FUN_140441860, FUN_14047fcb0 key CenPow
-- Port: crates/se_engine/src/clusters.rs:328-343,387-388, crates/se_core/src/proc_galsys.rs:495
-- Check: FUN_14047fcb0:470 reads CenPow (158 occurrences across Globular/Open/Extragalactic/SpaceEngine.sc), and FUN_14053a760 uses it as k = 1/CenPow in FUN_140441860 for open clusters and as c = clamp(sqrt(CenPow)*7.3, 5, 30) (consts 0x1406d5410/5318/5680) in an exp(-c r) acceptance test for the others; the port has no CenPow anywhere (ClusterRecord has no field), proc_galsys.rs:495 discards the draw, and build_cluster uses a fixed Plummer a = 0.5R/1.305.
-
-### 02-009 · Star clusters
-
-Central black holes: SE makes member 0 of the root node a black hole in every globular cluster older than 10 Myr (mass rand*sqrt(age/13)*1e4, clamped rand*100..rand*1e5 Msun) and in every galaxy-nucleus (Kern) cluster (mass rand*(galaxy[+0x20]/13700)^3*1e6, clamped rand*1e5..rand*1e10), unless a catalog star sits at the centre (FUN_140471df0); open clusters get none; the port has no cluster black holes and builds Kern clusters as Globular
-
-- Status: missing, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: FUN_14053a760 (root-node branch, class 0x5e80, radius M*4.245e-6 Rsun), FUN_140471df0
-- Port: crates/se_engine/src/clusters.rs:395-415, crates/se_engine/src/procsystems.rs:576
-- Check: In FUN_14053a760 the black-hole branch is only in the non-Open path (iVar18 == 3 takes the Gaussian loop with no black hole), so open clusters never get one; the rest checks out (0x5e80, lum 1000, radius M*4.245e-6, age > 0.01 via 0x1406d3f68, rand*sqrt(age/13)*1e4 clamped [rand*100, rand*1e5], Kern rand*(g[+0x20]/13700)^3*1e6 clamped [rand*1e5, rand*1e10]), and the port has none, with procsystems.rs:576 mapping Kern to "Globular".
-
 ### 02-011 · Star clusters
 
 Member and procedural star systems: SE member stars carry the cluster's age (and their own metallicity) into planet generation; the port's proc_system_input (system.rs:406-407) generates every promoted procedural star's system, cluster members included, with age 4 Gyr and [Fe/H] 0, because MemberStar/ProcStarInfo hold no age or metallicity
@@ -227,96 +176,6 @@ Member and procedural star systems: SE member stars carry the cluster's age (and
 - SE evidence: FUN_1401d6c60 / FUN_1401d63b0 (age = cluster age)
 - Port: crates/se_engine/src/system.rs:406-407, crates/se_engine/src/clusters.rs:240-279
 - Check: Both sides check out (FUN_14053a760 copies cluster age +0x3c into each member before FUN_1401d6c60/FUN_1401d63b0; port system.rs:406-407 hard-codes age_gyr 4.0, feh 0.0, which procgen/mod.rs:408-409 then use for planets), but the hard-coding is in proc_system_input for every promoted procedural star, not only cluster members, and MemberStar/ProcStarInfo carry no age to pass on; promoting the single nearest star is the port's general mechanism, not the gap.
-
-### 02-012 · Star clusters
-
-Cluster info: SE's info panel shows the cluster type (globular#star_cluster_type / open), magnitudes, luminosity, age and star count ("Number of stars", "Fly inside to count stars"); port's Selection panel shows only kind, distance, RA/Dec and radius
-
-- Status: partial, effort **S**, auditor confidence medium
-- SE evidence: eng-gui.cfg globular#star_cluster_type, FUN_14038a450 L"Number of stars" L"Fly inside to count stars"
-- Port: crates/se_engine/src/hud.rs:107,313-317 (no cluster branch)
-- Check: SE loads globular/open#star_cluster_type (eng-gui.cfg:124-125) and "Number of stars"/"Fly inside to count stars" in FUN_14038a450:922-923,1347-1350; the port's hud.rs shows "<kind> cluster", distance, RA/Dec and radius, and its per-type block (hud.rs ~250-320) has no Cluster arm, so there is no magnitude, luminosity, age or star count (it does show the type, as the gap says).
-
-### 02-013 · Star clusters
-
-Cluster markers and labels: SE draws green-diamond markers for clusters (ShowMarkersClusters true by default) and optional labels (ShowLabelsClusters), alpha = clamp(brightness - ClusterBrightMin) * clamp((radiusPx - 2)/3); port has no cluster marker kind or labels
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: main-def.cfg ShowMarkersClusters/ShowLabelsClusters, FUN_140488a20 case 2, FUN_14049a460, locale "green diamonds highlight star clusters"
-- Port: crates/se_engine/src/overlay.rs:61-67
-- Check: SE: main-def.cfg:748 ShowMarkersClusters true / :733 ShowLabelsClusters false, locale (cat/fra/ger-gui.cfg) "green diamonds highlight star clusters", FUN_140488a20 case 2 computes alpha = clamp(lum*K/d^2 - ClusterBrightMin(DAT_14075f804)) * clamp((radiusPx - 2)/DAT_1406d5008); port overlay.rs:61-67 MarkerKind has only Planet/Moon/Minor/Star/SystemStar, clusters appear only as pick discs (overlay.rs:486) and in the HUD kind text, no marker/label code anywhere in clusters.rs/procsystems.rs
-
-### 02-006 · Star clusters
-
-Open-cluster members: SE draws them by luminosity budget (stars from FUN_1401d6c60: Mv N(3,4) evolved at the cluster age into main-sequence stars, giants or white dwarfs, metallicity N(-0.125,0.07), each <= 0.5 L_cluster, until the sum reaches L_cluster, <=16384); port samples a Salpeter mass function truncated at the turn-off with no remnants and count = L / mean luminosity
-
-- Status: differs, effort **M**, auditor confidence high
-- SE evidence: FUN_14053a760 (type 3 branch), FUN_1401d6c60
-- Port: crates/se_engine/src/clusters.rs:291-326,371-376
-- Check: FUN_14053a760:144-185 open branch loops FUN_140441860 positions (k = 1/CenPow) and FUN_1401d6c60 stars, accepts a star only if its lum <= L_cluster*fVar33, stops when the summed lum reaches L_cluster or 16384 (0x3fff) and writes the sum back to the record; port clusters.rs:291-326,371-376 samples Salpeter masses below a turn-off with a fixed 0.2% giant fraction (only for age > 1 Gyr), no white dwarfs, count = L / mean_lum, Plummer positions ignoring CenPow
-
-### 02-007 · Star clusters
-
-Globular/nucleus member physics: SE generates each member with the full procedural star generator inside the level's magnitude band (per-class age and metallicity, evolved giants, white dwarfs, neutron stars, black holes, and a 45 % globular / 60 % nucleus share of special objects at the leaf level); port has main-sequence stars plus 0.2 % generic giants only, classes V/III
-
-- Status: differs, effort **M**, auditor confidence medium
-- SE evidence: FUN_1401d63b0, FUN_140543c70 leaf factors 0x140807fdc/0x140807f5c
-- Port: crates/se_engine/src/clusters.rs:298-312,408-414
-- Check: FUN_14053a760 calls FUN_1401d63b0(class 4 Kern / 3 globular, table[level] Mbright,Mfaint), which runs the evolution path (FUN_1401dd6b0, FUN_1401d5fe0) and diverts 0.6 (0x14075f828, Kern) / 0.45 (0x14075f82c, globular) of draws to class-0x6800 special objects, with FUN_140543c70 scaling leaf counts by 0x140807f5c/0x140807fdc; the port's clusters.rs sample_star is Salpeter main sequence plus giant_frac 0.002 (age > 1 Gyr only) and member_info labels only V/III.
-
-### 02-010 · Star clusters
-
-Member star names: SE names them RSC <galaxy>-<cluster>-<level>-<node>-<index> (8-number form in procedural galaxies) and resolves those names in search, goto and saved places; port names them "<cluster name> #k" and cannot resolve RSC names
-
-- Status: differs, effort **M**, auditor confidence high
-- SE evidence: FUN_1401c0180 L"RSC %i-%i-%i-%I64d-%i", parser FUN_1401c2480
-- Port: crates/se_engine/src/clusters.rs:89-99
-- Check: FUN_1401c0180 formats L"RSC %i-%i-%i-%I64d-%i" and the 8-number form, and the %u scanf variants in re/strings_utf16.txt:747-748 show the parse-back; the port's clusters.rs:94 uses format!("{cluster} #{k}") and nothing in crates/ handles "RSC" (only RS field-star names exist), and SE-compatible names need SE's member octree level/node ids.
-
-### 03-002 · Galaxies and nebulae
-
-Dust of galaxy and nebula sprite models: SE absorption sprites output (-colour*emBright*fade, absBright*fade) with blend ONE, ONE_MINUS_SRC_ALPHA (darken by absBright x the model's Transparency and subtract the dust colour); port instead uses its own Beer-Lambert multiply exp(-tau*desaturated tint*6) with ad-hoc global strengths (0.35 galaxies, 0.06 nebulae "deliberately weak"), so dust strength and colour differ: nebula dust (Horsehead, Barnard) is near-invisible while the edge-on Milky Way lane renders as a dark brown band; main-def.cfg ColorAbsorption is not read by the port
-
-- Status: differs, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: galaxy_model.glsl:64-69; nebula_model.glsl (same, texture .a); FUN_14029bdf0 glBlendFunc(1,0x303); main-def.cfg ColorAbsorption
-- Port: crates/se_engine/assets/shaders/galaxy_model.wesl:113-118; galaxies.rs:229 dust_strength; docs/formats/nebula.md section 7
-- Check: Code difference confirmed: galaxy_model.glsl:64-69 and nebula_model.glsl:60-65,77 output (-rgb*emBright*fade, absBright*fade) drawn with glBlendFunc(1,0x303) (FUN_14029bdf0:194), while galaxy_model.wesl:113-118 uses exp(-tau*desaturated tint*6) multiply with global strengths 0.35/0.06 (galaxies.rs:227, nebulae.rs:66, nebula.md:176 "deliberately weak"); but the M42 "near-black bands" claim is not shown by the auditor's runs (r1_orion_crop shows no such band; r1_mw does show a dark brown edge-on lane), and ColorAbsorption feeds DAT_14082c21e/21f read in FUN_1404877f0 (seCustomModel::Draw), not the galaxy sprite shader, so its role here is unproven
-
-### 03-007 · Galaxies and nebulae
-
-Nebula NoModel key ignored: SE gives catalog nebulae with `NoModel true` no model (M 43 and Sh2-279 Running Man, which are drawn by the Orion Nebula model); port gives them a pooled ray-marched model, so a stray striped orange sphere sits on the Running Man Nebula next to M 42
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: FUN_140172400 ("NoModel" -> model index 0xfffe); Catalogs.pak nebulae/SpriteAstro.sc M 43, Sh2-279 NoModel true
-- Port: crates/se_engine/src/nebulae.rs:327-329 (pooled raymarch for every nebula without a named model)
-- Check: FUN_140172400:462-464 reads "NoModel" and sets model index 0xfffe, and SpriteAstro.sc gives M 43 and Sh2-279 `NoModel true` ("implemented as a part of M 42 model"); the port's NebulaRecord (se_core/src/catalog.rs:131) has no such field, nothing in crates/ reads NoModel, and nebulae.rs:327-329 falls back to custom.pooled() for every nebula without a named model (run .audit/work/03/r3_sh2279.png).
-
-### 03-008 · Galaxies and nebulae
-
-Nebula sprite atlas: SE nebula sprite models sample their own atlas sprites_neb.png (Common.pak, 1024x1024 single-channel greyscale, 4x4 tiles of filamentary cloud shapes, used as coverage); port draws nebula sprite models with the galaxy atlas sprites_gal.png, so nebula texture detail differs
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: nebula_model.glsl:76 (texture(...).a); FUN_140168bd0 "sprites_neb.*"; Common.pak sprites_neb.png
-- Port: crates/se_engine/src/galaxies.rs:714 (only sprites_gal.png loaded, shared with nebulae.rs)
-- Check: FUN_140168bd0:177-181 loads "sprites_neb." next to sprites_gal, and nebula_model.glsl:76 samples the texture as coverage; the port loads only textures/common/sprites_gal.png (galaxies.rs:714) and nebulae.rs reuses that SpriteAtlas; but Common.pak sprites_neb.png is a 1024^2 8-bit greyscale (PNG colour type 0, mode L) 4x4 tile set of filamentary clouds, not an alpha-channel image.
-
-### 03-010 · Galaxies and nebulae
-
-Galaxy redshift: SE multiplies galaxy sprites and the front plane by Reddening = (1-x, 1-2x, 1-4x), x = distance / 4.227e9 pc, which reddens and dims distant galaxies (blue gone near 1 Gpc, green near 2 Gpc); port tints only far sprites with a 5500 K Planck spectrum shifted by z at constant luminance (about 10% redder at 1 Gpc), and 3D models are not tinted
-
-- Status: differs, effort **S**, auditor confidence medium
-- SE evidence: FUN_140299fe0 (param_1[4..6] = 1 - d/4.227e9 * (1,2,4); constants 0x14075eb8c, 0x1406d523c); galaxy_model.glsl:72; galaxy_plane.glsl:57
-- Port: crates/se_engine/assets/shaders/galaxy_far.wesl:117-130 (redshift_tint); galaxy_model.wesl (none)
-- Check: FUN_140299fe0:251-254 computes param_1[4..6] = 1 - d/DAT_14075eb8c * (1, 2, DAT_1406d523c) with bytes 0x4f7bf2e7 = 4.227e9 and 0x40800000 = 4.0, and galaxy_model.glsl:72 / galaxy_plane.glsl:57 multiply colour by Reddening.rgb (dimming, not luminance-preserving); the port only has redshift_tint() in galaxy_far.wesl:120-127 (5500 K Planck shift normalised to constant luminance) and galaxy_model.wesl has no reddening.
-
-### 03-003 · Galaxies and nebulae
-
-Galaxy sprite-model shading and brightness: SE fades a sprite when the eye is within 1.5 sprite radii (clamp(dist/spriteSize-0.5)) and scales models by hdr/realGalaxySpriteBright x ModelBright x pst Brightness (BrightZoom); port fades sprites by on-screen size (250-875 px) with edge-faded quads, enlarges sub-pixel sprites to a minimum radius, dims all bulge sprites to 0.3 (BULGE_GAIN) and calibrates model brightness to its analytic far sprite, so the inside-galaxy look (local clumps, bulge glare, overall model brightness) differs
-
-- Status: differs, effort **M**, auditor confidence medium
-- SE evidence: galaxy_model.glsl:39-57; FUN_14029bdf0 BrightZoom; main-def.cfg hdrGalaxySpriteBright 0.03, realGalaxySpriteBright 0.01
-- Port: crates/se_engine/assets/shaders/galaxy_model.wesl:61-69,108; crates/se_engine/src/galaxies.rs:960 (BULGE_GAIN), 1193 (calibration)
-- Check: galaxy_model.glsl:39,56 fades by clamp(dist/spriteSize-0.5) (gone inside 0.5 sprite radii) vs galaxy_model.wesl:61-69 screen-size fade between big_px 250 and 875 px plus MODEL_MIN_PX enlargement and edge-faded quads; BULGE_GAIN 0.3 (galaxies.rs:960) and far-sprite calibration (galaxies.rs:1187-1195) have no SE counterpart; SE emBright comes from FUN_140299fe0 fade x galaxy+0xa4 and renderer factors (FUN_14029bdf0:152-154), the hdr/realGalaxySpriteBright cvars being read in FUN_1404c4ae0, so the brightness chain differs even if the exact cvar wiring is indirect
 
 ### 03-004 · Galaxies and nebulae
 
@@ -345,15 +204,6 @@ Ray-marched nebula shader is a reimplementation that differs from the decrypted 
 - Port: crates/se_engine/assets/shaders/galaxy_nebula_raymarch.wesl; docs/formats/nebula_raymarch.md section 4; run .audit/work/03/r3_m43.png
 - Check: Emission, erosion and tone-curve differences confirmed (nebula_raymarch.glsl:26-36 abs(1-1.2*noise) erosion of bound and star cavity, 65 e*colour*coef_1*exp(-e^coef_2*coef_3), 75 smootherstep curve and separate OutTransm vs galaxy_nebula_raymarch.wesl:237-250 smooth edge/bubble fades, 287 coef_3*exp(-max(r-dir.w,0)/c0.w), 387 plain output), but "port has no dithering" is wrong: the port jitters the first sample per pixel (wesl:333-334,354); SE instead dithers density and step length (Dithering_func_1/2 with hash and DitherNoiseTex), and the striping on the Running Man in r3_m43.png is not shown to be step banding
 
-### 03-009 · Galaxies and nebulae
-
-Nebula sprite-model brightness and residency: port calibrates each model to the AbsMagn-based far sprite, so compact planetaries saturate to white close up (M 57 at 3e13 km) while faint ones (Abell 33, Manatee) are nearly invisible, keeps at most 4 resident models, and draws distant shell nebulae as a soft disc; SE scales models by hdrNebulaSpriteBright 0.06 / realNebulaSpriteBright 0.02 x model Brightness with NebulaBrightMin/GlowBrightMin cut-offs
-
-- Status: differs, effort **M**, auditor confidence medium
-- SE evidence: main-def.cfg hdrNebulaSpriteBright, realNebulaSpriteBright, NebulaBrightMin, GlowBrightMin, CacheSizeNebModelsVRAM
-- Port: crates/se_engine/src/nebulae.rs:617; docs/formats/nebula.md sections 6-7; run .audit/work/03/r1_m57.png
-- Check: Port calibrates model scale to the AbsMagn far-sprite surface brightness (nebulae.rs:613-617), caps residency at 4 (nebulae.rs:68, max 8), and docs/formats/nebula.md section 7 itself lists the M57 white saturation, near-invisible Abell 33/Manatee and soft-disc shell sprites (confirmed in .audit/work/03/r1_m57.png, white-cored blob); SE keys hdrNebulaSpriteBright 0.06 / realNebulaSpriteBright 0.02 / NebulaBrightMin 0.03 / GlowBrightMin 0.006 exist (main-def.cfg 173,175,253,275) and are read by FUN_1400125e0/FUN_14027a6a0, none is read by the port; exact SE application of the factors was not traced, so medium confidence.
-
 ### 03-011 · Galaxies and nebulae
 
 Intergalactic vision algorithm: SE sums the sky coverage of drawn galaxies (R^2/(d^2-R^2) per galaxy) and eases a brightness factor 1/(a + b*coverage) at AutoGalaxyMagnSpeed (1-exp(-dt*speed)); port sets the gain so the 3000th brightest galaxy looks magnitude 7 (cap 3000), blended in from 1 to 2 galaxy radii out, with a fixed 0.3 s smoothing and AutoGalaxyMagnSpeed not read
@@ -362,15 +212,6 @@ Intergalactic vision algorithm: SE sums the sky coverage of drawn galaxies (R^2/
 - SE evidence: FUN_1404c51a0, FUN_140299fe0 (+0x35cc accumulator); main-def.cfg AutoGalaxyMagnitude, AutoGalaxyMagnSpeed 10
 - Port: crates/se_engine/src/procgalaxies.rs:452-475; crates/se_engine/src/galaxies.rs:1045-1061
 - Check: FUN_140299fe0:144-152 accumulates R^2/max(d^2-R^2, eps) into +0x35cc per drawn galaxy and FUN_1404c51a0:78-90 eases it with 1-exp(-dt*speed) and sets brightness 1/(a + b*coverage) clamped >= 1; the port instead derives gain from the 3000th-brightest galaxy mapped to mag 7 (procgalaxies.rs:452-475, clamp 1..3000), blends by smoothstep(1,2 radii) and smooths with a fixed k = 3*dt (galaxies.rs:1050-1058), and AutoGalaxyMagnSpeed appears nowhere in crates/.
-
-### 03-012 · Galaxies and nebulae
-
-Galaxy/nebula display controls: SE has galaxy and DSO magnitude limits (GalaxyMagnLimit, NebulaMagnLimit, GlowMagnLimit), galaxy brightness up/down, an Intergalactic vision toggle and catalog-object filters (ShowCatGalaxies, ShowCatNebulae: "Real galaxies only / All galaxies", "Real nebulae only / All nebulae", "Galaxies disabled/enabled"); port exposes only the ShowProc* checkboxes and env vars
-
-- Status: missing, effort **M**, auditor confidence medium
-- SE evidence: locale *-gui.cfg keys "Galaxies magnitude limit", "Increase galaxies brightness", "DSO magnitude limit", "Intergalactic vision", "Real galaxies only"; main-def.cfg 167-177, 666-671
-- Port: crates/se_engine/src/procsystems.rs:169; galaxies.rs:241-266 (env only)
-- Check: Locale keys "Galaxies magnitude limit", "DSO magnitude limit", "Increase/Decrease galaxies brightness", "Intergalactic vision", "Real galaxies only", "All galaxies", "Real nebulae only", "All nebulae", "Galaxies disabled" exist (fra-gui.cfg 1268-1466; eng-gui.cfg is only a 5 KB stub) and main-def.cfg 167-177, 666-670 hold GalaxyMagnLimit/NebulaMagnLimit/GlowMagnLimit/AutoGalaxyMagnitude/ShowCatGalaxies/ShowCatNebulae; the port's only deep-sky UI is the three ShowProc* checkboxes (procsystems.rs:169-171), hud.rs/graphics.rs sliders cover stars and flares only, and galaxy brightness/auto gain are env-only (galaxies.rs:241-266).
 
 ### 04-009 · Planet surfaces
 
@@ -408,15 +249,6 @@ Faint square grid on smooth lit planet discs from orbit (Saturn at 250000 km, Ke
 - Port: crates/se_engine/assets/shaders/planet.wesl (terrain/aerial pass, cause not isolated)
 - Check: The auditor's own runs (.audit/work/04/saturn.png, kep10_zoom.png) show a regular ~10 px checker on the lit discs of Saturn and Kepler-10 b, visible even at half size, and SE jitters its lookups (planet.glsl:576 PlanetUVShatter, terrain_noise.glh:89-91); cause in the port is still not isolated
 
-### 05-015 · Atmospheres, rings, comets
-
-Atmosphere at a distance: SE keeps the atmosphere at least AtmoMinWidthPix (2 px) thick on screen and limits its effect to AtmoDistanceLimit (30 radii), so distant planets keep a visible limb. The port shows the shell only once the body is over 0.5 px, at its true thickness, so the limb disappears below a pixel
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: main-def.cfg AtmosphereRendering AtmoMinWidthPix AtmoDistanceLimit
-- Port: crates/se_engine/src/system.rs:732
-- Check: FUN_14044fe70 reads AtmoMinWidthPix (DAT_1419b2608) to widen the atmosphere height to at least tan(px*pixel angle)*distance, and AtmoDistanceLimit (DAT_1419b24d8) to clamp the eye distance to limit*radius for the atmosphere computation; the port has neither key, and update_sky_shells (system.rs:732) shows the true-thickness shell only once px_radius > 0.5.
-
 ### 05-017 · Atmospheres, rings, comets
 
 Cloud shadows: the port darkens the ground under its cloud shell. SE 0.991's planet shader has no cloud-shadow term; its only shadows are from rings and eclipses
@@ -425,33 +257,6 @@ Cloud shadows: the port darkens the ground under its cloud shell. SE 0.991's pla
 - SE evidence: planet.glsl:1057-1095 (Shadow = rings x eclipse only)
 - Port: crates/se_engine/assets/shaders/planet.wesl:1228-1231
 - Check: SE's planet.glsl has no cloud texture bound in the surface pass (samplers 0-15 contain no cloud map) and its Shadow term at 1057-1098 is only RingsShadow x eclipse, and no exe string or SE shader mentions a cloud shadow; the port multiplies the ground by 1 - 0.55*cloud in planet.wesl finish() (~1228-1231) and README says "cloud shadows"
-
-### 05-009 · Atmospheres, rings, comets
-
-Shadows on rings: SE casts the planet's shadow with a penumbra sized by the sun's angular radius and the planet's oblateness (EclipseValue, Oblateness), plus moon eclipse shadows on the 2D rings, the dust and the rocks (ECL/ECLDUST/ECLSTONES, e.g. SE's place "Titan's shadow on Saturn's rings"). The port tests the shadow ray against a sphere with a fixed smoothstep(0, 0.04) edge and draws no moon shadows on rings
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: rings.glsl:66-69; rings_raymarch.glsl:225,271-273,299-301; ger-gui.cfg "Titan's shadow on Saturn's rings"
-- Port: crates/se_engine/assets/shaders/rings.wesl:73-83
-- Check: rings.glsl:66-69 shades the planet shadow with EclipseValue(lightAngularRadius, casterAngularRadius, angle) on an oblateness-scaled light position and adds EclipseShadowAuto moon shadows under ECL (ger-gui.cfg:2466 cites the "Titan's shadow on Saturn's rings" place); the port's rings.wesl:73-83 does a sphere ray test with smoothstep(0,0.04) and has no eclipse import, while README says eclipses cover terrain, clouds and sky only
-
-### 05-010 · Atmospheres, rings, comets
-
-Ring shadow on planet, clouds and sky: SE's RingsShadow uses opacity 1-(1-density)^(1/cosPhi) with fwidth anti-aliased edges and fades out at equinox, and shadows the sky too (AtmoRingsShadow "Ring shadows on sky"); its "rings winter" (Clouds RingsWinter, 0 disables) fades clouds and the surface diffuse colour on the winter hemisphere by tan(sun elevation over the ring plane) x RingsWinter. The port draws a constant 0.95 x alpha hard-edged shadow on the ground only, nothing on sky or clouds, and rings_winter is parsed but unused
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: rings_common.glh:278-309; sky.glsl:247-253; planet.glsl:513-533,949-955; main-def.cfg AtmoRingsShadow; SolarSys.sc RingsWinter
-- Port: crates/se_engine/assets/shaders/planet.wesl:911-933; crates/se_engine/assets/shaders/sky.wesl
-- Check: Shadow formula and missing sky shadow hold (rings_common.glh:278-309 1-(1-density)^(1/cosPhi) with fwidth smoothing and equinox fade; sky.glsl:247-253 RingsShadow; port planet.wesl:911-933 constant a*0.95, nothing in sky.wesl or clouds.wesl), but SE's rings winter (planet.glsl:513-533, 949-955) is not a removal of clouds under the shadow: it fades the clouds and the surface diffuse colour on the hemisphere facing away from the sun, scaled by tan(sun elevation over the ring plane) x RingsWinter
-
-### 05-011 · Atmospheres, rings, comets
-
-Eclipse shadow on the sky: SE computes EclipseShadowFar per sky fragment for each light, so a moon's shadow shows as a dark patch on the atmosphere seen from space, and during totality the horizon stays bright. The port dims the whole sky shell by one factor taken at the camera (or the ground point below it)
-
-- Status: differs, effort **M**, auditor confidence high
-- SE evidence: sky.glsl:255-260
-- Port: crates/se_engine/src/system.rs:739-744
-- Check: SE sky.glsl:255-260 evaluates EclipseShadowFar per fragment at FragPosS inside the NLights loop, while the port's update_sky_shells (system.rs:739-744) takes one eclipse factor at the camera/ground point and multiplies the whole shell's sun_irradiance by it, and sky.wesl has no shadow term beyond the sun-disc occluder mask.
 
 ### 05-016 · Atmospheres, rings, comets
 
@@ -470,15 +275,6 @@ Volumetric rings: with VolumetricRings (default true) SE ray-marches individual 
 - SE evidence: rings_raymarch.glsl:62-388; main-def.cfg RingsRendering 138-152 and PlanetRendering VolumetricRings; strings_utf16 "Volumetric rings quality" "Draw 3D rings"
 - Port: crates/se_engine/src/rings.rs:288; crates/se_engine/assets/shaders/rings.wesl
 - Check: rings_raymarch.glsl (388 lines) ray-marches rocks with triplanar PBR textures (lines 107-205), dust with ECLDUST/ECLSTONES, and main-def.cfg:101 VolumetricRings true plus RingsRendering 141-148 configure it; the port draws only a flat annulus mesh (rings.rs:288 annulus, rings.wesl) and rocks_max_size_km/rocks_spacing/thickness_km are parsed but never read outside se_core rings.rs
-
-### 05-012 · Atmospheres, rings, comets
-
-Planetshine: SE's EnablePlanetShine (PlanetShineMode, PlanetShineBright, PlanetShineUpdateFrames, PlanetShinePickPerFrame) renders previews of nearby planets and lights bodies with their colour as a secondary light (e.g. earthshine on the Moon's night side), and the host planet lights its own rings (HostLightIndex in rings.glsl / rings_raymarch.glsl). The port has no secondary lighting: night sides get only a fixed 0.015 ambient, and rings are lit only by the star (sunlit face plus light passing through to the back face), with no light from the planet
-
-- Status: missing, effort **L**, auditor confidence high, amended by the checker
-- SE evidence: main-def.cfg PlanetRendering EnablePlanetShine..PlanetShinePickPerFrame; strings_utf16 "Planet shine" "Planet shine brightness" TogglePlanetShine; rings.glsl:66 HostLightIndex
-- Port: none
-- Check: main-def.cfg:105-109 EnablePlanetShine..PlanetShinePickPerFrame and the HostLightIndex branch in rings.glsl:20,66 / rings_raymarch.glsl check out, and the port has no planetshine (grep finds none); but night sides are not fully black (terrain.rs:1443 sets a constant ambient of 0.015, used at planet.wesl:1171), and unlit ring faces are not black (rings.wesl shows the back face by sunlight passing through the ring).
 
 ### 06-006 · Procedural generation
 
@@ -551,96 +347,6 @@ Session state: SE saves the planetarium state (MoveMode, BindMode, RefBody/RefPa
 - SE evidence: save/save-def.cfg Planetarium block; LastMode
 - Port: crates/se_engine/src/camera.rs:199-214; crates/se_engine/src/settings.rs:44-62
 - Check: save/save-def.cfg has LastMode and a Planetarium block (MoveMode 1, BindMode 1, RefBody "Saturn", RefParent "Sun", AbsPosition/RelPosition, Orientation, Velocity, TimeScale, Date); port place_at_start (camera.rs:199-214) always places the camera 4 radii from cfg.start_at (default "Earth", only changeable by the --start CLI arg, config.rs:52) and settings.rs Snapshot persists only display/audio/graphics settings, no camera, binding or time state
-
-### 08-026 · Interface
-
-Screenshots: SE F11 saves without the interface and Ctrl+F11 with it, into its screenshots/ folder in ScreenshotFormat (jpg by default, also png/dds/tga/tif); port F11 always captures the whole window including the egui interface, as PNG to Pictures/SpaceEngine-rs, with no Ctrl+F11 variant or format option
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: eng-gui "Screenshot without GUI" "Screenshot with GUI"; tutorial "Pressing [Ctrl]+[F11] takes a screenshot with SpaceEngine's interface"; strings "screenshots/"
-- Port: crates/se_engine/src/hud.rs:50-65
-- Check: Exe has "Screenshot without GUI"/"Screenshot with GUI" actions, "screenshots/" folder and ScreenshotFormat "jpg" default, and tut-04-camera.se says Ctrl+F11 includes the interface, while port hud.rs:50-65 spawns Screenshot::primary_window() (egui included) as PNG into Pictures/SpaceEngine-rs; the "on-screen message" claim is unproven (ScreenshotComplete looks like an event name, no message string found).
-
-### 08-028 · Interface
-
-Seizure warning: SE shows a seizure warning dialog at startup (ShowSeizureWarning true, menu/warning.txt); port shows none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg Interface ShowSeizureWarning; Scripts.pak menu/warning.txt; eng-gui "Seizure Warning"
-- Port: none
-- Check: main-def.cfg Interface ShowSeizureWarning true ("show seizure warning at startup", referenced by FUN_14000ce00) and Scripts.pak menu/warning.txt holds the red "Seizure Warning" page ending "Press Esc to continue"; grep of crates/, README and docs for seizure/warning.txt/epilep finds nothing.
-
-### 08-018 · Interface
-
-Markers overlay: SE has a Markers switch (ShowMarkers, off by default) with per-type ShowMarkers* for bodies, stars, clusters, nebulae and galaxies, drawn as MarkersSize 7 px filled discs placed in front of the body (body_mark.glsl); port has no marker switch or star/DSO markers and instead always draws a 4 px hollow ring at each labelled system body, which SE does not show by default
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: body_mark.glsl:20-43; main-def.cfg ShowMarkers*, MarkersSize
-- Port: crates/se_engine/src/overlay.rs:311-313
-- Check: body_mark.glsl:20-43 draws a filled smoothstep-edged disc pushed 1.1 radii toward the viewer, and main-def.cfg:565,737-750 has MarkersSize 7 and ShowMarkers (default false) with per-type switches incl. stars/clusters/nebulae/galaxies; port overlay.rs:311-313 always strokes a 4 px (7 px selected) ring at every labelled non-star body with no marker setting (OverlaySettings has none), so with SE defaults the port shows rings SE does not
-
-### 08-019 · Interface
-
-Orbit filters and marks: SE has orbits off by default with per-type switches (ships, planets, moons, dwarf planets, dwarf moons, asteroids, comets, suns, barycenters), Crop orbits, orbit point marks (OrbitMarksMode off/selection/all), fading trails (OrbitTrailsLength) and major/minor line thickness; port shows orbits by default, picks them by its own size/distance rules (minor bodies only when selected) and draws thin uniform lines with no options, trails or marks
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: main-def.cfg ShowOrbits*, OrbitMarksMode; eng-gui "Crop orbits" "Orbit marks"
-- Port: crates/se_engine/src/overlay.rs:118-136
-- Check: main-def.cfg:708-721 has OrbitMarksMode 1, OrbitTrailsLength, OrbitMajor/MinorThickness, ShowOrbits false plus nine per-type switches, eng-gui "Crop orbits" "Orbit marks"; port draw_orbits (overlay.rs:104-151) uses fixed size/distance rules, minor bodies only when selected, 1 px uniform-alpha gizmo lines, no marks/crop/per-type options, and its orbits default on (overlay.rs:36) while SE's default off
-
-### 08-022 · Interface
-
-Object filters: SE switches each class on/off (catalog/procedural galaxies, clusters, nebulae, stars, planets, procedural planets of catalog stars, spacecraft, atmospheres, clouds, water, aurora, comet tails, accretion disks, jets) from the Filters toolbar with cycling messages ("Real stars only", "All planets"...); port only has procedural galaxies/clusters/nebulae checkboxes
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: main-def.cfg ObjectFilters 664-688; eng-gui "Real & Procedural planets" "Procedural stars only"
-- Port: crates/se_engine/src/procsystems.rs:169-171
-- Check: main-def.cfg ObjectFilters 664-686 lists 19 Show* switches and the locale has the cycling messages ("Real stars only", "Procedural stars only", "All planets", "Real & Procedural planets"); the port's only object-class switches are the three procedural deep-sky checkboxes in procsystems.rs:169-171 (all other checkboxes are orbits/labels/flares/physics), no atmosphere/cloud/water/aurora/tail/disk/jet or catalog/procedural star/planet toggles.
-
-### 08-025 · Interface
-
-Locations dialog: SE's dialog (F6) has Current / Featured / My locations / Journey log tabs, picture thumbnails ("Load location to update picture"), an info pane, rename, share via copy URL / BB code / html / script code, paste from clipboard, import/export and the se:// protocol, visit/game/system dates; port's Places window is a filtered list with save and delete
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: rtti sePlacesBrowser seSLSortMode; eng-gui "Featured locations" "My locations" "Copy URL to clipboard" "Paste from clipboard" "Rename" "Register se:// protocol"
-- Port: crates/se_engine/src/hud.rs:401-473
-- Check: Locale has "Current", "Featured locations", "My locations", "Journey log", "Rename", "Load location to update picture", "Copy URL/BB code/html code to clipboard", "Paste from clipboard", "Import"/"Export", "Register se:// protocol" and the tutorial opens Locations with [F6]; port's Places window (hud.rs:401-473) is one filtered list with jump, save-current and delete of user places, no tabs, thumbnails, info pane, rename, clipboard sharing, import/export or se:// handling (grep finds no clipboard/se:// code).
-
-### 08-027 · Interface
-
-Display units: SE formats values in the user's units (Units: large distances ly or pc, so kly/Mly/Gly by default; medium AU or light-hours; small km/miles/nautical miles; temperature K/°C/°F; star temperature; pressure atm/bar/psi/inHg/mmHg/Pa) chosen in "Units of measurement"; port uses one fixed format that switches to kpc/Mpc/Gpc above 1000 ly and offers no unit choice
-
-- Status: differs, effort **M**, auditor confidence high
-- SE evidence: main-def.cfg Units 578-615; eng-gui "kly" "Mly" "Gly" "Units of measurement"
-- Port: crates/se_core/src/units.rs:32-51
-- Check: main-def.cfg Units 578-612 has UnitDistLarge/Medium/Small, UnitTemperature, UnitStarTemperature, UnitPressure and the exe has "Units of measurement", "Celsius", "Fahrenheit", "Pound per square inch", "Inch of Hg", "nautical mile"; port units.rs:32-51 has one fixed formatter switching to kpc/Mpc/Gpc above 1000 ly, hud.rs:280 hardcodes °C, and no unit setting exists anywhere in crates/.
-
-### 08-023 · Interface
-
-Solar system chart: SE's chart (F8) compares bodies in modes by radius/mass/density/temperature or a system map (ChartDisplayMode 4), with hierarchical layout (planets beside their star, moons below, barycenters as blue diamonds with blue links, green planet links), lit rotatable 3D bodies (ChartLightingAngle 35), toggles for stars/planets/dwarf planets/moons/dwarf moons/asteroids/comets/barycenters, min/max diameter/mass/density/temperature, zoom/scroll by mouse and WASD; port's F6 chart draws planets as flat dots on a log-distance line with moons listed below, no modes or options
-
-- Status: differs, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg SolarSystemChart 636-651; rtti seChartMode cmFilterMode; tut-06-system-chart strings; eng-gui "Min diameter" "Lighting angle"
-- Port: crates/se_engine/src/browser.rs:238-319
-- Check: tut-06-system-chart.se (opened with [F8]) describes the hierarchical scheme, mouse zoom/scroll, right-drag rotation of bodies, Size/Mass modes, the Stars checkbox, blue barycenter diamonds and green planet links, and main-def.cfg 636-648 has ChartDisplayMode 0-4, Chart* toggles and ChartLightingAngle; port browser.rs:238-319 (bound to F6, which is SE's Locations key) draws only planets/dwarf planets >=400 km as flat coloured circles on a log-distance line with up to 9 moons >=100 km listed below, no stars, barycenters, modes, options or zoom (the WASD detail is not evidenced, rest stands).
-
-### 08-024 · Interface
-
-Wiki window: SE's wiki has tabs (General, Physical, Orbital, Atmospheric...) with full physical, orbital, atmosphere and life data, a rotatable 3D preview, a status line ("Real object"/"Procedural (generated) object"), discovery fields (Pioneer name, Discovery date, Discovery method), an editable description ("Enter description here") and wiki export; port's wiki shows only the DB description or a distance/radius/parent summary (some physical/orbital numbers appear in the Selection panel instead, and Pioneer/Date are parsed in locale.rs but never shown)
-
-- Status: partial, effort **L**, auditor confidence high, amended by the checker
-- SE evidence: rtti seWiki seWikiPageMode seWikiExportDialog; eng-gui "General" "Physical" "Orbital" "Atmospheric" "Pioneer name" "Discovery method"; tutorial "switch to the Physical tab", "rotate the planet preview"
-- Port: crates/se_engine/src/wiki.rs:71-134
-- Check: Locale has the wiki fields ("Status", "Real object", "Procedural (generated) object", "Pioneer name", "Discovery date", "Discovery method" with its method list, "General"/"Physical"/"Orbital"/"Atmospheric", "Enter description here", export scopes) and the tutorial confirms the Physical tab and rotatable preview; port wiki.rs:71-134 shows only the DB description or distance/radius/parent, but the separate Selection panel (hud.rs:232-345) already shows mass, Teff/Mv, average/day/night temperature, a/e/P, rotation period and day lines, and locale.rs parses Pioneer/Date without displaying them, so the gap is the tabbed layout, atmosphere/life data, 3D preview, status/discovery lines, editable description and export rather than all object data.
-
-### 09-005 · Graphics and settings
-
-Final colour correction: SE applies ColorCorrentionLDR after tone mapping with Brightness, Contrast, Saturation (per-pixel vibrance 1 + (S-1)(1 - pixel saturation), so grey pixels gain more than vivid ones) and Gamma settings, plus a Dithering on/off switch; port has no brightness/contrast/saturation/gamma settings and approximates Saturation 1.5 by a uniform post_saturation 1.35 (vibrance at pixel saturation 0.3), over-saturating vivid colours (nebulae, red/blue stars, flare tints) and under-saturating greys; the port always dithers (Bevy DebandDither on Camera3d) with no switch
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: hsl.glh:31-54 ColorCorrentionLDR; hdr_final.glsl:184-204; main-def.cfg PostEffects Brightness Contrast Saturation Gamma, RenderingQuality Dithering; eng-gui "Brightness" "Contrast" "Color vibrance" "Gamma" "Dithering"
-- Port: crates/se_engine/src/camera.rs:167-177
-- Check: hsl.glh:33-53 ColorCorrentionLDR (contrast, brightness, per-pixel vibrance 1+(S-1)(1-sat), gamma) and hdr_final.glsl:186-204 confirm SE's side and the port only has a uniform post_saturation 1.35 at camera.rs:175, but the port does dither: Bevy 0.20 makes DebandDither::Enabled a required component of Camera3d (bevy_core_pipeline core_3d/mod.rs:104), so only the Dithering toggle is missing, not dithering
 
 ### 09-006 · Graphics and settings
 
@@ -788,42 +494,6 @@ neutron stars and white dwarfs in the GR shader: SE renders their accretion disk
 - SE evidence: einstein.glsl:2-12,49-52; gr_intersection.glh:641-648; Catalogs.pak planets/NeutronStars-bin.sc AccretionDisk
 - Port: crates/se_engine/src/blackholes.rs:145
 - Check: einstein.glsl:1-12 (neutron stars, white dwarfs with volumetric disk and jets, STAR define) and gr_intersection.glh:48-53,641-648 StarSurface with starTemp/starRadius/starEqSpeed/WD scaling; Catalogs.pak planets/NeutronStars-custom.sc "Crab Pulsar" and NeutronStars-bin.sc pulsars carry AccretionDisk blocks; port reads AccretionDisk only for StarKind::BlackHole (blackholes.rs:145-155), neutron stars are an ordinary star body (12 km procedural, system.rs:424).
-
-### 02-014 · Star clusters
-
-Cluster display filters: SE has ShowCatClusters and ShowProcClusters and a ToggleClusters cycle (Clusters disabled / enabled / Real clusters only / Procedural clusters only / All clusters); port only has ShowProcClusters, catalog clusters cannot be hidden, no toggle action
-
-- Status: partial, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowCatClusters, exe strings ToggleClusters "Real clusters only"
-- Port: crates/se_engine/src/procsystems.rs:170, crates/se_engine/src/procgalaxies.rs:49-65
-- Check: SE: main-def.cfg:668-669 ShowCatClusters/ShowProcClusters, strings_utf16.txt:2871-2875 "Clusters disabled/enabled/Real clusters only/Procedural clusters only/All clusters", :4170 ToggleClusters action (bound in def_*controller.cfg), FUN_140499ce0 filters by globals 0x1419fab60/0x1419fac60; port has only the ShowProcClusters checkbox (procsystems.rs:170, proc_galsys.rs:197), no ShowCatClusters or show flag in clusters.rs and no toggle action
-
-### 02-015 · Star clusters
-
-NStars/Type handling: SE treats NStars 0 as "no generated members" (Pleiades, Hyades, Trapezium, M 24) and ignores any other NStars (class init zeroes it; open nodes always use the 16384 cap), Type Part (M 24) gets no members; port uses NStars > 0 as the member count (Praesepe 50, Mon R2 100, NGC 265 1000), handles NStars 0 like a missing key (luminosity-based count), relies only on a ">= 15 catalog stars inside the radius" skip for every cluster, and builds Part (M 24, radius 300 pc) as an Open cluster with up to 3000 generated members
-
-- Status: differs, effort **S**, auditor confidence high, amended by the checker
-- SE evidence: FUN_14047fcb0 (NStars==0 flag), FUN_1404826a0 (+0x48 = 0), FUN_140483080 (KERN/GLOBULAR/OPEN/PART), FUN_140543c70 (Part = 0 stars)
-- Port: crates/se_engine/src/clusters.rs:351-360,373-382
-- Check: SE verified: FUN_14047fcb0:717 NStars==0 sets flag +0x78/1, FUN_1404826a0:94 zeroes +0x48 for Kern/Glob/Open, FUN_140543c70 Part(4) -> 0 stars and Open -> 0x4000 cap; port clusters.rs:373-376 uses NStars>0 as count and treats NStars 0 like absent (luminosity count), while the >=15-catalog-stars skip (351-360) applies to every cluster, not as an NStars-0 substitute; port builds every non-"glob" Type (Part) as Open, and Catalogs.pak has no Kern clusters, so the Kern half of the claim is moot for catalog clusters
-
-### 02-016 · Star clusters
-
-Galaxy GlobClusters key: SE uses a catalog galaxy's GlobClusters value (25 galaxies) as its globular-cluster count and only computes it when absent; port always uses the luminosity formula
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: FUN_14016bef0 key GlobClusters, FUN_14049cf40 line 132
-- Port: crates/se_core/src/proc_galsys.rs:470-486
-- Check: SE: FUN_14016bef0:550-555 reads GlobClusters into loader +0x8c, which is runtime galaxy +0x64 (same 0x28 shift as Type +0x30->+8 and Lum +0x44->+0x1c), and FUN_14049cf40:132-158 computes the count from luminosity only when that field is < 0; 25 catalog galaxies set it (M 31 450, M 87 14660, LMC 50, Sag dSph 0, M 32 0 ...); port proc_galsys.rs:470-486 always uses the luminosity/size formula and no crate reads GlobClusters
-
-### 03-016 · Galaxies and nebulae
-
-Quasars: SE reads `Quasar` catalog entries as galaxies of their Type with a quasar flag (0x800) and draws them like galaxies; port draws them as bluish point sprites (profile 3) and excludes them from elliptical volumes and intergalactic vision
-
-- Status: differs, effort **S**, auditor confidence low
-- SE evidence: FUN_14016b430 ("Quasar" -> FUN_14016bef0, flag /= 0x800); Catalogs.pak galaxies/BlackholeHosts.sc (22 Quasar, Type Sb/E2)
-- Port: crates/se_engine/src/galaxies.rs:309,324-326; ellipticals.rs:146
-- Check: FUN_14016b430 parses Quasar blocks with the same FUN_14016bef0 as Galaxy and only ORs flag 0x800 (exe strings use it as the "Quasar" type label); BlackholeHosts.sc quasars carry Type Sb/E0/E2 and Radius like galaxies, and SE shaders have no quasar-specific galaxy path, while port galaxies.rs:309 gives them profile 3 point sprites with a fixed blue colour (type_color), and skips them in ellipticals.rs:146, galaxies.rs:1036 and procsystems.rs:213; how SE uses 0x800 when drawing stays unproven, so confidence remains low
 
 ### 03-013 · Galaxies and nebulae
 
@@ -996,123 +666,6 @@ Navigation script commands: SE scripts can use Horizon, Track/Untrack, MoveMode,
 - Port: crates/se_engine/src/scripting.rs:568-580
 - Check: The convert() in se_script.rs:482 maps "stopfly" to Op::StopMotion, which scripting.rs:445-449 runs (stops velocity, travel and flight), so StopFly works; Track/Untrack (scripting.rs:568) and Horizon, MoveMode, Speed, Fly, Turn, StopTurn, StopRotation, GotoURL and User*Control (Op::Other, scripting.rs:577) are logged and skipped, as the exe command table in docs/formats/se_script.md:164-181 lists them
 
-### 07-020 · Camera and time
-
-Gamepad, joystick and 3D mouse: SE reads SDL joysticks and game controllers (up to 16, dead zones, sensitivities) with default maps def_generic_controller.cfg and def_xbox360_controller.cfg (sticks fly and turn, X/A velocity, d-pad time rate, shoulders select and orbit, Start Go to, Back Center), and a SpaceNavigator; port has keyboard and mouse only
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: config/def_xbox360_controller.cfg, def_generic_controller.cfg; FUN_1405ba8f0 SDL_JoystickOpen / SDL_GameControllerOpen, "SpaceNavigator"
-- Port: none
-- Check: FUN_1405ba8f0 ("Initializing controller") calls SDL_NumJoysticks/SDL_JoystickOpen/SDL_GameControllerOpen with a 0x10 joystick cap and a "SpaceNavigator" device, and def_xbox360_controller.cfg maps sticks and triggers to CamMove/CamTurn/Ship axes with DeadZone 2000 and Sensitivity* keys; the port has no gamepad, gilrs or joystick code anywhere in crates/
-
-### 08-030 · Interface
-
-Journey log: SE records visited objects automatically (seJournalBrowser, journal.cfg, JournalSize 100) and lists them in the Locations dialog; port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: rtti seJournalBrowser; main-def.cfg JournalSize; strings "journal.cfg"
-- Port: none
-- Check: Exe has seJournalBrowser RTTI, "Journey log" next to "Locations"/"My locations", journal.cfg, ConfigFileJournal and main-def.cfg JournalSize 100 ("maximum size of the Journey log"); port has only shipped/user Places (data.rs:35-53, README) and no journal/visited/history code in crates/.
-
-### 08-032 · Interface
-
-Planet vectors: SE can draw a body's rotation axis, prime meridian, orbital velocity vector and direction to parent (ShowPlanetVectors and four switches); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowPlanetVectors ShowPlanetRotationAxis ShowPlanetPrimeMeridian ShowPlanetVelocityVector ShowPlanetParentVector
-- Port: none
-- Check: main-def.cfg:697-701 ShowPlanetVectors + ShowPlanetRotationAxis/PrimeMeridian/VelocityVector/ParentVector registered in exe (FUN_1400169e0, FUN_140016a20) with locale strings "Vectors" "Rotation axis" "Prime meridian" "Velocity vector" "Direction to parent"; port grep of crates/ for axis/meridian/vector drawing in overlay.rs, hud.rs finds nothing (rotation.rs only computes orientation)
-
-### 08-033 · Interface
-
-Camera velocity vector: SE can mark the direction of motion on screen (ShowVelocityVector, VelocityPointerColor); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowVelocityVector; skin VelocityPointerColor
-- Port: none
-- Check: main-def.cfg:691 ShowVelocityVector registered by FUN_140016b60, skin colour VelocityPointerColor read in FUN_14036a560 and widget name "VelocityVector" in strings_utf16; port has no velocity marker in overlay.rs/hud.rs/ship.rs (only the selection pointer per README)
-
-### 08-034 · Interface
-
-Object context menu: SE offers a context menu on the selection with Parent, Satellites and Add to locations; port has none
-
-- Status: missing, effort **S**, auditor confidence medium
-- SE evidence: strings_utf16 "Context menu" "Parent" "Satellites" "Add to locations"
-- Port: none
-- Check: FUN_14024cb10 builds the "Context menu" window with "Parent", "Satellites", "Add to locations" entries; port has no egui context_menu/secondary-click on the selection (parent is a plain label hud.rs:263, children a collapsible list, place saving lives only in the hud save dialog hud.rs:462)
-
-### 08-038 · Interface
-
-GUI scaling: SE scales the interface by a GUIScale percent on top of optional Windows DPI scaling (GUIScaleDPI), set in interface settings; port follows the OS DPI implicitly via bevy_egui but has no scale percent or DPI toggle (partial)
-
-- Status: missing, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: main-def.cfg GUIScale GUIScaleDPI; eng-gui "Interface scaling" "Use system DPI"
-- Port: none
-- Check: SE main-def.cfg:535-536 GUIScaleDPI/GUIScale and strings "Interface scaling", "Use system DPI" confirmed; port has no scale setting, but bevy_egui 0.43 already multiplies by the window's OS scale factor, so DPI scaling happens implicitly (not switchable)
-
-### 08-040 · Interface
-
-FPS meter graph: SE can show an FPS or frame-time graph with target/min/max values (fps_meter.glsl, ShowFPSMeter, ShowFrametimeMeter) and a skin-coloured FPS counter; port only has the "N fps" label in the top bar
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: fps_meter.glsl; main-def.cfg DebugOverlay ShowFPSMeter ShowFrametimeMeter; strings_utf16 "Tgt FPS: %i" "Max FPS"
-- Port: crates/se_engine/src/hud.rs:183
-- Check: SE fps_meter.glsl (graph texture, Params data head/FPS/target), DebugOverlay ShowFPSMeter/ShowFrametimeMeter and strings "Tgt FPS: %i", "Max/Min FPS", "Tgt/Max/Min time" confirmed; port has only hud.rs:183 "{:.0} fps" label and an env-var frame-time log file (system.rs:104), no graph
-
-### 08-029 · Interface
-
-Star browser filter options: SE's filter dialog has Sun/Planet/Moon counts, system main star and parent sun filters, atmosphere pressure classes, volatiles classes, min/max diameter, mass, density and temperature, life origin, subglacial and aerial biomes, Ignore planemo, Ignore asteroids and comets and "Add to locations"; port's filter has object kind, catalog/procedural systems, star type, class, temperature class, arid/non-arid, atmosphere yes/no, life, life type, marine/terrestrial biome, radius range and a found count
-
-- Status: partial, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: eng-gui "Sun count" "System's main star" "Ignore planemo" "Ignore asteroids and comets" "Min mass"; tutorial "change the 'Sun count' to 3"
-- Port: crates/se_engine/src/star_search.rs:681-718
-- Check: Exe strings confirm "System's main star", "Object's parent sun", "Sun count"/"Planet count"/"Moon count", "Ignore planemo", "Ignore asteroids and comets", "Min/Max diameter/temperature/mass/density", "Add to locations"; but port star_search.rs:593-600 already shows a found count, and its filter (681-718) also has catalog/procedural systems, star type and unicellular/multicellular life type, which the gap omitted.
-
-### 08-031 · Interface
-
-Localization coverage: port translates only strings routed through i18n.tr; top bar ("rate", "velocity", "near:"), selection lines ("Teff", "mass ... Earth", "children"), help, Graphics, Ships and most Settings labels are fixed English or not SE keys, and object names are never taken from the *-db.cfg translations; SE translates every UI string and object name in 27 languages
-
-- Status: partial, effort **M**, auditor confidence high
-- SE evidence: data/locale/*-gui.cfg, *-db.cfg
-- Port: crates/se_engine/src/hud.rs:173-183,256-321; crates/se_engine/src/graphics.rs:217
-- Check: SE ships 27 *-gui.cfg (keys are the English UI strings, e.g. rus-gui.cfg "Console") and 25 *-db.cfg; port i18n.rs routes only some labels through tr (hud.rs:173-181 "rate"/"velocity"/"near:", hud.rs:256-321 "Teff"/"rotation period"/"children", help text hud.rs:477, graphics.rs:219-237 sliders, ship.rs:1203-1250 are literals) and Locale::object_name (se_core/locale.rs:184) is used only in tests while Catalog::display_name returns the raw catalog name, so object names are never translated outside the wiki heading
-
-### 08-035 · Interface
-
-Console window: SE has an in-game console (seConsole) with a command line and script error output ("Unknown command", "Error in line"); port has none
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seConsole; eng-gui "Console" "Unknown command" "Error in line"
-- Port: none
-- Check: rtti seConsole, eng-gui keys "Console" "Error in line" "Unknown command" "Unknown variable" (strings_utf16:2543-2548) and a bindable "Console" action in def_*controller.cfg; port only takes dev commands from CLI args/scripts (camera.rs:896 logs "unknown command" to the log) and has no in-game command-line window
-
-### 08-037 · Interface
-
-Music player window: SE has a player (play/pause/stop, previous/next, playlist, repeat track/playlist, in-order/random/context playing, volume, "[Playing] - " status); port only has the M and N keys
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: rtti seMusicPlayer; eng-gui "Music player" "Playlist" "Repeat playlist" "Context playing"
-- Port: crates/se_engine/src/music.rs
-- Check: SE strings_utf16:3050-3067 list the player (Play/Pause/Stop, Previous/Next track, Playlist, No repeat/Repeat track/Repeat playlist, Play in order/Play random/Context playing, Volume, "[Playing] - ") and rtti seMusicPlayer; port music.rs only has M toggle, N skip, fixed shuffle, and a volume that is saved but has no UI (set_volume is dead code)
-
-### 08-039 · Interface
-
-Fade transitions: SE fades overlays (orbits, markers, labels) in 0.2 s and out 0.35 s and fades+slides windows (WidgetFadeIn/Out, WidgetSlideIn/Out); port toggles overlays instantly and its egui windows only get egui's default 0.2 s fade with no slide (partial)
-
-- Status: missing, effort **M**, auditor confidence high, amended by the checker
-- SE evidence: main-def.cfg OverlayFadeIn OverlayFadeOut WidgetFadeIn WidgetFadeOut WidgetSlideIn WidgetSlideOut
-- Port: crates/se_engine/src/overlay.rs:114,284
-- Check: SE main-def.cfg:551-556 fade/slide durations confirmed; port overlays switch instantly (overlay.rs:114 `if !settings.orbits return`, :284 labels), but its 13 egui::Window panels already fade in over egui 0.36's default animation_time 0.2 s (Area fade_in=true, Window fade_out=true), so only the overlay fades, the slide and SE's 0.35 s fade-out timing are missing
-
-### 08-036 · Interface
-
-Event finder: SE's tool searches eclipses, transits, occultations and alignments (event type, precision, time step, start date, bodies table); port has none
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: rtti seEventFinder; eng-gui "Event finder" "Eclipse#event_finder" "Transit#event_finder"
-- Port: none
-- Check: SE has the window (rtti seEventFinder; strings_utf16:2353-2375 "Event finder", "Event type", "Precision", "Time step", "Start date", Alignment/Ordered alignment/Eclipse/Transit/Occultation, "Add object", "Being eclipsed"...); port has eclipse shadow rendering (eclipse.wesl) but no event search anywhere in crates/ or README
-
 ### 09-009 · Graphics and settings
 
 Screenshot formats: SE saves screenshots as jpg (default, JpegQuality 95), png, dds, tga or tif (ScreenshotFormat, "Screenshots format"), optionally with alpha (SaveAlpha, "Save transparency"), numbered scr%05i in screenshots/ (UserScreenshotsSubDir). Port writes PNG only, named by a millisecond timestamp
@@ -1175,15 +728,6 @@ Settings persistence: SE keeps every setting in config/main-user.cfg as override
 - SE evidence: strings "main-user.cfg" "Creating user config file \"%s\"" "Performing full update of the config file \"%s\"" DetectVersionChange
 - Port: crates/se_engine/src/settings.rs:43-136
 - Check: SE strings main-user.cfg, "Creating user config file", "Performing full update of the config file", DetectVersionChange exist (strings_ascii.txt:26306-26389); port settings.rs Snapshot persists only star/overlay/FOV/music/language/graphics-preset/lens-flare keys to %APPDATA%/SpaceEngine-rs/settings.cfg and only lensflare.rs:233, procgalaxies.rs:165 (plus graphics.rs:141 preset-*.cfg) read SE config files; Settings-window toggles such as ShowProcGalaxies are not saved
-
-### 09-012 · Graphics and settings
-
-Video capture: SE records video through FFmpeg (seVideoRecorder / seAsyncVideoRecorder: encoders from config/ffmpeg.cfg, NVENC/AMF/QSV hardware or libsvtav1/libaom-av1, pixel formats YUV420P..P010, quality and bitrate presets, VideoFrameRate 60, streaming (real-time) or offline (fixed-FPS, Frame time mode with RealTime/RealTimeFPS) capture, frame-rate capping, with or without GUI, auto-hiding recording tools) or as numbered screenshot frames (VideoFrameFormat). Port has none
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: config/ffmpeg.cfg; main-def.cfg Export 453-475; strings "seVideoRecorder::StartCapture() Capture started with encoder"; eng-gui "Video capture" "Start recording" "Record as video file" "Record as screenshots" "Capture mode" "Streaming (real time)" "Offline rendering (fixed FPS)" "Framerate capping" "Frame timing mode"; def_generic_controller.cfg VideoCaptureDialog VideoRecording
-- Port: none
-- Check: config/ffmpeg.cfg lists av1_nvenc/amf/qsv/libsvtav1/libaom-av1 with streaming/offline options, main-def.cfg Export 453-475 has VideoCaptureInAVI/VideoFrameRate 60/VideoEncoder/VideoFpsCapMethod/RealTime, strings_ascii.txt:24977-24997 seVideoRecorder/seAsyncVideoRecorder StartCapture, def_generic_controller.cfg:162-163 VideoCaptureDialog/VideoRecording; port has only single screenshots (README `shot FILE`, `--screenshot`) and no ffmpeg/video/frame-sequence code
 
 ### 09-013 · Graphics and settings
 
@@ -1377,33 +921,6 @@ Timing and loader modes: SE switches between real-time and fixed frame-time simu
 - Port: crates/se_engine/src/universe.rs:131-134
 - Check: The exe has the UTF-16 strings "Real time mode"/"Frame time mode" and "Immediate/Interleaved/Asynchronous loading mode" (strings_utf16.txt:2998-3003; they are in the other *-gui.cfg locales, not in eng-gui.cfg), TimingMode/LoaderMode are bindable actions (controller cfgs, default Shift+\ in the auditor's default-key table) and main-def.cfg:477 has LoaderMode 0/1/2; the port's advance_time (universe.rs:131-134) always uses the real frame delta and has no fixed-frame-time or loader-mode switch
 
-### 08-041 · Interface
-
-Eclipse totality mask: SE can draw the full-solar-eclipse phase mask overlay (ShowEclipseMask); port has none
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: main-def.cfg ShowEclipseMask; eng-gui "Eclipse totality mask"
-- Port: none
-- Check: SE has main-def.cfg:702 ShowEclipseMask (default false), the overlay-filter string "Eclipse totality mask" in strings_utf16:2712 among the grid/vector overlays, and control action ToggleEclipseMask (strings_utf16:4190); the port only renders eclipse shadows (README "Eclipses and shadows") and has no mask, totality or eclipse overlay in overlay.rs/hud.rs/settings.rs.
-
-### 08-043 · Interface
-
-Bottom info HUD option: SE can draw an old-style info HUD at the bottom of the screen when the bottom toolbars are hidden (BottomInfoHUD, off by default); the port always shows its own top info bar (date, rate, velocity, nearest, fps) and has neither SE's bottom toolbars nor this option
-
-- Status: missing, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: main-def.cfg Interface BottomInfoHUD
-- Port: none
-- Check: main-def.cfg:547 BottomInfoHUD (default false, "draw old style bottom HUD when bottom toolbars are hidden") is confirmed, but the port is not without an info HUD: hud.rs:155-205 always draws its own top bar with date, time rate, velocity, nearest object and fps, and it has no bottom toolbars for the option to depend on.
-
-### 08-042 · Interface
-
-Debug toolbox: SE has a debug window with debug screens (Performance, Memory, Loader, Camera), histogram, bloom/depth/impostor/env-map views, octree/quadtree/bounding-box overlays, wireframe and level limits; port has none (env vars only)
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg DebugOverlay 754-793; rtti seDebugToolbox; strings_utf16 "Debug toolbox" "Show Star octree"
-- Port: none
-- Check: strings_utf16:1155-1245 confirm the "Debug toolbox" window (rtti seDebugToolbox) with Performance/Memory/Loader/Camera screens, FPS meter, histogram, Wireframe, bloom/depth/impostor/envmap views, Land quadtree and Star/Galaxy/Cluster octree views, BBoxes and LandLimLevel/StarLimLevel/GalLimLevel, matching main-def.cfg DebugOverlay 754-791; the port has only a plain fps number in the top bar (hud.rs:183) and SE_* env toggles, with no debug window, overlay or wireframe.
-
 ### 09-018 · Graphics and settings
 
 Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / interleaved / asynchronous), MaxThreads, MultithreadedStartup, PreloadShaders / PreloadShipTextures, TimingStrategy 1 (time budget MaxTimePerFrame 10 ms, MaxTimePerFrameClean) and a "Frame timing mode" (real time vs fixed frame time, Export RealTime/RealTimeFPS for recording); port is fixed at SE's defaults (asynchronous task-pool loading, MaxTilesPerFrame tile budget, real-time stepping) with none of the alternatives selectable
@@ -1486,6 +1003,243 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - Check: The exe has "spacecraft.cfg" (FUN_1400402e0), ConfigFileSpacecraft, seSpacecraftList::ReadShipsConfig ("has no ShipID"), seSpacecraftsList::SaveSpacecraftsConfig, RefBodyID/TargetShipID (FUN_140531d60) and "seGameState::ApplyToCamera(): Unknown spacecraft id %i"; the port has no ship save or load (no spacecraft.cfg, ShipID or ship save code in crates/; ship.rs only spawns and despawns through ShipCommand)
 
 
+## Deferred by the owner
+
+Still open; left out of the work for now and of the counts above.
+
+### 07-020 · Camera and time (deferred 2026-10-30)
+
+Gamepad, joystick and 3D mouse: SE reads SDL joysticks and game controllers (up to 16, dead zones, sensitivities) with default maps def_generic_controller.cfg and def_xbox360_controller.cfg (sticks fly and turn, X/A velocity, d-pad time rate, shoulders select and orbit, Start Go to, Back Center), and a SpaceNavigator; port has keyboard and mouse only
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: config/def_xbox360_controller.cfg, def_generic_controller.cfg; FUN_1405ba8f0 SDL_JoystickOpen / SDL_GameControllerOpen, "SpaceNavigator"
+- Port: none
+
+### 08-001 · Interface (deferred 2026-10-29)
+
+Main menu: SE opens in its main menu (3D scene background from menu/Scene1.se when Use3Dmenu, else Menu.pak skybox menu0-3; logo, version line; buttons Continue / Planetarium / Flight simulator / Settings / Tools / Credits / Exit with sub-menus, tutorials list, credits.txt, faq.txt; Esc returns to it); port starts straight in the simulation with no menu (Scene1.se runs only from its Scripts window)
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: Scripts.pak menu/MainMenu.cfg; Menu.pak menu0-3*.jpg; main-def.cfg Use3Dmenu; rtti seMainMenu
+- Port: none
+
+### 08-007 · Interface (deferred 2026-10-29)
+
+Universe map (F1/M) missing: map centred on the selection or current position with a zoom slider from moons to the cosmic web, grid on the galactic plane with drop lines to objects (star_map_line), star marks coloured by temperature (pink for black holes/planemos), galaxy/cluster/nebula marks, clip-sphere fade, orbits and asteroids/comets as dots, exploration mode (overlays hidden, Density slider), MapShowProcedural/Grid/Lines, MapLabelsMode, MapPointOverbright, map renders of galaxies/nebulae (galaxy_model_map, nebula_model_map), time flow, Center/Close buttons
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg UniverseMap 651-664; star_map_mark/line/point.glsl; galaxy_map_mark/line/point.glsl; map_sphere.glsl; rtti seMapMode; tut-05-univ-map strings
+- Port: none
+
+### 08-018 · Interface (deferred 2026-10-30)
+
+Markers overlay: SE has a Markers switch (ShowMarkers, off by default) with per-type ShowMarkers* for bodies, stars, clusters, nebulae and galaxies, drawn as MarkersSize 7 px filled discs placed in front of the body (body_mark.glsl); port has no marker switch or star/DSO markers and instead always draws a 4 px hollow ring at each labelled system body, which SE does not show by default
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: body_mark.glsl:20-43; main-def.cfg ShowMarkers*, MarkersSize
+- Port: crates/se_engine/src/overlay.rs:311-313
+
+### 08-019 · Interface (deferred 2026-10-30)
+
+Orbit filters and marks: SE has orbits off by default with per-type switches (ships, planets, moons, dwarf planets, dwarf moons, asteroids, comets, suns, barycenters), Crop orbits, orbit point marks (OrbitMarksMode off/selection/all), fading trails (OrbitTrailsLength) and major/minor line thickness; port shows orbits by default, picks them by its own size/distance rules (minor bodies only when selected) and draws thin uniform lines with no options, trails or marks
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg ShowOrbits*, OrbitMarksMode; eng-gui "Crop orbits" "Orbit marks"
+- Port: crates/se_engine/src/overlay.rs:118-136
+
+### 08-022 · Interface (deferred 2026-10-30)
+
+Object filters: SE switches each class on/off (catalog/procedural galaxies, clusters, nebulae, stars, planets, procedural planets of catalog stars, spacecraft, atmospheres, clouds, water, aurora, comet tails, accretion disks, jets) from the Filters toolbar with cycling messages ("Real stars only", "All planets"...); port only has procedural galaxies/clusters/nebulae checkboxes
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg ObjectFilters 664-688; eng-gui "Real & Procedural planets" "Procedural stars only"
+- Port: crates/se_engine/src/procsystems.rs:169-171
+
+### 08-023 · Interface (deferred 2026-10-30)
+
+Solar system chart: SE's chart (F8) compares bodies in modes by radius/mass/density/temperature or a system map (ChartDisplayMode 4), with hierarchical layout (planets beside their star, moons below, barycenters as blue diamonds with blue links, green planet links), lit rotatable 3D bodies (ChartLightingAngle 35), toggles for stars/planets/dwarf planets/moons/dwarf moons/asteroids/comets/barycenters, min/max diameter/mass/density/temperature, zoom/scroll by mouse and WASD; port's F6 chart draws planets as flat dots on a log-distance line with moons listed below, no modes or options
+
+- Status: differs, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg SolarSystemChart 636-651; rtti seChartMode cmFilterMode; tut-06-system-chart strings; eng-gui "Min diameter" "Lighting angle"
+- Port: crates/se_engine/src/browser.rs:238-319
+
+### 08-024 · Interface (deferred 2026-10-30)
+
+Wiki window: SE's wiki has tabs (General, Physical, Orbital, Atmospheric...) with full physical, orbital, atmosphere and life data, a rotatable 3D preview, a status line ("Real object"/"Procedural (generated) object"), discovery fields (Pioneer name, Discovery date, Discovery method), an editable description ("Enter description here") and wiki export; port's wiki shows only the DB description or a distance/radius/parent summary (some physical/orbital numbers appear in the Selection panel instead, and Pioneer/Date are parsed in locale.rs but never shown)
+
+- Status: partial, effort **L**, auditor confidence high
+- SE evidence: rtti seWiki seWikiPageMode seWikiExportDialog; eng-gui "General" "Physical" "Orbital" "Atmospheric" "Pioneer name" "Discovery method"; tutorial "switch to the Physical tab", "rotate the planet preview"
+- Port: crates/se_engine/src/wiki.rs:71-134
+
+### 08-025 · Interface (deferred 2026-10-30)
+
+Locations dialog: SE's dialog (F6) has Current / Featured / My locations / Journey log tabs, picture thumbnails ("Load location to update picture"), an info pane, rename, share via copy URL / BB code / html / script code, paste from clipboard, import/export and the se:// protocol, visit/game/system dates; port's Places window is a filtered list with save and delete
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: rtti sePlacesBrowser seSLSortMode; eng-gui "Featured locations" "My locations" "Copy URL to clipboard" "Paste from clipboard" "Rename" "Register se:// protocol"
+- Port: crates/se_engine/src/hud.rs:401-473
+
+### 08-026 · Interface (deferred 2026-10-30)
+
+Screenshots: SE F11 saves without the interface and Ctrl+F11 with it, into its screenshots/ folder in ScreenshotFormat (jpg by default, also png/dds/tga/tif); port F11 always captures the whole window including the egui interface, as PNG to Pictures/SpaceEngine-rs, with no Ctrl+F11 variant or format option
+
+- Status: differs, effort **S**, auditor confidence high
+- SE evidence: eng-gui "Screenshot without GUI" "Screenshot with GUI"; tutorial "Pressing [Ctrl]+[F11] takes a screenshot with SpaceEngine's interface"; strings "screenshots/"
+- Port: crates/se_engine/src/hud.rs:50-65
+
+### 08-027 · Interface (deferred 2026-10-30)
+
+Display units: SE formats values in the user's units (Units: large distances ly or pc, so kly/Mly/Gly by default; medium AU or light-hours; small km/miles/nautical miles; temperature K/°C/°F; star temperature; pressure atm/bar/psi/inHg/mmHg/Pa) chosen in "Units of measurement"; port uses one fixed format that switches to kpc/Mpc/Gpc above 1000 ly and offers no unit choice
+
+- Status: differs, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg Units 578-615; eng-gui "kly" "Mly" "Gly" "Units of measurement"
+- Port: crates/se_core/src/units.rs:32-51
+
+### 08-028 · Interface (deferred 2026-10-30)
+
+Seizure warning: SE shows a seizure warning dialog at startup (ShowSeizureWarning true, menu/warning.txt); port shows none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg Interface ShowSeizureWarning; Scripts.pak menu/warning.txt; eng-gui "Seizure Warning"
+- Port: none
+
+### 08-029 · Interface (deferred 2026-10-30)
+
+Star browser filter options: SE's filter dialog has Sun/Planet/Moon counts, system main star and parent sun filters, atmosphere pressure classes, volatiles classes, min/max diameter, mass, density and temperature, life origin, subglacial and aerial biomes, Ignore planemo, Ignore asteroids and comets and "Add to locations"; port's filter has object kind, catalog/procedural systems, star type, class, temperature class, arid/non-arid, atmosphere yes/no, life, life type, marine/terrestrial biome, radius range and a found count
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: eng-gui "Sun count" "System's main star" "Ignore planemo" "Ignore asteroids and comets" "Min mass"; tutorial "change the 'Sun count' to 3"
+- Port: crates/se_engine/src/star_search.rs:681-718
+
+### 08-030 · Interface (deferred 2026-10-30)
+
+Journey log: SE records visited objects automatically (seJournalBrowser, journal.cfg, JournalSize 100) and lists them in the Locations dialog; port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: rtti seJournalBrowser; main-def.cfg JournalSize; strings "journal.cfg"
+- Port: none
+
+### 08-031 · Interface (deferred 2026-10-30)
+
+Localization coverage: port translates only strings routed through i18n.tr; top bar ("rate", "velocity", "near:"), selection lines ("Teff", "mass ... Earth", "children"), help, Graphics, Ships and most Settings labels are fixed English or not SE keys, and object names are never taken from the *-db.cfg translations; SE translates every UI string and object name in 27 languages
+
+- Status: partial, effort **M**, auditor confidence high
+- SE evidence: data/locale/*-gui.cfg, *-db.cfg
+- Port: crates/se_engine/src/hud.rs:173-183,256-321; crates/se_engine/src/graphics.rs:217
+
+### 08-032 · Interface (deferred 2026-10-30)
+
+Planet vectors: SE can draw a body's rotation axis, prime meridian, orbital velocity vector and direction to parent (ShowPlanetVectors and four switches); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowPlanetVectors ShowPlanetRotationAxis ShowPlanetPrimeMeridian ShowPlanetVelocityVector ShowPlanetParentVector
+- Port: none
+
+### 08-033 · Interface (deferred 2026-10-30)
+
+Camera velocity vector: SE can mark the direction of motion on screen (ShowVelocityVector, VelocityPointerColor); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowVelocityVector; skin VelocityPointerColor
+- Port: none
+
+### 08-034 · Interface (deferred 2026-10-30)
+
+Object context menu: SE offers a context menu on the selection with Parent, Satellites and Add to locations; port has none
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: strings_utf16 "Context menu" "Parent" "Satellites" "Add to locations"
+- Port: none
+
+### 08-035 · Interface (deferred 2026-10-30)
+
+Console window: SE has an in-game console (seConsole) with a command line and script error output ("Unknown command", "Error in line"); port has none
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: rtti seConsole; eng-gui "Console" "Unknown command" "Error in line"
+- Port: none
+
+### 08-036 · Interface (deferred 2026-10-30)
+
+Event finder: SE's tool searches eclipses, transits, occultations and alignments (event type, precision, time step, start date, bodies table); port has none
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: rtti seEventFinder; eng-gui "Event finder" "Eclipse#event_finder" "Transit#event_finder"
+- Port: none
+
+### 08-037 · Interface (deferred 2026-10-30)
+
+Music player window: SE has a player (play/pause/stop, previous/next, playlist, repeat track/playlist, in-order/random/context playing, volume, "[Playing] - " status); port only has the M and N keys
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: rtti seMusicPlayer; eng-gui "Music player" "Playlist" "Repeat playlist" "Context playing"
+- Port: crates/se_engine/src/music.rs
+
+### 08-038 · Interface (deferred 2026-10-30)
+
+GUI scaling: SE scales the interface by a GUIScale percent on top of optional Windows DPI scaling (GUIScaleDPI), set in interface settings; port follows the OS DPI implicitly via bevy_egui but has no scale percent or DPI toggle (partial)
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: main-def.cfg GUIScale GUIScaleDPI; eng-gui "Interface scaling" "Use system DPI"
+- Port: none
+
+### 08-039 · Interface (deferred 2026-10-30)
+
+Fade transitions: SE fades overlays (orbits, markers, labels) in 0.2 s and out 0.35 s and fades+slides windows (WidgetFadeIn/Out, WidgetSlideIn/Out); port toggles overlays instantly and its egui windows only get egui's default 0.2 s fade with no slide (partial)
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: main-def.cfg OverlayFadeIn OverlayFadeOut WidgetFadeIn WidgetFadeOut WidgetSlideIn WidgetSlideOut
+- Port: crates/se_engine/src/overlay.rs:114,284
+
+### 08-040 · Interface (deferred 2026-10-30)
+
+FPS meter graph: SE can show an FPS or frame-time graph with target/min/max values (fps_meter.glsl, ShowFPSMeter, ShowFrametimeMeter) and a skin-coloured FPS counter; port only has the "N fps" label in the top bar
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: fps_meter.glsl; main-def.cfg DebugOverlay ShowFPSMeter ShowFrametimeMeter; strings_utf16 "Tgt FPS: %i" "Max FPS"
+- Port: crates/se_engine/src/hud.rs:183
+
+### 08-041 · Interface (deferred 2026-10-30)
+
+Eclipse totality mask: SE can draw the full-solar-eclipse phase mask overlay (ShowEclipseMask); port has none
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: main-def.cfg ShowEclipseMask; eng-gui "Eclipse totality mask"
+- Port: none
+
+### 08-042 · Interface (deferred 2026-10-30)
+
+Debug toolbox: SE has a debug window with debug screens (Performance, Memory, Loader, Camera), histogram, bloom/depth/impostor/env-map views, octree/quadtree/bounding-box overlays, wireframe and level limits; port has none (env vars only)
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg DebugOverlay 754-793; rtti seDebugToolbox; strings_utf16 "Debug toolbox" "Show Star octree"
+- Port: none
+
+### 08-043 · Interface (deferred 2026-10-30)
+
+Bottom info HUD option: SE can draw an old-style info HUD at the bottom of the screen when the bottom toolbars are hidden (BottomInfoHUD, off by default); the port always shows its own top info bar (date, rate, velocity, nearest, fps) and has neither SE's bottom toolbars nor this option
+
+- Status: missing, effort **S**, auditor confidence medium
+- SE evidence: main-def.cfg Interface BottomInfoHUD
+- Port: none
+
+### 09-012 · Graphics and settings (deferred 2026-10-30)
+
+Video capture: SE records video through FFmpeg (seVideoRecorder / seAsyncVideoRecorder: encoders from config/ffmpeg.cfg, NVENC/AMF/QSV hardware or libsvtav1/libaom-av1, pixel formats YUV420P..P010, quality and bitrate presets, VideoFrameRate 60, streaming (real-time) or offline (fixed-FPS, Frame time mode with RealTime/RealTimeFPS) capture, frame-rate capping, with or without GUI, auto-hiding recording tools) or as numbered screenshot frames (VideoFrameFormat). Port has none
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: config/ffmpeg.cfg; main-def.cfg Export 453-475; strings "seVideoRecorder::StartCapture() Capture started with encoder"; eng-gui "Video capture" "Start recording" "Record as video file" "Record as screenshots" "Capture mode" "Streaming (real time)" "Offline rendering (fixed FPS)" "Framerate capping" "Frame timing mode"; def_generic_controller.cfg VideoCaptureDialog VideoRecording
+- Port: none
+
+### 10-001 · Scripts, audio, spacecraft (deferred 2026-10-29)
+
+Context music: in SE's default context mode (MusicOrderMode 2) the track is picked from music/context.cfg for where you are: Object entries first (Earth, Moon, Mars, Saturn, Europa, Pluto, Betelgeuse, NGC 501, M 42, Sirius), then the most specific Class filter for the selected/nearest object (planet class + temperature/volatiles/life subclasses, star types, BlackHole, NeutronStar, Galaxy, Nebula, Cluster, Asteroid, Comet) falling back to more general ones, plus the mode classes MainMenu, Credits, MapMode, ChartMode; it switches when the context changes, but not before MinTrackPlayingTime 20 s. Port shuffles the union of all Class tracks with no regard to location, never uses Object entries or the mode classes
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: data/music/context.cfg header and 66 entries; main-def.cfg Sound MusicOrderMode, MinTrackPlayingTime, MixDurationContext; exe MusicClassSelector, MusicObjectSelector (FUN_140397fb0)
+- Port: crates/se_engine/src/music.rs:113-139
+
+
 ## Fixed since the audit
 
 - **01-001** (Stars, fixed 2026-10-29): star point profile and magnitude->brightness/size model: SE draws a Gaussian core plus a 1/(PointFlareDecay*r^... Fix: `stars.wesl` uses SE's model: brightness StarBrightMin x PointOverbright x 10^(0.4 (StarMagnLimit - m)), above 100 compressed to 100^0.75 b^0.25, faded out at 0.03; a Gaussian of 2 sigma^2 = PointScale^2 x h/1080 px^2 out to ln(500 b). Not done: the flare wing (SE passes CosmHorizon as its decay, which leaves it near zero).
@@ -1508,8 +1262,26 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **02-003** (Star clusters, fixed 2026-10-29): Member-star LOD octree: SE gives each cluster a 5-level star octree (nodes "SC cluster-level-node", root half-... Fix: Cluster member octree (clusters.rs): SE's structure (FUN_140543c70 / FUN_140540220 / FUN_1401d7300): five levels below a root cube of half-size the cluster radius, level d holding one of SE's five equal-probability bands of Mv ~ N(3, 6) from -8 to 30 (-8, -1.5, 1.8, 4.7, 8.2, 25); a node loads while the camera is inside its sphere or its band's brightest star seen from the sphere's edge is above the star magnitude limit (StarMagnLimit + PointOverbright), at most 16384 stars per node, brighter nodes first, so faint members appear as you approach and big globulars reach millions of stars around the camera; counts scale with StarDensityInCluster. Not done: SE's own per-node star counts and member generator (CreateClusterBlock, FUN_1401d6c60) are not decoded, so band populations come from the port's Salpeter/turn-off model and Plummer profile.
 - **02-004** (Star clusters, fixed 2026-10-28): Catalog defaults for missing keys: SE draws age N(11,3) Gyr for globulars (152 of 154 in Globular.sc have no A... Fix: Missing age, radius and magnitude come from SE's ranges (`catalog::complete_cluster`: globular age N(11,3), open N(0.15,0.1) ...), seeded by the cluster's name instead of SE's random stream.
 - **02-005** (Star clusters, fixed 2026-10-28): Luminosity of open clusters without magnitude (1113 of 1298 catalog clusters): SE uses L = 10*R^3*StarDensityI... Fix: Open clusters without a magnitude use SE's L = clamp(10 R^3, 1000, 2e5) capped at ClusterCatMaxAppMagn 8.1 seen from the Sun (Pozzo 1: 44.5 L_sun).
+- **02-006** (Star clusters, fixed 2026-10-30): Open-cluster members: SE draws them by luminosity budget (stars from FUN_1401d6c60: Mv N(3,4) evolved at the c... Fix: SE: FUN_14053a760 type-3 branch: the root node only (positions FUN_140441860 with k = 1/CenPow, kept inside R); stars of FUN_1401d6c60 are accepted when their V light is <= 0.5 L_cluster (DAT_1406d43c0), until the sum reaches L_cluster or 16384 stars (FUN_140543c70 gives open nodes 0x4000). SE then writes the sum back as the cluster's luminosity. FUN_1401d6c60: [Fe/H] N(-0.1252, 0.07), a second N(0.662, 0.170) parameter, age = cluster age + N(0, 0.01) in [1e-4, 12.87], Mv N(3, 4) (Irwin-Hall FUN_140443d50) on the main sequence (class FUN_1401da080, mass FUN_1401dd9f0, lifetime FUN_1401dd7e0); lifetime over: a giant of Mv N(1, 1); the giant's over too: a remnant (FUN_1401d5fe0, the giant's mass) of Mv N(14, 0.83). Ported: `cluster_stars::open_member`; clusters.rs `Shape::Open` (one level, light budget, a tries guard). Checked: unit tests (Pozzo 1: 114 Lsun filled, members inside R); .audit/work/clusters/pozzo_new.png (22 stars), praesepe_new.png (221 stars with a few giants). Also fixed (catalog.rs): the luminosity cap of open clusters without a magnitude uses ClusterCatMaxAppMagn's compiled default 7.1 (DAT_14075f798; SE's static initializer FUN_140011160 computes it before the config is read), not main-def's 8.1: Pozzo 1 is 114 Lsun, not 44.5 (1113 catalog open clusters). Not ported: the sum written back to the record (the far particle keeps the catalog magnitude). Assumed: SE never gives open clusters child nodes (its block code would repeat the whole blob in each child).
+- **02-007** (Star clusters, fixed 2026-10-30): Globular/nucleus member physics: SE generates each member with the full procedural star generator inside the l... Fix: SE: FUN_1401d63b0(class 3 globular / 4 nucleus, band Mbright, Mfaint): [Fe/H] N(-1, 0.25); MS Mv = tn(0, 6, band) (rnd_tn FUN_140443fd0; the mean is [0x140808174], which nothing writes); MS class and mass; lifetime (M > 0.7: max(10 M^-3.75, 0.002), else 10 M^(-1.125-3.75M); x1.1 for IV and brighter); giant Mv = tn(1, 1, band); age = cluster age + N(0, 0.01) (nucleus: 70 % u x lifetime FUN_1401dd6b0, 30 % N(0, 0.01)); an evolved star is a giant (age then min(giant lifetime, 1.1 MS lifetimes)) if age < 1.1 lifetimes or Mfaint < 11.5, else a remnant of its MS mass (white dwarf below 1.44: subclass from mass, Mv/T tables 0x1406762b8/0x1406763c0; neutron star below 3: Mv tn(18,3,12,30); black hole: tn(20,3,14,32)). FUN_1401da080: MS types by Mv bounds -10,-2,0.5,2,4,5.5,8,17,20,25,30 (O..Y, 5 % IV for O..G); giants: Mv < -3 a supergiant of random type (Ia+ 5 %, Ia 25 %, Iab 32 %, Ib 38 %), else III of type F..M by Mv (2, 1.5, 0, -1, -3), fainter than 2 a MS class. FUN_1401dd9f0: mass from the bolometric light (five power laws, clamps by type). Ported: se_core `cluster_stars` (dense_member, ms_class, giant_class, mass_of, remnant, ClassWord with SE's bit layout and class names); members keep class word, mass, age and [Fe/H]. Checked: unit tests (11 Gyr globular: bands 0-1 all giants, the faint band dwarfs); screenshots: globulars are now dominated by orange giants with white subgiants (omega_in_new.png, m13_in_new.png), the nucleus by young blue stars (kern_new.png). Leaf level (`cluster_stars::leaf_member`): tries x 1/(1-0.45-3e-5) / 1/(1-0.6-0.01); 45 %/60 % class-0x6800 luminosity-0 objects (not kept), then remnants 0.0333 / 0.14 of the rest (0x1408300f8/fc, summed at 0x140014570: BH 3e-5/0.01 tn(8,3,3,100), NS 2.5e-4/0.03 tn(2.22,0.39,1.44,3), WD 0.033/0.1 tn(1,0.5,0.56,1.44), FUN_1401d8060). Port's: class temperatures (SpectralClass::temperature; SE's FUN_1401de8b0 table unread) and the bolometric correction (SE's FUN_1401deb90); leaf remnants' [Fe/H] N(-1, 0.25) (assumed).
+- **02-008** (Star clusters, fixed 2026-10-30): Radial profile and CenPow: SE uses the CenPow key (158 catalog clusters, procedural N(1.5,0.3) in [0.5,2.5]) a... Fix: SE: loader FUN_14047fcb0 reads `CenPow`; class init FUN_1404826a0 defaults it to tn(1.5, 0.3, 0.5, 2.5) (x1.5 for a nucleus). CreateClusterBlock FUN_14053a760: globular/nucleus nodes try uniform points of their cube and keep those inside R with u <= exp(-c r/R), c = clamp(7.3 sqrt(CenPow), 5, 30) (0x1406d5410/5318/5680); open clusters take FUN_140441860 points (r^2 exponential with mean 1/CenPow) inside R. Node tries (FUN_140543c70): clamp(StarDensityInCluster x L x 1e-4, 0.01, 5) x 1e5/(level+1)^3 (row +0xc of the FUN_1401d7300 tables). Ported: `ClusterRecord::cen_pow` (catalog value or SE's default, name-seeded), `ProcCluster::cen_pow` (the draw proc_galsys discarded), se_core `cluster_stars::{concentration, node_tries, count_factor, blob_point}`; clusters.rs builds nodes by SE's tries and rejection (the Plummer profile and the port's band-count model are gone). Checked: unit tests (Omega Cen root: 5e5 tries keep ~pi/c^3, 41 % inside R/4 as exp(-9.26 r/R) gives); .audit/work/clusters/omega_out.png, omega_in_new.png, tuc47_new.png, m13_in_new.png. Omega Cen has ~90k members in all (SE's count), 52k loaded 3 pc from its centre. Frame times (agent profile, same scripts, baseline exe run alternately): inside Omega Cen median 4.7 ms both; flying through it at 0.3 pc/frame median 6.2 vs 7.5 ms, p95 15.8 vs 16.7 (ft_fly_*.txt; some runs of both builds sat at a 16.7 ms cap from the shared GPU). Not ported: SE's random streams (node seed from node ids and the cluster position): same distributions, other stars. The leaf level's extra share is in 02-007.
+- **02-009** (Star clusters, fixed 2026-10-30): Central black holes: SE makes member 0 of the root node a black hole in every globular cluster older than 10 M... Fix: SE: FUN_14053a760 root branch (globular and nucleus, not open): if no catalog star is the cluster's centre (FUN_140471df0) and (nucleus or age > 0.01 Gyr), member 0 is a black hole (class 0x5e80, luminosity 1000, radius M x 4.245e-6 Rsun, the cluster's age). Globular mass u sqrt(age/13) 1e4 clamped to [u 100, u 1e5]; nucleus u (R_galaxy/13700)^3 1e6 in [u 1e5, u 1e10] (galaxy +0x20 = loader Radius). Ported: `cluster_stars::central_black_hole`, member 0 of the root node in clusters.rs (not drawn; it is a nearest-member candidate and resolves as `RSC <..>-0-0-0`). Kern clusters are built as nuclei: procsystems.rs maps ClusterClass::Kern to Type "Kern" (was "Globular"). Centre-star test: a catalog star `CenterOf` the cluster, or of the galaxy for its nucleus (Sgr A* is `CenterOf "Milky Way"` in BlackHoles.sc). Records made by clusters.rs (RSC names) get SE's mass and radius. Needed in system.rs (not mine): procedural_star_record gives every black hole 5-20 Msun; the nearest-member promotion should take the member's mass. Checked: unit tests (globular hole present, none below 10 Myr, nucleus none with a centre star); .audit/work/clusters/kern_new.png (Milky Way nucleus RC 8514-1260, Sgr A* kept). Not ported: FUN_140471df0's exact star-to-cluster link (approximated by CenterOf); a point for the hole (SE's luminosity 1000 is not drawn).
+- **02-010** (Star clusters, fixed 2026-10-30): Member star names: SE names them RSC <galaxy>-<cluster>-<level>-<node>-<index> (8-number form in procedural ga... Fix: SE: FUN_1401c0180 names members `RSC %i-%i-%i-%I64d-%i` (galaxy catalog index, cluster index in the galaxy, level, node number, index in the node), or `RSC %i-%i-%I64d-%i-%i-%i-%I64d-%i` in procedural galaxies (the RC numbers, then level-node-index). Node number = parent x 8 + octant (FUN_140543c70; octant bits 4/2/1 = lower x/y/z half, table 0x1407f4be0). Ported: `cluster_stars::{node_number, node_cell, parse_member_name}`; clusters.rs `rsc_prefix` (Milky Way 8514; a catalog cluster by its index among its galaxy's catalog clusters, Omega Cen is RSC 8514-29; procedural ones by their RC numbers) and `resolve_member_names`: an RSC name in a goto/select/look command, or in the search box once unchanged for 30 frames, has its node built on a worker and the member added to the catalog. procsystems.rs (a few lines) first promotes the RC cluster of an RSC name unless it is a catalog or already promoted cluster; a scripted command waits for both. Checked: unit tests (node numbers round trip, both name forms); `goto RSC 8514-29-0-0-7` (.audit/work/clusters/rsc_new.png), `goto RSC 8514-1260-0-0-0` (procedural nucleus, rsc_proc_new.png). Not ported: RSC names in saved places are not resolved at start; the cluster index assumes the port loads the cluster catalogs in SE's order.
+- **02-012** (Star clusters, fixed 2026-10-30): Cluster info: SE's info panel shows the cluster type (globular#star_cluster_type / open), magnitudes, luminosi... Fix: SE: info strings globular/open#star_cluster_type, "Number of stars", "Fly inside to count stars" (FUN_14038a450's string table). Ported (hud.rs, marked block): absolute and apparent magnitude, luminosity (Sun), age, "Number of stars" = the members of the cluster's loaded nodes (ClusterField::member_count), else "Fly inside to count stars" (not for NStars 0 clusters); the type word: a nucleus (Kern) is "Globular", Part "Open". Checked: .audit/work/clusters/omega_out.png (9530 stars at 65 pc), omega_in_new.png (51764), pozzo_new.png (22), pleiades_new.png (none: NStars 0), RC 8514-1268 shows "Fly inside to count stars". Not ported: SE's exact line order; whether SE counts the loaded or all members (assumed loaded, which is what its hint suggests).
+- **02-013** (Star clusters, fixed 2026-10-30): Cluster markers and labels: SE draws green-diamond markers for clusters (ShowMarkersClusters true by default) ... Fix: SE: main-def ShowMarkersClusters true, ShowLabelsClusters false (already the port's defaults); the tutorial's locale text: "green diamonds highlight star clusters". Ported (overlay.rs, marked): cluster markers are diamonds MarkersSize across in the skin's cluster colour (green in Flat Blue). Checked: .audit/work/clusters/markers_new.png (SE_OVERLAY=markers: green diamonds on clusters, nebulae keep circles). Not ported: the audit's fade (FUN_140488a20 case 2) is used by FUN_1404877f0, the cluster block's sprite draw, not by markers; markers for procedural clusters that are not catalog entries yet. Nebula triangles belong to the nebula package.
+- **02-014** (Star clusters, fixed 2026-10-30): Cluster display filters: SE has ShowCatClusters and ShowProcClusters and a ToggleClusters cycle (Clusters disa... Fix: SE: main-def ShowCatClusters / ShowProcClusters true; FUN_140499ce0 filters by the globals 0x1419fab60 / 0x1419fac60 (procedural records marked by their vtable); ToggleClusters (bound only on controllers) cycles "Real clusters only" / "Procedural clusters only" / "All clusters" / "Clusters disabled". Ported: clusters.rs `ClusterSettings::show_cat` (read from main-def) hides the catalog clusters' members, far particles (procsystems.rs sync_materials, one line), labels, markers and picks (overlay.rs); procedural (`RC`) ones follow ShowProcClusters. Checkbox "Catalog star clusters (ShowCatClusters)" in the Procedural deep sky settings window (procsystems.rs, a few lines). Checked: unit test of the switches. Not ported: the ToggleClusters cycle (no keyboard binding in SE), saving ShowCatClusters with the settings (settings.rs) and its script variable (scripting.rs).
+- **02-015** (Star clusters, fixed 2026-10-30): NStars/Type handling: SE treats NStars 0 as "no generated members" (Pleiades, Hyades, Trapezium, M 24) and ign... Fix: SE: FUN_14047fcb0 sets a no-members flag for NStars 0 (Pleiades, Hyades, Trapezium, M 24); class init FUN_1404826a0 zeroes any other NStars; FUN_140543c70 gives Part (M 24) nodes no stars. Ported: `ClusterRecord::no_members` (NStars 0 only; `n_stars` removed); clusters.rs makes no model for it nor for Part / unknown types; the port's own ">= 15 catalog stars inside the radius" skip is gone (SE has none), so Praesepe (NStars 50) gets SE's luminosity members. Checked: unit tests (catalog parse; no model for NStars 0 or Part); .audit/work/clusters/pleiades_new.png (catalog stars only), praesepe_new.png.
+- **02-016** (Star clusters, fixed 2026-10-30): Galaxy GlobClusters key: SE uses a catalog galaxy's GlobClusters value (25 galaxies) as its globular-cluster c... Fix: SE: galaxy loader FUN_14016bef0 reads GlobClusters (loader +0x8c, runtime +0x64); FUN_14049cf40 computes the globular count from the luminosity only when it is < 0 (the cap draw happens either way). Ported: catalog.rs `Catalog::glob_clusters` (galaxy index -> count; 25 catalog galaxies set it), `GalaxyShape::glob_clusters` used by proc_galsys::generate_clusters; procsystems.rs passes it (one line). Checked: unit tests (M 31's 450 parsed; a shape with 14 gets 14 globulars, with 0 none).
 - **03-001** (Galaxies and nebulae, fixed 2026-10-29): Galaxy front-texture plane: SE draws each sprite-model galaxy's full-resolution FrontTexture (`<name>.png`, 20... Fix: Sprite-model galaxies draw their FrontTexture (with mipmaps) as a disc over the sprites (`galaxy_plane.wesl`, after SE's galaxy_plane.glsl: faded within a model unit of the eye and edge-on, colour ^ 1/DSOGamma, premultiplied so its dust lanes hide the sprites behind); M 51's arms and pink knots, the Milky Way's bar and arms from outside. The disc takes 70% of a face-on model's calibrated brightness and the sprites the rest (port calibration; SE draws both at the model's brightness in units the port does not reproduce).
+- **03-002** (Galaxies and nebulae, fixed 2026-10-30): Dust of galaxy and nebula sprite models: SE absorption sprites output (-colour*emBright*fade, absBright*fade) ... Fix: SE: galaxy_model.glsl:64-69 / nebula_model.glsl:60-65 output absorption sprites as (-rgb * emBright * fade, absBright * fade) x atlas coverage; emission, dust and bulge are drawn in one call sorted far to near (FUN_140334e90, FUN_140333a30) with glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA) (FUN_14029bdf0:194, FUN_1402b3020:295); absBright = model Transparency x p1 (galaxies) or x b (nebulae), see 03-003. Vertex colour/intensity are bytes: clamp(colour), min(1, intensity). Ported: one AlphaMode::Premultiplied mesh per model; galaxy_model.wesl returns (-colour * emBright * w, absBright * w) for dust (layer 1) and (colour * emBright * w, 0) otherwise; sprites sorted far to near (`SpriteOrder`, 03-003), so dust only darkens what lies behind it. Dust colour = absParticleColor (Milky Way (0.08, 0.24, 0.48), Transparency 0.5); `dust_strength` multiplier default 1. Intensities clamped to 1 (MW absorption reached 5.5). Checked: s12.jpg (base / v5): Sgr A* lanes orange-brown without the black core, M 31 lanes fainter than before, M 42 dark dust patches with red rims (the dust colour subtracted from the pink emission). Not ported: ColorAbsorption is not read (its use in this shader is unproven).
+- **03-003** (Galaxies and nebulae, fixed 2026-10-30): Galaxy sprite-model shading and brightness: SE fades a sprite when the eye is within 1.5 sprite radii (clamp(d... Fix: SE (decoded): emBright = DAT_14080b5a4 x hdrGalaxySpriteBright (renderer +0x35ec = FUN_1404c4ae0 +0x4c, PhotoMode 0) x model Brightness x galaxy +0x74 (ModelBright) x p3 x [+0x35b8] x [+0x35ac] x galaxy +0xa4 (FUN_14029bdf0:152-154, 209-214); DAT_14080b5a4 = GlowBrightMin x exp((GlowMagnLimit + 0.2) / 1.0587) (FUN_1404c4610, 0.2 / 1.0587362 at 0x1406d4204 / 0x1406d46a8) = 0.006 x 898 x 0.03 = 0.162. absBright = Transparency x p1, p1 = clamp((px - 2) / 3) x bright_term x galaxy +0xa4, bright_term = clamp(GalaxyBrightMin x coef(GalaxyMagnLimit) x vision gain x L / d^2 - GalaxyBrightMin, 0, 1) (FUN_140299fe0, DAT_14080b5a0 from FUN_1404c4610 / FUN_1404c51a0). Front texture: EyePos.w = p2 x GalaxyFrontTexBright, p2 including p1. +0x35ac = deep-sky extinction inside an atmosphere (FUN_14044fe70), +0x35b8 = 1 every frame, galaxy +0xa4 = show/hide fader: all 1 in a steady view from space. Draw (decoded by the review): emission, dust and bulge in one call (FUN_140334e90), sprites sorted by camera distance, farthest first (FUN_140333a30, quicksort FUN_140334190), for spirals over 10 px. Ported: `se_glow_bright`, `se_magn_coef`, `se_bright_term` (galaxies.rs), keys from main-def.cfg; emission = se_glow_bright x Brightness x ModelBright, dust alpha = Transparency x bright_term, front texture x bright_term; no free factor (MODEL_EXPOSURE removed). One premultiplied mesh per model; `SpriteOrder` re-sorts it far-to-near on the async pool (`back_to_front`) when the camera moved > 2% of its distance and the model is over 10 px, then swaps the index buffer. Bulge gain 1, vertex bytes clamped (`sprite_vertex`). Assumed [I]: L / d^2 = exp(-(m + 0.2) / 1.0587), m the apparent magnitude (units not traced). Not ported: the atmosphere extinction (+0x35ac), realGalaxySpriteBright (PhotoMode 1/2); the far-sprite to model hand-over now changes brightness (SE's are not matched either); MODEL_MIN_PX area weighting and edge-faded quads stay (anti-aliasing). Checked: .audit/work/galaxies/s12.jpg (base / v5: sgr45, sgr10, sgr2, mwout, m31, orion): mottled orange-brown lane with foreground glow, no black core; M 31 lanes fainter (only dust in front of emission darkens it). Frame times against agentseed in the same session: Sgr A* FOV 45 6.46 ms vs 6.61 / 6.75, intergalactic 4.10 vs 4.62 / 4.11 (ftn / ftb / ftb2). Unit tests se_model_brightness_chain, sprites_sort_far_to_near.
+- **03-007** (Galaxies and nebulae, fixed 2026-10-30): Nebula NoModel key ignored: SE gives catalog nebulae with `NoModel true` no model (M 43 and Sh2-279 Running Ma... Fix: SE: FUN_140172400:462-464 reads `NoModel` and sets model index 0xfffe; Catalogs.pak nebulae/SpriteAstro.sc gives it to M 43 and Sh2-279 (Running Man), "implemented as a part of M 42 model". Ported: `nebulae.rs::no_model_names` re-parses the catalog nebulae's own .sc sources (NebulaRecord has no field for it and procsystems.rs builds that struct, so catalog.rs was not touched) and gives those nebulae no sprite model, no ray-marched model and no far sprite. Log: "2 NoModel". Checked: base_runman.png (striped orange sphere on the Running Man) vs fin_runman.png (gone; only the M 42 model around). Not ported: whether SE still draws a far point for NoModel nebulae is not traced (assumed not).
+- **03-008** (Galaxies and nebulae, fixed 2026-10-30): Nebula sprite atlas: SE nebula sprite models sample their own atlas sprites_neb.png (Common.pak, 1024x1024 sin... Fix: SE: FUN_140168bd0:177-181 loads `sprites_neb.*` next to `sprites_gal.*`; nebula_model.glsl:76 multiplies by texture(...).a (Common.pak sprites_neb.png: 1024^2 8-bit grey, 4x4 filamentary tiles, i.e. coverage). Ported: `galaxies::load_atlas(vfs, path)` loads either atlas (box-filtered to 512^2, R8, per-tile means); `setup_nebulae` gives the nebula materials, their calibration and far colours the nebula atlas (falls back to sprites_gal with a warning). Checked: fin_orion.png (filamentary dust/emission texture on M 42) vs base_orion.png.
+- **03-009** (Galaxies and nebulae, fixed 2026-10-30): Nebula sprite-model brightness and residency: port calibrates each model to the AbsMagn-based far sprite, so c... Fix: SE: FUN_1402b3020 draws nebula models with emBright = DAT_14080b5a4 (GlowBrightMin x coef(GlowMagnLimit)) x Brightness x hdrNebulaSpriteBright 0.06 (+0x35f0) x [+0x35ac] x b, absBright = Transparency x b, b = clamp(NebulaBrightMin x coef(NebulaMagnLimit) x L / d^2 - NebulaBrightMin, 0, 1) x fade-in; sprites sorted far to near (FUN_140334b10, FUN_140334e90); CacheSizeNebModelsVRAM. Ported: nebulae.rs uses that chain (se_glow_bright with hdrNebulaSpriteBright, se_bright_term with NebulaBrightMin and the nebula's apparent magnitude) and the galaxies' sorted single mesh (`SpriteOrder`); the AbsMagn calibration is gone. Not ported: residency stays at 4 models; the far sprite of shell nebulae is still a soft disc; L / d^2 units assumed as in 03-003. Checked: v5_orion.png against base_orion.png (s12.jpg).
+- **03-010** (Galaxies and nebulae, fixed 2026-10-30): Galaxy redshift: SE multiplies galaxy sprites and the front plane by Reddening = (1-x, 1-2x, 1-4x), x = distan... Fix: SE: FUN_140299fe0:251-254 sets Reddening = 1 - d / 4.227e9 pc x (1, 2, 4) (DAT_14075eb8c = 4.227e9, DAT_1406d523c = 4); galaxy_model.glsl:72 and galaxy_plane.glsl:57 multiply the colour by it (dims and reddens; blue gone near 1 Gpc, green near 2 Gpc). Ported: `redshift_tint` in galaxy_far.wesl (far sprites of catalog and procedural galaxies, nebulae, clusters) is now SE's ramp clamped to 0..1 (was a luminance-preserving 5500 K Planck shift); galaxy_model.wesl and galaxy_plane.wesl apply the same ramp from the model centre's distance. Checked: shader review; at catalog distances (< 100 Mpc) the factor is > 0.9 so the views do not change; procedural galaxies at Gpc distances fade to red and vanish beyond ~4 Gpc. Not ported: SE passes one value per galaxy; the far shader evaluates it per vertex (same thing).
+- **03-012** (Galaxies and nebulae, fixed 2026-10-30): Galaxy/nebula display controls: SE has galaxy and DSO magnitude limits (GalaxyMagnLimit, NebulaMagnLimit, Glow... Fix: SE: main-def.cfg GalaxyMagnLimit 7, NebulaMagnLimit 7, GlowMagnLimit 7, AutoGalaxyMagnitude true, ObjectFilters ShowCatGalaxies/ShowCatNebulae; keys `]`/`[` all limits (IncAllMagnCoef), Ctrl stars, Shift galaxies, P reset (FUN_1405ba8f0); locale "Galaxies magnitude limit". Ported: StarSettings.galaxy_mag_limit / nebula_mag_limit (read from main-def.cfg at startup in setup_galaxies, reset values for P); Shift+`]`/`[` change both, `]`/`[` change them with the stars, P resets; `sync_mag_limit` maps them to the far sprites' and models' reference magnitude (mag_ref = limit + 0.5, i.e. unchanged at 7; procedural galaxies and ellipticals follow). AutoGalaxyMagnitude sets the intergalactic-vision switch (SE_GAL_AUTO still wins); ShowCatGalaxies / ShowCatNebulae false hide catalog galaxies (far sprites and models) / nebulae. Checked: build, unit test nebula_limit_and_filter_reach_the_far_sprites; keys not exercised in a run (no key injection in the dev commands). Not ported: GlowMagnLimit (models stay tied to the far-sprite limit so the hand-over does not pop), separate galaxy brightness keys, GUI entries for the limits / Intergalactic vision / Real-or-All filters (hud.rs, procsystems.rs belong to others), saving the limits in the user settings file, the filter on ray-marched nebulae.
 - **03-014** (Galaxies and nebulae, fixed 2026-10-29): Fade-in of new procedural galaxy blocks: SE fades newly generated galaxy blocks in over StarFadeDuration (0.5 ... Fix: New blocks of procedural galaxies fade in the same way over StarFadeDuration (SE's 'blocks of stars and galaxies'): each new node gets its own copy of the far-sprite material, kept in step with the shared one by sync_material, with FarParams.cam_pos.w = 1 - fade scaling the brightness gain in galaxy_far.wesl (0 for all other far sprites), then rejoins the shared material (procgalaxies.rs).
+- **03-016** (Galaxies and nebulae, fixed 2026-10-30): Quasars: SE reads `Quasar` catalog entries as galaxies of their Type with a quasar flag (0x800) and draws them... Fix: SE: FUN_14016b430 parses `Quasar` blocks with the galaxy reader FUN_14016bef0 and only ORs flag 0x800; BlackholeHosts.sc quasars carry Type Sb/E0/E2 and Radius like galaxies; no SE shader has a quasar path. Ported: `profile_type` / `type_color` ignore the quasar flag (profile and colour from Type, like any galaxy; was a bluish point, profile 3); quasars count for intergalactic vision again and E-type quasars get elliptical volumes (ellipticals.rs). Checked: unit test quasars_use_their_galaxy_type. Not ported: procsystems.rs:247/457 and procstars.rs:642 still skip quasars for clusters/nebulae/stars inside them (files owned by others); what SE does with flag 0x800 when drawing remains unproven.
 - **04-001** (Planet surfaces, fixed 2026-10-29): Hapke shading and opposition surge on airless bodies: SE lights the ground with HapkeBRDF (catalog Surface key... Fix: SE's HapkeBRDF (terrain_pbr.glh) on the direct light, mixed in by Surface Hapke (or Lommel), with SpotBright/SpotWidth and the CB spot; the full Moon is evenly lit.
 - **04-002** (Planet surfaces, fixed 2026-10-29): Oblate and triaxial bodies: SE draws bodies as ellipsoids from the catalog Oblateness (Saturn 0.098, Jupiter 0... Fix: `BodyRecord::shape` (Dimensions, Oblateness scalar or per axis): terrain, cloud and aurora meshes, the body sphere and the sky shell are drawn as the ellipsoid (the shell turns with the body and works in its own frame); ground clearance, terrain LOD, shore and surface placement work through the shape. Not done: asteroid models and the eclipse/ring shadows stay spherical.
 - **04-003** (Planet surfaces, fixed 2026-10-29): Surface tint keys ModulateColor and ModulateBright: SE multiplies the surface colour by the catalog Surface Mo... Fix: The colour map takes Surface ModulateColor x ModulateBright (`PlanetUniform.modulate`).
@@ -1528,8 +1300,13 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **05-005** (Atmospheres, rings, comets, fixed 2026-10-29): Atmosphere look keys: in SE, Bright scales the scattering on both the sky and the ground (the disc haze and th... Fix: SE's calibration (main-def.cfg): scattered light x Bright x hdrAtmoScatterBright 1, surfaces x hdrPlanetSurfaceBright 5, ambient x hdrAtmoIllumBright 1 (`ATM_SCATTER_SCALE`, `ATM_SUN_SCALE`, `ATM_AMBIENT_SCALE`). `AtmParams.look`: Opacity mixes every transmittance towards 1, Hue/Saturation adjust the inscatter (SE's HSV AtmoColAdjust), SkyLight scales the sky irradiance on the ground and clouds (SE's ambient form, not divided by pi), plus the surface DayAmbient; generated atmospheres pass their opacity and SkyLight too.
 - **05-006** (Atmospheres, rings, comets, fixed 2026-10-29): Seeing through the sky: SE adds sky inscatter on top of the scene and dims what lies behind by the per-channel... Fix: The sky shell draws in three passes (`atmosphere::SkyPass`): the empty background (far-plane depth test) fades by sky brightness, everything behind the sky is multiplied by the per-channel transmittance (`atmo_transm.glsl`), then the inscatter is added. Stars and the Milky Way redden at the horizon. With SE's calibration (main-def.cfg: scattered light x hdrAtmoScatterBright 1 x Bright, sunlit surfaces x hdrPlanetSurfaceBright 5; the port had x5 on the sky too) the daytime sky is a mid blue and the first-quarter Moon shows in it; the haze on ground and clouds now takes Bright as well (that part of 05-005).
 - **05-007** (Atmospheres, rings, comets, fixed 2026-10-29): Ring lighting model: on the lit face SE uses a Hapke x Lambert phase with an opposition surge (Hapke, SpotBrig... Fix: SE's ring lighting (rings.glsl): the lit row premultiplied by its alpha scatters with Hapke x Lambert by phase angle and the French et al. opposition spots (SpotBright/SpotWidth, SpotBrightCB/SpotWidthCB), the back row forward-scatters with Mie g=-0.95, both turned into optical densities (Density, Opacity, SelfShadow; PlanetShadow) and marched in 8 steps through a slab whose density falls as exp(-3 x height) and SE's self-shadow towards the Sun, so the unlit face shows the dense B ring dark and the thin rings glowing; Brightness, FrontBright and BackBright linear (were square-rooted); RingDetailNoiseScale radial detail noise where resolved. Assumed: the slab's bounding sizes (RingsSize), which DensityParams channel takes which key, the detail noise's scale.
+- **05-009** (Atmospheres, rings, comets, fixed 2026-10-30): Shadows on rings: SE casts the planet's shadow with a penumbra sized by the sun's angular radius and the plane... Fix: SE: rings.glsl:66-69 per star: planet shadow = `1 - EclipseValue(lightAngRadius, asin(RingsParams.g / pixelDist), acos(dot(lightVecObl, pixelDir)))`, the light position's y scaled by Oblateness.g (= 1/(1 - flattening), FUN_1404e0b50 writes 1/(1 - obl) per axis); with ECL `shadow *= 1 - AmbientColor.a x EclipseShadowAuto(j, MAX_RINGS_ECLIPSES 8, ...)`. AmbientColor.a = DAT_1419fbb04^2, the eclipse switch (EnableEclipses). Ported: rings.wesl `ring_shadow` per light: SE's planet eclipse with the oblateness stretch (`hapke2.z` = 1 / polar semi-axis), with no other factor (the port's PlanetShadow factor is gone: PlanetShadow is the rings' shadow on the planet), then EclipseShadowAuto over the light's casters (`eclipse.wesl` eclipse_shadow, casters from the new `eclipse.rs`, 8 per light, stars included), times the eclipse intensity. The old fixed smoothstep(0, 0.04) sphere test is gone. Checked: Saturn 2017 (.audit/work/rings/c_sat2017z.png: sharp, slightly smaller (oblate) planet shadow on the rings); "Titan's Shadow on Saturn's Rings" place, 2009-08-03 (titan_shadow*.png): Titan is the first caster logged (19.5 R, 0.043 R), but at equinox the port's `smoothstep(0, 0.01, /L.y/)` leaves little sunlight on the rings, so the streak is faint (SE's 2D rings drop that smoothstep under DUST_SELF_SHADOW; which defines SE sets was not traced). Not ported: ECLDUST/ECLSTONES (3D dust and rocks, 05-008).
+- **05-010** (Atmospheres, rings, comets, fixed 2026-10-30): Ring shadow on planet, clouds and sky: SE's RingsShadow uses opacity 1-(1-density)^(1/cosPhi) with fwidth anti... Fix: SE: rings_common.glh RingsShadow: texU from the point projected along the light onto the ring plane (`p - L min(p.y/L.y, 0)`), density `RingsParams.z x FrontMap.a`, opacity `1 - (1 - density)^(1/max(cosPhi, 0.333))`, x `clamp(min(u,1-u)/fwidth(2u))` (edge AA), x `smoothstep(0.001, 0.003, cosPhi)` (equinox). planet.glsl:1059-1073 and sky.glsl:247-253 (RINGS) call it per light. FUN_14044fe70 sets the sky's RingsParams.z = (AtmoRingsShadow fade)^2 x the ring density; the density is the ring's +0x1b58, written as `PlanetShadow` (alias `Shadow`, FUN_14046cef0; FUN_1404eb190 writes it as PlanetShadow); without one FUN_140508600 derives it as Density x (1, or 0.5 for its 20 % thin rings). Ported: planet.wesl `ring_shadow` is SE's RingsShadow line by line (all lights, as before). The port's ring shadow read `geom.z` of the ring material, which had become the detail-noise frequency (2000), so any ring with alpha > 0.0005 cast a 95 % black band (Jupiter's faint ring drew a black line); `RingUniform.geom.z` is now that density, `PlanetShadow` or SE's derived default (rings.rs `planet_shadow`; the thin-ring draw from the ring's seed, SE uses its loader's random stream); the detail frequency moved to `hapke2.y`. sky.wesl: RingsShadow per light at the shell point (SE's FragPos), ring texture bound to the sky material; `AtmoRingsShadow` switch (05-016). Checked: Saturn 2017 from the south (.audit/work/rings/c_sat_south.png: B/Cassini/A ring shadow bands on the southern hemisphere; HEAD had it all black), from the north (only the faint C ring shadow shows, sat2017.png), Jupiter (c_jup... jup_triple.png: no black ring line). Not ported (files of others): clouds.wesl has no ring texture binding (terrain.rs CloudMaterial would need the ring texture + `ring`/`ring_normal` like PlanetMaterial; then clouds can call the same RingsShadow). Rings winter (planet.glsl:513-533, 949-955: clouds and surface diffuse faded on the winter hemisphere by tan(sun elevation over the ring plane) x RingsWinter) needs planet.wesl outside `ring_shadow` and a terrain.rs uniform.
+- **05-011** (Atmospheres, rings, comets, fixed 2026-10-30): Eclipse shadow on the sky: SE computes EclipseShadowFar per sky fragment for each light, so a moon's shadow sh... Fix: SE: sky.glsl:255-260 inside the NLights loop: `Shadow *= 1 - AmbientColor.a x EclipseShadowFar(i, MAX_ECLIPSES 8, FragPosS, lightVec, lightAngularRadius)` at the shell fragment (FragPos), then `Inscatter += inscatterSky(lightVec) x LightColor x Shadow`. Casters: EclipseCasters[light x 8 + k] (FUN_1404bc7c0 / FUN_1404be4c0 copy each light entry's 8 caster slots). Ported: new `eclipse.rs` (EclipsePlugin) gathers each light's casters for every body with a sky or rings (bodies between it and the light whose penumbra cone reaches it, stars included, largest apparent size first, 8 per light; the main light's source is its star, the others' the star that way, else the largest planet there). sky.wesl evaluates the shadow per light per fragment where the ray enters the shell from space (SE draws the near side) or at the far shell point from inside, at the top of the atmosphere (SE's FragPos at Radiuses.w); casters are sought within the shell's top radius as drawn; the CPU's one camera factor for the whole shell is gone. The sun-disc occluder mask stays (now from the casters). Checked: 2027-08-02 10:07:30 UT at Luxor from the ground (.audit/work/rings/luxor_up.png: stars at the zenith in totality, the sky bright towards the horizon; HEAD darkened the whole sky by the camera's factor), from space (c_ecl_space_z.png: the haze over the umbra is shadowed too), 2026-08-12 place. Not ported: SE's ellipsoid-scaled positions (05-020).
+- **05-012** (Atmospheres, rings, comets, fixed 2026-10-30): Planetshine: SE's EnablePlanetShine (PlanetShineMode, PlanetShineBright, PlanetShineUpdateFrames, PlanetShineP... Fix: SE: FUN_1404e0b50 sets HostLightIndex to the planet's own planet-shine light entry (index `*(lights + 0xc98)`, only with planet shine on and that light's intensity > 0), NLights = index + 1, LightColor = that entry's colour; HapkeParams2.z = outer / inner radius. rings.glsl host branch: lightVec = towards the planet centre, `shadow = (HapkeParams2.z / d)^2 x ((1 - Chi/pi) cos Chi + sin Chi / pi) x clamp(pi - asin(R/d) - Chi, 0, 1)` (Chi the angle at the planet between light 0 and the point), Mie g = -0.7, Hapke x Lambert front, no self-shadow. Ported: rings.wesl `host_scatter` as above. Without self-shadow the 8-step march sums to `1 - transparency` per row, so it costs no second march. rings.rs `host_light`: the planet's light at the outer edge as the port's planet shine computes it (albedo (R/outer)^2 x luminance of the planet's sprite colour, coloured by it and the star; PlanetShineBright), only with EnablePlanetShine. Checked: Saturn at equinox ("Titan's Shadow on Saturn's Rings", .audit/work/rings/titan_shadow2.png: the unlit rings glow with Saturnshine), Saturn 2017. Unit test `host_light_is_the_planet_shine_at_the_outer_edge`. Not ported: SE's light colour comes from its rendered planet previews (PlanetShineMode); the port uses the sprite colour, as its planet shine does.
 - **05-013** (Atmospheres, rings, comets, fixed 2026-10-30): Several light sources: SE lights skies, surfaces, clouds and rings by up to 4 stars (MAX_LIGHTS, NLights loop;... Fix: Skies, surfaces, clouds and rings lit by up to 4 stars with SE's magnitude fade, rings dropping a star past RingsLightingFadeEndMagn (see 01-006). Not ported: the rings' fifth light (HostLightIndex, the planet's own light, planetshine 05-012) and eclipses between the stars themselves.
 - **05-014** (Atmospheres, rings, comets, fixed 2026-10-30): Comets: SE draws tails as animated particle sprites (catalog Particles count). Gas particles are pushed anti-s... Fix: SE: FUN_140484400 draws comet_tail.glsl particle sprites from FUN_1404d4100; FUN_1404858f0 builds the VBO (Particles x 4 corners: random direction, phase bytes, kind 0 gas / 1-255 dust from a 2-octave value-noise fBm); FUN_140485750 sets Length = MaxLength (1 AU/r)^SlopeParam; FUN_140486280 fills missing tail values for every comet (MaxLength from mass, Particles 1000-3000 from MaxLength, GasToDust 0.25, Gas/DustBright U-split of U(0.01,0.05), colours, AbsMagn tn(8,4,-2,20), SlopeParam tn(4,2,2,20)). Uniforms: ScaleTime (Length km, frac(dt/0.6 d), 1-(q/r)^0.25, 1), per-particle colour 5000*CometTailBright*hdrCometTailBright*Bright/N, CometVel km/s, EyePos/SunPos AU (SunPos.w = 1), SunCol. Ported: comets.rs (uniforms, lazy particle meshes, SE defaults via se_core::procgen::tail_defaults) and comet.wesl (comet_tail.glsl line by line, HG g=-0.3). The old coma sphere and two tubes are gone; CometTailBright/hdrCometTailBright read from main-def.cfg. Port fix needed: the sprite tangent normalises before cross() (render metres overflow f32 otherwise). Spawn fix: spawn_missing_comets now waits until the system loader is done (it ran before the loader and could spawn comet bodies twice), spawn_tails gives one tail per comet. Checked: Halley 1986-03-10 and Hale-Bopp 1997-04-01 from the side (blue gas tail straight anti-sunward, whiter dust tail curved behind), Halley's coma close up, Halley 2024 (35 AU, no tail), AltairC119 (procedural). Frame times vs baseline in .audit/work/comets/ft_*. Not ported: SE's fade-in by the comet's apparent brightness (FUN_1404da600 output x DAT_14080b578, a runtime scale) and the impostor FBO path (EnableCometFBO/EnableCometImpostors); the port draws a tail once it is >= 2 px. Catalog comets draw SE's missing values on a stream seeded by name (SE uses its thread RNG at load). Length capped at 1e4 AU near the star (SE uncapped). NoCometTail is honoured (SE's FUN_140486280 would re-enable it).
+- **05-015** (Atmospheres, rings, comets, fixed 2026-10-30): Atmosphere at a distance: SE keeps the atmosphere at least AtmoMinWidthPix (2 px) thick on screen and limits i... Fix: SE: FUN_14044fe70: eye position (ellipsoid-scaled) clamped to AtmoDistanceLimit (30, DAT_1419b24d8) x radius; once the true height is below `w = tan(AtmoMinWidthPix (2, DAT_1419b2608) / pixels-per-radian) x eye distance`, drawn height `h' = min(w, 0.05 x radius)` (DAT_1406d4068; so Titan's 200 km and Pluto's tall atmospheres are drawn thinner and brighter from afar), eased back to the true height by `clamp(1 + cos(view dir, eye position), 0, 1)` (planet straight ahead: widened); the atmosphere's brightness and density x (h / h')^0.25 (pow const DAT_1406d424c) x (atmosphere switch DAT_1419fb6a4)^2. Ported: atmosphere.rs `widened_height` (unit test); system.rs `update_sky_shells` redraws the shell at the widened height (`AtmosphereGpu::with_height`, the shell's MeterScale) with its light x (h/h')^0.25; sky.wesl clamps the eye to AtmoDistanceLimit (in shell radii, `SkyUniform.shadow.z`). Keys read from main-def.cfg (switches.rs). Checked: Earth from 384 000 km and 3e6 km (.audit/work/rings/c_earthmoon_z.png, c_earthfar_z.png): a slightly firmer blue limb; Titan from 190 000 km (c_r2_titan.png, its 200 km drawn at 129 km); the shell still shows only from 0.5 px (as the disc). Not ported: SE also scales the density (opacity) by the factor; the port keeps the catalog Opacity (its `look.x` mixes transmittances, not SE's density).
 - **06-001** (Procedural generation, fixed 2026-10-29): Catalog stars without catalog planets get no planetary system: SE runs CreateProcedural (planets, moons, belts... Fix: A catalog system without catalog bodies whose one real star has no NoPlanets true gets the port's generated system on arrival (Vega: 25 bodies), seeded by the star's name. Not done: systems of several stars without planets stay empty.
 - **06-002** (Procedural generation, fixed 2026-10-29): Procedural planet architecture is designed, not SE's: SE gives each single star u%10+5 (5-14) planet slots (ci... Fix: Procedural planetary systems use SE's architecture (procgen/se_layout.rs, from FUN_1404f9210 / FUN_140500700 / FUN_14050a9f0 / FUN_140501f60 / FUN_140504e10 / FUN_1401aa500 / FUN_1404df8a0 / FUN_1401abd00 / FUN_1404fd2a0, probabilities from main-def.cfg SolarSystemGenerator matched to their exe globals): 5-14 slots out to a sphere of influence of tn(40,8,10,1000) AU per solar mass, the inner limit at 1.05 R*, T_eq 800 K (3200 K with hot planets: giants or 6.2%) or a mass term, geometric steps U(1.2,2.7) with e=/N(0,0.06)/ (7% U(1.7,2.2) with e=/N(0.2,0.1)/), SE's inclinations, planets above 3200 K dropped, gas giant 12% / ice giant 25% / terra with SE's log-normal masses capped by the disk (1.2% of the star), ProbColdTerra, SE's drawn giant thresholds and rocky composition (written to Interior.Composition, which the completion now keeps), SE's radius fits (giant fit in M_J and T_eq; Seager-style tables by ice/carbon/silicate share), dwarf planets (<= 2000 km) with SE's 100+ asteroid belts between the neighbours' Hill zones (1000 per system at most), SE's moon counts (N(60,20) giants, N(20,8) mini-Neptunes, N(10,8) solid planets, N(3,2) dwarf planets); SE's AU-vs-parsec overlap guard reproduced. Not ported: SE's moon generator (FUN_1404fdc90, the port places SE's count), asteroid sizes (FUN_140502710), comets, debris rings, the star's own C/O and metallicity draws (solar assumed). Giants and brown dwarfs no longer get a default cloud layer (SE's tg_gasgiant/tg_browndwarf height shaders leave cloud layers empty; the port's fallback clouds aliased into a lattice on them).
 - **06-003** (Procedural generation, fixed 2026-10-29): Procedural bodies bypass SE's body-completion chain that the port already has for catalog bodies: SE runs bulk... Fix: Procedural planets and moons go through SE's completion chain (procgen `emit_body`): they are written as SE's system generator leaves them (class, mass, radius, orbit, rotation, life, rings, aurora), so like any catalog body without them SE's chain (climate::complete: bulk composition, albedo, tidal heating, volcanism, atmosphere/greenhouse/ocean solve, look, temperature model and class word) and SE's surface generator (surface_gen) give them their atmosphere, ocean, clouds, surface and class. Not done: their rotation is still the port's (SE's derived spin is not written back into the rotation model), life is still the port's decision, and asteroids keep the designed blocks.
@@ -1573,6 +1350,7 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - **09-001** (Graphics and settings, fixed 2026-10-29): Bloom: SE's bloom adds 0.5x (BloomBright) of a 6-level Gaussian mip pyramid of the whole frame (weights 0.50/0... Fix: SE's bloom replaces Bevy's (`bloom.rs`, `se_bloom.wesl`): six levels of 2x2 averages (frame clamped to 65535, bloom source luma to 50), each blurred with SE's 9-tap Gaussian (normalised), added at BloomBright 0.5 with SE's weights before tone mapping. EnableBloom, BloomBright and BloomThreshold are in the Graphics window and saved (`bloom::BloomSettings`); SE leaves ToggleBloom unbound.
 - **09-002** (Graphics and settings, fixed 2026-10-29): Window and display settings: SE starts as a maximized window (Maximized true) and remembers its size and posit... Fix: Window and display (`display.rs`): the window opens maximized or at its saved size and place (SE's Display WindowSizeX/Y, WindowPosX/Y, Maximized, kept from winit while windowed), FullScreen 0 windowed / 1 fullscreen window / 2 exclusive fullscreen, VSync 0 off / 1 on / 2 auto (adaptive), Alt+Enter fullscreen, Shift+Enter next display, Ctrl+Enter minimize, Graphics window "Window mode" and "Vertical synchronization"; saved in the settings file's Display block. Not done: ScreenResX/Y, RefreshRate (exclusive fullscreen keeps the display's mode) and AspectRatio.
 - **09-003** (Graphics and settings, fixed 2026-10-30): Exposure compensation: SE lets the user brighten or darken the whole image in photographic stops (ExposureComp... Fix: SE's exposure compensation: ExposureComp is stored negated (FUN_140011e60 registers it -42..4, step 0.25; main-def.cfg MinExposureComp -4 / MaxExposureComp 42 bound the shown value), so +1 shown doubles the image; `.` / `,` step it by 0.25 stop and `/` resets it (IncExposure / DecExposure / ResetExposure in SE's key table FUN_1405ba8f0; FUN_1404c6000 adds the step and shows the splash), applied on top of the camera's tone-mapping exposure (exposure.rs). Assumed: the repeat while held (0.35 s, then every 0.05 s; SE's comes from its input system). Not ported: typing it on the Camera toolbar and applying a place's Exposure.
+- **09-005** (Graphics and settings, fixed 2026-10-30): Final colour correction: SE applies ColorCorrentionLDR after tone mapping with Brightness, Contrast, Saturatio... Fix: SE: hdr_final.glsl applies hsl.glh ColorCorrentionLDR to the tone-mapped (linear: hdrt_AgX_tone.glh agx_eotf returns pow(v, 2.2)) image with bcsg = (Brightness - 1, Contrast, Saturation - 1, 1 / Gamma): contrast around 0.5 plus brightness, vibrance mix(luma, c, 1 + (S - 1)(1 - (max - min))), gamma; DITHERING by RenderingQuality Dithering. Ported: color_correction.rs ColorCorrection, a FullscreenMaterial pass after Bevy's tonemapping (color_correction.wesl), settings from main-def.cfg; Dithering false turns Bevy's DebandDither off; camera.rs drops its uniform post_saturation 1.35 stand-in. Checked: Earth, Orion Nebula, Betelgeuse against the release build (.audit/work/colorcorr/cmp.jpg): means within 2 levels, vivid colours slightly less saturated, greys slightly more. Not ported: a settings UI for the four values (09-006) and main-user.cfg overrides (09-016); SE's own 4-level noise dither (Bevy's deband dither kept).
 - **10-002** (Scripts, audio, spacecraft, fixed 2026-10-29): Music transitions and title: SE cross-fades tracks (MixDurationGUI 2 s, MixDurationLoop 5 s, MixDurationContex... Fix: Music as SE's Sound settings: consecutive tracks cross-fade over MixDurationLoop 5 s (the next starts 5 s before the end, from the Ogg length), N cross-fades over MixDurationGUI 2 s, M fades out over 2 s, each new track's title shows as an on-screen message (MusicShowTitle), default MusicVolume 20 of 100, saved as SE's 0..100 MusicVolume (Settings "Music volume"). Not done: SE's repeat/order modes and the context mode (left out with 10-001).
 - **10-003** (Scripts, audio, spacecraft, fixed 2026-10-29): Interface sound effects: SE loads data/sounds/menu/button.ogg and menu.ogg (SDL_mixer) for GUI clicks and menu... Fix: Interface sounds (`sound.rs`): SE's data/sounds/menu/button.ogg on clicks of buttons, check boxes and list entries and menu.ogg when a drop-down opens (from egui's click events), at SoundVolume 30 of 100 (Settings "Sound effects", saved as SoundVolume). Assumed: which widgets sound. Not done: SetAudioDevice.
 - **10-004** (Scripts, audio, spacecraft, fixed 2026-10-30): Ship sounds: every EngineEffect has a looping Sound and Volume (156 effects: Starship_engine, Starship_thruste... Fix: SE: FUN_1402a8ed0 reads each EngineEffect's `Sound`, `SoundVolume`/`Volume` (Volume wins); defaults: volume 1, thrusters 0.02; sound by group (FUN_1405693a0): Main/Retro `Shuttle_engine.ogg`, Hover `Shuttle_hover.ogg`, Thruster `Shuttle_thruster.ogg`, Hyper `Starship_warp.ogg`. Playback is SDL_mixer: `seSound::FadeIn/FadeOut` (FUN_140567f30/FUN_140568060, Mix_FadeInChannelTimed/Mix_FadeOutChannel), channel volume (FUN_140567eb0, Mix_Volume) at `SoundVolume`. No positional calls are imported (no Mix_SetPosition/SetDistance/SetPanning): no distance attenuation or panning. Ported: `EngineEffect::sound_file`, `sound_candidates`, thruster default 0.02 (se_core ship.rs); `PlumeSpec.sound/volume`; `ship/engine_sound.rs` plays one looping voice per sound file of the flown ship: volume = SoundVolume x min(1, sum of Volume x effect level), the level that sizes the plume (spooled engine, RCS/turn command, warp fraction), faded over 0.3 s; silent outside flight mode. Checked: unit tests (defaults, voice mixing); logs show "ship sounds: 3 voices" (Shuttle) and 2 (Dragonfly), files read from data/sounds/spacecraft. Not ported / assumed: SE's per-effect channels and its fade times for ship sounds were not traced (the code that calls FadeIn for engines was not found); summing effect volumes stands in for SDL_mixer's channel mixing.

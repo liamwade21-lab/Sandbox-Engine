@@ -1,0 +1,8 @@
+# Gaps the owner has deferred: kept open in docs/missing_features.md, not given to agents, not counted as remaining.
+# ID | date | what
+08-001 | 2026-10-29 | main menu
+08-007 | 2026-10-29 | universe map
+10-001 | 2026-10-29 | context music
+09-012 | 2026-10-30 | video capture
+07-020 | 2026-10-30 | gamepad, joystick and 3D mouse
+08-* | 2026-10-30 | the whole Interface area

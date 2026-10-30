@@ -107,24 +107,15 @@ fn norm_for(ptype: f32) -> f32 {
     return gal.norm.w;
 }
 
-// Hubble distance c / H0 (H0 = 70 km/s/Mpc), pc.
-const HUBBLE_PC: f32 = 4.283e9;
+// SE's reddening distance (DAT_14075eb8c = 4.227e9 pc, about c / H0).
+const REDDEN_PC: f32 = 4.227e9;
 
-// Planck's law at `l_um` microns for temperature `t` (relative units).
-fn planck(l_um: f32, t: f32) -> f32 {
-    return 1.0 / (pow(l_um, 5.0) * (exp(min(14388.0 / (l_um * t), 80.0)) - 1.0));
-}
-
-// Cosmological redshift as a tint (an effect, not a simulation; SE's far galaxies redden too): a
-// galaxy's light taken as a 5500 K Planck spectrum at the sRGB primaries, shifted by z = d / (c/H0)
-// (a Planck spectrum redshifts to T / (1 + z)), at the same luminance.
+// SE's galaxy Reddening (FUN_140299fe0, multiplied into galaxy_model.glsl / galaxy_plane.glsl):
+// (1 - x, 1 - 2x, 1 - 4x), x = d / 4.227e9 pc. It dims as well as reddens: blue is gone at 1 Gpc,
+// green at 2 Gpc. Must match `reddening` in galaxies.rs.
 fn redshift_tint(d_pc: f32) -> vec3<f32> {
-    let z = min(d_pc / HUBBLE_PC, 10.0);
-    let t0 = 5500.0;
-    let t1 = t0 / (1.0 + z);
-    let l = vec3<f32>(0.61, 0.55, 0.465);
-    let k = vec3<f32>(planck(l.x, t1) / planck(l.x, t0), planck(l.y, t1) / planck(l.y, t0), planck(l.z, t1) / planck(l.z, t0));
-    return k / max(dot(k, vec3<f32>(0.2126, 0.7152, 0.0722)), 1e-30);
+    let x = d_pc / REDDEN_PC;
+    return clamp(vec3<f32>(1.0) - x * vec3<f32>(1.0, 2.0, 4.0), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // Intergalactic vision: the gain in full for unresolved sprites, none for galaxies big on

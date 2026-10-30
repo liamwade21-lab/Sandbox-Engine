@@ -56,6 +56,8 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         * smoothstep(0.0, 1.0, abs(dot(in.rel, n)) / dist * 2.5 - 0.2)
         * plane.center_rel.w;
     let tex = textureSample(front, front_sampler, in.uv);
-    let rgb = pow(max(tex.rgb, vec3<f32>(1e-6)), vec3<f32>(plane.params.y)) * plane.params.x * fade;
+    // SE's Reddening (galaxy_plane.glsl: OutColor.rgb *= Reddening.rgb; 1 - x (1, 2, 4), x = d / 4.227e9 pc).
+    let red = clamp(vec3<f32>(1.0) - length(plane.center_rel.xyz) / 4.227e9 * vec3<f32>(1.0, 2.0, 4.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    let rgb = pow(max(tex.rgb, vec3<f32>(1e-6)), vec3<f32>(plane.params.y)) * plane.params.x * fade * red;
     return vec4<f32>(rgb, clamp(tex.a * fade, 0.0, 1.0));
 }
