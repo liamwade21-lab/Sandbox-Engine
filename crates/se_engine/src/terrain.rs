@@ -119,8 +119,45 @@ pub struct PlanetUniform {
     /// light reaches the ground, 0 "Permanent").
     pub glow: Vec4,
     /// SE's ice glint (planet.glsl AICE): x SpecBrightIce, y RoughnessIce, z 1 when the colour map's
-    /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint).
+    /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint); w SE's WaterSurfColor.a, the
+    /// water display level ([`WaterDisplay`]).
     pub ice: Vec4,
+}
+
+/// SE's water filter (main-def.cfg ObjectFilters `ShowWater`, key `ToggleWater`): seas and lakes fade
+/// out and in (planet.glsl's WaterSurfColor.a "water on/off animation" scales the water mask), here
+/// over SE's OverlayFadeOut / OverlayFadeIn seconds.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct WaterDisplay {
+    pub show: bool,
+    /// The shown share, 0..1, following `show`.
+    pub level: f32,
+    pub fade_in_s: f32,
+    pub fade_out_s: f32,
+}
+
+impl Default for WaterDisplay {
+    fn default() -> Self {
+        Self { show: true, level: 1.0, fade_in_s: 0.2, fade_out_s: 0.35 }
+    }
+}
+
+impl WaterDisplay {
+    /// Moves `level` towards `show` over `dt` seconds.
+    pub fn step(&mut self, dt: f32) {
+        self.level = if self.show {
+            (self.level + dt / self.fade_in_s.max(1e-3)).min(1.0)
+        } else {
+            (self.level - dt / self.fade_out_s.max(1e-3)).max(0.0)
+        };
+    }
+}
+
+fn animate_water_display(time: Res<Time>, mut water: ResMut<WaterDisplay>) {
+    let target = if water.show { 1.0 } else { 0.0 };
+    if water.level != target {
+        water.step(time.delta_secs());
+    }
 }
 
 /// SE's self-emission settings (main-def.cfg `EnableSelfEmission`, `SelfEmissionBright`; key
@@ -146,13 +183,22 @@ impl SelfEmission {
     }
 }
 
-fn load_self_emission(mut commands: Commands, cfg: Res<crate::config::EngineConfig>) {
+fn load_surface_settings(mut commands: Commands, cfg: Res<crate::config::EngineConfig>) {
     let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
     let def = se_core::sc::parse(&text);
     let d = SelfEmission::default();
     commands.insert_resource(SelfEmission {
         enabled: def.find_deep("EnableSelfEmission").and_then(|i| i.bool()).unwrap_or(d.enabled),
         bright: def.find_deep("SelfEmissionBright").and_then(|i| i.f64()).map_or(d.bright, |v| v as f32),
+    });
+    let w = WaterDisplay::default();
+    let show = def.find_deep("ShowWater").and_then(|i| i.bool()).unwrap_or(w.show);
+    let f = |k: &str, d: f32| def.find_deep(k).and_then(|i| i.f64()).map_or(d, |v| v as f32);
+    commands.insert_resource(WaterDisplay {
+        show,
+        level: if show { 1.0 } else { 0.0 },
+        fade_in_s: f("OverlayFadeIn", w.fade_in_s),
+        fade_out_s: f("OverlayFadeOut", w.fade_out_s),
     });
 }
 
@@ -548,6 +594,7 @@ pub struct Terrain {
     last_sun: Vec4,
     last_ambient: f32,
     last_emission: SelfEmission,
+    last_water: f32,
     last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
@@ -692,6 +739,7 @@ impl Terrain {
             last_sun: Vec4::ZERO,
             last_ambient: 0.0,
             last_emission: SelfEmission::default(),
+            last_water: 1.0,
             last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
             last_eclipse: EclipseUniform::default(),
@@ -958,7 +1006,9 @@ impl Plugin for TerrainPlugin {
             .add_plugins(MaterialPlugin::<CloudMaterial>::default())
             .init_resource::<TileCaches>()
             .init_resource::<SelfEmission>()
-            .add_systems(Startup, (make_default_textures, load_self_emission))
+            .init_resource::<WaterDisplay>()
+            .add_systems(Startup, (make_default_textures, load_surface_settings))
+            .add_systems(Update, animate_water_display)
             .add_systems(
                 PostUpdate,
                 // After update_terrain, so the camera collides with this frame's nodes.
@@ -1595,7 +1645,7 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain)>,
-    (ambient, emission): (Res<crate::system::AmbientLighting>, Res<SelfEmission>),
+    (ambient, emission, water_display): (Res<crate::system::AmbientLighting>, Res<SelfEmission>, Res<WaterDisplay>),
     nodes: Query<&TerrainNode>,
     clouds_q: Query<&CloudNode>,
     mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
@@ -1779,7 +1829,7 @@ fn update_terrain(
                         as f32,
                     s.roughness_ice.unwrap_or(se_core::planet_tiles::ROUGHNESS_ICE_DEFAULT) as f32,
                     if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
-                    0.0,
+                    water_display.level,
                 ),
             };
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
@@ -2075,9 +2125,10 @@ fn update_terrain(
         }
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
-        if terrain.last_ambient != ambient.0 || terrain.last_emission != *emission {
+        if terrain.last_ambient != ambient.0 || terrain.last_emission != *emission || terrain.last_water != water_display.level {
             terrain.last_ambient = ambient.0;
             terrain.last_emission = *emission;
+            terrain.last_water = water_display.level;
             terrain.last_sun = Vec4::ZERO;
         }
         let glow_bright = terrain.surface.glow_bright as f32 * 1.5 * emission.scale();
@@ -2100,6 +2151,7 @@ fn update_terrain(
                                 m.u.eclipse = eclipse;
                                 m.u.params.x = glow_bright;
                                 m.u.thermal2.w = emission.scale();
+                                m.u.ice.w = water_display.level;
                             }
                         }
                     }
@@ -2451,6 +2503,20 @@ mod tests {
             let back = (up.as_vec3() + decode_normal_offset(encode_normal_offset(n, up))).normalize();
             assert!((back - n.as_vec3()).length() < tol, "tilt {tilt}: {back} vs {n}");
         }
+    }
+
+    #[test]
+    fn water_display_fades_over_se_overlay_times() {
+        let mut w = WaterDisplay { show: false, ..Default::default() };
+        w.step(0.175);
+        assert!((w.level - 0.5).abs() < 1e-5, "{}", w.level);
+        w.step(1.0);
+        assert_eq!(w.level, 0.0);
+        w.show = true;
+        w.step(0.1);
+        assert!((w.level - 0.5).abs() < 1e-5);
+        w.step(1.0);
+        assert_eq!(w.level, 1.0);
     }
 
     #[test]

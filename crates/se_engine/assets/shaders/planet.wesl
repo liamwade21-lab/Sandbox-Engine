@@ -57,7 +57,8 @@ struct Planet {
     light_color: array<vec4<f32>, 3>,
     // SE's GlowColor: rgb the glow map's tint, w the mode (1 Night, 0 Permanent).
     glow: vec4<f32>,
-    // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask.
+    // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask;
+    // w SE's WaterSurfColor.a, the water display (ShowWater) level.
     ice: vec4<f32>,
 };
 
@@ -2269,19 +2270,20 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     g_footprint_m = length(fwidth(in.world_pos)) * planet.planet.w / max(in.centre.w, 1e-30);
     // Texture lookups stay out of branches on the camera's depth (uniform control flow); the
     // results are picked at the end.
-    let under = planet.ocean_sea.w > 0.5 && in.cam_alt < 0.0;
+    // With the water hidden (SE's ShowWater filter, faded by `ice.w`) the seabed is dry ground.
+    let under = planet.ocean_sea.w > 0.5 && in.cam_alt < 0.0 && planet.ice.w > 0.5;
     let s = lit_ground(in, n, up, l, table_pos(up, max(in.height, 0.0)));
     var col = s.col;
     // Water above sea level (lakes, by the water map) and along the shore, with its surface. Under
     // the sea's own (see-through) surface only the water's depth: the seabed is drawn where it
     // is, so it no longer looks painted on the surface as the camera comes down to it.
     let wd = water_depth(in);
-    if s.water > 0.0 {
+    if s.water * planet.ice.w > 0.0 {
         let a = max(planet.params.w * planet.params.w, 0.002);
         // Where the sea's mesh lies in front of the ground it draws the surface itself.
         let sea = in.height < 0.0 && s.water >= 0.5;
         let lake = ocean_from_above(s, table_pos(up, max(in.height, 0.0)), wd, up, up, v, l, a);
-        col = mix(col, select(lake, ocean_under(s, wd, up, v, l), sea), clamp(s.water, 0.0, 1.0));
+        col = mix(col, select(lake, ocean_under(s, wd, up, v, l), sea), clamp(s.water, 0.0, 1.0) * planet.ice.w);
     }
     let above = finish(in, col, up, l, s.e_sun, s.e_city);
 
@@ -2312,7 +2314,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let a = sqrt(a_facet * a_facet + 2.0 * nw.w);
     // From above the surface is see-through (premultiplied alpha): its reflection over the seabed
     // the ground pass drew, whose haze (`finish` of nothing) is already in that colour.
-    let w = clamp(s.water, 0.0, 1.0);
+    let w = clamp(s.water, 0.0, 1.0) * planet.ice.w;
     let surf = ocean_surface(s, pos_km, up, nw.xyz, v, l, a);
     let above = vec4<f32>((finish(in, surf.rgb, up, l, s.e_sun, s.e_city) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city) * (1.0 - surf.w)) * w, surf.w * w);
 
@@ -2346,8 +2348,8 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // flanges past the node's edges (uv outside 0..1) only close the cracks seen from below;
     // from above they would blend a second layer of surface over the neighbour.
     let flange = any(in.uv < vec2<f32>(-1e-4)) || any(in.uv > vec2<f32>(1.0 + 1e-4));
-    if s.water < 0.5 || (flange && in.cam_alt >= 0.0) {
+    if s.water < 0.5 || (flange && in.cam_alt >= 0.0) || planet.ice.w <= 0.0 {
         discard;
     }
-    return select(above, vec4<f32>(below, 1.0), in.cam_alt < 0.0);
+    return select(above, vec4<f32>(below, 1.0), in.cam_alt < 0.0 && planet.ice.w > 0.5);
 }
