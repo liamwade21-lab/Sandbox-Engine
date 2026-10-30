@@ -353,6 +353,10 @@ pub struct PlanetMaterial {
     /// The sample layers' relief (normal, roughness, height), sampled with the samples' sampler.
     #[texture(24, dimension = "2d_array")]
     pub sample_relief: Handle<Image>,
+    /// SE's 64^3 `Noise3DSampler` (read with `textureLoad`), for the cellular noises of the airless
+    /// colour (tg_selena_color), matched to the height generator's.
+    #[texture(25, dimension = "3d")]
+    pub noise: Handle<Image>,
 }
 
 /// Pipeline key: the water surface is drawn from both sides with its own entry points.
@@ -920,6 +924,8 @@ pub struct DefaultTextures {
     pub black: Handle<Image>,
     /// 1x1x1 3D texture standing in for absent scattering tables.
     pub black3d: Handle<Image>,
+    /// SE's 64^3 noise texture ([`PlanetMaterial::noise`]).
+    pub noise3d: Handle<Image>,
 }
 
 struct DecodedTexture {
@@ -987,10 +993,19 @@ fn make_default_textures(mut commands: Commands, mut images: ResMut<Assets<Image
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
+    let n = se_core::tg::NOISE3D_SIZE as u32;
+    let noise3d = Image::new(
+        Extent3d { width: n, height: n, depth_or_array_layers: n },
+        TextureDimension::D3,
+        se_core::tg::noise3d(),
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
     commands.insert_resource(DefaultTextures {
         white: images.add(solid_image([255, 255, 255, 255])),
         black: images.add(solid_image([0, 0, 0, 255])),
         black3d: images.add(black3d),
+        noise3d: images.add(noise3d),
     });
 }
 
@@ -1774,6 +1789,7 @@ fn update_terrain(
                 soil_norm: surface_tex.soil_norm.clone(),
                 soil_rhao: surface_tex.soil_rhao.clone(),
                 sample_relief: surface_tex.sample_relief.clone(),
+                noise: defaults.noise3d.clone(),
             };
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
             let ground_u = ground.u;

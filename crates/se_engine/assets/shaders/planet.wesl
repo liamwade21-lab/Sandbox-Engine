@@ -78,7 +78,7 @@ struct Biomes {
     // x biomes on, y soils on, z vegetation on, w number of soils
     flags: vec4<f32>,
     // SE climate parameters (surface_tex::climate_uniform); climate[4].w 0 when unused.
-    climate: array<vec4<f32>, 9>,
+    climate: array<vec4<f32>, 12>,
     // xyz SE's ColorVary (linear), w 1 to apply it
     color_vary: vec4<f32>,
     // SE's gas giant clouds: the preset's CloudsPalette (gamma encoded) and parameters, see
@@ -115,6 +115,8 @@ struct Biomes {
 @group(constants::MATERIAL_BIND_GROUP) @binding(23) var soil_rhao_tex: texture_2d_array<f32>;
 // The sample layers' relief: normal xy (rg, x along u), roughness (b), height (a).
 @group(constants::MATERIAL_BIND_GROUP) @binding(24) var sample_relief_tex: texture_2d_array<f32>;
+// SE's 64^3 Noise3DSampler (textureLoad, repeating), as the height generator reads it.
+@group(constants::MATERIAL_BIND_GROUP) @binding(25) var noise_tex: texture_3d<f32>;
 
 const PI: f32 = 3.14159265359;
 
@@ -904,6 +906,238 @@ fn ter_rmf(point: vec3<f32>, gain: f32, octaves: f32) -> f32 {
     return sum;
 }
 
+// ---------------------------------------------------------------------------
+// SE's airless colour noises (tg_common.glh), on SE's noise texture and hash Perlin as the height
+// generator (tg_height.wesl) reads them, so the colour's craters, cracks and freckles fall on its.
+
+fn se_noise_texel(c: vec3<f32>) -> vec4<f32> {
+    let w = c - 64.0 * floor(c / 64.0);
+    return textureLoad(noise_tex, vec3<i32>(w), 0);
+}
+
+// Cell3Noise2Color: the two nearest feature distances over the 3x3x3 cells, and the nearest one's
+// random colour.
+fn se_cell3_noise2_color(p: vec3<f32>, color: ptr<function, vec4<f32>>) -> vec2<f32> {
+    let cell = floor(p);
+    let offs = p - cell;
+    var d1 = 1.0e38;
+    var d2 = 1.0e38;
+    var best = vec4<f32>(1.0);
+    for (var z = -1; z < 2; z++) {
+        for (var y = -1; y < 2; y++) {
+            for (var x = -1; x < 2; x++) {
+                let d = vec3<f32>(f32(x), f32(y), f32(z));
+                let rnd = se_noise_texel(cell + d);
+                let pos = rnd.xyz + d - offs;
+                let dist = dot(pos, pos);
+                if dist < d1 {
+                    d2 = d1;
+                    d1 = dist;
+                    best = rnd;
+                } else {
+                    d2 = min(d2, dist);
+                }
+            }
+        }
+    }
+    *color = best;
+    return sqrt(vec2<f32>(d1, d2));
+}
+
+// Cell2Noise2: the same over the 2x2x2 cells around the nearest corner.
+fn se_cell2_noise2(p: vec3<f32>) -> vec2<f32> {
+    let cell = floor(p);
+    let offs = p - cell - vec3<f32>(0.5);
+    var d1 = 1.0e38;
+    var d2 = 1.0e38;
+    for (var z = -1; z < 1; z++) {
+        for (var y = -1; y < 1; y++) {
+            for (var x = -1; x < 1; x++) {
+                let d = vec3<f32>(f32(x), f32(y), f32(z));
+                let pos = se_noise_texel(cell + d).xyz + d - offs;
+                let dist = dot(pos, pos);
+                if dist < d1 {
+                    d2 = d1;
+                    d1 = dist;
+                } else {
+                    d2 = min(d2, dist);
+                }
+            }
+        }
+    }
+    return sqrt(vec2<f32>(d1, d2));
+}
+
+// SE's NoiseDeriv (hash Perlin surflets): xyz the derivatives, w the noise.
+fn se_noise_deriv(p: vec3<f32>) -> vec4<f32> {
+    let Pi = floor(p);
+    let Pf = p - Pi;
+    let Pf1 = Pf - 1.0;
+    let h = gg_hash(Pi);
+    let C = vec4<f32>(0.49999);
+    var gx0 = h[0] - C;
+    var gy0 = h[1] - C;
+    var gz0 = h[2] - C;
+    let n0 = inverseSqrt(gx0 * gx0 + gy0 * gy0 + gz0 * gz0);
+    gx0 *= n0;
+    gy0 *= n0;
+    gz0 *= n0;
+    var gx1 = h[3] - C;
+    var gy1 = h[4] - C;
+    var gz1 = h[5] - C;
+    let n1 = inverseSqrt(gx1 * gx1 + gy1 * gy1 + gz1 * gz1);
+    gx1 *= n1;
+    gy1 *= n1;
+    gz1 *= n1;
+    let px = vec2<f32>(Pf.x, Pf1.x).xyxy;
+    let py = vec2<f32>(Pf.y, Pf1.y).xxyy;
+    let r0 = px * gx0 + py * gy0 + Pf.zzzz * gz0;
+    let r1 = px * gx1 + py * gy1 + Pf1.zzzz * gz1;
+    let sq = Pf * Pf;
+    let sq1 = Pf1 * Pf1;
+    let lsq = vec2<f32>(sq.x, sq1.x).xyxy + vec2<f32>(sq.y, sq1.y).xxyy;
+    let m0 = max(1.0 - (lsq + sq.zzzz), vec4<f32>(0.0));
+    let m20 = m0 * m0;
+    let m30 = m0 * m20;
+    let m1 = max(1.0 - (lsq + sq1.zzzz), vec4<f32>(0.0));
+    let m21 = m1 * m1;
+    let m31 = m1 * m21;
+    let t0 = -6.0 * m20 * r0;
+    let t1 = -6.0 * m21 * r1;
+    let d0 = vec3<f32>(dot(t0, px) + dot(m30, gx0), dot(t0, py) + dot(m30, gy0), dot(t0, Pf.zzzz) + dot(m30, gz0));
+    let d1 = vec3<f32>(dot(t1, px) + dot(m31, gx1), dot(t1, py) + dot(m31, gy1), dot(t1, Pf1.zzzz) + dot(m31, gz1));
+    return vec4<f32>(d0 + d1, dot(m30, r0) + dot(m31, r1)) * 2.3703703703703703;
+}
+
+// SE's JordanTurbulence as tg_selena_color calls it for the freckles: gains 0.8 / 0.5, warps
+// 0.6 / 0.35, damps 1.0 / 0.8, damp scale 1, lacunarity 2.
+fn se_jordan(point: vec3<f32>, octaves: f32) -> f32 {
+    // One noise call per pass (the first octave's weights folded in): half the code of SE's form.
+    var summ = 0.0;
+    var warp = vec3<f32>(0.0);
+    var damp = vec3<f32>(0.0);
+    var gain_warp = 0.6;
+    var gain_damp = 1.0;
+    var amp = 0.8;
+    var freq = 1.0;
+    var damped = 1.0;
+    for (var i = 0; f32(i) < max(octaves, 1.0); i++) {
+        let nd = se_noise_deriv(point * freq + warp);
+        let nd2 = nd * nd.w;
+        summ += damped * nd2.w;
+        warp += gain_warp * nd2.xyz;
+        damp += gain_damp * nd2.xyz;
+        gain_warp = 0.35;
+        gain_damp = 0.8;
+        if i > 0 {
+            amp *= 0.5;
+        }
+        damped = select(amp * (1.0 - 1.0 / (1.0 + dot(damp, damp))), amp * 0.5, i == 0);
+        freq *= 2.0;
+    }
+    return summ;
+}
+
+// SE's DistFbm: Fbm of noise displaced by its own NoiseVec3 x `dist`.
+fn se_dist_fbm(point: vec3<f32>, dist: f32, octaves: f32) -> f32 {
+    var pt = point;
+    var sum = 0.0;
+    var ampl = 1.0;
+    let lac = 2.218281828459;
+    let gain = pow(lac, -0.5);
+    for (var i = 0; f32(i) < octaves; i++) {
+        let q = pt + 0.5;
+        let w = vec3<f32>(gg_noise(q), gg_noise(q + vec3<f32>(3.33, 5.71, 1.96)), gg_noise(q + vec3<f32>(7.77, 2.65, 4.37)));
+        sum += gg_noise(pt + w * dist) * ampl;
+        ampl *= gain;
+        pt *= lac;
+    }
+    return sum;
+}
+
+// SE's RayedCraterColorFunc (radRim 0.03, radOuter 0.8): the ejecta at `r` crater radii from the
+// centre, `fi` the bearing (turns), `rnd` the crater's seed. `k` 0..1: how far the rays are resolved
+// (thinner than a pixel they fade to their mean).
+fn se_rayed_color_func(r: f32, fi: f32, rnd: f32, k: f32) -> f32 {
+    let t = saturate((0.8 - r) / (0.8 - 0.03));
+    let d4 = mix(0.08, pow(gg_noise(vec3<f32>(70.3 * fi, rnd, rnd)) * 0.5 + 0.5, 4.0), k);
+    let fade = pow(t, 6.0) * 0.5 + smoothstep(0.03 * 1.1, 0.03 * 0.9, r) * 0.3;
+    return fade * pow(saturate(1.0 - smoothstep(d4, d4 + 0.5, r)), 3.5);
+}
+
+// SE's RayedCraterColorNoise: the young craters' bright rays and ejecta, over the same spherical
+// Fibonacci cells (and per-octave rotations) as the generator's RayedCraterNoise. Octaves whose
+// craters are below about a pixel (`fp`) are left out.
+fn se_rayed_crater_color(point_in: vec3<f32>, freq: f32, sqrt_density: f32, octaves: f32, fp: f32) -> f32 {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    var point = point_in;
+    let binormal = normalize(vec3<f32>(-point.z, 0.0, point.x));
+    let rot = normalize(rnd);
+    let shape_dist = 1.0 + 2.5 * 0.03 * ter_fbm(point * 419.54, ter_oct(3.0, 419.54, lac, fp), lac);
+    let color_dist = 1.0 - 0.3 * ter_fbm(point * 315.16, ter_oct(3.0, 315.16, lac, fp), lac);
+    var color = 0.0;
+    var rad_factor = shape_dist / max(sqrt_density, 1e-3);
+    var fib = 2.0 * freq;
+    for (var i = 0; f32(i) < octaves; i++) {
+        // The cells' spacing on the unit sphere, sqrt(4 pi / n), against the pixel.
+        if sqrt(4.0 * PI / fib) < 2.0 * fp {
+            break;
+        }
+        var centre = vec3<f32>(0.0);
+        let cell = gg_isf(point, fib, &centre);
+        let rad = gg_hash1(cell.x * 743.1) * 0.9 + 0.1;
+        let fi = acos(clamp(dot(binormal, normalize(centre - point + vec3<f32>(1e-12))), -1.0, 1.0)) / (2.0 * PI);
+        // A ray is 1/70 turn wide at its crater's radius, rad / rad_factor.
+        let ray_w = 2.0 * PI * rad / rad_factor / 70.3;
+        color += se_rayed_color_func(cell.y * rad_factor / rad, fi, 48.3 * dot(centre, rnd), saturate(ray_w / (2.0 * fp) - 0.5));
+        if octaves > 1.0 {
+            point = gg_rotate(2.0 * PI * gg_hash1(f32(i)), rot, point);
+            fib *= 1.8;
+            rad_factor *= sqrt(1.8);
+        }
+    }
+    return min(color, 1.0) * color_dist;
+}
+
+// SE's CrackHeightFunc in its colour use (height 1): a dark-rimmed line where `r` < 1.
+fn se_crack_func(last: f32, lastlast: f32, r: f32, p_in: vec3<f32>, noise_ok: bool) -> f32 {
+    var p = p_in;
+    p.x += 0.05 * r;
+    let inner = smoothstep(0.0, 0.5, r);
+    let outer = smoothstep(0.5, 1.0, r);
+    let n = select(0.0, gg_noise(p * 625.7), noise_ok);
+    let cracks = 0.4 * n * (1.0 - inner) + inner * (1.0 - outer);
+    return mix(cracks, mix(last, lastlast, r), outer);
+}
+
+// SE's CrackColorNoise: the ice cracks' lines (the colour factor) and `mask`, 0 on them, which keeps
+// the freckles off. SE's lines are 1/250 of a cell wide; thinner than a pixel they widen to it and
+// fade by the share of it they cover.
+fn se_crack_color(point_in: vec3<f32>, fp: f32, mask: ptr<function, f32>) -> f32 {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    var scale = biomes.climate[9].w;
+    var point = (point_in + rnd) * scale;
+    var new_land = 0.0;
+    var last = 0.0;
+    var lastlast = 0.0;
+    *mask = 1.0;
+    for (var i = 0; f32(i) < biomes.climate[10].x; i++) {
+        let w = max(1.0 / 250.0, fp * scale);
+        let cover = (1.0 / 250.0) / w;
+        let cell = se_cell2_noise2(point + 0.02 * ter_fbm3d(1.8 * point, ter_oct(6.0, 1.8 * scale, lac, fp)));
+        let r = smoothstep(0.0, 1.0, abs(cell.y - cell.x) / w);
+        lastlast = last;
+        last = new_land;
+        new_land = mix(last, se_crack_func(lastlast, last, r, point, 625.7 * scale * fp < 0.5), cover);
+        point = point * 1.2 + rnd;
+        scale *= 1.2;
+        *mask *= mix(1.0, smoothstep(0.6, 1.0, r), cover);
+    }
+    return pow(saturate(1.0 - new_land), 2.0);
+}
+
 // The direction to the star in the body frame (set by `lit_ground`): the substellar point that SE's
 // colour shaders put on +x for tidally locked worlds.
 var<private> g_sun_body: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
@@ -933,10 +1167,15 @@ struct TerraMix {
 };
 
 // SE's ColorMapSelena (tg_selena_color.glsl), airless worlds: the base surface by height bands, an
-// albedo variation weakened on slopes and, on cratered worlds, outside younger patches; the
-// leading/trailing hemisphere darkening (drivenDarkening) and ice caps whitened. Rayed craters,
-// cracks and the hills' Jordan turbulence are not ported.
-fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
+// albedo variation weakened on slopes and, on cratered worlds, outside younger patches, cut by the
+// ice cracks' lines (CrackColorNoise) and the Europa-like freckles (JordanTurbulence in the hills
+// biome); the leading/trailing hemisphere darkening (drivenDarkening), the young craters' bright rays
+// (RayedCraterColorNoise) and the thin polar frost whitened. SE's asteroids (tg_asteroid_color.glsl)
+// take the base surface by a noise instead of the height and darken flat ground (x (0.5 + slope)).
+// The shield volcanoes' lava, which only steers SE's rock texture choice, is not ported. Cracks,
+// freckles, rays and the asteroid look only on `procedural` worlds: a colour map has its own (the
+// Moon's Tycho).
+fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool) -> TerraMix {
     let c0 = biomes.climate[0];
     let rnd = biomes.climate[6].xyz;
     let sea = c0.x;
@@ -945,6 +1184,19 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
     o.rock_tint = vec3<f32>(1.0);
     o.dark = 1.0;
     var w: array<f32, 12>;
+    if biomes.climate[7].z > 1.5 && procedural {
+        let hn = se_dist_fbm(point * 3.7 + rnd, 1.5, ter_oct(5.0, 3.7, lac, fp));
+        let ha = (hn - sea) / max(1.0 - sea, 1e-3) * 4.0 + 2.0;
+        let a0 = clamp(i32(floor(ha)), 0, 5);
+        w[a0] += 1.0 - fract(ha);
+        w[clamp(a0 + 1, 0, 5)] += fract(ha);
+        o.w = w;
+        o.vary = 1.0;
+        // SE's slope is 1 - cos^6 of the tilt (GetSurfaceHeightAndSlope), the port's 1 - cos.
+        o.dark = 0.5 + 1.0 - pow(1.0 - slope, 6.0);
+        o.white = 0.0;
+        return o;
+    }
     let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
     var latitude: f32;
     if biomes.climate[6].w <= 0.0 {
@@ -967,6 +1219,22 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
         young = smoothstep(0.0, 1.0, young * young * young);
         vary = mix(0.0, vary, young);
     }
+    var mask = 1.0;
+    if biomes.climate[10].x > 0.0 && procedural {
+        vary *= se_crack_color(point, fp, &mask);
+    }
+    // The freckles, in the generator's hills biome (its Cell3Noise2Color domains by mainFreq).
+    let c10 = biomes.climate[10];
+    let hills_freq = biomes.climate[7].x;
+    if c10.z > c10.y && procedural && ter_oct(10.0, hills_freq, 2.0, fp) > 0.0 {
+        let p = point * c10.w + rnd;
+        var col: vec4<f32>;
+        let cell = se_cell3_noise2_color(p * 2.3 + 13.5 * ter_fbm3d(p * 0.06, ter_oct(6.0, 0.06 * c10.w, lac, fp)), &col);
+        if col.r > c10.y && col.r < c10.z {
+            let scale = saturate(2.0 * (pow(abs(cell.y - cell.x), 0.7) - 0.05));
+            vary *= 1.0 - saturate(2.0 * mask * scale * se_jordan(point * hills_freq + rnd, ter_oct(10.0, hills_freq, 2.0, fp)));
+        }
+    }
     o.vary = vary;
     let dd = biomes.climate[8].x;
     if dd != 0.0 {
@@ -975,7 +1243,14 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
         z *= z;
         o.dark = mix(1.0 - abs(dd), 1.0, z);
     }
-    o.white = 0.8 * saturate((latitude - c0.z + 0.3) * 2.0);
+    // The rayed craters (the generator's craterRayed density and octaves), then the frost.
+    let c9 = biomes.climate[9];
+    let sd = biomes.climate[7].w;
+    var rays = 0.0;
+    if sd * sd * c9.z > 0.05 * 0.05 && procedural {
+        rays = se_rayed_crater_color(point, c9.x, sd * sqrt(c9.z), floor(c9.y * c9.z), fp);
+    }
+    o.white = 1.0 - (1.0 - rays) * (1.0 - 0.8 * saturate((latitude - c0.z + 0.3) * 2.0));
     o.w = w;
     return o;
 }
@@ -1140,7 +1415,7 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
         // BumpHeights. SE's generator: 0 terra, 1 selena (airless), 2 asteroid (as selena here).
         let hv = biomes.climate[5].z + h / max(biomes.climate[4].z, 1.0);
         if biomes.climate[7].z > 0.5 {
-            m = se_selena_mix(dir, hv, slope, fp);
+            m = se_selena_mix(dir, hv, slope, fp, tinted);
         } else {
             m = se_terra_mix(dir, hv, slope, fp);
         }
