@@ -2276,8 +2276,9 @@ fn update_terrain(
     }
     // SE's CacheSizeLandNode: the nodes of all planets together; beyond it the least recently used
     // ones go first (only nodes unused for STALE_FRAMES, never a root or one still loading). The
-    // port keeps at most LAND_NODES_MAX whatever the setting: its resident nodes cost it time every
-    // frame, and main-def.cfg's 10000 took a surface flight from ~50 to ~280 ms a frame.
+    // port keeps at most LAND_NODES_MAX whatever the setting: main-def.cfg's 10000 took a surface
+    // flight from ~50 to ~280 ms a frame, measured while every node's material was rewritten each
+    // frame (fixed in switches.rs); SE's value has not been measured since.
     let total: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.len()).sum();
     let cap = memory.land_nodes.min(LAND_NODES_MAX);
     if total > cap {

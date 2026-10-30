@@ -156,7 +156,9 @@ fn switch_keys(
     let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
-    let s = &mut *switches;
+    // Marked changed only on a toggle: the terrain rewrites every node's material when it is (a
+    // plain `&mut *switches` here flagged it every frame, ~150 ms a frame on a planet's surface).
+    let s = switches.bypass_change_detection();
     let hit = match (shift, ctrl, alt) {
         (true, false, false) if keys.just_pressed(KeyCode::KeyA) => Some((&mut s.atmospheres, "Atmospheres")),
         (true, false, false) if keys.just_pressed(KeyCode::KeyC) => Some((&mut s.clouds, "Clouds")),
@@ -166,9 +168,13 @@ fn switch_keys(
         (true, false, false) if keys.just_pressed(KeyCode::KeyL) => Some((&mut s.planet_shine, "Planet shine")),
         _ => None,
     };
-    if let Some((v, name)) = hit {
+    let toggled = hit.map(|(v, name)| {
         *v = !*v;
-        msg.switch(&i18n, name, *v);
+        (name, *v)
+    });
+    if let Some((name, on)) = toggled {
+        switches.set_changed();
+        msg.switch(&i18n, name, on);
     }
 }
 
