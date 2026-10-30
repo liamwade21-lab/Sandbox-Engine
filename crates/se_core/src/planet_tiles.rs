@@ -277,6 +277,9 @@ pub struct SurfaceParams {
     pub bump_offset_km: f64,
     pub glow_bright: f64,
     pub glow_color: [f64; 3],
+    /// SE's `GlowMode "Permanent"` (Io's lava): the glow map shines by day too; otherwise ("Night",
+    /// the default) it goes out where light reaches the ground (FUN_14046dde0, GlowColor.a).
+    pub glow_permanent: bool,
     pub diff_map_alpha_water: bool,
     pub spec_bright_water: f64,
     pub color_sea: Option<[f64; 3]>,
@@ -293,6 +296,8 @@ impl SurfaceParams {
             bump_offset_km: b.f64("BumpOffset").unwrap_or(0.0),
             glow_bright: b.f64("GlowBright").unwrap_or(1.0),
             glow_color: b.vec3("GlowColor").unwrap_or([1.0, 1.0, 1.0]),
+            // SE compares the exact words "Night" and "Permanent".
+            glow_permanent: b.str("GlowMode") == Some("Permanent"),
             diff_map_alpha_water: b.str("DiffMapAlpha").map(|s| s.eq_ignore_ascii_case("Water")).unwrap_or(false),
             spec_bright_water: b.f64("SpecBrightWater").unwrap_or(0.0),
             color_sea: b.vec3("colorSea"),
@@ -369,6 +374,16 @@ mod tests {
         let other = TileKey { face: CubeFace::PosX, level: 7, row: 0, col: 0 };
         assert_eq!(layer.source(other), other.ancestor_at(5));
         assert_eq!(layer.source(close.parent().unwrap()), close.parent().unwrap());
+    }
+
+    #[test]
+    fn glow_mode() {
+        let parse = |src: &str| SurfaceParams::from_block(&crate::sc::parse(src));
+        assert!(parse("GlowMap \"Io/Lights-SE\"\nGlowMode \"Permanent\"").glow_permanent);
+        assert!(!parse("GlowMap \"Earth/Lights-HD\"\nGlowMode \"Night\"").glow_permanent);
+        // SE matches the words exactly; anything else keeps the Night default.
+        assert!(!parse("GlowMode \"permanent\"").glow_permanent);
+        assert!(!parse("").glow_permanent);
     }
 
     #[test]

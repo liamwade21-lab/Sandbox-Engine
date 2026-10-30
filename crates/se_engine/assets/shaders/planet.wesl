@@ -49,12 +49,14 @@ struct Planet {
     // (kK^4), w 1 for giants.
     thermal: vec4<f32>,
     // x star surface radiance per its irradiance here (1 / (pi (R*/d)^2)), y star temperature (K),
-    // z ThermalEmissionShift (kK).
+    // z ThermalEmissionShift (kK), w self-emission scale (EnableSelfEmission x SelfEmissionBright).
     thermal2: vec4<f32>,
     // The further stars (SE lights a body by up to 4, planet.glsl's NLights loop): xyz direction,
     // w 1 when used; rgb their light, intensity included.
     light_dir: array<vec4<f32>, 3>,
     light_color: array<vec4<f32>, 3>,
+    // SE's GlowColor: rgb the glow map's tint, w the mode (1 Night, 0 Permanent).
+    glow: vec4<f32>,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -1618,6 +1620,9 @@ struct Surf {
     e_sun: vec3<f32>,
     // Water cover from the water map (or from the height on bodies without one).
     water: f32,
+    // The light on level ground from the stars and their sky light, shadowed (SE's
+    // cityLightingAccum), which switches the night lights.
+    e_city: vec3<f32>,
 };
 
 // SE's planetary sphere shadow (planet.glsl:1087-1095): a point `height` m up is lit until the star
@@ -1691,8 +1696,9 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         }
     }
     // Thermal emission, by the unshadowed star (the heating is from its light at the surface).
-    if planet.thermal.x > 0.45 || planet.thermal.z > 0.04 {
-        emission = thermal_emission(bdir, in.height, dot(up, l), planet.sun_color.rgb * planet.sun_dir.w * planet.atm_flags.y);
+    // SE's SelfEmissionBright scales it (SurfParams4.w), EnableSelfEmission off drops it.
+    if (planet.thermal.x > 0.45 || planet.thermal.z > 0.04) && planet.thermal2.w > 0.0 {
+        emission = thermal_emission(bdir, in.height, dot(up, l), planet.sun_color.rgb * planet.sun_dir.w * planet.atm_flags.y) * planet.thermal2.w;
     }
     // The soils, chosen by the map's colour and recoloured to the ground's, take over within 2 km
     // (SE's `detailFade = clamp(2 - distance_km, 0, 1)`, planet.glsl).
@@ -1727,6 +1733,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.col = albedo / PI * max(dot(ns, l), 0.0) * terminator * sun * planet.atm_flags.y;
         s.e_level = max(dot(up, l), 0.0) * terminator * e_sun;
     }
+    s.e_city = s.e_level;
     // SE's Hapke BRDF (terrain_pbr.glh) on the direct light: Lommel-Seeliger with the opposition
     // surge (SpotBright over SpotWidth, and the coherent-backscatter spot), mixed in by `Hapke`.
     if planet.modulate.w > 0.0 {
@@ -1754,15 +1761,18 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         let e_x = sun_x * planet.atm_flags.y;
         let term_x = horizon_shadow(in.height, dot(up, lx));
         var ground_x = sun_x * term_x;
+        var level_x: vec3<f32>;
         if has_atm {
             s.col += albedo / PI * atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, lx, e_x, 1.0);
-            s.e_level += atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, up, lx, e_x, 1.0);
+            level_x = atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, up, lx, e_x, 1.0);
             let r = length(pos_km);
             ground_x = sun_x * atm_transmittance_sun(planet.atm, transmittance_tex, atm_smp, r, dot(pos_km / r, lx));
         } else {
             s.col += albedo / PI * max(dot(ns, lx), 0.0) * term_x * e_x;
-            s.e_level += max(dot(up, lx), 0.0) * term_x * e_x;
+            level_x = max(dot(up, lx), 0.0) * term_x * e_x;
         }
+        s.e_level += level_x;
+        s.e_city += level_x;
         if planet.modulate.w > 0.0 {
             let v = normalize(-in.world_pos);
             let nl = max(dot(ns, lx), 0.0);
@@ -1835,8 +1845,22 @@ fn ocean_from_above(s: Surf, pos_km: vec3<f32>, depth: f32, up: vec3<f32>, nw: v
     return ocean_under(s, depth, up, v, l) * (1.0 - surf.w) + surf.rgb;
 }
 
+// SE's city-light cutoff, per unit of the main light's intensity (SurfParams4.x = 0.001 with HDR,
+// 0.05 without, times light 0's intensity at +0x58: FUN_1404ae4a0, FUN_1404bf5c0).
+const CITY_LIGHTS_CUTOFF: f32 = 0.001;
+
+// SE's city-light switch (planet.glsl:1336-1338): a Night glow map goes out as the light on level
+// ground `e_city` (every light, planet shine included, after eclipses and ring shadows) rises from a
+// fifth of the cutoff to it, so it lights up in eclipses, and a bright moon dims it as in SE. A
+// Permanent one (Io's lava) always shines.
+fn city_lights_on(e_city: vec3<f32>) -> f32 {
+    let cut = max(CITY_LIGHTS_CUTOFF * planet.sun_dir.w * planet.atm_flags.y, 1e-12);
+    let lum = dot(e_city, vec3<f32>(0.3, 0.59, 0.11));
+    return 1.0 - smoothstep(cut * 0.2, cut, lum) * planet.glow.w;
+}
+
 // Cloud shadows, city lights at night and aerial perspective, for a camera above the sea.
-fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>) -> vec3<f32> {
+fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>, e_city: vec3<f32>) -> vec3<f32> {
     var col = col_in;
     // Cloud shadows (the clouds themselves are a separate shell).
     var cloud = 0.0;
@@ -1845,15 +1869,10 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
         col *= 1.0 - 0.55 * cloud;
     }
 
-    // City lights on the night side.
+    // The glow map (city lights, Io's lava) in the catalog's GlowColor, by SE's switch.
     if planet.rect_lights.w > 0.5 {
-        let glow = textureSample(lights_tex, lights_smp, tile_uv(planet.rect_lights, in.uv)).rgb;
-        let night = 1.0 - smoothstep(-0.15, 0.05, dot(up, l));
-        // The lights map is a blurred density of city light (about a km per texel at
-        // best); seen from close by it would light the ground evenly, so let it fade
-        // in only once a pixel covers a good stretch of ground.
-        let glow_fade = smoothstep(30.0, 600.0, g_footprint_m);
-        col += glow * night * planet.params.x * glow_fade * (1.0 - clamp(cloud, 0.0, 1.0) * 0.7);
+        let glow = textureSample(lights_tex, lights_smp, tile_uv(planet.rect_lights, in.uv)).rgb * planet.glow.rgb;
+        col += glow * city_lights_on(e_city) * planet.params.x * (1.0 - clamp(cloud, 0.0, 1.0) * 0.7);
     }
 
     // Aerial perspective: haze and attenuation between the camera and the ground.
@@ -1909,9 +1928,13 @@ fn table_pos(up: vec3<f32>, h: f32) -> vec3<f32> {
     return up * planet.atm.radii.x * (1.0 + h / max(planet.planet.w, 1.0));
 }
 
-// The ground's shading normal from the node's normal map (texel centres span the node).
+// The ground's shading normal from the node's normal map (texel centres span the node): the map
+// holds the normal's departure from the smooth sphere's (body frame, square-root encoded, see
+// terrain.rs `encode_normal_offset`), so a smooth disc shades from its exact direction. Normals
+// stored whole quantised the sphere's own curvature into a grid near the terminator (04-014).
 fn ground_normal(in: VertexOut) -> vec3<f32> {
-    let nb = textureSample(normal_tex, normal_smp, node_map_uv(in)).xyz * 2.0 - 1.0;
+    let e = textureSample(normal_tex, normal_smp, node_map_uv(in)).xyz * 2.0 - 1.0;
+    let nb = normalize(normalize(in.body_dir) + e * abs(e));
     return normalize(in.axis_x * nb.x + in.axis_y * nb.y + in.axis_z * nb.z);
 }
 
@@ -1963,7 +1986,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         let lake = ocean_from_above(s, table_pos(up, max(in.height, 0.0)), wd, up, up, v, l, a);
         col = mix(col, select(lake, ocean_under(s, wd, up, v, l), sea), clamp(s.water, 0.0, 1.0));
     }
-    let above = finish(in, col, up, l, s.e_sun);
+    let above = finish(in, col, up, l, s.e_sun, s.e_city);
 
     // Under water: the seabed lit by the light that gets down to it, seen through the water.
     let depth = max(-in.height, 0.0);
@@ -1994,7 +2017,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // the ground pass drew, whose haze (`finish` of nothing) is already in that colour.
     let w = clamp(s.water, 0.0, 1.0);
     let surf = ocean_surface(s, pos_km, up, nw.xyz, v, l, a);
-    let above = vec4<f32>((finish(in, surf.rgb, up, l, s.e_sun) - finish(in, vec3<f32>(0.0), up, l, s.e_sun) * (1.0 - surf.w)) * w, surf.w * w);
+    let above = vec4<f32>((finish(in, surf.rgb, up, l, s.e_sun, s.e_city) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city) * (1.0 - surf.w)) * w, surf.w * w);
 
     // From below: the sky through Snell's window (the light refracted out), beyond it the water's
     // own depths reflected from the surface; then the water between the camera and the surface.
