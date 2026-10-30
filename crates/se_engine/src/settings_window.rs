@@ -170,6 +170,13 @@ fn settings_window(
                     ui.add(egui::Slider::new(&mut q.anisotropy, 0..=16).text(i18n.tr("Anisotropic filtering")));
                     ui.add(egui::Slider::new(&mut q.land_lod, -2.0..=2.0).step_by(0.5).text(i18n.tr("Landscape LOD")));
                     ui.add(egui::Slider::new(&mut q.max_tiles_per_frame, 1..=16).text(i18n.tr("Terrain tiles per frame")));
+                    // `SolidResolution`, `SolidUpscaleMode`, `SolidFXAA` (render_scale.rs).
+                    ui.add(egui::Slider::new(&mut q.solid_resolution, 0.1..=1.0).step_by(0.05).text(i18n.tr("Solid objects resolution")));
+                    let mut m = q.solid_upscale_mode.min(11) as usize;
+                    if combo(ui, "solid_upscale", "Upscale filter", &mut m, &crate::render_scale::UPSCALE_MODES, &i18n) {
+                        q.solid_upscale_mode = m as u32;
+                    }
+                    ui.checkbox(&mut q.solid_fxaa, i18n.tr("FXAA before upscaling"));
                     ui.collapsing(i18n.tr("Other preset values"), |ui| {
                         for (k, v) in &q.keys {
                             ui.label(format!("{k}  {v}"));
