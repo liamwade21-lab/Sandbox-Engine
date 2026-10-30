@@ -38,6 +38,7 @@ pub mod star_octree;
 pub mod surface_gen;
 pub mod system_gen;
 pub mod tg;
+pub mod tiff;
 pub mod time;
 pub mod units;
 pub mod upos;

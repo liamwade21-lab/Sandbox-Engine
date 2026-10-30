@@ -952,18 +952,6 @@ pub(crate) fn load_atlas(vfs: &Vfs, path: &str) -> Option<(Image, [f32; 16])> {
     Some((image, tile_mean))
 }
 
-/// Intensity `inten` of a galaxy `px` pixels in radius under the intergalactic-vision `gain`:
-/// unresolved galaxies get it in full (it raises the magnitude limit, as SpaceEngine's
-/// `AutoGalaxyMagnitude`), galaxies big on screen keep their own surface brightness, and
-/// nothing is raised beyond `cap`, so nearby galaxies keep their colour instead of turning
-/// into white blobs. Must match `vision` in galaxy_far.wesl.
-pub(crate) fn vision(inten: f32, gain: f32, px: f32, cap: f32) -> f32 {
-    let t = ((px - 3.0) / 37.0).clamp(0.0, 1.0);
-    let resolved = t * t * (3.0 - 2.0 * t);
-    let boosted = inten * gain.max(1.0).powf(1.0 - resolved);
-    inten.max(boosted.min(cap))
-}
-
 /// SE's eased sky coverage while the intergalactic vision is off or has just started (FUN_1404c51a0).
 pub(crate) const COVERAGE_OFF: f32 = 1.0e6;
 
@@ -987,10 +975,8 @@ pub(crate) fn intergalactic_gain(coverage: f32, limit: f32) -> f32 {
 /// widening them spreads a distant model's light until it disappears into the background.
 const MODEL_MIN_PX: f32 = 1.5;
 
-/// Peak sprite intensity the intergalactic vision can raise a far galaxy to.
+/// Peak sprite intensity the intergalactic vision can raise a far galaxy to (`vision` in galaxy_far.wesl).
 pub(crate) const VISION_CAP: f32 = 1.0;
-/// Mean surface brightness it can raise a 3D galaxy model to.
-pub(crate) const VISION_CAP_MODEL: f32 = 0.05;
 
 /// The port's far-sprite reference magnitude at SE's limiting magnitude: `mag_ref = limit + 0.5`
 /// (7.5 at the default `GalaxyMagnLimit` / `NebulaMagnLimit` 7).

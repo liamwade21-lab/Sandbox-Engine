@@ -385,17 +385,18 @@ channel, `PrecomputedDensityFunc`; loaded by `seGalaxyCatalog::LoadBulgeLookupTe
 ~1e-4 (about 0.9994, 0.30, 0.089, 0.027, 0.0085, 0.0026, 0.0007, 0.0002 at x = 0, 64, ... 448), the
 upper half of the rows (0..31) are nearly constant in y (inside the ellipsoid), the lower rows drop
 off quickly (outside). Colour/brightness/scale come from the `GalaxyGenerator` settings in 6.1.
-The shader itself is unavailable, so the E rendering is [?]; `EllipticGalaxy` (method 1) in
-`createGalaxy` is an alternative bulge-only sprite model that no shipped file uses.
-The port (`ellipticals.rs`, `galaxy_elliptical.wesl`) draws the nearest 4 resolved ellipticals as a volume: the
-back faces of a sphere of 1.03 R, projected to infinity like the other galaxy layers, integrate along each view
-ray a Prugniel-Simien deprojection of the far sprite's de Vaucouleurs profile (`r_e` 0.25 R, `p` 0.851, core
-0.01 R, the sprite's `(1 - x^2)^2` window) flattened to `1 - n/10` along the galaxy's z axis. 24 log-spaced steps
-on each side of the ray's closest approach resolve the cusp. The brightness carries the far sprite's total flux
-(`k = far_brightness 10^(0.4 (mag_ref - M)) 100 / (FOCAL_REF^2 mass R^2)`, mass = the profile's volume integral
-in R^3) with the sprite models' intergalactic-vision boost and daylight fade. It fades in over 6..16 px like a
-model while the far sprite fades out through the `resident` list, so the glow stays when the camera approaches or
-enters (the far sprite alone vanished inside 1.02 R). Procedural ellipticals are promoted to the catalog like the
+The shader (`galaxy_bulge.glsl`, decrypted) and its draw (`seGalaxySpriteModel::DrawBulge`, FUN_14029ce50) are
+known [V]: the galaxy's ellipsoid (radius `GalaxyEllipticalScale` x the catalog radius, x and z shortened to
+`1 - (index - 1) / 10`, FUN_140168210) is drawn with its back faces; per pixel `depth` = the ray's half chord
+(half of what lies ahead from inside), `r = sqrt(1 - depth^2)` its offset from the centre, and the table is read
+at `((0.5 r)^0.25, depth)`, its rows bottom-up as OpenGL receives them (depth 1 reads the saturated first file
+rows). `Color` = `GalaxyEllipticalColor` x `GalaxyEllipticalBright` (square-rooted in HDR) x the galaxy draw factor
+(fade-in `(px - 2) / 3` x brightness term, hdrGalaxySpriteBright x GlowBrightMin coef(GlowMagnLimit), ModelBright,
+`1 - 1e-7 px`) x the distance reddening `(1 - k, 1 - 2k, 1 - 4k)`, `k = d / 4.227 Gpc`; the pixel is
+`ColorCorrentionHDR(Color x density x 12, (DSOBrightness - 1, DSOContrast, DSOSaturation - 1,
+1 / GalaxyEllipticalGamma)) x 10`, added. The port (`ellipticals.rs`, `galaxy_elliptical.wesl`) does this for the
+16 largest ellipticals on screen, the table as R16Float, the ellipsoid projected to infinity like the other galaxy
+layers; the far sprite fades out as it fades in (`resident`). Procedural ellipticals are promoted to the catalog like the
 other types, so they can be picked and filled with stars.
 Nebula models (`Nebulae-sprite.pak`) share the same maker; their extra keys are listed in
 `config_locale.md`.

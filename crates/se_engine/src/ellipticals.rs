@@ -1,78 +1,63 @@
-//! Elliptical galaxies up close. SE has no sprite model for types E0..E7: `galaxy_bulge.glsl` draws them
-//! from a pre-integrated density table (`docs/formats/galaxy_model.md`, section 8). Here a sphere around
-//! the galaxy, projected to infinity like the other galaxy layers, ray-marches a deprojected de Vaucouleurs
-//! ellipsoid (the far sprite's profile, flattened to the Hubble type's axis ratio), so the glow stays when
-//! the camera approaches or enters the galaxy. Like a sprite model it fades in as the far sprite fades out
-//! (the `resident` list) and carries the same total flux.
+//! Elliptical galaxies up close, as SE draws them (`seGalaxySpriteModel::DrawBulge`, FUN_14029ce50, with
+//! `galaxy_bulge.glsl`): types E0..E7 have no sprite model; an ellipsoid of `GalaxyEllipticalScale` (2.4)
+//! times the catalog radius, its x and z axes shortened to `1 - (index - 1) / 10` (FUN_140168210), shows on
+//! its back faces the pre-integrated density table `textures/common/galaxy_bulge.tif`
+//! (`PrecomputedDensityFunc`, `seGalaxyCatalog::LoadBulgeLookupTexture`) looked up by the ray's offset from
+//! the centre and its half length inside, in `GalaxyEllipticalColor` and SE's colour correction
+//! (`docs/formats/galaxy_model.md`, section 8). Like a sprite model it fades in as the far sprite fades out
+//! (the `resident` list).
 
-use std::f64::consts::PI;
-use std::sync::OnceLock;
-
+use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
+};
 use bevy::shader::ShaderRef;
 use bevy::window::PrimaryWindow;
-use se_core::star_octree::GalaxyForm;
+use se_core::galaxy_model::hubble_type_index;
 
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    FOCAL_REF, GalaxyFarMaterial, GalaxySettings, GalaxyState, VISION_CAP_MODEL, angular_px, model_fade,
-    profile_type, type_color, update_galaxies, vision,
+    GalaxyFarMaterial, GalaxySettings, GalaxyState, MAG_REF_OFFSET, angular_px, main_def_doc, profile_type, se_bright_term,
+    se_glow_bright, update_galaxies,
 };
 
-/// Volumes drawn at once (the nearest ellipticals).
-const MAX_VOLUMES: usize = 4;
-/// The bounding sphere, in galaxy radii (the faceted mesh must still enclose the ellipsoid).
+/// Ellipticals drawn at once (the largest on screen).
+const MAX_VOLUMES: usize = 16;
+/// The bounding sphere of the faceted mesh, in ellipsoid radii.
 const BOUND: f32 = 1.03;
-
-/// Density profile, matching `galaxy_far.wesl`'s elliptical sprite: de Vaucouleurs with the effective
-/// radius at a quarter of the radius, deprojected after Prugniel & Simien (1997), softened core, the
-/// sprite's `(1 - x^2)^2` window. Must match `density` in `galaxy_elliptical.wesl`.
-fn density(m: f64) -> f64 {
-    if m >= 1.0 {
-        return 0.0;
-    }
-    let r = (m * m + 1.0e-4).sqrt() / 0.25;
-    let w = 1.0 - m * m;
-    r.powf(-0.851) * (-7.67 * (r.powf(0.25) - 1.0)).exp() * w * w
-}
-
-/// `4 pi * int m^2 rho(m) dm` over the unit sphere (log-spaced: the profile is cuspy).
-fn unit_mass() -> f64 {
-    static M: OnceLock<f64> = OnceLock::new();
-    *M.get_or_init(|| {
-        let (a, b, n) = (1.0e-6f64.ln(), 0.0f64, 20_000);
-        let h = (b - a) / n as f64;
-        let s: f64 = (0..n)
-            .map(|i| {
-                let m = (a + (i as f64 + 0.5) * h).exp();
-                density(m) * m * m * m
-            })
-            .sum();
-        4.0 * PI * s * h
-    })
-}
+/// SE's distance reddening (FUN_140299fe0): `(1 - k, 1 - 2k, 1 - 4k)` with `k = d / 4.227e9 pc`.
+const REDDEN_PC: f64 = 4.227e9;
 
 #[derive(Clone, Copy, Debug, ShaderType)]
-pub struct VolumeParams {
-    /// xyz: galaxy centre relative to the camera (pc), w: radius (pc)
+pub struct BulgeParams {
+    /// xyz: galaxy centre relative to the camera (pc), w: ellipsoid radius (pc)
     pub center_rel: Vec4,
     /// Columns of the universe -> galaxy rotation.
     pub rot0: Vec4,
     pub rot1: Vec4,
     pub rot2: Vec4,
-    /// rgb: colour times brightness per unit column density, w: axis ratio
+    /// xyz: the ellipsoid's axes in radii, w: unused
+    pub axes: Vec4,
+    /// SE's `Color` uniform
     pub color: Vec4,
+    /// SE's `ColorEffects`: (brightness - 1, contrast, saturation - 1, 1 / gamma)
+    pub effects: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct EllipticalMaterial {
     #[uniform(0)]
-    pub u: VolumeParams,
+    pub u: BulgeParams,
+    /// SE's `PrecomputedDensityFunc` (`galaxy_bulge.tif`).
+    #[texture(1)]
+    #[sampler(2)]
+    pub table: Handle<Image>,
 }
 
 impl Material for EllipticalMaterial {
@@ -97,15 +82,37 @@ impl Material for EllipticalMaterial {
     ) -> Result<(), SpecializedMeshPipelineError> {
         let vertex_layout = layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
-        // Back faces only: one fragment per pixel from outside, and all around the camera inside.
+        // Back faces, as SE (glCullFace(GL_FRONT)): one fragment per pixel from outside, all around inside.
         descriptor.primitive.cull_mode = Some(Face::Front);
         Ok(())
+    }
+}
+
+/// main-def.cfg `GalaxyGenerator` and `PostProcess` keys of the bulge draw.
+#[derive(Resource, Clone, Debug)]
+pub struct BulgeSettings {
+    /// `GalaxyEllipticalScale` (2.4): ellipsoid radius in catalog radii.
+    pub scale: f32,
+    /// `GalaxyEllipticalColor` (1 0.9 0.7 0).
+    pub color: Vec4,
+    /// `GalaxyEllipticalBright` (1): its square root in HDR mode.
+    pub bright: f32,
+    /// `GalaxyEllipticalGamma` (0.7, "replaces DSOGamma").
+    pub gamma: f32,
+    /// `DSOBrightness`, `DSOContrast`, `DSOSaturation` (1).
+    pub dso: Vec3,
+}
+
+impl Default for BulgeSettings {
+    fn default() -> Self {
+        Self { scale: 2.4, color: Vec4::new(1.0, 0.9, 0.7, 0.0), bright: 1.0, gamma: 0.7, dso: Vec3::ONE }
     }
 }
 
 #[derive(Resource, Default)]
 struct Volumes {
     mesh: Handle<Mesh>,
+    table: Handle<Image>,
     slots: Vec<(Entity, Handle<EllipticalMaterial>)>,
 }
 
@@ -115,8 +122,84 @@ impl Plugin for EllipticalsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<EllipticalMaterial>::default())
             .init_resource::<Volumes>()
+            .init_resource::<BulgeSettings>()
+            .add_systems(Startup, setup_bulge)
             .add_systems(PostUpdate, update_volumes.after(update_galaxies));
     }
+}
+
+/// Converts to IEEE half precision (the table is R16Float, which filters on every device).
+fn f16_bits(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+    let man = b & 0x7f_ffff;
+    if exp <= 0 {
+        // Subnormal half (below 6.1e-5): the mantissa in units of 2^-24, rounded.
+        if exp < -10 {
+            return sign;
+        }
+        let shift = (14 - exp) as u32;
+        return sign | (((man | 0x80_0000) + (1 << (shift - 1))) >> shift) as u16;
+    }
+    if exp >= 31 {
+        return sign | 0x7c00;
+    }
+    sign | (((exp as u32) << 10) + ((man + 0x1000) >> 13)) as u16
+}
+
+fn setup_bulge(
+    cfg: Res<crate::config::EngineConfig>,
+    data: Res<SeData>,
+    mut settings: ResMut<BulgeSettings>,
+    mut vols: ResMut<Volumes>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if let Some(doc) = main_def_doc(&cfg) {
+        let num = |k: &str| doc.find_deep(k).and_then(|i| i.f64()).map(|v| v as f32);
+        let s = &mut *settings;
+        s.scale = num("GalaxyEllipticalScale").unwrap_or(s.scale);
+        s.bright = num("GalaxyEllipticalBright").unwrap_or(s.bright);
+        s.gamma = num("GalaxyEllipticalGamma").unwrap_or(s.gamma);
+        if let Some(c) = doc.find_deep("GalaxyEllipticalColor").map(|i| i.nums()).filter(|c| c.len() >= 3) {
+            s.color = Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c.get(3).copied().unwrap_or(0.0) as f32);
+        }
+        s.dso = Vec3::new(
+            num("DSOBrightness").unwrap_or(s.dso.x),
+            num("DSOContrast").unwrap_or(s.dso.y),
+            num("DSOSaturation").unwrap_or(s.dso.z),
+        );
+    }
+    let table = data.vfs.read("textures/common/galaxy_bulge.tif").ok().and_then(|b| se_core::tiff::read_gray_f32(&b));
+    let Some((w, h, px)) = table else {
+        warn!("galaxy_bulge.tif not found or unreadable: elliptical galaxies are not drawn up close");
+        return;
+    };
+    // The file's last row is texture row 0, as SE's loader hands it to OpenGL: depth 1 (the full chord
+    // through the centre) then reads the first, saturated rows.
+    let bytes: Vec<u8> =
+        px.chunks_exact(w as usize).rev().flat_map(|row| row.iter().flat_map(|&v| f16_bits(v).to_le_bytes())).collect();
+    let mut img = Image::new(
+        Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        bytes,
+        TextureFormat::R16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        ..default()
+    });
+    vols.table = images.add(img);
+}
+
+/// SE's axis ratio of an elliptical (FUN_140168210): x and z are `1 - (index - 1) / 10` of y, index the
+/// Hubble type index (E0 1 .. E7 8; 0 for an unrecognised type).
+fn axis_ratio(kind: &str) -> f32 {
+    1.0 - (hubble_type_index(kind) as f32 - 1.0) / 10.0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -125,6 +208,8 @@ fn update_volumes(
     cam: Res<FlyCamera>,
     data: Res<SeData>,
     settings: Res<GalaxySettings>,
+    bulge: Res<BulgeSettings>,
+    photo: Option<Res<crate::exposure::PhotoMode>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     gs: Option<ResMut<GalaxyState>>,
     mut vols: ResMut<Volumes>,
@@ -134,20 +219,28 @@ fn update_volumes(
     mut vis: Query<&mut Visibility>,
 ) {
     let Some(mut gs) = gs else { return };
+    if vols.table == Handle::default() {
+        return;
+    }
     let cat = &data.catalog;
     let cam_pc = cam.pos.to_parsecs();
     let height = windows.iter().next().map(|w| w.resolution.physical_height()).unwrap_or(900) as f64;
     let focal = height * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    // The ellipsoid's radius: the catalog radius times GalaxyEllipticalScale (promoted procedural galaxies
+    // already carry it, `ProcGalaxy::display_radius_pc`).
+    let radius = |rec: &se_core::catalog::GalaxyRecord| {
+        if rec.source == "procedural" { rec.radius_pc } else { rec.radius_pc * bulge.scale as f64 }
+    };
 
-    // The ellipticals big enough on screen to be resolved, largest first.
+    // The ellipticals SE draws (fade-in over 2..5 px of the ellipsoid's radius), largest first.
     let mut wanted: Vec<(f64, usize, f32)> = Vec::new();
     if settings.enabled {
         for (g, rec) in cat.galaxies.iter().enumerate() {
             if profile_type(rec) != 0 || gs.has_model(g) {
                 continue;
             }
-            let px = angular_px(rec.radius_pc, (rec.pos_pc - cam_pc).length(), focal);
-            let fade = model_fade(px, settings.build_px as f64);
+            let px = angular_px(radius(rec), (rec.pos_pc - cam_pc).length(), focal);
+            let fade = ((px as f32 - 2.0) / 3.0).clamp(0.0, 1.0);
             if fade > 0.0 {
                 wanted.push((px, g, fade));
             }
@@ -161,13 +254,16 @@ fn update_volumes(
     }
     while vols.slots.len() < wanted.len() {
         let mat = mats.add(EllipticalMaterial {
-            u: VolumeParams {
+            u: BulgeParams {
                 center_rel: Vec4::ZERO,
                 rot0: Vec4::X,
                 rot1: Vec4::Y,
                 rot2: Vec4::Z,
-                color: Vec4::new(0.0, 0.0, 0.0, 1.0),
+                axes: Vec4::ONE,
+                color: Vec4::ZERO,
+                effects: Vec4::ZERO,
             },
+            table: vols.table.clone(),
         });
         let e = commands
             .spawn((Mesh3d(vols.mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
@@ -175,6 +271,12 @@ fn update_volumes(
         vols.slots.push((e, mat));
     }
 
+    // SE's ColorEffects (FUN_14029ce50): the DSO brightness, contrast and saturation, the ellipticals' gamma.
+    let effects = Vec4::new(bulge.dso.x - 1.0, bulge.dso.y, bulge.dso.z - 1.0, 1.0 / bulge.gamma.max(0.01));
+    // GalaxyEllipticalBright, square-rooted in HDR mode (PhotoMode 0).
+    let bright = if photo.is_none_or(|p| p.0 == 0) { bulge.bright.max(0.0).sqrt() } else { bulge.bright };
+    let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright);
+    let limit = settings.mag_ref - MAG_REF_OFFSET;
     let mut far = far_mats.get_mut(&gs.far_handle());
     for (i, (e, mat)) in vols.slots.iter().enumerate() {
         let Some(&(px, g, fade)) = wanted.get(i) else {
@@ -184,43 +286,38 @@ fn update_volumes(
             continue;
         };
         let rec = &cat.galaxies[g];
-        let r = rec.radius_pc;
-        let q = match GalaxyForm::from_type(&rec.kind) {
-            GalaxyForm::Elliptical { q } => q,
-            _ => 1.0,
-        };
-        // Total flux as the far sprite's (`galaxy_far.wesl`): the pixel sum of a galaxy at distance d is
-        // `far_brightness * 10^(0.4 (mag_ref - M)) * (10 pc / d)^2 * (focal / FOCAL_REF)^2`. A pixel shows
-        // `k * int rho ds` (s in radii), and the sum of that over the screen is `k * mass * r * focal^2 / d^2`
-        // with mass in radii^3: hence k below. Intergalactic vision and the daylight fade as for sprite models.
-        let flux = 10f64.powf(0.4 * (settings.mag_ref as f64 - rec.vis_mag)) * 100.0;
-        let mass = unit_mass() * q;
-        let mean_sb = settings.far_brightness as f64 * flux / (PI * r * r * FOCAL_REF * FOCAL_REF);
-        let boost = vision(mean_sb as f32, gs.gain, px as f32, VISION_CAP_MODEL) as f64 / mean_sb.max(1e-30);
-        let k = settings.far_brightness as f64 * flux / (FOCAL_REF * FOCAL_REF * mass * r * r)
-            * boost
-            * settings.model_brightness as f64
-            * fade as f64;
-        let col = type_color(&rec.kind);
+        let d = (rec.pos_pc - cam_pc).length();
+        // FUN_140299fe0: p1 = fade-in x brightness term (with the intergalactic vision); the colour then
+        // takes hdrGalaxySpriteBright x GlowBrightMin coef(GlowMagnLimit), the galaxy's ModelBright and
+        // the large-size fade 1 - 1e-7 px.
+        let m_app = rec.vis_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
+        let p1 = fade * se_bright_term(limit, m_app as f32, settings.bright_min * gs.gain, settings.bright_min);
+        let p3 = (1.0 - px * 1.0e-7).clamp(0.0, 1.0) as f32;
+        let k = (d / REDDEN_PC) as f32;
+        let redden = Vec3::new(1.0 - k, 1.0 - 2.0 * k, 1.0 - 4.0 * k).max(Vec3::ZERO);
+        let b = bright * p1 * glow * p3 * rec.model_bright as f32;
+        let q = axis_ratio(&rec.kind);
         let inv = Mat3::from_quat(rec.orientation.inverse().as_quat());
         if let Some(mut m) = mats.get_mut(mat) {
-            m.u = VolumeParams {
-                center_rel: (rec.pos_pc - cam_pc).as_vec3().extend(r as f32),
+            m.u = BulgeParams {
+                center_rel: (rec.pos_pc - cam_pc).as_vec3().extend(radius(rec) as f32),
                 rot0: inv.x_axis.extend(0.0),
                 rot1: inv.y_axis.extend(0.0),
                 rot2: inv.z_axis.extend(0.0),
-                color: Vec4::new(col[0] * k as f32, col[1] * k as f32, col[2] * k as f32, q as f32),
+                axes: Vec4::new(q, 1.0, q, 0.0),
+                color: (redden * b * bulge.color.truncate()).extend(bulge.color.w),
+                effects,
             };
         }
         if let Ok(mut v) = vis.get_mut(*e) {
-            *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+            *v = if p1 > 0.0 { Visibility::Visible } else { Visibility::Hidden };
         }
-        // The far sprite hides behind the volume as it fades in.
+        // The far sprite hides behind the ellipsoid as it fades in.
         gs.resident.push((g, fade));
-        if let Some(far) = far.as_mut() {
-            if let Some(slot) = far.uniforms.resident.iter_mut().find(|s| s.x < 0.0) {
-                *slot = Vec4::new(g as f32, fade, 0.0, 0.0);
-            }
+        if let Some(far) = far.as_mut()
+            && let Some(slot) = far.uniforms.resident.iter_mut().find(|s| s.x < 0.0)
+        {
+            *slot = Vec4::new(g as f32, fade, 0.0, 0.0);
         }
     }
 }
@@ -230,18 +327,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unit_mass_is_finite_and_centrally_concentrated() {
-        let m = unit_mass();
-        assert!(m.is_finite() && m > 0.0, "{m}");
-        // Half of the light within about the effective radius (0.25 of the radius, before the window).
-        let n = 20_000;
-        let (a, b) = (1.0e-6f64.ln(), 0.25f64.ln());
-        let h = (b - a) / n as f64;
-        let inner: f64 = (0..n).map(|i| (a + (i as f64 + 0.5) * h).exp()).map(|m| density(m) * m * m * m).sum::<f64>()
-            * 4.0
-            * PI
-            * h;
-        let f = inner / m;
-        assert!(f > 0.4 && f < 0.8, "{f}");
+    fn half_floats_and_axis_ratios() {
+        assert_eq!(f16_bits(1.0), 0x3c00);
+        assert_eq!(f16_bits(0.5), 0x3800);
+        assert_eq!(f16_bits(0.0), 0);
+        // 1e-4 = 1.6384 x 2^-14: exponent 1, mantissa 654. 3e-5 is subnormal: 3e-5 / 2^-24 = 503.3.
+        assert_eq!(f16_bits(1.0e-4), 1678);
+        assert_eq!(f16_bits(3.0e-5), 503);
+        assert!((axis_ratio("E0") - 1.0).abs() < 1e-6);
+        assert!((axis_ratio("E7") - 0.3).abs() < 1e-6);
     }
 }
