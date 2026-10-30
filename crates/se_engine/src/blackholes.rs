@@ -165,19 +165,22 @@ const ENV_FACES: [(Vec3, Vec3); 6] = [
 /// six at once when the map is (re)started). The lens shader takes rays that leave the screen
 /// from it.
 #[derive(Resource, Default)]
-struct EnvCapture {
-    cams: Vec<Entity>,
+pub(crate) struct EnvCapture {
+    pub(crate) cams: Vec<Entity>,
     size: u32,
     /// Bit i: face i holds the sky seen from `origin`.
-    valid: u8,
+    pub(crate) valid: u8,
     next: usize,
     /// Camera position the faces were rendered at, and the distance to the lensed hole then.
-    origin: Option<se_core::upos::UPos>,
+    pub(crate) origin: Option<se_core::upos::UPos>,
     hole_dist_m: f64,
-    /// Set by `update_lens`: some lensed ray can reach the environment map this frame.
-    want: bool,
+    /// Set by `update_lens` (and the warp bubble, `ship/warp.rs`): some bent ray can reach the
+    /// environment map this frame.
+    pub(crate) want: bool,
     /// Set by `update_lens`: the faces are stale, so all six render this frame.
-    restart: bool,
+    pub(crate) restart: bool,
+    /// Set by the warp bubble at a low `ShipWarpQuality`: no face renders between restarts.
+    pub(crate) paused: bool,
 }
 
 /// Catalog star indices of the black holes and neutron stars the lens draws this frame (their
@@ -195,6 +198,18 @@ struct LensedStars(Vec<u32>);
 /// The systems that fill [`LensedHoles`] each frame.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LensSet;
+
+/// Inside [`LensSet`]: the lens uniforms, then the environment cameras (the warp bubble,
+/// `ship/warp.rs`, asks for the map between the two).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LensStage {
+    Lens,
+    EnvCams,
+}
+
+/// The lens render pass (Core3d).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LensPassSet;
 
 /// Marks an environment-map camera (face index).
 #[derive(Component)]
@@ -245,7 +260,7 @@ impl Plugin for BlackHolesPlugin {
             .add_systems(Startup, (load_settings, init_images).chain())
             .add_systems(
                 PostUpdate,
-                (update_lens, update_env_cams)
+                (update_lens.in_set(LensStage::Lens), update_env_cams.in_set(LensStage::EnvCams))
                     .chain()
                     .in_set(LensSet)
                     .after(UniverseSet::Camera)
@@ -267,7 +282,7 @@ impl Plugin for BlackHolesPlugin {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
             .add_systems(RenderStartup, init_pipeline)
-            .add_systems(Core3d, lens_pass.in_set(Core3dSystems::EarlyPostProcess));
+            .add_systems(Core3d, lens_pass.in_set(LensPassSet).in_set(Core3dSystems::EarlyPostProcess));
     }
 }
 
@@ -577,6 +592,7 @@ fn update_lens(
 ) {
     env.want = false;
     env.restart = false;
+    env.paused = false;
     lensed.0.clear();
     surfaces.0.clear();
     let Some((cam_e, has_lens)) = cams.iter().next() else { return };
@@ -831,7 +847,7 @@ fn update_env_cams(
     let near = main.iter().next().and_then(|p| if let Projection::Perspective(p) = p { Some(p.near) } else { None });
     let next = env.next;
     for (face, mut c, mut tf, mut proj) in &mut faces {
-        let on = restart || face.0 == next;
+        let on = restart || (face.0 == next && !env.paused);
         c.is_active = on;
         if on {
             let (fwd, up) = ENV_FACES[face.0];
@@ -841,8 +857,10 @@ fn update_env_cams(
             }
         }
     }
-    env.valid |= if restart { 0b11_1111 } else { 1 << next };
-    env.next = (next + 1) % 6;
+    if restart || !env.paused {
+        env.valid |= if restart { 0b11_1111 } else { 1 << next };
+        env.next = (next + 1) % 6;
+    }
 }
 
 // ---------------------------------------------------------------------------
