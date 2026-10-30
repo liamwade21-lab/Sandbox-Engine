@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 212 kept after checking (53 of them amended), 1 refuted. 145 have been fixed since (listed at the end); the tables count the 67 still open. 29 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 145 have been fixed since (listed at the end); the tables count the 66 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 19 | 31 | 17 |
+| Gaps | 0 | 0 | 19 | 30 | 17 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 17 | 36 | 14 |
+| Gaps | 16 | 36 | 14 |
 
 | Area | Kept |
 |---|---|
@@ -120,7 +120,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 02 Star clusters | 2 |
 | 03 Galaxies and nebulae | 6 |
 | 04 Planet surfaces | 3 |
-| 05 Atmospheres, rings, comets | 9 |
+| 05 Atmospheres, rings, comets | 8 |
 | 06 Procedural generation | 7 |
 | 07 Camera and time | 4 |
 | 08 Interface | 0 |
@@ -350,15 +350,6 @@ Eclipse model details: SE allows up to 8 casters per light (MAX_ECLIPSES), shape
 - SE evidence: eclipse_common.glh:8-110
 - Port: crates/se_engine/assets/shaders/eclipse.wesl:6-61
 - Check: eclipse_common.glh confirms gamma 1/1.6, a smoothstep penumbra, MAX_ECLIPSES 8 (planet/sky/water/ship.glsl), scaling by AmbientColor.a (planet.glsl:1082, sky.glsl:259) and ellipsoid-scaled positions (FragPosEll/Ellipsoid), with no red tint; the port (terrain.rs:155-203, eclipse.wesl) keeps 4 occluders, uses the exact overlap area, filters out stars (`!b.star`) and tints umbras of atmospheric casters with (0.1,0.03,0.006). But gas giants are already casters in the port, so only stars are missing, and the flat penumbra comes from SE's smoothstep shape plus gamma, not just the gamma
-
-### 05-022 · Atmospheres, rings, comets
-
-Eclipse totality mask: SE's overlay "Eclipse totality mask" (ToggleEclipseMask) paints the umbra on surfaces blue (SurfParams1.x). The port has no such overlay
-
-- Status: missing, effort **S**, auditor confidence high
-- SE evidence: planet.glsl:1377-1380; strings_utf16 "Eclipse totality mask" ToggleEclipseMask
-- Port: none
-- Check: planet.glsl:1377-1380 adds SurfParams1.x to blue where EclipseMask<=0 (SurfParams1 comment line 134 "eclipse shadow mask"), toggled by main-def.cfg ShowEclipseMask false / ToggleEclipseMask / strings_utf16 "Eclipse totality mask"; the port has eclipse shadows (eclipse.wesl, README:176) but no grep hit for an eclipse/totality mask overlay or toggle in crates/
 
 ### 05-018 · Atmospheres, rings, comets
 
@@ -745,6 +736,14 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 ## Deferred by the owner
 
 Still open; left out of the work for now and of the counts above.
+
+### 05-022 · Atmospheres, rings, comets (deferred 2026-10-30)
+
+Eclipse totality mask: SE's overlay "Eclipse totality mask" (ToggleEclipseMask) paints the umbra on surfaces blue (SurfParams1.x). The port has no such overlay
+
+- Status: missing, effort **S**, auditor confidence high
+- SE evidence: planet.glsl:1377-1380; strings_utf16 "Eclipse totality mask" ToggleEclipseMask
+- Port: none
 
 ### 07-020 · Camera and time (deferred 2026-10-30)
 

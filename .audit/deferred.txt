@@ -6,3 +6,4 @@
 09-012 | 2026-10-30 | video capture
 07-020 | 2026-10-30 | gamepad, joystick and 3D mouse
 08-* | 2026-10-30 | the whole Interface area
+05-022 | 2026-10-30 | eclipse totality mask (the rendering side of the deferred 08-041 overlay; deferred by the main session while the owner was away)
