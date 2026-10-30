@@ -51,6 +51,10 @@ pub struct Settings<'w, 's> {
     pub emission: Option<ResMut<'w, SelfEmission>>,
     pub water: Option<ResMut<'w, WaterDisplay>>,
     pub switches: Option<ResMut<'w, RenderSwitches>>,
+    /// Script commands `DisplayMode`, `SetLocale` and `ReloadConstellations`.
+    pub projection: Option<ResMut<'w, crate::projection::ProjectionSettings>>,
+    pub i18n: Option<ResMut<'w, crate::i18n::I18n>>,
+    pub cons_reload: Option<ResMut<'w, crate::constellations::ReloadConstellations>>,
     /// SE's `Brightness`/`Contrast`/`Saturation`/`Gamma` (FUN_140326220) live on the camera.
     pub color: Query<'w, 's, &'static mut ColorCorrection, With<MainCamera>>,
 }

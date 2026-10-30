@@ -992,6 +992,48 @@ impl ScriptRunner {
                     Err(e) => self.warn_once(&format!("{key}:{file}"), format!("{} \"{}\": {e} (line {line})", item.key, path.display())),
                 }
             }
+            // FUN_140553a50: the projection modes; SE's stereo modes are not ported (09-017).
+            "displaymode" => {
+                let mode = item.name().unwrap_or("").to_ascii_lowercase();
+                let m = match mode.as_str() {
+                    "cubemap" => 1,
+                    "fisheye" => 2,
+                    "cylinder" => 3,
+                    "crosseye" | "verpair" | "horpair" | "anaglyph" | "shutter" => {
+                        self.warn_once(&format!("dm:{mode}"), format!("DisplayMode \"{mode}\": stereoscopic modes are not ported (line {line})"));
+                        0
+                    }
+                    _ => 0,
+                };
+                if let Some(p) = cx.vars.projection.as_mut() {
+                    p.mode = m;
+                }
+            }
+            // FUN_1405537b0: a language with a *-gui.cfg, else "Localization not found".
+            "setlocale" => {
+                let code = item.name().unwrap_or("");
+                match cx.vars.i18n.as_mut() {
+                    Some(i) if i.languages.iter().any(|(c, _)| c == code) => i.set_language(&cx.data.vfs, code),
+                    _ => self.warn_once(&format!("loc:{code}"), format!("Localization not found: \"{code}\" (line {line})")),
+                }
+            }
+            "reloadconstellations" => {
+                if let Some(r) = cx.vars.cons_reload.as_mut() {
+                    r.0 = true;
+                }
+            }
+            // FUN_140557b40 prints every config variable (type, value, min, max) as an HTML table; the
+            // port prints the settings scripts can reach, with their values.
+            "printvars" => {
+                let mut out = String::from("<table><tbody>\n");
+                for name in crate::script_vars::SCALARS {
+                    if let Some(v) = cx.vars.get(cx.cam, cx.sim, name) {
+                        out.push_str(&format!("<tr><td>{name}</td><td>double</td><td>{v}</td></tr>\n"));
+                    }
+                }
+                out.push_str("</tbody></table>");
+                info!("PrintVars:\n{out}");
+            }
             "show" | "hide" => {
                 let what = item.name().unwrap_or("").to_ascii_lowercase();
                 if !show_hide(cx, &what, key == "show") {

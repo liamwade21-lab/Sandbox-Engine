@@ -279,14 +279,28 @@ pub struct ConstellationsPlugin;
 
 impl Plugin for ConstellationsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Constellations>().add_systems(Startup, load_constellations).add_systems(
+        app.init_resource::<Constellations>()
+            .init_resource::<ReloadConstellations>()
+            .add_systems(Startup, load_constellations)
+            .add_systems(Update, load_constellations.run_if(|r: Res<ReloadConstellations>| r.0))
+            .add_systems(
             EguiPrimaryContextPass,
             draw_constellations.in_set(crate::skin::UiSet::Draw).after(crate::grids::draw_grids).before(crate::overlay::draw_orbits),
         );
     }
 }
 
-fn load_constellations(data: Res<SeData>, mut cons: ResMut<Constellations>, mut settings: ResMut<OverlaySettings>) {
+/// Set by the script command `ReloadConstellations` (FUN_140551c40): the constellations are read again.
+#[derive(Resource, Default)]
+pub struct ReloadConstellations(pub bool);
+
+fn load_constellations(
+    data: Res<SeData>,
+    mut cons: ResMut<Constellations>,
+    mut settings: ResMut<OverlaySettings>,
+    mut reload: ResMut<ReloadConstellations>,
+) {
+    reload.0 = false;
     let text = match data.vfs.read_string(CFG_PATH) {
         Ok(t) => t,
         Err(e) => {
