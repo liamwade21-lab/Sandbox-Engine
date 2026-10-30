@@ -192,12 +192,13 @@ pub struct StarSettings {
     pub zoom: f32,
     /// `StarMagnLimit` as loaded at startup, which SE's ResetAllMagnCoef (P) goes back to.
     pub mag_limit_reset: f32,
-    /// `GalaxyMagnLimit` / `NebulaMagnLimit` (main-def.cfg, 7): the deep-sky limits, read by
-    /// `galaxies.rs` / `nebulae.rs` (a galaxy this bright has the far sprites' reference flux), and
-    /// their startup values for ResetAllMagnCoef.
+    /// `GalaxyMagnLimit` / `NebulaMagnLimit` / `GlowMagnLimit` (main-def.cfg, 7): the deep-sky limits,
+    /// read by `galaxies.rs` / `nebulae.rs` (far sprites' reference flux; the glow limit scales the sprite
+    /// models, `galaxies::se_glow_bright`), and their startup values for ResetAllMagnCoef.
     pub galaxy_mag_limit: f32,
     pub nebula_mag_limit: f32,
-    pub dso_mag_limit_reset: [f32; 2],
+    pub glow_mag_limit: f32,
+    pub dso_mag_limit_reset: [f32; 3],
     /// SE's `StarFrustumClipFOV` (degrees, main-def.cfg): under this field of view SE loads the
     /// stars inside the view frustum only (FUN_14047b670), so zooming in loads fainter stars there.
     pub clip_fov: f32,
@@ -221,7 +222,8 @@ impl Default for StarSettings {
             mag_limit_reset: 7.0,
             galaxy_mag_limit: 7.0,
             nebula_mag_limit: 7.0,
-            dso_mag_limit_reset: [7.0; 2],
+            glow_mag_limit: 7.0,
+            dso_mag_limit_reset: [7.0; 3],
             clip_fov: 30.0,
         }
     }
@@ -468,7 +470,8 @@ fn track_zoom(cam: Res<FlyCamera>, mut s: ResMut<StarSettings>) {
 /// DecAllMagnCoef), Ctrl+`]` / `[` the stars' alone (IncStarMagnCoef / DecStarMagnCoef), and P
 /// resets them to the startup values (ResetAllMagnCoef). The port has one limit for stars and
 /// planets, so both act on it; Shift+`]` / `[` change the galaxies' and nebulae' limits
-/// (`GalaxyMagnLimit`, `NebulaMagnLimit`; "Galaxies magnitude limit"), which `]` / `[` raise too;
+/// (`GalaxyMagnLimit`, `NebulaMagnLimit`, `GlowMagnLimit`; "Galaxies magnitude limit"), which `]` / `[`
+/// raise too;
 /// Ctrl+Shift (planets) is left unbound. Each shows the limit as a splash message (its wording
 /// here is assumed).
 fn mag_limit_keys(
@@ -500,6 +503,7 @@ fn mag_limit_keys(
         }
         s.galaxy_mag_limit = dso(s.galaxy_mag_limit);
         s.nebula_mag_limit = dso(s.nebula_mag_limit);
+        s.glow_mag_limit = dso(s.glow_mag_limit);
         msg.show(format!("{}: {:.1}", i18n.tr("Galaxies magnitude limit"), s.galaxy_mag_limit));
         return;
     }
@@ -509,10 +513,11 @@ fn mag_limit_keys(
         if !ctrl {
             s.galaxy_mag_limit = dso(s.galaxy_mag_limit);
             s.nebula_mag_limit = dso(s.nebula_mag_limit);
+            s.glow_mag_limit = dso(s.glow_mag_limit);
         }
     } else if keys.just_pressed(KeyCode::KeyP) && !ctrl {
         s.mag_limit = s.mag_limit_reset;
-        [s.galaxy_mag_limit, s.nebula_mag_limit] = s.dso_mag_limit_reset;
+        [s.galaxy_mag_limit, s.nebula_mag_limit, s.glow_mag_limit] = s.dso_mag_limit_reset;
     } else {
         return;
     }

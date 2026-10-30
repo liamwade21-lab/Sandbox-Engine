@@ -247,8 +247,16 @@ pub struct GalaxySettings {
     pub enabled: bool,
     /// Global brightness of far sprites; 3D models are calibrated to the same surface brightness.
     pub far_brightness: f32,
-    /// Extra multiplier on the 3D model emission (1 = same mean surface brightness as the far sprite).
+    /// Multiplier on SE's model emission ([`se_glow_bright`]); defaults to [`MODEL_EXPOSURE`].
     pub model_brightness: f32,
+    /// SE's model brightness chain (main-def.cfg): `GlowMagnLimit` (follows the `]` / `[` keys),
+    /// `GlowBrightMin`, `hdrGalaxySpriteBright` and `GalaxyFrontTexBright`.
+    pub glow_mag_limit: f32,
+    pub glow_bright_min: f32,
+    pub sprite_bright: f32,
+    pub front_tex_bright: f32,
+    /// `GalaxyBrightMin` (cut-off of SE's per-galaxy brightness term, [`se_bright_term`]).
+    pub bright_min: f32,
     /// Multiplier on SE's dust strength (absBright = the model's `Transparency`); 1 = SE.
     pub dust_strength: f32,
     /// Minimum far-sprite radius in pixels.
@@ -273,7 +281,12 @@ impl Default for GalaxySettings {
         Self {
             enabled: true,
             far_brightness: 1.5,
-            model_brightness: 1.0,
+            model_brightness: MODEL_EXPOSURE,
+            glow_mag_limit: 7.0,
+            glow_bright_min: 0.006,
+            sprite_bright: 0.03,
+            front_tex_bright: 1.0,
+            bright_min: 0.03,
             dust_strength: 1.0,
             min_px: 2.5,
             build_px: 4.0,
@@ -433,16 +446,13 @@ struct BuiltModel {
     em: SpriteBuffers,
     dust: SpriteBuffers,
     map: Option<DensityMap>,
-    /// Mean per-pixel emission over the face-on disc for unit brightness (see calibration).
-    s_raw: f32,
     sprites: usize,
     plane: Option<FrontPlane>,
 }
 
-/// A model's front texture (with mipmaps) and its mean brightness over the disc after SE's gamma.
+/// A model's front texture (with mipmaps).
 struct FrontPlane {
     image: Image,
-    s_tex: f32,
 }
 
 struct BuildInput {
@@ -451,7 +461,6 @@ struct BuildInput {
     def: GalaxyModelDef,
     orientation: DQuat,
     radius_pc: f64,
-    tile_mean: [f32; 16],
     map_mode: u32,
     bulge_gain: f32,
 }
@@ -484,7 +493,7 @@ fn load_image(vfs: &Vfs, name: &Option<String>) -> Option<RgbaImage> {
 }
 
 fn build_model(inp: BuildInput) -> Option<BuiltModel> {
-    let BuildInput { vfs, textures, def, orientation, radius_pc, tile_mean, map_mode, bulge_gain } = inp;
+    let BuildInput { vfs, textures, def, orientation, radius_pc, map_mode, bulge_gain } = inp;
     let tex = model_textures(&def, &textures);
     let front = load_image(&vfs, &tex.front_image);
     let side = load_image(&vfs, &tex.side_image);
@@ -507,7 +516,6 @@ fn build_model(inp: BuildInput) -> Option<BuiltModel> {
     let scale = DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc;
     let mut em = SpriteBuffers::default();
     let mut dust = SpriteBuffers::default();
-    let mut cover = 0.0f64;
     for s in &data.sprites {
         let local = DVec3::new(s.pos[0] as f64, s.pos[1] as f64, s.pos[2] as f64) * scale;
         let off = orientation * se_to_port(map_mode, local);
@@ -515,75 +523,78 @@ fn build_model(inp: BuildInput) -> Option<BuiltModel> {
         let layer = s.layer();
         let info = [size_pc as f32, s.atlas_tile() as f32, s.lod_rand as f32 / 255.0, layer as u8 as f32];
         let pos = [off.x as f32, off.y as f32, off.z as f32];
-        let mut d = sprite_vertex(s.color, s.brightness, def.brightness);
-        if layer == SpriteLayer::Absorption {
-            dust.push(pos, d, info);
-        } else {
-            // `SE_GAL_BULGE` scales the bulge sprites for comparisons (the calibration `cover` below uses
-            // the ungained value so the disc keeps its brightness).
-            let lum = 0.2126 * s.color[0] + 0.7152 * s.color[1] + 0.0722 * s.color[2];
-            let side = 2.0 * s.size as f64;
-            let full = d[3];
-            if layer == SpriteLayer::Bulge {
+        let mut d = sprite_vertex(s.color, s.brightness);
+        match layer {
+            SpriteLayer::Emission => em.push(pos, d, info),
+            SpriteLayer::Absorption => dust.push(pos, d, info),
+            // SE's VBO holds em, abs, bulge in generation order, bucketed into BBoxRes^3 cells by
+            // SortVertexesToTree (FUN_140332910); the cell draw order was not traced. Drawing the bulge after
+            // all dust hid the dust lane across the centre from the Sun, so the bulge stays with the emission
+            // and all dust is drawn over it. `SE_GAL_BULGE` scales it for comparisons (1 = SE).
+            SpriteLayer::Bulge => {
                 d[3] *= bulge_gain;
+                em.push(pos, d, info);
             }
-            em.push(pos, d, info);
-            cover += (full * lum) as f64 * tile_mean[s.atlas_tile() as usize] as f64 * side * side;
         }
     }
-    let s_raw = (cover / PI) as f32;
     let plane = tex.front_texture.as_deref().and_then(|name| front_plane(&vfs, name));
     Some(BuiltModel {
         sprites: data.sprites.len(),
         em,
         dust,
         map: data.emission_map,
-        s_raw,
         plane,
     })
 }
 
 /// Vertex colour and intensity of a model sprite as SE uploads them (FUN_1402da540 / FUN_1402d9a10:
-/// `clamp(colour) * 255` and `min(1, intensity) * 255` bytes; the shader reads them back as 0..1), times
-/// the model's `Brightness` (SE multiplies it into emBright, the same factor for every sprite).
-pub(crate) fn sprite_vertex(color: [f32; 3], intensity: f32, model_brightness: f32) -> [f32; 4] {
+/// `clamp(colour) * 255` and `min(1, intensity) * 255` bytes; the shader reads them back as 0..1).
+pub(crate) fn sprite_vertex(color: [f32; 3], intensity: f32) -> [f32; 4] {
     let c = color.map(|c| c.clamp(0.0, 1.0));
-    [c[0], c[1], c[2], intensity.clamp(0.0, 1.0) * model_brightness]
+    [c[0], c[1], c[2], intensity.clamp(0.0, 1.0)]
+}
+
+/// The one free factor on SE's sprite-model brightness chain (galaxies and nebulae): it stands for the
+/// parts that were not decoded (the per-frame multipliers at renderer +0x35ac / +0x35b8 and galaxy +0xa4,
+/// the BBoxRes cell draw order, SE's HDR exposure and tone curve against the port's AgX). Chosen so the
+/// view from the Sun toward Sgr A* (FOV 45 and 10) keeps the band unsaturated with brown dust lanes, as
+/// before the port of the chain; at 1 the bulge behind the lane went orange/red. `SE_GAL_MODEL` /
+/// `SE_NEB_MODEL` override it.
+pub(crate) const MODEL_EXPOSURE: f32 = 0.5;
+
+/// SE's magnitude-limit coefficient (FUN_1404c4610): a limit `m` is `exp((m + 0.2) / 1.0587)`
+/// (DAT_1406d4204 = 0.2, DAT_1406d46a8 = 1.0587362).
+pub(crate) fn se_magn_coef(limit: f32) -> f32 {
+    ((limit + 0.2) / 1.058_736_2).exp()
+}
+
+/// SE's sprite-model brightness without the fades (emBright of FUN_14029bdf0, PhotoMode 0 = HDR):
+/// `DAT_14080b5a4 * [renderer+0x35ec]` = `GlowBrightMin * exp((GlowMagnLimit + 0.2) / 1.0587)`
+/// (FUN_1404c4610) times `hdrGalaxySpriteBright` (or `hdrNebulaSpriteBright`, FUN_1404c4ae0 +0x4c / +0x50).
+/// The draw multiplies it by the model's `Brightness` and the galaxy's +0x74; the front texture
+/// (galaxy_plane.glsl EyePos.w) by `GalaxyFrontTexBright` instead of `Brightness`. 0.162 at SE's defaults.
+pub(crate) fn se_glow_bright(glow_limit: f32, glow_bright_min: f32, sprite_bright: f32) -> f32 {
+    glow_bright_min * se_magn_coef(glow_limit) * sprite_bright
+}
+
+/// SE's per-object brightness term of a sprite model (FUN_140299fe0 galaxies, FUN_1402b3020 nebulae):
+/// `clamp(scale * coef(limit) * L / d^2 - bright_min, 0, 1)`, with the object's flux `L / d^2` taken as
+/// `exp(-(m + 0.2) / 1.0587)` on SE's magnitude scale (its units were not traced). Galaxies use scale 1
+/// (DAT_14080b58c) and `GalaxyBrightMin`, nebulae `NebulaBrightMin` for both. 0 hides the model.
+pub(crate) fn se_bright_term(limit: f32, m_app: f32, scale: f32, bright_min: f32) -> f32 {
+    (scale * ((limit - m_app) / 1.058_736_2).exp() - bright_min).clamp(0.0, 1.0)
 }
 
 /// SE's `DSOGamma` (main-def.cfg), applied to the front texture (galaxy_plane.glsl).
 const DSO_GAMMA: f32 = 0.7;
-/// SE's `GalaxyFrontTexBright`.
-const FRONT_TEX_BRIGHT: f32 = 1.0;
-/// The share of a face-on model's light in its front texture; its sprites keep the rest (port
-/// calibration: SE draws both at the model's brightness, in units the port does not reproduce; with
-/// less, the sprites' soft cloud hides the texture's detail).
-const FRONT_SHARE: f32 = 0.7;
-
-/// Loads a front texture with its mip chain, and measures its mean brightness (linear, after the
-/// gamma) over the disc it shows (the inscribed circle: one model unit).
+/// Loads a front texture with its mip chain.
 fn front_plane(vfs: &Vfs, name: &str) -> Option<FrontPlane> {
     let bytes = vfs.read(&format!("textures/galaxies/{name}")).ok()?;
     let mut level = image::load_from_memory(&bytes).ok()?.to_rgba8();
     let (w, h) = level.dimensions();
     let mut data = Vec::new();
     let mut mips = 0;
-    let mut s_tex = None;
     loop {
-        if s_tex.is_none() && level.width() <= 512 {
-            let (lw, lh) = level.dimensions();
-            let lin = |c: u8| srgb_to_linear(c as f32 / 255.0).powf(1.0 / DSO_GAMMA) as f64;
-            let (mut sum, mut n) = (0.0f64, 0u32);
-            for (x, y, p) in level.enumerate_pixels() {
-                let u = (x as f64 + 0.5) / lw as f64 * 2.0 - 1.0;
-                let v = (y as f64 + 0.5) / lh as f64 * 2.0 - 1.0;
-                if u * u + v * v <= 1.0 {
-                    sum += 0.2126 * lin(p[0]) + 0.7152 * lin(p[1]) + 0.0722 * lin(p[2]);
-                    n += 1;
-                }
-            }
-            s_tex = Some((sum / n.max(1) as f64) as f32);
-        }
         data.extend_from_slice(level.as_raw());
         mips += 1;
         if level.width() == 1 && level.height() == 1 {
@@ -609,11 +620,7 @@ fn front_plane(vfs: &Vfs, name: &str) -> Option<FrontPlane> {
         anisotropy_clamp: 8,
         ..default()
     });
-    Some(FrontPlane { image, s_tex: s_tex.unwrap_or(0.0) })
-}
-
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    Some(FrontPlane { image })
 }
 
 /// A unit quad (corners at +-1) with the texture's columns along +x and its rows down +y.
@@ -739,9 +746,8 @@ enum SlotState {
 struct ReadyModel {
     entities: [Entity; 2],
     mats: [Handle<GalaxyModelMaterial>; 2],
-    /// The front texture's disc: entity, material, mean brightness.
-    plane: Option<(Entity, Handle<GalaxyPlaneMaterial>, f32)>,
-    s_raw: f32,
+    /// The front texture's disc: entity, material.
+    plane: Option<(Entity, Handle<GalaxyPlaneMaterial>)>,
     sprites: usize,
     /// Emission voxel map (the density of the stars generated inside the galaxy).
     map: Option<Arc<DensityMap>>,
@@ -930,8 +936,9 @@ pub(crate) fn main_def_doc(cfg: &crate::config::EngineConfig) -> Option<se_core:
 /// galaxy far sprites and models (procedural galaxies and ellipticals read the same setting).
 fn sync_mag_limit(stars: Res<crate::stars::StarSettings>, mut gs: ResMut<GalaxySettings>) {
     let m = stars.galaxy_mag_limit + MAG_REF_OFFSET;
-    if (gs.mag_ref - m).abs() > 1e-6 {
+    if (gs.mag_ref - m).abs() > 1e-6 || gs.glow_mag_limit != stars.glow_mag_limit {
         gs.mag_ref = m;
+        gs.glow_mag_limit = stars.glow_mag_limit;
     }
 }
 
@@ -965,8 +972,14 @@ pub(crate) fn setup_galaxies(
         let flag = |k: &str| doc.find_deep(k).and_then(|i| i.bool());
         stars.galaxy_mag_limit = num("GalaxyMagnLimit").unwrap_or(stars.galaxy_mag_limit);
         stars.nebula_mag_limit = num("NebulaMagnLimit").unwrap_or(stars.nebula_mag_limit);
-        stars.dso_mag_limit_reset = [stars.galaxy_mag_limit, stars.nebula_mag_limit];
+        stars.glow_mag_limit = num("GlowMagnLimit").unwrap_or(stars.glow_mag_limit);
+        stars.dso_mag_limit_reset = [stars.galaxy_mag_limit, stars.nebula_mag_limit, stars.glow_mag_limit];
         settings.mag_ref = stars.galaxy_mag_limit + MAG_REF_OFFSET;
+        settings.glow_mag_limit = stars.glow_mag_limit;
+        settings.glow_bright_min = num("GlowBrightMin").unwrap_or(settings.glow_bright_min);
+        settings.sprite_bright = num("hdrGalaxySpriteBright").unwrap_or(settings.sprite_bright);
+        settings.front_tex_bright = num("GalaxyFrontTexBright").unwrap_or(settings.front_tex_bright);
+        settings.bright_min = num("GalaxyBrightMin").unwrap_or(settings.bright_min);
         // SE_GAL_AUTO (testing) wins over AutoGalaxyMagnitude.
         if std::env::var_os("SE_GAL_AUTO").is_none() {
             settings.auto_gain = flag("AutoGalaxyMagnitude").unwrap_or(settings.auto_gain);
@@ -1139,7 +1152,6 @@ fn spawn_build(state: &mut GalaxyState, vfs: &Arc<Vfs>, rec: &GalaxyRecord, g: u
         def: state.models.models()[mi].clone(),
         orientation: rec.orientation,
         radius_pc: rec.radius_pc,
-        tile_mean: state.tile_mean,
         map_mode: std::env::var("SE_GAL_MAP").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MAP_MODE),
         bulge_gain: std::env::var("SE_GAL_BULGE").ok().and_then(|v| v.parse().ok()).unwrap_or(BULGE_GAIN),
     };
@@ -1336,13 +1348,12 @@ pub(crate) fn update_galaxies(
                     GalaxyEntity,
                 ))
                 .id();
-            (e, mat, fp.s_tex)
+            (e, mat)
         });
         slot.state = SlotState::Ready(ReadyModel {
             entities: [e0, e1],
             mats: [m_em, m_du],
             plane,
-            s_raw: built.s_raw,
             sprites: built.sprites,
             map,
         });
@@ -1381,35 +1392,33 @@ pub(crate) fn update_galaxies(
         let fade = if settings.enabled { model_fade(px, settings.build_px as f64) } else { 0.0 };
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
 
-        // Calibration: the model's mean surface brightness equals that of the far sprite.
-        let r = rec.radius_pc * def.radius[0] as f64;
-        let flux = 10f64.powf(0.4 * (settings.mag_ref as f64 - rec.vis_mag)) * 100.0;
-        let target = settings.far_brightness as f64 * flux / (PI * r * r * FOCAL_REF * FOCAL_REF);
-        let target = vision(target as f32, gain, px as f32, VISION_CAP_MODEL) as f64;
-        let k_emission = if ready.s_raw > 0.0 {
-            (target / ready.s_raw as f64) as f32 * settings.model_brightness * rec.model_bright as f32
-        } else {
-            0.0
-        };
-        // SE's absBright (FUN_14029bdf0: model Transparency x the fade, which the shader applies).
-        let k_dust = settings.dust_strength * def.transparency;
-        // The front texture's disc over the sprites: it takes `FRONT_SHARE` of the calibrated surface
-        // brightness as it turns face-on (its shader fades it edge-on), the sprites the rest.
-        let mut k_emission = k_emission;
-        if let Some((e, mat, s_tex)) = &ready.plane {
+        // SE's brightness chain (FUN_14029bdf0 / FUN_140299fe0): emBright = se_glow_bright x model
+        // Brightness x the galaxy's +0x74 (catalog ModelBright) x fades (p3 = 1 - px 1e-7 and the
+        // per-frame multipliers at renderer +0x35ac / +0x35b8 / galaxy +0xa4 are 1 in a plain view);
+        // absBright = Transparency x p1 (fade-in x bright_term, both 1 for a resolved galaxy brighter
+        // than the limit). The model fade `center_rel.w` stands in for the fade-in.
+        let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright)
+            * settings.model_brightness
+            * rec.model_bright as f32;
+        let m_app = rec.vis_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
+        let bright = se_bright_term(settings.mag_ref - MAG_REF_OFFSET, m_app as f32, 1.0, settings.bright_min);
+        let fade = if bright > 0.0 { fade } else { 0.0 };
+        let center_rel = center_rel.truncate().extend(fade);
+        let k_emission = glow * def.brightness;
+        let k_dust = settings.dust_strength * def.transparency * bright;
+        // The front texture (galaxy_plane.glsl): EyePos.w = p2 x GalaxyFrontTexBright, drawn with the
+        // sprites at full strength.
+        if let Some((e, mat)) = &ready.plane {
             let unit_pc = rec.radius_pc * def.model_scale().x as f64;
             let axis_x = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(unit_pc, 0.0, 0.0));
             let axis_y = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(0.0, unit_pc, 0.0));
-            let normal = axis_x.cross(axis_y).normalize_or_zero();
-            let face = smoothstep(0.0, 1.0, (rec.pos_pc - cam_pc).normalize_or_zero().dot(normal).abs() * 2.5 - 0.2) as f32;
-            k_emission *= 1.0 - FRONT_SHARE * face;
-            let k_plane = if *s_tex > 0.0 { target as f32 / s_tex * FRONT_SHARE * FRONT_TEX_BRIGHT } else { 0.0 };
+            let k_plane = glow * settings.front_tex_bright;
             if let Some(mut m) = plane_mats.get_mut(mat) {
                 m.uniforms = PlaneParams {
                     center_rel,
                     axis_x: axis_x.as_vec3().extend(0.0),
                     axis_y: axis_y.as_vec3().extend(0.0),
-                    params: Vec4::new(k_plane * settings.model_brightness * rec.model_bright as f32, 1.0 / DSO_GAMMA, unit_pc as f32, 0.0),
+                    params: Vec4::new(k_plane, 1.0 / DSO_GAMMA, unit_pc as f32, 0.0),
                 };
             }
             if let Ok(mut v) = vis.get_mut(*e) {
@@ -1455,8 +1464,19 @@ mod tests {
     #[test]
     fn sprite_vertex_clamps_like_se_bytes() {
         // SE uploads clamp(colour) and min(1, intensity) as bytes; the model Brightness multiplies emBright.
-        assert_eq!(sprite_vertex([0.08, 0.24, 1.7], 5.5, 1.0), [0.08, 0.24, 1.0, 1.0]);
-        assert_eq!(sprite_vertex([1.0, 0.5, -0.2], 0.25, 2.0), [1.0, 0.5, 0.0, 0.5]);
+        assert_eq!(sprite_vertex([0.08, 0.24, 1.7], 5.5), [0.08, 0.24, 1.0, 1.0]);
+        assert_eq!(sprite_vertex([1.0, 0.5, -0.2], 0.25), [1.0, 0.5, 0.0, 0.25]);
+    }
+
+    #[test]
+    fn se_model_brightness_chain() {
+        // exp((7 + 0.2) / 1.0587) = 898.
+        assert!((se_magn_coef(7.0) - 898.3).abs() < 0.5, "{}", se_magn_coef(7.0));
+        // GlowBrightMin 0.006 x exp(7.2 / 1.0587) x hdrGalaxySpriteBright 0.03.
+        assert!((se_glow_bright(7.0, 0.006, 0.03) - 0.1619).abs() < 1e-3);
+        // One magnitude more on the limit: x exp(1 / 1.0587) = 2.57.
+        let r = se_glow_bright(8.0, 0.006, 0.03) / se_glow_bright(7.0, 0.006, 0.03);
+        assert!((r - 2.572).abs() < 1e-2, "{r}");
     }
 
     #[test]

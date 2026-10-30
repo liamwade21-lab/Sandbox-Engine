@@ -17,7 +17,6 @@
 //! * Like the galaxies, everything sorts after all other transparent items and fades out in daylight.
 
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
@@ -37,9 +36,9 @@ use se_core::vfs::Vfs;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, FOCAL_REF, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
     ModelParams, SpriteAtlas, SpriteBuffers, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
-    setup_galaxies, sprite_vertex, update_galaxies,
+    se_bright_term, se_glow_bright, setup_galaxies, sprite_vertex, update_galaxies,
 };
 
 /// Names (lower case) of the catalog nebulae marked `NoModel true` in their `.sc` source: SE gives them
@@ -64,7 +63,7 @@ pub struct NebulaSettings {
     pub enabled: bool,
     /// Far-sprite brightness; the 3D model is calibrated to the same mean surface brightness.
     pub brightness: f32,
-    /// Extra multiplier on the model emission.
+    /// Multiplier on SE's model emission; defaults to `galaxies::MODEL_EXPOSURE`.
     pub model_brightness: f32,
     /// Multiplier on SE's dust strength (absBright = the model's `Transparency`); 1 = SE.
     pub dust_strength: f32,
@@ -72,8 +71,15 @@ pub struct NebulaSettings {
     pub build_px: f32,
     /// Maximum resident models.
     pub max_models: usize,
-    /// Reference magnitude of the far sprites and models: SE's `NebulaMagnLimit` + `MAG_REF_OFFSET`.
+    /// Reference magnitude of the far sprites: SE's `NebulaMagnLimit` + `MAG_REF_OFFSET`.
     pub mag_ref: f32,
+    /// SE's model brightness chain (main-def.cfg, see `galaxies::se_glow_bright`): `NebulaMagnLimit`,
+    /// `NebulaBrightMin`, `GlowMagnLimit`, `GlowBrightMin`, `hdrNebulaSpriteBright`.
+    pub mag_limit: f32,
+    pub bright_min: f32,
+    pub glow_mag_limit: f32,
+    pub glow_bright_min: f32,
+    pub sprite_bright: f32,
 }
 
 impl Default for NebulaSettings {
@@ -81,11 +87,16 @@ impl Default for NebulaSettings {
         let mut s = Self {
             enabled: true,
             brightness: 0.8,
-            model_brightness: 1.0,
+            model_brightness: crate::galaxies::MODEL_EXPOSURE,
             dust_strength: 1.0,
             build_px: 4.0,
             max_models: 4,
             mag_ref: 7.0 + MAG_REF_OFFSET,
+            mag_limit: 7.0,
+            bright_min: 0.03,
+            glow_mag_limit: 7.0,
+            glow_bright_min: 0.006,
+            sprite_bright: 0.06,
         };
         let get = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok());
         if let Some(v) = get("SE_NEB_FAR") {
@@ -104,7 +115,6 @@ impl Default for NebulaSettings {
 struct BuiltNebula {
     em: SpriteBuffers,
     dust: SpriteBuffers,
-    s_raw: f32,
     sprites: usize,
 }
 
@@ -114,7 +124,6 @@ struct BuildInput {
     def: GalaxyModelDef,
     orientation: DQuat,
     radius_pc: f64,
-    tile_mean: [f32; 16],
 }
 
 /// Loads a nebula texture. Like the exe, the absorption channel is the *last* channel of the image, so an
@@ -164,13 +173,12 @@ fn nebula_color(vfs: &Vfs, textures: &[String], def: &GalaxyModelDef, tile_mean:
 }
 
 fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
-    let BuildInput { vfs, textures, def, orientation, radius_pc, tile_mean } = inp;
+    let BuildInput { vfs, textures, def, orientation, radius_pc } = inp;
     let data = generate(&vfs, &textures, &def)?;
     let ms = def.model_scale();
     let scale = DVec3::new(ms.x as f64, ms.y as f64, ms.z as f64) * radius_pc;
     let mut em = SpriteBuffers::default();
     let mut dust = SpriteBuffers::default();
-    let mut cover = 0.0f64;
     for s in &data.sprites {
         let local = DVec3::new(s.pos[0] as f64, s.pos[1] as f64, s.pos[2] as f64) * scale;
         let off = orientation * local;
@@ -178,17 +186,14 @@ fn build_nebula(inp: BuildInput) -> Option<BuiltNebula> {
         let layer = s.layer();
         let info = [size_pc as f32, s.atlas_tile() as f32, s.lod_rand as f32 / 255.0, layer as u8 as f32];
         let pos = [off.x as f32, off.y as f32, off.z as f32];
-        let d = sprite_vertex(s.color, s.brightness, def.brightness);
+        let d = sprite_vertex(s.color, s.brightness);
         if layer == SpriteLayer::Absorption {
             dust.push(pos, d, info);
         } else {
             em.push(pos, d, info);
-            let lum = 0.2126 * s.color[0] + 0.7152 * s.color[1] + 0.0722 * s.color[2];
-            let side = 2.0 * s.size as f64;
-            cover += (d[3] * lum) as f64 * tile_mean[s.atlas_tile() as usize] as f64 * side * side;
         }
     }
-    Some(BuiltNebula { sprites: data.sprites.len(), em, dust, s_raw: (cover / PI) as f32 })
+    Some(BuiltNebula { sprites: data.sprites.len(), em, dust })
 }
 
 enum SlotState {
@@ -200,7 +205,6 @@ enum SlotState {
 struct Ready {
     entities: [Entity; 2],
     mats: [Handle<GalaxyModelMaterial>; 2],
-    s_raw: f32,
 }
 
 struct Slot {
@@ -276,8 +280,10 @@ fn nebula_far_settings(s: &NebulaSettings) -> GalaxySettings {
 /// `NebulaMagnLimit` (the `]` / `[` keys, `stars::mag_limit_keys`) -> the nebulae's reference magnitude.
 fn sync_mag_limit(stars: Res<crate::stars::StarSettings>, mut ns: ResMut<NebulaSettings>) {
     let m = stars.nebula_mag_limit + MAG_REF_OFFSET;
-    if (ns.mag_ref - m).abs() > 1e-6 {
+    if (ns.mag_ref - m).abs() > 1e-6 || ns.glow_mag_limit != stars.glow_mag_limit {
         ns.mag_ref = m;
+        ns.mag_limit = stars.nebula_mag_limit;
+        ns.glow_mag_limit = stars.glow_mag_limit;
     }
 }
 
@@ -314,6 +320,16 @@ fn setup_nebulae(
     // `ShowCatNebulae false` (main-def.cfg ObjectFilters) hides the catalog nebulae.
     if let Some(doc) = main_def_doc(&cfg) {
         settings.enabled &= doc.find_deep("ShowCatNebulae").and_then(|i| i.bool()).unwrap_or(true);
+        let num = |k: &str, v: &mut f32| {
+            if let Some(x) = doc.find_deep(k).and_then(|i| i.f64()) {
+                *v = x as f32;
+            }
+        };
+        num("NebulaMagnLimit", &mut settings.mag_limit);
+        num("NebulaBrightMin", &mut settings.bright_min);
+        num("GlowMagnLimit", &mut settings.glow_mag_limit);
+        num("GlowBrightMin", &mut settings.glow_bright_min);
+        num("hdrNebulaSpriteBright", &mut settings.sprite_bright);
     }
     let vfs = data.vfs.clone();
     let cat = data.catalog.clone();
@@ -495,7 +511,6 @@ fn spawn_build(st: &mut NebulaState, vfs: &Arc<Vfs>, rec: &NebulaRecord, n: usiz
         def: st.models.models()[mi].clone(),
         orientation: rec.orientation,
         radius_pc: rec.radius_pc,
-        tile_mean: st.atlas.tile_mean,
     };
     let task = AsyncComputeTaskPool::get().spawn(async move { build_nebula(input) });
     st.slots.push(Slot { nebula: n, state: SlotState::Loading(task), last_wanted: now });
@@ -642,7 +657,7 @@ pub(crate) fn update_nebulae(
         };
         let e0 = spawn(mesh_em, &m_em);
         let e1 = spawn(mesh_du, &m_du);
-        slot.state = SlotState::Ready(Ready { entities: [e0, e1], mats: [m_em, m_du], s_raw: built.s_raw });
+        slot.state = SlotState::Ready(Ready { entities: [e0, e1], mats: [m_em, m_du] });
     }
     st.slots.retain(|s| !matches!(s.state, SlotState::Failed));
     let mut i = 0;
@@ -668,13 +683,14 @@ pub(crate) fn update_nebulae(
         let px = angular_px(rec.radius_pc, d, focal);
         let fade = if settings.enabled { model_fade(px, settings.build_px as f64) } else { 0.0 };
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
-        // Same mean surface brightness as the far sprite.
-        let r = rec.radius_pc * def.radius[0] as f64;
-        let flux = 10f64.powf(0.4 * (gs.mag_ref as f64 - rec.abs_mag)) * 100.0;
-        let target = settings.brightness as f64 * flux / (PI * r * r * FOCAL_REF * FOCAL_REF);
-        let k_em = if ready.s_raw > 0.0 { (target / ready.s_raw as f64) as f32 * settings.model_brightness } else { 0.0 };
-        // SE's absBright: the model's Transparency (x the fade, applied in the shader).
-        let k_dust = settings.dust_strength * def.transparency;
+        // SE's nebula draw (FUN_1402b3020): emBright = DAT_14080b5a4 (GlowBrightMin x the GlowMagnLimit
+        // coefficient) x model Brightness x hdrNebulaSpriteBright (+0x35f0) x b, absBright = Transparency x b,
+        // b = clamp(NebulaBrightMin coef(NebulaMagnLimit) L / d^2 - NebulaBrightMin, 0, 1) x fade-in.
+        let m_app = rec.abs_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
+        let b = se_bright_term(settings.mag_limit, m_app as f32, settings.bright_min, settings.bright_min);
+        let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright);
+        let k_em = glow * def.brightness * settings.model_brightness * b;
+        let k_dust = settings.dust_strength * def.transparency * b;
         for (e, (mat, dust)) in ready.entities.iter().zip(ready.mats.iter().zip([false, true])) {
             if let Some(mut m) = model_mats.get_mut(mat) {
                 m.uniforms.center_rel = center_rel;

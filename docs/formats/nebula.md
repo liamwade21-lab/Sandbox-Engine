@@ -146,8 +146,10 @@ which is what the stored values describe.
   `AlphaMode::Add` (premultiplied, alpha 0) and dust with SE's `ONE, ONE_MINUS_SRC_ALPHA` blend
   (`AlphaMode::Premultiplied`, output `(-dust colour * emBright, Transparency) * coverage`, see galaxy_model.md
   section 11). Sprite colour and intensity are clamped to 0..1 like SE's vertex bytes. The far sprite cross-fades
-  out through `model_fade` and the model scale is calibrated so that its mean surface brightness equals the
-  far sprite's (`K = target / S_raw`, same as galaxies).
+  out through `model_fade`. Brightness follows SE's nebula draw (FUN_1402b3020): `emBright = GlowBrightMin *
+  exp((GlowMagnLimit + 0.2) / 1.0587) * hdrNebulaSpriteBright * Brightness * b`, `absBright = Transparency * b`,
+  `b = clamp(NebulaBrightMin * exp((NebulaMagnLimit - m) / 1.0587) - NebulaBrightMin, 0, 1)` (m apparent), times
+  the galaxies' free factor `MODEL_EXPOSURE` (`SE_NEB_MODEL`), see galaxy_model.md section 11.
 * **Ordering and daylight**: draw order far < emission < dust, all with a huge positive `depth_bias` and a
   symmetric padded AABB (see galaxy_model.md section 11) so the atmosphere sky shell cannot erase them; they
   fade with the shared `SkyFade` resource written by the galaxy renderer.
@@ -168,9 +170,8 @@ extra draw of about 25k sprites per resident model (60 fps in a debug build in t
 * The pool of a type does not include models without `UseForType` that are named for a nebula of that type,
   and the exe's model load order is only approximated (alphabetical file order): which tiny catalog nebula
   gets which default model is a best guess.
-* Catalog planetaries/SNRs are physically bright for their size (`AbsMagn` over a few thousand AU): the
-  calibrated model saturates to white when you fly to them (e.g. IRAS 23206+4637, M57 at 3e13 km), while
-  faint ones (Abell 33, the Manatee remnant) are nearly invisible at default brightness. `SE_NEB_MODEL`
+* Model brightness no longer follows `AbsMagn` (SE's chain depends only on the model's `Brightness` and the
+  apparent-magnitude term `b`); M57-like planetaries and faint remnants were not re-checked. `SE_NEB_MODEL`
   scales the model brightness for inspection; `SE_NEB_FORCE="Ring Nebula=Plan0"` forces a default model
   onto one nebula.
 * The far sprite of a shell nebula is a soft disc, not a ring (its colour is the emission-weighted mean of
@@ -178,4 +179,4 @@ extra draw of about 25k sprites per resident model (60 fps in a debug build in t
 * Cube-map handedness / orientation is the identity (the same as the galaxy models); not independently
   verified against a reference screenshot beyond the overall look of M42.
 * Dust uses SE's strength now; where the calibrated emission is far above 1 (close to bright models) the
-  subtracted dust colour shows as orange/black (see galaxy_model.md section 11).
+  subtracted dust colour leaves red rims on M 42's dark patches.
