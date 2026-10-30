@@ -102,6 +102,7 @@ cargo test -p se_core
 | X / Shift+X / Ctrl+X / Alt+X | constellations / their lines / boundaries / names (right click the Constellations button for the switches) |
 | Ctrl+; / Alt+; | celestial grids (equatorial by default; ecliptic and galactic on the Celestial grids button's right click) / a planet's geographic grid |
 | Shift+. / Shift+, (`>` / `<`) | SE's ambient lighting up / down in steps of 0.05 (none by default), so dark bodies can be seen |
+| `.` / `,` / `/` | exposure compensation up / down by a quarter stop (repeats while held; -4 to +42) / reset |
 
 ### Flight mode (spacecraft)
 
