@@ -668,6 +668,7 @@ fn spawn_system_members(
             let arid = surf_gen.classes.volq == 1;
             let life = b.block.sub("Life").is_some();
             let mut terrain = crate::terrain::Terrain::new(radius_m, b, temperature, surf_gen, completion.as_ref(), bump_km);
+            terrain.glow_temps = (gen_in.t_eq, gen_in.t_surf);
             terrain.tidal_lock = se_core::climate::catalog_body_in(cat, i as usize, &light).is_some_and(|c| c.tidally_locked);
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.
@@ -1428,6 +1429,7 @@ pub(crate) fn update_sky_shells(
     cam: Res<FlyCamera>,
     bodies: Query<(&SystemBody, &BodyLighting, Option<&crate::terrain::Terrain>, Option<&crate::eclipse::EclipseCasters>)>,
     mut shells: Query<(&SkyOf, &crate::atmosphere::SkyShell, &mut UPosition, &mut UOrientation, &mut MeterScale, &mut Visibility)>,
+    emission: Res<crate::terrain::SelfEmission>,
     mut mats: ResMut<Assets<crate::atmosphere::SkyMaterial>>,
     rings: Query<&crate::rings::Rings>,
     ring_mats: Res<Assets<crate::rings::RingMaterial>>,
@@ -1525,6 +1527,8 @@ pub(crate) fn update_sky_shells(
                 }
                 (dirs, colors)
             },
+            // SE's glowing atmosphere (THERM), scaled as the starlight it scatters.
+            terrain.map_or(Vec3::ZERO, |t| t.glow_atmo(emission.scale())) * crate::terrain::ATM_SCATTER_SCALE * bright,
         );
     }
 }

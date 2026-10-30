@@ -292,6 +292,7 @@ fn setup(
             ring: Vec4::ZERO,
             shadow: Vec4::ZERO,
             eclipse: Default::default(),
+            glow: Vec4::ZERO,
         },
         inscatter: gpu.inscatter.clone(),
         transmittance: gpu.transmittance.clone(),

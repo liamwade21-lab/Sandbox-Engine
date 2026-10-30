@@ -124,6 +124,9 @@ pub struct PlanetUniform {
     /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint); w SE's WaterSurfColor.a, the
     /// water display level ([`WaterDisplay`]).
     pub ice: Vec4,
+    /// SE's GlowColorAtmo ([`glow_color_atmo`]), rgb in the units of
+    /// `light_color`; 0 without a glowing atmosphere.
+    pub glow_atmo: Vec4,
 }
 
 /// SE's water filter (main-def.cfg ObjectFilters `ShowWater`, key `ToggleWater`): seas and lakes fade
@@ -575,6 +578,9 @@ pub struct Terrain {
     /// The atmosphere's `Bright` and look (Opacity, Hue, Saturation, SkyLight), set with `atmosphere`.
     pub atm_bright: f32,
     pub atm_look: Vec4,
+    /// The equilibrium and mean surface temperatures (K) SE's glowing atmosphere is drawn from
+    /// ([`glow_color_atmo`]).
+    pub glow_temps: (f32, f32),
     /// Biome texturing; `None` until chosen (and for bodies without a preset).
     biome: Option<BiomeUniform>,
     biome_chosen: bool,
@@ -616,7 +622,42 @@ pub fn scatter_rel(atm_bright: f32) -> f32 {
     atm_bright * ATM_SCATTER_SCALE / ATM_SUN_SCALE
 }
 
+/// SE's GlowColorAtmo (FUN_1404c4250, HDR photo mode), the light of a hot atmosphere that sky.glsl
+/// and planet.glsl (THERM) scatter as if lit from the planet's centre. Its strength comes from the
+/// equilibrium temperature `t_eq` (record +0x1248; none below 644.211 K):
+/// `(T / 5572)^4 x emission / hdrAtmoScatterBright x 10^(8.36619 - 3880.12 / T - 1380540 / T^2
+/// - 0.775597 ln T) x` the star surface gain at T (FUN_1404c4090, [`crate::system::star_surface_gain`]),
+/// none under 0.001 and `(k - 0.001) / 0.002` up to 0.003; its colour from the PlanckFunction table
+/// at the surface temperature `t_surf` (+0x1250). `emission` is the self-emission scale (renderer
+/// +0xc80, 0 with self-emission off).
+pub fn glow_color_atmo(t_eq: f64, t_surf: f64, emission: f32) -> Vec3 {
+    if t_eq < 644.211 || emission <= 0.0 {
+        return Vec3::ZERO;
+    }
+    let x = t_eq.min(1.0e5);
+    let curve = 10f64.powf(8.366_19 - 3880.12 / x - 1_380_540.0 / (x * x) - 0.775_597 * x.ln());
+    let mut k = (t_eq / 5572.0).powi(4) * emission as f64 / ATM_SCATTER_SCALE as f64
+        * curve
+        * crate::system::star_surface_gain(t_eq);
+    if k < 0.001 {
+        return Vec3::ZERO;
+    }
+    if k < 0.003 {
+        k = (k - 0.001) / 0.002;
+    }
+    let c = crate::blackholes::planck_lookup(t_surf);
+    Vec3::new((k * c[0]) as f32, (k * c[1]) as f32, (k * c[2]) as f32)
+}
+
 impl Terrain {
+    /// SE's GlowColorAtmo for this body's atmosphere at self-emission scale `emission`; 0 without one.
+    pub fn glow_atmo(&self, emission: f32) -> Vec3 {
+        if self.atmosphere.is_none() {
+            return Vec3::ZERO;
+        }
+        glow_color_atmo(self.glow_temps.0 as f64, self.glow_temps.1 as f64, emission)
+    }
+
     /// `completion` is SE's generated atmosphere and ocean for a body the catalog leaves without;
     /// `bump_km` its `BumpHeight` (catalog or SE's default).
     pub fn new(
@@ -729,6 +770,7 @@ impl Terrain {
             atmosphere: None,
             atm_bright: 1.0,
             atm_look: crate::atmosphere::ATM_LOOK_DEFAULT,
+            glow_temps: (0.0, 0.0),
             biome: None,
             biome_chosen: false,
             has_ocean,
@@ -1738,6 +1780,7 @@ fn update_terrain(
         let thermal = thermal_uniform(terrain, light);
         let keys: Vec<TileKey> = terrain.nodes.keys().copied().collect();
         for key in keys {
+            let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
             let slot = terrain.nodes.get_mut(&key).unwrap();
             let NodeState::Loading(task) = &mut slot.state else { continue };
             let Some(build) = check_ready(task) else { continue };
@@ -1856,6 +1899,7 @@ fn update_terrain(
                     if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
                     water_display.level,
                 ),
+                glow_atmo: glow_atmo_u,
             };
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             let ground = PlanetMaterial {
@@ -2164,6 +2208,7 @@ fn update_terrain(
             terrain.last_sun = Vec4::ZERO;
         }
         let glow_bright = terrain.surface.glow_bright as f32 * 1.5 * emission.scale();
+        let glow_atmo = terrain.glow_atmo(emission.scale()).extend(0.0);
         let eclipse = terrain.casters;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
@@ -2185,6 +2230,7 @@ fn update_terrain(
                                 m.u.thermal2.w = emission.scale();
                                 m.u.ice.w = water_display.level;
                                 m.u.atm_flags.x = atm_on;
+                                m.u.glow_atmo = glow_atmo;
                             }
                         }
                     }
@@ -2523,6 +2569,23 @@ impl Material for CloudMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glowing_atmospheres() {
+        // None below SE's 644.211 K, or with self-emission off.
+        assert_eq!(glow_color_atmo(600.0, 900.0, 1.0), Vec3::ZERO);
+        assert_eq!(glow_color_atmo(2500.0, 2500.0, 0.0), Vec3::ZERO);
+        // A 2500 K hot Jupiter: (2500/5572)^4 x 10^0.525 x 23.9 = 3.24 times a red Planck colour.
+        let g = glow_color_atmo(2500.0, 2500.0, 1.0);
+        let c = crate::blackholes::planck_lookup(2500.0);
+        assert!((g.x as f64 / c[0] - 3.24).abs() < 0.05, "{g:?} {c:?}");
+        assert!(g.x > g.y && g.y > g.z && g.z >= 0.0);
+        // At 4000 K: 0.2656 x 10^0.877 x 1.226 = 2.45 (the gain falls as the Planck colour rises).
+        assert!((glow_color_atmo(4000.0, 2500.0, 1.0).x as f64 / c[0] - 2.45).abs() < 0.05);
+        // The colour follows the surface temperature.
+        let w = glow_color_atmo(2500.0, 6000.0, 1.0);
+        assert!(w.z / w.x > g.z / g.x);
+    }
 
     #[test]
     fn normal_offset_is_flat_on_a_smooth_sphere() {

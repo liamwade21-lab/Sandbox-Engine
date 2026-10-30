@@ -33,6 +33,8 @@ struct SkyUniform {
     shadow: vec4<f32>,
     // Each light's eclipse casters, the main star first.
     eclipse: array<EclipseLight, 4>,
+    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_irradiance`.
+    glow: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> sky: SkyUniform;
@@ -198,6 +200,12 @@ fn sky_look(in: VertexOut) -> SkyLook {
         let sx = atm_sky_radiance(sky.atm, inscatter_tex, transmittance_tex, atm_sampler, cam, ray, extra[i].xyz);
         let sh = light_shadow(in, i + 1, pt, normalize(sky.light_dir[i].xyz), extra[i].xyz);
         col += sx.radiance * sky.light_irradiance[i].rgb * sky.sun_irradiance.w * sh;
+    }
+    // A glowing atmosphere (sky.glsl THERM): the inscatter as if lit from the planet's centre (no
+    // light vector: nu and muS 0, no Mie) times GlowColorAtmo.
+    if sky.glow.r + sky.glow.g + sky.glow.b > 0.0 {
+        let sg = atm_sky_radiance(sky.atm, inscatter_tex, transmittance_tex, atm_sampler, cam, ray, vec3<f32>(0.0));
+        col += sg.radiance * sky.glow.rgb * sky.sun_irradiance.w;
     }
 
     // Optional sun disc, reddened by the atmosphere (only when the ray does not hit the ground).

@@ -378,7 +378,10 @@ pub struct SkyUniform {
     pub shadow: Vec4,
     /// Each light's eclipse casters, the main star first ([`crate::eclipse::EclipseCasters`]).
     pub eclipse: [EclipseLight; SKY_EXTRA_LIGHTS + 1],
+    /// SE's GlowColorAtmo (terrain.rs `glow_color_atmo`) in the units of `light_irradiance`; 0 none.
+    pub glow: Vec4,
 }
+
 
 /// The three passes of a sky shell, drawn in this order (SE: `atmo_transm.glsl` dims what lies
 /// behind the sky by the transmittance along the ray, per channel, then `sky.glsl` adds the
@@ -438,6 +441,7 @@ impl SkyMaterial {
                 ring: Vec4::ZERO,
                 shadow: Vec4::new(gpu.params.radius_ground / gpu.params.radius_top, 1.0, 0.0, 1.0),
                 eclipse: Default::default(),
+                glow: Vec4::ZERO,
             },
             inscatter: gpu.inscatter.clone(),
             transmittance: gpu.transmittance.clone(),
@@ -585,12 +589,14 @@ pub fn sky_uniform_update(
     occluder: Vec4,
     disc_irradiance: Vec3,
     extra: ([Vec4; SKY_EXTRA_LIGHTS], [Vec4; SKY_EXTRA_LIGHTS]),
+    glow: Vec3,
 ) {
     for handle in std::iter::once(&shell.material).chain(&shell.dimming) {
         if let Some(mut m) = materials.get_mut(handle) {
             m.set_sun(dir_to_star, sun_irradiance, sun_angular_radius);
             m.set_occluder(occluder, disc_irradiance);
             (m.uniform.light_dir, m.uniform.light_irradiance) = extra;
+            m.uniform.glow = glow.extend(0.0);
         }
     }
 }

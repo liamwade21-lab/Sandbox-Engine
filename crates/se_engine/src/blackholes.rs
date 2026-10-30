@@ -332,15 +332,28 @@ pub fn planck_rgb(t: f64) -> [f64; 3] {
 pub fn planck_table() -> Vec<[f32; 4]> {
     (0..PLANCK_SIZE)
         .map(|i| {
-            let t = 1000.0 * ((i as f64 / PLANCK_SIZE as f64) / 0.188 - 0.7).exp();
-            let mut c = planck_rgb(t);
-            if t < 2000.0 {
-                let k = 1000f64.powf(1.0 - (t - 500.0) / 1500.0);
-                c = c.map(|v| v * k);
-            }
+            let c = planck_entry(i);
             [c[0] as f32, c[1] as f32, c[2] as f32, 1.0]
         })
         .collect()
+}
+
+/// Entry `i` of SE's PlanckFunction table ([`planck_table`]).
+pub fn planck_entry(i: usize) -> [f64; 3] {
+    let t = 1000.0 * ((i as f64 / PLANCK_SIZE as f64) / 0.188 - 0.7).exp();
+    let c = planck_rgb(t);
+    if t < 2000.0 {
+        let k = 1000f64.powf(1.0 - (t - 500.0) / 1500.0);
+        return c.map(|v| v * k);
+    }
+    c
+}
+
+/// SE's lookup of a temperature in that table (FUN_1404c4250): entry `(ln(T / 1000) + 0.7) x 0.188
+/// x 4096`, rounded down and clamped.
+pub fn planck_lookup(t: f64) -> [f64; 3] {
+    let i = (((t.max(1e-6) * 0.001).ln() + 0.7) * 0.188 * PLANCK_SIZE as f64).floor();
+    planck_entry(i.clamp(0.0, (PLANCK_SIZE - 1) as f64) as usize)
 }
 
 /// SE's 16 x 16 NoiseIqMap: random R and B, with G and A the R and B values of the texel

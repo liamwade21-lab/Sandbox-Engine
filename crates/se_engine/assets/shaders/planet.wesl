@@ -61,6 +61,8 @@ struct Planet {
     // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask;
     // w SE's WaterSurfColor.a, the water display (ShowWater) level.
     ice: vec4<f32>,
+    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none.
+    glow_atmo: vec4<f32>,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -2207,6 +2209,12 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
             }
             let e_x = planet.light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
             col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, normalize(planet.light_dir[i].xyz), e_x);
+        }
+        // A glowing atmosphere over the ground (planet.glsl THERM): its inscatter as if lit from the
+        // planet's centre times GlowColorAtmo.
+        let g = planet.glow_atmo.rgb;
+        if g.r + g.g + g.b > 0.0 {
+            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, vec3<f32>(0.0), g * planet.atm_flags.y * planet.atm_flags.z);
         }
     }
     return col;
