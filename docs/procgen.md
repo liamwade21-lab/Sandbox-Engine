@@ -67,9 +67,10 @@ Verified against `SpaceEngine/save/places-def.cfg`, `data/locale/*-db.cfg` and e
   after a binary component letter the number is attached: `<system> A4`, `<system> B2`, `<system> AB3`
   (`planet_name` treats a trailing 1-3 capital letters as a component). Circumbinary planets of the
   root barycentre are `<system> <n>`.
-* Moons: `<planet>.<n>` outward (round moons, tag `Moon`) and `<planet>.S<n>` (small/irregular
-  `DwarfMoon`s). SE's data shows `4.1`, `5.1`, `B2.1` and letter forms (`3a`, `A6b`) and `2.S24`; the
-  choice "numbers for round moons, `.S` for small ones" is an interpretation. Belt asteroids: `<star> S<n>`
+* Moons: `<planet>.<n>` outward for `Moon`s and `<planet>.D<n>` for `DwarfMoon`s, as SE numbers its
+  type 5 and other moons (FUN_1404fdc90). SE's third series, `<planet>.S<n>` (`2.S24` in its
+  places-def), is for the asteroid-type moons of its last moon stage (type 8, flag 0x2000), which the
+  port does not generate. Binary planets take letters (`3a`, `A6b`). Belt asteroids: `<star> S<n>`
   (designed).
 
 ## Which stars get planets

@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 151 have been fixed since (listed at the end); the tables count the 60 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 152 have been fixed since (listed at the end); the tables count the 59 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 17 | 29 | 14 |
+| Gaps | 0 | 0 | 17 | 29 | 13 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 11 | 35 | 14 |
+| Gaps | 10 | 35 | 14 |
 
 | Area | Kept |
 |---|---|
@@ -121,7 +121,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 03 Galaxies and nebulae | 6 |
 | 04 Planet surfaces | 3 |
 | 05 Atmospheres, rings, comets | 5 |
-| 06 Procedural generation | 7 |
+| 06 Procedural generation | 6 |
 | 07 Camera and time | 4 |
 | 08 Interface | 0 |
 | 09 Graphics and settings | 13 |
@@ -588,15 +588,6 @@ Atmosphere table generation: SE generates scattering tables on the GPU (ag_*.gls
 - Port: crates/se_engine/src/atmosphere.rs:262-278
 - Check: FUN_14044ad90 loads "<model>.atm" via LoadBinary FUN_14044b650 if the file exists and otherwise (when precompute is enabled) queues task 6 whose handler RecreateModel FUN_14044a760 reads the model from atmospheres.cfg, logs "Generating atmosphere model" and runs the ag_*.glsl precompute and SaveBinary FUN_14044b060; the stock Atmospheres.pak ships .atm files for all 13 uncommented atmospheres.cfg models, and main-def.cfg says AtmoHalfPrecision/AtmoAnalyticTransm/AtmoFixHorizon apply only after "remove cache", so changing them does not by itself regenerate; the port (atmosphere.rs:262-278) only loads shipped .atm files and never reads atmospheres.cfg (no RayleighBeta/MieScaBeta hit in crates/)
 
-### 06-019 · Procedural generation
-
-Moon names only partly match: SE numbers moons in three series: plain "<planet>.<n>" (type 5), "<planet>.D<n>" (other types) and "<planet>.S<n>" (flag 0x2000; seen in SE's places-def as "2.S24", "1.S7"); the port uses only ".<n>" for Moon and ".S<n>" for DwarfMoon, has no ".D<n>" series, and has no lettered binary-planet components ("B5b", "A6b", "3a"); the type-5 and flag conditions are not yet decoded
-
-- Status: differs, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: FUN_1404fdc90:943-1010 (string "D" at 0x1406c5280); save/places-def.cfg:468
-- Port: crates/se_core/src/procgen/mod.rs (gen_moons naming, docs/procgen.md "Naming")
-- Check: FUN_1404fdc90:943-1021 (and 560-600) has three moon-number forms: plain "%d" (DAT_1406bd48c) for body type 5, "D"+n (L"D" at 0x1406c5280) for other types, and "S"+n (L"S" at 0x140687dec) when flag bit 13 of +0x11c0 is set; SE's own save/places-def.cfg holds "RS 0-1-3-1102-3821-2-11-619 2.S24" and "...6081-18 1.S7", so the port's ".S<n>" (procgen/mod.rs:2091-2099) is a real SE form, not an invention; what is missing is the "D" counter and the lettered binary-planet components (port has no binary planets)
-
 ### 07-022 · Camera and time
 
 Timing and loader modes: SE switches between real-time and fixed frame-time simulation (TimingMode, Shift+\, "Real time mode" / "Frame time mode", used for video capture) and asynchronous loading (LoaderMode, "Asynchronous loading mode"); port always advances by real frame time
@@ -1022,6 +1013,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **06-011** (Procedural generation, fixed 2026-10-30): Planet class words use designed thresholds instead of SE's: procgen temperature frigid<130/cold<240/cool<273/t... Fix: Procedural class words use SE's thresholds through the functions already ported in surface_gen: temperature > 1000/500/330/250/170/90 K (temp_class), pressure 1e-6/1e-3/0.1/10/1000 atm (atmo_class, FUN_1404caaa0), size 0.002/0.02/0.2/2/10 Me, Neptunes 4/10/25/62.5 Me, Jupiters 0.2/0.5/2.5/12.5 MJ (size_class, FUN_1404cabf0); the star browser's search classifies with them too. Not ported: the volatiles word still comes from ocean/ice cover (SE: ocean depth against BumpHeight, FUN_140505680, and no glacial), because the generator's bodies carry no ocean depth.
 - **06-014** (Procedural generation, fixed 2026-10-30): Supermassive black hole systems missing: SE builds a dedicated system for any black hole of 400+ solar masses ... Fix: SE: FUN_1404f7c40 sends a black hole >= 400 Msun to FUN_1404fb950 (CreateSupermassiveBlackHoleSystem): n = int(3 log10 M) <= 50 stars named "S<k>" ("%d" with "S" inserted, 0x1406bd48c/0x140687dec); system age tn(50,20,1,200) x 0.001 Gyr; orbits MA/argp/node/inc = U x 2pi, e = tn(0.5,0.5,0,0.89) (FUN_140441b80), a = inner/(1-e) + rand % int(outer/(1+e) - inner/(1-e)) AU with inner = max(R_AU + 1, 0.0017085 cbrt(2 M_e/14.536)), outer = 500 inner; period with both masses; star seeds seed*0x71e981 + k*0x7aee1d / seed*0x45de81 + k*0x1523da; stars from FUN_1401d6c60 (M_V N(3,4), else giant N(1,1), else WD N(14,0.83); [Fe/H] N(-0.125,0.07), C/O N(0.662,0.17)). Ported: `procgen/se_smbh.rs`, emitted as `Star "<hole> S<k>"` with orbit, Age, FeH, CtoO; is_multiple stays false. Works for catalog holes with no catalog members (generate_planets path) and procedural ones. Checked: unit test (19 for Sgr A*'s 4.31e6, orbit limits, 60-90% main sequence), exotic_stars test (500 Msun -> 8 stars loading with orbits); in the port `goto Mrk 335*` logs "21 stars" and `.audit/work/procgen/smbh_s3.png` shows S3 (A8V, 1.83 Msun, 0.053 Gyr). Assumed: MS temperature for a magnitude from the port's relation, giants 3500-5200 K (SE's class tables FUN_1401da080 not decoded); no WR/carbon conversions; orbit draws on the hole's seeds. Not done: Sgr A* itself (its catalog SagittariusA.sc already has S-stars, so system.rs `generated_system_star` gives it no generated system; SE's behaviour there was not checked). Catalog big holes sit in galaxy cores, where the port renders the view white (pre-existing, not this change).
 - **06-016** (Procedural generation, fixed 2026-10-30): StarGenerator settings not honoured: SE drops procedural stars brighter than StarMaxAppMagn 10 seen from the S... Fix: SE's StarGenerator limits are read from main-def.cfg: procedural Milky Way stars brighter than StarMaxAppMagn (10) as seen from the Sun, at any distance, or nearer to it than StarMinDistNormal (2.5 pc), are left to the catalogs (FUN_1405945e0), replacing the port's hard-coded magnitude 8.5 within 2.5 kpc. Not ported: the separate minimum distances of brown dwarfs (2 pc) and remnants (3 pc), which the generator's exclusion test cannot tell apart, and StarDensityInGalaxy/InCluster (both 1 by default).
+- **06-019** (Procedural generation, fixed 2026-10-30): Moon names only partly match: SE numbers moons in three series: plain "<planet>.<n>" (type 5), "<planet>.D<n>"... Fix: SE: FUN_1404fdc90's naming loop numbers a planet's moons in three counters from 1: '<planet>.<n>' for type 5 (Moon), '<planet>.D<n>' (L"D" at 0x1406c5280) for the other types (type 7 DwarfMoon), '<planet>.S<n>' for bodies with flag 0x2000 of +0x11c0, which only its last moon stage sets (type 8 Asteroid moons, after the planet's +0x1d38 count). Port: procgen names Moons '.<n>' and DwarfMoons '.D<n>' (was '.S<n>'), in the single-planet and binary-planet paths; docs/procgen.md updated; binary planets already take letters (06-010). Not ported: the S series, as the port does not generate SE's stage-3 asteroid moons. Checked: statistics_sun_like asserts the forms over 200 systems.
 - **07-001** (Camera and time, fixed 2026-10-28): Startup field of view: SE starts at FOV 45 deg (Controls FOV 45, DefaultFOV 45); port's camera and projection ... Fix: The camera starts at SE's 45 degrees (and the `fov` command defaults to it).
 - **07-002** (Camera and time, fixed 2026-10-28): Time-rate steps: SE's L/K (and the toolbar buttons) step the rate through 1, 3, 10, 30, 100, 300... (two press... Fix: K/L and the top bar's << / >> step the rate through 1, 3, 10, 30, ... (`hud::rate_step`).
 - **07-003** (Camera and time, fixed 2026-10-28): Go to arrival distance: SE arrives 4 radii from the centre (25,513 km for Earth, velocity set to 2,551 km/s, p... Fix: Go to arrives 4 radii from the centre (`GOTO_RADII`).

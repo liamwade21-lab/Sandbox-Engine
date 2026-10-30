@@ -1485,7 +1485,7 @@ fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<Planet
     let (sa, sb) = crate::surface_gen::catalog_seeds(&bary, &pb.parent);
     let keep = SeRng::new(sa ^ 0x4249_4e41, sb).uniform(1.0) <= se_moons::PROB_BINARY_PLANET_MOONS;
     moons.retain(|m| keep && m.a_au * (1.0 - m.ecc) > 3.0 * sep);
-    let (mut n_big, mut n_s) = (if close { 0 } else { 1 }, 0);
+    let (mut n_big, mut n_d) = (if close { 0 } else { 1 }, 0);
     for m in moons.iter_mut() {
         m.parent = bary.clone();
         // The catalog sums only stars under a barycentre, so the period is given.
@@ -1498,8 +1498,8 @@ fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<Planet
             n_big += 1;
             m.name = format!("{base}.{n_big}");
         } else {
-            n_s += 1;
-            m.name = format!("{base}.S{n_s}");
+            n_d += 1;
+            m.name = format!("{base}.D{n_d}");
         }
     }
     moons.insert(0, s);
@@ -2254,16 +2254,19 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
         (m.tag, m.kind, m.class) = if round { (Tag::Moon, Kind::Solid, "") } else { (Tag::DwarfMoon, Kind::Small, "Asteroid") };
     }
     out.sort_by(|a, b| a.a_au.total_cmp(&b.a_au));
-    // Names: ".N" for the larger (round) moons, ".SN" for small irregular/captured ones.
-    let (mut n_big, mut n_s) = (0, 0);
+    // SE's moon numbers (FUN_1404fdc90 naming loop): "<planet>.<n>" for Moon-type moons (type 5),
+    // "<planet>.D<n>" for the others (dwarf moons, type 7), each counted outward from 1. Its third
+    // series, "<planet>.S<n>", is for the small asteroid-type moons of its last moon stage (type 8,
+    // flag 0x2000), which the port does not generate.
+    let (mut n_big, mut n_d) = (0, 0);
     for m in out.iter_mut() {
         m.parent = p.name.clone();
         if m.tag == Tag::Moon {
             n_big += 1;
             m.name = format!("{}.{}", p.name, n_big);
         } else {
-            n_s += 1;
-            m.name = format!("{}.S{}", p.name, n_s);
+            n_d += 1;
+            m.name = format!("{}.D{}", p.name, n_d);
         }
     }
     out
@@ -2794,6 +2797,10 @@ mod tests {
                 let rh_km = host.a_au * AU_KM * (1.0 - host.ecc) * (host.mass_me / (3.0 * SOLAR_TO_EARTH_MASS)).cbrt();
                 assert!(m.a_au * AU_KM * (1.0 + m.ecc) < 0.5 * rh_km, "seed {seed}: {} beyond 0.5 RH", m.name);
                 assert!(m.a_au * AU_KM * (1.0 - m.ecc) > host.radius_km * 1.5, "{} inside its planet", m.name);
+                // SE's numbering: "<planet>.<n>" for Moons, "<planet>.D<n>" for dwarf moons.
+                let n = m.name.strip_prefix(&format!("{}.", m.parent)).expect("moon name");
+                let n = if m.tag == "Moon" { n } else { n.strip_prefix('D').expect("dwarf moon name") };
+                assert!(n.parse::<u32>().is_ok_and(|n| n >= 1), "{}", m.name);
             }
             // Belts: 100-1000 asteroids in all.
             let n_ast = g.bodies.iter().filter(|b| b.tag == "Asteroid").count();
