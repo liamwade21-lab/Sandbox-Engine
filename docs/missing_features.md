@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 241 kept after checking (61 of them amended), 1 refuted. 116 have been fixed since (listed at the end); the tables count the 125 still open.
+242 gaps reported by the auditors, 236 kept after checking (61 of them amended), 1 refuted. 116 have been fixed since (listed at the end); the tables count the 120 still open. 5 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 1 | 2 | 45 | 57 | 20 |
+| Gaps | 0 | 0 | 45 | 55 | 20 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 33 | 65 | 27 |
+| Gaps | 33 | 64 | 23 |
 
 | Area | Kept |
 |---|---|
@@ -122,45 +122,12 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 04 Planet surfaces | 10 |
 | 05 Atmospheres, rings, comets | 9 |
 | 06 Procedural generation | 12 |
-| 07 Camera and time | 6 |
-| 08 Interface | 26 |
-| 09 Graphics and settings | 15 |
-| 10 Scripts, audio, spacecraft | 28 |
+| 07 Camera and time | 5 |
+| 08 Interface | 24 |
+| 09 Graphics and settings | 14 |
+| 10 Scripts, audio, spacecraft | 27 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
-
-
-## Visibility 5: obvious at once
-
-### 08-001 · Interface
-
-Main menu: SE opens in its main menu (3D scene background from menu/Scene1.se when Use3Dmenu, else Menu.pak skybox menu0-3; logo, version line; buttons Continue / Planetarium / Flight simulator / Settings / Tools / Credits / Exit with sub-menus, tutorials list, credits.txt, faq.txt; Esc returns to it); port starts straight in the simulation with no menu (Scene1.se runs only from its Scripts window)
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: Scripts.pak menu/MainMenu.cfg; Menu.pak menu0-3*.jpg; main-def.cfg Use3Dmenu; rtti seMainMenu
-- Port: none
-- Check: Scripts.pak has menu/MainMenu.cfg, credits.txt, faq.txt, Scene1.se, Menu.pak has menu0-3 skyboxes, main-def.cfg:538 Use3Dmenu true, rtti seMainMenu, strings "Planetarium"/"Flight simulator"/"Continue"; the port has no menu state anywhere (no Escape handler outside ship.rs:487, no menu strings in crates/), it starts in the simulation and only plays scripts/menu/Scene1.se via --script or the Scripts window (scripting.rs:300 just hides the HUD for it).
-
-
-## Visibility 4: common activities
-
-### 08-007 · Interface
-
-Universe map (F1/M) missing: map centred on the selection or current position with a zoom slider from moons to the cosmic web, grid on the galactic plane with drop lines to objects (star_map_line), star marks coloured by temperature (pink for black holes/planemos), galaxy/cluster/nebula marks, clip-sphere fade, orbits and asteroids/comets as dots, exploration mode (overlays hidden, Density slider), MapShowProcedural/Grid/Lines, MapLabelsMode, MapPointOverbright, map renders of galaxies/nebulae (galaxy_model_map, nebula_model_map), time flow, Center/Close buttons
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: main-def.cfg UniverseMap 651-664; star_map_mark/line/point.glsl; galaxy_map_mark/line/point.glsl; map_sphere.glsl; rtti seMapMode; tut-05-univ-map strings
-- Port: none
-- Check: main-def.cfg UniverseMap 651-661 (MapExploreMode, MapShowProcedural/Grid/Lines, MapLabelsMode, MapDensity, MapPointOverbright), shaders star_map_mark/line/point, galaxy_map_*, galaxy_model_map, nebula_model_map, map_sphere exist (star_map_mark.glsl:42 magenta for marks without colour), tutorial "Open the map by pressing [F1] or the [M] key", rtti seMapMode; port has no map mode at all (F1 = help hud.rs:66, M = music music.rs:183, galaxies.rs map_mode is only a coordinate mapping)
-
-### 10-001 · Scripts, audio, spacecraft
-
-Context music: in SE's default context mode (MusicOrderMode 2) the track is picked from music/context.cfg for where you are: Object entries first (Earth, Moon, Mars, Saturn, Europa, Pluto, Betelgeuse, NGC 501, M 42, Sirius), then the most specific Class filter for the selected/nearest object (planet class + temperature/volatiles/life subclasses, star types, BlackHole, NeutronStar, Galaxy, Nebula, Cluster, Asteroid, Comet) falling back to more general ones, plus the mode classes MainMenu, Credits, MapMode, ChartMode; it switches when the context changes, but not before MinTrackPlayingTime 20 s. Port shuffles the union of all Class tracks with no regard to location, never uses Object entries or the mode classes
-
-- Status: missing, effort **M**, auditor confidence high
-- SE evidence: data/music/context.cfg header and 66 entries; main-def.cfg Sound MusicOrderMode, MinTrackPlayingTime, MixDurationContext; exe MusicClassSelector, MusicObjectSelector (FUN_140397fb0)
-- Port: crates/se_engine/src/music.rs:113-139
-- Check: context.cfg has the 4 mode classes, 54 Class and 12 Object entries (incl. Sirius A/B) with the most-specific-first filter rules in its header, main-def.cfg Sound MusicOrderMode 2 / MinTrackPlayingTime 20, and FUN_140397fb0 (seMusicPlayer::LoadConfig) references MusicClassSelector/MusicObjectSelector; port music.rs track_pool() just unions every non-MainMenu/Credits Class file list into one shuffled pool, ignores Object entries and never looks at the camera's location or mode
 
 
 ## Visibility 3: specific features
@@ -780,15 +747,6 @@ Navigation script commands: SE scripts can use Horizon, Track/Untrack, MoveMode,
 - Port: crates/se_engine/src/scripting.rs:568-580
 - Check: The convert() in se_script.rs:482 maps "stopfly" to Op::StopMotion, which scripting.rs:445-449 runs (stops velocity, travel and flight), so StopFly works; Track/Untrack (scripting.rs:568) and Horizon, MoveMode, Speed, Fly, Turn, StopTurn, StopRotation, GotoURL and User*Control (Op::Other, scripting.rs:577) are logged and skipped, as the exe command table in docs/formats/se_script.md:164-181 lists them
 
-### 07-020 · Camera and time
-
-Gamepad, joystick and 3D mouse: SE reads SDL joysticks and game controllers (up to 16, dead zones, sensitivities) with default maps def_generic_controller.cfg and def_xbox360_controller.cfg (sticks fly and turn, X/A velocity, d-pad time rate, shoulders select and orbit, Start Go to, Back Center), and a SpaceNavigator; port has keyboard and mouse only
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: config/def_xbox360_controller.cfg, def_generic_controller.cfg; FUN_1405ba8f0 SDL_JoystickOpen / SDL_GameControllerOpen, "SpaceNavigator"
-- Port: none
-- Check: FUN_1405ba8f0 ("Initializing controller") calls SDL_NumJoysticks/SDL_JoystickOpen/SDL_GameControllerOpen with a 0x10 joystick cap and a "SpaceNavigator" device, and def_xbox360_controller.cfg maps sticks and triggers to CamMove/CamTurn/Ship axes with DeadZone 2000 and Sensitivity* keys; the port has no gamepad, gilrs or joystick code anywhere in crates/
-
 ### 08-030 · Interface
 
 Journey log: SE records visited objects automatically (seJournalBrowser, journal.cfg, JournalSize 100) and lists them in the Locations dialog; port has none
@@ -959,15 +917,6 @@ Settings persistence: SE keeps every setting in config/main-user.cfg as override
 - SE evidence: strings "main-user.cfg" "Creating user config file \"%s\"" "Performing full update of the config file \"%s\"" DetectVersionChange
 - Port: crates/se_engine/src/settings.rs:43-136
 - Check: SE strings main-user.cfg, "Creating user config file", "Performing full update of the config file", DetectVersionChange exist (strings_ascii.txt:26306-26389); port settings.rs Snapshot persists only star/overlay/FOV/music/language/graphics-preset/lens-flare keys to %APPDATA%/SpaceEngine-rs/settings.cfg and only lensflare.rs:233, procgalaxies.rs:165 (plus graphics.rs:141 preset-*.cfg) read SE config files; Settings-window toggles such as ShowProcGalaxies are not saved
-
-### 09-012 · Graphics and settings
-
-Video capture: SE records video through FFmpeg (seVideoRecorder / seAsyncVideoRecorder: encoders from config/ffmpeg.cfg, NVENC/AMF/QSV hardware or libsvtav1/libaom-av1, pixel formats YUV420P..P010, quality and bitrate presets, VideoFrameRate 60, streaming (real-time) or offline (fixed-FPS, Frame time mode with RealTime/RealTimeFPS) capture, frame-rate capping, with or without GUI, auto-hiding recording tools) or as numbered screenshot frames (VideoFrameFormat). Port has none
-
-- Status: missing, effort **L**, auditor confidence high
-- SE evidence: config/ffmpeg.cfg; main-def.cfg Export 453-475; strings "seVideoRecorder::StartCapture() Capture started with encoder"; eng-gui "Video capture" "Start recording" "Record as video file" "Record as screenshots" "Capture mode" "Streaming (real time)" "Offline rendering (fixed FPS)" "Framerate capping" "Frame timing mode"; def_generic_controller.cfg VideoCaptureDialog VideoRecording
-- Port: none
-- Check: config/ffmpeg.cfg lists av1_nvenc/amf/qsv/libsvtav1/libaom-av1 with streaming/offline options, main-def.cfg Export 453-475 has VideoCaptureInAVI/VideoFrameRate 60/VideoEncoder/VideoFpsCapMethod/RealTime, strings_ascii.txt:24977-24997 seVideoRecorder/seAsyncVideoRecorder StartCapture, def_generic_controller.cfg:162-163 VideoCaptureDialog/VideoRecording; port has only single screenshots (README `shot FILE`, `--screenshot`) and no ffmpeg/video/frame-sequence code
 
 ### 09-013 · Graphics and settings
 
@@ -1268,6 +1217,51 @@ Ship persistence: SE saves ships between sessions in spacecraft.cfg (ShipID, Sys
 - SE evidence: exe ConfigFileSpacecraft, "spacecraft.cfg", seSpacecraftsList::SaveSpacecraftsConfig, "ShipID %i"
 - Port: none
 - Check: The exe has "spacecraft.cfg" (FUN_1400402e0), ConfigFileSpacecraft, seSpacecraftList::ReadShipsConfig ("has no ShipID"), seSpacecraftsList::SaveSpacecraftsConfig, RefBodyID/TargetShipID (FUN_140531d60) and "seGameState::ApplyToCamera(): Unknown spacecraft id %i"; the port has no ship save or load (no spacecraft.cfg, ShipID or ship save code in crates/; ship.rs only spawns and despawns through ShipCommand)
+
+
+## Deferred by the owner
+
+Still open; left out of the work for now and of the counts above.
+
+### 07-020 · Camera and time (deferred 2026-10-30)
+
+Gamepad, joystick and 3D mouse: SE reads SDL joysticks and game controllers (up to 16, dead zones, sensitivities) with default maps def_generic_controller.cfg and def_xbox360_controller.cfg (sticks fly and turn, X/A velocity, d-pad time rate, shoulders select and orbit, Start Go to, Back Center), and a SpaceNavigator; port has keyboard and mouse only
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: config/def_xbox360_controller.cfg, def_generic_controller.cfg; FUN_1405ba8f0 SDL_JoystickOpen / SDL_GameControllerOpen, "SpaceNavigator"
+- Port: none
+
+### 08-001 · Interface (deferred 2026-10-29)
+
+Main menu: SE opens in its main menu (3D scene background from menu/Scene1.se when Use3Dmenu, else Menu.pak skybox menu0-3; logo, version line; buttons Continue / Planetarium / Flight simulator / Settings / Tools / Credits / Exit with sub-menus, tutorials list, credits.txt, faq.txt; Esc returns to it); port starts straight in the simulation with no menu (Scene1.se runs only from its Scripts window)
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: Scripts.pak menu/MainMenu.cfg; Menu.pak menu0-3*.jpg; main-def.cfg Use3Dmenu; rtti seMainMenu
+- Port: none
+
+### 08-007 · Interface (deferred 2026-10-29)
+
+Universe map (F1/M) missing: map centred on the selection or current position with a zoom slider from moons to the cosmic web, grid on the galactic plane with drop lines to objects (star_map_line), star marks coloured by temperature (pink for black holes/planemos), galaxy/cluster/nebula marks, clip-sphere fade, orbits and asteroids/comets as dots, exploration mode (overlays hidden, Density slider), MapShowProcedural/Grid/Lines, MapLabelsMode, MapPointOverbright, map renders of galaxies/nebulae (galaxy_model_map, nebula_model_map), time flow, Center/Close buttons
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: main-def.cfg UniverseMap 651-664; star_map_mark/line/point.glsl; galaxy_map_mark/line/point.glsl; map_sphere.glsl; rtti seMapMode; tut-05-univ-map strings
+- Port: none
+
+### 09-012 · Graphics and settings (deferred 2026-10-30)
+
+Video capture: SE records video through FFmpeg (seVideoRecorder / seAsyncVideoRecorder: encoders from config/ffmpeg.cfg, NVENC/AMF/QSV hardware or libsvtav1/libaom-av1, pixel formats YUV420P..P010, quality and bitrate presets, VideoFrameRate 60, streaming (real-time) or offline (fixed-FPS, Frame time mode with RealTime/RealTimeFPS) capture, frame-rate capping, with or without GUI, auto-hiding recording tools) or as numbered screenshot frames (VideoFrameFormat). Port has none
+
+- Status: missing, effort **L**, auditor confidence high
+- SE evidence: config/ffmpeg.cfg; main-def.cfg Export 453-475; strings "seVideoRecorder::StartCapture() Capture started with encoder"; eng-gui "Video capture" "Start recording" "Record as video file" "Record as screenshots" "Capture mode" "Streaming (real time)" "Offline rendering (fixed FPS)" "Framerate capping" "Frame timing mode"; def_generic_controller.cfg VideoCaptureDialog VideoRecording
+- Port: none
+
+### 10-001 · Scripts, audio, spacecraft (deferred 2026-10-29)
+
+Context music: in SE's default context mode (MusicOrderMode 2) the track is picked from music/context.cfg for where you are: Object entries first (Earth, Moon, Mars, Saturn, Europa, Pluto, Betelgeuse, NGC 501, M 42, Sirius), then the most specific Class filter for the selected/nearest object (planet class + temperature/volatiles/life subclasses, star types, BlackHole, NeutronStar, Galaxy, Nebula, Cluster, Asteroid, Comet) falling back to more general ones, plus the mode classes MainMenu, Credits, MapMode, ChartMode; it switches when the context changes, but not before MinTrackPlayingTime 20 s. Port shuffles the union of all Class tracks with no regard to location, never uses Object entries or the mode classes
+
+- Status: missing, effort **M**, auditor confidence high
+- SE evidence: data/music/context.cfg header and 66 entries; main-def.cfg Sound MusicOrderMode, MinTrackPlayingTime, MixDurationContext; exe MusicClassSelector, MusicObjectSelector (FUN_140397fb0)
+- Port: crates/se_engine/src/music.rs:113-139
 
 
 ## Fixed since the audit

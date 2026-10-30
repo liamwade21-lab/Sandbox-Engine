@@ -45,6 +45,14 @@ if os.path.exists(fixed_path):
         f = fields(line.rstrip("\n"))
         if len(f) >= 3 and f[0] in gaps:
             fixed[f[0]] = (f[1], f[2])
+# Gaps the owner deferred: `.audit/deferred.txt`, `ID | date | what`. Still open, listed apart, not counted.
+deferred = {}
+deferred_path = os.path.join(AUD, "deferred.txt")
+if os.path.exists(deferred_path):
+    for line in open(deferred_path, encoding="utf-8"):
+        f = fields(line.rstrip("\n"))
+        if len(f) >= 2 and f[0] in gaps:
+            deferred[f[0]] = f[1]
 if "--check" in sys.argv:
     print(f"{len(gaps)} gaps, {len(checks)} verdicts, {len(missing)} missing (tickets {sorted({m[:2] for m in missing})})")
     sys.exit(0)
@@ -69,6 +77,8 @@ order = {"S": 0, "M": 1, "L": 2, "?": 3}
 kept.sort(key=lambda g: (-g["vis"], g["id"][:2], order.get(g["effort"], 3), g["id"]))
 done = [g for g in kept if g["id"] in fixed]
 kept = [g for g in kept if g["id"] not in fixed]
+held = [g for g in kept if g["id"] in deferred]
+kept = [g for g in kept if g["id"] not in deferred]
 
 
 def md(s):
@@ -83,7 +93,8 @@ counts = {v: sum(1 for g in kept if g["vis"] == v) for v in range(5, 0, -1)}
 eff = {e: sum(1 for g in kept if g["effort"] == e) for e in "SML"}
 w(f"\n## Summary\n\n{len(gaps)} gaps reported by the auditors, {len(kept) + len(done)} kept after checking "
   f"({sum(1 for g in kept + done if g['verdict'].startswith('AMENDED'))} of them amended), {len(refuted)} refuted. "
-  f"{len(done)} have been fixed since (listed at the end); the tables count the {len(kept)} still open.\n")
+  f"{len(done)} have been fixed since (listed at the end); the tables count the {len(kept)} still open. "
+  f"{len(held)} more are open but deferred by the owner (listed after them, not counted).\n")
 w("| Visibility | 5 | 4 | 3 | 2 | 1 |\n|---|---|---|---|---|---|")
 w("| Gaps | " + " | ".join(str(counts[v]) for v in range(5, 0, -1)) + " |\n")
 w("| Effort | S | M | L |\n|---|---|---|---|")
@@ -110,6 +121,15 @@ for g in kept:
     w(f"- SE evidence: {md(g['se'])}")
     w(f"- Port: {md(g['port'])}")
     w(f"- Check: {md(g['reason'])}\n")
+
+w("\n## Deferred by the owner\n")
+w("Still open; left out of the work for now and of the counts above.\n")
+for g in sorted(held, key=lambda g: g["id"]):
+    w(f"### {g['id']} · {TICKETS[g['id'][:2]]} (deferred {deferred[g['id']]})\n")
+    w(f"{md(g['feature'])}\n")
+    w(f"- Status: {g['status']}, effort **{g['effort']}**, auditor confidence {g['conf']}")
+    w(f"- SE evidence: {md(g['se'])}")
+    w(f"- Port: {md(g['port'])}\n")
 
 w("\n## Fixed since the audit\n")
 for g in sorted(done, key=lambda g: g["id"]):
