@@ -4,9 +4,10 @@
 //! Preset keys the port maps: `MSAALevel`, `FXAA`, `AnisotropyLevel` (planet surface textures), `LandLOD`
 //! and `LandTargetRes` (terrain subdivision), `MaxTilesPerFrame` (terrain tiles started per frame),
 //! `VolumResolution` (ray-march steps of the nebula volumes), `StarPointMethod` (star points) and
-//! `WarpPrecision` (black hole ray-march step). The others (VideoMemorySize, TextureCompress,
+//! `WarpPrecision` (black hole ray-march step), and the solids' render resolution `SolidResolution`,
+//! `SolidTargetRes`, `SolidUpscaleMode` and `SolidFXAA` (`render_scale.rs`). The others (VideoMemorySize, TextureCompress,
 //! PlanetPointMethod, PlanetShineMode, AuroraQuality, ShipEngineQuality, BlackHoleQuality,
-//! ShipWarpQuality, the TextureRendering resolutions and environment maps, the loader time limits) drive
+//! ShipWarpQuality, the other TextureRendering resolutions and environment maps, the loader time limits) drive
 //! SE features the port draws differently; they are kept as read ([`Quality::keys`]), saved with the
 //! settings and shown in the Graphics settings.
 
@@ -22,8 +23,21 @@ use crate::surface_tex::SurfaceTextures;
 pub const PRESET_NAMES: [&str; 5] = ["Potato", "Low", "Medium", "High", "Ultra"];
 
 /// Keys read into [`Quality`]'s own fields (the rest go to [`Quality::keys`]).
-const MAPPED: [&str; 9] =
-    ["MSAALevel", "FXAA", "AnisotropyLevel", "LandLOD", "LandTargetRes", "MaxTilesPerFrame", "VolumResolution", "StarPointMethod", "WarpPrecision"];
+const MAPPED: [&str; 13] = [
+    "MSAALevel",
+    "FXAA",
+    "AnisotropyLevel",
+    "LandLOD",
+    "LandTargetRes",
+    "MaxTilesPerFrame",
+    "VolumResolution",
+    "StarPointMethod",
+    "WarpPrecision",
+    "SolidResolution",
+    "SolidTargetRes",
+    "SolidUpscaleMode",
+    "SolidFXAA",
+];
 
 /// The values of one preset.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +53,14 @@ pub struct Quality {
     pub star_points: u32,
     /// `WarpPrecision` (black holes' ray-march step).
     pub warp_precision: f32,
+    /// `SolidResolution`: the solids' fraction of the window resolution.
+    pub solid_resolution: f32,
+    /// `SolidTargetRes`: screens taller than this render the solids as if they were this tall.
+    pub solid_target_res: u32,
+    /// `SolidUpscaleMode` (0-2 nearest, 3-5 bilinear, 6-8 bicubic, 9-11 lanczos; plain, sharp, CAS).
+    pub solid_upscale_mode: u32,
+    /// `SolidFXAA`: FXAA on the solids before upscaling.
+    pub solid_fxaa: bool,
     /// The preset's other keys and values, as written (`"true"`, `"0.85"`, ...), in file order.
     pub keys: Vec<(String, String)>,
 }
@@ -56,6 +78,10 @@ impl Default for Quality {
             volume_resolution: 0.5,
             star_points: 2,
             warp_precision: 0.8,
+            solid_resolution: 0.85,
+            solid_target_res: 1080,
+            solid_upscale_mode: 8,
+            solid_fxaa: true,
             keys: Vec::new(),
         }
     }
@@ -105,6 +131,18 @@ impl Quality {
         if let Some(v) = num("WarpPrecision") {
             q.warp_precision = v as f32;
         }
+        if let Some(v) = num("SolidResolution") {
+            q.solid_resolution = (v as f32).clamp(0.1, 1.0);
+        }
+        if let Some(v) = num("SolidTargetRes") {
+            q.solid_target_res = v.max(480.0) as u32;
+        }
+        if let Some(v) = num("SolidUpscaleMode") {
+            q.solid_upscale_mode = v.clamp(0.0, 13.0) as u32;
+        }
+        if let Some(v) = doc.find_deep("SolidFXAA").and_then(|i| i.bool()) {
+            q.solid_fxaa = v;
+        }
         // Every other leaf key, in file order (blocks are SE's groups: Memory, RenderingQuality, ...).
         fn walk(b: &se_core::sc::Block, out: &mut Vec<(String, String)>) {
             for item in &b.items {
@@ -127,6 +165,10 @@ impl Quality {
         let mut out = format!(
             "\tMSAALevel         {}\n\tFXAA              {}\n\tAnisotropyLevel   {}\n\tLandLOD           {}\n\tLandTargetRes     {}\n\tMaxTilesPerFrame  {}\n\tVolumResolution   {}\n\tStarPointMethod   {}\n\tWarpPrecision     {}\n",
             self.msaa, self.fxaa, self.anisotropy, self.land_lod, self.land_target_res, self.max_tiles_per_frame, self.volume_resolution, self.star_points, self.warp_precision
+        );
+        out += &format!(
+            "\tSolidResolution   {}\n\tSolidTargetRes    {}\n\tSolidUpscaleMode  {}\n\tSolidFXAA         {}\n",
+            self.solid_resolution, self.solid_target_res, self.solid_upscale_mode, self.solid_fxaa
         );
         for (k, v) in &self.keys {
             out += &format!("\t{k} {v}\n");
@@ -349,6 +391,10 @@ mod tests {
     fn reads_preset_keys_and_scales_terrain() {
         let q = Quality::from_cfg("Graphics\n{\n\tMSAALevel 4\n\tFXAA false\n\tLandLOD -2\n\tLandTargetRes 480\n}\n", &Quality::default());
         assert_eq!((q.msaa, q.fxaa, q.land_lod, q.max_tiles_per_frame), (4, false, -2.0, 4));
+        // preset-medium.cfg's solids: 0.7 of the window, lanczos, no FXAA before upscaling.
+        let m = Quality::from_cfg("TextureRendering\n{\n\tSolidResolution 0.7\n\tSolidTargetRes 1080\n\tSolidUpscaleMode 9\n\tSolidFXAA false\n}\n", &Quality::default());
+        assert_eq!((m.solid_resolution, m.solid_target_res, m.solid_upscale_mode, m.solid_fxaa, m.keys.len()), (0.7, 1080, 9, false, 0));
+        assert_eq!(Quality::from_cfg(&format!("Graphics\n{{\n{}}}\n", m.cfg_lines()), &Quality::default()), m);
         // A quarter of the detail; screens are never made coarser, and the 1080-line target caps
         // how much finer a tall screen gets.
         assert!((q.terrain_split_scale(960.0) - 0.25).abs() < 1e-12);

@@ -374,9 +374,16 @@ impl Plugin for ProjectionPlugin {
         // hole lens and warp passes, bloom, exposure, tone mapping), as the main pass would.
         render_app
             .add_systems(RenderStartup, init_pipeline)
-            .add_systems(Core3d, projection_pass.before(crate::blackholes::LensPassSet).in_set(Core3dSystems::EarlyPostProcess));
+            .add_systems(
+                Core3d,
+                projection_pass.before(crate::blackholes::LensPassSet).in_set(ProjectionPassSet).in_set(Core3dSystems::EarlyPostProcess),
+            );
     }
 }
+
+/// The projection render pass (Core3d), for ordering (`render_scale.rs` runs before it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectionPassSet;
 
 #[derive(Resource)]
 struct ProjPipeline {

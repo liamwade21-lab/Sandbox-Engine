@@ -3,7 +3,8 @@
 //! then hdr_final.glsl with hsl.glh `ColorCorrentionLDR`: contrast and brightness, a per-pixel vibrance
 //! (`Saturation`) that lifts grey pixels more than vivid ones, gamma, and dithering. Settings from
 //! main-def.cfg `PostEffects` (`Brightness`, `Contrast`, `Saturation`, `Gamma`, `ToneMappingShader`) and
-//! `RenderingQuality` (`Dithering`).
+//! `RenderingQuality` (`Dithering`). hdr_final's `SHARP` variant sharpens the tone-mapped frame first
+//! with AMD FidelityFX CAS (`textureFastCAS`) at `PostEffects` `Sharpness`.
 //!
 //! Bevy's own tone mapping pass runs first as `Tonemapping::Linear`: it applies the exposure
 //! (`ColorGrading`, `exposure.rs`) and keeps its one `post_process_write` flip. This pass then writes its
@@ -45,18 +46,22 @@ pub fn tone_index(name: &str) -> Option<usize> {
     TONE_SHADERS.iter().position(|n| n.eq_ignore_ascii_case(name.trim()))
 }
 
-/// The tone shader and dithering (`ToneMappingShader`, `Dithering`).
+/// The tone shader, dithering and final sharpening (`ToneMappingShader`, `Dithering`, `Sharpness`).
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct FinalImage {
     /// Index into [`TONE_SHADERS`].
     pub tone: usize,
     pub dithering: bool,
+    /// `PostEffects` `Sharpness` (FUN_140326220: default 1, 0..1): hdr_final.glsl's `SHARP` variant
+    /// (textureFastCAS with `LimParams.w` = this) when above 0. Also the solids' and volumetrics'
+    /// upscale sharpness when `SolidAutoSharp` / `VolumAutoSharp` (1 - this, FUN_14018dae0).
+    pub sharpness: f32,
 }
 
 impl Default for FinalImage {
-    /// main-def.cfg's "AgX" with dithering.
+    /// main-def.cfg's "AgX" with dithering and sharpness 1.
     fn default() -> Self {
-        Self { tone: 1, dithering: true }
+        Self { tone: 1, dithering: true, sharpness: 1.0 }
     }
 }
 
@@ -74,6 +79,8 @@ pub struct ColorCorrection {
     pub bcsg: Vec4,
     /// x the tone shader, y dithering, z auto exposure (photo mode 2) on.
     pub mode: UVec4,
+    /// x `Sharpness` (0 off).
+    pub sharp: Vec4,
 }
 
 impl Default for ColorCorrection {
@@ -84,7 +91,11 @@ impl Default for ColorCorrection {
 
 impl ColorCorrection {
     pub fn new(brightness: f32, contrast: f32, saturation: f32, gamma: f32) -> Self {
-        Self { bcsg: Vec4::new(brightness - 1.0, contrast, saturation - 1.0, 1.0 / gamma.max(1e-3)), mode: UVec4::new(1, 1, 0, 0) }
+        Self {
+            bcsg: Vec4::new(brightness - 1.0, contrast, saturation - 1.0, 1.0 / gamma.max(1e-3)),
+            mode: UVec4::new(1, 1, 0, 0),
+            sharp: Vec4::new(1.0, 0.0, 0.0, 0.0),
+        }
     }
 
     /// SE's (`Brightness`, `Contrast`, `Saturation`, `Gamma`).
@@ -113,8 +124,8 @@ impl Plugin for ColorCorrectionPlugin {
     }
 }
 
-/// main-def.cfg's `ToneMappingShader` and `Dithering` (env `SE_TONEMAP=<name>` for testing, `aces` for
-/// ACES_Fitted).
+/// main-def.cfg's `ToneMappingShader`, `Dithering` and `Sharpness` (env `SE_TONEMAP=<name>` for testing,
+/// `aces` for ACES_Fitted; `SE_SHARPNESS=<0..1>`).
 fn load_final_image(cfg: Res<crate::config::EngineConfig>, mut fi: ResMut<FinalImage>) {
     let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
     let def = se_core::sc::parse(&text);
@@ -122,6 +133,10 @@ fn load_final_image(cfg: Res<crate::config::EngineConfig>, mut fi: ResMut<FinalI
         fi.tone = t;
     }
     fi.dithering = def.find_deep("Dithering").and_then(|i| i.bool()).unwrap_or(fi.dithering);
+    fi.sharpness = def.find_deep("Sharpness").and_then(|i| i.f64()).map_or(fi.sharpness, |v| (v as f32).clamp(0.0, 1.0));
+    if let Some(v) = std::env::var("SE_SHARPNESS").ok().and_then(|v| v.parse::<f32>().ok()) {
+        fi.sharpness = v.clamp(0.0, 1.0);
+    }
     if let Ok(v) = std::env::var("SE_TONEMAP") {
         let v = if v.eq_ignore_ascii_case("aces") { "ACES_Fitted".to_string() } else { v };
         if let Some(t) = tone_index(&v) {
@@ -144,9 +159,11 @@ fn attach(mut commands: Commands, cfg: Res<crate::config::EngineConfig>, cams: Q
 /// The tone shader, dithering and photo mode onto the camera's uniform.
 fn sync_mode(fi: Res<FinalImage>, photo: Res<PhotoMode>, mut cams: Query<&mut ColorCorrection, With<MainCamera>>) {
     let want = UVec4::new(fi.tone.min(TONE_SHADERS.len() - 1) as u32, fi.dithering as u32, photo.auto() as u32, 0);
+    let sharp = Vec4::new(fi.sharpness.clamp(0.0, 1.0), 0.0, 0.0, 0.0);
     for mut c in &mut cams {
-        if c.mode != want {
+        if c.mode != want || c.sharp != sharp {
             c.mode = want;
+            c.sharp = sharp;
         }
     }
 }
@@ -156,7 +173,7 @@ struct ColorCorrectionPipeline {
     layout: BindGroupLayoutDescriptor,
     sampler: Sampler,
     pipeline: CachedRenderPipelineId,
-    /// Copies the scratch texture back into the main texture.
+    /// hdr_final: sharpens and corrects the scratch texture back into the main texture.
     blit: CachedRenderPipelineId,
 }
 
@@ -224,7 +241,7 @@ fn init_pipeline(
             ..default()
         })
     };
-    let (pipeline, blit) = (queue("fragment"), queue("blit"));
+    let (pipeline, blit) = (queue("fragment"), queue("final_image"));
     commands.insert_resource(ColorCorrectionPipeline { layout, sampler, pipeline, blit });
 }
 
@@ -258,7 +275,8 @@ fn color_correction(
     };
     let (from_main, from_scratch) = (group(target.main_texture_view()), group(&scratch.0.default_view));
     let encoder = ctx.command_encoder();
-    // The corrected frame into the scratch texture, then back into the main texture.
+    // The tone-mapped frame into the scratch texture, then sharpened and corrected back into the main
+    // texture (SE's hdr_tone and hdr_final).
     for (attachment, render_pipeline, bind) in [
         (
             RenderPassColorAttachment { view: &scratch.0.default_view, depth_slice: None, resolve_target: None, ops: Operations::default() },
@@ -291,6 +309,8 @@ mod tests {
         assert_eq!(tone_index("reinhard_se"), Some(9));
         assert_eq!(tone_index("Nope"), None);
         assert_eq!(FinalImage::default().tone_name(), "AgX");
+        // main-def.cfg `Sharpness 1`: hdr_final's SHARP variant on by default.
+        assert_eq!((FinalImage::default().sharpness, ColorCorrection::default().sharp.x), (1.0, 1.0));
         let v = ColorCorrection::new(1.2, 0.9, 1.5, 2.0).values();
         assert!((v[0] - 1.2).abs() < 1e-6 && (v[1] - 0.9).abs() < 1e-6 && (v[2] - 1.5).abs() < 1e-6 && (v[3] - 2.0).abs() < 1e-5);
     }

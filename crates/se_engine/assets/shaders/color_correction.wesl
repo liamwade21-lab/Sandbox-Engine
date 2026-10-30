@@ -1,6 +1,8 @@
 // SE's tone mapping and final colour correction (`color_correction.rs`): hdr_tone.glsl with the chosen
-// hdrt_*_tone.glh `ToneMapping`, then hdr_final.glsl (hsl.glh `ColorCorrentionLDR`, `DITHERING`). Bevy's
-// tone mapping pass runs before this one as `Tonemapping::Linear`, so the input is the HDR frame with the
+// hdrt_*_tone.glh `ToneMapping`, then hdr_final.glsl (hsl.glh `ColorCorrentionLDR`, `DITHERING`).
+// Two passes as SE's: `fragment` (hdr_tone) tone-maps into the scratch texture, `final_image` (hdr_final,
+// with its `SHARP` textureFastCAS) corrects it back into the main one.
+// Bevy's tone mapping pass runs before this one as `Tonemapping::Linear`, so the input is the HDR frame with the
 // exposure applied; the output is linear (the swapchain encodes sRGB), as the port's earlier AgX look.
 
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
@@ -10,6 +12,8 @@ struct ColorCorrection {
     bcsg: vec4<f32>,
     // x: tone shader (`TONE_SHADERS` index), y: dithering, z: auto exposure on
     mode: vec4<u32>,
+    // x: `Sharpness` (0 no sharpening)
+    sharp: vec4<f32>,
 };
 
 // The auto exposure state (`auto_exposure.wesl`): x the compensation in stops (positive darker).
@@ -131,6 +135,7 @@ fn dither(pos: vec2<f32>) -> vec3<f32> {
     return (d - 0.5) / 255.0;
 }
 
+// hdr_tone.glsl: the tone-mapped frame, into the scratch texture.
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let src = textureSample(scene, scene_sampler, in.uv);
@@ -138,7 +143,46 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     if cc.mode.z != 0u {
         hdr = hdr * exp2(-auto_state.comp.x);
     }
-    var c = tone_map(hdr, cc.mode.x);
+    return vec4<f32>(tone_map(hdr, cc.mode.x), src.a);
+}
+
+// A texel of the tone-mapped frame, clamped to the edge (SE's textureOffset).
+fn tap(p: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
+    return textureLoad(scene, clamp(p, vec2<i32>(0), size - 1), 0);
+}
+
+// hdr_final.glsl `textureFastCAS` (AMD FidelityFX CAS, SE's `SHARP` variant): a cross of five texels,
+// the sharpening shaped by the green channel's distance to 0 and 1, `sharpness` 0..1 (`LimParams.w`).
+fn fast_cas(p: vec2<i32>, size: vec2<i32>, sharpness: f32) -> vec4<f32> {
+    let col = tap(p, size);
+    let n = tap(p + vec2<i32>(0, -1), size);
+    let e = tap(p + vec2<i32>(1, 0), size);
+    let s = tap(p + vec2<i32>(0, 1), size);
+    let w = tap(p + vec2<i32>(-1, 0), size);
+    var max_g = max(max(max(col.y, n.y), max(e.y, s.y)), w.y);
+    let min_g = min(min(min(col.y, n.y), min(e.y, s.y)), w.y);
+    let colw = n + e + s + w;
+    let d_min_g = min_g;
+    let d_max_g = 1.0 - max_g;
+    max_g = max(0.0, max_g);
+    var a = select(d_min_g / max_g, d_max_g / max_g, d_max_g < d_min_g);
+    a = sqrt(max(0.0, a)) * mix(-0.125, -0.2, sharpness);
+    return (col + colw * a) / (1.0 + 4.0 * a);
+}
+
+// hdr_final.glsl: the sharpening (when `Sharpness` > 0) and the colour correction of the tone-mapped
+// scratch texture, back into the main texture.
+@fragment
+fn final_image(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let size = vec2<i32>(textureDimensions(scene));
+    let p = vec2<i32>(in.position.xy);
+    var src: vec4<f32>;
+    if cc.sharp.x > 0.0 {
+        src = fast_cas(p, size, cc.sharp.x);
+    } else {
+        src = tap(p, size);
+    }
+    var c = src.rgb;
     // Contrast and brightness.
     c = mix(vec3<f32>(0.5), c, cc.bcsg.y) + cc.bcsg.xxx;
     // Vibrance: extrapolate from luma by 1 + (S - 1) (1 - the pixel's saturation).
@@ -152,10 +196,4 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         c = pow(max(pow(c, vec3<f32>(1.0 / 2.2)) + dither(in.position.xy), vec3<f32>(0.0)), vec3<f32>(2.2));
     }
     return vec4<f32>(c, src.a);
-}
-
-// The corrected frame copied back into the main texture.
-@fragment
-fn blit(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(scene, scene_sampler, in.uv);
 }

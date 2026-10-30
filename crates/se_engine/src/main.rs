@@ -47,6 +47,7 @@ mod messages;
 mod script_gui;
 mod script_vars;
 mod scripting;
+mod render_scale;
 mod screenshot;
 mod session;
 mod settings;
@@ -112,7 +113,7 @@ fn main() {
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(cfg)
     // Core: game data, simulation clock / floating origin, observer.
-    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, memory::MemoryPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin))
+    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, memory::MemoryPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin, render_scale::RenderScalePlugin))
     // Deep sky (Bevy plugin tuples are limited to 15 entries, hence the groups).
     .add_plugins((
         stars::StarsPlugin,
