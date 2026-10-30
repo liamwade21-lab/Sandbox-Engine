@@ -1819,6 +1819,23 @@ fn giant_clouds(p: &mut [f32; N_PARAMS], r: &mut SeRng, inp: &GenInput) {
     }
 }
 
+/// A brown dwarf's surface parameters (SE's bulk class 8, drawn by tg_browndwarf_*, FUN_1402ef870
+/// generator 6): the star branch's photosphere (its `erosion` mixes the granulation in), then the
+/// giant branch's cloud bands, hot (`bulk == BROWN_DWARF`: doubled cloud frequency and fluctuation,
+/// halved twist, fewer cyclones the hotter). Draws as in [`generate`] and `giant_clouds`, not in
+/// SE's order.
+pub fn brown_dwarf(inp: &GenInput, given: &[f32; N_PARAMS]) -> SurfaceGen {
+    let mut g = generate(inp, given);
+    let mut i = inp.clone();
+    i.classes.bulk = bulk::BROWN_DWARF;
+    let mut r = SeRng::new(inp.seeds.0 ^ 0x0b0d_0b0d, inp.seeds.1);
+    // The star branch's final clamp turned the unset octaves into 0.
+    g.p[CLOUDS_MAIN_OCTAVES] = given[CLOUDS_MAIN_OCTAVES];
+    giant_clouds(&mut g.p, &mut r, &i);
+    g.p[CLOUDS_MAIN_OCTAVES] = if g.p[CLOUDS_MAIN_OCTAVES] >= 0.0 { g.p[CLOUDS_MAIN_OCTAVES].min(15.0) } else { 0.0 };
+    g
+}
+
 /// Leading/trailing darkening of airless moons of giants (class 6, `drivenDarkening`).
 fn driven_darkening(inp: &GenInput) -> f32 {
     let Some(m) = inp.moon else { return 0.0 };
@@ -2119,6 +2136,30 @@ pub fn preset_sun_temp(cat: &crate::catalog::Catalog, i: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brown_dwarf_gets_hot_cloud_bands() {
+        let inp = GenInput {
+            seeds: (17, 4),
+            obj_type: obj::STAR,
+            classes: Classes { bulk: -1, ..Default::default() },
+            radius_km: 62_000.0,
+            mass_earth: 10_000.0,
+            t_eq: 1350.0,
+            t_surf: 1350.0,
+            t_class: 1350.0,
+            star: Some(StarCode::of(&crate::star::SpectralClass::parse("L8V"))),
+            ..Default::default()
+        };
+        let g = brown_dwarf(&inp, &[UNSET; N_PARAMS]);
+        // Hot: doubled frequency (0.5..1.5 drawn), halved twist (7..15 drawn), no cyclones at 1350 K.
+        assert!((1.0..=3.0).contains(&g.v(CLOUDS_MAIN_FREQ)), "{}", g.v(CLOUDS_MAIN_FREQ));
+        assert!((3.5..=7.5).contains(&g.v(STRIPE_TWIST)), "{}", g.v(STRIPE_TWIST));
+        assert_eq!((g.v(CYCLONE_OCTAVES), g.v(CYCLONE_OCTAVES2)), (0.0, 0.0));
+        assert_eq!(g.v(CLOUDS_MAIN_OCTAVES), 12.0);
+        // Below 1500 K the star branch's granulation is off: erosion 0, bands only.
+        assert_eq!(g.v(EROSION), 0.0);
+    }
 
     #[test]
     fn star_surfaces() {

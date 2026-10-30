@@ -1004,6 +1004,7 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<PlanetMaterial>::default())
             .add_plugins(MaterialPlugin::<CloudMaterial>::default())
+            .add_plugins(crate::brown_dwarf::BrownDwarfPlugin)
             .init_resource::<TileCaches>()
             .init_resource::<SelfEmission>()
             .init_resource::<WaterDisplay>()
