@@ -267,6 +267,12 @@ fn settings_window(
             Tab::Camera => {
                 ui.add(egui::Slider::new(&mut cam.fov_deg, crate::camera::MIN_FOV_DEG..=crate::camera::MAX_FOV_DEG).logarithmic(true).text(i18n.tr("field of view")));
                 ui.checkbox(&mut cam.auto_horizon, i18n.tr("Auto horizon on planets"));
+                // SE's movement mode (keys 1-3).
+                let labels = crate::camera::MoveMode::ALL.map(|m| m.label());
+                let mut m = crate::camera::MoveMode::ALL.iter().position(|x| *x == cam.move_mode).unwrap_or(0);
+                if combo(ui, "move_mode", "Movement mode", &mut m, &labels, &i18n) {
+                    cam.set_move_mode(crate::camera::MoveMode::ALL[m]);
+                }
             }
             Tab::Display => {
                 let modes = ["Windowed", "Fullscreen window", "Fullscreen"];

@@ -51,7 +51,6 @@ const MAX_GEOM_LEVEL: u8 = 20;
 /// Split when the camera is closer than this many node edge lengths.
 const SPLIT_DISTANCE: f64 = 2.2;
 const MAX_IN_FLIGHT: usize = 24;
-const MAX_NODES: usize = 2500;
 
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct PlanetUniform {
@@ -1715,7 +1714,7 @@ fn update_terrain(
     clouds_q: Query<&CloudNode>,
     mut vis_q: Query<&mut Visibility, Or<(With<TerrainNode>, With<CloudNode>)>>,
     rings: Query<&crate::rings::Rings>,
-    (ring_mats, surface_tex, quality, mut tgen, mut gen_queue, mut shader_buffers, time): (
+    (ring_mats, surface_tex, quality, mut tgen, mut gen_queue, mut shader_buffers, time, memory): (
         Res<Assets<crate::rings::RingMaterial>>,
         Option<Res<SurfaceTextures>>,
         Res<crate::graphics::TerrainQuality>,
@@ -1723,6 +1722,7 @@ fn update_terrain(
         ResMut<crate::terrain_gen::GenQueue>,
         ResMut<Assets<bevy::render::storage::ShaderBuffer>>,
         Res<crate::universe::SimTime>,
+        Res<crate::memory::MemoryLimits>,
     ),
 ) {
     let (Some(defaults), Some(surface_tex)) = (defaults, surface_tex) else { return };
@@ -1785,8 +1785,8 @@ fn update_terrain(
         let shadow = terrain.layers.as_ref().and_then(|l| terrain.shadow_clouds(l));
         let thermal = thermal_uniform(terrain, light);
         let keys: Vec<TileKey> = terrain.nodes.keys().copied().collect();
+        let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
         for key in keys {
-            let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
             let slot = terrain.nodes.get_mut(&key).unwrap();
             let NodeState::Loading(task) = &mut slot.state else { continue };
             let Some(build) = check_ready(task) else { continue };
@@ -2253,29 +2253,48 @@ fn update_terrain(
                 }
             }
         }
-        // Evict stale nodes.
-        if terrain.nodes.len() > MAX_NODES / 2 {
-            let mut stale: Vec<(TileKey, u64)> = terrain
-                .nodes
-                .iter()
-                .filter(|(k, s)| k.level > 0 && !matches!(s.state, NodeState::Loading(_)) && frame - s.last_used > 30)
-                .map(|(k, s)| (*k, s.last_used))
-                .collect();
-            stale.sort_by_key(|(_, f)| *f);
-            let excess = terrain.nodes.len().saturating_sub(MAX_NODES / 2);
-            for (k, _) in stale.into_iter().take(excess.max(64)) {
-                terrain.node_heights.remove(&k);
-                terrain.node_hrange.remove(&k);
-                if let Some(slot) = terrain.nodes.remove(&k) {
-                    if let NodeState::Ready(e, c) = slot.state {
-                        for e in std::iter::once(e).chain(c) {
-                            commands.entity(e).despawn();
-                        }
+    }
+    // SE's CacheSizeLandNode: the nodes of all planets together; beyond it the least recently used
+    // ones go first (only nodes unused for STALE_FRAMES, never a root or one still loading). The
+    // port keeps at most LAND_NODES_MAX whatever the setting: its resident nodes cost it time every
+    // frame, and main-def.cfg's 10000 took a surface flight from ~50 to ~280 ms a frame.
+    let total: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.len()).sum();
+    let cap = memory.land_nodes.min(LAND_NODES_MAX);
+    if total > cap {
+        let mut stale: Vec<(u64, Entity, TileKey)> = bodies
+            .iter()
+            .flat_map(|(e, _, _, t, _)| {
+                t.nodes
+                    .iter()
+                    .filter(|(k, s)| k.level > 0 && !matches!(s.state, NodeState::Loading(_)) && t.frame - s.last_used > STALE_FRAMES)
+                    .map(move |(k, s)| (t.frame - s.last_used, e, *k))
+            })
+            .collect();
+        stale.sort_unstable_by_key(|s| std::cmp::Reverse(s.0));
+        for (_, e, k) in stale.into_iter().take(evict_count(total, cap)) {
+            let Ok((_, _, _, mut terrain, _)) = bodies.get_mut(e) else { continue };
+            terrain.node_heights.remove(&k);
+            terrain.node_hrange.remove(&k);
+            if let Some(slot) = terrain.nodes.remove(&k) {
+                if let NodeState::Ready(e, c) = slot.state {
+                    for e in std::iter::once(e).chain(c) {
+                        commands.entity(e).despawn();
                     }
                 }
             }
         }
     }
+}
+
+/// The port's ceiling on resident terrain nodes (its earlier per-planet eviction threshold).
+const LAND_NODES_MAX: usize = 1250;
+
+/// A node unused for this many frames may be evicted.
+const STALE_FRAMES: u64 = 30;
+
+/// Nodes to evict from `total` over the cache size `cap`: the excess, at least 64 at a time.
+pub fn evict_count(total: usize, cap: usize) -> usize {
+    if total > cap { (total - cap).max(64) } else { 0 }
 }
 
 /// Quadtree traversal. Pushes nodes to draw into `visible` (kept sorted) and

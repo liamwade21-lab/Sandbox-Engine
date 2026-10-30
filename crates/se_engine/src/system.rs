@@ -406,6 +406,9 @@ struct ActiveScan {
     /// catalog is free to take it.
     running: Option<(u32, u32, Task<Generated>)>,
     ready: Option<(u32, u32, Generated)>,
+    /// The generated systems' roots, least recently entered first: SE keeps `CacheSizeSolarSystems`
+    /// planetary systems in memory and frees the oldest beyond that.
+    entered: std::collections::VecDeque<u32>,
 }
 
 /// The members of the system just entered still to spawn, a few each frame (SE's loader works
@@ -435,12 +438,13 @@ fn select_active_system(
     members: Query<Entity, With<SystemMember>>,
     mut load: ResMut<SystemLoad>,
     mut scan: Local<ActiveScan>,
+    memory: Option<Res<crate::memory::MemoryLimits>>,
 ) {
     let cam_pc = cam.pos.to_parsecs();
     let cat = data.catalog.clone();
     // The full catalog scan only reruns once the camera has moved by a percent of the
     // distance to the nearest star (or every couple of seconds).
-    let ActiveScan { last_pc, last_star, age, generated, running, ready } = &mut *scan;
+    let ActiveScan { last_pc, last_star, age, generated, running, ready, entered } = &mut *scan;
     *age += 1;
     let mut nearest = {
         let eph = Ephemeris::new(&cat);
@@ -521,6 +525,24 @@ fn select_active_system(
                 if !multiples || needs_system(cat_mut, root) {
                     load_generated(cat_mut, star, out);
                 }
+                // Beyond SE's CacheSizeSolarSystems the least recently entered systems are freed;
+                // entering one again generates it anew (the same, from its seed).
+                let cap = memory.as_ref().map_or(64, |m| m.solar_systems);
+                // Never the systems the camera still refers to: its selection, the object it is
+                // bound to or flying to, and the earlier selections (Backspace).
+                let refs = cam.selected.into_iter().chain(cam.follow.map(|f| f.target)).chain(cam.travel.as_ref().map(|t| t.target)).chain(cam.history.iter().copied());
+                let keep = [Some(root), active.root]
+                    .into_iter()
+                    .flatten()
+                    .chain(refs.filter(|r| matches!(r, ObjectRef::Star(_) | ObjectRef::Body(_))).filter_map(|r| cat_mut.system_root(r)))
+                    .collect::<Vec<_>>();
+                for old in systems_to_unload(entered, generated.len(), cap, &keep) {
+                    let name = cat_mut.stars[old as usize].names[0].clone();
+                    let n = cat_mut.unload_generated(&name);
+                    generated.remove(&old);
+                    entered.retain(|r| *r != old);
+                    info!("unloaded the planetary system of {name} ({n} objects; CacheSizeSolarSystems {cap})");
+                }
             }
             None => {
                 *ready = Some((root, star, out));
@@ -536,6 +558,10 @@ fn select_active_system(
     }
     active.bodies.clear();
     active.root = Some(root);
+    if generated.contains(&root) {
+        entered.retain(|r| *r != root);
+        entered.push_back(root);
+    }
     active.name = cat.stars[root as usize].names[0].clone();
     let mut objs = cat.system_members(&active.name);
     objs.push(ObjectRef::Star(root));
@@ -796,6 +822,13 @@ pub fn materialize_star(cat: &mut se_core::catalog::Catalog, rec: se_core::catal
 fn needs_system(cat: &se_core::catalog::Catalog, idx: u32) -> bool {
     let s = &cat.stars[idx as usize];
     s.source == "procedural" && cat.children_of(&s.names[0]).is_empty()
+}
+
+/// The generated systems to free when `count` are kept and the cache holds `cap`: the least
+/// recently entered first, never one in `keep` (the one entered, the one being left and those the
+/// camera's selection, binding, flight and selection history are in).
+fn systems_to_unload(entered: &std::collections::VecDeque<u32>, count: usize, cap: usize, keep: &[u32]) -> Vec<u32> {
+    entered.iter().copied().filter(|r| !keep.contains(r)).take(count.saturating_sub(cap)).collect()
 }
 
 /// Load a star's generated planetary system (with SE's component stars for a procedural star)
@@ -1684,6 +1717,13 @@ impl Material for StarSurfaceMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn least_recently_entered_systems_go_first() {
+        let entered: std::collections::VecDeque<u32> = [7, 3, 9, 4].into();
+        assert_eq!(systems_to_unload(&entered, 5, 3, &[1, 7]), vec![3, 9]);
+        assert!(systems_to_unload(&entered, 3, 3, &[]).is_empty());
+    }
 
     #[test]
     fn cluster_members_keep_their_age() {

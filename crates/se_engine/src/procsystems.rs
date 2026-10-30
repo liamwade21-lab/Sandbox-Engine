@@ -54,8 +54,6 @@ const CLUSTER_MIN_PX: f32 = 1.5;
 const ACTIVE_RADII: f64 = 3.0;
 /// Frames after which the Milky Way system stops waiting for its emission map.
 const FALLBACK_FRAMES: u64 = 2400;
-/// Generated systems kept for name lookups.
-const MAX_CACHE: usize = 6;
 /// Nebulae become catalog entries (3D models) at this angular radius, pixels, ...
 const NEBULA_PROMOTE_PX: f64 = 3.0;
 /// ... and only when they are brighter than this (SE's `NebulaMagnLimit`/`GlowMagnLimit` are 7), so that the many
@@ -111,7 +109,11 @@ struct SystemSprites {
 #[derive(Resource)]
 pub struct ProcSystems {
     slots: HashMap<u32, Slot>,
+    /// Generated systems kept for name lookups (SE's `CacheSizeGalSysModels`, the galaxy subsystems
+    /// kept in memory), with the frame each was last used; the least recently used go first.
     cache: HashMap<u32, (Arc<GalaxySystem>, bool)>,
+    cache_used: HashMap<u32, u64>,
+    cache_cap: usize,
     clu_mat: Handle<GalaxyFarMaterial>,
     neb_mat: Handle<GalaxyFarMaterial>,
     /// The far particles of the catalog clusters (always on: SE's `ShowCatClusters`).
@@ -143,7 +145,13 @@ impl Plugin for ProcSystemsPlugin {
     }
 }
 
-fn setup(mut commands: Commands, data: Res<SeData>, mut meshes: ResMut<Assets<Mesh>>, mut far_mats: ResMut<Assets<GalaxyFarMaterial>>) {
+fn setup(
+    mut commands: Commands,
+    data: Res<SeData>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
+    memory: Option<Res<crate::memory::MemoryLimits>>,
+) {
     let gs = GalaxySettings::default();
     let clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
     let neb_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
@@ -181,6 +189,8 @@ fn setup(mut commands: Commands, data: Res<SeData>, mut meshes: ResMut<Assets<Me
     commands.insert_resource(ProcSystems {
         slots: HashMap::new(),
         cache: HashMap::new(),
+        cache_used: HashMap::new(),
+        cache_cap: memory.map_or(32, |m| m.gal_sys_models),
         clu_mat,
         neb_mat,
         cat_clu_mat,
@@ -512,12 +522,7 @@ fn manage_systems(
                     system.clusters.len(),
                     system.nebulae.len()
                 );
-                if sys.cache.len() >= MAX_CACHE {
-                    if let Some(k) = sys.cache.keys().find(|k| !wanted.contains(k)).copied() {
-                        sys.cache.remove(&k);
-                    }
-                }
-                sys.cache.insert(g, (system.clone(), slot.uses_map));
+                cache_put(&mut sys.cache, &mut sys.cache_used, (sys.cache_cap, sys.frame_no), g, (system.clone(), slot.uses_map), &wanted);
                 slot.state = SlotState::Ready(system);
             }
         }
@@ -768,19 +773,39 @@ impl ProcSystems {
             return Some((s.clone(), *frame));
         }
         if let Some((s, _)) = self.cache.get(&g) {
+            self.cache_used.insert(g, self.frame_no);
             // The frame only depends on the (unchanging) catalog record, so it is cheap to rebuild by the caller.
             let inp = input()?;
             return Some((s.clone(), inp.frame));
         }
         let inp = input()?;
         let system = run_generate(&inp);
-        if self.cache.len() >= MAX_CACHE {
-            if let Some(k) = self.cache.keys().next().copied() {
-                self.cache.remove(&k);
-            }
-        }
-        self.cache.insert(g, (system.clone(), inp.uses_map));
+        cache_put(&mut self.cache, &mut self.cache_used, (self.cache_cap, self.frame_no), g, (system.clone(), inp.uses_map), &self.wanted);
         Some((system, inp.frame))
+    }
+}
+
+/// Keep galaxy `g`'s system in the cache, dropping the least recently used others beyond its size
+/// `cap` (galaxies still wanted only when nothing else can go).
+fn cache_put(
+    cache: &mut HashMap<u32, (Arc<GalaxySystem>, bool)>,
+    used: &mut HashMap<u32, u64>,
+    (cap, frame): (usize, u64),
+    g: u32,
+    entry: (Arc<GalaxySystem>, bool),
+    wanted: &[u32],
+) {
+    cache.insert(g, entry);
+    used.insert(g, frame);
+    let age = |k: &u32| used.get(k).copied().unwrap_or(0);
+    let mut drop = crate::memory::lru_victims(cache.len(), cap, cache.keys().filter(|k| **k != g && !wanted.contains(k)).map(|k| (*k, age(k))));
+    if cache.len() - drop.len() > cap {
+        let rest = cache.len() - drop.len();
+        drop.extend(crate::memory::lru_victims(rest, cap, cache.keys().filter(|k| **k != g && wanted.contains(k)).map(|k| (*k, age(k)))));
+    }
+    for k in drop {
+        cache.remove(&k);
+        used.remove(&k);
     }
 }
 

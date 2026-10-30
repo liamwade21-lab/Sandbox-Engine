@@ -559,6 +559,7 @@ fn stream_nodes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StarMaterial>>,
     time: Res<Time<Real>>,
+    memory: Option<Res<crate::memory::MemoryLimits>>,
 ) {
     let Some(mut field) = field else { return };
     let field = &mut *field;
@@ -659,7 +660,14 @@ fn stream_nodes(
         .filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && frame_no - s.last_used > KEEP_FRAMES)
         .map(|(k, _)| *k)
         .collect();
-    for k in stale {
+    // SE's CacheSizeStarNode: beyond it the least recently wanted nodes go first.
+    let cap = memory.map_or(usize::MAX, |m| m.star_nodes);
+    let over = crate::memory::lru_victims(
+        field.nodes.len() - stale.len(),
+        cap,
+        field.nodes.iter().filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && s.last_used < frame_no && frame_no - s.last_used <= KEEP_FRAMES).map(|(k, s)| (*k, s.last_used)),
+    );
+    for k in stale.into_iter().chain(over) {
         if let Some(NodeSlot {
             state: NodeState::Ready { entity: Some(e), .. },
             ..
