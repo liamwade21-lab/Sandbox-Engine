@@ -18,7 +18,7 @@ use crate::bloom::BloomSettings;
 use crate::camera::{FlyCamera, MainCamera};
 use crate::clusters::ClusterSettings;
 use crate::color_correction::ColorCorrection;
-use crate::exposure::ExposureComp;
+use crate::exposure::{ExposureComp, PhotoMode};
 use crate::graphics::GraphicsSettings;
 use crate::lensflare::LensFlareSettings;
 use crate::overlay::{MarkerKind, OverlaySettings, SkySwitches};
@@ -41,6 +41,8 @@ pub struct Settings<'w, 's> {
     /// Inserted at startup by their plugins.
     pub clusters: Option<ResMut<'w, ClusterSettings>>,
     pub exposure: Option<ResMut<'w, ExposureComp>>,
+    /// SE's `PhotoMode` (exposure.rs).
+    pub photo: Option<ResMut<'w, PhotoMode>>,
     pub switches: Option<ResMut<'w, RenderSwitches>>,
     /// SE's `Brightness`/`Contrast`/`Saturation`/`Gamma` (FUN_140326220) live on the camera.
     pub color: Query<'w, 's, &'static mut ColorCorrection, With<MainCamera>>,
@@ -87,6 +89,7 @@ pub const SCALARS: &[&str] = &[
     "showprocnebulae",
     "showcatclusters",
     "exposurecomp",
+    "photomode",
     "showatmospheres",
     "showclouds",
     "showaurora",
@@ -129,6 +132,7 @@ struct View<'a> {
     wps: &'a Waypoints,
     clusters: Option<&'a ClusterSettings>,
     exposure: Option<&'a ExposureComp>,
+    photo: Option<&'a PhotoMode>,
     switches: Option<&'a RenderSwitches>,
     color: Option<&'a ColorCorrection>,
     cam: &'a FlyCamera,
@@ -181,6 +185,7 @@ impl View<'_> {
             "showcatclusters" => b(self.clusters?.show_cat),
             // SE keeps ExposureComp negated: +1 shown (twice as bright) is -1 (exposure.rs).
             "exposurecomp" => -self.exposure?.stops as f64,
+            "photomode" => self.photo?.0 as f64,
             "showatmospheres" => b(self.switches?.atmospheres),
             "showclouds" => b(self.switches?.clouds),
             "showaurora" => b(self.switches?.aurora),
@@ -219,6 +224,7 @@ impl Settings<'_, '_> {
             wps: &self.waypoints,
             clusters: self.clusters.as_deref(),
             exposure: self.exposure.as_deref(),
+            photo: self.photo.as_deref(),
             switches: self.switches.as_deref(),
             color: self.color.single().ok(),
             cam,
@@ -280,6 +286,10 @@ impl Settings<'_, '_> {
             },
             "exposurecomp" => match self.exposure.as_mut() {
                 Some(e) => e.set(-v as f32),
+                None => return false,
+            },
+            "photomode" => match self.photo.as_mut() {
+                Some(m) => **m = PhotoMode::new(v.clamp(0.0, 2.0) as u8),
                 None => return false,
             },
             // switches.rs (rings, skies and eclipses): the planet drawing switches.
@@ -356,6 +366,7 @@ pub fn default_value(name: &str) -> Option<f64> {
         wps: &wps,
         clusters: Some(&clusters),
         exposure: Some(&exposure),
+        photo: Some(&PhotoMode::default()),
         switches: Some(&switches),
         color: Some(&color),
         cam: &cam,
