@@ -207,10 +207,11 @@ fn follow_main(
         }
         if v.post.correct {
             ec.insert(grading.clone());
-            if let Some(c) = cc
-                && vcc.map(|x| x.bcsg != c.bcsg || x.mode != c.mode).unwrap_or(true)
+            // Without the sharpening: each tile or cube face sharpened on its own would leave seams.
+            if let Some(c) = cc.map(|c| crate::color_correction::ColorCorrection { sharp: Vec4::ZERO, ..*c })
+                && vcc.map(|x| x.bcsg != c.bcsg || x.mode != c.mode || x.sharp != c.sharp).unwrap_or(true)
             {
-                ec.insert(*c);
+                ec.insert(c);
             }
         }
         match bloom.filter(|_| v.post.bloom) {

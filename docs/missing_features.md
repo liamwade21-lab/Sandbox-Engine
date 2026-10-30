@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 190 have been fixed since (listed at the end); the tables count the 21 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 191 have been fixed since (listed at the end); the tables count the 20 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 6 | 10 | 5 |
+| Gaps | 0 | 0 | 6 | 9 | 5 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 1 | 11 | 9 |
+| Gaps | 1 | 11 | 8 |
 
 | Area | Kept |
 |---|---|
@@ -124,7 +124,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 06 Procedural generation | 6 |
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
-| 09 Graphics and settings | 2 |
+| 09 Graphics and settings | 1 |
 | 10 Scripts, audio, spacecraft | 5 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
@@ -242,15 +242,6 @@ Only one cloud layer per procedural body, and only one is rendered: SE gives eli
 - SE evidence: main-def.cfg PlanetGenerator PlanetCloudsTerra, PlanetCloudsGasGiant; FUN_1405057e0 (reads DAT_14075f814); eng-gui "Clouds 0", "Clouds 1", "Clouds 2"
 - Port: crates/se_core/src/procgen/mod.rs:1755-1760
 - Check: FUN_1405057e0:185-193 gives a terrestrial-type body 1 + rand % PlanetCloudsTerra layers (DAT_14075f814), but the other branch (lines 173-181) hard-codes 1 or 2 layers, and PlanetCloudsGasGiant (DAT_14075f810) has no reader outside config load/save (x-ref); the port's procgen emits at most one Clouds block (procgen/mod.rs:1353 gas giants, 1756-1762 solids), and its renderer also uses a single cloud layer (terrain.rs layers.clouds), although body_params.rs:169 parses several
-
-### 09-014 · Graphics and settings
-
-Render resolution and upscaling: SE renders solid objects at SolidResolution (0.5 default, 0.7-1.0 in the presets, capped by SolidTargetRes 1080) and volumetrics at VolumResolution 0.35, then upscales them (SolidUpscaleMode/VolumUpscaleMode: nearest, bilinear, bicubic, lanczos, each plain/sharp/CAS, or checkerboard upscale_checkerboard.glsl), optionally spread over frames (SolidTemporalUpscale, combine_temporal.glsl, "Fast temporal rendering"), FXAA'd before upscaling (SolidFXAA) and bilateral-filtered (VolumBilateral, bilateral.glsl), and sharpens the final frame with AMD FidelityFX CAS at PostEffects Sharpness 1 (hdr_final.glsl SHARP). Port renders everything at window resolution with no sharpening, and uses VolumResolution as a nebula ray-march step count
-
-- Status: missing, effort **L**, auditor confidence medium
-- SE evidence: upscale_bicubic.glsl; upscale_checkerboard.glsl; combine_temporal.glsl; bilateral.glsl; hdr_final.glsl:38-170 textureFastCAS; main-def.cfg TextureRendering 316-349, PostEffects Sharpness; eng-gui "Sharpness" "Fast temporal rendering" "Volumetric objects resolution" "While moving" "While stationary"
-- Port: crates/se_engine/src/graphics.rs:66-67; crates/se_engine/src/nebula_raymarch.rs:275
-- Check: main-def.cfg TextureRendering 316-349 has SolidTargetRes 1080, SolidResolution 0.5, VolumResolution 0.35, Solid/VolumUpscaleMode 8 (bicubic CAS), SolidTemporalUpscale, SolidFXAA, VolumBilateral, PostEffects Sharpness 1 (line 200), and hdr_final.glsl:39-175 defines textureCAS/textureFastCAS under SHARP; port graphics.rs:4-8 says render scale is "kept only for display", there is no render-scale, upscale, TAA or ContrastAdaptiveSharpening anywhere in crates/, and nebula_raymarch.rs:275-287 spends volume_resolution on ray-march step count
 
 ### 10-021 · Scripts, audio, spacecraft
 
@@ -732,6 +723,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **09-010** (Graphics and settings, fixed 2026-10-30): High-resolution screenshot tool: SE renders screenshots larger than the window as tiles (seScreenshotTool: Tar... Fix: SE: HD screenshot (Shift+F11 dialog, tiles saved as screenshots-hd/mosaicNNNNN, ScreenshotLandLOD, Scale stars, Wait loading completeness; input locked during the job, FUN_140221d70). Port (capture branch, capture.rs / screenshot.rs): Shift+F11 or Settings > Display, tiles through one offscreen camera slicing the full frame at the rotation from the job's start (camera input locked), time paused, ScreenshotLandLOD, Scale stars, Wait loading completeness. Not ported: bloom per tile (tile edges showed), lens flares and black-hole lensing in tiles.
 - **09-011** (Graphics and settings, fixed 2026-10-30): Skybox / panorama export: SE exports the sky around the camera as a 6-face cubemap or a cylindrical panorama (... Fix: SE: skybox export as cube faces in SE's face order pos_x, neg_x, neg_y, pos_y, pos_z, neg_z (FUN_1403278f0 renders GL order, saved under SE's name table), dds cubemap, cylindrical panorama, 8/16/32-bit. Port (capture branch): faces, dds cubemap (X8R8G8B8 without Save transparency), panorama, 8/16-bit PNG/TIFF/DDS and float TIFF/DDS writers (files read back); star loading all round during export. Not traced: each face image's orientation in SE, the panorama file name. Post-process per face off by default (edges show).
 - **09-013** (Graphics and settings, fixed 2026-10-30): Projection modes: SE renders a cubemap and resamples it into fish-eye (proj_fisheye.glsl: FisheyeFOV 180, circ... Fix: SE: projection modes from proj_fisheye / proj_cylinder (decrypted) and the cubemap mosaic, Projection settings. Port (capture branch, projection.rs): fish eye, cylindrical, cubemap mosaic, Projection tab, saved Projection block; ship layer kept; star loading not clipped to the view cone in projection modes. Checked: still-frame flicker in each mode, frame times unchanged in perspective. Not ported: SE's distort-interface option (labels, orbits, flares drawn flat), GUI/lens-flare resolution settings that go with it.
+- **09-014** (Graphics and settings, fixed 2026-10-30): Render resolution and upscaling: SE renders solid objects at SolidResolution (0.5 default, 0.7-1.0 in the pres... Fix: SE: PostEffects Sharpness (hdr_final.glsl SHARP, textureFastCAS); SolidResolution / SolidTargetRes (FUN_1401910f0), SolidUpscaleMode (nearest, bilinear, bicubic, lanczos x plain/sharp/CAS, bicubic_common.glh), SolidFXAA; VolumResolution/VolumUpscaleMode/VolumBilateral; SolidTemporalUpscale. Port (render-scale branch, render_scale.rs, upscale.wesl, color_correction split into hdr_tone + hdr_final): CAS sharpening (Sharpness from main-def, saved, slider), the 3D pass at SE's reduced size via MainPassResolutionOverride with the 12 upscale modes and SolidFXAA before upscaling (off during warp and in cube-map projections), Graphics settings controls; review fixes: the reduced pass waits for the upscale pipelines, HD tiles and cube faces are not sharpened (seams), capture views pick up Sharpness changes. Checked: reviewer frame times equal to main (Earth view 14.7 vs 14.8 ms, deep space 4.1 ms), 30-frame flicker 0 bad, tests. Port difference: the whole 3D pass is reduced (Bevy cannot split it), not only solids. Not ported: VolumResolution / VolumBilateral for the volumes, SolidTemporalUpscale and the checkerboard modes 12/13 (drawn as bicubic CAS).
 - **09-015** (Graphics and settings, fixed 2026-10-30): Memory limits and caches: SE caps VRAM and RAM (VideoMemoryStrategy, VideoMemorySize 3072 MB, VideoMemoryReser... Fix: SE: main-def Memory block (CacheSize*, MaxRAM/VRAM) and the RAM/VRAM log lines. Port (camera branch, memory.rs): cache sizes from main-def.cfg with least-recently-used eviction for planetary systems (64; a revisited system is regenerated; systems referenced by the selection, bound object, Go to target and history are kept), star and galaxy octree nodes, cluster/nebula lists, atmosphere models; SE's RAM/VRAM lines in se.log. Terrain nodes stay at the port's 1250 (main-def's 10000 took a surface flight from ~50 to 280 ms a frame). No port counterpart: the RAM/VRAM caps themselves, CacheSizeLandTextures, CacheSizeGalModels, the model VRAM minimums.
 - **09-016** (Graphics and settings, fixed 2026-10-30): Settings persistence: SE keeps every setting in config/main-user.cfg as overrides of main-def.cfg (created on ... Fix: SE: config/main-user.cfg holds the user's values over main-def.cfg (DetectVersionChange). Port (agent, settings.rs): %APPDATA%/SpaceEngine-rs/settings.cfg in SE's key names and blocks (Version, Settings, PostEffects, Export, Graphics with the whole preset and GPU, Display), written atomically (review fix); scripted runs neither read nor write it. Not ported: main-def keys without a port setting (modules reading main-def directly do not see user overrides). Checked: unit test; runs with APPDATA redirected.
 - **09-018** (Graphics and settings, fixed 2026-10-30): Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / interleaved / asynchronous), Ma... Fix: SE: main-def Loader LoaderMode 2 (0 immediate, 1 interleaved, 2 asynchronous), MaxThreads 0 (auto), MultithreadedStartup, PreloadShipTextures, PreloadShaders 2, TimingStrategy 0 (MaxTilesPerFrame) or 1 (MaxTimePerFrame 10 ms), MaxTimePerFrameClean; frame timing mode (RealTime/RealTimeFPS, Shift+Backslash) was done earlier. Port: MaxThreads sizes Bevy's task pools (main.rs TaskPoolPlugin); TimingStrategy 1 sets finished terrain nodes up until MaxTimePerFrame has gone by and stops counting tiles (graphics.rs TerrainQuality.time_budget_ms, terrain.rs); defaults unchanged (Earth check 50.04, 0 bad frames). Not ported: LoaderMode 0/1 (every port loader is asynchronous, SE's default), MultithreadedStartup, PreloadShaders (Bevy compiles pipelines when first used), PreloadShipTextures, MaxTimePerFrameClean (memory cleaning is per cache, memory.rs).

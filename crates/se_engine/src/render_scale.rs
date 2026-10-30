@@ -204,11 +204,13 @@ fn sync_upscale(
 struct LowTexture(CachedTexture);
 
 /// The main pass size: reduced while the view is the size the settings were computed for, the warp pass
-/// (which reads the depth buffer at full size) is off.
+/// (which reads the depth buffer at full size) is off and the upscale pipelines are ready (else the
+/// frame would show the small pass in a corner while they compile).
 fn prepare_upscale(
     mut commands: Commands,
     mut cache: ResMut<TextureCache>,
     device: Res<RenderDevice>,
+    (pipeline, pipeline_cache): (Option<Res<UpscalePipeline>>, Res<PipelineCache>),
     views: Query<(
         Entity,
         &ExtractedCamera,
@@ -217,8 +219,11 @@ fn prepare_upscale(
         Has<crate::ship::warp::WarpBubble>,
     )>,
 ) {
+    let ready = pipeline.is_some_and(|p| {
+        pipeline_cache.get_render_pipeline(p.fxaa).is_some() && pipeline_cache.get_render_pipeline(p.upscale).is_some()
+    });
     for (entity, camera, up, current, warp) in &views {
-        let on = up.active() && !warp && camera.physical_viewport_size == Some(up.full());
+        let on = ready && up.active() && !warp && camera.physical_viewport_size == Some(up.full());
         if !on {
             if current.is_some() {
                 commands.entity(entity).remove::<(MainPassResolutionOverride, LowTexture)>();
