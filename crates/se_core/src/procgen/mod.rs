@@ -18,12 +18,17 @@ use glam::DVec3;
 
 mod se_comets;
 mod se_layout;
+mod se_life;
+mod se_moons;
 mod se_multiple;
+mod se_rings;
+mod se_smbh;
+pub mod se_stars;
 
 pub use se_comets::{comet_name, tail_defaults, tail_particles, CometTail, CometTailGiven, TailParticle};
 
 use crate::star::StarKind;
-use crate::surface_gen::{bulk, BULK_NAMES};
+use crate::surface_gen::{bulk, SeRng, BULK_NAMES};
 use crate::units::{EARTH_MASS_KG, EARTH_RADIUS_KM, G, METERS_PER_AU, SECONDS_PER_YEAR, SOLAR_MASS_KG};
 
 // ---------------------------------------------------------------------------------------
@@ -137,11 +142,16 @@ pub struct StarParams {
     pub teff: f64,
     pub radius_sol: f64,
     pub age_gyr: f64,
-    /// Metallicity [Fe/H] (dex).
+    /// Metallicity [Fe/H] (dex), SE's star record +0x44 (each planet takes it times U(0.8, 1.2)).
     pub feh: f64,
     pub kind: StarKind,
     /// The star's spectral class, when known (SE's layout reads its luminosity class).
     pub class: Option<crate::star::SpectralClass>,
+    /// The star's C/O (record +0x48), when known; solar 0.55 otherwise.
+    pub c_to_o: Option<f64>,
+    /// SE's system seed (its position hash, [`se_system_seed`]); without one the generator hashes
+    /// the seed argument with the star's name.
+    pub se_seed: Option<u32>,
 }
 
 /// One generated body, as a compact summary (the full definition is in the `.sc` text).
@@ -184,6 +194,8 @@ pub struct GeneratedSystem {
     pub stars: Vec<(String, String)>,
     /// A multiple system's total mass (solar masses), which its root barycentre must carry.
     pub root_mass_sol: Option<f64>,
+    /// The barycentres of binary planets (written as `Barycenter`s).
+    pub barycenters: Vec<String>,
 }
 
 /// Generate the `.sc` text for the planetary system of `star`. Deterministic in `(star, seed)`.
@@ -220,13 +232,24 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
         "// Star: {:.3} Msun, {:.4} Lsun, Teff {:.0} K, R {:.3} Rsun, age {:.2} Gyr, [Fe/H] {:+.2}, regime {:?}",
         ctx.mass, ctx.lum, ctx.teff, ctx.radius_sol, ctx.age, ctx.feh, ctx.regime
     );
-    let mut out = GeneratedSystem { sc: String::new(), bodies: Vec::new(), stars: Vec::new(), root_mass_sol: None };
-    // SE's black holes of 400 solar masses or more take another generator (FUN_1404fb950).
-    let multiple = if big_black_hole(star) || !multiples { None } else { se_multiple::build(&se_root(star, &ctx), seed32) };
+    let mut out = GeneratedSystem { sc: String::new(), bodies: Vec::new(), stars: Vec::new(), root_mass_sol: None, barycenters: Vec::new() };
+    // SE's black holes of 400 solar masses or more get stars, no planets (FUN_1404fb950).
+    if big_black_hole(star) {
+        let stars = se_smbh::stars(star.mass_sol, star.radius_sol * crate::units::SOLAR_RADIUS_KM, seed32);
+        let _ = writeln!(sc, "// {}: supermassive black hole, {} star(s)", ctx.name, stars.len());
+        for (k, s) in stars.iter().enumerate() {
+            let name = format!("{} S{}", ctx.name, k + 1);
+            emit_smbh_star(&mut sc, &name, &ctx.name, s);
+            out.stars.push((name, s.class.clone()));
+        }
+        out.sc = sc;
+        return out;
+    }
+    let multiple = if !multiples { None } else { se_multiple::build(&se_root(star, &ctx), seed32) };
     match multiple {
         None => {
             let (planets, asteroids, se_comets) = se_bodies(&mut rng, star, &ctx, seed32);
-            host_bodies(&mut rng, &ctx, planets, asteroids, &mut sc, &mut out.bodies);
+            host_bodies(&mut rng, &ctx, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
             if comets {
                 host_comets(&ctx, &se_comets, &mut sc, &mut out.bodies);
             }
@@ -235,7 +258,7 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
             out.root_mass_sol = Some(comps[0].star.mass_sol);
             let name = |i: usize| comp_name(&star.name, &comps[i].suffix);
             for (i, c) in comps.iter().enumerate().skip(1) {
-                emit_component(&mut sc, &name(i), &name(c.parent.unwrap_or(0)), c);
+                emit_component(&mut sc, &name(i), &name(c.parent.unwrap_or(0)), c, star.age_gyr);
                 if c.children.is_none() {
                     out.stars.push((name(i), c.class.clone()));
                 }
@@ -255,6 +278,8 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
                     feh: star.feh,
                     kind: c.kind,
                     class: Some(crate::star::SpectralClass::parse(&c.class)),
+                    c_to_o: star.c_to_o,
+                    se_seed: None,
                 };
                 let hctx = Ctx::new(&hp);
                 let inner = |hot: bool| se_multiple::inner_au(&comps, i, hot);
@@ -262,12 +287,33 @@ fn generate(star: &StarParams, seed: u64, multiples: bool, comets: bool) -> Gene
                 n0 += sys.planets.len() as u32;
                 let mut hrng = rng.fork(0x51_0000 + c.idx as u64);
                 let (planets, asteroids, _) = bodies_from(&mut hrng, &hctx, &sys);
-                host_bodies(&mut hrng, &hctx, planets, asteroids, &mut sc, &mut out.bodies);
+                host_bodies(&mut hrng, &hctx, planets, asteroids, &mut sc, &mut out.bodies, &mut out.barycenters);
             }
         }
     }
     out.sc = sc;
     out
+}
+
+/// SE's life generator ([`se_life`]) for the generated bodies of the system under catalog star
+/// `root`, once loaded: `Life` blocks from the bodies' completions. Returns the bodies with life.
+pub fn apply_life(cat: &mut crate::catalog::Catalog, root: u32, jd: f64) -> usize {
+    let seed = se_system_seed(&cat.stars[root as usize]);
+    se_life::apply(cat, root, seed, jd)
+}
+
+/// SE's system seed of a star record (FUN_140510f40): a hash of the position SE stores, from the
+/// catalog's coordinates ([`crate::system_gen::system_seed`]) or, for a procedural star, its
+/// universe position.
+pub fn se_system_seed(rec: &crate::catalog::StarRecord) -> u32 {
+    if rec.source == "procedural" { position_seed(rec.pos_pc) } else { crate::system_gen::system_seed(&rec.block) }
+}
+
+/// SE's position hash (FUN_140510f40) of a universe position in parsecs: each coordinate as f32
+/// read in units of 2^-32 pc, `x 0x28842 - z 0x2309fb + y 0xe35ad`.
+pub fn position_seed(pos_pc: DVec3) -> u32 {
+    let c = |v: f64| ((v as f32) as f64 * 4_294_967_296.0).floor() as i64 as u32;
+    c(pos_pc.x).wrapping_mul(0x28842).wrapping_add(c(pos_pc.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(pos_pc.y).wrapping_mul(0xe35ad))
 }
 
 /// Whether SE's generator makes `star` a multiple system (its record is then a barycentre).
@@ -277,13 +323,37 @@ pub fn is_multiple(star: &StarParams, seed: u64) -> bool {
 }
 
 fn big_black_hole(star: &StarParams) -> bool {
-    star.kind == StarKind::BlackHole && star.mass_sol >= 400.0
+    se_smbh::applies(star.kind, star.mass_sol)
+}
+
+/// A star about a supermassive black hole ([`se_smbh`]) as a catalog `Star` with its orbit.
+fn emit_smbh_star(out: &mut String, name: &str, parent: &str, s: &se_smbh::SmbhStar) {
+    let _ = writeln!(out, "\nStar \"{}\"\n{{", name);
+    let _ = writeln!(out, "\tParentBody     \"{}\"", parent);
+    let _ = writeln!(out, "\tClass          \"{}\"", s.class);
+    let _ = writeln!(out, "\tTeff           {}", num(s.teff));
+    let _ = writeln!(out, "\tLumBol         {}", num(s.lum_sol));
+    let _ = writeln!(out, "\tRadius         {}\t// km", num(s.radius_km));
+    let _ = writeln!(out, "\tMassSol        {}", num(s.mass_sol));
+    let _ = writeln!(out, "\tAge            {}\t// Gyr", num(s.draw.age_gyr));
+    let _ = writeln!(out, "\tFeH            {}", num(s.draw.feh));
+    let _ = writeln!(out, "\tCtoO           {}", num(s.draw.c_to_o));
+    let _ = writeln!(out, "\tOrbit\n\t{{");
+    let _ = writeln!(out, "\t\tRefPlane        \"Ecliptic\"");
+    let _ = writeln!(out, "\t\tSemiMajorAxis   {}", num(s.a_au));
+    let _ = writeln!(out, "\t\tPeriod          {}\t// years", num(s.period_days / 365.25));
+    let _ = writeln!(out, "\t\tEccentricity    {}", num(s.ecc));
+    let _ = writeln!(out, "\t\tInclination     {}", num(s.inc_deg));
+    let _ = writeln!(out, "\t\tAscendingNode   {}", num(s.node_deg));
+    let _ = writeln!(out, "\t\tArgOfPericenter {}", num(s.argp_deg));
+    let _ = writeln!(out, "\t\tMeanAnomaly     {}", num(s.ma_deg));
+    let _ = writeln!(out, "\t}}\n}}");
 }
 
 /// The 32-bit seed standing in for SE's system seed. The seed is mixed before the name's hash
 /// joins it: the engine seeds a star by that same hash, which would otherwise cancel.
 fn system_seed(star: &StarParams, seed: u64) -> u32 {
-    (mix64(mix64(seed) ^ fnv1a(&star.name)) >> 32) as u32
+    star.se_seed.unwrap_or_else(|| (mix64(mix64(seed) ^ fnv1a(&star.name)) >> 32) as u32)
 }
 
 /// A component's name: the system's plus SE's suffix ("A", "AB", ...).
@@ -291,8 +361,9 @@ fn comp_name(system: &str, suffix: &str) -> String {
     if suffix.is_empty() { system.to_string() } else { format!("{system} {suffix}") }
 }
 
-/// Planets (with moons) and asteroids of one host, through the port's physics, into `sc`.
-fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: Vec<Body>, sc: &mut String, summaries: &mut Vec<BodySummary>) {
+/// Planets (with moons, binary planets about their barycentres) and asteroids of one host, through
+/// the port's physics, into `sc`.
+fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: Vec<Body>, sc: &mut String, summaries: &mut Vec<BodySummary>, barys: &mut Vec<String>) {
     for (i, p) in planets.iter_mut().enumerate() {
         p.name = planet_name(&ctx.name, i + 1);
         p.parent = ctx.name.clone();
@@ -303,26 +374,35 @@ fn host_bodies(rng: &mut Rng, ctx: &Ctx, mut planets: Vec<Body>, mut asteroids: 
     }
     let star_mass_kg = ctx.mass * SOLAR_MASS_KG;
     let mut moons_of: Vec<Vec<Body>> = Vec::with_capacity(planets.len());
+    let mut bary_of: Vec<Option<PlanetBary>> = Vec::with_capacity(planets.len());
     for (i, p) in planets.iter_mut().enumerate() {
         let mut prng = rng.fork(1000 + i as u64);
         // SE's size and class stay; the port's physics fills in what the emitter writes.
         let se = (p.radius_km, p.class, p.kind, p.tag);
         physics_planet(&mut prng, ctx, p, star_mass_kg);
         (p.radius_km, p.class, p.kind, p.tag) = se;
+        roll_rings(ctx, p);
         let mut mrng = rng.fork(5000 + i as u64);
         let mut moons = gen_moons(&mut mrng, ctx, p);
         for (j, m) in moons.iter_mut().enumerate() {
             let mut r = rng.fork(9000 + (i as u64) * 64 + j as u64);
             physics_moon(&mut r, ctx, m, p);
+            roll_rings(ctx, m);
         }
+        bary_of.push(make_binary(&ctx.name, p, &mut moons));
         moons_of.push(moons);
     }
     for (i, a) in asteroids.iter_mut().enumerate() {
         let mut r = rng.fork(20000 + i as u64);
         physics_asteroid(&mut r, ctx, a, star_mass_kg);
+        roll_rings(ctx, a);
     }
     let _ = writeln!(sc, "// {}: {} planet(s)/dwarf planet(s), {} asteroid(s)", ctx.name, planets.len(), asteroids.len());
-    for (p, moons) in planets.iter().zip(&moons_of) {
+    for ((p, moons), bary) in planets.iter().zip(&moons_of).zip(&bary_of) {
+        if let Some(bc) = bary {
+            emit_planet_barycenter(sc, bc);
+            barys.push(bc.name.clone());
+        }
         emit_body(sc, p);
         summaries.push(p.summary());
         for m in moons {
@@ -404,13 +484,14 @@ fn host_comets(ctx: &Ctx, comets: &[se_comets::SeComet], sc: &mut String, summar
 }
 
 /// A component of a multiple system as a catalog `Star` (or nested `Barycenter`) with its orbit
-/// about its barycentre.
-fn emit_component(out: &mut String, name: &str, parent: &str, c: &se_multiple::Comp) {
+/// about its barycentre; a star carries the system's age (SE's system age, record +0xa0).
+fn emit_component(out: &mut String, name: &str, parent: &str, c: &se_multiple::Comp, age_gyr: f64) {
     let bary = c.children.is_some();
     let _ = writeln!(out, "\n{} \"{}\"\n{{", if bary { "Barycenter" } else { "Star" }, name);
     let _ = writeln!(out, "\tParentBody     \"{}\"", parent);
     if !bary {
         let _ = writeln!(out, "\tClass          \"{}\"", c.class);
+        let _ = writeln!(out, "\tAge            {}\t// Gyr", num(age_gyr));
         if c.star.teff > 0.0 {
             let _ = writeln!(out, "\tTeff           {}", num(c.star.teff));
             let _ = writeln!(out, "\tLumBol         {}", num(c.star.lum_sol));
@@ -699,16 +780,6 @@ pub struct Life {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Rings {
-    inner_km: f64,
-    outer_km: f64,
-    thickness_km: f64,
-    opacity: f64,
-    brightness: f64,
-    density: f64,
-}
-
-#[derive(Debug, Clone, Default)]
 struct Aurora {
     height_km: f64,
     top: [f64; 3],
@@ -779,13 +850,32 @@ struct Body {
     ocean: Option<Ocean>,
     clouds: Option<Clouds>,
     life: Option<Life>,
-    rings: Option<Rings>,
+    rings: Option<se_rings::SeRings>,
     aurora: Option<Aurora>,
     giant: Option<GiantLook>,
     /// SE's number of moons for a planet from SE's layout.
     se_moons: Option<u32>,
     /// SE's composition of a planet from SE's layout, written to `Interior` for the completion.
     se_comp: Option<[f32; 6]>,
+    /// A captured (irregular) moon.
+    irregular: bool,
+    /// The orbit's period is written out (binary planets: about their barycentre, with both masses).
+    period_given: bool,
+}
+
+/// The barycentre of a binary planet ([`se_moons`]), in the planet's place about its star.
+#[derive(Debug, Clone)]
+struct PlanetBary {
+    name: String,
+    parent: String,
+    mass_me: f64,
+    a_au: f64,
+    ecc: f64,
+    inc: f64,
+    node: f64,
+    argp: f64,
+    ma: f64,
+    period_s: f64,
 }
 
 impl Body {
@@ -1070,9 +1160,10 @@ fn se_star(sp: &StarParams, c: &Ctx) -> se_layout::SeStar {
         lum_sol: c.lum,
         lum_code,
         letter,
-        // Assumed: SE's octree draws the star's C/O and metallicity factor; solar values here.
-        c_to_o: 0.55,
-        met: 10f64.powf(c.feh) as f32,
+        // SE's star generator draws both (FUN_1401d63b0, [`se_stars`]); +0x44 holds [Fe/H] in dex
+        // (field stars about -0.2 near the Sun, remnants 1.5). Solar C/O without one.
+        c_to_o: sp.c_to_o.filter(|v| v.is_finite()).unwrap_or(0.55) as f32,
+        met: if sp.feh.is_finite() { sp.feh.clamp(-5.0, 5.0) as f32 } else { 0.0 },
     }
 }
 
@@ -1320,26 +1411,104 @@ fn physics_giant(rng: &mut Rng, c: &Ctx, b: &mut Body) {
     let z = (22.0 / b.mass_me).min(0.9);
     b.wmf = z * 0.5;
     b.cmf = 0.3;
-    // Rings.
-    let p_ring = if gas { if b.mass_me > 60.0 && b.t_eq < 400.0 { 0.4 } else { 0.1 } } else { 0.25 };
-    if rng.chance(p_ring) && b.a_au > 0.3 {
-        let rho = b.density_gcc();
-        let roche = 2.456 * b.radius_km * (rho.max(0.3) / 0.9).cbrt();
-        let bright = rng.chance(0.25) && b.t_eq < 250.0;
-        let inner = b.radius_km * rng.range(1.15, 1.5);
-        let outer = if bright { (b.radius_km * rng.range(1.9, 2.4)).min(0.95 * roche) } else { (b.radius_km * rng.range(1.55, 1.95)).min(0.95 * roche) };
-        if outer > inner * 1.1 {
-            b.rings = Some(Rings {
-                inner_km: inner,
-                outer_km: outer,
-                thickness_km: rng.range(0.05, 0.6),
-                opacity: if bright { rng.range(0.8, 1.0) } else { rng.range(0.1, 0.4) },
-                brightness: if bright { 4.0 } else { 1.0 },
-                density: if bright { 2.0 } else { 0.5 },
-            });
+}
+
+/// SE's ring roll ([`se_rings`]) for a generated body, at SE's equilibrium temperature for its
+/// distance from the star, on a stream of its own seeds.
+fn roll_rings(c: &Ctx, b: &mut Body) {
+    let (a, s) = crate::surface_gen::catalog_seeds(&b.name, &b.parent);
+    let mut r = crate::surface_gen::SeRng::new(a ^ 0x5249_4e47, s ^ 0x5249_4e47);
+    let flux = (c.lum / (b.helio_a * b.helio_a).max(1e-12)) as f32;
+    let t = crate::climate::equilibrium_temps(flux, 0.0, None).0;
+    b.rings = se_rings::generate(&mut r, b.mass_me as f32, b.radius_km as f32, t, b.locked);
+}
+
+/// SE's binary planet ([`se_moons`]): when planet `p`'s heaviest moon makes one, the pair orbit a
+/// barycentre that takes the planet's orbit about star `host`, and the other moons stay (about the
+/// barycentre, beyond three separations) with ProbBinaryPlanetMoons. Both lose their tidal lock, as
+/// in SE (record +0x165c bits 0-1 cleared).
+fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<PlanetBary> {
+    let k = (0..moons.len()).max_by(|&i, &j| moons[i].mass_me.total_cmp(&moons[j].mass_me))?;
+    let close = se_moons::binary(p.mass_me, moons[k].mass_me)?;
+    let mut s = moons.remove(k);
+    let base = p.name.clone();
+    let (bary, p_name, s_name) = if close {
+        (base.clone(), format!("{base}a"), format!("{base}b"))
+    } else {
+        let s_name = format!("{base}.1");
+        let short = s_name.strip_prefix(host).unwrap_or(&s_name).trim_start();
+        (format!("{base}-{short}"), base.clone(), s_name)
+    };
+    let mt = p.mass_me + s.mass_me;
+    let (sep, ecc) = (s.a_au, s.ecc);
+    let (inc, node) = tilt_normal(p.obliq, p.eq_node, s.inc, s.node);
+    let period = orbital_period_s(sep, mt * EARTH_MASS_KG);
+    let pb = PlanetBary { name: bary.clone(), parent: p.parent.clone(), mass_me: mt, a_au: p.a_au, ecc: p.ecc, inc: p.inc, node: p.node, argp: p.argp, ma: p.ma, period_s: p.orbit_period_s };
+    let (mp, ms, s_argp) = (p.mass_me, s.mass_me, s.argp);
+    for (b, name, a, argp, other) in [(&mut *p, p_name, sep * ms / mt, s_argp + 180.0, ms), (&mut s, s_name, sep * mp / mt, s_argp, mp)] {
+        b.name = name;
+        b.parent = bary.clone();
+        // Circular: the engine's completion reads tidal heating from a body's own orbit, which
+        // for a binary component is its distance to the barycentre, not to its partner, so any
+        // eccentricity would heat it a hundred million times too much (SE keeps the moon's e).
+        (b.a_au, b.ecc, b.inc, b.node, b.argp) = (a, 0.0, inc, node, argp.rem_euclid(360.0));
+        b.ref_plane = "Ecliptic";
+        b.orbit_period_s = period;
+        b.period_given = true;
+        b.locked = false;
+        let lim = se_moons::ring_limit_km(sep * AU_KM, ecc, b.mass_me, other) as f32;
+        if let Some(r) = b.rings.as_mut().filter(|r| r.inner_km < lim) {
+            r.outer_km = r.outer_km.min(lim);
+            r.edge_km = r.edge_km.min(r.outer_km);
+            r.chart_km = r.chart_km.min(r.outer_km);
+        } else {
+            b.rings = None;
         }
     }
+    p.ma = s.ma;
+    let (sa, sb) = crate::surface_gen::catalog_seeds(&bary, &pb.parent);
+    let keep = SeRng::new(sa ^ 0x4249_4e41, sb).uniform(1.0) <= se_moons::PROB_BINARY_PLANET_MOONS;
+    moons.retain(|m| keep && m.a_au * (1.0 - m.ecc) > 3.0 * sep);
+    let (mut n_big, mut n_s) = (if close { 0 } else { 1 }, 0);
+    for m in moons.iter_mut() {
+        m.parent = bary.clone();
+        // The catalog sums only stars under a barycentre, so the period is given.
+        m.orbit_period_s = orbital_period_s(m.a_au, mt * EARTH_MASS_KG);
+        m.period_given = true;
+        if m.locked {
+            m.rot_h = m.orbit_period_s / 3600.0;
+        }
+        if m.tag == Tag::Moon {
+            n_big += 1;
+            m.name = format!("{base}.{n_big}");
+        } else {
+            n_s += 1;
+            m.name = format!("{base}.S{n_s}");
+        }
+    }
+    moons.insert(0, s);
+    Some(pb)
 }
+
+/// A binary planet's barycentre as a catalog `Barycenter` on the planet's orbit.
+fn emit_planet_barycenter(out: &mut String, b: &PlanetBary) {
+    let _ = writeln!(out, "\n// Binary planet\nBarycenter \"{}\"\n{{", b.name);
+    let _ = writeln!(out, "\tParentBody     \"{}\"", b.parent);
+    let _ = writeln!(out, "\tMassSol        {}", num(b.mass_me / SOLAR_TO_EARTH_MASS));
+    let _ = writeln!(out, "\tOrbit\n\t{{");
+    let _ = writeln!(out, "\t\tRefPlane        \"Ecliptic\"");
+    let _ = writeln!(out, "\t\tSemiMajorAxis   {}\t// AU", num(b.a_au));
+    let _ = writeln!(out, "\t\tPeriod          {}\t// years", num(b.period_s / JULIAN_YEAR_S));
+    let _ = writeln!(out, "\t\tEccentricity    {}", num(b.ecc));
+    let _ = writeln!(out, "\t\tInclination     {}", num(b.inc));
+    let _ = writeln!(out, "\t\tAscendingNode   {}", num(b.node));
+    let _ = writeln!(out, "\t\tArgOfPericenter {}", num(b.argp));
+    let _ = writeln!(out, "\t\tMeanAnomaly     {}", num(b.ma));
+    let _ = writeln!(out, "\t}}\n}}");
+}
+
+/// Seconds in the Julian year of the catalog's `Period`.
+const JULIAN_YEAR_S: f64 = 365.25 * 86_400.0;
 
 fn make_aurora(rng: &mut Rng, radius_km: f64, h2: bool) -> Aurora {
     let top = if h2 { [1.0, 1.0, 1.0] } else { [0.5, 0.5, 0.5] };
@@ -1863,8 +2032,9 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
     let a_hi = 0.4 * r_hill_km;
     let rho_p = p.density_gcc().max(0.3);
     let mut a_lo = (1.26 * p.radius_km * (rho_p / 2.5).cbrt() * 1.3).max(1.8 * p.radius_km);
+    // Outside the main ring (an E-like ring's faint outer part holds moons, as Saturn's).
     if let Some(r) = &p.rings {
-        a_lo = a_lo.max(r.outer_km * 1.2);
+        a_lo = a_lo.max(r.edge_km as f64 * 1.2);
     }
     if a_hi <= a_lo * 1.5 {
         return out;
@@ -1918,7 +2088,7 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
         None => (scale(n_reg, rng), scale(n_small, rng), scale(n_irr, rng)),
     };
     let icy_zone = p.a_au > c.a_snow * 1.1;
-    let make = |rng: &mut Rng, mass: f64, a_km: f64, e: f64, inc: f64, _irregular: bool, icy: bool| -> Body {
+    let make = |rng: &mut Rng, mass: f64, a_km: f64, e: f64, inc: f64, irregular: bool, icy: bool| -> Body {
         let wmf = if icy { rng.range(0.2, 0.5) } else { rng.range(0.0, 0.01) };
         let cmf = rng.range(0.2, 0.4);
         let mut b = Body {
@@ -1935,6 +2105,7 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
             ma: rng.range(0.0, 360.0),
             ref_plane: "Equator",
             helio_a: p.a_au,
+            irregular,
             ..Default::default()
         };
         b.radius_km = solid_radius_km(mass, wmf, cmf);
@@ -2038,6 +2209,22 @@ fn gen_moons(rng: &mut Rng, c: &Ctx, p: &Body) -> Vec<Body> {
         b.class = "Asteroid";
         out.push(b);
     }
+    // SE's masses for the placed moons ([`se_moons`]): Moon-type moons (SE's 95% of regular moons,
+    // 0.5% of captured ones, which SE weighs without the zone factor) by its law, the rest as its
+    // dwarf moons; size and tag follow.
+    let (sa, sb) = crate::surface_gen::catalog_seeds(&p.name, &p.parent);
+    let zone = se_moons::zone(&mut SeRng::new(sa ^ 0x4d4f_4f4e, sb ^ 0x4d4f_4f4e));
+    let icy_dry = p.se_comp.is_some_and(|c| c[0] + c[1] <= 0.0 && c[2] >= 0.1);
+    for (j, m) in out.iter_mut().enumerate() {
+        let k = j as u32;
+        let mut r = SeRng::new(sa.wrapping_add(k.wrapping_mul(0x1e7)), sb.wrapping_add(k.wrapping_mul(0xa5e)));
+        let moon_type = if m.irregular { r.uniform(1.0) < 0.005 } else { r.uniform(1.0) >= 0.05 };
+        let factor = if m.irregular { 1.0 } else { se_moons::zone_factor(&zone, (m.a_au * AU_KM / p.radius_km) as f32) };
+        m.mass_me = if moon_type { se_moons::moon_mass(&mut r, p.mass_me as f32, icy_dry, factor) } else { se_moons::small_moon_mass(&mut r) } as f64;
+        m.radius_km = solid_radius_km(m.mass_me, m.wmf, m.cmf);
+        let round = m.radius_km >= 200.0;
+        (m.tag, m.kind, m.class) = if round { (Tag::Moon, Kind::Solid, "") } else { (Tag::DwarfMoon, Kind::Small, "Asteroid") };
+    }
     out.sort_by(|a, b| a.a_au.total_cmp(&b.a_au));
     // Names: ".N" for the larger (round) moons, ".SN" for small irregular/captured ones.
     let (mut n_big, mut n_s) = (0, 0);
@@ -2091,10 +2278,11 @@ fn comp_block(out: &mut String, indent: &str, comp: &[(&'static str, f64)]) {
 }
 
 /// Planets and moons are written as SE's system generator leaves them: class, mass, radius, orbit,
-/// rotation, life, rings and aurora. Like any catalog body without them, SE's completion chain then
+/// rotation, rings and aurora. Like any catalog body without them, SE's completion chain then
 /// gives them their composition, albedo, tidal heat, volcanism, atmosphere, ocean, clouds and
-/// temperature (`climate::complete`), and SE's surface generator their surface (`surface_gen`).
-/// Asteroids (which that chain skips) keep the designed blocks.
+/// temperature (`climate::complete`), SE's life generator their life once the system is loaded
+/// ([`apply_life`]), and SE's surface generator their surface (`surface_gen`). Asteroids (which
+/// that chain skips) keep the designed blocks.
 fn emit_body(out: &mut String, b: &Body) {
     let _ = writeln!(out, "\n// {} | Teq {:.0} K, Tsurf {:.0} K{}", b.describe(), b.t_eq, b.t_surf, if b.locked { ", tidally locked" } else { "" });
     let _ = writeln!(out, "{} \"{}\"\n{{", b.tag.key(), b.name);
@@ -2225,9 +2413,6 @@ fn emit_body(out: &mut String, b: &Body) {
         comp_block(out, "\t\t", &a.comp);
         let _ = writeln!(out, "\t}}");
     }
-    if let Some(l) = &b.life {
-        let _ = writeln!(out, "\tLife\n\t{{\n\t\tClass   \"{}\"\n\t\tType    \"{}\"\n\t\tBiome   \"{}\"\n\t}}", l.class, l.kind, l.biome);
-    }
     if let Some(a) = &b.aurora {
         let _ = writeln!(out, "\tAurora\n\t{{");
         let _ = writeln!(out, "\t\tHeight       {}", num(a.height_km));
@@ -2242,16 +2427,49 @@ fn emit_body(out: &mut String, b: &Body) {
         let _ = writeln!(out, "\t}}");
     }
     if let Some(r) = &b.rings {
+        let kv = |out: &mut String, k: &str, v: f32| {
+            let _ = writeln!(out, "\t\t{k:<15} {}", num(v as f64));
+        };
         let _ = writeln!(out, "\tRings\n\t{{");
-        let _ = writeln!(out, "\t\tInnerRadius     {}\t// km", num(r.inner_km));
-        let _ = writeln!(out, "\t\tOuterRadius     {}\t// km", num(r.outer_km));
-        let _ = writeln!(out, "\t\tThickness       {}", num(r.thickness_km));
-        let _ = writeln!(out, "\t\tBrightness      {}", num(r.brightness));
-        let _ = writeln!(out, "\t\tFrontBright     {}", num(r.brightness * 1.25));
-        let _ = writeln!(out, "\t\tBackBright      {}", num(r.brightness * 0.6));
-        let _ = writeln!(out, "\t\tDensity         {}", num(r.density));
-        let _ = writeln!(out, "\t\tOpacity         {}", num(r.opacity));
-        let _ = writeln!(out, "\t\tSelfShadow      1\n\t\tPlanetShadow    1\n\t\tHapke           1");
+        for (k, v) in [
+            ("InnerRadius", r.inner_km),
+            ("OuterRadius", r.outer_km),
+            ("EdgeRadius", r.edge_km),
+            ("MeanRadius", r.mean_km),
+            ("ChartRadius", r.chart_km),
+            ("Thickness", r.thickness_km),
+            ("RocksMaxSize", r.rocks_max_size_km),
+            ("RocksSpacing", r.rocks_spacing),
+            ("VolumDrawDist", r.volum_draw_dist_km),
+            ("RotationPeriod", r.rotation_period_days * 24.0),
+            ("Brightness", r.brightness),
+            ("FrontBright", r.front_bright),
+            ("BackBright", r.back_bright),
+            ("Density", r.density),
+            ("Opacity", r.opacity),
+            ("PlanetShadow", r.shadow),
+            ("SelfShadow", r.self_shadow),
+            ("Hapke", r.hapke),
+            ("SpotBright", r.spot_bright),
+            ("SpotWidth", r.spot_width),
+            ("SpotBrightCB", r.spot_bright_cb),
+            ("SpotWidthCB", r.spot_width_cb),
+            ("frequency", r.frequency),
+            ("densityScale", r.density_scale),
+            ("densityOffset", r.density_offset),
+            ("densityPower", r.density_power),
+            ("colorContrast", r.color_contrast),
+        ] {
+            kv(out, k, v);
+        }
+        for (k, c) in [
+            ("FrontColor", se_rings::FRONT_COLOR),
+            ("BackThickColor", se_rings::BACK_THICK_COLOR),
+            ("BackIceColor", se_rings::BACK_ICE_COLOR),
+            ("BackDustColor", se_rings::BACK_DUST_COLOR),
+        ] {
+            let _ = writeln!(out, "\t\t{k:<15} ({} {} {})", num(c[0] as f64), num(c[1] as f64), num(c[2] as f64));
+        }
         let _ = writeln!(out, "\t}}");
     } else if matches!(b.tag, Tag::Planet | Tag::DwarfPlanet) {
         let _ = writeln!(out, "\tNoRings        true");
@@ -2267,6 +2485,9 @@ fn emit_body(out: &mut String, b: &Body) {
     let _ = writeln!(out, "\tOrbit\n\t{{");
     let _ = writeln!(out, "\t\tRefPlane        \"{}\"", b.ref_plane);
     let _ = writeln!(out, "\t\tSemiMajorAxis   {}\t// AU", num(b.a_au));
+    if b.period_given {
+        let _ = writeln!(out, "\t\tPeriod          {}\t// years", num(b.orbit_period_s / JULIAN_YEAR_S));
+    }
     let _ = writeln!(out, "\t\tEccentricity    {}", num(b.ecc));
     let _ = writeln!(out, "\t\tInclination     {}", num(b.inc));
     let _ = writeln!(out, "\t\tAscendingNode   {}", num(b.node));
@@ -2312,6 +2533,8 @@ mod tests {
             feh: 0.0,
             kind: StarKind::Normal,
             class: None,
+            c_to_o: None,
+            se_seed: None,
         }
     }
 
@@ -2327,6 +2550,8 @@ mod tests {
             feh: 0.0,
             kind,
             class: None,
+            c_to_o: None,
+            se_seed: None,
         }
     }
 
@@ -2424,6 +2649,49 @@ mod tests {
     }
 
     #[test]
+    fn rings_and_binary_planets() {
+        // SE's ring roll rings cold bodies of every kind; its moon masses make binary planets.
+        let (mut ringed_solid, mut ringed_giant, mut binaries, mut close) = (0, 0, 0, 0);
+        for seed in 0..80u64 {
+            let s = sun_like(&format!("RS 0-8-2-{seed}"));
+            let g = generate_system(&s, seed.wrapping_mul(104_729));
+            for b in g.bodies.iter().filter(|b| b.has_rings) {
+                if b.class == "Jupiter" || b.class == "Neptune" {
+                    ringed_giant += 1;
+                } else {
+                    ringed_solid += 1;
+                }
+                assert!(b.t_eq_k < 330.0 || b.tag == "Moon" || b.tag == "DwarfMoon", "{} ringed at {} K", b.name, b.t_eq_k);
+            }
+            if g.barycenters.is_empty() {
+                continue;
+            }
+            let cat = load_generated(&s, &g);
+            for bc in &g.barycenters {
+                binaries += 1;
+                let pair: Vec<&BodySummary> = g.bodies.iter().filter(|b| &b.parent == bc && b.name.len() <= bc.len() + 2).collect();
+                close += pair.iter().any(|b| b.name.ends_with('a')) as usize;
+                let Some(ObjectRef::Star(k)) = cat.find(bc) else { panic!("barycentre {bc} not loaded") };
+                assert!(cat.stars[k as usize].barycenter && cat.stars[k as usize].orbit.is_some());
+                let members: Vec<_> = g.bodies.iter().filter(|b| &b.parent == bc).collect();
+                assert!(members.len() >= 2, "{bc}: {} members", members.len());
+                let periods: Vec<f64> = members[..2]
+                    .iter()
+                    .map(|m| match cat.find(&m.name) {
+                        Some(ObjectRef::Body(i)) => cat.bodies[i as usize].orbit.as_ref().unwrap().period,
+                        other => panic!("{} {other:?}", m.name),
+                    })
+                    .collect();
+                assert!(periods[0] > 0.0 && (periods[0] - periods[1]).abs() < 1e-6 * periods[0], "{bc}: {periods:?}");
+                assert!(members[0].mass_me >= members[1].mass_me && members[0].mass_me <= 50.0 * members[1].mass_me);
+            }
+        }
+        eprintln!("ringed solid {ringed_solid}, giant {ringed_giant}, binary planets {binaries} ({close} a/b)");
+        assert!(ringed_solid > 50 && ringed_giant > 5, "solid {ringed_solid}, giant {ringed_giant}");
+        assert!(binaries > 5, "binary planets {binaries}");
+    }
+
+    #[test]
     fn statistics_sun_like() {
         // SE's architecture (se_layout): 5-14 slots, geometric spacing out to the sphere of
         // influence, gas giants ~12% and ice giants ~25% of planets.
@@ -2438,8 +2706,12 @@ mod tests {
             hosts.dedup();
             for h in hosts {
                 let ps: Vec<&&BodySummary> = planets.iter().filter(|p| p.parent == h).collect();
+                if g.barycenters.iter().any(|b| b == h) {
+                    continue;
+                }
                 if g.stars.is_empty() {
-                    counts.push(ps.len());
+                    // A binary planet's barycentre stands in its planet's slot.
+                    counts.push(ps.len() + g.barycenters.len());
                 }
                 assert!((1..=14).contains(&ps.len()), "seed {seed}: {} planets of {h}", ps.len());
                 // Outward by SE's geometric steps (SE's guard against crossing orbits mixes AU
@@ -2450,8 +2722,10 @@ mod tests {
             }
             for p in &planets {
                 planets_total += 1;
-                // Circumbinary planets reach out to 1000 AU around wide binaries.
-                assert!(p.a_au > 0.005 && p.a_au < 3000.0, "{} a={}", p.name, p.a_au);
+                // Circumbinary planets reach out to 1000 AU around wide binaries. A binary
+                // planet's primary orbits its barycentre, which has the planet's orbit.
+                assert!(p.helio_a_au > 0.005 && p.helio_a_au < 3000.0, "{} a={}", p.name, p.helio_a_au);
+                assert!(g.barycenters.contains(&p.parent) || p.a_au == p.helio_a_au, "{}", p.name);
                 assert!(p.ecc >= 0.0 && p.ecc < 0.8);
                 assert!(p.mass_me > 1e-5 && p.mass_me < 5000.0, "{} M {}", p.name, p.mass_me);
                 assert!(p.radius_km > 100.0 && p.radius_km < 130_000.0, "{} R {}", p.name, p.radius_km);
@@ -2461,7 +2735,7 @@ mod tests {
                 dwarfs += (p.tag == "DwarfPlanet") as usize;
             }
             // Moons: outside the planet, Hill-stable (about a one-solar-mass single star).
-            for m in g.bodies.iter().filter(|b| g.stars.is_empty() && (b.tag == "Moon" || b.tag == "DwarfMoon")) {
+            for m in g.bodies.iter().filter(|b| g.stars.is_empty() && (b.tag == "Moon" || b.tag == "DwarfMoon") && !g.barycenters.contains(&b.parent)) {
                 moons += 1;
                 let host = g.bodies.iter().find(|b| b.name == m.parent).expect("moon host");
                 let rh_km = host.a_au * AU_KM * (1.0 - host.ecc) * (host.mass_me / (3.0 * SOLAR_TO_EARTH_MASS)).cbrt();
@@ -2490,7 +2764,16 @@ mod tests {
     fn exotic_stars() {
         // Every star but a black hole of 400+ solar masses gets SE's planets.
         for seed in 0..10u64 {
-            assert!(generate_system(&star(500.0, StarKind::BlackHole, 1e-3, 0.01), seed).bodies.is_empty());
+            // SE's supermassive black hole system: int(3 log10 500) = 8 stars, no planets.
+            let s = star(500.0, StarKind::BlackHole, 1e-3, 0.01);
+            let g = generate_system(&s, seed);
+            assert!(g.bodies.is_empty() && g.stars.len() == 8);
+            let cat = load_generated(&s, &g);
+            for (name, _) in &g.stars {
+                let Some(ObjectRef::Star(i)) = cat.find(name) else { panic!("{name}") };
+                let st = &cat.stars[i as usize];
+                assert!(st.orbit.as_ref().is_some_and(|o| o.period > 0.0) && st.mass_kg > 0.0, "{name}");
+            }
             let g = generate_system(&star(10.0, StarKind::BlackHole, 1e-4, 0.01), seed);
             assert!(g.bodies.iter().any(|b| b.tag == "Planet" || b.tag == "DwarfPlanet"));
         }
@@ -2553,7 +2836,8 @@ mod tests {
             }
         }
         // Planets and moons leave their atmosphere, ocean and clouds to SE's completion.
-        assert!(atm == 0 && oc == 0 && cl == 0 && life > 0 && ring > 0 && aur > 5, "{atm} {oc} {cl} {life} {ring} {aur}");
+        // Life comes from SE's life generator once the system is completed (`apply_life`).
+        assert!(atm == 0 && oc == 0 && cl == 0 && life == 0 && ring > 0 && aur > 5, "{atm} {oc} {cl} {life} {ring} {aur}");
     }
 
     #[test]
@@ -2571,7 +2855,7 @@ mod tests {
         let vals = [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-12, 1e9];
         for (i, &v) in vals.iter().enumerate() {
             for &k in &kinds {
-                let s = StarParams { name: format!("X{i}"), mass_sol: v, lum_bol: v, teff: v, radius_sol: v, age_gyr: v, feh: v, kind: k, class: None };
+                let s = StarParams { name: format!("X{i}"), mass_sol: v, lum_bol: v, teff: v, radius_sol: v, age_gyr: v, feh: v, kind: k, class: None, c_to_o: Some(v), se_seed: None };
                 for seed in 0..5 {
                     let g = generate_system(&s, seed);
                     let bad = g.sc.lines().filter(|l| !l.trim_start().starts_with("//")).find(|l| l.contains("NaN") || l.contains("inf"));
