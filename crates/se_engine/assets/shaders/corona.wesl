@@ -30,7 +30,7 @@ struct VertexOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) uv: vec2<f32>,
-    // xyz: the plane's normal (world), w: the corona radius (world units)
+    // xyz: the plane's normal (world), w: the corona radius (world units, the longest semi-axis)
     @location(2) @interpolate(flat) plane: vec4<f32>,
     @location(3) @interpolate(flat) phase: f32,
 };
@@ -43,7 +43,10 @@ fn vertex(v: Vertex) -> VertexOut {
     o.clip = position_world_to_clip(wp);
     o.world_position = wp;
     o.uv = v.uv;
-    o.plane = vec4<f32>(normalize((m * vec4<f32>(v.normal, 0.0)).xyz), length(m[0].xyz));
+    // The planes are scaled by the star's ellipsoid along the body axes; a normal along one of them
+    // stays along it.
+    let radius = max(length(m[0].xyz), max(length(m[1].xyz), length(m[2].xyz)));
+    o.plane = vec4<f32>(normalize((m * vec4<f32>(v.normal, 0.0)).xyz), radius);
     let n = abs(v.normal);
     o.phase = select(select(corona.phase.z, corona.phase.y, n.y > 0.5), corona.phase.x, n.z > 0.5);
     return o;

@@ -217,7 +217,9 @@ fn spawn_coronas(
             UPosition(body.pos),
             UOrientation(body.orient),
             ScaleAnchor(body.pos),
-            MeterScale(DVec3::splat(keys.radius_km * 1000.0)),
+            // FUN_1405481c0 scales the planes by the star's ellipsoid, (1 - oblateness) x Radius per
+            // body axis (+0x1200..+0x1208), so the corona hugs a flattened star.
+            MeterScale(DVec3::splat(keys.radius_km * 1000.0) * body.shape),
             Transform::IDENTITY,
             Visibility::Hidden,
             NoFrustumCulling,
