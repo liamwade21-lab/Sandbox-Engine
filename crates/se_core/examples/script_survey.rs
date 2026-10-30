@@ -29,6 +29,15 @@ fn main() {
         }
         return;
     }
+    if what == "music" {
+        // The tracks the scripts' PlayMusic names, as the music player finds them.
+        let all = vfs.list_ext("music", "ogg");
+        for name in a.iter().skip(1) {
+            let hit = all.iter().find(|p| p.rsplit('/').next().is_some_and(|f| f.eq_ignore_ascii_case(name)));
+            println!("{name}: {hit:?} (direct exists: {})", vfs.exists(&format!("music/{name}")));
+        }
+        return;
+    }
     if what == "sizes" {
         for dir in ["scripts", "scripts/menu", "scripts/tutorials"] {
             for f in vfs.list_ext(dir, "se") {

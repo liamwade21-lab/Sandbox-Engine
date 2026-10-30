@@ -115,12 +115,14 @@ pub struct ScriptGui {
     /// Hidden toolbars ([`TOOLBARS`] order) and how far each has slid out (0 shown, 1 gone).
     pub toolbars: [bool; 4],
     slide: [f32; 4],
+    /// The slide last applied to each toolbar's layer.
+    applied: [f32; 4],
     pub fade: Option<Fade>,
 }
 
 impl Default for ScriptGui {
     fn default() -> Self {
-        Self { highlight: None, message_pos: None, message_pos_pix: None, toolbars: [false; 4], slide: [0.0; 4], fade: None }
+        Self { highlight: None, message_pos: None, message_pos_pix: None, toolbars: [false; 4], slide: [0.0; 4], applied: [0.0; 4], fade: None }
     }
 }
 
@@ -342,6 +344,9 @@ fn draw_gui(
     let pointer = ctx.pointer_latest_pos();
     let mut reveal = [false; 4];
     for (i, (_, id)) in TOOLBARS.iter().enumerate() {
+        if !gui.toolbars[i] {
+            continue;
+        }
         let (Some(p), Some(r)) = (pointer, ctx.memory(|m| m.area_rect(egui::Id::new(*id)))) else { continue };
         let edge = match i {
             0 => p.x <= screen.left() + EDGE_PX && p.y >= r.top() && p.y <= r.bottom(),
@@ -353,8 +358,13 @@ fn draw_gui(
     gui.update(time.delta_secs_f64(), reveal);
     // Toolbars slide off their screen edges (main left, filters right, the two bottom ones down).
     for (i, (_, id)) in TOOLBARS.iter().enumerate() {
-        let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new(*id));
         let s = gui.slide[i];
+        // Untouched toolbars keep egui's own (identity) transform.
+        if s == 0.0 && gui.applied[i] == 0.0 {
+            continue;
+        }
+        gui.applied[i] = s;
+        let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new(*id));
         let shift = match ctx.memory(|m| m.area_rect(egui::Id::new(*id))) {
             Some(r) if s > 0.0 => match i {
                 0 => egui::vec2(-(r.right() + 8.0) * s, 0.0),
