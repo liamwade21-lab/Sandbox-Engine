@@ -165,14 +165,14 @@ pub struct HullDefaults {
     pub planck: Handle<Image>,
     /// main-def.cfg `ThermalEmissionShift` (default 0), `ThermalParams.y`.
     pub thermal_shift: f32,
+    /// main-def.cfg `hdrShipModelBright` (1): with the design's `Exposure`, the hull's `Params.w`.
+    pub model_bright: f32,
 }
 
 impl FromWorld for HullDefaults {
     fn from_world(world: &mut World) -> Self {
-        let thermal_shift = world
-            .get_resource::<crate::config::EngineConfig>()
-            .and_then(|c| crate::stars::main_def_f64(c, "ThermalEmissionShift"))
-            .unwrap_or(0.0) as f32;
+        let def = |k: &str, d: f64| world.get_resource::<crate::config::EngineConfig>().and_then(|c| crate::stars::main_def_f64(c, k)).unwrap_or(d) as f32;
+        let (thermal_shift, model_bright) = (def("ThermalEmissionShift", 0.0), def("hdrShipModelBright", 1.0));
         let mut images = world.resource_mut::<Assets<Image>>();
         let planck: Vec<u8> = crate::blackholes::planck_table().iter().flatten().flat_map(|f| f.to_le_bytes()).collect();
         let n = (planck.len() / 16) as u32;
@@ -190,6 +190,7 @@ impl FromWorld for HullDefaults {
             flat_normal: images.add(flat_raw([127, 127, 255, 255])),
             planck: images.add(planck),
             thermal_shift,
+            model_bright,
         }
     }
 }
@@ -681,8 +682,8 @@ fn missing_material() -> ShipMaterial {
 }
 
 /// Builds all meshes, textures and plume placements of a design. Runs on a worker thread.
-/// `thermal_shift` is SE's `ThermalEmissionShift`.
-pub fn build_ship(vfs: &Vfs, design: &ShipDesign, thermal_shift: f32) -> Option<LoadedShip> {
+/// `thermal_shift` is SE's `ThermalEmissionShift`, `model_bright` its `hdrShipModelBright`.
+pub fn build_ship(vfs: &Vfs, design: &ShipDesign, thermal_shift: f32, model_bright: f32) -> Option<LoadedShip> {
     let presets = load_ship_materials(vfs);
     let ship_rot = DMat4::from_quat(design.quat);
     let mut cfgs: HashMap<String, Option<Arc<CfgEntry>>> = HashMap::new();
@@ -809,7 +810,10 @@ pub fn build_ship(vfs: &Vfs, design: &ShipDesign, thermal_shift: f32) -> Option<
             continue;
         }
         let tex = load_hull_textures(vfs, &mat, design.rad_temp, &mut tex_cache);
-        let u = hull_uniform(&mat, &tex, design.rad_temp, thermal_shift);
+        let mut u = hull_uniform(&mat, &tex, design.rad_temp, thermal_shift);
+        // ship.glsl's Params.w: the design's Exposure x hdrShipModelBright (x the fade, 1 here;
+        // FUN_14029f670 from FUN_140528000, design +0xf2c).
+        u.ambient.z = design.exposure as f32 * model_bright;
         debug!(
             "ship group {key}: diffuse {:?} (decoded {}), normal {:?}, flags {:#x}, {} vertices",
             mat.diff_map,

@@ -532,7 +532,8 @@ fn ship_commands(
                         for i in 0..count {
                             let place = if a == manager::Action::Fly { Placement::Pilot } else { Placement::Ahead(i) };
                             let mine = a != manager::Action::Other;
-                            spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design.clone(), hull_defaults.thermal_shift, place, mine);
+                            let look = (hull_defaults.thermal_shift, hull_defaults.model_bright);
+                            spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design.clone(), look, place, mine);
                         }
                     }
                     manager::Action::DestroyAll => {
@@ -757,7 +758,8 @@ fn spawn_ship(
     cam: &mut FlyCamera,
     bodies: &Query<&SystemBody>,
     design: Arc<ShipDesign>,
-    thermal_shift: f32,
+    // SE's ThermalEmissionShift and hdrShipModelBright (ship_assets::HullDefaults).
+    (thermal_shift, model_bright): (f32, f32),
     place: Placement,
     mine: bool,
 ) {
@@ -780,7 +782,7 @@ fn spawn_ship(
 
     let vfs = data.vfs.clone();
     let d2 = full.clone();
-    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift) });
+    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift, model_bright) });
     flight.next_serial += 1;
     let ship = Ship {
         design: full.clone(),
