@@ -169,15 +169,22 @@ pub struct ClusterRecord {
     pub radius_pc: f64,
     pub abs_mag: f64,
     pub age_gyr: f64,
-    pub n_stars: Option<f64>,
+    /// SE's concentration key `CenPow` (FUN_14047fcb0), or its default draw (FUN_1404826a0).
+    pub cen_pow: f64,
+    /// `NStars 0`: no generated members, the stars are in the star catalog (FUN_14047fcb0 sets a
+    /// flag; any other `NStars` is ignored, class init FUN_1404826a0 zeroes it).
+    pub no_members: bool,
     /// Colour of the far star-like particle: the catalog `Color`, `None` for SE's default by type.
     /// `Color (0 0 0)` means no particle (the stars are in the star catalog).
     pub color: Option<[f32; 3]>,
     pub source: String,
 }
 
-/// SE's `ClusterGenerator`/`StarGenerator` values used to complete catalog clusters (main-def.cfg).
-const CLUSTER_CAT_MAX_APP_MAGN: f64 = 8.1;
+/// SE's `ClusterGenerator`/`StarGenerator` values used to complete catalog clusters. The catalog cap
+/// is the compiled default of `ClusterCatMaxAppMagn`, 7.1 (`DAT_14075f798`), not main-def.cfg's 8.1:
+/// SE turns it into its brightness constant once, in a static initializer (FUN_140011160), before the
+/// config is read.
+const CLUSTER_CAT_MAX_APP_MAGN: f64 = 7.1;
 const STAR_DENSITY_IN_CLUSTER: f64 = 1.0;
 
 /// SE's cluster types (`FUN_140483080`).
@@ -214,10 +221,10 @@ fn trunc_normal(rng: &mut crate::star_octree::Rng, mean: f64, sd: f64, lo: f64, 
     mean.clamp(lo, hi)
 }
 
-/// Radius (pc), absolute magnitude and age (Gyr) of a catalog cluster, completed as SE does where the
-/// catalog leaves them out (loader `FUN_14047fcb0`, class init `FUN_1404826a0`). SE draws the missing
-/// values from its random stream; here the draws are seeded by the cluster's name.
-fn complete_cluster(b: &Block, kind: ClusterType, name: &str, dist_pc: f64) -> (f64, f64, f64) {
+/// Radius (pc), absolute magnitude, age (Gyr) and `CenPow` of a catalog cluster, completed as SE does
+/// where the catalog leaves them out (loader `FUN_14047fcb0`, class init `FUN_1404826a0`). SE draws
+/// the missing values from its random stream; here the draws are seeded by the cluster's name.
+fn complete_cluster(b: &Block, kind: ClusterType, name: &str, dist_pc: f64) -> (f64, f64, f64, f64) {
     let mut rng = crate::star_octree::Rng(name.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3)));
     let radius = b.f64("Radius").unwrap_or_else(|| match kind {
         ClusterType::Globular => trunc_normal(&mut rng, 30.0, 10.0, 5.0, 70.0),
@@ -233,7 +240,7 @@ fn complete_cluster(b: &Block, kind: ClusterType, name: &str, dist_pc: f64) -> (
         .unwrap_or_else(|| {
             let l = match kind {
                 // Open clusters without a magnitude: 10 R^3 x density, never brighter than
-                // ClusterCatMaxAppMagn seen from the Sun (Pozzo 1: about 45 Lsun).
+                // ClusterCatMaxAppMagn seen from the Sun (Pozzo 1: about 114 Lsun).
                 ClusterType::Open | ClusterType::Part => {
                     let l = (10.0 * radius.powi(3) * STAR_DENSITY_IN_CLUSTER).clamp(1000.0, 2.0e5);
                     l.min(dist_pc * dist_pc * (-(CLUSTER_CAT_MAX_APP_MAGN + 0.2) / 1.0587362).exp())
@@ -250,7 +257,8 @@ fn complete_cluster(b: &Block, kind: ClusterType, name: &str, dist_pc: f64) -> (
         ClusterType::Kern => trunc_normal(&mut rng, 0.1, 0.03, 0.01, 13.0),
         ClusterType::Other => 1.0,
     });
-    (radius, abs_mag, age)
+    let cen_pow = b.f64("CenPow").unwrap_or_else(|| crate::cluster_stars::default_cen_pow(&mut rng, kind == ClusterType::Kern));
+    (radius, abs_mag, age, cen_pow)
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +291,8 @@ pub struct Catalog {
     pub galaxies: Vec<GalaxyRecord>,
     pub clusters: Vec<ClusterRecord>,
     pub nebulae: Vec<NebulaRecord>,
+    /// Catalog galaxy index -> its `GlobClusters` (the galaxies that set it).
+    pub glob_clusters: HashMap<u32, i32>,
     /// Lower-cased name -> object (every alias is indexed).
     names: HashMap<String, ObjectRef>,
     /// Names two objects share but for case ("Kepler-34 b" the planet, "Kepler-34 B" the star),
@@ -709,7 +719,15 @@ impl Catalog {
             source: source.to_string(),
             model_roll: None,
         };
+        // SE's galaxy `GlobClusters` (FUN_14016bef0, runtime +0x64): the globular count, used instead
+        // of the luminosity formula (FUN_14049cf40).
+        let glob = b.f64("GlobClusters").map(|n| (n as i32, rec.names.clone()));
         self.push_galaxy(rec);
+        if let Some((n, names)) = glob {
+            if let Some(ObjectRef::Galaxy(i)) = self.existing(&names) {
+                self.glob_clusters.insert(i, n);
+            }
+        }
     }
 
     fn push_galaxy(&mut self, rec: GalaxyRecord) {
@@ -786,7 +804,7 @@ impl Catalog {
         let dist = pos.length();
         let names = item.names();
         let kind = b.str("Type").unwrap_or("Open").to_string();
-        let (radius_pc, abs_mag, age_gyr) = complete_cluster(b, ClusterType::parse(&kind), names.first().map_or("", String::as_str), dist);
+        let (radius_pc, abs_mag, age_gyr, cen_pow) = complete_cluster(b, ClusterType::parse(&kind), names.first().map_or("", String::as_str), dist);
         let rec = ClusterRecord {
             names,
             galaxy: b.str("Galaxy").unwrap_or("Milky Way").to_string(),
@@ -795,7 +813,8 @@ impl Catalog {
             radius_pc,
             abs_mag,
             age_gyr,
-            n_stars: b.f64("NStars"),
+            cen_pow,
+            no_members: b.f64("NStars") == Some(0.0),
             color: b.vec3("Color").map(|c| [c[0] as f32, c[1] as f32, c[2] as f32]),
             source: source.to_string(),
         };
@@ -1242,16 +1261,23 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
         let mut c = Catalog::new();
         c.load_sc(
             "Cluster \"Pozzo 1\" { Galaxy \"Milky Way\" Type \"Open\" RA 8.15888889 Dec -47.3366667 Dist 336 Radius 0.8796 }\n\
-             Cluster \"Pleiades\" { Type \"Open\" RA 3.78 Dec 24.1 Dist 135.8 Radius 2.3 AbsMagn -3.6 Color ( 0 0 0 ) }\n\
-             Cluster \"G\" { Type \"Globular\" RA 1 Dec 2 Dist 5000 Radius 20 AbsMagn -8 }\n",
+             Cluster \"Pleiades\" { Type \"Open\" RA 3.78 Dec 24.1 Dist 135.8 Radius 2.3 AbsMagn -3.6 Color ( 0 0 0 ) CenPow 0.5 NStars 0 }\n\
+             Cluster \"G\" { Type \"Globular\" RA 1 Dec 2 Dist 5000 Radius 20 AbsMagn -8 NStars 1000 }\n\
+             Galaxy \"M 31\" { Type \"Sb\" RA 0.7 Dec 41 Dist 778000 GlobClusters 450 }\n",
             "c.sc",
         );
-        // Pozzo 1: L = min(1000, 336^2 exp(-8.3/1.0587362)) = 44.5 Lsun, an open cluster's young age.
+        // Pozzo 1: L = min(1000, 336^2 exp(-7.3/1.0587362)) = 114.2 Lsun, an open cluster's young age.
         let p = &c.clusters[0];
-        assert!((p.abs_mag - (4.83 - 2.5 * 44.5f64.log10())).abs() < 0.02, "{}", p.abs_mag);
+        assert!((p.abs_mag - (4.83 - 2.5 * 114.2f64.log10())).abs() < 0.02, "{}", p.abs_mag);
         assert!(p.age_gyr > 0.0 && p.age_gyr < 3.5);
+        assert!((0.5..=2.5).contains(&p.cen_pow) && !p.no_members);
         assert_eq!(c.clusters[1].color, Some([0.0; 3]));
+        assert!(c.clusters[1].no_members && c.clusters[1].cen_pow == 0.5);
         assert!(c.clusters[2].age_gyr > 0.0 && c.clusters[2].age_gyr <= 13.0);
+        // Only NStars 0 counts.
+        assert!(!c.clusters[2].no_members);
+        let Some(ObjectRef::Galaxy(m31)) = c.find("M 31") else { panic!() };
+        assert_eq!(c.glob_clusters.get(&m31), Some(&450));
     }
 
     #[test]
