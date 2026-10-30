@@ -494,26 +494,172 @@ pub fn resolve_mesh_path(vfs: &Vfs, cfg: &ModuleConfig) -> Option<String> {
 // Materials
 // ------------------------------------------------------------------------------------
 
-/// A spacecraft material from a `textures/spacecraft/**/*.sml` file, with texture
-/// paths resolved to VFS paths.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// What the diffuse map's alpha channel means (`DiffMapAlpha`, material flags bits 0-2 in
+/// FUN_1402a1fb0): `"None"`, `"Spec"` (specular power, the shader's ASPEC) or `"Transp"`
+/// (alpha-tested cut-out, ATRNS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffAlpha {
+    None,
+    /// The executable's default for a non-PBR `Material`.
+    #[default]
+    Spec,
+    Transp,
+}
+
+/// A spacecraft (or catalog model) material from an `.sml` file, with texture paths
+/// resolved to VFS paths. Keys and defaults are the executable's (parser FUN_1402a1fb0,
+/// defaults FUN_1402a3560, uniforms FUN_14029f200); `ship.glsl` uses them.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShipMaterial {
     pub name: String,
+    /// `DiffColor` or `DiffColorScale` (same slot): the shader's `DiffColorScale`. Default 1.
     pub diff_color: [f32; 3],
+    /// `DiffColorConst`, added to the diffuse colour. Default 0.
+    pub diff_const: [f32; 3],
     pub emis_color: [f32; 3],
+    /// `EmisBright`, default 1.
     pub emis_bright: f32,
+    /// `SpecColor` or `SpecColorScale`, default 1.
     pub spec_color: [f32; 3],
+    /// `SpecPower`, default 150.
+    pub spec_power: f32,
+    /// `DiffGamma`, `SpecGamma`, `EmisGamma` (the shader's `MapCorrections`): 1 leaves the map
+    /// as read, a negative value converts from sRGB, others are a power. Default 1.
+    pub diff_gamma: f32,
+    pub spec_gamma: f32,
+    pub emis_gamma: f32,
     pub diff_map: Option<String>,
     pub emis_map: Option<String>,
     pub spec_map: Option<String>,
+    /// `TempMap`: surface temperature as a fraction of the design's `RadTemp`.
+    pub temp_map: Option<String>,
+    /// `NormMap`, or a `BumpMap` height map (`bump_is_height`) turned into a normal map with
+    /// `BumpHeight` (default 2) at load time (bump_to_norm.glsl). They share one slot; the
+    /// later key wins.
     pub norm_map: Option<String>,
-    /// `DiffMapAlpha`: what the diffuse alpha channel means (`"Transp"` = cut-out
-    /// transparency, `"Spec"` = specular strength).
-    pub diff_alpha: Option<String>,
+    pub bump_is_height: bool,
+    pub bump_height: f32,
+    /// `DirectXNormMap`: the normal maps' green channel points down.
+    pub directx_norm: bool,
+    /// `DetDiffMap`, sampled at `DetDiffScale` and 4x that, mixed by `DetDiffMag`.
+    pub det_diff_map: Option<String>,
+    /// `DetBumpMap` (a height map, `DetBumpHeight` default 2) or `DetNormMap`, sampled at
+    /// `DetBumpScale` and 4x that and blended in by `DetBumpMag`.
+    pub det_norm_map: Option<String>,
+    pub det_is_height: bool,
+    pub det_bump_height: f32,
+    /// `DetDiffScale` 32, `DetDiffMag` 0.5, `DetBumpScale` 32, `DetBumpMag` 0.25 by default.
+    pub det_diff_scale: f32,
+    pub det_diff_mag: f32,
+    pub det_bump_scale: f32,
+    pub det_bump_mag: f32,
+    /// `TempMapMaxTemp`, default 3000 K (used by the PBR path only).
+    pub temp_max: f32,
+    pub two_sided: bool,
+    /// `Reflections` / `EnvMap`: the environment-map reflection (not drawn by the port).
+    pub reflections: bool,
+    pub diff_alpha: DiffAlpha,
+}
+
+impl Default for ShipMaterial {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            diff_color: [1.0; 3],
+            diff_const: [0.0; 3],
+            emis_color: [1.0; 3],
+            emis_bright: 1.0,
+            spec_color: [1.0; 3],
+            spec_power: 150.0,
+            diff_gamma: 1.0,
+            spec_gamma: 1.0,
+            emis_gamma: 1.0,
+            diff_map: None,
+            emis_map: None,
+            spec_map: None,
+            temp_map: None,
+            norm_map: None,
+            bump_is_height: false,
+            bump_height: 2.0,
+            directx_norm: false,
+            det_diff_map: None,
+            det_norm_map: None,
+            det_is_height: false,
+            det_bump_height: 2.0,
+            det_diff_scale: 32.0,
+            det_diff_mag: 0.5,
+            det_bump_scale: 32.0,
+            det_bump_mag: 0.25,
+            temp_max: 3000.0,
+            two_sided: false,
+            reflections: false,
+            diff_alpha: DiffAlpha::Spec,
+        }
+    }
 }
 
 fn color3(b: &Block, key: &str, default: [f32; 3]) -> [f32; 3] {
     b.vec3(key).map(|v| [v[0] as f32, v[1] as f32, v[2] as f32]).unwrap_or(default)
+}
+
+/// Parses one `Material "name" { ... }` block (FUN_1402a1fb0). `map` resolves a texture name.
+pub fn parse_ship_material(name: &str, b: &Block, map: impl Fn(&str) -> Option<String>) -> ShipMaterial {
+    let d = ShipMaterial::default();
+    let f = |key: &str, def: f32| b.f64(key).map_or(def, |v| v as f32);
+    // Keys sharing a slot: the later one in the executable's order wins.
+    let color = |a: &str, b2: &str, def: [f32; 3]| color3(b, b2, color3(b, a, def));
+    let tex = |key: &str| b.str(key).and_then(&map);
+    let (mut norm_map, mut bump_is_height) = (None, false);
+    if let Some(p) = tex("BumpMap") {
+        (norm_map, bump_is_height) = (Some(p), true);
+    }
+    if let Some(p) = tex("NormMap") {
+        (norm_map, bump_is_height) = (Some(p), false);
+    }
+    let (mut det_norm_map, mut det_is_height) = (None, false);
+    if let Some(p) = tex("DetBumpMap") {
+        (det_norm_map, det_is_height) = (Some(p), true);
+    }
+    if let Some(p) = tex("DetNormMap") {
+        (det_norm_map, det_is_height) = (Some(p), false);
+    }
+    let diff_alpha = match b.str("DiffMapAlpha").map(str::to_ascii_lowercase).as_deref() {
+        Some("none") => DiffAlpha::None,
+        Some("transp") => DiffAlpha::Transp,
+        _ => DiffAlpha::Spec,
+    };
+    ShipMaterial {
+        name: name.to_owned(),
+        diff_color: color("DiffColor", "DiffColorScale", d.diff_color),
+        diff_const: color3(b, "DiffColorConst", d.diff_const),
+        emis_color: color3(b, "EmisColor", d.emis_color),
+        emis_bright: f("EmisBright", d.emis_bright),
+        spec_color: color("SpecColor", "SpecColorScale", d.spec_color),
+        spec_power: f("SpecPower", d.spec_power),
+        diff_gamma: f("DiffGamma", d.diff_gamma),
+        spec_gamma: f("SpecGamma", d.spec_gamma),
+        emis_gamma: f("EmisGamma", d.emis_gamma),
+        diff_map: tex("DiffMap"),
+        emis_map: tex("EmisMap"),
+        spec_map: tex("SpecMap"),
+        temp_map: tex("TempMap"),
+        norm_map,
+        bump_is_height,
+        bump_height: f("BumpHeight", d.bump_height),
+        directx_norm: b.bool("DirectXNormMap").unwrap_or(false),
+        det_diff_map: tex("DetDiffMap"),
+        det_norm_map,
+        det_is_height,
+        det_bump_height: f("DetBumpHeight", d.det_bump_height),
+        det_diff_scale: f("DetDiffScale", d.det_diff_scale),
+        det_diff_mag: f("DetDiffMag", d.det_diff_mag),
+        det_bump_scale: f("DetBumpScale", d.det_bump_scale),
+        det_bump_mag: f("DetBumpMag", d.det_bump_mag),
+        temp_max: f("TempMapMaxTemp", d.temp_max),
+        two_sided: b.bool("TwoSided").unwrap_or(false),
+        reflections: b.bool("Reflections").unwrap_or(false) || b.bool("EnvMap").unwrap_or(false),
+        diff_alpha,
+    }
 }
 
 /// Resolves a texture name from an `.sml`: `*` as the extension means any of the known
@@ -540,19 +686,7 @@ pub fn parse_ship_materials(src: &str, file: &str, exists: impl Fn(&str) -> bool
     let mut out = Vec::new();
     for m in root.all("Material") {
         let (Some(name), Some(b)) = (first_str(m), m.block.as_ref()) else { continue };
-        let map = |key: &str| b.str(key).and_then(|t| resolve_texture(&exists, file, t));
-        out.push(ShipMaterial {
-            name: name.to_owned(),
-            diff_color: color3(b, "DiffColor", [1.0; 3]),
-            emis_color: color3(b, "EmisColor", [1.0; 3]),
-            emis_bright: b.f64("EmisBright").unwrap_or(0.0) as f32,
-            spec_color: color3(b, "SpecColor", [0.0; 3]),
-            diff_map: map("DiffMap"),
-            emis_map: map("EmisMap"),
-            spec_map: map("SpecMap"),
-            norm_map: map("NormMap"),
-            diff_alpha: b.str("DiffMapAlpha").map(str::to_owned),
-        });
+        out.push(parse_ship_material(name, b, |t| resolve_texture(&exists, file, t)));
     }
     out
 }
@@ -783,8 +917,40 @@ Material "Plain" { DiffColor (1 1 1) }
         assert_eq!(m[0].emis_bright, 0.5);
         assert_eq!(m[0].diff_map.as_deref(), Some("textures/spacecraft/modules/SHW-diff.png"));
         assert!(m[0].emis_map.is_none());
-        assert!(m[0].diff_alpha.is_none());
+        assert_eq!(m[0].diff_alpha, DiffAlpha::Spec);
         assert!(m[1].diff_map.is_none());
+    }
+
+    #[test]
+    fn material_defaults_and_shared_slots() {
+        let sml = r#"
+Material "Shuttle"
+{
+	SpecColor       (2.000 2.000 2.000)
+	DiffMapAlpha	"Spec"
+	DiffMap         "default/Shuttle-diff.*"
+	BumpMap         "default/Shuttle-bump.*"
+	BumpHeight       2.5
+	DetBumpMap      "default/Detail-noise.*"
+	DetBumpScale     16
+	DetBumpHeight    0.3
+}
+Material "Frame" { DiffColorScale (0.5 0.5 0.5) DiffMapAlpha "Transp" BumpMap "a.png" NormMap "b.png" TwoSided true }
+"#;
+        let m = parse_ship_materials(sml, "textures/spacecraft/default/Shuttle.sml", |_| true);
+        let s = &m[0];
+        // The executable's defaults (FUN_1402a3560).
+        assert_eq!((s.diff_color, s.emis_bright, s.spec_power), ([1.0; 3], 1.0, 150.0));
+        assert_eq!((s.det_diff_scale, s.det_diff_mag, s.det_bump_mag), (32.0, 0.5, 0.25));
+        assert_eq!((s.spec_color, s.bump_height, s.det_bump_scale, s.det_bump_height), ([2.0; 3], 2.5, 16.0, 0.3));
+        assert!(s.bump_is_height && s.det_is_height && s.norm_map.is_some());
+        assert_eq!(s.diff_alpha, DiffAlpha::Spec);
+        let f = &m[1];
+        assert_eq!(f.diff_color, [0.5; 3]);
+        assert_eq!(f.diff_alpha, DiffAlpha::Transp);
+        // NormMap comes after BumpMap in the executable and takes the slot.
+        assert!(!f.bump_is_height && f.norm_map.as_deref().is_some_and(|p| p.ends_with("b.png")));
+        assert!(f.two_sided && f.det_norm_map.is_none());
     }
 
     /// Checks every shipped design against the real install and prints bounds data.

@@ -1,9 +1,9 @@
-//! Minimal DDS reader: the top mip level of DXT1/DXT3/DXT5 (BC1/BC2/BC3) and
-//! uncompressed 24/32-bit images, decoded to RGBA8.
+//! Minimal DDS reader: the top mip level of DXT1/DXT3/DXT5 (BC1/BC2/BC3), `ATI2` (BC5)
+//! normal maps and uncompressed 24/32-bit images, decoded to RGBA8.
 //!
 //! The spacecraft textures (`textures/spacecraft/ShipsTex.pak`) are mostly DXT1/DXT5
-//! with a full mip chain; only the first (largest) level is decoded. Other formats
-//! (e.g. `ATI2` normal maps) return an error.
+//! with a full mip chain; only the first (largest) level is decoded. BC5 normal maps come
+//! out as x, y and the rebuilt z (as SE's `FromBC5`). Other formats return an error.
 
 /// Decoded image, tightly packed RGBA8, row 0 at the top.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +110,17 @@ enum Block {
     Bc1,
     Bc2,
     Bc3,
+    /// Two-channel normal map (`ATI2`): x and y as BC4 blocks; z is rebuilt (SE's FromBC5).
+    Bc5,
+}
+
+/// Rebuilds the z of a unit normal from 8-bit x and y, expanded as ship.glsl does (`2 v - NORM_ONE`,
+/// so 127 is 0), stored so that the same expansion gives z back.
+fn bc5_z(x: u8, y: u8) -> u8 {
+    let e = |v: u8| (2.0 * v as f32 - 254.0) / 255.0;
+    let (x, y) = (e(x), e(y));
+    let z = (1.0 - x * x - y * y).clamp(0.0, 1.0).sqrt();
+    ((255.0 * z + 254.0) * 0.5).round() as u8
 }
 
 fn decode_blocks(data: &[u8], w: usize, h: usize, kind: Block) -> Result<Vec<u8>, DdsError> {
@@ -122,6 +133,16 @@ fn decode_blocks(data: &[u8], w: usize, h: usize, kind: Block) -> Result<Vec<u8>
     for by in 0..bh {
         for bx in 0..bw {
             let blk = &data[(by * bw + bx) * bsize..][..bsize];
+            if kind == Block::Bc5 {
+                let (xs, ys) = (decode_alpha_block(&blk[..8]), decode_alpha_block(&blk[8..]));
+                for i in 0..16 {
+                    let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
+                    if x < w && y < h {
+                        out[(y * w + x) * 4..][..4].copy_from_slice(&[xs[i], ys[i], bc5_z(xs[i], ys[i]), 255]);
+                    }
+                }
+                continue;
+            }
             let (color_part, alpha): (&[u8], Option<[u8; 16]>) = match kind {
                 Block::Bc1 => (blk, None),
                 Block::Bc2 => {
@@ -133,6 +154,7 @@ fn decode_blocks(data: &[u8], w: usize, h: usize, kind: Block) -> Result<Vec<u8>
                     (&blk[8..], Some(a))
                 }
                 Block::Bc3 => (&blk[8..], Some(decode_alpha_block(&blk[..8]))),
+                Block::Bc5 => unreachable!(),
             };
             let px = decode_color_block(color_part, kind == Block::Bc1);
             for ty in 0..4 {
@@ -172,6 +194,7 @@ pub fn decode_dds(bytes: &[u8]) -> Result<DdsImage, DdsError> {
             b"DXT1" => decode_blocks(data, w, h, Block::Bc1)?,
             b"DXT2" | b"DXT3" => decode_blocks(data, w, h, Block::Bc2)?,
             b"DXT4" | b"DXT5" => decode_blocks(data, w, h, Block::Bc3)?,
+            b"ATI2" | b"BC5U" => decode_blocks(data, w, h, Block::Bc5)?,
             other => return Err(DdsError::Unsupported(String::from_utf8_lossy(other).into_owned())),
         }
     } else if pf_flags & 0x40 != 0 {
@@ -273,10 +296,22 @@ mod tests {
     #[test]
     fn rejects_garbage_and_unknown_formats() {
         assert_eq!(decode_dds(b"nope").unwrap_err(), DdsError::NotDds);
-        let d = header(4, 4, b"ATI2");
+        let d = header(4, 4, b"ATI1");
         assert!(matches!(decode_dds(&d), Err(DdsError::Unsupported(_))));
         let d = header(8, 8, b"DXT1");
         assert_eq!(decode_dds(&d).unwrap_err(), DdsError::Truncated);
+    }
+
+    #[test]
+    fn ati2_normals_rebuild_z() {
+        let mut d = header(4, 4, b"ATI2");
+        // x block: every texel 128 (x = 0); y block: every texel 255 (y = 1).
+        d.extend_from_slice(&[128, 128, 0, 0, 0, 0, 0, 0]);
+        d.extend_from_slice(&[255, 255, 0, 0, 0, 0, 0, 0]);
+        let img = decode_dds(&d).unwrap();
+        assert_eq!(&img.rgba[0..4], &[128, 255, 127, 255]);
+        // A flat normal (127, 127 expand to 0) has z = 1.
+        assert_eq!(bc5_z(127, 127), 255);
     }
 
     #[test]

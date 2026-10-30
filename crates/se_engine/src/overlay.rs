@@ -523,15 +523,13 @@ fn fade_sky(time: Res<Time>, settings: Res<OverlaySettings>, cfg: Option<Res<Sky
 /// SE's overlay keys: O orbits, ' labels (off, brief, detail), Ctrl+' markers, ; the selection
 /// pointer; X constellations, Shift+X their lines, Ctrl+X boundaries, Alt+X names, Ctrl+; the
 /// celestial grids, Alt+; the geographic grid (key table FUN_1405ba8f0: ToggleConstellations,
-/// ToggleConstLines/Boundaries/Labels, ToggleCelGrids, ToggleGeoGrids). X cuts the throttle while a
-/// ship is piloted, so it leaves the constellations alone then.
+/// ToggleConstLines/Boundaries/Labels, ToggleCelGrids, ToggleGeoGrids), also while a ship is piloted.
 fn overlay_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut settings: ResMut<OverlaySettings>,
     mut egui: EguiContexts,
     mut msg: ResMut<crate::messages::Messages>,
     i18n: Res<crate::i18n::I18n>,
-    flight: Option<Res<crate::ship::Flight>>,
 ) {
     if egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false) {
         return;
@@ -541,7 +539,6 @@ fn overlay_keys(
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     let mods = ctrl || shift || alt;
     let sky = &mut settings.sky;
-    let piloting = flight.is_some_and(|f| f.active);
     let x = match (shift, ctrl, alt) {
         (false, false, false) => Some((&mut sky.constellations, "Constellations")),
         (true, false, false) => Some((&mut sky.constel_lines, "Constellation lines")),
@@ -549,7 +546,7 @@ fn overlay_keys(
         (false, false, true) => Some((&mut sky.constel_labels, "Constellation names")),
         _ => None,
     };
-    if let (Some((switch, name)), true) = (x, keys.just_pressed(KeyCode::KeyX) && !piloting) {
+    if let (Some((switch, name)), true) = (x, keys.just_pressed(KeyCode::KeyX)) {
         *switch = !*switch;
         msg.switch(&i18n, name, *switch);
     }

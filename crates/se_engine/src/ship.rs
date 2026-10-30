@@ -21,7 +21,9 @@
 //! While flight mode is on, the free camera ([`FlyCamera`]) is driven by [`ship_camera`]
 //! instead of the user: `camera.rs` checks [`FlightHold`] and leaves the camera alone.
 //!
-//! Keys are SE's ship bindings (key table FUN_1405ba8f0): 5-0 Prograde .. Normal Down, End
+//! Keys are SE's ship bindings (key table FUN_1405ba8f0): = / - (keypad + / -) main engines +/-,
+//! with Shift the retro engines, with Ctrl the hover engines (three separate levels), W/S/A/D/R/F (arrows,
+//! keypad 1/0) the thrusters, keypad 8/2/4/6 and Q/E (keypad 7/9) turn, 5-0 Prograde .. Normal Down, End
 //! Horizon, Num5 Kill rotation, U Flight assist, Z Stop engines, Alt+Z Stop warp drive, Shift+Z
 //! Sync velocity, H Hold altitude, T Select target, P Select reference body, C Rotate to target,
 //! Shift+G Fly to target, Alt+G Warp to target, G Fly or warp to target, Alt+= / Alt+- (and
@@ -53,8 +55,8 @@ use self::engine_sound::{EngineSoundCache, start_engine_sounds, update_engine_so
 use crate::camera::{FlightHold, FlyCamera, MainCamera, look_rotation};
 use crate::data::SeData;
 use crate::ship_assets::{
-    LoadedShip, PlumeMaterial, PlumeSpec, PlumeUniform, ShipSurfaceMaterial, ShipUniform, build_ship, flat_texture,
-    plume_mesh, plume_rotation,
+    HullDefaults, HullMaterial, LoadedShip, PlumeMaterial, PlumeSpec, PlumeUniform, add_hull_material, build_ship,
+    engine_brightness, engine_step, engine_type, plume_box, plume_mesh,
 };
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
@@ -66,7 +68,8 @@ use crate::universe::{SimTime, UOrientation, UPosition, UniverseSet};
 const MAX_TURN_RATE: f64 = 0.1;
 /// Mouse turning: rad/s added per pixel, per rad/s^2 of `TurnEngines`.
 const MOUSE_TURN_GAIN: f64 = 0.05;
-/// Throttle slew (full scale per second) when W/S are held.
+/// Engine command slew (full scale per second) while = / - are held (SE's keyboard rate was not
+/// found; its mouse wheel moves a command 0.02 of full scale per notch, FUN_1405b2620).
 const THROTTLE_RATE: f64 = 0.5;
 /// Engine spool-up (full scale per second); the executable's ramp factor is 2.0.
 const ENGINE_SPOOL: f64 = 2.0;
@@ -105,14 +108,13 @@ pub struct ShipCommand {
 /// Player input gathered in `Update`, consumed by the physics in `PostUpdate`.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct ShipInput {
-    /// RCS translation, each axis -1..1 (x right, y up).
+    /// Thruster (RCS) translation, each axis -1..1 (x right, y up, z forward).
     pub rcs: DVec3,
     /// Torque command per local axis (x pitch up, y yaw left, z roll left), -1..1.
     pub turn: DVec3,
     /// Mouse turning request for this frame (pixels).
     pub mouse: DVec2,
     pub boost_turn: bool,
-    pub brake: bool,
 }
 
 /// Aerodynamic numbers of the last frame (SE's ship panel: Mach, Dynamic pressure, Air velocity,
@@ -151,8 +153,12 @@ pub struct Flight {
     /// Flight mode: the camera follows the ship and the keys fly it.
     pub active: bool,
     pub ship: Option<Entity>,
-    /// Commanded main-engine throttle, -1 (full retro) to 1 (full main).
-    pub throttle: f64,
+    /// Commanded main, retro and hover engine levels, each 0..1 of its engine's acceleration:
+    /// SE's three engine groups (ShipMain/Retro/HoverEnginePlus/Minus, held = / - with no
+    /// modifier, Shift or Ctrl).
+    pub main_cmd: f64,
+    pub retro_cmd: f64,
+    pub hover_cmd: f64,
     /// Whether the warp drive is engaged, and the requested boost (log10).
     pub warp_on: bool,
     pub warp_cmd: f64,
@@ -193,7 +199,9 @@ impl Default for Flight {
         Self {
             active: false,
             ship: None,
-            throttle: 0.0,
+            main_cmd: 0.0,
+            retro_cmd: 0.0,
+            hover_cmd: 0.0,
             warp_on: false,
             warp_cmd: 0.0,
             assist: true,
@@ -221,6 +229,20 @@ impl Default for Flight {
     }
 }
 
+impl Flight {
+    /// A signed main / retro command (the `throttle` script command, the autopilot): positive
+    /// for the main engines, negative for the retro engines; the hover engines are left alone.
+    pub fn set_throttle(&mut self, t: f64) {
+        let t = t.clamp(-1.0, 1.0);
+        (self.main_cmd, self.retro_cmd) = (t.max(0.0), (-t).max(0.0));
+    }
+
+    /// ShipStopEngines (Z, FUN_140409c20): every engine group's command to 0.
+    pub fn stop_engines(&mut self) {
+        (self.main_cmd, self.retro_cmd, self.hover_cmd) = (0.0, 0.0, 0.0);
+    }
+}
+
 /// Physical state of the player's ship.
 #[derive(Component)]
 pub struct Ship {
@@ -229,8 +251,10 @@ pub struct Ship {
     pub vel: DVec3,
     /// Angular velocity in the ship frame (rad/s).
     pub ang_vel: DVec3,
-    /// Spooled main-engine level, -1..1.
-    pub engine: f64,
+    /// Spooled main, retro and hover engine levels, 0..1 (FUN_140523240).
+    pub main: f64,
+    pub retro: f64,
+    pub hover: f64,
     /// Current warp boost (log10 multiplier).
     pub warp: f64,
     /// Distance from the pivot to the hull bottom (m).
@@ -251,16 +275,42 @@ pub struct Landed {
 struct ShipLoading(Task<Option<LoadedShip>>);
 
 struct PlumeInstance {
-    entity: Entity,
-    material: Handle<PlumeMaterial>,
+    /// The exhaust box and its material; `None` for a `Type` SE has no exhaust shape for (`Hyper`).
+    draw: Option<(Entity, Handle<PlumeMaterial>)>,
+    /// Ship space to the box's `[-1, 1]^3` frame.
+    to_box: bevy::math::Affine3A,
     spec: PlumeSpec,
-    base_scale: Vec3,
-    visible: bool,
+    /// Offset of the effect's noise time (s), SE's per-effect phase.
+    phase: f32,
+}
+
+/// main-def.cfg `ShipEngineQuality` (the exhaust ray-march step) and `hdrShipEnginesBright`.
+#[derive(Resource, Clone, Copy)]
+struct EngineEffectSettings {
+    step: f32,
+    bright: f32,
+}
+
+impl FromWorld for EngineEffectSettings {
+    fn from_world(world: &mut World) -> Self {
+        let cfg = world.get_resource::<crate::config::EngineConfig>();
+        let key = |k: &str| cfg.and_then(|c| crate::stars::main_def_f64(c, k));
+        Self {
+            step: engine_step(key("ShipEngineQuality").unwrap_or(2.0) as i32),
+            bright: key("hdrShipEnginesBright").unwrap_or(1.0) as f32,
+        }
+    }
+}
+
+/// SE's per-effect phase of the exhaust noise (FUN_1402a8ed0: effect index * 0x414a, in units of
+/// 1 / 7314.7 day), wrapped to the 256 s period of its time.
+fn effect_phase(i: usize) -> f32 {
+    ((i as f64 * 16714.0 * 86400.0 / 7314.7) % 256.0) as f32
 }
 
 #[derive(Component, Default)]
 struct ShipVisuals {
-    hull: Vec<Handle<ShipSurfaceMaterial>>,
+    hull: Vec<Handle<HullMaterial>>,
     plumes: Vec<PlumeInstance>,
 }
 
@@ -271,16 +321,19 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MaterialPlugin::<ShipSurfaceMaterial>::default(), MaterialPlugin::<PlumeMaterial>::default()))
+        add_hull_material(app);
+        app.add_plugins(MaterialPlugin::<PlumeMaterial>::default())
             .init_resource::<Flight>()
             .insert_resource(ShipUi { show: std::env::var_os("SE_SHIPS_WINDOW").is_some(), ..default() })
             .init_resource::<ShipLibrary>()
             .init_resource::<AirCache>()
             .init_resource::<EngineSoundCache>()
             .init_resource::<FlightKeys>()
+            .init_resource::<EngineEffectSettings>()
             .add_message::<ShipCommand>()
             .add_systems(Startup, (load_library, make_plume_mesh))
             .add_systems(PreUpdate, take_flight_keys.after(bevy::input::InputSystems))
+            .add_systems(Update, disable_egui_keyboard_zoom)
             .add_systems(
                 Update,
                 (ship_commands, ship_input, finish_ship_loading, sync_hold, start_engine_sounds).chain(),
@@ -408,6 +461,7 @@ fn ship_commands(
     time: Res<Time>,
     bodies: Query<&SystemBody>,
     ships: Query<(Entity, &UPosition, &Ship)>,
+    hull_defaults: Res<HullDefaults>,
 ) {
     for msg in reader.read() {
         let arg = msg.arg.trim();
@@ -425,11 +479,19 @@ fn ship_commands(
                 for (e, ..) in &ships {
                     commands.entity(e).despawn();
                 }
-                spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design);
+                spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design, hull_defaults.thermal_shift);
             }
             "throttle" => {
-                if let Ok(v) = arg.parse::<f64>() {
-                    flight.throttle = v.clamp(-1.0, 1.0);
+                // `throttle X` (signed: main, or retro below 0), `throttle main|retro|hover X` (0..1).
+                let (group, value) = arg.split_once(' ').map_or(("", arg), |(a, b)| (a, b.trim()));
+                if let Ok(v) = value.parse::<f64>() {
+                    let v01 = v.clamp(0.0, 1.0);
+                    match group {
+                        "main" => flight.main_cmd = v01,
+                        "retro" => flight.retro_cmd = v01,
+                        "hover" => flight.hover_cmd = v01,
+                        _ => flight.set_throttle(v),
+                    }
                 }
             }
             "warp" => {
@@ -535,6 +597,7 @@ fn ship_commands(
 
 /// Places `design` so that its first chase camera coincides with the free camera, at rest
 /// relative to the nearest body, and enters flight mode.
+#[allow(clippy::too_many_arguments)]
 fn spawn_ship(
     commands: &mut Commands,
     data: &SeData,
@@ -543,6 +606,7 @@ fn spawn_ship(
     cam: &mut FlyCamera,
     bodies: &Query<&SystemBody>,
     design: Arc<ShipDesign>,
+    thermal_shift: f32,
 ) {
     let full = match ShipDesign::load(&data.vfs, &design.path) {
         Some(d) => Arc::new(d),
@@ -568,14 +632,16 @@ fn spawn_ship(
 
     let vfs = data.vfs.clone();
     let d2 = full.clone();
-    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2) });
+    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift) });
     let id = commands
         .spawn((
             Ship {
                 design: full.clone(),
                 vel,
                 ang_vel: DVec3::ZERO,
-                engine: 0.0,
+                main: 0.0,
+                retro: 0.0,
+                hover: 0.0,
                 warp: 0.0,
                 clearance: full.length_m * 0.1,
                 radius: full.length_m * 0.5,
@@ -591,7 +657,7 @@ fn spawn_ship(
         .id();
     flight.ship = Some(id);
     flight.active = true;
-    flight.throttle = 0.0;
+    flight.stop_engines();
     flight.warp_on = false;
     flight.warp_cmd = full.warp_boost_log;
     flight.cam_mode = 0;
@@ -634,14 +700,14 @@ fn ship_input(
     if !egui_keys {
         if keys.just_pressed(KeyCode::Escape) && flight.active {
             flight.active = false;
-            flight.throttle = 0.0;
+            flight.stop_engines();
             stop_programs(&mut flight);
         } else if keys.just_pressed(KeyCode::Enter) && flight.ship.is_some() {
             flight.active = !flight.active;
             if !flight.active {
-                flight.throttle = 0.0;
+                flight.stop_engines();
             }
-        } else if keys.just_pressed(KeyCode::KeyF) && flight.ship.is_some() && !flight.active {
+        } else if keys.just_pressed(KeyCode::KeyF) && flight.ship.is_some() && !flight.active && !keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight, KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::AltLeft, KeyCode::AltRight]) {
             // F only enters: in flight it is SE's ShipMoveDown.
             flight.active = true;
         }
@@ -686,22 +752,26 @@ fn ship_input(
         return;
     }
 
-    // Throttle (W/S); Z is SE's Stop engines (ShipStopEngines), X the port's cut.
+    // Engine groups (SE's key table FUN_1405ba8f0): = / - (or the keypad's + / -) raise and lower
+    // the main engines, with Shift the retro engines, with Ctrl the hover engines (with Alt the
+    // warp drive, below). Z is SE's Stop engines (ShipStopEngines).
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let plain = !shift && !alt && !ctrl;
     let now = time.elapsed_secs_f64();
-    let mut dthr = 0.0;
-    if keys.pressed(KeyCode::KeyW) {
-        dthr += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        dthr -= 1.0;
-    }
-    flight.throttle = (flight.throttle + dthr * THROTTLE_RATE * dt).clamp(-1.0, 1.0);
-    if keys.just_pressed(KeyCode::KeyX) {
-        flight.throttle = 0.0;
+    let plus = keys.any_pressed([KeyCode::Equal, KeyCode::NumpadAdd]) as i32 as f64;
+    let minus = keys.any_pressed([KeyCode::Minus, KeyCode::NumpadSubtract]) as i32 as f64;
+    let d = (plus - minus) * THROTTLE_RATE * dt;
+    if d != 0.0 && !alt && !(shift && ctrl) {
+        let cmd = if shift {
+            &mut flight.retro_cmd
+        } else if ctrl {
+            &mut flight.hover_cmd
+        } else {
+            &mut flight.main_cmd
+        };
+        *cmd = (*cmd + d).clamp(0.0, 1.0);
     }
     if keys.just_pressed(KeyCode::KeyZ) {
         if alt {
@@ -712,7 +782,7 @@ fn ship_input(
             flight.autopilot = None;
         } else {
             // ShipStopEngines: also ends a running program (and the jump it was making).
-            flight.throttle = 0.0;
+            flight.stop_engines();
             if flight.autopilot.take().is_some_and(|a| a.program == Program::WarpTo) {
                 flight.warp_on = false;
             }
@@ -720,30 +790,32 @@ fn ship_input(
         }
     }
 
-    // RCS translation.
-    let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f64 - keys.pressed(neg) as i32 as f64;
-    flight.input.rcs = DVec3::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyR, KeyCode::KeyF), 0.0);
-    // Rotation: arrows pitch/yaw, Q/E roll.
+    // SE's key table (FUN_1405ba8f0): the thrusters ShipMoveForward/Back/Left/Right are W/S/A/D or
+    // the arrows, ShipMoveUp/Down R/F or the keypad's 1/0; ShipTurnUp/Down/Left/Right the keypad's
+    // 8/2/4/6 (Ctrl + keypad are the ShipLook views), ShipTurnCCW/CW Q/E or the keypad's 7/9. The
+    // letters are bound without modifiers, so Shift+A (atmospheres) and the like leave them alone.
+    let down = |letter: KeyCode, alt_key: KeyCode| ((plain && keys.pressed(letter)) || keys.pressed(alt_key)) as i32 as f64;
+    let pad = |k: KeyCode| (!ctrl && !alt && keys.pressed(k)) as i32 as f64;
+    flight.input.rcs = DVec3::new(
+        down(KeyCode::KeyD, KeyCode::ArrowRight) - down(KeyCode::KeyA, KeyCode::ArrowLeft),
+        down(KeyCode::KeyR, KeyCode::Numpad1) - down(KeyCode::KeyF, KeyCode::Numpad0),
+        down(KeyCode::KeyW, KeyCode::ArrowUp) - down(KeyCode::KeyS, KeyCode::ArrowDown),
+    );
+    // Rotation (Shift turns faster).
     flight.input.turn = DVec3::new(
-        axis(KeyCode::ArrowUp, KeyCode::ArrowDown),
-        axis(KeyCode::ArrowLeft, KeyCode::ArrowRight),
-        axis(KeyCode::KeyQ, KeyCode::KeyE),
+        pad(KeyCode::Numpad8) - pad(KeyCode::Numpad2),
+        pad(KeyCode::Numpad4) - pad(KeyCode::Numpad6),
+        down(KeyCode::KeyQ, KeyCode::Numpad7) - down(KeyCode::KeyE, KeyCode::Numpad9),
     );
     flight.input.rcs = (flight.input.rcs + flight.script_rcs).clamp(DVec3::splat(-1.0), DVec3::ONE);
     flight.input.turn = (flight.input.turn + flight.script_turn).clamp(DVec3::splat(-1.0), DVec3::ONE);
     flight.input.boost_turn = shift;
-    flight.input.brake = keys.pressed(KeyCode::Backspace);
-    if flight.input.brake {
-        // The port's brake: it takes over from any program.
-        stop_programs(&mut flight);
-        flight.throttle = 0.0;
-    }
 
-    if keys.just_pressed(KeyCode::KeyU) {
+    if keys.just_pressed(KeyCode::KeyU) && plain {
         // ShipFlightAssist.
         flight.assist = !flight.assist;
     }
-    if keys.just_pressed(KeyCode::Numpad5) && !ctrl {
+    if keys.just_pressed(KeyCode::Numpad5) && plain {
         // ShipStopRotation: drop the holds and brake the rotation.
         flight.attitude = Attitude::Free;
         flight.kill_rotation = true;
@@ -841,8 +913,17 @@ fn ship_input(
             flight.warp_on = false;
         }
     }
-    if flight.input.brake {
-        flight.warp_on = false;
+}
+
+/// Ctrl+= / Ctrl+- are SE's hover engine keys (and the camera's): egui's keyboard zoom, on by
+/// default, would scale the whole interface with them. Turned off once the context exists.
+fn disable_egui_keyboard_zoom(mut egui: EguiContexts, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    if let Ok(ctx) = egui.ctx_mut() {
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        *done = true;
     }
 }
 
@@ -871,7 +952,7 @@ fn stop_warp_drive(flight: &mut Flight) {
     flight.warp_on = false;
     if flight.autopilot.is_some_and(|a| a.program == Program::WarpTo) {
         flight.autopilot = None;
-        flight.throttle = 0.0;
+        flight.set_throttle(0.0);
     }
 }
 
@@ -880,7 +961,7 @@ fn stop_warp_drive(flight: &mut Flight) {
 fn stop_programs(flight: &mut Flight) {
     if let Some(a) = flight.autopilot.take() {
         if a.program != Program::RotateTo {
-            flight.throttle = 0.0;
+            flight.set_throttle(0.0);
         }
         if a.program == Program::WarpTo {
             flight.warp_on = false;
@@ -934,8 +1015,10 @@ fn finish_ship_loading(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
+    mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
+    hull_defaults: Res<HullDefaults>,
+    engine_fx: Res<EngineEffectSettings>,
     plume_mesh: Option<Res<PlumeMesh>>,
     mut loading: Query<(Entity, &mut ShipLoading, &mut Ship, &mut ShipVisuals)>,
     mut flight: ResMut<Flight>,
@@ -955,22 +1038,9 @@ fn finish_ship_loading(
         };
         ship.clearance = loaded.clearance;
         ship.radius = loaded.radius;
-        let white = images.add(flat_texture([255, 255, 255, 255]));
-        let black = images.add(flat_texture([0, 0, 0, 255]));
         let n_groups = loaded.groups.len();
         for g in loaded.groups {
-            let diffuse = g.diffuse.map(|i| images.add(i)).unwrap_or_else(|| white.clone());
-            let emissive = g.emissive.map(|i| images.add(i)).unwrap_or_else(|| black.clone());
-            let mat = hull_mats.add(ShipSurfaceMaterial {
-                u: ShipUniform {
-                    light_dir: [Vec4::new(0.0, 1.0, 0.0, 1.0), Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
-                    light_color: [Vec4::ONE, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
-                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.0),
-                    emis: Vec4::new(g.emis[0], g.emis[1], g.emis[2], g.cutoff),
-                },
-                diffuse,
-                emissive,
-            });
+            let mat = hull_mats.add(g.tex.into_material(&mut images, &hull_defaults, g.u));
             visuals.hull.push(mat.clone());
             commands.spawn((
                 ChildOf(entity),
@@ -982,32 +1052,24 @@ fn finish_ship_loading(
             ));
         }
         for (i, spec) in loaded.plumes.iter().enumerate() {
-            let rot = plume_rotation(spec.dir, spec.x_axis);
-            let base_scale = Vec3::new(spec.size.x * 0.5, spec.size.y * 0.5, spec.size.z);
-            let intensity = spec.brightness
-                * match spec.kind.as_str() {
-                    "Fusion" | "Chemical" => 3.0,
-                    "Aerospike" => 2.5,
-                    "Hyper" => 2.0,
-                    _ => 1.6,
-                };
-            let material = plume_mats.add(PlumeMaterial {
-                u: PlumeUniform {
-                    color: Vec4::new(spec.color[0] * 3.0, spec.color[1] * 3.0, spec.color[2] * 3.0, intensity),
-                    params: Vec4::new(0.0, 0.0, i as f32, 0.0),
-                },
+            let tf = plume_box(spec.pos, spec.dir, spec.x_axis, spec.size);
+            let draw = engine_type(&spec.kind).map(|kind| {
+                let material = plume_mats.add(PlumeMaterial {
+                    u: PlumeUniform { color: Vec4::ZERO, params: Vec4::new(kind as f32, 0.0, engine_fx.step, 0.0) },
+                });
+                let e = commands
+                    .spawn((
+                        ChildOf(entity),
+                        Mesh3d(plume_mesh.0.clone()),
+                        MeshMaterial3d(material.clone()),
+                        tf,
+                        Visibility::Hidden,
+                        NoFrustumCulling,
+                    ))
+                    .id();
+                (e, material)
             });
-            let e = commands
-                .spawn((
-                    ChildOf(entity),
-                    Mesh3d(plume_mesh.0.clone()),
-                    MeshMaterial3d(material.clone()),
-                    Transform { translation: spec.pos, rotation: rot, scale: base_scale * 1e-3 },
-                    Visibility::Hidden,
-                    NoFrustumCulling,
-                ))
-                .id();
-            visuals.plumes.push(PlumeInstance { entity: e, material, spec: spec.clone(), base_scale, visible: false });
+            visuals.plumes.push(PlumeInstance { draw, to_box: tf.compute_affine().inverse(), spec: spec.clone(), phase: effect_phase(i) });
         }
         info!(
             "ship {} built: {} meshes, {} vertices, {} plumes, {} modules unresolved",
@@ -1107,6 +1169,15 @@ fn ship_physics(
     };
     let corr_a = if design.corr_engines > 0.0 { design.corr_engines } else { design.main_engines * 0.05 };
     let up_a = if design.hover_engines > 0.0 { design.hover_engines } else { corr_a };
+    // A program's upward push goes to the hover engines when the design has them (`up_a`), on
+    // top of the pilot's hover command; the thrusters (ShipMove*) push with `corr_a`.
+    let mut hover_prog = 0.0f64;
+    let route_up = |rcs: &mut DVec3, hover: &mut f64| {
+        if design.hover_engines > 0.0 && rcs.y > 0.0 {
+            *hover = hover.max(rcs.y);
+            rcs.y = 0.0;
+        }
+    };
 
     // --- Autopilot and attitude holds ---------------------------------------------------------
     let mut input = flight.input;
@@ -1154,18 +1225,20 @@ fn ship_physics(
                 if ap.program != Program::RotateTo {
                     // Arrived: match the frame of the body there.
                     flight.sync_velocity = true;
-                    flight.throttle = 0.0;
+                    flight.set_throttle(0.0);
                 }
                 notify(&mut flight, format!("{}: done", ap.program.label()), now);
             } else {
                 flight.autopilot = Some(ap);
                 if ap.program != Program::RotateTo {
-                    flight.throttle = ap_out.throttle;
+                    flight.set_throttle(ap_out.throttle);
                     flight.warp_on = ap_out.warp_on;
                     if ap_out.warp_on && flight.warp_cmd < 1.0 {
                         flight.warp_cmd = design.warp_boost_log;
                     }
-                    input.rcs = (input.rcs + ap_out.rcs).clamp(DVec3::splat(-1.0), DVec3::ONE);
+                    let mut rcs = ap_out.rcs;
+                    route_up(&mut rcs, &mut hover_prog);
+                    input.rcs = (input.rcs + rcs).clamp(DVec3::splat(-1.0), DVec3::ONE);
                 }
             }
         }
@@ -1242,7 +1315,7 @@ fn ship_physics(
                 let c = cmd[k];
                 if c != 0.0 {
                     w[k] += c * alpha * ship_dt;
-                } else if flight.assist || input.brake {
+                } else if flight.assist {
                     let step = alpha * ship_dt;
                     w[k] = if w[k].abs() <= step { 0.0 } else { w[k] - step * w[k].signum() };
                 }
@@ -1270,21 +1343,27 @@ fn ship_physics(
         let g_up = if flight.gravity { gravity_at(&infos, upos.0).dot(up) } else { 0.0 };
         let a_up = (vz_want - vz) - g_up;
         let l = urot.0.inverse() * (up * a_up);
-        input.rcs.y = (input.rcs.y + l.y / if l.y > 0.0 { up_a } else { corr_a }).clamp(-1.0, 1.0);
+        let mut rcs = DVec3::new(0.0, (l.y / if l.y > 0.0 { up_a } else { corr_a }).clamp(-1.0, 1.0), 0.0);
+        route_up(&mut rcs, &mut hover_prog);
+        input.rcs.y = (input.rcs.y + rcs.y).clamp(-1.0, 1.0);
         if (urot.0 * DVec3::NEG_Z).dot(up).abs() > 0.7 {
-            flight.throttle = if l.z <= 0.0 { (-l.z / design.main_engines.max(1e-6)).min(1.0) } else { -(l.z / retro_a).min(1.0) };
+            flight.set_throttle(if l.z <= 0.0 { (-l.z / design.main_engines.max(1e-6)).min(1.0) } else { -(l.z / retro_a).min(1.0) });
         }
     }
 
     // --- Thrust ----------------------------------------------------------------------------
-    let target_thr = flight.throttle.clamp(-1.0, 1.0);
+    // Each engine group spools towards its command (FUN_140523240), then the main engines push
+    // forward (-z), the retro engines back, the hover engines up; the thrusters (ShipMove*: x
+    // right, y up, z forward) with the correction engines.
     let step = ENGINE_SPOOL * ship_dt;
-    ship.engine += (target_thr - ship.engine).clamp(-step, step);
-    let main_a = if ship.engine >= 0.0 { ship.engine * design.main_engines } else { ship.engine * retro_a };
+    let spool = |level: &mut f64, cmd: f64| *level += (cmd.clamp(0.0, 1.0) - *level).clamp(-step, step);
+    spool(&mut ship.main, flight.main_cmd);
+    spool(&mut ship.retro, flight.retro_cmd);
+    spool(&mut ship.hover, flight.hover_cmd.max(hover_prog));
     let a_local = DVec3::new(
         input.rcs.x * corr_a,
-        if input.rcs.y > 0.0 { input.rcs.y * up_a } else { input.rcs.y * corr_a },
-        -main_a,
+        input.rcs.y * corr_a + ship.hover * design.hover_engines.max(0.0),
+        -ship.main * design.main_engines + ship.retro * retro_a - input.rcs.z * corr_a,
     );
     let mut a_thrust = urot.0 * a_local;
 
@@ -1377,7 +1456,7 @@ fn ship_physics(
     }
 
     // --- Integration -----------------------------------------------------------------------------
-    let sync = flight.sync_velocity || input.brake;
+    let sync = flight.sync_velocity;
     let mut aero_accel = DVec3::ZERO;
     if !skip_integration {
         let n = ((ship_dt / 0.05).ceil() as usize).clamp(1, 32);
@@ -1644,12 +1723,16 @@ fn update_ship_visuals(
     star_settings: Res<crate::stars::StarSettings>,
     ships: Query<(&Ship, &UPosition, &UOrientation, &ShipVisuals)>,
     bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
-    mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
+    mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
-    mut tfs: Query<(&mut Transform, &mut Visibility)>,
+    engine_fx: Res<EngineEffectSettings>,
+    cam: Res<FlyCamera>,
+    mut vis_q: Query<&mut Visibility>,
 ) {
     let cat = &data.catalog;
-    for (ship, pos, _rot, vis) in &ships {
+    for (ship, pos, rot, vis) in &ships {
+        // The camera in ship space, to tell when it is inside an exhaust box.
+        let cam_ship = (rot.0.inverse() * cam.pos.delta_m(pos.0)).as_vec3();
         // SE lights a ship like a body (FUN_1404bf5c0, called for ships with kind 7 from
         // FUN_1401f2b10): its up to MAX_LIGHTS stars of the most flux, faded and normalised to the
         // brightest, each dimmed by the bodies eclipsing it (ship.glsl ECL).
@@ -1672,52 +1755,57 @@ fn update_ship_visuals(
             colors[i] = (*c * *k * shadow).extend(1.0);
         }
         for h in &vis.hull {
-            if let Some(mut m) = hull_mats.get_mut(h) {
-                (m.u.light_dir, m.u.light_color, m.u.tint.w) = (dirs, colors, ambient.0);
+            // Only a change re-prepares the material's bind group.
+            let same = hull_mats.get(h).is_some_and(|m| m.u.light_dir == dirs && m.u.light_color == colors && m.u.ambient.x == ambient.0);
+            if !same {
+                if let Some(mut m) = hull_mats.get_mut(h) {
+                    (m.u.light_dir, m.u.light_color, m.u.ambient.x) = (dirs, colors, ambient.0);
+                }
             }
         }
 
-        // Plume levels from the commands.
-        let t = time.elapsed_secs();
+        // Exhaust: the box is fixed, the level sets its brightness (FUN_14048d180, which skips a
+        // level of 0); the noise time runs with a 256 s period.
+        let t = time.elapsed_secs_f64();
         for p in &vis.plumes {
+            let Some((entity, material)) = &p.draw else { continue };
             let level = plume_level(&p.spec, ship, &flight.input);
-            let show = level > 0.02;
-            if let Ok((mut tf, mut v)) = tfs.get_mut(p.entity) {
+            let show = level > 0.0;
+            if let Ok(mut v) = vis_q.get_mut(*entity) {
                 let want = if show { Visibility::Inherited } else { Visibility::Hidden };
                 if *v != want {
                     *v = want;
                 }
-                if show {
-                    let l = level.powf(0.8);
-                    tf.scale = Vec3::new(p.base_scale.x * (0.5 + 0.5 * l), p.base_scale.y * (0.5 + 0.5 * l), p.base_scale.z * l);
-                }
             }
-            if show || p.visible {
-                if let Some(mut m) = plume_mats.get_mut(&p.material) {
-                    m.u.params.x = level;
-                    m.u.params.y = t;
+            if show {
+                if let Some(mut m) = plume_mats.get_mut(material) {
+                    let c = p.to_box.transform_point3(cam_ship);
+                    m.u.params.w = if c.abs().max_element() < 1.05 { 1.0 } else { 0.0 };
+                    let k = engine_brightness(level, engine_fx.bright, p.spec.brightness);
+                    m.u.color = (Vec3::from_array(p.spec.color) * k).extend(0.0);
+                    m.u.params.y = ((t + p.phase as f64) % 256.0) as f32;
                 }
             }
         }
     }
 }
 
-/// Level (0..1) of an engine effect: its plume size and the loudness of its sound. Main and
-/// retro follow the spooled engine, hover the upward RCS command, warp effects the boost, and a
-/// thruster fires when its push helps the translation or turn command.
+/// Level (0..1) of an engine effect: its exhaust brightness and the loudness of its sound. Main,
+/// retro and hover follow their spooled engine group, warp effects the boost, and a thruster fires
+/// when its push helps the translation or turn command.
 fn plume_level(s: &PlumeSpec, ship: &Ship, input: &ShipInput) -> f32 {
-    let engine = ship.engine;
     let rcs = input.rcs;
     let wfrac = if ship.design.warp_boost_log > 0.0 { (ship.warp / ship.design.warp_boost_log) as f32 } else { 0.0 };
     match s.group {
-        EffectGroup::Main => engine.max(0.0) as f32,
-        EffectGroup::Retro => (-engine).max(0.0) as f32,
-        EffectGroup::Hover => rcs.y.max(0.0) as f32,
+        EffectGroup::Main => ship.main as f32,
+        EffectGroup::Retro => ship.retro as f32,
+        EffectGroup::Hover => ship.hover as f32,
         EffectGroup::Hyper => wfrac,
         EffectGroup::Thruster => {
             // The nozzle pushes the ship along -dir; it fires when that helps a command.
             let push = -s.dir.as_dvec3();
-            let trans = push.dot(DVec3::new(rcs.x, rcs.y, 0.0).normalize_or(DVec3::ZERO)).max(0.0);
+            // Ship axes: forward is -z.
+            let trans = push.dot(DVec3::new(rcs.x, rcs.y, -rcs.z).normalize_or(DVec3::ZERO)).max(0.0);
             let torque = s.pos.as_dvec3().cross(push);
             let rot_cmd = input.turn;
             let rot = if torque.length() > 1e-6 && rot_cmd.length() > 0.0 { torque.normalize().dot(rot_cmd.normalize()).max(0.0) } else { 0.0 };
@@ -1819,7 +1907,7 @@ fn draw_ship_window(
             ui.checkbox(&mut flight.assist, "Flight assist");
             ui.checkbox(&mut flight.aero, "Aerodynamics");
         });
-        ui.weak("W/S throttle, A/D/R/F RCS, arrows + Q/E turn, V camera, Alt+= / Alt+- warp, Esc leaves");
+        ui.weak("= / - main engines (Shift retro, Ctrl hover, Alt warp), W/S/A/D/R/F or arrows thrusters, keypad 8/2/4/6 + Q/E turn, V camera, Esc leaves");
         ui.weak("5-0 / End holds, Num5 kill rotation, T target, P reference body, C / G / Shift+G / Alt+G autopilot");
     });
     if !open {
@@ -1867,9 +1955,13 @@ fn draw_flight_hud(
                     };
                     ui.label(
                         egui::RichText::new(format!(
-                            "throttle {:+.0}% (engine {:+.0}%)   {}",
-                            flight.throttle * 100.0,
-                            ship.engine * 100.0,
+                            "main {:.0}% retro {:.0}% hover {:.0}% (set {:.0}/{:.0}/{:.0})   {}",
+                            ship.main * 100.0,
+                            ship.retro * 100.0,
+                            ship.hover * 100.0,
+                            flight.main_cmd * 100.0,
+                            flight.retro_cmd * 100.0,
+                            flight.hover_cmd * 100.0,
                             warp
                         ))
                         .monospace(),
@@ -1933,7 +2025,7 @@ fn draw_flight_hud(
                         ui.label(egui::RichText::new(&info.notice).color(egui::Color32::from_rgb(255, 200, 80)).strong());
                     }
                     ui.weak(format!(
-                        "W/S throttle  Z stop  A/D/R/F RCS  arrows/Q/E turn  U assist {}  V camera [{}]  Alt+=/- warp  Alt+Z stop warp  Esc leave",
+                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F arrows thrusters  keypad/Q/E turn  U assist {}  V camera [{}]  Alt+=/- warp  Alt+Z stop warp  Esc leave",
                         if flight.assist { "on" } else { "off" },
                         cam_name
                     ));
@@ -2023,9 +2115,9 @@ mod tests {
 
     #[test]
     fn leaving_the_seat_and_stopping_the_warp_end_the_programs() {
-        let mut f = Flight { autopilot: Some(Autopilot::new(Program::WarpTo)), warp_on: true, throttle: 1.0, ..default() };
+        let mut f = Flight { autopilot: Some(Autopilot::new(Program::WarpTo)), warp_on: true, main_cmd: 1.0, ..default() };
         stop_warp_drive(&mut f);
-        assert!(!f.warp_on && f.autopilot.is_none() && f.throttle == 0.0);
+        assert!(!f.warp_on && f.autopilot.is_none() && f.main_cmd == 0.0);
         // Fly to target uses no warp: Alt+Z leaves it running.
         f.autopilot = Some(Autopilot::new(Program::FlyTo));
         stop_warp_drive(&mut f);
@@ -2033,10 +2125,24 @@ mod tests {
         f.attitude = Attitude::Prograde;
         f.hold_altitude = Some(1000.0);
         f.sync_velocity = true;
-        f.throttle = 1.0;
+        f.set_throttle(1.0);
+        f.hover_cmd = 0.5;
         stop_programs(&mut f);
         assert!(f.autopilot.is_none() && f.attitude == Attitude::Free && f.hold_altitude.is_none() && !f.sync_velocity);
-        assert_eq!(f.throttle, 0.0);
+        // The programs' main / retro command ends; the pilot's hover level stays.
+        assert_eq!((f.main_cmd, f.retro_cmd, f.hover_cmd), (0.0, 0.0, 0.5));
+    }
+
+    #[test]
+    fn engine_groups_are_separate_levels() {
+        let mut f = Flight::default();
+        f.set_throttle(-0.5);
+        assert_eq!((f.main_cmd, f.retro_cmd), (0.0, 0.5));
+        f.hover_cmd = 0.3;
+        f.set_throttle(0.8);
+        assert_eq!((f.main_cmd, f.retro_cmd, f.hover_cmd), (0.8, 0.0, 0.3));
+        f.stop_engines();
+        assert_eq!((f.main_cmd, f.retro_cmd, f.hover_cmd), (0.0, 0.0, 0.0));
     }
 
     #[test]
@@ -2045,7 +2151,9 @@ mod tests {
             design: Arc::new(ShipDesign::default()),
             vel: DVec3::ZERO,
             ang_vel: DVec3::ZERO,
-            engine: 0.0,
+            main: 0.0,
+            retro: 0.0,
+            hover: 0.0,
             warp: 0.0,
             clearance: 1.0,
             radius: 1.0,

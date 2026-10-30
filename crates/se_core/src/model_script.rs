@@ -4,7 +4,9 @@
 //! relative to the VFS `models/` directory. The script instantiates a model config
 //! (`.cfg`) through `Module "id" { "x.cfg" (16 numbers) }`, and the config names the
 //! binary mesh (`Mesh "x.sm"`, see [`crate::model_sm`]) and the materials (`Material "n"`).
-//! Material presets (`DiffMap`, `NormMap`, ...) live in `textures/planets/Asteroids/*.sml`.
+//! Material presets (`DiffMap`, `NormMap`, ...) live in `textures/planets/Asteroids/*.sml`; they
+//! are the spacecraft material format ([`crate::ship::parse_ship_material`]), since SE draws
+//! these models with its ship shader.
 //!
 //! Relative paths inside a script are resolved against the directory of the file that
 //! names them, then that directory's parent, then the search root (`models/` or
@@ -14,6 +16,7 @@
 //! See `docs/formats/sm_model.md` section 4 for the key list.
 
 use crate::sc::{self, Item, Value};
+use crate::ship::{ShipMaterial, parse_ship_material};
 use crate::vfs::Vfs;
 
 /// `Module "id" { "cfg" (matrix) }` entry of a `.sss`.
@@ -88,6 +91,8 @@ pub struct ModelScript {
     pub textures: Vec<(String, String)>,
     /// `(material name, VFS path of NormMap texture)` for every material with a normal map.
     pub normal_maps: Vec<(String, String)>,
+    /// The full `.sml` material of each `materials` entry (`None` when no preset has the name).
+    pub material_defs: Vec<Option<ShipMaterial>>,
 }
 
 impl ModelScript {
@@ -229,6 +234,21 @@ pub fn load_material_presets(vfs: &Vfs) -> Vec<MaterialPreset> {
     out
 }
 
+/// Every material of `textures/planets/Asteroids/*.sml` with all its keys (the ship material format),
+/// texture names resolved like [`load_material_presets`].
+pub fn load_model_materials(vfs: &Vfs) -> Vec<ShipMaterial> {
+    let mut out = Vec::new();
+    for file in vfs.list_ext("textures/planets/Asteroids", "sml") {
+        let Ok(src) = vfs.read_string(&file) else { continue };
+        let root = sc::parse(&src);
+        for m in root.all("Material") {
+            let (Some(name), Some(b)) = (first_str(m), m.block.as_ref()) else { continue };
+            out.push(parse_ship_material(name, b, |t| resolve_relative(&file, t, "textures", |c| vfs.exists(c))));
+        }
+    }
+    out
+}
+
 /// Resolves a catalog model reference (relative to `models/`, e.g.
 /// `planets/Asteroids/67P.sss`) into mesh, material and texture paths.
 ///
@@ -279,6 +299,8 @@ pub fn load_model_script(vfs: &Vfs, model_ref: &str) -> Option<ModelScript> {
             }
         }
     }
+    let defs = load_model_materials(vfs);
+    out.material_defs = cfg.materials.iter().map(|m| defs.iter().find(|d| d.name.eq_ignore_ascii_case(m)).cloned()).collect();
     out.materials = cfg.materials;
     Some(out)
 }
