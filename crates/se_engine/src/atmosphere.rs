@@ -340,6 +340,20 @@ fn upload_tables(t: AtmTables, images: &mut Assets<Image>) -> AtmosphereGpu {
 /// The further stars a sky is lit by besides the brightest (`system::MAX_LIGHTS` - 1).
 pub const SKY_EXTRA_LIGHTS: usize = 3;
 
+/// SE's `MAX_ECLIPSES` (planet.glsl, sky.glsl, water.glsl) and `MAX_RINGS_ECLIPSES` (rings.glsl): casters
+/// per light.
+pub const MAX_ECLIPSES: usize = 8;
+
+/// The eclipse casters of one light (`EclipseLight` in `eclipse.wesl`, filled by `eclipse.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct EclipseLight {
+    /// xyz: caster centre relative to the lit body (render orientation, lit-body radii); w its radius in
+    /// the same units, 0 ending the list (SE's `if (casterRadius <= 0.0) break`).
+    pub casters: [Vec4; MAX_ECLIPSES],
+    /// x: the light's angular radius seen from the lit body (rad), y: number of casters.
+    pub info: Vec4,
+}
+
 /// Uniform block of the sky shader (`SkyUniform` in `sky.wesl`).
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct SkyUniform {
@@ -356,6 +370,14 @@ pub struct SkyUniform {
     /// The further stars: xyz direction, w 1 when used; rgb their irradiance like `sun_irradiance`.
     pub light_dir: [Vec4; SKY_EXTRA_LIGHTS],
     pub light_irradiance: [Vec4; SKY_EXTRA_LIGHTS],
+    /// The body's rings for their shadow on the sky (SE's RingsParams): x inner, y outer radius
+    /// (planet radii), z `PlanetShadow`, w 1 when drawn (rings and `AtmoRingsShadow`), 0.5 untextured.
+    pub ring: Vec4,
+    /// x the planet's radius over the shell's (top) radius, y the eclipse intensity (SE's
+    /// AmbientColor.a), z SE's `AtmoDistanceLimit` in shell radii (0 none), w 1 with `AtmoExtinction`.
+    pub shadow: Vec4,
+    /// Each light's eclipse casters, the main star first ([`crate::eclipse::EclipseCasters`]).
+    pub eclipse: [EclipseLight; SKY_EXTRA_LIGHTS + 1],
 }
 
 /// The three passes of a sky shell, drawn in this order (SE: `atmo_transm.glsl` dims what lies
@@ -383,6 +405,10 @@ pub struct SkyMaterial {
     pub inscatter: Handle<Image>,
     #[texture(3)]
     pub transmittance: Handle<Image>,
+    /// The body's ring texture (its alpha is the rings' opacity), Bevy's white image without rings.
+    #[texture(4)]
+    #[sampler(5)]
+    pub ring: Handle<Image>,
     pub pass: SkyPass,
 }
 
@@ -409,9 +435,13 @@ impl SkyMaterial {
                 disc_irradiance: Vec4::ONE,
                 light_dir: [Vec4::ZERO; SKY_EXTRA_LIGHTS],
                 light_irradiance: [Vec4::ZERO; SKY_EXTRA_LIGHTS],
+                ring: Vec4::ZERO,
+                shadow: Vec4::new(gpu.params.radius_ground / gpu.params.radius_top, 1.0, 0.0, 1.0),
+                eclipse: Default::default(),
             },
             inscatter: gpu.inscatter.clone(),
             transmittance: gpu.transmittance.clone(),
+            ring: Handle::default(),
             pass: SkyPass::Inscatter,
         }
     }
@@ -565,6 +595,47 @@ pub fn sky_uniform_update(
     }
 }
 
+/// The shadows on a sky shell (SE's sky.glsl RINGS and ECL): the rings (`ring` as
+/// [`SkyUniform::ring`], their texture), [`SkyUniform::shadow`] and the eclipse casters; and the
+/// atmosphere as drawn this frame (`atm`, its look kept), widened at a distance (SE's AtmoMinWidthPix).
+pub fn sky_shadow_update(
+    materials: &mut Assets<SkyMaterial>,
+    shell: &SkyShell,
+    ring: (Vec4, Option<&Handle<Image>>),
+    shadow: Vec4,
+    eclipse: [EclipseLight; SKY_EXTRA_LIGHTS + 1],
+    atm: Option<AtmosphereParamsUniform>,
+) {
+    for handle in std::iter::once(&shell.material).chain(&shell.dimming) {
+        if let Some(mut m) = materials.get_mut(handle) {
+            let u = &mut m.uniform;
+            u.ring = ring.0;
+            u.shadow = shadow;
+            u.eclipse = eclipse;
+            if let Some(mut a) = atm {
+                a.look = u.atm.look;
+                u.atm = a;
+            }
+            if let Some(tex) = ring.1.filter(|t| **t != m.ring) {
+                m.ring = tex.clone();
+            }
+        }
+    }
+}
+
+/// SE's atmosphere at a distance (FUN_14044fe70:338-343): once the true `height_m` is below
+/// `AtmoMinWidthPix` on screen (`min_width_m`, the pixels' size at the eye's distance), the height
+/// drawn is that width capped at 0.05 of the radius (so a tall atmosphere, Titan's or Pluto's, is
+/// drawn thinner from afar), eased back to the true height as the planet leaves the middle of the
+/// view (`cos_view`, the cosine between the view direction and the eye's position from the planet:
+/// -1 straight ahead); and SE's brightness for it, `(height / drawn) ^ 0.25`.
+pub fn widened_height(height_m: f64, radius_m: f64, min_width_m: f64, cos_view: f64) -> (f64, f64) {
+    let widened = if height_m <= min_width_m { min_width_m.min(radius_m * 0.05) } else { height_m };
+    let k = (1.0 + cos_view).clamp(0.0, 1.0);
+    let drawn = (height_m - widened) * k + widened;
+    (drawn, (height_m / drawn.max(1e-9)).powf(0.25))
+}
+
 #[cfg(test)]
 mod tests {
     use super::f32_to_f16_bits;
@@ -578,5 +649,24 @@ mod tests {
         assert_eq!(f32_to_f16_bits(1e-5), 0x00a8);
         assert_eq!(f32_to_f16_bits(0.0), 0);
         assert_eq!(f32_to_f16_bits(1e9), 0x7c00);
+    }
+
+    #[test]
+    fn atmosphere_widened_at_a_distance() {
+        use super::widened_height;
+        // Earth (100 km) seen from afar, straight ahead: 2 px are 500 km there, under the 0.05 R cap.
+        let (h, b) = widened_height(100e3, 6371e3, 250e3, -1.0);
+        assert_eq!(h, 250e3);
+        assert!((b - 0.4f64.powf(0.25)).abs() < 1e-12);
+        // Capped at 0.05 R, and the true height at the edge of the view or when thick enough.
+        assert_eq!(widened_height(100e3, 6371e3, 1e7, -1.0).0, 6371e3 * 0.05);
+        assert_eq!(widened_height(100e3, 6371e3, 250e3, 0.0).0, 100e3);
+        assert_eq!(widened_height(100e3, 6371e3, 50e3, -1.0), (100e3, 1.0));
+        // Halfway: halfway between.
+        assert_eq!(widened_height(100e3, 6371e3, 300e3, -0.5).0, 200e3);
+        // Titan (200 km over 2575 km) from afar: drawn at 0.05 R, thinner and brighter.
+        let (h, b) = widened_height(200e3, 2575e3, 400e3, -1.0);
+        assert_eq!(h, 2575e3 * 0.05);
+        assert!(b > 1.0);
     }
 }

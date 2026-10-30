@@ -1355,55 +1355,108 @@ fn update_star_spheres(mut q: Query<(&SystemBody, &mut Visibility), With<StarSph
     }
 }
 
-fn update_sky_shells(
+/// The sky shells: placed with their bodies, lit by the body's lights (the eclipses and the rings'
+/// shadow per fragment in `sky.wesl`, SE's sky.glsl), and drawn at least `AtmoMinWidthPix` thick
+/// from afar (SE's FUN_14044fe70).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_sky_shells(
     cam: Res<FlyCamera>,
-    bodies: Query<(&SystemBody, &BodyLighting, Option<&crate::terrain::Terrain>)>,
-    mut shells: Query<(&SkyOf, &crate::atmosphere::SkyShell, &mut UPosition, &mut UOrientation, &mut Visibility)>,
+    bodies: Query<(&SystemBody, &BodyLighting, Option<&crate::terrain::Terrain>, Option<&crate::eclipse::EclipseCasters>)>,
+    mut shells: Query<(&SkyOf, &crate::atmosphere::SkyShell, &mut UPosition, &mut UOrientation, &mut MeterScale, &mut Visibility)>,
     mut mats: ResMut<Assets<crate::atmosphere::SkyMaterial>>,
+    rings: Query<&crate::rings::Rings>,
+    ring_mats: Res<Assets<crate::rings::RingMaterial>>,
+    switches: Res<crate::switches::RenderSwitches>,
 ) {
-    for (sky, shell, mut pos, mut rot, mut vis) in &mut shells {
-        let Ok((body, light, terrain)) = bodies.get(sky.body) else { continue };
+    for (sky, shell, mut pos, mut rot, mut scale, mut vis) in &mut shells {
+        let Ok((body, light, terrain, casters)) = bodies.get(sky.body) else { continue };
         pos.0 = body.pos;
         rot.0 = body.orient;
-        let show = body.px_radius > 0.5;
+        let show = body.px_radius > 0.5 && switches.atmospheres;
         *vis = if show { Visibility::Visible } else { Visibility::Hidden };
         if !show {
             continue;
         }
         let star_dist = light.star_pos.delta_m(body.pos).length().max(1.0);
         let ang = (light.star_radius_m / star_dist) as f32;
-        // Darken the sky by the eclipse seen from the observer (or the ground point below).
-        let shadow = terrain.map_or(Vec3::ONE, |t| {
-            let rel = cam.pos.delta_m(body.pos) / body.radius_m;
-            let p = if rel.length() < 1.0 { rel.normalize_or(DVec3::Y) } else { rel };
-            t.eclipse.light_at(p, light.sun_dir.as_dvec3()).max(Vec3::splat(0.004))
-        });
-        // The shell paints an analytic sun disc over anything behind it, so mask the part
-        // covered by an eclipsing body (the largest one in front of the star).
-        let occluder = terrain
-            .filter(|_| shadow.max_element() < 0.999)
-            .and_then(|t| {
-                let cam_rel = cam.pos.delta_m(body.pos) / body.radius_m;
-                t.eclipse.occ.iter().take(t.eclipse.info.y as usize).map(|o| {
-                    let v = o.truncate().as_dvec3() - cam_rel;
-                    let r = ((o.w as f64).abs() / v.length()).min(1.0).asin();
-                    v.normalize().as_vec3().extend(r as f32)
-                }).max_by(|a, b| a.w.total_cmp(&b.w))
+        let eclipse = casters.map_or_else(Default::default, |c| c.lights);
+        let cam_rel = cam.pos.delta_m(body.pos) / body.radius_m;
+        // The shell paints an analytic sun disc over anything behind it, so mask the part covered by
+        // an eclipsing body (the largest one in front of the star, seen from the camera) while the
+        // camera (or the ground below it) is in a shadow.
+        let p = if cam_rel.length() < 1.0 { cam_rel.normalize_or(DVec3::Y) } else { cam_rel };
+        let in_shadow = terrain.is_some_and(|t| t.eclipse.light_at(p, light.sun_dir.as_dvec3()).max_element() < 0.999);
+        let main = &eclipse[0];
+        let occluder = main
+            .casters
+            .iter()
+            .take(main.info.y as usize)
+            .filter(|_| switches.eclipses && in_shadow)
+            .map(|o| {
+                let v = o.truncate().as_dvec3() - cam_rel;
+                let r = (o.w as f64 / v.length()).min(1.0).asin();
+                v.normalize_or(DVec3::Y).as_vec3().extend(r as f32)
             })
+            .filter(|o| o.truncate().dot(light.sun_dir) > (o.w + ang).cos() && o.truncate().dot(light.sun_dir) > 0.0)
+            .max_by(|a, b| a.w.total_cmp(&b.w))
             .unwrap_or(Vec4::ZERO);
+
+        // SE's atmosphere at a distance: the drawn height set to AtmoMinWidthPix (at most 0.05 R), its
+        // light scaled to match; the eye's distance for the scattering capped at AtmoDistanceLimit radii.
+        let gpu = terrain.and_then(|t| t.atmosphere.as_ref());
+        let (mut bright, mut atm, mut top_m) = (1.0f32, None, None);
+        if let Some(gpu) = gpu {
+            let d = cam.pos.delta_m(body.pos).length().max(body.radius_m * 1.0001);
+            let px_per_rad = body.px_radius * (d * d - body.radius_m * body.radius_m).sqrt() / body.radius_m;
+            let min_width = (switches.atmo_min_width_px as f64 / px_per_rad.max(1e-9)).tan() * d;
+            let height = gpu.top_radius_m(body.radius_m) - body.radius_m;
+            let forward = cam.rot * DVec3::NEG_Z;
+            let cos_view = forward.dot(cam.pos.delta_m(body.pos) / d);
+            let (drawn, b) = crate::atmosphere::widened_height(height, body.radius_m, min_width, cos_view);
+            if (drawn - height).abs() > height * 1e-4 {
+                let wide = gpu.with_height(body.radius_m, drawn);
+                atm = Some(wide.uniform());
+                top_m = Some(wide.top_radius_m(body.radius_m));
+                bright = b as f32;
+            } else {
+                atm = Some(gpu.uniform());
+                top_m = Some(gpu.top_radius_m(body.radius_m));
+            }
+        }
+        if let Some(top) = top_m {
+            let want = DVec3::splat(top) * body.shape;
+            if scale.0 != want {
+                scale.0 = want;
+            }
+        }
+        let top = top_m.unwrap_or(body.radius_m * 1.02);
+        // The rings' shadow on the sky (AtmoRingsShadow).
+        let ring = rings.iter().find(|r| r.body == sky.body).and_then(|r| ring_mats.get(&r.material));
+        let ring_u = ring
+            .filter(|_| switches.sky_rings_shadows)
+            .map_or(Vec4::ZERO, |m| m.u.geom.truncate().extend(if m.u.params.z > 0.5 { 1.0 } else { 0.5 }));
+        let limit = switches.atmo_distance_limit as f64 * body.radius_m / top;
+        crate::atmosphere::sky_shadow_update(
+            &mut mats,
+            shell,
+            (ring_u, ring.map(|m| &m.texture)),
+            Vec4::new((body.radius_m / top) as f32, switches.eclipse_intensity(), limit as f32, if switches.atmo_extinction { 1.0 } else { 0.0 }),
+            eclipse,
+            atm,
+        );
         crate::atmosphere::sky_uniform_update(
             &mut mats,
             shell,
             light.sun_dir,
             // SE's scattered light: the star's times `Bright` (in the shader) x hdrAtmoScatterBright.
-            light.sun_color * shadow * light.sun_intensity * crate::terrain::ATM_SCATTER_SCALE,
+            light.sun_color * light.sun_intensity * crate::terrain::ATM_SCATTER_SCALE * bright,
             ang,
             occluder,
             light.sun_color * light.sun_intensity * crate::terrain::ATM_SUN_SCALE,
             {
                 let (dirs, mut colors) = light.extra_uniforms(false);
                 for c in &mut colors {
-                    *c *= crate::terrain::ATM_SCATTER_SCALE;
+                    *c *= crate::terrain::ATM_SCATTER_SCALE * bright;
                 }
                 (dirs, colors)
             },

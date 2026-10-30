@@ -6,7 +6,7 @@ import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::globals;
 
 struct Aurora {
-    // xyz: unit direction to the star (render frame)
+    // xyz: unit direction to the star; w: SE's AuroraBright.
     sun_dir: vec4<f32>,
     // rgb: lower-edge colour, w: brightness
     bottom: vec4<f32>,
@@ -88,6 +88,6 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         let a = in.uv.y;
         col = aurora.bottom.rgb * exp(-a * a * 4.0) * (0.25 + 0.75 * folds) * 0.5;
     }
-    let i = aurora.bottom.w * night * flash;
+    let i = aurora.bottom.w * aurora.sun_dir.w * night * flash;
     return vec4<f32>(col * i, 0.0);
 }

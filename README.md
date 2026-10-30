@@ -103,6 +103,7 @@ cargo test -p se_core
 | X / Shift+X / Ctrl+X / Alt+X | constellations / their lines / boundaries / names (right click the Constellations button for the switches) |
 | Ctrl+; / Alt+; | celestial grids (equatorial by default; ecliptic and galactic on the Celestial grids button's right click) / a planet's geographic grid |
 | Shift+. / Shift+, (`>` / `<`) | SE's ambient lighting up / down in steps of 0.05 (none by default), so dark bodies can be seen |
+| Shift+A / Shift+C / Shift+Ctrl+A / Shift+Ctrl+C / Ctrl+L / Shift+L | show or hide atmospheres / clouds / auroras / comet tails / eclipse shadows / planet shine (SE's keys, saved with the settings) |
 | `.` / `,` / `/` | exposure compensation up / down by a quarter stop (repeats while held; -4 to +42) / reset |
 
 ### Flight mode (spacecraft)
@@ -214,7 +215,7 @@ Key rendering decisions:
   and rings) and planet shine, the light nearby planets and moons reflect (earthshine on the Moon's night side, Jupiter's
   moons on its night side). The terminator is SE's sharp, height-aware horizon shadow, so peaks catch the light past it,
   and SE's ambient lighting (none by default, `>` / `<`) lifts dark bodies.
-- **Eclipses and shadows.** Soft umbra and penumbra from up to four occluders per body, on terrain, clouds and the sky (the sky's sun disc is masked by the eclipsing body); atmospheres turn a lunar umbra red. Rings cast their shadow on the planet.
+- **Eclipses and shadows.** SE's eclipse model (eclipse_common.glh): soft umbra and penumbra on terrain, clouds and the sky, and up to 8 casters per light (stars included) on the sky and rings; the sky is shadowed per light and per pixel, so in totality the zenith darkens while the horizon stays lit. Rings cast SE's `RingsShadow` on the planet and its sky (density from the catalog's `PlanetShadow`, anti-aliased, fading at equinox); the planet, flattened as it is, and its moons shadow the rings, and the rings are lit by their planet's own light.
 - **Coronae and auroras.** Streamered coronae around resolved stars (visible around the Moon at totality), correct from any distance including inside them; auroral ovals from the catalog `Aurora` blocks, on the night side.
 - **Comets.** SE's particle tails: blue gas pushed straight away from the star and whiter dust curving behind along the orbit, shorter far from the star, with SE's defaults for comets the catalog leaves without tail values; every single star of a procedural system gets SE's 100-199 comets.
 - **Spacecraft and flight mode.** The 29 shipped designs (merged module meshes, DXT/PNG textures, emissive maps, frame cut-outs, engine plumes) fly with Newtonian physics in f64: engine accelerations from the design, gravity of the whole system, a warp drive whose speed is limited by altitude, terrain contact, chase and orbit cameras, a flight HUD (see Flight mode above). SE's aerodynamic models (none, shuttle, arrow; its coefficient table read from the exe) act in atmospheres, with Mach and dynamic pressure on the HUD; attitude holds (prograde to normal, horizon), hold altitude, sync velocity and an autopilot that rotates to, flies to or warps to a target in SE's stages; engine, thruster, hover and warp sounds play by thrust.
