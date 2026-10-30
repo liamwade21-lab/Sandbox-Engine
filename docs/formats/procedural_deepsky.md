@@ -172,8 +172,9 @@ The blob (`FUN_140441860(k = 0.25)`) is a random point with `r^2 = -k ln u` and 
 * Large procedural spirals/irregulars (angular radius above 0.7 x the model build size) become catalog galaxies
   (`Catalog::add_galaxy_record`), so `galaxies.rs` builds their 3D models and fades the far sprite out; names are
   resolved from commands, the search box and saved places (`goto RG 0-9-110030168-905 9e15`).
-* The adaptive "intergalactic vision" gain (`AutoGalaxyMagnitude`): far from every bright catalog galaxy the
-  brightness is raised until the 3000th brightest galaxy looks like a magnitude-7 one (clamped to 3000).
+* The "intergalactic vision" gain (`AutoGalaxyMagnitude`): the streamer sums the sky covered by the drawn
+  procedural galaxies (`galaxies::sky_coverage`) for `galaxies.rs`, which adds the catalog galaxies and applies
+  SE's gain (galaxy_model.md, "Intergalactic vision").
 * `procsystems.rs`: the Milky Way and galaxies the camera is near get a generated system; clusters and nebulae are
   far sprites (brightest 20 000 of each as seen from the camera); clusters within `max(300 pc, 60 radii)` and
   nebulae above ~3 px become catalog entries, after which `clusters.rs` makes their member stars and `nebulae.rs`
