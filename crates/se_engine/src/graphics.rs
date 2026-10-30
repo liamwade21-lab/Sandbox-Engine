@@ -222,18 +222,26 @@ pub struct TerrainQuality {
     /// main-def.cfg `PlanetReverseLoading` (true, Graphics "Fast landscape loading"): the deepest
     /// wanted nodes load first, then the coarser ones; else nearest first.
     pub reverse_loading: bool,
+    /// main-def.cfg Loader `TimingStrategy` 1: finished nodes are set up until `MaxTimePerFrame` (10 ms)
+    /// has gone by in a frame, and new loads are not counted; `None` for 0, SE's default, which counts
+    /// tiles (`MaxTilesPerFrame`).
+    pub time_budget_ms: Option<f32>,
 }
 
 impl Default for TerrainQuality {
     fn default() -> Self {
-        Self { split_scale: 1.0, tiles_per_frame: 8, reverse_loading: true }
+        Self { split_scale: 1.0, tiles_per_frame: 8, reverse_loading: true, time_budget_ms: None }
     }
 }
 
 fn load_terrain_options(cfg: Res<crate::config::EngineConfig>, mut q: ResMut<TerrainQuality>) {
     let text = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).unwrap_or_default();
-    if let Some(v) = se_core::sc::parse(&text).find_deep("PlanetReverseLoading").and_then(|i| i.bool()) {
+    let doc = se_core::sc::parse(&text);
+    if let Some(v) = doc.find_deep("PlanetReverseLoading").and_then(|i| i.bool()) {
         q.reverse_loading = v;
+    }
+    if doc.find_deep("TimingStrategy").and_then(|i| i.f64()) == Some(1.0) {
+        q.time_budget_ms = Some(doc.find_deep("MaxTimePerFrame").and_then(|i| i.f64()).unwrap_or(10.0) as f32);
     }
 }
 

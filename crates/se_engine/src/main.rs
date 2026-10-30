@@ -80,8 +80,14 @@ fn main() {
     let mut app = App::new();
     // Before the plugins: the log file reads SE's Log settings from the install.
     app.insert_resource(cfg.clone());
+    // main-def.cfg Loader `MaxThreads` (0: as many as the machine has).
+    let task_pools = match stars::main_def_f64(&cfg, "MaxThreads").map_or(0, |v| v.max(0.0) as usize) {
+        0 => TaskPoolOptions::default(),
+        n => TaskPoolOptions::with_num_threads(n),
+    };
     app.add_plugins(
         DefaultPlugins
+            .set(TaskPoolPlugin { task_pool_options: task_pools })
             .set(bevy::log::LogPlugin { custom_layer: log_file::layer, ..default() })
             .set(RenderPlugin {
                 // The port targets Vulkan only.

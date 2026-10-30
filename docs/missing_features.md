@@ -104,15 +104,15 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 
 ## Summary
 
-242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 187 have been fixed since (listed at the end); the tables count the 24 still open. 30 more are open but deferred by the owner (listed after them, not counted).
+242 gaps reported by the auditors, 211 kept after checking (53 of them amended), 1 refuted. 188 have been fixed since (listed at the end); the tables count the 23 still open. 30 more are open but deferred by the owner (listed after them, not counted).
 
 | Visibility | 5 | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| Gaps | 0 | 0 | 6 | 10 | 8 |
+| Gaps | 0 | 0 | 6 | 10 | 7 |
 
 | Effort | S | M | L |
 |---|---|---|---|
-| Gaps | 2 | 13 | 9 |
+| Gaps | 1 | 13 | 9 |
 
 | Area | Kept |
 |---|---|
@@ -124,7 +124,7 @@ After the top 15: cloud layers and atmosphere height (05-002, 05-004) and the in
 | 06 Procedural generation | 6 |
 | 07 Camera and time | 0 |
 | 08 Interface | 0 |
-| 09 Graphics and settings | 3 |
+| 09 Graphics and settings | 2 |
 | 10 Scripts, audio, spacecraft | 7 |
 
 Visibility: 5 = obvious in the first minutes with default settings, 4 = common activities, 3 = a specific common feature, 2 = niche, 1 = obscure. Effort: S about a day, M a few days, L a week or more or further reverse engineering. Status: missing / partial / differs. IDs are `<area>-<n>`; the raw auditor and checker lines are in `.audit/gaps/` and `.audit/checks/`.
@@ -299,15 +299,6 @@ Atmosphere table generation: SE generates scattering tables on the GPU (ag_*.gls
 - SE evidence: exe "Generating atmosphere model \"%s\"" FUN_14044a760; strings seAtmosphereModelCache::Precompute; ag_*.glsl; main-def.cfg AtmoHalfPrecision AtmoAnalyticTransm AtmoFixHorizon
 - Port: crates/se_engine/src/atmosphere.rs:262-278
 - Check: FUN_14044ad90 loads "<model>.atm" via LoadBinary FUN_14044b650 if the file exists and otherwise (when precompute is enabled) queues task 6 whose handler RecreateModel FUN_14044a760 reads the model from atmospheres.cfg, logs "Generating atmosphere model" and runs the ag_*.glsl precompute and SaveBinary FUN_14044b060; the stock Atmospheres.pak ships .atm files for all 13 uncommented atmospheres.cfg models, and main-def.cfg says AtmoHalfPrecision/AtmoAnalyticTransm/AtmoFixHorizon apply only after "remove cache", so changing them does not by itself regenerate; the port (atmosphere.rs:262-278) only loads shipped .atm files and never reads atmospheres.cfg (no RayleighBeta/MieScaBeta hit in crates/)
-
-### 09-018 · Graphics and settings
-
-Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / interleaved / asynchronous), MaxThreads, MultithreadedStartup, PreloadShaders / PreloadShipTextures, TimingStrategy 1 (time budget MaxTimePerFrame 10 ms, MaxTimePerFrameClean) and a "Frame timing mode" (real time vs fixed frame time, Export RealTime/RealTimeFPS for recording); port is fixed at SE's defaults (asynchronous task-pool loading, MaxTilesPerFrame tile budget, real-time stepping) with none of the alternatives selectable
-
-- Status: missing, effort **S**, auditor confidence medium, amended by the checker
-- SE evidence: main-def.cfg Loader 475-501, Export RealTime RealTimeFPS; eng-gui "Loader mode" "Immediate loading mode" "Interleaved loading mode" "Asynchronous loading mode" "Frame timing mode" "Real time mode" "Frame time mode"
-- Port: crates/se_engine/src/graphics.rs:164
-- Check: Port already behaves as SE's defaults (LoaderMode 2 asynchronous via AsyncComputeTaskPool in every builder, TimingStrategy 0 tile-count budget from MaxTilesPerFrame in graphics.rs:164, RealTime true), so only the selectable alternatives are missing; the UI strings are exe strings (strings_utf16.txt:2997-3003), not eng-gui.cfg, and RealTime/RealTimeFPS belong to Export (frame-time mode matters for video recording)
 
 ### 09-017 · Graphics and settings
 
@@ -761,6 +752,7 @@ Context music: in SE's default context mode (MusicOrderMode 2) the track is pick
 - **09-013** (Graphics and settings, fixed 2026-10-30): Projection modes: SE renders a cubemap and resamples it into fish-eye (proj_fisheye.glsl: FisheyeFOV 180, circ... Fix: SE: projection modes from proj_fisheye / proj_cylinder (decrypted) and the cubemap mosaic, Projection settings. Port (capture branch, projection.rs): fish eye, cylindrical, cubemap mosaic, Projection tab, saved Projection block; ship layer kept; star loading not clipped to the view cone in projection modes. Checked: still-frame flicker in each mode, frame times unchanged in perspective. Not ported: SE's distort-interface option (labels, orbits, flares drawn flat), GUI/lens-flare resolution settings that go with it.
 - **09-015** (Graphics and settings, fixed 2026-10-30): Memory limits and caches: SE caps VRAM and RAM (VideoMemoryStrategy, VideoMemorySize 3072 MB, VideoMemoryReser... Fix: SE: main-def Memory block (CacheSize*, MaxRAM/VRAM) and the RAM/VRAM log lines. Port (camera branch, memory.rs): cache sizes from main-def.cfg with least-recently-used eviction for planetary systems (64; a revisited system is regenerated; systems referenced by the selection, bound object, Go to target and history are kept), star and galaxy octree nodes, cluster/nebula lists, atmosphere models; SE's RAM/VRAM lines in se.log. Terrain nodes stay at the port's 1250 (main-def's 10000 took a surface flight from ~50 to 280 ms a frame). No port counterpart: the RAM/VRAM caps themselves, CacheSizeLandTextures, CacheSizeGalModels, the model VRAM minimums.
 - **09-016** (Graphics and settings, fixed 2026-10-30): Settings persistence: SE keeps every setting in config/main-user.cfg as overrides of main-def.cfg (created on ... Fix: SE: config/main-user.cfg holds the user's values over main-def.cfg (DetectVersionChange). Port (agent, settings.rs): %APPDATA%/SpaceEngine-rs/settings.cfg in SE's key names and blocks (Version, Settings, PostEffects, Export, Graphics with the whole preset and GPU, Display), written atomically (review fix); scripted runs neither read nor write it. Not ported: main-def keys without a port setting (modules reading main-def directly do not see user overrides). Checked: unit test; runs with APPDATA redirected.
+- **09-018** (Graphics and settings, fixed 2026-10-30): Loader and frame-timing options: SE lets the user pick LoaderMode (immediate / interleaved / asynchronous), Ma... Fix: SE: main-def Loader LoaderMode 2 (0 immediate, 1 interleaved, 2 asynchronous), MaxThreads 0 (auto), MultithreadedStartup, PreloadShipTextures, PreloadShaders 2, TimingStrategy 0 (MaxTilesPerFrame) or 1 (MaxTimePerFrame 10 ms), MaxTimePerFrameClean; frame timing mode (RealTime/RealTimeFPS, Shift+Backslash) was done earlier. Port: MaxThreads sizes Bevy's task pools (main.rs TaskPoolPlugin); TimingStrategy 1 sets finished terrain nodes up until MaxTimePerFrame has gone by and stops counting tiles (graphics.rs TerrainQuality.time_budget_ms, terrain.rs); defaults unchanged (Earth check 50.04, 0 bad frames). Not ported: LoaderMode 0/1 (every port loader is asynchronous, SE's default), MultithreadedStartup, PreloadShaders (Bevy compiles pipelines when first used), PreloadShipTextures, MaxTimePerFrameClean (memory cleaning is per cache, memory.rs).
 - **09-019** (Graphics and settings, fixed 2026-10-30): Log file: SE writes system/se.log with optional time and thread stamps (LogTimeStamp, LogThreadStamp) and filt... Fix: SE: main-def.cfg Log (LogTimeStamp false, LogThreadStamp true, CatalogLogLevel 2, CsvLogLevel 1, CsvPatchWarning true); system/se.log has a version line, STARTING, then '[MT] ' / '[NN] ' stamped lines with 'ERROR: ' / 'WARNING: ' prefixes. Port: log_file.rs adds a tracing layer (LogPlugin custom_layer) writing se.log in %APPDATA%/SpaceEngine-rs (never the install) in that format, with the time and thread stamps from main-def.cfg; the catalog loader's warnings follow CatalogLogLevel / CsvLogLevel (0 silences them). Not ported: each catalog's own LogLevel cap and CsvPatchWarning (the port's loader reports only problems, no per-object messages). Checked: unit test reads_main_def_and_formats_like_se; a run writes se.log with [MT] / [00] lines and '[MT] WARNING: catalog: ...'.
 - **10-002** (Scripts, audio, spacecraft, fixed 2026-10-29): Music transitions and title: SE cross-fades tracks (MixDurationGUI 2 s, MixDurationLoop 5 s, MixDurationContex... Fix: Music as SE's Sound settings: consecutive tracks cross-fade over MixDurationLoop 5 s (the next starts 5 s before the end, from the Ogg length), N cross-fades over MixDurationGUI 2 s, M fades out over 2 s, each new track's title shows as an on-screen message (MusicShowTitle), default MusicVolume 20 of 100, saved as SE's 0..100 MusicVolume (Settings "Music volume"). Not done: SE's repeat/order modes and the context mode (left out with 10-001).
 - **10-003** (Scripts, audio, spacecraft, fixed 2026-10-29): Interface sound effects: SE loads data/sounds/menu/button.ogg and menu.ogg (SDL_mixer) for GUI clicks and menu... Fix: Interface sounds (`sound.rs`): SE's data/sounds/menu/button.ogg on clicks of buttons, check boxes and list entries and menu.ogg when a drop-down opens (from egui's click events), at SoundVolume 30 of 100 (Settings "Sound effects", saved as SoundVolume). Assumed: which widgets sound. Not done: SetAudioDevice.

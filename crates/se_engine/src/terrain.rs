@@ -1786,7 +1786,11 @@ fn update_terrain(
         let thermal = thermal_uniform(terrain, light);
         let keys: Vec<TileKey> = terrain.nodes.keys().copied().collect();
         let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
+        let setup_start = std::time::Instant::now();
         for key in keys {
+            if quality.time_budget_ms.is_some_and(|ms| setup_start.elapsed().as_secs_f32() * 1000.0 >= ms) {
+                break;
+            }
             let slot = terrain.nodes.get_mut(&key).unwrap();
             let NodeState::Loading(task) = &mut slot.state else { continue };
             let Some(build) = check_ready(task) else { continue };
@@ -2110,7 +2114,7 @@ fn update_terrain(
         }
         let gen_level = gen_max_level(terrain.radius);
         for key in requests {
-            if in_flight >= MAX_IN_FLIGHT || started >= quality.tiles_per_frame {
+            if in_flight >= MAX_IN_FLIGHT || (quality.time_budget_ms.is_none() && started >= quality.tiles_per_frame) {
                 break;
             }
             if terrain.nodes.contains_key(&key) {
