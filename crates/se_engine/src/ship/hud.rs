@@ -143,6 +143,8 @@ pub struct PanelInfo {
     pub atmo_height: Option<f64>,
     /// Current and commanded boost factors (linear).
     pub boost: f64,
+    /// SE's warp field efficiency (0..1, `warp::field_efficiency`).
+    pub efficiency: f64,
     pub boost_cmd: f64,
     pub arrival: Option<f64>,
     /// Pointer directions (universe axes): nose, local vertical, to the reference body, velocity
@@ -393,6 +395,18 @@ pub fn draw_hud_pointers(
     Ok(())
 }
 
+/// SE's drive status (FUN_14052d9c0, the info panel's "Warp drive" line): "None" without a drive,
+/// "In warp (Boost factor = ...)" while engaged, "Normal space" otherwise.
+fn drive_status(can_warp: bool, engaged: bool, boost: f64) -> String {
+    if !can_warp {
+        "None".to_string()
+    } else if engaged {
+        format!("In warp (Boost factor = {boost:.3e})")
+    } else {
+        "Normal space".to_string()
+    }
+}
+
 fn fmt_time(s: f64) -> String {
     if !s.is_finite() {
         return "-".to_string();
@@ -489,12 +503,18 @@ pub fn draw_flight_hud(mut contexts: EguiContexts, flight: Res<Flight>, time: Re
                     ui.add_space(18.0);
                     egui::Grid::new("ship_panel_c").num_columns(2).spacing([10.0, 1.0]).show(ui, |ui| {
                         if warping && d.can_warp() {
-                            row(ui, "Warp drive", format!("10^{:.1} (set {:.0}, max {:.0})", ship.warp, flight.warp_cmd, d.warp_boost_log));
+                            row(ui, "Warp drive", drive_status(d.can_warp(), ship.warp > 0.0 || flight.warp_on, pi.boost));
                             row(ui, "Boost factor", format!("{:.3e}", pi.boost));
                             row(ui, "Max boost factor", format!("{:.3e}", 10f64.powf(d.warp_boost_log)));
                             row(ui, "Physical velocity", format_speed(info.speed_rel));
                             row(ui, "Effective velocity", format_speed(info.speed_eff));
-                            row(ui, "Efficiency", format!("{:.1}%", 100.0 * (pi.boost / pi.boost_cmd.max(1.0)).min(1.0)));
+                            // Below 90 % the efficiency blinks red (FUN_14040a590, the GUI's blink phase).
+                            let unstable = pi.efficiency < super::warp::UNSTABLE_EFFICIENCY;
+                            let blink = (time.elapsed_secs() * 2.0) as u64 % 2 == 0;
+                            ui.label(egui::RichText::new("Efficiency").color(hud_c.gamma_multiply(0.8)));
+                            let c = if unstable && blink { egui::Color32::RED } else { hud_c };
+                            ui.label(egui::RichText::new(format!("{:.0}%", pi.efficiency * 100.0)).monospace().color(c));
+                            ui.end_row();
                             if let Some(t) = pi.arrival {
                                 row(ui, "Arrival after", fmt_time(t));
                             }
@@ -557,8 +577,12 @@ pub fn draw_flight_hud(mut contexts: EguiContexts, flight: Res<Flight>, time: Re
                     if info.notice_until > time.elapsed_secs_f64() && !info.notice.is_empty() {
                         ui.label(egui::RichText::new(&info.notice).color(egui::Color32::from_rgb(255, 200, 80)).strong());
                     }
+                    // FUN_14040a590's Warp HUD: with the drive engaged and the field under 90 % efficient.
+                    if flight.hud == HudMode::Warp && (flight.warp_on || ship.warp > 0.0) && pi.efficiency < super::warp::UNSTABLE_EFFICIENCY {
+                        ui.label(egui::RichText::new("Field is unstable, turn to the target!").color(egui::Color32::RED).strong());
+                    }
                     ui.weak(format!(
-                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F thrusters  keypad/Q/E turn  Alt+=/- warp  Alt+Z stop warp  V camera [{cam_name}]  Ctrl+1-5 HUD  Esc leave"
+                        "=/- main  Shift+=/- retro  Ctrl+=/- hover  Z stop  W/S/A/D/R/F thrusters  keypad/Q/E turn  Alt+=/- warp  Alt+Z stop hyperdrive  V camera [{cam_name}]  Ctrl+1-5 HUD  Esc leave"
                     ));
                     ui.weak("5-0 End holds  Num5 kill rot.  U assist  H hold alt.  Shift+Z sync vel.  T target  P ref body  C rotate  G go  Shift+G fly  Alt+G warp");
                 });

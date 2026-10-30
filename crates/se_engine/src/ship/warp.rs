@@ -42,6 +42,23 @@ use crate::universe::UPosition;
 
 /// Render layer of every ship mesh: the main camera sees it, the environment cameras do not.
 pub const SHIP_LAYER: usize = 7;
+
+/// SE's warp field efficiency (FUN_140530720): how closely the velocity the drive multiplies lies
+/// along the ship's long axis, either way: 2.001 |cos| - 1 clamped to 0..1, and 0 below 1 m/s
+/// (3.24e-17 pc/s). The ship step (FUN_140537060) moves the ship by that velocity times
+/// 10^(boost x efficiency); below [`UNSTABLE_EFFICIENCY`] the Warp HUD warns "Field is unstable,
+/// turn to the target!" (FUN_14040a590). A `Hyperdrive` design is a warp drive design: SE's parser
+/// (FUN_1405308b0) reads `Hyperdrive` and `Warpdrive` into the same flag (0x80000).
+pub fn field_efficiency(vel: DVec3, axis: DVec3) -> f64 {
+    let s = vel.length();
+    if s <= 1.0 {
+        return 0.0;
+    }
+    (vel.dot(axis.normalize_or_zero()).abs() / s * 2.001 - 1.0).clamp(0.0, 1.0)
+}
+
+/// FUN_14040a590's threshold for the unstable field warning (90 %).
+pub const UNSTABLE_EFFICIENCY: f64 = 0.9;
 /// SE's ray space: ship radius / 0.6 per unit (DAT_1406d442c / radius).
 const RAY_UNITS_PER_RADIUS: f64 = 0.6;
 /// warpV = tanh(WARP_V_GAIN * max(s, WARP_S_MIN)) (DAT_1406d4908, DAT_1406d4170).
@@ -466,6 +483,21 @@ fn warp_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_efficiency_follows_se() {
+        let axis = DVec3::Z;
+        // Along the axis, either way, the field is whole; at rest and across it, none.
+        assert_eq!(field_efficiency(DVec3::new(0.0, 0.0, -300.0), axis), 1.0);
+        assert_eq!(field_efficiency(DVec3::new(0.0, 0.0, 300.0), axis), 1.0);
+        assert_eq!(field_efficiency(DVec3::new(0.0, 0.0, 0.5), axis), 0.0);
+        assert_eq!(field_efficiency(DVec3::new(300.0, 0.0, 0.0), axis), 0.0);
+        // 2.001 cos - 1: 60 degrees off is the edge, 25 degrees off is under 90 %.
+        let at = |deg: f64| field_efficiency(DVec3::new(deg.to_radians().sin(), 0.0, deg.to_radians().cos()) * 100.0, axis);
+        assert!(at(60.0) < 0.001 && at(59.0) > 0.0);
+        assert!((at(25.0) - (2.001 * 25f64.to_radians().cos() - 1.0)).abs() < 1e-12);
+        assert!(at(25.0) < UNSTABLE_EFFICIENCY && at(15.0) > UNSTABLE_EFFICIENCY);
+    }
 
     #[test]
     fn metric_params_follow_se() {

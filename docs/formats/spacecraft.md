@@ -49,7 +49,7 @@ Module "ship" { "default/DragonFly.cfg" (m0 .. m15) }
 | `MainEngines`, `RetroEngines`, `HoverEngines`, `CorrEngines` | **acceleration in m/s^2**, independent of `Mass` (not multiples of g) | each is multiplied by 3.2407793e-17 (metres to parsecs) at load; mass only feeds fuel/inertia fields |
 | `TurnEngines` | angular acceleration in rad/s^2 per axis, not scaled by mass or length | autopilot rotate planner: time = sqrt(angle * k / Turn) |
 | `WarpBoostLog` | maximum of a log10 multiplier; warp velocity = velocity * 10^boost | the current boost (`WarpBoost`, saved in the ship state) is clamped to `[0, WarpBoostLog]` |
-| `Warpdrive`, `Hyperdrive` | either one enables the warp drive | |
+| `Warpdrive`, `Hyperdrive` | either one enables the warp drive (FUN_1405308b0 reads both into flag 0x80000) | |
 | `Mass` | kg | |
 | `Length`, `Offset` | metres in the file, stored as km | |
 
@@ -69,6 +69,17 @@ Defaults: Main 50, Retro 50, Turn 0.002, WarpBoostLog 12, Mass 18000 m/s^2, rad/
   `alt / (|v| * 10^WarpBoostLog) < 2 dt` the target becomes `log10(alt / (|v| * 2 dt))` instead of the maximum,
   so a warp step never covers more than about half the remaining altitude. Below `0.01 * radius` of altitude
   the target is 0. This is how the maximum warp speed scales with distance from massive bodies.
+* **Warp field efficiency** (`FUN_140530720`): `2.001 |cos a| - 1` clamped to 0..1, with `a` the angle between the
+  ship's velocity (relative to its frame) and its long axis, 0 below 1 m/s. The ship step (`FUN_140537060`) moves
+  the ship by that velocity times `10^(WarpBoost * efficiency)`: sideways the warp fails. The Warp HUD shows it
+  ("Efficiency", red on the GUI's blink phase below 90 %) and, with the drive engaged under 90 %, "Field is
+  unstable, turn to the target!" (`FUN_14040a590`). The info panel's "Warp drive" line reads "None", "Normal
+  space" or "In warp (Boost factor = ...)" (`FUN_14052d9c0`).
+* **Hyperdrive.** SE 0.991 has no separate hyperspace: `Hyperdrive` designs are warp drive designs, the ship
+  control panel's "Stop hyperdrive" and "Hyperjump" buttons stop the warp drive and switch to the Warp HUD for a
+  target (`FUN_140406630`, `FUN_1404095a0`), and the key table names Alt+Z "Stop hyperdrive". "Hyperspace",
+  "Hyperdrive" (as a label), "Hyperjump here" and "Stop warp drive" are in the executable's string table
+  (`FUN_14038a450`) but nothing reads them.
 * **Ground.** With the `Collisions` cheat flag on, contact starts below `0.5 * Length` of altitude
   (`FUN_14051b720`) and an impact of 25 m/s or more crashes the ship (`FUN_140530810`). Gravity acts from
   the reference body (`RefBodyID`); `Gravity` and `Collisions` are cheat-menu flags.

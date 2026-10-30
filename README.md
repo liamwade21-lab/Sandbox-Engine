@@ -126,7 +126,7 @@ starts. Ship data comes from SpaceEngine's `ShipsModels.pak`; see `docs/formats/
 | Enter (or F outside flight) | toggle flight mode (needs a ship) |
 | Esc | leave flight mode; the free camera stays where the chase camera was and the ship keeps drifting |
 | `=` / `-` (keypad `+` / `-`) | main engines up / down; with Shift the retro engines, with Ctrl the hover engines, with Alt the warp drive (SE's keys) |
-| Z / Alt+Z / Shift+Z | stop the main, retro and hover engines (and any autopilot program) / stop the warp drive / sync velocity with the reference body |
+| Z / Alt+Z / Shift+Z | stop the main, retro and hover engines (and any autopilot program) / stop the warp drive (SE's "Stop hyperdrive") / sync velocity with the reference body |
 | W / S / A / D (or arrows), R / F (or keypad 1 / 0) | thrusters forward / back / left / right, up / down |
 | Keypad 8 / 2 / 4 / 6, Q / E (or keypad 7 / 9) | pitch and yaw, roll (`TurnEngines`); Shift is ×10 |
 | Mouse drag | turn the ship (chase views) or orbit it (orbit view); wheel zooms the camera |

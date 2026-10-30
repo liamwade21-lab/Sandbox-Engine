@@ -24,7 +24,7 @@
 //! Keys are SE's ship bindings (key table FUN_1405ba8f0): = / - (keypad + / -) main engines +/-,
 //! with Shift the retro engines, with Ctrl the hover engines (three separate levels), W/S/A/D/R/F (arrows,
 //! keypad 1/0) the thrusters, keypad 8/2/4/6 and Q/E (keypad 7/9) turn, 5-0 Prograde .. Normal Down, End
-//! Horizon, Num5 Kill rotation, U Flight assist, Z Stop engines, Alt+Z Stop warp drive, Shift+Z
+//! Horizon, Num5 Kill rotation, U Flight assist, Z Stop engines, Alt+Z Stop hyperdrive, Shift+Z
 //! Sync velocity, H Hold altitude, T Select target, P Select reference body, C Rotate to target,
 //! Shift+G Fly to target, Alt+G Warp to target, G Fly or warp to target, Alt+= / Alt+- (and
 //! PageUp / PageDown) warp drive +/-.
@@ -1188,7 +1188,7 @@ fn take_flight_keys(hold: Res<FlightHold>, mut keys: ResMut<ButtonInput<KeyCode>
     }
 }
 
-/// ShipStopWarpDrive (Alt+Z): the drive off, and a Warp to target program with it (it would
+/// ShipStopWarpDrive (Alt+Z, SE's "Stop hyperdrive"): the drive off, and a Warp to target program with it (it would
 /// engage the drive again).
 fn stop_warp_drive(flight: &mut Flight) {
     flight.warp_on = false;
@@ -1691,7 +1691,9 @@ fn ship_physics(
     if ship.warp < 1e-3 && warp_target == 0.0 {
         ship.warp = 0.0;
     }
-    let mut boost = 10f64.powf(ship.warp);
+    // The boost exponent times the field efficiency (FUN_140537060): flying sideways, the warp fails.
+    let efficiency = warp::field_efficiency(vel - warp_frame, urot.0 * DVec3::Z);
+    let mut boost = 10f64.powf(ship.warp * efficiency);
     if boost > 1.0 && altitude.is_finite() && speed > 1e-9 {
         // Never step more than half the remaining altitude, however far the boost still has to ramp down.
         boost = boost.min((altitude.max(0.0) / (2.0 * speed * ship_dt)).max(1.0));
@@ -1840,6 +1842,7 @@ fn ship_physics(
     panel.ang_vel = ship.ang_vel.length();
     panel.ang_accel = (ship.ang_vel - ang_vel0).length() / ship_dt;
     panel.boost = boost;
+    panel.efficiency = efficiency;
     panel.boost_cmd = if flight.warp_on { 10f64.powf(flight.warp_cmd.min(wmax)) } else { 1.0 };
     panel.arrival = (flight.info.target_distance.is_finite() && speed_rel * boost > 0.0).then(|| flight.info.target_distance / (speed_rel * boost));
     panel.nose = urot.0 * DVec3::NEG_Z;
