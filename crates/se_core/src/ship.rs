@@ -18,6 +18,9 @@ use crate::model_script::{join_path, resolve_relative};
 use crate::sc::{self, Block, Item, Value};
 use crate::vfs::Vfs;
 
+pub mod aero;
+pub use aero::AeroModel;
+
 /// Defaults used by the executable when a key is missing (`FUN_140524610`).
 pub const DEFAULT_MAIN_ENGINES: f64 = 50.0;
 pub const DEFAULT_RETRO_ENGINES: f64 = 50.0;
@@ -94,6 +97,8 @@ pub struct ShipDesign {
     pub hyperdrive: bool,
     pub aerodynamics: bool,
     pub aero_model: Option<String>,
+    /// The aerodynamic model `Aerodynamics` / `AeroModel` select ([`AeroModel::from_keys`]).
+    pub aero: AeroModel,
     pub rad_temp: f64,
     pub cameras: Vec<ShipCamera>,
     pub modules: Vec<ShipModule>,
@@ -124,6 +129,7 @@ impl Default for ShipDesign {
             hyperdrive: false,
             aerodynamics: false,
             aero_model: None,
+            aero: AeroModel::None,
             rad_temp: 0.0,
             cameras: Vec::new(),
             modules: Vec::new(),
@@ -183,6 +189,7 @@ impl ShipDesign {
             hyperdrive: block_bool(&root, "Hyperdrive"),
             aerodynamics: block_bool(&root, "Aerodynamics"),
             aero_model: root.str("AeroModel").map(str::to_owned),
+            aero: AeroModel::from_keys(root.bool("Aerodynamics"), root.str("AeroModel")),
             rad_temp: root.f64("RadTemp").unwrap_or(0.0),
             cameras: Vec::new(),
             modules: Vec::new(),
@@ -367,6 +374,32 @@ impl EngineEffect {
     pub fn direction(&self) -> DVec3 {
         self.rotation() * DVec3::NEG_Z
     }
+
+    /// The looping sound of the effect: its `Sound`, else the executable's default for the group
+    /// (FUN_1405693a0): `Shuttle_engine.ogg` for Main and Retro, `Shuttle_hover.ogg` for Hover,
+    /// `Shuttle_thruster.ogg` for Thruster and `Starship_warp.ogg` for Hyper.
+    pub fn sound_file(&self) -> Option<&str> {
+        if let Some(s) = self.sound.as_deref().filter(|s| !s.is_empty()) {
+            return Some(s);
+        }
+        match self.group {
+            EffectGroup::Main | EffectGroup::Retro => Some("Shuttle_engine.ogg"),
+            EffectGroup::Hover => Some("Shuttle_hover.ogg"),
+            EffectGroup::Thruster => Some("Shuttle_thruster.ogg"),
+            EffectGroup::Hyper => Some("Starship_warp.ogg"),
+            EffectGroup::Other => None,
+        }
+    }
+}
+
+/// VFS paths to try for an engine sound named in a module config: relative to `sounds/`, then
+/// the file name in `sounds/spacecraft/` (the executable's defaults are bare file names).
+pub fn sound_candidates(name: &str) -> Vec<String> {
+    let n = name.replace('\\', "/");
+    let file = n.rsplit('/').next().unwrap_or(&n).to_owned();
+    let mut v = vec![format!("sounds/{n}"), format!("sounds/{}", n.to_ascii_lowercase()), format!("sounds/spacecraft/{file}")];
+    v.dedup();
+    v
 }
 
 /// Parsed module `.cfg` (also used for the single-module `default/X.cfg` designs).
@@ -414,9 +447,10 @@ pub fn parse_module_cfg(src: &str, path: &str) -> ModuleConfig {
     for e in root.all("EngineEffect") {
         let Some(b) = &e.block else { continue };
         let color = b.vec3("Color").unwrap_or([0.05, 0.25, 0.6]);
+        let group = EffectGroup::parse(b.str("Group").unwrap_or(""));
         out.effects.push(EngineEffect {
             name: first_str(e).unwrap_or("").to_owned(),
-            group: EffectGroup::parse(b.str("Group").unwrap_or("")),
+            group,
             kind: b.str("Type").unwrap_or("Ion").to_owned(),
             pos: vec3_of(b, "Pos"),
             rot_deg: vec3_of(b, "Rot"),
@@ -425,7 +459,7 @@ pub fn parse_module_cfg(src: &str, path: &str) -> ModuleConfig {
             brightness_hdr: b.f64("BrightnessHDR").unwrap_or(1.0),
             brightness_real: b.f64("BrightnessReal").unwrap_or(1.0),
             sound: b.str("Sound").map(str::to_owned),
-            volume: b.f64_any(&["Volume", "SoundVolume"]).unwrap_or(1.0),
+            volume: b.f64_any(&["Volume", "SoundVolume"]).unwrap_or(if group == EffectGroup::Thruster { 0.02 } else { 1.0 }),
         });
     }
     out
@@ -613,6 +647,7 @@ EngineEffect "Thruster up"
         assert_eq!(d.turn_engines, 0.005);
         assert_eq!(d.warp_boost_log, 15.0);
         assert!(d.hyperdrive && !d.warpdrive && !d.aerodynamics);
+        assert_eq!(d.aero, AeroModel::Arrow);
         assert!(d.can_warp());
     }
 
@@ -673,7 +708,13 @@ EngineEffect "Thruster up"
         assert_eq!(e.pos, DVec3::new(0.0, 53.7, 37.6));
         assert_eq!(e.size, DVec3::new(7.0, 7.0, 300.0));
         assert_eq!(e.sound.as_deref(), Some("Spacecraft/Starship_engine.ogg"));
+        assert_eq!(e.sound_file(), Some("Spacecraft/Starship_engine.ogg"));
         assert_eq!(c.effects[1].group, EffectGroup::Thruster);
+        // No Sound or Volume: the executable's thruster defaults.
+        assert_eq!(c.effects[1].sound_file(), Some("Shuttle_thruster.ogg"));
+        assert_eq!(c.effects[1].volume, 0.02);
+        assert_eq!(sound_candidates("Shuttle_hover.ogg").last().unwrap(), "sounds/spacecraft/Shuttle_hover.ogg");
+        assert_eq!(sound_candidates("Spacecraft/Starship_engine.ogg")[0], "sounds/Spacecraft/Starship_engine.ogg");
     }
 
     #[test]
