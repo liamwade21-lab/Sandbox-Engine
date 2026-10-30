@@ -13,6 +13,7 @@ mod brown_dwarf;
 mod browser;
 mod star_search;
 mod camera;
+mod capture;
 mod clusters;
 mod comets;
 mod config;
@@ -38,6 +39,7 @@ mod models;
 mod music;
 mod overlay;
 mod procgalaxies;
+mod projection;
 mod procsystems;
 mod procstars;
 mod rings;
@@ -155,6 +157,8 @@ fn main() {
     // Sky overlays: coordinate grids and constellations.
     .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin))
     // Settings window, screenshots and the saved session.
-    .add_plugins((settings_window::SettingsWindowPlugin, screenshot::ScreenshotPlugin, session::SessionPlugin));
+    .add_plugins((settings_window::SettingsWindowPlugin, screenshot::ScreenshotPlugin, session::SessionPlugin))
+    // Offscreen views: the HD screenshot tiles, skybox export and the projection modes' cube faces.
+    .add_plugins((capture::CapturePlugin, projection::ProjectionPlugin));
     app.run();
 }

@@ -209,6 +209,9 @@ pub struct StarSettings {
     /// SE's `StarFrustumClipFOV` (degrees, main-def.cfg): under this field of view SE loads the
     /// stars inside the view frustum only (FUN_14047b670), so zooming in loads fainter stars there.
     pub clip_fov: f32,
+    /// Something renders all around the camera (a projection mode's cube faces or the skybox export,
+    /// `capture.rs`): no view cone then.
+    pub all_around: bool,
 }
 
 impl Default for StarSettings {
@@ -235,6 +238,7 @@ impl Default for StarSettings {
             glow_mag_limit: 7.0,
             dso_mag_limit_reset: [7.0; 3],
             clip_fov: 30.0,
+            all_around: false,
         }
     }
 }
@@ -280,7 +284,7 @@ impl StarSettings {
     /// The view as a cone (unit axis in the universe frame, half-angle out to the frustum's
     /// corners) when the field of view is under `clip_fov`; `aspect` = width / height.
     pub fn view_cone(&self, cam: &FlyCamera, aspect: f64) -> Option<(DVec3, f64)> {
-        (cam.fov_deg < self.clip_fov).then(|| {
+        (cam.fov_deg < self.clip_fov && !self.all_around).then(|| {
             let half = (cam.fov_deg as f64 * 0.5).to_radians().tan();
             ((cam.rot * DVec3::NEG_Z).normalize(), (half * (1.0 + aspect * aspect).sqrt()).atan())
         })
