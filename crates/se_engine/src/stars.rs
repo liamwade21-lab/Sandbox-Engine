@@ -504,6 +504,7 @@ fn update_sprite_blur(
     settings: Res<StarSettings>,
     active: Res<crate::system::ActiveSystem>,
     data: Res<SeData>,
+    lensed: Option<Res<crate::blackholes::LensedHoles>>,
     mut blur: ResMut<SpriteBlur>,
     mut stars: ResMut<Assets<StarMaterial>>,
     mut far: ResMut<Assets<crate::galaxies::GalaxyFarMaterial>>,
@@ -535,10 +536,16 @@ fn update_sprite_blur(
     blur.delta = delta.as_vec3().extend(0.0);
     blur.prev_view = Mat4::from_quat(prev_rot.as_quat()).inverse();
     // The active system's star (all components of a catalog system share its position in the fields).
-    // A system without bodies (a lone black hole, whose disk shines as a field point) draws nothing.
+    // A system without bodies (a lone black hole, whose disk shines as a field point) draws nothing
+    // itself, so its point stays until the lens draws the disk.
+    let lensed = |r: &u32| {
+        lensed.as_ref().is_some_and(|l| {
+            l.0.iter().any(|&h| data.catalog.system_root(se_core::catalog::ObjectRef::Star(h)).unwrap_or(h) == *r)
+        })
+    };
     let hide = active
         .root
-        .filter(|_| !active.bodies.is_empty())
+        .filter(|r| !active.bodies.is_empty() || lensed(r))
         .and_then(|r| data.catalog.stars.get(r as usize))
         .map(|s| (s.pos_pc - pos).as_vec3());
     let eps_abs = (pos.length() as f32 * 4.0e-7).max(HIDE_EPS_PC);
