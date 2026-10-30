@@ -107,7 +107,7 @@ impl Plugin for ColorCorrectionPlugin {
         render_app
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(Render, prepare_scratch.in_set(RenderSystems::PrepareResources))
-            .add_systems(Core3d, color_correction.after(tonemapping).in_set(Core3dSystems::PostProcess));
+            .add_systems(Core3d, color_correction.after(tonemapping).after(bevy::anti_alias::fxaa::fxaa).after(bevy::anti_alias::smaa::smaa).in_set(Core3dSystems::PostProcess));
     }
 }
 

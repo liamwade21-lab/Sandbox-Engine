@@ -264,7 +264,7 @@ impl Plugin for ExposurePlugin {
         render_app
             .add_systems(RenderStartup, init_auto_exposure)
             .add_systems(Render, prepare_auto.in_set(RenderSystems::PrepareResources))
-            .add_systems(Core3d, auto_exposure.before(tonemapping).in_set(Core3dSystems::PostProcess));
+            .add_systems(Core3d, auto_exposure.before(tonemapping).after(crate::bloom::SeBloomSet).in_set(Core3dSystems::PostProcess));
     }
 }
 

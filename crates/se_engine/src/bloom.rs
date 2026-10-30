@@ -177,7 +177,7 @@ impl Plugin for SeBloomPlugin {
         render_app
             .add_systems(RenderStartup, init_pipelines)
             .add_systems(Render, prepare_textures.in_set(RenderSystems::PrepareResources))
-            .add_systems(Core3d, se_bloom.before(tonemapping).in_set(Core3dSystems::PostProcess));
+            .add_systems(Core3d, se_bloom.before(tonemapping).in_set(SeBloomSet).in_set(Core3dSystems::PostProcess));
     }
 }
 
@@ -378,6 +378,11 @@ fn f32_bytes(v: &[f32]) -> Vec<u8> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The bloom pass (Core3d): it reads the main texture and flips it, so the other passes that read
+/// it are ordered against this set.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SeBloomSet;
+
 fn se_bloom(
     view: ViewQuery<(&ExtractedCamera, &ViewTarget, &BloomTextures, &DynamicUniformIndex<SeBloom>, &SeBloom, Option<&FlareDraw>)>,
     pipelines: Res<BloomPipelines>,
