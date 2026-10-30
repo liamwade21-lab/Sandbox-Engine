@@ -1,7 +1,8 @@
 # Lens flares (`textures/flares/Flares.pak`)
 
-Port: `se_core::lens_flare` (parser), `se_engine/src/lensflare.rs` (renderer), shaders `lens_flare.wesl`
-and `pseudo_flare.wesl`. Tags: [V] verified in the exe, [I] inferred, [P] port choice.
+Port: `se_core::lens_flare` (parser), `se_engine/src/lensflare.rs` (sources and sprites),
+`se_engine/src/bloom.rs` (drawing), shaders `lens_flare.wesl`, `lens_flare_probe.wesl` and `se_bloom.wesl`
+(`combine_flares`). Tags: [V] verified in the exe, [I] inferred, [P] port choice.
 
 ## 1. Files and settings
 
@@ -41,25 +42,26 @@ aspect`; `angle` rotates it. Chroma is not used (0 in the shipped presets).
 
 `RaysTexture`, `DirtTexture`, `GhostsCount`, `GhostsDispersal`, `GhostsBright`, `GhostsBlur`,
 `HaloRadius`, `HaloBright`, `HaloBlur`, `DirtBright`, `DirtDispersal`, `Chromaticism`: John Chapman's
-screen-space lens flare (ghosts and a halo mirrored through the centre from the bright parts of the frame,
-chromatic distortion, the lens colour gradient, lens dirt and a starburst). The exe binds
-`BloomTex, FrameTex, GhostTexAtlas` for it.
+screen-space lens flare, drawn by `hdr_combine.glsl` (FLARES): ghosts and a halo of the bloom mip chain
+mirrored through the centre (at GhostsBlur / HaloBlur levels, chromatic offsets of Chromaticism frame
+texels, ghost weight `smoothstep(0, 5.5, luma)`), times the `LensRays` starburst x3 plus the `LensDirt`
+texture; the frame plus bloom is mixed towards the bloom at DirtDispersal levels by dirt x DirtBright. The
+script reader (`FUN_14026c610`) clears both texture names first, so `Clean lens` has no dirt. [V]
 
 ## 4. Port
 
 * Light sources: up to 4 stars of the current system whose disc touches the screen, brightest first. A
   flare fades linearly in apparent magnitude from `LensFlareFadeBeginMagn` to `EndMagn` (the Sun from Earth
-  keeps 80 %) and with the part of the disc hidden by the system's bodies (`terrain::disc_overlap`; on low
-  ground the body's horizon plane). Terrain, ships and rings do not occlude. [P]
-* SE scales each flare by the frame's brightness at the sun (`smoothstep(3, 10, luma)` of the bloom or
-  frame there): the port does not read the frame, but takes that brightness as the photosphere's (about 2)
-  plus the sun's glare sprite spread over the disc, so the flare is whole while the disc is within the
-  glare (`StarSettings::max_radius_px`) and gone once it is about 2.8 times wider (`disc_fade`). [P]
-* Sprites are placed on the CPU each frame and drawn in screen space over everything (reverse-Z depth 1,
-  additive, depth bias 1e16). `FLARE_GAIN` 8 matches SE's saturated core; ghosts get 3x more (their atlas
-  tiles peak at 0.13) and lose brightness with area past 0.1 half-heights, so the big faint ghosts of a
-  preset stay washes as in SE. [P]
-* Pseudo flare: ghosts, halo, chromatic distortion and the lens colour; no dirt or starburst textures
-  (the fullscreen pass binds only the frame). [P]
+  keeps 80 %).
+* Like SE, each flare is scaled by the frame at the sun: after the bloom chain, a probe pass reads the
+  frame (limited to BloomDynamicRange) and the bloom at level `clamp(7 - log2(height / radius px), 0, 5)`,
+  mixes them by `smoothstep(LensFlareSmallMethodRadius 5, LargeMethodRadius 8, radius px)`, multiplies by
+  `smoothstep(3, 10, luma)` and takes `pow(1/2.2)` (`lens_flare.glsl`, FUN_1402698e0, FUN_1404e6240), so
+  bodies, terrain, clouds, rings and ships over the sun hide the flare and the atmosphere tints it. [V]
+* Sprites are placed on the CPU each frame and drawn after the probe, before the bloom combine, so they are
+  not bloomed. Ghosts get 3x more (their atlas tiles peak at 0.13) and lose brightness with area past 0.1
+  half-heights, so the big faint ghosts of a preset stay washes as in SE. [P]
+* Pseudo flare: SE's FLARES code in the bloom combine; `LensRaysMatr` is not decoded, the starburst turns
+  with the camera as in Chapman's original. The lens colour gradient is not used (SE's shader does not). [P]
 * The Graphics window (Settings > Graphics) toggles the three layers and picks the presets; the choice is
   saved in `settings.cfg`.

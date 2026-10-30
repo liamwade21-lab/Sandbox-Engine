@@ -9,8 +9,7 @@ const TO_GRAY: vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 struct Probe {
     // Per sun: xy screen position (uv), z bloom level, w frame (0) to bloom (1) mix.
     sources: array<vec4<f32>, 4>,
-    // x: the frame's brightness limit (BloomDynamicRange, as hdr_down.glsl limits the bloom),
-    // y: the port-to-SE brightness gain of the samples (`lensflare.rs` STAR_FRAME_GAIN).
+    // x: the frame's brightness limit (BloomDynamicRange, as hdr_down.glsl limits the bloom).
     params: vec4<f32>,
 };
 
@@ -22,11 +21,8 @@ struct Probe {
 @fragment
 fn probe(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let s = probe_u.sources[min(u32(in.position.x), 3u)];
-    let gain = probe_u.params.y;
-    // SE's bloom is limited to BloomDynamicRange where it is made; the gained one is limited here.
-    var from_bloom = textureSampleLevel(bloom, probe_sampler, s.xy, s.z).rgb * gain;
-    from_bloom *= clamp(probe_u.params.x / (dot(from_bloom, TO_GRAY) + 1.0e-10), 0.0, 1.0);
-    var from_frame = clamp(textureSampleLevel(frame, probe_sampler, s.xy, 0.0).rgb * gain, vec3<f32>(0.0), vec3<f32>(100.0));
+    let from_bloom = textureSampleLevel(bloom, probe_sampler, s.xy, s.z).rgb;
+    var from_frame = clamp(textureSampleLevel(frame, probe_sampler, s.xy, 0.0).rgb, vec3<f32>(0.0), vec3<f32>(100.0));
     from_frame *= clamp(probe_u.params.x / (dot(from_frame, TO_GRAY) + 1.0e-10), 0.0, 1.0);
     // Small suns read the frame, large ones the bloom; the modulation is limited and gamma-corrected.
     var m = mix(from_frame, from_bloom, s.w);

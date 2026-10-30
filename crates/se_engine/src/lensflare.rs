@@ -37,12 +37,6 @@ const GHOST_GAIN: f32 = 3.0;
 /// The bloom level read for a large sun: 7 - log2(screen height / sun radius), 0..5 (FUN_1402698e0).
 const BLOOM_LEVEL_BASE: f64 = 7.0;
 const BLOOM_LEVEL_MAX: f64 = 5.0;
-/// The gain from the port's frame to SE's brightness scale for the flare test. The port draws a star's
-/// disc at `system::STAR_SURFACE_BRIGHT` (2) where SE has `hdrStarSurfaceBright` (2000) times its Planck
-/// table, so an open sun saturates SE's frame sample (at BloomDynamicRange) but reads about 2..5 in
-/// the port; the port's scenery is on SE's scale. x10 puts an open disc past the top of SE's 3..10
-/// ramp while the dark side of a mountain, a moon or a ring in front of the sun stays below it.
-const STAR_FRAME_GAIN: f32 = 10.0;
 
 /// The `PointRendering` / `Lighting` / `PostEffects` keys of `config/main-def.cfg` that drive the flares.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -290,7 +284,7 @@ fn rays_matrix(rot: bevy::math::DQuat) -> Vec4 {
 }
 
 /// The pseudo lens flare's part of [`SeBloom`] (`hdr_combine.glsl` BrightParams, BlurParams,
-/// FlareParams); off without a preset. Its ghosts and halo read the bloom with [`STAR_FRAME_GAIN`].
+/// FlareParams); off without a preset.
 fn pseudo_uniform(b: &mut SeBloom, p: Option<&PseudoFlare>, bright: f32, aspect: f32, lens: &LensTextures, rays: Vec4) {
     let Some(p) = p else {
         b.flare_bright = Vec4::ZERO;
@@ -299,7 +293,7 @@ fn pseudo_uniform(b: &mut SeBloom, p: Option<&PseudoFlare>, bright: f32, aspect:
     b.flare_bright = Vec4::new(p.ghosts_bright * bright, p.halo_bright * bright, p.dirt_bright, 1.0);
     b.flare_blur = Vec4::new(p.ghosts_blur, p.halo_blur, p.dirt_dispersal, 1.0);
     b.flare_shape = Vec4::new(p.ghosts_dispersal, p.ghosts_count as f32, p.halo_radius, p.chromaticism);
-    b.lens = Vec4::new(aspect, lens.dirt.is_some() as u32 as f32, lens.rays.is_some() as u32 as f32, STAR_FRAME_GAIN);
+    b.lens = Vec4::new(aspect, lens.dirt.is_some() as u32 as f32, lens.rays.is_some() as u32 as f32, 0.0);
     b.rays = rays;
 }
 
@@ -356,7 +350,7 @@ fn update_flares(
     sources.sort_by(|a, b| a.0.total_cmp(&b.0));
     sources.truncate(MAX_FLARE_SOURCES);
 
-    let mut fd = FlareDraw { count: sources.len() as u32, frame_limit: settings.frame_limit, frame_gain: STAR_FRAME_GAIN, ..default() };
+    let mut fd = FlareDraw { count: sources.len() as u32, frame_limit: settings.frame_limit, ..default() };
     for (k, s) in sources.iter().enumerate() {
         fd.sources[k] = s.3;
     }

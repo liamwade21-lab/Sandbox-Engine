@@ -79,7 +79,7 @@ pub struct CoronaUniform {
     pub bright: Vec4,
     /// SE's `Shape`: (RayDensity, RayCurvature, Scale, SinFreq).
     pub shape: Vec4,
-    /// xyz: `EyePos.w` of the three planes, w: the star's radius over the corona's.
+    /// `EyePos.w` of the three planes.
     pub phase: Vec4,
 }
 
@@ -160,8 +160,10 @@ fn planes_mesh() -> Mesh {
 }
 
 /// SE's `Color` uniform: the star's colour scaled to unit luma (0.299, 0.587, 0.114), times
-/// FUN_1404c07f0 of its temperature, the corona `Brightness`, 2.5 and `hdrStarCoronaBright` (the body's
-/// own `Brightness`, 1 for stars, and a renderer factor that was not decoded are taken as 1).
+/// FUN_1404c07f0 of its temperature, the corona `Brightness`, 2.5 and `hdrStarCoronaBright`. The body's
+/// own `Brightness` is 1 for stars. Renderer +0x35a0 is the last frame's +0x35a4 (FUN_1404c51a0 copies
+/// it and resets +0x35a4 to 1): 1 in space; with the camera inside an atmosphere FUN_14044fe70
+/// multiplies it by an exp() of the air's extinction, which is not ported (taken as 1).
 pub fn corona_color(rgb: [f32; 3], teff: f64, brightness: f64, hdr_bright: f32) -> Vec3 {
     let c = Vec3::from_array(rgb);
     let luma = c.dot(Vec3::new(0.299, 0.587, 0.114));
@@ -205,7 +207,7 @@ fn spawn_coronas(
                 color: color.extend(0.0),
                 bright: BRIGHT,
                 shape: Vec4::new(keys.ray_density as f32, keys.ray_curv as f32, SCALE, SIN_FREQ),
-                phase: Vec4::new(p[0], p[1], p[2], (body.radius_m / 1000.0 / keys.radius_km) as f32),
+                phase: Vec4::new(p[0], p[1], p[2], 0.0),
             },
         });
         let mesh = mesh.get_or_insert_with(|| meshes.add(planes_mesh())).clone();
@@ -247,11 +249,11 @@ fn update_coronas(
         anchor.0 = b.pos;
         orient.0 = b.orient;
         let p = corona.keys.phases(sim.jd - PHASE_EPOCH_JD);
-        if let Some(m) = mats.get(&corona.material)
-            && m.u.phase.truncate() != Vec3::from_array(p)
+        let phase = Vec4::new(p[0], p[1], p[2], 0.0);
+        if mats.get(&corona.material).is_some_and(|m| m.u.phase != phase)
             && let Some(mut m) = mats.get_mut(&corona.material)
         {
-            m.u.phase = Vec3::from_array(p).extend(m.u.phase.w);
+            m.u.phase = phase;
         }
     }
 }
