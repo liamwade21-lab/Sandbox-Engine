@@ -1,9 +1,10 @@
 //! SE's settings dialog (F4; Ctrl+F4 and the Graphics button open it on Graphics): tabs Graphics (groups
 //! "Graphics quality", anti-aliasing, post-effects, tone mapping, lens flares, point sources, planets,
-//! volumetrics), Camera, Display, Interface and Sound, and "Reset settings" ("Really reset settings?",
-//! "This will reset all settings except controls and restart SpaceEngine"). SE's Projection / 3D and
-//! Controls tabs have no counterpart in the port (stereo and VR projections, key binding editor) and are
-//! left out.
+//! volumetrics), Camera, Display (with "High resolution screenshot" and "Export skybox"), Projection
+//! (SE's "Configure projection": perspective, cubemap, fish eye, cylindrical; its stereo and VR modes are
+//! out of scope), Interface and Sound, and "Reset settings" ("Really reset settings?", "This will reset
+//! all settings except controls and restart SpaceEngine"). SE's Controls tab (key binding editor) has no
+//! counterpart in the port.
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -23,18 +24,20 @@ enum Tab {
     Graphics,
     Camera,
     Display,
+    Projection,
     Interface,
     Sound,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Graphics, Tab::Camera, Tab::Display, Tab::Interface, Tab::Sound];
+    const ALL: [Tab; 6] = [Tab::Graphics, Tab::Camera, Tab::Display, Tab::Projection, Tab::Interface, Tab::Sound];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Graphics => "Graphics",
             Tab::Camera => "Camera",
             Tab::Display => "Display",
+            Tab::Projection => "Projection",
             Tab::Interface => "Interface",
             Tab::Sound => "Sound",
         }
@@ -47,6 +50,8 @@ struct WindowState {
     /// `GraphicsUi::open` last frame, to switch to the Graphics tab when it opens.
     graphics_was_open: bool,
     confirm_reset: bool,
+    /// Env `SE_UI_OPEN` read (testing: `projection` / `display` open those tabs).
+    env_read: bool,
 }
 
 pub struct SettingsWindowPlugin;
@@ -97,7 +102,23 @@ fn settings_window(
         ResMut<crate::screenshot::ScreenshotSettings>,
         ResMut<crate::settings::ResetRequest>,
     ),
+    (mut proj, mut sky, mut sky_req, mut hires_ui): (
+        ResMut<crate::projection::ProjectionSettings>,
+        ResMut<crate::capture::SkyboxSettings>,
+        ResMut<crate::capture::SkyboxRequest>,
+        ResMut<crate::screenshot::HiresUi>,
+    ),
 ) -> Result {
+    if !state.env_read {
+        state.env_read = true;
+        let env = std::env::var("SE_UI_OPEN").unwrap_or_default();
+        for (key, tab) in [("projection", Tab::Projection), ("display", Tab::Display)] {
+            if env.split(',').any(|w| w.trim() == key) {
+                state.tab = tab;
+                hud.show_settings = true;
+            }
+        }
+    }
     if gfx_ui.open && !state.graphics_was_open {
         state.tab = Tab::Graphics;
     }
@@ -118,6 +139,9 @@ fn settings_window(
     let mut ph = photo.0 as usize;
     let mut ex = *exposure;
     let mut sh = shots.clone();
+    let mut pr = proj.clone();
+    let mut sk = sky.clone();
+    let (mut export, mut open_hires) = (false, false);
     let mut em = emission.as_deref().copied();
     let mut wa = water.as_deref().map(|w| w.show);
     let bcsg0 = cc.iter().next().map(|c| c.values());
@@ -261,7 +285,12 @@ fn settings_window(
                 }
                 ui.add_enabled(sh.format == "jpg", egui::Slider::new(&mut sh.jpeg_quality, 1..=100).text(i18n.tr("JPEG quality")));
                 ui.add_enabled(sh.format != "jpg", egui::Checkbox::new(&mut sh.save_alpha, i18n.tr("Save transparency")));
+                if ui.button(i18n.tr("High resolution screenshot")).clicked() {
+                    open_hires = true;
+                }
+                group(ui, "Export skybox", &i18n, |ui| skybox_controls(ui, &mut sk, &mut export, &i18n));
             }
+            Tab::Projection => projection_controls(ui, &mut pr, &i18n),
             Tab::Interface => {
                 ui.horizontal(|ui| {
                     ui.label(i18n.tr("Language"));
@@ -355,6 +384,14 @@ fn settings_window(
     if sh != *shots {
         *shots = sh;
     }
+    if pr != *proj {
+        *proj = pr;
+    }
+    if sk != *sky {
+        *sky = sk;
+    }
+    sky_req.0 |= export;
+    hires_ui.open |= open_hires;
     if let (Some(e), Some(cur)) = (em, emission.as_mut())
         && e != **cur
     {
@@ -371,4 +408,69 @@ fn settings_window(
         }
     }
     Ok(())
+}
+
+/// SE's "Export skybox" dialog (seExportSkyboxDialog).
+fn skybox_controls(ui: &mut egui::Ui, sk: &mut crate::capture::SkyboxSettings, export: &mut bool, i18n: &I18n) {
+    use crate::screenshot::Depth;
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut sk.cylindrical, false, i18n.tr("Cubemap"));
+        ui.radio_value(&mut sk.cylindrical, true, i18n.tr("Cylindrical"));
+    });
+    ui.add(egui::Slider::new(&mut sk.resolution, 64..=crate::capture::MAX_SKYBOX_RES).logarithmic(true).text(i18n.tr("Resolution")));
+    let formats = crate::capture::SKYBOX_FORMATS;
+    let mut f = formats.iter().position(|x| *x == sk.format).unwrap_or(0);
+    if combo(ui, "skybox_format", "Image format", &mut f, &formats, i18n) {
+        sk.format = formats[f].to_string();
+    }
+    // The pixel formats the image format holds.
+    let ext = if sk.format == "dds cubemap" { "dds" } else { sk.format.as_str() };
+    let allowed: Vec<Depth> = Depth::ALL.into_iter().filter(|x| crate::screenshot::best_depth(ext, *x) == *x).collect();
+    let names: Vec<&str> = allowed.iter().map(|x| Depth::NAMES[x.index()]).collect();
+    let mut d = allowed.iter().position(|x| *x == crate::screenshot::best_depth(ext, sk.depth)).unwrap_or(0);
+    if combo(ui, "skybox_depth", "Pixel format", &mut d, &names, i18n) {
+        sk.depth = allowed[d.min(allowed.len() - 1)];
+    }
+    ui.checkbox(&mut sk.post_process, i18n.tr("Post-process"));
+    ui.checkbox(&mut sk.color_correction, i18n.tr("Color correction (no HDR!)"));
+    ui.add_enabled(ext != "jpg", egui::Checkbox::new(&mut sk.save_alpha, i18n.tr("Save transparency")));
+    if ui.button(i18n.tr("Export skybox")).clicked() {
+        *export = true;
+    }
+}
+
+/// SE's Projection tab and "Configure projection" (its stereo / VR modes are out of scope).
+fn projection_controls(ui: &mut egui::Ui, pr: &mut crate::projection::ProjectionSettings, i18n: &I18n) {
+    let mut m = pr.mode as usize;
+    if combo(ui, "projection_mode", "Projection", &mut m, &crate::projection::MODES, i18n) {
+        pr.mode = m as u8;
+    }
+    let (lo, hi) = crate::projection::FACE_RES_RANGE;
+    ui.add(egui::Slider::new(&mut pr.cube_face_res, lo..=hi).logarithmic(true).text(i18n.tr("Rendering resolution")));
+    group(ui, "Fish eye", i18n, |ui| {
+        ui.add(egui::Slider::new(&mut pr.fisheye_fov, 40.0..=360.0).text(i18n.tr("Lens angle")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_crop, 1.0..=2.0).text(i18n.tr("Circle crop")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_zoom, 1.0..=3.0).text(i18n.tr("Zoom")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_offset.x, -1.0..=1.0).text(i18n.tr("X offset")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_offset.y, -1.0..=1.0).text(i18n.tr("Y offset")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_warp.x, -1.0..=1.0).text(i18n.tr("X warp")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_warp.y, -1.0..=1.0).text(i18n.tr("Y warp")));
+        ui.add(egui::Slider::new(&mut pr.fisheye_warp.z, -1.0..=1.0).text(i18n.tr("Z warp")));
+        ui.checkbox(&mut pr.fisheye_flip_x, i18n.tr("Flip horizontally"));
+        ui.checkbox(&mut pr.fisheye_flip_y, i18n.tr("Flip vertically"));
+        if ui.button(i18n.tr("Reset to default")).clicked() {
+            let d = crate::projection::ProjectionSettings::default();
+            (pr.fisheye_fov, pr.fisheye_crop, pr.fisheye_zoom, pr.fisheye_offset, pr.fisheye_warp, pr.fisheye_flip_x, pr.fisheye_flip_y) =
+                (d.fisheye_fov, d.fisheye_crop, d.fisheye_zoom, d.fisheye_offset, d.fisheye_warp, d.fisheye_flip_x, d.fisheye_flip_y);
+        }
+    });
+    group(ui, "Cubemap", i18n, |ui| {
+        let mut f = pr.cubemap_format as usize;
+        if combo(ui, "cubemap_format", "Frame format", &mut f, &crate::projection::CUBEMAP_FORMATS, i18n) {
+            pr.cubemap_format = f as u8;
+        }
+        // SE's "Identify faces" draws the face edges (`ShowCubempEdges`).
+        ui.checkbox(&mut pr.show_edges, i18n.tr("Identify faces"));
+        ui.checkbox(&mut pr.fit_to_screen, i18n.tr("Fit to screen"));
+    });
 }

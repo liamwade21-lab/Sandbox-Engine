@@ -79,6 +79,7 @@ struct Live<'w, 's> {
     planets: (Option<ResMut<'w, crate::terrain::SelfEmission>>, Option<ResMut<'w, crate::terrain::WaterDisplay>>),
     deep_sky: (ResMut<'w, crate::procgalaxies::ProcSettings>, Option<ResMut<'w, crate::clusters::ClusterSettings>>),
     color: Query<'w, 's, &'static ColorCorrection, With<MainCamera>>,
+    capture: (ResMut<'w, crate::projection::ProjectionSettings>, ResMut<'w, crate::capture::SkyboxSettings>),
     adapter: Option<Res<'w, bevy::render::renderer::RenderAdapterInfo>>,
 }
 
@@ -137,6 +138,10 @@ struct Snapshot {
     self_emission: (bool, f32),
     show_water: bool,
     shots: ScreenshotSettings,
+    /// SE's `Export` `SkyboxFormat`.
+    skybox_format: String,
+    /// SE's `Projection` block.
+    projection: crate::projection::ProjectionSettings,
     gpu: String,
 }
 
@@ -186,6 +191,8 @@ impl Snapshot {
             self_emission: l.planets.0.as_ref().map_or((true, 1.0), |e| (e.enabled, e.bright)),
             show_water: l.planets.1.as_ref().is_none_or(|w| w.show),
             shots: (**shots).clone(),
+            skybox_format: l.capture.1.format.clone(),
+            projection: (*l.capture.0).clone(),
             gpu: l.adapter.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
         }
     }
@@ -228,6 +235,7 @@ impl Snapshot {
         ) + &self.post_cfg()
             + &self.graphics_cfg()
             + &self.display.to_cfg()
+            + &self.projection.to_cfg()
     }
 
     /// The per-kind overlay filters and switches, by SE's keys.
@@ -255,8 +263,8 @@ impl Snapshot {
         let [br, co, sa, ga] = self.bcsg;
         let s = &self.shots;
         format!(
-            "PostEffects\n{{\n\tPhotoMode         {}\n\tExposureComp      {}\n\tToneMappingShader \"{}\"\n\tBrightness        {br}\n\tContrast          {co}\n\tSaturation        {sa}\n\tGamma             {ga}\n\tDithering         {}\n}}\nExport\n{{\n\tScreenshotFormat  \"{}\"\n\tJpegQuality       {}\n\tSaveAlpha         {}\n}}\n",
-            self.photo_mode, self.exposure_comp, self.tone, self.dithering, s.format, s.jpeg_quality, s.save_alpha
+            "PostEffects\n{{\n\tPhotoMode         {}\n\tExposureComp      {}\n\tToneMappingShader \"{}\"\n\tBrightness        {br}\n\tContrast          {co}\n\tSaturation        {sa}\n\tGamma             {ga}\n\tDithering         {}\n}}\nExport\n{{\n\tScreenshotFormat  \"{}\"\n\tJpegQuality       {}\n\tSaveAlpha         {}\n\tSkyboxFormat      \"{}\"\n}}\n",
+            self.photo_mode, self.exposure_comp, self.tone, self.dithering, s.format, s.jpeg_quality, s.save_alpha, self.skybox_format
         )
     }
 
@@ -469,6 +477,12 @@ fn load_settings(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeDat
                 s.jpeg_quality = q.clamp(1.0, 100.0) as u8;
             }
             s.save_alpha = e.bool("SaveAlpha").unwrap_or(s.save_alpha);
+            if let Some(f) = e.str("SkyboxFormat").map(str::to_ascii_lowercase).filter(|f| crate::capture::SKYBOX_FORMATS.contains(&f.as_str())) {
+                live.capture.1.format = f;
+            }
+        }
+        if let Some(p) = doc.sub("Projection") {
+            live.capture.0.read(p);
         }
         if let Some(g) = doc.sub("Graphics") {
             load_graphics(g, &mut live.gfx, &mut live.lens, &mut live.bloom);

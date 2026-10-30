@@ -650,6 +650,12 @@ pub fn glow_color_atmo(t_eq: f64, t_surf: f64, emission: f32) -> Vec3 {
 }
 
 impl Terrain {
+    /// Nodes whose tiles are still being built (the HD screenshot's and skybox export's "Wait
+    /// loading completeness", `capture.rs`).
+    pub fn loading_nodes(&self) -> usize {
+        self.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count()
+    }
+
     /// SE's GlowColorAtmo for this body's atmosphere at self-emission scale `emission`; 0 without one.
     pub fn glow_atmo(&self, emission: f32) -> Vec3 {
         if self.atmosphere.is_none() {

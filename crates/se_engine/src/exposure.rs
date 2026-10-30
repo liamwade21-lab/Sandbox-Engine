@@ -324,7 +324,7 @@ fn prepare_auto(frame: Option<Res<AutoFrame>>, mut bufs: ResMut<AutoExposureBuff
 }
 
 fn auto_exposure(
-    view: ViewQuery<&ViewTarget, With<ColorCorrection>>,
+    view: ViewQuery<&ViewTarget, (With<ColorCorrection>, Without<crate::capture::CaptureView>)>,
     frame: Option<Res<AutoFrame>>,
     pipes: Res<AutoExposurePipelines>,
     bufs: Res<AutoExposureBuffers>,

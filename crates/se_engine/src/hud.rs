@@ -70,14 +70,15 @@ fn hud_keys(
     if egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false) {
         return;
     }
-    if keys.just_pressed(KeyCode::F11) {
-        // SE's format and numbering, in <Pictures>/SpaceEngine-rs/ (screenshot.rs).
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    if keys.just_pressed(KeyCode::F11) && !shift {
+        // SE's format and numbering, in <Pictures>/SpaceEngine-rs/ (screenshot.rs); Shift+F11 is the
+        // high-resolution screenshot tool.
         crate::screenshot::take(&mut commands, &shots, &mut shot_no);
     }
     // SE's keys (its default binds): Ctrl+` the interface, F3 Find object (Shift+F3 is the Star
     // browser's search), F4 Settings, Ctrl+F4 graphics, F7 Locations, I the wiki. F1 (SE's universe
     // map, not ported) opens the port's list of controls.
-    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     if keys.just_pressed(KeyCode::F1) {
         hud.show_help = !hud.show_help;
@@ -827,7 +828,7 @@ fn draw_hud(
             ui.label("Ctrl+`: hide interface    F3: find object    Shift+F3: star browser    F4: settings    F7: locations    F8: chart    I: wiki");
             ui.label("O: orbits    ': labels (brief, detail, off)    Ctrl+': markers    ;: selection pointer");
             ui.label("X: constellations (Shift/Ctrl/Alt+X: lines/boundaries/names)    Ctrl+;: celestial grids    Alt+;: geographic grid");
-            ui.label("F11: screenshot (Pictures/SpaceEngine-rs)    M: music on/off    N: next track");
+            ui.label("F11: screenshot (Pictures/SpaceEngine-rs)    Shift+F11: high-resolution screenshot    M: music on/off    N: next track");
         });
     }
     Ok(())
