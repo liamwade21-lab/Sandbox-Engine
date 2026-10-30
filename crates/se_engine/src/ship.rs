@@ -53,7 +53,7 @@ use self::engine_sound::{EngineSoundCache, start_engine_sounds, update_engine_so
 use crate::camera::{FlightHold, FlyCamera, MainCamera, look_rotation};
 use crate::data::SeData;
 use crate::ship_assets::{
-    LoadedShip, PlumeMaterial, PlumeSpec, PlumeUniform, ShipSurfaceMaterial, ShipUniform, build_ship, flat_texture,
+    HullDefaults, HullMaterial, LoadedShip, PlumeMaterial, PlumeSpec, PlumeUniform, add_hull_material, build_ship,
     plume_mesh, plume_rotation,
 };
 use crate::system::SystemBody;
@@ -260,7 +260,7 @@ struct PlumeInstance {
 
 #[derive(Component, Default)]
 struct ShipVisuals {
-    hull: Vec<Handle<ShipSurfaceMaterial>>,
+    hull: Vec<Handle<HullMaterial>>,
     plumes: Vec<PlumeInstance>,
 }
 
@@ -271,7 +271,8 @@ pub struct ShipPlugin;
 
 impl Plugin for ShipPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MaterialPlugin::<ShipSurfaceMaterial>::default(), MaterialPlugin::<PlumeMaterial>::default()))
+        add_hull_material(app);
+        app.add_plugins(MaterialPlugin::<PlumeMaterial>::default())
             .init_resource::<Flight>()
             .insert_resource(ShipUi { show: std::env::var_os("SE_SHIPS_WINDOW").is_some(), ..default() })
             .init_resource::<ShipLibrary>()
@@ -408,6 +409,7 @@ fn ship_commands(
     time: Res<Time>,
     bodies: Query<&SystemBody>,
     ships: Query<(Entity, &UPosition, &Ship)>,
+    hull_defaults: Res<HullDefaults>,
 ) {
     for msg in reader.read() {
         let arg = msg.arg.trim();
@@ -425,7 +427,7 @@ fn ship_commands(
                 for (e, ..) in &ships {
                     commands.entity(e).despawn();
                 }
-                spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design);
+                spawn_ship(&mut commands, &data, &sim, &mut flight, &mut cam, &bodies, design, hull_defaults.thermal_shift);
             }
             "throttle" => {
                 if let Ok(v) = arg.parse::<f64>() {
@@ -535,6 +537,7 @@ fn ship_commands(
 
 /// Places `design` so that its first chase camera coincides with the free camera, at rest
 /// relative to the nearest body, and enters flight mode.
+#[allow(clippy::too_many_arguments)]
 fn spawn_ship(
     commands: &mut Commands,
     data: &SeData,
@@ -543,6 +546,7 @@ fn spawn_ship(
     cam: &mut FlyCamera,
     bodies: &Query<&SystemBody>,
     design: Arc<ShipDesign>,
+    thermal_shift: f32,
 ) {
     let full = match ShipDesign::load(&data.vfs, &design.path) {
         Some(d) => Arc::new(d),
@@ -568,7 +572,7 @@ fn spawn_ship(
 
     let vfs = data.vfs.clone();
     let d2 = full.clone();
-    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2) });
+    let task = AsyncComputeTaskPool::get().spawn(async move { build_ship(&vfs, &d2, thermal_shift) });
     let id = commands
         .spawn((
             Ship {
@@ -934,8 +938,9 @@ fn finish_ship_loading(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
+    mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
+    hull_defaults: Res<HullDefaults>,
     plume_mesh: Option<Res<PlumeMesh>>,
     mut loading: Query<(Entity, &mut ShipLoading, &mut Ship, &mut ShipVisuals)>,
     mut flight: ResMut<Flight>,
@@ -955,22 +960,9 @@ fn finish_ship_loading(
         };
         ship.clearance = loaded.clearance;
         ship.radius = loaded.radius;
-        let white = images.add(flat_texture([255, 255, 255, 255]));
-        let black = images.add(flat_texture([0, 0, 0, 255]));
         let n_groups = loaded.groups.len();
         for g in loaded.groups {
-            let diffuse = g.diffuse.map(|i| images.add(i)).unwrap_or_else(|| white.clone());
-            let emissive = g.emissive.map(|i| images.add(i)).unwrap_or_else(|| black.clone());
-            let mat = hull_mats.add(ShipSurfaceMaterial {
-                u: ShipUniform {
-                    light_dir: [Vec4::new(0.0, 1.0, 0.0, 1.0), Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
-                    light_color: [Vec4::ONE, Vec4::ZERO, Vec4::ZERO, Vec4::ZERO],
-                    tint: Vec4::new(g.tint[0], g.tint[1], g.tint[2], 0.0),
-                    emis: Vec4::new(g.emis[0], g.emis[1], g.emis[2], g.cutoff),
-                },
-                diffuse,
-                emissive,
-            });
+            let mat = hull_mats.add(g.tex.into_material(&mut images, &hull_defaults, g.u));
             visuals.hull.push(mat.clone());
             commands.spawn((
                 ChildOf(entity),
@@ -1644,7 +1636,7 @@ fn update_ship_visuals(
     star_settings: Res<crate::stars::StarSettings>,
     ships: Query<(&Ship, &UPosition, &UOrientation, &ShipVisuals)>,
     bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
-    mut hull_mats: ResMut<Assets<ShipSurfaceMaterial>>,
+    mut hull_mats: ResMut<Assets<HullMaterial>>,
     mut plume_mats: ResMut<Assets<PlumeMaterial>>,
     mut tfs: Query<(&mut Transform, &mut Visibility)>,
 ) {
@@ -1673,7 +1665,7 @@ fn update_ship_visuals(
         }
         for h in &vis.hull {
             if let Some(mut m) = hull_mats.get_mut(h) {
-                (m.u.light_dir, m.u.light_color, m.u.tint.w) = (dirs, colors, ambient.0);
+                (m.u.light_dir, m.u.light_color, m.u.ambient.x) = (dirs, colors, ambient.0);
             }
         }
 
