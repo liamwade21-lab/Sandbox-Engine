@@ -25,6 +25,8 @@ use crate::overlay::{MarkerKind, OverlaySettings, SkySwitches};
 use crate::procgalaxies::ProcSettings;
 use crate::stars::{PointStyle, StarSettings};
 use crate::switches::RenderSwitches;
+use crate::system::AmbientLighting;
+use crate::terrain::{SelfEmission, WaterDisplay};
 use crate::universe::SimTime;
 use crate::waypoints::Waypoints;
 
@@ -43,6 +45,11 @@ pub struct Settings<'w, 's> {
     pub exposure: Option<ResMut<'w, ExposureComp>>,
     /// SE's `PhotoMode` (exposure.rs).
     pub photo: Option<ResMut<'w, PhotoMode>>,
+    /// `AmbientLighting` (system.rs), `EnableSelfEmission` / `SelfEmissionBright` and `ShowWater`
+    /// (terrain.rs).
+    pub ambient: Option<ResMut<'w, AmbientLighting>>,
+    pub emission: Option<ResMut<'w, SelfEmission>>,
+    pub water: Option<ResMut<'w, WaterDisplay>>,
     pub switches: Option<ResMut<'w, RenderSwitches>>,
     /// SE's `Brightness`/`Contrast`/`Saturation`/`Gamma` (FUN_140326220) live on the camera.
     pub color: Query<'w, 's, &'static mut ColorCorrection, With<MainCamera>>,
@@ -90,6 +97,13 @@ pub const SCALARS: &[&str] = &[
     "showcatclusters",
     "exposurecomp",
     "photomode",
+    "ambientlighting",
+    "enableselfemission",
+    "selfemissionbright",
+    "showwater",
+    "pointflarebright",
+    "pointflaredecay",
+    "linkscaletoscreenres",
     "showatmospheres",
     "showclouds",
     "showaurora",
@@ -133,6 +147,9 @@ struct View<'a> {
     clusters: Option<&'a ClusterSettings>,
     exposure: Option<&'a ExposureComp>,
     photo: Option<&'a PhotoMode>,
+    ambient: Option<&'a AmbientLighting>,
+    emission: Option<&'a SelfEmission>,
+    water: Option<&'a WaterDisplay>,
     switches: Option<&'a RenderSwitches>,
     color: Option<&'a ColorCorrection>,
     cam: &'a FlyCamera,
@@ -186,6 +203,13 @@ impl View<'_> {
             // SE keeps ExposureComp negated: +1 shown (twice as bright) is -1 (exposure.rs).
             "exposurecomp" => -self.exposure?.stops as f64,
             "photomode" => self.photo?.0 as f64,
+            "ambientlighting" => self.ambient?.0 as f64,
+            "enableselfemission" => b(self.emission?.enabled),
+            "selfemissionbright" => self.emission?.bright as f64,
+            "showwater" => b(self.water?.show),
+            "pointflarebright" => s.flare_bright as f64,
+            "pointflaredecay" => s.flare_decay as f64,
+            "linkscaletoscreenres" => b(s.link_screen_res),
             "showatmospheres" => b(self.switches?.atmospheres),
             "showclouds" => b(self.switches?.clouds),
             "showaurora" => b(self.switches?.aurora),
@@ -225,6 +249,9 @@ impl Settings<'_, '_> {
             clusters: self.clusters.as_deref(),
             exposure: self.exposure.as_deref(),
             photo: self.photo.as_deref(),
+            ambient: self.ambient.as_deref(),
+            emission: self.emission.as_deref(),
+            water: self.water.as_deref(),
             switches: self.switches.as_deref(),
             color: self.color.single().ok(),
             cam,
@@ -292,6 +319,22 @@ impl Settings<'_, '_> {
                 Some(m) => **m = PhotoMode::new(v.clamp(0.0, 2.0) as u8),
                 None => return false,
             },
+            "ambientlighting" => match self.ambient.as_mut() {
+                Some(a) => a.0 = v.max(0.0) as f32,
+                None => return false,
+            },
+            "enableselfemission" | "selfemissionbright" => match self.emission.as_mut() {
+                Some(e) if k == "enableselfemission" => e.enabled = on,
+                Some(e) => e.bright = v.max(0.0) as f32,
+                None => return false,
+            },
+            "showwater" => match self.water.as_mut() {
+                Some(w) => w.show = on,
+                None => return false,
+            },
+            "pointflarebright" => s.flare_bright = v.max(0.0) as f32,
+            "pointflaredecay" => s.flare_decay = v.max(1e-3) as f32,
+            "linkscaletoscreenres" => s.link_screen_res = on,
             // switches.rs (rings, skies and eclipses): the planet drawing switches.
             "showatmospheres" | "showclouds" | "showaurora" | "showcomettails" | "showeclipsemask" | "enableeclipses" | "atmoringsshadow"
             | "atmoextinction" | "enableplanetshine" | "atmominwidthpix" | "atmodistancelimit" | "aurorabright" => {
@@ -367,6 +410,9 @@ pub fn default_value(name: &str) -> Option<f64> {
         clusters: Some(&clusters),
         exposure: Some(&exposure),
         photo: Some(&PhotoMode::default()),
+        ambient: Some(&AmbientLighting::default()),
+        emission: Some(&SelfEmission::default()),
+        water: Some(&WaterDisplay::default()),
         switches: Some(&switches),
         color: Some(&color),
         cam: &cam,

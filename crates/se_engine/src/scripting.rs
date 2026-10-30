@@ -1266,6 +1266,9 @@ impl ScriptRunner {
         if loc.vel > 0.0 {
             cx.cam.speed = clamp_speed(loc.vel * se_core::units::METERS_PER_PC);
         }
+        // SE's GotoLocation also applies the location's photo mode and exposure.
+        cx.vars.set(cx.cam, cx.sim, "PhotoMode", loc.photo_mode as f64);
+        cx.vars.set(cx.cam, cx.sim, "ExposureComp", loc.exposure);
         let body = resolve_object(cat, &loc.body);
         if body.is_none() {
             let key = format!("loc:{}", loc.body);
