@@ -96,6 +96,10 @@ pub struct ProcStarInfo {
     pub class: String,
     pub abs_mag: f32,
     pub teff: f32,
+    /// A cluster member's age (Gyr) and [Fe/H]: SE copies the cluster's age into its members
+    /// (FUN_14053a760) before drawing their scatter and metallicity (FUN_1401d6c60). None for
+    /// field stars, which draw their own.
+    pub age_feh: Option<(f32, f32)>,
 }
 
 
@@ -243,6 +247,7 @@ impl ProcStarField {
             class: s.class.clone(),
             abs_mag: s.abs_mag,
             teff: s.teff,
+            age_feh: None,
         }
     }
 
@@ -520,6 +525,7 @@ impl StarScan {
             class: s.class.clone(),
             abs_mag: s.abs_mag,
             teff: s.teff,
+            age_feh: None,
         }
     }
 }

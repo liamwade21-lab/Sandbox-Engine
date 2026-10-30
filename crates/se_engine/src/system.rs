@@ -898,11 +898,17 @@ pub fn procedural_star_record(s: &crate::procstars::ProcStarInfo, pos_pc: DVec3)
     } else {
         let x = crate::procstars::galaxy_radius_fraction(pos_pc).unwrap_or(2.0 / 3.0);
         let mut d = ss::field_star(&mut r, x, lifetime);
-        if s.name.starts_with("RSC ") {
-            d = ss::group_star(&mut r, d.age_gyr);
-        }
-        if lum_code <= 6 {
-            d.age_gyr = lifetime.min(ss::MAX_AGE_GYR);
+        match s.age_feh {
+            // A cluster member: its cluster's age and [Fe/H] with SE's scatter (clusters.rs).
+            Some((age, feh)) => (d.age_gyr, d.feh) = (age as f64, feh as f64),
+            None => {
+                if s.name.starts_with("RSC ") {
+                    d = ss::group_star(&mut r, d.age_gyr);
+                }
+                if lum_code <= 6 {
+                    d.age_gyr = lifetime.min(ss::MAX_AGE_GYR);
+                }
+            }
         }
         d
     };
@@ -1674,6 +1680,17 @@ impl Material for StarSurfaceMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cluster_members_keep_their_age() {
+        let info = |age_feh| crate::procstars::ProcStarInfo { name: "RSC 8514-12-3-4-5".into(), class: "K0V".into(), abs_mag: 6.0, teff: 5200.0, age_feh };
+        let rec = procedural_star_record(&info(Some((0.12, -0.3))), DVec3::new(100.0, 0.0, 0.0));
+        let (params, _) = proc_system_input(&rec);
+        assert!((params.age_gyr - 0.12).abs() < 1e-6 && (params.feh + 0.3).abs() < 1e-6, "{} {}", params.age_gyr, params.feh);
+        // A field star draws its own.
+        let (field, _) = proc_system_input(&procedural_star_record(&info(None), DVec3::new(100.0, 0.0, 0.0)));
+        assert!(field.age_gyr > 0.0 && (field.age_gyr - 0.12).abs() > 1e-3);
+    }
 
     #[test]
     fn crescent_shift_follows_the_phase() {

@@ -243,6 +243,7 @@ fn info_of(rsc: &str, id: MemberId, m: &MemberStar) -> ProcStarInfo {
         class: m.class.name(),
         abs_mag: m.abs_mag,
         teff: m.teff,
+        age_feh: Some((m.age_gyr, m.feh)),
     }
 }
 
