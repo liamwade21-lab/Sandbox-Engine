@@ -1352,6 +1352,9 @@ fn run_commands(
         // points N: SE's StarPointMethod (1 sprites, 2 motion blur, 3 motion and rotation blur).
         "points" => stars.point_style = crate::stars::PointStyle::from_method(arg.parse().unwrap_or(2)),
         "colorshift" => stars.color_shift = arg.parse().unwrap_or(0.0),
+        "maglimit" => {
+            stars.mag_limit = arg.parse().unwrap_or(stars.mag_limit).clamp(crate::stars::MAG_LIMIT_MIN, crate::stars::MAG_LIMIT_MAX)
+        }
         "spin" => *spin = arg.parse().unwrap_or(0.0),
         "date" => {
             let p: Vec<f64> = arg.split(['-', ' ', ':', 'T']).filter_map(|s| s.parse().ok()).collect();

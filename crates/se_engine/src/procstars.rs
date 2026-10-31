@@ -35,6 +35,8 @@ const KEEP_FRAMES: u64 = 90;
 const FULL_REACH_MAX: f64 = 2.0;
 /// Most nodes per level loaded beyond their usual reach inside the zoomed view.
 const FAR_NODES_MAX: usize = 512;
+/// SE's default `CacheSizeStarNode` (main-def.cfg), when the memory limits are not loaded.
+const STAR_NODES_DEFAULT: usize = 50_000;
 
 struct BuiltNode {
     mesh: Option<Mesh>,
@@ -513,7 +515,9 @@ fn stream_nodes(
         .filter(|n| matches!(n.state, NodeState::Loading(_)))
         .count();
     if field.enabled && field.galaxy.is_some() {
-        for keys in field.octree.wanted_nodes(cam_model, reach, cone, FAR_NODES_MAX) {
+        // SE's CacheSizeStarNode bounds the nodes wanted as well as those kept.
+        let max_nodes = memory.as_ref().map_or(STAR_NODES_DEFAULT, |m| m.star_nodes);
+        for keys in field.octree.wanted_nodes(cam_model, reach, cone, FAR_NODES_MAX, max_nodes) {
             for key in keys {
                 if let Some(slot) = field.nodes.get_mut(&key) {
                     slot.last_used = frame_no;

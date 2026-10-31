@@ -61,6 +61,8 @@ const BAND_MEAN: f64 = 0.0;
 const BAND_SIGMA_SQRT2: f64 = 8.485_281_374_238_571;
 /// Keep a node while its brightest band edge is this many magnitudes past the limit (star fade-in).
 const REACH_MARGIN_MAG: f64 = 0.5;
+/// Most grid cells the node search visits per node a level may still keep.
+const VISITS_PER_NODE: usize = 4;
 
 /// What SE knows about a galaxy when it fills it with stars.
 #[derive(Debug, Clone, Copy)]
@@ -136,6 +138,24 @@ pub fn sphere_meets_cone(apex: DVec3, (axis, half): (DVec3, f64), centre: DVec3,
     } else {
         across * cos_a - along * sin_a <= r
     }
+}
+
+/// Where the ray from `p` along `dir` is inside the box `lo..hi`: `(t_in, t_out)`, or `None` if it
+/// misses (or the box lies behind).
+fn ray_box(p: DVec3, dir: DVec3, lo: DVec3, hi: DVec3) -> Option<(f64, f64)> {
+    let (mut t0, mut t1) = (f64::NEG_INFINITY, f64::INFINITY);
+    for i in 0..3 {
+        if dir[i] == 0.0 {
+            if p[i] < lo[i] || p[i] > hi[i] {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((lo[i] - p[i]) / dir[i], (hi[i] - p[i]) / dir[i]);
+        t0 = t0.max(a.min(b));
+        t1 = t1.min(a.max(b));
+    }
+    (t0 <= t1 && t1 >= 0.0).then_some((t0, t1))
 }
 
 /// Node address: star level and the cell of the global grid of depth `depth + level` (cells per axis
@@ -377,27 +397,129 @@ impl StarOctree {
     /// (FUN_1404a0e80) and clips them to the view frustum when the field of view is under
     /// `StarFrustumClipFOV` (FUN_14047b670). At most `max_far` nodes per level beyond the usual
     /// reach are kept, the nearest.
-    pub fn wanted_nodes(&self, cam: DVec3, reach: f64, cone: Option<(DVec3, f64)>, max_far: usize) -> Vec<Vec<NodeKey>> {
+    ///
+    /// At most `max_nodes` in all (SE's `CacheSizeStarNode`), coarse levels first, each level no more
+    /// than an even share of what the coarser ones left: a raised magnitude limit or a deep zoom
+    /// reaches millions of nodes, of which the nearest are kept. The search visits a few cells per
+    /// node it may keep, so its cost follows the cache, not the reach.
+    pub fn wanted_nodes(&self, cam: DVec3, reach: f64, cone: Option<(DVec3, f64)>, max_far: usize, max_nodes: usize) -> Vec<Vec<NodeKey>> {
         let reach = reach.max(1.0);
+        let mut left = max_nodes;
         (0..self.levels)
             .map(|level| {
+                let share = left / (self.levels - level) as usize;
+                if share == 0 || self.level_is_empty(level) {
+                    return Vec::new();
+                }
                 let near = self.reach(level);
                 let far = near * reach;
-                let half = self.node_half(level);
-                let radius = half.length();
+                // All around out to `near` (`far` without a cone), as far as the share allows.
+                let ball = if cone.is_some() { near } else { far };
+                let r = self.radius_for_cells(level, cam, ball, share.saturating_mul(VISITS_PER_NODE).max(27));
                 let mut v: Vec<(f64, NodeKey)> = Vec::new();
-                self.for_cells_near(level, cam, far, |key| {
+                self.for_cells_near(level, cam, r, |key| {
                     let d = self.box_distance(key, cam);
-                    if d <= near || (d <= far && cone.is_none_or(|k| sphere_meets_cone(cam, k, self.node_center(key), radius))) {
+                    if d <= r {
                         v.push((d, key));
                     }
                 });
                 v.sort_by(|a, b| a.0.total_cmp(&b.0));
                 let n = v.partition_point(|(d, _)| *d <= near);
-                v.truncate(n.saturating_add(max_far));
+                v.truncate(n.saturating_add(max_far).min(share));
+                // Zoomed in: the nodes beyond, inside the view cone.
+                if let Some(k) = cone {
+                    let room = max_far.min(share - v.len());
+                    v.extend(self.cone_nodes(level, cam, k, near, far, room));
+                }
+                left -= v.len();
                 v.into_iter().map(|(_, k)| k).collect()
             })
             .collect()
+    }
+
+    /// Whether SE leaves every node of `level` empty: past level 4 with fewer than 64 tries.
+    pub fn level_is_empty(&self, level: u8) -> bool {
+        let tries = if level == self.levels - 1 { self.leaf_total } else { self.total };
+        level > 4 && tries < 64
+    }
+
+    /// Grid cells of `level` meeting the box `lo..hi` (model frame), per axis.
+    fn cell_span(&self, level: u8, lo: DVec3, hi: DVec3) -> [(i32, i32); 3] {
+        let n = (1i64 << self.grid_bits(level)) as i32;
+        let (a, b) = (self.cell_of(level, lo), self.cell_of(level, hi));
+        [0, 1, 2].map(|i| (a[i].max(0), b[i].min(n - 1)))
+    }
+
+    /// The radius, at most `r`, whose cube around `p` meets at most `max_cells` cells of `level`.
+    fn radius_for_cells(&self, level: u8, p: DVec3, mut r: f64, max_cells: usize) -> f64 {
+        loop {
+            let cells = self
+                .cell_span(level, p - DVec3::splat(r), p + DVec3::splat(r))
+                .iter()
+                .map(|&(a, b)| (b - a + 1).max(0) as u64)
+                .product::<u64>();
+            if cells <= max_cells as u64 || r < 1e-9 {
+                return r;
+            }
+            r *= (0.95 * (max_cells as f64 / cells as f64).cbrt()).min(0.95);
+        }
+    }
+
+    /// Nodes of `level` past `near` and out to `far` whose bounding sphere meets the cone (unit axis,
+    /// half-angle), nearest first, at most `room`. The cone is walked in slices along its axis about
+    /// as thick as it is wide, each cell counted in the slice its centre projects into, until `room`
+    /// nodes are found.
+    fn cone_nodes(&self, level: u8, cam: DVec3, (axis, half): (DVec3, f64), near: f64, far: f64, room: usize) -> Vec<(f64, NodeKey)> {
+        let mut out = Vec::new();
+        if room == 0 || far <= near {
+            return out;
+        }
+        let h = self.node_half(level);
+        let radius = h.length();
+        let tan = half.min(1.5).tan();
+        let pad = radius / half.min(1.5).cos();
+        // The stretch of the axis whose cone section meets the grid.
+        let widen = DVec3::splat(far * tan + pad);
+        let Some((t_in, t_out)) = ray_box(cam, axis, -self.dims - widen, self.dims + widen) else { return out };
+        let mut t = t_in.max(near * half.min(1.5).cos() - 2.0 * radius).max(0.0);
+        let end = t_out.min(far + radius);
+        let mut visits = 0usize;
+        while t < end && visits < room.saturating_mul(64).max(65_536) {
+            let step = (2.0 * h.min_element()).max(t * tan + pad);
+            let t1 = t + step;
+            let rho = DVec3::splat(t1 * tan + pad);
+            let (a, b) = (cam + axis * t, cam + axis * t1);
+            let span = self.cell_span(level, a.min(b) - rho, a.max(b) + rho);
+            for x in span[0].0..=span[0].1 {
+                for y in span[1].0..=span[1].1 {
+                    for z in span[2].0..=span[2].1 {
+                        visits += 1;
+                        let key = NodeKey { level, cell: [x, y, z] };
+                        let c = self.node_center(key);
+                        let tau = (c - cam).dot(axis);
+                        if tau < t || tau >= t1 {
+                            continue;
+                        }
+                        let d = self.box_distance(key, cam);
+                        if d > near && d <= far && sphere_meets_cone(cam, (axis, half), c, radius) {
+                            out.push((d, key));
+                        }
+                    }
+                }
+            }
+            t = t1;
+            // The later slices' nodes are at least `t - radius` away.
+            if out.len() >= room {
+                out.sort_by(|a, b| a.0.total_cmp(&b.0));
+                out.truncate(room);
+                if out[room - 1].0 <= t - radius {
+                    break;
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.truncate(room);
+        out
     }
 
     /// Calls `f` for every node of `level` in the grid whose cell meets the cube of half-side `r`
@@ -423,7 +545,7 @@ impl StarOctree {
         }
         let leaf = key.level == self.levels - 1;
         let tries = if leaf { self.leaf_total } else { self.total };
-        if key.level > 4 && tries < 64 {
+        if self.level_is_empty(key.level) {
             return Vec::new();
         }
         let seed = self.seed(key);
@@ -770,7 +892,7 @@ mod tests {
     fn wanted_nodes_reach_by_band() {
         let t = StarOctree::new(&milky_way(), 7.0);
         let cam = DVec3::new(8_500.0, 0.0, 0.0);
-        let w = t.wanted_nodes(cam, 1.0, None, 0);
+        let w = t.wanted_nodes(cam, 1.0, None, 0, usize::MAX);
         assert_eq!(w.len(), 9);
         for (l, keys) in w.iter().enumerate() {
             assert!(!keys.is_empty(), "level {l}");
@@ -778,7 +900,45 @@ mod tests {
         }
         // The camera's own node at every level.
         assert!(w[8].contains(&NodeKey { level: 8, cell: t.cell_of(8, cam) }));
-        let zoomed = t.wanted_nodes(cam, 10.0, Some((DVec3::X, 2f64.to_radians())), 3);
+        let cone = (DVec3::X, 2f64.to_radians());
+        let zoomed = t.wanted_nodes(cam, 10.0, Some(cone), 3, usize::MAX);
         assert!(zoomed.iter().zip(&w).all(|(z, b)| z.len() <= b.len() + 3));
+        // The far nodes are the nearest ones in the cone past the usual reach.
+        for (l, (z, b)) in zoomed.iter().zip(&w).enumerate() {
+            let near = t.reach(l as u8);
+            let radius = t.node_half(l as u8).length();
+            let mut all: Vec<(f64, NodeKey)> = Vec::new();
+            t.for_cells_near(l as u8, cam, near * 10.0, |k| {
+                let d = t.box_distance(k, cam);
+                if d > near && d <= near * 10.0 && sphere_meets_cone(cam, cone, t.node_center(k), radius) {
+                    all.push((d, k));
+                }
+            });
+            all.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let far: Vec<NodeKey> = z.iter().filter(|k| !b.contains(k)).copied().collect();
+            assert_eq!(far.len(), all.len().min(3), "level {l}");
+            if let Some(&(kth, _)) = far.len().checked_sub(1).and_then(|i| all.get(i)) {
+                assert!(far.iter().all(|k| t.box_distance(*k, cam) <= kth), "level {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn wanted_nodes_stay_within_the_cache() {
+        // A raised magnitude limit reaches millions of nodes; a deep zoom, billions of cells.
+        let t = StarOctree::new(&milky_way(), 20.0);
+        let cam = DVec3::new(8_500.0, 0.0, 0.0);
+        let start = std::time::Instant::now();
+        let w = t.wanted_nodes(cam, 1.0, None, 0, 50_000);
+        let n: usize = w.iter().map(Vec::len).sum();
+        assert!(n <= 50_000 && n > 40_000, "{n}");
+        // Every level keeps its nearest nodes, the camera's own among them.
+        for (l, keys) in w.iter().enumerate() {
+            assert!(keys.contains(&NodeKey { level: l as u8, cell: t.cell_of(l as u8, cam) }), "level {l}");
+        }
+        let low = StarOctree::new(&milky_way(), 7.0);
+        let zoomed = low.wanted_nodes(cam, 631.0, Some((DVec3::new(-1.0, 0.3, 0.1).normalize(), 1e-5)), 512, 50_000);
+        assert!(zoomed.iter().all(|z| z.len() <= 50_000));
+        assert!(start.elapsed().as_secs_f64() < 2.0, "{:?}", start.elapsed());
     }
 }
