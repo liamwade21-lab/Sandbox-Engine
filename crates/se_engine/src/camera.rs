@@ -284,7 +284,8 @@ impl Follow {
 /// What a [`Travel`] does.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TravelKind {
-    /// Go to (G): fly to `end_distance` (0: `GOTO_RADII`) from the target, bound to it (Follow).
+    /// Go to (G): fly to `end_distance` (0: `GOTO_RADII`) from the target, bound to it (rotating
+    /// with a body, following anything else).
     Goto,
     /// Center (C): turn to the target.
     Center,
@@ -1127,14 +1128,15 @@ pub fn travel_and_move(
             let dir = start_off.normalize_or(DVec3::Z);
             cam.pos = target_pos.offset_m(dir * d);
             // Go to binds the camera to the target at once, as in SpaceEngine, so a flight
-            // cut short (by moving or looking around) still moves with it.
-            cam.follow = Some(Follow {
-                target: tr.target,
-                last_pos: target_pos,
-                last_rot: DQuat::IDENTITY,
-                locked: false,
-                sync: false,
-            });
+            // cut short (by moving or looking around) still moves with it. SE's binding is
+            // Follow ("Following Moon", its tutorial); the port rotates with planets, moons and
+            // the other bodies (the user's choice), so their surface holds still under the camera.
+            // (Bound already: the next frame's follow step switches the frame.)
+            let sync = matches!(tr.target, ObjectRef::Body(_));
+            match cam.follow.as_mut() {
+                Some(f) if f.target == tr.target => f.sync = sync,
+                _ => cam.follow = Some(Follow::new(tr.target, sync, &eph, sim.jd)),
+            }
         }
         if t < 1.0 {
             cam.travel = Some(tr);

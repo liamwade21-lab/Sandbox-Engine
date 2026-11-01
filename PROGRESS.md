@@ -8,6 +8,13 @@
 
 ## Recently done
 
+- **Go to rotates with planets (2026-11-01):** Go to (G, and double G) now binds the camera as
+  "Rotate with object" for planets, moons and other bodies, so their surface holds still under
+  the camera; stars, galaxies and the rest are still followed. SE itself only follows ("Following
+  Moon" in its tutorial); this is the user's choice. Checked at 3600x time on Mars: the camera
+  stays at the same point in Mars's frame. Seen while testing: at very high time rates the info
+  panel's distance wobbles (it samples a moving planet at a slightly different moment); harmless.
+
 - **Info panel counts (2026-11-01):** the top-left info panel's "N children" row is replaced by
   SE's counts, each opening to a list: a star or star system shows "Number of planets",
   "Number of dwarf planets" and "Number of stars"; a planet shows "Number of moons". Counts look
