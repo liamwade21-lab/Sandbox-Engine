@@ -4,8 +4,19 @@
 
 - The port runs and covers most of SpaceEngine; see README.md "Status" and
   `docs/missing_features.md` for what is left.
-- The work below is committed on the branch `nebulae-and-close-up-ground` (not yet merged into
-  `main`, nothing pushed).
+- The work below is committed on `main` (nothing pushed), except the second-landing fix, which
+  is on the branch `second-landing-terrain` (not merged yet).
+
+## On a branch
+
+- **Ground stops refining from the second landing on (2026-11-01):** each planet keeps up to
+  1500 generated height grids; past that, the cleanup threw away every newly arrived grid whose
+  terrain patch didn't exist yet, though the patch can only be built from it. So after a first
+  landing filled the cache, new terrain under the camera could no longer be built: it stayed
+  coarse, or flickered between sharp and blurry. Now a grid is kept for 10 s after it was last
+  used. Checked with three fast landings on RS 8514-1828-5-27938-309 2: all reach the finest
+  terrain and stay sharp. This is probably also behind the user's original "limit to how close
+  I can get" report.
 
 ## Recently done
 

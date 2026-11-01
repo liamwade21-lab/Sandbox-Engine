@@ -53,6 +53,10 @@ const MAX_GEOM_LEVEL: u8 = 20;
 /// Split when the camera is closer than this many node edge lengths.
 const SPLIT_DISTANCE: f64 = 2.2;
 const MAX_IN_FLIGHT: usize = 24;
+/// Generated height grids kept per planet before unused ones are dropped (145^2 floats, 84 KB each).
+const GEN_TILES_MAX: usize = 1500;
+/// A grid with no node of its own is kept this long after it last served a request.
+const GEN_TILE_KEEP_FRAMES: u64 = 600;
 
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct PlanetUniform {
@@ -630,9 +634,10 @@ pub struct Terrain {
     /// SE's record flag "locked to a star" (+0x165c bit 2), for its height generator's climate.
     pub tidal_lock: bool,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
-    /// and no height data: requested grids (job id, frame) and the grids read back.
+    /// and no height data: requested grids (job id, frame) and the grids read back (with the frame
+    /// they last served a request).
     gen_jobs: HashMap<TileKey, (u64, u64)>,
-    gen_tiles: HashMap<TileKey, Arc<HeightTile>>,
+    gen_tiles: HashMap<TileKey, (Arc<HeightTile>, u64)>,
     gen_failed: bool,
     frame: u64,
     last_sun: Vec4,
@@ -2189,7 +2194,7 @@ fn update_terrain(
                 debug!("generated {k:?}: {:.4}..{:.4}", d.iter().cloned().fold(f32::INFINITY, f32::min), d.iter().cloned().fold(f32::NEG_INFINITY, f32::max));
                 let n = crate::terrain_gen::GEN_N as usize;
                 let tile = HeightTile { w: n, h: n, data: (*d).clone(), border: crate::terrain_gen::GEN_BORDER, span: crate::terrain_gen::GEN_SPAN };
-                terrain.gen_tiles.insert(k, Arc::new(tile));
+                terrain.gen_tiles.insert(k, (Arc::new(tile), frame));
             }
             // A generator that cannot run (its pipeline failed): back to the port's own heights.
             // Only then: falling back because answers were slow (a job waiting 600 frames, as when
@@ -2200,9 +2205,14 @@ fn update_terrain(
                 terrain.gen_failed = true;
                 terrain.gen_jobs.clear();
             }
-            if terrain.gen_tiles.len() > 1500 {
+            // Over the limit, grids whose node is gone and that served no request for a while go.
+            // A grid arrives before its node exists (the node is built from it), so dropping every
+            // grid without a node threw away each new one as it came in, once a planet had 1500 (a
+            // first landing makes that many): it was asked for again, and again, and the terrain
+            // under the camera stopped refining from the second landing on.
+            if terrain.gen_tiles.len() > GEN_TILES_MAX {
                 let nodes = &terrain.nodes;
-                terrain.gen_tiles.retain(|k, _| nodes.contains_key(k));
+                terrain.gen_tiles.retain(|k, &mut (_, used)| nodes.contains_key(k) || frame - used < GEN_TILE_KEEP_FRAMES);
             }
         }
         let gen_level = gen_max_level(terrain.radius);
@@ -2219,8 +2229,9 @@ fn update_terrain(
                 while gk.level > gen_level {
                     gk = gk.parent().unwrap();
                 }
-                match terrain.gen_tiles.get(&gk) {
-                    Some(tile) => {
+                match terrain.gen_tiles.get_mut(&gk) {
+                    Some((tile, used)) => {
+                        *used = frame;
                         generated = Some((gk, tile.clone(), gen_ref(&terrain.proc), terrain.proc.bump_m));
                     }
                     None => {
