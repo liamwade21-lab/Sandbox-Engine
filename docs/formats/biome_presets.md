@@ -86,8 +86,14 @@ weighed at each point: `d = 4 (slope - Slope)^2 + |dH| + |dS| + |dV|` between th
 the soil's `Color` in HSV (SE's `rgb2hsl` is HSV; stored sRGB values; the hue gap is looped only
 when positive, as SE does), slope `1 - cos^6` of the ground's tilt from the node's normal map,
 weight `d^-1/2`; the heaviest wins, blended with the next over a weight band of 0.05. The chosen
-soil is recoloured: its texels move in HSV by the ground's colour minus the texture's mean, so the
-map's colour shows through. Soils are full within 1 km and gone by 2 km. Earth's grassland
+soil is recoloured: in SE its texels move in HSV by the ground's colour minus the texture's mean, so the
+map's colour shows through. [P] The port gives the ground's colour the texture's brightness and half
+its colour departures around its mean instead: SE's shift turns grey texels (arbitrary hue) green, gold
+or red once the saturation is raised, and the ground changed colour as the soils resolved on the way
+down (orange from 200 m, gold at 20 m on RS 238-21-2-44-404 6). [P] A layer magnified past a texel a
+pixel (a camera metres up) gets the same layer at an eighth of its repeat faded in over it, so the
+ground stays sharp and keeps its look down to 1.5 m (`planet.wesl` `soil_layer`).
+Soils are full within 1 km and gone by 2 km. Earth's grassland
 (HSV 0.19 0.52 0.25) gets "Grass 3/4 green", the Sahara at 23.5 N 10 E "Sand white 1" (with the
 ground flat: steeper plains take "Blocks yellow", Slope 0.2).
 

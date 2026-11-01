@@ -43,7 +43,8 @@ to those files.
 - Soils are baked per near node (`tg_detail_maps.glsl`). Slope `1 - nz^6` (`:548`); per soil
   `d = 4 (slope - Slope)^2 + sum |dHSL|` against the colour map, hue wrapped (`:491-520`,
   `COLOR_METRICS 1`), weight `d^-0.5`; mineral and organic soils all compete. The chosen soil is
-  recoloured to the map by an HSL shift (`:459-469`). Modul layer per `texture_mix.glh:120-155`.
+  recoloured to the map by an HSL shift (`:459-469`; the port keeps the map's mean colour instead,
+  see biome_presets.md). Modul layer per `texture_mix.glh:120-155`.
   Height (Bias/ScaleHeight) is never used for parallax.
 - `detailFade = clamp(2 - d_km, 0, 1)` (`planet.glsl:731`): soils full within 1 km, gone at 2 km.
 - Lighting `terrain_pbr.glh`: GGX F0 0.04, `(1-F)` diffuse, Hapke factor

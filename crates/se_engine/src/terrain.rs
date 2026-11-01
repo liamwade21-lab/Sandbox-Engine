@@ -1112,11 +1112,16 @@ impl Plugin for TerrainPlugin {
             .add_systems(Update, animate_water_display)
             .add_systems(
                 PostUpdate,
-                // After update_terrain, so the camera collides with this frame's nodes.
+                // After update_terrain, so the camera collides with this frame's nodes. Before Bevy
+                // turns the projection into this frame's matrix: `keep_camera_above_ground` brings
+                // the near plane in to the ground, and `sync_camera_transform` sets it each frame from
+                // the reference sphere, kilometres below high ground (11 km on Eris, so the near
+                // plane sat 11 m out and cut away the ground in front of a camera 1.5 m up).
                 (update_eclipses, update_terrain, cull_sea_patches, keep_camera_above_ground, update_node_transforms)
                     .chain()
                     .after(UniverseSet::Camera)
-                    .before(UniverseSet::FloatingOrigin),
+                    .before(UniverseSet::FloatingOrigin)
+                    .before(bevy::camera::CameraUpdateSystems),
             );
     }
 }
@@ -2186,9 +2191,12 @@ fn update_terrain(
                 let tile = HeightTile { w: n, h: n, data: (*d).clone(), border: crate::terrain_gen::GEN_BORDER, span: crate::terrain_gen::GEN_SPAN };
                 terrain.gen_tiles.insert(k, Arc::new(tile));
             }
-            // A pipeline that never answers (shader error): back to the port's own generator.
-            if terrain.gen_jobs.values().any(|&(_, f)| frame > f + 600) {
-                warn!("terrain generator gave no heights in 600 frames; using the port's own");
+            // A generator that cannot run (its pipeline failed): back to the port's own heights.
+            // Only then: falling back because answers were slow (a job waiting 600 frames, as when
+            // the window was minimized) gave the rest of the planet other heights, kilometres off
+            // the nodes already loaded, with holes between them.
+            if gen_queue.failed() {
+                warn!("terrain generator failed; using the port's own heights");
                 terrain.gen_failed = true;
                 terrain.gen_jobs.clear();
             }

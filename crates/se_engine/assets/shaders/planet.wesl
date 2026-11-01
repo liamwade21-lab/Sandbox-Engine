@@ -1605,11 +1605,35 @@ fn soil_texel(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, z: f32, rot: 
     return t;
 }
 
-// A soil layer with SE's zones: the noise picking them repeats with the soil coordinates, so
-// neighbouring nodes stay seamless.
+// The port's close-up octave: SE's layers are 1024 texels a repeat, so a camera metres up sees a
+// coarse one magnified (a 10 m soil, 1 cm a texel, spans 9 screen pixels a texel at 1.5 m): it
+// blurred into blobs on the way down and the ground seemed to turn into another texture. As a
+// layer is magnified past a texel a pixel, the same layer at an eighth of its repeat fades in,
+// modulating brightness, relief and occlusion around its mean, so the ground keeps its look and
+// stays sharp down to the camera's 1.5 m.
+const SOIL_OCTAVE: f32 = 8.0;
+const SOIL_OCTAVE_STRENGTH: f32 = 0.55;
+
+// A soil layer with SE's zones, and the close-up octave where it is magnified.
 fn soil_layer(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, period_m: f32, rot: bool) -> SoilTexel {
     let n = max(i32(round(SOIL_WRAP_M / period_m)), 1);
-    let kz = 8.0 * clamp(vnoise_tiled(vec3<f32>(uv, f32(l * 3)), vec2<i32>(n, n)).x * 0.5 + 0.5, 0.0, 0.9999);
+    var o = soil_zoned(l, uv, dx, dy, n, f32(l * 3), rot);
+    let texels = max(length(dx), length(dy)) * 1024.0;
+    let k = (1.0 - smoothstep(1.0 / SOIL_OCTAVE, 1.0, texels)) * SOIL_OCTAVE_STRENGTH;
+    if k > 0.005 {
+        let f = soil_zoned(l, uv * SOIL_OCTAVE, dx * SOIL_OCTAVE, dy * SOIL_OCTAVE, n * i32(SOIL_OCTAVE), f32(l * 3) + 1.5, rot);
+        let mean = to_gamma(textureSampleLevel(soil_tex, soil_smp, vec2<f32>(0.5), l, 20.0).rgb);
+        o.col *= mix(1.0, luma(f.col) / max(luma(mean), 0.02), k);
+        o.slope += f.slope * k;
+        o.rhao.b *= mix(1.0, f.rhao.b, k);
+    }
+    return o;
+}
+
+// A soil layer with SE's zones: the noise picking them repeats with the soil coordinates (`n`
+// repeats across the 4096 m wrap), so neighbouring nodes stay seamless.
+fn soil_zoned(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, n: i32, seed: f32, rot: bool) -> SoilTexel {
+    let kz = 8.0 * clamp(vnoise_tiled(vec3<f32>(uv, seed), vec2<i32>(n, n)).x * 0.5 + 0.5, 0.0, 0.9999);
     let za = floor(kz);
     let fr = kz - za;
     // One zone where the blend has not begun or is done (as in `sample_layer`).
@@ -1670,12 +1694,19 @@ fn soil_look(k: i32, xy: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, q: f32, surf: 
         mod_ao = mix(1.0, m.rhao.b, rm);
     }
     var o: SoilLook;
-    // Colour: (detail x Modul brightness) moved in HSV by the ground minus the texture's mean.
-    let c = det * mix(1.0, lum, md.x);
-    let c_avg = det_avg * mix(1.0, lum_avg, md.x);
-    var hsv = rgb2hsv(c) + surf - rgb2hsv(c_avg);
-    hsv = vec3<f32>(fract(hsv.x), clamp(hsv.yz, vec2<f32>(0.0), vec2<f32>(1.0)));
-    o.col = to_linear(hsv2rgb(hsv));
+    // Colour: (detail x Modul brightness) taken to the ground's colour. SE moves each texel in HSV
+    // by the ground minus the texture's mean; a grey texel's hue is arbitrary, so the saturation
+    // that brings in turned rock textures' greys green, gold and red, and the ground changed colour
+    // as the soils resolved on the way down (orange from 200 m, gold at 20 m). Here the ground's
+    // colour carries the texture's brightness, and half its colour departures around its mean: the
+    // mean stays the ground's at every distance.
+    let c = to_linear(det * mix(1.0, lum, md.x));
+    let c_avg = to_linear(det_avg * mix(1.0, lum_avg, md.x));
+    let lc = luma(c);
+    let la = max(luma(c_avg), 1e-3);
+    let g = to_linear(hsv2rgb(surf));
+    let tint = c / max(lc, 1e-3) - c_avg / la;
+    o.col = max((g + tint * luma(g) * 0.5) * min(lc / la, 4.0), vec3<f32>(0.0));
     o.slope = mix(det_slope, mod_slope, md.y * ratio);
     o.rough = clamp(det_rh.x * mix(1.0, lum, md.z) * b.y + b.x, 0.05, 1.0);
     o.ao = mix(det_rh.y, mod_ao, md.w * ratio);
@@ -1766,8 +1797,12 @@ fn soil_detail(sc: SoilCoords, n: vec3<f32>, slope: f32, ground: vec3<f32>, surf
     let t = select(0.0, b2 / (SOIL_MIX_SOFTNESS + b2), k2 >= 0 && k2 != k1);
     // The soil metres come from the node's uv: on a big node right by the camera (a coarse one
     // before its children load) they step in f32 units of about edge / 2^23, which scrambles the
-    // fine layer (sparkle). It fades out until a pixel spans a few such steps.
-    let q = smoothstep(4.0, 16.0, max(length(dx), length(dy)) / max(planet.soil_tile.z * 1.2e-7, 1e-12));
+    // fine layer (sparkle). It fades out until a pixel spans a few such steps: from 1.5 steps, full
+    // at 4 (the derivatives then wobble by a quarter, a third of a mip). It used to need 16, which
+    // took the soils off every node coarser than ~500 m under a camera 1.5 m up: while the finer
+    // nodes loaded (or lagged a fast camera) the ground at its feet showed as from hundreds of
+    // metres up, and looked out of reach.
+    let q = smoothstep(1.5, 4.0, max(length(dx), length(dy)) / max(planet.soil_tile.z * 1.2e-7, 1e-12));
     let sh = rgb2hsv(to_gamma(surf));
     var o = soil_look(k1, xy, dx, dy, q, sh);
     if t > 0.004 {

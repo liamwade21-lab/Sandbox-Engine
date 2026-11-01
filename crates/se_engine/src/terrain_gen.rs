@@ -4,6 +4,7 @@
 //! main world -> render world (compute pass) -> back through a one-shot readback.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
@@ -15,6 +16,7 @@ use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderGraph, RenderQueue};
 use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
+use bevy::shader::ShaderCacheError;
 
 /// Samples a side of a node's grid: the node's 129 normal-map texels and 8 more on each side (the
 /// mesh's skirt ring and the parent's vertices just outside the node).
@@ -60,6 +62,16 @@ struct GenJob {
 pub struct GenQueue {
     jobs: Vec<GenJob>,
     dispatched: Arc<Mutex<Vec<(u64, Handle<ShaderBuffer>)>>>,
+    /// Set by the render world when the generator's pipeline fails to build (shader error).
+    failed: Arc<AtomicBool>,
+}
+
+impl GenQueue {
+    /// The generator cannot run: its compute pipeline failed. Slow answers (the window minimized,
+    /// the shader still compiling) are not failures; the jobs simply wait.
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Relaxed)
+    }
 }
 
 /// The main world's handle on the generator.
@@ -222,6 +234,17 @@ fn prepare_jobs(
 
 fn dispatch(mut ctx: RenderContext, cache: Res<PipelineCache>, pipeline: Option<Res<GenPipeline>>, mut jobs: ResMut<RenderJobs>, queue: Res<GenQueue>) {
     let Some(pipeline) = pipeline else { return };
+    match cache.get_compute_pipeline_state(pipeline.pipeline) {
+        // The shader (or an import) still loading: wait.
+        CachedPipelineState::Err(ShaderCacheError::ShaderNotLoaded(_) | ShaderCacheError::ShaderImportNotYetAvailable) => return,
+        CachedPipelineState::Err(e) => {
+            if !queue.failed.swap(true, Ordering::Relaxed) {
+                error!("terrain generator pipeline failed: {e}");
+            }
+            return;
+        }
+        _ => {}
+    }
     let Some(compute) = cache.get_compute_pipeline(pipeline.pipeline) else { return };
     if jobs.ready.is_empty() {
         return;
