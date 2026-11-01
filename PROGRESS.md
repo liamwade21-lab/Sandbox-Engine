@@ -4,10 +4,16 @@
 
 - The port runs and covers most of SpaceEngine; see README.md "Status" and
   `docs/missing_features.md` for what is left.
-- The work below is committed on `main` (nothing pushed), except the second-landing fix, which
-  is on the branch `second-landing-terrain` (not merged yet).
+- The work below is committed on `main` (nothing pushed).
 
-## On a branch
+## Recently done
+
+- **Info panel counts (2026-11-01):** the top-left info panel's "N children" row is replaced by
+  SE's counts, each opening to a list: a star or star system shows "Number of planets",
+  "Number of dwarf planets" and "Number of stars"; a planet shows "Number of moons". Counts look
+  through barycentres (the Sun has 8 planets including Earth; Earth has 1 moon, Pluto 5) and skip
+  asteroids, comets and spacecraft. Clicking those rows no longer also selects the star behind
+  them (the panel is on egui's background layer, which egui does not count as interface).
 
 - **Ground stops refining from the second landing on (2026-11-01):** each planet keeps up to
   1500 generated height grids; past that, the cleanup threw away every newly arrived grid whose
@@ -17,8 +23,6 @@
   used. Checked with three fast landings on RS 8514-1828-5-27938-309 2: all reach the finest
   terrain and stay sharp. This is probably also behind the user's original "limit to how close
   I can get" report.
-
-## Recently done
 
 - **Nebulae (2026-10-31):** procedural nebulae are volumetric like SE's, nearer nebulae draw
   over farther ones, and nebulae no longer pop in and out. The user confirmed the look.

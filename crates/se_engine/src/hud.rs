@@ -433,8 +433,81 @@ fn orbital_resonances(cat: &se_core::catalog::Catalog, i: usize) -> String {
     out.join(", ")
 }
 
+/// What an object orbiting the selection is counted as in the info panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChildGroup {
+    Planets,
+    DwarfPlanets,
+    Moons,
+    Stars,
+}
+
+fn child_group(cat: &se_core::catalog::Catalog, c: ObjectRef) -> Option<ChildGroup> {
+    use se_core::catalog::BodyTag;
+    match c {
+        ObjectRef::Star(i) if !cat.stars[i as usize].barycenter => Some(ChildGroup::Stars),
+        ObjectRef::Body(i) => match cat.bodies[i as usize].tag {
+            BodyTag::Planet => Some(ChildGroup::Planets),
+            BodyTag::DwarfPlanet => Some(ChildGroup::DwarfPlanets),
+            BodyTag::Moon | BodyTag::DwarfMoon => Some(ChildGroup::Moons),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_barycenter(cat: &se_core::catalog::Catalog, r: ObjectRef) -> bool {
+    matches!(r, ObjectRef::Star(i) if cat.stars[i as usize].barycenter)
+}
+
+/// What orbits `sel`, seen through barycentres: the Sun's planets include Earth (under the
+/// Earth-Moon barycentre, beside the Moon), not the barycentre or the 200 binary asteroids'
+/// barycentres; a star system's stars are its component stars. A planet under a barycentre also
+/// has that barycentre's moons (Earth the Moon, Pluto Charon and the rest).
+fn orbiting(cat: &se_core::catalog::Catalog, sel: ObjectRef) -> Vec<ObjectRef> {
+    fn walk(cat: &se_core::catalog::Catalog, of: ObjectRef, depth: u32, skip: ObjectRef, out: &mut Vec<ObjectRef>) {
+        // A child can share its parent's name (planets/Stars.sc "Vega" under "Vega/ALF Lyr").
+        for &c in cat.children_of(cat.display_name(of)) {
+            if c == skip || c == of || out.contains(&c) {
+                continue;
+            }
+            if is_barycenter(cat, c) {
+                if depth < 4 {
+                    walk(cat, c, depth + 1, skip, out);
+                }
+            } else {
+                out.push(c);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(cat, sel, 0, sel, &mut out);
+    if let ObjectRef::Body(i) = sel {
+        let parent = &cat.bodies[i as usize].parent;
+        if let Some(p) = cat.find(parent).filter(|&p| is_barycenter(cat, p)) {
+            let mut sib = Vec::new();
+            walk(cat, p, 0, sel, &mut sib);
+            for c in sib {
+                if child_group(cat, c) == Some(ChildGroup::Moons) && !out.contains(&c) {
+                    out.push(c);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// egui temp-data key of the info panel's clickable rects (its count headers and their lists).
+const INFO_HITS: &str = "info_table_hits";
+
+/// Whether the pointer is over the interface, so a click there does not also select an object.
+/// The info panel sits on egui's background layer, which egui itself never counts as over the
+/// interface: a click on its fold-out arrows also picked the star under them.
 pub fn pointer_over_ui(ctx: &egui::Context) -> bool {
     ctx.is_pointer_over_egui()
+        || ctx.pointer_latest_pos().is_some_and(|p| {
+            ctx.data(|d| d.get_temp::<Vec<egui::Rect>>(egui::Id::new(INFO_HITS))).is_some_and(|rects| rects.iter().any(|r| r.contains(p)))
+        })
 }
 
 fn draw_hud(
@@ -459,6 +532,8 @@ fn draw_hud(
     ),
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    // The info panel puts back its clickable rects each frame it is drawn.
+    ctx.data_mut(|d| d.remove_temp::<Vec<egui::Rect>>(egui::Id::new(INFO_HITS)));
     if hud.hidden {
         return Ok(());
     }
@@ -844,19 +919,40 @@ fn draw_hud(
                 line(ui, "RA/Dec", format!("{ra:.4}h {dec:+.4}° (from the Sun)"));
                 line(ui, "Distance from the Sun", format!("{:.4} pc", pos.to_meters().length() / METERS_PER_PC));
             }
-            // A child can share its parent's name (planets/Stars.sc "Vega" under "Vega/ALF Lyr"): skip itself.
-            let children: Vec<ObjectRef> = cat.children_of(cat.display_name(sel)).iter().copied().filter(|&c| c != sel).collect();
-            if !children.is_empty() {
-                egui::CollapsingHeader::new(format!("{} {}", children.len(), i18n.tr("children"))).show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                        for &c in children.iter().take(200) {
-                            if ui.link(cat.display_name(c)).clicked() {
-                                cam.selected = Some(c);
+            // SE's counts of what orbits the selection ("Number of planets", "... moons", "... stars"),
+            // each opening to the list. Asteroids, comets and spacecraft are not counted, as in SE.
+            let children = orbiting(cat, sel);
+            let mut hits: Vec<egui::Rect> = Vec::new();
+            for (key, group) in [
+                ("Number of planets", ChildGroup::Planets),
+                ("Number of dwarf planets", ChildGroup::DwarfPlanets),
+                ("Number of moons", ChildGroup::Moons),
+                ("Number of stars", ChildGroup::Stars),
+            ] {
+                // A planet counts its moons; a star or a star system its planets and stars (moons seen
+                // through the Earth-Moon or Pluto-Charon barycentre are not the Sun's).
+                if (group == ChildGroup::Moons) != matches!(sel, ObjectRef::Body(_)) {
+                    continue;
+                }
+                let members: Vec<ObjectRef> = children.iter().copied().filter(|&c| child_group(cat, c) == Some(group)).collect();
+                if members.is_empty() {
+                    continue;
+                }
+                let r = egui::CollapsingHeader::new(egui::RichText::new(format!("{}: {}", i18n.tr(key), members.len())).size(13.0))
+                    .id_salt(key)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                            for &c in members.iter().take(200) {
+                                if ui.link(cat.display_name(c)).clicked() {
+                                    cam.selected = Some(c);
+                                }
                             }
-                        }
+                        });
                     });
-                });
+                hits.push(r.header_response.rect);
+                hits.extend(r.body_response.map(|b| b.rect));
             }
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(INFO_HITS), hits));
         });
     }
 
@@ -968,5 +1064,24 @@ fn format_angle(a: f64) -> String {
         format!("{:.3}'", deg * 60.0)
     } else {
         format!("{:.3}\"", deg * 3600.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A click on the info panel's fold-out rows is the interface's, not a pick of the star behind.
+    #[test]
+    fn info_panel_rows_count_as_interface() {
+        let ctx = egui::Context::default();
+        let at = |x: f32, y: f32| egui::RawInput { events: vec![egui::Event::PointerMoved(egui::pos2(x, y))], ..Default::default() };
+        let row = egui::Rect::from_min_size(egui::pos2(10.0, 240.0), egui::vec2(180.0, 18.0));
+        let _ = ctx.run_ui(at(20.0, 248.0), |ui| {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(INFO_HITS), vec![row]));
+        });
+        assert!(pointer_over_ui(&ctx));
+        let _ = ctx.run_ui(at(600.0, 400.0), |_| {});
+        assert!(!pointer_over_ui(&ctx));
     }
 }
