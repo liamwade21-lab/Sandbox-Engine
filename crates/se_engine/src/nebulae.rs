@@ -9,9 +9,11 @@
 //!
 //! * **Far field**: one billboard per catalog nebula at infinity, drawn with the galaxy far-sprite shader
 //!   (a second `GalaxyFarMaterial` instance, soft profile), coloured by the model's stored `sumColor`.
+//! * Nebulae without a named sprite model, procedural ones included, are ray-marched (`nebula_raymarch.rs`).
 //! * **Near volume**: when the angular radius exceeds `build_px` or the camera is inside, the model is built
 //!   on the async pool and drawn with the galaxy model shader (emission `Add` + dust with SE's
-//!   `ONE, ONE_MINUS_SRC_ALPHA`), using the nebula atlas `sprites_neb.png` (FUN_140168bd0).
+//!   `ONE, ONE_MINUS_SRC_ALPHA`), using the nebula atlas `sprites_neb.png` (FUN_140168bd0). It fades in
+//!   from 4 to 7 px of radius (`fade_in`) while the far sprite fades out.
 //! * Catalog nebulae with `NoModel true` (M 43, Sh2-279: part of the M 42 model) get no model and no
 //!   sprite (FUN_140172400 sets model index 0xfffe).
 //! * Like the galaxies, everything sorts after all other transparent items and fades out in daylight.
@@ -27,6 +29,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use bevy::window::PrimaryWindow;
 use se_core::catalog::NebulaRecord;
+use se_core::custom_model::CustomModelSet;
 use se_core::galaxy_model::{
     GalaxyModelDef, ModelCatalog, ModelImages, ModelMethod, ModelSelection, RgbaImage, SpriteLayer, build_galaxy_model,
     model_textures, nebula_position_hash, parse_pst_kind,
@@ -36,8 +39,8 @@ use se_core::vfs::Vfs;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, main_def_doc, GalaxyModelMaterial, GalaxySettings,
-    ModelParams, SORT_PX, SpriteAtlas, SpriteBuffers, SpriteOrder, angular_px, far_uniforms, load_atlas, model_fade, pad_aabb,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, NEBULA_FAR_BIAS, NEBULA_MODEL_BIAS, RESIDENT_SLOTS, main_def_doc, nebula_model_bias, GalaxyModelMaterial, GalaxySettings,
+    ModelParams, SORT_PX, SpriteAtlas, SpriteBuffers, SpriteOrder, angular_px, far_uniforms, load_atlas, pad_aabb,
     se_bright_term, se_glow_bright, setup_galaxies, sprite_vertex, update_galaxies,
 };
 
@@ -67,7 +70,8 @@ pub struct NebulaSettings {
     pub model_brightness: f32,
     /// Multiplier on SE's dust strength (absBright = the model's `Transparency`); 1 = SE.
     pub dust_strength: f32,
-    /// Build a model when the angular radius exceeds this many pixels.
+    /// Build a model when the angular radius exceeds this many pixels: below SE's fade-in from 4 px
+    /// (`fade_in`), so the model is ready when it starts to show.
     pub build_px: f32,
     /// Maximum resident models.
     pub max_models: usize,
@@ -91,7 +95,7 @@ impl Default for NebulaSettings {
             brightness: 0.8,
             model_brightness: 1.0,
             dust_strength: 1.0,
-            build_px: 4.0,
+            build_px: 2.0,
             max_models: 4,
             mag_ref: 7.0 + MAG_REF_OFFSET,
             mag_limit: 7.0,
@@ -113,6 +117,12 @@ impl Default for NebulaSettings {
         }
         s
     }
+}
+
+/// SE's fade-in of the nebula models with their radius on screen `px`: `clamp((px - 4) / 3)`, from 4 to 7
+/// px (`FUN_1402b3020` for the sprite models, `FUN_140488a20` for the ray-marched ones).
+pub(crate) fn fade_in(px: f64) -> f32 {
+    ((px as f32 - 4.0) / 3.0).clamp(0.0, 1.0)
 }
 
 struct BuiltNebula {
@@ -218,6 +228,8 @@ pub(crate) struct NebulaState {
     /// Model indices per nebula `Type` (`UseForType`), restricted to the supported generators.
     pools: HashMap<String, Vec<usize>>,
     model_of: Vec<Option<usize>>,
+    /// The ray-marched models (`models/custom/*.cfg`), whose type pools SE draws from.
+    custom: Arc<CustomModelSet>,
     atlas: SpriteAtlas,
     far: Handle<GalaxyFarMaterial>,
     slots: Vec<Slot>,
@@ -236,26 +248,48 @@ pub(crate) struct NebulaState {
 pub(crate) struct ResidentNebulae(pub Vec<(usize, f32)>);
 
 impl NebulaState {
-    /// Number of sprite models of a nebula `Type` (the random pool of procedural nebulae).
+    /// Number of models in the random pool of a nebula `Type`, which procedural nebulae roll into: the
+    /// ray-marched pool, as SE's `FUN_14026f250` takes the custom pools (`DAT_140d8dcd0` is 1).
     pub(crate) fn pool_len(&self, kind: &str) -> u32 {
-        self.pools.get(kind).map_or(0, |p| p.len() as u32)
+        self.custom.pool_len(kind)
     }
 
     /// The material of the catalog far sprites.
     pub(crate) fn far_handle(&self) -> Handle<GalaxyFarMaterial> {
         self.far.clone()
     }
+}
 
-    /// Model of a nebula added to the catalog at runtime: the raw pool draw of a procedural nebula, else
-    /// the position hash of the catalog nebulae.
-    fn pick_runtime(&self, rec: &NebulaRecord) -> Option<usize> {
-        let pool = self.pools.get(&rec.kind).filter(|p| !p.is_empty())?;
-        let i = match rec.model_roll {
-            Some(r) => r % pool.len() as u32,
-            None => nebula_position_hash([rec.pos_pc.x, rec.pos_pc.y, rec.pos_pc.z]) % pool.len() as u32,
-        };
-        Some(pool[i as usize]).filter(|&m| supported(self.models.models()[m].method))
+/// SE's model choice for a nebula (`FUN_140486cb0`, `FUN_140270120`, `FUN_14026f250`): a ray-marched model
+/// naming it, then a sprite model naming it, else the ray-marched pool of its type (the switch
+/// `DAT_140d8dcd0` is constant 1) at its procedural roll or its position hash. Returns (sprite model,
+/// ray-marched model).
+fn choose_models(
+    models: &ModelCatalog,
+    pools: &HashMap<String, Vec<usize>>,
+    custom: &CustomModelSet,
+    rec: &NebulaRecord,
+) -> (Option<usize>, Option<usize>) {
+    let mut pick = None;
+    let mut raymarch = custom.named(&rec.names);
+    for n in rec.names.iter().filter(|_| raymarch.is_none()) {
+        // Hubble type "E0" has no pool, so only an exact `UseForObject` match returns a model.
+        if let ModelSelection::Model(i) = models.select(n, "E0", [0.0; 3]) {
+            pick = Some(i);
+            break;
+        }
     }
+    let h = rec.model_roll.unwrap_or_else(|| nebula_position_hash([rec.pos_pc.x, rec.pos_pc.y, rec.pos_pc.z]));
+    if pick.is_none() && raymarch.is_none() {
+        raymarch = custom.rolled(&rec.kind, h);
+    }
+    // A type without ray-marched models (none in the shipped data) falls back to its sprite pool.
+    if pick.is_none() && raymarch.is_none() {
+        if let Some(pool) = pools.get(&rec.kind).filter(|p| !p.is_empty()) {
+            pick = Some(pool[(h % pool.len() as u32) as usize]);
+        }
+    }
+    (pick, raymarch)
 }
 
 pub struct NebulaePlugin;
@@ -384,24 +418,7 @@ fn setup_nebulae(
             hidden += 1;
             continue;
         }
-        let mut pick = None;
-        let mut raymarch = custom.named(&rec.names);
-        for n in rec.names.iter().filter(|_| raymarch.is_none()) {
-            // Hubble type "E0" has no pool, so only an exact `UseForObject` match returns a model.
-            if let ModelSelection::Model(i) = models.select(n, "E0", [0.0; 3]) {
-                pick = Some(i);
-                break;
-            }
-        }
-        if pick.is_none() && raymarch.is_none() {
-            raymarch = custom.pooled(&rec.kind, [rec.pos_pc.x, rec.pos_pc.y, rec.pos_pc.z]);
-        }
-        if pick.is_none() && raymarch.is_none() {
-            if let Some(pool) = pools.get(&rec.kind).filter(|p| !p.is_empty()) {
-                let h = nebula_position_hash([rec.pos_pc.x, rec.pos_pc.y, rec.pos_pc.z]);
-                pick = Some(pool[(h % pool.len() as u32) as usize]);
-            }
-        }
+        let (mut pick, mut raymarch) = choose_models(&models, &pools, &custom, rec);
         // Debug override: SE_NEB_FORCE="Ring Nebula=Plan0" gives that catalog nebula that model.
         if let Some((target, model)) = force.as_ref() {
             if rec.names.iter().any(|n| n.eq_ignore_ascii_case(target)) {
@@ -423,7 +440,7 @@ fn setup_nebulae(
         raymarch_of.iter().flatten().count(),
         hidden
     );
-    commands.insert_resource(crate::nebula_raymarch::RaymarchAssign { set: custom, model_of: raymarch_of });
+    commands.insert_resource(crate::nebula_raymarch::RaymarchAssign { set: custom.clone(), model_of: raymarch_of });
     info!(
         "nebulae: {} models, {} textures, {} of {} catalog nebulae use a sprite model",
         models.models().len(),
@@ -479,7 +496,7 @@ fn setup_nebulae(
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
     let gs = nebula_far_settings(&settings);
-    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
+    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: NEBULA_FAR_BIAS });
     let far_mesh = meshes.add(mesh);
     let mut color_queue: Vec<usize> = (0..n).filter(|&i| model_of[i].is_some() && vert_of[i].is_some()).collect();
     // Brightest first (popped from the back).
@@ -491,6 +508,7 @@ fn setup_nebulae(
         textures: Arc::new(textures),
         pools,
         model_of,
+        custom,
         atlas,
         far,
         slots: Vec::new(),
@@ -535,14 +553,16 @@ pub(crate) fn update_nebulae(
     mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
     mut resident_out: ResMut<ResidentNebulae>,
+    mut assign: ResMut<crate::nebula_raymarch::RaymarchAssign>,
 ) {
     let st = &mut *st;
     let cat = &data.catalog;
     // Nebulae added to the catalog at runtime (procedural `RN` nebulae) get their model choice here.
     while st.model_of.len() < cat.nebulae.len() {
-        let pick = st.pick_runtime(&cat.nebulae[st.model_of.len()]);
-        st.model_of.push(pick);
+        let (pick, raymarch) = choose_models(&st.models, &st.pools, &st.custom, &cat.nebulae[st.model_of.len()]);
+        st.model_of.push(pick.filter(|&i| supported(st.models.models()[i].method)));
         st.vert_of.push(None);
+        assign.model_of.push(raymarch);
     }
     resident_out.0.clear();
     let now = time.elapsed_secs();
@@ -636,6 +656,7 @@ pub(crate) fn update_nebulae(
         let mat = model_mats.add(GalaxyModelMaterial {
             uniforms: ModelParams { center_rel: Vec4::ZERO, params: Vec4::new(1.0, 2.0, 0.0, 0.0), params2: Vec4::ZERO },
             atlas: st.atlas.handle.clone(),
+            depth_bias: NEBULA_MODEL_BIAS,
         });
         let centres = built.buf.centres();
         let mesh = meshes.add(built.buf.into_mesh());
@@ -667,7 +688,7 @@ pub(crate) fn update_nebulae(
         let def = &st.models.models()[st.model_of[slot.nebula].unwrap()];
         let d = (rec.pos_pc - cam_pc).length();
         let px = angular_px(rec.radius_pc, d, focal);
-        let fade = if settings.enabled { model_fade(px, settings.build_px as f64) } else { 0.0 };
+        let fade = if settings.enabled { fade_in(px) } else { 0.0 };
         let center_rel = (rec.pos_pc - cam_pc).as_vec3().extend(fade);
         // SE's nebula draw (FUN_1402b3020): emBright = DAT_14080b5a4 (GlowBrightMin x the GlowMagnLimit
         // coefficient) x model Brightness x hdrNebulaSpriteBright (+0x35f0) x b, absBright = Transparency x b,
@@ -680,12 +701,13 @@ pub(crate) fn update_nebulae(
         if let Some(mut m) = model_mats.get_mut(&ready.mat) {
             m.uniforms.center_rel = center_rel;
             m.uniforms.params = Vec4::new(k_em, 2.0, k_dust, 0.0);
+            m.depth_bias = nebula_model_bias(d);
         }
         if let Ok(mut v) = vis.get_mut(ready.entity) {
             *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
         }
         ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
-        if n_res < 8 && fade > 0.0 {
+        if n_res < RESIDENT_SLOTS && fade > 0.0 {
             far_u.resident[n_res] = Vec4::new(slot.nebula as f32, fade, 0.0, 0.0);
             n_res += 1;
         }

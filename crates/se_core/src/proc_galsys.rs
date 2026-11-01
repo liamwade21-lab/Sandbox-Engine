@@ -352,7 +352,7 @@ pub struct ProcNebula {
     pub lum: f32,
     /// Random orientation `(w, x, y, z)` of the nebula model.
     pub quat: [f32; 4],
-    /// Raw draw of the sprite-model pool pick (`pool[class][roll % len]`), if the pool is not empty.
+    /// Raw draw of the model pool pick (`pool[class][roll % len]`), if the pool is not empty.
     pub model_roll: Option<u32>,
 }
 
@@ -371,9 +371,9 @@ pub fn abs_mag_of_lum(lum: f32) -> f32 {
 // Generation
 // ---------------------------------------------------------------------------------------------
 
-/// Builds the nebulae and clusters of a galaxy. `nebula_pools[c]` is the number of sprite models of
-/// nebula class `c` (1 diffuse, 2 planetary, 3 SNR; index 0 unused), which sets how many draws the
-/// model pick consumes.
+/// Builds the nebulae and clusters of a galaxy. `nebula_pools[c]` is the number of models in the pool of
+/// nebula class `c` (1 diffuse, 2 planetary, 3 SNR; index 0 unused; the ray-marched custom models in 0.991,
+/// `FUN_14026f250`), which sets how many draws the model pick consumes.
 pub fn generate_system(shape: &GalaxyShape, cfg: &DeepSkyConfig, emission: &dyn EmissionMap, nebula_pools: [u32; 4]) -> GalaxySystem {
     let seed = shape.seed();
     let nebulae = generate_nebulae(shape, cfg, emission, nebula_pools, seed);

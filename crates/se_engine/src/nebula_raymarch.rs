@@ -1,5 +1,6 @@
 //! Ray-marched nebulae: the `CustomModel`s of `models/custom/*.cfg` (`se_core::custom_model`,
-//! docs/formats/nebula_raymarch.md). SE draws every catalog nebula without a named sprite model this way.
+//! docs/formats/nebula_raymarch.md). SE draws every nebula without a named sprite model this way, the
+//! procedural ones included.
 //!
 //! `galaxy_nebula_raymarch.wesl` is SE's `nebula_raymarch.glsl` translated: the script's keys fill SE's
 //! uniform block `CustomModelUniforms2` (`uFlags`, `uIntData`, `uFloatData[39]`, laid out by
@@ -17,6 +18,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, Face, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, TextureDimension, TextureFormat,
@@ -24,14 +26,16 @@ use bevy::render::render_resource::{
 use bevy::shader::ShaderRef;
 use bevy::window::PrimaryWindow;
 use se_core::custom_model::{BaseShape, CustomModel, CustomModelSet};
+use se_core::star_octree::sphere_meets_cone;
 
 use crate::camera::FlyCamera;
 use crate::data::SeData;
-use crate::galaxies::{GalaxyFarMaterial, angular_px, se_bright_term, se_glow_bright};
-use crate::nebulae::{NebulaSettings, NebulaState, ResidentNebulae, update_nebulae};
+use crate::galaxies::{GalaxyFarMaterial, angular_px, nebula_model_bias, se_bright_term, se_glow_bright};
+use crate::nebulae::{NebulaSettings, NebulaState, ResidentNebulae, fade_in, update_nebulae};
 
-/// Volumes drawn at once (the largest on screen).
-const MAX_VOLUMES: usize = 4;
+/// Volumes drawn at once (the largest in view), since procedural nebulae fill the view inside a galaxy.
+/// With the sprite models (`NebulaSettings::max_models`) they fit the far sprites' `RESIDENT_SLOTS`.
+const MAX_VOLUMES: usize = 12;
 /// `uFloatData` vec4s of SE's `CustomModelUniforms2`; must match `galaxy_nebula_raymarch.wesl`.
 pub const FLOAT_SLOTS: usize = 39;
 
@@ -151,6 +155,8 @@ pub struct RaymarchMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub noise: Handle<Image>,
+    /// `galaxies::nebula_model_bias` of the nebula's distance, so nearer volumes draw over farther ones.
+    pub depth_bias: f32,
 }
 
 impl Material for RaymarchMaterial {
@@ -165,8 +171,8 @@ impl Material for RaymarchMaterial {
         AlphaMode::Premultiplied
     }
     fn depth_bias(&self) -> f32 {
-        // With the galaxy and nebula model emission (`GalaxyModelMaterial`).
-        -3.0e15
+        // With the nebula sprite models, after the galaxy models, far to near.
+        self.depth_bias
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -210,7 +216,7 @@ pub fn pack(m: &CustomModel) -> (UVec4, [Vec4; FLOAT_SLOTS]) {
 /// `clamp((px - 4) / 3)` times SE's brightness term (`clamp(NebulaBrightMin coef(NebulaMagnLimit) L / d^2 -
 /// NebulaBrightMin)`, as for the sprite models), `px` the nebula's own radius on screen.
 fn draw_fade(px: f64, bright: f32) -> f32 {
-    ((px as f32 - 4.0) / 3.0).clamp(0.0, 1.0) * bright
+    fade_in(px) * bright
 }
 
 #[derive(Resource, Default)]
@@ -253,12 +259,20 @@ fn update_volumes(
     let cam_pc = cam.pos.to_parsecs();
     let height = windows.iter().next().map(|w| w.resolution.physical_height()).unwrap_or(900) as f64;
     let focal = height * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    // The cone around the screen's corners: volumes outside it would take the slots of visible ones.
+    let aspect = windows.iter().next().map_or(16.0 / 9.0, |w| (w.width() / w.height().max(1.0)) as f64);
+    let half_fov = (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    let view = ((cam.rot * DVec3::NEG_Z).normalize(), (half_fov * (1.0 + aspect * aspect).sqrt()).atan());
 
-    // The ray-marched nebulae big enough on screen, largest first.
+    // The ray-marched nebulae in view and big enough on screen, largest first.
     let mut wanted: Vec<(f64, usize, usize, f32)> = Vec::new();
     if settings.enabled {
         for (n, m) in assign.model_of.iter().enumerate() {
             let (Some(m), Some(rec)) = (m, cat.nebulae.get(n)) else { continue };
+            let bound = rec.radius_pc * assign.set.models[*m].bound_radius().max(1.0) * 1.1;
+            if !sphere_meets_cone(cam_pc, view, rec.pos_pc, bound) {
+                continue;
+            }
             let d = (rec.pos_pc - cam_pc).length();
             let px = angular_px(rec.radius_pc, d, focal);
             let m_app = rec.abs_mag + 5.0 * (d.max(1e-9) / 10.0).log10();
@@ -270,7 +284,13 @@ fn update_volumes(
         wanted.sort_by(|a, b| b.0.total_cmp(&a.0));
         wanted.truncate(MAX_VOLUMES);
     }
-    debug!("ray-marched volumes: {:?}", wanted.iter().map(|w| (cat.nebulae[w.1].names[0].as_str(), assign.set.models[w.2].name.as_str(), w.0 as i64)).collect::<Vec<_>>());
+    debug!(
+        "ray-marched volumes (name, model, px, fade, abs mag): {:?}",
+        wanted
+            .iter()
+            .map(|w| (cat.nebulae[w.1].names[0].as_str(), assign.set.models[w.2].name.as_str(), w.0 as i64, w.3, cat.nebulae[w.1].abs_mag as f32))
+            .collect::<Vec<_>>()
+    );
 
     if vols.mesh == Handle::default() {
         vols.mesh = meshes.add(Sphere::new(1.03).mesh().ico(3).expect("icosphere"));
@@ -301,6 +321,7 @@ fn update_volumes(
                 f: [Vec4::ZERO; FLOAT_SLOTS],
             },
             noise: vols.noise.clone(),
+            depth_bias: crate::galaxies::NEBULA_MODEL_BIAS,
         });
         let e = commands
             .spawn((Mesh3d(vols.mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
@@ -343,13 +364,16 @@ fn update_volumes(
                 ints,
                 f,
             };
+            mm.depth_bias = nebula_model_bias((rec.pos_pc - cam_pc).length());
         }
         if let Ok(mut v) = vis.get_mut(*e) {
             *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
         }
-        // The far sprite hides behind the volume as it fades in.
+        // The far sprite hides behind the volume as it fades in (a procedural nebula's is streamed by
+        // `procsystems.rs`, which reads `resident`).
         resident.0.push((n, fade));
-        if let Some(far) = far.as_mut()
+        if rec.source != "procedural"
+            && let Some(far) = far.as_mut()
             && let Some(slot) = far.uniforms.resident.iter_mut().find(|s| s.x < 0.0)
         {
             *slot = Vec4::new(n as f32, fade, 0.0, 0.0);

@@ -10,7 +10,8 @@
 //! `UseForObject` wins; nebulae left without any model (no named sprite model either) take
 //! `pool[h % len]` from the custom models of their type, with the same position hash `h` as the sprite
 //! pools (`galaxy_model::nebula_position_hash`). The exe's switch between the sprite and the custom pools
-//! (`DAT_140d8dcd0`) is constant 1: unnamed catalog nebulae are always ray-marched.
+//! (`DAT_140d8dcd0`) is constant 1: unnamed catalog nebulae are always ray-marched, and so are the
+//! procedural nebulae, whose generator rolls `pool[roll % len]` (`FUN_14026f250`).
 
 use std::collections::HashMap;
 
@@ -154,8 +155,19 @@ impl CustomModelSet {
 
     /// The pool model of a nebula of type `kind` at `pos_pc`.
     pub fn pooled(&self, kind: &str, pos_pc: [f64; 3]) -> Option<usize> {
+        self.rolled(kind, nebula_position_hash(pos_pc))
+    }
+
+    /// Number of models in the pool of nebula type `kind`.
+    pub fn pool_len(&self, kind: &str) -> u32 {
+        self.pools.get(&kind.to_ascii_lowercase()).map_or(0, |p| p.len() as u32)
+    }
+
+    /// `pool[roll % len]` of type `kind`: the model of a procedural nebula, whose generator draws `roll`
+    /// (`FUN_14026f250`, which takes the custom pools as the switch `DAT_140d8dcd0` is 1).
+    pub fn rolled(&self, kind: &str, roll: u32) -> Option<usize> {
         let pool = self.pools.get(&kind.to_ascii_lowercase()).filter(|p| !p.is_empty())?;
-        Some(pool[(nebula_position_hash(pos_pc) % pool.len() as u32) as usize])
+        Some(pool[(roll % pool.len() as u32) as usize])
     }
 }
 
@@ -204,5 +216,10 @@ CustomModel "spirograph"
         assert_eq!(set.named(&["NGC 2022".into(), "Spirograph Nebula".into()]), Some(1));
         assert_eq!(set.pooled("Diffuse", [1.0, 2.0, 3.0]), Some(0));
         assert_eq!(set.pooled("SNR", [1.0, 2.0, 3.0]), None);
+        // Named models stay in their type's pool, which procedural nebulae roll into.
+        let two = CustomModelSet::new(vec![("b.cfg".into(), CFG.into()), ("a.cfg".into(), CFG.into())]);
+        assert_eq!((two.pool_len("diffuse"), two.pool_len("Planetary"), two.pool_len("SNR")), (2, 2, 0));
+        assert_eq!((two.rolled("Planetary", 6), two.rolled("Planetary", 7)), (Some(1), Some(3)));
+        assert_eq!(two.rolled("SNR", 7), None);
     }
 }

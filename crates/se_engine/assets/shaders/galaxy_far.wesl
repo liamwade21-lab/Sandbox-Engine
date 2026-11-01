@@ -19,7 +19,7 @@ struct FarParams {
     // profile normalisations (integral of the profile over the unit disc) for types 0..3
     norm: vec4<f32>,
     // x: galaxy id (-1 unused), y: model fade (0 = far sprite only, 1 = 3D model only)
-    resident: array<vec4<f32>, 8>,
+    resident: array<vec4<f32>, 16>,
     // Motion blur, as in stars.wesl.
     blur: vec4<f32>,
     blur_delta: vec4<f32>,
@@ -139,7 +139,7 @@ fn vertex(v: Vertex) -> VertexOut {
         return hidden();
     }
     var mfade = 0.0;
-    for (var i = 0u; i < 8u; i = i + 1u) {
+    for (var i = 0u; i < 16u; i = i + 1u) {
         if abs(gal.resident[i].x - v.corner.z) < 0.5 {
             mfade = gal.resident[i].y;
         }

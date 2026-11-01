@@ -34,8 +34,8 @@ use se_core::star_octree::GalaxyFrame;
 use crate::camera::{CommandQueue, FlyCamera};
 use crate::data::{Places, SeData};
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyDensity, GalaxyFarMaterial, GalaxySettings, GalaxyState, angular_px, far_uniforms,
-    pad_aabb,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GALAXY_FAR_BIAS, GalaxyDensity, GalaxyFarMaterial, GalaxySettings, GalaxyState, NEBULA_FAR_BIAS,
+    RESIDENT_SLOTS, angular_px, far_uniforms, pad_aabb,
 };
 use crate::hud::HudState;
 use crate::nebulae::{NebulaSettings, NebulaState, ResidentNebulae};
@@ -197,9 +197,9 @@ fn setup(
     let deep = std::fs::read_to_string(engine.se_path.join("config/main-def.cfg")).map_or_else(|_| DeepSkyConfig::default(), |t| DeepSkyConfig::from_cfg(&t));
     add_nebula_clusters(data.catalog_mut(), &deep);
     let gs = GalaxySettings::default();
-    let clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
-    let neb_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
-    let cat_clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs) });
+    let clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: GALAXY_FAR_BIAS });
+    let neb_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: NEBULA_FAR_BIAS });
+    let cat_clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: GALAXY_FAR_BIAS });
     // SE draws every catalog cluster as a star-like particle (`FUN_140496f00`), not only once its
     // member stars exist: one mesh at absolute positions, translated by minus the camera.
     let particles: Vec<Sprite> = data
@@ -382,8 +382,10 @@ fn gen_input(g: u32, cat: &Catalog, gs: &GalaxyState, ns: &NebulaState, density:
         return None;
     }
     let (lum_radius, dims, seed_pos) = (b.radius, b.dims, b.seed_pos);
-    let count = |name: &str| cat.clusters.iter().filter(|c| c.galaxy == name).count() as u32;
-    let count_n = |name: &str| cat.nebulae.iter().filter(|c| c.galaxy == name).count() as u32;
+    // The generated objects are numbered after the catalog's own: the promoted ones (`source`
+    // "procedural") must not count, or every regeneration would renumber them and promote them again.
+    let count = |name: &str| cat.clusters.iter().filter(|c| c.galaxy == name && c.source != "procedural").count() as u32;
+    let count_n = |name: &str| cat.nebulae.iter().filter(|c| c.galaxy == name && c.source != "procedural").count() as u32;
     let (cc, cn) = if is_mw { (count("Milky Way"), count_n("Milky Way")) } else { (0, 0) };
     let home = is_mw.then(|| {
         let h = frame.to_model(DVec3::ZERO);
@@ -694,11 +696,10 @@ fn sync_materials(
     let mut zero_hidden = |mat: &Handle<GalaxyFarMaterial>, src: Handle<GalaxyFarMaterial>, on: bool, res: &[(usize, f32)]| {
         let Some(mut u) = far_mats.get(&src).map(|m| m.uniforms) else { return };
         u.cam_pos = Vec4::ZERO;
-        u.resident = [Vec4::new(-1.0, 0.0, 0.0, 0.0); 8];
-        for (n, &(c, fade)) in res.iter().take(8).enumerate() {
-            if let Some(&id) = sys.neb_sprite.get(&(c as u32)) {
-                u.resident[n] = Vec4::new(id, fade, 0.0, 0.0);
-            }
+        u.resident = [Vec4::new(-1.0, 0.0, 0.0, 0.0); RESIDENT_SLOTS];
+        let ids = res.iter().filter_map(|&(c, fade)| sys.neb_sprite.get(&(c as u32)).map(|&id| Vec4::new(id, fade, 0.0, 0.0)));
+        for (slot, v) in u.resident.iter_mut().zip(ids) {
+            *slot = v;
         }
         if !on {
             u.params.x = 0.0;
@@ -784,8 +785,13 @@ fn promote_objects(
     let cam_pc = cam.pos.to_parsecs();
     let height = windows.iter().next().map(|w| w.resolution.physical_height()).unwrap_or(900) as f64;
     let focal = height * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    // Nebulae are drawn only in view (`nebula_raymarch.rs`): promote those on screen, largest first, so
+    // the ones off screen do not hold back the ones about to fade in.
+    let aspect = crate::stars::window_aspect(&windows);
+    let half_fov = (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    let screen = ((cam.rot * DVec3::NEG_Z).normalize(), (half_fov * (1.0 + aspect * aspect).sqrt()).atan());
     let mut new_c: Vec<(u32, proc_galsys::ProcCluster, GalaxyFrame)> = Vec::new();
-    let mut new_n: Vec<(u32, proc_galsys::ProcNebula, GalaxyFrame)> = Vec::new();
+    let mut new_n: Vec<(f64, u32, proc_galsys::ProcNebula, GalaxyFrame)> = Vec::new();
     for (&g, slot) in &sys.slots {
         let SlotState::Ready(system) = &slot.state else { continue };
         let rel_cam = slot.frame.rot.inverse() * (cam_pc - slot.frame.center_pc);
@@ -793,6 +799,11 @@ fn promote_objects(
         let in_view = |p: [f32; 3], r: f64| {
             let p = DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
             view.is_none_or(|k| se_core::star_octree::sphere_meets_cone(rel_cam, k, p, r))
+        };
+        let screen = (slot.frame.rot.inverse() * screen.0, screen.1);
+        let on_screen = |p: [f32; 3], r: f64| {
+            let p = DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+            se_core::star_octree::sphere_meets_cone(rel_cam, screen, p, r)
         };
         let rel_cam = [rel_cam.x as f32, rel_cam.y as f32, rel_cam.z as f32];
         let d2 = |p: [f32; 3]| -> f64 {
@@ -811,12 +822,14 @@ fn promote_objects(
         if settings.nebulae {
             for n in &system.nebulae {
                 let d = d2(n.pos).sqrt().max(1.0);
-                if angular_px(n.radius_pc as f64, d, focal) > NEBULA_PROMOTE_PX.max(neb_settings.build_px as f64 * 0.7)
+                let px = angular_px(n.radius_pc as f64, d, focal);
+                // A model's bounding shape reaches up to ~1.7 nebula radii (a box's corners).
+                if px > NEBULA_PROMOTE_PX.max(neb_settings.build_px as f64 * 0.7)
                     && proc_galsys::abs_mag_of_lum(n.lum) + 5.0 * ((d as f32).log10() - 1.0) < NEBULA_PROMOTE_MAG
-                    && in_view(n.pos, n.radius_pc as f64)
+                    && on_screen(n.pos, n.radius_pc as f64 * 2.0)
                     && !sys.promoted_n.contains_key(&(g, n.index))
                 {
-                    new_n.push((g, n.clone(), slot.frame));
+                    new_n.push((px, g, n.clone(), slot.frame));
                 }
             }
         }
@@ -826,6 +839,7 @@ fn promote_objects(
     }
     new_c.sort_by(|a, b| (a.1.radius_pc).total_cmp(&b.1.radius_pc));
     new_c.truncate(3);
+    new_n.sort_by(|a, b| b.0.total_cmp(&a.0));
     new_n.truncate(3);
     let cat = data.catalog_mut();
     for (g, c, frame) in new_c {
@@ -833,7 +847,7 @@ fn promote_objects(
         let i = cat.add_cluster_record(rec);
         sys.promoted_c.insert((g, c.index), i);
     }
-    for (g, n, frame) in new_n {
+    for (_, g, n, frame) in new_n {
         let rec = nebula_record(cat, g, &n, frame);
         let i = cat.add_nebula_record(rec);
         sys.promoted_n.insert((g, n.index), i);

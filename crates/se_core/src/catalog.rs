@@ -291,7 +291,7 @@ pub struct NebulaRecord {
     pub abs_mag: f64,
     pub orientation: DQuat,
     pub source: String,
-    /// Procedural nebulae: raw draw of the sprite-model pool pick (`pool[type][roll % len]`).
+    /// Procedural nebulae: raw draw of the model pool pick (`pool[type][roll % len]`, the ray-marched pools).
     pub model_roll: Option<u32>,
     /// `Randomize` (FUN_140172400): added to the ray-marched model's own as the shader's `uRandomize`.
     pub randomize: [f32; 3],

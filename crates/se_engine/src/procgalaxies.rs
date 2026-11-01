@@ -29,7 +29,8 @@ use se_core::proc_galsys::DeepSkyConfig;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, GalaxySettings, GalaxyState, angular_px, far_uniforms, pad_aabb, profile_type, type_color,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GALAXY_FAR_BIAS, GalaxyFarMaterial, GalaxySettings, GalaxyState, RESIDENT_SLOTS, angular_px, far_uniforms,
+    pad_aabb, profile_type, type_color,
 };
 use crate::universe::UniverseSet;
 
@@ -174,7 +175,7 @@ fn setup_field(
             settings.nebulae = settings.cfg.show_nebulae;
         }
     }
-    let material = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &GalaxySettings::default()) });
+    let material = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &GalaxySettings::default()), depth_bias: GALAXY_FAR_BIAS });
     commands.insert_resource(ProcGalaxyField {
         nodes: HashMap::new(),
         material,
@@ -328,7 +329,7 @@ fn stream_nodes(
                 let entity = built.mesh.map(|m| {
                     let own = far_mats.get(&material).map(|s| s.uniforms).map(|mut u| {
                         u.cam_pos.w = 1.0;
-                        far_mats.add(GalaxyFarMaterial { uniforms: u })
+                        far_mats.add(GalaxyFarMaterial { uniforms: u, depth_bias: GALAXY_FAR_BIAS })
                     });
                     let node_material = own.clone().unwrap_or_else(|| material.clone());
                     fade = own.map(|h| (0.0, h));
@@ -546,11 +547,11 @@ fn sync_material(
     let Some(src) = far_mats.get(&gs.far_handle()).map(|m| m.uniforms) else { return };
     let mut u = src;
     u.cam_pos = Vec4::ZERO;
-    u.resident = [Vec4::new(-1.0, 0.0, 0.0, 0.0); 8];
+    u.resident = [Vec4::new(-1.0, 0.0, 0.0, 0.0); RESIDENT_SLOTS];
     let mut n = 0;
     for &(g, fade) in &gs.resident {
         if let Some(&id) = field.sprite_id.get(&(g as u32)) {
-            if n < 8 {
+            if n < RESIDENT_SLOTS {
                 u.resident[n] = Vec4::new(id, fade, 0.0, 0.0);
                 n += 1;
             }

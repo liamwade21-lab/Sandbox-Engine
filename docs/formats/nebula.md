@@ -43,8 +43,8 @@ Model methods used by the shipped files:
    catalog position unit are [I]; a model without `UseForType` also joins the pool of the type of the first
    nebula it is named for (`model+0x48`, set in the same function), which the port does not do.
 *Correction (2026-10-27):* in 0.991 the exe takes the pool from the ray-marched custom models
-(`DAT_140d8dcd0` is constant 1, see nebula_raymarch.md section 3), so step 2 applies only to procedural
-nebulae; catalog nebulae without a named model are ray-marched.
+(`DAT_140d8dcd0` is constant 1, see nebula_raymarch.md section 3), so step 2 never applies with the shipped
+data: catalog nebulae without a named model and all procedural nebulae (`FUN_14026f250`) are ray-marched.
 
 3. The pool contains **every** model of the type, named ones included (so a random planetary can show the
    Helix image), and since all three procedural generators are implemented the default models `Plan0..3`,
@@ -141,11 +141,12 @@ which is what the stored values describe.
   of the generated sprite colours (`sum(colour * brightness * tile_mean * size^2)`, normalised), computed
   for all nebulae in two background tasks at start-up (brightest first); until then a type colour is used.
   The stored `sumColor` is **not** usable for this (it disagrees with the generated colour for most models).
-* **Near volume**: when the angular radius exceeds `build_px` (4 px) the model is built on the async pool
+* **Near volume**: when the angular radius exceeds `build_px` (2 px) the model is built on the async pool
   (at most 4 resident, least recently wanted evicted) and drawn with `galaxy_model.wesl`: emission and dust in
   one mesh sorted far to near (FUN_1402b3020 -> FUN_140334b10 / FUN_140334e90), SE's `ONE, ONE_MINUS_SRC_ALPHA`
-  blend (dust outputs `(-dust colour * emBright, Transparency) * coverage`, see galaxy_model.md section 11). Sprite colour and intensity are clamped to 0..1 like SE's vertex bytes. The far sprite cross-fades
-  out through `model_fade`. Brightness follows SE's nebula draw (FUN_1402b3020): `emBright = GlowBrightMin *
+  blend (dust outputs `(-dust colour * emBright, Transparency) * coverage`, see galaxy_model.md section 11). Sprite colour and intensity are clamped to 0..1 like SE's vertex bytes. The model fades in
+  as SE's (FUN_1402b3020: `clamp((px - 4) / 3)`, `px` the model's radius on screen, `DAT_14075a688` = 4,
+  `DAT_1406d5008` = 3) and the far sprite fades out with it; building from 2 px has it ready by then. Brightness follows SE's nebula draw (FUN_1402b3020): `emBright = GlowBrightMin *
   exp((GlowMagnLimit + 0.2) / 1.0587) * hdrNebulaSpriteBright * Brightness * b`, `absBright = Transparency * b`,
   `b = clamp(NebulaBrightMin * exp((NebulaMagnLimit - m) / 1.0587) - NebulaBrightMin, 0, 1)` (m apparent).
 * **Ordering and daylight**: draw order far sprites < model sprites, all with a huge positive `depth_bias` and a

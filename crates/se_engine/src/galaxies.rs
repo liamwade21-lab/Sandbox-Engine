@@ -66,6 +66,9 @@ pub(crate) const ATTR_MODEL_DATA: MeshVertexAttribute = MeshVertexAttribute::new
 pub(crate) const ATTR_MODEL_INFO: MeshVertexAttribute = MeshVertexAttribute::new("GalModelInfo", 0x6A1A_0005, VertexFormat::Float32x4);
 pub(crate) const ATTR_MODEL_CORNER: MeshVertexAttribute = MeshVertexAttribute::new("GalModelCorner", 0x6A1A_0006, VertexFormat::Float32x2);
 
+/// Objects whose far sprite fades out behind their 3D model (`FarParams::resident`, `galaxy_far.wesl`).
+pub(crate) const RESIDENT_SLOTS: usize = 16;
+
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct FarParams {
     /// xyz: the camera (pc); w: how far a new block of procedural galaxies is still faded out
@@ -74,11 +77,26 @@ pub struct FarParams {
     pub params: Vec4,
     pub params2: Vec4,
     pub norm: Vec4,
-    pub resident: [Vec4; 8],
+    pub resident: [Vec4; RESIDENT_SLOTS],
     /// Motion blur, as in `StarParams` (filled in by `stars::update_sprite_blur`).
     pub blur: Vec4,
     pub blur_delta: Vec4,
     pub prev_view: Mat4,
+}
+
+/// Draw order of the galaxy far sprites and models (see `GalaxyModelMaterial::depth_bias`).
+pub(crate) const GALAXY_FAR_BIAS: f32 = -4.0e15;
+pub(crate) const GALAXY_MODEL_BIAS: f32 = -3.0e15;
+/// Nebulae draw after the galaxy models: SE draws far to near, and a nebula lies inside its galaxy, so
+/// the galaxy's dust does not hide it. Far sprites first, then the models and ray-marched volumes.
+pub(crate) const NEBULA_FAR_BIAS: f32 = -2.7e15;
+pub(crate) const NEBULA_MODEL_BIAS: f32 = -2.5e15;
+
+/// Sort key of a nebula model whose centre is `d_pc` from the camera: SE draws far to near, so a nearer
+/// nebula goes over a farther one. Stays within `NEBULA_MODEL_BIAS - 1e14 ..= NEBULA_MODEL_BIAS`.
+pub(crate) fn nebula_model_bias(d_pc: f64) -> f32 {
+    let d = d_pc.max(0.0);
+    NEBULA_MODEL_BIAS - (1.0e14 * d / (d + 100.0)) as f32
 }
 
 /// Far-field sprite material (all catalog galaxies).
@@ -86,6 +104,8 @@ pub struct FarParams {
 pub struct GalaxyFarMaterial {
     #[uniform(0)]
     pub uniforms: FarParams,
+    /// `GALAXY_FAR_BIAS`, or `NEBULA_FAR_BIAS` for nebulae.
+    pub depth_bias: f32,
 }
 
 impl Material for GalaxyFarMaterial {
@@ -100,7 +120,7 @@ impl Material for GalaxyFarMaterial {
     }
     fn depth_bias(&self) -> f32 {
         // See `GalaxyModelMaterial::depth_bias`.
-        -4.0e15
+        self.depth_bias
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -193,6 +213,8 @@ pub struct GalaxyModelMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub atlas: Handle<Image>,
+    /// `GALAXY_MODEL_BIAS`, or `NEBULA_MODEL_BIAS` for nebulae.
+    pub depth_bias: f32,
 }
 
 impl Material for GalaxyModelMaterial {
@@ -214,8 +236,9 @@ impl Material for GalaxyModelMaterial {
         // before everything else transparent but the stars: an atmosphere's sky shell, drawn over
         // them, lets them through by its transmittance and hides them in a bright sky (`sky.wesl`).
         // Depth testing against the opaque bodies still hides the galaxy behind them. Order: far
-        // sprites, model sprites (sorted far to near inside the mesh, see `SpriteOrder`), front texture.
-        -3.0e15
+        // sprites, model sprites (sorted far to near inside the mesh, see `SpriteOrder`), nebulae, front
+        // texture.
+        self.depth_bias
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -1006,7 +1029,7 @@ pub(crate) fn far_uniforms(cam_pc: Vec3, s: &GalaxySettings) -> FarParams {
         params: Vec4::new(s.far_brightness, s.min_px, FOCAL_REF as f32, s.mag_ref),
         params2: Vec4::new(s.cull, 1.0, 1.0, 0.0),
         norm: Vec4::new(profile_norm(0), profile_norm(1), profile_norm(2), profile_norm(3)),
-        resident: [Vec4::new(-1.0, 0.0, 0.0, 0.0); 8],
+        resident: [Vec4::new(-1.0, 0.0, 0.0, 0.0); RESIDENT_SLOTS],
         blur: Vec4::ZERO,
         blur_delta: Vec4::ZERO,
         prev_view: Mat4::IDENTITY,
@@ -1138,7 +1161,7 @@ pub(crate) fn setup_galaxies(
         .with_inserted_attribute(ATTR_FAR_SHAPE, shape)
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
-    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &settings) });
+    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &settings), depth_bias: GALAXY_FAR_BIAS });
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(far.clone()),
@@ -1230,24 +1253,10 @@ pub(crate) fn angular_px(r: f64, d: f64, focal: f64) -> f64 {
     }
 }
 
-pub(crate) fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
 /// SE's fade of a galaxy's 3D model (FUN_140299fe0, `fade_in = clamp((px - 2) / 3)`): none below a
 /// 2 px radius, full at 5 px; the far sprite fades out as it fades in.
 pub(crate) fn galaxy_model_fade(px: f64) -> f32 {
     if px.is_infinite() { 1.0 } else { ((px - 2.0) / 3.0).clamp(0.0, 1.0) as f32 }
-}
-
-/// Fade of a 3D model (and inverse fade of the far sprite) from `build_px` (the nebula models).
-pub(crate) fn model_fade(px: f64, build_px: f64) -> f32 {
-    if px.is_infinite() {
-        1.0
-    } else {
-        smoothstep(build_px * 1.5, build_px * 4.0, px) as f32
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1362,6 +1371,7 @@ pub(crate) fn update_galaxies(
                 params2: Vec4::ZERO,
             },
             atlas: st.atlas.clone(),
+            depth_bias: GALAXY_MODEL_BIAS,
         });
         let centres = built.buf.centres();
         let mesh = meshes.add(built.buf.into_mesh());
@@ -1480,7 +1490,7 @@ pub(crate) fn update_galaxies(
             *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
         }
         ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
-        if n_res < 8 && fade > 0.0 {
+        if n_res < RESIDENT_SLOTS && fade > 0.0 {
             far_u.resident[n_res] = Vec4::new(slot.galaxy as f32, fade, 0.0, 0.0);
             n_res += 1;
         }
@@ -1517,6 +1527,13 @@ mod tests {
     fn sprites_sort_far_to_near() {
         let c = [[0.0, 0.0, 1.0], [0.0, 0.0, 5.0], [0.0, 0.0, -3.0]];
         assert_eq!(back_to_front(&c, [0.0; 3]), vec![4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 0, 1, 2, 0, 2, 3]);
+    }
+
+    #[test]
+    fn nebulae_sort_far_to_near_after_the_galaxies() {
+        let keys: Vec<f32> = [0.0, 3.0, 30.0, 300.0, 3000.0, 3.0e6].iter().map(|&d| nebula_model_bias(d)).collect();
+        assert!(keys.windows(2).all(|k| k[1] < k[0]), "farther nebulae draw first: {keys:?}");
+        assert!(keys.iter().all(|&k| k > GALAXY_MODEL_BIAS && k > NEBULA_FAR_BIAS && k <= NEBULA_MODEL_BIAS));
     }
 
     #[test]

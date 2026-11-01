@@ -30,8 +30,16 @@ for an emitting gas volume.
    (`FUN_140270120`, with `h` the position hash of nebula.md section 2): the switch between the sprite and
    the custom pools (`DAT_140d8dcd0`) is set to 1 at start and never cleared. Pool order = file name order.
 
-With the shipped data 75 catalog nebulae are ray-marched. Procedural `RN` nebulae
-keep the sprite pools in the port.
+With the shipped data 75 catalog nebulae are ray-marched. Procedural `RN` nebulae are ray-marched too: the
+galaxy generator (`FUN_14049def0`) picks each one's model with `FUN_14026f250(cache, class)`, which reads
+the same switch (`cache+0x40` = `DAT_140d8dcd0`) and returns `custom pool[class][roll % len] + 0x4000`, `roll`
+being two steps of the generator's LCG (none when the pool is empty). Pools (`FUN_14026f4f0`): every custom
+model of object class 3 (nebula) with a type index (1 Diffuse, 2 Planetary, 3 SNR), named ones included, in
+load order: 63 / 32 / 16 models. [V]
+
+Draw order [P]: SE draws far to near, so a nebula inside a galaxy goes after that galaxy's model; the
+port sorts nebula far sprites and models after the galaxy models (`galaxies::NEBULA_*_BIAS`), so the
+galaxy's dust does not cover them.
 
 ## 4. The shader [V]
 
@@ -64,7 +72,7 @@ translated from the decrypted shader (`re/se_shaders`):
   brightness `f`, with `f = clamp((px - 4) / 3) * clamp(NebulaBrightMin coef(NebulaMagnLimit) L / d^2 -
   NebulaBrightMin)` (FUN_140488a20), `px` the nebula's radius on screen.
 
-Port differences [P]: up to 4 volumes at a time, drawn at full resolution (SE marches at `VolumResolution`
+Port differences [P]: up to 12 volumes at a time, only those in view, sorted far to near by distance, drawn at full resolution (SE marches at `VolumResolution`
 into its own buffer); the dither texture `DitherNoiseTex` (contents not traced) is replaced by a per-pixel hash;
 SE's per-channel transmittance (`OutTransm`, dual-source blending) becomes one grey alpha; a negative `e` in
 the gas emission zeroes that sample's emission (SE's `pow` gives NaN there, which its `clamp` turns to 0 on
