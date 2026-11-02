@@ -1200,12 +1200,13 @@ fn compute_markers(
         sky_cache.1.clear();
         if wanted(MarkerKind::Star) {
             for (i, s) in cat.stars.iter().enumerate() {
-                if s.barycenter || !s.has_position || s.hidden() {
+                if s.barycenter || !s.has_position {
                     continue;
                 }
                 let d = s.pos_pc.distance(cam_pc).max(1e-9);
                 let m = se_core::star::app_mag_from_abs(s.abs_mag, d) as f32;
-                if m < settings.star_label_mag && d > 1e-3 {
+                // hidden() searches the star's block, so it runs only for the few bright enough.
+                if m < settings.star_label_mag && d > 1e-3 && !s.hidden() {
                     sky_cache.1.push((ObjectRef::Star(i as u32), m));
                 }
             }

@@ -813,7 +813,7 @@ fn apply_pending(mut pending: ResMut<PendingSelect>, mut data: ResMut<SeData>, m
             pending.0 = None;
             return;
         };
-        let Some(cat) = Arc::get_mut(&mut data.catalog) else { return };
+        let Some(cat) = data.catalog_get_mut() else { return };
         materialize_star(cat, procedural_star_record(info, row.pos_pc));
     }
     if let Some(r) = data.catalog.find(body) {

@@ -497,6 +497,29 @@ fn orbiting(cat: &se_core::catalog::Catalog, sel: ObjectRef) -> Vec<ObjectRef> {
     out
 }
 
+/// The child lists of [`orbiting`] by group, in the panel's order (planets, dwarf planets, moons,
+/// stars).
+fn child_groups(cat: &se_core::catalog::Catalog, sel: ObjectRef) -> [Vec<ObjectRef>; 4] {
+    let children = orbiting(cat, sel);
+    [ChildGroup::Planets, ChildGroup::DwarfPlanets, ChildGroup::Moons, ChildGroup::Stars]
+        .map(|group| children.iter().copied().filter(|&c| child_group(cat, c) == Some(group)).collect())
+}
+
+/// The stars of the selection's system the info panel reads, from one `system_members` walk kept
+/// while the catalog stands: `star_light`'s list and the temperature view's.
+struct SystemStars {
+    root: u32,
+    lit: Vec<u32>,
+    view: Vec<u32>,
+}
+
+impl SystemStars {
+    fn new(cat: &se_core::catalog::Catalog, root: u32) -> Self {
+        let walk = se_core::climate::system_walk(cat, root);
+        Self { root, lit: se_core::climate::system_stars_in(cat, &walk), view: se_core::climate::display::view_stars(cat, walk) }
+    }
+}
+
 /// egui temp-data key of the info panel's clickable rects (its count headers and their lists).
 const INFO_HITS: &str = "info_table_hits";
 
@@ -524,13 +547,24 @@ fn draw_hud(
     mut script_ui: ResMut<crate::scripting::ScriptUi>,
     i18n: Res<I18n>,
     mut gfx_ui: ResMut<crate::graphics::GraphicsUi>,
-    (mut thermal, mut resonances): (Local<Option<(ObjectRef, se_core::climate::display::Model)>>, Local<Option<(ObjectRef, String)>>),
+    (mut thermal, mut resonances, mut sys_stars, mut groups): (
+        Local<Option<(ObjectRef, se_core::climate::display::Model)>>,
+        Local<Option<(ObjectRef, String)>>,
+        Local<Option<SystemStars>>,
+        Local<Option<(ObjectRef, [Vec<ObjectRef>; 4])>>,
+    ),
     (mut browser, mut msg): (ResMut<crate::browser::BrowserState>, ResMut<crate::messages::Messages>),
     (terrains, clusters): (
         Query<(&crate::system::SystemBody, &crate::terrain::Terrain)>,
         Option<Res<crate::clusters::ClusterField>>,
     ),
 ) -> Result {
+    // The panel's system and child lists hold while the catalog stands (the temperature model
+    // stays as set up for the selection).
+    if data.is_changed() {
+        *sys_stars = None;
+        *groups = None;
+    }
     let ctx = contexts.ctx_mut()?;
     // The info panel puts back its clickable rects each frame it is drawn.
     ctx.data_mut(|d| d.remove_temp::<Vec<egui::Rect>>(egui::Id::new(INFO_HITS)));
@@ -822,10 +856,19 @@ fn draw_hud(
                         }
                     }
                     line(ui, "Albedo", format!("{:.3}", b.albedo));
+                    // The system's stars, walked once per system; a body outside any system has
+                    // none, as star_light and catalog_view find.
+                    let root = cat.system_root(sel);
+                    if let Some(root) = root.filter(|&r| sys_stars.as_ref().is_none_or(|s| s.root != r)) {
+                        *sys_stars = Some(SystemStars::new(cat, root));
+                    }
+                    let system = sys_stars.as_ref().filter(|_| root.is_some());
+                    // The stars as seen from the body this frame, for the temperature and the day lines.
+                    let view = system.map(|s| se_core::climate::display::catalog_view_from(&eph, cat, i as usize, sim.jd, &s.view)).unwrap_or_default();
                     // SE's panel temperature for the stars' current distances; the model is set up
                     // once per selection.
                     if thermal.as_ref().is_none_or(|(r, _)| *r != sel) {
-                        let light = se_core::climate::star_light(&eph, cat, sel, sim.jd);
+                        let light = se_core::climate::star_light_from(&eph, cat, sel, sim.jd, system.map_or(&[][..], |s| &s.lit));
                         let completion = cat
                             .climate
                             .as_ref()
@@ -833,7 +876,7 @@ fn draw_hud(
                         *thermal = Some((sel, se_core::climate::display::catalog_model(cat, i as usize, &light, completion.as_ref())));
                     }
                     if let Some((_, m)) = thermal.as_ref() {
-                        let p = m.panel(&se_core::climate::display::catalog_view(&eph, cat, i as usize, sim.jd));
+                        let p = m.panel(&view);
                         line(ui, "Average temperature", format!("{:.1} °C (night {:.0} K, day {:.0} K)", p.average - 273.15, p.night, p.day));
                     }
                     if let Some(p) = b.block.sub("Atmosphere").and_then(|a| a.f64("Pressure")) {
@@ -877,7 +920,7 @@ fn draw_hud(
                         line(ui, "Height above surface", format_distance(dist - surface));
                         line(ui, "Lat/Lon", format!("{:+.4}° {:+.4}°", lat.to_degrees(), (-n.z).atan2(n.x).to_degrees()));
                     }
-                    if let Some(l) = se_core::climate::display::day_lines(&eph, cat, i as usize, sim.jd, lat) {
+                    if let Some(l) = se_core::climate::display::day_lines_from(&eph, cat, i as usize, sim.jd, lat, &view) {
                         let span = |days: f64| if days < 2.0 { format!("{:.3} h", days * 24.0) } else { format!("{days:.3} d") };
                         line(ui, "Solar day", span(l.solar_day));
                         line(
@@ -921,20 +964,25 @@ fn draw_hud(
             }
             // SE's counts of what orbits the selection ("Number of planets", "... moons", "... stars"),
             // each opening to the list. Asteroids, comets and spacecraft are not counted, as in SE.
-            let children = orbiting(cat, sel);
+            if groups.as_ref().is_none_or(|(r, _)| *r != sel) {
+                *groups = Some((sel, child_groups(cat, sel)));
+            }
+            let lists = &groups.as_ref().expect("set above").1;
             let mut hits: Vec<egui::Rect> = Vec::new();
-            for (key, group) in [
+            for ((key, group), members) in [
                 ("Number of planets", ChildGroup::Planets),
                 ("Number of dwarf planets", ChildGroup::DwarfPlanets),
                 ("Number of moons", ChildGroup::Moons),
                 ("Number of stars", ChildGroup::Stars),
-            ] {
+            ]
+            .into_iter()
+            .zip(lists)
+            {
                 // A planet counts its moons; a star or a star system its planets and stars (moons seen
                 // through the Earth-Moon or Pluto-Charon barycentre are not the Sun's).
                 if (group == ChildGroup::Moons) != matches!(sel, ObjectRef::Body(_)) {
                     continue;
                 }
-                let members: Vec<ObjectRef> = children.iter().copied().filter(|&c| child_group(cat, c) == Some(group)).collect();
                 if members.is_empty() {
                     continue;
                 }

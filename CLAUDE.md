@@ -20,8 +20,8 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
 - Game assets are read from the install, never copied into the project.
 - Ask before taking over the screen to run SpaceEngine. When it is allowed, a Sonnet agent
   (high effort) drives SE and takes the screenshots.
-- No Opus high-effort subagents, except in the /bugfinder skill, which may use any agents it
-  wants.
+- No Opus high-effort subagents, except in the /bugfinder and /optimize skills, which may use
+  any agents they want.
 - Commit only when asked; never push. Commit messages end with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Keep each file's line endings (many files are CRLF): don't use `sed -i` on them.
@@ -46,3 +46,17 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
   flattened giants mostly flat blue.
 - Reaching a star in another galaxy with dev commands: `select RG …` twice, `go <km inside it>`,
   `wait 600`, then `rs RS …`. The planet names then work with `select`.
+- Measuring speed: `SE_PERF=FILE` turns on the frame-time logger (`perf.rs`); the dev command
+  `perf NAME` … `perf end` marks a segment. The scripts in `.optimize/bench/` (`all.sh` scenes,
+  `refs.sh` reference shots, `compare.py`) do this for fixed scenes; `.optimize/REPORT.md` has the
+  2026-11-02 optimization results. A segment whose median sits at ~16.6 ms was capped at 60 fps from
+  outside the port (window not in focus): rerun it with the window in front.
+- Never change a Bevy material asset every frame (`Assets::get_mut`, `iter_mut`): Bevy then
+  re-prepares every object using it. Per-frame values go in a storage buffer written in place: the
+  star/galaxy sprites' camera values (`stars.rs` `SPRITE_CAMERA`) and terrain lighting (`terrain.rs`
+  light pages). Write material assets only when a value really changes.
+- After editing a shader, an older exe reading the new shaders can fail (bindings differ): rebuild.
+- The catalog counts its changes (`Catalog::revision()`, and `edits()` for records changed in
+  place); the nearest-star cache and the black-hole list rely on them. Change the catalog only
+  through its own methods or `SeData::catalog_mut` / `catalog_get_mut`, and bump `edits` when code
+  edits an existing record in place.

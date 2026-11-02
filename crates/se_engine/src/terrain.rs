@@ -8,10 +8,13 @@
 //! available texture tile; nodes deeper than the data reuse an ancestor tile via
 //! a UV sub-rectangle.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
+// A fixed fast hasher for the per-node maps, looked up thousands of times a frame. Nothing relies
+// on their order (std's was random per run).
+use bevy::platform::collections::{HashMap as NodeMap, HashSet};
 use bevy::image::{ImageSampler, ImageSamplerDescriptor, ImageAddressMode, ImageFilterMode};
 use bevy::math::{DQuat, DVec3};
 use bevy::mesh::{Indices, MeshVertexAttribute, MeshVertexBufferLayoutRef, PrimitiveTopology};
@@ -22,8 +25,9 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
-    TextureDimension, TextureFormat,
+    TextureDimension, TextureFormat, encase,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use se_core::catalog::{BodyRecord, ObjectRef};
@@ -58,12 +62,10 @@ const GEN_TILES_MAX: usize = 1500;
 /// A grid with no node of its own is kept this long after it last served a request.
 const GEN_TILE_KEEP_FRAMES: u64 = 600;
 
+/// The fixed part of a patch's material. What a relight changes is in the node's [`PatchLight`];
+/// the shader reads those components (marked "the slot's") from there.
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct PlanetUniform {
-    /// xyz: unit direction to the star (render frame); w: intensity.
-    pub sun_dir: Vec4,
-    /// rgb star colour.
-    pub sun_color: Vec4,
     /// xyz: planet centre in node-local (body-frame, meters) coordinates; w: radius (m).
     pub planet: Vec4,
     /// Texture sub-rectangles: xy offset, z size, w enabled (1/0).
@@ -71,18 +73,18 @@ pub struct PlanetUniform {
     pub rect_lights: Vec4,
     pub rect_water: Vec4,
     pub rect_clouds: Vec4,
-    /// rgb fallback albedo; w ambient.
+    /// rgb fallback albedo; w ambient (the slot's).
     pub base_color: Vec4,
-    /// x glow brightness (self-emission included), y water specular, z cloud opacity, w water
-    /// roughness.
+    /// x glow brightness (self-emission included; the slot's), y water specular, z cloud opacity,
+    /// w water roughness.
     pub params: Vec4,
     /// rgb SE's WaterSurfColor ([`Terrain::water_color`] x ModulateColor, linear); w: 1 = body has
     /// water.
     pub ocean_sea: Vec4,
     /// SE's WaterFogColor ([`Terrain::water_fog`]): the water's absorption, rgb and opacity, per km.
     pub water_fog: Vec4,
-    /// x: atmosphere enabled, y: sun irradiance scale for the tables, z: the scattered light's scale
-    /// relative to y ([`scatter_rel`]), w: the surface's `DayAmbient`.
+    /// x: atmosphere enabled (the slot's), y: sun irradiance scale for the tables, z: the scattered
+    /// light's scale relative to y ([`scatter_rel`]), w: the surface's `DayAmbient`.
     pub atm_flags: Vec4,
     /// Procedural palette (lowland, midland, highland, polar), linear rgb.
     pub proc_pal0: Vec4,
@@ -95,8 +97,6 @@ pub struct PlanetUniform {
     /// (4 Oceanic, 5 Superoceanic: 3D water at every distance, see [`water_reach_m`]).
     pub proc_params2: Vec4,
     pub atm: AtmosphereParamsUniform,
-    /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl, from [`crate::eclipse::EclipseCasters`]).
-    pub eclipse: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     /// Own rings: x inner, y outer radius (planet radii), z opacity, w 0 none / 0.5 untextured / 1 textured.
     pub ring: Vec4,
     /// xyz: ring plane normal (render orientation); w: SE's rings winter strength, `RingsWinter` x
@@ -104,7 +104,7 @@ pub struct PlanetUniform {
     pub ring_normal: Vec4,
     /// Node position on its cube face for metre-scale soil textures: xy the node corner
     /// (m, modulo `SOIL_WRAP_M`), z the node edge length (m); w the split distance in node edges,
-    /// for the geomorph (0: none).
+    /// for the geomorph (0: none; the slot's).
     pub soil_tile: Vec4,
     /// xyz: the node's +u axis on its cube face at its centre (body frame), for the waves;
     /// w: 1 on the water surface material (`water_fragment`, both sides), 0 on the ground.
@@ -118,22 +118,111 @@ pub struct PlanetUniform {
     pub thermal: Vec4,
     /// x 1 / (pi (R* / d)^2), the star's surface radiance per its irradiance here; y the star's
     /// temperature (K); z SE's ThermalEmissionShift (thousand K); w the self-emission scale
-    /// ([`SelfEmission::scale`]).
+    /// ([`SelfEmission::scale`]; the slot's).
     pub thermal2: Vec4,
-    /// The further stars ([`BodyLighting::extra_uniforms`]): xyz direction, w 1 when used.
-    pub light_dir: [Vec4; MAX_LIGHTS - 1],
-    /// Their rgb light, intensity included.
-    pub light_color: [Vec4; MAX_LIGHTS - 1],
     /// SE's GlowColor: rgb the catalog's tint of the glow map, w its mode (1 "Night": off where
     /// light reaches the ground, 0 "Permanent").
     pub glow: Vec4,
     /// SE's ice glint (planet.glsl AICE): x SpecBrightIce, y RoughnessIce, z 1 when the colour map's
     /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint); w SE's WaterSurfColor.a, the
-    /// water display level ([`WaterDisplay`]).
+    /// water display level ([`WaterDisplay`]; the slot's).
     pub ice: Vec4,
-    /// SE's GlowColorAtmo ([`glow_color_atmo`]), rgb in the units of
-    /// `light_color`; 0 without a glowing atmosphere.
+    /// The node's record in the material's light page (`PlanetMaterial::light_page`).
+    pub slot: u32,
+}
+
+/// The lighting of a node's patches (ground, sea surface, cloud layers): what a relight changes,
+/// kept per node in its body's light pages, which the shaders read at the patch's `slot`. Rewriting
+/// every patch's material instead made Bevy rebuild them all in one frame, a 50 ms hitch each time
+/// the sun moved (every ~13 s on fast-orbiting worlds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct PatchLight {
+    /// xyz: unit direction to the star (render frame); w: intensity.
+    pub sun_dir: Vec4,
+    /// rgb star colour.
+    pub sun_color: Vec4,
+    /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl, from [`crate::eclipse::EclipseCasters`]).
+    pub eclipse: [crate::eclipse::EclipseLight; MAX_LIGHTS],
+    /// The further stars ([`BodyLighting::extra_uniforms`]): xyz direction, w 1 when used.
+    pub light_dir: [Vec4; MAX_LIGHTS - 1],
+    /// Their rgb light, intensity included.
+    pub light_color: [Vec4; MAX_LIGHTS - 1],
+    /// SE's GlowColorAtmo ([`glow_color_atmo`]), rgb in the units of `light_color`; 0 without a
+    /// glowing atmosphere.
     pub glow_atmo: Vec4,
+    /// The relit components of [`PlanetUniform`]: x `base_color.w`, y `params.x`, z `thermal2.w`,
+    /// w `ice.w`.
+    pub levels: Vec4,
+    /// x `atm_flags.x`, y `soil_tile.w`.
+    pub flags: Vec4,
+}
+
+/// Records per light page.
+const LIGHT_PAGE_SLOTS: u32 = 64;
+
+/// A body's [`PatchLight`]s, one slot per built node, in fixed-size storage buffers. A buffer is never
+/// resized (a new size re-creates it and rebuilds every material bound to it); more nodes take new
+/// pages. Small pages keep the upload of a frame's few changed records small (Bevy writes a
+/// changed buffer whole).
+#[derive(Default)]
+struct LightPages {
+    pages: Vec<LightPage>,
+    free: BTreeSet<u32>,
+}
+
+struct LightPage {
+    buffer: Handle<ShaderBuffer>,
+    lights: Vec<PatchLight>,
+    dirty: bool,
+}
+
+impl LightPages {
+    /// A free slot: the lowest, so the nodes built in one frame share pages.
+    fn alloc(&mut self, buffers: &mut Assets<ShaderBuffer>) -> u32 {
+        if let Some(s) = self.free.pop_first() {
+            return s;
+        }
+        let base = self.pages.len() as u32 * LIGHT_PAGE_SLOTS;
+        let lights = vec![PatchLight::default(); LIGHT_PAGE_SLOTS as usize];
+        self.pages.push(LightPage { buffer: buffers.add(light_buffer(&lights)), lights, dirty: false });
+        self.free.extend(base + 1..base + LIGHT_PAGE_SLOTS);
+        base
+    }
+
+    fn release(&mut self, slot: u32) {
+        self.free.insert(slot);
+    }
+
+    /// The page holding `slot`, and the slot's index in it (`PlanetUniform::slot`).
+    fn page(&self, slot: u32) -> (Handle<ShaderBuffer>, u32) {
+        (self.pages[(slot / LIGHT_PAGE_SLOTS) as usize].buffer.clone(), slot % LIGHT_PAGE_SLOTS)
+    }
+
+    fn set(&mut self, slot: u32, light: PatchLight) {
+        let page = &mut self.pages[(slot / LIGHT_PAGE_SLOTS) as usize];
+        let l = &mut page.lights[(slot % LIGHT_PAGE_SLOTS) as usize];
+        if *l != light {
+            *l = light;
+            page.dirty = true;
+        }
+    }
+
+    /// Sends the changed pages (same size: Bevy writes them into their buffers in place).
+    fn upload(&mut self, buffers: &mut Assets<ShaderBuffer>) {
+        for page in self.pages.iter_mut().filter(|p| p.dirty) {
+            page.dirty = false;
+            if let Some(mut b) = buffers.get_mut(&page.buffer) {
+                *b = light_buffer(&page.lights);
+            }
+        }
+    }
+}
+
+/// A light page's storage buffer (render world only: the page keeps its own copy).
+fn light_buffer(lights: &[PatchLight]) -> ShaderBuffer {
+    let mut bytes = encase::StorageBuffer::new(Vec::<u8>::new());
+    bytes.write(lights).expect("light page");
+    ShaderBuffer::new(bytes.into_inner(), RenderAssetUsages::RENDER_WORLD)
 }
 
 /// SE's water filter (main-def.cfg ObjectFilters `ShowWater`, key `ToggleWater`): seas and lakes fade
@@ -291,26 +380,41 @@ pub(crate) fn disc_overlap(rs: f64, ro: f64, d: f64) -> f64 {
 
 /// Finds the bodies whose shadow (umbra or penumbra) can reach each resolved
 /// terrain body, largest apparent size first. None with SE's eclipses switch off (Ctrl+L).
+/// Only bodies over half a pixel get any: the others are visited only to clear what they had
+/// (`held`, the bodies whose eclipse is not the default; a Terrain starts with the default).
 fn update_eclipses(
     switches: Res<crate::switches::RenderSwitches>,
-    mut set: ParamSet<(
-        Query<(&SystemBody, Option<&Terrain>)>,
-        Query<(&SystemBody, &BodyLighting, &mut Terrain)>,
-    )>,
+    bodies: Query<(Entity, &SystemBody)>,
+    lights: Query<&BodyLighting>,
+    mut set: ParamSet<(Query<&Terrain>, Query<&mut Terrain>)>,
+    mut held: Local<HashSet<Entity>>,
 ) {
-    let occluders: Vec<(ObjectRef, UPos, f64, bool)> = set
-        .p0()
-        .iter()
-        .filter(|(b, _)| !b.star && b.radius_m > 1000.0)
-        .map(|(b, t)| (b.obj, b.pos, b.radius_m, t.is_some_and(|t| t.atmosphere.is_some())))
-        .collect();
-    for (body, light, mut terrain) in &mut set.p1() {
+    let mut occluders: Vec<(Entity, ObjectRef, UPos, f64)> = Vec::new();
+    let mut visit: Vec<Entity> = Vec::new();
+    for (entity, b) in &bodies {
+        if !b.star && b.radius_m > 1000.0 {
+            occluders.push((entity, b.obj, b.pos, b.radius_m));
+        }
+        if b.px_radius > 0.5 {
+            visit.push(entity);
+        }
+    }
+    visit.extend(held.iter().copied().filter(|e| !bodies.get(*e).is_ok_and(|(_, b)| b.px_radius > 0.5)));
+    let mut changed: Vec<(Entity, EclipseUniform)> = Vec::new();
+    let terrains = set.p0();
+    for entity in visit {
+        // Gone, or its terrain is: nothing to clear.
+        let Ok(terrain) = terrains.get(entity) else {
+            held.remove(&entity);
+            continue;
+        };
+        let (Ok((_, body)), Ok(light)) = (bodies.get(entity), lights.get(entity)) else { continue };
         let mut e = EclipseUniform::default();
         let star_dist = light.star_pos.delta_m(body.pos).length();
         if switches.eclipses && body.px_radius > 0.5 && light.star_radius_m > 0.0 && star_dist > 0.0 {
             let a_s = (light.star_radius_m / star_dist).min(1.0).asin();
             let mut found: Vec<(f64, Vec4)> = Vec::new();
-            for &(obj, pos, r_o, atm) in &occluders {
+            for &(occ, obj, pos, r_o) in &occluders {
                 if obj == body.obj {
                     continue;
                 }
@@ -327,6 +431,7 @@ fn update_eclipses(
                 }
                 let rel = -w / body.radius_m;
                 let r = (r_o / body.radius_m) as f32;
+                let atm = terrains.get(occ).is_ok_and(|t| t.atmosphere.is_some());
                 found.push((r_o / w.length(), rel.as_vec3().extend(if atm { -r } else { r })));
             }
             found.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -337,6 +442,17 @@ fn update_eclipses(
         }
         if e != terrain.eclipse {
             debug!("eclipse on {:?}: {:?}", body.obj, e);
+            changed.push((entity, e));
+        }
+        if e == EclipseUniform::default() {
+            held.remove(&entity);
+        } else {
+            held.insert(entity);
+        }
+    }
+    let mut terrains = set.p1();
+    for (entity, e) in changed {
+        if let Ok(mut terrain) = terrains.get_mut(entity) {
             terrain.eclipse = e;
         }
     }
@@ -422,6 +538,9 @@ pub struct PlanetMaterial {
     /// colour (tg_selena_color), matched to the height generator's.
     #[texture(25, dimension = "3d")]
     pub noise: Handle<Image>,
+    /// The light page holding the node's [`PatchLight`] (at `u.slot`).
+    #[storage(26, read_only)]
+    pub light_page: Handle<ShaderBuffer>,
 }
 
 /// Pipeline key: the water surface is drawn from both sides with its own entry points.
@@ -574,6 +693,8 @@ struct NodeSlot {
     ready_frame: u64,
     /// The `Terrain::light_gen` its materials were last lit for.
     light_gen: u64,
+    /// Its [`PatchLight`] in `Terrain::lights` (once built).
+    light: u32,
 }
 
 #[derive(Component)]
@@ -619,25 +740,33 @@ pub struct Terrain {
     biome_chosen: bool,
     layers: Option<Arc<TerrainLayers>>,
     /// Height grids of loaded nodes, for ground-height queries.
-    node_heights: HashMap<TileKey, Arc<Vec<f32>>>,
+    node_heights: NodeMap<TileKey, Arc<Vec<f32>>>,
     /// Lowest and highest ground of loaded nodes (m above the reference radius), for the LOD.
-    node_hrange: HashMap<TileKey, (f32, f32)>,
+    node_hrange: NodeMap<TileKey, (f32, f32)>,
     /// Nodes drawn this frame (sorted): the ground the camera collides with.
     visible: Vec<TileKey>,
     /// Nodes with a patch (ground or cloud) shown: the only ones whose visibility can change next
     /// frame, so the thousands of cached ones are not touched every frame.
     drawn: Vec<TileKey>,
+    /// The turned cloud layers' node lists and the clouds switch the visibility pass last ran for
+    /// (with `visible`); `None` when it must run. With the same inputs it would change nothing.
+    vis_inputs: Option<(Vec<Option<Vec<TileKey>>>, bool)>,
+    /// The `light_gen` every node in `drawn` is lit for; `None` once `drawn` has changed.
+    drawn_lit: Option<u64>,
     /// Radii of the highest and the lowest ground, for the horizon test.
     horizon_top: f64,
     horizon_floor: f64,
-    nodes: HashMap<TileKey, NodeSlot>,
+    nodes: NodeMap<TileKey, NodeSlot>,
+    /// The nodes still being built (`NodeState::Loading`), in the order they were started: the
+    /// only ones to poll.
+    loading: Vec<TileKey>,
     /// SE's record flag "locked to a star" (+0x165c bit 2), for its height generator's climate.
     pub tidal_lock: bool,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
     /// and no height data: requested grids (job id, frame) and the grids read back (with the frame
     /// they last served a request).
-    gen_jobs: HashMap<TileKey, (u64, u64)>,
-    gen_tiles: HashMap<TileKey, (Arc<HeightTile>, u64)>,
+    gen_jobs: NodeMap<TileKey, (u64, u64)>,
+    gen_tiles: NodeMap<TileKey, (Arc<HeightTile>, u64)>,
     gen_failed: bool,
     frame: u64,
     last_sun: Vec4,
@@ -654,6 +783,8 @@ pub struct Terrain {
     last_casters: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     /// Bumped when the lighting changes: shown nodes take it at once, cached ones when shown again.
     light_gen: u64,
+    /// The built nodes' lighting.
+    lights: LightPages,
 }
 
 /// The light an atmosphere of `Bright` `atm_bright` scatters (haze, the sky seen in water) relative to
@@ -694,7 +825,7 @@ impl Terrain {
     /// Nodes whose tiles are still being built (the HD screenshot's and skybox export's "Wait
     /// loading completeness", `capture.rs`).
     pub fn loading_nodes(&self) -> usize {
-        self.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count()
+        self.loading.len()
     }
 
     /// SE's GlowColorAtmo for this body's atmosphere at self-emission scale `emission`; 0 without one.
@@ -827,16 +958,19 @@ impl Terrain {
             biome_chosen: false,
             has_ocean,
             layers: None,
-            node_heights: HashMap::new(),
-            node_hrange: HashMap::new(),
+            node_heights: NodeMap::new(),
+            node_hrange: NodeMap::new(),
             visible: Vec::new(),
             drawn: Vec::new(),
+            vis_inputs: None,
+            drawn_lit: None,
             horizon_top,
             horizon_floor,
-            nodes: HashMap::new(),
+            nodes: NodeMap::new(),
+            loading: Vec::new(),
             tidal_lock: false,
-            gen_jobs: HashMap::new(),
-            gen_tiles: HashMap::new(),
+            gen_jobs: NodeMap::new(),
+            gen_tiles: NodeMap::new(),
             gen_failed: false,
             frame: 0,
             last_sun: Vec4::ZERO,
@@ -849,6 +983,7 @@ impl Terrain {
             casters: Default::default(),
             last_casters: Default::default(),
             light_gen: 0,
+            lights: LightPages::default(),
         }
     }
 
@@ -1646,16 +1781,13 @@ fn build_node(input: BuildInput) -> NodeBuild {
     }
 }
 
+/// A node's ground patch (its sea surface, if any, is a child entity). Its materials are never
+/// changed after the build: the lighting is in the node's [`PatchLight`].
 #[derive(Component)]
-pub struct TerrainNode {
-    pub material: Handle<PlanetMaterial>,
-    /// Material of the node's sea surface (a child entity), if it has one.
-    pub water: Option<Handle<PlanetMaterial>>,
-}
+pub struct TerrainNode;
 
 #[derive(Component)]
 pub struct CloudNode {
-    pub material: Handle<CloudMaterial>,
     /// Index into `Terrain::clouds`.
     pub layer: usize,
 }
@@ -1769,8 +1901,8 @@ fn height_range(t: &Terrain, key: TileKey) -> (f64, f64) {
 }
 
 /// `scale` is the graphics quality's factor (`graphics::TerrainQuality`, SE's `LandLOD`);
-/// `hrange` the node's ground heights ([`height_range`]).
-fn wants_split(key: TileKey, radius: f64, cam_body: DVec3, scale: f64, hrange: (f64, f64)) -> bool {
+/// `hrange` the node's ground heights ([`height_range`]); `dir` its centre direction.
+fn wants_split(key: TileKey, dir: DVec3, radius: f64, cam_body: DVec3, scale: f64, hrange: (f64, f64)) -> bool {
     if key.level >= MAX_GEOM_LEVEL {
         return false;
     }
@@ -1780,7 +1912,7 @@ fn wants_split(key: TileKey, radius: f64, cam_body: DVec3, scale: f64, hrange: (
     // every patch, and the ones under it stopped splitting at a few hundred metres, a blurry half
     // of the view beside sharp ones.
     let h = (cam_body.length() - radius).clamp(hrange.0, hrange.1.max(hrange.0));
-    let center = key.center_dir() * (radius + h);
+    let center = dir * (radius + h);
     // Distance to the patch, approximated by distance to centre minus its half diagonal.
     let d = (cam_body - center).length() - edge * 0.7;
     d < edge * SPLIT_DISTANCE * scale
@@ -1797,20 +1929,39 @@ fn node_split(level: u8, scale: f64) -> f32 {
 /// surface; it used to be dropped within 0.01 % of the reference radius (638 m on Earth), and
 /// every node on the far side became wanted at once, the terrain falling back to coarse nodes
 /// until they loaded and the camera, pushed up by the coarse ground, flickering across the line.
-fn beyond_horizon(key: TileKey, cam_body: DVec3, top: f64, floor: f64) -> bool {
-    horizon_gap(key, cam_body, top, floor) > 0.0
+/// `gap` is the node's [`Horizon::gap`].
+fn beyond_horizon(gap: f64) -> bool {
+    gap > 0.0
 }
 
-/// How far node `key` lies past the horizon (radians of arc; negative when some of it may show).
-fn horizon_gap(key: TileKey, cam_body: DVec3, top: f64, floor: f64) -> f64 {
-    let rc = cam_body.length();
-    if rc <= 0.0 {
-        return -1.0;
+/// The camera's horizon for [`select`]'s walk, worked out once (it depends only on the camera and
+/// the terrain's radii, which the walk does not change).
+struct Horizon {
+    /// The camera's direction from the centre, `None` at the centre (everything may show).
+    cam_dir: Option<DVec3>,
+    /// Arc from below the camera to the horizon of the lowest ground, plus on to where the
+    /// highest ground (or cloud top) rises over it.
+    arc: f64,
+}
+
+impl Horizon {
+    fn new(cam_body: DVec3, top: f64, floor: f64) -> Self {
+        let rc = cam_body.length();
+        if rc <= 0.0 {
+            return Self { cam_dir: None, arc: 0.0 };
+        }
+        let r0 = floor.min(rc);
+        let arc = (r0 / rc).clamp(-1.0, 1.0).acos() + (r0 / top.max(r0)).clamp(-1.0, 1.0).acos();
+        Self { cam_dir: Some(cam_body.normalize()), arc }
     }
-    let r0 = floor.min(rc);
-    let horizon = (r0 / rc).clamp(-1.0, 1.0).acos() + (r0 / top.max(r0)).clamp(-1.0, 1.0).acos();
-    let ang = cam_body.normalize().dot(key.center_dir()).clamp(-1.0, 1.0).acos();
-    ang - (horizon + node_angle(key.level) + 0.01)
+
+    /// How far node `key` (centre direction `dir`) lies past the horizon (radians of arc;
+    /// negative when some of it may show).
+    fn gap(&self, key: TileKey, dir: DVec3) -> f64 {
+        let Some(cam_dir) = self.cam_dir else { return -1.0 };
+        let ang = cam_dir.dot(dir).clamp(-1.0, 1.0).acos();
+        ang - (self.arc + node_angle(key.level) + 0.01)
+    }
 }
 
 /// Angular radius (generous) of a node at `level`.
@@ -1836,7 +1987,6 @@ fn update_terrain(
         Res<WaterDisplay>,
         Res<crate::switches::RenderSwitches>,
     ),
-    nodes: Query<&TerrainNode, Allow<Disabled>>,
     clouds_q: Query<&CloudNode, Allow<Disabled>>,
     mut vis_q: Query<(&mut Visibility, Has<Disabled>), (Or<(With<TerrainNode>, With<CloudNode>)>, Allow<Disabled>)>,
     rings: Query<&crate::rings::Rings>,
@@ -1854,10 +2004,7 @@ fn update_terrain(
     ),
 ) {
     let (Some(defaults), Some(surface_tex)) = (defaults, surface_tex) else { return };
-    let mut in_flight: usize = bodies
-        .iter()
-        .map(|(_, _, _, t, _)| t.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count())
-        .sum();
+    let mut in_flight: usize = bodies.iter().map(|(_, _, _, t, _)| t.loading.len()).sum();
     // Tiles started this frame, over all bodies (SE's `MaxTilesPerFrame`).
     let mut started = 0usize;
     for (body_entity, body, light, mut terrain, casters) in &mut bodies {
@@ -1915,7 +2062,7 @@ fn update_terrain(
         // Poll finished builds.
         let shadow = terrain.layers.as_ref().and_then(|l| terrain.shadow_clouds(l));
         let thermal = thermal_uniform(terrain, light);
-        let keys: Vec<TileKey> = terrain.nodes.keys().copied().collect();
+        let keys = terrain.loading.clone();
         let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
         let setup_start = std::time::Instant::now();
         for key in keys {
@@ -1925,6 +2072,7 @@ fn update_terrain(
             let slot = terrain.nodes.get_mut(&key).unwrap();
             let NodeState::Loading(task) = &mut slot.state else { continue };
             let Some(build) = check_ready(task) else { continue };
+            terrain.loading.retain(|k| *k != key);
             in_flight = in_flight.saturating_sub(1);
             let layers = terrain.layers.clone().unwrap();
             let mut tex_cache = caches.textures.lock().unwrap();
@@ -1944,9 +2092,9 @@ fn update_terrain(
             let s = &terrain.surface;
             let (u0n, v0n, sizen) = key.uv_rect();
             let (extra_dir, extra_color) = light.extra_uniforms(false);
+            let light_slot = terrain.lights.alloc(&mut shader_buffers);
+            let (light_page, page_slot) = terrain.lights.page(light_slot);
             let u = PlanetUniform {
-                sun_dir: light.sun_dir.extend(light.sun_intensity),
-                sun_color: light.sun_color.extend(1.0),
                 planet: (-build.center).as_vec3().extend(terrain.radius as f32),
                 rect_color: rc,
                 rect_lights: rl,
@@ -2000,7 +2148,6 @@ fn update_terrain(
                         mie_g: 0.8,
                         mie_fade: 0.1,
                     }).into()),
-                eclipse: terrain.casters,
                 ring: ring.as_ref().map_or(Vec4::ZERO, |r| r.1),
                 ring_normal,
                 soil_tile: {
@@ -2021,9 +2168,7 @@ fn update_terrain(
                     let omega = (light.star_radius_m / d).powi(2).max(1e-30);
                     Vec4::new((1.0 / (std::f64::consts::PI * omega)) as f32, light.star_teff, THERMAL_EMISSION_SHIFT, emission.scale())
                 },
-                light_dir: extra_dir,
-                light_color: extra_color,
-                glow: Vec3::from_array(s.glow_color.map(|c| c as f32)).extend(if s.glow_permanent { 0.0 } else { 1.0 }),
+                glow:Vec3::from_array(s.glow_color.map(|c| c as f32)).extend(if s.glow_permanent { 0.0 } else { 1.0 }),
                 ice: Vec4::new(
                     s.spec_bright_ice
                         .unwrap_or_else(|| se_core::planet_tiles::ice_spec_default(terrain.surf_gen.classes.surface, terrain.surf_gen.classes.atmo > 0))
@@ -2032,8 +2177,22 @@ fn update_terrain(
                     if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
                     water_display.level,
                 ),
-                glow_atmo: glow_atmo_u,
+                slot: page_slot,
             };
+            // The node's lighting now (its patches all take the same).
+            terrain.lights.set(
+                light_slot,
+                PatchLight {
+                    sun_dir: light.sun_dir.extend(light.sun_intensity),
+                    sun_color: light.sun_color.extend(1.0),
+                    eclipse: terrain.casters,
+                    light_dir: extra_dir,
+                    light_color: extra_color,
+                    glow_atmo: glow_atmo_u,
+                    levels: Vec4::new(u.base_color.w, u.params.x, u.thermal2.w, u.ice.w),
+                    flags: Vec4::new(u.atm_flags.x, u.soil_tile.w, 0.0, 0.0),
+                },
+            );
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             let ground = PlanetMaterial {
                 u,
@@ -2053,6 +2212,7 @@ fn update_terrain(
                 soil_rhao: surface_tex.soil_rhao.clone(),
                 sample_relief: surface_tex.sample_relief.clone(),
                 noise: defaults.noise3d.clone(),
+                light_page: light_page.clone(),
             };
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
             let ground_u = ground.u;
@@ -2076,12 +2236,9 @@ fn update_terrain(
                     let procedural = c.map.is_none();
                     let cmat = cloud_mats.add(CloudMaterial {
                         u: CloudUniform {
-                            sun_dir: light.sun_dir.extend(light.sun_intensity),
-                            sun_color: light.sun_color.extend(1.0),
                             rect: crect,
                             params: Vec4::new(c.opacity.min(1.0), c.bump_m, if c.opaque_map { 1.0 } else { 0.0 }, 0.0),
                             planet: (-ccenter).as_vec3().extend(terrain.radius as f32),
-                            eclipse: terrain.casters,
                             proc: terrain
                                 .cloud_proc
                                 .filter(|_| procedural)
@@ -2098,18 +2255,18 @@ fn update_terrain(
                             look: c.look,
                             atm_flags: Vec4::new(ground_u.atm_flags.x, ATM_SUN_SCALE, ground_u.atm_flags.z, 0.0),
                             atm: ground_u.atm,
-                            light_dir: ground_u.light_dir,
-                            light_color: ground_u.light_color,
+                            slot: page_slot,
                         },
                         clouds: ctex,
                         inscatter: ground_atm.0.clone(),
                         transmittance: ground_atm.1.clone(),
                         irradiance: ground_atm.2.clone(),
+                        light_page: light_page.clone(),
                     });
                     commands
                         .spawn((
                             SystemMember,
-                            CloudNode { material: cmat.clone(), layer },
+                            CloudNode { layer },
                             BodyAttached {
                                 body: body_entity,
                                 center: ccenter,
@@ -2131,10 +2288,7 @@ fn update_terrain(
             let center_u = body.pos.offset_m(body.orient * body.to_shape(build.center));
             let mut node = commands.spawn((
                     SystemMember,
-                    TerrainNode {
-                        material: material.clone(),
-                        water: water_mat.clone(),
-                    },
+                    TerrainNode,
                     BodyAttached {
                         body: body_entity,
                         center: build.center,
@@ -2160,11 +2314,15 @@ fn update_terrain(
             terrain.node_heights.insert(key, Arc::new(build.grid_heights));
             slot.state = NodeState::Ready(e, cloud_entities);
             slot.light_gen = terrain.light_gen;
+            slot.light = light_slot;
             slot.ready_frame = frame;
         }
 
         if !resolved {
+            terrain.lights.upload(&mut shader_buffers);
             terrain.visible.clear();
+            terrain.vis_inputs = None;
+            terrain.drawn_lit = None;
             // Hide what is shown; keep nodes cached for a while.
             for key in std::mem::take(&mut terrain.drawn) {
                 if let Some(NodeSlot { state: NodeState::Ready(e, c), .. }) = terrain.nodes.get(&key) {
@@ -2186,9 +2344,7 @@ fn update_terrain(
         let cam_body = body.from_shape(body.orient.inverse() * cam.pos.delta_m(body.pos));
         let mut visible: Vec<TileKey> = Vec::new();
         let mut requests: Vec<TileKey> = Vec::new();
-        for face in CubeFace::ALL {
-            select(terrain, TileKey::root(face), &cam_body, frame, &mut visible, &mut requests, quality.split_scale);
-        }
+        select_all(terrain, &cam_body, frame, &mut visible, &mut requests, quality.split_scale);
         // A turned cloud layer (FlipMap, Velocity) shows each node's patch elsewhere: its patches are
         // those of the nodes a camera turned back by the layer's spin would see.
         let cloud_visible: Vec<Option<Vec<TileKey>>> = (0..terrain.clouds.len())
@@ -2198,9 +2354,7 @@ fn update_terrain(
                 spin.map(|spin| {
                     let cam_l = DQuat::from_rotation_y(-spin) * cam_body;
                     let mut v = Vec::new();
-                    for face in CubeFace::ALL {
-                        select(terrain, TileKey::root(face), &cam_l, frame, &mut v, &mut requests, quality.split_scale);
-                    }
+                    select_all(terrain, &cam_l, frame, &mut v, &mut requests, quality.split_scale);
                     v
                 })
             })
@@ -2315,40 +2469,51 @@ fn update_terrain(
                     last_used: frame,
                     ready_frame: u64::MAX,
                     light_gen: 0,
+                    light: u32::MAX,
                 },
             );
+            terrain.loading.push(key);
             in_flight += 1;
             started += 1;
         }
         // Visibility: of the nodes drawn now and those shown last frame (every other is hidden).
-        let mut touch: Vec<TileKey> = std::mem::take(&mut terrain.drawn);
-        touch.extend(visible.iter().copied());
-        touch.extend(cloud_visible.iter().flatten().flatten().copied());
-        touch.sort_unstable();
-        touch.dedup();
-        terrain.visible = visible;
-        let visible = &terrain.visible;
-        let mut drawn = Vec::with_capacity(touch.len());
-        for key in touch {
-            let Some(NodeSlot { state: NodeState::Ready(e, c), .. }) = terrain.nodes.get(&key) else { continue };
-            let want = visible.binary_search(&key).is_ok();
-            let mut shown = false;
-            for &e in std::iter::once(e).chain(c) {
-                let cloud = clouds_q.get(e).ok();
-                let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
-                    Some(v) => v.binary_search(&key).is_ok(),
-                    None => want,
-                } && (cloud.is_none() || switches.clouds);
-                shown |= want;
-                if let Ok((mut vis, disabled)) = vis_q.get_mut(e) {
-                    show_patch(&mut commands, &children, e, &mut vis, disabled, want);
+        // The same lists as last frame change nothing (their nodes are all ready and, touched every
+        // frame, cannot be evicted), so the pass is skipped and `drawn` stays.
+        if !vis_inputs_same(terrain, &visible, &cloud_visible, switches.clouds) {
+            let mut touch: Vec<TileKey> = std::mem::take(&mut terrain.drawn);
+            let before = touch.clone();
+            touch.extend(visible.iter().copied());
+            touch.extend(cloud_visible.iter().flatten().flatten().copied());
+            touch.sort_unstable();
+            touch.dedup();
+            terrain.visible = visible;
+            let visible = &terrain.visible;
+            let mut drawn = Vec::with_capacity(touch.len());
+            for key in touch {
+                let Some(NodeSlot { state: NodeState::Ready(e, c), .. }) = terrain.nodes.get(&key) else { continue };
+                let want = visible.binary_search(&key).is_ok();
+                let mut shown = false;
+                for &e in std::iter::once(e).chain(c) {
+                    let cloud = clouds_q.get(e).ok();
+                    let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
+                        Some(v) => v.binary_search(&key).is_ok(),
+                        None => want,
+                    } && (cloud.is_none() || switches.clouds);
+                    shown |= want;
+                    if let Ok((mut vis, disabled)) = vis_q.get_mut(e) {
+                        show_patch(&mut commands, &children, e, &mut vis, disabled, want);
+                    }
+                }
+                if shown {
+                    drawn.push(key);
                 }
             }
-            if shown {
-                drawn.push(key);
+            if drawn != before {
+                terrain.drawn_lit = None;
             }
+            terrain.drawn = drawn;
+            terrain.vis_inputs = Some((cloud_visible, switches.clouds));
         }
-        terrain.drawn = drawn;
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
         // SE's atmospheres switch (Shift+A) also takes the aerial perspective off the ground and clouds.
@@ -2382,43 +2547,34 @@ fn update_terrain(
             terrain.last_split = split_scale;
             terrain.light_gen += 1;
         }
-        // The shown nodes are lit now; cached ones when they are shown again.
+        // The shown nodes are lit now; cached ones when they are shown again. Only their light
+        // records change: the materials (ground, sea surface, clouds) read them by slot.
         let light_gen = terrain.light_gen;
-        for key in &terrain.drawn {
-            let Some(slot) = terrain.nodes.get_mut(key) else { continue };
-            if slot.light_gen == light_gen {
-                continue;
-            }
-            slot.light_gen = light_gen;
-            if let NodeState::Ready(e, c) = &slot.state {
-                if let Ok(node) = nodes.get(*e) {
-                    for h in std::iter::once(&node.material).chain(node.water.as_ref()) {
-                        if let Some(mut m) = materials.get_mut(h) {
-                            m.u.sun_dir = sun;
-                            m.u.sun_color = light.sun_color.extend(1.0);
-                            (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
-                            m.u.base_color.w = ambient.0;
-                            m.u.eclipse = eclipse;
-                            m.u.params.x = glow_bright;
-                            m.u.thermal2.w = emission.scale();
-                            m.u.ice.w = water_display.level;
-                            m.u.atm_flags.x = atm_on;
-                            m.u.glow_atmo = glow_atmo;
-                            m.u.soil_tile.w = node_split(key.level, split_scale);
-                        }
-                    }
+        let lit = PatchLight {
+            sun_dir: sun,
+            sun_color: light.sun_color.extend(1.0),
+            eclipse,
+            light_dir: extra_dir,
+            light_color: extra_color,
+            glow_atmo,
+            levels: Vec4::new(ambient.0, glow_bright, emission.scale(), water_display.level),
+            flags: Vec4::new(atm_on, 0.0, 0.0, 0.0),
+        };
+        // Lit for this generation already and none shown since: nothing to relight.
+        if terrain.drawn_lit != Some(light_gen) {
+            for key in &terrain.drawn {
+                let Some(slot) = terrain.nodes.get_mut(key) else { continue };
+                if slot.light_gen == light_gen {
+                    continue;
                 }
-                for cn in c.iter().filter_map(|&c| clouds_q.get(c).ok()) {
-                    if let Some(mut m) = cloud_mats.get_mut(&cn.material) {
-                        m.u.sun_dir = sun;
-                        m.u.sun_color = light.sun_color.extend(1.0);
-                        (m.u.light_dir, m.u.light_color) = (extra_dir, extra_color);
-                        m.u.eclipse = eclipse;
-                        m.u.atm_flags.x = atm_on;
-                    }
+                slot.light_gen = light_gen;
+                if let NodeState::Ready(..) = &slot.state {
+                    terrain.lights.set(slot.light, PatchLight { flags: Vec4::new(atm_on, node_split(key.level, split_scale), 0.0, 0.0), ..lit });
                 }
             }
+            terrain.drawn_lit = Some(light_gen);
         }
+        terrain.lights.upload(&mut shader_buffers);
     }
     // SE's CacheSizeLandNode (main-def.cfg 10000): the nodes of all planets together; beyond it the
     // least recently used ones go first (only nodes unused for STALE_FRAMES, never a root or one
@@ -2449,6 +2605,7 @@ fn update_terrain(
                     for e in std::iter::once(e).chain(c) {
                         commands.entity(e).despawn();
                     }
+                    terrain.lights.release(slot.light);
                 }
             }
         }
@@ -2472,6 +2629,12 @@ fn show_patch(commands: &mut Commands, children: &Query<&Children, Allow<Disable
     }
 }
 
+/// Whether the visibility pass last ran for these very lists (each cloud layer's `None`, following
+/// the ground, or its own list) and clouds switch.
+fn vis_inputs_same(t: &Terrain, visible: &[TileKey], cloud_visible: &[Option<Vec<TileKey>>], clouds_on: bool) -> bool {
+    t.vis_inputs.as_ref().is_some_and(|(c, on)| *on == clouds_on && c.as_slice() == cloud_visible) && t.visible == visible
+}
+
 /// A node unused for this many frames may be evicted.
 const STALE_FRAMES: u64 = 30;
 
@@ -2480,12 +2643,28 @@ pub fn evict_count(total: usize, cap: usize) -> usize {
     if total > cap { (total - cap).max(64) } else { 0 }
 }
 
-/// Quadtree traversal. Pushes nodes to draw into `visible` (kept sorted) and
-/// nodes to load into `requests`. Returns whether this subtree is drawable.
+/// Walks the quadtrees of all six faces ([`select`]); `visible` comes back sorted.
+fn select_all(t: &mut Terrain, cam_body: &DVec3, frame: u64, visible: &mut Vec<TileKey>, requests: &mut Vec<TileKey>, scale: f64) {
+    let horizon = Horizon::new(*cam_body, t.cull_top(), t.horizon_floor);
+    for face in CubeFace::ALL {
+        let root = TileKey::root(face);
+        select(t, root, root.center_dir(), -1.0, cam_body, &horizon, frame, visible, requests, scale);
+    }
+    // Each node is visited once a walk, so this is the list the sorted inserts made.
+    visible.sort_unstable();
+}
+
+/// Quadtree traversal. Pushes nodes to draw into `visible` (in walk order) and nodes to load
+/// into `requests`. Returns whether this subtree is drawable. `dir` is the node's centre direction
+/// and `gap` its [`Horizon::gap`] (unused on a root), both from its parent.
+#[allow(clippy::too_many_arguments)]
 fn select(
     t: &mut Terrain,
     key: TileKey,
+    dir: DVec3,
+    gap: f64,
     cam_body: &DVec3,
+    horizon: &Horizon,
     frame: u64,
     visible: &mut Vec<TileKey>,
     requests: &mut Vec<TileKey>,
@@ -2497,43 +2676,41 @@ fn select(
     if let Some(slot) = t.nodes.get_mut(&key) {
         slot.last_used = frame;
     }
-    if key.level > 0 && beyond_horizon(key, *cam_body, t.cull_top(), t.horizon_floor) {
+    if key.level > 0 && beyond_horizon(gap) {
         return true;
     }
     let ready = |t: &Terrain, k: &TileKey| {
         t.nodes.get(k).is_some_and(|s| matches!(s.state, NodeState::Ready(..)) && s.ready_frame < frame)
     };
-    if wants_split(key, t.radius, *cam_body, scale, height_range(t, key)) {
+    if wants_split(key, dir, t.radius, *cam_body, scale, height_range(t, key)) {
         let children = key.children();
-        let all_ready = children
-            .iter()
-            .all(|c| ready(t, c) || beyond_horizon(*c, *cam_body, t.cull_top(), t.horizon_floor));
+        let dirs = children.map(|c| c.center_dir());
+        let gaps: [f64; 4] = std::array::from_fn(|i| horizon.gap(children[i], dirs[i]));
+        let all_ready = (0..4).all(|i| ready(t, &children[i]) || beyond_horizon(gaps[i]));
         if all_ready {
             // Children within a node of the horizon load ahead, ready when it recedes.
-            for c in children {
-                if !t.nodes.contains_key(&c) && horizon_gap(c, *cam_body, t.cull_top(), t.horizon_floor) < node_angle(c.level) {
-                    requests.push(c);
+            for (c, g) in children.iter().zip(gaps) {
+                if !t.nodes.contains_key(c) && g < node_angle(c.level) {
+                    requests.push(*c);
                 }
             }
             let mut ok = true;
-            for c in children {
-                ok &= select(t, c, cam_body, frame, visible, requests, scale);
+            for i in 0..4 {
+                ok &= select(t, children[i], dirs[i], gaps[i], cam_body, horizon, frame, visible, requests, scale);
             }
             if ok {
                 return true;
             }
         } else {
-            for c in children {
-                if !t.nodes.contains_key(&c) && !beyond_horizon(c, *cam_body, t.cull_top(), t.horizon_floor) {
-                    requests.push(c);
+            for (c, g) in children.iter().zip(gaps) {
+                if !t.nodes.contains_key(c) && !beyond_horizon(g) {
+                    requests.push(*c);
                 }
             }
         }
     }
     if ready(t, &key) {
-        if let Err(pos) = visible.binary_search(&key) {
-            visible.insert(pos, key);
-        }
+        visible.push(key);
         true
     } else {
         if !t.nodes.contains_key(&key) {
@@ -2704,10 +2881,9 @@ fn se_cloud_uniform(g: &se_core::surface_gen::SurfaceGen, tidal_lock: bool, proc
     ]
 }
 
+/// The fixed part of a cloud patch's material; its lighting is its node's [`PatchLight`].
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct CloudUniform {
-    pub sun_dir: Vec4,
-    pub sun_color: Vec4,
     /// Cloud tile sub-rectangle: xy offset, z size, w enabled.
     pub rect: Vec4,
     /// x opacity, y relief of the cloud tops (m; SE's `BumpHeight` with a `BumpMap`, else 0),
@@ -2715,8 +2891,6 @@ pub struct CloudUniform {
     pub params: Vec4,
     /// xyz: planet centre in node-local coordinates (m); w: planet radius (m).
     pub planet: Vec4,
-    /// Each light's eclipse casters (`EclipseLight` in eclipse.wesl).
-    pub eclipse: [crate::eclipse::EclipseLight; MAX_LIGHTS],
     /// Procedural clouds (no texture): x coverage, y base frequency, z octaves, w enabled.
     pub proc: Vec4,
     /// x seed, y unused (the layer's drift turns the shell), z latitude belt strength.
@@ -2727,12 +2901,12 @@ pub struct CloudUniform {
     pub color: Vec4,
     /// `CloudLayer::look`.
     pub look: Vec4,
-    /// x: atmosphere enabled, y: sun irradiance scale for the tables, z: the scattered light's scale
-    /// relative to y, w unused (SkyLight is in `atm.look`).
+    /// x: atmosphere enabled (the slot's), y: sun irradiance scale for the tables, z: the scattered
+    /// light's scale relative to y, w unused (SkyLight is in `atm.look`).
     pub atm_flags: Vec4,
     pub atm: AtmosphereParamsUniform,
-    pub light_dir: [Vec4; MAX_LIGHTS - 1],
-    pub light_color: [Vec4; MAX_LIGHTS - 1],
+    /// The node's record in the material's light page.
+    pub slot: u32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -2750,6 +2924,9 @@ pub struct CloudMaterial {
     pub transmittance: Handle<Image>,
     #[texture(6)]
     pub irradiance: Handle<Image>,
+    /// The light page of the patch's node ([`PlanetMaterial::light_page`]).
+    #[storage(7, read_only)]
+    pub light_page: Handle<ShaderBuffer>,
 }
 
 impl Material for CloudMaterial {
@@ -2861,5 +3038,419 @@ mod tests {
         assert_eq!(levels, 2);
         assert!(decode_normal_offset([all[16], all[17], all[18]]).length() < 1e-4);
         assert_eq!(all[19], 200);
+    }
+
+    fn test_terrain(radius: f64) -> Terrain {
+        let rec = BodyRecord {
+            tag: se_core::catalog::BodyTag::Planet,
+            names: vec!["Test".into()],
+            parent: String::new(),
+            class: None,
+            radius_km: radius / 1000.0,
+            mass_kg: 6.0e24,
+            oblateness: 0.0,
+            color: None,
+            albedo: 0.3,
+            orbit: None,
+            rotation: Default::default(),
+            lock: Default::default(),
+            source: String::new(),
+            block: Default::default(),
+        };
+        use se_core::surface_gen as sg;
+        let surf_gen = sg::SurfaceGen { p: [sg::UNSET; sg::N_PARAMS], color: None, classes: Default::default() };
+        Terrain::new(radius, &rec, 288.0, surf_gen, None, 5.0)
+    }
+
+    #[test]
+    fn light_pages_keep_their_size_and_records() {
+        let mut buffers = Assets::<ShaderBuffer>::default();
+        let mut pages = LightPages::default();
+        let slots: Vec<u32> = (0..70).map(|_| pages.alloc(&mut buffers)).collect();
+        assert_eq!(slots, (0..70).collect::<Vec<_>>());
+        assert_eq!(pages.pages.len(), 2);
+        // Freed slots are taken again, lowest first, before any new one.
+        pages.release(66);
+        pages.release(5);
+        assert_eq!([pages.alloc(&mut buffers), pages.alloc(&mut buffers), pages.alloc(&mut buffers)], [5, 66, 70]);
+        let rec = PatchLight {
+            sun_dir: Vec4::new(0.6, 0.8, 0.0, 0.7),
+            sun_color: Vec4::new(1.0, 0.9, 0.8, 1.0),
+            light_dir: [Vec4::new(0.0, 1.0, 0.0, 1.0); MAX_LIGHTS - 1],
+            levels: Vec4::new(0.01, 1.5, 1.0, 0.5),
+            flags: Vec4::new(1.0, 2.2, 0.0, 0.0),
+            ..Default::default()
+        };
+        pages.set(67, rec);
+        assert!(!pages.pages[0].dirty && pages.pages[1].dirty);
+        pages.upload(&mut buffers);
+        assert!(!pages.pages[1].dirty);
+        // Setting the same record again changes nothing.
+        pages.set(67, rec);
+        assert!(!pages.pages[1].dirty);
+        // A page is always the same size (a resize would rebuild its materials), and reads back.
+        assert_eq!(PatchLight::min_size().get(), 752);
+        for p in &pages.pages {
+            assert_eq!(buffers.get(&p.buffer).unwrap().buffer_size(), 752 * LIGHT_PAGE_SLOTS as u64);
+        }
+        let b = buffers.get(&pages.pages[1].buffer).unwrap();
+        let bevy::render::storage::ShaderBufferData::Initialized { data, .. } = &b.data else { panic!() };
+        let back: Vec<PatchLight> = encase::StorageBuffer::new(&data[..]).create().unwrap();
+        assert_eq!(back[3], rec);
+        assert_eq!(pages.page(67).1, 3);
+    }
+
+    // The walk before the horizon was cached and `visible` sorted once (02-3), for the test below.
+    fn old_horizon_gap(key: TileKey, cam_body: DVec3, top: f64, floor: f64) -> f64 {
+        let rc = cam_body.length();
+        if rc <= 0.0 {
+            return -1.0;
+        }
+        let r0 = floor.min(rc);
+        let horizon = (r0 / rc).clamp(-1.0, 1.0).acos() + (r0 / top.max(r0)).clamp(-1.0, 1.0).acos();
+        let ang = cam_body.normalize().dot(key.center_dir()).clamp(-1.0, 1.0).acos();
+        ang - (horizon + node_angle(key.level) + 0.01)
+    }
+
+    fn old_beyond_horizon(key: TileKey, cam_body: DVec3, top: f64, floor: f64) -> bool {
+        old_horizon_gap(key, cam_body, top, floor) > 0.0
+    }
+
+    fn old_select(t: &mut Terrain, key: TileKey, cam_body: &DVec3, frame: u64, visible: &mut Vec<TileKey>, requests: &mut Vec<TileKey>, scale: f64) -> bool {
+        if let Some(slot) = t.nodes.get_mut(&key) {
+            slot.last_used = frame;
+        }
+        if key.level > 0 && old_beyond_horizon(key, *cam_body, t.cull_top(), t.horizon_floor) {
+            return true;
+        }
+        let ready = |t: &Terrain, k: &TileKey| t.nodes.get(k).is_some_and(|s| matches!(s.state, NodeState::Ready(..)) && s.ready_frame < frame);
+        if wants_split(key, key.center_dir(), t.radius, *cam_body, scale, height_range(t, key)) {
+            let children = key.children();
+            let all_ready = children.iter().all(|c| ready(t, c) || old_beyond_horizon(*c, *cam_body, t.cull_top(), t.horizon_floor));
+            if all_ready {
+                for c in children {
+                    if !t.nodes.contains_key(&c) && old_horizon_gap(c, *cam_body, t.cull_top(), t.horizon_floor) < node_angle(c.level) {
+                        requests.push(c);
+                    }
+                }
+                let mut ok = true;
+                for c in children {
+                    ok &= old_select(t, c, cam_body, frame, visible, requests, scale);
+                }
+                if ok {
+                    return true;
+                }
+            } else {
+                for c in children {
+                    if !t.nodes.contains_key(&c) && !old_beyond_horizon(c, *cam_body, t.cull_top(), t.horizon_floor) {
+                        requests.push(c);
+                    }
+                }
+            }
+        }
+        if ready(t, &key) {
+            if let Err(pos) = visible.binary_search(&key) {
+                visible.insert(pos, key);
+            }
+            true
+        } else {
+            if !t.nodes.contains_key(&key) {
+                requests.push(key);
+            }
+            false
+        }
+    }
+
+    #[test]
+    fn select_walk_matches_the_old_one() {
+        let radius = 6.4e6;
+        // On the ground, low, high, far, and at the centre; the camera drifts each frame.
+        for (alt, dir) in [(2.0, DVec3::new(0.3, -0.5, 0.8)), (300.0, DVec3::new(-0.9, 0.1, 0.2)), (4.0e5, DVec3::X), (2.0e7, DVec3::new(0.2, 0.9, -0.4)), (-radius, DVec3::Y)] {
+            let (mut a, mut b) = (test_terrain(radius), test_terrain(radius));
+            for frame in 1..60u64 {
+                let d = (dir.normalize() + DVec3::new(0.0, 1e-7, 2e-7) * frame as f64).normalize();
+                let cam = d * (radius + alt);
+                let (mut va, mut ra, mut vb, mut rb) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                for face in CubeFace::ALL {
+                    old_select(&mut a, TileKey::root(face), &cam, frame, &mut va, &mut ra, 1.0);
+                }
+                select_all(&mut b, &cam, frame, &mut vb, &mut rb, 1.0);
+                assert_eq!((&va, &ra), (&vb, &rb), "alt {alt} frame {frame}");
+                // The requested nodes are ready the next frame, some of them with relief.
+                for (i, k) in ra.iter().enumerate().take(400) {
+                    for t in [&mut a, &mut b] {
+                        t.nodes.entry(*k).or_insert(NodeSlot { state: NodeState::Ready(Entity::PLACEHOLDER, Vec::new()), last_used: frame, ready_frame: frame, light_gen: 0, light: 0 });
+                        if i % 3 == 0 {
+                            t.node_hrange.insert(*k, (-50.0, 900.0 + i as f32));
+                        }
+                    }
+                }
+            }
+            let used = |t: &Terrain| t.nodes.iter().map(|(k, s)| (*k, s.last_used)).collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(used(&a), used(&b));
+            assert!(a.nodes.len() > 20, "alt {alt}: {} nodes", a.nodes.len());
+            if alt == 2.0 {
+                assert!(a.nodes.len() > 1000 && a.nodes.keys().any(|k| k.level >= 15), "{} nodes", a.nodes.len());
+            }
+        }
+    }
+
+    #[test]
+    fn visibility_pass_skips_only_the_same_inputs() {
+        let mut t = test_terrain(6.4e6);
+        let k = |l| TileKey::root(CubeFace::ALL[l]);
+        t.visible = vec![k(0), k(1)];
+        // Never run (or everything hidden since): the pass must run.
+        assert!(!vis_inputs_same(&t, &[k(0), k(1)], &[None], true));
+        t.vis_inputs = Some((vec![None, Some(vec![k(2)])], true));
+        assert!(vis_inputs_same(&t, &[k(0), k(1)], &[None, Some(vec![k(2)])], true));
+        assert!(!vis_inputs_same(&t, &[k(0)], &[None, Some(vec![k(2)])], true));
+        assert!(!vis_inputs_same(&t, &[k(0), k(1)], &[None, Some(vec![k(2)])], false));
+        assert!(!vis_inputs_same(&t, &[k(0), k(1)], &[None, Some(vec![])], true));
+        // A layer that starts or stops turning changes shape, even with no patches.
+        t.vis_inputs = Some((vec![None, Some(vec![])], true));
+        assert!(!vis_inputs_same(&t, &[k(0), k(1)], &[None, None], true));
+        assert!(!vis_inputs_same(&t, &[k(0), k(1)], &[None], true));
+    }
+
+    /// Times one walk, old and new, over a settled tree 2 m above a 6400 km planet:
+    /// `cargo test -p se_engine --release bench_select -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_select() {
+        let radius = 6.4e6;
+        let mut t = test_terrain(radius);
+        t.clouds.push(CloudLayer::from_block(&se_core::sc::Block::default(), radius, 1.0));
+        let cam = DVec3::new(0.31, 0.83, 0.47).normalize() * (radius + 2.0);
+        let mut frame = 1;
+        for _ in 0..400 {
+            frame += 1;
+            let (mut v, mut r) = (Vec::new(), Vec::new());
+            select_all(&mut t, &cam, frame, &mut v, &mut r, 1.0);
+            r.sort();
+            r.dedup();
+            if r.is_empty() {
+                break;
+            }
+            for k in r {
+                t.nodes.insert(k, NodeSlot { state: NodeState::Ready(Entity::PLACEHOLDER, Vec::new()), last_used: frame, ready_frame: frame, light_gen: 0, light: 0 });
+                t.node_hrange.insert(k, ((k.row % 7) as f32 * -10.0, (k.col % 5) as f32 * 30.0 + 50.0));
+            }
+        }
+        let n = 3000;
+        let (mut vo, mut vn) = (Vec::new(), Vec::new());
+        for round in 0..3 {
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                frame += 1;
+                let (mut v, mut r) = (Vec::new(), Vec::new());
+                for face in CubeFace::ALL {
+                    old_select(&mut t, TileKey::root(face), &cam, frame, &mut v, &mut r, 1.0);
+                }
+                vo = std::hint::black_box(v);
+            }
+            let old = t0.elapsed().as_secs_f64() * 1e3 / n as f64;
+            let t1 = std::time::Instant::now();
+            for _ in 0..n {
+                frame += 1;
+                let (mut v, mut r) = (Vec::new(), Vec::new());
+                select_all(&mut t, &cam, frame, &mut v, &mut r, 1.0);
+                vn = std::hint::black_box(v);
+            }
+            let new = t1.elapsed().as_secs_f64() * 1e3 / n as f64;
+            // The poll loop's old key scan (nothing loading once settled) against the loading list.
+            let t2 = std::time::Instant::now();
+            let mut hits = 0;
+            for _ in 0..n {
+                hits += t.nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count();
+                let keys: Vec<TileKey> = t.nodes.keys().copied().collect();
+                let start = std::time::Instant::now();
+                for key in keys {
+                    if start.elapsed().as_secs_f32() * 1000.0 >= 10.0 {
+                        break;
+                    }
+                    let slot = t.nodes.get_mut(&key).unwrap();
+                    let NodeState::Loading(_) = &mut slot.state else { continue };
+                    hits += 1;
+                }
+            }
+            let poll = t2.elapsed().as_secs_f64() * 1e3 / n as f64;
+            println!("round {round}: {} nodes, {} visible: walk old {old:.3} ms, new {new:.3} ms; old poll scan {poll:.3} ms ({hits})", t.nodes.len(), vn.len());
+        }
+        assert_eq!(vo, vn);
+    }
+
+    // update_eclipses before it skipped the bodies under half a pixel (04-4), for the test below.
+    fn old_update_eclipses(
+        switches: Res<crate::switches::RenderSwitches>,
+        mut set: ParamSet<(Query<(&SystemBody, Option<&Terrain>)>, Query<(&SystemBody, &BodyLighting, &mut Terrain)>)>,
+    ) {
+        let occluders: Vec<(ObjectRef, UPos, f64, bool)> = set
+            .p0()
+            .iter()
+            .filter(|(b, _)| !b.star && b.radius_m > 1000.0)
+            .map(|(b, t)| (b.obj, b.pos, b.radius_m, t.is_some_and(|t| t.atmosphere.is_some())))
+            .collect();
+        for (body, light, mut terrain) in &mut set.p1() {
+            let mut e = EclipseUniform::default();
+            let star_dist = light.star_pos.delta_m(body.pos).length();
+            if switches.eclipses && body.px_radius > 0.5 && light.star_radius_m > 0.0 && star_dist > 0.0 {
+                let a_s = (light.star_radius_m / star_dist).min(1.0).asin();
+                let mut found: Vec<(f64, Vec4)> = Vec::new();
+                for &(obj, pos, r_o, atm) in &occluders {
+                    if obj == body.obj {
+                        continue;
+                    }
+                    let w = body.pos.delta_m(pos);
+                    let to_star = light.star_pos.delta_m(pos).normalize_or(DVec3::Y);
+                    let t = -w.dot(to_star);
+                    if t <= 0.0 {
+                        continue;
+                    }
+                    let perp = (w + to_star * t).length();
+                    if perp > body.radius_m + r_o + t * a_s {
+                        continue;
+                    }
+                    let rel = -w / body.radius_m;
+                    let r = (r_o / body.radius_m) as f32;
+                    found.push((r_o / w.length(), rel.as_vec3().extend(if atm { -r } else { r })));
+                }
+                found.sort_by(|a, b| b.0.total_cmp(&a.0));
+                for (i, (_, o)) in found.iter().take(4).enumerate() {
+                    e.occ[i] = *o;
+                }
+                e.info = Vec4::new(a_s as f32, found.len().min(4) as f32, 0.0, 0.0);
+            }
+            if e != terrain.eclipse {
+                terrain.eclipse = e;
+            }
+        }
+    }
+
+    /// Times update_eclipses, old and new, over 2500 bodies of which 3 are resolved:
+    /// `cargo test -p se_engine --release bench_eclipses -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_eclipses() {
+        for (name, new) in [("old", false), ("new", true), ("old", false), ("new", true)] {
+            let mut w = World::new();
+            w.insert_resource(crate::switches::RenderSwitches::default());
+            let mut s = Schedule::default();
+            if new {
+                s.add_systems(update_eclipses);
+            } else {
+                s.add_systems(old_update_eclipses);
+            }
+            let light = BodyLighting { star_radius_m: 7.0e8, ..Default::default() };
+            for i in 0..2500u32 {
+                let a = i as f64;
+                let p = DVec3::new(a.sin(), (a * 1.7).cos(), (a * 0.3).sin()) * 1.5e11 * (1.0 + 0.001 * a);
+                let b = SystemBody {
+                    obj: ObjectRef::Body(i),
+                    radius_m: 1.0e6,
+                    star: false,
+                    pos: UPos::ZERO.offset_m(p),
+                    orient: DQuat::IDENTITY,
+                    px_radius: if i < 3 { 50.0 } else { 0.01 },
+                    shape: DVec3::ONE,
+                };
+                w.spawn((b, light, test_terrain(1.0e6)));
+            }
+            s.run(&mut w);
+            let n = 300;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                s.run(&mut w);
+            }
+            println!("{name}: {:.3} ms", t0.elapsed().as_secs_f64() * 1e3 / n as f64);
+        }
+    }
+
+    #[test]
+    fn eclipses_match_visiting_every_body() {
+        let mut worlds: Vec<(World, Schedule)> = (0..2)
+            .map(|i| {
+                let mut w = World::new();
+                w.insert_resource(crate::switches::RenderSwitches::default());
+                let mut s = Schedule::default();
+                if i == 0 {
+                    s.add_systems(old_update_eclipses);
+                } else {
+                    s.add_systems(update_eclipses);
+                }
+                (w, s)
+            })
+            .collect();
+        let au = 1.5e11;
+        let light = BodyLighting { star_radius_m: 7.0e8, ..Default::default() };
+        let body = |i: u32, x: f64, y: f64, r: f64, px: f64| SystemBody {
+            obj: ObjectRef::Body(i),
+            radius_m: r,
+            star: false,
+            pos: UPos::ZERO.offset_m(DVec3::new(x, y, 0.0)),
+            orient: DQuat::IDENTITY,
+            px_radius: px,
+            shape: DVec3::ONE,
+        };
+        let atm = || AtmosphereGpu {
+            params: se_core::atm::AtmParams {
+                radius_ground: 6360.0,
+                radius_top: 6420.0,
+                rayleigh_h: 8.0,
+                mie_h: 1.2,
+                rayleigh_beta: [0.0; 3],
+                mie_sca_beta: [0.0; 3],
+                mie_ext_beta: [0.0; 3],
+                mie_g: 0.8,
+                mie_fade: 0.1,
+            },
+            inscatter: Handle::default(),
+            transmittance: Handle::default(),
+            irradiance: Handle::default(),
+        };
+        let mut ids = Vec::new();
+        for (w, _) in &mut worlds {
+            let mut e = Vec::new();
+            // A lit planet, a moon with an atmosphere and one without shading it, a body with no
+            // terrain in front of both, one behind, and small far bodies.
+            e.push(w.spawn((body(0, au, 0.0, 6.4e6, 40.0), light, test_terrain(6.4e6))).id());
+            let mut moon = test_terrain(1.7e6);
+            moon.atmosphere = Some(atm());
+            e.push(w.spawn((body(1, au - 4.0e8, 2.0e6, 1.7e6, 3.0), light, moon)).id());
+            e.push(w.spawn((body(2, au - 3.0e8, -1.0e6, 1.7e6, 2.0), light, test_terrain(1.7e6))).id());
+            e.push(w.spawn(body(3, au - 6.0e8, 0.5e6, 2.5e6, 0.2)).id());
+            e.push(w.spawn((body(4, au + 4.0e8, 0.0, 1.0e6, 0.1), light, test_terrain(1.0e6))).id());
+            for i in 5..12 {
+                e.push(w.spawn((body(i, au + 1.0e9 * i as f64, 0.0, 2.0e5, 0.01), light, test_terrain(2.0e5))).id());
+            }
+            ids.push(e);
+        }
+        assert_eq!(ids[0], ids[1]);
+        let ids = ids[0].clone();
+        // Frame by frame: as set up, the planet under half a pixel, back, the moon moving out of
+        // line, the eclipses switched off and on, and the planet removed.
+        for frame in 0..8 {
+            for (w, s) in &mut worlds {
+                match frame {
+                    1 => w.get_mut::<SystemBody>(ids[0]).unwrap().px_radius = 0.3,
+                    2 => w.get_mut::<SystemBody>(ids[0]).unwrap().px_radius = 40.0,
+                    3 => w.get_mut::<SystemBody>(ids[1]).unwrap().pos = UPos::ZERO.offset_m(DVec3::new(au - 4.0e8, 5.0e7, 0.0)),
+                    4 => w.resource_mut::<crate::switches::RenderSwitches>().eclipses = false,
+                    5 => w.resource_mut::<crate::switches::RenderSwitches>().eclipses = true,
+                    6 => w.get_mut::<SystemBody>(ids[1]).unwrap().pos = UPos::ZERO.offset_m(DVec3::new(au - 4.0e8, 2.0e6, 0.0)),
+                    7 => {
+                        w.despawn(ids[0]);
+                    }
+                    _ => {}
+                }
+                s.run(w);
+            }
+            let eclipses = |w: &World| ids.iter().map(|e| w.get::<Terrain>(*e).map(|t| t.eclipse)).collect::<Vec<_>>();
+            assert_eq!(eclipses(&worlds[0].0), eclipses(&worlds[1].0), "frame {frame}");
+            if frame == 0 {
+                let e = worlds[0].0.get::<Terrain>(ids[0]).unwrap().eclipse;
+                assert!(e.info.y >= 2.0 && e.occ.iter().any(|o| o.w < 0.0), "{e:?}");
+            }
+        }
     }
 }

@@ -253,6 +253,13 @@ pub fn oval_particles(o: &SeOval, seed: &mut u32) -> (Vec<[f32; 3]>, Vec<[f32; 4
     (pos, data)
 }
 
+/// Advances `seed` as [`oval_particles`] does: three draws a ring, whatever its particles.
+fn skip_particles(o: &SeOval, seed: &mut u32) {
+    for _ in 0..o.rings.max(1) * 3 {
+        lcg(seed);
+    }
+}
+
 fn particle_mesh(pos: Vec<[f32; 3]>, data: Vec<[f32; 4]>) -> Mesh {
     let quads = pos.len() as u32 / 4;
     let idx: Vec<u32> = (0..quads).flat_map(|q| [0, 1, 2, 1, 3, 2].map(|i| q * 4 + i)).collect();
@@ -273,6 +280,9 @@ struct AuroraOf {
     height_km: f64,
     top: Vec3,
     bottom: Vec3,
+    /// The seed of its particles until they are built, the first frame the oval shows (most are
+    /// never seen): its `Mesh3d` handle is reserved at spawn and filled then.
+    particle_seed: Option<u32>,
 }
 
 /// Marks bodies whose aurora has been looked up.
@@ -285,7 +295,7 @@ fn spawn_auroras(
     data: Res<SeData>,
     // A body waiting for its atmosphere model has no terrain yet to tell its bulk class.
     bodies: Query<(Entity, &SystemBody, Option<&crate::terrain::Terrain>), (Without<AuroraChecked>, Without<crate::system::PendingAtmosphere>)>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    meshes: Res<Assets<Mesh>>,
     mut mats: ResMut<Assets<AuroraMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut settings: ResMut<AuroraSettings>,
@@ -321,9 +331,11 @@ fn spawn_auroras(
                 h
             }
         };
+        // North then south, the south starting where the north's particles left the seed.
         let mut pseed = seed;
         for oval in ovals {
-            let (pos, vdata) = oval_particles(&oval, &mut pseed);
+            let particle_seed = pseed;
+            skip_particles(&oval, &mut pseed);
             let material = mats.add(AuroraMaterial {
                 u: AuroraUniform {
                     frame_x: Vec4::X,
@@ -338,8 +350,8 @@ fn spawn_auroras(
             });
             commands.spawn((
                 SystemMember,
-                AuroraOf { body: entity, material: material.clone(), oval, base_km, height_km, top, bottom },
-                Mesh3d(meshes.add(particle_mesh(pos, vdata))),
+                AuroraOf { body: entity, material: material.clone(), oval, base_km, height_km, top, bottom, particle_seed: Some(particle_seed) },
+                Mesh3d(meshes.reserve_handle()),
                 MeshMaterial3d(material),
                 UPosition(body.pos),
                 UOrientation(body.orient),
@@ -384,8 +396,9 @@ fn update_auroras(
     windows: Query<&Window>,
     cams: Query<&Projection, With<crate::camera::MainCamera>>,
     bodies: Query<(&SystemBody, &BodyLighting)>,
-    mut auroras: Query<(&AuroraOf, &mut UPosition, &mut UOrientation, &mut ScaleAnchor, &mut Visibility)>,
+    mut auroras: Query<(&mut AuroraOf, &Mesh3d, &mut UPosition, &mut UOrientation, &mut ScaleAnchor, &mut Visibility)>,
     mut mats: ResMut<Assets<AuroraMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     switches: Res<crate::switches::RenderSwitches>,
     settings: Res<AuroraSettings>,
 ) {
@@ -399,16 +412,23 @@ fn update_auroras(
         })
         .unwrap_or(1.0);
     let px_per_rad = h * 0.5 / (fov * 0.5).tan();
-    for (aurora, mut pos, mut rot, mut anchor, mut vis) in &mut auroras {
+    for (mut aurora, mesh, mut pos, mut rot, mut anchor, mut vis) in &mut auroras {
         let Ok((b, light)) = bodies.get(aurora.body) else { continue };
-        let o = &aurora.oval;
         let cam_km = b.from_shape(b.orient.inverse() * cam.pos.delta_m(b.pos)) / 1000.0;
-        let k = if switches.aurora { oval_brightness(o, aurora.base_km, cam_km, px_per_rad) } else { 0.0 };
+        let k = if switches.aurora { oval_brightness(&aurora.oval, aurora.base_km, cam_km, px_per_rad) } else { 0.0 };
         let v = if k > 0.0 { Visibility::Visible } else { Visibility::Hidden };
         vis.set_if_neq(v);
         if k <= 0.0 {
             continue;
         }
+        // Shown for the first time: build its particles now, so it is never drawn without them.
+        if let Some(mut seed) = aurora.particle_seed {
+            aurora.particle_seed = None;
+            let (p, d) = oval_particles(&aurora.oval, &mut seed);
+            meshes.insert(mesh.id(), particle_mesh(p, d)).expect("reserved aurora mesh handle");
+        }
+        let aurora = &*aurora;
+        let o = &aurora.oval;
         pos.0 = b.pos;
         rot.0 = b.orient;
         anchor.0 = b.pos;
@@ -486,6 +506,42 @@ mod tests {
         assert!(pos.iter().all(|p| p[1] <= lo + 1e-4 && p[1] >= hi - 1e-4));
         // Corners in SE's order.
         assert_eq!(data[..4].iter().map(|d| (d[3] * 255.0).round() as u32).collect::<Vec<_>>(), [0, 64, 128, 192]);
+    }
+
+    fn mesh_bytes(m: &Mesh) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = m.attributes().map(|(_, v)| v.get_bytes().to_vec()).collect();
+        out.push(match m.indices() {
+            Some(Indices::U32(i)) => i.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            other => panic!("{other:?}"),
+        });
+        out
+    }
+
+    #[test]
+    fn lazy_ovals_build_the_eager_meshes() {
+        let south = AuroraOval { lat_deg: -80.0, rings: 0, ..earth_north() };
+        for (north, south) in [(earth_north(), south.clone()), (AuroraOval { rings: 0, ..earth_north() }, south)] {
+            let mut seed = 0x1234_5678;
+            let ovals = [&north, &south].map(|o| SeOval::from_catalog(o, 6438.0, 6378.0, bulk::TERRA, &mut seed));
+            // As the ovals were built at spawn: north then south from one seed.
+            let mut eager_seed = seed;
+            let eager = ovals.map(|o| {
+                let (p, d) = oval_particles(&o, &mut eager_seed);
+                mesh_bytes(&particle_mesh(p, d))
+            });
+            // Each from the seed it was given at spawn, south first.
+            let mut pseed = seed;
+            let seeds = ovals.map(|o| {
+                let s = pseed;
+                skip_particles(&o, &mut pseed);
+                s
+            });
+            assert_eq!(pseed, eager_seed);
+            for i in [1, 0] {
+                let (p, d) = oval_particles(&ovals[i], &mut { seeds[i] });
+                assert!(mesh_bytes(&particle_mesh(p, d)) == eager[i], "oval {i}");
+            }
+        }
     }
 
     #[test]

@@ -7,6 +7,8 @@
 //! (`docs/formats/galaxy_model.md`, section 8). Like a sprite model it fades in as the far sprite fades out
 //! (the `resident` list).
 
+use std::sync::Arc;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -23,7 +25,7 @@ use se_core::galaxy_model::hubble_type_index;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    GalaxyFarMaterial, GalaxySettings, GalaxyState, MAG_REF_OFFSET, angular_px, main_def_doc, profile_type, se_bright_term,
+    GalaxySettings, GalaxyState, MAG_REF_OFFSET, angular_px, main_def_doc, profile_type, se_bright_term,
     se_glow_bright, update_galaxies,
 };
 
@@ -110,10 +112,15 @@ impl Default for BulgeSettings {
 }
 
 #[derive(Resource, Default)]
-struct Volumes {
+pub(crate) struct Volumes {
     mesh: Handle<Mesh>,
     table: Handle<Image>,
     slots: Vec<(Entity, Handle<EllipticalMaterial>)>,
+    /// The catalog galaxies (in order) of profile 0 without a sprite model, among the first `scanned`,
+    /// of the catalog at `cat_ptr`.
+    candidates: Vec<usize>,
+    scanned: usize,
+    cat_ptr: usize,
 }
 
 pub struct EllipticalsPlugin;
@@ -203,7 +210,7 @@ fn axis_ratio(kind: &str) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_volumes(
+pub(crate) fn update_volumes(
     mut commands: Commands,
     cam: Res<FlyCamera>,
     data: Res<SeData>,
@@ -215,10 +222,10 @@ fn update_volumes(
     mut vols: ResMut<Volumes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<EllipticalMaterial>>,
-    mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
 ) {
     let Some(mut gs) = gs else { return };
+    let gs = &mut *gs;
     if vols.table == Handle::default() {
         return;
     }
@@ -235,7 +242,22 @@ fn update_volumes(
     // The ellipticals SE draws (fade-in over 2..5 px of the ellipsoid's radius), largest first.
     let mut wanted: Vec<(f64, usize, f32)> = Vec::new();
     if settings.enabled {
-        for (g, rec) in cat.galaxies.iter().enumerate() {
+        // Which galaxies can be ellipticals is fixed once a galaxy has its model choice (catalog
+        // galaxies are only appended): those are listed once, the rest are tested each frame.
+        let ptr = Arc::as_ptr(&data.catalog) as usize;
+        if vols.cat_ptr != ptr || vols.scanned > cat.galaxies.len() {
+            (vols.cat_ptr, vols.scanned) = (ptr, 0);
+            vols.candidates.clear();
+        }
+        let known = cat.galaxies.len().min(gs.model_count());
+        for g in vols.scanned..known {
+            if profile_type(&cat.galaxies[g]) == 0 && !gs.has_model(g) {
+                vols.candidates.push(g);
+            }
+        }
+        vols.scanned = vols.scanned.max(known);
+        for g in vols.candidates.iter().copied().chain(vols.scanned..cat.galaxies.len()) {
+            let rec = &cat.galaxies[g];
             if profile_type(rec) != 0 || gs.has_model(g) {
                 continue;
             }
@@ -277,11 +299,12 @@ fn update_volumes(
     let bright = if photo.is_none_or(|p| p.0 == 0) { bulge.bright.max(0.0).sqrt() } else { bulge.bright };
     let glow = se_glow_bright(settings.glow_mag_limit, settings.glow_bright_min, settings.sprite_bright);
     let limit = settings.mag_ref - MAG_REF_OFFSET;
-    let mut far = far_mats.get_mut(&gs.far_handle());
+    // This frame's far-sprite uniforms (`update_galaxies`), which `galaxies::write_far` then puts in place.
+    let mut far = gs.far_u.as_mut();
     for (i, (e, mat)) in vols.slots.iter().enumerate() {
         let Some(&(px, g, fade)) = wanted.get(i) else {
             if let Ok(mut v) = vis.get_mut(*e) {
-                *v = Visibility::Hidden;
+                v.set_if_neq(Visibility::Hidden);
             }
             continue;
         };
@@ -298,7 +321,10 @@ fn update_volumes(
         let b = bright * p1 * glow * p3 * rec.model_bright as f32;
         let q = axis_ratio(&rec.kind);
         let inv = Mat3::from_quat(rec.orientation.inverse().as_quat());
-        if let Some(mut m) = mats.get_mut(mat) {
+        // A hidden volume draws nothing: its material is written again on the frame it shows.
+        if p1 > 0.0
+            && let Some(mut m) = mats.get_mut(mat)
+        {
             m.u = BulgeParams {
                 center_rel: (rec.pos_pc - cam_pc).as_vec3().extend(radius(rec) as f32),
                 rot0: inv.x_axis.extend(0.0),
@@ -310,12 +336,12 @@ fn update_volumes(
             };
         }
         if let Ok(mut v) = vis.get_mut(*e) {
-            *v = if p1 > 0.0 { Visibility::Visible } else { Visibility::Hidden };
+            v.set_if_neq(if p1 > 0.0 { Visibility::Visible } else { Visibility::Hidden });
         }
         // The far sprite hides behind the ellipsoid as it fades in.
         gs.resident.push((g, fade));
         if let Some(far) = far.as_mut()
-            && let Some(slot) = far.uniforms.resident.iter_mut().find(|s| s.x < 0.0)
+            && let Some(slot) = far.resident.iter_mut().find(|s| s.x < 0.0)
         {
             *slot = Vec4::new(g as f32, fade, 0.0, 0.0);
         }

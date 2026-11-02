@@ -63,9 +63,20 @@ fn light_source(bodies: &[Body], lit: &Body, dir: Vec3) -> Option<Body> {
     star.or_else(|| cone.iter().max_by(|a, b| a.1.total_cmp(&b.1))).map(|c| *c.2)
 }
 
+/// The bodies that can shadow `lit` (all but itself above 1 km, in order), each with `lit`'s offset
+/// from it: the same for each of its lights, so worked out once per receiver.
+fn casters_of(bodies: &[Body], lit: &Body) -> Vec<(Body, DVec3)> {
+    bodies
+        .iter()
+        .filter(|c| c.entity != lit.entity && !(c.radius_m < MIN_CASTER_RADIUS_M))
+        .map(|c| (*c, lit.pos.delta_m(c.pos)))
+        .collect()
+}
+
 /// The casters of light `src` on the body `lit`, `extent_m` its reach from its centre (its rings' outer
 /// radius, or the top of its atmosphere): the bodies between them whose penumbra cone can reach it.
-fn gather(bodies: &[Body], lit: &Body, extent_m: f64, src: &Body) -> EclipseLight {
+/// `casters` are [`casters_of`] `lit`.
+fn gather(casters: &[(Body, DVec3)], lit: &Body, extent_m: f64, src: &Body) -> EclipseLight {
     let mut e = EclipseLight::default();
     let src_dist = src.pos.delta_m(lit.pos).length();
     if src_dist <= src.radius_m || lit.radius_m <= 0.0 {
@@ -73,11 +84,11 @@ fn gather(bodies: &[Body], lit: &Body, extent_m: f64, src: &Body) -> EclipseLigh
     }
     e.info.x = (src.radius_m / src_dist).min(1.0).asin() as f32;
     let mut found: Vec<(f64, Vec4)> = Vec::new();
-    for c in bodies {
-        if c.entity == lit.entity || c.entity == src.entity || c.radius_m < MIN_CASTER_RADIUS_M {
+    for &(c, w) in casters {
+        if c.entity == src.entity {
             continue;
         }
-        if let Some((size, rel)) = shadow_reach(lit.pos.delta_m(c.pos), src.pos.delta_m(c.pos), src.radius_m, c.radius_m, extent_m) {
+        if let Some((size, rel)) = shadow_reach(w, src.pos.delta_m(c.pos), src.radius_m, c.radius_m, extent_m) {
             found.push((size, (-rel / lit.radius_m).as_vec3().extend((c.radius_m / lit.radius_m) as f32)));
         }
     }
@@ -158,14 +169,15 @@ pub fn update_eclipse_casters(
         let me = Body { entity, pos: b.pos, radius_m: b.radius_m, star: false };
         let extent = receiver_extent(b.radius_m, receivers.iter().filter(|r| r.0 == entity).map(|r| r.1));
         let mut set = EclipseCasters::default();
+        let shadowing = casters_of(&bodies, &me);
         // The main light is the star at `star_pos`; the others are found by their direction.
         let main = bodies.iter().find(|s| s.pos == light.star_pos && s.entity != entity).copied();
         if let Some(src) = main.or_else(|| light_source(&bodies, &me, light.sun_dir)) {
-            set.lights[0] = gather(&bodies, &me, extent, &src);
+            set.lights[0] = gather(&shadowing, &me, extent, &src);
         }
         for (slot, x) in set.lights[1..].iter_mut().zip(light.extra.iter().take(light.n_extra)) {
             if let Some(src) = light_source(&bodies, &me, x.dir) {
-                *slot = gather(&bodies, &me, extent, &src);
+                *slot = gather(&shadowing, &me, extent, &src);
             }
         }
         match casters {
@@ -250,5 +262,59 @@ mod tests {
         assert!(shadow_reach(DVec3::new(10.0, 0.0, 0.0), to_src, 7e8, 0.3, 1.0).is_none());
         // A wider receiver (the rings) catches it further out.
         assert!(shadow_reach(DVec3::new(-10.0, 2.0, 0.0), to_src, 7e8, 0.3, 2.5).is_some());
+    }
+
+    #[test]
+    fn casters_once_per_receiver_match_the_pass_per_light() {
+        // The pass over every body for each light, as it was before the casters were kept.
+        fn gather_each(bodies: &[Body], lit: &Body, extent_m: f64, src: &Body) -> EclipseLight {
+            let mut e = EclipseLight::default();
+            let src_dist = src.pos.delta_m(lit.pos).length();
+            if src_dist <= src.radius_m || lit.radius_m <= 0.0 {
+                return e;
+            }
+            e.info.x = (src.radius_m / src_dist).min(1.0).asin() as f32;
+            let mut found: Vec<(f64, Vec4)> = Vec::new();
+            for c in bodies {
+                if c.entity == lit.entity || c.entity == src.entity || c.radius_m < MIN_CASTER_RADIUS_M {
+                    continue;
+                }
+                if let Some((size, rel)) = shadow_reach(lit.pos.delta_m(c.pos), src.pos.delta_m(c.pos), src.radius_m, c.radius_m, extent_m) {
+                    found.push((size, (-rel / lit.radius_m).as_vec3().extend((c.radius_m / lit.radius_m) as f32)));
+                }
+            }
+            found.sort_by(|a, b| b.0.total_cmp(&a.0));
+            for (slot, (_, o)) in e.casters.iter_mut().zip(&found) {
+                *slot = *o;
+            }
+            e.info.y = found.len().min(MAX_ECLIPSES) as f32;
+            e
+        }
+        // Two suns and a planet with moons and small bodies scattered around its shadows.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let body = |i: u32, p: DVec3, r: f64, star: bool| Body { entity: Entity::from_raw_u32(i).unwrap(), pos: UPos::from_meters(p), radius_m: r, star };
+        let planet = DVec3::new(1.5e11, 2e9, -3e8);
+        let mut bodies = vec![body(0, DVec3::ZERO, 7e8, true), body(1, DVec3::new(-4e11, 1e10, 0.0), 3e8, true), body(2, planet, 6e7, false)];
+        for i in 3..400 {
+            let toward = if i % 2 == 0 { -planet.normalize() } else { (planet - bodies[1].pos.to_meters()).normalize() };
+            let off = DVec3::new(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * 2e8;
+            let r = [500.0, 1000.0, 3e5, 1.7e6][i % 4] * (0.5 + rnd());
+            bodies.push(body(i as u32, planet + toward * (1e8 + rnd() * 5e9) + off, r, false));
+        }
+        let lit = bodies[2];
+        let casters = casters_of(&bodies, &lit);
+        for src in [bodies[0], bodies[1], bodies[7], lit] {
+            for extent in [6e7, 1.4e8] {
+                let (a, b) = (gather(&casters, &lit, extent, &src), gather_each(&bodies, &lit, extent, &src));
+                assert_eq!(format!("{a:?}"), format!("{b:?}"));
+            }
+        }
+        assert!(gather(&casters, &lit, 1.4e8, &bodies[0]).info.y > 0.0, "some casters are found");
     }
 }

@@ -83,7 +83,7 @@ pub struct BodyLighting {
     /// Unit direction (universe/render frame) from the body towards the star.
     pub sun_dir: Vec3,
     pub sun_color: Vec3,
-    /// SE's light intensity ([`LightingFade::planet_intensity`]): 1 under a star brighter than the
+    /// SE's light intensity ([`FadeFluxes::planet_intensity`]): 1 under a star brighter than the
     /// fade magnitude wherever the body is, less as the star fades, 0 unlit.
     pub sun_intensity: f32,
     /// The intensity on rings, which lose a star fainter than `RingsLightingFadeEndMagn`.
@@ -231,13 +231,7 @@ impl LightingFade {
         10f64.powf(0.4 * (se_core::units::SOLAR_ABS_MAG_V + 5.0 * au_pc.log10() - 5.0 - mag))
     }
 
-    /// SE's intensity of the brightest star of flux `flux` on a planet: faded, then
-    /// `(F / max(F_begin, F))^0.35`, the brightest star normalised to 1.
-    pub fn planet_intensity(&self, flux: f64) -> f32 {
-        self.planet_intensities(&[(flux, true)]).first().copied().unwrap_or(0.0)
-    }
-
-    /// The same for the lights `(flux, star)`, brightest first (FUN_1404bf5c0): the list ends at
+    /// SE's intensity of the lights `(flux, star)`, brightest first (FUN_1404bf5c0): the list ends at
     /// the first light past the fade end, each is faded, then `(F / max(F_begin, F_max))^0.35`
     /// with `F_max` over the stars only (planet shine never sets the scale).
     pub fn planet_intensities(&self, lights: &[(f64, bool)]) -> Vec<f32> {
@@ -256,8 +250,37 @@ impl LightingFade {
         Self::flux(self.planet_end_mag)
     }
 
+    /// The fade's fluxes, worked out once for the frame's bodies.
+    pub fn fluxes(&self) -> FadeFluxes {
+        FadeFluxes { begin: Self::flux(self.planet_begin_mag), end: Self::flux(self.planet_end_mag), rings_end: Self::flux(self.rings_end_mag) }
+    }
+}
+
+/// [`LightingFade`]'s fluxes worked out once: no `powf` or `Vec` per body.
+#[derive(Clone, Copy, Debug)]
+pub struct FadeFluxes {
+    begin: f64,
+    end: f64,
+    rings_end: f64,
+}
+
+impl FadeFluxes {
+    /// SE's intensity of the brightest star of flux `flux` on a planet: faded, then
+    /// `(F / max(F_begin, F))^0.35`, the brightest star normalised to 1. The steps of
+    /// [`LightingFade::planet_intensities`] for one star.
+    pub fn planet_intensity(&self, flux: f64) -> f32 {
+        if !(flux >= self.end) {
+            return 0.0;
+        }
+        let (begin, end) = (self.begin, self.end);
+        let f = if flux < begin { ((flux - end) / (begin - end)).max(0.0) * flux } else { flux };
+        let max = begin.max(f);
+        (f / max).powf(0.35) as f32
+    }
+
+    /// Whether rings take a star of flux `flux` (`RingsLightingFadeEndMagn`).
     pub fn rings_lit(&self, flux: f64) -> bool {
-        flux >= Self::flux(self.rings_end_mag)
+        flux >= self.rings_end
     }
 }
 
@@ -343,27 +366,82 @@ fn star_distance_pc(cat: &se_core::catalog::Catalog, eph: &Ephemeris, i: u32, jd
     }
 }
 
+/// Radius (pc) around the camera of the stars [`nearest_catalog_star`] keeps between catalog changes.
+const NEAR_SET_PC: f64 = 20.0;
+
+/// The catalog stars with a position (not barycentres) within [`NEAR_SET_PC`] of `centre`, in index
+/// order, for the catalog `key` ([`crate::data::SeData::catalog_key`]). While the camera's nearest
+/// star and its reach stay inside that sphere, no star outside it can be nearer or within reach,
+/// so measuring these finds the same star as measuring the whole catalog.
+#[derive(Default)]
+struct NearSet {
+    key: Option<(usize, u64)>,
+    centre: DVec3,
+    stars: Vec<u32>,
+}
+
 /// The catalog star (not a barycentre) nearest to the camera and its distance in pc. The coarse
 /// pass measures every star at `pos_pc`; stars that could still be nearer once their systems are
 /// spread out are then measured at their real positions (Regor A is 2863 AU from its barycentre).
-fn nearest_catalog_star(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f64, cam_pc: DVec3) -> Option<(u32, f64)> {
+/// Stars near the camera are kept in `near`, which later calls measure instead of the catalog.
+fn nearest_catalog_star(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f64, cam_pc: DVec3, key: (usize, u64), near: &mut NearSet) -> Option<(u32, f64)> {
     let drawn = |i: usize| {
         let s = &cat.stars[i];
         s.has_position && !s.barycenter && !s.hidden()
     };
-    let d0 = (0..cat.stars.len())
-        .filter(|&i| drawn(i))
-        .map(|i| cat.stars[i].pos_pc.distance_squared(cam_pc))
-        .fold(f64::INFINITY, f64::min)
-        .sqrt();
+    // Stars within reach of the nearest one, in index order, measured where they really are; the
+    // first of equal distances wins.
+    let in_reach = |stars: &mut dyn Iterator<Item = usize>, d0: f64| {
+        let reach2 = (d0 + SYSTEM_REACH_PC).powi(2);
+        stars
+            .filter(|&i| cat.stars[i].pos_pc.distance_squared(cam_pc) < reach2 && drawn(i))
+            .map(|i| (i as u32, star_distance_pc(cat, eph, i as u32, jd, cam_pc)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    };
+    // Slack (pc) for the rounding of the distances, which grows with the coordinates.
+    let slack = 1e-6 + cam_pc.abs().max_element() * 1e-9;
+    if near.key == Some(key) {
+        // `d < best` skips `hidden()` for stars that can't lower the minimum; the minimum is the same.
+        let mut best = f64::INFINITY;
+        for &i in &near.stars {
+            let d = cat.stars[i as usize].pos_pc.distance_squared(cam_pc);
+            if d < best && drawn(i as usize) {
+                best = d;
+            }
+        }
+        let d0 = best.sqrt();
+        // A star outside the set is farther than NEAR_SET_PC - |cam - centre| >= d0 + reach.
+        if d0.is_finite() && near.centre.distance(cam_pc) + d0 + SYSTEM_REACH_PC + slack <= NEAR_SET_PC {
+            return in_reach(&mut near.stars.iter().map(|&i| i as usize), d0);
+        }
+    }
+    near.key = None;
+    near.stars.clear();
+    let set2 = NEAR_SET_PC * NEAR_SET_PC;
+    let mut best = f64::INFINITY;
+    for (i, s) in cat.stars.iter().enumerate() {
+        if !s.has_position || s.barycenter {
+            continue;
+        }
+        let d = s.pos_pc.distance_squared(cam_pc);
+        if d <= set2 {
+            near.stars.push(i as u32);
+        }
+        if d < best && !s.hidden() {
+            best = d;
+        }
+    }
+    let d0 = best.sqrt();
     if !d0.is_finite() {
         return None;
     }
-    let reach2 = (d0 + SYSTEM_REACH_PC).powi(2);
-    (0..cat.stars.len())
-        .filter(|&i| drawn(i) && cat.stars[i].pos_pc.distance_squared(cam_pc) < reach2)
-        .map(|i| (i as u32, star_distance_pc(cat, eph, i as u32, jd, cam_pc)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
+    if d0 + SYSTEM_REACH_PC + slack <= NEAR_SET_PC {
+        near.key = Some(key);
+        near.centre = cam_pc;
+        return in_reach(&mut near.stars.iter().map(|&i| i as usize), d0);
+    }
+    // Between galaxies the nearest star is farther than the set reaches: no set.
+    in_reach(&mut (0..cat.stars.len()), d0)
 }
 
 /// A generator's output, its script parsed (with SE's life), how long that took, and the bodies
@@ -411,6 +489,8 @@ struct ActiveScan {
     /// The generated systems' roots, least recently entered first: SE keeps `CacheSizeSolarSystems`
     /// planetary systems in memory and frees the oldest beyond that.
     entered: std::collections::VecDeque<u32>,
+    /// The stars near the camera at the last full scan.
+    near: NearSet,
 }
 
 /// The members of the system just entered still to spawn, a few each frame (SE's loader works
@@ -444,10 +524,11 @@ fn select_active_system(
     memory: Option<Res<crate::memory::MemoryLimits>>,
 ) {
     let cam_pc = cam.pos.to_parsecs();
+    let cat_key = data.catalog_key();
     let cat = data.catalog.clone();
     // The full catalog scan only reruns once the camera has moved by a percent of the
     // distance to the nearest star (or every couple of seconds).
-    let ActiveScan { last_pc, last_star, age, generated, running, ready, entered } = &mut *scan;
+    let ActiveScan { last_pc, last_star, age, generated, running, ready, entered, near } = &mut *scan;
     *age += 1;
     let mut nearest = {
         let eph = Ephemeris::new(&cat);
@@ -455,7 +536,7 @@ fn select_active_system(
             .map(|i| (i, star_distance_pc(&cat, &eph, i, sim.jd, cam_pc)))
             .filter(|&(_, d)| *age < 120 && last_pc.distance(cam_pc) < d * 0.01);
         reuse.or_else(|| {
-            let n = nearest_catalog_star(&cat, &eph, sim.jd, cam_pc);
+            let n = nearest_catalog_star(&cat, &eph, sim.jd, cam_pc, cat_key, near);
             *last_pc = cam_pc;
             *last_star = n.map(|(i, _)| i);
             *age = 0;
@@ -479,7 +560,7 @@ fn select_active_system(
             // a frame where nothing does. Its planets follow from a background task.
             let added = match existing {
                 Some(_) => None,
-                None => std::sync::Arc::get_mut(&mut data.catalog).map(|cat_mut| promote_star(cat_mut, rec)),
+                None => data.catalog_get_mut().map(|cat_mut| promote_star(cat_mut, rec)),
             };
             if let Some(idx) = existing.or(added) {
                 nearest = Some((idx, nearest_proc.dist_pc));
@@ -526,7 +607,7 @@ fn select_active_system(
             }
             return;
         };
-        match std::sync::Arc::get_mut(&mut data.catalog) {
+        match data.catalog_get_mut() {
             Some(cat_mut) => {
                 generated.insert(root);
                 // Unless it was made meanwhile (a selection materializes a star at once).
@@ -672,9 +753,9 @@ fn spawn_system_members(
             let light = se_core::climate::star_light_from(&eph, cat, obj, sim.jd, &lit);
             let mut temperature = se_core::climate::equilibrium_temperature(light.flux_mean, b);
             // SE fills in the atmosphere and ocean of solid planets the catalog leaves without.
+            let body_in = se_core::climate::catalog_body_in(cat, i as usize, &light);
             let completion = cat.climate.as_ref().and_then(|t| {
-                let body_in = se_core::climate::catalog_body_in(cat, i as usize, &light)?;
-                let c = se_core::climate::complete(t, &body_in)?;
+                let c = se_core::climate::complete(t, body_in.as_ref()?)?;
                 debug!(
                     "climate of {}: {:.3} atm {:.0} K, ocean {:.2} km, age {:.2} Gyr, gases {:?}",
                     b.names[0],
@@ -703,7 +784,7 @@ fn spawn_system_members(
             let life = b.block.sub("Life").is_some();
             let mut terrain = crate::terrain::Terrain::new(radius_m, b, temperature, surf_gen, completion.as_ref(), bump_km);
             terrain.glow_temps = (gen_in.t_eq, gen_in.t_surf);
-            terrain.tidal_lock = se_core::climate::catalog_body_in(cat, i as usize, &light).is_some_and(|c| c.tidally_locked);
+            terrain.tidal_lock = body_in.as_ref().is_some_and(|c| c.tidally_locked);
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.
             // Look: Opacity, Hue, Saturation, SkyLight (`AtmosphereParamsUniform::look`).
@@ -926,6 +1007,7 @@ fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took, 
             st.block.items.push(se_core::sc::Item { key: OWN_MASS_KEY.into(), args: vec![se_core::sc::Value::Num(st.mass_kg)], ..default() });
         }
         st.mass_kg = m * se_core::units::SOLAR_MASS_KG;
+        cat.note_edit();
     }
     cat.finalize();
     let name = &cat.stars[idx as usize].names[0];
@@ -1112,16 +1194,31 @@ fn spawn_sprite(
     let _ = RenderAssetUsages::RENDER_WORLD;
 }
 
+/// update_bodies' plan of the members' parent chains, and its ancestors' positions this frame.
+#[derive(Default)]
+struct BodyPlan {
+    plan: se_core::ephemeris::BatchPlan,
+    frame: se_core::ephemeris::PlanFrame,
+}
+
 fn update_bodies(
     data: Res<SeData>,
     sim: Res<SimTime>,
     mut q: Query<(&mut SystemBody, &mut UPosition, &mut UOrientation)>,
+    mut plan: Local<BodyPlan>,
 ) {
     let eph = Ephemeris::new(&data.catalog);
+    // The plan holds parents found by name: rebuild it when the catalog changes (names are
+    // re-registered or unloaded) and when members join. Members that left only cost a little work.
+    if data.is_changed() || q.iter_mut().any(|(b, ..)| b.is_added()) {
+        plan.plan = se_core::ephemeris::BatchPlan::new(&data.catalog, q.iter().map(|(b, ..)| b.obj));
+    }
+    // Each parent (the Sun, the planets) once, instead of once per child.
+    let BodyPlan { plan, frame } = &mut *plan;
+    plan.solve_parents(&eph, sim.jd, frame);
     // Thousands of bodies (asteroids, comets) in the Solar System: spread over threads.
     q.par_iter_mut().for_each(|(mut b, mut pos, mut rot)| {
-        b.pos = eph.position(b.obj, sim.jd);
-        b.orient = eph.orientation(b.obj, sim.jd);
+        (b.pos, b.orient) = plan.solve(&eph, b.obj, frame);
         pos.0 = b.pos;
         rot.0 = b.orient;
     });
@@ -1263,7 +1360,10 @@ fn update_lighting(
     };
     // The eye adapts to its sun: SE shows a red dwarf's planet tan, not deep red (the star itself is
     // still drawn in its full colour).
-    let star_color = |k: usize| illum_color(stars[k].2, stars[k].4 as f32, &settings);
+    // Worked out once a frame: every body of the system takes its colour from the same few stars.
+    let colors: Vec<Vec3> = stars.iter().map(|s| illum_color(s.2, s.4 as f32, &settings)).collect();
+    let star_color = |k: usize| colors[k];
+    let fade_fluxes = fade.fluxes();
     let star_light = |pos: UPos, (flux, k): (f64, usize)| Light {
         flux,
         dir: stars[k].0.delta_m(pos).normalize_or(DVec3::Y).as_vec3(),
@@ -1356,8 +1456,8 @@ fn update_lighting(
         let more = || (stars.len() > 1 && b.px_radius >= 0.15).then(|| star_lights(b.pos).into_iter().map(|l| star_light(b.pos, l)).collect());
         let Some(mut lights) = full.remove(&e).or_else(more) else {
             // Too small to show more than its brightest star (and the only one in most systems).
-            light.sun_intensity = fade.planet_intensity(main_flux);
-            light.rings_intensity = if fade.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
+            light.sun_intensity = fade_fluxes.planet_intensity(main_flux);
+            light.rings_intensity = if fade_fluxes.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
             continue;
         };
         // The brightest star stays the main light; the rest by flux.
@@ -1365,12 +1465,12 @@ fn update_lighting(
         lights.truncate(MAX_LIGHTS);
         let intensities = fade.planet_intensities(&lights.iter().map(|l| (l.flux, l.star)).collect::<Vec<_>>());
         light.sun_intensity = intensities.first().copied().unwrap_or(0.0);
-        light.rings_intensity = if fade.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
+        light.rings_intensity = if fade_fluxes.rings_lit(main_flux) { light.sun_intensity } else { 0.0 };
         for (l, &k) in lights.iter().zip(&intensities).skip(1) {
             let color = l.color * k;
             let n = light.n_extra;
             // Rings take the stars only (SE adds just their host planet's light, not ported).
-            light.extra[n] = ExtraLight { dir: l.dir, color, rings_color: if l.star && fade.rings_lit(l.flux) { color } else { Vec3::ZERO } };
+            light.extra[n] = ExtraLight { dir: l.dir, color, rings_color: if l.star && fade_fluxes.rings_lit(l.flux) { color } else { Vec3::ZERO } };
             light.n_extra += 1;
         }
     }
@@ -1439,6 +1539,7 @@ fn setup_sprite_batch(
     let mesh = meshes.add(build_sprite_mesh(p, d, c, i));
     let material = mats.add(StarMaterial {
         uniforms: batch_uniforms(&settings),
+        camera: crate::stars::SPRITE_CAMERA,
     });
     commands.spawn((
         Mesh3d(mesh.clone()),
@@ -1463,6 +1564,7 @@ fn update_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StarMaterial>>,
     mut sun_mats: ResMut<Assets<SunSpriteMaterial>>,
+    mut last: Local<(Vec<[f32; 3]>, Vec<[f32; 4]>)>,
 ) {
     // Stars: a few sprites with their own material.
     for (sprite, mut vis) in &mut sprites {
@@ -1509,9 +1611,20 @@ fn update_sprites(
     if p.is_empty() {
         push_star(&mut p, &mut d, &mut c, &mut i, [0.0; 3], [0.0; 3], 99.0);
     }
+    // Keep the mesh while nothing moved: replacing it makes Bevy re-upload it and recheck every
+    // mesh entity. The corners and indices follow from the count, so positions and data decide.
+    if same_bits(&p, &last.0) && same_bits(&d, &last.1) {
+        return;
+    }
     if let Some(mut mesh) = meshes.get_mut(&batch.mesh) {
+        *last = (p.clone(), d.clone());
         *mesh = build_sprite_mesh(p, d, c, i);
     }
+}
+
+/// Whether two vertex arrays hold the same bits (a -0.0 for 0.0, or a changed NaN, differs).
+fn same_bits<const N: usize>(a: &[[f32; N]], b: &[[f32; N]]) -> bool {
+    a.len() == b.len() && a.iter().flatten().zip(b.iter().flatten()).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// SE's OffsetToCrescent (`star_point.glsl` / `star_sprite.glsl` PLANET): a point-like body's
@@ -1838,6 +1951,91 @@ impl Material for StarSurfaceMaterial {
 mod tests {
     use super::*;
 
+    /// `nearest_catalog_star` as it was: both passes over the whole catalog.
+    fn nearest_full(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f64, cam_pc: DVec3) -> Option<(u32, f64)> {
+        let drawn = |i: usize| {
+            let s = &cat.stars[i];
+            s.has_position && !s.barycenter && !s.hidden()
+        };
+        let d0 = (0..cat.stars.len())
+            .filter(|&i| drawn(i))
+            .map(|i| cat.stars[i].pos_pc.distance_squared(cam_pc))
+            .fold(f64::INFINITY, f64::min)
+            .sqrt();
+        if !d0.is_finite() {
+            return None;
+        }
+        let reach2 = (d0 + SYSTEM_REACH_PC).powi(2);
+        (0..cat.stars.len())
+            .filter(|&i| drawn(i) && cat.stars[i].pos_pc.distance_squared(cam_pc) < reach2)
+            .map(|i| (i as u32, star_distance_pc(cat, eph, i as u32, jd, cam_pc)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
+    /// The kept near set finds the same star as scanning the whole catalog, frame after frame along
+    /// a path through a star cloud (hidden stars, barycentres with spread-out components, twins at
+    /// one place), with stars added and removed on the way, and out of the cloud.
+    #[test]
+    fn near_set_finds_the_same_nearest_star_as_a_full_scan() {
+        let mut seed = 12345u64;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let info = |name: String| crate::procstars::ProcStarInfo { name, class: "G2V".into(), abs_mag: 4.8, teff: 5800.0, age_feh: Some((4.0, 0.0)), se: None };
+        let mut cat = se_core::catalog::Catalog::new();
+        for i in 0..3000 {
+            let pos = DVec3::new(rnd(), rnd(), rnd()) * 100.0;
+            let mut rec = procedural_star_record(&info(format!("S{i}")), pos);
+            if i % 13 == 0 {
+                rec.block = se_core::sc::parse("Hidden true");
+            }
+            rec.barycenter = i % 29 == 0;
+            cat.add_star_record(rec.clone());
+            if i % 97 == 0 {
+                // A twin at the same place: the first index wins.
+                rec.names = vec![format!("S{i} twin")];
+                cat.add_star_record(rec);
+            }
+        }
+        // Components 0.3 pc from their barycentres (as far as an orbit takes them, at 2 AU per day).
+        let mut sc = String::new();
+        for i in (0..3000).step_by(29) {
+            for (c, w) in [("A", 0.0), ("B", 180.0)] {
+                sc += &format!("Star \"S{i} {c}\" {{ ParentBody \"S{i}\" Class \"K0V\" MassSol 0.8 Orbit {{ SemiMajorAxis 62000 Period 5 ArgOfPericenter {w} }} }}\n");
+            }
+        }
+        cat.load_sc(&sc, "test.sc");
+        cat.finalize();
+        let jd = se_core::time::J2000;
+        let mut near = NearSet::default();
+        let (mut hits, mut frames, mut added) = (0, 0, 0);
+        let dir = DVec3::new(1.0, 0.3, 0.2).normalize();
+        for step in 0..900 {
+            // Through the cloud, then out of it (the nearest star beyond the set's reach).
+            let t = if step < 600 { step as f64 * 0.25 } else { 150.0 + (step - 600) as f64 * 2.0 };
+            let cam = DVec3::splat(5.0) + dir * t;
+            if step % 37 == 5 {
+                let rec = procedural_star_record(&info(format!("N{added}")), cam + dir * 1.5);
+                cat.add_star_record(rec);
+                added += 1;
+            }
+            if step % 53 == 7 {
+                let name = format!("S{}", (step * 7) % 3000);
+                cat.load_sc(&format!("RemoveStar \"{name}\"\n"), "test.sc");
+            }
+            let eph = Ephemeris::new(&cat);
+            let key = (0, cat.revision());
+            let before = (near.key, near.centre);
+            let got = nearest_catalog_star(&cat, &eph, jd + step as f64 * 0.01, cam, key, &mut near);
+            assert_eq!(got, nearest_full(&cat, &eph, jd + step as f64 * 0.01, cam), "step {step}");
+            hits += (before == (Some(key), near.centre)) as u32;
+            frames += 1;
+        }
+        // Most frames used the kept set.
+        assert!(hits > frames / 2, "{hits} of {frames}");
+    }
+
     #[test]
     fn least_recently_entered_systems_go_first() {
         let entered: std::collections::VecDeque<u32> = [7, 3, 9, 4].into();
@@ -1908,6 +2106,7 @@ mod tests {
         assert_eq!(f, LightingFade::default());
         // The Sun at 1 AU is -26.74; -7 is 1.27e-8 of that (some 9000 AU away).
         assert!((LightingFade::flux(-7.0) / 1.271e-8 - 1.0).abs() < 0.01);
+        let f = f.fluxes();
         // The brightest star lights a planet fully wherever it is brighter than -7.
         for flux in [1000.0, 1.0, 1e-3, 2e-8] {
             assert_eq!(f.planet_intensity(flux), 1.0, "{flux}");
@@ -1918,6 +2117,33 @@ mod tests {
         assert!(mid[0] > 0.0 && mid[0] < mid[1] && mid[1] < mid[2] && mid[2] < 1.0, "{mid:?}");
         // Rings lose the star from -10 (2e-7).
         assert!(f.rings_lit(1e-6) && !f.rings_lit(1e-7));
+    }
+
+    #[test]
+    fn sprite_batch_keeps_only_bit_equal_arrays() {
+        let a = [[1.0f32, 0.0, f32::NAN], [2.0, 3.0, 4.0]];
+        assert!(same_bits(&a, &a));
+        assert!(!same_bits(&a, &a[..1]));
+        assert!(!same_bits(&a, &[[1.0, -0.0, f32::NAN], [2.0, 3.0, 4.0]]));
+        assert!(!same_bits(&a, &[[1.0, 0.0, f32::from_bits(f32::NAN.to_bits() ^ 1)], [2.0, 3.0, 4.0]]));
+        assert!(!same_bits::<3>(&[], &a) && same_bits::<4>(&[], &[]));
+    }
+
+    #[test]
+    fn frame_fade_fluxes_match_the_fade() {
+        // The once-a-frame fluxes give the same bits as the per-body fade, at and past its ends.
+        let odd = LightingFade { planet_begin_mag: -3.0, planet_end_mag: 2.5, rings_end_mag: 0.0, ..default() };
+        for f in [LightingFade::default(), odd] {
+            let ff = f.fluxes();
+            let edges = [LightingFade::flux(f.planet_begin_mag), LightingFade::flux(f.planet_end_mag), LightingFade::flux(f.rings_end_mag)];
+            let sweep = (-300..300).map(|k| 10f64.powf(k as f64 * 0.05));
+            let special = [0.0, -1.0, f64::NAN, f64::INFINITY, f64::MIN_POSITIVE];
+            for x in sweep.chain(special).chain(edges.iter().flat_map(|&e| [e, e.next_up(), e.next_down()])) {
+                let one = f.planet_intensities(&[(x, true)]).first().copied().unwrap_or(0.0);
+                assert_eq!(ff.planet_intensity(x).to_bits(), one.to_bits(), "{x}");
+                assert_eq!(ff.rings_lit(x), x >= LightingFade::flux(f.rings_end_mag), "{x}");
+            }
+        }
     }
 
     #[test]

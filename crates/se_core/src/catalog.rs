@@ -335,7 +335,16 @@ pub struct Catalog {
     pub climate: Option<std::sync::Arc<crate::climate::ClimateTables>>,
     /// Star and body counts covered by the last `resolve` (`finalize` only handles newer ones).
     resolved: (usize, usize),
+    /// [`Catalog::revision`] and [`Catalog::edits`].
+    revision: u64,
+    edits: u64,
+    /// Generated records replaced in place by a later definition: their earlier names may still
+    /// point at them, so [`Catalog::unload_generated`] sweeps the whole name maps for those.
+    replaced_generated: std::collections::HashSet<ObjectRef>,
 }
+
+/// Source of [`Catalog::revision`] values, so that no two catalogs share one.
+static NEXT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The source of a record [`Catalog::unload_generated`] emptied.
 pub const UNLOADED_SOURCE: &str = "unloaded";
@@ -382,47 +391,204 @@ fn small_body_mass_kg(tag: BodyTag, radius_km: f64) -> f64 {
     4.0 / 3.0 * std::f64::consts::PI * (radius_km * 1000.0).powi(3) * density
 }
 
+/// What [`Catalog::load`] does with a catalog file.
+#[derive(Clone, Copy)]
+enum FileKind {
+    StarCsv,
+    Sc,
+    GalaxyCsv,
+}
+
+/// A catalog file read (and parsed) on a worker thread, waiting for its turn in the merge.
+enum ParsedFile {
+    StarCsv(Result<Vec<CsvStar>, String>),
+    Sc(sc::Block),
+    /// Galaxy rows are merged straight from the text (`push_galaxy` looks at earlier rows).
+    GalaxyCsv(String),
+    /// A read error the load reports.
+    Warning(String),
+    /// A read error the load ignores (galaxy, cluster and nebula catalogs).
+    Skip,
+}
+
+/// One star csv row, with the lower-cased keys of its names.
+struct CsvStar {
+    rec: StarRecord,
+    keys: Vec<String>,
+}
+
+/// Rows above which a star csv is parsed in chunks on several threads (HIPPARCOS has ~118k).
+const CSV_CHUNK_ROWS: usize = 8192;
+
+/// The rows of a star csv that have a name and a position, in file order, or the header warning.
+/// Each row stands alone, so big files are parsed in chunks on scoped threads.
+fn parse_star_csv(text: &str, source: &str) -> Result<Vec<CsvStar>, String> {
+    let mut lines = text.lines();
+    let Some(header) = lines.next() else { return Ok(Vec::new()) };
+    let cols: Vec<String> = header.split(',').map(|c| c.trim().to_ascii_lowercase()).collect();
+    let col = |n: &str| cols.iter().position(|c| c == n);
+    let (Some(c_name), Some(c_ra), Some(c_dec), Some(c_dist)) = (col("name"), col("ra"), col("dec"), col("dist"))
+    else {
+        return Err(format!("{source}: unrecognised star csv header"));
+    };
+    let c_mag = col("appmagn");
+    let c_abs = col("absmagn");
+    let c_class = col("specclass").or_else(|| col("class"));
+    let c_mass = col("masssol");
+    let c_rad = col("radsol");
+    let c_temp = col("temperature").or_else(|| col("teff"));
+    let row = |line: &str| -> Option<CsvStar> {
+        let f: Vec<&str> = line.split(',').collect();
+        let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
+        let num = |i: Option<usize>| get(i).and_then(|s| s.parse::<f64>().ok());
+        let (Some(ra), Some(dec), Some(dist)) = (num(Some(c_ra)), num(Some(c_dec)), num(Some(c_dist))) else {
+            return None;
+        };
+        let names: Vec<String> = get(Some(c_name))
+            .map(|n| n.split('/').map(str::to_string).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            return None;
+        }
+        let class = SpectralClass::parse(get(c_class).unwrap_or("G2V"));
+        let teff = num(c_temp).unwrap_or_else(|| class.temperature());
+        let abs_mag = num(c_abs)
+            .or_else(|| num(c_mag).map(|m| star::abs_mag_from_app(m, dist.max(1e-6))))
+            .unwrap_or_else(|| class.typical_abs_mag());
+        let radius_km = num(c_rad).map(|r| r * SOLAR_RADIUS_KM).unwrap_or_else(|| {
+            let lum_bol = star::lum_from_abs_mag(abs_mag) * 10f64.powf(-0.4 * star::bolometric_correction(teff));
+            star::radius_from_lum_teff(lum_bol, teff) * SOLAR_RADIUS_KM
+        });
+        let keys = names.iter().map(|n| key(n)).collect();
+        let rec = StarRecord {
+            names,
+            barycenter: false,
+            parent: None,
+            pos_pc: radec_to_universe(ra, dec) * dist,
+            has_position: true,
+            class,
+            abs_mag,
+            teff,
+            radius_km,
+            mass_kg: num(c_mass).map(|m| m * SOLAR_MASS_KG).unwrap_or(SOLAR_MASS_KG),
+            orbit: None,
+            rotation: RotationModel::default(),
+            source: source.to_string(),
+            block: Block::default(),
+        };
+        Some(CsvStar { rec, keys })
+    };
+    let lines: Vec<&str> = lines.collect();
+    if lines.len() <= CSV_CHUNK_ROWS {
+        return Ok(lines.into_iter().filter_map(row).collect());
+    }
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunk = lines.len().div_ceil(threads).max(CSV_CHUNK_ROWS / 4);
+    Ok(std::thread::scope(|s| {
+        let parts: Vec<_> = lines.chunks(chunk).map(|c| s.spawn(|| c.iter().copied().filter_map(row).collect::<Vec<_>>())).collect();
+        parts.into_iter().flat_map(|h| h.join().expect("star csv chunk")).collect()
+    }))
+}
+
 impl Catalog {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Changes whenever the catalog may have changed (records added, edited, hidden or unloaded,
+    /// names registered or dropped), so caches of catalog data know to rebuild. Each value is used
+    /// by one catalog only.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Changes when a record already in the catalog may have new contents in place: replaced by a
+    /// later definition, or edited through the public fields ([`Catalog::note_edit`]). Not when
+    /// records are only added, a star is hidden (`has_position` cleared) or a generated system is
+    /// unloaded ([`UNLOADED_SOURCE`] placeholders, stars without a position): a cache that re-checks
+    /// those on its records sees them without a rebuild. Nor when [`Catalog::finalize`] places or
+    /// times the stars from [`Catalog::resolved_stars`] on, which it hadn't resolved yet.
+    pub fn edits(&self) -> u64 {
+        self.edits
+    }
+
+    /// How many stars (from index 0) the last resolve covered; later ones may still be changed by
+    /// [`Catalog::finalize`] without counting as [`Catalog::edits`].
+    pub fn resolved_stars(&self) -> usize {
+        self.resolved.0
+    }
+
+    /// Marks the catalog changed ([`Catalog::revision`]); for code holding it mutably.
+    pub fn touch(&mut self) {
+        self.revision = NEXT_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Marks a record already in the catalog edited in place ([`Catalog::edits`]).
+    pub fn note_edit(&mut self) {
+        self.touch();
+        self.edits = self.revision;
+    }
+
     /// Load every catalog under `catalogs/` from the VFS.
     pub fn load(vfs: &Vfs) -> Self {
         let mut cat = Catalog::new();
-        // Stars first so planets can resolve their parents' masses.
+        // (path, kind, whether a read error is a warning) in merge order. Stars first so planets
+        // can resolve their parents' masses; SE reads the galaxy csv before the .sc files, whose
+        // definitions then win the merge.
+        let mut files: Vec<(String, FileKind, bool)> = Vec::new();
         for dir in ["catalogs/stars", "catalogs/planets"] {
-            for path in vfs.list_ext(dir, "csv") {
-                match vfs.read_string(&path) {
-                    Ok(text) => cat.load_star_csv(&text, &path),
-                    Err(e) => cat.warnings.push(format!("{path}: {e}")),
-                }
-            }
-            for path in vfs.list_ext(dir, "sc") {
-                match vfs.read_string(&path) {
-                    Ok(text) => cat.load_sc(&text, &path),
-                    Err(e) => cat.warnings.push(format!("{path}: {e}")),
-                }
-            }
+            files.extend(vfs.list_ext(dir, "csv").into_iter().map(|p| (p, FileKind::StarCsv, true)));
+            files.extend(vfs.list_ext(dir, "sc").into_iter().map(|p| (p, FileKind::Sc, true)));
         }
-        // SE reads the galaxy csv before the .sc files, whose definitions then win the merge.
-        for path in vfs.list_ext("catalogs/galaxies", "csv") {
-            if let Ok(text) = vfs.read_string(&path) {
-                cat.load_galaxy_csv(&text, &path);
-            }
-        }
-        for path in vfs.list_ext("catalogs/galaxies", "sc") {
-            if let Ok(text) = vfs.read_string(&path) {
-                cat.load_sc(&text, &path);
-            }
-        }
+        files.extend(vfs.list_ext("catalogs/galaxies", "csv").into_iter().map(|p| (p, FileKind::GalaxyCsv, false)));
+        files.extend(vfs.list_ext("catalogs/galaxies", "sc").into_iter().map(|p| (p, FileKind::Sc, false)));
         for dir in ["catalogs/clusters", "catalogs/nebulae"] {
-            for path in vfs.list_ext(dir, "sc") {
-                if let Ok(text) = vfs.read_string(&path) {
-                    cat.load_sc(&text, &path);
+            files.extend(vfs.list_ext(dir, "sc").into_iter().map(|p| (p, FileKind::Sc, false)));
+        }
+        // Reading and parsing are independent per file, so they run on worker threads; the merge
+        // depends on everything before it, so this thread does it in the order above, each file
+        // as soon as it and all before it are ready.
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(files.len());
+        std::thread::scope(|s| {
+            let (tx, rx) = std::sync::mpsc::channel::<(usize, ParsedFile)>();
+            for _ in 0..workers {
+                let (tx, next, files) = (tx.clone(), &next, &files);
+                s.spawn(move || {
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((path, kind, warn)) = files.get(i) else { break };
+                        let parsed = match (vfs.read_string(path), kind) {
+                            (Err(e), _) if *warn => ParsedFile::Warning(format!("{path}: {e}")),
+                            (Err(_), _) => ParsedFile::Skip,
+                            (Ok(text), FileKind::StarCsv) => ParsedFile::StarCsv(parse_star_csv(&text, path)),
+                            (Ok(text), FileKind::Sc) => ParsedFile::Sc(sc::parse(&text)),
+                            (Ok(text), FileKind::GalaxyCsv) => ParsedFile::GalaxyCsv(text),
+                        };
+                        if tx.send((i, parsed)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(tx);
+            let mut ready: Vec<Option<ParsedFile>> = (0..files.len()).map(|_| None).collect();
+            let mut merged = 0;
+            for (i, parsed) in rx {
+                ready[i] = Some(parsed);
+                while let Some(parsed) = ready.get_mut(merged).and_then(Option::take) {
+                    let path = &files[merged].0;
+                    match parsed {
+                        ParsedFile::StarCsv(Ok(rows)) => cat.merge_star_csv(rows),
+                        ParsedFile::StarCsv(Err(w)) | ParsedFile::Warning(w) => cat.warnings.push(w),
+                        ParsedFile::Sc(doc) => cat.load_doc(doc, path),
+                        ParsedFile::GalaxyCsv(text) => cat.load_galaxy_csv(&text, path),
+                        ParsedFile::Skip => {}
+                    }
+                    merged += 1;
                 }
             }
-        }
+        });
         cat.resolve();
         // Catalog spacecraft (`Model "spacecraft/....sss"`) without a radius take half their design's
         // `Length` (SE builds them as static ships, "Initializing static ships").
@@ -441,7 +607,8 @@ impl Catalog {
 
     /// [`Catalog::load_sc`] for a script already parsed (off the main thread, say).
     pub fn load_doc(&mut self, doc: sc::Block, source: &str) {
-        for item in doc.items {
+        self.touch();
+        for mut item in doc.items {
             // SE's star reader treats `Remove` as `RemoveStar` (FUN_140475fb0), used before a
             // system is redefined (Albireo's BET1/BET2 Cyg).
             if item.key == "RemoveStar" || item.key == "Remove" {
@@ -450,15 +617,16 @@ impl Catalog {
                 }
                 continue;
             }
-            let Some(block) = item.block.as_ref() else { continue };
+            // The doc is ours: stars and bodies keep their block moved, not cloned.
+            let Some(block) = item.block.take() else { continue };
             if item.names().is_empty() {
                 continue;
             }
             match item.key.as_str() {
                 "Star" | "StarBarycenter" | "Barycenter" => self.add_star(&item, block, source),
-                "Galaxy" | "Quasar" => self.add_galaxy(&item, block, source),
-                "Cluster" => self.add_cluster(&item, block, source),
-                "Nebula" => self.add_nebula(&item, block, source),
+                "Galaxy" | "Quasar" => self.add_galaxy(&item, &block, source),
+                "Cluster" => self.add_cluster(&item, &block, source),
+                "Nebula" => self.add_nebula(&item, &block, source),
                 tag => {
                     if let Some(t) = BodyTag::parse(tag) {
                         self.add_body(t, &item, block, source);
@@ -469,8 +637,12 @@ impl Catalog {
     }
 
     fn register(&mut self, names: &[String], r: ObjectRef) {
-        for n in names {
-            let k = key(n);
+        self.register_keys(names, names.iter().map(|n| key(n)), r);
+    }
+
+    /// [`Catalog::register`] with each name's [`key`] already worked out.
+    fn register_keys(&mut self, names: &[String], keys: impl IntoIterator<Item = String>, r: ObjectRef) {
+        for (n, k) in names.iter().zip(keys) {
             if let Some(&old) = self.names.get(&k)
                 && old != r
             {
@@ -492,6 +664,7 @@ impl Catalog {
     }
 
     fn hide_star(&mut self, i: u32) {
+        self.touch();
         let s = &mut self.stars[i as usize];
         s.has_position = false;
         s.parent = None;
@@ -511,7 +684,16 @@ impl Catalog {
         names.first().and_then(|n| self.names.get(&key(n)).copied())
     }
 
-    fn add_star(&mut self, item: &Item, b: &Block, source: &str) {
+    /// Star or body `r` is about to be replaced in place by a definition from `source`.
+    fn note_replaced(&mut self, r: ObjectRef, source: &str) {
+        self.note_edit();
+        if source == crate::climate::PROCEDURAL_SOURCE {
+            self.replaced_generated.insert(r);
+        }
+    }
+
+    fn add_star(&mut self, item: &Item, block: Block, source: &str) {
+        let b = &block;
         let names = item.names();
         let barycenter = item.key != "Star";
         let class = SpectralClass::parse(b.str("Class").unwrap_or(if barycenter { "" } else { "G2V" }));
@@ -593,7 +775,7 @@ impl Catalog {
             orbit: orbit_block(b),
             rotation: RotationModel::from_body_block(b),
             source: source.to_string(),
-            block: b.clone(),
+            block,
             names,
         };
         // csv stars sharing any of its names ("Ran/EPS Eri", barycenter "Polaris"): SE merges
@@ -629,6 +811,7 @@ impl Catalog {
         match target {
             Some(i) => {
                 let names = rec.names.clone();
+                self.note_replaced(ObjectRef::Star(i), &rec.source);
                 self.stars[i as usize] = rec;
                 self.register(&names, ObjectRef::Star(i));
             }
@@ -642,68 +825,28 @@ impl Catalog {
 
     /// `Name,RA,Dec,Dist,AppMagn,SpecClass,MassSol,RadSol,Temperature` star tables.
     pub fn load_star_csv(&mut self, text: &str, source: &str) {
-        let mut lines = text.lines();
-        let Some(header) = lines.next() else { return };
-        let cols: Vec<String> = header.split(',').map(|c| c.trim().to_ascii_lowercase()).collect();
-        let col = |n: &str| cols.iter().position(|c| c == n);
-        let (Some(c_name), Some(c_ra), Some(c_dec), Some(c_dist)) = (col("name"), col("ra"), col("dec"), col("dist"))
-        else {
-            self.warnings.push(format!("{source}: unrecognised star csv header"));
-            return;
-        };
-        let c_mag = col("appmagn");
-        let c_abs = col("absmagn");
-        let c_class = col("specclass").or_else(|| col("class"));
-        let c_mass = col("masssol");
-        let c_rad = col("radsol");
-        let c_temp = col("temperature").or_else(|| col("teff"));
-        for line in lines {
-            let f: Vec<&str> = line.split(',').collect();
-            let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
-            let num = |i: Option<usize>| get(i).and_then(|s| s.parse::<f64>().ok());
-            let (Some(ra), Some(dec), Some(dist)) = (num(Some(c_ra)), num(Some(c_dec)), num(Some(c_dist))) else {
-                continue;
-            };
-            let names: Vec<String> = get(Some(c_name))
-                .map(|n| n.split('/').map(str::to_string).collect())
-                .unwrap_or_default();
-            if names.is_empty() {
-                continue;
-            }
-            let class = SpectralClass::parse(get(c_class).unwrap_or("G2V"));
-            let teff = num(c_temp).unwrap_or_else(|| class.temperature());
-            let abs_mag = num(c_abs)
-                .or_else(|| num(c_mag).map(|m| star::abs_mag_from_app(m, dist.max(1e-6))))
-                .unwrap_or_else(|| class.typical_abs_mag());
-            let radius_km = num(c_rad).map(|r| r * SOLAR_RADIUS_KM).unwrap_or_else(|| {
-                let lum_bol = star::lum_from_abs_mag(abs_mag) * 10f64.powf(-0.4 * star::bolometric_correction(teff));
-                star::radius_from_lum_teff(lum_bol, teff) * SOLAR_RADIUS_KM
-            });
-            let rec = StarRecord {
-                names,
-                barycenter: false,
-                parent: None,
-                pos_pc: radec_to_universe(ra, dec) * dist,
-                has_position: true,
-                class,
-                abs_mag,
-                teff,
-                radius_km,
-                mass_kg: num(c_mass).map(|m| m * SOLAR_MASS_KG).unwrap_or(SOLAR_MASS_KG),
-                orbit: None,
-                rotation: RotationModel::default(),
-                source: source.to_string(),
-                block: Block::default(),
-            };
-            if self.existing(&rec.names).is_none() {
+        match parse_star_csv(text, source) {
+            Ok(rows) => self.merge_star_csv(rows),
+            Err(w) => self.warnings.push(w),
+        }
+    }
+
+    /// Adds the rows of [`parse_star_csv`] in order; a row whose first name is taken is skipped.
+    fn merge_star_csv(&mut self, rows: Vec<CsvStar>) {
+        self.touch();
+        self.names.reserve(rows.len());
+        for CsvStar { rec, keys } in rows {
+            // `existing`, with the first name's key already known.
+            if !self.names.contains_key(&keys[0]) {
                 let idx = self.stars.len() as u32;
-                self.register(&rec.names, ObjectRef::Star(idx));
+                self.register_keys(&rec.names, keys, ObjectRef::Star(idx));
                 self.stars.push(rec);
             }
         }
     }
 
-    fn add_body(&mut self, tag: BodyTag, item: &Item, b: &Block, source: &str) {
+    fn add_body(&mut self, tag: BodyTag, item: &Item, block: Block, source: &str) {
+        let b = &block;
         let names = item.names();
         let Some(parent) = b.str("ParentBody") else {
             self.warnings.push(format!("{source}:{} {} has no ParentBody", item.line, names[0]));
@@ -735,12 +878,13 @@ impl Catalog {
             rotation: RotationModel::from_body_block(b),
             lock: crate::rotation::RotationLock::from_body_block(b),
             source: source.to_string(),
-            block: b.clone(),
+            block,
             names,
         };
         match self.existing(&rec.names) {
             Some(ObjectRef::Body(i)) if self.bodies[i as usize].parent.eq_ignore_ascii_case(&rec.parent) => {
                 let names = rec.names.clone();
+                self.note_replaced(ObjectRef::Body(i), &rec.source);
                 self.bodies[i as usize] = rec;
                 self.register(&names, ObjectRef::Body(i));
             }
@@ -845,6 +989,7 @@ impl Catalog {
         match target {
             Some(ObjectRef::Galaxy(i)) => {
                 let names = rec.names.clone();
+                self.note_edit();
                 self.galaxies[i as usize] = rec;
                 self.register(&names, ObjectRef::Galaxy(i));
             }
@@ -858,6 +1003,7 @@ impl Catalog {
 
     /// `Name,Type,RA,Dec,Dist,AbsMagn,Radius,Quat.w,Quat.x,Quat.y,Quat.z`.
     pub fn load_galaxy_csv(&mut self, text: &str, source: &str) {
+        self.touch();
         let mut lines = text.lines();
         let Some(header) = lines.next() else { return };
         let cols: Vec<String> = header.split(',').map(|c| c.trim().to_ascii_lowercase()).collect();
@@ -978,11 +1124,13 @@ impl Catalog {
     /// last resolve. Only the new records are visited: a full pass over the catalog takes
     /// ~10 ms, a hitch on every procedural system entered.
     pub fn finalize(&mut self) {
+        self.touch();
         let (s0, b0) = self.resolved;
         self.resolve_from(s0, b0);
     }
 
     fn resolve(&mut self) {
+        self.touch();
         self.children.clear();
         self.resolve_from(0, 0);
     }
@@ -1126,6 +1274,14 @@ impl Catalog {
                 mine.period = std::f64::consts::TAU * (sep.powi(3) / (crate::units::G * (m1 + m2))).sqrt();
             }
             if let Some(q) = partner {
+                // A partner from before this resolve has its orbit edited in place.
+                if match q {
+                    ObjectRef::Star(j) => (j as usize) < s0,
+                    ObjectRef::Body(j) => (j as usize) < b0,
+                    _ => false,
+                } {
+                    self.note_edit();
+                }
                 let far = mine.arg_of_periapsis + std::f64::consts::PI;
                 match self.orbit_mut(q) {
                     Some(slot @ None) => {
@@ -1218,6 +1374,7 @@ impl Catalog {
         if let Some(ObjectRef::Star(i)) = self.existing(&rec.names) {
             return i;
         }
+        self.touch();
         let idx = self.stars.len() as u32;
         self.register(&rec.names, ObjectRef::Star(idx));
         self.stars.push(rec);
@@ -1230,6 +1387,7 @@ impl Catalog {
         if let Some(ObjectRef::Galaxy(i)) = self.existing(&rec.names) {
             return i;
         }
+        self.touch();
         let idx = self.galaxies.len() as u32;
         self.register(&rec.names, ObjectRef::Galaxy(idx));
         self.galaxies.push(rec);
@@ -1241,6 +1399,7 @@ impl Catalog {
         if let Some(ObjectRef::Cluster(i)) = self.existing(&rec.names) {
             return i;
         }
+        self.touch();
         let idx = self.clusters.len() as u32;
         self.register(&rec.names, ObjectRef::Cluster(idx));
         self.clusters.push(rec);
@@ -1252,6 +1411,7 @@ impl Catalog {
         if let Some(ObjectRef::Nebula(i)) = self.existing(&rec.names) {
             return i;
         }
+        self.touch();
         let idx = self.nebulae.len() as u32;
         self.register(&rec.names, ObjectRef::Nebula(idx));
         self.nebulae.push(rec);
@@ -1263,6 +1423,7 @@ impl Catalog {
     /// cluster or nebula also loses its size and light, so nothing draws or labels it. The record
     /// stays, so no other index moves.
     pub fn retire(&mut self, r: ObjectRef) {
+        self.note_edit();
         for n in self.names_of(r).to_vec() {
             let k = key(&n);
             if self.names.get(&k) == Some(&r) {
@@ -1327,6 +1488,11 @@ impl Catalog {
     /// (planets/Stars.sc `Star "Vega" { ParentBody "ALF Lyr" }` under the HIPPARCOS "Vega/ALF Lyr"),
     /// which used to list the child as its own child until a 100 000-step guard.
     pub fn system_members(&self, root: &str) -> Vec<ObjectRef> {
+        self.members_walk(root).0
+    }
+
+    /// [`Catalog::system_members`], and the names whose children lists it read.
+    fn members_walk(&self, root: &str) -> (Vec<ObjectRef>, std::collections::HashSet<String>) {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut expanded = std::collections::HashSet::new();
@@ -1342,7 +1508,7 @@ impl Catalog {
                 }
             }
         }
-        out
+        (out, expanded)
     }
 
     /// Drop the generated stars and bodies (source [`crate::climate::PROCEDURAL_SOURCE`]) of the
@@ -1351,27 +1517,69 @@ impl Catalog {
     /// every other object keeps its index. Generating the system again adds it anew. Returns how
     /// many objects went.
     pub fn unload_generated(&mut self, root: &str) -> usize {
+        let (members, walked) = self.members_walk(root);
+        let gone = self.generated_of(members);
+        if gone.is_empty() {
+            return 0;
+        }
+        self.touch();
+        if gone.iter().any(|r| self.replaced_generated.contains(r)) {
+            // A record replaced in place may still own the names of the definition it replaced.
+            self.names.retain(|_, r| !gone.contains(r));
+            self.exact.retain(|_, r| !gone.contains(r));
+            self.replaced_generated.retain(|r| !gone.contains(r));
+        } else {
+            // Otherwise a record's lookups are all under its own names (`register`, `add_body`):
+            // only those are visited, not the whole catalog's maps.
+            for r in &gone {
+                let names = match *r {
+                    ObjectRef::Star(i) => &self.stars[i as usize].names,
+                    ObjectRef::Body(i) => &self.bodies[i as usize].names,
+                    _ => continue,
+                };
+                for n in names {
+                    let k = key(n);
+                    if self.names.get(&k) == Some(r) {
+                        self.names.remove(&k);
+                    }
+                    if self.exact.get(n.trim()) == Some(r) {
+                        self.exact.remove(n.trim());
+                    }
+                }
+            }
+        }
+        // Each object is in one children list, under the parent `members_walk` found it through
+        // (`resolve_from`), and only this empties a list, so no other list changes.
+        for n in &walked {
+            let k = key(n);
+            if let Some(v) = self.children.get_mut(&k) {
+                v.retain(|r| !gone.contains(r));
+                if v.is_empty() {
+                    self.children.remove(&k);
+                }
+            }
+        }
+        self.clear_generated(&gone);
+        gone.len()
+    }
+
+    /// The generated stars and bodies among `members`.
+    fn generated_of(&self, members: Vec<ObjectRef>) -> std::collections::HashSet<ObjectRef> {
         let src = crate::climate::PROCEDURAL_SOURCE;
-        let gone: std::collections::HashSet<ObjectRef> = self
-            .system_members(root)
+        members
             .into_iter()
             .filter(|m| match *m {
                 ObjectRef::Star(i) => self.stars[i as usize].source == src,
                 ObjectRef::Body(i) => self.bodies[i as usize].source == src,
                 _ => false,
             })
-            .collect();
-        if gone.is_empty() {
-            return 0;
-        }
-        self.names.retain(|_, r| !gone.contains(r));
-        self.exact.retain(|_, r| !gone.contains(r));
-        for v in self.children.values_mut() {
-            v.retain(|r| !gone.contains(r));
-        }
-        self.children.retain(|_, v| !v.is_empty());
+            .collect()
+    }
+
+    /// Turns the unloaded records into placeholders.
+    fn clear_generated(&mut self, gone: &std::collections::HashSet<ObjectRef>) {
         let placeholder = sc::parse("Hidden true");
-        for r in &gone {
+        for r in gone {
             match *r {
                 ObjectRef::Star(i) => {
                     let s = &mut self.stars[i as usize];
@@ -1398,6 +1606,25 @@ impl Catalog {
                 _ => {}
             }
         }
+    }
+
+    /// [`Catalog::unload_generated`] as it was, sweeping the whole name and children maps: the
+    /// reference the targeted version is tested against.
+    #[cfg(test)]
+    fn unload_generated_full(&mut self, root: &str) -> usize {
+        let gone = self.generated_of(self.system_members(root));
+        if gone.is_empty() {
+            return 0;
+        }
+        self.touch();
+        self.names.retain(|_, r| !gone.contains(r));
+        self.exact.retain(|_, r| !gone.contains(r));
+        for v in self.children.values_mut() {
+            v.retain(|r| !gone.contains(r));
+        }
+        self.children.retain(|_, v| !v.is_empty());
+        self.replaced_generated.retain(|r| !gone.contains(r));
+        self.clear_generated(&gone);
         gone.len()
     }
 
@@ -1505,6 +1732,87 @@ Galaxy "M 31/Andromeda" { Type "Sb" RA 0.7122 Dec 41.2689 Dist 778770 Radius 226
         c.finalize();
         assert!(c.find("Gen c").is_some());
         assert_eq!(c.system_members("Alpha Centauri").len(), 4);
+    }
+
+    /// The targeted unload leaves the catalog exactly as sweeping every map did: generated multiple
+    /// systems (stars and planets whose names differ only by case, moons), a catalog planet under a
+    /// generated star, a generated planet replaced in place by a definition without its alias, and
+    /// systems unloaded, loaded again and unloaded in another order.
+    #[test]
+    fn targeted_unload_matches_full_sweep() {
+        let mut c = Catalog::new();
+        c.load_sc(SYSTEM, "test.sc");
+        c.resolve();
+        let gen_src = crate::climate::PROCEDURAL_SOURCE;
+        let load = |c: &mut Catalog, i: u32| {
+            let name = format!("RS 0-{i}");
+            if c.find(&name).is_none() {
+                c.load_sc(&format!("Star \"{name}\" {{ RA {} 0 0 Dec 10 0 0 Dist {} Class \"G2V\" }}\n", i % 24, 5 + i), "procedural");
+            }
+            let params = crate::procgen::StarParams {
+                name: name.clone(),
+                mass_sol: 0.7 + 0.15 * (i % 5) as f64,
+                lum_bol: 1.0,
+                teff: 5778.0,
+                radius_sol: 1.0,
+                age_gyr: 4.6,
+                feh: 0.0,
+                kind: StarKind::Normal,
+                class: None,
+                c_to_o: None,
+                se_seed: Some(1000 + i),
+            };
+            let g = crate::procgen::generate_system(&params, 7 + i as u64);
+            c.load_doc(sc::parse(&g.sc), gen_src);
+            c.finalize();
+            name
+        };
+        let roots: Vec<String> = (0..12).map(|i| load(&mut c, i)).collect();
+        let n_gen = c.stars.iter().filter(|s| s.source == gen_src).count() + c.bodies.iter().filter(|b| b.source == gen_src).count();
+        assert!(n_gen > 50, "{n_gen} generated objects");
+        let generated = |c: &Catalog, r: ObjectRef| match r {
+            ObjectRef::Star(i) => c.stars[i as usize].source == gen_src,
+            ObjectRef::Body(i) => c.bodies[i as usize].source == gen_src,
+            _ => false,
+        };
+        // A generated star and planet whose names differ only by case.
+        c.load_sc(
+            &format!("Star \"{0} Z\" {{ ParentBody \"{0}\" Class \"M2V\" MassSol 0.3 Orbit {{ SemiMajorAxis 40 }} }}\nPlanet \"{0} z\" {{ ParentBody \"{0} Z\" Radius 3000 Orbit {{ SemiMajorAxis 0.1 }} }}\n", roots[2]),
+            gen_src,
+        );
+        c.finalize();
+        assert!(c.exact.values().any(|&r| generated(&c, r)), "no generated names that differ only by case");
+        // A catalog planet under a generated star keeps its children list.
+        let gen_star = format!("{} Z", roots[2]);
+        c.load_sc(&format!("Planet \"Kept b\" {{ ParentBody \"{gen_star}\" Radius 3000 Orbit {{ SemiMajorAxis 0.1 }} }}\n"), "test.sc");
+        c.finalize();
+        // A generated planet defined again in place, without its alias.
+        c.load_sc(&format!("Planet \"Rep b/Rep alias\" {{ ParentBody \"{}\" Radius 3000 Orbit {{ SemiMajorAxis 0.2 }} }}\n", roots[1]), gen_src);
+        c.finalize();
+        c.load_sc(&format!("Planet \"Rep b\" {{ ParentBody \"{}\" Radius 4000 Orbit {{ SemiMajorAxis 0.2 }} }}\n", roots[1]), gen_src);
+        c.finalize();
+        assert_eq!(c.replaced_generated.len(), 1);
+
+        let unload = |c: &mut Catalog, root: &str| {
+            let mut full = c.clone();
+            let n = c.unload_generated(root);
+            assert_eq!(n, full.unload_generated_full(root));
+            assert_eq!(fingerprint(c), fingerprint(&full), "unloading {root}");
+            assert_eq!(c.replaced_generated, full.replaced_generated);
+            n
+        };
+        for i in [3, 0, 7, 1, 11, 5] {
+            assert!(unload(&mut c, &roots[i]) > 0);
+        }
+        assert!(c.find("Kept b").is_some() && c.find("Rep alias").is_none() && c.find("Rep b").is_none());
+        assert!(c.replaced_generated.is_empty());
+        for i in [3, 1] {
+            load(&mut c, i);
+        }
+        for i in [2, 1, 4, 3, 6, 8, 9, 10, 0] {
+            unload(&mut c, &roots[i]);
+        }
+        assert!(c.find("Kept b").is_some());
     }
 
     #[test]
@@ -1868,5 +2176,200 @@ Comet "Snowball" { ParentBody "Sol" Radius 5 Orbit { SemiMajorAxis 10 } }
         let j = c.add_nebula_record(NebulaRecord { pos_pc: DVec3::new(9.0, 9.0, 9.0), ..rec });
         assert_ne!(i, j);
         assert_eq!(c.find("rn 8514-7"), Some(ObjectRef::Nebula(j)));
+    }
+
+    /// `Catalog::load` as it was before the parallel read and parse, for comparison.
+    fn serial_load(vfs: &Vfs) -> Catalog {
+        let mut cat = Catalog::new();
+        for dir in ["catalogs/stars", "catalogs/planets"] {
+            for path in vfs.list_ext(dir, "csv") {
+                match vfs.read_string(&path) {
+                    Ok(text) => serial_star_csv(&mut cat, &text, &path),
+                    Err(e) => cat.warnings.push(format!("{path}: {e}")),
+                }
+            }
+            for path in vfs.list_ext(dir, "sc") {
+                match vfs.read_string(&path) {
+                    Ok(text) => cat.load_sc(&text, &path),
+                    Err(e) => cat.warnings.push(format!("{path}: {e}")),
+                }
+            }
+        }
+        for path in vfs.list_ext("catalogs/galaxies", "csv") {
+            if let Ok(text) = vfs.read_string(&path) {
+                cat.load_galaxy_csv(&text, &path);
+            }
+        }
+        for path in vfs.list_ext("catalogs/galaxies", "sc") {
+            if let Ok(text) = vfs.read_string(&path) {
+                cat.load_sc(&text, &path);
+            }
+        }
+        for dir in ["catalogs/clusters", "catalogs/nebulae"] {
+            for path in vfs.list_ext(dir, "sc") {
+                if let Ok(text) = vfs.read_string(&path) {
+                    cat.load_sc(&text, &path);
+                }
+            }
+        }
+        cat.resolve();
+        for b in cat.bodies.iter_mut().filter(|b| b.tag == BodyTag::Spacecraft && b.radius_km <= 0.0) {
+            if let Some(d) = b.block.str("Model").and_then(|m| crate::ship::ShipDesign::load_header(vfs, m)) {
+                b.radius_km = d.length_m * 0.5e-3;
+            }
+        }
+        cat
+    }
+
+    /// The old row-by-row `load_star_csv`.
+    fn serial_star_csv(cat: &mut Catalog, text: &str, source: &str) {
+        let mut lines = text.lines();
+        let Some(header) = lines.next() else { return };
+        let cols: Vec<String> = header.split(',').map(|c| c.trim().to_ascii_lowercase()).collect();
+        let col = |n: &str| cols.iter().position(|c| c == n);
+        let (Some(c_name), Some(c_ra), Some(c_dec), Some(c_dist)) = (col("name"), col("ra"), col("dec"), col("dist"))
+        else {
+            cat.warnings.push(format!("{source}: unrecognised star csv header"));
+            return;
+        };
+        let (c_mag, c_abs, c_class) = (col("appmagn"), col("absmagn"), col("specclass").or_else(|| col("class")));
+        let (c_mass, c_rad, c_temp) = (col("masssol"), col("radsol"), col("temperature").or_else(|| col("teff")));
+        for line in lines {
+            let f: Vec<&str> = line.split(',').collect();
+            let get = |i: Option<usize>| i.and_then(|i| f.get(i)).map(|s| s.trim()).filter(|s| !s.is_empty());
+            let num = |i: Option<usize>| get(i).and_then(|s| s.parse::<f64>().ok());
+            let (Some(ra), Some(dec), Some(dist)) = (num(Some(c_ra)), num(Some(c_dec)), num(Some(c_dist))) else {
+                continue;
+            };
+            let names: Vec<String> = get(Some(c_name)).map(|n| n.split('/').map(str::to_string).collect()).unwrap_or_default();
+            if names.is_empty() {
+                continue;
+            }
+            let class = SpectralClass::parse(get(c_class).unwrap_or("G2V"));
+            let teff = num(c_temp).unwrap_or_else(|| class.temperature());
+            let abs_mag = num(c_abs)
+                .or_else(|| num(c_mag).map(|m| star::abs_mag_from_app(m, dist.max(1e-6))))
+                .unwrap_or_else(|| class.typical_abs_mag());
+            let radius_km = num(c_rad).map(|r| r * SOLAR_RADIUS_KM).unwrap_or_else(|| {
+                let lum_bol = star::lum_from_abs_mag(abs_mag) * 10f64.powf(-0.4 * star::bolometric_correction(teff));
+                star::radius_from_lum_teff(lum_bol, teff) * SOLAR_RADIUS_KM
+            });
+            let rec = StarRecord {
+                names,
+                barycenter: false,
+                parent: None,
+                pos_pc: radec_to_universe(ra, dec) * dist,
+                has_position: true,
+                class,
+                abs_mag,
+                teff,
+                radius_km,
+                mass_kg: num(c_mass).map(|m| m * SOLAR_MASS_KG).unwrap_or(SOLAR_MASS_KG),
+                orbit: None,
+                rotation: RotationModel::default(),
+                source: source.to_string(),
+                block: Block::default(),
+            };
+            if cat.existing(&rec.names).is_none() {
+                let idx = cat.stars.len() as u32;
+                cat.register(&rec.names, ObjectRef::Star(idx));
+                cat.stars.push(rec);
+            }
+        }
+    }
+
+    /// A hash of everything a load builds: the records in order, the warnings and the name maps.
+    fn fingerprint(c: &Catalog) -> u64 {
+        use std::fmt::Write;
+        use std::hash::Hasher;
+        struct H(std::collections::hash_map::DefaultHasher);
+        impl Write for H {
+            fn write_str(&mut self, s: &str) -> std::fmt::Result {
+                self.0.write(s.as_bytes());
+                Ok(())
+            }
+        }
+        let mut h = H(Default::default());
+        let sorted = |m: &HashMap<String, ObjectRef>| {
+            let mut v: Vec<_> = m.iter().collect();
+            v.sort_by(|a, b| a.0.cmp(b.0));
+            format!("{v:?}")
+        };
+        let mut children: Vec<_> = c.children.iter().collect();
+        children.sort_by(|a, b| a.0.cmp(b.0));
+        let mut glob: Vec<_> = c.glob_clusters.iter().collect();
+        glob.sort();
+        write!(h, "{:?}{:?}{:?}{:?}{:?}{:?}", c.stars, c.bodies, c.galaxies, c.clusters, c.nebulae, c.warnings).unwrap();
+        write!(h, "{}{}{children:?}{glob:?}{:?}", sorted(&c.names), sorted(&c.exact), c.resolved).unwrap();
+        h.0.finish()
+    }
+
+    /// A small install on disk: two star csvs (one big enough to be parsed in chunks, with names
+    /// repeated across chunks and files), .sc overrides, a bad header, a galaxy csv and .sc
+    /// catalogs of every kind.
+    #[test]
+    fn parallel_load_matches_serial_load() {
+        let root = std::env::temp_dir().join(format!("se_catalog_load_{}", std::process::id()));
+        let w = |path: &str, text: &str| {
+            let p = root.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        let mut big = String::from("Name,RA,Dec,Dist,AppMagn,SpecClass,MassSol,RadSol,Temperature\n");
+        for i in 0..3 * CSV_CHUNK_ROWS {
+            // Every 7th row repeats a name from far back, so it is skipped in the merge.
+            let name = if i % 7 == 6 { format!("HIP {}/Dup {i}", i / 3) } else { format!("HIP {i}/HD {}", i * 2) };
+            let class = ["G2V", "M3V", "K0III", "B5", ""][i % 5];
+            let (mass, rad) = if i % 3 == 0 { (String::new(), String::new()) } else { (format!("{}", 0.5 + i as f64 * 1e-4), "1.2".into()) };
+            big += &format!("{name},{},{},{},{},{class},{mass},{rad},\n", i as f64 * 0.001 % 24.0, (i as f64 * 0.01) % 180.0 - 90.0, 1.0 + i as f64 * 0.1, 5.0 + (i % 11) as f64 * 0.3);
+            if i % 1000 == 0 {
+                big += "no position row,,,,\n";
+            }
+        }
+        w("catalogs/stars/a_big.csv", &big);
+        w("catalogs/stars/b_small.csv", "name,ra,dec,dist,absmagn,teff\nHIP 5/Small 5,1,2,3,4,5000\nAchernar,1.6,-57.2,42,,\n");
+        w("catalogs/stars/c_bad.csv", "Foo,Bar\n1,2\n");
+        w("catalogs/stars/d.sc", "StarBarycenter \"Achernar\" { RA 1.6 Dec -57.2 Dist 43 }\nStar \"Achernar/HIP 12\" { ParentBody \"Achernar\" Class \"B6V\" }\nRemoveStar \"HIP 40\"\nStar \"HIP 41/Gamma\" { RA 2 Dec 3 Dist 4 Class \"F5V\" }\n");
+        w("catalogs/planets/p.sc", "Planet \"Achernar b\" { ParentBody \"Achernar\" Radius 7000 Orbit { SemiMajorAxis 1 } }\nMoon \"Achernar b I\" { ParentBody \"Achernar b\" Radius 100 Orbit { SemiMajorAxis 0.001 } }\nPlanet \"Orphan\" { Radius 1 }\n");
+        w("catalogs/galaxies/g.csv", "Name,Type,RA,Dec,Dist,AbsMagn,Radius\nM 31/Andromeda,Sb,0.71,41.3,778770,-21,22000\nNGC 1,E2,1,2,3e7,,\n");
+        w("catalogs/galaxies/g.sc", "Galaxy \"M 31\" { Type \"Sb\" RA 0.7122 Dec 41.2689 Dist 778770 Radius 22655 AppMagn 2.68 }\n");
+        w("catalogs/clusters/c.sc", "Cluster \"M 45/Pleiades\" { Type \"Open\" RA 3.79 Dec 24.1 Dist 136 }\n");
+        w("catalogs/nebulae/n.sc", "Nebula \"M 42\" { Type \"Diffuse\" RA 5.59 Dec -5.39 Dist 412 Radius 4 }\n");
+        let mut vfs = Vfs::new();
+        vfs.mount_dir(&root).unwrap();
+        let (old, new) = (serial_load(&vfs), Catalog::load(&vfs));
+        std::fs::remove_dir_all(&root).ok();
+        assert!(old.stars.len() > 2 * CSV_CHUNK_ROWS && !old.warnings.is_empty(), "the fixture exercises the chunks and warnings");
+        assert_eq!(new.warnings, old.warnings);
+        assert_eq!(fingerprint(&new), fingerprint(&old));
+    }
+
+    #[test]
+    #[ignore = "reads the SpaceEngine install"]
+    fn parallel_load_matches_serial_load_on_the_install() {
+        let Ok(vfs) = Vfs::mount_install(std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine")) else {
+            eprintln!("install not found, skipping");
+            return;
+        };
+        let t = std::time::Instant::now();
+        let old = serial_load(&vfs);
+        let t_old = t.elapsed();
+        let t = std::time::Instant::now();
+        let new = Catalog::load(&vfs);
+        let t_new = t.elapsed();
+        eprintln!("serial load {t_old:.0?}, parallel load {t_new:.0?}: {} stars, {} bodies", new.stars.len(), new.bodies.len());
+        assert_eq!(new.warnings, old.warnings);
+        assert_eq!(fingerprint(&new), fingerprint(&old));
+    }
+
+    /// `load_doc` moves each star's and body's block into its record: the same block it parsed.
+    #[test]
+    fn records_keep_their_parsed_blocks() {
+        let doc = sc::parse(SYSTEM);
+        let blocks: Vec<Block> = doc.items.iter().filter_map(|i| i.block.clone()).collect();
+        let mut c = Catalog::new();
+        c.load_doc(doc, "test.sc");
+        assert_eq!(c.stars.iter().map(|s| &s.block).collect::<Vec<_>>(), blocks[..3].iter().collect::<Vec<_>>());
+        assert_eq!(c.bodies[0].block, blocks[3]);
     }
 }

@@ -311,6 +311,80 @@ fn panel_temperatures_match_se() {
 }
 
 #[test]
+fn kept_system_walk_gives_the_same_stars_and_views() {
+    use crate::catalog::{Catalog, ObjectRef};
+    // A binary under a barycentre with a black hole, a planet with a moon and a barycentre of its own.
+    let mut cat = Catalog::new();
+    cat.load_sc(
+        r#"
+StarBarycenter "Alpha Centauri" { RA 14 39 36.5 Dec -60 50 02 Dist 1.3474 }
+Star "Alpha Centauri A" { ParentBody "Alpha Centauri" Class "G2V" MassSol 1.1 AppMagn 0.01
+  Orbit { SemiMajorAxis 10.9 Period 79.91 Eccentricity 0.52 } }
+Star "Alpha Centauri B" { ParentBody "Alpha Centauri" Class "K1V" MassSol 0.9
+  Orbit { SemiMajorAxis 12.0 Period 79.91 Eccentricity 0.52 ArgOfPericenter 180 } }
+Star "Alpha Centauri X" { ParentBody "Alpha Centauri" Class "X" MassSol 8 Orbit { SemiMajorAxis 300 Period 4000 } }
+Barycenter "Test bc" { ParentBody "Alpha Centauri B" Orbit { SemiMajorAxis 0.05 Period 4.1 } }
+Planet "Test b" { ParentBody "Test bc" Radius 6000 Mass 1 Obliquity 23 RotationPeriod 20 Orbit { SemiMajorAxis 0.0001 Period 1.3 } }
+Moon "Test b I" { ParentBody "Test bc" Radius 1000 Mass 0.01 Orbit { SemiMajorAxis 0.001 Period 1.3 } }
+"#,
+        "test.sc",
+    );
+    cat.finalize();
+    let eph = crate::ephemeris::Ephemeris::new(&cat);
+    // Both bodies' year is Test bc's orbit around B.
+    let Some(ObjectRef::Star(main)) = cat.find("Alpha Centauri B") else { panic!() };
+    // The walk per call, as catalog_view and system_stars did it before the walk was kept.
+    let walk_view = |i: usize, jd: f64| {
+        let obj = ObjectRef::Body(i as u32);
+        let Some(root) = cat.system_root(obj) else { return Vec::new() };
+        let mut stars = cat.system_members(&cat.stars[root as usize].names[0]);
+        stars.push(ObjectRef::Star(root));
+        stars.dedup();
+        let pos = eph.position(obj, jd);
+        let pole = eph.orientation(obj, jd) * glam::DVec3::Y;
+        stars
+            .into_iter()
+            .filter_map(|s| {
+                let ObjectRef::Star(k) = s else { return None };
+                let st = &cat.stars[k as usize];
+                if st.barycenter || matches!(st.class.kind, crate::star::StarKind::BlackHole | crate::star::StarKind::Planemo) {
+                    return None;
+                }
+                let d = eph.position(s, jd).delta_m(pos);
+                let lum = st.lum_bol() as f32;
+                let dist = (d.length() / crate::units::METERS_PER_PC) as f32;
+                let decl = pole.dot(d.normalize_or_zero()).clamp(-1.0, 1.0).asin() as f32;
+                Some(format!("{} {} {} {}", lum.to_bits(), dist.to_bits(), decl.to_bits(), k == main))
+            })
+            .collect::<Vec<_>>()
+    };
+    let bits = |v: &[display::StarView]| v.iter().map(|s| format!("{} {} {} {}", s.lum.to_bits(), s.dist_pc.to_bits(), s.decl.to_bits(), s.main)).collect::<Vec<_>>();
+    let mut checked = 0;
+    for name in ["Test b", "Test b I"] {
+        let Some(ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
+        let root = cat.system_root(ObjectRef::Body(i)).unwrap();
+        let walk = system_walk(&cat, root);
+        let (lit, shown) = (system_stars_in(&cat, &walk), display::view_stars(&cat, walk));
+        assert_eq!(lit, system_stars(&cat, root));
+        // Both stars shown (the black hole left out); the black hole still counts for the light.
+        assert_eq!((shown.len(), lit.len()), (2, 3), "{name}");
+        for k in 0..20 {
+            let jd = 2_451_545.0 + k as f64 * 3.7;
+            let view = display::catalog_view_from(&eph, &cat, i as usize, jd, &shown);
+            assert_eq!(bits(&view), walk_view(i as usize, jd), "{name} {jd}");
+            assert_eq!(bits(&view), bits(&display::catalog_view(&eph, &cat, i as usize, jd)));
+            let lat = 0.3 * k as f64 - 1.5;
+            let a = display::day_lines_from(&eph, &cat, i as usize, jd, lat, &view);
+            assert_eq!(format!("{a:?}"), format!("{:?}", display::day_lines(&eph, &cat, i as usize, jd, lat)));
+            let (x, y) = (star_light_from(&eph, &cat, ObjectRef::Body(i), jd, &lit), star_light(&eph, &cat, ObjectRef::Body(i), jd));
+            assert_eq!(format!("{x:?}"), format!("{y:?}"));
+            checked += view.iter().filter(|s| s.main).count();
+        }
+    }
+    assert_eq!(checked, 40, "each view has its main star");
+}
+
+#[test]
 fn visual_atmosphere_heights() {
     // SE's AtmoHeightHarb formula: p^0.1 x 7.8 scale heights.
     let earth = se_visual_atm_height_km(1.0, 8.43, 1.0, 6371.0);

@@ -1,17 +1,38 @@
 # Progress
 
-## Current state (2026-11-01)
+## Current state (2026-11-02)
 
 - The port runs and covers most of SpaceEngine; see README.md "Status" and
   `docs/missing_features.md` for what is left.
 - **V1:** `main` at 97094fd is the port's official V1, tagged `v1.0` (local only).
-- **Bug hunt (2026-11-01), not committed yet:** 55 bug fixes sit uncommitted in the working tree
-  on top of V1 (46 in round 1, plus 9 of the 10 "won't fix now" items in round 2). The full list,
-  with what's left, is in `.bugfinder/REPORT.md`. Everything older below is committed.
-- Next: playtest the fixes; commit when the user says so. Open items are under "What's left"
-  and "Won't fix now" in `.bugfinder/REPORT.md`.
+- **Bug hunt (2026-11-01):** 55 bug fixes, committed as `24c82fb` on 2026-11-02. The full list,
+  with what's left, is in `.bugfinder/REPORT.md`.
+- **Optimization (/optimize, 2026-11-02), not committed:** 42 speedups that keep every picture and
+  behaviour the same are in the working tree (28 rated "risk none", done while the user was away,
+  plus 14 rated "risk low" that the user approved). One more was tried and reverted because it made
+  start-up worse. The full list and measurements are in `.optimize/REPORT.md`, which also lists 8
+  "needs your call" items that would change the picture (the biggest: render nebulae at SE's own
+  lower volumetric resolution, ~3 ms of GPU time). Also uncommitted: a frame-time logger for
+  measuring (`perf.rs`, the `perf` dev command; only active with `SE_PERF=FILE`).
+- Next: the user playtests the faster build and says whether to commit; then maybe the "needs your
+  call" items.
 
 ## Recently done
+
+- **Optimization (2026-11-02, uncommitted):** measured side by side with the morning build
+  (typical frame time):
+  - RS planet ground, looking around: 13.0 → 5.6 ms (about 180 fps); the stutter every ~13 s (a
+    lighting update that rebuilt every ground patch, frames of 45-60 ms) is gone (worst ~8 ms).
+  - RS planet from 300 m 10.3 → 4.8 ms. Earth surface 13.8 → 5.7 ms. Mars 9.1 → 5.0 ms. Near Earth
+    7.7 → 4.3 ms. Milky Way view 5.0 → 2.9 ms.
+  - Flying fast through stars: 7.4 → 4.9 ms, hitches much smaller (worst 53 → 21 ms).
+  - Inside nebulae: 6-16% faster.
+  - Start-up: running about 1 s sooner; worst start-up frame 784 → 145 ms.
+  - Pictures: identical on Earth and Mars, and elsewhere no more different than two runs of the
+    old build. All tests pass (306 core, 201 engine).
+  - Biggest causes: Bevy re-preparing thousands of star-field objects every frame because shared
+    materials were touched every frame; Bevy's multi-draw path doing per-patch work that batched
+    nothing; the nearest-star search scanning all 135,000 catalog stars every frame while flying.
 
 - **Bug hunt (2026-11-01):** 11 hunters checked the whole port and 64 suspected bugs were
   verified (62 real). These are fixed:

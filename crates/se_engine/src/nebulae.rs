@@ -39,7 +39,7 @@ use se_core::vfs::Vfs;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GalaxyFarMaterial, MAG_REF_OFFSET, NEBULA_FAR_BIAS, NEBULA_MODEL_BIAS, RESIDENT_SLOTS, main_def_doc, nebula_model_bias, GalaxyModelMaterial, GalaxySettings,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, FarParams, GalaxyFarMaterial, MAG_REF_OFFSET, NEBULA_FAR_BIAS, NEBULA_MODEL_BIAS, RESIDENT_SLOTS, main_def_doc, nebula_model_bias, GalaxyModelMaterial, GalaxySettings,
     ModelParams, SORT_PX, SpriteAtlas, SpriteBuffers, SpriteOrder, angular_px, far_uniforms, load_atlas, pad_aabb,
     se_bright_term, se_glow_bright, setup_galaxies, sprite_vertex, update_galaxies,
 };
@@ -240,6 +240,9 @@ pub(crate) struct NebulaState {
     /// Nebulae whose far colour is still to be derived from their model (brightest last).
     color_queue: Vec<usize>,
     color_tasks: Vec<(usize, Task<Option<[f32; 3]>>)>,
+    /// This frame's far-sprite uniforms from `update_nebulae`; `nebula_raymarch.rs` adds its resident
+    /// volumes, then `write_far` puts the result into the material.
+    pub(crate) far_u: Option<FarParams>,
 }
 
 /// Catalog nebulae whose 3D model is fading in (`(catalog index, fade)`, written by `update_nebulae`);
@@ -299,7 +302,16 @@ impl Plugin for NebulaePlugin {
         app.init_resource::<NebulaSettings>()
             .init_resource::<ResidentNebulae>()
             .add_systems(Startup, setup_nebulae.after(setup_galaxies))
-            .add_systems(PostUpdate, (sync_mag_limit, update_nebulae).chain().after(update_galaxies));
+            .add_systems(PostUpdate, (sync_mag_limit, update_nebulae).chain().after(update_galaxies))
+            .add_systems(PostUpdate, write_far.after(update_nebulae).after(crate::nebula_raymarch::update_volumes));
+    }
+}
+
+/// Puts this frame's far-sprite uniforms (`update_nebulae`, plus the ray-marched volumes' residents)
+/// into the nebula far material, when they change.
+fn write_far(mut st: ResMut<NebulaState>, mut far_mats: ResMut<Assets<GalaxyFarMaterial>>) {
+    if let Some(u) = st.far_u.take() {
+        crate::galaxies::set_far_uniforms(&mut far_mats, &st.far, &u);
     }
 }
 
@@ -496,7 +508,7 @@ fn setup_nebulae(
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
     let gs = nebula_far_settings(&settings);
-    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: NEBULA_FAR_BIAS });
+    let far = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &gs), NEBULA_FAR_BIAS));
     let far_mesh = meshes.add(mesh);
     let mut color_queue: Vec<usize> = (0..n).filter(|&i| model_of[i].is_some() && vert_of[i].is_some()).collect();
     // Brightest first (popped from the back).
@@ -517,6 +529,7 @@ fn setup_nebulae(
         vert_of,
         color_queue,
         color_tasks: Vec::new(),
+        far_u: None,
     });
 }
 
@@ -550,7 +563,6 @@ pub(crate) fn update_nebulae(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut model_mats: ResMut<Assets<GalaxyModelMaterial>>,
-    mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
     mut resident_out: ResMut<ResidentNebulae>,
     mut assign: ResMut<crate::nebula_raymarch::RaymarchAssign>,
@@ -658,13 +670,16 @@ pub(crate) fn update_nebulae(
             atlas: st.atlas.handle.clone(),
             depth_bias: NEBULA_MODEL_BIAS,
         });
-        let centres = built.buf.centres();
-        let mesh = meshes.add(built.buf.into_mesh());
+        // Render-world only, like the galaxy models: the sort rebuilds it from `looks`.
+        let (centres, looks) = (built.buf.centres(), built.buf.looks());
+        let mut m = built.buf.into_mesh();
+        m.asset_usage = RenderAssetUsages::RENDER_WORLD;
+        let mesh = meshes.add(m);
         let entity = commands
             .spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, Visibility::Hidden, NoFrustumCulling))
             .id();
         // SE sorts nebula models too (FUN_1402b3020 -> FUN_140334b10, FUN_140334e90).
-        slot.state = SlotState::Ready(Ready { entity, mat, order: SpriteOrder::new(centres, mesh) });
+        slot.state = SlotState::Ready(Ready { entity, mat, order: SpriteOrder::render_world(centres, looks, mesh) });
     }
     st.slots.retain(|s| !matches!(s.state, SlotState::Failed));
     let mut i = 0;
@@ -715,9 +730,7 @@ pub(crate) fn update_nebulae(
             resident_out.0.push((slot.nebula, fade));
         }
     }
-    if let Some(mut m) = far_mats.get_mut(&st.far) {
-        m.uniforms = far_u;
-    }
+    st.far_u = Some(far_u);
 }
 
 #[cfg(test)]

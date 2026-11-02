@@ -44,6 +44,83 @@ struct StarParams {
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> star: StarParams;
 
+// The per-frame camera values of the star fields at infinity (stars.rs SpriteCamera), shared by every
+// StarMaterial; the sun sprites (SunSpriteMaterial) have no such binding.
+struct SpriteCamera {
+    blur: vec4<f32>,
+    blur_delta: vec4<f32>,
+    prev_view: mat4x4<f32>,
+    params: vec4<f32>,
+    params2: vec4<f32>,
+    hide_catalog: vec4<f32>,
+    hide_octree: vec4<f32>,
+};
+
+@if(SPRITE_CAMERA) @group(constants::MATERIAL_BIND_GROUP) @binding(1) var<storage, read> sprite_cam: SpriteCamera;
+
+// The per-frame values: the shared ones for the fields at infinity (anchor.w 0 or 2), else the
+// material's own.
+fn shared_camera() -> bool {
+    return star.anchor.w < 0.5 || (star.anchor.w > 1.5 && star.anchor.w < 2.5);
+}
+
+fn star_blur() -> vec4<f32> {
+    @if(SPRITE_CAMERA) {
+        if shared_camera() {
+            return sprite_cam.blur;
+        }
+    }
+    return star.blur;
+}
+
+fn star_blur_delta() -> vec4<f32> {
+    @if(SPRITE_CAMERA) {
+        if shared_camera() {
+            return sprite_cam.blur_delta;
+        }
+    }
+    return star.blur_delta;
+}
+
+fn star_prev_view() -> mat4x4<f32> {
+    @if(SPRITE_CAMERA) {
+        if shared_camera() {
+            return sprite_cam.prev_view;
+        }
+    }
+    return star.prev_view;
+}
+
+fn star_params() -> vec4<f32> {
+    @if(SPRITE_CAMERA) {
+        if shared_camera() {
+            return sprite_cam.params;
+        }
+    }
+    return star.params;
+}
+
+fn star_params2() -> vec4<f32> {
+    @if(SPRITE_CAMERA) {
+        if shared_camera() {
+            return vec4<f32>(sprite_cam.params2.xyz, star.params2.w);
+        }
+    }
+    return star.params2;
+}
+
+fn star_hide() -> vec4<f32> {
+    @if(SPRITE_CAMERA) {
+        if star.anchor.w < 0.5 {
+            return sprite_cam.hide_catalog;
+        }
+        if shared_camera() {
+            return sprite_cam.hide_octree;
+        }
+    }
+    return star.hide;
+}
+
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
@@ -137,28 +214,32 @@ fn hidden() -> VertexOut {
 // Screen trail (px) of a point at world offset `rel` (pc) from the camera, seen at `clip`: from
 // where it was a frame ago to where it is, scaled to the exposure.
 fn blur_trail(rel: vec3<f32>, clip: vec4<f32>) -> vec2<f32> {
-    if star.blur.x < 0.5 || clip.w <= 0.0 {
+    let blur = star_blur();
+    if blur.x < 0.5 || clip.w <= 0.0 {
         return vec2<f32>(0.0);
     }
-    let pdir = normalize(rel + star.blur_delta.xyz);
+    let pdir = normalize(rel + star_blur_delta().xyz);
     var pv = view.view_from_world * vec4<f32>(pdir, 0.0);
-    if star.blur.y > 0.5 {
-        pv = star.prev_view * vec4<f32>(pdir, 0.0);
+    if blur.y > 0.5 {
+        pv = star_prev_view() * vec4<f32>(pdir, 0.0);
     }
     let pc = view.clip_from_view * pv;
     if pc.w <= 0.0 {
         return vec2<f32>(0.0);
     }
-    var t = (clip.xy / clip.w - pc.xy / pc.w) * view.viewport.zw * 0.5 * star.blur.z;
+    var t = (clip.xy / clip.w - pc.xy / pc.w) * view.viewport.zw * 0.5 * blur.z;
     let l = length(t);
-    if l > star.blur.w {
-        t = t * (star.blur.w / l);
+    if l > blur.w {
+        t = t * (blur.w / l);
     }
     return t;
 }
 
 @vertex
 fn vertex(v: Vertex) -> VertexOut {
+    let params = star_params();
+    let params2 = star_params2();
+    let hide = star_hide();
     let world_from_local = get_world_from_local(v.instance_index);
     let batched = star.anchor.w > 2.5;
     var rel = v.position - star.cam_pos.xyz;
@@ -168,21 +249,21 @@ fn vertex(v: Vertex) -> VertexOut {
     let d = max(length(rel), 1e-12);
     // Only the active system's own point is hidden; every other star stays drawn however close
     // (SE hides only the barycentre pseudo-star).
-    if star.hide.w > 0.0 && !batched && length(rel - star.hide.xyz) < star.hide.w {
+    if hide.w > 0.0 && !batched && length(rel - hide.xyz) < hide.w {
         return hidden();
     }
 
     // Apparent magnitude.
-    var m = v.data.w + star.params2.w + 5.0 * (log2(d) * LOG10_2 - 1.0);
+    var m = v.data.w + params2.w + 5.0 * (log2(d) * LOG10_2 - 1.0);
     if batched {
-        m = v.data.w + star.params2.w;
+        m = v.data.w + params2.w;
     }
     // SE's pixel brightness, compressed above 100, and the fade-in above the cutoff (Param.w = 20).
-    var b = star.params.w * star.params.y * exp2(0.4 * (star.params.x - m) * LOG2_10);
+    var b = params.w * params.y * exp2(0.4 * (params.x - m) * LOG2_10);
     if b > 100.0 {
         b = 31.6227766 * pow(b, 0.25);
     }
-    let fade = clamp(20.0 * (b - star.params.w), 0.0, 1.0);
+    let fade = clamp(20.0 * (b - params.w), 0.0, 1.0);
     if fade <= 0.0 {
         return hidden();
     }
@@ -207,10 +288,10 @@ fn vertex(v: Vertex) -> VertexOut {
 
     // The Gaussian out to where it falls to 1/500 of the cutoff, radius^2 = ln(500 b) 2 sigma^2, or the
     // flare wing to where it does, ((flareBright 500 b 2 sigma^2 - 1) / flareDecay) (SE's spriteSize).
-    let gauss_r2 = log(b * 500.0) * star.params.z;
-    let flare_r2 = (star.flare.x * 500.0 * b * star.params.z - 1.0) / max(star.flare.y, 1e-6);
+    let gauss_r2 = log(b * 500.0) * params.z;
+    let flare_r2 = (star.flare.x * 500.0 * b * params.z - 1.0) / max(star.flare.y, 1e-6);
     let r2_px = max(gauss_r2, flare_r2);
-    let edge = r2_px / star.params.z;
+    let edge = r2_px / params.z;
     let radius_px = sqrt(r2_px);
     // Motion blur: the sprite becomes a capsule from its last position to this one.
     var trail = vec2<f32>(0.0);
@@ -229,12 +310,12 @@ fn vertex(v: Vertex) -> VertexOut {
     // StarColorSaturation, then faint points turn grey (GrayLevel = (b / PointDesaturation)^3; not
     // for planets).
     var base = v.data.rgb;
-    if !batched && star.params2.y != 0.0 {
-        base = color_shift(base, star.params2.y);
+    if !batched && params2.y != 0.0 {
+        base = color_shift(base, params2.y);
     }
-    var col = mix(vec3<f32>(dot(base, TO_GRAY)), base, star.params2.z);
+    var col = mix(vec3<f32>(dot(base, TO_GRAY)), base, params2.z);
     if !batched {
-        col = mix(vec3<f32>(dot(col, TO_GRAY)), col, pow(clamp(b * star.params2.x, 0.0, 1.0), 3.0));
+        col = mix(vec3<f32>(dot(col, TO_GRAY)), col, pow(clamp(b * params2.x, 0.0, 1.0), 3.0));
     }
 
     var o: VertexOut;
@@ -244,7 +325,7 @@ fn vertex(v: Vertex) -> VertexOut {
     o.uv = vec2<f32>(v.corner.x * (1.0 + half), v.corner.y);
     o.edge = edge;
     o.trail = half;
-    o.flare = vec2<f32>(star.flare.x * star.params.z, star.flare.y * r2_px);
+    o.flare = vec2<f32>(star.flare.x * params.z, star.flare.y * r2_px);
     return o;
 }
 

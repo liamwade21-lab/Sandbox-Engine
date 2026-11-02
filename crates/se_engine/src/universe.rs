@@ -224,13 +224,17 @@ fn apply_floating_origin(
         &mut Transform,
         Option<&Visibility>,
         Has<crate::terrain::BodyAttached>,
+        (Has<crate::system::SystemBody>, Has<Mesh3d>, Has<Children>),
     )>,
 ) {
-    for (pos, rot, scale, anchor, mut tf, vis, attached) in &mut q {
+    for (pos, rot, scale, anchor, mut tf, vis, attached, (body, mesh, children)) in &mut q {
         // Hidden terrain patches and body models keep their last transform: thousands of cached
         // ones would otherwise be re-placed, re-propagated and re-uploaded every frame. One shown
-        // again is placed in the same frame (terrain and body models run before this set).
-        if attached && vis == Some(&Visibility::Hidden) {
+        // again is placed in the same frame (terrain and body models run before this set). So do
+        // the hidden bodies with nothing to draw (all but the star spheres): no one reads their
+        // transforms, and writing them marks thousands changed every frame.
+        let hidden = vis == Some(&Visibility::Hidden);
+        if hidden && (attached || (body && !mesh && !children)) {
             continue;
         }
         let delta = pos.0.delta_m(cam.pos);

@@ -404,28 +404,29 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
             sum = sum + light_color * exp(-ldl * ldl * ldl * vol.f[10].w) / vol.f[11].w * sum_t;
         }
         if flag(GAS_EMISSION) {
-            var gas_color = vec3<f32>(0.0);
-            // A negative distance term makes SE's pow() NaN, and its clamp() then zeroes the sum.
-            var invalid = false;
             let ndb = max(nd.y, nd.z);
-            for (var g = 0u; g < 3u; g = g + 1u) {
-                if !flag(EMISSION_GAS_1 << g) {
-                    continue;
-                }
-                let dir = vol.f[6u + 3u * g].xyz;
-                let c0 = vol.f[7u + 3u * g].xyz;
-                let col = vol.f[5u + 3u * g].xyz;
-                // coef_1..3 of gas g: uFloatData[31].z onwards.
-                let base = 31u * 4u + 2u + 3u * g;
-                let c1 = vol.f[base / 4u][base % 4u];
-                let c2 = vol.f[(base + 1u) / 4u][(base + 1u) % 4u];
-                let c3 = vol.f[(base + 2u) / 4u][(base + 2u) % 4u];
-                let e = (max(ndb, 1.0e-4) + c0.x) * dir.x + ((abs(min(ndb, -1.0e-4)) + c0.y) * dir.y + (abs(ndb) + c0.z) * dir.z);
-                invalid = invalid || (e < 0.0 && c2 != floor(c2));
-                gas_color = gas_color + e * col * c1 * exp(-pow(abs(e), c2) * c3) * sum_t;
-            }
-            gas_color = select(clamp(gas_color, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.0), invalid);
+            // The gases' light is only used inside the gas layer.
             if ndb < gas_h {
+                var gas_color = vec3<f32>(0.0);
+                // A negative distance term makes SE's pow() NaN, and its clamp() then zeroes the sum.
+                var invalid = false;
+                for (var g = 0u; g < 3u; g = g + 1u) {
+                    if !flag(EMISSION_GAS_1 << g) {
+                        continue;
+                    }
+                    let dir = vol.f[6u + 3u * g].xyz;
+                    let c0 = vol.f[7u + 3u * g].xyz;
+                    let col = vol.f[5u + 3u * g].xyz;
+                    // coef_1..3 of gas g: uFloatData[31].z onwards.
+                    let base = 31u * 4u + 2u + 3u * g;
+                    let c1 = vol.f[base / 4u][base % 4u];
+                    let c2 = vol.f[(base + 1u) / 4u][(base + 1u) % 4u];
+                    let c3 = vol.f[(base + 2u) / 4u][(base + 2u) % 4u];
+                    let e = (max(ndb, 1.0e-4) + c0.x) * dir.x + ((abs(min(ndb, -1.0e-4)) + c0.y) * dir.y + (abs(ndb) + c0.z) * dir.z);
+                    invalid = invalid || (e < 0.0 && c2 != floor(c2));
+                    gas_color = gas_color + e * col * c1 * exp(-pow(abs(e), c2) * c3) * sum_t;
+                }
+                gas_color = select(clamp(gas_color, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(0.0), invalid);
                 let gas_density = gas_h - min(ndb, -1.0e-5);
                 let sigma_gas = vec3<f32>(max(gas_density * vol.f[31].x, 1.0e-12));
                 let trans_gas = exp(-sigma_gas * step_length * vol.f[31].y);

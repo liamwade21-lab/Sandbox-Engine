@@ -20,13 +20,22 @@ struct FarParams {
     norm: vec4<f32>,
     // x: galaxy id (-1 unused), y: model fade (0 = far sprite only, 1 = 3D model only)
     resident: array<vec4<f32>, 16>,
-    // Motion blur, as in stars.wesl.
+};
+
+// The per-frame camera values shared with the star fields (stars.rs SpriteCamera); the far sprites
+// read its motion blur.
+struct SpriteCamera {
     blur: vec4<f32>,
     blur_delta: vec4<f32>,
     prev_view: mat4x4<f32>,
+    params: vec4<f32>,
+    params2: vec4<f32>,
+    hide_catalog: vec4<f32>,
+    hide_octree: vec4<f32>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> gal: FarParams;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var<storage, read> sprite_cam: SpriteCamera;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -60,22 +69,23 @@ fn hidden() -> VertexOut {
 
 // Screen trail (px) of a point at world offset `rel` (pc), as in stars.wesl.
 fn blur_trail(rel: vec3<f32>, clip: vec4<f32>) -> vec2<f32> {
-    if gal.blur.x < 0.5 || clip.w <= 0.0 {
+    let blur = sprite_cam.blur;
+    if blur.x < 0.5 || clip.w <= 0.0 {
         return vec2<f32>(0.0);
     }
-    let pdir = normalize(rel + gal.blur_delta.xyz);
+    let pdir = normalize(rel + sprite_cam.blur_delta.xyz);
     var pv = view.view_from_world * vec4<f32>(pdir, 0.0);
-    if gal.blur.y > 0.5 {
-        pv = gal.prev_view * vec4<f32>(pdir, 0.0);
+    if blur.y > 0.5 {
+        pv = sprite_cam.prev_view * vec4<f32>(pdir, 0.0);
     }
     let pc = view.clip_from_view * pv;
     if pc.w <= 0.0 {
         return vec2<f32>(0.0);
     }
-    var t = (clip.xy / clip.w - pc.xy / pc.w) * view.viewport.zw * 0.5 * gal.blur.z;
+    var t = (clip.xy / clip.w - pc.xy / pc.w) * view.viewport.zw * 0.5 * blur.z;
     let l = length(t);
-    if l > gal.blur.w {
-        t = t * (gal.blur.w / l);
+    if l > blur.w {
+        t = t * (blur.w / l);
     }
     return t;
 }

@@ -200,9 +200,9 @@ fn setup(
     let deep = std::fs::read_to_string(engine.se_path.join("config/main-def.cfg")).map_or_else(|_| DeepSkyConfig::default(), |t| DeepSkyConfig::from_cfg(&t));
     add_nebula_clusters(data.catalog_mut(), &deep);
     let gs = GalaxySettings::default();
-    let clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: GALAXY_FAR_BIAS });
-    let neb_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: NEBULA_FAR_BIAS });
-    let cat_clu_mat = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &gs), depth_bias: GALAXY_FAR_BIAS });
+    let clu_mat = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &gs), GALAXY_FAR_BIAS));
+    let neb_mat = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &gs), NEBULA_FAR_BIAS));
+    let cat_clu_mat = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &gs), GALAXY_FAR_BIAS));
     // SE draws every catalog cluster as a star-like particle (`FUN_140496f00`), not only once its
     // member stars exist: one mesh at absolute positions, translated by minus the camera.
     let particles: Vec<Sprite> = data
@@ -578,11 +578,16 @@ fn manage_systems(
         sys.wanted = near.into_iter().map(|(_, i)| i).collect();
     }
     let wanted = sys.wanted.clone();
+    // The Milky Way's catalog index, found once a frame (the catalog does not change in this loop).
+    let mut milky_way: Option<usize> = None;
     for &g in &wanted {
         if let Some(slot) = sys.slots.get_mut(&g) {
             slot.last_used = frame_no;
             // The Milky Way was built before its emission map existed: redo it once with the real map.
-            if g as usize == cat.galaxies.iter().position(|r| r.names.iter().any(|n| n == "Milky Way")).unwrap_or(usize::MAX)
+            let mw = *milky_way.get_or_insert_with(|| {
+                cat.galaxies.iter().position(|r| r.names.iter().any(|n| n == "Milky Way")).unwrap_or(usize::MAX)
+            });
+            if g as usize == mw
                 && !slot.uses_map
                 && density.has_map()
                 && matches!(slot.state, SlotState::Ready(_))
@@ -713,9 +718,8 @@ fn sync_materials(
             u.params.y = CLUSTER_MIN_PX;
         }
         u.params2.z = 1.0;
-        if let Some(mut m) = far_mats.get_mut(mat) {
-            m.uniforms = u;
-        }
+        // Only changes are written: a changed material re-prepares every sprite drawn with it.
+        crate::galaxies::set_far_uniforms(&mut far_mats, mat, &u);
     };
     zero_hidden(&sys.clu_mat, gs.far_handle(), settings.clusters, &[]);
     zero_hidden(&sys.cat_clu_mat, gs.far_handle(), show_cat, &[]);

@@ -7,21 +7,42 @@ import bevy_pbr::render::mesh_view_bindings::globals;
 import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irradiance, atm_apply_aerial, atm_transmittance_sun};
 import super::eclipse::{EclipseLight, eclipse_light};
 
-struct Planet {
+// The node's lighting (terrain.rs PatchLight): what a relight changes, one record per node in the
+// material's light page, at `planet.slot`. Clouds.wesl has the same struct.
+struct PatchLight {
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
+    // Each light's casters: [0] the brightest star, then the extra lights in order.
+    eclipse: array<EclipseLight, 4>,
+    // The further stars (SE lights a body by up to 4, planet.glsl's NLights loop): xyz direction,
+    // w 1 when used; rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
+    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none.
+    glow_atmo: vec4<f32>,
+    // Planet's relit components: x base_color.w (ambient), y params.x (glow brightness), z thermal2.w
+    // (self-emission scale), w ice.w (water display level).
+    levels: vec4<f32>,
+    // x atm_flags.x (atmosphere enabled), y soil_tile.w (geomorph split distance).
+    flags: vec4<f32>,
+};
+
+// The fixed part of the material. The components marked "slot" are read from `lit`.
+struct Planet {
     planet: vec4<f32>,
     rect_color: vec4<f32>,
     rect_lights: vec4<f32>,
     rect_water: vec4<f32>,
     rect_clouds: vec4<f32>,
+    // rgb fallback albedo; w (slot) ambient.
     base_color: vec4<f32>,
+    // x (slot) glow brightness, y water specular, z cloud opacity, w water roughness.
     params: vec4<f32>,
     // rgb SE's WaterSurfColor (linear), w 1 when the body has water.
     ocean_sea: vec4<f32>,
     // SE's WaterFogColor: the water's absorption, rgb and opacity, per km.
     water_fog: vec4<f32>,
-    // x: atmosphere enabled, y: sun irradiance scale for the tables (SE hdrPlanetSurfaceBright),
+    // x: (slot) atmosphere enabled, y: sun irradiance scale for the tables (SE hdrPlanetSurfaceBright),
     // z: the scattered light (haze, the sky seen in water) relative to y: Bright x hdrAtmoScatterBright / y
     atm_flags: vec4<f32>,
     proc_pal0: vec4<f32>,
@@ -33,14 +54,12 @@ struct Planet {
     // x: radius (m), y: seed fraction, z: procedural colour enabled, w: SE's volatiles class
     proc_params2: vec4<f32>,
     atm: AtmParams,
-    // Each light's casters: [0] the brightest star, then the extra lights in order.
-    eclipse: array<EclipseLight, 4>,
     // Own rings: x inner, y outer radius (planet radii), z opacity, w 0 none / 0.5 untextured / 1 textured.
     ring: vec4<f32>,
     // xyz: ring plane normal (render orientation).
     ring_normal: vec4<f32>,
     // xy: node corner on its cube face (m, wrapped), z: node edge (m); for soil textures.
-    // w: split distance in node edges, for the geomorph (0: none).
+    // w (slot): split distance in node edges, for the geomorph (0: none).
     soil_tile: vec4<f32>,
     // xyz: the node's +u axis (body frame), for the waves; w: 1 on the water surface material.
     water: vec4<f32>,
@@ -52,19 +71,15 @@ struct Planet {
     // (kK^4), w 1 for giants.
     thermal: vec4<f32>,
     // x star surface radiance per its irradiance here (1 / (pi (R*/d)^2)), y star temperature (K),
-    // z ThermalEmissionShift (kK), w self-emission scale (EnableSelfEmission x SelfEmissionBright).
+    // z ThermalEmissionShift (kK), w (slot) self-emission scale (EnableSelfEmission x SelfEmissionBright).
     thermal2: vec4<f32>,
-    // The further stars (SE lights a body by up to 4, planet.glsl's NLights loop): xyz direction,
-    // w 1 when used; rgb their light, intensity included.
-    light_dir: array<vec4<f32>, 3>,
-    light_color: array<vec4<f32>, 3>,
     // SE's GlowColor: rgb the glow map's tint, w the mode (1 Night, 0 Permanent).
     glow: vec4<f32>,
     // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask;
-    // w SE's WaterSurfColor.a, the water display (ShowWater) level.
+    // w (slot) SE's WaterSurfColor.a, the water display (ShowWater) level.
     ice: vec4<f32>,
-    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none.
-    glow_atmo: vec4<f32>,
+    // The node's record in `lit`.
+    slot: u32,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -127,6 +142,8 @@ struct Biomes {
 @group(constants::MATERIAL_BIND_GROUP) @binding(24) var sample_relief_tex: texture_2d_array<f32>;
 // SE's 64^3 Noise3DSampler (textureLoad, repeating), as the height generator reads it.
 @group(constants::MATERIAL_BIND_GROUP) @binding(25) var noise_tex: texture_3d<f32>;
+// The light page holding this node's PatchLight (at `planet.slot`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(26) var<storage, read> lit: array<PatchLight>;
 
 const PI: f32 = 3.14159265359;
 
@@ -188,7 +205,7 @@ fn vertex(v: Vertex) -> VertexOut {
     // Geomorph: on the parent's shape where the node has just split from it (twice the split
     // distance), its own from 1.4 times the split distance in.
     var morph = 1.0;
-    let split_m = planet.soil_tile.z * planet.soil_tile.w;
+    let split_m = planet.soil_tile.z * lit[planet.slot].flags.y;
     if split_m > 0.0 {
         let d = length(v.position - camera_local(world_from_local));
         morph = clamp((2.0 * split_m - d) / (0.6 * split_m), 0.0, 1.0);
@@ -204,7 +221,7 @@ fn vertex(v: Vertex) -> VertexOut {
         if fade > 0.0 {
             let up_l = normalize(local - planet.planet.xyz);
             let slope = 1.0 - clamp(dot(normalize(v.normal), up_l), 0.0, 1.0);
-            let l = normalize(planet.sun_dir.xyz);
+            let l = normalize(lit[planet.slot].sun_dir.xyz);
             g_sun_body = normalize(vec3<f32>(
                 dot(normalize(world_from_local[0].xyz), l),
                 dot(normalize(world_from_local[1].xyz), l),
@@ -698,15 +715,31 @@ struct SampleLook {
     k: f32,
 };
 
-// As a factor around 1: the texture divided by its mean (the 1x1 mip), so far away (where the
-// mips average it) it fades to 1 and never shifts the albedo.
-fn sample_layer(l: vec4<f32>, pos_m: vec3<f32>, w: vec3<f32>) -> SampleLook {
-    let layer = i32(max(l.x, 0.0));
+// A sample layer's texture coordinates at a point and their screen derivatives. Kept apart from
+// the sampling so a caller can take the derivatives in uniform control flow and sample in a branch.
+struct LayerPos {
+    p: vec3<f32>,
+    dx: vec3<f32>,
+    dy: vec3<f32>,
+};
+
+fn layer_pos(l: vec4<f32>, pos_m: vec3<f32>) -> LayerPos {
     // A slow warp bends the texture grid so its repeats do not line up into a visible pattern.
     let p0 = pos_m / l.y;
-    let p = p0 + vec3<f32>(vnoise(p0 * 0.07 + vec3<f32>(3.1)), vnoise(p0 * 0.07 + vec3<f32>(7.7)), vnoise(p0 * 0.07 + vec3<f32>(1.3))) * 1.2;
-    let dx = dpdx(p);
-    let dy = dpdy(p);
+    var o: LayerPos;
+    o.p = p0 + vec3<f32>(vnoise(p0 * 0.07 + vec3<f32>(3.1)), vnoise(p0 * 0.07 + vec3<f32>(7.7)), vnoise(p0 * 0.07 + vec3<f32>(1.3))) * 1.2;
+    o.dx = dpdx(o.p);
+    o.dy = dpdy(o.p);
+    return o;
+}
+
+// As a factor around 1: the texture divided by its mean (the 1x1 mip), so far away (where the
+// mips average it) it fades to 1 and never shifts the albedo. `lp` is `layer_pos(l, ..)`.
+fn sample_layer(l: vec4<f32>, lp: LayerPos, w: vec3<f32>) -> SampleLook {
+    let layer = i32(max(l.x, 0.0));
+    let p = lp.p;
+    let dx = lp.dx;
+    let dy = lp.dy;
     // A layer whose repeat covers only a few dozen pixels would show as a grid (SE's surfaces are
     // smooth from orbit): its contrast fades in as the repeat grows on screen.
     let on_screen = smoothstep(48.0, 384.0, l.y / max(g_footprint_m, 1.0e-3));
@@ -1458,11 +1491,11 @@ struct BiomeLook {
 };
 
 // One biome slot: its large and small sample layers (colours multiplied, reliefs added), times
-// its tint if `tinted`.
-fn biome_look(k: i32, pos_m: vec3<f32>, tw: vec3<f32>, tinted: bool) -> BiomeLook {
+// its tint if `tinted`. `la`/`lb` are the layers' `layer_pos`.
+fn biome_look(k: i32, la: LayerPos, lb: LayerPos, tw: vec3<f32>, tinted: bool) -> BiomeLook {
     let tint = select(vec3<f32>(1.0), biomes.color[k].rgb, tinted);
-    let a = sample_layer(biomes.large[k], pos_m, tw);
-    let b = sample_layer(biomes.small[k], pos_m, tw);
+    let a = sample_layer(biomes.large[k], la, tw);
+    let b = sample_layer(biomes.small[k], lb, tw);
     var o: BiomeLook;
     o.col = tint * a.col * b.col;
     o.grad = a.grad + b.grad;
@@ -1518,13 +1551,20 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
     var tw = pow(abs(dir), vec3<f32>(4.0));
     tw = tw / (tw.x + tw.y + tw.z);
     let t = clamp(max(w2, 0.0) / max(w1 + max(w2, 0.0), 1e-4), 0.0, 0.5);
-    var b1 = biome_look(k1, pos_m, tw, tinted);
-    var b2 = biome_look(k2, pos_m, tw, tinted);
+    var b1 = biome_look(k1, layer_pos(biomes.large[k1], pos_m), layer_pos(biomes.small[k1], pos_m), tw, tinted);
     if k1 == 5 {
         b1.col *= rock_tint;
     }
-    if k2 == 5 {
-        b2.col *= rock_tint;
+    // The second biome is read only where it shows (t > 0; at t = 0 the mixes below give b1
+    // exactly). Its derivatives are taken here, outside the per-pixel branch.
+    let l2a = layer_pos(biomes.large[k2], pos_m);
+    let l2b = layer_pos(biomes.small[k2], pos_m);
+    var b2 = b1;
+    if t > 0.0 {
+        b2 = biome_look(k2, l2a, l2b, tw, tinted);
+        if k2 == 5 {
+            b2.col *= rock_tint;
+        }
     }
     // Designed worlds: albedo patches a few hundred km across (SE's own albedoVary is applied with
     // its ColorVary by the caller; textured bodies keep their maps).
@@ -2166,13 +2206,13 @@ fn sea_light(s: Surf, n: vec3<f32>, v: vec3<f32>, rough: f32) -> SeaLight {
     o.spec = vec3<f32>(0.0);
     let nv = clamp(dot(n, v), 0.0, 1.0);
     for (var i = 0; i < 4; i++) {
-        var l = normalize(planet.sun_dir.xyz);
+        var l = normalize(lit[planet.slot].sun_dir.xyz);
         var sun = s.sun_at_ground;
         if i > 0 {
-            if planet.light_dir[i - 1].w < 0.5 {
+            if lit[planet.slot].light_dir[i - 1].w < 0.5 {
                 break;
             }
-            l = normalize(planet.light_dir[i - 1].xyz);
+            l = normalize(lit[planet.slot].light_dir[i - 1].xyz);
             sun = s.sun_x[i - 1];
         }
         let nl = clamp(dot(n, l), 0.0, 1.0);
@@ -2187,14 +2227,14 @@ fn sea_light(s: Surf, n: vec3<f32>, v: vec3<f32>, rough: f32) -> SeaLight {
 // SE's waterFogAccum (planet.glsl:959, 1157-1159, 1245) before the water's colour: AmbientColor plus
 // each light's direct light on level ground and sky irradiance, at hdrWaterSurfaceBright.
 fn water_fog_light(s: Surf) -> vec3<f32> {
-    return (vec3<f32>(planet.base_color.w) + s.e_direct / planet.atm_flags.y + (s.e_city - s.e_direct) / PI) * WATER_SURFACE_BRIGHT;
+    return (vec3<f32>(lit[planet.slot].levels.x) + s.e_direct / planet.atm_flags.y + (s.e_city - s.e_direct) / PI) * WATER_SURFACE_BRIGHT;
 }
 
 // SE's ambSeaAccum light (planet.glsl:1026, 1132-1144, 1213): AmbientColor plus each light's day
 // ambient and sky irradiance (at hdrAtmoIllumBright 1), `amb_k` x AmbientColor (water.glsl tints
 // the AmbientColor by the water's colour twice).
 fn water_amb_light(s: Surf, amb_k: vec3<f32>) -> vec3<f32> {
-    return planet.base_color.w * amb_k + (s.e_level - s.e_direct - vec3<f32>(planet.base_color.w * planet.atm_flags.y)) / PI;
+    return lit[planet.slot].levels.x * amb_k + (s.e_level - s.e_direct - vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y)) / PI;
 }
 
 // SE's water in the ground pass (planet.glsl:807-867, 1243-1275), over the lit ground `col`: the ground
@@ -2206,7 +2246,7 @@ fn water_amb_light(s: Surf, amb_k: vec3<f32>) -> vec3<f32> {
 // window: SE has none.
 fn se_ground_water(in: VertexOut, s: Surf, col: vec3<f32>, up: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
     // WaterSurfColor.a: the ShowWater animation, squared (DAT_1419fb564^2 in FUN_1404ae4a0).
-    let a = planet.ice.w * planet.ice.w;
+    let a = lit[planet.slot].levels.w * lit[planet.slot].levels.w;
     let wm = clamp(s.water, 0.0, 1.0);
     // SurfParams1.w: the water mask is the body's water map (Earth's).
     let earth = select(0.0, 1.0, planet.rect_water.w > 0.5);
@@ -2295,10 +2335,10 @@ fn horizon_shadow(height: f32, mu: f32) -> f32 {
 
 // The ground's colour lit at `pos_km` (no water, clouds or haze yet).
 fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: vec3<f32>) -> Surf {
-    let has_atm = planet.atm_flags.x > 0.5;
+    let has_atm = lit[planet.slot].flags.x > 0.5;
     let p_rel = (in.world_pos - in.centre.xyz) / max(in.centre.w, 1e-30);
-    let shadow = eclipse_light(planet.eclipse[0], p_rel, l) * ring_shadow(p_rel, l);
-    let sun = planet.sun_color.rgb * planet.sun_dir.w * shadow;
+    let shadow = eclipse_light(lit[planet.slot].eclipse[0], p_rel, l) * ring_shadow(p_rel, l);
+    let sun = lit[planet.slot].sun_color.rgb * lit[planet.slot].sun_dir.w * shadow;
     let e_sun = sun * planet.atm_flags.y;
 
     var albedo = planet.base_color.rgb;
@@ -2361,8 +2401,8 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     }
     // Thermal emission, by the unshadowed star (the heating is from its light at the surface).
     // SE's SelfEmissionBright scales it (SurfParams4.w), EnableSelfEmission off drops it.
-    if (planet.thermal.x > 0.45 || planet.thermal.z > 0.04) && planet.thermal2.w > 0.0 {
-        emission = thermal_emission(bdir, in.height, dot(up, l), planet.sun_color.rgb * planet.sun_dir.w * planet.atm_flags.y) * planet.thermal2.w;
+    if (planet.thermal.x > 0.45 || planet.thermal.z > 0.04) && lit[planet.slot].levels.z > 0.0 {
+        emission = thermal_emission(bdir, in.height, dot(up, l), lit[planet.slot].sun_color.rgb * lit[planet.slot].sun_dir.w * planet.atm_flags.y) * lit[planet.slot].levels.z;
     }
     // The soils, chosen by the map's colour and recoloured to the ground's, take over within 2 km
     // (SE's `detailFade = clamp(2 - distance_km, 0, 1)`, planet.glsl).
@@ -2427,11 +2467,11 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     // The further stars: their direct light (with the Hapke term), sky light and day ambient,
     // shadowed by the rings and eclipses on their own paths (planet.glsl:1032-1131).
     for (var i = 0; i < 3; i++) {
-        if planet.light_dir[i].w < 0.5 {
+        if lit[planet.slot].light_dir[i].w < 0.5 {
             break;
         }
-        let lx = normalize(planet.light_dir[i].xyz);
-        let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse[i + 1], p_rel, lx) * ring_shadow(p_rel, lx);
+        let lx = normalize(lit[planet.slot].light_dir[i].xyz);
+        let sun_x = lit[planet.slot].light_color[i].rgb * eclipse_light(lit[planet.slot].eclipse[i + 1], p_rel, lx) * ring_shadow(p_rel, lx);
         let e_x = sun_x * planet.atm_flags.y;
         let term_x = horizon_shadow(in.height, dot(up, lx));
         var ground_x = sun_x * term_x;
@@ -2463,8 +2503,8 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.e_level += day_x;
     }
     // SE's AmbientLighting (the AmbientColor its light sums start from), in the light's units.
-    s.col += albedo / PI * planet.base_color.w * planet.atm_flags.y + emission;
-    s.e_level += vec3<f32>(planet.base_color.w * planet.atm_flags.y);
+    s.col += albedo / PI * lit[planet.slot].levels.x * planet.atm_flags.y + emission;
+    s.e_level += vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y);
     // The soils' sheen: GGX with their roughness (dielectric, F0 0.04), only where the
     // mesh's own surface faces the star.
     // Beyond the soils' 2 km, the sample layers' roughness where they show.
@@ -2478,21 +2518,21 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     // fwidth, so it is taken here in uniform control flow, not inside the per-pixel branch.
     var ring_x = array<f32, 3>(1.0, 1.0, 1.0);
     for (var i = 0; i < 3; i++) {
-        if planet.light_dir[i].w < 0.5 {
+        if lit[planet.slot].light_dir[i].w < 0.5 {
             break;
         }
-        ring_x[i] = ring_shadow(p_rel, normalize(planet.light_dir[i].xyz));
+        ring_x[i] = ring_shadow(p_rel, normalize(lit[planet.slot].light_dir[i].xyz));
     }
     if ice * (1.0 - fade) > 0.0 {
         let v = normalize(-in.world_pos);
         let a = planet.ice.y * planet.ice.y;
         var glint = s.sun_at_ground * ground_spec(ns, v, l, a);
         for (var i = 0; i < 3; i++) {
-            if planet.light_dir[i].w < 0.5 {
+            if lit[planet.slot].light_dir[i].w < 0.5 {
                 break;
             }
-            let lx = normalize(planet.light_dir[i].xyz);
-            let sun_x = planet.light_color[i].rgb * eclipse_light(planet.eclipse[i + 1], p_rel, lx) * ring_x[i];
+            let lx = normalize(lit[planet.slot].light_dir[i].xyz);
+            let sun_x = lit[planet.slot].light_color[i].rgb * eclipse_light(lit[planet.slot].eclipse[i + 1], p_rel, lx) * ring_x[i];
             glint += sun_x * horizon_shadow(in.height, dot(up, lx)) * ground_spec(ns, v, lx, a);
         }
         s.col += glint * planet.atm_flags.y * ice * (1.0 - fade) * smoothstep(0.0, 0.1, dot(n, l));
@@ -2519,7 +2559,7 @@ const CITY_LIGHTS_CUTOFF: f32 = 0.001;
 // fifth of the cutoff to it, so it lights up in eclipses, and a bright moon dims it as in SE. A
 // Permanent one (Io's lava) always shines.
 fn city_lights_on(e_city: vec3<f32>) -> f32 {
-    let cut = max(CITY_LIGHTS_CUTOFF * planet.sun_dir.w * planet.atm_flags.y, 1e-12);
+    let cut = max(CITY_LIGHTS_CUTOFF * lit[planet.slot].sun_dir.w * planet.atm_flags.y, 1e-12);
     let lum = dot(e_city, vec3<f32>(0.3, 0.59, 0.11));
     return 1.0 - smoothstep(cut * 0.2, cut, lum) * planet.glow.w;
 }
@@ -2533,11 +2573,11 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
     // The glow map (city lights, Io's lava) in the catalog's GlowColor, by SE's switch.
     if planet.rect_lights.w > 0.5 {
         let glow = textureSample(lights_tex, lights_smp, tile_uv(planet.rect_lights, in.uv)).rgb * planet.glow.rgb;
-        col += glow * city_lights_on(e_city) * planet.params.x;
+        col += glow * city_lights_on(e_city) * lit[planet.slot].levels.y;
     }
 
     // Aerial perspective: haze and attenuation between the camera and the ground.
-    if planet.atm_flags.x > 0.5 {
+    if lit[planet.slot].flags.x > 0.5 {
         // In the tables' sphere: the body's axes with its ellipsoid undone, as the sky shell does,
         // so a flattened planet's ground lies on the tables' ground and not inside it near the
         // poles (which cut it to black and left only the haze).
@@ -2553,15 +2593,15 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
         col = atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, body_axes(in, l), e_sun * planet.atm_flags.z);
         // The further stars' haze.
         for (var i = 0; i < 3; i++) {
-            if planet.light_dir[i].w < 0.5 {
+            if lit[planet.slot].light_dir[i].w < 0.5 {
                 break;
             }
-            let e_x = planet.light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
-            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, body_axes(in, normalize(planet.light_dir[i].xyz)), e_x);
+            let e_x = lit[planet.slot].light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
+            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, body_axes(in, normalize(lit[planet.slot].light_dir[i].xyz)), e_x);
         }
         // A glowing atmosphere over the ground (planet.glsl THERM): its inscatter as if lit from the
         // planet's centre times GlowColorAtmo.
-        let g = planet.glow_atmo.rgb;
+        let g = lit[planet.slot].glow_atmo.rgb;
         if g.r + g.g + g.b > 0.0 {
             col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, vec3<f32>(0.0), g * planet.atm_flags.y * planet.atm_flags.z);
         }
@@ -2638,11 +2678,11 @@ fn water_depth(in: VertexOut) -> f32 {
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let n = ground_normal(in);
     let up = normalize(in.up);
-    let l = normalize(planet.sun_dir.xyz);
+    let l = normalize(lit[planet.slot].sun_dir.xyz);
     let v = normalize(-in.world_pos);
     g_footprint_m = length(fwidth(in.world_pos)) * planet.planet.w / max(in.centre.w, 1e-30);
     // With the water hidden (SE's ShowWater filter, faded by `ice.w`) the seabed is dry ground.
-    let under = planet.ocean_sea.w > 0.5 && in.cam_alt < 0.0 && planet.ice.w > 0.5;
+    let under = planet.ocean_sea.w > 0.5 && in.cam_alt < 0.0 && lit[planet.slot].levels.w > 0.5;
     let s = lit_ground(in, n, up, l, table_pos(up, max(in.height, 0.0)));
     var col = s.col;
     // SE's AWATER path: the underwater fog over the ground and, past the 3D water, the flat sea.
@@ -2660,7 +2700,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
 @fragment
 fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let up = normalize(in.up);
-    let l = normalize(planet.sun_dir.xyz);
+    let l = normalize(lit[planet.slot].sun_dir.xyz);
     // Within a centimetre or so of the surface, distant nodes can place the camera on the other
     // side of it than near ones do (f32 node offsets); mirror the view into the side each branch
     // expects so such a node still shades as grazing water rather than black.
@@ -2680,7 +2720,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let waves = clamp(2.0 - d * 0.1, 0.0, 1.0);
     let nw = normalize(mix(up, wave_normal(in, up, 0.5 * (a0 * a0 - a_facet * a_facet)).xyz, waves * waves));
     // WaterSurfColor.a: the ShowWater animation, squared.
-    let a = planet.ice.w * planet.ice.w;
+    let a = lit[planet.slot].levels.w * lit[planet.slot].levels.w;
     let col = planet.ocean_sea.rgb;
     let horizon = water_horizon_opacity(in.cam_alt);
 
@@ -2709,7 +2749,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // over the neighbour.
     let flange = any(in.uv < vec2<f32>(-1e-4)) || any(in.uv > vec2<f32>(1.0 + 1e-4));
     let flange_off = in.cam_alt >= 0.0 || op_w < 0.95;
-    if s.water < 0.5 || (flange && flange_off) || planet.ice.w <= 0.0 || fade_x > 1.0 {
+    if s.water < 0.5 || (flange && flange_off) || lit[planet.slot].levels.w <= 0.0 || fade_x > 1.0 {
         discard;
     }
     return select(above, below, in.cam_alt < 0.0);

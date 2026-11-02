@@ -38,6 +38,7 @@ mod i18n;
 mod models;
 mod music;
 mod overlay;
+mod perf;
 mod procgalaxies;
 mod projection;
 mod procsystems;
@@ -76,17 +77,15 @@ use bevy_egui::EguiPlugin;
 
 fn main() {
     let cfg = config::EngineConfig::from_args();
+    // Mount the install and load the catalogs while Bevy builds its plugins (data.rs).
+    let data_load = data::DataLoad::start(&cfg);
     let asset_dir = config::asset_dir();
     let display = display::startup_settings(&cfg);
 
     let mut app = App::new();
     // Before the plugins: the log file reads SE's Log settings from the install.
     app.insert_resource(cfg.clone());
-    // main-def.cfg Loader `MaxThreads` (0: as many as the machine has).
-    let task_pools = match stars::main_def_f64(&cfg, "MaxThreads").map_or(0, |v| v.max(0.0) as usize) {
-        0 => TaskPoolOptions::default(),
-        n => TaskPoolOptions::with_num_threads(n),
-    };
+    let task_pools = task_pool_options(stars::main_def_f64(&cfg, "MaxThreads").map_or(0, |v| v.max(0.0) as usize));
     app.add_plugins(
         DefaultPlugins
             .set(TaskPoolPlugin { task_pool_options: task_pools })
@@ -114,7 +113,7 @@ fn main() {
     .insert_resource(ClearColor(Color::BLACK))
     .insert_resource(cfg)
     // Core: game data, simulation clock / floating origin, observer.
-    .add_plugins((data::DataPlugin, universe::UniversePlugin, camera::CameraPlugin, memory::MemoryPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin, render_scale::RenderScalePlugin))
+    .add_plugins((data::DataPlugin::new(data_load), universe::UniversePlugin, camera::CameraPlugin, memory::MemoryPlugin, exposure::ExposurePlugin, color_correction::ColorCorrectionPlugin, render_scale::RenderScalePlugin))
     // Deep sky (Bevy plugin tuples are limited to 15 entries, hence the groups).
     .add_plugins((
         stars::StarsPlugin,
@@ -167,6 +166,51 @@ fn main() {
     // Settings window, screenshots and the saved session.
     .add_plugins((settings_window::SettingsWindowPlugin, screenshot::ScreenshotPlugin, session::SessionPlugin))
     // Offscreen views: the HD screenshot tiles, skybox export and the projection modes' cube faces.
-    .add_plugins((capture::CapturePlugin, projection::ProjectionPlugin));
+    .add_plugins((capture::CapturePlugin, projection::ProjectionPlugin))
+    // Frame-time measurement (SE_PERF=FILE only).
+    .add_plugins(perf::PerfPlugin)
+    .add_systems(Startup, no_light_clustering);
     app.run();
+}
+
+/// Bevy's task pools from main-def.cfg Loader `MaxThreads` (0: as many as the machine has). A
+/// user-set count is used as is. With 0, the background pool that every loader shares (terrain,
+/// stars, galaxy models, systems) and that Bevy builds its pipelines on gets a third of the
+/// threads, at most 8, instead of Bevy's quarter capped at 4: the first frame's pipeline build
+/// otherwise waits behind the galaxy model builds.
+fn task_pool_options(max_threads: usize) -> TaskPoolOptions {
+    match max_threads {
+        0 => {
+            let mut o = TaskPoolOptions::default();
+            o.async_compute.percent = 1.0 / 3.0;
+            o.async_compute.max_threads = 8;
+            o
+        }
+        n => TaskPoolOptions::with_num_threads(n),
+    }
+}
+
+/// The port draws no Bevy lights (its shaders never read the light clusters), so Bevy's GPU light
+/// clustering, which runs every frame, is switched off (camera.rs gives the camera no clusters).
+/// The resource is made in PbrPlugin's `finish`, so this runs at Startup.
+fn no_light_clustering(settings: Option<ResMut<bevy::light::cluster::GlobalClusterSettings>>) {
+    if let Some(mut s) = settings {
+        s.gpu_clustering = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_max_threads_is_kept() {
+        let o = task_pool_options(6);
+        assert_eq!((o.min_total_threads, o.max_total_threads), (6, 6));
+        // Only the default (0) widens the background pool.
+        assert_eq!(o.async_compute.max_threads, TaskPoolOptions::default().async_compute.max_threads);
+        let o = task_pool_options(0);
+        assert_eq!((o.min_total_threads, o.max_total_threads), (1, usize::MAX));
+        assert_eq!((o.async_compute.min_threads, o.async_compute.max_threads), (1, 8));
+    }
 }

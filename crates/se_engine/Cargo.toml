@@ -11,6 +11,43 @@ path = "src/main.rs"
 
 [dependencies]
 se_core = { path = "../se_core" }
-bevy = "0.20"
-bevy_egui = "0.43"
+# Bevy's default features without what the port never uses: UI, sprites, text, gizmos, picking,
+# gamepads, glTF/scenes, animation and morph targets, states, input focus, Bevy's clipboard and WebGL.
+# Each of those adds plugins whose systems run every frame.
+bevy = { version = "0.20", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "reflect_auto_register",
+    "sysinfo_plugin",
+    "bevy_log",
+    "bevy_asset",
+    "bevy_winit",
+    "bevy_window",
+    "custom_cursor",
+    "x11",
+    "wayland",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_post_process",
+    "bevy_anti_alias",
+    "bevy_pbr",
+    "bevy_light",
+    "bevy_camera",
+    "bevy_mesh",
+    "bevy_material",
+    "bevy_shader",
+    "bevy_image",
+    "bevy_color",
+    "hdr",
+    "png",
+    "ktx2",
+    "zstd_rust",
+    "tonemapping_luts",
+    "smaa_luts",
+    "bevy_audio",
+    "vorbis",
+] }
+# Without its `bevy_ui` and `picking` defaults, which pull those Bevy features back in.
+bevy_egui = { version = "0.43", default-features = false, features = ["render", "default_fonts", "manage_clipboard", "open_url"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

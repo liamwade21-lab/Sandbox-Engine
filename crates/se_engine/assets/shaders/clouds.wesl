@@ -10,16 +10,30 @@ import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_transmittanc
 
 const PI: f32 = 3.14159265358979;
 
-struct Clouds {
+// The node's lighting (terrain.rs PatchLight, as in planet.wesl): one record per node in the
+// material's light page, at `clouds.slot`.
+struct PatchLight {
     sun_dir: vec4<f32>,
     sun_color: vec4<f32>,
+    // Each light's casters: [0] the brightest star, then the extra lights in order.
+    eclipse: array<EclipseLight, 4>,
+    // The further stars: xyz direction, w 1 when used; rgb their light, intensity included.
+    light_dir: array<vec4<f32>, 3>,
+    light_color: array<vec4<f32>, 3>,
+    // The ground's (unused here).
+    glow_atmo: vec4<f32>,
+    levels: vec4<f32>,
+    // x: atmosphere enabled.
+    flags: vec4<f32>,
+};
+
+// The fixed part of the material; the lighting is in `lit`.
+struct Clouds {
     rect: vec4<f32>,
     // x opacity, y relief of the cloud tops (m), z 1: the map is the colour of an opaque layer
     params: vec4<f32>,
     // xyz: planet centre (node-local), w: planet radius
     planet: vec4<f32>,
-    // Each light's casters: [0] the brightest star, then the extra lights in order.
-    eclipse: array<EclipseLight, 4>,
     // Procedural clouds (no texture): x coverage, y base frequency, z octaves, w enabled
     proc: vec4<f32>,
     // x seed, y unused, z latitude belt strength
@@ -31,12 +45,12 @@ struct Clouds {
     color: vec4<f32>,
     // x DayAmbient, y SubsurfScatBright, z SubsurfScatPower, w Hapke
     look: vec4<f32>,
-    // x: atmosphere enabled, y: sun irradiance scale for the tables, z: the haze relative to y, w unused
+    // x: (in `lit`) atmosphere enabled, y: sun irradiance scale for the tables, z: the haze relative
+    // to y, w unused
     atm_flags: vec4<f32>,
     atm: AtmParams,
-    // The further stars: xyz direction, w 1 when used; rgb their light, intensity included.
-    light_dir: array<vec4<f32>, 3>,
-    light_color: array<vec4<f32>, 3>,
+    // The node's record in `lit`.
+    slot: u32,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> clouds: Clouds;
@@ -46,6 +60,8 @@ struct Clouds {
 @group(constants::MATERIAL_BIND_GROUP) @binding(4) var atm_smp: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(5) var transmittance_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(6) var irradiance_tex: texture_2d<f32>;
+// The light page holding the node's PatchLight (at `clouds.slot`).
+@group(constants::MATERIAL_BIND_GROUP) @binding(7) var<storage, read> lit: array<PatchLight>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -80,7 +96,7 @@ fn vertex(v: Vertex) -> VertexOut {
     o.centre = vec4<f32>(centre, clouds.planet.w * length(world_from_local[0].xyz));
     // Node meshes are in the body frame, offset from the planet centre.
     o.body_dir = v.position - clouds.planet.xyz;
-    let s = clouds.sun_dir.xyz;
+    let s = lit[clouds.slot].sun_dir.xyz;
     o.sun_body = normalize(vec3<f32>(dot(normalize(world_from_local[0].xyz), s), dot(normalize(world_from_local[1].xyz), s), dot(normalize(world_from_local[2].xyz), s)) + vec3<f32>(1e-12));
     return o;
 }
@@ -393,7 +409,7 @@ fn proc_clouds(d: vec3<f32>) -> f32 {
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let up = normalize(in.up);
-    let l = normalize(clouds.sun_dir.xyz);
+    let l = normalize(lit[clouds.slot].sun_dir.xyz);
     let texel = textureSample(clouds_tex, clouds_smp, tile_uv(clouds.rect, in.uv));
     // SE's DiffMapAlpha: "None" makes the map the colour of an opaque layer (Venus); otherwise the
     // (greyscale) map is the opacity.
@@ -429,9 +445,9 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let a = clamp((density - 0.05) / 0.95 * clouds.params.x, 0.0, 1.0) * near;
 
     let rel = in.world_pos - in.centre.xyz;
-    let shadow = eclipse_light(clouds.eclipse[0], rel / max(in.centre.w, 1e-30), l);
+    let shadow = eclipse_light(lit[clouds.slot].eclipse[0], rel / max(in.centre.w, 1e-30), l);
     // Star light above the atmosphere, in the tables' scale.
-    let e_top = clouds.sun_color.rgb * clouds.sun_dir.w * shadow * clouds.atm_flags.y;
+    let e_top = lit[clouds.slot].sun_color.rgb * lit[clouds.slot].sun_dir.w * shadow * clouds.atm_flags.y;
     let mu_s = dot(up, l);
     // The planet's shadow: lit until the star sets below the horizon at the cloud's height.
     let rr = clamp(in.centre.w / max(length(rel), 1e-30), 0.0, 1.0);
@@ -440,7 +456,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     var sky = vec3<f32>(0.0);
     let to_table = clouds.atm.radii.x / max(in.centre.w, 1e-30);
     let pos_km = rel * to_table;
-    let has_atm = clouds.atm_flags.x > 0.5;
+    let has_atm = lit[clouds.slot].flags.x > 0.5;
     if has_atm {
         let r = length(pos_km);
         e_sun *= atm_transmittance_sun(clouds.atm, transmittance_tex, atm_smp, r, mu_s);
@@ -466,11 +482,11 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     }
     // The further stars, lit the same way (SE's NLights loop).
     for (var i = 0; i < 3; i++) {
-        if clouds.light_dir[i].w < 0.5 {
+        if lit[clouds.slot].light_dir[i].w < 0.5 {
             break;
         }
-        let lx = normalize(clouds.light_dir[i].xyz);
-        let top_x = clouds.light_color[i].rgb * eclipse_light(clouds.eclipse[i + 1], rel / max(in.centre.w, 1e-30), lx) * clouds.atm_flags.y;
+        let lx = normalize(lit[clouds.slot].light_dir[i].xyz);
+        let top_x = lit[clouds.slot].light_color[i].rgb * eclipse_light(lit[clouds.slot].eclipse[i + 1], rel / max(in.centre.w, 1e-30), lx) * clouds.atm_flags.y;
         let mu_x = dot(up, lx);
         var sun_x = top_x * clamp((sqrt(1.0 - rr * rr) + mu_x) * 500.0, 0.0, 1.0);
         var sky_x = vec3<f32>(0.0);
@@ -493,11 +509,11 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     if has_atm {
         col = atm_apply_aerial(clouds.atm, inscatter_tex, transmittance_tex, atm_smp, col, -in.centre.xyz * to_table, pos_km, l, e_top * clouds.atm_flags.z);
         for (var i = 0; i < 3; i++) {
-            if clouds.light_dir[i].w < 0.5 {
+            if lit[clouds.slot].light_dir[i].w < 0.5 {
                 break;
             }
-            let e_x = clouds.light_color[i].rgb * clouds.atm_flags.y * clouds.atm_flags.z;
-            col += atm_apply_aerial(clouds.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), -in.centre.xyz * to_table, pos_km, normalize(clouds.light_dir[i].xyz), e_x);
+            let e_x = lit[clouds.slot].light_color[i].rgb * clouds.atm_flags.y * clouds.atm_flags.z;
+            col += atm_apply_aerial(clouds.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), -in.centre.xyz * to_table, pos_km, normalize(lit[clouds.slot].light_dir[i].xyz), e_x);
         }
     }
     return vec4<f32>(col, a);

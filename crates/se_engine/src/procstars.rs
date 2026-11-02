@@ -51,7 +51,147 @@ enum NodeState {
 
 struct NodeSlot {
     state: NodeState,
+    /// The last frame the node was wanted, except while it is in the current wanted set (`set`).
     last_used: u64,
+    /// Id of the last [`WantedSet`] that held the node.
+    set: u64,
+}
+
+impl NodeSlot {
+    /// The last frame the node was wanted: this one while it is in the current set.
+    fn used(&self, current: Option<u64>, frame_no: u64) -> u64 {
+        if current == Some(self.set) { frame_no } else { self.last_used }
+    }
+}
+
+/// The nodes `wanted_nodes` gave and the bits of everything it read (octree, camera, reach, cone,
+/// limits). On a planet the camera's f64 position steps only every few dozen frames, so most
+/// frames reuse the set and skip both the search and a lookup per node.
+#[derive(Default)]
+struct WantedCache {
+    /// Bumped when the octree is replaced.
+    octree_gen: u64,
+    /// The id last given to a set.
+    last_id: u64,
+    current: Option<WantedSet>,
+    /// The set that ended last and its last frame, for [`settle`](Self::settle). Every slot is
+    /// settled each frame, so the sets that ended before are settled already.
+    ended: Option<(u64, u64)>,
+}
+
+struct WantedSet {
+    inputs: WantedInputs,
+    keys: Vec<NodeKey>,
+    /// Stamped into the slots of its nodes: while the set is current they count as used every
+    /// frame, and once it has ended they get its last frame as `last_used` (`settle`).
+    id: u64,
+    /// Some node of the set has no slot yet (the `MAX_IN_FLIGHT` limit).
+    missing: bool,
+}
+
+type WantedInputs = [u64; 13];
+
+impl WantedCache {
+    fn inputs(&self, cam_model: DVec3, reach: f64, cone: Option<(DVec3, f64)>, max_nodes: usize, mag_limit: f64) -> WantedInputs {
+        let (axis, half) = cone.unwrap_or((DVec3::ZERO, 0.0));
+        let c = cam_model.to_array().map(f64::to_bits);
+        let a = axis.to_array().map(f64::to_bits);
+        [
+            self.octree_gen,
+            c[0],
+            c[1],
+            c[2],
+            reach.to_bits(),
+            cone.is_some() as u64,
+            a[0],
+            a[1],
+            a[2],
+            half.to_bits(),
+            max_nodes as u64,
+            FAR_NODES_MAX as u64,
+            mag_limit.to_bits(),
+        ]
+    }
+
+    fn current_id(&self) -> Option<u64> {
+        self.current.as_ref().map(|s| s.id)
+    }
+
+    /// Ends the current set: its nodes were last wanted the frame before `frame_no`.
+    fn end(&mut self, frame_no: u64) {
+        if let Some(set) = self.current.take() {
+            self.ended = Some((set.id, frame_no - 1));
+        }
+    }
+
+    /// Gives a node of the set that ended last that set's last frame as `last_used`. Called for
+    /// every slot every frame, after `mark` or `end` and before the stale and LRU tests.
+    fn settle(&self, slot: &mut NodeSlot) {
+        if let Some((id, last)) = self.ended
+            && slot.set == id
+        {
+            slot.last_used = last;
+        }
+    }
+
+    /// Marks this frame's wanted nodes (from `wanted`, unless `inputs` are those of the current
+    /// set) and requests missing ones with `spawn`, in order, while fewer than `MAX_IN_FLIGHT` load.
+    fn mark(
+        &mut self,
+        nodes: &mut HashMap<NodeKey, NodeSlot>,
+        frame_no: u64,
+        inputs: WantedInputs,
+        wanted: impl FnOnce() -> Vec<Vec<NodeKey>>,
+        mut spawn: impl FnMut(NodeKey) -> NodeState,
+    ) {
+        if self.current.as_ref().is_none_or(|s| s.inputs != inputs) {
+            self.end(frame_no);
+            self.last_id += 1;
+            let keys = wanted().into_iter().flatten().collect();
+            self.current = Some(WantedSet { inputs, keys, id: self.last_id, missing: true });
+        }
+        let set = self.current.as_mut().unwrap();
+        // Nodes of the current set are never dropped, so with none missing there is nothing to do.
+        if !set.missing {
+            return;
+        }
+        set.missing = false;
+        let mut in_flight = nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count();
+        for &key in &set.keys {
+            if let Some(slot) = nodes.get_mut(&key) {
+                slot.last_used = frame_no;
+                slot.set = set.id;
+                continue;
+            }
+            if in_flight >= MAX_IN_FLIGHT {
+                set.missing = true;
+                continue;
+            }
+            nodes.insert(key, NodeSlot { state: spawn(key), last_used: frame_no, set: set.id });
+            in_flight += 1;
+        }
+    }
+}
+
+/// Nodes to drop: the stale ones, then beyond `cap` (SE's CacheSizeStarNode) the least recently
+/// wanted. `current`: the id of the current wanted set.
+fn unwanted(nodes: &HashMap<NodeKey, NodeSlot>, current: Option<u64>, frame_no: u64, cap: usize) -> Vec<NodeKey> {
+    let mut out: Vec<NodeKey> = nodes
+        .iter()
+        .filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && frame_no - s.used(current, frame_no) > KEEP_FRAMES)
+        .map(|(k, _)| *k)
+        .collect();
+    let over = crate::memory::lru_victims(
+        nodes.len() - out.len(),
+        cap,
+        nodes
+            .iter()
+            .map(|(k, s)| (*k, s, s.used(current, frame_no)))
+            .filter(|(_, s, used)| matches!(s.state, NodeState::Ready { .. }) && *used < frame_no && frame_no - used <= KEEP_FRAMES)
+            .map(|(k, _, used)| (k, used)),
+    );
+    out.extend(over);
+    out
 }
 
 #[derive(Resource)]
@@ -69,6 +209,7 @@ pub struct ProcStarField {
     /// built, and since when (seconds).
     pending: Option<(usize, f32)>,
     nodes: HashMap<NodeKey, NodeSlot>,
+    wanted: WantedCache,
     material: Handle<StarMaterial>,
     /// SE's `StarFadeDuration` (s).
     fade_s: f32,
@@ -213,7 +354,7 @@ fn setup_field(
     register_field_galaxy(g.pos_pc, g.radius_pc);
     let mut u = uniforms_for(Vec3::ZERO, &settings);
     u.anchor = Vec4::new(0.0, 0.0, 0.0, 2.0);
-    let material = materials.add(StarMaterial { uniforms: u });
+    let material = materials.add(StarMaterial { uniforms: u, camera: crate::stars::SPRITE_CAMERA });
     commands.insert_resource(ProcStarField {
         enabled: true,
         octree: empty_octree(),
@@ -224,6 +365,7 @@ fn setup_field(
         milky_way: gi as usize,
         pending: None,
         nodes: HashMap::new(),
+        wanted: WantedCache::default(),
         material,
         fade_s: crate::stars::block_fade_seconds(&cfg),
         frame_no: 0,
@@ -267,6 +409,7 @@ impl ProcStarField {
             if matches!(density, StarDensity::Voxel(_)) { "voxel map" } else { "analytic" }
         );
         self.octree = octree;
+        self.wanted.octree_gen += 1;
         self.density = density;
         self.pending = None;
         self.loaded_stars = 0;
@@ -509,35 +652,24 @@ fn stream_nodes(
     let reach = if cone.is_some() { reach } else { reach.min(FULL_REACH_MAX) };
 
     // Mark wanted nodes, request missing ones (coarse levels first, nearest first).
-    let mut in_flight = field
-        .nodes
-        .values()
-        .filter(|n| matches!(n.state, NodeState::Loading(_)))
-        .count();
     if field.enabled && field.galaxy.is_some() {
         // SE's CacheSizeStarNode bounds the nodes wanted as well as those kept.
         let max_nodes = memory.as_ref().map_or(STAR_NODES_DEFAULT, |m| m.star_nodes);
-        for keys in field.octree.wanted_nodes(cam_model, reach, cone, FAR_NODES_MAX, max_nodes) {
-            for key in keys {
-                if let Some(slot) = field.nodes.get_mut(&key) {
-                    slot.last_used = frame_no;
-                    continue;
-                }
-                if in_flight >= MAX_IN_FLIGHT {
-                    continue;
-                }
-                let (o, f, d, h) = (field.octree.clone(), field.frame, field.density.clone(), field.home);
-                let task = AsyncComputeTaskPool::get().spawn(async move { build(o, f, d, h, key) });
-                field.nodes.insert(
-                    key,
-                    NodeSlot {
-                        state: NodeState::Loading(task),
-                        last_used: frame_no,
-                    },
-                );
-                in_flight += 1;
-            }
-        }
+        let inputs = field.wanted.inputs(cam_model, reach, cone, max_nodes, field.octree.mag_limit);
+        let (octree, frame, density, home) = (&field.octree, field.frame, &field.density, field.home);
+        field.wanted.mark(
+            &mut field.nodes,
+            frame_no,
+            inputs,
+            || octree.wanted_nodes(cam_model, reach, cone, FAR_NODES_MAX, max_nodes),
+            |key| {
+                let (o, f, d, h) = (octree.clone(), frame, density.clone(), home);
+                NodeState::Loading(AsyncComputeTaskPool::get().spawn(async move { build(o, f, d, h, key) }))
+            },
+        );
+    } else {
+        // The nodes are no longer wanted: they go stale.
+        field.wanted.end(frame_no);
     }
 
     // Finish builds; new nodes fade in (SE raises a block's brightness by dt / StarFadeDuration a
@@ -546,6 +678,7 @@ fn stream_nodes(
     let step = time.delta_secs() / field.fade_s;
     let mut loaded = 0;
     for (key, slot) in field.nodes.iter_mut() {
+        field.wanted.settle(slot);
         if let NodeState::Loading(task) = &mut slot.state {
             if let Some(built) = check_ready(task) {
                 let mut fade = None;
@@ -553,7 +686,7 @@ fn stream_nodes(
                     let center_pc = field.frame.to_universe(field.octree.node_center(*key));
                     let own = materials.get(&material).map(|s| s.uniforms).map(|mut u| {
                         u.tint = Vec4::new(0.0, 0.0, 0.0, 1.0);
-                        materials.add(StarMaterial { uniforms: u })
+                        materials.add(StarMaterial { uniforms: u, camera: crate::stars::SPRITE_CAMERA })
                     });
                     let node_material = own.clone().unwrap_or_else(|| material.clone());
                     fade = own.map(|h| (0.0, h));
@@ -588,21 +721,8 @@ fn stream_nodes(
     }
     field.loaded_stars = loaded;
 
-    // Drop stale nodes.
-    let stale: Vec<NodeKey> = field
-        .nodes
-        .iter()
-        .filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && frame_no - s.last_used > KEEP_FRAMES)
-        .map(|(k, _)| *k)
-        .collect();
-    // SE's CacheSizeStarNode: beyond it the least recently wanted nodes go first.
     let cap = memory.map_or(usize::MAX, |m| m.star_nodes);
-    let over = crate::memory::lru_victims(
-        field.nodes.len() - stale.len(),
-        cap,
-        field.nodes.iter().filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && s.last_used < frame_no && frame_no - s.last_used <= KEEP_FRAMES).map(|(k, s)| (*k, s.last_used)),
-    );
-    for k in stale.into_iter().chain(over) {
+    for k in unwanted(&field.nodes, field.wanted.current_id(), frame_no, cap) {
         if let Some(NodeSlot {
             state: NodeState::Ready { entity: Some(e), .. },
             ..
@@ -687,22 +807,43 @@ fn follow_galaxy(
 fn position_nodes(cam: Res<FlyCamera>, mut q: Query<(&ProcStarNode, &mut Transform)>) {
     let cam_pc = cam.pos.to_parsecs();
     for (node, mut tf) in &mut q {
-        tf.translation = (node.center_pc - cam_pc).as_vec3();
+        // Only when it moves (bit for bit): a changed transform re-extracts the node's mesh.
+        let t = (node.center_pc - cam_pc).as_vec3();
+        if tf.translation.to_array().map(f32::to_bits) != t.to_array().map(f32::to_bits) {
+            tf.translation = t;
+        }
     }
 }
 
-fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut nearest: ResMut<NearestProcStar>) {
-    let Some(field) = field else { return };
-    let cam_model = field.frame.to_model(cam.pos.to_parsecs());
+/// The star of the ready `nodes` nearest `cam_model`: (squared distance, star, node).
+fn nearest_star<'a>(octree: &StarOctree, nodes: &'a HashMap<NodeKey, NodeSlot>, cam_model: DVec3) -> Option<(f64, &'a ProcStar, NodeKey)> {
+    let ready = |slot: &'a NodeSlot| match &slot.state {
+        NodeState::Ready { stars, .. } => Some(stars),
+        _ => None,
+    };
     let mut best: Option<(f64, &ProcStar, NodeKey)> = None;
+    // Start from the finest ready node holding the camera: with a near best at once, the boxes of
+    // the other nodes rule out nearly all of their stars.
+    let seed = (0..octree.levels)
+        .rev()
+        .map(|level| NodeKey { level, cell: octree.cell_of(level, cam_model) })
+        .find_map(|key| nodes.get(&key).and_then(ready).map(|stars| (key, stars)));
+    if let Some((key, stars)) = seed {
+        for s in stars.iter() {
+            let d = (s.pos - cam_model).length_squared();
+            if best.is_none_or(|(bd, _, _)| d < bd) {
+                best = Some((d, s, key));
+            }
+        }
+    }
     // The nearest star can live at any level (bright stars sit in coarse nodes),
     // so scan every node whose box could still beat the current best.
-    for (key, slot) in &field.nodes {
-        let gap = field.octree.box_distance(*key, cam_model);
+    for (key, slot) in nodes {
+        let gap = octree.box_distance(*key, cam_model);
         if best.is_some_and(|(bd, _, _)| gap * gap > bd) {
             continue;
         }
-        if let NodeState::Ready { stars, .. } = &slot.state {
+        if let Some(stars) = ready(slot) {
             for s in stars.iter() {
                 let d = (s.pos - cam_model).length_squared();
                 if best.is_none_or(|(bd, _, _)| d < bd) {
@@ -711,7 +852,15 @@ fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut near
             }
         }
     }
-    if field.frame_no % 120 == 0 {
+    best
+}
+
+fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut nearest: ResMut<NearestProcStar>) {
+    let Some(field) = field else { return };
+    let cam_model = field.frame.to_model(cam.pos.to_parsecs());
+    let best = nearest_star(&field.octree, &field.nodes, cam_model);
+    // The report scans every loaded star (over a million): only when debug logging would show it.
+    if field.frame_no % 120 == 0 && bevy::log::tracing::enabled!(bevy::log::Level::DEBUG) {
         let ready = field.nodes.values().filter(|n| matches!(n.state, NodeState::Ready { .. })).count();
         // The nearest rogue planet too (there is no way to see one).
         let planemo = field
@@ -738,5 +887,147 @@ fn find_nearest(cam: Res<FlyCamera>, field: Option<Res<ProcStarField>>, mut near
             nearest.star = None;
             nearest.dist_pc = f64::INFINITY;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn milky_way(mag_limit: f64) -> StarOctree {
+        let r = 19_329.9;
+        StarOctree::new(
+            &se_core::star_octree::GalaxyStarInput {
+                dims: DVec3::splat(r),
+                radius_pc: r,
+                hubble: 15,
+                has_model: true,
+                seed: -8_628_293,
+                galaxy: se_core::proc_galsys::GalaxyRef::Catalog(8514),
+            },
+            mag_limit,
+        )
+    }
+
+    #[test]
+    fn nearest_star_matches_a_full_scan() {
+        let t = milky_way(7.0);
+        let home = DVec3::new(8_500.0, 0.0, 10.0);
+        let ready = |stars| NodeSlot { state: NodeState::Ready { entity: None, stars: Arc::new(stars), fade: None }, last_used: 0, set: 0 };
+        let mut map: HashMap<NodeKey, NodeSlot> = t
+            .wanted_nodes(home, 1.0, None, 0, 400)
+            .into_iter()
+            .flatten()
+            .map(|k| (k, ready(t.generate_where(k, &StarDensity::Analytic, None, &|_| true))))
+            .collect();
+        // A node still loading is skipped, even the camera's own (the next level's seeds the scan).
+        let pool = bevy::tasks::TaskPool::new();
+        let own = NodeKey { level: t.levels - 1, cell: t.cell_of(t.levels - 1, home) };
+        assert!(map.contains_key(&own));
+        map.insert(own, NodeSlot { state: NodeState::Loading(pool.spawn(std::future::pending::<BuiltNode>())), last_used: 0, set: 0 });
+        let nodes: Vec<(NodeKey, Arc<Vec<ProcStar>>)> = map
+            .iter()
+            .filter_map(|(k, s)| match &s.state {
+                NodeState::Ready { stars, .. } => Some((*k, stars.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(nodes.iter().map(|n| n.1.len()).sum::<usize>() > 10_000);
+        let offsets = [DVec3::ZERO, DVec3::new(3.0, -2.0, 0.5), DVec3::new(40.0, 0.0, 0.0), DVec3::new(0.0, 0.0, 900.0), DVec3::splat(1e5)];
+        for (i, off) in offsets.into_iter().enumerate() {
+            let cam = home + off;
+            let full = nodes
+                .iter()
+                .flat_map(|(k, v)| v.iter().map(move |s| ((s.pos - cam).length_squared(), s, *k)))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .unwrap();
+            let fast = nearest_star(&t, &map, cam).unwrap();
+            assert_eq!(fast.0.to_bits(), full.0.to_bits(), "camera {i}");
+            assert_eq!((fast.2, fast.1.index), (full.2, full.1.index), "camera {i}");
+        }
+        assert!(nearest_star(&t, &HashMap::new(), home).is_none());
+    }
+
+    /// The old marking: `wanted_nodes` every frame, each wanted slot stamped with the frame.
+    fn old_mark(nodes: &mut HashMap<NodeKey, NodeSlot>, frame_no: u64, wanted: Vec<Vec<NodeKey>>, mut spawn: impl FnMut(NodeKey) -> NodeState) {
+        let mut in_flight = nodes.values().filter(|n| matches!(n.state, NodeState::Loading(_))).count();
+        for key in wanted.into_iter().flatten() {
+            if let Some(slot) = nodes.get_mut(&key) {
+                slot.last_used = frame_no;
+                continue;
+            }
+            if in_flight >= MAX_IN_FLIGHT {
+                continue;
+            }
+            nodes.insert(key, NodeSlot { state: spawn(key), last_used: frame_no, set: 0 });
+            in_flight += 1;
+        }
+    }
+
+    #[test]
+    fn cached_wanted_nodes_match_the_old_marking() {
+        let t = milky_way(7.0);
+        let pool = bevy::tasks::TaskPool::new();
+        let loading = || NodeState::Loading(pool.spawn(std::future::pending::<BuiltNode>()));
+        let hasher = std::collections::hash_map::RandomState::new();
+        let mut old: HashMap<NodeKey, NodeSlot> = HashMap::with_hasher(hasher.clone());
+        let mut new: HashMap<NodeKey, NodeSlot> = HashMap::with_hasher(hasher);
+        let mut cache = WantedCache::default();
+        let (max_nodes, cap) = (500, 650);
+        let a = DVec3::new(8_500.0, 0.0, 10.0);
+        let cone = Some((DVec3::new(-1.0, 0.3, 0.1).normalize(), 0.05));
+        let mut wanted_calls = 0;
+        // Stay, move, stay long enough for stale nodes to go, come back, zoom, switch the field
+        // off and on, replace the octree.
+        let mut path: Vec<(DVec3, f64, Option<(DVec3, f64)>, bool)> = Vec::new();
+        path.extend((0..40).map(|_| (a, 1.0, None, true)));
+        path.extend((0..20).map(|i| (a + DVec3::new(2.0 * i as f64, 1.0, 0.0), 1.0, None, true)));
+        path.extend((0..120).map(|_| (a + DVec3::new(60.0, 1.0, 0.0), 1.0, None, true)));
+        path.extend((0..30).map(|_| (a, 1.0, None, true)));
+        path.extend((0..30).map(|_| (a, 8.0, cone, true)));
+        path.extend((0..5).map(|_| (a, 1.0, None, false)));
+        path.extend((0..100).map(|i| (a + DVec3::splat((i / 25) as f64), 1.0, None, i % 40 != 7)));
+        let mut drops = 0;
+        for (f, &(cam, reach, cone, enabled)) in path.iter().enumerate() {
+            let frame_no = f as u64 + 1;
+            if f == 300 {
+                old.clear();
+                new.clear();
+                cache.octree_gen += 1;
+            }
+            // Builds finish in map order, the same in both maps.
+            for map in [&mut old, &mut new] {
+                for slot in map.values_mut().filter(|s| matches!(s.state, NodeState::Loading(_))).take(30) {
+                    slot.state = NodeState::Ready { entity: None, stars: Arc::new(Vec::new()), fade: None };
+                }
+            }
+            if enabled {
+                old_mark(&mut old, frame_no, t.wanted_nodes(cam, reach, cone, FAR_NODES_MAX, max_nodes), |_| loading());
+                let inputs = cache.inputs(cam, reach, cone, max_nodes, t.mag_limit);
+                let wanted = || {
+                    wanted_calls += 1;
+                    t.wanted_nodes(cam, reach, cone, FAR_NODES_MAX, max_nodes)
+                };
+                cache.mark(&mut new, frame_no, inputs, wanted, |_| loading());
+            } else {
+                cache.end(frame_no);
+            }
+            // As the build loop does.
+            new.values_mut().for_each(|s| cache.settle(s));
+            let current = cache.current_id();
+            let gone = unwanted(&old, None, frame_no, cap);
+            assert_eq!(gone, unwanted(&new, current, frame_no, cap), "frame {frame_no}");
+            drops += gone.len();
+            for k in &gone {
+                old.remove(k);
+                new.remove(k);
+            }
+            let snap = |m: &HashMap<NodeKey, NodeSlot>, current| {
+                m.iter().map(|(k, s)| (*k, s.used(current, frame_no), matches!(s.state, NodeState::Ready { .. }))).collect::<Vec<_>>()
+            };
+            assert_eq!(snap(&old, None), snap(&new, current), "frame {frame_no}");
+        }
+        assert!(drops > 100, "{drops}");
+        assert!(wanted_calls < path.len() / 3, "{wanted_calls}");
     }
 }

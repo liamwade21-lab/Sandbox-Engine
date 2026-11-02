@@ -7,10 +7,12 @@ use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat, encase,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bevy::math::{DQuat, DVec3};
+use std::collections::HashMap;
 use se_core::star::{StarKind, blackbody_rgb};
 
 use crate::camera::FlyCamera;
@@ -48,10 +50,54 @@ pub struct StarParams {
     pub flare: Vec4,
 }
 
+/// The per-frame camera values of the star fields at infinity and the far galaxy sprites, written by
+/// `update_sprite_blur` into one storage buffer ([`SPRITE_CAMERA`]) that every [`StarMaterial`] and
+/// `GalaxyFarMaterial` binds. Writing it in place leaves those shared materials unchanged, so their
+/// thousands of node entities are not re-specialized every frame. Must match `stars.wesl` and
+/// `galaxy_far.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct SpriteCamera {
+    /// [`SpriteBlur`]: `StarParams::blur`, `blur_delta`, `prev_view` (every far sprite, and the star
+    /// fields with anchor.w 0 or 2).
+    pub blur: Vec4,
+    pub blur_delta: Vec4,
+    pub prev_view: Mat4,
+    /// `StarParams::params` and `params2.xyz` of those star fields (w stays the material's own).
+    pub params: Vec4,
+    pub params2: Vec4,
+    /// `StarParams::hide` of the catalog field (anchor.w 0, its tolerance widened with distance) and of
+    /// the octree fields (anchor.w 2).
+    pub hide_catalog: Vec4,
+    pub hide_octree: Vec4,
+}
+
+/// The [`SpriteCamera`] buffer: one fixed size, label and usage, so its writes are in place.
+pub const SPRITE_CAMERA: Handle<ShaderBuffer> = bevy::asset::uuid_handle!("5e57c0a1-2b3d-4e6f-8a9b-1c2d3e4f5a6b");
+
+/// A uniform value's GPU bytes (std430; every field here is a vec4 or mat4, so the same as std140).
+pub(crate) fn gpu_bytes<T: ShaderType + encase::internal::WriteInto>(v: &T) -> Vec<u8> {
+    let mut b = encase::StorageBuffer::new(Vec::new());
+    b.write(v).expect("uniform fits");
+    b.into_inner()
+}
+
+/// Whether two uniform values have the same bytes, so writing one over the other would change nothing
+/// (unlike `==`, signed zeros and NaNs count).
+pub(crate) fn same_bytes<T: ShaderType + encase::internal::WriteInto>(a: &T, b: &T) -> bool {
+    gpu_bytes(a) == gpu_bytes(b)
+}
+
+fn sprite_camera_buffer(c: &SpriteCamera) -> ShaderBuffer {
+    ShaderBuffer::new(gpu_bytes(c), RenderAssetUsages::default())
+}
+
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 pub struct StarMaterial {
     #[uniform(0)]
     pub uniforms: StarParams,
+    /// [`SPRITE_CAMERA`]: the shader reads it in place of the per-frame fields when anchor.w is 0 or 2.
+    #[storage(1, read_only)]
+    pub camera: Handle<ShaderBuffer>,
 }
 
 impl Material for StarMaterial {
@@ -81,6 +127,11 @@ impl Material for StarMaterial {
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = None;
+        // Binds the SPRITE_CAMERA buffer (the sun sprites share the shader without it).
+        descriptor.vertex.shader_defs.push("SPRITE_CAMERA".into());
+        if let Some(f) = descriptor.fragment.as_mut() {
+            f.shader_defs.push("SPRITE_CAMERA".into());
+        }
         Ok(())
     }
 }
@@ -345,7 +396,7 @@ impl Plugin for StarsPlugin {
         app.add_plugins((MaterialPlugin::<StarMaterial>::default(), MaterialPlugin::<SunSpriteMaterial>::default()))
             .init_resource::<StarSettings>()
             .init_resource::<SpriteBlur>()
-            .add_systems(Startup, (load_star_config, build_catalog_starfield))
+            .add_systems(Startup, (load_star_config, init_sprite_camera, build_catalog_starfield))
             .add_systems(PreUpdate, track_screen_scale)
             .add_systems(Update, mag_limit_keys)
             .add_systems(PostUpdate, (track_zoom, update_star_uniforms).chain().after(UniverseSet::Camera))
@@ -358,6 +409,21 @@ impl Plugin for StarsPlugin {
                     .before(bevy::asset::AssetEventSystems),
             );
     }
+}
+
+/// The [`SPRITE_CAMERA`] buffer, before the first `update_sprite_blur` fills it.
+fn init_sprite_camera(settings: Res<StarSettings>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+    let u = uniforms_for(Vec3::ZERO, &settings);
+    let c = SpriteCamera {
+        blur: u.blur,
+        blur_delta: u.blur_delta,
+        prev_view: u.prev_view,
+        params: u.params,
+        params2: u.params2,
+        hide_catalog: u.hide,
+        hide_octree: u.hide,
+    };
+    let _ = buffers.insert(&SPRITE_CAMERA, sprite_camera_buffer(&c));
 }
 
 /// Append one star sprite (4 vertices, 6 indices) to mesh buffers.
@@ -401,6 +467,15 @@ pub fn star_render_color(kind: StarKind, teff: f64) -> [f32; 3] {
     }
 }
 
+/// [`star_render_color`], memoised by temperature: `blackbody_rgb` depends on nothing else, and the
+/// catalog's stars share a few thousand temperatures. Black holes and neutron stars skip the cache.
+fn cached_render_color(cache: &mut HashMap<u64, [f32; 3]>, kind: StarKind, teff: f64) -> [f32; 3] {
+    match kind {
+        StarKind::BlackHole | StarKind::NeutronStar => star_render_color(kind, teff),
+        _ => *cache.entry(teff.to_bits()).or_insert_with(|| star_render_color(kind, teff)),
+    }
+}
+
 fn build_catalog_starfield(
     mut commands: Commands,
     data: Res<SeData>,
@@ -415,6 +490,7 @@ fn build_catalog_starfield(
     let mut count = 0;
     // A ForceAppMagn system's components share its catalog AppMagn (catalog.rs).
     let forced = cat.forced_system_offsets();
+    let mut colors = HashMap::new();
     for (s, off) in cat.stars.iter().zip(forced) {
         if s.barycenter || !s.has_position || s.hidden() {
             continue;
@@ -426,7 +502,7 @@ fn build_catalog_starfield(
                 None => continue,
             }
         } else {
-            (star_render_color(s.class.kind, s.teff), s.abs_mag as f32 + off)
+            (cached_render_color(&mut colors, s.class.kind, s.teff), s.abs_mag as f32 + off)
         };
         let p = s.pos_pc.as_vec3();
         push_star(&mut positions, &mut sdata, &mut corners, &mut indices, [p.x, p.y, p.z], rgb, abs_mag);
@@ -436,6 +512,7 @@ fn build_catalog_starfield(
     let mesh = meshes.add(build_sprite_mesh(positions, sdata, corners, indices));
     let material = materials.add(StarMaterial {
         uniforms: uniforms_for(Vec3::ZERO, &settings),
+        camera: SPRITE_CAMERA,
     });
     commands.spawn((
         Mesh3d(mesh),
@@ -551,8 +628,8 @@ fn mag_limit_keys(
 }
 
 /// Motion blur of the star and galaxy points: how the camera moved and turned since the last
-/// frame, written into every star field at infinity and the far galaxy sprites (after their own
-/// uniform updates, which reset it). The star fields also get the active system's hide position.
+/// frame, for every star field at infinity and the far galaxy sprites ([`SPRITE_CAMERA`]). The star
+/// fields also get the point settings and the active system's hide position there.
 #[allow(clippy::too_many_arguments)]
 fn update_sprite_blur(
     time: Res<Time>,
@@ -562,8 +639,7 @@ fn update_sprite_blur(
     data: Res<SeData>,
     lensed: Option<Res<crate::blackholes::LensedHoles>>,
     mut blur: ResMut<SpriteBlur>,
-    mut stars: ResMut<Assets<StarMaterial>>,
-    mut far: ResMut<Assets<crate::galaxies::GalaxyFarMaterial>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let pos = cam.pos.to_parsecs();
     let dt = time.delta_secs().max(1e-4);
@@ -605,21 +681,34 @@ fn update_sprite_blur(
         .and_then(|r| data.catalog.stars.get(r as usize))
         .map(|s| (s.pos_pc - pos).as_vec3());
     let eps_abs = (pos.length() as f32 * 4.0e-7).max(HIDE_EPS_PC);
-    for (_, m) in stars.iter_mut() {
-        let u = &mut m.uniforms;
-        if u.anchor.w < 0.5 || (u.anchor.w > 1.5 && u.anchor.w < 2.5) {
-            (u.blur, u.blur_delta, u.prev_view) = (blur.blur, blur.delta, blur.prev_view);
-            // The point settings, for the fields set up once (procedural stars, cluster members).
-            u.params = star_params(&settings);
-            (u.params2.x, u.params2.y, u.params2.z) = (1.0 / settings.desaturation.max(1e-3), settings.color_shift, settings.saturation);
-            let eps = if u.anchor.w < 0.5 { eps_abs } else { HIDE_EPS_PC };
-            u.hide = hide.map_or(Vec4::ZERO, |h| h.extend(eps));
+    let c = SpriteCamera {
+        blur: blur.blur,
+        blur_delta: blur.delta,
+        prev_view: blur.prev_view,
+        // The point settings, for the fields set up once (procedural stars, cluster members).
+        params: star_params(&settings),
+        params2: Vec4::new(1.0 / settings.desaturation.max(1e-3), settings.color_shift, settings.saturation, 0.0),
+        hide_catalog: hide.map_or(Vec4::ZERO, |h| h.extend(eps_abs)),
+        hide_octree: hide.map_or(Vec4::ZERO, |h| h.extend(HIDE_EPS_PC)),
+    };
+    write_sprite_camera(&mut buffers, &c);
+}
+
+/// Writes `c` into the [`SPRITE_CAMERA`] buffer in place (same size, so the GPU buffer and the
+/// materials' bind groups stay), only when its bytes change.
+fn write_sprite_camera(buffers: &mut Assets<ShaderBuffer>, c: &SpriteCamera) {
+    let bytes = gpu_bytes(c);
+    if buffers.get(&SPRITE_CAMERA).and_then(|b| b.cast_slice::<u8>()) == Some(&bytes[..]) {
+        return;
+    }
+    if let Some(mut b) = buffers.get_mut(&SPRITE_CAMERA) {
+        match b.cast_slice_mut::<u8>() {
+            Some(d) if d.len() == bytes.len() => d.copy_from_slice(&bytes),
+            _ => *b = sprite_camera_buffer(c),
         }
+        return;
     }
-    for (_, m) in far.iter_mut() {
-        let u = &mut m.uniforms;
-        (u.blur, u.blur_delta, u.prev_view) = (blur.blur, blur.delta, blur.prev_view);
-    }
+    let _ = buffers.insert(&SPRITE_CAMERA, sprite_camera_buffer(c));
 }
 
 /// SE's `StarFadeDuration` (main-def.cfg `PointRendering`, FUN_14048dd70): a newly generated block
@@ -645,7 +734,11 @@ fn update_star_uniforms(
         if let Some(mut m) = materials.get_mut(&field.material) {
             // A bright star or planet in view does not dim the background: SE keeps the Milky
             // Way and the stars as they are from far out to a star's disc filling the view.
-            m.uniforms = uniforms_for(cam_pc, &settings);
+            // Written only when it changes: a changed material re-prepares its entity.
+            let u = uniforms_for(cam_pc, &settings);
+            if !same_bytes(&m.uniforms, &u) {
+                m.uniforms = u;
+            }
         }
     }
 }
@@ -666,6 +759,45 @@ mod tests {
         let b = 116.0f32;
         let flare_r2 = (0.002 * 500.0 * b * 0.83 - 1.0) / 0.125;
         assert!((flare_r2.sqrt() - 27.6).abs() < 0.1 && flare_r2 > (500.0 * b).ln() * 0.83);
+    }
+
+    #[test]
+    fn cached_colors_match() {
+        let mut cache = HashMap::new();
+        let kinds = [StarKind::BlackHole, StarKind::NeutronStar, StarKind::Planemo, StarKind::WhiteDwarf, StarKind::Normal];
+        for i in 0..400 {
+            let teff = [0.0, -0.0, 1.0, 2500.0, 5778.0, 40000.0][i % 6] + (i / 6) as f64 * 37.5;
+            for k in kinds {
+                // Twice: the second read comes from the cache.
+                for _ in 0..2 {
+                    assert_eq!(cached_render_color(&mut cache, k, teff), star_render_color(k, teff), "{k:?} {teff}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sprite_camera_layout() {
+        // One fixed size (so the buffer is written in place), laid out as `stars.wesl` reads it.
+        let c = SpriteCamera {
+            blur: Vec4::new(1.0, 2.0, 3.0, 4.0),
+            blur_delta: Vec4::splat(5.0),
+            prev_view: Mat4::from_cols_array(&std::array::from_fn(|i| 10.0 + i as f32)),
+            params: Vec4::splat(6.0),
+            params2: Vec4::splat(7.0),
+            hide_catalog: Vec4::splat(8.0),
+            hide_octree: Vec4::splat(9.0),
+        };
+        let b = gpu_bytes(&c);
+        assert_eq!(b.len(), 160);
+        let f = |i: usize| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!([f(0), f(3), f(4), f(8), f(23), f(24), f(28), f(32), f(36)], [1.0, 4.0, 5.0, 10.0, 25.0, 6.0, 7.0, 8.0, 9.0]);
+        // Signed zeros count as a change.
+        let mut z = c;
+        z.blur.x = 0.0;
+        let mut nz = c;
+        nz.blur.x = -0.0;
+        assert!(!same_bytes(&z, &nz) && same_bytes(&c, &c));
     }
 
     fn at_fov(fov: f32) -> StarSettings {

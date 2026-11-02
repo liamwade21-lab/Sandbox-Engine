@@ -241,6 +241,7 @@ struct EnvFaceCam(usize);
 
 /// Static, camera independent description of one catalog black hole, neutron star or white
 /// dwarf.
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct BhInfo {
     star: u32,
     kind: params::Remnant,
@@ -270,6 +271,12 @@ struct BhInfo {
 struct BhList {
     n_stars: usize,
     list: Vec<BhInfo>,
+    /// What the list was last built from: the catalog (`Arc` address and [`Catalog::edits`]), its
+    /// [`Catalog::resolved_stars`] and the `BlackHoleWarpRadius`.
+    ///
+    /// [`Catalog::edits`]: se_core::catalog::Catalog::edits
+    /// [`Catalog::resolved_stars`]: se_core::catalog::Catalog::resolved_stars
+    built: Option<((usize, u64), usize, f64)>,
 }
 
 pub struct BlackHolesPlugin;
@@ -462,15 +469,19 @@ pub fn star_time(sim_s: f64, radius_km: f64) -> f64 {
     (sim_s / (1000.0 * radius_km.max(1e-6).sqrt())).rem_euclid(1.0) * 256.0
 }
 
-/// Collect every catalog black hole, neutron star and white dwarf and derive its disk parameters.
-fn build_list(cat: &se_core::catalog::Catalog, warp_radius: f64) -> Vec<BhInfo> {
+/// Whether catalog star `s` goes in the list, and as what.
+fn listed(s: &se_core::catalog::StarRecord) -> Option<params::Remnant> {
+    // A star whose parent never resolved has no real position (it would sit on the Sun).
+    let kind = params::Remnant::of(s.class.kind)?;
+    (!s.barycenter && s.has_position && !s.hidden()).then_some(kind)
+}
+
+/// Collect every catalog black hole, neutron star and white dwarf from star `from` on and derive
+/// its disk parameters.
+fn build_list(cat: &se_core::catalog::Catalog, from: usize, warp_radius: f64) -> Vec<BhInfo> {
     let mut out = Vec::new();
-    for (i, s) in cat.stars.iter().enumerate() {
-        // A star whose parent never resolved has no real position (it would sit on the Sun).
-        let Some(kind) = params::Remnant::of(s.class.kind) else { continue };
-        if s.barycenter || !s.has_position || s.hidden() {
-            continue;
-        }
+    for (i, s) in cat.stars.iter().enumerate().skip(from) {
+        let Some(kind) = listed(s) else { continue };
         let hole = kind == params::Remnant::BlackHole;
         let mass_sun = if s.mass_kg > 0.0 { s.mass_kg / SOLAR_MASS_KG } else { DEFAULT_MASS_SUN };
         let name = &s.names[0];
@@ -513,6 +524,26 @@ fn build_list(cat: &se_core::catalog::Catalog, warp_radius: f64) -> Vec<BhInfo> 
         });
     }
     out
+}
+
+/// Brings the list up to the catalog's stars, as a full [`build_list`] would. A full build re-reads
+/// 135k stars (4-10 ms), so when only stars were added it measures just those: an entry depends
+/// only on its own star and the warp radius, and records already listed change in place only
+/// through [`se_core::catalog::Catalog::edits`], by being hidden or unloaded (no longer listed),
+/// or, the stars the catalog had not resolved, in a later `finalize` (measured again).
+fn update_list(list: &mut BhList, cat: &std::sync::Arc<se_core::catalog::Catalog>, warp_radius: f64) {
+    let key = (std::sync::Arc::as_ptr(cat) as usize, cat.edits());
+    let len = cat.stars.len();
+    match list.built {
+        Some((k, resolved, warp)) if k == key && warp == warp_radius && list.n_stars <= len => {
+            let from = resolved.min(list.n_stars);
+            list.list.retain(|b| (b.star as usize) < from && listed(&cat.stars[b.star as usize]).is_some());
+            list.list.extend(build_list(cat, from, warp_radius));
+        }
+        _ => list.list = build_list(cat, 0, warp_radius),
+    }
+    list.n_stars = len;
+    list.built = Some((key, cat.resolved_stars(), warp_radius));
 }
 
 /// The light of a catalog black hole's accretion disk seen from afar: SE adds the disk's
@@ -646,8 +677,7 @@ fn update_lens(
     }
     let cat = &data.catalog;
     if list.n_stars != cat.stars.len() {
-        list.n_stars = cat.stars.len();
-        list.list = build_list(cat, settings.warp_radius);
+        update_list(&mut list, &data.catalog, settings.warp_radius);
     }
     let (w, h) = windows.iter().next().map(|w| (w.width() as f64, w.height() as f64)).unwrap_or((1280.0, 720.0));
     let tan_y = (cam.fov_deg.to_radians() as f64 * 0.5).tan();
@@ -1058,6 +1088,80 @@ fn lens_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Extending the list from the stars added gives the list a full build would, through stars
+    /// added, hidden, unloaded, placed by a later `finalize`, edited in place, and a new warp radius.
+    #[test]
+    fn extended_list_matches_a_full_build() {
+        use se_core::catalog::Catalog;
+        use std::sync::Arc;
+        let mut sc = String::new();
+        for i in 0..40 {
+            let class = ["X", "Q", "DA", "G2V", "WD"][i % 5];
+            let hidden = if i % 7 == 0 { "Hidden true" } else { "" };
+            let kind = if i % 11 == 0 { "StarBarycenter" } else { "Star" };
+            sc += &format!("{kind} \"R{i}\" {{ RA {} 0 0 Dec {} 0 0 Dist {} Class \"{class}\" MassSol {} {hidden} }}\n", i % 24, i as i32 - 20, 10 + i, 0.5 + i as f64 * 0.3);
+        }
+        let mut c = Catalog::new();
+        c.load_sc(&sc, "test.sc");
+        c.finalize();
+        let mut cat = Arc::new(c);
+        let mut list = BhList::default();
+        let mut warp = 100.0;
+        let check = |list: &mut BhList, cat: &Arc<Catalog>, warp: f64| {
+            assert_ne!(list.n_stars, cat.stars.len());
+            update_list(list, cat, warp);
+            assert_eq!(list.list, build_list(cat, 0, warp));
+        };
+        check(&mut list, &cat, warp);
+        let add = |cat: &mut Arc<Catalog>, text: &str, source: &str| {
+            let c = Arc::get_mut(cat).unwrap();
+            c.load_sc(text, source);
+            c.finalize();
+        };
+        // Stars added; a listed one removed.
+        add(&mut cat, "Star \"N1\" { RA 3 0 0 Dec 4 0 0 Dist 7 Class \"X\" MassSol 9 }\n", "test.sc");
+        check(&mut list, &cat, warp);
+        add(&mut cat, "RemoveStar \"R1\"\nStar \"N2\" { RA 5 0 0 Dec 1 0 0 Dist 8 Class \"Q\" }\n", "test.sc");
+        check(&mut list, &cat, warp);
+        // A generated system with remnant components, then unloaded.
+        let gen_src = se_core::climate::PROCEDURAL_SOURCE;
+        add(&mut cat, "Star \"G\" { RA 6 0 0 Dec 2 0 0 Dist 9 Class \"G2V\" }\n", "procedural");
+        check(&mut list, &cat, warp);
+        add(&mut cat, "Star \"G A\" { ParentBody \"G\" Class \"DA\" Orbit { SemiMajorAxis 10 } }\nStar \"G B\" { ParentBody \"G\" Class \"X\" MassSol 5 Orbit { SemiMajorAxis 12 } }\n", gen_src);
+        check(&mut list, &cat, warp);
+        assert!(list.list.iter().any(|b| cat.stars[b.star as usize].names[0] == "G B"));
+        Arc::get_mut(&mut cat).unwrap().unload_generated("G");
+        add(&mut cat, "Star \"N3\" { RA 7 0 0 Dec 1 0 0 Dist 8 Class \"DA\" }\n", "test.sc");
+        check(&mut list, &cat, warp);
+        // Stars added without a resolve (as a promoted star is), placed by the next one.
+        let rec = |name: &str| {
+            let mut r = cat.stars[cat.stars.len() - 1].clone();
+            r.names = vec![name.to_string()];
+            r
+        };
+        let mut unplaced = rec("U1");
+        unplaced.has_position = false;
+        unplaced.parent = Some("N3".into());
+        let placed = rec("U2");
+        let c = Arc::get_mut(&mut cat).unwrap();
+        c.add_star_record(unplaced);
+        c.add_star_record(placed);
+        check(&mut list, &cat, warp);
+        add(&mut cat, "Star \"N4\" { RA 8 0 0 Dec 1 0 0 Dist 8 Class \"X\" }\n", "test.sc");
+        check(&mut list, &cat, warp);
+        assert!(list.list.iter().any(|b| cat.stars[b.star as usize].names[0] == "U1"));
+        // A listed star edited in place, then a new warp radius.
+        let c = Arc::get_mut(&mut cat).unwrap();
+        let i = list.list[2].star as usize;
+        c.stars[i].mass_kg *= 3.0;
+        c.note_edit();
+        add(&mut cat, "Star \"N5\" { RA 9 0 0 Dec 1 0 0 Dist 8 Class \"Q\" }\n", "test.sc");
+        check(&mut list, &cat, warp);
+        warp = 50.0;
+        add(&mut cat, "Star \"N6\" { RA 10 0 0 Dec 1 0 0 Dist 8 Class \"Q\" }\n", "test.sc");
+        check(&mut list, &cat, warp);
+    }
 
     #[test]
     fn environment_map_follows_black_hole_quality() {

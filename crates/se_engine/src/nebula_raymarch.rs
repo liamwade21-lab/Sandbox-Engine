@@ -30,7 +30,7 @@ use se_core::star_octree::sphere_meets_cone;
 
 use crate::camera::FlyCamera;
 use crate::data::SeData;
-use crate::galaxies::{GalaxyFarMaterial, angular_px, nebula_model_bias, se_bright_term, se_glow_bright};
+use crate::galaxies::{angular_px, nebula_model_bias, se_bright_term, se_glow_bright};
 use crate::nebulae::{NebulaSettings, NebulaState, ResidentNebulae, fade_in, update_nebulae};
 
 /// Volumes drawn at once (the largest in view), since procedural nebulae fill the view inside a galaxy.
@@ -220,10 +220,29 @@ fn draw_fade(px: f64, bright: f32) -> f32 {
 }
 
 #[derive(Resource, Default)]
-struct Volumes {
+pub(crate) struct Volumes {
     mesh: Handle<Mesh>,
     noise: Handle<Image>,
     slots: Vec<(Entity, Handle<RaymarchMaterial>)>,
+    /// [`ModelConsts`] of every model of the set they were made from.
+    consts: Option<(Arc<CustomModelSet>, Vec<ModelConsts>)>,
+}
+
+/// What `update_volumes` reads of a model every frame, computed once per model set: each is a pure
+/// function of the model's script (a key lookup each).
+struct ModelConsts {
+    bound: f64,
+    ints: UVec4,
+    f: [Vec4; FLOAT_SLOTS],
+    randomize: Vec3,
+}
+
+impl ModelConsts {
+    fn of(m: &CustomModel) -> Self {
+        let (ints, f) = pack(m);
+        let r = m.v3("Randomize");
+        Self { bound: m.bound_radius(), ints, f, randomize: Vec3::new(r[0] as f32, r[1] as f32, r[2] as f32) }
+    }
 }
 
 pub struct NebulaRaymarchPlugin;
@@ -238,23 +257,27 @@ impl Plugin for NebulaRaymarchPlugin {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_volumes(
+pub(crate) fn update_volumes(
     mut commands: Commands,
     cam: Res<FlyCamera>,
     data: Res<SeData>,
     assign: Res<RaymarchAssign>,
     settings: Res<NebulaSettings>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    st: Option<Res<NebulaState>>,
+    st: Option<ResMut<NebulaState>>,
     mut resident: ResMut<ResidentNebulae>,
     mut vols: ResMut<Volumes>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut mats: ResMut<Assets<RaymarchMaterial>>,
-    mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
 ) {
-    let Some(st) = st else { return };
+    let Some(mut st) = st else { return };
+    let vols = &mut *vols;
+    if vols.consts.as_ref().is_none_or(|(set, _)| !Arc::ptr_eq(set, &assign.set)) {
+        vols.consts = Some((assign.set.clone(), assign.set.models.iter().map(ModelConsts::of).collect()));
+    }
+    let consts = &vols.consts.as_ref().expect("set above").1;
     let cat = &data.catalog;
     let cam_pc = cam.pos.to_parsecs();
     let height = windows.iter().next().map(|w| w.resolution.physical_height()).unwrap_or(900) as f64;
@@ -269,7 +292,7 @@ fn update_volumes(
     if settings.enabled {
         for (n, m) in assign.model_of.iter().enumerate() {
             let (Some(m), Some(rec)) = (m, cat.nebulae.get(n)) else { continue };
-            let bound = rec.radius_pc * assign.set.models[*m].bound_radius().max(1.0) * 1.1;
+            let bound = rec.radius_pc * consts[*m].bound.max(1.0) * 1.1;
             if !sphere_meets_cone(cam_pc, view, rec.pos_pc, bound) {
                 continue;
             }
@@ -329,7 +352,8 @@ fn update_volumes(
         vols.slots.push((e, mat));
     }
 
-    let mut far = far_mats.get_mut(&st.far_handle());
+    // This frame's far-sprite uniforms (`update_nebulae`), which `nebulae::write_far` then puts in place.
+    let mut far = st.far_u.as_mut();
     // SE's colour brightness (FUN_1404877f0, drawn straight to the frame): model Bright x 10 x
     // DAT_14080b5a4 (GlowBrightMin x coef(GlowMagnLimit)) x the draw factor x hdrNebulaRaymarchBright; the
     // alpha brightness is the draw factor.
@@ -343,8 +367,8 @@ fn update_volumes(
         };
         let rec = &cat.nebulae[n];
         let model = &assign.set.models[m];
+        let c = &consts[m];
         let inv = Mat3::from_quat(rec.orientation.inverse().as_quat());
-        let (ints, f) = pack(model);
         let shape = match model.shape {
             BaseShape::Box => 0.0,
             BaseShape::Sphere => 1.0,
@@ -352,19 +376,24 @@ fn update_volumes(
         };
         let v3 = |a: [f64; 3]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32);
         if let Some(mut mm) = mats.get_mut(mat) {
-            mm.u = RaymarchParams {
+            let u = RaymarchParams {
                 center_rel: (rec.pos_pc - cam_pc).as_vec3().extend(rec.radius_pc as f32),
                 rot0: inv.x_axis.extend(0.0),
                 rot1: inv.y_axis.extend(0.0),
                 rot2: inv.z_axis.extend(0.0),
                 shape: Vec4::new(shape, model.dims[0] as f32, model.dims[1] as f32, model.dims[2] as f32),
-                scale: v3(model.scale).extend(model.bound_radius() as f32),
-                rnd: (Vec3::from(rec.randomize) + v3(model.v3("Randomize"))).extend(0.0),
+                scale: v3(model.scale).extend(c.bound as f32),
+                rnd: (Vec3::from(rec.randomize) + c.randomize).extend(0.0),
                 img: Vec4::new(model.bright as f32 * glow * fade, fade, 0.0, 0.0),
-                ints,
-                f,
+                ints: c.ints,
+                f: c.f,
             };
-            mm.depth_bias = nebula_model_bias((rec.pos_pc - cam_pc).length());
+            let bias = nebula_model_bias((rec.pos_pc - cam_pc).length());
+            // Written only when it changes: a changed material is prepared again.
+            if !crate::stars::same_bytes(&mm.u, &u) || mm.depth_bias.to_bits() != bias.to_bits() {
+                mm.u = u;
+                mm.depth_bias = bias;
+            }
         }
         if let Ok(mut v) = vis.get_mut(*e) {
             *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
@@ -374,7 +403,7 @@ fn update_volumes(
         resident.0.push((n, fade));
         if rec.source != "procedural"
             && let Some(far) = far.as_mut()
-            && let Some(slot) = far.uniforms.resident.iter_mut().find(|s| s.x < 0.0)
+            && let Some(slot) = far.resident.iter_mut().find(|s| s.x < 0.0)
         {
             *slot = Vec4::new(n as f32, fade, 0.0, 0.0);
         }
@@ -403,6 +432,25 @@ mod tests {
         assert_eq!(f[8].xyz(), Vec3::new(1.0, 0.5, 0.0));
         assert_eq!(f[32].w, 2.0);
         assert_eq!(f[1].w, 10.0);
+    }
+
+    #[test]
+    fn model_consts_match_the_model() {
+        let set = CustomModelSet::new(vec![(
+            "a.cfg".into(),
+            "CustomModel \"x\" { UseForType \"Nebula/SNR\" BaseShape \"sphere\" BaseShapeDims (10 12 14) Internal_scale 10 \
+             Raymarch_step_count 86 NebulaFormSph true Randomize (0.25 -3 7.5) Scale (1 2 3) }"
+                .into(),
+        )]);
+        let m = &set.models[0];
+        let c = ModelConsts::of(m);
+        assert_eq!(c.bound.to_bits(), m.bound_radius().to_bits());
+        let (ints, f) = pack(m);
+        assert_eq!(c.ints, ints);
+        assert_eq!(c.f.map(|v| v.to_array().map(f32::to_bits)), f.map(|v| v.to_array().map(f32::to_bits)));
+        let r = m.v3("Randomize");
+        assert_eq!(c.randomize, Vec3::new(r[0] as f32, r[1] as f32, r[2] as f32));
+        assert_eq!(c.randomize, Vec3::new(0.25, -3.0, 7.5));
     }
 
     #[test]

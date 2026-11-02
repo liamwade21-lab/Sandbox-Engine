@@ -2066,10 +2066,21 @@ pub fn star_light(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Catal
 
 /// The stars (not barycentres) of the system under `root`, the root included.
 pub fn system_stars(cat: &crate::catalog::Catalog, root: u32) -> Vec<u32> {
+    system_stars_in(cat, &system_walk(cat, root))
+}
+
+/// The members of the system under `root` with the root pushed last (not deduplicated): the walk
+/// [`system_stars`] and [`display::catalog_view`] filter, worth keeping while the catalog stands.
+pub fn system_walk(cat: &crate::catalog::Catalog, root: u32) -> Vec<crate::catalog::ObjectRef> {
+    let mut members = cat.system_members(&cat.stars[root as usize].names[0]);
+    members.push(crate::catalog::ObjectRef::Star(root));
+    members
+}
+
+/// [`system_stars`] from a [`system_walk`].
+pub fn system_stars_in(cat: &crate::catalog::Catalog, walk: &[crate::catalog::ObjectRef]) -> Vec<u32> {
     use crate::catalog::ObjectRef;
-    let mut stars = cat.system_members(&cat.stars[root as usize].names[0]);
-    stars.push(ObjectRef::Star(root));
-    stars.into_iter().filter_map(|s| match s {
+    walk.iter().filter_map(|&s| match s {
         ObjectRef::Star(i) if !cat.stars[i as usize].barycenter => Some(i),
         _ => None,
     }).collect()

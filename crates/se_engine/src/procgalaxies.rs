@@ -29,7 +29,7 @@ use se_core::proc_galsys::DeepSkyConfig;
 use crate::camera::FlyCamera;
 use crate::data::SeData;
 use crate::galaxies::{
-    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GALAXY_FAR_BIAS, GalaxyFarMaterial, GalaxySettings, GalaxyState, RESIDENT_SLOTS, angular_px, far_uniforms,
+    ATTR_FAR_CORNER, ATTR_FAR_DATA, ATTR_FAR_SHAPE, GALAXY_FAR_BIAS, GalaxyFarMaterial, GalaxySettings, GalaxyState, RESIDENT_SLOTS, angular_px, far_uniforms, set_far_uniforms,
     pad_aabb, profile_type, type_color,
 };
 use crate::universe::UniverseSet;
@@ -102,6 +102,22 @@ pub struct ProcGalaxyField {
     drawn_sprites: usize,
     last_cam: DVec3,
     wanted: Vec<GalNodeKey>,
+    /// Bumped whenever a node is added, becomes ready or is dropped.
+    node_gen: u64,
+    /// The inputs of the last `promote_near` run, when it found nothing to promote.
+    idle_promote: Option<PromoteKey>,
+}
+
+/// What `promote_near` depends on besides the promoted set, which only grows (so a run that found
+/// nothing finds nothing again with the same key): bit patterns of the camera, the focal length, the
+/// size threshold and the view cone, and the node generation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PromoteKey {
+    cam: [u64; 3],
+    focal: u64,
+    px_min: u64,
+    cone: Option<([u64; 3], u64)>,
+    node_gen: u64,
 }
 
 impl ProcGalaxyField {
@@ -175,7 +191,7 @@ fn setup_field(
             settings.nebulae = settings.cfg.show_nebulae;
         }
     }
-    let material = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &GalaxySettings::default()), depth_bias: GALAXY_FAR_BIAS });
+    let material = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &GalaxySettings::default()), GALAXY_FAR_BIAS));
     commands.insert_resource(ProcGalaxyField {
         nodes: HashMap::new(),
         material,
@@ -188,6 +204,8 @@ fn setup_field(
         drawn_sprites: 0,
         last_cam: DVec3::splat(f64::MAX),
         wanted: Vec::new(),
+        node_gen: 0,
+        idle_promote: None,
     });
 }
 
@@ -304,6 +322,7 @@ fn stream_nodes(
         let pools = gs.model_pools();
         let task = AsyncComputeTaskPool::get().spawn(async move { build_node(key, pools) });
         field.nodes.insert(key, NodeSlot { state: NodeState::Loading(task), last_used: frame_no });
+        field.node_gen += 1;
         in_flight += 1;
     }
 
@@ -327,7 +346,7 @@ fn stream_nodes(
                 let entity = built.mesh.map(|m| {
                     let own = far_mats.get(&material).map(|s| s.uniforms).map(|mut u| {
                         u.cam_pos.w = 1.0;
-                        far_mats.add(GalaxyFarMaterial { uniforms: u, depth_bias: GALAXY_FAR_BIAS })
+                        far_mats.add(GalaxyFarMaterial::new(u, GALAXY_FAR_BIAS))
                     });
                     let node_material = own.clone().unwrap_or_else(|| material.clone());
                     fade = own.map(|h| (0.0, h));
@@ -344,6 +363,7 @@ fn stream_nodes(
                 });
                 let max_radius = built.galaxies.iter().map(|g| g.display_radius_pc()).fold(0.0, f64::max);
                 slot.state = NodeState::Ready { entity, galaxies: built.galaxies, max_radius, drawn: built.drawn, fade };
+                field.node_gen += 1;
             }
         }
         if let NodeState::Ready { galaxies, drawn, .. } = &slot.state {
@@ -371,6 +391,7 @@ fn stream_nodes(
         field.nodes.iter().filter(|(_, s)| matches!(s.state, NodeState::Ready { .. }) && s.last_used < frame_no && frame_no - s.last_used <= KEEP_FRAMES).map(|(k, s)| (*k, s.last_used)),
     );
     for k in stale.into_iter().chain(over) {
+        field.node_gen += 1;
         if let Some(NodeSlot { state: NodeState::Ready { entity: Some(e), .. }, .. }) = field.nodes.remove(&k) {
             commands.entity(e).despawn();
         }
@@ -391,7 +412,11 @@ fn stream_nodes(
 fn position_nodes(cam: Res<FlyCamera>, mut q: Query<(&ProcGalaxyNode, &mut Transform)>) {
     let cam_pc = cam.pos.to_parsecs();
     for (node, mut tf) in &mut q {
-        tf.translation = (node.center_pc - cam_pc).as_vec3();
+        // Only when it moves (bit for bit): a changed transform re-extracts the node's mesh.
+        let t = (node.center_pc - cam_pc).as_vec3();
+        if tf.translation.to_array().map(f32::to_bits) != t.to_array().map(f32::to_bits) {
+            tf.translation = t;
+        }
     }
 }
 
@@ -431,6 +456,16 @@ fn promote_near(
     let px_min = gal_settings.build_px as f64 * 0.7;
     // Zoomed in, galaxies all around grow past the threshold: only those in view are promoted.
     let cone = star_settings.view_cone(&cam, crate::stars::window_aspect(&windows));
+    let key = PromoteKey {
+        cam: cam_pc.to_array().map(f64::to_bits),
+        focal: focal.to_bits(),
+        px_min: px_min.to_bits(),
+        cone: cone.map(|(a, h)| (a.to_array().map(f64::to_bits), h.to_bits())),
+        node_gen: field.node_gen,
+    };
+    if field.idle_promote == Some(key) {
+        return;
+    }
     let in_view = |p: DVec3, r: f64| cone.is_none_or(|k| se_core::star_octree::sphere_meets_cone(cam_pc, k, p, r));
     let mut found: Vec<ProcGalaxy> = Vec::new();
     for (key, slot) in &field.nodes {
@@ -454,6 +489,7 @@ fn promote_near(
     }
     found.sort_by(|a, b| (a.pos_pc - cam_pc).length().total_cmp(&(b.pos_pc - cam_pc).length()));
     found.truncate(4);
+    field.idle_promote = found.is_empty().then_some(key);
     if found.is_empty() {
         return;
     }
@@ -555,15 +591,13 @@ fn sync_material(
             }
         }
     }
-    if let Some(mut m) = far_mats.get_mut(&field.material) {
-        m.uniforms = u;
-    }
+    // Only changes are written: the shared material is drawn by every streamed node.
+    set_far_uniforms(&mut far_mats, &field.material, &u);
     for slot in field.nodes.values() {
         if let NodeState::Ready { fade: Some((f, own)), .. } = &slot.state {
-            if let Some(mut m) = far_mats.get_mut(own) {
-                m.uniforms = u;
-                m.uniforms.cam_pos.w = 1.0 - f;
-            }
+            let mut own_u = u;
+            own_u.cam_pos.w = 1.0 - f;
+            set_far_uniforms(&mut far_mats, own, &own_u);
         }
     }
 }

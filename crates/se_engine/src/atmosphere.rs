@@ -126,7 +126,7 @@ impl AtmosphereCache {
     pub fn get_or_load(&mut self, vfs: &Vfs, model: &str, images: &mut Assets<Image>) -> AtmLoad {
         let name = model.to_ascii_lowercase();
         // A model being generated in the background is not there yet: no warning, no negative entry.
-        if !self.models.contains_key(&name) && self.preload.is_some() && vfs.read(&format!("models/atmospheres/{model}.atm")).is_err() {
+        if !self.models.contains_key(&name) && self.preload.is_some() && !vfs.is_readable(&format!("models/atmospheres/{model}.atm")) {
             return AtmLoad::Pending;
         }
         if !self.models.contains_key(&name) {

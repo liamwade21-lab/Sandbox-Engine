@@ -551,30 +551,42 @@ fn year_orbit(cat: &crate::catalog::Catalog, i: usize) -> Option<(crate::catalog
 /// latitude under each star (from the port's spin axis). The main star is the first star up the
 /// parent chain; black holes are left out.
 pub fn catalog_view(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Catalog, i: usize, jd: f64) -> Vec<StarView> {
+    let Some(root) = cat.system_root(crate::catalog::ObjectRef::Body(i as u32)) else { return Vec::new() };
+    catalog_view_from(eph, cat, i, jd, &view_stars(cat, super::system_walk(cat, root)))
+}
+
+/// The stars [`catalog_view`] shows from the system's [`super::system_walk`], in its order: the
+/// walk deduplicated, then barycentres, black holes and planemos left out.
+pub fn view_stars(cat: &crate::catalog::Catalog, mut walk: Vec<crate::catalog::ObjectRef>) -> Vec<u32> {
     use crate::catalog::ObjectRef;
-    let obj = ObjectRef::Body(i as u32);
-    let Some(root) = cat.system_root(obj) else { return Vec::new() };
-    let main = year_orbit(cat, i).map(|(_, s)| s);
-    let pos = eph.position(obj, jd);
-    let pole = eph.orientation(obj, jd) * glam::DVec3::Y;
-    let mut stars = cat.system_members(&cat.stars[root as usize].names[0]);
-    stars.push(ObjectRef::Star(root));
-    stars.dedup();
-    stars
-        .into_iter()
+    walk.dedup();
+    walk.into_iter()
         .filter_map(|s| {
             let ObjectRef::Star(k) = s else { return None };
             let st = &cat.stars[k as usize];
-            if st.barycenter || matches!(st.class.kind, crate::star::StarKind::BlackHole | crate::star::StarKind::Planemo) {
-                return None;
-            }
-            let d = eph.position(s, jd).delta_m(pos);
-            Some(StarView {
+            (!st.barycenter && !matches!(st.class.kind, crate::star::StarKind::BlackHole | crate::star::StarKind::Planemo)).then_some(k)
+        })
+        .collect()
+}
+
+/// [`catalog_view`] over the system's [`view_stars`], for a caller that keeps them.
+pub fn catalog_view_from(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Catalog, i: usize, jd: f64, stars: &[u32]) -> Vec<StarView> {
+    use crate::catalog::ObjectRef;
+    let obj = ObjectRef::Body(i as u32);
+    let main = year_orbit(cat, i).map(|(_, s)| s);
+    let pos = eph.position(obj, jd);
+    let pole = eph.orientation(obj, jd) * glam::DVec3::Y;
+    stars
+        .iter()
+        .map(|&k| {
+            let st = &cat.stars[k as usize];
+            let d = eph.position(ObjectRef::Star(k), jd).delta_m(pos);
+            StarView {
                 lum: st.lum_bol() as f32,
                 dist_pc: (d.length() / crate::units::METERS_PER_PC) as f32,
                 decl: pole.dot(d.normalize_or_zero()).clamp(-1.0, 1.0).asin() as f32,
                 main: main == Some(k),
-            })
+            }
         })
         .collect()
 }
@@ -622,6 +634,18 @@ pub fn polar_day_percent(lat: f32, tilt: f32) -> f32 {
 /// for a body without a rotation, without a star to orbit, or turning once per orbit
 /// (FUN_140515cf0). The year is the orbit around the star of the body or of the planet it circles.
 pub fn day_lines(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Catalog, i: usize, jd: f64, lat: f64) -> Option<DayLines> {
+    day_lines_from(eph, cat, i, jd, lat, &catalog_view(eph, cat, i, jd))
+}
+
+/// [`day_lines`] with the body's [`catalog_view`] at `jd` given, for a caller that has it.
+pub fn day_lines_from(
+    eph: &crate::ephemeris::Ephemeris,
+    cat: &crate::catalog::Catalog,
+    i: usize,
+    jd: f64,
+    lat: f64,
+    view: &[StarView],
+) -> Option<DayLines> {
     use crate::catalog::ObjectRef;
     let b = &cat.bodies[i];
     // Without a rotation of its own a moon turns once per orbit (SE locks catalog moons).
@@ -653,7 +677,7 @@ pub fn day_lines(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::Catalo
     };
     let denom = if (cos_tilt >= 0.0) != backwards { p_orb - p_rot } else { p_orb + p_rot };
     let solar_day = ((p_rot * p_orb / denom).abs() / 1e-6 + 0.5).floor() * 1e-6;
-    let decl = catalog_view(eph, cat, i, jd).iter().find(|s| s.main).map_or(0.0, |s| s.decl);
+    let decl = view.iter().find(|s| s.main).map_or(0.0, |s| s.decl);
     Some(DayLines {
         solar_day,
         daylight_equator: daylight_share(0.0, decl),

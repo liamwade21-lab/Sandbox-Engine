@@ -325,7 +325,7 @@ fn setup_clusters(
 ) {
     let mut u = uniforms_for(Vec3::ZERO, &settings);
     u.anchor = Vec4::new(0.0, 0.0, 0.0, 2.0);
-    let material = materials.add(StarMaterial { uniforms: u });
+    let material = materials.add(StarMaterial { uniforms: u, camera: crate::stars::SPRITE_CAMERA });
     let main_def = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).map(|t| se_core::sc::parse(&t)).ok();
     let key = |k: &str| main_def.as_ref().and_then(|d| d.find_deep(k));
     let density = key("StarDensityInCluster").and_then(|i| i.f64()).unwrap_or(1.0).max(0.0);
@@ -519,7 +519,11 @@ fn update_clusters(
 fn position_clusters(cam: Res<FlyCamera>, mut q: Query<(&ClusterNode, &mut Transform)>) {
     let cam_pc = cam.pos.to_parsecs();
     for (node, mut tf) in &mut q {
-        tf.translation = (node.centre_pc - cam_pc).as_vec3();
+        // Only when it moves (bit for bit): a changed transform re-extracts the node's mesh.
+        let t = (node.centre_pc - cam_pc).as_vec3();
+        if tf.translation.to_array().map(f32::to_bits) != t.to_array().map(f32::to_bits) {
+            tf.translation = t;
+        }
     }
 }
 

@@ -394,6 +394,12 @@ fn spawn_camera(mut commands: Commands) {
             ..default()
         }),
         Transform::IDENTITY,
+        // The port has no Bevy lights: no light clusters to build for this view (main.rs turns
+        // GPU clustering off).
+        bevy::light::cluster::ClusterConfig::None,
+        // Every ground patch has its own material, so indirect multi-draw batches nothing but
+        // costs ~3-4 ms of per-patch bookkeeping a frame. CPU frustum culling still runs.
+        bevy::render::view::NoIndirectDrawing,
         MainCamera,
     ));
 }
@@ -1608,6 +1614,12 @@ fn run_commands(
             // Spacecraft commands are handled by ship.rs.
             ship_cmds.write(crate::ship::ShipCommand { verb: verb.clone(), arg: arg.clone() });
         }
+        // `perf NAME` / `perf end`: frame-time segments for SE_PERF (perf.rs).
+        "perf" => commands.queue(move |w: &mut World| {
+            if let Some(mut p) = w.get_resource_mut::<crate::perf::PerfLog>() {
+                p.mark(&arg);
+            }
+        }),
         other => warn!("unknown command: {other}"),
     }
 }

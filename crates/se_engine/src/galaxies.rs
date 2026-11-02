@@ -33,6 +33,7 @@ use bevy::render::render_resource::{
     AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
     TextureDimension, TextureFormat, VertexFormat,
 };
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use bevy::window::PrimaryWindow;
@@ -78,10 +79,6 @@ pub struct FarParams {
     pub params2: Vec4,
     pub norm: Vec4,
     pub resident: [Vec4; RESIDENT_SLOTS],
-    /// Motion blur, as in `StarParams` (filled in by `stars::update_sprite_blur`).
-    pub blur: Vec4,
-    pub blur_delta: Vec4,
-    pub prev_view: Mat4,
 }
 
 /// Draw order of the galaxy far sprites and models (see `GalaxyModelMaterial::depth_bias`).
@@ -104,8 +101,27 @@ pub(crate) fn nebula_model_bias(d_pc: f64) -> f32 {
 pub struct GalaxyFarMaterial {
     #[uniform(0)]
     pub uniforms: FarParams,
+    /// `stars::SPRITE_CAMERA`: the motion blur (`stars::update_sprite_blur`), shared with the star fields.
+    #[storage(1, read_only)]
+    pub camera: Handle<ShaderBuffer>,
     /// `GALAXY_FAR_BIAS`, or `NEBULA_FAR_BIAS` for nebulae.
     pub depth_bias: f32,
+}
+
+impl GalaxyFarMaterial {
+    pub(crate) fn new(uniforms: FarParams, depth_bias: f32) -> Self {
+        Self { uniforms, camera: crate::stars::SPRITE_CAMERA, depth_bias }
+    }
+}
+
+/// Writes `u` into a far material only when its bytes change: a changed material re-prepares every
+/// entity drawn with it (the streamed procedural nodes share one).
+pub(crate) fn set_far_uniforms(far_mats: &mut Assets<GalaxyFarMaterial>, mat: &Handle<GalaxyFarMaterial>, u: &FarParams) {
+    if let Some(mut m) = far_mats.get_mut(mat)
+        && !crate::stars::same_bytes(&m.uniforms, u)
+    {
+        m.uniforms = *u;
+    }
 }
 
 impl Material for GalaxyFarMaterial {
@@ -440,13 +456,17 @@ pub(crate) fn pad_aabb(positions: &mut Vec<[f32; 3]>) -> f32 {
 impl SpriteBuffers {
     pub(crate) fn push(&mut self, pos: [f32; 3], data: [f32; 4], info: [f32; 4]) {
         let base = self.positions.len() as u32;
+        self.push_corners(pos, data, info);
+        self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+
+    fn push_corners(&mut self, pos: [f32; 3], data: [f32; 4], info: [f32; 4]) {
         for c in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
             self.positions.push(pos);
             self.data.push(data);
             self.info.push(info);
             self.corners.push(c);
         }
-        self.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// Each sprite's centre (one per quad).
@@ -454,7 +474,14 @@ impl SpriteBuffers {
         self.positions.iter().step_by(4).copied().collect()
     }
 
-    /// The mesh keeps its main-world copy: `SpriteOrder` swaps its index buffer.
+    /// Each sprite's data and info (one per quad), for buffers filled by `push`.
+    pub(crate) fn looks(&self) -> SpriteLooks {
+        debug_assert!(self.data.len() == self.positions.len() && self.info.len() == self.positions.len());
+        SpriteLooks { data: self.data.iter().step_by(4).copied().collect(), info: self.info.iter().step_by(4).copied().collect() }
+    }
+
+    /// The mesh keeps its main-world copy (`SpriteOrder::new` swaps its index buffer); galaxy models
+    /// then make it render-world only (`SpriteOrder::render_world` rebuilds it).
     pub(crate) fn into_mesh(mut self) -> Mesh {
         pad_aabb(&mut self.positions);
         self.data.extend([[0.0; 4]; 2]);
@@ -469,9 +496,40 @@ impl SpriteBuffers {
     }
 }
 
+/// Per sprite of a model, what `SpriteBuffers::push` was given besides its centre: enough to
+/// rebuild the mesh, so the mesh itself lives only in the render world (232 bytes a sprite
+/// there, 44 here with the centre).
+pub(crate) struct SpriteLooks {
+    data: Vec<[f32; 4]>,
+    info: Vec<[f32; 4]>,
+}
+
+impl SpriteLooks {
+    /// The mesh `into_mesh` made of these sprites, drawn in the order of `indices`.
+    fn mesh(&self, centres: &[[f32; 3]], indices: Vec<u32>) -> Mesh {
+        let n = centres.len() * 4 + 2;
+        let mut buf = SpriteBuffers {
+            positions: Vec::with_capacity(n),
+            data: Vec::with_capacity(n),
+            info: Vec::with_capacity(n),
+            corners: Vec::with_capacity(n),
+            indices,
+        };
+        for ((&pos, &data), &info) in centres.iter().zip(&self.data).zip(&self.info) {
+            buf.push_corners(pos, data, info);
+        }
+        let mut mesh = buf.into_mesh();
+        mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
+        mesh
+    }
+}
+
 struct BuiltModel {
-    /// Emission, dust and bulge sprites in generation order (SE's VBO order before sorting).
-    buf: SpriteBuffers,
+    /// Emission, dust and bulge sprites in generation order (SE's VBO order before sorting), for
+    /// the render world only.
+    mesh: Mesh,
+    centres: Vec<[f32; 3]>,
+    looks: SpriteLooks,
     map: Option<DensityMap>,
     sprites: usize,
     plane: Option<FrontPlane>,
@@ -557,9 +615,14 @@ fn build_model(inp: BuildInput) -> Option<BuiltModel> {
         buf.push(pos, d, info);
     }
     let plane = tex.front_texture.as_deref().and_then(|name| front_plane(&vfs, name));
+    let (centres, looks) = (buf.centres(), buf.looks());
+    let mut mesh = buf.into_mesh();
+    mesh.asset_usage = RenderAssetUsages::RENDER_WORLD;
     Some(BuiltModel {
         sprites: data.sprites.len(),
-        buf,
+        mesh,
+        centres,
+        looks,
         map: data.emission_map,
         plane,
     })
@@ -598,26 +661,48 @@ pub(crate) const SORT_PX: f64 = 10.0;
 
 /// The draw order of one resident sprite model. SE rebuilds it per view; the port re-sorts on the async
 /// pool when the camera has moved by more than 2% of its distance to the model centre, and swaps the
-/// index buffer in when the job is done (one upload per re-sort, none per frame).
+/// index buffer in when the job is done (one upload per re-sort, none per frame). A mesh kept only in
+/// the render world is rebuilt whole by the job from the sprites instead.
 pub(crate) struct SpriteOrder {
     centres: Arc<Vec<[f32; 3]>>,
+    /// The sprites of a render-world mesh.
+    looks: Option<Arc<SpriteLooks>>,
     mesh: Handle<Mesh>,
     sorted_eye: Option<Vec3>,
-    task: Option<(Vec3, Task<Vec<u32>>)>,
+    task: Option<(Vec3, Task<Sorted>)>,
+}
+
+enum Sorted {
+    Indices(Vec<u32>),
+    Mesh(Mesh),
 }
 
 impl SpriteOrder {
+    /// For a mesh with its main-world copy (`SpriteBuffers::into_mesh`).
     pub(crate) fn new(centres: Vec<[f32; 3]>, mesh: Handle<Mesh>) -> Self {
-        Self { centres: Arc::new(centres), mesh, sorted_eye: None, task: None }
+        Self { centres: Arc::new(centres), looks: None, mesh, sorted_eye: None, task: None }
+    }
+
+    /// For the render-world mesh `into_mesh` made of these sprites.
+    pub(crate) fn render_world(centres: Vec<[f32; 3]>, looks: SpriteLooks, mesh: Handle<Mesh>) -> Self {
+        Self { looks: Some(Arc::new(looks)), ..Self::new(centres, mesh) }
     }
 
     /// `eye`: the camera relative to the model centre (pc, universe frame); `sort`: the model is drawn
     /// large enough for SE to sort it.
     pub(crate) fn update(&mut self, eye: Vec3, sort: bool, meshes: &mut Assets<Mesh>) {
         if let Some((at, task)) = self.task.as_mut() {
-            if let Some(idx) = check_ready(task) {
-                if let Some(mut m) = meshes.get_mut(&self.mesh) {
-                    m.insert_indices(Indices::U32(idx));
+            if let Some(sorted) = check_ready(task) {
+                match sorted {
+                    Sorted::Indices(idx) => {
+                        if let Some(mut m) = meshes.get_mut(&self.mesh) {
+                            m.insert_indices(Indices::U32(idx));
+                        }
+                    }
+                    Sorted::Mesh(m) => {
+                        // Into the same handle: the entity keeps its mesh, now sorted.
+                        let _ = meshes.insert(&self.mesh, m);
+                    }
                 }
                 self.sorted_eye = Some(*at);
                 self.task = None;
@@ -628,8 +713,15 @@ impl SpriteOrder {
         if !sort || moved <= 0.02 * eye.length() {
             return;
         }
-        let (centres, e) = (self.centres.clone(), eye.to_array());
-        self.task = Some((eye, AsyncComputeTaskPool::get().spawn(async move { back_to_front(&centres, e) })));
+        let (centres, looks, e) = (self.centres.clone(), self.looks.clone(), eye.to_array());
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            let idx = back_to_front(&centres, e);
+            match looks {
+                Some(l) => Sorted::Mesh(l.mesh(&centres, idx)),
+                None => Sorted::Indices(idx),
+            }
+        });
+        self.task = Some((eye, task));
     }
 }
 
@@ -870,6 +962,33 @@ pub(crate) struct GalaxyState {
     pub(crate) proc_coverage: f32,
     /// The total sky coverage eased at `AutoGalaxyMagnSpeed` (SE renderer +0x35d0; 1e6 when off).
     pub(crate) coverage: f32,
+    /// This frame's far-sprite uniforms from `update_galaxies`; `ellipticals.rs` adds its resident
+    /// volumes, then `write_far` puts the result into the material.
+    pub(crate) far_u: Option<FarParams>,
+    /// `update_galaxies`' scans over the catalog, kept while their inputs stay the same.
+    scan: Option<CatalogScan>,
+}
+
+/// The results of `update_galaxies`' scans over every catalog galaxy for one [`ScanKey`]: the
+/// catalog's sky coverage and the galaxies that want a model, each filled in when first needed.
+struct CatalogScan {
+    key: ScanKey,
+    coverage: Option<f64>,
+    wanted: Option<Vec<(f64, usize)>>,
+}
+
+/// What `update_galaxies`' scan over every catalog galaxy depends on (bit patterns): the camera, the
+/// focal length, the catalog (pointer and length), the failed builds and the settings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ScanKey {
+    cam: [u64; 3],
+    focal: u64,
+    cat: usize,
+    len: usize,
+    failed: usize,
+    enabled: bool,
+    build_px: u32,
+    max_models: usize,
 }
 
 impl GalaxyState {
@@ -910,6 +1029,11 @@ impl GalaxyState {
     pub(crate) fn has_model(&self, g: usize) -> bool {
         self.model_of.get(g).is_some_and(Option::is_some)
     }
+
+    /// How many catalog galaxies have their model choice made (`has_model` is final for these).
+    pub(crate) fn model_count(&self) -> usize {
+        self.model_of.len()
+    }
 }
 
 pub struct GalaxiesPlugin;
@@ -924,7 +1048,8 @@ impl Plugin for GalaxiesPlugin {
         .insert_resource(GalaxySettings::from_env())
         .init_resource::<GalaxyDensity>()
         .add_systems(Startup, setup_galaxies)
-        .add_systems(PostUpdate, (sync_mag_limit, update_galaxies).chain().after(UniverseSet::FloatingOrigin));
+        .add_systems(PostUpdate, (sync_mag_limit, update_galaxies).chain().after(UniverseSet::FloatingOrigin))
+        .add_systems(PostUpdate, write_far.after(update_galaxies).after(crate::ellipticals::update_volumes));
     }
 }
 
@@ -1030,9 +1155,6 @@ pub(crate) fn far_uniforms(cam_pc: Vec3, s: &GalaxySettings) -> FarParams {
         params2: Vec4::new(s.cull, 1.0, 1.0, 0.0),
         norm: Vec4::new(profile_norm(0), profile_norm(1), profile_norm(2), profile_norm(3)),
         resident: [Vec4::new(-1.0, 0.0, 0.0, 0.0); RESIDENT_SLOTS],
-        blur: Vec4::ZERO,
-        blur_delta: Vec4::ZERO,
-        prev_view: Mat4::IDENTITY,
     }
 }
 
@@ -1161,7 +1283,7 @@ pub(crate) fn setup_galaxies(
         .with_inserted_attribute(ATTR_FAR_SHAPE, shape)
         .with_inserted_attribute(ATTR_FAR_CORNER, corner)
         .with_inserted_indices(Indices::U32(indices));
-    let far = far_mats.add(GalaxyFarMaterial { uniforms: far_uniforms(Vec3::ZERO, &settings), depth_bias: GALAXY_FAR_BIAS });
+    let far = far_mats.add(GalaxyFarMaterial::new(far_uniforms(Vec3::ZERO, &settings), GALAXY_FAR_BIAS));
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
         MeshMaterial3d(far.clone()),
@@ -1188,6 +1310,8 @@ pub(crate) fn setup_galaxies(
         resident: Vec::new(),
         proc_coverage: 0.0,
         coverage: COVERAGE_OFF,
+        far_u: None,
+        scan: None,
     };
     if let Some(g) = milky_way {
         let rec = &cat.galaxies[g];
@@ -1271,7 +1395,6 @@ pub(crate) fn update_galaxies(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut model_mats: ResMut<Assets<GalaxyModelMaterial>>,
-    mut far_mats: ResMut<Assets<GalaxyFarMaterial>>,
     mut vis: Query<&mut Visibility>,
     (mut plane_mats, mut images): (ResMut<Assets<GalaxyPlaneMaterial>>, ResMut<Assets<Image>>),
 ) {
@@ -1289,12 +1412,30 @@ pub(crate) fn update_galaxies(
     let focal = height * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
 
     // ---- which galaxies want a model ------------------------------------------------------
+    // The two scans over every catalog galaxy give the same results while their inputs stay the same
+    // (a still camera): catalog galaxies are only appended at runtime and `failed` only grows.
+    let key = ScanKey {
+        cam: cam_pc.to_array().map(f64::to_bits),
+        focal: focal.to_bits(),
+        cat: Arc::as_ptr(&data.catalog) as usize,
+        len: cat.galaxies.len(),
+        failed: st.failed.len(),
+        enabled: settings.enabled,
+        build_px: settings.build_px.to_bits(),
+        max_models: settings.max_models,
+    };
+    if st.scan.as_ref().is_none_or(|s| s.key != key) {
+        st.scan = Some(CatalogScan { key, coverage: None, wanted: None });
+    }
+    let scan = st.scan.as_mut().expect("set above");
     let mut wanted: Vec<(f64, usize)> = Vec::new();
     // Intergalactic vision: the sky covered by the catalog galaxies and the streamed procedural ones,
     // eased at AutoGalaxyMagnSpeed (FUN_1404c51a0: 1 - exp(-dt speed)).
     if settings.auto_gain {
-        let covered = st.proc_coverage as f64
-            + cat.galaxies.iter().map(|rec| sky_coverage(rec.radius_pc, (rec.pos_pc - cam_pc).length())).sum::<f64>();
+        let catalog = *scan.coverage.get_or_insert_with(|| {
+            cat.galaxies.iter().map(|rec| sky_coverage(rec.radius_pc, (rec.pos_pc - cam_pc).length())).sum::<f64>()
+        });
+        let covered = st.proc_coverage as f64 + catalog;
         let k = 1.0 - (-time.delta_secs() * settings.auto_speed).exp();
         st.coverage += (covered as f32 - st.coverage) * k.clamp(0.0, 1.0);
     } else {
@@ -1303,18 +1444,23 @@ pub(crate) fn update_galaxies(
     st.gain = intergalactic_gain(st.coverage, settings.mag_ref - MAG_REF_OFFSET);
     let gain = st.gain;
     if settings.enabled {
-        for (g, rec) in cat.galaxies.iter().enumerate() {
-            if st.model_of[g].is_none() {
-                continue;
+        if scan.wanted.is_none() {
+            for (g, rec) in cat.galaxies.iter().enumerate() {
+                if st.model_of[g].is_none() {
+                    continue;
+                }
+                let d = (rec.pos_pc - cam_pc).length();
+                let px = angular_px(rec.radius_pc, d, focal);
+                if px > settings.build_px as f64 && !st.failed.contains(&g) {
+                    wanted.push((px, g));
+                }
             }
-            let d = (rec.pos_pc - cam_pc).length();
-            let px = angular_px(rec.radius_pc, d, focal);
-            if px > settings.build_px as f64 && !st.failed.contains(&g) {
-                wanted.push((px, g));
-            }
+            wanted.sort_by(|a, b| b.0.total_cmp(&a.0));
+            wanted.truncate(settings.max_models.min(MAX_SLOTS));
+            scan.wanted = Some(wanted.clone());
+        } else {
+            wanted = scan.wanted.clone().unwrap_or_default();
         }
-        wanted.sort_by(|a, b| b.0.total_cmp(&a.0));
-        wanted.truncate(settings.max_models.min(MAX_SLOTS));
     }
     for &(_, g) in &wanted {
         if let Some(slot) = st.slots.iter_mut().find(|s| s.galaxy == g) {
@@ -1373,8 +1519,7 @@ pub(crate) fn update_galaxies(
             atlas: st.atlas.clone(),
             depth_bias: GALAXY_MODEL_BIAS,
         });
-        let centres = built.buf.centres();
-        let mesh = meshes.add(built.buf.into_mesh());
+        let mesh = meshes.add(built.mesh);
         let entity = commands
             .spawn((
                 Mesh3d(mesh.clone()),
@@ -1405,7 +1550,7 @@ pub(crate) fn update_galaxies(
         slot.state = SlotState::Ready(ReadyModel {
             entity,
             mat,
-            order: SpriteOrder::new(centres, mesh),
+            order: SpriteOrder::render_world(built.centres, built.looks, mesh),
             plane,
             sprites: built.sprites,
             map,
@@ -1469,7 +1614,10 @@ pub(crate) fn update_galaxies(
             let axis_x = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(unit_pc, 0.0, 0.0));
             let axis_y = rec.orientation * se_to_port(DEFAULT_MAP_MODE, DVec3::new(0.0, unit_pc, 0.0));
             let k_plane = glow * settings.front_tex_bright * bright;
-            if let Some(mut m) = plane_mats.get_mut(mat) {
+            // A hidden entity draws nothing: its material is written again on the frame it shows.
+            if fade > 0.001
+                && let Some(mut m) = plane_mats.get_mut(mat)
+            {
                 m.uniforms = PlaneParams {
                     center_rel,
                     axis_x: axis_x.as_vec3().extend(0.0),
@@ -1478,16 +1626,18 @@ pub(crate) fn update_galaxies(
                 };
             }
             if let Ok(mut v) = vis.get_mut(*e) {
-                *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+                v.set_if_neq(if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden });
             }
         }
-        if let Some(mut m) = model_mats.get_mut(&ready.mat) {
+        if fade > 0.001
+            && let Some(mut m) = model_mats.get_mut(&ready.mat)
+        {
             m.uniforms.center_rel = center_rel;
             // The dust colour is subtracted at the emission brightness (SE: Color.rgb *= emBright).
             m.uniforms.params = Vec4::new(k_emission, MODEL_MIN_PX, k_dust, 0.0);
         }
         if let Ok(mut v) = vis.get_mut(ready.entity) {
-            *v = if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden };
+            v.set_if_neq(if fade > 0.001 { Visibility::Visible } else { Visibility::Hidden });
         }
         ready.order.update(-center_rel.truncate(), fade > 0.001 && px > SORT_PX, &mut meshes);
         if n_res < RESIDENT_SLOTS && fade > 0.0 {
@@ -1499,8 +1649,14 @@ pub(crate) fn update_galaxies(
         }
         let _ = ready.sprites;
     }
-    if let Some(mut m) = far_mats.get_mut(&st.far) {
-        m.uniforms = far_u;
+    st.far_u = Some(far_u);
+}
+
+/// Puts this frame's far-sprite uniforms (`update_galaxies`, plus the elliptical volumes' residents)
+/// into the catalog far material, when they change.
+fn write_far(mut st: ResMut<GalaxyState>, mut far_mats: ResMut<Assets<GalaxyFarMaterial>>) {
+    if let Some(u) = st.far_u.take() {
+        set_far_uniforms(&mut far_mats, &st.far, &u);
     }
 }
 
@@ -1527,6 +1683,35 @@ mod tests {
     fn sprites_sort_far_to_near() {
         let c = [[0.0, 0.0, 1.0], [0.0, 0.0, 5.0], [0.0, 0.0, -3.0]];
         assert_eq!(back_to_front(&c, [0.0; 3]), vec![4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11, 0, 1, 2, 0, 2, 3]);
+    }
+
+    fn mesh_bytes(m: &Mesh) -> (PrimitiveTopology, Vec<(&'static str, Vec<u8>)>, Vec<u32>) {
+        let attrs = m.attributes().map(|(a, v)| (a.name, v.get_bytes().to_vec())).collect();
+        let Some(Indices::U32(idx)) = m.indices() else { panic!("u32 indices") };
+        (m.primitive_topology(), attrs, idx.clone())
+    }
+
+    #[test]
+    fn rebuilt_sorted_meshes_match_into_mesh() {
+        let mut s = 0x2545_f491u32;
+        let mut r = || {
+            s = s.wrapping_mul(0x19660d).wrapping_add(0x3c6ef35f);
+            (s >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0
+        };
+        for n in [0, 1, 7, 1000] {
+            let mut buf = SpriteBuffers::default();
+            for _ in 0..n {
+                buf.push([r() * 50.0, r() * 50.0, r() * 3.0], [r(), r(), r(), r()], [r(), r(), r(), r()]);
+            }
+            let (centres, looks) = (buf.centres(), buf.looks());
+            let eye = [r() * 80.0, r() * 80.0, 20.0];
+            let mut old = buf.into_mesh();
+            old.insert_indices(Indices::U32(back_to_front(&centres, eye)));
+            let new = looks.mesh(&centres, back_to_front(&centres, eye));
+            assert_eq!(new.asset_usage, RenderAssetUsages::RENDER_WORLD);
+            assert_eq!(old.attributes().count(), 4);
+            assert!(mesh_bytes(&old) == mesh_bytes(&new), "{n} sprites");
+        }
     }
 
     #[test]
