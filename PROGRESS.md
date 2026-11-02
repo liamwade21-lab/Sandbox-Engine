@@ -7,19 +7,18 @@
 - **V1:** `main` at 97094fd is the port's official V1, tagged `v1.0` (local only).
 - **Bug hunt (2026-11-01):** 55 bug fixes, committed as `24c82fb` on 2026-11-02. The full list,
   with what's left, is in `.bugfinder/REPORT.md`.
-- **Optimization (/optimize, 2026-11-02), not committed:** 42 speedups that keep every picture and
-  behaviour the same are in the working tree (28 rated "risk none", done while the user was away,
+- **Optimization (/optimize, 2026-11-02):** committed as `083e5d7`. 42 speedups that keep every picture and
+  behaviour the same are in (28 rated "risk none", done while the user was away,
   plus 14 rated "risk low" that the user approved). One more was tried and reverted because it made
   start-up worse. The full list and measurements are in `.optimize/REPORT.md`, which also lists 8
   "needs your call" items that would change the picture (the biggest: render nebulae at SE's own
-  lower volumetric resolution, ~3 ms of GPU time). Also uncommitted: a frame-time logger for
-  measuring (`perf.rs`, the `perf` dev command; only active with `SE_PERF=FILE`).
-- Next: the user playtests the faster build and says whether to commit; then maybe the "needs your
-  call" items.
+  lower volumetric resolution, ~3 ms of GPU time). Also added: a frame-time logger for measuring
+  (`perf.rs`, the `perf` dev command; only active with `SE_PERF=FILE`).
+- Next: the user playtests the faster build; then maybe the "needs your call" items.
 
 ## Recently done
 
-- **Optimization (2026-11-02, uncommitted):** measured side by side with the morning build
+- **Optimization (2026-11-02, `083e5d7`):** measured side by side with the morning build
   (typical frame time):
   - RS planet ground, looking around: 13.0 → 5.6 ms (about 180 fps); the stutter every ~13 s (a
     lighting update that rebuilt every ground patch, frames of 45-60 ms) is gone (worst ~8 ms).
