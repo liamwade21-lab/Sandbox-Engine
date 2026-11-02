@@ -923,6 +923,8 @@ pub struct BodyIn {
     pub orbit: Option<(f64, f64, f64, f32)>,
     /// Orbit inclination (degrees); SE adds it to a drawn obliquity, and a moon takes it as its own.
     pub orbit_incl_deg: f64,
+    /// Orbit's ascending node (degrees); the equator's node is drawn around it.
+    pub orbit_node_deg: f64,
     /// A moon whose catalog orbit omits the inclination / the node: SE draws them in the moon's
     /// completion ([`crate::system_gen::moon_angles`]), ahead of everything else.
     pub orbit_angles_drawn: [bool; 2],
@@ -930,7 +932,7 @@ pub struct BodyIn {
     pub star_parent: bool,
     /// Catalog values that stop SE drawing its own (they change which random numbers follow).
     pub obliquity_deg: Option<f64>,
-    pub eq_node_given: bool,
+    pub eq_node_deg: Option<f64>,
     pub rotation_days: Option<f64>,
     pub tidally_locked: bool,
     pub no_ocean: bool,
@@ -966,8 +968,10 @@ pub struct Completion {
     /// Spin: tidally locked, and the period (days) SE derives.
     pub locked: bool,
     pub rotation_days: Option<f64>,
-    /// Obliquity of the spin axis (radians).
+    /// Spin axis (radians): obliquity and the equator's ascending node, in the orbit's reference
+    /// frame (the orbit's own inclination and node put the axis along the orbit's normal).
     pub obliquity_rad: f64,
+    pub eq_node_rad: f64,
     pub pressure_atm: f32,
     /// Pressure SE's info panel shows: the surface's, or a giant's at depth (its model keeps the
     /// 1 atm level as the surface).
@@ -1321,17 +1325,17 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
     // its catalog flag set: no asteroid-belt draw for dwarf planets and no cap on tidal heating.
     // Spin axis: a planet draws the equator's node, then the obliquity (degrees, around the
     // orbit's inclination), each when the catalog gives none. A moon first draws the orbit angles
-    // its catalog leaves out and takes the orbit's inclination as its obliquity.
+    // its catalog leaves out and takes the orbit's inclination and node as its own.
     let incl_rad = b.orbit_incl_deg.to_radians();
+    let node_rad = b.orbit_node_deg.to_radians();
     out.obliquity_rad = if matches!(b.obj_type, obj::MOON | obj::DWARF_MOON) {
         for _ in b.orbit_angles_drawn.iter().filter(|&&d| d) {
             draw_a(&mut r);
         }
+        out.eq_node_rad = b.eq_node_deg.map_or(node_rad, f64::to_radians);
         b.obliquity_deg.map_or(incl_rad, f64::to_radians)
     } else {
-        if !b.eq_node_given {
-            gauss_d(&mut r, 0.0, 5.0);
-        }
+        out.eq_node_rad = b.eq_node_deg.unwrap_or_else(|| gauss_d(&mut r, 0.0, 5.0) + b.orbit_node_deg).to_radians();
         b.obliquity_deg
             .unwrap_or_else(|| {
                 let wide = (draw_a(&mut r) as f32 * INV_2_32) < 0.2;
@@ -1358,6 +1362,7 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
         out.locked = true;
         if b.orbit.is_some() {
             out.obliquity_rad = incl_rad;
+            out.eq_node_rad = node_rad;
         }
     } else if b.rotation_days.is_none() {
         let mi = if giant { m.min(317.8284) } else { m };
@@ -1371,6 +1376,7 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
             if (b.age_gyr as f64) < despin {
                 let f = b.age_gyr as f64 / despin;
                 out.rotation_days = Some(1.0 / (w0 + (worb - w0) * f));
+                out.eq_node_rad += (node_rad - out.eq_node_rad) * f;
                 out.obliquity_rad += (incl_rad - out.obliquity_rad) * f;
             } else {
                 // Spin-orbit resonance odds by eccentricity; 1:1 otherwise.
@@ -1400,6 +1406,7 @@ pub fn complete(tab: &ClimateTables, b: &BodyIn) -> Option<Completion> {
                 out.locked = ratio == 1.0;
                 out.rotation_days = Some(ratio * period);
                 out.obliquity_rad = incl_rad;
+                out.eq_node_rad = node_rad;
             }
         }
     }
@@ -2121,11 +2128,13 @@ pub fn star_light_from(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::
 }
 
 /// Equilibrium temperature of a body (K) from the starlight `flux` (L_sun / AU^2), its albedo
-/// and any catalog greenhouse warming.
+/// and any catalog greenhouse warming: SE's max(20, 278 (F (1 - A))^1/4) ([`equilibrium_temps`])
+/// with the Bond albedo as SE's loader sets it (`AlbedoBond`, else `Albedo`, else `AlbedoGeom`).
 pub fn equilibrium_temperature(flux: f64, b: &crate::catalog::BodyRecord) -> f64 {
-    let albedo = b.albedo.clamp(0.0, 0.95);
-    let greenhouse = b.block.sub("Atmosphere").and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
-    278.6 * flux.powf(0.25) * ((1.0 - albedo) / 0.7).powf(0.25) + greenhouse
+    let blk = &b.block;
+    let bond = blk.f64("AlbedoBond").or_else(|| blk.f64("Albedo")).or_else(|| blk.f64("AlbedoGeom")).unwrap_or(b.albedo);
+    let greenhouse = blk.sub("Atmosphere").and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
+    (278.0 * (flux * (1.0 - bond)).max(0.0).powf(0.25)).max(20.0) + greenhouse
 }
 
 /// SE's completion input for catalog body `i`, or `None` when SE keeps the catalog's own
@@ -2183,10 +2192,11 @@ pub fn catalog_body_in(cat: &crate::catalog::Catalog, i: usize, light: &StarLigh
         flux_mean: light.flux_mean as f32,
         orbit,
         orbit_incl_deg: b.orbit.as_ref().map_or(0.0, |o| o.inclination.to_degrees()),
+        orbit_node_deg: b.orbit.as_ref().map_or(0.0, |o| o.ascending_node.to_degrees()),
         orbit_angles_drawn: [moon && angles.0.is_none(), moon && angles.1.is_none()],
         star_parent: matches!(cat.find(&b.parent), Some(crate::catalog::ObjectRef::Star(s)) if !planet_barycentre(cat, s)),
         obliquity_deg: blk.f64("Obliquity").or_else(|| rot.and_then(|r| r.f64("Obliquity"))),
-        eq_node_given: given("EqAscendNode") || given("EquatorAscNode"),
+        eq_node_deg: ["EqAscendNode", "EquatorAscNode"].iter().find_map(|k| blk.f64(k).or_else(|| rot.and_then(|r| r.f64(k)))),
         rotation_days: if given("RotationPeriod") { b.rotation.period_seconds().map(|s| s / 86_400.0) } else { None },
         tidally_locked: blk.bool("TidalLocked").unwrap_or(false) || rot.is_some_and(|r| r.bool("TidalLocked").unwrap_or(false)),
         no_ocean: blk.bool("NoOcean").unwrap_or(false),

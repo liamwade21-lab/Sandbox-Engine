@@ -105,15 +105,16 @@ fn scan_number(prefix: &str, dir: &Path) -> u32 {
     next_number(prefix, names.iter().map(String::as_str))
 }
 
-/// The number of the next screenshot: the folder is scanned once, then counted up per press, so two
-/// presses before the first capture arrives still get two numbers.
+/// The number of the next screenshot per name prefix: the folder is scanned once per prefix, then
+/// counted up per press, so two presses (or script shots) before the first capture arrives still get
+/// two numbers.
 #[derive(Resource, Default)]
-pub struct ScreenshotNumber(Option<u32>);
+pub struct ScreenshotNumber(std::collections::HashMap<String, u32>);
 
 impl ScreenshotNumber {
-    fn next(&mut self, dir: &Path) -> u32 {
-        let n = *self.0.get_or_insert_with(|| scan_number("scr", dir));
-        self.0 = Some(n + 1);
+    fn next_for(&mut self, prefix: &str, dir: &Path) -> u32 {
+        let n = *self.0.entry(prefix.to_string()).or_insert_with(|| scan_number(prefix, dir));
+        self.0.insert(prefix.to_string(), n + 1);
         n
     }
 }
@@ -128,10 +129,7 @@ pub fn take(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut
 pub fn take_named(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut ScreenshotNumber, prefix: Option<&str>) -> Arc<AtomicBool> {
     let dir = folder();
     let _ = std::fs::create_dir_all(&dir);
-    let n = match prefix {
-        Some(p) if p != "scr" => scan_number(p, &dir),
-        _ => number.next(&dir),
-    };
+    let n = number.next_for(prefix.unwrap_or("scr"), &dir);
     let path = dir.join(format!("{}{n:05}.{}", prefix.unwrap_or("scr"), settings.format));
     let s = settings.clone();
     let done = Arc::new(AtomicBool::new(false));
@@ -599,11 +597,16 @@ struct HiresJob {
 }
 
 #[derive(Resource, Default)]
-struct HiresState(Option<HiresJob>);
+pub(crate) struct HiresState(Option<HiresJob>);
 
 impl HiresState {
     pub fn running(&self) -> bool {
         self.0.is_some()
+    }
+
+    /// The user's LandLOD while a job holds its own (what settings.cfg must keep).
+    pub fn user_land_lod(&self) -> Option<f32> {
+        self.0.as_ref().map(|j| j.restore.1)
     }
 }
 
@@ -848,7 +851,16 @@ mod tests {
         // Counted up per press without waiting for the files.
         let mut n = ScreenshotNumber::default();
         let empty = PathBuf::from("no such folder");
-        assert_eq!((n.next(&empty), n.next(&empty)), (0, 1));
+        assert_eq!((n.next_for("scr", &empty), n.next_for("scr", &empty)), (0, 1));
+    }
+
+    #[test]
+    fn named_shots_count_up_per_prefix() {
+        // Two script shots with the same name before either file is written get two numbers.
+        let mut n = ScreenshotNumber::default();
+        let empty = PathBuf::from("no such folder");
+        assert_eq!((n.next_for("foo", &empty), n.next_for("foo", &empty)), (0, 1));
+        assert_eq!((n.next_for("bar", &empty), n.next_for("scr", &empty), n.next_for("foo", &empty)), (0, 0, 2));
     }
 
     /// Writes a gradient in every format into `SE_SHOT_TEST_DIR` (to open in other programs).

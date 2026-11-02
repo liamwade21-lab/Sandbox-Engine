@@ -83,6 +83,11 @@ pub struct FlyCamera {
     /// FOV animation (SE's camera +0x1468 / +0x1470 / +0x1478 / +0x1480, FUN_14056ad80): from,
     /// to and the time it has run.
     pub zoom_anim: Option<ZoomAnim>,
+    /// Counts the travels started (Go to, Center, Land, Horizon) and the binds made with
+    /// [`Self::bind`] (Shift+F / Shift+R / Shift+D, the toolbar), so a script trigger can tell a new
+    /// one from one already under way, or a binding already there, when it began waiting.
+    pub travel_serial: u32,
+    pub bind_serial: u32,
 }
 
 /// One FOV animation over `ZoomTime`.
@@ -210,6 +215,8 @@ impl Default for FlyCamera {
             move_mode: MoveMode::Free,
             thrust: DVec3::ZERO,
             zoom_anim: None,
+            travel_serial: 0,
+            bind_serial: 0,
         }
     }
 }
@@ -231,6 +238,7 @@ impl FlyCamera {
             return;
         }
         self.follow = target.map(|t| Follow::new(t, sync, eph, jd));
+        self.bind_serial = self.bind_serial.wrapping_add(1);
     }
 
     /// Switch the movement mode (FUN_14057a740): leaving Spacecraft or Aircraft mode multiplies the
@@ -591,7 +599,8 @@ fn input_controls(
                     // Zoom: scale the distance to the object (drag up to approach).
                     let r = eph.radius_m(p).max(1.0);
                     let f = (motion.delta.y as f64 * 0.01).exp();
-                    let dist = (off.length() * f).max(r * 1.0001);
+                    let solid = matches!(p, ObjectRef::Body(_) | ObjectRef::Star(_));
+                    let dist = zoom_distance(off.length(), f, r, solid);
                     cam.pos = center.offset_m(off.normalize_or(DVec3::Z) * dist);
                 }
                 cam.travel = None;
@@ -627,10 +636,10 @@ fn input_controls(
             cam.speed = clamp_speed(cam.speed * WHEEL_STEP.powf(notches as f64));
         }
     }
-    if egui_keys {
-        *last_rot = None;
-        return;
-    }
+    // Typing in a text field: the keys count as let go, so flight and turning ramp down as they
+    // would without them instead of carrying on.
+    let no_keys = ButtonInput::<KeyCode>::default();
+    let keys: &ButtonInput<KeyCode> = if egui_keys { &no_keys } else { &keys };
     let plus = keys.just_pressed(KeyCode::NumpadAdd) || keys.just_pressed(KeyCode::Equal);
     let minus = keys.just_pressed(KeyCode::NumpadSubtract) || keys.just_pressed(KeyCode::Minus);
     if plus || minus {
@@ -732,7 +741,7 @@ fn input_controls(
         }
     }
     // Aircraft: SE keeps the velocity in the camera frame, so it turns as the camera turns.
-    // Only from the previous frame: after frames this system skipped (typing, flying a ship) the
+    // Only from the previous frame: after frames this system skipped (flying a ship) the
     // rotation meanwhile is not applied at once.
     let frame = frames.0;
     if let (MoveMode::Aircraft, Some((prev, f))) = (cam.move_mode, *last_rot) {
@@ -806,6 +815,14 @@ fn input_controls(
             *last_sel = Some(prev);
         }
     }
+}
+
+/// The distance after a two-button zoom by `f` from `d`: never into a solid body or star (radius
+/// `r`), nor into a galaxy, cluster or nebula from outside it; inside one the zoom is free (down to
+/// 1 m) instead of jumping out to its edge.
+fn zoom_distance(d: f64, f: f64, r: f64, solid: bool) -> f64 {
+    let floor = if solid || d > r { r * 1.0001 } else { 1.0 };
+    (d * f).max(floor)
 }
 
 /// An Aircraft-mode velocity after the camera turned from `prev` to `rot`: the same in the camera's
@@ -967,12 +984,14 @@ pub fn start_center(cam: &mut FlyCamera, target: ObjectRef) {
     }
     let start_rot = cam.rot;
     cam.travel = Some(Travel { target, kind: TravelKind::Center, start_off: None, start_rot, end_distance: -1.0, elapsed: 0.0, duration: CENTER_TIME, set_speed: false });
+    cam.travel_serial = cam.travel_serial.wrapping_add(1);
 }
 
 /// SE's Horizon object (End): level the view to `target`'s horizon in `CenterTime`.
 pub fn start_horizon(cam: &mut FlyCamera, target: ObjectRef) {
     let start_rot = cam.rot;
     cam.travel = Some(Travel { target, kind: TravelKind::Horizon, start_off: None, start_rot, end_distance: -1.0, elapsed: 0.0, duration: CENTER_TIME, set_speed: false });
+    cam.travel_serial = cam.travel_serial.wrapping_add(1);
 }
 
 /// SE's Land on object (Shift+G): planets, moons, asteroids and comets only.
@@ -983,6 +1002,7 @@ pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
     cam.velocity = DVec3::ZERO;
     let start_rot = cam.rot;
     cam.travel = Some(Travel { target, kind: TravelKind::Land, start_off: None, start_rot, end_distance: LAND_ALTITUDE_M, elapsed: 0.0, duration: -1.0, set_speed: true });
+    cam.travel_serial = cam.travel_serial.wrapping_add(1);
 }
 
 /// Go to `target` (refused while a script locks movement).
@@ -1002,6 +1022,7 @@ pub fn start_travel(cam: &mut FlyCamera, target: ObjectRef, distance: Option<f64
         duration: -1.0,
         set_speed: true,
     });
+    cam.travel_serial = cam.travel_serial.wrapping_add(1);
 }
 
 /// Find the nearest surface among the active system's bodies and the galaxies.
@@ -1122,7 +1143,9 @@ pub fn travel_and_move(
                 cam.assign_velocity(end_d / GOTO_SPEED_DIVISOR);
             }
             let start_off = *tr.start_off.get_or_insert_with(|| cam.pos.delta_m(target_pos));
-            let start_d = start_off.length().max(end_d * 1.0001);
+            // From the real distance, also from inside the arrival distance (no jump out on the
+            // first frame).
+            let start_d = start_off.length().max(1.0);
             // Interpolate the distance logarithmically so huge jumps stay smooth.
             let d = (start_d.ln() + (end_d.ln() - start_d.ln()) * s).exp();
             let dir = start_off.normalize_or(DVec3::Z);
@@ -1670,6 +1693,54 @@ Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 
         step(&mut world, 300);
         // The planet moved ~900 km meanwhile; the camera kept its place relative to it.
         assert!((offset(&world, planet) - before).length() < 1.0, "{:?} -> {:?}", before, offset(&world, planet));
+    }
+
+    #[test]
+    fn goto_from_inside_the_arrival_distance_does_not_jump() {
+        let (mut world, planet) = setup();
+        // 1.5 radii out; Go to arrives at 4 radii.
+        let start = DVec3::X * 9.0e6;
+        let pos = world.resource::<FlyCamera>().pos.offset_m(start - offset(&world, planet));
+        world.resource_mut::<FlyCamera>().pos = pos;
+        start_travel(&mut world.resource_mut::<FlyCamera>(), planet, None);
+        step(&mut world, 1);
+        let d1 = offset(&world, planet).length();
+        assert!((d1 - 9.0e6).abs() < 1.0e5, "first frame at {d1}");
+        step(&mut world, 500);
+        assert!((offset(&world, planet).length() - 2.4e7).abs() < 1.0e3);
+    }
+
+    #[test]
+    fn travels_and_binds_are_counted() {
+        // A script's Control|Goto / Follow wait compares these with their values when it began, so
+        // a flight under way or a binding already there does not hide a new one.
+        let (world, planet) = setup();
+        let cat = world.resource::<SeData>().catalog.clone();
+        let eph = Ephemeris::new(&cat);
+        let mut cam = world.resource::<FlyCamera>().clone();
+        start_travel(&mut cam, planet, None);
+        start_center(&mut cam, planet);
+        assert_eq!(cam.travel_serial, 2);
+        cam.bind(Some(planet), false, &eph, 0.0);
+        cam.bind(Some(planet), false, &eph, 0.0);
+        assert_eq!(cam.bind_serial, 2);
+        // Locked: refused, not counted.
+        cam.locks.movement = true;
+        start_travel(&mut cam, planet, None);
+        cam.bind(None, false, &eph, 0.0);
+        assert_eq!((cam.travel_serial, cam.bind_serial), (2, 2));
+    }
+
+    #[test]
+    fn zoom_floor_only_for_solid_bodies() {
+        // Outside a planet the zoom stops at its surface.
+        assert_eq!(zoom_distance(2.0e7, 0.01, 6.0e6, true), 6.0e6 * 1.0001);
+        // Inside a galaxy any zoom stays inside instead of jumping to its edge.
+        let r = 1.5e21;
+        assert_eq!(zoom_distance(1.0e20, 0.5, r, false), 5.0e19);
+        assert_eq!(zoom_distance(1.0e20, 1.25, r, false), 1.25e20);
+        // From outside it, not into it.
+        assert_eq!(zoom_distance(2.0e21, 0.5, r, false), r * 1.0001);
     }
 
     #[test]

@@ -227,10 +227,11 @@ pub fn oval_particles(o: &SeOval, seed: &mut u32) -> (Vec<[f32; 3]>, Vec<[f32; 4
     for r in 0..rings {
         let ang = (rings - 1) as f32 * delta * 0.5 + theta0 - r as f32 * delta;
         let s = ang.cos();
-        let mut nr = (s / c0 * n as f32 / rings as f32) as i32;
-        if r == rings - 1 {
-            nr = n - verts / 4;
-        }
+        // An oval of radius 0 (no NorthRadius/SouthRadius) has c0 <= 0: share the particles evenly
+        // rather than by a ratio that runs to billions. No ring takes more than is left.
+        let mut nr = if c0 > 0.0 && (s / c0).is_finite() { (s / c0 * n as f32 / rings as f32) as i32 } else { n / rings };
+        let left = n - verts / 4;
+        nr = if r == rings - 1 { left } else { nr.clamp(0, left.max(0)) };
         let mut phi = lcg(seed) as f32 * std::f32::consts::TAU * 2.328_306_4e-10;
         let dphi = (rings as f64 * TAU / nr as f64) as f32;
         let lo = (lcg(seed) % 255) as f32 / 255.0;
@@ -282,7 +283,8 @@ struct AuroraChecked;
 fn spawn_auroras(
     mut commands: Commands,
     data: Res<SeData>,
-    bodies: Query<(Entity, &SystemBody, Option<&crate::terrain::Terrain>), Without<AuroraChecked>>,
+    // A body waiting for its atmosphere model has no terrain yet to tell its bulk class.
+    bodies: Query<(Entity, &SystemBody, Option<&crate::terrain::Terrain>), (Without<AuroraChecked>, Without<crate::system::PendingAtmosphere>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<AuroraMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -367,6 +369,14 @@ pub fn oval_brightness(o: &SeOval, base_km: f64, cam_km: DVec3, px_per_rad: f64)
     fade * if px < 20.0 { (px - 2.0) / 18.0 } else { 1.0 }
 }
 
+/// The flash phase (ScaleTime.w): FlashFreq x t wrapped into +-1000, / 10, with t SE's clock in days
+/// since J2000 (FUN_140451fe0; the epoch DAT_140855480 is set to JD 2451545 by FUN_1405d30b0). In
+/// seconds it ran 86400 times too fast and the noise it moves changed every frame: a flicker.
+fn flash_phase(flash_freq: f64, jd: f64) -> f64 {
+    let ft = flash_freq * (jd - 2_451_545.0);
+    (ft - 2000.0 * (ft / 2000.0).round()) / 10.0
+}
+
 #[allow(clippy::too_many_arguments)]
 fn update_auroras(
     cam: Res<crate::camera::FlyCamera>,
@@ -389,7 +399,6 @@ fn update_auroras(
         })
         .unwrap_or(1.0);
     let px_per_rad = h * 0.5 / (fov * 0.5).tan();
-    let t_s = sim.jd * 86_400.0;
     for (aurora, mut pos, mut rot, mut anchor, mut vis) in &mut auroras {
         let Ok((b, light)) = bodies.get(aurora.body) else { continue };
         let o = &aurora.oval;
@@ -413,9 +422,7 @@ fn update_auroras(
         // base radii.
         let width = TAU * o.radius.sin() * 200_000.0 / o.particles.max(1) as f64 / aurora.base_km;
         let gain = (o.width / (o.rings + 1) as f64).sin() * 20.0;
-        // The flash phase: FlashFreq x t wrapped into +-1000, / 10.
-        let ft = o.flash_freq * t_s;
-        let phase = (ft - 2000.0 * (ft / 2000.0).round()) / 10.0;
+        let phase = flash_phase(o.flash_freq, sim.jd);
         // The pattern's drift: MoveSpeed along the star's direction in the oval's plane.
         let sun_body = b.orient.inverse() * light.sun_dir.as_dvec3();
         let s2 = DVec3::new(sun_body.dot(x), 0.0, sun_body.dot(z));
@@ -479,6 +486,30 @@ mod tests {
         assert!(pos.iter().all(|p| p[1] <= lo + 1e-4 && p[1] >= hi - 1e-4));
         // Corners in SE's order.
         assert_eq!(data[..4].iter().map(|d| (d[3] * 255.0).round() as u32).collect::<Vec<_>>(), [0, 64, 128, 192]);
+    }
+
+    #[test]
+    fn flash_phase_moves_slowly() {
+        // SE's clock is in days since J2000: 0 there, FlashFreq / 10 a day later.
+        assert_eq!(flash_phase(70.0, 2_451_545.0), 0.0);
+        assert!((flash_phase(70.0, 2_451_546.0) - 7.0).abs() < 1e-6);
+        // A frame at 60 fps moves the noise it slides by a sliver of a texel (0.37 x phase in
+        // texture units, 256 texels), not a new random value every frame.
+        let jd = 2_461_346.6;
+        let step = (flash_phase(70.0, jd + 1.0 / 60.0 / 86_400.0) - flash_phase(70.0, jd)).abs();
+        assert!(step * 0.37 * 256.0 < 0.01, "{step}");
+    }
+
+    #[test]
+    fn ovals_without_a_radius_keep_the_particle_budget() {
+        // An add-on Aurora block with Width but no NorthRadius: radius 0 (c0 just below 0 in f32),
+        // and one with a radius under half its width.
+        for radius in [0.0, 0.01] {
+            let o = SeOval { radius, width: 0.1, rings: 4, particles: 1000, ..SeOval::from_catalog(&earth_north(), 6438.0, 6378.0, bulk::TERRA, &mut 7) };
+            let (pos, data) = oval_particles(&o, &mut 7);
+            assert_eq!((pos.len(), data.len()), (4000, 4000), "radius {radius}");
+            assert!(pos.iter().flatten().all(|v| v.is_finite()));
+        }
     }
 
     #[test]

@@ -17,8 +17,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use bevy::camera::visibility::RenderLayers;
-use bevy::camera::{Hdr, RenderTarget};
+use bevy::camera::primitives::Frustum;
+use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
+use bevy::camera::{Hdr, RenderTarget, SubCameraView};
+use bevy::shape::ViewFrustum;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
@@ -619,13 +621,45 @@ impl Plugin for CapturePlugin {
             .add_systems(Startup, load_skybox_format)
             .add_systems(PreUpdate, capture_commands)
             .add_systems(Update, (run_skybox, sky_all_around).chain())
-            .add_systems(PostUpdate, follow_main.after(UniverseSet::Camera).before(TransformSystems::Propagate));
+            .add_systems(PostUpdate, follow_main.after(UniverseSet::Camera).before(TransformSystems::Propagate))
+            .add_systems(PostUpdate, sub_view_frusta.after(VisibilitySystems::UpdateFrusta).before(VisibilitySystems::CheckVisibility));
     }
+}
+
+/// Bevy culls every camera with the frustum of its whole projection (`update_frusta` ignores
+/// `sub_camera_view`), so a high-resolution screenshot's tile away from the image centre lost what
+/// lay outside a centred frustum of the tile's own aspect (terrain, sea, body models, clouds). A view
+/// rendering a sub-view gets the frustum of the part it renders, every frame.
+fn sub_view_frusta(mut views: Query<(&Camera, &GlobalTransform, &Projection, &mut Frustum), With<CaptureView>>) {
+    for (camera, tf, proj, mut frustum) in &mut views {
+        let Some(sub) = camera.sub_camera_view else { continue };
+        *frustum = sub_view_frustum(proj, &sub, tf);
+    }
+}
+
+fn sub_view_frustum(proj: &Projection, sub: &SubCameraView, tf: &GlobalTransform) -> Frustum {
+    let clip_from_world = proj.get_clip_from_view_for_sub(sub) * tf.affine().inverse();
+    Frustum(ViewFrustum::from_clip_from_world_custom_far(&clip_from_world, &tf.translation(), &tf.back(), proj.far()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sub_view_tiles_cull_with_their_own_part() {
+        use bevy::camera::primitives::Sphere;
+        // A 2048 x 512 image of 512 x 512 tiles: the right tile covers 27..46 degrees right of centre.
+        let proj = Projection::Perspective(PerspectiveProjection { fov: 0.5, aspect_ratio: 1.0, near: 0.05, far: 1.0e6, ..default() });
+        let sub = SubCameraView { full_size: UVec2::new(2048, 512), offset: Vec2::new(1536.0, 0.0), size: UVec2::new(512, 512) };
+        let tf = GlobalTransform::IDENTITY;
+        let at = |deg: f32| Sphere { center: (Vec3::new(deg.to_radians().sin(), 0.0, -deg.to_radians().cos()) * 100.0).into(), radius: 0.1 };
+        let f = sub_view_frustum(&proj, &sub, &tf);
+        assert!(f.intersects_sphere(&at(40.0), true));
+        assert!(!f.intersects_sphere(&at(0.0), true) && !f.intersects_sphere(&at(-40.0), true));
+        // Bevy's own frustum for that camera is centred and misses it.
+        assert!(!proj.compute_frustum(&tf).intersects_sphere(&at(40.0), true));
+    }
 
     #[test]
     fn faces_look_where_they_are_named() {

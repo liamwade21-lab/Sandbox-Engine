@@ -62,6 +62,14 @@ pub struct AtmosphereCache {
     analytic_transm: bool,
 }
 
+/// What [`AtmosphereCache::get_or_load`] found for a model.
+pub enum AtmLoad {
+    Ready(AtmosphereGpu),
+    /// A `.cfg`-only model still being generated in the background: ask again later.
+    Pending,
+    Missing,
+}
+
 impl AtmosphereCache {
     /// Start parsing every `models/atmospheres/*.atm` in the background (once), then generating the
     /// tables of every model of the `models/atmospheres/*.cfg` scripts that has no `.atm` file, as SE's
@@ -115,11 +123,11 @@ impl AtmosphereCache {
         self.analytic_transm = on;
     }
 
-    pub fn get_or_load(&mut self, vfs: &Vfs, model: &str, images: &mut Assets<Image>) -> Option<AtmosphereGpu> {
+    pub fn get_or_load(&mut self, vfs: &Vfs, model: &str, images: &mut Assets<Image>) -> AtmLoad {
         let name = model.to_ascii_lowercase();
         // A model being generated in the background is not there yet: no warning, no negative entry.
         if !self.models.contains_key(&name) && self.preload.is_some() && vfs.read(&format!("models/atmospheres/{model}.atm")).is_err() {
-            return None;
+            return AtmLoad::Pending;
         }
         if !self.models.contains_key(&name) {
             if let Some(i) = self.parsed.iter().position(|(n, _)| *n == name) {
@@ -129,7 +137,7 @@ impl AtmosphereCache {
         }
         let gpu = self.models.entry(name.clone()).or_insert_with(|| load_atmosphere(vfs, model, images)).clone();
         self.touch(name);
-        gpu
+        gpu.map_or(AtmLoad::Missing, AtmLoad::Ready)
     }
 
     /// Mark `name` as just used and drop the least recently used others beyond the cache size.
@@ -752,5 +760,22 @@ mod tests {
         let (h, b) = widened_height(200e3, 2575e3, 400e3, -1.0);
         assert_eq!(h, 2575e3 * 0.05);
         assert!(b > 1.0);
+    }
+
+    #[test]
+    fn a_model_still_being_generated_is_pending_not_missing() {
+        use super::{AtmLoad, AtmosphereCache};
+        use bevy::prelude::{Assets, Image};
+        use bevy::tasks::{AsyncComputeTaskPool, TaskPool};
+        let vfs = se_core::vfs::Vfs::new();
+        let mut images = Assets::<Image>::default();
+        let mut cache = AtmosphereCache::default();
+        // A `.cfg`-only model while the preload (which generates it) runs: asked for again later.
+        cache.preload = Some(AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async { Vec::new() }));
+        assert!(matches!(cache.get_or_load(&vfs, "Pinkworld", &mut images), AtmLoad::Pending));
+        assert!(cache.models.is_empty(), "no negative entry while pending");
+        // Once the preload is done, a model it did not make is missing.
+        cache.preload = None;
+        assert!(matches!(cache.get_or_load(&vfs, "Pinkworld", &mut images), AtmLoad::Missing));
     }
 }

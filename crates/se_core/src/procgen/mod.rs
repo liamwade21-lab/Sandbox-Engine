@@ -338,7 +338,8 @@ fn rogue_system(rng: &mut Rng, star: &StarParams, seed32: u32, sc: &mut String, 
     // SE's planet draw on the system's star streams (the planet's own are not known).
     let (pa, pb) = (seed32.wrapping_mul(0x2e3).wrapping_add(0x1486), seed32.wrapping_mul(0x234).wrapping_add(0x1cdb));
     let c_to_o = star.c_to_o.unwrap_or(0.55) as f32;
-    let met = 10f32.powf(star.feh as f32);
+    // [Fe/H] in dex, as every other planet reads it (se_star).
+    let met = if star.feh.is_finite() { star.feh.clamp(-5.0, 5.0) as f32 } else { 0.0 };
     let (mass, radius_km, comp, class) = se_layout::lone_planet(pa, pb, t_own, c_to_o, met);
     let kind = match class {
         bulk::JUPITER => Kind::GasGiant,
@@ -419,7 +420,8 @@ pub fn se_system_seed(rec: &crate::catalog::StarRecord) -> u32 {
 /// units of 2^-32 pc), `x 0x28842 - z 0x2309fb + y 0xe35ad`. Only catalog stars pass through the
 /// star loader's f32 ([`crate::system_gen::system_seed`]); a procedural star keeps full precision.
 pub fn position_seed(pos_pc: DVec3) -> u32 {
-    let c = |v: f64| (v * 4_294_967_296.0).floor() as i64 as u32;
+    // Through i128: past 2^31 pc the value overflows i64, and SE keeps the low 32 bits.
+    let c = |v: f64| (v * 4_294_967_296.0).floor() as i128 as u32;
     c(pos_pc.x).wrapping_mul(0x28842).wrapping_add(c(pos_pc.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(pos_pc.y).wrapping_mul(0xe35ad))
 }
 
@@ -1604,6 +1606,12 @@ fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<Planet
     let (mut n_big, mut n_d) = (if close { 0 } else { 1 }, 0);
     for m in moons.iter_mut() {
         m.parent = bary.clone();
+        // The barycentre does not spin, so its "Equator" is the ecliptic: the moons' orbits about
+        // the planet's equator turn into the ecliptic frame, as the pair's.
+        if m.ref_plane == "Equator" {
+            (m.inc, m.node) = tilt_normal(p.obliq, p.eq_node, m.inc, m.node);
+            m.ref_plane = "Ecliptic";
+        }
         // The catalog sums only stars under a barycentre, so the period is given.
         m.orbit_period_s = orbital_period_s(m.a_au, mt * EARTH_MASS_KG);
         m.period_given = true;
@@ -2833,6 +2841,54 @@ mod tests {
             seeds.dedup();
             assert!(seeds.len() > 19_900, "{} distinct at {base}", seeds.len());
         }
+    }
+
+    #[test]
+    fn position_seeds_wrap_far_from_the_origin() {
+        // Below 2^31 pc the seeds are the i64 ones they always were.
+        let old = |p: DVec3| {
+            let c = |v: f64| (v * 4_294_967_296.0).floor() as i64 as u32;
+            c(p.x).wrapping_mul(0x28842).wrapping_add(c(p.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(p.y).wrapping_mul(0xe35ad))
+        };
+        let mut r = Rng::new(7);
+        for _ in 0..5000 {
+            let p = DVec3::new(r.range(-2.1e9, 2.1e9), r.range(-2.1e9, 2.1e9), r.range(-2.1e9, 2.1e9));
+            assert_eq!(position_seed(p), old(p), "{p}");
+        }
+        // Past it SE keeps the low 32 bits: stars in a far galaxy differ.
+        let base = DVec3::new(3e9, -2.5e9, 4e9);
+        let mut seeds: Vec<u32> = (0..1000).map(|_| position_seed(base + DVec3::new(r.range(0.0, 400.0), r.range(0.0, 400.0), r.range(0.0, 400.0)))).collect();
+        seeds.sort_unstable();
+        seeds.dedup();
+        assert!(seeds.len() > 990, "{} distinct", seeds.len());
+    }
+
+    #[test]
+    fn binary_planet_moons_turn_into_the_ecliptic_frame() {
+        let moon = |name: &str, mass_me: f64, a_au: f64, inc: f64, node: f64| Body {
+            name: name.into(),
+            tag: Tag::Moon,
+            mass_me,
+            a_au,
+            inc,
+            node,
+            ref_plane: "Equator",
+            ..Default::default()
+        };
+        let mut kept = 0;
+        for i in 0..40 {
+            let mut p = Body { name: format!("T{i} b"), parent: format!("T{i}"), tag: Tag::Planet, mass_me: 1.0, obliq: 60.0, eq_node: 40.0, ..Default::default() };
+            let mut moons = vec![moon("s", 0.2, 0.003, 2.0, 10.0), moon("m", 0.001, 0.05, 5.0, 100.0)];
+            make_binary(&format!("T{i}"), &mut p, &mut moons).expect("binary");
+            let Some(m) = moons.get(1) else { continue };
+            kept += 1;
+            assert_eq!(m.ref_plane, "Ecliptic");
+            assert_eq!((m.inc, m.node), tilt_normal(60.0, 40.0, 5.0, 100.0));
+            // The kept moon orbits near the pair's plane, both near the planet's equator.
+            let angle = normal_of(m.inc, m.node).angle_between(normal_of(p.inc, p.node)).to_degrees();
+            assert!(angle < 10.0, "{angle}");
+        }
+        assert!(kept > 0);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use crate::camera::{FlyCamera, start_travel};
 use crate::data::SeData;
 use crate::i18n::I18n;
 use crate::procstars::{ProcStarField, ProcStarInfo, ScanLevels, StarScan};
-use crate::system::{materialize_star, proc_system_input, procedural_star_record};
+use crate::system::{generate, generated_system_star, materialize_star, proc_system_input, procedural_star_record};
 
 /// SE's limit on the scanned systems.
 pub const MAX_SYSTEMS: usize = 10_000;
@@ -315,25 +315,31 @@ fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3, tables: Option<&Arc<se_
     let (params, seed) = proc_system_input(&rec);
     let g = se_core::procgen::generate_system_for_search(&params, seed);
     // SE's life, as on arrival: its life generator on the completed system (system.rs `generate`).
-    let mut lives = std::collections::HashMap::new();
-    if let Some(t) = tables {
+    let doc = tables.map(|t| {
         rec.barycenter = g.root_mass_sol.is_some();
         let mut doc = se_core::sc::parse(&g.sc);
         se_core::procgen::apply_life_to_doc(&[rec], t.clone(), g.root_mass_sol, &mut doc, se_core::time::J2000);
-        for it in &doc.items {
-            if let (Some(name), Some(l)) = (it.name(), it.block().and_then(|b| b.sub("Life"))) {
-                let s = |k: &str| l.str(k).unwrap_or_default().to_string();
-                lives.insert(name.to_string(), (s("Class"), s("Type"), s("Biome")));
-            }
-        }
-    }
+        doc
+    });
     let stars = if g.stars.is_empty() {
         vec![StarFacts { name: info.name.clone(), class: SpectralClass::parse(&info.class) }]
     } else {
         g.stars.iter().map(|(n, c)| StarFacts { name: n.clone(), class: SpectralClass::parse(c) }).collect()
     };
-    let bodies = g
-        .bodies
+    (generated_bodies(g.bodies, doc.as_ref()), stars)
+}
+
+/// Facts of a generated system's planets and moons, with the life SE's life generator gave them
+/// in the system's parsed script `doc`.
+fn generated_bodies(bodies: Vec<se_core::procgen::BodySummary>, doc: Option<&se_core::sc::Block>) -> Vec<BodyFacts> {
+    let mut lives = std::collections::HashMap::new();
+    for it in doc.iter().flat_map(|d| &d.items) {
+        if let (Some(name), Some(l)) = (it.name(), it.block().and_then(|b| b.sub("Life"))) {
+            let s = |k: &str| l.str(k).unwrap_or_default().to_string();
+            lives.insert(name.to_string(), (s("Class"), s("Type"), s("Biome")));
+        }
+    }
+    bodies
         .into_iter()
         .filter_map(|b| {
             let moon = match b.tag {
@@ -354,14 +360,14 @@ fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3, tables: Option<&Arc<se_
                 life,
             })
         })
-        .collect();
-    (bodies, stars)
+        .collect()
 }
 
 fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc: f64, jd: f64, kind: ScanKind, scan: Arc<Scan>) {
     if let ScanKind::Stars(t) = kind {
         return scan_stars(cat, stars, center, radius_pc, t, scan);
     }
+    let started = std::time::Instant::now();
     // Catalog systems: the roots of their trees (procedural stars that became catalog entries
     // come again from the field).
     let mut cands: Vec<(f64, Option<u32>, Option<(DVec3, ProcStarInfo)>)> = cat
@@ -386,6 +392,10 @@ fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc
         scan.scanned.fetch_add(1, Ordering::Relaxed);
     };
     // Catalog systems first, so the catalog is released early (new procedural stars wait for it).
+    // A catalog star without catalog planets gets the system SE generates for it on arrival
+    // (system.rs `generated_system_star`), from the same input and seed: generated once the
+    // catalog is released.
+    let mut generated = Vec::new();
     {
         let eph = Ephemeris::new(&cat);
         for (d, i, _) in cands.iter().filter(|c| c.1.is_some()) {
@@ -394,19 +404,42 @@ fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc
             }
             let i = i.unwrap_or(0);
             let s = &cat.stars[i as usize];
-            push(SystemRow {
+            let row = SystemRow {
                 name: s.names[0].clone(),
                 pos_pc: s.pos_pc,
                 dist_pc: *d,
                 spectral: s.class.raw.clone(),
                 source: StarSource::Catalog,
-                bodies: catalog_bodies(&cat, &eph, i, jd),
+                bodies: Vec::new(),
                 stars: catalog_stars(&cat, i),
-            });
+            };
+            match generated_system_star(&cat, i) {
+                Some(star) => generated.push((row, generate(&cat, star, false))),
+                None => push(SystemRow { bodies: catalog_bodies(&cat, &eph, i, jd), ..row }),
+            }
         }
     }
     let tables = cat.climate.clone();
     drop(cat);
+    // With its comets (system.rs generates them too) and SE's life on all its bodies such a system
+    // takes ~10x a procedural one's search, so a few threads share them.
+    let n_generated = generated.len();
+    let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4));
+    let queue = Mutex::new(generated.into_iter());
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                while !scan.cancel.load(Ordering::Relaxed) {
+                    let Some((row, job)) = queue.lock().ok().and_then(|mut q| q.next()) else { break };
+                    let (g, doc, _, _) = job();
+                    push(SystemRow { bodies: generated_bodies(g.bodies, Some(&doc)), ..row });
+                }
+            });
+        }
+    });
+    if scan.cancel.load(Ordering::Relaxed) {
+        return;
+    }
     for (d, _, p) in cands.into_iter() {
         let Some((pos, info)) = p else { continue };
         if scan.cancel.load(Ordering::Relaxed) {
@@ -423,7 +456,33 @@ fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc
             source: StarSource::Procedural(info),
         });
     }
+    info!(
+        "system search within {radius_pc:.0} pc: {} systems ({n_generated} catalog stars' generated) in {:.1} s",
+        scan.total.load(Ordering::Relaxed),
+        started.elapsed().as_secs_f64()
+    );
     scan.done.store(true, Ordering::Relaxed);
+}
+
+/// The field's octree levels a search for star type `t` visits: only those whose magnitudes can
+/// hold the type (the field's dead stars have a level of their own; O-A stars are bright, so their
+/// nodes are few and large). Giants reach Mv 3.5: most of SE's field giants are in the band near
+/// Mv 1.5-3.
+fn type_levels(t: usize) -> ScanLevels {
+    let inf = f64::INFINITY;
+    match t {
+        1 | 2 => ScanLevels::Remnants,
+        3 => ScanLevels::Mags(10.0, inf),
+        4 => ScanLevels::Mags(inf, inf),
+        5 => ScanLevels::Mags(-inf, 3.5),
+        6 => ScanLevels::Mags(-inf, -2.5),
+        7 => ScanLevels::Mags(-inf, 2.0),
+        8 => ScanLevels::Mags(0.0, 3.5),
+        9 => ScanLevels::Mags(1.5, 5.5),
+        10 => ScanLevels::Mags(-inf, 7.0),
+        11 => ScanLevels::Mags(-inf, 10.5),
+        _ => ScanLevels::All,
+    }
 }
 
 /// A star search: one row per matching star, catalog and procedural, the nearest
@@ -454,23 +513,7 @@ fn scan_stars(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_
             3 => s.kind == StarKind::WhiteDwarf,
             _ => star_type_ok(t, &SpectralClass::parse(&s.class)),
         };
-        // Only the levels whose magnitudes can hold the type (the field's dead stars have a level
-        // of their own; giants and O-A stars are bright, so their nodes are few and large).
-        let inf = f64::INFINITY;
-        let levels = match t {
-            1 | 2 => ScanLevels::Remnants,
-            3 => ScanLevels::Mags(10.0, inf),
-            4 => ScanLevels::Mags(inf, inf),
-            5 => ScanLevels::Mags(-inf, 1.0),
-            6 => ScanLevels::Mags(-inf, -2.5),
-            7 => ScanLevels::Mags(-inf, 2.0),
-            8 => ScanLevels::Mags(0.0, 3.5),
-            9 => ScanLevels::Mags(1.5, 5.5),
-            10 => ScanLevels::Mags(-inf, 7.0),
-            11 => ScanLevels::Mags(-inf, 10.5),
-            _ => ScanLevels::All,
-        };
-        rows.extend(st.stars_within(center, radius_pc, MAX_SYSTEMS, levels, &keep).into_iter().map(|(p, info)| SystemRow {
+        rows.extend(st.stars_within(center, radius_pc, MAX_SYSTEMS, type_levels(t), &keep).into_iter().map(|(p, info)| SystemRow {
             name: info.name.clone(),
             pos_pc: p,
             dist_pc: p.distance(center),
@@ -756,8 +799,17 @@ fn filter_window(ctx: &egui::Context, st: &mut SearchState, i18n: &I18n) {
 /// the catalog first, in a frame where nothing else holds the catalog.
 fn apply_pending(mut pending: ResMut<PendingSelect>, mut data: ResMut<SeData>, mut cam: ResMut<FlyCamera>) {
     let Some((row, body, go)) = pending.0.as_ref() else { return };
-    if data.catalog.find(&row.name).is_none() {
+    // A procedural system not in the catalog, or whose root stayed when CacheSizeSolarSystems
+    // freed its members: generated again (materialize_star keeps a loaded root and its system).
+    if data.catalog.find(&row.name).is_none() || data.catalog.find(body).is_none() {
         let StarSource::Procedural(info) = &row.source else {
+            // A catalog star's generated system is only made on arrival: its star meanwhile.
+            if let Some(r) = data.catalog.find(&row.name) {
+                cam.selected = Some(r);
+                if *go {
+                    start_travel(&mut cam, r, None);
+                }
+            }
             pending.0 = None;
             return;
         };
@@ -771,4 +823,52 @@ fn apply_pending(mut pending: ResMut<PendingSelect>, mut data: ResMut<SeData>, m
         }
     }
     pending.0 = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn giant_search_scans_the_levels_giants_are_in() {
+        use se_core::star_octree::{GalaxyStarInput, StarOctree};
+        let r = 19_329.9;
+        let mw = GalaxyStarInput { dims: DVec3::splat(r), radius_pc: r, hubble: 15, has_model: true, seed: -8_628_293, galaxy: se_core::proc_galsys::GalaxyRef::Catalog(8514) };
+        let t = StarOctree::new(&mw, 7.0);
+        let ScanLevels::Mags(lo, hi) = type_levels(5) else { panic!("giants scan by magnitude") };
+        // As procstars' stars_within picks levels; SE's field giants are mostly at levels 4 and 5.
+        let wanted = |level: u8| {
+            let (b, f) = t.mag_band(level);
+            b < hi && f > lo
+        };
+        assert!(wanted(4) && wanted(5), "{:?} {:?}", t.mag_band(4), t.mag_band(5));
+    }
+
+    #[test]
+    fn catalog_stars_without_planets_list_the_system_made_on_arrival() {
+        let mut cat = Catalog::new();
+        cat.load_sc(
+            r#"Star "Lonely" { RA 1 Dec 20 Dist 30 Class "G2V" MassSol 1 }
+Star "Planetless" { RA 1 Dec 20 Dist 30.1 Class "G2V" MassSol 1 NoPlanets true }"#,
+            "test",
+        );
+        cat.finalize();
+        let Some(ObjectRef::Star(i)) = cat.find("Lonely") else { panic!() };
+        let center = cat.stars[i as usize].pos_pc;
+        // The planets system.rs gives it on arrival.
+        let want: Vec<String> = generate(&cat, generated_system_star(&cat, i).unwrap(), false)()
+            .0
+            .bodies
+            .into_iter()
+            .filter(|b| matches!(b.tag, "Planet" | "DwarfPlanet" | "Moon" | "DwarfMoon"))
+            .map(|b| b.name)
+            .collect();
+        assert!(!want.is_empty());
+        let scan = Arc::new(Scan::default());
+        run_scan(Arc::new(cat), None, center, 1.0, se_core::time::J2000, ScanKind::Systems, scan.clone());
+        let rows = scan.rows.lock().unwrap();
+        let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
+        assert_eq!(row("Lonely").bodies.iter().map(|b| b.name.clone()).collect::<Vec<_>>(), want);
+        assert!(row("Planetless").bodies.is_empty());
+    }
 }

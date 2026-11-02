@@ -213,6 +213,12 @@ pub fn ogg_length(bytes: &[u8]) -> Option<f32> {
     (rate > 0 && granule != u64::MAX).then(|| (granule as f64 / rate as f64) as f32)
 }
 
+/// Whether `bytes` look like an Ogg Vorbis stream: an `OggS` page whose first packet is the
+/// Vorbis identification header. bevy_audio's decoder panics on anything else (mp3, Opus, text).
+pub fn is_ogg_vorbis(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"OggS") && bytes.get(..bytes.len().min(512)).is_some_and(|h| h.windows(7).any(|w| w == b"\x01vorbis"))
+}
+
 /// Flips music on or off; the driver stops or starts playback accordingly.
 pub fn toggle(state: &mut MusicState) {
     state.enabled = !state.enabled;
@@ -243,6 +249,8 @@ fn music_driver(
     (mut msg, i18n, mut script): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, ResMut<ScriptMusic>),
 ) {
     let dt = time.delta_secs();
+    // A track a script started this frame (not in the query until the commands apply).
+    let mut started: Option<Entity> = None;
     // Script requests (dropped while music is off).
     for req in std::mem::take(&mut script.requests) {
         if !state.enabled {
@@ -280,6 +288,10 @@ fn music_driver(
                         continue;
                     }
                 };
+                if !is_ogg_vorbis(&bytes) {
+                    warn!("music: {path} is not an Ogg Vorbis file, skipped");
+                    continue;
+                }
                 for (_, mut t, sink) in &mut tracks {
                     t.hold = false;
                     t.rate = -1.0 / mix.max(0.01);
@@ -287,7 +299,12 @@ fn music_driver(
                         s.play();
                     }
                 }
-                let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
+                // A second PlayMusic in the same frame replaces the first.
+                if let Some(e) = started.take() {
+                    commands.entity(e).despawn();
+                }
+                let (e, name) = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
+                started = Some(e);
                 if SHOW_TITLE {
                     let title = name.strip_suffix(".ogg").unwrap_or(&name);
                     msg.show(format!("{}: {title}", i18n.tr("Music")));
@@ -295,9 +312,11 @@ fn music_driver(
                 state.current = Some(name);
                 // The playlist must not cross-fade over it at once.
                 queue.skip = false;
-                return;
             }
         }
+    }
+    if started.is_some() {
+        return;
     }
     // Fades; a track faded out (or finished) is removed, a paused one kept.
     let mut playing = None;
@@ -356,6 +375,10 @@ fn music_driver(
                 continue;
             }
         };
+        if !is_ogg_vorbis(&bytes) {
+            warn!("music: {path} is not an Ogg Vorbis file, skipped");
+            continue;
+        }
         // Every track still playing fades out, a paused one too (N after a script's PauseMusic
         // must not leave it counted as playing).
         for (_, mut t, sink) in &mut tracks {
@@ -367,7 +390,7 @@ fn music_driver(
                 }
             }
         }
-        let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
+        let (_, name) = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
         if SHOW_TITLE {
             let title = name.strip_suffix(".ogg").unwrap_or(&name);
             msg.show(format!("{}: {title}", i18n.tr("Music")));
@@ -378,19 +401,21 @@ fn music_driver(
     }
 }
 
-/// Starts a track, fading in over `mix` s; returns its file name.
-fn spawn_track(commands: &mut Commands, assets: &mut Assets<AudioSource>, state: &MusicState, bytes: Vec<u8>, path: &str, mix: f32) -> String {
+/// Starts a track, fading in over `mix` s; returns its entity and file name.
+fn spawn_track(commands: &mut Commands, assets: &mut Assets<AudioSource>, state: &MusicState, bytes: Vec<u8>, path: &str, mix: f32) -> (Entity, String) {
     let length = ogg_length(&bytes);
     let handle = assets.add(AudioSource { bytes: Arc::from(bytes) });
     let name = file_name(path).to_string();
     let gain = if mix > 0.0 { 0.0 } else { 1.0 };
-    commands.spawn((
-        AudioPlayer(handle),
-        PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
-        MusicTrack { gain, rate: 1.0 / mix.max(0.01), length, hold: false },
-    ));
+    let e = commands
+        .spawn((
+            AudioPlayer(handle),
+            PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
+            MusicTrack { gain, rate: 1.0 / mix.max(0.01), length, hold: false },
+        ))
+        .id();
     info!("music: playing {name}");
-    name
+    (e, name)
 }
 
 #[cfg(test)]
@@ -407,5 +432,17 @@ mod tests {
         last.extend_from_slice(&(44_100u64 * 90).to_le_bytes());
         f.extend_from_slice(&last);
         assert_eq!(ogg_length(&f), Some(90.0));
+        assert!(is_ogg_vorbis(&f));
+    }
+
+    #[test]
+    fn non_vorbis_bytes_are_rejected() {
+        assert!(!is_ogg_vorbis(b"ID3\x04\x00\x00\x00\x00\x00\x00 mp3 data"));
+        assert!(!is_ogg_vorbis(b"Class \"Earth\" { Files ( \"a.ogg\" ) }"));
+        let mut opus = vec![0u8; 64];
+        opus[0..4].copy_from_slice(b"OggS");
+        opus[28..36].copy_from_slice(b"OpusHead");
+        assert!(!is_ogg_vorbis(&opus));
+        assert!(!is_ogg_vorbis(b""));
     }
 }

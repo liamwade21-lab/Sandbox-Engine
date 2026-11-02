@@ -26,9 +26,26 @@ pub struct SessionPlugin;
 impl Plugin for SessionPlugin {
     fn build(&self, app: &mut App) {
         // After bevy_window turns the closed window into AppExit (in Last too).
-        app.add_systems(PostStartup, restore_session).add_systems(Last, save_on_exit.after(bevy::window::ExitSystems));
+        app.add_systems(PostStartup, restore_session)
+            .add_systems(Update, resolve_pending_ref.run_if(resource_exists::<PendingRef>))
+            .add_systems(Last, save_on_exit.after(bevy::window::ExitSystems));
     }
 }
+
+/// A saved `RefBody` the catalog did not have at startup: a procedural star or a generated planet
+/// or moon, added only once the camera's system is made (`system.rs`). Looked up again each frame
+/// for [`PENDING_REF_S`].
+#[derive(Resource, Debug, Clone)]
+pub(crate) struct PendingRef {
+    name: String,
+    bind_mode: u8,
+    /// The saved time, for carrying the camera along with the body once it is found.
+    jd: f64,
+    waited_s: f32,
+}
+
+/// How long a saved procedural `RefBody` is waited for (s).
+const PENDING_REF_S: f32 = 60.0;
 
 fn save_path() -> std::path::PathBuf {
     crate::settings::user_file("save.cfg")
@@ -111,7 +128,7 @@ impl Session {
     }
 }
 
-fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
+fn restore_session(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
     if crate::settings::scripted(&cfg) || cfg.start_given {
         return;
     }
@@ -136,7 +153,49 @@ fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<Fl
     if let (Some(r), 1..) = (cam.selected, s.bind_mode) {
         cam.bind(Some(r), s.bind_mode == 2, &se_core::ephemeris::Ephemeris::new(cat), s.jd);
     }
+    if cam.selected.is_none() && !s.ref_body.is_empty() {
+        info!("the saved object \"{}\" is not loaded yet; waiting for its system", s.ref_body);
+        commands.insert_resource(PendingRef { name: s.ref_body.clone(), bind_mode: s.bind_mode, jd: s.jd, waited_s: 0.0 });
+    }
     info!("restored the session from {}", save_path().display());
+}
+
+/// Selects and binds the saved procedural `RefBody` once its system is made. The camera is carried
+/// along with the body for the time it waited, as the binding would have done (it kept its place in
+/// space meanwhile, and planets move tens of km/s). Nothing is changed that the user set meanwhile.
+fn resolve_pending_ref(
+    mut commands: Commands,
+    time: Res<Time>,
+    pending: Option<ResMut<PendingRef>>,
+    data: Res<SeData>,
+    mut cam: ResMut<FlyCamera>,
+    sim: Res<SimTime>,
+) {
+    let Some(mut p) = pending else { return };
+    let Some(r) = data.catalog.find(&p.name) else {
+        p.waited_s += time.delta_secs();
+        if p.waited_s > PENDING_REF_S {
+            warn!("the saved object \"{}\" was not found; the session continues unbound", p.name);
+            commands.remove_resource::<PendingRef>();
+        }
+        return;
+    };
+    commands.remove_resource::<PendingRef>();
+    if cam.selected.is_none() {
+        cam.selected = Some(r);
+    }
+    if p.bind_mode == 0 || cam.follow.is_some() || cam.travel.is_some() {
+        return;
+    }
+    let eph = se_core::ephemeris::Ephemeris::new(&data.catalog);
+    let sync = p.bind_mode == 2;
+    let (then, now) = (eph.position(r, p.jd), eph.position(r, sim.jd));
+    let turn = if sync { eph.orientation(r, sim.jd) * eph.orientation(r, p.jd).inverse() } else { DQuat::IDENTITY };
+    let off = cam.pos.delta_m(then);
+    cam.pos = now.offset_m(turn * off);
+    cam.rot = (turn * cam.rot).normalize();
+    cam.bind(Some(r), sync, &eph, sim.jd);
+    info!("bound to the saved object \"{}\" again", p.name);
 }
 
 /// SE's save.cfg `Velocity` in the inertial modes: the assigned acceleration times this
@@ -150,6 +209,7 @@ pub(crate) fn save_on_exit(
     cam: Res<FlyCamera>,
     sim: Res<SimTime>,
     flight: Option<Res<crate::ship::Flight>>,
+    pending: Option<Res<PendingRef>>,
 ) {
     if exits.read().count() == 0 || crate::settings::scripted(&cfg) || cfg.start_given {
         return;
@@ -166,11 +226,14 @@ pub(crate) fn save_on_exit(
         (_, true) => cam.speed * crate::camera::MODE_SPEED_FACTOR,
         _ => cam.speed,
     };
+    // SE's RefBody: the body the camera is bound to, else the selection (else a saved one still
+    // waited for, so quitting early does not lose it).
+    let ref_body = cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string());
+    let still_pending = pending.as_ref().filter(|_| ref_body.is_none() && cam.follow.is_none());
     let s = Session {
         move_mode,
-        bind_mode: cam.bind_mode(),
-        // SE's RefBody: the body the camera is bound to, else the selection.
-        ref_body: cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string()).unwrap_or_default(),
+        bind_mode: still_pending.map_or(cam.bind_mode(), |p| p.bind_mode),
+        ref_body: ref_body.or(still_pending.map(|p| p.name.clone())).unwrap_or_default(),
         pos: [cam.pos.x, cam.pos.y, cam.pos.z],
         rot: [rot.w, rot.x, rot.y, rot.z],
         speed_pc: speed / se_core::units::METERS_PER_PC,
@@ -211,5 +274,44 @@ mod tests {
         // A bad MoveMode falls back to Free mode.
         let bad = s.to_cfg().replace("MoveMode    3", "MoveMode    7");
         assert_eq!(Session::parse(&bad).unwrap().move_mode, 1);
+    }
+
+    #[test]
+    fn a_procedural_ref_body_is_bound_once_it_exists() {
+        use bevy::ecs::system::RunSystemOnce;
+        use se_core::ephemeris::Ephemeris;
+        use std::sync::Arc;
+        let star = r#"Star "Sun" { RA 0 Dec 0 Dist 0 Class "G2V" MassSol 1 }"#;
+        let planet = r#"Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 0.1 } }"#;
+        let catalog = |src: &str| {
+            let mut cat = se_core::catalog::Catalog::new();
+            cat.load_sc(src, "test");
+            cat.finalize();
+            Arc::new(cat)
+        };
+        let full = catalog(&format!("{star}\n{planet}"));
+        let p = full.find("P").unwrap();
+        let jd0 = se_core::time::J2000;
+        let saved_off = DVec3::X * 3.0e7;
+        let mut world = World::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(std::time::Duration::from_secs_f64(0.5));
+        world.insert_resource(time);
+        // The camera where it was saved; 10 s of simulated time pass before the planet exists.
+        let cam = FlyCamera { pos: Ephemeris::new(&full).position(p, jd0).offset_m(saved_off), ..default() };
+        world.insert_resource(cam);
+        world.insert_resource(SimTime { jd: jd0 + 10.0 / 86_400.0, rate: 1.0, paused: false });
+        world.insert_resource(SeData { vfs: Arc::new(se_core::vfs::Vfs::new()), catalog: catalog(star) });
+        world.insert_resource(PendingRef { name: "P".into(), bind_mode: 1, jd: jd0, waited_s: 0.0 });
+        world.run_system_once(resolve_pending_ref).unwrap();
+        assert!(world.get_resource::<PendingRef>().is_some() && world.resource::<FlyCamera>().selected.is_none());
+        // Its system is made: selected, bound, and still where it was relative to the planet.
+        world.resource_mut::<SeData>().catalog = full.clone();
+        world.run_system_once(resolve_pending_ref).unwrap();
+        assert!(world.get_resource::<PendingRef>().is_none());
+        let cam = world.resource::<FlyCamera>();
+        assert_eq!((cam.selected, cam.follow.map(|f| f.target), cam.bind_mode()), (Some(p), Some(p), 1));
+        let now = Ephemeris::new(&full).position(p, jd0 + 10.0 / 86_400.0);
+        assert!((cam.pos.delta_m(now) - saved_off).length() < 1.0);
     }
 }

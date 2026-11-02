@@ -13,7 +13,7 @@ done
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 cd "$REPO" || exit 1
 mkdir -p "$(dirname "$OUT")"
-NO_COLOR=1 RUST_LOG_STYLE=never SE_NO_MUSIC=1 timeout 400 ${PORT_BIN:-target/release/spaceengine-rs.exe} --run "$CMDS" --screenshot "$OUT" --frames "$FRAMES" "$@" > "$OUT.log" 2>&1
+NO_COLOR=1 RUST_LOG_STYLE=never SE_NO_MUSIC=1 timeout 400 "${PORT_BIN:-target/release/spaceengine-rs.exe}" --run "$CMDS" --screenshot "$OUT" --frames "$FRAMES" "$@" > "$OUT.log" 2>&1
 echo "exit $?; log: $OUT.log"
 grep -iE "error|panic|warn" "$OUT.log" | grep -v "wgpu_hal" | tail -8
 tail -5 "$OUT.log"

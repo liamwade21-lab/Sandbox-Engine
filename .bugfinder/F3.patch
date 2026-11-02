@@ -1,0 +1,945 @@
+diff --git a/crates/se_engine/src/camera.rs b/crates/se_engine/src/camera.rs
+index 7d38ac5..0a0906a 100644
+--- a/crates/se_engine/src/camera.rs
++++ b/crates/se_engine/src/camera.rs
+@@ -83,6 +83,11 @@ pub struct FlyCamera {
+     /// FOV animation (SE's camera +0x1468 / +0x1470 / +0x1478 / +0x1480, FUN_14056ad80): from,
+     /// to and the time it has run.
+     pub zoom_anim: Option<ZoomAnim>,
++    /// Counts the travels started (Go to, Center, Land, Horizon) and the binds made with
++    /// [`Self::bind`] (Shift+F / Shift+R / Shift+D, the toolbar), so a script trigger can tell a new
++    /// one from one already under way, or a binding already there, when it began waiting.
++    pub travel_serial: u32,
++    pub bind_serial: u32,
+ }
+ 
+ /// One FOV animation over `ZoomTime`.
+@@ -210,6 +215,8 @@ impl Default for FlyCamera {
+             move_mode: MoveMode::Free,
+             thrust: DVec3::ZERO,
+             zoom_anim: None,
++            travel_serial: 0,
++            bind_serial: 0,
+         }
+     }
+ }
+@@ -231,6 +238,7 @@ impl FlyCamera {
+             return;
+         }
+         self.follow = target.map(|t| Follow::new(t, sync, eph, jd));
++        self.bind_serial = self.bind_serial.wrapping_add(1);
+     }
+ 
+     /// Switch the movement mode (FUN_14057a740): leaving Spacecraft or Aircraft mode multiplies the
+@@ -591,7 +599,8 @@ fn input_controls(
+                     // Zoom: scale the distance to the object (drag up to approach).
+                     let r = eph.radius_m(p).max(1.0);
+                     let f = (motion.delta.y as f64 * 0.01).exp();
+-                    let dist = (off.length() * f).max(r * 1.0001);
++                    let solid = matches!(p, ObjectRef::Body(_) | ObjectRef::Star(_));
++                    let dist = zoom_distance(off.length(), f, r, solid);
+                     cam.pos = center.offset_m(off.normalize_or(DVec3::Z) * dist);
+                 }
+                 cam.travel = None;
+@@ -627,10 +636,10 @@ fn input_controls(
+             cam.speed = clamp_speed(cam.speed * WHEEL_STEP.powf(notches as f64));
+         }
+     }
+-    if egui_keys {
+-        *last_rot = None;
+-        return;
+-    }
++    // Typing in a text field: the keys count as let go, so flight and turning ramp down as they
++    // would without them instead of carrying on.
++    let no_keys = ButtonInput::<KeyCode>::default();
++    let keys: &ButtonInput<KeyCode> = if egui_keys { &no_keys } else { &keys };
+     let plus = keys.just_pressed(KeyCode::NumpadAdd) || keys.just_pressed(KeyCode::Equal);
+     let minus = keys.just_pressed(KeyCode::NumpadSubtract) || keys.just_pressed(KeyCode::Minus);
+     if plus || minus {
+@@ -732,7 +741,7 @@ fn input_controls(
+         }
+     }
+     // Aircraft: SE keeps the velocity in the camera frame, so it turns as the camera turns.
+-    // Only from the previous frame: after frames this system skipped (typing, flying a ship) the
++    // Only from the previous frame: after frames this system skipped (flying a ship) the
+     // rotation meanwhile is not applied at once.
+     let frame = frames.0;
+     if let (MoveMode::Aircraft, Some((prev, f))) = (cam.move_mode, *last_rot) {
+@@ -808,6 +817,14 @@ fn input_controls(
+     }
+ }
+ 
++/// The distance after a two-button zoom by `f` from `d`: never into a solid body or star (radius
++/// `r`), nor into a galaxy, cluster or nebula from outside it; inside one the zoom is free (down to
++/// 1 m) instead of jumping out to its edge.
++fn zoom_distance(d: f64, f: f64, r: f64, solid: bool) -> f64 {
++    let floor = if solid || d > r { r * 1.0001 } else { 1.0 };
++    (d * f).max(floor)
++}
++
+ /// An Aircraft-mode velocity after the camera turned from `prev` to `rot`: the same in the camera's
+ /// frame (SE keeps it there, FUN_140576090 mode 3).
+ pub fn aircraft_turn(prev: DQuat, rot: DQuat, v: DVec3) -> DVec3 {
+@@ -967,12 +984,14 @@ pub fn start_center(cam: &mut FlyCamera, target: ObjectRef) {
+     }
+     let start_rot = cam.rot;
+     cam.travel = Some(Travel { target, kind: TravelKind::Center, start_off: None, start_rot, end_distance: -1.0, elapsed: 0.0, duration: CENTER_TIME, set_speed: false });
++    cam.travel_serial = cam.travel_serial.wrapping_add(1);
+ }
+ 
+ /// SE's Horizon object (End): level the view to `target`'s horizon in `CenterTime`.
+ pub fn start_horizon(cam: &mut FlyCamera, target: ObjectRef) {
+     let start_rot = cam.rot;
+     cam.travel = Some(Travel { target, kind: TravelKind::Horizon, start_off: None, start_rot, end_distance: -1.0, elapsed: 0.0, duration: CENTER_TIME, set_speed: false });
++    cam.travel_serial = cam.travel_serial.wrapping_add(1);
+ }
+ 
+ /// SE's Land on object (Shift+G): planets, moons, asteroids and comets only.
+@@ -983,6 +1002,7 @@ pub fn start_land(cam: &mut FlyCamera, target: ObjectRef) {
+     cam.velocity = DVec3::ZERO;
+     let start_rot = cam.rot;
+     cam.travel = Some(Travel { target, kind: TravelKind::Land, start_off: None, start_rot, end_distance: LAND_ALTITUDE_M, elapsed: 0.0, duration: -1.0, set_speed: true });
++    cam.travel_serial = cam.travel_serial.wrapping_add(1);
+ }
+ 
+ /// Go to `target` (refused while a script locks movement).
+@@ -1002,6 +1022,7 @@ pub fn start_travel(cam: &mut FlyCamera, target: ObjectRef, distance: Option<f64
+         duration: -1.0,
+         set_speed: true,
+     });
++    cam.travel_serial = cam.travel_serial.wrapping_add(1);
+ }
+ 
+ /// Find the nearest surface among the active system's bodies and the galaxies.
+@@ -1122,7 +1143,9 @@ pub fn travel_and_move(
+                 cam.assign_velocity(end_d / GOTO_SPEED_DIVISOR);
+             }
+             let start_off = *tr.start_off.get_or_insert_with(|| cam.pos.delta_m(target_pos));
+-            let start_d = start_off.length().max(end_d * 1.0001);
++            // From the real distance, also from inside the arrival distance (no jump out on the
++            // first frame).
++            let start_d = start_off.length().max(1.0);
+             // Interpolate the distance logarithmically so huge jumps stay smooth.
+             let d = (start_d.ln() + (end_d.ln() - start_d.ln()) * s).exp();
+             let dir = start_off.normalize_or(DVec3::Z);
+@@ -1672,6 +1695,54 @@ Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period
+         assert!((offset(&world, planet) - before).length() < 1.0, "{:?} -> {:?}", before, offset(&world, planet));
+     }
+ 
++    #[test]
++    fn goto_from_inside_the_arrival_distance_does_not_jump() {
++        let (mut world, planet) = setup();
++        // 1.5 radii out; Go to arrives at 4 radii.
++        let start = DVec3::X * 9.0e6;
++        let pos = world.resource::<FlyCamera>().pos.offset_m(start - offset(&world, planet));
++        world.resource_mut::<FlyCamera>().pos = pos;
++        start_travel(&mut world.resource_mut::<FlyCamera>(), planet, None);
++        step(&mut world, 1);
++        let d1 = offset(&world, planet).length();
++        assert!((d1 - 9.0e6).abs() < 1.0e5, "first frame at {d1}");
++        step(&mut world, 500);
++        assert!((offset(&world, planet).length() - 2.4e7).abs() < 1.0e3);
++    }
++
++    #[test]
++    fn travels_and_binds_are_counted() {
++        // A script's Control|Goto / Follow wait compares these with their values when it began, so
++        // a flight under way or a binding already there does not hide a new one.
++        let (world, planet) = setup();
++        let cat = world.resource::<SeData>().catalog.clone();
++        let eph = Ephemeris::new(&cat);
++        let mut cam = world.resource::<FlyCamera>().clone();
++        start_travel(&mut cam, planet, None);
++        start_center(&mut cam, planet);
++        assert_eq!(cam.travel_serial, 2);
++        cam.bind(Some(planet), false, &eph, 0.0);
++        cam.bind(Some(planet), false, &eph, 0.0);
++        assert_eq!(cam.bind_serial, 2);
++        // Locked: refused, not counted.
++        cam.locks.movement = true;
++        start_travel(&mut cam, planet, None);
++        cam.bind(None, false, &eph, 0.0);
++        assert_eq!((cam.travel_serial, cam.bind_serial), (2, 2));
++    }
++
++    #[test]
++    fn zoom_floor_only_for_solid_bodies() {
++        // Outside a planet the zoom stops at its surface.
++        assert_eq!(zoom_distance(2.0e7, 0.01, 6.0e6, true), 6.0e6 * 1.0001);
++        // Inside a galaxy any zoom stays inside instead of jumping to its edge.
++        let r = 1.5e21;
++        assert_eq!(zoom_distance(1.0e20, 0.5, r, false), 5.0e19);
++        assert_eq!(zoom_distance(1.0e20, 1.25, r, false), 1.25e20);
++        // From outside it, not into it.
++        assert_eq!(zoom_distance(2.0e21, 0.5, r, false), r * 1.0001);
++    }
++
+     #[test]
+     fn horizon_turns_keep_the_roll() {
+         let up = DVec3::new(0.3, 0.9, -0.2).normalize();
+diff --git a/crates/se_engine/src/capture.rs b/crates/se_engine/src/capture.rs
+index 61aedd9..7ac8d05 100644
+--- a/crates/se_engine/src/capture.rs
++++ b/crates/se_engine/src/capture.rs
+@@ -17,8 +17,10 @@
+ 
+ use std::sync::{Arc, Mutex};
+ 
+-use bevy::camera::visibility::RenderLayers;
+-use bevy::camera::{Hdr, RenderTarget};
++use bevy::camera::primitives::Frustum;
++use bevy::camera::visibility::{RenderLayers, VisibilitySystems};
++use bevy::camera::{Hdr, RenderTarget, SubCameraView};
++use bevy::shape::ViewFrustum;
+ use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
+ use bevy::prelude::*;
+ use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
+@@ -619,14 +621,46 @@ impl Plugin for CapturePlugin {
+             .add_systems(Startup, load_skybox_format)
+             .add_systems(PreUpdate, capture_commands)
+             .add_systems(Update, (run_skybox, sky_all_around).chain())
+-            .add_systems(PostUpdate, follow_main.after(UniverseSet::Camera).before(TransformSystems::Propagate));
++            .add_systems(PostUpdate, follow_main.after(UniverseSet::Camera).before(TransformSystems::Propagate))
++            .add_systems(PostUpdate, sub_view_frusta.after(VisibilitySystems::UpdateFrusta).before(VisibilitySystems::CheckVisibility));
+     }
+ }
+ 
++/// Bevy culls every camera with the frustum of its whole projection (`update_frusta` ignores
++/// `sub_camera_view`), so a high-resolution screenshot's tile away from the image centre lost what
++/// lay outside a centred frustum of the tile's own aspect (terrain, sea, body models, clouds). A view
++/// rendering a sub-view gets the frustum of the part it renders, every frame.
++fn sub_view_frusta(mut views: Query<(&Camera, &GlobalTransform, &Projection, &mut Frustum), With<CaptureView>>) {
++    for (camera, tf, proj, mut frustum) in &mut views {
++        let Some(sub) = camera.sub_camera_view else { continue };
++        *frustum = sub_view_frustum(proj, &sub, tf);
++    }
++}
++
++fn sub_view_frustum(proj: &Projection, sub: &SubCameraView, tf: &GlobalTransform) -> Frustum {
++    let clip_from_world = proj.get_clip_from_view_for_sub(sub) * tf.affine().inverse();
++    Frustum(ViewFrustum::from_clip_from_world_custom_far(&clip_from_world, &tf.translation(), &tf.back(), proj.far()))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn sub_view_tiles_cull_with_their_own_part() {
++        use bevy::camera::primitives::Sphere;
++        // A 2048 x 512 image of 512 x 512 tiles: the right tile covers 27..46 degrees right of centre.
++        let proj = Projection::Perspective(PerspectiveProjection { fov: 0.5, aspect_ratio: 1.0, near: 0.05, far: 1.0e6, ..default() });
++        let sub = SubCameraView { full_size: UVec2::new(2048, 512), offset: Vec2::new(1536.0, 0.0), size: UVec2::new(512, 512) };
++        let tf = GlobalTransform::IDENTITY;
++        let at = |deg: f32| Sphere { center: (Vec3::new(deg.to_radians().sin(), 0.0, -deg.to_radians().cos()) * 100.0).into(), radius: 0.1 };
++        let f = sub_view_frustum(&proj, &sub, &tf);
++        assert!(f.intersects_sphere(&at(40.0), true));
++        assert!(!f.intersects_sphere(&at(0.0), true) && !f.intersects_sphere(&at(-40.0), true));
++        // Bevy's own frustum for that camera is centred and misses it.
++        assert!(!proj.compute_frustum(&tf).intersects_sphere(&at(40.0), true));
++    }
++
+     #[test]
+     fn faces_look_where_they_are_named() {
+         for (i, (f, u)) in FACES.iter().enumerate() {
+diff --git a/crates/se_engine/src/display.rs b/crates/se_engine/src/display.rs
+index fca5981..be496dd 100644
+--- a/crates/se_engine/src/display.rs
++++ b/crates/se_engine/src/display.rs
+@@ -15,7 +15,8 @@ use crate::config::EngineConfig;
+ 
+ #[derive(Resource, Debug, Clone, PartialEq)]
+ pub struct DisplaySettings {
+-    /// The windowed size and place (physical pixels), kept while maximized or fullscreen.
++    /// The windowed size (logical pixels, as the window is opened with) and place (physical), kept
++    /// while maximized or fullscreen.
+     pub size: UVec2,
+     pub pos: Option<IVec2>,
+     pub maximized: bool,
+@@ -158,30 +159,48 @@ fn apply_settings(settings: Res<DisplaySettings>, mut window: Single<&mut Window
+     }
+ }
+ 
++/// A window of `size` (logical) that does not fit its monitor (`monitor`, physical, at `scale`) gets
++/// 90% of the monitor instead: sizes saved as physical pixels by older builds grew on scaled displays.
++fn fit_to_monitor(size: Vec2, monitor: UVec2, scale: f32) -> Option<Vec2> {
++    let max = monitor.as_vec2() / scale.max(0.1);
++    (monitor.x > 0 && monitor.y > 0 && (size.x > max.x || size.y > max.y)).then(|| size.min(max * 0.9).round())
++}
++
+ /// Keep the windowed size and place, and whether the window is maximized (from winit, on the main
+ /// thread), as SE does.
+ fn track_window(
+     _main: bevy::ecs::system::NonSendMarker,
+     cfg: Res<EngineConfig>,
+     mut settings: ResMut<DisplaySettings>,
+-    window: Single<(Entity, &Window), With<PrimaryWindow>>,
++    window: Single<(Entity, &mut Window), With<PrimaryWindow>>,
++    mut fitted: Local<bool>,
+ ) {
+     if crate::settings::scripted(&cfg) {
+         return;
+     }
+-    let (entity, w) = *window;
++    let (entity, mut w) = window.into_inner();
+     if !matches!(w.mode, WindowMode::Windowed) {
+         return;
+     }
+-    let state = bevy::winit::WINIT_WINDOWS.with_borrow(|ww| ww.get_window(entity).map(|win| (win.is_maximized(), win.is_minimized().unwrap_or(false), win.outer_position().ok())));
+-    let Some((maximized, minimized, outer)) = state else { return };
++    let state = bevy::winit::WINIT_WINDOWS.with_borrow(|ww| {
++        ww.get_window(entity).map(|win| (win.is_maximized(), win.is_minimized().unwrap_or(false), win.outer_position().ok(), win.current_monitor().map(|m| m.size())))
++    });
++    let Some((maximized, minimized, outer, monitor)) = state else { return };
+     if minimized {
+         return;
+     }
++    if !std::mem::replace(&mut *fitted, true) && !maximized {
++        let size = Vec2::new(w.resolution.width(), w.resolution.height());
++        if let Some(fit) = monitor.and_then(|m| fit_to_monitor(size, UVec2::new(m.width, m.height), w.resolution.scale_factor())) {
++            w.resolution.set(fit.x, fit.y);
++            return;
++        }
++    }
+     let mut d = settings.clone();
+     d.maximized = maximized;
+     if !maximized {
+-        d.size = UVec2::new(w.resolution.physical_width(), w.resolution.physical_height());
++        // Logical, as `window()` opens it: physical pixels would grow by the display scale each start.
++        d.size = UVec2::new(w.resolution.width().round() as u32, w.resolution.height().round() as u32);
+         if let Some(p) = outer {
+             d.pos = Some(IVec2::new(p.x, p.y));
+         }
+@@ -202,4 +221,12 @@ mod tests {
+         assert_eq!(DisplaySettings::load(&d.to_cfg()), d);
+         assert_eq!(DisplaySettings::load(""), DisplaySettings::default());
+     }
++
++    #[test]
++    fn oversized_window_fits_its_monitor() {
++        // 2400x1350 saved as physical by an older build, on a 1920x1080 display at 125%.
++        assert_eq!(fit_to_monitor(Vec2::new(2400.0, 1350.0), UVec2::new(1920, 1080), 1.25), Some(Vec2::new(1382.0, 778.0)));
++        assert_eq!(fit_to_monitor(Vec2::new(1200.0, 700.0), UVec2::new(1920, 1080), 1.25), None);
++        assert_eq!(fit_to_monitor(Vec2::new(1200.0, 700.0), UVec2::ZERO, 1.0), None);
++    }
+ }
+diff --git a/crates/se_engine/src/grids.rs b/crates/se_engine/src/grids.rs
+index ee1d59a..a93817c 100644
+--- a/crates/se_engine/src/grids.rs
++++ b/crates/se_engine/src/grids.rs
+@@ -171,7 +171,8 @@ pub(crate) fn draw_grids(
+         // SE multiplies all four channels by ShowGridGeographic^2 and fades the line itself by the
+         // body's size (Width.z), drawn premultiplied (FUN_1404c7460).
+         let c = skin.rgba(COLOR_KEYS[3], DEFAULT_COLORS[3]);
+-        let k = geographic * geographic;
++        // `geographic` is already the switch squared (above), so it is used once.
++        let k = geographic;
+         let rgb = [c[0] * k, c[1] * k, c[2] * k];
+         mesh.premultiplied = true;
+         for b in bodies.iter().filter(|b| !b.star && b.radius_m > 0.0 && b.px_radius > GEO_MIN_PX) {
+diff --git a/crates/se_engine/src/music.rs b/crates/se_engine/src/music.rs
+index d5bef63..2f6e36e 100644
+--- a/crates/se_engine/src/music.rs
++++ b/crates/se_engine/src/music.rs
+@@ -213,6 +213,12 @@ pub fn ogg_length(bytes: &[u8]) -> Option<f32> {
+     (rate > 0 && granule != u64::MAX).then(|| (granule as f64 / rate as f64) as f32)
+ }
+ 
++/// Whether `bytes` look like an Ogg Vorbis stream: an `OggS` page whose first packet is the
++/// Vorbis identification header. bevy_audio's decoder panics on anything else (mp3, Opus, text).
++pub fn is_ogg_vorbis(bytes: &[u8]) -> bool {
++    bytes.starts_with(b"OggS") && bytes.get(..bytes.len().min(512)).is_some_and(|h| h.windows(7).any(|w| w == b"\x01vorbis"))
++}
++
+ /// Flips music on or off; the driver stops or starts playback accordingly.
+ pub fn toggle(state: &mut MusicState) {
+     state.enabled = !state.enabled;
+@@ -243,6 +249,8 @@ fn music_driver(
+     (mut msg, i18n, mut script): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, ResMut<ScriptMusic>),
+ ) {
+     let dt = time.delta_secs();
++    // A track a script started this frame (not in the query until the commands apply).
++    let mut started: Option<Entity> = None;
+     // Script requests (dropped while music is off).
+     for req in std::mem::take(&mut script.requests) {
+         if !state.enabled {
+@@ -280,6 +288,10 @@ fn music_driver(
+                         continue;
+                     }
+                 };
++                if !is_ogg_vorbis(&bytes) {
++                    warn!("music: {path} is not an Ogg Vorbis file, skipped");
++                    continue;
++                }
+                 for (_, mut t, sink) in &mut tracks {
+                     t.hold = false;
+                     t.rate = -1.0 / mix.max(0.01);
+@@ -287,7 +299,12 @@ fn music_driver(
+                         s.play();
+                     }
+                 }
+-                let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
++                // A second PlayMusic in the same frame replaces the first.
++                if let Some(e) = started.take() {
++                    commands.entity(e).despawn();
++                }
++                let (e, name) = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
++                started = Some(e);
+                 if SHOW_TITLE {
+                     let title = name.strip_suffix(".ogg").unwrap_or(&name);
+                     msg.show(format!("{}: {title}", i18n.tr("Music")));
+@@ -295,10 +312,12 @@ fn music_driver(
+                 state.current = Some(name);
+                 // The playlist must not cross-fade over it at once.
+                 queue.skip = false;
+-                return;
+             }
+         }
+     }
++    if started.is_some() {
++        return;
++    }
+     // Fades; a track faded out (or finished) is removed, a paused one kept.
+     let mut playing = None;
+     for (e, mut t, sink) in &mut tracks {
+@@ -356,6 +375,10 @@ fn music_driver(
+                 continue;
+             }
+         };
++        if !is_ogg_vorbis(&bytes) {
++            warn!("music: {path} is not an Ogg Vorbis file, skipped");
++            continue;
++        }
+         // Every track still playing fades out, a paused one too (N after a script's PauseMusic
+         // must not leave it counted as playing).
+         for (_, mut t, sink) in &mut tracks {
+@@ -367,7 +390,7 @@ fn music_driver(
+                 }
+             }
+         }
+-        let name = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
++        let (_, name) = spawn_track(&mut commands, &mut assets, &state, bytes, &path, mix);
+         if SHOW_TITLE {
+             let title = name.strip_suffix(".ogg").unwrap_or(&name);
+             msg.show(format!("{}: {title}", i18n.tr("Music")));
+@@ -378,19 +401,21 @@ fn music_driver(
+     }
+ }
+ 
+-/// Starts a track, fading in over `mix` s; returns its file name.
+-fn spawn_track(commands: &mut Commands, assets: &mut Assets<AudioSource>, state: &MusicState, bytes: Vec<u8>, path: &str, mix: f32) -> String {
++/// Starts a track, fading in over `mix` s; returns its entity and file name.
++fn spawn_track(commands: &mut Commands, assets: &mut Assets<AudioSource>, state: &MusicState, bytes: Vec<u8>, path: &str, mix: f32) -> (Entity, String) {
+     let length = ogg_length(&bytes);
+     let handle = assets.add(AudioSource { bytes: Arc::from(bytes) });
+     let name = file_name(path).to_string();
+     let gain = if mix > 0.0 { 0.0 } else { 1.0 };
+-    commands.spawn((
+-        AudioPlayer(handle),
+-        PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
+-        MusicTrack { gain, rate: 1.0 / mix.max(0.01), length, hold: false },
+-    ));
++    let e = commands
++        .spawn((
++            AudioPlayer(handle),
++            PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(state.volume * gain), ..default() },
++            MusicTrack { gain, rate: 1.0 / mix.max(0.01), length, hold: false },
++        ))
++        .id();
+     info!("music: playing {name}");
+-    name
++    (e, name)
+ }
+ 
+ #[cfg(test)]
+@@ -407,5 +432,17 @@ mod tests {
+         last.extend_from_slice(&(44_100u64 * 90).to_le_bytes());
+         f.extend_from_slice(&last);
+         assert_eq!(ogg_length(&f), Some(90.0));
++        assert!(is_ogg_vorbis(&f));
++    }
++
++    #[test]
++    fn non_vorbis_bytes_are_rejected() {
++        assert!(!is_ogg_vorbis(b"ID3\x04\x00\x00\x00\x00\x00\x00 mp3 data"));
++        assert!(!is_ogg_vorbis(b"Class \"Earth\" { Files ( \"a.ogg\" ) }"));
++        let mut opus = vec![0u8; 64];
++        opus[0..4].copy_from_slice(b"OggS");
++        opus[28..36].copy_from_slice(b"OpusHead");
++        assert!(!is_ogg_vorbis(&opus));
++        assert!(!is_ogg_vorbis(b""));
+     }
+ }
+diff --git a/crates/se_engine/src/screenshot.rs b/crates/se_engine/src/screenshot.rs
+index 6ceb36f..3b147e9 100644
+--- a/crates/se_engine/src/screenshot.rs
++++ b/crates/se_engine/src/screenshot.rs
+@@ -105,15 +105,16 @@ fn scan_number(prefix: &str, dir: &Path) -> u32 {
+     next_number(prefix, names.iter().map(String::as_str))
+ }
+ 
+-/// The number of the next screenshot: the folder is scanned once, then counted up per press, so two
+-/// presses before the first capture arrives still get two numbers.
++/// The number of the next screenshot per name prefix: the folder is scanned once per prefix, then
++/// counted up per press, so two presses (or script shots) before the first capture arrives still get
++/// two numbers.
+ #[derive(Resource, Default)]
+-pub struct ScreenshotNumber(Option<u32>);
++pub struct ScreenshotNumber(std::collections::HashMap<String, u32>);
+ 
+ impl ScreenshotNumber {
+-    fn next(&mut self, dir: &Path) -> u32 {
+-        let n = *self.0.get_or_insert_with(|| scan_number("scr", dir));
+-        self.0 = Some(n + 1);
++    fn next_for(&mut self, prefix: &str, dir: &Path) -> u32 {
++        let n = *self.0.entry(prefix.to_string()).or_insert_with(|| scan_number(prefix, dir));
++        self.0.insert(prefix.to_string(), n + 1);
+         n
+     }
+ }
+@@ -128,10 +129,7 @@ pub fn take(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut
+ pub fn take_named(commands: &mut Commands, settings: &ScreenshotSettings, number: &mut ScreenshotNumber, prefix: Option<&str>) -> Arc<AtomicBool> {
+     let dir = folder();
+     let _ = std::fs::create_dir_all(&dir);
+-    let n = match prefix {
+-        Some(p) if p != "scr" => scan_number(p, &dir),
+-        _ => number.next(&dir),
+-    };
++    let n = number.next_for(prefix.unwrap_or("scr"), &dir);
+     let path = dir.join(format!("{}{n:05}.{}", prefix.unwrap_or("scr"), settings.format));
+     let s = settings.clone();
+     let done = Arc::new(AtomicBool::new(false));
+@@ -599,12 +597,17 @@ struct HiresJob {
+ }
+ 
+ #[derive(Resource, Default)]
+-struct HiresState(Option<HiresJob>);
++pub(crate) struct HiresState(Option<HiresJob>);
+ 
+ impl HiresState {
+     pub fn running(&self) -> bool {
+         self.0.is_some()
+     }
++
++    /// The user's LandLOD while a job holds its own (what settings.cfg must keep).
++    pub fn user_land_lod(&self) -> Option<f32> {
++        self.0.as_ref().map(|j| j.restore.1)
++    }
+ }
+ 
+ fn hires_key(keys: Res<ButtonInput<KeyCode>>, mut egui: EguiContexts, mut ui: ResMut<HiresUi>, mut env_read: Local<bool>) {
+@@ -848,7 +851,16 @@ mod tests {
+         // Counted up per press without waiting for the files.
+         let mut n = ScreenshotNumber::default();
+         let empty = PathBuf::from("no such folder");
+-        assert_eq!((n.next(&empty), n.next(&empty)), (0, 1));
++        assert_eq!((n.next_for("scr", &empty), n.next_for("scr", &empty)), (0, 1));
++    }
++
++    #[test]
++    fn named_shots_count_up_per_prefix() {
++        // Two script shots with the same name before either file is written get two numbers.
++        let mut n = ScreenshotNumber::default();
++        let empty = PathBuf::from("no such folder");
++        assert_eq!((n.next_for("foo", &empty), n.next_for("foo", &empty)), (0, 1));
++        assert_eq!((n.next_for("bar", &empty), n.next_for("scr", &empty), n.next_for("foo", &empty)), (0, 0, 2));
+     }
+ 
+     /// Writes a gradient in every format into `SE_SHOT_TEST_DIR` (to open in other programs).
+diff --git a/crates/se_engine/src/scripting.rs b/crates/se_engine/src/scripting.rs
+index d0b7bf6..faf81c9 100644
+--- a/crates/se_engine/src/scripting.rs
++++ b/crates/se_engine/src/scripting.rs
+@@ -57,7 +57,6 @@ const AUTO_MESSAGE_S: f64 = 4.0;
+ const LOADING_SETTLE_S: f64 = 1.0;
+ const MAX_OPS_PER_FRAME: usize = 4000;
+ const MAX_CALL_DEPTH: usize = 8;
+-const DEFAULT_FOV: f32 = 60.0;
+ /// The engine version scripts check with `CheckVersion` (SE 0.991).
+ const ENGINE_VERSION: u32 = 991;
+ /// `Control|Move` matches a `Direction` when every component of the movement's direction is
+@@ -81,6 +80,11 @@ impl Plugin for ScriptingPlugin {
+             .add_systems(PreUpdate, swallow_time_keys.after(bevy::input::InputSystems))
+             // Idle, the runner takes no part in the frame (it borrows many settings).
+             .add_systems(Update, run_script.run_if(|r: Res<ScriptRunner>| r.running() || r.pending.is_some() || r.stop))
++            // After bevy_window turns the closed window into AppExit, before the session is saved.
++            .add_systems(
++                Last,
++                stop_on_exit.after(bevy::window::ExitSystems).before(crate::session::save_on_exit).run_if(|r: Res<ScriptRunner>| r.running()),
++            )
+             .add_systems(EguiPrimaryContextPass, (draw_captions, draw_scripts_window).in_set(crate::skin::UiSet::Draw));
+     }
+ }
+@@ -132,9 +136,11 @@ struct Snapshot {
+     selected: Option<ObjectRef>,
+     /// The selected waypoint's name.
+     selected_wp: Option<String>,
+-    travel: bool,
++    /// The camera's travel and bind counters: a travel or binding already under way when the
++    /// wait began does not hide a new one started later.
++    travel_serial: u32,
++    bind_serial: u32,
+     following: bool,
+-    rotating: bool,
+     track: bool,
+ }
+ 
+@@ -323,6 +329,12 @@ impl ScriptRunner {
+         !self.frames.is_empty()
+     }
+ 
++    /// The script holds the user's settings to give back (a menu scene's slot, or a `SaveVars` not
++    /// yet restored): what it changes meanwhile is its own, not the user's to save.
++    pub fn holds_user_settings(&self) -> bool {
++        self.running() && (self.menu_slot.is_some() || !self.saved.is_empty())
++    }
++
+     /// Ask the runner to start `path` (a VFS path like `scripts/menu/Scene1.se`,
+     /// `tutorials/tut-00-interface.se`, or a file on disk) on the next frame.
+     pub fn request(&mut self, path: &str) {
+@@ -543,6 +555,44 @@ fn run_script(
+     }
+ }
+ 
++/// Quitting while a script runs (the window closed, or the script's own `Quit`) stops it first, so
++/// the settings it changed go back to the user's before settings.cfg and save.cfg are written.
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn stop_on_exit(
++    mut exits: MessageReader<AppExit>,
++    data: Res<SeData>,
++    cfg: Res<EngineConfig>,
++    mut runner: ResMut<ScriptRunner>,
++    mut cam: ResMut<FlyCamera>,
++    mut sim: ResMut<SimTime>,
++    mut vars: Settings,
++    mut dialogs: Dialogs,
++    mut music: ResMut<ScriptMusic>,
++    (mut shots, shot_settings): (ResMut<crate::screenshot::ScriptShots>, Res<crate::screenshot::ScreenshotSettings>),
++) {
++    if exits.read().count() == 0 || !runner.running() {
++        return;
++    }
++    let mut cx = Cx {
++        cam: &mut cam,
++        sim: &mut sim,
++        data: &data,
++        vars: &mut vars,
++        dialogs: &mut dialogs,
++        shots: &mut shots,
++        shot_settings: &shot_settings,
++        se_path: &cfg.se_path,
++        music: &mut music,
++        auto: None,
++        persist: !crate::settings::scripted(&cfg),
++        aspect: 16.0 / 9.0,
++        quit: false,
++        ended: false,
++    };
++    runner.finish(&mut cx, true);
++    info!("script {} stopped on exit", runner.name);
++}
++
+ impl ScriptRunner {
+     /// A script ended, by itself or `stopped` by hand. A menu scene gives the user's settings
+     /// back; a script stopped by hand gives back what its first SaveVars kept, as its RestoreVars
+@@ -698,7 +748,8 @@ impl ScriptRunner {
+             }
+             Op::Goto(args) => self.start_goto(cx, args, cmd.line),
+             Op::Fov { fov, time } => {
+-                let to = fov.unwrap_or(DEFAULT_FOV as f64);
++                // SE's fov handler falls back to main-def.cfg DefaultFOV (45), the camera default.
++                let to = fov.unwrap_or(crate::camera::DEFAULT_FOV_DEG as f64);
+                 match time {
+                     Some(t) if *t > 0.0 => {
+                         self.fov_anim = Some(Anim { from: cx.cam.fov_deg as f64, to, elapsed: 0.0, duration: *t })
+@@ -1521,9 +1572,9 @@ fn snapshot(cx: &Cx) -> Snapshot {
+         paused: cx.sim.paused,
+         jd: cx.sim.jd,
+         selected: cx.cam.selected,
+-        travel: cx.cam.travel.is_some(),
++        travel_serial: cx.cam.travel_serial,
++        bind_serial: cx.cam.bind_serial,
+         following: cx.cam.follow.is_some(),
+-        rotating: cx.cam.bind_mode() == 2,
+     }
+ }
+ 
+@@ -1822,7 +1873,7 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
+         }
+         // A Go to started (to `Object`, or to an object of `Type`); GotoCenter is Ctrl+G's.
+         "control|goto" | "control|gotocenter" => {
+-            let Some(tr) = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Goto && !snap.travel) else { return Check::No };
++            let Some(tr) = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Goto && cam.travel_serial != snap.travel_serial) else { return Check::No };
+             let center_ok = !t.kind.eq_ignore_ascii_case("control|gotocenter") || (tr.end_distance > 0.0 && tr.end_distance <= 10.0);
+             let object_ok = match &t.object {
+                 Some(n) => resolve_object(cat, n) == Some(tr.target),
+@@ -1907,7 +1958,7 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
+             yes((cam.fov_target == Some(def) || (cam.fov_deg - def).abs() < 0.01) && (snap.fov - def).abs() >= 0.01)
+         }
+         "control|center" => {
+-            if cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Center) && !snap.travel {
++            if cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Center) && cam.travel_serial != snap.travel_serial {
+                 return Check::Yes;
+             }
+             let Some(sel) = cam.selected else { return Check::No };
+@@ -1915,9 +1966,11 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
+             let fwd = cam.rot * DVec3::NEG_Z;
+             yes(fwd.angle_between(to) < 3f64.to_radians())
+         }
+-        "control|horizon" => yes(cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Horizon) && !snap.travel),
+-        "control|follow" => yes(cam.follow.is_some() && !snap.following),
+-        "control|syncrot" => yes(cam.bind_mode() == 2 && !snap.rotating),
++        "control|horizon" => yes(cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Horizon) && cam.travel_serial != snap.travel_serial),
++        // Shift+F / Shift+R (or the toolbar) since the start: also when the camera was bound
++        // already, as after tut-01's Go to the Moon (Follow binds to the selection).
++        "control|follow" => yes(cam.bind_serial != snap.bind_serial && cam.follow.is_some_and(|f| Some(f.target) == cam.selected)),
++        "control|syncrot" => yes(cam.bind_serial != snap.bind_serial && cam.bind_mode() == 2),
+         "control|free" => yes(cam.follow.is_none() && snap.following),
+         "control|track" => yes(cam.track && !snap.track),
+         "control|untrack" => yes(!cam.track && snap.track),
+@@ -2152,6 +2205,20 @@ mod tests {
+         assert!(!stop.step(0.016));
+     }
+ 
++    #[test]
++    fn settings_held_while_a_script_will_give_them_back() {
++        // settings.rs does not save while this holds: a tutorial's SaveVars, a menu scene's slot.
++        let mut r = ScriptRunner::default();
++        r.saved.push(HashMap::new());
++        assert!(!r.holds_user_settings(), "not running");
++        r.frames.push(Frame { name: "t.se".into(), script: Arc::new(se_script::parse("")), pc: 0, loops: Vec::new() });
++        assert!(r.holds_user_settings());
++        r.saved.clear();
++        assert!(!r.holds_user_settings());
++        r.menu_slot = Some(HashMap::new());
++        assert!(r.holds_user_settings());
++    }
++
+     #[test]
+     fn lon_lat_over_a_body() {
+         let d = se_core::se_script::polar_dir(30.0, 70.0);
+diff --git a/crates/se_engine/src/session.rs b/crates/se_engine/src/session.rs
+index 332f3c6..71336f3 100644
+--- a/crates/se_engine/src/session.rs
++++ b/crates/se_engine/src/session.rs
+@@ -26,10 +26,27 @@ pub struct SessionPlugin;
+ impl Plugin for SessionPlugin {
+     fn build(&self, app: &mut App) {
+         // After bevy_window turns the closed window into AppExit (in Last too).
+-        app.add_systems(PostStartup, restore_session).add_systems(Last, save_on_exit.after(bevy::window::ExitSystems));
++        app.add_systems(PostStartup, restore_session)
++            .add_systems(Update, resolve_pending_ref.run_if(resource_exists::<PendingRef>))
++            .add_systems(Last, save_on_exit.after(bevy::window::ExitSystems));
+     }
+ }
+ 
++/// A saved `RefBody` the catalog did not have at startup: a procedural star or a generated planet
++/// or moon, added only once the camera's system is made (`system.rs`). Looked up again each frame
++/// for [`PENDING_REF_S`].
++#[derive(Resource, Debug, Clone)]
++pub(crate) struct PendingRef {
++    name: String,
++    bind_mode: u8,
++    /// The saved time, for carrying the camera along with the body once it is found.
++    jd: f64,
++    waited_s: f32,
++}
++
++/// How long a saved procedural `RefBody` is waited for (s).
++const PENDING_REF_S: f32 = 60.0;
++
+ fn save_path() -> std::path::PathBuf {
+     crate::settings::user_file("save.cfg")
+ }
+@@ -111,7 +128,7 @@ impl Session {
+     }
+ }
+ 
+-fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
++fn restore_session(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
+     if crate::settings::scripted(&cfg) || cfg.start_given {
+         return;
+     }
+@@ -136,9 +153,51 @@ fn restore_session(cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<Fl
+     if let (Some(r), 1..) = (cam.selected, s.bind_mode) {
+         cam.bind(Some(r), s.bind_mode == 2, &se_core::ephemeris::Ephemeris::new(cat), s.jd);
+     }
++    if cam.selected.is_none() && !s.ref_body.is_empty() {
++        info!("the saved object \"{}\" is not loaded yet; waiting for its system", s.ref_body);
++        commands.insert_resource(PendingRef { name: s.ref_body.clone(), bind_mode: s.bind_mode, jd: s.jd, waited_s: 0.0 });
++    }
+     info!("restored the session from {}", save_path().display());
+ }
+ 
++/// Selects and binds the saved procedural `RefBody` once its system is made. The camera is carried
++/// along with the body for the time it waited, as the binding would have done (it kept its place in
++/// space meanwhile, and planets move tens of km/s). Nothing is changed that the user set meanwhile.
++fn resolve_pending_ref(
++    mut commands: Commands,
++    time: Res<Time>,
++    pending: Option<ResMut<PendingRef>>,
++    data: Res<SeData>,
++    mut cam: ResMut<FlyCamera>,
++    sim: Res<SimTime>,
++) {
++    let Some(mut p) = pending else { return };
++    let Some(r) = data.catalog.find(&p.name) else {
++        p.waited_s += time.delta_secs();
++        if p.waited_s > PENDING_REF_S {
++            warn!("the saved object \"{}\" was not found; the session continues unbound", p.name);
++            commands.remove_resource::<PendingRef>();
++        }
++        return;
++    };
++    commands.remove_resource::<PendingRef>();
++    if cam.selected.is_none() {
++        cam.selected = Some(r);
++    }
++    if p.bind_mode == 0 || cam.follow.is_some() || cam.travel.is_some() {
++        return;
++    }
++    let eph = se_core::ephemeris::Ephemeris::new(&data.catalog);
++    let sync = p.bind_mode == 2;
++    let (then, now) = (eph.position(r, p.jd), eph.position(r, sim.jd));
++    let turn = if sync { eph.orientation(r, sim.jd) * eph.orientation(r, p.jd).inverse() } else { DQuat::IDENTITY };
++    let off = cam.pos.delta_m(then);
++    cam.pos = now.offset_m(turn * off);
++    cam.rot = (turn * cam.rot).normalize();
++    cam.bind(Some(r), sync, &eph, sim.jd);
++    info!("bound to the saved object \"{}\" again", p.name);
++}
++
+ /// SE's save.cfg `Velocity` in the inertial modes: the assigned acceleration times this
+ /// (DAT_1406d5100; read back times DAT_1406d4698 0.01).
+ const SAVE_ACCEL_SCALE: f64 = 100.0;
+@@ -150,6 +209,7 @@ pub(crate) fn save_on_exit(
+     cam: Res<FlyCamera>,
+     sim: Res<SimTime>,
+     flight: Option<Res<crate::ship::Flight>>,
++    pending: Option<Res<PendingRef>>,
+ ) {
+     if exits.read().count() == 0 || crate::settings::scripted(&cfg) || cfg.start_given {
+         return;
+@@ -166,11 +226,14 @@ pub(crate) fn save_on_exit(
+         (_, true) => cam.speed * crate::camera::MODE_SPEED_FACTOR,
+         _ => cam.speed,
+     };
++    // SE's RefBody: the body the camera is bound to, else the selection (else a saved one still
++    // waited for, so quitting early does not lose it).
++    let ref_body = cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string());
++    let still_pending = pending.as_ref().filter(|_| ref_body.is_none() && cam.follow.is_none());
+     let s = Session {
+         move_mode,
+-        bind_mode: cam.bind_mode(),
+-        // SE's RefBody: the body the camera is bound to, else the selection.
+-        ref_body: cam.follow.map(|f| f.target).or(cam.selected).map(|r| cat.display_name(r).to_string()).unwrap_or_default(),
++        bind_mode: still_pending.map_or(cam.bind_mode(), |p| p.bind_mode),
++        ref_body: ref_body.or(still_pending.map(|p| p.name.clone())).unwrap_or_default(),
+         pos: [cam.pos.x, cam.pos.y, cam.pos.z],
+         rot: [rot.w, rot.x, rot.y, rot.z],
+         speed_pc: speed / se_core::units::METERS_PER_PC,
+@@ -212,4 +275,43 @@ mod tests {
+         let bad = s.to_cfg().replace("MoveMode    3", "MoveMode    7");
+         assert_eq!(Session::parse(&bad).unwrap().move_mode, 1);
+     }
++
++    #[test]
++    fn a_procedural_ref_body_is_bound_once_it_exists() {
++        use bevy::ecs::system::RunSystemOnce;
++        use se_core::ephemeris::Ephemeris;
++        use std::sync::Arc;
++        let star = r#"Star "Sun" { RA 0 Dec 0 Dist 0 Class "G2V" MassSol 1 }"#;
++        let planet = r#"Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 0.1 } }"#;
++        let catalog = |src: &str| {
++            let mut cat = se_core::catalog::Catalog::new();
++            cat.load_sc(src, "test");
++            cat.finalize();
++            Arc::new(cat)
++        };
++        let full = catalog(&format!("{star}\n{planet}"));
++        let p = full.find("P").unwrap();
++        let jd0 = se_core::time::J2000;
++        let saved_off = DVec3::X * 3.0e7;
++        let mut world = World::new();
++        let mut time = Time::<()>::default();
++        time.advance_by(std::time::Duration::from_secs_f64(0.5));
++        world.insert_resource(time);
++        // The camera where it was saved; 10 s of simulated time pass before the planet exists.
++        let cam = FlyCamera { pos: Ephemeris::new(&full).position(p, jd0).offset_m(saved_off), ..default() };
++        world.insert_resource(cam);
++        world.insert_resource(SimTime { jd: jd0 + 10.0 / 86_400.0, rate: 1.0, paused: false });
++        world.insert_resource(SeData { vfs: Arc::new(se_core::vfs::Vfs::new()), catalog: catalog(star) });
++        world.insert_resource(PendingRef { name: "P".into(), bind_mode: 1, jd: jd0, waited_s: 0.0 });
++        world.run_system_once(resolve_pending_ref).unwrap();
++        assert!(world.get_resource::<PendingRef>().is_some() && world.resource::<FlyCamera>().selected.is_none());
++        // Its system is made: selected, bound, and still where it was relative to the planet.
++        world.resource_mut::<SeData>().catalog = full.clone();
++        world.run_system_once(resolve_pending_ref).unwrap();
++        assert!(world.get_resource::<PendingRef>().is_none());
++        let cam = world.resource::<FlyCamera>();
++        assert_eq!((cam.selected, cam.follow.map(|f| f.target), cam.bind_mode()), (Some(p), Some(p), 1));
++        let now = Ephemeris::new(&full).position(p, jd0 + 10.0 / 86_400.0);
++        assert!((cam.pos.delta_m(now) - saved_off).length() < 1.0);
++    }
+ }
+diff --git a/crates/se_engine/src/settings.rs b/crates/se_engine/src/settings.rs
+index f573170..3db3098 100644
+--- a/crates/se_engine/src/settings.rs
++++ b/crates/se_engine/src/settings.rs
+@@ -35,7 +35,8 @@ impl Plugin for SettingsPlugin {
+         app.init_resource::<ResetRequest>()
+             .add_systems(PostStartup, load_settings)
+             .add_systems(Update, (apply_pending_color, save_when_changed, reset_settings).chain())
+-            .add_systems(Last, restart_after_reset.after(crate::session::save_on_exit));
++            .add_systems(Last, save_on_exit.after(bevy::window::ExitSystems).after(crate::scripting::stop_on_exit))
++            .add_systems(Last, restart_after_reset.after(crate::session::save_on_exit).after(save_on_exit));
+     }
+ }
+ 
+@@ -532,14 +533,44 @@ fn load_post(p: &se_core::sc::Block, live: &mut Live, commands: &mut Commands) {
+     commands.insert_resource(PendingColor([v("Brightness", 0), v("Contrast", 1), v("Saturation", 2), v("Gamma", 3)]));
+ }
+ 
+-fn save_when_changed(time: Res<Time>, saved: Option<ResMut<Saved>>, live: Live) {
++/// What holds settings that are not the user's: a script that will give the user's back, and a
++/// high-resolution screenshot's own LandLOD.
++#[derive(SystemParam)]
++struct Holders<'w> {
++    runner: Option<Res<'w, crate::scripting::ScriptRunner>>,
++    hires: Option<Res<'w, crate::screenshot::HiresState>>,
++}
++
++fn save_when_changed(time: Res<Time>, saved: Option<ResMut<Saved>>, live: Live, holders: Holders) {
+     let Some(mut saved) = saved else { return };
+     saved.timer += time.delta_secs();
+     if saved.timer < 2.0 {
+         return;
+     }
+     saved.timer = 0.0;
+-    let now = saved.capture(&live);
++    save_now(&mut saved, &live, &holders);
++}
++
++/// The last write on exit, after a running script gave the user's settings back
++/// (`scripting::stop_on_exit`), so changes from the last two seconds are kept too.
++fn save_on_exit(mut exits: MessageReader<AppExit>, saved: Option<ResMut<Saved>>, live: Live, holders: Holders) {
++    if exits.read().count() == 0 {
++        return;
++    }
++    if let Some(mut saved) = saved {
++        save_now(&mut saved, &live, &holders);
++    }
++}
++
++fn save_now(saved: &mut Saved, live: &Live, holders: &Holders) {
++    // A script's values (a tutorial's DefaultSettings) are never saved over the user's.
++    if holders.runner.as_ref().is_some_and(|r| r.holds_user_settings()) {
++        return;
++    }
++    let mut now = saved.capture(live);
++    if let Some(lod) = holders.hires.as_ref().and_then(|h| h.user_land_lod()) {
++        now.gfx.land_lod = lod;
++    }
+     if now != saved.last {
+         let path = settings_path();
+         if let Some(dir) = path.parent() {

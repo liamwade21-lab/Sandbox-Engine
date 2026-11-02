@@ -328,6 +328,28 @@ pub fn bulk_of(class: &str) -> i32 {
     }
 }
 
+/// Bulk class of a catalog body SE's completion did not run on. Asteroids and comets are
+/// asteroids (unless the catalog calls them Aquaria); a body with no class is classed by size with
+/// SE's catalog thresholds (FUN_1401aa500 with the catalog flag: at least 60 Earth masses and
+/// 40000 km a Jupiter, at least 10 and 18000 km a Neptune), else by its class string.
+pub fn catalog_bulk(b: &crate::catalog::BodyRecord) -> i32 {
+    use crate::catalog::BodyTag;
+    let class = b.class.as_deref().unwrap_or("").trim();
+    if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
+        return bulk::ASTEROID;
+    }
+    if class.is_empty() || class.eq_ignore_ascii_case("none") {
+        let (m, r) = (b.mass_kg / crate::units::EARTH_MASS_KG, b.radius_km);
+        if m >= 60.0 && r >= 40000.0 {
+            return bulk::JUPITER;
+        }
+        if m >= 10.0 && r >= 18000.0 {
+            return bulk::NEPTUNE;
+        }
+    }
+    bulk_of(class)
+}
+
 /// Temperature class: > 1000 Torrid, > 500 Hot, > 330 Warm, > 250 Temperate, > 170 Cool, > 90 Cold,
 /// else Frigid. FUN_1404d6850 first applies it to the surface temperature; once the system is
 /// built FUN_140510f40 reapplies it to the temperature model's average, which the class string and
@@ -1977,14 +1999,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
         BodyTag::Comet => obj::COMET,
         BodyTag::Spacecraft => 11,
     };
-    let class = b.class.as_deref().unwrap_or("");
-    let bulk = if let Some(c) = completion {
-        c.bulk
-    } else if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
-        bulk::ASTEROID
-    } else {
-        bulk_of(class)
-    };
+    let bulk = completion.map_or_else(|| catalog_bulk(b), |c| c.bulk);
     let surface = blk.sub("Surface");
     let atm = sub_unless(blk, "Atmosphere", "NoAtmosphere");
     let ocean = sub_unless(blk, "Ocean", "NoOcean");
@@ -2005,7 +2020,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
             OceanInfo { depth_km: h as f32, bump_height_km: bump_km as f32, global: h >= bump_km, global_shallow: false }
         }),
     };
-    let obliquity_rad = (blk.f64("Obliquity").unwrap_or(0.0) as f32).to_radians();
+    let obliquity_rad = spin_tilt_rad(cat, i, completion) as f32;
     let rotation_days = b.rotation.period_seconds().map_or(1.0, |s| (s / 86_400.0) as f32);
     // The class word follows SE's temperature model, not the surface temperature. Bodies the
     // catalog describes fully get Earth's internal heat (plus a moon's tidal heating, with SE's
@@ -2033,7 +2048,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
             a_km: a_km.max(1.0),
             parent_radius_km: p.radius_km as f32,
             parent_ring_outer_km: sub_unless(&p.block, "Rings", "NoRings").and_then(|r| r.f64("OuterRadius")).map(|v| v as f32),
-            parent_giant: bulk_of(p.class.as_deref().unwrap_or("")) >= bulk::NEPTUNE,
+            parent_giant: catalog_bulk(p) >= bulk::NEPTUNE,
             inside_sync_orbit: period > 0.0 && period < spin,
         }
     });
@@ -2066,6 +2081,65 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
         star: None,
     };
     (inp, given_from(surface, clouds))
+}
+
+/// Tilt (radians) of catalog body `i`'s spin axis against the orbit of the planet it belongs to
+/// (its own, or for a moon its planet's): SE's FUN_140515e50, whose sine is the generator's
+/// tropicLatitude. A body turned by an IAU model or locked takes the ephemeris's axis. Otherwise
+/// SE's axis is the obliquity and equator node in the orbit's reference frame: the completion's,
+/// else the catalog's, each falling back to the orbit's own (SE's rule for moons, and where its
+/// spin-down leaves a planet; a planet's drawn tilt needs the completion).
+pub fn spin_tilt_rad(cat: &crate::catalog::Catalog, i: usize, completion: Option<&crate::climate::Completion>) -> f64 {
+    use crate::catalog::ObjectRef;
+    use crate::rotation::{RotationLock, RotationModel};
+    use glam::{DQuat, DVec3};
+    let eph = crate::ephemeris::Ephemeris::new(cat);
+    let jd = crate::time::J2000;
+    // Rotation from body `j`'s orbit reference frame (normal +Z) to the universe.
+    let frame = |j: usize| {
+        let o = cat.bodies[j].orbit.as_ref();
+        match (o, cat.find(&cat.bodies[j].parent)) {
+            (Some(o), Some(p)) if p != ObjectRef::Body(j as u32) => {
+                let pos = if o.ref_plane == crate::orbit::RefPlane::Extrinsic { eph.position(p, jd) } else { crate::upos::UPos::ZERO };
+                eph.reference_rotation(o.ref_plane, p, pos, jd)
+            }
+            _ => crate::coords::ecliptic_to_universe_quat(),
+        }
+    };
+    let orbit_angles = |j: usize| cat.bodies[j].orbit.as_ref().map_or((0.0, 0.0), |o| (o.inclination, o.ascending_node));
+    // The planet at the top: climb while the parent is a body (SE stops at a star or barycentre).
+    let mut top = i;
+    for _ in 0..16 {
+        match cat.find(&cat.bodies[top].parent) {
+            Some(ObjectRef::Body(j)) if j as usize != top => top = j as usize,
+            _ => break,
+        }
+    }
+    // Its orbit's normal: from the motion (SE takes an analytic model's osculating orbit), else the
+    // elements.
+    let me_top = ObjectRef::Body(top as u32);
+    let moving = cat.find(&cat.bodies[top].parent).filter(|p| *p != me_top).and_then(|p| {
+        let rel = |t: f64| eph.position(me_top, t).delta_m(eph.position(p, t));
+        let (a, b) = (rel(jd), rel(jd + 1.0e-3));
+        Some(a.cross(b - a).normalize_or_zero()).filter(|n| *n != DVec3::ZERO)
+    });
+    let normal = moving.unwrap_or_else(|| frame(top) * cat.bodies[top].orbit.as_ref().map_or(DQuat::IDENTITY, |o| o.plane_rotation()) * DVec3::Z);
+    let b = &cat.bodies[i];
+    let pole = if matches!(b.rotation, RotationModel::Simple(_)) && b.lock == RotationLock::None {
+        let (obliquity, node) = match completion {
+            Some(c) => (c.obliquity_rad, c.eq_node_rad),
+            None => {
+                let rot = b.block.sub("Rotation");
+                let key = |k: &str| b.block.f64(k).or_else(|| rot.and_then(|r| r.f64(k))).map(f64::to_radians);
+                let (incl, asc) = orbit_angles(i);
+                (key("Obliquity").unwrap_or(incl), key("EqAscendNode").or_else(|| key("EquatorAscNode")).unwrap_or(asc))
+            }
+        };
+        frame(i) * DQuat::from_rotation_z(node) * DQuat::from_rotation_x(obliquity) * DVec3::Z
+    } else {
+        eph.orientation(ObjectRef::Body(i as u32), jd) * DVec3::Y
+    };
+    pole.normalize_or_zero().dot(normal.normalize_or_zero()).clamp(-1.0, 1.0).acos()
 }
 
 /// Inputs of SE's temperature model for catalog body `i` when SE keeps its catalog atmosphere:
@@ -2331,5 +2405,113 @@ mod tests {
         assert_eq!(g1.v(MONTES_MAGN), 0.123);
         assert_eq!(g1.surf_style(), 0.42);
         assert_eq!(g1, generate(&rocky(4), &given));
+    }
+
+    #[test]
+    fn classless_catalog_giants_are_classed_by_size() {
+        let mut cat = crate::catalog::Catalog::default();
+        cat.load_sc(
+            "Planet \"Hot Jupiter\" { ParentBody \"Sol\" Radius 80000 Mass 371 Atmosphere { Height 500 } }\n\
+             Planet \"Mini\" { ParentBody \"Sol\" Radius 20000 Mass 15 }\n\
+             Planet \"Small\" { ParentBody \"Sol\" Radius 6371 Mass 1 }\n\
+             Planet \"Named\" { Class \"Terra\" ParentBody \"Sol\" Radius 80000 Mass 371 }\n\
+             Planet \"Unclassed\" { Class \"NONE\" ParentBody \"Sol\" Radius 80000 Mass 371 }\n",
+            "test.sc",
+        );
+        let bulk = |name: &str| {
+            let Some(crate::catalog::ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
+            let (inp, _) = catalog_input(&cat, i as usize, 1000.0, 0.0, 100.0, None);
+            assert_eq!(inp.classes.bulk, catalog_bulk(&cat.bodies[i as usize]));
+            inp.classes.bulk
+        };
+        assert_eq!(bulk("Hot Jupiter"), bulk::JUPITER);
+        assert_eq!(bulk("Mini"), bulk::NEPTUNE);
+        assert_eq!(bulk("Small"), bulk::TERRA);
+        assert_eq!(bulk("Named"), bulk::TERRA);
+        assert_eq!(bulk("Unclassed"), bulk::JUPITER);
+    }
+
+    #[test]
+    fn tropic_latitude_follows_the_tilt_against_the_orbit() {
+        let mut cat = crate::catalog::Catalog::default();
+        cat.load_sc(
+            "Planet \"Tilted\" { ParentBody \"Sol\" Obliquity 30 Orbit { SemiMajorAxis 1 Inclination 10 } }\n\
+             Planet \"Noded\" { ParentBody \"Sol\" Obliquity 30 EqAscendNode 90 Orbit { SemiMajorAxis 1 Inclination 10 } }\n\
+             Planet \"Sub\" { ParentBody \"Sol\" Rotation { Obliquity 25 } Orbit { SemiMajorAxis 1 } }\n\
+             Planet \"Bare\" { ParentBody \"Sol\" Orbit { SemiMajorAxis 1 Inclination 50 AscendingNode 70 } }\n\
+             Moon \"Moonlet\" { ParentBody \"Tilted\" Orbit { SemiMajorAxis 0.001 } }\n",
+            "test.sc",
+        );
+        let idx = |name: &str| match cat.find(name) {
+            Some(crate::catalog::ObjectRef::Body(i)) => i as usize,
+            _ => panic!("{name}"),
+        };
+        let deg = |name: &str, c: Option<&crate::climate::Completion>| spin_tilt_rad(&cat, idx(name), c).to_degrees();
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+        // Against its own orbit: 30 deg to the ecliptic on an orbit inclined 10 deg about the same node.
+        near(deg("Tilted", None), 20.0);
+        near(deg("Noded", None), (30f64.to_radians().cos() * 10f64.to_radians().cos()).acos().to_degrees());
+        near(deg("Sub", None), 25.0);
+        // No spin given: the axis keeps to the orbit.
+        near(deg("Bare", None), 0.0);
+        // A moon on its planet's equator measures against the planet's orbit.
+        near(deg("Moonlet", None), 20.0);
+        // The completion's axis: along the orbit (locked), then 0.3 rad past it.
+        let mut c = crate::climate::Completion { obliquity_rad: 50f64.to_radians(), eq_node_rad: 70f64.to_radians(), ..Default::default() };
+        near(deg("Bare", Some(&c)), 0.0);
+        c.obliquity_rad += 0.3;
+        near(deg("Bare", Some(&c)), 0.3f64.to_degrees());
+        let (inp, _) = catalog_input(&cat, idx("Tilted"), 280.0, 0.0, 1.0, None);
+        near(inp.obliquity_rad as f64, 20f64.to_radians());
+    }
+
+    #[test]
+    #[ignore = "reads the catalogs from the install"]
+    fn catalog_tilts() {
+        use crate::catalog::{Catalog, ObjectRef};
+        let root = std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine");
+        let vfs = crate::vfs::Vfs::mount_install(root).unwrap();
+        let mut cat = Catalog::load(&vfs);
+        crate::system_gen::complete_catalog_orbits(&mut cat);
+        let t = crate::climate::ClimateTables::from_install(root).unwrap();
+        let eph = crate::ephemeris::Ephemeris::new(&cat);
+        let completion = |i: usize| {
+            let light = crate::climate::star_light(&eph, &cat, ObjectRef::Body(i as u32), crate::time::J2000);
+            crate::climate::catalog_body_in(&cat, i, &light).and_then(|b| crate::climate::complete(&t, &b))
+        };
+        let tilt = |name: &str| {
+            let Some(ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
+            let c = completion(i as usize);
+            let d = spin_tilt_rad(&cat, i as usize, c.as_ref()).to_degrees();
+            eprintln!("{name:<14} tilt {d:7.2}  completion {}", c.is_some());
+            d
+        };
+        // Against their orbits (Mars 25.19, Uranus 97.77, a moon its planet's: Saturn 26.7 for
+        // Titan); locked bodies keep to their orbits.
+        assert!((tilt("Mars") - 25.19).abs() < 0.2);
+        // Uranus: IAU's north pole is the one south of its orbit, so 180 - 97.77 (the same sine).
+        assert!((tilt("Uranus") - 82.23).abs() < 0.3);
+        // Earth's parent is the Earth-Moon barycentre, so SE measures against that orbit, in the
+        // Moon's plane (5.15 deg, node 125 deg at J2000).
+        assert!((tilt("Earth") - 20.88).abs() < 0.1);
+        assert!((tilt("Titan") - 26.7).abs() < 2.0);
+        assert!(tilt("Proxima b") < 1e-3);
+        assert!(tilt("TRAPPIST-1 e") < 1e-3);
+        let (mut done, mut tilted, mut sub) = (0, 0, 0);
+        for i in 0..cat.bodies.len() {
+            let b = &cat.bodies[i];
+            sub += b.block.sub("Rotation").is_some() as usize;
+            let Some(c) = completion(i) else { continue };
+            done += 1;
+            let d = spin_tilt_rad(&cat, i, Some(&c)).to_degrees();
+            assert!((0.0..=180.0).contains(&d), "{}: {d}", b.names[0]);
+            if d > 1.0 {
+                tilted += 1;
+                if tilted <= 8 {
+                    eprintln!("{:<20} tilt {d:7.2} locked {}", b.names[0], c.locked);
+                }
+            }
+        }
+        eprintln!("{done} completed, {tilted} tilted over 1 deg; {sub} bodies with a Rotation block");
     }
 }

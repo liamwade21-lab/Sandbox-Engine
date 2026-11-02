@@ -475,7 +475,7 @@ impl Model {
 /// SE's temperature model for catalog body `i` with its system's `light`: from the completion
 /// when SE generated the atmosphere, else from the catalog as for the class word.
 pub fn catalog_model(cat: &crate::catalog::Catalog, i: usize, light: &super::StarLight, completion: Option<&super::Completion>) -> Model {
-    use crate::catalog::{BodyTag, ObjectRef};
+    use crate::catalog::ObjectRef;
     let b = &cat.bodies[i];
     let blk = &b.block;
     let atm = blk.sub("Atmosphere").filter(|_| !blk.bool("NoAtmosphere").unwrap_or(false));
@@ -489,12 +489,7 @@ pub fn catalog_model(cat: &crate::catalog::Catalog, i: usize, light: &super::Sta
             let t_surf = super::equilibrium_temperature(light.flux_mean, b) as f32;
             let greenhouse = atm.and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
             let p = atm.and_then(|a| a.f64("Pressure")).unwrap_or(if atm.is_some() { 1.0 } else { 0.0 }) as f32;
-            let class = b.class.as_deref().unwrap_or("");
-            let bulk = if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
-                crate::surface_gen::bulk::ASTEROID
-            } else {
-                crate::surface_gen::bulk_of(class)
-            };
+            let bulk = crate::surface_gen::catalog_bulk(b);
             let t = crate::surface_gen::catalog_thermal(cat, i, light.flux_mean, greenhouse, p, t_surf, bulk);
             let h = (t_surf * super::R_GAS) / (29.0 * g(t.mass_earth, t.radius_km));
             (t, if p >= 0.2 { ((1.0 - (0.2 / p).powf(0.25)) * h) / 0.25 } else { 0.0 })

@@ -40,7 +40,7 @@ const MAX_IN_FLIGHT: usize = 24;
 const KEEP_FRAMES: u64 = 90;
 /// Brightest-galaxy magnitude a node must reach to be worth generating.
 const NODE_MAG_LIMIT: f32 = 19.0;
-/// Galaxies fainter than this from the nearest point of their node are not put in the mesh.
+/// Galaxies fainter than this from the camera are not picked or counted in the sky coverage.
 const GALAXY_MAG_CULL: f32 = 18.5;
 /// A level-`L` node is requested while the camera is within `REACH` node sizes of it.
 const REACH: f64 = 1.0;
@@ -70,7 +70,7 @@ impl Default for ProcSettings {
 struct BuiltNode {
     mesh: Option<Mesh>,
     galaxies: Arc<Vec<ProcGalaxy>>,
-    /// Sprites in the mesh (galaxies above the magnitude cull).
+    /// Sprites in the mesh.
     drawn: usize,
 }
 
@@ -209,15 +209,13 @@ pub fn galaxy_record(g: &ProcGalaxy) -> GalaxyRecord {
     }
 }
 
-fn build_node(key: GalNodeKey, pools: [u32; 17], cam: DVec3) -> BuiltNode {
+/// The node's galaxies and their sprites: all of them, as the camera may come close to any while
+/// the node stays loaded; the shader hides the faint ones each frame (galaxy_far.wesl).
+fn build_node(key: GalNodeKey, pools: [u32; 17]) -> BuiltNode {
     let galaxies = proc_galaxy::generate_node(key, &pools);
     let center = key.center();
-    let d_node = key.distance_to(cam).max(1.0) as f32;
     let (mut p, mut d, mut s, mut c, mut ix) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for g in &galaxies {
-        if proc_galaxy::app_mag(g.lum, d_node) > GALAXY_MAG_CULL {
-            continue;
-        }
         let rec = galaxy_record(g);
         let ptype = profile_type(&rec);
         let normal = if ptype == 1 { (rec.orientation * DVec3::NEG_Z).as_vec3() } else { Vec3::ZERO };
@@ -304,7 +302,7 @@ fn stream_nodes(
             continue;
         }
         let pools = gs.model_pools();
-        let task = AsyncComputeTaskPool::get().spawn(async move { build_node(key, pools, cam_pc) });
+        let task = AsyncComputeTaskPool::get().spawn(async move { build_node(key, pools) });
         field.nodes.insert(key, NodeSlot { state: NodeState::Loading(task), last_used: frame_no });
         in_flight += 1;
     }

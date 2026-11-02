@@ -81,6 +81,44 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
 }
 
+/// Linear RGB palette of a surface kind at temperature `t` (K).
+fn palette(kind: SurfaceKind, t: f32, has_life: bool) -> [[f32; 3]; 4] {
+    match kind {
+        SurfaceKind::Rocky if has_life => [
+            [0.10, 0.22, 0.08],
+            [0.30, 0.32, 0.18],
+            [0.42, 0.37, 0.30],
+            [0.90, 0.92, 0.95],
+        ],
+        SurfaceKind::Rocky => {
+            // Deserts: warmer worlds are redder.
+            let warm = ((t - 200.0) / 300.0).clamp(0.0, 1.0);
+            [
+                mix([0.45, 0.42, 0.38], [0.62, 0.40, 0.24], warm),
+                mix([0.55, 0.50, 0.44], [0.70, 0.52, 0.34], warm),
+                mix([0.35, 0.33, 0.31], [0.45, 0.30, 0.22], warm),
+                if t < 270.0 { [0.92, 0.93, 0.95] } else { [0.75, 0.62, 0.48] },
+            ]
+        }
+        SurfaceKind::Cratered => [[0.30, 0.29, 0.28], [0.42, 0.41, 0.39], [0.52, 0.51, 0.49], [0.62, 0.61, 0.60]],
+        SurfaceKind::Icy => [[0.55, 0.60, 0.66], [0.72, 0.76, 0.80], [0.85, 0.87, 0.90], [0.95, 0.96, 0.98]],
+        SurfaceKind::Lava => [[0.08, 0.07, 0.07], [0.14, 0.11, 0.10], [0.22, 0.18, 0.16], [0.30, 0.25, 0.22]],
+        SurfaceKind::Carbon => [[0.09, 0.08, 0.08], [0.14, 0.13, 0.12], [0.20, 0.18, 0.17], [0.30, 0.28, 0.26]],
+        SurfaceKind::Iron => [[0.32, 0.22, 0.18], [0.45, 0.33, 0.27], [0.55, 0.45, 0.40], [0.70, 0.66, 0.62]],
+        SurfaceKind::Ocean => [[0.25, 0.30, 0.20], [0.40, 0.38, 0.30], [0.55, 0.52, 0.48], [0.92, 0.93, 0.96]],
+        SurfaceKind::GasGiant => {
+            let hot = ((t - 400.0) / 800.0).clamp(0.0, 1.0);
+            [
+                mix([0.82, 0.72, 0.58], [0.35, 0.22, 0.18], hot),
+                mix([0.68, 0.52, 0.38], [0.25, 0.14, 0.12], hot),
+                mix([0.90, 0.86, 0.78], [0.45, 0.30, 0.24], hot),
+                mix([0.55, 0.42, 0.33], [0.20, 0.10, 0.08], hot),
+            ]
+        }
+        SurfaceKind::IceGiant => [[0.45, 0.62, 0.85], [0.55, 0.72, 0.90], [0.62, 0.80, 0.92], [0.40, 0.55, 0.80]],
+    }
+}
+
 impl ProcSurface {
     /// Choose a surface for a body. `class` is the SE planet class (e.g. "Terra",
     /// "Selena", "Jupiter"); `temperature_k` the equilibrium/surface temperature.
@@ -124,44 +162,11 @@ impl ProcSurface {
         let relief_m = (9_000.0 * (9.81 / g.max(0.01)).sqrt()).max(1_500.0).min(radius_m * 0.04).max(10.0);
         let ocean_fraction = match kind {
             SurfaceKind::Ocean => 0.97,
-            SurfaceKind::Rocky if has_ocean => 0.55 + 0.25 * ((seed >> 7) % 100) as f64 / 100.0,
+            // Any solid world with an ocean (Ferria and Carbonia ones too) has a sea level.
+            k if has_ocean && !k.is_giant() => 0.55 + 0.25 * ((seed >> 7) % 100) as f64 / 100.0,
             _ => 0.0,
         };
-        let t = temperature_k as f32;
-        let palette = match kind {
-            SurfaceKind::Rocky if has_life => [
-                [0.10, 0.22, 0.08],
-                [0.30, 0.32, 0.18],
-                [0.42, 0.37, 0.30],
-                [0.90, 0.92, 0.95],
-            ],
-            SurfaceKind::Rocky => {
-                // Deserts: warmer worlds are redder.
-                let warm = ((t - 200.0) / 300.0).clamp(0.0, 1.0);
-                [
-                    mix([0.45, 0.42, 0.38], [0.62, 0.40, 0.24], warm),
-                    mix([0.55, 0.50, 0.44], [0.70, 0.52, 0.34], warm),
-                    mix([0.35, 0.33, 0.31], [0.45, 0.30, 0.22], warm),
-                    if t < 270.0 { [0.92, 0.93, 0.95] } else { [0.75, 0.62, 0.48] },
-                ]
-            }
-            SurfaceKind::Cratered => [[0.30, 0.29, 0.28], [0.42, 0.41, 0.39], [0.52, 0.51, 0.49], [0.62, 0.61, 0.60]],
-            SurfaceKind::Icy => [[0.55, 0.60, 0.66], [0.72, 0.76, 0.80], [0.85, 0.87, 0.90], [0.95, 0.96, 0.98]],
-            SurfaceKind::Lava => [[0.08, 0.07, 0.07], [0.14, 0.11, 0.10], [0.22, 0.18, 0.16], [0.30, 0.25, 0.22]],
-            SurfaceKind::Carbon => [[0.09, 0.08, 0.08], [0.14, 0.13, 0.12], [0.20, 0.18, 0.17], [0.30, 0.28, 0.26]],
-            SurfaceKind::Iron => [[0.32, 0.22, 0.18], [0.45, 0.33, 0.27], [0.55, 0.45, 0.40], [0.70, 0.66, 0.62]],
-            SurfaceKind::Ocean => [[0.25, 0.30, 0.20], [0.40, 0.38, 0.30], [0.55, 0.52, 0.48], [0.92, 0.93, 0.96]],
-            SurfaceKind::GasGiant => {
-                let hot = ((t - 400.0) / 800.0).clamp(0.0, 1.0);
-                [
-                    mix([0.82, 0.72, 0.58], [0.35, 0.22, 0.18], hot),
-                    mix([0.68, 0.52, 0.38], [0.25, 0.14, 0.12], hot),
-                    mix([0.90, 0.86, 0.78], [0.45, 0.30, 0.24], hot),
-                    mix([0.55, 0.42, 0.33], [0.20, 0.10, 0.08], hot),
-                ]
-            }
-            SurfaceKind::IceGiant => [[0.45, 0.62, 0.85], [0.55, 0.72, 0.90], [0.62, 0.80, 0.92], [0.40, 0.55, 0.80]],
-        };
+        let palette = palette(kind, temperature_k as f32, has_life);
         Self {
             seed,
             kind,
@@ -192,6 +197,16 @@ impl ProcSurface {
 
     /// Use SE's surface parameters for the relief (`bump_height_km`: the body's `BumpHeight`).
     pub fn with_se(mut self, g: SurfaceGen, bump_height_km: f64) -> Self {
+        // A body SE classes Neptune to brown dwarf is a giant whatever its class word or size
+        // (the completion makes small hot bodies mini-Neptunes), as the renderer treats it.
+        let bulk = g.classes.bulk;
+        if !self.kind.is_giant() && (sg::bulk::NEPTUNE..=sg::bulk::BROWN_DWARF).contains(&bulk) {
+            self.kind = if bulk == sg::bulk::NEPTUNE { SurfaceKind::IceGiant } else { SurfaceKind::GasGiant };
+            self.palette = palette(self.kind, self.temperature_k as f32, self.has_life);
+            self.ocean_fraction = 0.0;
+            self.crater_strength = 0.0;
+            self.mountain_strength = 0.35;
+        }
         if !self.kind.is_giant() && bump_height_km > 0.0 {
             self.bump_m = bump_height_km * 1000.0;
             self.relief_m = self.bump_m * 0.35;
@@ -518,5 +533,41 @@ mod tests {
             eprintln!("class {surface}: {:.1} .. {:.1} km", lo / 1000.0, hi / 1000.0);
             assert!(hi - lo < ps.bump_m && lo > -ps.bump_m && hi < ps.bump_m, "{lo} {hi}");
         }
+    }
+
+    #[test]
+    fn se_giant_bulk_makes_a_giant_kind() {
+        use crate::surface_gen::{self as sg, Classes, GenInput};
+        // A small hot body the completion makes a mini-Neptune (55 Cnc e like).
+        let inp = GenInput {
+            seeds: sg::catalog_seeds("Test", "Star"),
+            obj_type: sg::obj::PLANET,
+            classes: Classes { bulk: sg::bulk::NEPTUNE, temp: 0, atmo: 4, volq: 9, size: 3, surface: 8 },
+            radius_km: 12000.0,
+            mass_earth: 8.0,
+            t_eq: 2000.0,
+            t_surf: 2000.0,
+            t_class: 2000.0,
+            pressure_atm: 100.0,
+            bump_height_km: 20.0,
+            ..Default::default()
+        };
+        let g = sg::generate(&inp, &sg::given_from(None, None));
+        let ps = ProcSurface::for_body("Test", Some("Terra"), 12_000_000.0, 4.8e25, 2000.0, true, false, false).with_se(g, 20.0);
+        assert_eq!(ps.kind, SurfaceKind::IceGiant);
+        assert!(ps.se.is_none());
+        assert_eq!(ps.height_m(DVec3::X), 0.0);
+    }
+
+    #[test]
+    fn solid_worlds_with_an_ocean_have_a_sea_level() {
+        let iron = ProcSurface::for_body("Test Ferria", Some("Ferria"), 5_000_000.0, 3e24, 280.0, true, true, false);
+        assert_eq!(iron.kind, SurfaceKind::Iron);
+        assert!(iron.ocean_fraction > 0.5);
+        let carbon = ProcSurface::for_body("Test Carbonia", Some("Carbonia"), 5_000_000.0, 3e24, 280.0, true, true, false);
+        assert_eq!(carbon.kind, SurfaceKind::Carbon);
+        assert!(carbon.ocean_fraction > 0.5);
+        let dry = ProcSurface::for_body("Test Dry", Some("Ferria"), 5_000_000.0, 3e24, 280.0, true, false, false);
+        assert_eq!(dry.ocean_fraction, 0.0);
     }
 }

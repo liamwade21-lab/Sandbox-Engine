@@ -644,6 +644,8 @@ pub struct Terrain {
     last_ambient: f32,
     last_emission: SelfEmission,
     last_water: f32,
+    /// `TerrainQuality::split_scale` the materials' geomorph distance (`soil_tile.w`) was last set from.
+    last_split: f64,
     last_extra: [Vec4; MAX_LIGHTS - 1],
     /// Current shadows from other bodies, and the value last sent to the materials.
     pub eclipse: EclipseUniform,
@@ -841,6 +843,7 @@ impl Terrain {
             last_ambient: 0.0,
             last_emission: SelfEmission::default(),
             last_water: 1.0,
+            last_split: 0.0,
             last_extra: [Vec4::ZERO; MAX_LIGHTS - 1],
             eclipse: EclipseUniform::default(),
             casters: Default::default(),
@@ -855,8 +858,14 @@ impl Terrain {
     /// load, and it can sit metres above them, so the drawn one is what counts.
     /// What a ship rests on: the ground, or the sea's surface over it (ships float).
     pub fn surface_height(&self, dir: DVec3) -> f64 {
-        let ground = self.ground_height(dir).unwrap_or(0.0);
-        if self.has_ocean { ground.max(0.0) } else { ground }
+        self.surface_sample(dir).map_or(0.0, |s| s.0)
+    }
+
+    /// [`Self::surface_height`] and the level of the node it comes from (how fine it is); `None`
+    /// if nothing is loaded there.
+    pub fn surface_sample(&self, dir: DVec3) -> Option<(f64, u8)> {
+        let (ground, level) = self.ground_sample(dir)?;
+        Some((if self.has_ocean { ground.max(0.0) } else { ground }, level))
     }
 
     /// The nearest coast to `dir` in the loaded terrain (body frame): a point `back` m from it
@@ -901,6 +910,11 @@ impl Terrain {
     }
 
     pub fn ground_height(&self, dir: DVec3) -> Option<f64> {
+        self.ground_sample(dir).map(|s| s.0)
+    }
+
+    /// [`Self::ground_height`] and the level of the node it comes from.
+    fn ground_sample(&self, dir: DVec3) -> Option<(f64, u8)> {
         let (face, u, v) = CubeFace::from_dir(dir);
         let mut drawn: Option<(TileKey, &Arc<Vec<f32>>)> = None;
         let mut deepest: Option<(TileKey, &Arc<Vec<f32>>)> = None;
@@ -929,11 +943,12 @@ impl Terrain {
         // The mesh splits each cell along the (x+1, y)-(x, y+1) diagonal; follow its
         // triangles rather than a bilinear patch, which can bulge above them.
         let (a, b, c, d) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
-        Some(if tx + ty <= 1.0 {
+        let h = if tx + ty <= 1.0 {
             a + (b - a) * tx + (c - a) * ty
         } else {
             d + (c - d) * (1.0 - tx) + (b - d) * (1.0 - ty)
-        })
+        };
+        Some((h, key.level))
     }
 }
 
@@ -1115,6 +1130,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<WaterDisplay>()
             .add_systems(Startup, (make_default_textures, load_surface_settings))
             .add_systems(Update, animate_water_display)
+            .add_observer(forget_gen_jobs)
             .add_systems(
                 PostUpdate,
                 // After update_terrain, so the camera collides with this frame's nodes. Before Bevy
@@ -1128,6 +1144,14 @@ impl Plugin for TerrainPlugin {
                     .before(UniverseSet::FloatingOrigin)
                     .before(bevy::camera::CameraUpdateSystems),
             );
+    }
+}
+
+/// A terrain going away (its system unloaded) forgets the grids still being made for it, which
+/// would otherwise wait for it in the generator's results for the rest of the session.
+fn forget_gen_jobs(ev: On<Remove<Terrain>>, terrains: Query<&Terrain>, tgen: Option<Res<crate::terrain_gen::TerrainGen>>) {
+    if let (Ok(t), Some(tgen)) = (terrains.get(ev.entity), tgen) {
+        tgen.forget(t.gen_jobs.values().map(|&(id, _)| id));
     }
 }
 
@@ -1307,12 +1331,16 @@ fn build_node(input: BuildInput) -> NodeBuild {
     // One surface for every level, as SE's generator has fixed octave counts: a node samples the
     // same heights as its parent, only more densely, so coasts and lakes stay put as nodes split.
     let finest = FINEST_FEATURE_M;
+    // `u, v` may lie a sample past the face's edge (the outer ring for the normals, along `dir`).
     let h_at = |u: f64, v: f64, dir: DVec3| -> f64 {
         if let Some((gk, tile, h_ref, metres)) = &generated {
-            // SE's own heights: below their finest level its tiles are only interpolated.
+            // SE's own heights: below their finest level its tiles are only interpolated. Their
+            // border (`GEN_BORDER`) holds the heights past the face's edge: clamped there, the outer
+            // ring stood a step out at the edge's height and halved the slope along the cube's edges.
             let (gu, gv, gs) = gk.uv_rect();
             return (tile.sample((u - gu) / gs, (v - gv) / gs) - h_ref) * metres;
         }
+        let (u, v) = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
         match &height {
             Some((anc, tile)) => {
                 let (au, av, asz) = anc.uv_rect();
@@ -1343,7 +1371,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
         let u = u0 + size * i / (GRID - 1) as f64;
         let v = v0 + size * j / (GRID - 1) as f64;
         let dir = key.face.uv_to_dir(u, v);
-        let h = h_at(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), dir);
+        let h = h_at(u, v, dir);
         (dir * (radius + h), h)
     };
     let mut dirs: Vec<[f32; 3]> = Vec::with_capacity(GRID * GRID + 4 * GRID);
@@ -1390,7 +1418,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
                 let u = u0 + size * i / (GRID - 1) as f64;
                 let v = v0 + size * j / (GRID - 1) as f64;
                 let dir = key.face.uv_to_dir(u, v);
-                let h = h_at(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), dir);
+                let h = h_at(u, v, dir);
                 (dir * (radius + h), h)
             })
             .collect()
@@ -1432,7 +1460,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
                 let u = u0 + size * i / (n - 1) as f64;
                 let v = v0 + size * j / (n - 1) as f64;
                 let dir = key.face.uv_to_dir(u, v);
-                let h = h_at(u.clamp(0.0, 1.0), v.clamp(0.0, 1.0), dir);
+                let h = h_at(u, v, dir);
                 (dir * (radius + h), h)
             })
             .collect();
@@ -1758,6 +1786,12 @@ fn wants_split(key: TileKey, radius: f64, cam_body: DVec3, scale: f64, hrange: (
     d < edge * SPLIT_DISTANCE * scale
 }
 
+/// A node material's `soil_tile.w`: the split distance in node edges at quality `scale`, for the
+/// geomorph (0 on the roots, which do not morph).
+fn node_split(level: u8, scale: f64) -> f32 {
+    if level == 0 { 0.0 } else { (SPLIT_DISTANCE * scale) as f32 }
+}
+
 /// Whether node `key` lies wholly past the horizon: ground no lower than `floor` (radius) hides
 /// everything up to `top` beyond it. Measured from the lowest ground, the test holds down to the
 /// surface; it used to be dropped within 0.01 % of the reference radius (638 m on Earth), and
@@ -1972,9 +2006,7 @@ fn update_terrain(
                 soil_tile: {
                     let edge = terrain.radius * std::f64::consts::FRAC_PI_2 / (1u64 << key.level) as f64;
                     let wrap = |i: u32| (i as f64 * edge).rem_euclid(SOIL_WRAP_M) as f32;
-                    // w: the split distance in node edges (0 on the roots, which do not morph).
-                    let split = if key.level == 0 { 0.0 } else { SPLIT_DISTANCE * quality.split_scale };
-                    Vec4::new(wrap(key.col), wrap(key.row), edge as f32, split as f32)
+                    Vec4::new(wrap(key.col), wrap(key.row), edge as f32, node_split(key.level, quality.split_scale))
                 },
                 water: {
                     let (cu, cv) = (u0n + sizen * 0.5, v0n + sizen * 0.5);
@@ -2203,7 +2235,7 @@ fn update_terrain(
             if gen_queue.failed() {
                 warn!("terrain generator failed; using the port's own heights");
                 terrain.gen_failed = true;
-                terrain.gen_jobs.clear();
+                tgen.forget(terrain.gen_jobs.drain().map(|(_, (id, _))| id));
             }
             // Over the limit, grids whose node is gone and that served no request for a while go.
             // A grid arrives before its node exists (the node is built from it), so dropping every
@@ -2336,10 +2368,18 @@ fn update_terrain(
         let eclipse = terrain.casters;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
-        if (sun - terrain.last_sun).length() > 1e-3 || extra_moved || casters_differ(&eclipse, &terrain.last_casters) {
+        // A new LandLOD, graphics preset or window height changes the split distance: the nodes
+        // built before morph over the old one unless it is set again (with the lighting).
+        let split_scale = quality.split_scale;
+        if (sun - terrain.last_sun).length() > 1e-3
+            || extra_moved
+            || casters_differ(&eclipse, &terrain.last_casters)
+            || terrain.last_split != split_scale
+        {
             terrain.last_sun = sun;
             terrain.last_extra = extra_dir;
             terrain.last_casters = eclipse;
+            terrain.last_split = split_scale;
             terrain.light_gen += 1;
         }
         // The shown nodes are lit now; cached ones when they are shown again.
@@ -2364,6 +2404,7 @@ fn update_terrain(
                             m.u.ice.w = water_display.level;
                             m.u.atm_flags.x = atm_on;
                             m.u.glow_atmo = glow_atmo;
+                            m.u.soil_tile.w = node_split(key.level, split_scale);
                         }
                     }
                 }
@@ -2606,7 +2647,8 @@ fn keep_camera_above_ground(
         cam.nearest_surface = clearance.max(0.001);
         for mut p in &mut proj {
             if let Projection::Perspective(p) = p.as_mut() {
-                p.near = crate::camera::near_plane(cam.nearest_surface);
+                // `min`: `ship_near_plane` may already have brought it closer for the hull.
+                p.near = p.near.min(crate::camera::near_plane(cam.nearest_surface));
             }
         }
     }

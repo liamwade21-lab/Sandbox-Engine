@@ -15,7 +15,8 @@ use crate::config::EngineConfig;
 
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct DisplaySettings {
-    /// The windowed size and place (physical pixels), kept while maximized or fullscreen.
+    /// The windowed size (logical pixels, as the window is opened with) and place (physical), kept
+    /// while maximized or fullscreen.
     pub size: UVec2,
     pub pos: Option<IVec2>,
     pub maximized: bool,
@@ -158,30 +159,48 @@ fn apply_settings(settings: Res<DisplaySettings>, mut window: Single<&mut Window
     }
 }
 
+/// A window of `size` (logical) that does not fit its monitor (`monitor`, physical, at `scale`) gets
+/// 90% of the monitor instead: sizes saved as physical pixels by older builds grew on scaled displays.
+fn fit_to_monitor(size: Vec2, monitor: UVec2, scale: f32) -> Option<Vec2> {
+    let max = monitor.as_vec2() / scale.max(0.1);
+    (monitor.x > 0 && monitor.y > 0 && (size.x > max.x || size.y > max.y)).then(|| size.min(max * 0.9).round())
+}
+
 /// Keep the windowed size and place, and whether the window is maximized (from winit, on the main
 /// thread), as SE does.
 fn track_window(
     _main: bevy::ecs::system::NonSendMarker,
     cfg: Res<EngineConfig>,
     mut settings: ResMut<DisplaySettings>,
-    window: Single<(Entity, &Window), With<PrimaryWindow>>,
+    window: Single<(Entity, &mut Window), With<PrimaryWindow>>,
+    mut fitted: Local<bool>,
 ) {
     if crate::settings::scripted(&cfg) {
         return;
     }
-    let (entity, w) = *window;
+    let (entity, mut w) = window.into_inner();
     if !matches!(w.mode, WindowMode::Windowed) {
         return;
     }
-    let state = bevy::winit::WINIT_WINDOWS.with_borrow(|ww| ww.get_window(entity).map(|win| (win.is_maximized(), win.is_minimized().unwrap_or(false), win.outer_position().ok())));
-    let Some((maximized, minimized, outer)) = state else { return };
+    let state = bevy::winit::WINIT_WINDOWS.with_borrow(|ww| {
+        ww.get_window(entity).map(|win| (win.is_maximized(), win.is_minimized().unwrap_or(false), win.outer_position().ok(), win.current_monitor().map(|m| m.size())))
+    });
+    let Some((maximized, minimized, outer, monitor)) = state else { return };
     if minimized {
         return;
+    }
+    if !std::mem::replace(&mut *fitted, true) && !maximized {
+        let size = Vec2::new(w.resolution.width(), w.resolution.height());
+        if let Some(fit) = monitor.and_then(|m| fit_to_monitor(size, UVec2::new(m.width, m.height), w.resolution.scale_factor())) {
+            w.resolution.set(fit.x, fit.y);
+            return;
+        }
     }
     let mut d = settings.clone();
     d.maximized = maximized;
     if !maximized {
-        d.size = UVec2::new(w.resolution.physical_width(), w.resolution.physical_height());
+        // Logical, as `window()` opens it: physical pixels would grow by the display scale each start.
+        d.size = UVec2::new(w.resolution.width().round() as u32, w.resolution.height().round() as u32);
         if let Some(p) = outer {
             d.pos = Some(IVec2::new(p.x, p.y));
         }
@@ -201,5 +220,13 @@ mod tests {
         let d = DisplaySettings { size: UVec2::new(1200, 700), pos: Some(IVec2::new(30, -8)), maximized: false, fullscreen: 2, vsync: 0 };
         assert_eq!(DisplaySettings::load(&d.to_cfg()), d);
         assert_eq!(DisplaySettings::load(""), DisplaySettings::default());
+    }
+
+    #[test]
+    fn oversized_window_fits_its_monitor() {
+        // 2400x1350 saved as physical by an older build, on a 1920x1080 display at 125%.
+        assert_eq!(fit_to_monitor(Vec2::new(2400.0, 1350.0), UVec2::new(1920, 1080), 1.25), Some(Vec2::new(1382.0, 778.0)));
+        assert_eq!(fit_to_monitor(Vec2::new(1200.0, 700.0), UVec2::new(1920, 1080), 1.25), None);
+        assert_eq!(fit_to_monitor(Vec2::new(1200.0, 700.0), UVec2::ZERO, 1.0), None);
     }
 }

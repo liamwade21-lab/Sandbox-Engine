@@ -56,8 +56,8 @@ pub struct IauRotation {
     pub pole_dec_rate: f64,
     pub prime_meridian: f64,
     pub rotation_rate: f64,
-    /// (amplitude deg, phase deg, frequency deg/day) terms added to W.
-    pub w_terms: Vec<[f64; 3]>,
+    /// (amplitude deg, phase deg, frequency deg/day, frequency rate deg/day^2) terms added to W.
+    pub w_terms: Vec<[f64; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,9 +97,10 @@ impl RotationModel {
                     let mut w_terms = Vec::new();
                     if let Some(t) = rb.sub("PeriodicTermsDiurnal") {
                         let nums = t.anonymous_numbers();
-                        // SE rows: amplitude, phase, frequency (+ optional extras); use triplets.
-                        for c in nums.chunks_exact(3) {
-                            w_terms.push([c[0], c[1], c[2]]);
+                        // SE rows (SolarSys.sc): PoleRA amp, PoleDec amp, PrimeMer amp, phase, freq,
+                        // freq_rate. Only the prime-meridian part is used.
+                        for c in nums.chunks_exact(6) {
+                            w_terms.push([c[2], c[3], c[4], c[5]]);
                         }
                     }
                     return RotationModel::Iau(IauRotation {
@@ -134,7 +135,7 @@ impl RotationModel {
                 let dec = (r.pole_dec + r.pole_dec_rate * t).to_radians();
                 let mut w = r.prime_meridian + r.rotation_rate * d;
                 for term in &r.w_terms {
-                    w += term[0] * (term[1] + term[2] * d).to_radians().sin();
+                    w += term[0] * (term[1] + term[2] * d + term[3] * d * d).to_radians().sin();
                 }
                 // Active rotation IAU body -> ICRF.
                 let q_iau = DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2 + ra)
@@ -190,6 +191,26 @@ mod tests {
         // Eastward rotation: after a quarter day the meridian moves towards -Z (90 E).
         let q3 = m.orientation(J2000 + 90.0 / 350.89198226);
         assert!((q3 * DVec3::X).dot(q * DVec3::NEG_Z) > 0.999);
+    }
+
+    #[test]
+    fn diurnal_terms_read_six_column_rows() {
+        // Mercury's rows in SolarSys.sc.
+        let doc = sc::parse(
+            "Planet \"Mercury\" { RotationModel \"IAU\" { Epoch 2451545 PrimeMeridian 329.5469 RotationRate 6.1385025\n\
+             PeriodicTermsDiurnal {\n\
+             0, 0, +0.00993822, 174.791086,  4.092335, 0,\n\
+             0, 0, -0.00104581, 349.582171,  8.184670, 0,\n\
+             } } }",
+        );
+        let m = RotationModel::from_body_block(doc.get("Planet").unwrap().block().unwrap());
+        let RotationModel::Iau(r) = &m else { panic!() };
+        assert_eq!(r.w_terms, vec![[0.00993822, 174.791086, 4.092335, 0.0], [-0.00104581, 349.582171, 8.18467, 0.0]]);
+        // The terms move the meridian by hundredths of a degree, not hundreds.
+        let plain = RotationModel::Iau(IauRotation { w_terms: Vec::new(), ..r.clone() });
+        let jd = 2_460_000.5;
+        let cos = (m.orientation(jd) * DVec3::X).dot(plain.orientation(jd) * DVec3::X);
+        assert!(cos.acos().to_degrees() < 0.02, "{}", cos.acos().to_degrees());
     }
 
     #[test]

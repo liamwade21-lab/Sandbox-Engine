@@ -616,6 +616,18 @@ pub enum SystemKind {
     Nebula,
 }
 
+/// The code a catalog galaxy's `RS`/`RC`/`RN` names use, from its port catalog index `g` (and the
+/// Milky Way's, `milky_way`): the Milky Way is [`MILKY_WAY_SE_INDEX`], and the galaxy that holds
+/// that index in the port takes the Milky Way's index instead, so no two galaxies share a code.
+/// The swap is its own inverse: applied to a code it gives back the port index.
+pub fn catalog_galaxy_code(g: u32, milky_way: Option<u32>) -> u32 {
+    match milky_way {
+        Some(mw) if g == mw => MILKY_WAY_SE_INDEX,
+        Some(mw) if g == MILKY_WAY_SE_INDEX => mw,
+        _ => g,
+    }
+}
+
 /// `RC 8514-123`, `RC 0-3-116-2668-52089`, `RN 8514-9602`, `RN 0-9-110030168-905-7`.
 pub fn system_name(kind: SystemKind, g: GalaxyRef, index: u32) -> String {
     let p = match kind {
@@ -683,6 +695,18 @@ mod tests {
         assert_eq!(parse_system_name("RC 0-3-9999-1-1"), None);
         assert_eq!(parse_system_name("RS 8514-1"), None);
         assert_eq!(parse_system_name("RC 12"), None);
+    }
+
+    #[test]
+    fn galaxy_codes_do_not_clash_with_the_milky_way() {
+        let mw = Some(228);
+        assert_eq!(catalog_galaxy_code(228, mw), MILKY_WAY_SE_INDEX);
+        assert_eq!(catalog_galaxy_code(MILKY_WAY_SE_INDEX, mw), 228);
+        assert_eq!(catalog_galaxy_code(5, mw), 5);
+        for g in [5, 228, MILKY_WAY_SE_INDEX] {
+            assert_eq!(catalog_galaxy_code(catalog_galaxy_code(g, mw), mw), g);
+        }
+        assert_eq!(catalog_galaxy_code(MILKY_WAY_SE_INDEX, None), MILKY_WAY_SE_INDEX);
     }
 
     #[test]

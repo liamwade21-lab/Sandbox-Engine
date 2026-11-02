@@ -63,10 +63,11 @@ fn catalog_class_dominates_the_composition() {
         flux_mean: 1.0,
         orbit: Some((1.0, 0.0, 365.25, 332_946.0)),
         orbit_incl_deg: 0.0,
+        orbit_node_deg: 0.0,
         orbit_angles_drawn: [false; 2],
         star_parent: true,
         obliquity_deg: None,
-        eq_node_given: false,
+        eq_node_deg: None,
         rotation_days: None,
         tidally_locked: false,
         no_ocean: false,
@@ -124,10 +125,11 @@ fn proxima(names: &str, mass_earth: f32, radius_earth: f32, a_au: f64, e: f64, p
         flux_mean: (0.0017 / (a_au * (1.0 + 0.5 * e * e)).powi(2)) as f32,
         orbit: Some((a_au, e, period_days, 0.122 * 332_946.0)),
         orbit_incl_deg: 0.0,
+        orbit_node_deg: 0.0,
         orbit_angles_drawn: [false; 2],
         star_parent: true,
         obliquity_deg: None,
-        eq_node_given: false,
+        eq_node_deg: None,
         rotation_days: None,
         tidally_locked: false,
         no_ocean: false,
@@ -376,4 +378,28 @@ fn catalog_cloud_layers() {
     }
     eprintln!("layers: {counts:?}");
     assert!(counts[2] > 0 && counts[3] > 0, "{counts:?}");
+}
+
+#[test]
+fn equilibrium_temperature_follows_se() {
+    let mut cat = crate::catalog::Catalog::default();
+    cat.load_sc(
+        "Planet \"Bond\" { ParentBody \"Sol\" Radius 6371 Mass 1 AlbedoBond 0.3 AlbedoGeom 0.5 }\n\
+         Planet \"Geom\" { ParentBody \"Sol\" Radius 6371 Mass 1 AlbedoGeom 0.5 }\n\
+         Planet \"Plain\" { ParentBody \"Sol\" Radius 6371 Mass 1 }\n\
+         Planet \"Warm\" { ParentBody \"Sol\" Radius 6371 Mass 1 Albedo 0.3 Atmosphere { Greenhouse 33 } }\n",
+        "test.sc",
+    );
+    let t = |name: &str, flux: f64| {
+        let Some(crate::catalog::ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
+        equilibrium_temperature(flux, &cat.bodies[i as usize])
+    };
+    // SE's max(20, 278 (F (1 - A_bond))^1/4): the Bond albedo first, the geometric one only alone.
+    let earth = 278.0 * 0.7f64.powf(0.25);
+    assert!((t("Bond", 1.0) - earth).abs() < 1e-9, "{}", t("Bond", 1.0));
+    assert!((t("Geom", 1.0) - 278.0 * 0.5f64.powf(0.25)).abs() < 1e-9);
+    assert!((t("Plain", 1.0) - earth).abs() < 1e-9);
+    assert!((t("Warm", 1.0) - earth - 33.0).abs() < 1e-9);
+    assert!((t("Bond", 1.0) as f32 - equilibrium_temps(1.0, 0.0, Some(0.3)).0).abs() < 1e-3);
+    assert_eq!(t("Plain", 1e-12), 20.0);
 }

@@ -1,0 +1,643 @@
+diff --git a/crates/se_core/src/climate.rs b/crates/se_core/src/climate.rs
+index cf0bb81..8487fa9 100644
+--- a/crates/se_core/src/climate.rs
++++ b/crates/se_core/src/climate.rs
+@@ -2121,11 +2121,13 @@ pub fn star_light_from(eph: &crate::ephemeris::Ephemeris, cat: &crate::catalog::
+ }
+ 
+ /// Equilibrium temperature of a body (K) from the starlight `flux` (L_sun / AU^2), its albedo
+-/// and any catalog greenhouse warming.
++/// and any catalog greenhouse warming: SE's max(20, 278 (F (1 - A))^1/4) ([`equilibrium_temps`])
++/// with the Bond albedo as SE's loader sets it (`AlbedoBond`, else `Albedo`, else `AlbedoGeom`).
+ pub fn equilibrium_temperature(flux: f64, b: &crate::catalog::BodyRecord) -> f64 {
+-    let albedo = b.albedo.clamp(0.0, 0.95);
+-    let greenhouse = b.block.sub("Atmosphere").and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
+-    278.6 * flux.powf(0.25) * ((1.0 - albedo) / 0.7).powf(0.25) + greenhouse
++    let blk = &b.block;
++    let bond = blk.f64("AlbedoBond").or_else(|| blk.f64("Albedo")).or_else(|| blk.f64("AlbedoGeom")).unwrap_or(b.albedo);
++    let greenhouse = blk.sub("Atmosphere").and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
++    (278.0 * (flux * (1.0 - bond)).max(0.0).powf(0.25)).max(20.0) + greenhouse
+ }
+ 
+ /// SE's completion input for catalog body `i`, or `None` when SE keeps the catalog's own
+diff --git a/crates/se_core/src/climate/display.rs b/crates/se_core/src/climate/display.rs
+index 2e72b5b..2154b6e 100644
+--- a/crates/se_core/src/climate/display.rs
++++ b/crates/se_core/src/climate/display.rs
+@@ -475,7 +475,7 @@ impl Model {
+ /// SE's temperature model for catalog body `i` with its system's `light`: from the completion
+ /// when SE generated the atmosphere, else from the catalog as for the class word.
+ pub fn catalog_model(cat: &crate::catalog::Catalog, i: usize, light: &super::StarLight, completion: Option<&super::Completion>) -> Model {
+-    use crate::catalog::{BodyTag, ObjectRef};
++    use crate::catalog::ObjectRef;
+     let b = &cat.bodies[i];
+     let blk = &b.block;
+     let atm = blk.sub("Atmosphere").filter(|_| !blk.bool("NoAtmosphere").unwrap_or(false));
+@@ -489,12 +489,7 @@ pub fn catalog_model(cat: &crate::catalog::Catalog, i: usize, light: &super::Sta
+             let t_surf = super::equilibrium_temperature(light.flux_mean, b) as f32;
+             let greenhouse = atm.and_then(|a| a.f64("Greenhouse")).unwrap_or(0.0);
+             let p = atm.and_then(|a| a.f64("Pressure")).unwrap_or(if atm.is_some() { 1.0 } else { 0.0 }) as f32;
+-            let class = b.class.as_deref().unwrap_or("");
+-            let bulk = if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
+-                crate::surface_gen::bulk::ASTEROID
+-            } else {
+-                crate::surface_gen::bulk_of(class)
+-            };
++            let bulk = crate::surface_gen::catalog_bulk(b);
+             let t = crate::surface_gen::catalog_thermal(cat, i, light.flux_mean, greenhouse, p, t_surf, bulk);
+             let h = (t_surf * super::R_GAS) / (29.0 * g(t.mass_earth, t.radius_km));
+             (t, if p >= 0.2 { ((1.0 - (0.2 / p).powf(0.25)) * h) / 0.25 } else { 0.0 })
+diff --git a/crates/se_core/src/climate/tests.rs b/crates/se_core/src/climate/tests.rs
+index 5f36333..506b41e 100644
+--- a/crates/se_core/src/climate/tests.rs
++++ b/crates/se_core/src/climate/tests.rs
+@@ -377,3 +377,27 @@ fn catalog_cloud_layers() {
+     eprintln!("layers: {counts:?}");
+     assert!(counts[2] > 0 && counts[3] > 0, "{counts:?}");
+ }
++
++#[test]
++fn equilibrium_temperature_follows_se() {
++    let mut cat = crate::catalog::Catalog::default();
++    cat.load_sc(
++        "Planet \"Bond\" { ParentBody \"Sol\" Radius 6371 Mass 1 AlbedoBond 0.3 AlbedoGeom 0.5 }\n\
++         Planet \"Geom\" { ParentBody \"Sol\" Radius 6371 Mass 1 AlbedoGeom 0.5 }\n\
++         Planet \"Plain\" { ParentBody \"Sol\" Radius 6371 Mass 1 }\n\
++         Planet \"Warm\" { ParentBody \"Sol\" Radius 6371 Mass 1 Albedo 0.3 Atmosphere { Greenhouse 33 } }\n",
++        "test.sc",
++    );
++    let t = |name: &str, flux: f64| {
++        let Some(crate::catalog::ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
++        equilibrium_temperature(flux, &cat.bodies[i as usize])
++    };
++    // SE's max(20, 278 (F (1 - A_bond))^1/4): the Bond albedo first, the geometric one only alone.
++    let earth = 278.0 * 0.7f64.powf(0.25);
++    assert!((t("Bond", 1.0) - earth).abs() < 1e-9, "{}", t("Bond", 1.0));
++    assert!((t("Geom", 1.0) - 278.0 * 0.5f64.powf(0.25)).abs() < 1e-9);
++    assert!((t("Plain", 1.0) - earth).abs() < 1e-9);
++    assert!((t("Warm", 1.0) - earth - 33.0).abs() < 1e-9);
++    assert!((t("Bond", 1.0) as f32 - equilibrium_temps(1.0, 0.0, Some(0.3)).0).abs() < 1e-3);
++    assert_eq!(t("Plain", 1e-12), 20.0);
++}
+diff --git a/crates/se_core/src/proc_surface.rs b/crates/se_core/src/proc_surface.rs
+index 538d873..8bc7f2d 100644
+--- a/crates/se_core/src/proc_surface.rs
++++ b/crates/se_core/src/proc_surface.rs
+@@ -81,6 +81,44 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]
+ }
+ 
++/// Linear RGB palette of a surface kind at temperature `t` (K).
++fn palette(kind: SurfaceKind, t: f32, has_life: bool) -> [[f32; 3]; 4] {
++    match kind {
++        SurfaceKind::Rocky if has_life => [
++            [0.10, 0.22, 0.08],
++            [0.30, 0.32, 0.18],
++            [0.42, 0.37, 0.30],
++            [0.90, 0.92, 0.95],
++        ],
++        SurfaceKind::Rocky => {
++            // Deserts: warmer worlds are redder.
++            let warm = ((t - 200.0) / 300.0).clamp(0.0, 1.0);
++            [
++                mix([0.45, 0.42, 0.38], [0.62, 0.40, 0.24], warm),
++                mix([0.55, 0.50, 0.44], [0.70, 0.52, 0.34], warm),
++                mix([0.35, 0.33, 0.31], [0.45, 0.30, 0.22], warm),
++                if t < 270.0 { [0.92, 0.93, 0.95] } else { [0.75, 0.62, 0.48] },
++            ]
++        }
++        SurfaceKind::Cratered => [[0.30, 0.29, 0.28], [0.42, 0.41, 0.39], [0.52, 0.51, 0.49], [0.62, 0.61, 0.60]],
++        SurfaceKind::Icy => [[0.55, 0.60, 0.66], [0.72, 0.76, 0.80], [0.85, 0.87, 0.90], [0.95, 0.96, 0.98]],
++        SurfaceKind::Lava => [[0.08, 0.07, 0.07], [0.14, 0.11, 0.10], [0.22, 0.18, 0.16], [0.30, 0.25, 0.22]],
++        SurfaceKind::Carbon => [[0.09, 0.08, 0.08], [0.14, 0.13, 0.12], [0.20, 0.18, 0.17], [0.30, 0.28, 0.26]],
++        SurfaceKind::Iron => [[0.32, 0.22, 0.18], [0.45, 0.33, 0.27], [0.55, 0.45, 0.40], [0.70, 0.66, 0.62]],
++        SurfaceKind::Ocean => [[0.25, 0.30, 0.20], [0.40, 0.38, 0.30], [0.55, 0.52, 0.48], [0.92, 0.93, 0.96]],
++        SurfaceKind::GasGiant => {
++            let hot = ((t - 400.0) / 800.0).clamp(0.0, 1.0);
++            [
++                mix([0.82, 0.72, 0.58], [0.35, 0.22, 0.18], hot),
++                mix([0.68, 0.52, 0.38], [0.25, 0.14, 0.12], hot),
++                mix([0.90, 0.86, 0.78], [0.45, 0.30, 0.24], hot),
++                mix([0.55, 0.42, 0.33], [0.20, 0.10, 0.08], hot),
++            ]
++        }
++        SurfaceKind::IceGiant => [[0.45, 0.62, 0.85], [0.55, 0.72, 0.90], [0.62, 0.80, 0.92], [0.40, 0.55, 0.80]],
++    }
++}
++
+ impl ProcSurface {
+     /// Choose a surface for a body. `class` is the SE planet class (e.g. "Terra",
+     /// "Selena", "Jupiter"); `temperature_k` the equilibrium/surface temperature.
+@@ -124,44 +162,11 @@ impl ProcSurface {
+         let relief_m = (9_000.0 * (9.81 / g.max(0.01)).sqrt()).max(1_500.0).min(radius_m * 0.04).max(10.0);
+         let ocean_fraction = match kind {
+             SurfaceKind::Ocean => 0.97,
+-            SurfaceKind::Rocky if has_ocean => 0.55 + 0.25 * ((seed >> 7) % 100) as f64 / 100.0,
++            // Any solid world with an ocean (Ferria and Carbonia ones too) has a sea level.
++            k if has_ocean && !k.is_giant() => 0.55 + 0.25 * ((seed >> 7) % 100) as f64 / 100.0,
+             _ => 0.0,
+         };
+-        let t = temperature_k as f32;
+-        let palette = match kind {
+-            SurfaceKind::Rocky if has_life => [
+-                [0.10, 0.22, 0.08],
+-                [0.30, 0.32, 0.18],
+-                [0.42, 0.37, 0.30],
+-                [0.90, 0.92, 0.95],
+-            ],
+-            SurfaceKind::Rocky => {
+-                // Deserts: warmer worlds are redder.
+-                let warm = ((t - 200.0) / 300.0).clamp(0.0, 1.0);
+-                [
+-                    mix([0.45, 0.42, 0.38], [0.62, 0.40, 0.24], warm),
+-                    mix([0.55, 0.50, 0.44], [0.70, 0.52, 0.34], warm),
+-                    mix([0.35, 0.33, 0.31], [0.45, 0.30, 0.22], warm),
+-                    if t < 270.0 { [0.92, 0.93, 0.95] } else { [0.75, 0.62, 0.48] },
+-                ]
+-            }
+-            SurfaceKind::Cratered => [[0.30, 0.29, 0.28], [0.42, 0.41, 0.39], [0.52, 0.51, 0.49], [0.62, 0.61, 0.60]],
+-            SurfaceKind::Icy => [[0.55, 0.60, 0.66], [0.72, 0.76, 0.80], [0.85, 0.87, 0.90], [0.95, 0.96, 0.98]],
+-            SurfaceKind::Lava => [[0.08, 0.07, 0.07], [0.14, 0.11, 0.10], [0.22, 0.18, 0.16], [0.30, 0.25, 0.22]],
+-            SurfaceKind::Carbon => [[0.09, 0.08, 0.08], [0.14, 0.13, 0.12], [0.20, 0.18, 0.17], [0.30, 0.28, 0.26]],
+-            SurfaceKind::Iron => [[0.32, 0.22, 0.18], [0.45, 0.33, 0.27], [0.55, 0.45, 0.40], [0.70, 0.66, 0.62]],
+-            SurfaceKind::Ocean => [[0.25, 0.30, 0.20], [0.40, 0.38, 0.30], [0.55, 0.52, 0.48], [0.92, 0.93, 0.96]],
+-            SurfaceKind::GasGiant => {
+-                let hot = ((t - 400.0) / 800.0).clamp(0.0, 1.0);
+-                [
+-                    mix([0.82, 0.72, 0.58], [0.35, 0.22, 0.18], hot),
+-                    mix([0.68, 0.52, 0.38], [0.25, 0.14, 0.12], hot),
+-                    mix([0.90, 0.86, 0.78], [0.45, 0.30, 0.24], hot),
+-                    mix([0.55, 0.42, 0.33], [0.20, 0.10, 0.08], hot),
+-                ]
+-            }
+-            SurfaceKind::IceGiant => [[0.45, 0.62, 0.85], [0.55, 0.72, 0.90], [0.62, 0.80, 0.92], [0.40, 0.55, 0.80]],
+-        };
++        let palette = palette(kind, temperature_k as f32, has_life);
+         Self {
+             seed,
+             kind,
+@@ -192,6 +197,16 @@ impl ProcSurface {
+ 
+     /// Use SE's surface parameters for the relief (`bump_height_km`: the body's `BumpHeight`).
+     pub fn with_se(mut self, g: SurfaceGen, bump_height_km: f64) -> Self {
++        // A body SE classes Neptune to brown dwarf is a giant whatever its class word or size
++        // (the completion makes small hot bodies mini-Neptunes), as the renderer treats it.
++        let bulk = g.classes.bulk;
++        if !self.kind.is_giant() && (sg::bulk::NEPTUNE..=sg::bulk::BROWN_DWARF).contains(&bulk) {
++            self.kind = if bulk == sg::bulk::NEPTUNE { SurfaceKind::IceGiant } else { SurfaceKind::GasGiant };
++            self.palette = palette(self.kind, self.temperature_k as f32, self.has_life);
++            self.ocean_fraction = 0.0;
++            self.crater_strength = 0.0;
++            self.mountain_strength = 0.35;
++        }
+         if !self.kind.is_giant() && bump_height_km > 0.0 {
+             self.bump_m = bump_height_km * 1000.0;
+             self.relief_m = self.bump_m * 0.35;
+@@ -519,4 +534,40 @@ mod tests {
+             assert!(hi - lo < ps.bump_m && lo > -ps.bump_m && hi < ps.bump_m, "{lo} {hi}");
+         }
+     }
++
++    #[test]
++    fn se_giant_bulk_makes_a_giant_kind() {
++        use crate::surface_gen::{self as sg, Classes, GenInput};
++        // A small hot body the completion makes a mini-Neptune (55 Cnc e like).
++        let inp = GenInput {
++            seeds: sg::catalog_seeds("Test", "Star"),
++            obj_type: sg::obj::PLANET,
++            classes: Classes { bulk: sg::bulk::NEPTUNE, temp: 0, atmo: 4, volq: 9, size: 3, surface: 8 },
++            radius_km: 12000.0,
++            mass_earth: 8.0,
++            t_eq: 2000.0,
++            t_surf: 2000.0,
++            t_class: 2000.0,
++            pressure_atm: 100.0,
++            bump_height_km: 20.0,
++            ..Default::default()
++        };
++        let g = sg::generate(&inp, &sg::given_from(None, None));
++        let ps = ProcSurface::for_body("Test", Some("Terra"), 12_000_000.0, 4.8e25, 2000.0, true, false, false).with_se(g, 20.0);
++        assert_eq!(ps.kind, SurfaceKind::IceGiant);
++        assert!(ps.se.is_none());
++        assert_eq!(ps.height_m(DVec3::X), 0.0);
++    }
++
++    #[test]
++    fn solid_worlds_with_an_ocean_have_a_sea_level() {
++        let iron = ProcSurface::for_body("Test Ferria", Some("Ferria"), 5_000_000.0, 3e24, 280.0, true, true, false);
++        assert_eq!(iron.kind, SurfaceKind::Iron);
++        assert!(iron.ocean_fraction > 0.5);
++        let carbon = ProcSurface::for_body("Test Carbonia", Some("Carbonia"), 5_000_000.0, 3e24, 280.0, true, true, false);
++        assert_eq!(carbon.kind, SurfaceKind::Carbon);
++        assert!(carbon.ocean_fraction > 0.5);
++        let dry = ProcSurface::for_body("Test Dry", Some("Ferria"), 5_000_000.0, 3e24, 280.0, true, false, false);
++        assert_eq!(dry.ocean_fraction, 0.0);
++    }
+ }
+diff --git a/crates/se_core/src/procgen/mod.rs b/crates/se_core/src/procgen/mod.rs
+index 2f2a885..44d9945 100644
+--- a/crates/se_core/src/procgen/mod.rs
++++ b/crates/se_core/src/procgen/mod.rs
+@@ -338,7 +338,8 @@ fn rogue_system(rng: &mut Rng, star: &StarParams, seed32: u32, sc: &mut String,
+     // SE's planet draw on the system's star streams (the planet's own are not known).
+     let (pa, pb) = (seed32.wrapping_mul(0x2e3).wrapping_add(0x1486), seed32.wrapping_mul(0x234).wrapping_add(0x1cdb));
+     let c_to_o = star.c_to_o.unwrap_or(0.55) as f32;
+-    let met = 10f32.powf(star.feh as f32);
++    // [Fe/H] in dex, as every other planet reads it (se_star).
++    let met = if star.feh.is_finite() { star.feh.clamp(-5.0, 5.0) as f32 } else { 0.0 };
+     let (mass, radius_km, comp, class) = se_layout::lone_planet(pa, pb, t_own, c_to_o, met);
+     let kind = match class {
+         bulk::JUPITER => Kind::GasGiant,
+@@ -419,7 +420,8 @@ pub fn se_system_seed(rec: &crate::catalog::StarRecord) -> u32 {
+ /// units of 2^-32 pc), `x 0x28842 - z 0x2309fb + y 0xe35ad`. Only catalog stars pass through the
+ /// star loader's f32 ([`crate::system_gen::system_seed`]); a procedural star keeps full precision.
+ pub fn position_seed(pos_pc: DVec3) -> u32 {
+-    let c = |v: f64| (v * 4_294_967_296.0).floor() as i64 as u32;
++    // Through i128: past 2^31 pc the value overflows i64, and SE keeps the low 32 bits.
++    let c = |v: f64| (v * 4_294_967_296.0).floor() as i128 as u32;
+     c(pos_pc.x).wrapping_mul(0x28842).wrapping_add(c(pos_pc.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(pos_pc.y).wrapping_mul(0xe35ad))
+ }
+ 
+@@ -1604,6 +1606,12 @@ fn make_binary(host: &str, p: &mut Body, moons: &mut Vec<Body>) -> Option<Planet
+     let (mut n_big, mut n_d) = (if close { 0 } else { 1 }, 0);
+     for m in moons.iter_mut() {
+         m.parent = bary.clone();
++        // The barycentre does not spin, so its "Equator" is the ecliptic: the moons' orbits about
++        // the planet's equator turn into the ecliptic frame, as the pair's.
++        if m.ref_plane == "Equator" {
++            (m.inc, m.node) = tilt_normal(p.obliq, p.eq_node, m.inc, m.node);
++            m.ref_plane = "Ecliptic";
++        }
+         // The catalog sums only stars under a barycentre, so the period is given.
+         m.orbit_period_s = orbital_period_s(m.a_au, mt * EARTH_MASS_KG);
+         m.period_given = true;
+@@ -2835,6 +2843,54 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn position_seeds_wrap_far_from_the_origin() {
++        // Below 2^31 pc the seeds are the i64 ones they always were.
++        let old = |p: DVec3| {
++            let c = |v: f64| (v * 4_294_967_296.0).floor() as i64 as u32;
++            c(p.x).wrapping_mul(0x28842).wrapping_add(c(p.z).wrapping_mul(0x2309fb_u32.wrapping_neg())).wrapping_add(c(p.y).wrapping_mul(0xe35ad))
++        };
++        let mut r = Rng::new(7);
++        for _ in 0..5000 {
++            let p = DVec3::new(r.range(-2.1e9, 2.1e9), r.range(-2.1e9, 2.1e9), r.range(-2.1e9, 2.1e9));
++            assert_eq!(position_seed(p), old(p), "{p}");
++        }
++        // Past it SE keeps the low 32 bits: stars in a far galaxy differ.
++        let base = DVec3::new(3e9, -2.5e9, 4e9);
++        let mut seeds: Vec<u32> = (0..1000).map(|_| position_seed(base + DVec3::new(r.range(0.0, 400.0), r.range(0.0, 400.0), r.range(0.0, 400.0)))).collect();
++        seeds.sort_unstable();
++        seeds.dedup();
++        assert!(seeds.len() > 990, "{} distinct", seeds.len());
++    }
++
++    #[test]
++    fn binary_planet_moons_turn_into_the_ecliptic_frame() {
++        let moon = |name: &str, mass_me: f64, a_au: f64, inc: f64, node: f64| Body {
++            name: name.into(),
++            tag: Tag::Moon,
++            mass_me,
++            a_au,
++            inc,
++            node,
++            ref_plane: "Equator",
++            ..Default::default()
++        };
++        let mut kept = 0;
++        for i in 0..40 {
++            let mut p = Body { name: format!("T{i} b"), parent: format!("T{i}"), tag: Tag::Planet, mass_me: 1.0, obliq: 60.0, eq_node: 40.0, ..Default::default() };
++            let mut moons = vec![moon("s", 0.2, 0.003, 2.0, 10.0), moon("m", 0.001, 0.05, 5.0, 100.0)];
++            make_binary(&format!("T{i}"), &mut p, &mut moons).expect("binary");
++            let Some(m) = moons.get(1) else { continue };
++            kept += 1;
++            assert_eq!(m.ref_plane, "Ecliptic");
++            assert_eq!((m.inc, m.node), tilt_normal(60.0, 40.0, 5.0, 100.0));
++            // The kept moon orbits near the pair's plane, both near the planet's equator.
++            let angle = normal_of(m.inc, m.node).angle_between(normal_of(p.inc, p.node)).to_degrees();
++            assert!(angle < 10.0, "{angle}");
++        }
++        assert!(kept > 0);
++    }
++
+     #[test]
+     fn rings_and_binary_planets() {
+         // SE's ring roll rings cold bodies of every kind; its moon masses make binary planets.
+diff --git a/crates/se_core/src/surface_gen.rs b/crates/se_core/src/surface_gen.rs
+index f824737..39d3f42 100644
+--- a/crates/se_core/src/surface_gen.rs
++++ b/crates/se_core/src/surface_gen.rs
+@@ -328,6 +328,28 @@ pub fn bulk_of(class: &str) -> i32 {
+     }
+ }
+ 
++/// Bulk class of a catalog body SE's completion did not run on. Asteroids and comets are
++/// asteroids (unless the catalog calls them Aquaria); a body with no class is classed by size with
++/// SE's catalog thresholds (FUN_1401aa500 with the catalog flag: at least 60 Earth masses and
++/// 40000 km a Jupiter, at least 10 and 18000 km a Neptune), else by its class string.
++pub fn catalog_bulk(b: &crate::catalog::BodyRecord) -> i32 {
++    use crate::catalog::BodyTag;
++    let class = b.class.as_deref().unwrap_or("").trim();
++    if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
++        return bulk::ASTEROID;
++    }
++    if class.is_empty() || class.eq_ignore_ascii_case("none") {
++        let (m, r) = (b.mass_kg / crate::units::EARTH_MASS_KG, b.radius_km);
++        if m >= 60.0 && r >= 40000.0 {
++            return bulk::JUPITER;
++        }
++        if m >= 10.0 && r >= 18000.0 {
++            return bulk::NEPTUNE;
++        }
++    }
++    bulk_of(class)
++}
++
+ /// Temperature class: > 1000 Torrid, > 500 Hot, > 330 Warm, > 250 Temperate, > 170 Cool, > 90 Cold,
+ /// else Frigid. FUN_1404d6850 first applies it to the surface temperature; once the system is
+ /// built FUN_140510f40 reapplies it to the temperature model's average, which the class string and
+@@ -1977,14 +1999,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
+         BodyTag::Comet => obj::COMET,
+         BodyTag::Spacecraft => 11,
+     };
+-    let class = b.class.as_deref().unwrap_or("");
+-    let bulk = if let Some(c) = completion {
+-        c.bulk
+-    } else if matches!(b.tag, BodyTag::Asteroid | BodyTag::Comet) && !class.eq_ignore_ascii_case("aquaria") {
+-        bulk::ASTEROID
+-    } else {
+-        bulk_of(class)
+-    };
++    let bulk = completion.map_or_else(|| catalog_bulk(b), |c| c.bulk);
+     let surface = blk.sub("Surface");
+     let atm = sub_unless(blk, "Atmosphere", "NoAtmosphere");
+     let ocean = sub_unless(blk, "Ocean", "NoOcean");
+@@ -2033,7 +2048,7 @@ pub fn catalog_input(cat: &crate::catalog::Catalog, i: usize, t_eq: f64, greenho
+             a_km: a_km.max(1.0),
+             parent_radius_km: p.radius_km as f32,
+             parent_ring_outer_km: sub_unless(&p.block, "Rings", "NoRings").and_then(|r| r.f64("OuterRadius")).map(|v| v as f32),
+-            parent_giant: bulk_of(p.class.as_deref().unwrap_or("")) >= bulk::NEPTUNE,
++            parent_giant: catalog_bulk(p) >= bulk::NEPTUNE,
+             inside_sync_orbit: period > 0.0 && period < spin,
+         }
+     });
+@@ -2332,4 +2347,28 @@ mod tests {
+         assert_eq!(g1.surf_style(), 0.42);
+         assert_eq!(g1, generate(&rocky(4), &given));
+     }
++
++    #[test]
++    fn classless_catalog_giants_are_classed_by_size() {
++        let mut cat = crate::catalog::Catalog::default();
++        cat.load_sc(
++            "Planet \"Hot Jupiter\" { ParentBody \"Sol\" Radius 80000 Mass 371 Atmosphere { Height 500 } }\n\
++             Planet \"Mini\" { ParentBody \"Sol\" Radius 20000 Mass 15 }\n\
++             Planet \"Small\" { ParentBody \"Sol\" Radius 6371 Mass 1 }\n\
++             Planet \"Named\" { Class \"Terra\" ParentBody \"Sol\" Radius 80000 Mass 371 }\n\
++             Planet \"Unclassed\" { Class \"NONE\" ParentBody \"Sol\" Radius 80000 Mass 371 }\n",
++            "test.sc",
++        );
++        let bulk = |name: &str| {
++            let Some(crate::catalog::ObjectRef::Body(i)) = cat.find(name) else { panic!("{name}") };
++            let (inp, _) = catalog_input(&cat, i as usize, 1000.0, 0.0, 100.0, None);
++            assert_eq!(inp.classes.bulk, catalog_bulk(&cat.bodies[i as usize]));
++            inp.classes.bulk
++        };
++        assert_eq!(bulk("Hot Jupiter"), bulk::JUPITER);
++        assert_eq!(bulk("Mini"), bulk::NEPTUNE);
++        assert_eq!(bulk("Small"), bulk::TERRA);
++        assert_eq!(bulk("Named"), bulk::TERRA);
++        assert_eq!(bulk("Unclassed"), bulk::JUPITER);
++    }
+ }
+diff --git a/crates/se_engine/src/procgalaxies.rs b/crates/se_engine/src/procgalaxies.rs
+index 8bfc1da..3c6150a 100644
+--- a/crates/se_engine/src/procgalaxies.rs
++++ b/crates/se_engine/src/procgalaxies.rs
+@@ -40,7 +40,7 @@ const MAX_IN_FLIGHT: usize = 24;
+ const KEEP_FRAMES: u64 = 90;
+ /// Brightest-galaxy magnitude a node must reach to be worth generating.
+ const NODE_MAG_LIMIT: f32 = 19.0;
+-/// Galaxies fainter than this from the nearest point of their node are not put in the mesh.
++/// Galaxies fainter than this from the camera are not picked or counted in the sky coverage.
+ const GALAXY_MAG_CULL: f32 = 18.5;
+ /// A level-`L` node is requested while the camera is within `REACH` node sizes of it.
+ const REACH: f64 = 1.0;
+@@ -70,7 +70,7 @@ impl Default for ProcSettings {
+ struct BuiltNode {
+     mesh: Option<Mesh>,
+     galaxies: Arc<Vec<ProcGalaxy>>,
+-    /// Sprites in the mesh (galaxies above the magnitude cull).
++    /// Sprites in the mesh.
+     drawn: usize,
+ }
+ 
+@@ -209,15 +209,13 @@ pub fn galaxy_record(g: &ProcGalaxy) -> GalaxyRecord {
+     }
+ }
+ 
+-fn build_node(key: GalNodeKey, pools: [u32; 17], cam: DVec3) -> BuiltNode {
++/// The node's galaxies and their sprites: all of them, as the camera may come close to any while
++/// the node stays loaded; the shader hides the faint ones each frame (galaxy_far.wesl).
++fn build_node(key: GalNodeKey, pools: [u32; 17]) -> BuiltNode {
+     let galaxies = proc_galaxy::generate_node(key, &pools);
+     let center = key.center();
+-    let d_node = key.distance_to(cam).max(1.0) as f32;
+     let (mut p, mut d, mut s, mut c, mut ix) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+     for g in &galaxies {
+-        if proc_galaxy::app_mag(g.lum, d_node) > GALAXY_MAG_CULL {
+-            continue;
+-        }
+         let rec = galaxy_record(g);
+         let ptype = profile_type(&rec);
+         let normal = if ptype == 1 { (rec.orientation * DVec3::NEG_Z).as_vec3() } else { Vec3::ZERO };
+@@ -304,7 +302,7 @@ fn stream_nodes(
+             continue;
+         }
+         let pools = gs.model_pools();
+-        let task = AsyncComputeTaskPool::get().spawn(async move { build_node(key, pools, cam_pc) });
++        let task = AsyncComputeTaskPool::get().spawn(async move { build_node(key, pools) });
+         field.nodes.insert(key, NodeSlot { state: NodeState::Loading(task), last_used: frame_no });
+         in_flight += 1;
+     }
+diff --git a/crates/se_engine/src/star_search.rs b/crates/se_engine/src/star_search.rs
+index e94bc33..951af3b 100644
+--- a/crates/se_engine/src/star_search.rs
++++ b/crates/se_engine/src/star_search.rs
+@@ -426,6 +426,27 @@ fn run_scan(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc
+     scan.done.store(true, Ordering::Relaxed);
+ }
+ 
++/// The field's octree levels a search for star type `t` visits: only those whose magnitudes can
++/// hold the type (the field's dead stars have a level of their own; O-A stars are bright, so their
++/// nodes are few and large). Giants reach Mv 3.5: most of SE's field giants are in the band near
++/// Mv 1.5-3.
++fn type_levels(t: usize) -> ScanLevels {
++    let inf = f64::INFINITY;
++    match t {
++        1 | 2 => ScanLevels::Remnants,
++        3 => ScanLevels::Mags(10.0, inf),
++        4 => ScanLevels::Mags(inf, inf),
++        5 => ScanLevels::Mags(-inf, 3.5),
++        6 => ScanLevels::Mags(-inf, -2.5),
++        7 => ScanLevels::Mags(-inf, 2.0),
++        8 => ScanLevels::Mags(0.0, 3.5),
++        9 => ScanLevels::Mags(1.5, 5.5),
++        10 => ScanLevels::Mags(-inf, 7.0),
++        11 => ScanLevels::Mags(-inf, 10.5),
++        _ => ScanLevels::All,
++    }
++}
++
+ /// A star search: one row per matching star, catalog and procedural, the nearest
+ /// [`MAX_SYSTEMS`]; no planetary systems are generated.
+ fn scan_stars(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_pc: f64, t: usize, scan: Arc<Scan>) {
+@@ -454,23 +475,7 @@ fn scan_stars(cat: Arc<Catalog>, stars: Option<StarScan>, center: DVec3, radius_
+             3 => s.kind == StarKind::WhiteDwarf,
+             _ => star_type_ok(t, &SpectralClass::parse(&s.class)),
+         };
+-        // Only the levels whose magnitudes can hold the type (the field's dead stars have a level
+-        // of their own; giants and O-A stars are bright, so their nodes are few and large).
+-        let inf = f64::INFINITY;
+-        let levels = match t {
+-            1 | 2 => ScanLevels::Remnants,
+-            3 => ScanLevels::Mags(10.0, inf),
+-            4 => ScanLevels::Mags(inf, inf),
+-            5 => ScanLevels::Mags(-inf, 1.0),
+-            6 => ScanLevels::Mags(-inf, -2.5),
+-            7 => ScanLevels::Mags(-inf, 2.0),
+-            8 => ScanLevels::Mags(0.0, 3.5),
+-            9 => ScanLevels::Mags(1.5, 5.5),
+-            10 => ScanLevels::Mags(-inf, 7.0),
+-            11 => ScanLevels::Mags(-inf, 10.5),
+-            _ => ScanLevels::All,
+-        };
+-        rows.extend(st.stars_within(center, radius_pc, MAX_SYSTEMS, levels, &keep).into_iter().map(|(p, info)| SystemRow {
++        rows.extend(st.stars_within(center, radius_pc, MAX_SYSTEMS, type_levels(t), &keep).into_iter().map(|(p, info)| SystemRow {
+             name: info.name.clone(),
+             pos_pc: p,
+             dist_pc: p.distance(center),
+@@ -756,7 +761,9 @@ fn filter_window(ctx: &egui::Context, st: &mut SearchState, i18n: &I18n) {
+ /// the catalog first, in a frame where nothing else holds the catalog.
+ fn apply_pending(mut pending: ResMut<PendingSelect>, mut data: ResMut<SeData>, mut cam: ResMut<FlyCamera>) {
+     let Some((row, body, go)) = pending.0.as_ref() else { return };
+-    if data.catalog.find(&row.name).is_none() {
++    // A procedural system not in the catalog, or whose root stayed when CacheSizeSolarSystems
++    // freed its members: generated again (materialize_star keeps a loaded root and its system).
++    if data.catalog.find(&row.name).is_none() || data.catalog.find(body).is_none() {
+         let StarSource::Procedural(info) = &row.source else {
+             pending.0 = None;
+             return;
+@@ -772,3 +779,23 @@ fn apply_pending(mut pending: ResMut<PendingSelect>, mut data: ResMut<SeData>, m
+     }
+     pending.0 = None;
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn giant_search_scans_the_levels_giants_are_in() {
++        use se_core::star_octree::{GalaxyStarInput, StarOctree};
++        let r = 19_329.9;
++        let mw = GalaxyStarInput { dims: DVec3::splat(r), radius_pc: r, hubble: 15, has_model: true, seed: -8_628_293, galaxy: se_core::proc_galsys::GalaxyRef::Catalog(8514) };
++        let t = StarOctree::new(&mw, 7.0);
++        let ScanLevels::Mags(lo, hi) = type_levels(5) else { panic!("giants scan by magnitude") };
++        // As procstars' stars_within picks levels; SE's field giants are mostly at levels 4 and 5.
++        let wanted = |level: u8| {
++            let (b, f) = t.mag_band(level);
++            b < hi && f > lo
++        };
++        assert!(wanted(4) && wanted(5), "{:?} {:?}", t.mag_band(4), t.mag_band(5));
++    }
++}
+diff --git a/crates/se_engine/src/system.rs b/crates/se_engine/src/system.rs
+index 7a035d5..87ba600 100644
+--- a/crates/se_engine/src/system.rs
++++ b/crates/se_engine/src/system.rs
+@@ -508,6 +508,11 @@ fn select_active_system(
+         None
+     } else if needs_system(&data.catalog, root) {
+         Some((root, true))
++    } else if data.catalog.stars[root as usize].source == "procedural" {
++        // Made at once by a selection (`materialize_star`): a generated system like the others,
++        // freed beyond CacheSizeSolarSystems.
++        generated.insert(root);
++        None
+     } else {
+         generated_system_star(&data.catalog, root).map(|s| (s, false))
+     };
+@@ -838,7 +843,13 @@ fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took,
+     let t = std::time::Instant::now();
+     cat.load_doc(doc, se_core::climate::PROCEDURAL_SOURCE);
+     if let Some(m) = g.root_mass_sol {
+-        cat.stars[idx as usize].mass_kg = m * se_core::units::SOLAR_MASS_KG;
++        // The record becomes the system's barycentre, of all its stars' mass; the star's own is
++        // kept for generating the system again (`proc_system_input`) once it has been unloaded.
++        let st = &mut cat.stars[idx as usize];
++        if st.block.f64(OWN_MASS_KEY).is_none() {
++            st.block.items.push(se_core::sc::Item { key: OWN_MASS_KEY.into(), args: vec![se_core::sc::Value::Num(st.mass_kg)], ..default() });
++        }
++        st.mass_kg = m * se_core::units::SOLAR_MASS_KG;
+     }
+     cat.finalize();
+     let name = &cat.stars[idx as usize].names[0];
+@@ -874,11 +885,16 @@ fn generated_system_star(cat: &se_core::catalog::Catalog, root: u32) -> Option<u
+     Some(star)
+ }
+ 
++/// The key of a star record's own mass (kg) once its generated system made it a barycentre.
++const OWN_MASS_KEY: &str = "PortOwnMassKg";
++
+ /// The generator's input for a procedural star's planetary system (its star and seed).
+ pub fn proc_system_input(st: &se_core::catalog::StarRecord) -> (se_core::procgen::StarParams, u64) {
+     let lum_bol = se_core::star::lum_from_abs_mag(st.abs_mag) * 10f64.powf(-0.4 * se_core::star::bolometric_correction(st.teff));
+-    // Catalog stars may lack a mass or radius: the main-sequence values for their light.
+-    let mass_sol = if st.mass_kg > 0.0 { st.mass_kg / se_core::units::SOLAR_MASS_KG } else { lum_bol.max(1e-4).powf(1.0 / 3.5).clamp(0.08, 80.0) };
++    // The star's own mass, not its system's (`load_generated`). Catalog stars may lack a mass or
++    // radius: the main-sequence values for their light.
++    let mass_kg = st.block.f64(OWN_MASS_KEY).unwrap_or(st.mass_kg);
++    let mass_sol = if mass_kg > 0.0 { mass_kg / se_core::units::SOLAR_MASS_KG } else { lum_bol.max(1e-4).powf(1.0 / 3.5).clamp(0.08, 80.0) };
+     let radius_sol = if st.radius_km > 0.0 {
+         st.radius_km / se_core::units::SOLAR_RADIUS_KM
+     } else {
+@@ -1764,6 +1780,35 @@ mod tests {
+         assert!(field.age_gyr > 0.0 && (field.age_gyr - 0.12).abs() > 1e-3);
+     }
+ 
++    #[test]
++    fn unloaded_multiple_systems_generate_the_same_again() {
++        let mut multiples = 0;
++        for i in 0..200 {
++            let info = crate::procstars::ProcStarInfo { name: format!("RS 0-1-2-{i}"), class: "G2V".into(), abs_mag: 4.8, teff: 5772.0, age_feh: None, se: None };
++            let rec = procedural_star_record(&info, DVec3::new(100.0 + i as f64, 20.0, -30.0));
++            // The system as first made, from a star not yet loaded.
++            let mut fresh = se_core::catalog::Catalog::default();
++            let i0 = promote_star(&mut fresh, rec.clone());
++            if !fresh.stars[i0 as usize].barycenter {
++                continue;
++            }
++            multiples += 1;
++            let first = generate(&fresh, i0, true)().0.sc;
++            let mut cat = se_core::catalog::Catalog::default();
++            let idx = materialize_star(&mut cat, rec.clone());
++            assert!(cat.stars[idx as usize].mass_kg > rec.mass_kg);
++            assert_eq!(proc_system_input(&cat.stars[idx as usize]).0.mass_sol, proc_system_input(&rec).0.mass_sol);
++            // Freed beyond CacheSizeSolarSystems and entered again: the same system.
++            cat.unload_generated(&info.name);
++            assert!(needs_system(&cat, idx));
++            assert_eq!(generate(&cat, idx, true)().0.sc, first, "{}", info.name);
++            if multiples == 3 {
++                break;
++            }
++        }
++        assert!(multiples > 0);
++    }
++
+     #[test]
+     fn crescent_shift_follows_the_phase() {
+         let r = 1000.0;

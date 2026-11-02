@@ -18,6 +18,7 @@ use se_core::upos::UPos;
 
 use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 
+use crate::atmosphere::AtmLoad;
 use crate::camera::{FlyCamera, MainCamera};
 use crate::data::SeData;
 use crate::stars::{StarMaterial, StarSettings, SunSpriteMaterial, build_sprite_mesh, push_star, star_render_color, uniforms_for};
@@ -312,7 +313,7 @@ impl Plugin for SystemPlugin {
             .add_systems(Last, log_frame_times)
             .add_systems(
                 PostUpdate,
-                (select_active_system, spawn_system_members, update_bodies, update_lighting)
+                (select_active_system, spawn_system_members, attach_pending_atmospheres, update_bodies, update_lighting)
                     .chain()
                     .after(crate::universe::advance_time)
                     .in_set(UniverseSet::Simulate),
@@ -367,11 +368,12 @@ fn nearest_catalog_star(cat: &se_core::catalog::Catalog, eph: &Ephemeris, jd: f6
 
 /// A generator's output, its script parsed (with SE's life), how long that took, and the bodies
 /// with life.
-type Generated = (se_core::procgen::GeneratedSystem, se_core::sc::Block, std::time::Duration, usize);
+pub(crate) type Generated = (se_core::procgen::GeneratedSystem, se_core::sc::Block, std::time::Duration, usize);
 
 /// Generate a star's planetary system (with SE's component stars when `multiples`), parse it and
-/// run SE's life generator on it (FUN_1404faf40), with the system's seed (its root's).
-fn generate(cat: &se_core::catalog::Catalog, star: u32, multiples: bool) -> impl FnOnce() -> Generated + Send + 'static {
+/// run SE's life generator on it (FUN_1404faf40), with the system's seed (its root's). The Star
+/// browser's search lists catalog stars' generated systems from it too (star_search.rs).
+pub(crate) fn generate(cat: &se_core::catalog::Catalog, star: u32, multiples: bool) -> impl FnOnce() -> Generated + Send + 'static {
     let (mut params, seed) = proc_system_input(&cat.stars[star as usize]);
     let root = cat.system_root(ObjectRef::Star(star)).unwrap_or(star);
     params.se_seed = Some(se_core::procgen::se_system_seed(&cat.stars[root as usize]));
@@ -508,6 +510,11 @@ fn select_active_system(
         None
     } else if needs_system(&data.catalog, root) {
         Some((root, true))
+    } else if data.catalog.stars[root as usize].source == "procedural" {
+        // Made at once by a selection (`materialize_star`): a generated system like the others,
+        // freed beyond CacheSizeSolarSystems.
+        generated.insert(root);
+        None
     } else {
         generated_system_star(&data.catalog, root).map(|s| (s, false))
     };
@@ -736,43 +743,33 @@ fn spawn_system_members(
                     ))
                 }),
             };
+            let mut held = None;
             if let Some((model, height_km, bright, look)) = sky {
-                if let Some(gpu) = atm_cache.get_or_load(&data.vfs, &model, &mut images) {
-                    let gpu = gpu.with_height(radius_m, height_km * 1000.0);
-                    let bright = bright.max(0.1);
-                    let shell = crate::atmosphere::spawn_sky_shell(
-                        &mut commands,
-                        &mut meshes,
-                        &mut sky_mats,
-                        &gpu,
-                        radius_m,
-                        height_km * 1000.0,
-                        bright,
-                        look,
-                    );
-                    commands.entity(shell).insert((
-                        SystemMember,
-                        SkyOf { body: body_entity },
-                        UPosition(pos),
-                        // Turned with the body and flattened like it (`sky.wesl` works in the shell's frame).
-                        UOrientation(orient),
-                        MeterScale(DVec3::splat(gpu.top_radius_m(radius_m)) * shape),
-                        Visibility::Hidden,
-                    ));
-                    terrain.atmosphere = Some(gpu);
-                    terrain.atm_bright = bright;
-                    terrain.atm_look = look;
-                } else {
-                    warn!("atmosphere model {model} not found");
+                match atm_cache.get_or_load(&data.vfs, &model, &mut images) {
+                    AtmLoad::Ready(gpu) => {
+                        let sky = Sky { body: body_entity, radius_m, height_km, bright, look, pos, orient, shape };
+                        attach_atmosphere(&mut commands, &mut meshes, &mut sky_mats, gpu, &sky, Some(&mut terrain));
+                    }
+                    AtmLoad::Pending => held = Some(PendingAtmosphere { model, height_km, bright, look, terrain: None }),
+                    AtmLoad::Missing => warn!("atmosphere model {model} not found"),
                 }
             }
             match b.block.str("Model") {
                 Some(model_ref) => {
                     commands.entity(body_entity).insert(crate::body_models::BodyModel::new(model_ref));
+                    if let Some(p) = held {
+                        commands.entity(body_entity).insert(p);
+                    }
                 }
-                None => {
-                    commands.entity(body_entity).insert(terrain);
-                }
+                // The ground waits for an atmosphere still being generated, so that it is built with it.
+                None => match held {
+                    Some(p) => {
+                        commands.entity(body_entity).insert(PendingAtmosphere { terrain: Some(terrain), ..p });
+                    }
+                    None => {
+                        commands.entity(body_entity).insert(terrain);
+                    }
+                },
             }
             if let Some(d) = defaults.as_ref() {
                 crate::rings::spawn_rings(
@@ -796,6 +793,90 @@ fn spawn_system_members(
     load.bodies += n_bodies;
     if load.pending.is_empty() {
         info!("entered system {} ({} bodies) in {:.0} ms", active.name, load.bodies, load.spent.as_secs_f64() * 1e3);
+    }
+}
+
+/// A body's atmosphere as drawn: model height (km), `Bright` and look, and the body's place.
+struct Sky {
+    body: Entity,
+    radius_m: f64,
+    height_km: f64,
+    bright: f32,
+    look: Vec4,
+    pos: UPos,
+    orient: DQuat,
+    shape: DVec3,
+}
+
+/// Spawn a body's sky shell and give its terrain the atmosphere.
+fn attach_atmosphere(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    sky_mats: &mut Assets<crate::atmosphere::SkyMaterial>,
+    gpu: crate::atmosphere::AtmosphereGpu,
+    sky: &Sky,
+    terrain: Option<&mut crate::terrain::Terrain>,
+) {
+    let gpu = gpu.with_height(sky.radius_m, sky.height_km * 1000.0);
+    let bright = sky.bright.max(0.1);
+    let shell = crate::atmosphere::spawn_sky_shell(commands, meshes, sky_mats, &gpu, sky.radius_m, sky.height_km * 1000.0, bright, sky.look);
+    commands.entity(shell).insert((
+        SystemMember,
+        SkyOf { body: sky.body },
+        UPosition(sky.pos),
+        // Turned with the body and flattened like it (`sky.wesl` works in the shell's frame).
+        UOrientation(sky.orient),
+        MeterScale(DVec3::splat(gpu.top_radius_m(sky.radius_m)) * sky.shape),
+        Visibility::Hidden,
+    ));
+    if let Some(terrain) = terrain {
+        terrain.atmosphere = Some(gpu);
+        terrain.atm_bright = bright;
+        terrain.atm_look = sky.look;
+    }
+}
+
+/// A body whose atmosphere model is still being generated in the background (an add-on's
+/// `.cfg`-only model, `AtmLoad::Pending`): its sky shell, and its terrain, held back so that its
+/// ground is built with the atmosphere, wait for the model.
+#[derive(Component)]
+pub(crate) struct PendingAtmosphere {
+    model: String,
+    height_km: f64,
+    bright: f32,
+    look: Vec4,
+    terrain: Option<crate::terrain::Terrain>,
+}
+
+/// Give the bodies waiting for their atmosphere model the model once it is ready (or their terrain
+/// without it, should the model turn out missing).
+fn attach_pending_atmospheres(
+    mut commands: Commands,
+    data: Res<SeData>,
+    mut pending: Query<(Entity, &SystemBody, &mut PendingAtmosphere)>,
+    (mut images, mut atm_cache): (ResMut<Assets<Image>>, ResMut<crate::atmosphere::AtmosphereCache>),
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut sky_mats: ResMut<Assets<crate::atmosphere::SkyMaterial>>,
+) {
+    for (e, body, mut p) in &mut pending {
+        let gpu = match atm_cache.get_or_load(&data.vfs, &p.model, &mut images) {
+            AtmLoad::Pending => continue,
+            AtmLoad::Ready(gpu) => Some(gpu),
+            AtmLoad::Missing => {
+                warn!("atmosphere model {} not found", p.model);
+                None
+            }
+        };
+        let mut terrain = p.terrain.take();
+        if let Some(gpu) = gpu {
+            let sky = Sky { body: e, radius_m: body.radius_m, height_km: p.height_km, bright: p.bright, look: p.look, pos: body.pos, orient: body.orient, shape: body.shape };
+            attach_atmosphere(&mut commands, &mut meshes, &mut sky_mats, gpu, &sky, terrain.as_mut());
+        }
+        let mut ec = commands.entity(e);
+        ec.remove::<PendingAtmosphere>();
+        if let Some(t) = terrain {
+            ec.insert(t);
+        }
     }
 }
 
@@ -838,7 +919,13 @@ fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took, 
     let t = std::time::Instant::now();
     cat.load_doc(doc, se_core::climate::PROCEDURAL_SOURCE);
     if let Some(m) = g.root_mass_sol {
-        cat.stars[idx as usize].mass_kg = m * se_core::units::SOLAR_MASS_KG;
+        // The record becomes the system's barycentre, of all its stars' mass; the star's own is
+        // kept for generating the system again (`proc_system_input`) once it has been unloaded.
+        let st = &mut cat.stars[idx as usize];
+        if st.block.f64(OWN_MASS_KEY).is_none() {
+            st.block.items.push(se_core::sc::Item { key: OWN_MASS_KEY.into(), args: vec![se_core::sc::Value::Num(st.mass_kg)], ..default() });
+        }
+        st.mass_kg = m * se_core::units::SOLAR_MASS_KG;
     }
     cat.finalize();
     let name = &cat.stars[idx as usize].names[0];
@@ -853,7 +940,7 @@ fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took, 
 
 /// The star of a catalog system SE fills with a generated one: a system without catalog bodies
 /// whose one real star (alone, or under its barycentre) has no `NoPlanets true`.
-fn generated_system_star(cat: &se_core::catalog::Catalog, root: u32) -> Option<u32> {
+pub(crate) fn generated_system_star(cat: &se_core::catalog::Catalog, root: u32) -> Option<u32> {
     let r = &cat.stars[root as usize];
     if r.source == "procedural" {
         return None;
@@ -874,11 +961,16 @@ fn generated_system_star(cat: &se_core::catalog::Catalog, root: u32) -> Option<u
     Some(star)
 }
 
+/// The key of a star record's own mass (kg) once its generated system made it a barycentre.
+const OWN_MASS_KEY: &str = "PortOwnMassKg";
+
 /// The generator's input for a procedural star's planetary system (its star and seed).
 pub fn proc_system_input(st: &se_core::catalog::StarRecord) -> (se_core::procgen::StarParams, u64) {
     let lum_bol = se_core::star::lum_from_abs_mag(st.abs_mag) * 10f64.powf(-0.4 * se_core::star::bolometric_correction(st.teff));
-    // Catalog stars may lack a mass or radius: the main-sequence values for their light.
-    let mass_sol = if st.mass_kg > 0.0 { st.mass_kg / se_core::units::SOLAR_MASS_KG } else { lum_bol.max(1e-4).powf(1.0 / 3.5).clamp(0.08, 80.0) };
+    // The star's own mass, not its system's (`load_generated`). Catalog stars may lack a mass or
+    // radius: the main-sequence values for their light.
+    let mass_kg = st.block.f64(OWN_MASS_KEY).unwrap_or(st.mass_kg);
+    let mass_sol = if mass_kg > 0.0 { mass_kg / se_core::units::SOLAR_MASS_KG } else { lum_bol.max(1e-4).powf(1.0 / 3.5).clamp(0.08, 80.0) };
     let radius_sol = if st.radius_km > 0.0 {
         st.radius_km / se_core::units::SOLAR_RADIUS_KM
     } else {
@@ -1762,6 +1854,35 @@ mod tests {
         // A field star draws its own.
         let (field, _) = proc_system_input(&procedural_star_record(&info(None), DVec3::new(100.0, 0.0, 0.0)));
         assert!(field.age_gyr > 0.0 && (field.age_gyr - 0.12).abs() > 1e-3);
+    }
+
+    #[test]
+    fn unloaded_multiple_systems_generate_the_same_again() {
+        let mut multiples = 0;
+        for i in 0..200 {
+            let info = crate::procstars::ProcStarInfo { name: format!("RS 0-1-2-{i}"), class: "G2V".into(), abs_mag: 4.8, teff: 5772.0, age_feh: None, se: None };
+            let rec = procedural_star_record(&info, DVec3::new(100.0 + i as f64, 20.0, -30.0));
+            // The system as first made, from a star not yet loaded.
+            let mut fresh = se_core::catalog::Catalog::default();
+            let i0 = promote_star(&mut fresh, rec.clone());
+            if !fresh.stars[i0 as usize].barycenter {
+                continue;
+            }
+            multiples += 1;
+            let first = generate(&fresh, i0, true)().0.sc;
+            let mut cat = se_core::catalog::Catalog::default();
+            let idx = materialize_star(&mut cat, rec.clone());
+            assert!(cat.stars[idx as usize].mass_kg > rec.mass_kg);
+            assert_eq!(proc_system_input(&cat.stars[idx as usize]).0.mass_sol, proc_system_input(&rec).0.mass_sol);
+            // Freed beyond CacheSizeSolarSystems and entered again: the same system.
+            cat.unload_generated(&info.name);
+            assert!(needs_system(&cat, idx));
+            assert_eq!(generate(&cat, idx, true)().0.sc, first, "{}", info.name);
+            if multiples == 3 {
+                break;
+            }
+        }
+        assert!(multiples > 0);
     }
 
     #[test]

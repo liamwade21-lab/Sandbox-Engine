@@ -160,14 +160,18 @@ struct VertexOut {
     @location(9) @interpolate(flat) axis_x: vec3<f32>,
     @location(10) @interpolate(flat) axis_y: vec3<f32>,
     @location(11) @interpolate(flat) axis_z: vec3<f32>,
+    // The node frame's scale along those axes (render units per node unit): the body's ellipsoid.
+    @location(12) @interpolate(flat) axis_len: vec3<f32>,
 };
 
 // Camera height above the sphere of radius planet.w (m). Exact to centimetres: worked out from
 // the camera in node-local metres (small near the camera) rather than from planet-scale floats.
-// The node centre lies on that sphere.
+// The node centre lies on that sphere. The node's axes are the body's, scaled per axis by its
+// ellipsoid (MeterScale), so the inverse divides each axis by its own squared scale.
 fn camera_local(world_from_local: mat4x4<f32>) -> vec3<f32> {
     let m = mat3x3<f32>(world_from_local[0].xyz, world_from_local[1].xyz, world_from_local[2].xyz);
-    return (transpose(m) * -world_from_local[3].xyz) / dot(m[0], m[0]);
+    let s2 = vec3<f32>(dot(m[0], m[0]), dot(m[1], m[1]), dot(m[2], m[2]));
+    return (transpose(m) * -world_from_local[3].xyz) / s2;
 }
 
 fn camera_altitude(world_from_local: mat4x4<f32>) -> f32 {
@@ -226,6 +230,7 @@ fn vertex(v: Vertex) -> VertexOut {
     o.axis_x = normalize(world_from_local[0].xyz);
     o.axis_y = normalize(world_from_local[1].xyz);
     o.axis_z = normalize(world_from_local[2].xyz);
+    o.axis_len = vec3<f32>(length(world_from_local[0].xyz), length(world_from_local[1].xyz), length(world_from_local[2].xyz));
     o.centre = vec4<f32>(centre, planet.planet.w * length(world_from_local[0].xyz));
     o.body_dir = v.body_dir;
     o.cam_alt = camera_altitude(world_from_local);
@@ -2533,19 +2538,26 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
 
     // Aerial perspective: haze and attenuation between the camera and the ground.
     if planet.atm_flags.x > 0.5 {
-        let to_table = planet.atm.radii.x / max(in.centre.w, 1e-30);
-        let cam_km = (-in.centre.xyz) * to_table;
+        // In the tables' sphere: the body's axes with its ellipsoid undone, as the sky shell does,
+        // so a flattened planet's ground lies on the tables' ground and not inside it near the
+        // poles (which cut it to black and left only the haze).
+        let cam_km = table_local(in, -in.centre.xyz);
         // Aerial perspective subtracts two inscatter lookups along the view ray; keep both
         // ends in the same (interpolated) geometry or the difference blows up.
-        let view_km = (in.world_pos - in.centre.xyz) * to_table;
-        col = atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, l, e_sun * planet.atm_flags.z);
+        var view_km = table_local(in, in.world_pos - in.centre.xyz);
+        // Between its corners a flat triangle sags inside the ground's sphere (0.4 km on a giant
+        // seen from afar), which the haze took for under the ground: a darker cell per triangle.
+        // Lift the point out to the ground's radius at its height (never down).
+        let r_ground = planet.atm.radii.x * (1.0 + in.height / max(planet.planet.w, 1.0));
+        view_km *= max(r_ground / max(length(view_km), 1e-6), 1.0);
+        col = atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, body_axes(in, l), e_sun * planet.atm_flags.z);
         // The further stars' haze.
         for (var i = 0; i < 3; i++) {
             if planet.light_dir[i].w < 0.5 {
                 break;
             }
             let e_x = planet.light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
-            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, normalize(planet.light_dir[i].xyz), e_x);
+            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, body_axes(in, normalize(planet.light_dir[i].xyz)), e_x);
         }
         // A glowing atmosphere over the ground (planet.glsl THERM): its inscatter as if lit from the
         // planet's centre times GlowColorAtmo.
@@ -2569,6 +2581,19 @@ fn wave_normal(in: VertexOut, up: vec3<f32>, total_var: f32) -> vec4<f32> {
 // Smooth surface point (km, table frame) at height `h` (m) over the fragment's up vector.
 // Interpolated positions sag below the sphere between vertices (tens of km on a coarse
 // giant-planet patch), which the tables would read as lower altitude and shade as a grid.
+// A world offset from the planet's centre in the atmosphere tables' frame (km): along the body's
+// axes, each divided by the node frame's scale on it (the sky shell's `cam_local`), so the body's
+// ellipsoid becomes the tables' sphere.
+fn table_local(in: VertexOut, v: vec3<f32>) -> vec3<f32> {
+    let l = vec3<f32>(dot(v, in.axis_x) / in.axis_len.x, dot(v, in.axis_y) / in.axis_len.y, dot(v, in.axis_z) / in.axis_len.z);
+    return l * (planet.atm.radii.x / max(planet.planet.w, 1e-30));
+}
+
+// A world direction along the body's axes (the sky shell's `to_shell`).
+fn body_axes(in: VertexOut, d: vec3<f32>) -> vec3<f32> {
+    return normalize(vec3<f32>(dot(d, in.axis_x), dot(d, in.axis_y), dot(d, in.axis_z)));
+}
+
 fn table_pos(up: vec3<f32>, h: f32) -> vec3<f32> {
     return up * planet.atm.radii.x * (1.0 + h / max(planet.planet.w, 1.0));
 }

@@ -311,10 +311,11 @@ pub struct Ship {
 }
 
 /// An idle ship's place relative to the body it holds station at: in the body's turning frame
-/// close to it (`turning`), else in fixed axes.
+/// close to it (`turning`), else in fixed axes. The body is kept as its catalog object, not its
+/// entity: a system switch despawns the bodies and spawns them anew on the way back.
 #[derive(Clone, Copy, Debug)]
 pub struct Parked {
-    pub body: Entity,
+    pub body: ObjectRef,
     pub local_pos: DVec3,
     pub local_rot: DQuat,
     pub turning: bool,
@@ -323,9 +324,12 @@ pub struct Parked {
 /// The ship rests on a body and turns with it.
 #[derive(Clone, Copy)]
 pub struct Landed {
-    pub body: Entity,
+    pub body: ObjectRef,
     pub local_pos: DVec3,
     pub local_rot: DQuat,
+    /// Level of the terrain node its height comes from, `None` for the bare ellipsoid: only ground
+    /// at least as fine moves it ([`settle_landed`]).
+    pub level: Option<u8>,
 }
 
 #[derive(Component)]
@@ -468,13 +472,23 @@ fn find_design(lib: &ShipLibrary, name: &str) -> Option<Arc<ShipDesign>> {
         .cloned()
 }
 
-/// Velocity of a body in the universe frame (m per simulated second).
+/// Velocity of a body in the universe frame (m per simulated second), also while the clock is
+/// paused: the ship's physics then moves it relative to the frozen bodies ([`carry_with_frame`]),
+/// and its velocity still holds the body's.
 fn body_velocity(eph: &Ephemeris, obj: ObjectRef, sim: &SimTime) -> DVec3 {
-    if sim.paused {
-        return DVec3::ZERO;
-    }
+    velocity_at(eph, obj, sim.jd)
+}
+
+/// A body's place and orientation at `jd` from the ephemeris, as `system.rs` sets them on its
+/// entity, for a body whose system is not loaded; `None` once its generated system has been freed
+/// (`Catalog::unload_generated` leaves a nameless placeholder).
+fn body_frame_at(data: &SeData, eph: &Ephemeris, obj: ObjectRef, jd: f64) -> Option<(UPos, DQuat)> {
+    (!data.catalog.display_name(obj).is_empty()).then(|| (eph.position(obj, jd), eph.orientation(obj, jd)))
+}
+
+fn velocity_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
     let h = 0.5 / 86_400.0;
-    eph.position(obj, sim.jd + h).delta_m(eph.position(obj, sim.jd - h))
+    eph.position(obj, jd + h).delta_m(eph.position(obj, jd - h))
 }
 
 /// Velocity of the frame a ship at `pos` is "at rest" in: the body's orbital velocity, plus
@@ -516,15 +530,70 @@ fn blend_frames(parts: impl IntoIterator<Item = (f64, f64, DVec3)>) -> DVec3 {
     if wsum > 0.0 { sum / wsum } else { DVec3::ZERO }
 }
 
-/// Angular velocity of a body (rad per simulated second, universe frame).
+/// Angular velocity of a body (rad per simulated second, universe frame), also while paused.
 fn body_spin(eph: &Ephemeris, obj: ObjectRef, sim: &SimTime) -> DVec3 {
-    if sim.paused {
-        return DVec3::ZERO;
-    }
+    spin_at(eph, obj, sim.jd)
+}
+
+fn spin_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
     let h = 0.5 / 86_400.0;
-    let dq = eph.orientation(obj, sim.jd + h) * eph.orientation(obj, sim.jd - h).inverse();
+    turn_vector(eph.orientation(obj, jd + h) * eph.orientation(obj, jd - h).inverse())
+}
+
+fn turn_vector(dq: DQuat) -> DVec3 {
     let (axis, angle) = dq.to_axis_angle();
     if angle.is_finite() { axis * angle } else { DVec3::ZERO }
+}
+
+/// How the frame a ship is at rest in near a body moves over a stretch of simulated time:
+/// the body's place and velocity at its start and end, and its turn over it.
+#[derive(Clone, Copy, Debug)]
+struct FrameMotion {
+    p_from: UPos,
+    p_to: UPos,
+    v_from: DVec3,
+    v_to: DVec3,
+    turn: DQuat,
+}
+
+impl FrameMotion {
+    /// The motion of `obj` (now at `body_pos`, at `jd`) from `from_s` to `to_s` seconds from now:
+    /// from its velocity and spin over a short stretch (two ephemeris lookups a second apart would
+    /// differ by the rounding of the date, metres for a planet), from the ephemeris over a long one.
+    fn of(eph: &Ephemeris, obj: ObjectRef, body_pos: UPos, jd: f64, from_s: f64, to_s: f64) -> Self {
+        let span = to_s - from_s;
+        if span.abs() < 1.0 {
+            let (v, w) = (velocity_at(eph, obj, jd), spin_at(eph, obj, jd));
+            return Self {
+                p_from: body_pos.offset_m(v * from_s),
+                p_to: body_pos.offset_m(v * to_s),
+                v_from: v,
+                v_to: v,
+                turn: DQuat::from_scaled_axis(w * span),
+            };
+        }
+        let (ja, jb) = (jd + from_s / 86_400.0, jd + to_s / 86_400.0);
+        Self {
+            p_from: eph.position(obj, ja),
+            p_to: eph.position(obj, jb),
+            v_from: velocity_at(eph, obj, ja),
+            v_to: velocity_at(eph, obj, jb),
+            turn: (eph.orientation(obj, jb) * eph.orientation(obj, ja).inverse()).normalize(),
+        }
+    }
+}
+
+/// Carry a ship (`pos`, `vel`, `rot`) with the frame it is at rest in near a body of radius
+/// `radius` through `m`, as [`reference_velocity`] weighs it: the body's motion out to 50 radii
+/// (faded out by 100), its rotation within one radius of altitude (faded out by two). The ship's
+/// state relative to that frame stays the same.
+fn carry_with_frame(m: &FrameMotion, radius: f64, pos: UPos, vel: DVec3, rot: DQuat) -> (UPos, DVec3, DQuat) {
+    let rel = pos.delta_m(m.p_from);
+    let (_, fade, spin) = frame_terms(rel.length() - radius, radius);
+    let turn = DQuat::IDENTITY.slerp(m.turn, spin).normalize();
+    let pos = m.p_from.offset_m(turn * rel + m.p_to.delta_m(m.p_from) * fade);
+    let vel = m.v_from + (m.v_to - m.v_from) * fade + turn * (vel - m.v_from);
+    (pos, vel, (turn * rot).normalize())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1331,11 +1400,12 @@ fn finish_ship_loading(
 // ------------------------------------------------------------------------------------
 
 struct BodyInfo<'a> {
-    entity: Entity,
     obj: ObjectRef,
     pos: UPos,
     orient: DQuat,
     radius: f64,
+    /// SE's ellipsoid the terrain is drawn on ([`SystemBody::shape`]).
+    shape: DVec3,
     gm: f64,
     terrain: Option<&'a Terrain>,
 }
@@ -1373,7 +1443,7 @@ fn ship_physics(
     data: Res<SeData>,
     mut flight: ResMut<Flight>,
     mut air: ResMut<AirCache>,
-    body_q: Query<(Entity, &SystemBody, Option<&Terrain>)>,
+    body_q: Query<(&SystemBody, Option<&Terrain>)>,
     mut ships: Query<(&mut Ship, &mut UPosition, &mut UOrientation)>,
 ) {
     let Some(entity) = flight.ship else { return };
@@ -1391,16 +1461,28 @@ fn ship_physics(
 
     let infos: Vec<BodyInfo> = body_q
         .iter()
-        .map(|(entity, b, terrain)| BodyInfo {
-            entity,
+        .map(|(b, terrain)| BodyInfo {
             obj: b.obj,
             pos: b.pos,
             orient: b.orient,
             radius: b.radius_m,
+            shape: b.shape,
             gm: G * body_mass(&data, b.obj, b.radius_m),
             terrain,
         })
         .collect();
+    // The ship's steps cover `ship_dt` of the frame's simulated time; over the rest (above 10x,
+    // backwards, or none while paused) it goes with the frame it is at rest in, so the bodies
+    // neither leave it behind nor stop for it.
+    let sim_dt = if sim.paused { 0.0 } else { time.delta_secs_f64() * sim.rate };
+    if ship.landed.is_none() && sim_dt != ship_dt {
+        let p = upos.0;
+        if let Some(b) = reference_body(&infos, flight.ref_mode, flight.ref_body, p).or_else(|| nearest_body(&infos, p)) {
+            let m = FrameMotion::of(&eph, b.obj, b.pos, sim.jd, -sim_dt, -ship_dt);
+            let (pos, vel, rot) = carry_with_frame(&m, b.radius, p, ship.vel, urot.0);
+            (upos.0, ship.vel, urot.0) = (pos, vel, rot);
+        }
+    }
     let (nearest, _, _, altitude) = nearest_state(&infos, &eph, &sim, &data, upos.0);
     let refb = reference_body(&infos, flight.ref_mode, flight.ref_body, upos.0).or(nearest);
     let ref_vel = refb.map_or(DVec3::ZERO, |b| reference_velocity(&eph, b.obj, b.pos, b.radius, upos.0, &sim));
@@ -1467,9 +1549,10 @@ fn ship_physics(
             if ap_out.done {
                 info!("autopilot {} done at {} from the target", ap.program.label(), format_distance(to_target.length()));
                 flight.autopilot = None;
-                flight.warp_on = false;
                 if ap.program != Program::RotateTo {
-                    // Arrived: match the frame of the body there.
+                    // Arrived: match the frame of the body there. (A turn leaves a warp the pilot
+                    // engaged alone.)
+                    flight.warp_on = false;
                     flight.sync_velocity = true;
                     flight.set_throttle(0.0);
                 }
@@ -1618,24 +1701,13 @@ fn ship_physics(
     let mut vel = ship.vel;
     let mut skip_integration = false;
     if let Some(l) = ship.landed {
-        match infos.iter().find(|b| b.entity == l.body) {
+        match infos.iter().find(|b| b.obj == l.body) {
             Some(b) => {
                 // The ground under the ship may be refined (or fall away) as terrain loads.
-                let mut local = l.local_pos;
-                let d = local.length();
-                if d > 0.0 {
-                    let ground = b.terrain.map_or(0.0, |t| t.surface_height(local / d));
-                    let min_r = b.radius + ground + ship.clearance;
-                    if d < min_r {
-                        local *= min_r / d;
-                    } else if d > min_r + 2.0 && flight.collisions {
-                        ship.landed = None;
-                    }
-                }
-                if let Some(l) = ship.landed.as_mut() {
-                    l.local_pos = local;
-                }
-                pos = b.pos.offset_m(b.orient * local);
+                let mut kept = l;
+                let on_ground = settle_landed(&mut kept, ground_radius_local(b, l.local_pos), ship.clearance, flight.collisions);
+                ship.landed = on_ground.then_some(kept);
+                pos = b.pos.offset_m(b.orient * kept.local_pos);
                 urot.0 = (b.orient * l.local_rot).normalize();
                 let rel = pos.delta_m(b.pos);
                 vel = body_velocity(&eph, b.obj, &sim) + body_spin(&eph, b.obj, &sim).cross(rel);
@@ -1648,7 +1720,16 @@ fn ship_physics(
                     skip_integration = ship.landed.is_some();
                 }
             }
-            None => ship.landed = None,
+            // Its system is not loaded (the camera went to another): it stays where it stands.
+            None => match body_frame_at(&data, &eph, l.body, sim.jd) {
+                Some((bp, bq)) => {
+                    pos = bp.offset_m(bq * l.local_pos);
+                    urot.0 = (bq * l.local_rot).normalize();
+                    vel = body_velocity(&eph, l.body, &sim) + body_spin(&eph, l.body, &sim).cross(bq * l.local_pos);
+                    skip_integration = true;
+                }
+                None => ship.landed = None,
+            },
         }
     }
 
@@ -1753,12 +1834,12 @@ fn ship_physics(
         for b in &infos {
             let rel = pos.delta_m(b.pos);
             let d = rel.length();
-            let top = b.terrain.map_or(b.radius, |t| t.top_radius().max(b.radius));
+            let top = b.terrain.map_or(b.radius, |t| t.top_radius().max(b.radius)) * b.shape.max_element().max(1.0);
             if d > top * 1.2 + 20_000.0 + ship.clearance || d <= 0.0 {
                 continue;
             }
-            let ground = ground_at(b, rel);
-            let min_r = b.radius + ground + ship.clearance;
+            let (ground_r, level) = ground_radius_local(b, b.orient.inverse() * rel);
+            let min_r = ground_r + ship.clearance;
             if d >= min_r {
                 continue;
             }
@@ -1782,9 +1863,10 @@ fn ship_physics(
             if v_rel.length() < 0.5 && !lifting {
                 vel = surf_vel;
                 ship.landed = Some(Landed {
-                    body: b.entity,
+                    body: b.obj,
                     local_pos: b.orient.inverse() * rel,
                     local_rot: b.orient.inverse() * urot.0,
+                    level,
                 });
                 notice = notice.or(Some("Landed".to_string()));
             }
@@ -1868,10 +1950,15 @@ fn park_ships(
     sim: Res<SimTime>,
     data: Res<SeData>,
     flight: Res<Flight>,
-    body_q: Query<(Entity, &SystemBody)>,
+    body_q: Query<&SystemBody>,
     mut ships: Query<(Entity, &mut Ship, &mut UPosition, &mut UOrientation)>,
 ) {
     let eph = Ephemeris::new(&data.catalog);
+    // Where a body is and how it is turned: as its entity has it, or from the ephemeris while its
+    // system is not loaded (the camera went to another one).
+    let frame_of = |obj: ObjectRef| {
+        body_q.iter().find(|b| b.obj == obj).map(|b| (b.pos, b.orient)).or_else(|| body_frame_at(&data, &eph, obj, sim.jd))
+    };
     for (e, mut ship, mut upos, mut urot) in &mut ships {
         if flight.ship == Some(e) {
             if ship.parked.is_some() {
@@ -1881,38 +1968,39 @@ fn park_ships(
         }
         (ship.main, ship.retro, ship.hover, ship.warp, ship.ang_vel) = (0.0, 0.0, 0.0, 0.0, DVec3::ZERO);
         if let Some(l) = ship.landed {
-            if let Some((_, b)) = body_q.iter().find(|(be, _)| *be == l.body) {
-                upos.0 = b.pos.offset_m(b.orient * l.local_pos);
-                urot.0 = (b.orient * l.local_rot).normalize();
-                ship.vel = body_velocity(&eph, b.obj, &sim) + body_spin(&eph, b.obj, &sim).cross(upos.0.delta_m(b.pos));
+            if let Some((bp, bq)) = frame_of(l.body) {
+                let rel = bq * l.local_pos;
+                upos.0 = bp.offset_m(rel);
+                urot.0 = (bq * l.local_rot).normalize();
+                ship.vel = body_velocity(&eph, l.body, &sim) + body_spin(&eph, l.body, &sim).cross(rel);
                 continue;
             }
             ship.landed = None;
         }
-        let place = ship.parked.and_then(|pk| body_q.iter().find(|(be, _)| *be == pk.body).map(|(_, b)| (pk, b)));
-        let (pk, b) = match place {
+        let place = ship.parked.and_then(|pk| frame_of(pk.body).map(|f| (pk, f)));
+        let (pk, (bp, bq)) = match place {
             Some(x) => x,
             None => {
                 let p = upos.0;
-                let Some((be, b)) = body_q
+                let Some(b) = body_q
                     .iter()
-                    .min_by(|a, b| (a.1.pos.delta_m(p).length() - a.1.radius_m).total_cmp(&(b.1.pos.delta_m(p).length() - b.1.radius_m)))
+                    .min_by(|a, b| (a.pos.delta_m(p).length() - a.radius_m).total_cmp(&(b.pos.delta_m(p).length() - b.radius_m)))
                 else {
                     continue;
                 };
                 let rel = p.delta_m(b.pos);
                 let turning = rel.length() - b.radius_m < 2.0 * b.radius_m;
                 let frame = if turning { b.orient } else { DQuat::IDENTITY };
-                let pk = Parked { body: be, local_pos: frame.inverse() * rel, local_rot: frame.inverse() * urot.0, turning };
+                let pk = Parked { body: b.obj, local_pos: frame.inverse() * rel, local_rot: frame.inverse() * urot.0, turning };
                 ship.parked = Some(pk);
-                (pk, b)
+                (pk, (b.pos, b.orient))
             }
         };
-        let frame = if pk.turning { b.orient } else { DQuat::IDENTITY };
-        upos.0 = b.pos.offset_m(frame * pk.local_pos);
+        let frame = if pk.turning { bq } else { DQuat::IDENTITY };
+        upos.0 = bp.offset_m(frame * pk.local_pos);
         urot.0 = (frame * pk.local_rot).normalize();
-        let spin = if pk.turning { body_spin(&eph, b.obj, &sim).cross(frame * pk.local_pos) } else { DVec3::ZERO };
-        ship.vel = body_velocity(&eph, b.obj, &sim) + spin;
+        let spin = if pk.turning { body_spin(&eph, pk.body, &sim).cross(frame * pk.local_pos) } else { DVec3::ZERO };
+        ship.vel = body_velocity(&eph, pk.body, &sim) + spin;
     }
 }
 
@@ -1938,13 +2026,10 @@ fn nearest_state<'a>(
     data: &SeData,
     pos: UPos,
 ) -> (Option<&'a BodyInfo<'a>>, DVec3, String, f64) {
-    let nearest = infos
-        .iter()
-        .min_by(|a, b| (a.pos.delta_m(pos).length() - a.radius).total_cmp(&(b.pos.delta_m(pos).length() - b.radius)));
+    let nearest = nearest_body(infos, pos);
     match nearest {
         Some(b) => {
-            let rel = pos.delta_m(b.pos);
-            let altitude = rel.length() - b.radius - ground_at(b, rel);
+            let altitude = body_altitude(b, pos);
             (
                 nearest,
                 reference_velocity(eph, b.obj, b.pos, b.radius, pos, sim),
@@ -1956,10 +2041,17 @@ fn nearest_state<'a>(
     }
 }
 
+/// The body with the nearest (reference sphere) surface to `pos`.
+fn nearest_body<'a>(infos: &'a [BodyInfo<'a>], pos: UPos) -> Option<&'a BodyInfo<'a>> {
+    infos
+        .iter()
+        .min_by(|a, b| (a.pos.delta_m(pos).length() - a.radius).total_cmp(&(b.pos.delta_m(pos).length() - b.radius)))
+}
+
 /// Altitude of `pos` over the (terrain) surface of `b`.
 fn body_altitude(b: &BodyInfo, pos: UPos) -> f64 {
     let rel = pos.delta_m(b.pos);
-    rel.length() - b.radius - ground_at(b, rel)
+    rel.length() - surface_radius(b, rel)
 }
 
 /// Vertical speed (m/s) Hold altitude asks for at altitude `h` to come back to `h0`.
@@ -1967,13 +2059,53 @@ fn hold_climb_rate(h0: f64, h: f64) -> f64 {
     ((h0 - h) * 0.5).clamp(-100.0, 100.0)
 }
 
-/// Height of the rendered surface of `b` at the given position relative to its centre.
-fn ground_at(b: &BodyInfo, rel: DVec3) -> f64 {
-    let d = rel.length();
-    if d <= 0.0 {
-        return 0.0;
+/// Distance from the centre of `b` to its rendered surface along `rel` (universe axes).
+fn surface_radius(b: &BodyInfo, rel: DVec3) -> f64 {
+    surface_radius_local(b, b.orient.inverse() * rel)
+}
+
+/// The same along `local` in the body's axes: the terrain is built on a sphere and drawn on SE's
+/// ellipsoid (as `keep_camera_above_ground`), so the sphere's direction drawn along `local` and
+/// how far out along it the ellipsoid lies relative to the sphere.
+fn surface_radius_local(b: &BodyInfo, local: DVec3) -> f64 {
+    surface_radius_on(b.radius, b.shape, b.terrain, local)
+}
+
+fn surface_radius_on(radius: f64, shape: DVec3, terrain: Option<&Terrain>, local: DVec3) -> f64 {
+    ground_on(radius, shape, terrain, local).0
+}
+
+/// [`surface_radius_local`] and the level of the terrain node the ground comes from, `None` on the
+/// bare ellipsoid (no terrain, or none loaded there).
+fn ground_radius_local(b: &BodyInfo, local: DVec3) -> (f64, Option<u8>) {
+    ground_on(b.radius, b.shape, b.terrain, local)
+}
+
+fn ground_on(radius: f64, shape: DVec3, terrain: Option<&Terrain>, local: DVec3) -> (f64, Option<u8>) {
+    let Some(dir) = (local / shape).try_normalize() else { return (radius, None) };
+    let k = (dir * shape).length();
+    let s = terrain.and_then(|t| t.surface_sample(dir));
+    ((radius + s.map_or(0.0, |s| s.0)) * k, s.map(|s| s.1))
+}
+
+/// A landed ship on the ground now under it (`ground`: radius and node level, as
+/// [`ground_radius_local`]): lifted onto ground that rises, off the ground (`false`) where it falls
+/// away more than 2 m, but only for ground at least as fine as the one it stands on. Coarser or
+/// missing terrain (the camera went away, its nodes not loaded yet) leaves it where it is.
+fn settle_landed(l: &mut Landed, ground: (f64, Option<u8>), clearance: f64, collisions: bool) -> bool {
+    let (ground_r, level) = ground;
+    let d = l.local_pos.length();
+    if d <= 0.0 || level < l.level {
+        return true;
     }
-    b.terrain.map_or(0.0, |t| t.surface_height((b.orient.inverse() * rel) / d))
+    l.level = level;
+    let min_r = ground_r + clearance;
+    if d < min_r {
+        l.local_pos *= min_r / d;
+    } else if d > min_r + 2.0 && collisions {
+        return false;
+    }
+    true
 }
 
 // ------------------------------------------------------------------------------------
@@ -2013,11 +2145,10 @@ fn ship_camera(
     for (body, terrain) in &bodies {
         let rel = cam.pos.delta_m(body.pos);
         let d = rel.length();
-        if d > terrain.top_radius().max(body.radius_m) * 1.2 || d <= 0.0 {
+        if d > terrain.top_radius().max(body.radius_m) * body.shape.max_element().max(1.0) * 1.2 || d <= 0.0 {
             continue;
         }
-        let ground = terrain.surface_height((body.orient.inverse() * rel) / d);
-        let min_r = body.radius_m + ground + 2.0;
+        let min_r = surface_radius_on(body.radius_m, body.shape, Some(terrain), body.orient.inverse() * rel) + 2.0;
         if d < min_r {
             cam.pos = body.pos.offset_m(rel / d * min_r);
         }
@@ -2161,11 +2292,11 @@ mod tests {
     #[test]
     fn gravity_points_to_the_body_and_follows_inverse_square() {
         let mk = |x: f64| BodyInfo {
-            entity: Entity::PLACEHOLDER,
             obj: ObjectRef::Body(0),
             pos: UPos::from_meters(DVec3::new(x, 0.0, 0.0)),
             orient: DQuat::IDENTITY,
             radius: 6.371e6,
+            shape: DVec3::ONE,
             gm: G * 5.972e24,
             terrain: None,
         };
@@ -2216,11 +2347,11 @@ mod tests {
     #[test]
     fn hold_altitude_measures_from_the_reference_body() {
         let b = BodyInfo {
-            entity: Entity::PLACEHOLDER,
             obj: ObjectRef::Body(0),
             pos: UPos::from_meters(DVec3::new(1e7, 0.0, 0.0)),
             orient: DQuat::IDENTITY,
             radius: 6.371e6,
+            shape: DVec3::ONE,
             gm: 0.0,
             terrain: None,
         };
@@ -2297,5 +2428,90 @@ mod tests {
         let yaw = |y: f64| ShipInput { turn: DVec3::new(0.0, y, 0.0), ..default() };
         assert!((plume_level(&spec, &ship, &yaw(1.0)) - 0.8).abs() < 1e-6);
         assert_eq!(plume_level(&spec, &ship, &yaw(-1.0)), 0.0);
+    }
+
+    /// One frame of `ship_physics` for a ship coasting with a planet moving in a straight line:
+    /// the carry over the simulated time the ship's steps leave out, then the ship's own steps.
+    fn coast_one_frame(sim_dt: f64, ship_dt: f64) -> DVec3 {
+        let v = DVec3::new(30_000.0, 0.0, 0.0);
+        let body_now = UPos::from_meters(DVec3::new(1.5e11, 0.0, 0.0));
+        let offset = DVec3::new(0.0, 2.0e7, 0.0);
+        // The ship's state is from the end of the last frame, `sim_dt` ago.
+        let pos = body_now.offset_m(-v * sim_dt + offset);
+        let m = FrameMotion {
+            p_from: body_now.offset_m(-v * sim_dt),
+            p_to: body_now.offset_m(-v * ship_dt),
+            v_from: v,
+            v_to: v,
+            turn: DQuat::IDENTITY,
+        };
+        let (pos, vel, _) = carry_with_frame(&m, 6.4e6, pos, v, DQuat::IDENTITY);
+        pos.offset_m(vel * ship_dt).delta_m(body_now) - offset
+    }
+
+    #[test]
+    fn fast_time_and_pause_keep_the_ship_with_its_body() {
+        // 1000x at 60 fps: the ship steps 10x; before, the planet left it 495 km behind a frame.
+        assert!(coast_one_frame(1000.0 / 60.0, 10.0 / 60.0).length() < 1e-3);
+        // Backwards at -100x: the ship's steps still go forwards.
+        assert!(coast_one_frame(-100.0 / 60.0, 10.0 / 60.0).length() < 1e-3);
+        // Paused: the planet stands still and the ship moves only relative to it.
+        assert!(coast_one_frame(0.0, 1.0 / 60.0).length() < 1e-3);
+    }
+
+    #[test]
+    fn carry_turns_with_the_body_only_close_to_it() {
+        let r = 1.0e6;
+        let turn = DQuat::from_rotation_y(0.1);
+        let m = FrameMotion { p_from: UPos::ZERO, p_to: UPos::ZERO, v_from: DVec3::ZERO, v_to: DVec3::ZERO, turn };
+        // Hovering 1 km up in the turning frame: place, velocity and attitude turn with the ground.
+        let rel = DVec3::new(r + 1000.0, 0.0, 0.0);
+        let vel = DVec3::new(0.0, 0.0, -5.0);
+        let (p, v, q) = carry_with_frame(&m, r, UPos::from_meters(rel), vel, DQuat::IDENTITY);
+        assert!((p.delta_m(UPos::ZERO) - turn * rel).length() < 1e-3);
+        assert!((v - turn * vel).length() < 1e-9);
+        assert!(q.angle_between(turn) < 1e-9);
+        // Beyond two radii up the frame does not turn.
+        let far = DVec3::new(3.5 * r, 0.0, 0.0);
+        let (p, v, _) = carry_with_frame(&m, r, UPos::from_meters(far), vel, DQuat::IDENTITY);
+        assert!((p.delta_m(UPos::ZERO) - far).length() < 1e-3);
+        assert!((v - vel).length() < 1e-9);
+    }
+
+    #[test]
+    fn ground_lies_on_the_ellipsoid() {
+        let (r, shape) = (6.378e6, DVec3::new(1.0, 1.0 - 1.0 / 298.257, 1.0));
+        assert!((surface_radius_on(r, shape, None, DVec3::X * 7.0e6) - r).abs() < 1e-6);
+        assert!((surface_radius_on(r, shape, None, DVec3::Y * 7.0e6) - r * shape.y).abs() < 1e-6);
+        // At 45 degrees the ellipse x^2/a^2 + y^2/b^2 = 1 along the direction.
+        let u = DVec3::new(1.0, 1.0, 0.0).normalize();
+        let want = r / ((u.x / shape.x).powi(2) + (u.y / shape.y).powi(2)).sqrt();
+        assert!((surface_radius_on(r, shape, None, u * 7.0e6) - want).abs() < 1e-6);
+        // At 45N Earth's sphere stands ~10.7 km above the ellipsoid: a ship rested on it.
+        assert!(r - want > 10_000.0);
+    }
+
+    #[test]
+    fn landed_ship_ignores_coarser_ground() {
+        let r = 6.0e6;
+        let landed = |h: f64, level| Landed { body: ObjectRef::Body(0), local_pos: DVec3::X * (r + h), local_rot: DQuat::IDENTITY, level };
+        let height = |l: &Landed| l.local_pos.length() - r;
+        // Stood on level-12 ground at 100 m (no clearance): coarser ground, higher or lower, or
+        // none loaded leaves it there and landed.
+        for ground in [(r + 300.0, Some(8)), (r + 20.0, Some(11)), (r, None)] {
+            let mut l = landed(100.0, Some(12));
+            assert!(settle_landed(&mut l, ground, 0.0, true));
+            assert!((height(&l) - 100.0).abs() < 1e-6 && l.level == Some(12));
+        }
+        // Ground at least as fine lifts it, or lets it go where it falls away.
+        let mut l = landed(100.0, Some(12));
+        assert!(settle_landed(&mut l, (r + 150.0, Some(12)), 0.0, true));
+        assert!((height(&l) - 150.0).abs() < 1e-6);
+        let mut l = landed(100.0, Some(12));
+        assert!(!settle_landed(&mut l, (r + 50.0, Some(14)), 0.0, true));
+        // Landed on the bare ellipsoid: the first terrain that loads places it.
+        let mut l = landed(0.0, None);
+        assert!(settle_landed(&mut l, (r + 40.0, Some(3)), 0.0, true));
+        assert!((height(&l) - 40.0).abs() < 1e-6 && l.level == Some(3));
     }
 }

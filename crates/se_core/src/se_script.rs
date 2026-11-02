@@ -435,29 +435,55 @@ pub fn parse(src: &str) -> Script {
     b.finish()
 }
 
-/// `if { A < 7 }`: the `.sc` lexer drops comparison characters, so quote them.
+/// `if { A < 7 }`: the `.sc` lexer drops comparison characters, so quote them. The condition
+/// block may open on the line after the `if`/`elif` and span lines.
 fn preprocess_conditions(src: &str) -> String {
     let mut out = String::with_capacity(src.len() + 16);
+    // None outside a condition; Some(0) after `if`/`elif` before its `{`; Some(n) n braces deep.
+    let mut depth: Option<u32> = None;
     for raw in src.split_inclusive('\n') {
-        let t = raw.trim_start().to_ascii_lowercase();
-        let is_cond = (t.starts_with("if") || t.starts_with("elif"))
-            && t.trim_start_matches("elif").trim_start_matches("if").trim_start().starts_with('{');
-        if !is_cond {
-            out.push_str(raw);
-            continue;
+        let mut i = 0;
+        if depth.is_none() {
+            let Some(k) = cond_keyword_len(raw) else {
+                out.push_str(raw);
+                continue;
+            };
+            out.push_str(&raw[..k]);
+            i = k;
+            depth = Some(0);
         }
         let b = raw.as_bytes();
-        let mut i = 0;
+        let mut in_str = false;
         while i < b.len() {
+            let Some(d) = depth else {
+                out.push_str(&raw[i..]);
+                break;
+            };
             let c = b[i];
-            let two = if i + 1 < b.len() { &raw[i..i + 2] } else { "" };
-            if matches!(two, "<=" | ">=" | "==" | "!=") {
-                out.push_str(&format!(" \"{two}\" "));
+            // Bytes, not `&raw[i..i + 2]`: that panics when a multi-byte character follows.
+            let two = b.get(i..i + 2).unwrap_or(&[]);
+            if !in_str && two == b"//" {
+                out.push_str(&raw[i..]);
+                break;
+            }
+            if d == 0 && !c.is_ascii_whitespace() && c != b'{' {
+                // No condition block follows.
+                depth = None;
+                continue;
+            }
+            if !in_str && matches!(two, b"<=" | b">=" | b"==" | b"!=") {
+                out.push_str(&format!(" \"{}{}\" ", two[0] as char, two[1] as char));
                 i += 2;
-            } else if matches!(c, b'<' | b'>' | b'=') {
+            } else if !in_str && matches!(c, b'<' | b'>' | b'=') {
                 out.push_str(&format!(" \"{}\" ", c as char));
                 i += 1;
             } else {
+                match c {
+                    b'"' => in_str = !in_str,
+                    b'{' if !in_str => depth = Some(d + 1),
+                    b'}' if !in_str => depth = (d > 1).then(|| d - 1),
+                    _ => {}
+                }
                 // Copy whole UTF-8 characters.
                 let ch = raw[i..].chars().next().unwrap_or(' ');
                 out.push(ch);
@@ -466,6 +492,14 @@ fn preprocess_conditions(src: &str) -> String {
         }
     }
     out
+}
+
+/// Length up to the end of a leading `if`/`elif` keyword when the line starts a condition.
+fn cond_keyword_len(line: &str) -> Option<usize> {
+    let t = line.trim_start();
+    let k = ["elif", "if"].into_iter().find(|k| t.get(..k.len()).is_some_and(|p| p.eq_ignore_ascii_case(k)))?.len();
+    let rest = t[k..].trim_start();
+    (rest.is_empty() || rest.starts_with('{') || rest.starts_with("//")).then_some(line.len() - t.len() + k)
 }
 
 #[derive(Default)]
@@ -597,12 +631,27 @@ impl Builder {
     }
 
     fn finish(mut self) -> Script {
+        // Open jump targets point past the last command (the script ends there), not at 0,
+        // which would restart the script forever.
+        let end = self.ops.len();
         for f in std::mem::take(&mut self.ifs) {
             self.warnings.push(format!("line {}: if without endif", f.line));
+            if let Some(p) = f.pending {
+                self.set_on_false(p, end);
+            }
+            for j in f.jumps {
+                self.ops[j].op = Op::Jump(end);
+            }
         }
         for f in std::mem::take(&mut self.loops) {
             let line = self.ops[f.start].line;
             self.warnings.push(format!("line {line}: loop without endloop"));
+            if let Op::Loop { end: e, .. } = &mut self.ops[f.start].op {
+                *e = end;
+            }
+            for b in f.breaks {
+                self.ops[b].op = Op::Break { end };
+            }
         }
         Script { commands: self.ops, warnings: self.warnings }
     }
@@ -1444,6 +1493,39 @@ WaitTrigger "Time" { Mode "Later" Time "2016.11.15 21:00:00" }
         assert_eq!(s.warnings.len(), 1);
         let s = parse("endif\n");
         assert_eq!(s.warnings.len(), 1);
+        // Open targets end the script instead of jumping back to the top.
+        let s = parse("if { A == 1 }\nWait 1\nelif { A > 5 }\nWait 2\nelse\nWait 3\n");
+        assert!(s.commands.iter().all(|c| match c.op {
+            Op::If { on_false, .. } | Op::Elif { on_false, .. } => on_false > 0,
+            Op::Jump(t) => t > 0,
+            _ => true,
+        }));
+        assert_eq!(s.commands[2].op, Op::Jump(s.commands.len()));
+        let s = parse("loop 3\nWait 1\nbreak\n");
+        assert_eq!(s.warnings.len(), 1);
+        assert_eq!(s.commands[0].op, Op::Loop { count: Some(3), end: 3 });
+        assert_eq!(s.commands[2].op, Op::Break { end: 3 });
+    }
+
+    #[test]
+    fn conditions_with_non_ascii_comments() {
+        let s = parse("if { LessonPassed < 0 } // урок\nWait 1\nendif\nif { T > 5 } // 5 °C\nendif\n");
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let Op::If { cond, .. } = &s.commands[0].op else { panic!() };
+        assert_eq!(cond.op, CmpOp::Lt);
+        let Op::If { cond, .. } = &s.commands[3].op else { panic!() };
+        assert_eq!(cond.op, CmpOp::Gt);
+    }
+
+    #[test]
+    fn multi_line_conditions() {
+        let s = parse("if\n{\n\tVar < 7\n}\nWait 1\nelif\n{ Var >= 9 }\nWait 2\nendif\nWait 3 // x < y\n");
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let Op::If { cond, on_false } = &s.commands[0].op else { panic!("{:?}", s.commands[0]) };
+        assert_eq!((cond.var.as_str(), cond.op, *on_false), ("Var", CmpOp::Lt, 3));
+        let Op::Elif { cond, .. } = &s.commands[3].op else { panic!("{:?}", s.commands[3]) };
+        assert_eq!((cond.var.as_str(), cond.op), ("Var", CmpOp::Ge));
+        assert_eq!(s.commands.len(), 7);
     }
 
     #[test]

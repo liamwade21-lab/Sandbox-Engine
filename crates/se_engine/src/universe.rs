@@ -168,9 +168,48 @@ impl Plugin for UniversePlugin {
     }
 }
 
-pub fn advance_time(mut t: ResMut<SimTime>, time: Res<Time>) {
-    if !t.paused {
-        t.jd += time.delta_secs_f64() * t.rate / 86_400.0;
+pub fn advance_time(mut t: ResMut<SimTime>, time: Res<Time>, mode: Res<TimingMode>, mut clock: Local<FrameClock>) {
+    if mode.real_time {
+        clock.reset();
+        if !t.paused {
+            t.jd += time.delta_secs_f64() * t.rate / 86_400.0;
+        }
+    } else {
+        clock.advance(&mut t, time.delta_secs_f64());
+    }
+}
+
+/// Frame time mode's clock. Adding the same short step to a Julian date of ~2.46e6 every frame
+/// rounds the same way each time (-2.2 s an hour at 60 fps), so the date is the one the clock was
+/// last set to plus the simulated seconds since. A date or rate written elsewhere starts it again.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameClock {
+    anchor_jd: f64,
+    rate: f64,
+    elapsed_s: f64,
+    written_jd: f64,
+}
+
+impl Default for FrameClock {
+    fn default() -> Self {
+        Self { anchor_jd: f64::NAN, rate: f64::NAN, elapsed_s: 0.0, written_jd: f64::NAN }
+    }
+}
+
+impl FrameClock {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn advance(&mut self, t: &mut SimTime, dt: f64) {
+        if t.jd != self.written_jd || t.rate != self.rate {
+            *self = Self { anchor_jd: t.jd, rate: t.rate, elapsed_s: 0.0, written_jd: t.jd };
+        }
+        if !t.paused {
+            self.elapsed_s += dt * t.rate;
+            t.jd = self.anchor_jd + self.elapsed_s / 86_400.0;
+            self.written_jd = t.jd;
+        }
     }
 }
 
@@ -208,5 +247,37 @@ fn apply_floating_origin(
         }
         let s = scale.map(|s| s.0).unwrap_or(DVec3::ONE) * k;
         tf.scale = s.as_vec3();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_time_clock_does_not_drift() {
+        let start = 2_461_000.25;
+        let mut t = SimTime { jd: start, rate: 1.0, paused: false };
+        let mut clock = FrameClock::default();
+        let dt = std::time::Duration::from_secs_f64(1.0 / 60.0).as_secs_f64();
+        let frames = 216_000;
+        for _ in 0..frames {
+            clock.advance(&mut t, dt);
+        }
+        let err_s = (t.jd - start) * 86_400.0 - frames as f64 * dt;
+        assert!(err_s.abs() < 1e-3, "{err_s} s after an hour");
+        // A date set elsewhere, then a new rate, carry on from there.
+        t.jd = start + 10.0;
+        clock.advance(&mut t, dt);
+        assert!(((t.jd - start - 10.0) * 86_400.0 - dt).abs() < 1e-4);
+        let at = t.jd;
+        t.rate = 3600.0;
+        clock.advance(&mut t, 1.0);
+        assert!(((t.jd - at) * 86_400.0 - 3600.0).abs() < 1e-4);
+        // Paused: the date stays.
+        t.paused = true;
+        let at = t.jd;
+        clock.advance(&mut t, 1.0);
+        assert_eq!(t.jd, at);
     }
 }

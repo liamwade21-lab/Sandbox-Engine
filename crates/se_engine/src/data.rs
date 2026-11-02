@@ -50,7 +50,8 @@ pub fn write_user_places(cfg: &EngineConfig, places: &[se_core::places::Place]) 
         std::fs::create_dir_all(dir)?;
     }
     let user: Vec<se_core::places::Place> = places.iter().filter(|p| p.user).cloned().collect();
-    std::fs::write(&path, se_core::places::write_places(&user))
+    // Temp file and rename, so a crash mid-write cannot leave the user's places empty.
+    crate::settings::write_atomic(&path, &se_core::places::write_places(&user))
 }
 
 pub struct DataPlugin;

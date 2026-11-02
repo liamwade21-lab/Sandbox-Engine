@@ -371,6 +371,17 @@ fn mass_kg(b: &Block) -> Option<f64> {
         .or_else(|| b.f64("Msini").map(|m| m * EARTH_MASS_KG))
 }
 
+/// SE's mass for a catalog asteroid or comet given a radius but no mass (FUN_140503b60): a sphere
+/// of 3000 kg/m^3 (asteroids) or 500 kg/m^3 (comets). Other bodies stay massless here.
+fn small_body_mass_kg(tag: BodyTag, radius_km: f64) -> f64 {
+    let density = match tag {
+        BodyTag::Asteroid => 3000.0,
+        BodyTag::Comet => 500.0,
+        _ => return 0.0,
+    };
+    4.0 / 3.0 * std::f64::consts::PI * (radius_km * 1000.0).powi(3) * density
+}
+
 impl Catalog {
     pub fn new() -> Self {
         Self::default()
@@ -394,14 +405,15 @@ impl Catalog {
                 }
             }
         }
-        for path in vfs.list_ext("catalogs/galaxies", "sc") {
-            if let Ok(text) = vfs.read_string(&path) {
-                cat.load_sc(&text, &path);
-            }
-        }
+        // SE reads the galaxy csv before the .sc files, whose definitions then win the merge.
         for path in vfs.list_ext("catalogs/galaxies", "csv") {
             if let Ok(text) = vfs.read_string(&path) {
                 cat.load_galaxy_csv(&text, &path);
+            }
+        }
+        for path in vfs.list_ext("catalogs/galaxies", "sc") {
+            if let Ok(text) = vfs.read_string(&path) {
+                cat.load_sc(&text, &path);
             }
         }
         for dir in ["catalogs/clusters", "catalogs/nebulae"] {
@@ -476,6 +488,10 @@ impl Catalog {
     /// it loses its names and position, which hides it everywhere.
     fn remove_star(&mut self, name: &str) {
         let Some(ObjectRef::Star(i)) = self.names.get(&key(name)).copied() else { return };
+        self.hide_star(i);
+    }
+
+    fn hide_star(&mut self, i: u32) {
         let s = &mut self.stars[i as usize];
         s.has_position = false;
         s.parent = None;
@@ -580,15 +596,43 @@ impl Catalog {
             block: b.clone(),
             names,
         };
-        match self.existing(&rec.names) {
+        // csv stars sharing any of its names ("Ran/EPS Eri", barycenter "Polaris"): SE merges
+        // duplicate stars by any shared name ("Merged stars"), the .sc definition winning. Not for
+        // generated systems, whose records are unloaded later.
+        let mut csv: Vec<u32> = Vec::new();
+        for n in rec.names.iter().filter(|_| source != crate::climate::PROCEDURAL_SOURCE) {
+            if let Some(&ObjectRef::Star(j)) = self.names.get(&key(n))
+                && self.stars[j as usize].source.ends_with(".csv")
+                && !csv.contains(&j)
+            {
+                csv.push(j);
+            }
+        }
+        let target = match self.existing(&rec.names) {
             // A component star may share its barycenter's primary name ("Achernar" in
             // both); that is a new object, not an override.
-            Some(ObjectRef::Star(i)) if self.stars[i as usize].barycenter == rec.barycenter => {
+            Some(ObjectRef::Star(i)) if self.stars[i as usize].barycenter == rec.barycenter => Some(i),
+            _ => csv.first().copied(),
+        };
+        let mut rec = rec;
+        // The merged csv entries' other names (HIP/HD numbers) stay with it.
+        for &j in &csv {
+            for n in self.stars[j as usize].names.clone() {
+                if !rec.names.iter().any(|m| key(m) == key(&n)) {
+                    rec.names.push(n);
+                }
+            }
+            if Some(j) != target {
+                self.hide_star(j);
+            }
+        }
+        match target {
+            Some(i) => {
                 let names = rec.names.clone();
                 self.stars[i as usize] = rec;
                 self.register(&names, ObjectRef::Star(i));
             }
-            _ => {
+            None => {
                 let idx = self.stars.len() as u32;
                 self.register(&rec.names, ObjectRef::Star(idx));
                 self.stars.push(rec);
@@ -671,16 +715,23 @@ impl Catalog {
             .or_else(|| b.f64("RadSol").map(|r| r * SOLAR_RADIUS_KM))
             .or_else(|| b.vec3("Dimensions").map(|d| (d[0] + d[1] + d[2]) / 6.0))
             .unwrap_or(0.0);
+        let mut orbit = orbit_block(b);
+        // SE's per-type default RefPlane (FUN_140467c70, table 0x14067a718): a moon without one
+        // orbits in its parent's equator (Proteus), not the ecliptic.
+        let has_plane = [b.sub("Orbit"), b.sub("BinaryOrbit")].into_iter().flatten().any(|o| o.str("RefPlane").is_some());
+        if let (BodyTag::Moon, false, Some(o)) = (tag, has_plane, orbit.as_mut()) {
+            o.ref_plane = crate::orbit::RefPlane::ParentEquator;
+        }
         let rec = BodyRecord {
             tag,
             parent: parent.to_string(),
             class: b.str("Class").map(str::to_string),
             radius_km,
-            mass_kg: mass_kg(b).unwrap_or(0.0),
+            mass_kg: mass_kg(b).unwrap_or_else(|| small_body_mass_kg(tag, radius_km)),
             oblateness: b.f64("Oblateness").unwrap_or(0.0),
             color: b.vec3("Color"),
             albedo: b.f64_any(&["AlbedoGeom", "Albedo", "AlbedoBond"]).unwrap_or(0.3),
-            orbit: orbit_block(b),
+            orbit,
             rotation: RotationModel::from_body_block(b),
             lock: crate::rotation::RotationLock::from_body_block(b),
             source: source.to_string(),
@@ -771,8 +822,27 @@ impl Catalog {
         }
     }
 
-    fn push_galaxy(&mut self, rec: GalaxyRecord) {
-        match self.existing(&rec.names) {
+    fn push_galaxy(&mut self, mut rec: GalaxyRecord) {
+        // An .sc galaxy replaces the csv row sharing any of its names ("NGC 7318A" is the csv's
+        // "NGC 7318-1/NGC 7318A"), keeping the row's other names, as SE's duplicate merge does.
+        let from_sc = !rec.source.ends_with(".csv");
+        let target = self.existing(&rec.names).filter(|r| matches!(r, ObjectRef::Galaxy(_))).or_else(|| {
+            rec.names.iter().filter(|_| from_sc).find_map(|n| match self.names.get(&key(n)) {
+                Some(&ObjectRef::Galaxy(j)) if self.galaxies[j as usize].source.ends_with(".csv") => Some(ObjectRef::Galaxy(j)),
+                _ => None,
+            })
+        });
+        if let Some(ObjectRef::Galaxy(i)) = target
+            && from_sc
+            && self.galaxies[i as usize].source.ends_with(".csv")
+        {
+            for n in self.galaxies[i as usize].names.clone() {
+                if !rec.names.iter().any(|m| key(m) == key(&n)) {
+                    rec.names.push(n);
+                }
+            }
+        }
+        match target {
             Some(ObjectRef::Galaxy(i)) => {
                 let names = rec.names.clone();
                 self.galaxies[i as usize] = rec;
@@ -1083,7 +1153,9 @@ impl Catalog {
         }
     }
 
-    /// Mass of a named object, or for barycenters the sum of their stellar children.
+    /// Mass of a named object, or for barycenters the sum of their stellar children. A barycenter
+    /// without stars weighs its bodies when it orbits something (a binary asteroid, "2003 HC57
+    /// system"), else its own mass (1 Msun unless given: "V2051 Oph", whose stars are not listed).
     fn system_mass(&self, name_key: &str) -> f64 {
         match self.names.get(name_key) {
             Some(ObjectRef::Star(i)) => {
@@ -1092,9 +1164,22 @@ impl Catalog {
                     self.children
                         .get(name_key)
                         .map(|c| {
-                            c.iter()
+                            let stars: f64 = c
+                                .iter()
                                 .filter_map(|r| match r {
                                     ObjectRef::Star(j) => Some(self.stars[*j as usize].mass_kg),
+                                    _ => None,
+                                })
+                                .sum();
+                            if stars > 0.0 {
+                                return stars;
+                            }
+                            if s.parent.is_none() {
+                                return s.mass_kg;
+                            }
+                            c.iter()
+                                .filter_map(|r| match r {
+                                    ObjectRef::Body(j) => Some(self.bodies[*j as usize].mass_kg),
                                     _ => None,
                                 })
                                 .sum()
@@ -1111,6 +1196,20 @@ impl Catalog {
 
     pub fn find(&self, name: &str) -> Option<ObjectRef> {
         self.exact.get(name.trim()).or_else(|| self.names.get(&key(name))).copied()
+    }
+
+    /// The Milky Way's galaxy index, if the catalog has it.
+    pub fn milky_way(&self) -> Option<u32> {
+        match self.find("Milky Way") {
+            Some(ObjectRef::Galaxy(g)) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// The code catalog galaxy `g`'s `RS`/`RC`/`RN` names use
+    /// ([`crate::proc_galsys::catalog_galaxy_code`]); applied to a code, the galaxy index.
+    pub fn galaxy_code(&self, g: u32) -> u32 {
+        crate::proc_galsys::catalog_galaxy_code(g, self.milky_way())
     }
 
     /// Append a star created at runtime (e.g. a procedural star the observer
@@ -1157,6 +1256,31 @@ impl Catalog {
         self.register(&rec.names, ObjectRef::Nebula(idx));
         self.nebulae.push(rec);
         idx
+    }
+
+    /// Takes a runtime object's names out of the lookups, so that adding a record of the same name
+    /// makes a new one (a rebuilt procedural system gives its `RC`/`RN` names to other objects). A
+    /// cluster or nebula also loses its size and light, so nothing draws or labels it. The record
+    /// stays, so no other index moves.
+    pub fn retire(&mut self, r: ObjectRef) {
+        for n in self.names_of(r).to_vec() {
+            let k = key(&n);
+            if self.names.get(&k) == Some(&r) {
+                self.names.remove(&k);
+            }
+            if self.exact.get(n.trim()) == Some(&r) {
+                self.exact.remove(n.trim());
+            }
+        }
+        let size_light = match r {
+            ObjectRef::Cluster(i) => self.clusters.get_mut(i as usize).map(|c| (&mut c.radius_pc, &mut c.abs_mag)),
+            ObjectRef::Nebula(i) => self.nebulae.get_mut(i as usize).map(|n| (&mut n.radius_pc, &mut n.abs_mag)),
+            _ => None,
+        };
+        if let Some((radius, abs_mag)) = size_light {
+            *radius = 0.0;
+            *abs_mag = f64::INFINITY;
+        }
     }
 
     /// Case-insensitive prefix search over all names, for the search box.
@@ -1550,6 +1674,90 @@ Remove \"BET2 Cyg\"
     }
 
     #[test]
+    fn sc_stars_merge_csv_stars_by_any_name() {
+        let mut c = Catalog::new();
+        c.load_star_csv(
+            "Name,RA,Dec,Dist,AppMagn,SpecClass\n\
+             EPS Eri/HIP 16537/HD 22049,3.5,-9.4,3.2,3.7,K2V\n\
+             Polaris/ALF UMi/HIP 11767,2.5,89.2,133,2.0,F7I\n\
+             Vega/ALF Lyr/HIP 91262,18.6,38.8,7.7,0.0,A0V\n\
+             BET2 Cyg/HIP 95951,19.5,27.9,120,4.7,B8V\n\
+             Lone/HIP 5,1,2,10,5,G2V\n",
+            "stars.csv",
+        );
+        let n_csv = c.stars.len();
+        c.load_sc(
+            "Star \"Ran/EPS Eri\" { RA 3 32 55.8 Dec -9 27 29.7 Dist 3.2 Class \"K2V\" }\n\
+             StarBarycenter \"Polaris/Cynosura\" { RA 2 31 49 Dec 89 15 51 Dist 100 }\n\
+             Star \"Polaris Aa\" { ParentBody \"Polaris\" Class \"F7I\" MassSol 5.4 }\n\
+             Star \"Polaris B\" { ParentBody \"Polaris\" Class \"F3V\" MassSol 1.4 }\n\
+             Star \"Vega\" { RA 18 36 56 Dec 38 47 01 Dist 7.68 Class \"A0V\" AbsMagn 0.58 }\n\
+             RemoveStar \"BET2 Cyg\"\n\
+             StarBarycenter \"BET2 Cyg\" { RA 19.5 Dec 27.9 Dist 120 }\n\
+             Star \"BET2 Cyg A\" { ParentBody \"BET2 Cyg\" Class \"B8V\" }\n",
+            "s.sc",
+        );
+        c.finalize();
+        let star = |n: &str| match c.find(n) {
+            Some(ObjectRef::Star(i)) => &c.stars[i as usize],
+            _ => panic!("{n}"),
+        };
+        // Each .sc star takes its csv twin's slot and keeps its catalog numbers.
+        assert_eq!(star("HIP 16537").names[0], "Ran");
+        assert_eq!(star("EPS Eri").source, "s.sc");
+        assert!(star("Polaris").barycenter && star("HIP 11767").barycenter);
+        assert_eq!(star("Cynosura").names[0], "Polaris");
+        assert_eq!(star("ALF Lyr").names[0], "Vega");
+        assert!(star("BET2 Cyg").barycenter);
+        assert_eq!(c.system_members("Polaris").len(), 2);
+        // No csv star is left drawn under a name that now means a .sc star.
+        let drawn_csv = c.stars.iter().filter(|s| s.source.ends_with(".csv") && s.has_position).count();
+        assert_eq!(drawn_csv, 1, "{:?}", c.stars.iter().map(|s| (&s.names, &s.source, s.has_position)).collect::<Vec<_>>());
+        // Three merged in place, BET2 Cyg removed then redefined, plus Polaris' two and BET2 Cyg A.
+        assert_eq!(c.stars.len(), n_csv + 4);
+    }
+
+    #[test]
+    fn moons_default_to_the_parent_equator() {
+        use crate::orbit::RefPlane;
+        let mut c = Catalog::new();
+        c.load_sc(
+            "Moon \"Proteus\" { ParentBody \"Neptune\" Orbit { SemiMajorAxis 0.0007866 Inclination 0.524 } }\n\
+             Moon \"Moon\" { ParentBody \"Earth\" Orbit { RefPlane \"Ecliptic\" SemiMajorAxis 0.00257 } }\n\
+             DwarfMoon \"Small\" { ParentBody \"Neptune\" Orbit { SemiMajorAxis 0.001 } }\n\
+             Planet \"Neptune\" { ParentBody \"Sun\" Orbit { SemiMajorAxis 30.07 } }\n",
+            "s.sc",
+        );
+        let plane = |i: usize| c.bodies[i].orbit.as_ref().unwrap().ref_plane;
+        assert_eq!([plane(0), plane(1), plane(2), plane(3)], [RefPlane::ParentEquator, RefPlane::Ecliptic, RefPlane::Ecliptic, RefPlane::Ecliptic]);
+    }
+
+    #[test]
+    fn sc_galaxies_replace_csv_rows_by_any_name() {
+        let mut c = Catalog::new();
+        c.load_galaxy_csv(
+            "Name,Type,RA,Dec,Dist,AbsMagn,Radius\n\
+             NGC 7318-1/NGC 7318A/MCG 6-49-39,E2,22.6,33.97,86736569,-21,15140\n\
+             NGC 4079/UGC 7067,Sc,12.07,-2.38,87962960,-21,29427\n",
+            "NGC-IC.csv",
+        );
+        c.load_sc(
+            "Galaxy \"NGC 7318A/UGC 12099\" { Type \"E2\" RA 22.6 Dec 33.97 Dist 80.5e6 Radius 20000 }\n\
+             Galaxy \"NGC 4079\" { Type \"Sa\" RA 12.07 Dec -2.38 Dist 95.3e6 Radius 35000 }\n",
+            "Kexitt.sc",
+        );
+        assert_eq!(c.galaxies.len(), 2);
+        let gal = |n: &str| match c.find(n) {
+            Some(ObjectRef::Galaxy(i)) => &c.galaxies[i as usize],
+            _ => panic!("{n}"),
+        };
+        assert_eq!((gal("NGC 4079").kind.as_str(), gal("NGC 4079").radius_pc), ("Sa", 35000.0));
+        let a = gal("NGC 7318-1");
+        assert_eq!((a.names[0].as_str(), a.radius_pc), ("NGC 7318A", 20000.0));
+        assert!(a.names.iter().any(|n| n == "MCG 6-49-39"));
+    }
+
+    #[test]
     fn binary_separation_is_split_by_mass() {
         let au = crate::units::METERS_PER_AU;
         let mut c = Catalog::new();
@@ -1582,5 +1790,83 @@ Star "WD pair B" { ParentBody "WD pair" Class "K5V" MassSol 0.6 BinaryOrbit { Se
         assert!((b.arg_of_periapsis - a.arg_of_periapsis - std::f64::consts::PI).abs() < 1e-12);
         let years = a.period / crate::units::SECONDS_PER_YEAR;
         assert!((years - (200.0f64.powi(3) / 1.2).sqrt()).abs() < 20.0, "{years}");
+    }
+
+    #[test]
+    fn massless_small_bodies_and_body_barycenters_move() {
+        let mut c = Catalog::new();
+        c.load_sc(
+            r#"
+Star "Sol" { RA 0 Dec 0 Dist 0.00001 Class "G2V" MassSol 1 }
+Barycenter "Rock system" { ParentBody "Sol" Orbit { SemiMajorAxis 44 Period 293 } }
+Asteroid "Rock A" { ParentBody "Rock system" Radius 111 Orbit { Separation 1.31e-5 } }
+Asteroid "Rock B" { ParentBody "Rock system" Radius 105.5 }
+Barycenter "Pair system" { ParentBody "Sol" Orbit { SemiMajorAxis 40 Period 250 } }
+Asteroid "Pair A" { ParentBody "Pair system" Radius 46 Orbit { SemiMajorAxis 0.000483 } }
+Asteroid "Pair B" { ParentBody "Pair system" Radius 26.5 Orbit { SemiMajorAxis 0.002525 } }
+Asteroid "Florence" { ParentBody "Sol" Radius 2.45 Orbit { SemiMajorAxis 1.77 Period 2.35 } }
+Asteroid "Florence I" { ParentBody "Florence" Radius 0.1 Orbit { Period 0.0009 } }
+Comet "Snowball" { ParentBody "Sol" Radius 5 Orbit { SemiMajorAxis 10 } }
+"#,
+            "test.sc",
+        );
+        c.resolve();
+        let body = |n: &str| match c.find(n) {
+            Some(ObjectRef::Body(i)) => &c.bodies[i as usize],
+            r => panic!("{n}: {r:?}"),
+        };
+        // SE's densities: 3000 kg/m^3 for asteroids, 500 for comets.
+        let sphere = |r_km: f64, rho: f64| 4.0 / 3.0 * std::f64::consts::PI * (r_km * 1e3).powi(3) * rho;
+        assert!((body("Florence").mass_kg / sphere(2.45, 3000.0) - 1.0).abs() < 1e-9);
+        assert!((body("Snowball").mass_kg / sphere(5.0, 500.0) - 1.0).abs() < 1e-9);
+        for n in ["Rock A", "Rock B", "Pair A", "Pair B", "Florence I"] {
+            let o = body(n).orbit.as_ref().unwrap();
+            assert!(o.period > 0.0 && o.semi_major_axis > 0.0, "{n}: P {} a {}", o.period, o.semi_major_axis);
+        }
+        // The separation splits by mass.
+        let (ma, mb) = (body("Rock A").mass_kg, body("Rock B").mass_kg);
+        let (aa, ab) = (body("Rock A").orbit.as_ref().unwrap().semi_major_axis, body("Rock B").orbit.as_ref().unwrap().semi_major_axis);
+        assert!((aa / (aa + ab) - mb / (ma + mb)).abs() < 1e-9);
+        assert!(((aa + ab) / crate::units::METERS_PER_AU / 1.31e-5 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn galaxy_codes_swap_with_the_milky_way() {
+        let mut c = Catalog::new();
+        c.load_sc(SYSTEM, "test.sc");
+        c.load_sc("Galaxy \"Milky Way\" { Type \"SBbc\" RA 0 Dec 0 Dist 0.008 Radius 25000 }\n", "test.sc");
+        c.resolve();
+        assert_eq!(c.milky_way(), Some(1));
+        assert_eq!(c.galaxy_code(1), crate::proc_galsys::MILKY_WAY_SE_INDEX);
+        assert_eq!(c.galaxy_code(crate::proc_galsys::MILKY_WAY_SE_INDEX), 1);
+        assert_eq!(c.galaxy_code(0), 0);
+    }
+
+    #[test]
+    fn retired_nebula_frees_its_name() {
+        let mut c = Catalog::new();
+        let rec = NebulaRecord {
+            names: vec!["RN 8514-7".into()],
+            galaxy: "Milky Way".into(),
+            kind: "Diffuse".into(),
+            pos_pc: DVec3::new(1.0, 2.0, 3.0),
+            radius_pc: 5.0,
+            abs_mag: -3.0,
+            orientation: DQuat::IDENTITY,
+            source: "procedural".into(),
+            model_roll: None,
+            randomize: [0.0; 3],
+            generate_stars: true,
+        };
+        let i = c.add_nebula_record(rec.clone());
+        assert_eq!(c.add_nebula_record(rec.clone()), i);
+        c.retire(ObjectRef::Nebula(i));
+        assert_eq!(c.find("RN 8514-7"), None);
+        let n = &c.nebulae[i as usize];
+        assert!(n.radius_pc == 0.0 && n.abs_mag.is_infinite());
+        // The same name now makes a new record.
+        let j = c.add_nebula_record(NebulaRecord { pos_pc: DVec3::new(9.0, 9.0, 9.0), ..rec });
+        assert_ne!(i, j);
+        assert_eq!(c.find("rn 8514-7"), Some(ObjectRef::Nebula(j)));
     }
 }

@@ -267,11 +267,12 @@ pub fn rsc_prefix(cat: &Catalog, ci: usize) -> String {
     format!("RSC {}", &rc[3..])
 }
 
-/// The catalog index SE names a galaxy's clusters by: 8514 for the Milky Way, else the port's index.
+/// The catalog index SE names a galaxy's clusters by: 8514 for the Milky Way, else the port's index
+/// (swapped with the Milky Way's for the galaxy at 8514, `Catalog::galaxy_code`).
 fn galaxy_code(cat: &Catalog, galaxy: &str) -> u32 {
     match cat.find(galaxy) {
         _ if galaxy == "Milky Way" => MILKY_WAY_SE_INDEX,
-        Some(ObjectRef::Galaxy(g)) => g,
+        Some(ObjectRef::Galaxy(g)) => cat.galaxy_code(g),
         _ => 0,
     }
 }

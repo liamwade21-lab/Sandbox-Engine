@@ -57,7 +57,6 @@ const AUTO_MESSAGE_S: f64 = 4.0;
 const LOADING_SETTLE_S: f64 = 1.0;
 const MAX_OPS_PER_FRAME: usize = 4000;
 const MAX_CALL_DEPTH: usize = 8;
-const DEFAULT_FOV: f32 = 60.0;
 /// The engine version scripts check with `CheckVersion` (SE 0.991).
 const ENGINE_VERSION: u32 = 991;
 /// `Control|Move` matches a `Direction` when every component of the movement's direction is
@@ -81,6 +80,11 @@ impl Plugin for ScriptingPlugin {
             .add_systems(PreUpdate, swallow_time_keys.after(bevy::input::InputSystems))
             // Idle, the runner takes no part in the frame (it borrows many settings).
             .add_systems(Update, run_script.run_if(|r: Res<ScriptRunner>| r.running() || r.pending.is_some() || r.stop))
+            // After bevy_window turns the closed window into AppExit, before the session is saved.
+            .add_systems(
+                Last,
+                stop_on_exit.after(bevy::window::ExitSystems).before(crate::session::save_on_exit).run_if(|r: Res<ScriptRunner>| r.running()),
+            )
             .add_systems(EguiPrimaryContextPass, (draw_captions, draw_scripts_window).in_set(crate::skin::UiSet::Draw));
     }
 }
@@ -132,9 +136,11 @@ struct Snapshot {
     selected: Option<ObjectRef>,
     /// The selected waypoint's name.
     selected_wp: Option<String>,
-    travel: bool,
+    /// The camera's travel and bind counters: a travel or binding already under way when the
+    /// wait began does not hide a new one started later.
+    travel_serial: u32,
+    bind_serial: u32,
     following: bool,
-    rotating: bool,
     track: bool,
 }
 
@@ -321,6 +327,12 @@ pub struct ScriptRunner {
 impl ScriptRunner {
     pub fn running(&self) -> bool {
         !self.frames.is_empty()
+    }
+
+    /// The script holds the user's settings to give back (a menu scene's slot, or a `SaveVars` not
+    /// yet restored): what it changes meanwhile is its own, not the user's to save.
+    pub fn holds_user_settings(&self) -> bool {
+        self.running() && (self.menu_slot.is_some() || !self.saved.is_empty())
     }
 
     /// Ask the runner to start `path` (a VFS path like `scripts/menu/Scene1.se`,
@@ -543,6 +555,44 @@ fn run_script(
     }
 }
 
+/// Quitting while a script runs (the window closed, or the script's own `Quit`) stops it first, so
+/// the settings it changed go back to the user's before settings.cfg and save.cfg are written.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stop_on_exit(
+    mut exits: MessageReader<AppExit>,
+    data: Res<SeData>,
+    cfg: Res<EngineConfig>,
+    mut runner: ResMut<ScriptRunner>,
+    mut cam: ResMut<FlyCamera>,
+    mut sim: ResMut<SimTime>,
+    mut vars: Settings,
+    mut dialogs: Dialogs,
+    mut music: ResMut<ScriptMusic>,
+    (mut shots, shot_settings): (ResMut<crate::screenshot::ScriptShots>, Res<crate::screenshot::ScreenshotSettings>),
+) {
+    if exits.read().count() == 0 || !runner.running() {
+        return;
+    }
+    let mut cx = Cx {
+        cam: &mut cam,
+        sim: &mut sim,
+        data: &data,
+        vars: &mut vars,
+        dialogs: &mut dialogs,
+        shots: &mut shots,
+        shot_settings: &shot_settings,
+        se_path: &cfg.se_path,
+        music: &mut music,
+        auto: None,
+        persist: !crate::settings::scripted(&cfg),
+        aspect: 16.0 / 9.0,
+        quit: false,
+        ended: false,
+    };
+    runner.finish(&mut cx, true);
+    info!("script {} stopped on exit", runner.name);
+}
+
 impl ScriptRunner {
     /// A script ended, by itself or `stopped` by hand. A menu scene gives the user's settings
     /// back; a script stopped by hand gives back what its first SaveVars kept, as its RestoreVars
@@ -698,7 +748,8 @@ impl ScriptRunner {
             }
             Op::Goto(args) => self.start_goto(cx, args, cmd.line),
             Op::Fov { fov, time } => {
-                let to = fov.unwrap_or(DEFAULT_FOV as f64);
+                // SE's fov handler falls back to main-def.cfg DefaultFOV (45), the camera default.
+                let to = fov.unwrap_or(crate::camera::DEFAULT_FOV_DEG as f64);
                 match time {
                     Some(t) if *t > 0.0 => {
                         self.fov_anim = Some(Anim { from: cx.cam.fov_deg as f64, to, elapsed: 0.0, duration: *t })
@@ -1521,9 +1572,9 @@ fn snapshot(cx: &Cx) -> Snapshot {
         paused: cx.sim.paused,
         jd: cx.sim.jd,
         selected: cx.cam.selected,
-        travel: cx.cam.travel.is_some(),
+        travel_serial: cx.cam.travel_serial,
+        bind_serial: cx.cam.bind_serial,
         following: cx.cam.follow.is_some(),
-        rotating: cx.cam.bind_mode() == 2,
     }
 }
 
@@ -1822,7 +1873,7 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
         }
         // A Go to started (to `Object`, or to an object of `Type`); GotoCenter is Ctrl+G's.
         "control|goto" | "control|gotocenter" => {
-            let Some(tr) = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Goto && !snap.travel) else { return Check::No };
+            let Some(tr) = cam.travel.as_ref().filter(|tr| tr.kind == TravelKind::Goto && cam.travel_serial != snap.travel_serial) else { return Check::No };
             let center_ok = !t.kind.eq_ignore_ascii_case("control|gotocenter") || (tr.end_distance > 0.0 && tr.end_distance <= 10.0);
             let object_ok = match &t.object {
                 Some(n) => resolve_object(cat, n) == Some(tr.target),
@@ -1907,7 +1958,7 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
             yes((cam.fov_target == Some(def) || (cam.fov_deg - def).abs() < 0.01) && (snap.fov - def).abs() >= 0.01)
         }
         "control|center" => {
-            if cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Center) && !snap.travel {
+            if cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Center) && cam.travel_serial != snap.travel_serial {
                 return Check::Yes;
             }
             let Some(sel) = cam.selected else { return Check::No };
@@ -1915,9 +1966,11 @@ fn check_trigger(it: &mut TrigState, cx: &Cx, elapsed: f64, dt: f64) -> Check {
             let fwd = cam.rot * DVec3::NEG_Z;
             yes(fwd.angle_between(to) < 3f64.to_radians())
         }
-        "control|horizon" => yes(cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Horizon) && !snap.travel),
-        "control|follow" => yes(cam.follow.is_some() && !snap.following),
-        "control|syncrot" => yes(cam.bind_mode() == 2 && !snap.rotating),
+        "control|horizon" => yes(cam.travel.as_ref().is_some_and(|tr| tr.kind == TravelKind::Horizon) && cam.travel_serial != snap.travel_serial),
+        // Shift+F / Shift+R (or the toolbar) since the start: also when the camera was bound
+        // already, as after tut-01's Go to the Moon (Follow binds to the selection).
+        "control|follow" => yes(cam.bind_serial != snap.bind_serial && cam.follow.is_some_and(|f| Some(f.target) == cam.selected)),
+        "control|syncrot" => yes(cam.bind_serial != snap.bind_serial && cam.bind_mode() == 2),
         "control|free" => yes(cam.follow.is_none() && snap.following),
         "control|track" => yes(cam.track && !snap.track),
         "control|untrack" => yes(!cam.track && snap.track),
@@ -2150,6 +2203,20 @@ mod tests {
         assert_eq!(m.cur, 100.0);
         let mut stop = Motion::new(m.axis, m.cur, 0.0, 0.0);
         assert!(!stop.step(0.016));
+    }
+
+    #[test]
+    fn settings_held_while_a_script_will_give_them_back() {
+        // settings.rs does not save while this holds: a tutorial's SaveVars, a menu scene's slot.
+        let mut r = ScriptRunner::default();
+        r.saved.push(HashMap::new());
+        assert!(!r.holds_user_settings(), "not running");
+        r.frames.push(Frame { name: "t.se".into(), script: Arc::new(se_script::parse("")), pc: 0, loops: Vec::new() });
+        assert!(r.holds_user_settings());
+        r.saved.clear();
+        assert!(!r.holds_user_settings());
+        r.menu_slot = Some(HashMap::new());
+        assert!(r.holds_user_settings());
     }
 
     #[test]

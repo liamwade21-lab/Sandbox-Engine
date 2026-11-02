@@ -35,7 +35,8 @@ impl Plugin for SettingsPlugin {
         app.init_resource::<ResetRequest>()
             .add_systems(PostStartup, load_settings)
             .add_systems(Update, (apply_pending_color, save_when_changed, reset_settings).chain())
-            .add_systems(Last, restart_after_reset.after(crate::session::save_on_exit));
+            .add_systems(Last, save_on_exit.after(bevy::window::ExitSystems).after(crate::scripting::stop_on_exit))
+            .add_systems(Last, restart_after_reset.after(crate::session::save_on_exit).after(save_on_exit));
     }
 }
 
@@ -532,14 +533,44 @@ fn load_post(p: &se_core::sc::Block, live: &mut Live, commands: &mut Commands) {
     commands.insert_resource(PendingColor([v("Brightness", 0), v("Contrast", 1), v("Saturation", 2), v("Gamma", 3)]));
 }
 
-fn save_when_changed(time: Res<Time>, saved: Option<ResMut<Saved>>, live: Live) {
+/// What holds settings that are not the user's: a script that will give the user's back, and a
+/// high-resolution screenshot's own LandLOD.
+#[derive(SystemParam)]
+struct Holders<'w> {
+    runner: Option<Res<'w, crate::scripting::ScriptRunner>>,
+    hires: Option<Res<'w, crate::screenshot::HiresState>>,
+}
+
+fn save_when_changed(time: Res<Time>, saved: Option<ResMut<Saved>>, live: Live, holders: Holders) {
     let Some(mut saved) = saved else { return };
     saved.timer += time.delta_secs();
     if saved.timer < 2.0 {
         return;
     }
     saved.timer = 0.0;
-    let now = saved.capture(&live);
+    save_now(&mut saved, &live, &holders);
+}
+
+/// The last write on exit, after a running script gave the user's settings back
+/// (`scripting::stop_on_exit`), so changes from the last two seconds are kept too.
+fn save_on_exit(mut exits: MessageReader<AppExit>, saved: Option<ResMut<Saved>>, live: Live, holders: Holders) {
+    if exits.read().count() == 0 {
+        return;
+    }
+    if let Some(mut saved) = saved {
+        save_now(&mut saved, &live, &holders);
+    }
+}
+
+fn save_now(saved: &mut Saved, live: &Live, holders: &Holders) {
+    // A script's values (a tutorial's DefaultSettings) are never saved over the user's.
+    if holders.runner.as_ref().is_some_and(|r| r.holds_user_settings()) {
+        return;
+    }
+    let mut now = saved.capture(live);
+    if let Some(lod) = holders.hires.as_ref().and_then(|h| h.user_land_lod()) {
+        now.gfx.land_lod = lod;
+    }
     if now != saved.last {
         let path = settings_path();
         if let Some(dir) = path.parent() {

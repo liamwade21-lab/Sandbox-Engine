@@ -3,8 +3,8 @@
 //! reads them back, skipping a block without `ShipID`). The port writes `%APPDATA%/SpaceEngine-rs/spacecraft.cfg`
 //! on exit with SE's keys (`ShipID`, `RefBodyID`, `Model`, `UnivPos`, `Orientation`, `Velocity`,
 //! `AngVelocity`, `WarpBoost`), the position in the port's fixed-point universe coordinates (as `save.cfg`),
-//! velocities in m/s and rad/s, plus `Mine` and `Piloted`; it rebuilds them on the next start, and flies again
-//! the one that was flown. Scripted runs and `--start` neither read nor write it, like the session.
+//! velocities in m/s and rad/s, plus `Mine`, `Piloted` and, for a landed ship, `LandedPos`, `LandedRot` and
+//! `LandedLevel` ([`SavedLanding`]); it rebuilds them on the next start, and flies again the one that was flown. Scripted runs and `--start` neither read nor write it, like the session.
 //!
 //! Not kept: SE's `SystemID`, `TargetID` / `TargetShipID`, fuel, propellant and heat (the port does not model
 //! them), docking (`DockedShipID` / `DockedPort`), `HUDMode`, `PhysMode` and the autopilot programme. An idle
@@ -18,7 +18,7 @@ use se_core::places::{format_fixed, parse_fixed};
 use se_core::ship::ShipDesign;
 use se_core::upos::UPos;
 
-use super::{Flight, Ship, spawn_built, take_control};
+use super::{Flight, Landed, Ship, spawn_built, take_control};
 use crate::camera::FlyCamera;
 use crate::config::EngineConfig;
 use crate::data::SeData;
@@ -49,6 +49,20 @@ struct SavedShip {
     warp: f64,
     mine: bool,
     piloted: bool,
+    landed: Option<SavedLanding>,
+}
+
+/// Where a landed ship stands on its `RefBodyID` (the port's `LandedPos`, `LandedRot` and
+/// `LandedLevel`): it lands there again once the body exists, rather than falling onto whatever
+/// coarse ground has loaded by then.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SavedLanding {
+    /// Body axes (m).
+    pos: [f64; 3],
+    /// (w, x, y, z), body axes.
+    rot: [f64; 4],
+    /// [`super::Landed::level`].
+    level: Option<u8>,
 }
 
 impl SavedShip {
@@ -57,8 +71,13 @@ impl SavedShip {
         let [w, x, y, z] = self.rot;
         let [vx, vy, vz] = self.vel;
         let [ax, ay, az] = self.ang_vel;
+        let landed = self.landed.map_or(String::new(), |l| {
+            let ([lx, ly, lz], [lw, qx, qy, qz]) = (l.pos, l.rot);
+            let level = l.level.map_or(-1, i32::from);
+            format!("\tLandedPos   ({lx:?} {ly:?} {lz:?})\n\tLandedRot   ({lw:?} {qx:?} {qy:?} {qz:?})\n\tLandedLevel  {level}\n")
+        });
         format!(
-            "Spacecraft\t\"{}\"\n{{\n\tShipID       {}\n\tRefBodyID   \"{}\"\n\tModel       \"{}\"\n\tUnivPos     ({px} {py} {pz})\n\tOrientation ({w:?} {x:?} {y:?} {z:?})\n\tVelocity    ({vx:?} {vy:?} {vz:?})\n\tAngVelocity ({ax:?} {ay:?} {az:?})\n\tWarpBoost    {:?}\n\tMine         {}\n\tPiloted      {}\n}}\n\n",
+            "Spacecraft\t\"{}\"\n{{\n\tShipID       {}\n\tRefBodyID   \"{}\"\n\tModel       \"{}\"\n\tUnivPos     ({px} {py} {pz})\n\tOrientation ({w:?} {x:?} {y:?} {z:?})\n\tVelocity    ({vx:?} {vy:?} {vz:?})\n\tAngVelocity ({ax:?} {ay:?} {az:?})\n\tWarpBoost    {:?}\n\tMine         {}\n\tPiloted      {}\n{landed}}}\n\n",
             self.name, self.id, self.ref_body, self.model, self.warp, self.mine, self.piloted
         )
     }
@@ -83,6 +102,7 @@ impl SavedShip {
                     warp: 0.0,
                     mine: true,
                     piloted: false,
+                    landed: None,
                 };
                 cur = Some((blank, false, false));
                 continue;
@@ -135,6 +155,15 @@ impl SavedShip {
                 "WarpBoost" => s.warp = rest.parse().unwrap_or(0.0),
                 "Mine" => s.mine = rest != "false",
                 "Piloted" => s.piloted = rest == "true",
+                "LandedPos" | "LandedRot" | "LandedLevel" => {
+                    let l = s.landed.get_or_insert(SavedLanding { pos: [0.0; 3], rot: [1.0, 0.0, 0.0, 0.0], level: None });
+                    match (key, &floats()[..]) {
+                        ("LandedPos", &[x, y, z]) => l.pos = [x, y, z],
+                        ("LandedRot", &[w, x, y, z]) => l.rot = [w, x, y, z],
+                        ("LandedLevel", _) => l.level = rest.parse::<u8>().ok(),
+                        _ => {}
+                    }
+                }
                 _ => {}
             }
         }
@@ -147,7 +176,6 @@ pub(super) fn save_ships_on_exit(
     cfg: Res<EngineConfig>,
     data: Res<SeData>,
     flight: Res<Flight>,
-    bodies: Query<&crate::system::SystemBody>,
     ships: Query<(Entity, &Ship, &UPosition, &UOrientation)>,
 ) {
     if exits.read().count() == 0 || (test_file().is_none() && (crate::settings::scripted(&cfg) || cfg.start_given)) {
@@ -158,7 +186,7 @@ pub(super) fn save_ships_on_exit(
     for (e, ship, pos, rot) in &ships {
         // SE's RefBodyID: the body the ship rests on or holds station at.
         let anchor = ship.landed.map(|l| l.body).or(ship.parked.map(|p| p.body));
-        let ref_body = anchor.and_then(|b| bodies.get(b).ok()).map(|b| cat.display_name(b.obj).to_string()).unwrap_or_default();
+        let ref_body = anchor.map(|b| cat.display_name(b).to_string()).unwrap_or_default();
         let q = rot.0.normalize();
         let s = SavedShip {
             name: if ship.nickname.is_empty() { ship.design.name.clone() } else { ship.nickname.clone() },
@@ -172,6 +200,10 @@ pub(super) fn save_ships_on_exit(
             warp: ship.warp,
             mine: ship.mine,
             piloted: flight.active && flight.ship == Some(e),
+            landed: ship.landed.map(|l| {
+                let q = l.local_rot.normalize();
+                SavedLanding { pos: l.local_pos.to_array(), rot: [q.w, q.x, q.y, q.z], level: l.level }
+            }),
         };
         text.push_str(&s.to_cfg());
     }
@@ -185,25 +217,41 @@ pub(super) fn save_ships_on_exit(
     }
 }
 
-/// Restored idle ships and the body they were parked at: an idle ship parks at the nearest body that
-/// exists, so it parks again once that one does (bodies appear as their system is made).
+/// Restored idle ships and the name of the body they were parked at: an idle ship parks at the nearest
+/// body that exists, so it parks again once that one does (bodies appear as their system is made). The
+/// name is looked up until it is found: a procedural star or a generated planet is in the catalog
+/// only once its system has been made, after the ships are restored. A ship saved landed (piloted
+/// or not) lands on it again where it stood.
 #[derive(Resource, Default)]
-pub(super) struct PendingRefs(Vec<(Entity, se_core::catalog::ObjectRef, f64)>);
+pub(super) struct PendingRefs(Vec<(Entity, String, f64, Option<SavedLanding>)>);
 
 /// Seconds a restored ship waits for its body.
 const REF_WAIT_S: f64 = 30.0;
 
 pub(super) fn settle_restored(
     time: Res<Time>,
+    data: Res<SeData>,
     mut pending: ResMut<PendingRefs>,
     bodies: Query<&crate::system::SystemBody>,
     mut ships: Query<&mut Ship>,
 ) {
     let now = time.elapsed_secs_f64();
-    pending.0.retain(|&(e, r, t0)| {
-        if bodies.iter().any(|b| b.obj == r) {
+    pending.0.retain(|(e, name, t0, landing)| {
+        let (e, t0) = (*e, *t0);
+        if let Some(r) = data.catalog.find(name)
+            && bodies.iter().any(|b| b.obj == r)
+        {
             if let Ok(mut ship) = ships.get_mut(e) {
                 ship.parked = None;
+                if let Some(l) = landing {
+                    let [w, x, y, z] = l.rot;
+                    ship.landed = Some(Landed {
+                        body: r,
+                        local_pos: DVec3::from(l.pos),
+                        local_rot: DQuat::from_xyzw(x, y, z, w).normalize(),
+                        level: l.level,
+                    });
+                }
             }
             return false;
         }
@@ -252,10 +300,12 @@ pub(super) fn restore_ships(
             }
         });
         flight.next_serial = flight.next_serial.max(id);
+        let landing = s.landed.filter(|l| DVec3::from(l.pos) != DVec3::ZERO);
         if s.piloted {
             take_control(&mut flight, &mut cam, e, &design, false);
-        } else if let Some(r) = data.catalog.find(&s.ref_body) {
-            pending.0.push((e, r, time.elapsed_secs_f64()));
+        }
+        if !s.ref_body.is_empty() && (!s.piloted || landing.is_some()) {
+            pending.0.push((e, s.ref_body.clone(), time.elapsed_secs_f64(), landing));
         }
     }
     if !saved.is_empty() {
@@ -281,8 +331,12 @@ mod tests {
             warp: 2.5,
             mine: false,
             piloted: true,
+            landed: None,
         };
-        let text = format!("// header\n\n{}{}", s.to_cfg(), "Spacecraft \"no id\"\n{\n\tModel \"x\"\n}\n");
-        assert_eq!(SavedShip::parse_all(&text), vec![s]);
+        // Landed ones keep where they stand on the body, and how fine the ground there was.
+        let on = |level| SavedShip { landed: Some(SavedLanding { pos: [1.0e6, -2.5, 1.737e6], rot: [0.0, 1.0, 0.0, 0.0], level }), ..s.clone() };
+        let (a, b) = (on(Some(14)), on(None));
+        let text = format!("// header\n\n{}{}{}{}", s.to_cfg(), a.to_cfg(), b.to_cfg(), "Spacecraft \"no id\"\n{\n\tModel \"x\"\n}\n");
+        assert_eq!(SavedShip::parse_all(&text), vec![s, a, b]);
     }
 }

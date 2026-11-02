@@ -171,7 +171,8 @@ pub(crate) fn draw_grids(
         // SE multiplies all four channels by ShowGridGeographic^2 and fades the line itself by the
         // body's size (Width.z), drawn premultiplied (FUN_1404c7460).
         let c = skin.rgba(COLOR_KEYS[3], DEFAULT_COLORS[3]);
-        let k = geographic * geographic;
+        // `geographic` is already the switch squared (above), so it is used once.
+        let k = geographic;
         let rgb = [c[0] * k, c[1] * k, c[2] * k];
         mesh.premultiplied = true;
         for b in bodies.iter().filter(|b| !b.star && b.radius_m > 0.0 && b.px_radius > GEO_MIN_PX) {

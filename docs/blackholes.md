@@ -77,7 +77,9 @@ environment map (`Skybox()`).
   at the inner edge around one solar mass. Config keys read from main-def.cfg:
   hdrAccretionDiskBright, hdrAccretionJetBright, BlackHoleWarpRadius, WarpPrecision,
   EnvmapDimensions.
-* Objects closer than 2 pc (catalog position) are tested every frame; one is lensed when 1.45 x its
+* Objects are tested every frame unless their catalog position is beyond the distance where that
+  region would be under 1.5 px (plus 10%; M87* lasts to ~60 pc at a 45 deg FOV); this replaced a
+  fixed 2 pc cut that dropped M87* while it still covered ~45 px. One is lensed when 1.45 x its
   render sphere's angular radius (SE draws the GR impostor over that sphere; nothing changes
   outside it) is >= 1.5 px, and the camera is outside the horizon (1.5 Rg) or the star. Up to 4,
   largest on screen first. With none in range the `BlackHoleLens` component is removed and the

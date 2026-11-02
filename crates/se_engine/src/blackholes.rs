@@ -613,6 +613,13 @@ fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, info: &BhInfo, set: &Black
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Catalog distance, pc, past which a hole's lens region (far away ~`REGION_PER_SPHERE` x sphere /
+/// distance radians) is under `MIN_REGION_PX` pixels of `px_ang` radians, with 10% slack: a cheap
+/// cut before the ephemeris (M87*: ~60 pc at a 45 deg FOV).
+fn lens_cutoff_pc(sphere_km: f64, px_ang: f64) -> f64 {
+    1.1 * REGION_PER_SPHERE * sphere_km * 1e3 / (MIN_REGION_PX * px_ang * se_core::units::METERS_PER_PC)
+}
+
 fn update_lens(
     mut commands: Commands,
     data: Res<SeData>,
@@ -663,7 +670,7 @@ fn update_lens(
     let mut nearest_m = f64::INFINITY;
     let mut want_env = false;
     for info in &list.list {
-        if info.has_pos && info.pos_pc.distance(cam_pc) > 2.0 {
+        if info.has_pos && info.pos_pc.distance(cam_pc) > lens_cutoff_pc(info.sphere_km, px_ang) {
             continue;
         }
         let obj = ObjectRef::Star(info.star);
@@ -1116,6 +1123,22 @@ mod tests {
         let keys = params::DiskKeys { temperature: Some(6000.0), outer_km: Some(1.0e5), ..Default::default() };
         let d = params::resolve(Some(&keys), false, Remnant::BlackHole, 10.0, 29.5, 29.5, &mut params::SeRng::from_name("x")).unwrap();
         assert!((render_sphere_km(Remnant::BlackHole, 29.5, 29.5, 100.0, None, Some(&d)) - 1.0e5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lens_cutoff_follows_screen_size() {
+        // M87* (6.5e9 solar masses) at a 45 deg FOV, 720 px high: still lensed well past 2 pc.
+        let rg = RS_PER_MSUN_KM * 6.5e9;
+        let sphere_km = render_sphere_km(params::Remnant::BlackHole, rg, rg, 100.0, None, None);
+        let px_ang = 2.0 * 22.5f64.to_radians().tan() / 720.0;
+        let cut = lens_cutoff_pc(sphere_km, px_ang);
+        assert!(cut > 30.0 && cut < 100.0, "{cut}");
+        // Just inside the cut (less the slack) the region is the MIN_REGION_PX limit.
+        let d = cut / 1.1 * se_core::units::METERS_PER_PC * 1e-3;
+        let region = REGION_PER_SPHERE * (sphere_km / d).asin();
+        assert!((region / (MIN_REGION_PX * px_ang) - 1.0).abs() < 1e-6);
+        // A stellar hole's cut is far below a parsec.
+        assert!(lens_cutoff_pc(100.0 * RS_PER_MSUN_KM * 10.0, px_ang) < 1e-3);
     }
 
     #[test]

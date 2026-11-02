@@ -587,8 +587,8 @@ Star	"Gliese 3618/GJ 3618"
 		Epoch 2451545
 		PeriodicTermsDiurnal
 		{
-			1.0 2.0 3.0
-			4e-1 -5 +6
+			0, 0, 1.0, 2.0, 3.0, 0,
+			0 0 4e-1 -5 +6 0
 		}
 	}
 	NoRings
@@ -615,7 +615,7 @@ Galaxy "2MASX J1" { Type "E0" Dist 1.5e6 }
         let rot = b.get("RotationModel").unwrap();
         assert_eq!(rot.str(), Some("IAU"));
         let terms = rot.block().unwrap().sub("PeriodicTermsDiurnal").unwrap();
-        assert_eq!(terms.anonymous_numbers(), vec![1.0, 2.0, 3.0, 0.4, -5.0, 6.0]);
+        assert_eq!(terms.anonymous_numbers(), vec![0.0, 0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.4, -5.0, 6.0, 0.0]);
         let gal = doc.get("Galaxy").unwrap();
         assert_eq!(gal.name(), Some("2MASX J1"));
         assert_eq!(gal.block().unwrap().f64("Dist"), Some(1.5e6));

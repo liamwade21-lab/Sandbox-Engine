@@ -1,0 +1,624 @@
+diff --git a/crates/se_core/src/catalog.rs b/crates/se_core/src/catalog.rs
+index 2517170..843c623 100644
+--- a/crates/se_core/src/catalog.rs
++++ b/crates/se_core/src/catalog.rs
+@@ -394,14 +394,15 @@ impl Catalog {
+                 }
+             }
+         }
+-        for path in vfs.list_ext("catalogs/galaxies", "sc") {
++        // SE reads the galaxy csv before the .sc files, whose definitions then win the merge.
++        for path in vfs.list_ext("catalogs/galaxies", "csv") {
+             if let Ok(text) = vfs.read_string(&path) {
+-                cat.load_sc(&text, &path);
++                cat.load_galaxy_csv(&text, &path);
+             }
+         }
+-        for path in vfs.list_ext("catalogs/galaxies", "csv") {
++        for path in vfs.list_ext("catalogs/galaxies", "sc") {
+             if let Ok(text) = vfs.read_string(&path) {
+-                cat.load_galaxy_csv(&text, &path);
++                cat.load_sc(&text, &path);
+             }
+         }
+         for dir in ["catalogs/clusters", "catalogs/nebulae"] {
+@@ -476,6 +477,10 @@ impl Catalog {
+     /// it loses its names and position, which hides it everywhere.
+     fn remove_star(&mut self, name: &str) {
+         let Some(ObjectRef::Star(i)) = self.names.get(&key(name)).copied() else { return };
++        self.hide_star(i);
++    }
++
++    fn hide_star(&mut self, i: u32) {
+         let s = &mut self.stars[i as usize];
+         s.has_position = false;
+         s.parent = None;
+@@ -580,15 +585,43 @@ impl Catalog {
+             block: b.clone(),
+             names,
+         };
+-        match self.existing(&rec.names) {
++        // csv stars sharing any of its names ("Ran/EPS Eri", barycenter "Polaris"): SE merges
++        // duplicate stars by any shared name ("Merged stars"), the .sc definition winning. Not for
++        // generated systems, whose records are unloaded later.
++        let mut csv: Vec<u32> = Vec::new();
++        for n in rec.names.iter().filter(|_| source != crate::climate::PROCEDURAL_SOURCE) {
++            if let Some(&ObjectRef::Star(j)) = self.names.get(&key(n))
++                && self.stars[j as usize].source.ends_with(".csv")
++                && !csv.contains(&j)
++            {
++                csv.push(j);
++            }
++        }
++        let target = match self.existing(&rec.names) {
+             // A component star may share its barycenter's primary name ("Achernar" in
+             // both); that is a new object, not an override.
+-            Some(ObjectRef::Star(i)) if self.stars[i as usize].barycenter == rec.barycenter => {
++            Some(ObjectRef::Star(i)) if self.stars[i as usize].barycenter == rec.barycenter => Some(i),
++            _ => csv.first().copied(),
++        };
++        let mut rec = rec;
++        // The merged csv entries' other names (HIP/HD numbers) stay with it.
++        for &j in &csv {
++            for n in self.stars[j as usize].names.clone() {
++                if !rec.names.iter().any(|m| key(m) == key(&n)) {
++                    rec.names.push(n);
++                }
++            }
++            if Some(j) != target {
++                self.hide_star(j);
++            }
++        }
++        match target {
++            Some(i) => {
+                 let names = rec.names.clone();
+                 self.stars[i as usize] = rec;
+                 self.register(&names, ObjectRef::Star(i));
+             }
+-            _ => {
++            None => {
+                 let idx = self.stars.len() as u32;
+                 self.register(&rec.names, ObjectRef::Star(idx));
+                 self.stars.push(rec);
+@@ -671,6 +704,13 @@ impl Catalog {
+             .or_else(|| b.f64("RadSol").map(|r| r * SOLAR_RADIUS_KM))
+             .or_else(|| b.vec3("Dimensions").map(|d| (d[0] + d[1] + d[2]) / 6.0))
+             .unwrap_or(0.0);
++        let mut orbit = orbit_block(b);
++        // SE's per-type default RefPlane (FUN_140467c70, table 0x14067a718): a moon without one
++        // orbits in its parent's equator (Proteus), not the ecliptic.
++        let has_plane = [b.sub("Orbit"), b.sub("BinaryOrbit")].into_iter().flatten().any(|o| o.str("RefPlane").is_some());
++        if let (BodyTag::Moon, false, Some(o)) = (tag, has_plane, orbit.as_mut()) {
++            o.ref_plane = crate::orbit::RefPlane::ParentEquator;
++        }
+         let rec = BodyRecord {
+             tag,
+             parent: parent.to_string(),
+@@ -680,7 +720,7 @@ impl Catalog {
+             oblateness: b.f64("Oblateness").unwrap_or(0.0),
+             color: b.vec3("Color"),
+             albedo: b.f64_any(&["AlbedoGeom", "Albedo", "AlbedoBond"]).unwrap_or(0.3),
+-            orbit: orbit_block(b),
++            orbit,
+             rotation: RotationModel::from_body_block(b),
+             lock: crate::rotation::RotationLock::from_body_block(b),
+             source: source.to_string(),
+@@ -771,8 +811,27 @@ impl Catalog {
+         }
+     }
+ 
+-    fn push_galaxy(&mut self, rec: GalaxyRecord) {
+-        match self.existing(&rec.names) {
++    fn push_galaxy(&mut self, mut rec: GalaxyRecord) {
++        // An .sc galaxy replaces the csv row sharing any of its names ("NGC 7318A" is the csv's
++        // "NGC 7318-1/NGC 7318A"), keeping the row's other names, as SE's duplicate merge does.
++        let from_sc = !rec.source.ends_with(".csv");
++        let target = self.existing(&rec.names).filter(|r| matches!(r, ObjectRef::Galaxy(_))).or_else(|| {
++            rec.names.iter().filter(|_| from_sc).find_map(|n| match self.names.get(&key(n)) {
++                Some(&ObjectRef::Galaxy(j)) if self.galaxies[j as usize].source.ends_with(".csv") => Some(ObjectRef::Galaxy(j)),
++                _ => None,
++            })
++        });
++        if let Some(ObjectRef::Galaxy(i)) = target
++            && from_sc
++            && self.galaxies[i as usize].source.ends_with(".csv")
++        {
++            for n in self.galaxies[i as usize].names.clone() {
++                if !rec.names.iter().any(|m| key(m) == key(&n)) {
++                    rec.names.push(n);
++                }
++            }
++        }
++        match target {
+             Some(ObjectRef::Galaxy(i)) => {
+                 let names = rec.names.clone();
+                 self.galaxies[i as usize] = rec;
+@@ -1549,6 +1608,90 @@ Remove \"BET2 Cyg\"
+         assert!(c.find("HD 2").is_some());
+     }
+ 
++    #[test]
++    fn sc_stars_merge_csv_stars_by_any_name() {
++        let mut c = Catalog::new();
++        c.load_star_csv(
++            "Name,RA,Dec,Dist,AppMagn,SpecClass\n\
++             EPS Eri/HIP 16537/HD 22049,3.5,-9.4,3.2,3.7,K2V\n\
++             Polaris/ALF UMi/HIP 11767,2.5,89.2,133,2.0,F7I\n\
++             Vega/ALF Lyr/HIP 91262,18.6,38.8,7.7,0.0,A0V\n\
++             BET2 Cyg/HIP 95951,19.5,27.9,120,4.7,B8V\n\
++             Lone/HIP 5,1,2,10,5,G2V\n",
++            "stars.csv",
++        );
++        let n_csv = c.stars.len();
++        c.load_sc(
++            "Star \"Ran/EPS Eri\" { RA 3 32 55.8 Dec -9 27 29.7 Dist 3.2 Class \"K2V\" }\n\
++             StarBarycenter \"Polaris/Cynosura\" { RA 2 31 49 Dec 89 15 51 Dist 100 }\n\
++             Star \"Polaris Aa\" { ParentBody \"Polaris\" Class \"F7I\" MassSol 5.4 }\n\
++             Star \"Polaris B\" { ParentBody \"Polaris\" Class \"F3V\" MassSol 1.4 }\n\
++             Star \"Vega\" { RA 18 36 56 Dec 38 47 01 Dist 7.68 Class \"A0V\" AbsMagn 0.58 }\n\
++             RemoveStar \"BET2 Cyg\"\n\
++             StarBarycenter \"BET2 Cyg\" { RA 19.5 Dec 27.9 Dist 120 }\n\
++             Star \"BET2 Cyg A\" { ParentBody \"BET2 Cyg\" Class \"B8V\" }\n",
++            "s.sc",
++        );
++        c.finalize();
++        let star = |n: &str| match c.find(n) {
++            Some(ObjectRef::Star(i)) => &c.stars[i as usize],
++            _ => panic!("{n}"),
++        };
++        // Each .sc star takes its csv twin's slot and keeps its catalog numbers.
++        assert_eq!(star("HIP 16537").names[0], "Ran");
++        assert_eq!(star("EPS Eri").source, "s.sc");
++        assert!(star("Polaris").barycenter && star("HIP 11767").barycenter);
++        assert_eq!(star("Cynosura").names[0], "Polaris");
++        assert_eq!(star("ALF Lyr").names[0], "Vega");
++        assert!(star("BET2 Cyg").barycenter);
++        assert_eq!(c.system_members("Polaris").len(), 2);
++        // No csv star is left drawn under a name that now means a .sc star.
++        let drawn_csv = c.stars.iter().filter(|s| s.source.ends_with(".csv") && s.has_position).count();
++        assert_eq!(drawn_csv, 1, "{:?}", c.stars.iter().map(|s| (&s.names, &s.source, s.has_position)).collect::<Vec<_>>());
++        // Three merged in place, BET2 Cyg removed then redefined, plus Polaris' two and BET2 Cyg A.
++        assert_eq!(c.stars.len(), n_csv + 4);
++    }
++
++    #[test]
++    fn moons_default_to_the_parent_equator() {
++        use crate::orbit::RefPlane;
++        let mut c = Catalog::new();
++        c.load_sc(
++            "Moon \"Proteus\" { ParentBody \"Neptune\" Orbit { SemiMajorAxis 0.0007866 Inclination 0.524 } }\n\
++             Moon \"Moon\" { ParentBody \"Earth\" Orbit { RefPlane \"Ecliptic\" SemiMajorAxis 0.00257 } }\n\
++             DwarfMoon \"Small\" { ParentBody \"Neptune\" Orbit { SemiMajorAxis 0.001 } }\n\
++             Planet \"Neptune\" { ParentBody \"Sun\" Orbit { SemiMajorAxis 30.07 } }\n",
++            "s.sc",
++        );
++        let plane = |i: usize| c.bodies[i].orbit.as_ref().unwrap().ref_plane;
++        assert_eq!([plane(0), plane(1), plane(2), plane(3)], [RefPlane::ParentEquator, RefPlane::Ecliptic, RefPlane::Ecliptic, RefPlane::Ecliptic]);
++    }
++
++    #[test]
++    fn sc_galaxies_replace_csv_rows_by_any_name() {
++        let mut c = Catalog::new();
++        c.load_galaxy_csv(
++            "Name,Type,RA,Dec,Dist,AbsMagn,Radius\n\
++             NGC 7318-1/NGC 7318A/MCG 6-49-39,E2,22.6,33.97,86736569,-21,15140\n\
++             NGC 4079/UGC 7067,Sc,12.07,-2.38,87962960,-21,29427\n",
++            "NGC-IC.csv",
++        );
++        c.load_sc(
++            "Galaxy \"NGC 7318A/UGC 12099\" { Type \"E2\" RA 22.6 Dec 33.97 Dist 80.5e6 Radius 20000 }\n\
++             Galaxy \"NGC 4079\" { Type \"Sa\" RA 12.07 Dec -2.38 Dist 95.3e6 Radius 35000 }\n",
++            "Kexitt.sc",
++        );
++        assert_eq!(c.galaxies.len(), 2);
++        let gal = |n: &str| match c.find(n) {
++            Some(ObjectRef::Galaxy(i)) => &c.galaxies[i as usize],
++            _ => panic!("{n}"),
++        };
++        assert_eq!((gal("NGC 4079").kind.as_str(), gal("NGC 4079").radius_pc), ("Sa", 35000.0));
++        let a = gal("NGC 7318-1");
++        assert_eq!((a.names[0].as_str(), a.radius_pc), ("NGC 7318A", 20000.0));
++        assert!(a.names.iter().any(|n| n == "MCG 6-49-39"));
++    }
++
+     #[test]
+     fn binary_separation_is_split_by_mass() {
+         let au = crate::units::METERS_PER_AU;
+diff --git a/crates/se_core/src/orbit.rs b/crates/se_core/src/orbit.rs
+index 953316f..bee2fb1 100644
+--- a/crates/se_core/src/orbit.rs
++++ b/crates/se_core/src/orbit.rs
+@@ -150,7 +150,9 @@ impl KeplerOrbit {
+         }
+         let mu = G * parent_mass_kg;
+         if self.period <= 0.0 && self.semi_major_axis > 0.0 {
+-            self.period = TAU * (self.semi_major_axis.powi(3) / mu).sqrt();
++            // Parabolic: `a` holds q and Barker's equation runs on n = sqrt(mu / (2 q^3)).
++            let k = if (self.eccentricity - 1.0).abs() < 1e-9 { 2.0 } else { 1.0 };
++            self.period = TAU * (k * self.semi_major_axis.powi(3) / mu).sqrt();
+         } else if self.semi_major_axis <= 0.0 && self.period > 0.0 {
+             // Kepler's third law: a^3 = mu P^2 / (4 pi^2).
+             self.semi_major_axis = (mu * self.period * self.period / (TAU * TAU)).cbrt();
+@@ -401,4 +403,20 @@ mod tests {
+         o.resolve_period(crate::units::SOLAR_MASS_KG);
+         assert!((o.period / SECONDS_PER_YEAR - 1.0).abs() < 1e-3);
+     }
++
++    #[test]
++    fn parabolic_orbit_moves_at_escape_speed() {
++        let doc = sc::parse("Orbit { Eccentricity 1 PericenterDist 0.5 }");
++        let mut o = KeplerOrbit::from_block(doc.sub("Orbit").unwrap()).unwrap();
++        let m = crate::units::SOLAR_MASS_KG;
++        o.resolve_period(m);
++        for days in [0.0, 30.0, 400.0] {
++            let jd = crate::time::J2000 + days;
++            let h = 1e-3;
++            let r = o.position_at(jd);
++            let v = (o.position_at(jd + h) - o.position_at(jd - h)) / (2.0 * h * SECONDS_PER_DAY);
++            let escape = (2.0 * G * m / r.length()).sqrt();
++            assert!((v.length() / escape - 1.0).abs() < 1e-5, "{days}: {}", v.length() / escape);
++        }
++    }
+ }
+diff --git a/crates/se_core/src/rotation.rs b/crates/se_core/src/rotation.rs
+index 2f23d95..d1068e2 100644
+--- a/crates/se_core/src/rotation.rs
++++ b/crates/se_core/src/rotation.rs
+@@ -56,8 +56,8 @@ pub struct IauRotation {
+     pub pole_dec_rate: f64,
+     pub prime_meridian: f64,
+     pub rotation_rate: f64,
+-    /// (amplitude deg, phase deg, frequency deg/day) terms added to W.
+-    pub w_terms: Vec<[f64; 3]>,
++    /// (amplitude deg, phase deg, frequency deg/day, frequency rate deg/day^2) terms added to W.
++    pub w_terms: Vec<[f64; 4]>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq)]
+@@ -97,9 +97,10 @@ impl RotationModel {
+                     let mut w_terms = Vec::new();
+                     if let Some(t) = rb.sub("PeriodicTermsDiurnal") {
+                         let nums = t.anonymous_numbers();
+-                        // SE rows: amplitude, phase, frequency (+ optional extras); use triplets.
+-                        for c in nums.chunks_exact(3) {
+-                            w_terms.push([c[0], c[1], c[2]]);
++                        // SE rows (SolarSys.sc): PoleRA amp, PoleDec amp, PrimeMer amp, phase, freq,
++                        // freq_rate. Only the prime-meridian part is used.
++                        for c in nums.chunks_exact(6) {
++                            w_terms.push([c[2], c[3], c[4], c[5]]);
+                         }
+                     }
+                     return RotationModel::Iau(IauRotation {
+@@ -134,7 +135,7 @@ impl RotationModel {
+                 let dec = (r.pole_dec + r.pole_dec_rate * t).to_radians();
+                 let mut w = r.prime_meridian + r.rotation_rate * d;
+                 for term in &r.w_terms {
+-                    w += term[0] * (term[1] + term[2] * d).to_radians().sin();
++                    w += term[0] * (term[1] + term[2] * d + term[3] * d * d).to_radians().sin();
+                 }
+                 // Active rotation IAU body -> ICRF.
+                 let q_iau = DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2 + ra)
+@@ -192,6 +193,26 @@ mod tests {
+         assert!((q3 * DVec3::X).dot(q * DVec3::NEG_Z) > 0.999);
+     }
+ 
++    #[test]
++    fn diurnal_terms_read_six_column_rows() {
++        // Mercury's rows in SolarSys.sc.
++        let doc = sc::parse(
++            "Planet \"Mercury\" { RotationModel \"IAU\" { Epoch 2451545 PrimeMeridian 329.5469 RotationRate 6.1385025\n\
++             PeriodicTermsDiurnal {\n\
++             0, 0, +0.00993822, 174.791086,  4.092335, 0,\n\
++             0, 0, -0.00104581, 349.582171,  8.184670, 0,\n\
++             } } }",
++        );
++        let m = RotationModel::from_body_block(doc.get("Planet").unwrap().block().unwrap());
++        let RotationModel::Iau(r) = &m else { panic!() };
++        assert_eq!(r.w_terms, vec![[0.00993822, 174.791086, 4.092335, 0.0], [-0.00104581, 349.582171, 8.18467, 0.0]]);
++        // The terms move the meridian by hundredths of a degree, not hundreds.
++        let plain = RotationModel::Iau(IauRotation { w_terms: Vec::new(), ..r.clone() });
++        let jd = 2_460_000.5;
++        let cos = (m.orientation(jd) * DVec3::X).dot(plain.orientation(jd) * DVec3::X);
++        assert!(cos.acos().to_degrees() < 0.02, "{}", cos.acos().to_degrees());
++    }
++
+     #[test]
+     fn simple_model_zero_obliquity_pole_is_ecliptic_north() {
+         let doc = sc::parse("RotationPeriod 24\nObliquity 0\n");
+diff --git a/crates/se_core/src/sc.rs b/crates/se_core/src/sc.rs
+index c176447..4c38db7 100644
+--- a/crates/se_core/src/sc.rs
++++ b/crates/se_core/src/sc.rs
+@@ -587,8 +587,8 @@ Star	"Gliese 3618/GJ 3618"
+ 		Epoch 2451545
+ 		PeriodicTermsDiurnal
+ 		{
+-			1.0 2.0 3.0
+-			4e-1 -5 +6
++			0, 0, 1.0, 2.0, 3.0, 0,
++			0 0 4e-1 -5 +6 0
+ 		}
+ 	}
+ 	NoRings
+@@ -615,7 +615,7 @@ Galaxy "2MASX J1" { Type "E0" Dist 1.5e6 }
+         let rot = b.get("RotationModel").unwrap();
+         assert_eq!(rot.str(), Some("IAU"));
+         let terms = rot.block().unwrap().sub("PeriodicTermsDiurnal").unwrap();
+-        assert_eq!(terms.anonymous_numbers(), vec![1.0, 2.0, 3.0, 0.4, -5.0, 6.0]);
++        assert_eq!(terms.anonymous_numbers(), vec![0.0, 0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.4, -5.0, 6.0, 0.0]);
+         let gal = doc.get("Galaxy").unwrap();
+         assert_eq!(gal.name(), Some("2MASX J1"));
+         assert_eq!(gal.block().unwrap().f64("Dist"), Some(1.5e6));
+diff --git a/crates/se_core/src/se_script.rs b/crates/se_core/src/se_script.rs
+index b142a4f..401e356 100644
+--- a/crates/se_core/src/se_script.rs
++++ b/crates/se_core/src/se_script.rs
+@@ -435,29 +435,55 @@ pub fn parse(src: &str) -> Script {
+     b.finish()
+ }
+ 
+-/// `if { A < 7 }`: the `.sc` lexer drops comparison characters, so quote them.
++/// `if { A < 7 }`: the `.sc` lexer drops comparison characters, so quote them. The condition
++/// block may open on the line after the `if`/`elif` and span lines.
+ fn preprocess_conditions(src: &str) -> String {
+     let mut out = String::with_capacity(src.len() + 16);
++    // None outside a condition; Some(0) after `if`/`elif` before its `{`; Some(n) n braces deep.
++    let mut depth: Option<u32> = None;
+     for raw in src.split_inclusive('\n') {
+-        let t = raw.trim_start().to_ascii_lowercase();
+-        let is_cond = (t.starts_with("if") || t.starts_with("elif"))
+-            && t.trim_start_matches("elif").trim_start_matches("if").trim_start().starts_with('{');
+-        if !is_cond {
+-            out.push_str(raw);
+-            continue;
++        let mut i = 0;
++        if depth.is_none() {
++            let Some(k) = cond_keyword_len(raw) else {
++                out.push_str(raw);
++                continue;
++            };
++            out.push_str(&raw[..k]);
++            i = k;
++            depth = Some(0);
+         }
+         let b = raw.as_bytes();
+-        let mut i = 0;
++        let mut in_str = false;
+         while i < b.len() {
++            let Some(d) = depth else {
++                out.push_str(&raw[i..]);
++                break;
++            };
+             let c = b[i];
+-            let two = if i + 1 < b.len() { &raw[i..i + 2] } else { "" };
+-            if matches!(two, "<=" | ">=" | "==" | "!=") {
+-                out.push_str(&format!(" \"{two}\" "));
++            // Bytes, not `&raw[i..i + 2]`: that panics when a multi-byte character follows.
++            let two = b.get(i..i + 2).unwrap_or(&[]);
++            if !in_str && two == b"//" {
++                out.push_str(&raw[i..]);
++                break;
++            }
++            if d == 0 && !c.is_ascii_whitespace() && c != b'{' {
++                // No condition block follows.
++                depth = None;
++                continue;
++            }
++            if !in_str && matches!(two, b"<=" | b">=" | b"==" | b"!=") {
++                out.push_str(&format!(" \"{}{}\" ", two[0] as char, two[1] as char));
+                 i += 2;
+-            } else if matches!(c, b'<' | b'>' | b'=') {
++            } else if !in_str && matches!(c, b'<' | b'>' | b'=') {
+                 out.push_str(&format!(" \"{}\" ", c as char));
+                 i += 1;
+             } else {
++                match c {
++                    b'"' => in_str = !in_str,
++                    b'{' if !in_str => depth = Some(d + 1),
++                    b'}' if !in_str => depth = (d > 1).then(|| d - 1),
++                    _ => {}
++                }
+                 // Copy whole UTF-8 characters.
+                 let ch = raw[i..].chars().next().unwrap_or(' ');
+                 out.push(ch);
+@@ -468,6 +494,14 @@ fn preprocess_conditions(src: &str) -> String {
+     out
+ }
+ 
++/// Length up to the end of a leading `if`/`elif` keyword when the line starts a condition.
++fn cond_keyword_len(line: &str) -> Option<usize> {
++    let t = line.trim_start();
++    let k = ["elif", "if"].into_iter().find(|k| t.get(..k.len()).is_some_and(|p| p.eq_ignore_ascii_case(k)))?.len();
++    let rest = t[k..].trim_start();
++    (rest.is_empty() || rest.starts_with('{') || rest.starts_with("//")).then_some(line.len() - t.len() + k)
++}
++
+ #[derive(Default)]
+ struct Builder {
+     ops: Vec<Command>,
+@@ -597,12 +631,27 @@ impl Builder {
+     }
+ 
+     fn finish(mut self) -> Script {
++        // Open jump targets point past the last command (the script ends there), not at 0,
++        // which would restart the script forever.
++        let end = self.ops.len();
+         for f in std::mem::take(&mut self.ifs) {
+             self.warnings.push(format!("line {}: if without endif", f.line));
++            if let Some(p) = f.pending {
++                self.set_on_false(p, end);
++            }
++            for j in f.jumps {
++                self.ops[j].op = Op::Jump(end);
++            }
+         }
+         for f in std::mem::take(&mut self.loops) {
+             let line = self.ops[f.start].line;
+             self.warnings.push(format!("line {line}: loop without endloop"));
++            if let Op::Loop { end: e, .. } = &mut self.ops[f.start].op {
++                *e = end;
++            }
++            for b in f.breaks {
++                self.ops[b].op = Op::Break { end };
++            }
+         }
+         Script { commands: self.ops, warnings: self.warnings }
+     }
+@@ -1444,6 +1493,39 @@ WaitTrigger "Time" { Mode "Later" Time "2016.11.15 21:00:00" }
+         assert_eq!(s.warnings.len(), 1);
+         let s = parse("endif\n");
+         assert_eq!(s.warnings.len(), 1);
++        // Open targets end the script instead of jumping back to the top.
++        let s = parse("if { A == 1 }\nWait 1\nelif { A > 5 }\nWait 2\nelse\nWait 3\n");
++        assert!(s.commands.iter().all(|c| match c.op {
++            Op::If { on_false, .. } | Op::Elif { on_false, .. } => on_false > 0,
++            Op::Jump(t) => t > 0,
++            _ => true,
++        }));
++        assert_eq!(s.commands[2].op, Op::Jump(s.commands.len()));
++        let s = parse("loop 3\nWait 1\nbreak\n");
++        assert_eq!(s.warnings.len(), 1);
++        assert_eq!(s.commands[0].op, Op::Loop { count: Some(3), end: 3 });
++        assert_eq!(s.commands[2].op, Op::Break { end: 3 });
++    }
++
++    #[test]
++    fn conditions_with_non_ascii_comments() {
++        let s = parse("if { LessonPassed < 0 } // урок\nWait 1\nendif\nif { T > 5 } // 5 °C\nendif\n");
++        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
++        let Op::If { cond, .. } = &s.commands[0].op else { panic!() };
++        assert_eq!(cond.op, CmpOp::Lt);
++        let Op::If { cond, .. } = &s.commands[3].op else { panic!() };
++        assert_eq!(cond.op, CmpOp::Gt);
++    }
++
++    #[test]
++    fn multi_line_conditions() {
++        let s = parse("if\n{\n\tVar < 7\n}\nWait 1\nelif\n{ Var >= 9 }\nWait 2\nendif\nWait 3 // x < y\n");
++        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
++        let Op::If { cond, on_false } = &s.commands[0].op else { panic!("{:?}", s.commands[0]) };
++        assert_eq!((cond.var.as_str(), cond.op, *on_false), ("Var", CmpOp::Lt, 3));
++        let Op::Elif { cond, .. } = &s.commands[3].op else { panic!("{:?}", s.commands[3]) };
++        assert_eq!((cond.var.as_str(), cond.op), ("Var", CmpOp::Ge));
++        assert_eq!(s.commands.len(), 7);
+     }
+ 
+     #[test]
+diff --git a/crates/se_engine/src/aurora.rs b/crates/se_engine/src/aurora.rs
+index 293e5c6..d3f69e7 100644
+--- a/crates/se_engine/src/aurora.rs
++++ b/crates/se_engine/src/aurora.rs
+@@ -227,10 +227,11 @@ pub fn oval_particles(o: &SeOval, seed: &mut u32) -> (Vec<[f32; 3]>, Vec<[f32; 4
+     for r in 0..rings {
+         let ang = (rings - 1) as f32 * delta * 0.5 + theta0 - r as f32 * delta;
+         let s = ang.cos();
+-        let mut nr = (s / c0 * n as f32 / rings as f32) as i32;
+-        if r == rings - 1 {
+-            nr = n - verts / 4;
+-        }
++        // An oval of radius 0 (no NorthRadius/SouthRadius) has c0 <= 0: share the particles evenly
++        // rather than by a ratio that runs to billions. No ring takes more than is left.
++        let mut nr = if c0 > 0.0 && (s / c0).is_finite() { (s / c0 * n as f32 / rings as f32) as i32 } else { n / rings };
++        let left = n - verts / 4;
++        nr = if r == rings - 1 { left } else { nr.clamp(0, left.max(0)) };
+         let mut phi = lcg(seed) as f32 * std::f32::consts::TAU * 2.328_306_4e-10;
+         let dphi = (rings as f64 * TAU / nr as f64) as f32;
+         let lo = (lcg(seed) % 255) as f32 / 255.0;
+@@ -481,6 +482,18 @@ mod tests {
+         assert_eq!(data[..4].iter().map(|d| (d[3] * 255.0).round() as u32).collect::<Vec<_>>(), [0, 64, 128, 192]);
+     }
+ 
++    #[test]
++    fn ovals_without_a_radius_keep_the_particle_budget() {
++        // An add-on Aurora block with Width but no NorthRadius: radius 0 (c0 just below 0 in f32),
++        // and one with a radius under half its width.
++        for radius in [0.0, 0.01] {
++            let o = SeOval { radius, width: 0.1, rings: 4, particles: 1000, ..SeOval::from_catalog(&earth_north(), 6438.0, 6378.0, bulk::TERRA, &mut 7) };
++            let (pos, data) = oval_particles(&o, &mut 7);
++            assert_eq!((pos.len(), data.len()), (4000, 4000), "radius {radius}");
++            assert!(pos.iter().flatten().all(|v| v.is_finite()));
++        }
++    }
++
+     #[test]
+     fn small_ovals_are_hidden() {
+         let o = SeOval::from_catalog(&earth_north(), 6438.0, 6378.0, bulk::TERRA, &mut 7);
+diff --git a/crates/se_engine/src/blackholes.rs b/crates/se_engine/src/blackholes.rs
+index a133b79..1b02dc8 100644
+--- a/crates/se_engine/src/blackholes.rs
++++ b/crates/se_engine/src/blackholes.rs
+@@ -613,6 +613,13 @@ fn disk_uniform(u: &mut HoleUniform, dk: &DiskParams, info: &BhInfo, set: &Black
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
++/// Catalog distance, pc, past which a hole's lens region (far away ~`REGION_PER_SPHERE` x sphere /
++/// distance radians) is under `MIN_REGION_PX` pixels of `px_ang` radians, with 10% slack: a cheap
++/// cut before the ephemeris (M87*: ~60 pc at a 45 deg FOV).
++fn lens_cutoff_pc(sphere_km: f64, px_ang: f64) -> f64 {
++    1.1 * REGION_PER_SPHERE * sphere_km * 1e3 / (MIN_REGION_PX * px_ang * se_core::units::METERS_PER_PC)
++}
++
+ fn update_lens(
+     mut commands: Commands,
+     data: Res<SeData>,
+@@ -663,7 +670,7 @@ fn update_lens(
+     let mut nearest_m = f64::INFINITY;
+     let mut want_env = false;
+     for info in &list.list {
+-        if info.has_pos && info.pos_pc.distance(cam_pc) > 2.0 {
++        if info.has_pos && info.pos_pc.distance(cam_pc) > lens_cutoff_pc(info.sphere_km, px_ang) {
+             continue;
+         }
+         let obj = ObjectRef::Star(info.star);
+@@ -1118,6 +1125,22 @@ mod tests {
+         assert!((render_sphere_km(Remnant::BlackHole, 29.5, 29.5, 100.0, None, Some(&d)) - 1.0e5).abs() < 1e-6);
+     }
+ 
++    #[test]
++    fn lens_cutoff_follows_screen_size() {
++        // M87* (6.5e9 solar masses) at a 45 deg FOV, 720 px high: still lensed well past 2 pc.
++        let rg = RS_PER_MSUN_KM * 6.5e9;
++        let sphere_km = render_sphere_km(params::Remnant::BlackHole, rg, rg, 100.0, None, None);
++        let px_ang = 2.0 * 22.5f64.to_radians().tan() / 720.0;
++        let cut = lens_cutoff_pc(sphere_km, px_ang);
++        assert!(cut > 30.0 && cut < 100.0, "{cut}");
++        // Just inside the cut (less the slack) the region is the MIN_REGION_PX limit.
++        let d = cut / 1.1 * se_core::units::METERS_PER_PC * 1e-3;
++        let region = REGION_PER_SPHERE * (sphere_km / d).asin();
++        assert!((region / (MIN_REGION_PX * px_ang) - 1.0).abs() < 1e-6);
++        // A stellar hole's cut is far below a parsec.
++        assert!(lens_cutoff_pc(100.0 * RS_PER_MSUN_KM * 10.0, px_ang) < 1e-3);
++    }
++
+     #[test]
+     fn star_surface_params() {
+         // SE's equator speed formula comes out tiny even for a millisecond pulsar.
+diff --git a/crates/se_engine/src/data.rs b/crates/se_engine/src/data.rs
+index 8163ae1..fa05406 100644
+--- a/crates/se_engine/src/data.rs
++++ b/crates/se_engine/src/data.rs
+@@ -50,7 +50,8 @@ pub fn write_user_places(cfg: &EngineConfig, places: &[se_core::places::Place])
+         std::fs::create_dir_all(dir)?;
+     }
+     let user: Vec<se_core::places::Place> = places.iter().filter(|p| p.user).cloned().collect();
+-    std::fs::write(&path, se_core::places::write_places(&user))
++    // Temp file and rename, so a crash mid-write cannot leave the user's places empty.
++    crate::settings::write_atomic(&path, &se_core::places::write_places(&user))
+ }
+ 
+ pub struct DataPlugin;
+diff --git a/docs/blackholes.md b/docs/blackholes.md
+index c57b2e5..bcace71 100644
+--- a/docs/blackholes.md
++++ b/docs/blackholes.md
+@@ -77,7 +77,9 @@ environment map (`Skybox()`).
+   at the inner edge around one solar mass. Config keys read from main-def.cfg:
+   hdrAccretionDiskBright, hdrAccretionJetBright, BlackHoleWarpRadius, WarpPrecision,
+   EnvmapDimensions.
+-* Objects closer than 2 pc (catalog position) are tested every frame; one is lensed when 1.45 x its
++* Objects are tested every frame unless their catalog position is beyond the distance where that
++  region would be under 1.5 px (plus 10%; M87* lasts to ~60 pc at a 45 deg FOV); this replaced a
++  fixed 2 pc cut that dropped M87* while it still covered ~45 px. One is lensed when 1.45 x its
+   render sphere's angular radius (SE draws the GR impostor over that sphere; nothing changes
+   outside it) is >= 1.5 px, and the camera is outside the horizon (1.5 Rg) or the star. Up to 4,
+   largest on screen first. With none in range the `BlackHoleLens` component is removed and the

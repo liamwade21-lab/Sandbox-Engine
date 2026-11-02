@@ -150,7 +150,9 @@ impl KeplerOrbit {
         }
         let mu = G * parent_mass_kg;
         if self.period <= 0.0 && self.semi_major_axis > 0.0 {
-            self.period = TAU * (self.semi_major_axis.powi(3) / mu).sqrt();
+            // Parabolic: `a` holds q and Barker's equation runs on n = sqrt(mu / (2 q^3)).
+            let k = if (self.eccentricity - 1.0).abs() < 1e-9 { 2.0 } else { 1.0 };
+            self.period = TAU * (k * self.semi_major_axis.powi(3) / mu).sqrt();
         } else if self.semi_major_axis <= 0.0 && self.period > 0.0 {
             // Kepler's third law: a^3 = mu P^2 / (4 pi^2).
             self.semi_major_axis = (mu * self.period * self.period / (TAU * TAU)).cbrt();
@@ -400,5 +402,21 @@ mod tests {
         };
         o.resolve_period(crate::units::SOLAR_MASS_KG);
         assert!((o.period / SECONDS_PER_YEAR - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn parabolic_orbit_moves_at_escape_speed() {
+        let doc = sc::parse("Orbit { Eccentricity 1 PericenterDist 0.5 }");
+        let mut o = KeplerOrbit::from_block(doc.sub("Orbit").unwrap()).unwrap();
+        let m = crate::units::SOLAR_MASS_KG;
+        o.resolve_period(m);
+        for days in [0.0, 30.0, 400.0] {
+            let jd = crate::time::J2000 + days;
+            let h = 1e-3;
+            let r = o.position_at(jd);
+            let v = (o.position_at(jd + h) - o.position_at(jd - h)) / (2.0 * h * SECONDS_PER_DAY);
+            let escape = (2.0 * G * m / r.length()).sqrt();
+            assert!((v.length() / escape - 1.0).abs() < 1e-5, "{days}: {}", v.length() / escape);
+        }
     }
 }
