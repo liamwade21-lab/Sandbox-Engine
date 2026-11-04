@@ -18,7 +18,8 @@ struct SimUniform {
     // x, y: the seed pattern's slice (mod 4096) and how far into it, z: the output's interpolation
     // from the previous state to the current one, w: 1 to use the cells (0: the derived weather alone).
     seed: vec4<f32>,
-    // x: the effects' clock (s), y, z: the heights flashes are between (m above the radius), w: 1 on.
+    // x: the effects' clock (s), y, z: the heights flashes are between (m above the radius), w: 1 on,
+    // 2 on over a gas giant (`giant_storm`).
     flash: vec4<f32>,
     // xyz: towards the camera (sphere space, unit), w: the angle around it near flashes are looked
     // for in (rad).
@@ -34,12 +35,14 @@ struct SimUniform {
 @group(0) @binding(4) var smp: sampler;
 @group(0) @binding(5) var state_out: texture_storage_2d_array<rgba16float, write>;
 @group(0) @binding(6) var weather_out: texture_storage_2d_array<rgba8unorm, write>;
-// R fog, G dust.
+// R fog, G dust, B the storms' activity (as `sim_out` shapes it).
 @group(0) @binding(7) var fx_out: texture_storage_2d_array<rgba8unorm, write>;
 // The weather cube (as sim_out wrote it) and the flashes: xyz where (sphere space, m from the
 // centre), w how bright now (0: none).
 @group(0) @binding(8) var weather_in: texture_cube<f32>;
 @group(0) @binding(9) var<storage, read_write> flashes: array<vec4<f32>, 8>;
+// The fog, dust and storms cube (as sim_out wrote it).
+@group(0) @binding(10) var fx_in: texture_cube<f32>;
 
 const PI: f32 = 3.14159265358979;
 // se_core weather.rs `WIND_RANGE` (m/s).
@@ -206,8 +209,17 @@ fn sim_out(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(weather_out, vec2<i32>(id.xy), i32(id.z), clamp(w, vec4<f32>(0.0), vec4<f32>(1.0)));
     // Storms clear the fog; their outflows lift dust on dry worlds.
     let dry = 1.0 - su.maps.z;
-    let fx = vec4<f32>(dw.fx.x * (1.0 - c), dw.fx.y + 0.5 * c * dry * dry, 0.0, 0.0);
+    let fx = vec4<f32>(dw.fx.x * (1.0 - c), dw.fx.y + 0.5 * c * dry * dry, c, 0.0);
     textureStore(fx_out, vec2<i32>(id.xy), i32(id.z), clamp(fx, vec4<f32>(0.0), vec4<f32>(1.0)));
+}
+
+// A gas giant's storm activity at d for its lightning (it has no weather maps: SE's bands and storms
+// are its own): scattered storm cells in its deep water clouds, a 400th of its radius across (Jupiter's
+// about 180 km), changing over ten minutes of the effects' clock.
+fn giant_storm(d: vec3<f32>) -> f32 {
+    let t = su.flash.x / 600.0;
+    let k = floor(t);
+    return smoothstep(0.68, 0.9, sliced(d, 400.0, k, t - k, body_seed() ^ 0x6a11u));
 }
 
 // A random direction (h: three uniforms).
@@ -232,8 +244,12 @@ fn hash1(a: u32, b: u32) -> f32 {
 }
 
 // The flashes: each slot has its own rhythm (a flash every 1.5 to 5 s of the effects' clock, three
-// strokes within a quarter second), and at each flash a new place: the most convective of 32 tries,
-// half near the camera, half anywhere; none where storms are weak.
+// strokes within a quarter second, each fading over 50 ms: at 30 ms a frame mostly caught a stroke
+// nearly gone), and at each flash a new place: the most active storm of 32
+// tries, near the camera for six slots, anywhere for the other two; none where storms are weak, the
+// stronger the more often. (The best of 32 tries, half near and half anywhere, was nearly always on
+// the afternoon side, where storms are strongest; and the weather's convection, which the test once
+// read, is low at night even in a storm: no lightning near the camera at night.)
 @compute @workgroup_size(8, 1, 1)
 fn sim_flash(@builtin(local_invocation_id) id: vec3<u32>) {
     let k = id.x;
@@ -248,7 +264,7 @@ fn sim_flash(@builtin(local_invocation_id) id: vec3<u32>) {
     var bright = 0.0;
     for (var j = 0u; j < 3u; j++) {
         let at = f32(j) * mix(0.05, 0.12, hash1(k * 7u + j, epoch));
-        bright += select(0.0, exp(-(t - at) / 0.03) * mix(0.4, 1.0, hash1(k * 11u + j, epoch + 1u)), t >= at);
+        bright += select(0.0, exp(-(t - at) / 0.05) * mix(0.4, 1.0, hash1(k * 11u + j, epoch + 1u)), t >= at);
     }
     if bright < 1e-3 {
         flashes[k] = vec4<f32>(0.0);
@@ -256,18 +272,19 @@ fn sim_flash(@builtin(local_invocation_id) id: vec3<u32>) {
     }
     var best = vec3<f32>(0.0, 1.0, 0.0);
     var conv = 0.0;
+    let near = k < 6u;
     for (var i = 0u; i < 32u; i++) {
         let s = epoch * 64u + i;
         let h = vec3<f32>(hash1(k * 101u + i, s), hash1(k * 103u + i, s), hash1(k * 107u + i, s));
-        let d = select(rand_dir(h), rand_near(su.cam.xyz, su.cam.w, h), i < 16u);
-        let c = textureSampleLevel(weather_in, smp, d, 0.0).b;
+        let d = select(rand_dir(h), rand_near(su.cam.xyz, su.cam.w, h), near);
+        let c = select(textureSampleLevel(fx_in, smp, d, 0.0).b, giant_storm(d), su.flash.w > 1.5);
         if c > conv {
             conv = c;
             best = d;
         }
     }
     // Only real storms flash, the stronger the more often.
-    if conv < 0.3 || hash1(k, epoch + 7u) > (conv - 0.2) * 2.0 {
+    if conv < 0.15 || hash1(k, epoch + 7u) > (conv - 0.08) * 2.0 {
         flashes[k] = vec4<f32>(0.0);
         return;
     }

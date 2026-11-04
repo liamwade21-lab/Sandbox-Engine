@@ -59,7 +59,8 @@ from it, never its code, shaders or textures.
 - Test runs: `bash .audit/tools/runport.sh OUT.png FRAMES "cmds"` (one run at a time). Useful
   dev commands: `select NAME`, `surface LAT LON ALT_KM PITCH`, `agl M` (hold M metres above
   the ground), `fly KMS`, `spin DEG` (turn in place), `orbit DEG` (swing round the selection, as the
-  right mouse button does; degrees a second), `shot FILE`, `wait N`, `date`, `pause`. A 1x1 screenshot
+  right mouse button does; degrees a second), `photo 0|1|2` (photo mode: 2 is auto exposure), `ambient X` (SE's
+  ambient light), `shot FILE`, `wait N`, `date`, `pause`. A 1x1 screenshot
   (72 bytes) means the window was minimised at that moment: take each picture twice.
 - The user's own `se.log` and `settings.cfg` (in `%APPDATA%\SpaceEngine-rs-v2`) can be hidden
   from Claude's shell by the desktop app's sandbox (they were readable on 2026-11-02); if so, copy
@@ -148,6 +149,23 @@ from it, never its code, shaders or textures.
   Once only a lowest layer under 15 km above the radius was cumulus: dry worlds with 20 km of relief
   (the ground's middle 10 km up) then got veils alone (the user: "procedural planets are missing the
   detail"). Earth's middle is 0.
+- The far trace's steps grow with the distance from the camera (`step_rate`: q t, q bisected so the
+  steps cover the ray's pieces of the shell), and a sample's footprint is at least a quarter of its own
+  step. With even steps (path / MAX_STEPS) a ray skimming a layer from inside it (150-300 km) had km-long
+  steps next to the camera: the heaps there became the layer's mean, a flat band over the far heaps'
+  tops that zooming in magnified (the user's 2026-11-04 video, a 10 degree view). The near pass keeps
+  even steps.
+- Night light: the clouds take the further lights as the ground does (`BodyLighting::extra`: other
+  stars and planet shine; `CloudView::extra_dir` / `extra_light`, `night_light` in the shader, no light
+  march of their own; their haze too) and SE's `AmbientLighting` (`sun_light.w`; the flat shells take
+  it as well). The sun's light march is skipped where the sun has set (`tw_l` 0). Without these the
+  night side's clouds were black over a moonlit ground. Test with `photo 2` (auto exposure, as the user
+  plays) and Earth under a full moon (2026-11-24 14:53, 20 N 137 E is midnight under it).
+- Lightning (`weather_sim.wesl` `sim_flash`): 6 of the 8 slots look for storms only around the camera
+  (300 km or its height), 2 anywhere, each the most active storm of its 32 tries by the storms' own
+  activity (the fx cube's B, written by `sim_out`), not the weather's convection (low at night even in
+  a storm). The derived weather has convection at night (se_core weather.rs: half the afternoon's at
+  midnight). Before, no flash ever went near a camera on the night side.
 - Cloud shapes (the clouds plan's step 5): cumuliform layers are fields of heaps (`layer_density`,
   `heaps`): the shape noise, spread evenly over 0..1 by a logistic fitted to its distribution (about
   0.833 +- 0.041: se_core `cargo test -p se_core print_shape_quantiles -- --ignored --nocapture`; change
@@ -179,9 +197,19 @@ from it, never its code, shaders or textures.
 - SE's gas giant cloud generator lives in `gas_giant.wesl` (noise primitives, `gg_height`,
   `gas_giant_cloud`), shared by `planet.wesl`, `brown_dwarf.wesl` and the volumetric giant decks.
   Change it there and check flat Jupiter stays identical (it was pixel-checked when split out).
-- Gas giants' volumetric decks (step 8, in progress) only draw with `SE_GIANT_DECKS=1`; by default
-  giants keep SE's flat bands. The camera cannot yet go below a giant's cloud-top radius
-  (`terrain.rs` `keep_camera_above_ground` pushes it back out).
+- Gas giants' volumetric decks (`giant_specs`, `giant_sample`; on by default, `SE_GIANT_DECKS=0` off)
+  fade in within 6 scale heights of the cloud tops and must match SE's flat bands there: a deck point's
+  light counts the cloud above it from the main deck's own top there (`giant_sample` puts that column in
+  the sample's `wx.x`), never the deck's mean top (that made belts five times too dark); they take the
+  atmosphere's haze down to the radius (the tables' ground) like the ground; a catalog giant's colours
+  come from its own colour tiles (`compose_face` with a tint, cover kind 5 with `kind.y` 1), else SE's
+  generator. The rings shade every body's clouds (`ring_shadow`, in the body frame: in sphere space a
+  flattened giant's shadow fell in the wrong places) and SE's rings winter fades a giant's deck. The
+  camera may go down to 10 scale heights under a giant's radius while the passes work on it
+  (`giant_floor_m`, terrain.rs `keep_camera_above_ground`). Giant lightning: `sim_flash` with
+  `flash.w` 2 (`giant_storm` cells, flashes about the main deck's base). Compare with `SE_GIANT_DECKS=0`
+  and `photo 0` (fixed exposure); find a giant's day side first (look down from 3,000 km at four
+  longitudes).
 - The clouds' weather makes the user's planet 2 spot (25.46 N, -48.19) clear: it lies in a dry
   subtropical belt. Cloudy test spots change with the date; check orbit pictures first to find one.
 - Reaching the user's RSN planets by dev commands (`.optimize/bench/rsn_ultra.sh`) needs the

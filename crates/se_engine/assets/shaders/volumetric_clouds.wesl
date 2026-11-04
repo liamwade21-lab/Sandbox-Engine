@@ -56,7 +56,7 @@ struct CloudView {
     layer_c: array<vec4<f32>, 4>,
     // xyz: towards the star (world), w: 1 when lit.
     sun_dir: vec4<f32>,
-    // rgb: the star's light above the atmosphere, in the tables' scale.
+    // rgb: the star's light above the atmosphere, in the tables' scale; w SE's AmbientLighting, in it.
     sun_light: vec4<f32>,
     // x: 1 when drawn, y: shape noise frequency (1/m), z: detail noise frequency (1/m), w: divisor.
     params: vec4<f32>,
@@ -86,6 +86,15 @@ struct CloudView {
     // The far cross-fade (volumetric_clouds.rs, 40 to 60 radii): x the clouds' share (the flat shells
     // draw the rest), y the weather in the air's; z, w the near pass's range and divisor.
     lod: vec4<f32>,
+    // The further lights (other stars, the planets' and moons' shine), which light the night side: xyz
+    // towards each (world), w 1 when used; rgb their light above the atmosphere, in the tables' scale.
+    extra_dir: array<vec4<f32>, 3>,
+    extra_light: array<vec4<f32>, 3>,
+    // The body's rings (their shadow): x inner, y outer radius (radii), z opacity, w 0 none, 0.5
+    // untextured, 1 textured; ring_frame xyz the body's semi-axes over its radius (sphere space to the
+    // body frame, the rings in its equator), w SE's rings winter.
+    ring: vec4<f32>,
+    ring_frame: vec4<f32>,
     // Each layer's detail cover patches (volumetric_clouds/detail.rs, DETAIL_LEVELS a layer, finest
     // first): xyz the centre in the layer's frame, w the tangent of the half-width (0: none).
     detail: array<vec4<f32>, 12>,
@@ -172,6 +181,8 @@ struct LightGen {
 @group(0) @binding(28) var light_tex: texture_3d<f32>;
 @group(0) @binding(29) var<uniform> lv: LightFrame;
 @group(0) @binding(30) var<uniform> lgen: LightGen;
+// The body's rings' texture (its alpha their density), for their shadow (`ring_shadow`).
+@group(0) @binding(31) var ring_tex: texture_2d<f32>;
 // The detail cover patches, a layer each (R: the cover after SE's 5% cut).
 @group(0) @binding(19) var detail_cover: texture_2d_array<f32>;
 // The cover map's passes.
@@ -240,7 +251,13 @@ fn cover_gen(in: FullscreenVertexOutput) -> CoverOut {
     let texel = 1.0 / cover_face.y;
     out.pattern = vec4<f32>(weather_pattern(normalize(face_dir(face, in.uv.x, in.uv.y)), 0.5 * PI * texel), 0.0, 0.0, 1.0);
     // A gas giant (its main deck, kind 5): SE's band colour (rgb, as its square root) and cloud height
-    // (a, a third of it), one sample a texel (the generator is costly and its bands smooth).
+    // (a, a third of it), one sample a texel (the generator is costly and its bands smooth); a catalog
+    // giant's own colour map instead (volumetric_clouds.rs `compose_face`: rgb the same, a its height
+    // from its brightness), as its flat surface draws it.
+    if i32(cg.layers[0].kind.x + 0.5) == 5 && cg.layers[0].kind.y > 0.5 {
+        out.cover = textureSampleLevel(mapped_tex, clamp_smp, in.uv, face, 0.0);
+        return out;
+    }
     if i32(cg.layers[0].kind.x + 0.5) == 5 {
         let gc = gas_giant_cloud(normalize(face_dir(face, in.uv.x, in.uv.y)), GiantParams(cg.giant_palette, cg.giant));
         out.cover = vec4<f32>(sqrt(gc.rgb), clamp(gc.a / 3.0, 0.0, 1.0));
@@ -828,28 +845,45 @@ struct Sample {
 
 // A gas giant's decks at x (layers: 0 the main deck, 1 the haze, 2 the deep deck): the main deck in
 // SE's band colours, its top following SE's cloud height (zones above belts) and billowing, opaque
-// below; the haze a thin veil; the deep deck dark and opaque.
+// below; the haze a thin veil; the deep deck dark and opaque. For a giant the sample's `wx.x` holds
+// the decks' optical depth straight up from x (the main deck's from its own top there).
 fn giant_sample(x: vec3<f32>, h: f32, fp: f32) -> Sample {
     var s: Sample;
     s.layer = 0;
     s.sigma = 0.0;
     s.albedo = vec3<f32>(1.0);
+    s.wx = vec4<f32>(0.0);
     let fade = cv.giant.y;
     let a0 = cv.layer_a[0];
     var main = 0.0;
-    if h < a0.y && h > a0.x {
+    var above = 0.0;
+    if h < a0.y {
         let lod = clamp(log2(max(fp / cv.atm_flags.z, 1e-6)), 0.0, 11.0);
         let gc = textureSampleLevel(cover_tex, clamp_smp, x, lod);
         var top = a0.x + (a0.y - a0.x) * (0.45 + 0.55 * gc.a);
         let far = smoothstep(0.3, 1.5, fp * cv.params.y);
-        if far < 1.0 {
+        if far < 1.0 && h > a0.x {
             let n = textureSampleLevel(shape_tex, repeat_smp, fract((x - cv.noise_off.xyz) * cv.params.y), lod_for(fp, cv.params.y, 128.0));
             let fbm = n.g * 0.625 + n.b * 0.25 + n.a * 0.125;
             top -= (a0.y - a0.x) * 0.12 * (1.0 - far) * (1.0 - fbm) * a0.w;
         }
-        let hf = (h - a0.x) / max(top - a0.x, 1.0);
-        main = cv.layer_b[0].z * smoothstep(1.0, 0.92, hf) * smoothstep(0.0, 0.05, hf);
-        s.albedo = gc.rgb * gc.rgb;
+        // (Above the deck's own top here, not its mean: a belt's tops lie below the mean, and were
+        // shaded as if under 10 km of cloud, five times too dark and reddened.)
+        above = cv.layer_b[0].z * max(top - 0.04 * (top - a0.x) - max(h, a0.x), 0.0);
+        if h > a0.x {
+            let hf = (h - a0.x) / max(top - a0.x, 1.0);
+            main = cv.layer_b[0].z * smoothstep(1.0, 0.92, hf) * smoothstep(0.0, 0.05, hf);
+            s.albedo = gc.rgb * gc.rgb;
+            // SE's rings winter (planet.wesl, as the flat bands): the hemisphere the rings shade fades by
+            // the tangent of the star's height over the ring plane.
+            if cv.ring_frame.w > 0.0 {
+                let ly = normalize((cv.sphere_from_world * vec4<f32>(cv.sun_dir.xyz, 0.0)).xyz * cv.ring_frame.xyz).y;
+                let py = normalize(x * cv.ring_frame.xyz).y;
+                let cos_phi = min(abs(ly), 0.9999);
+                let lt = smoothstep(0.0, 0.6, abs(py)) * step(ly * py, 0.0);
+                s.albedo *= 1.0 - lt * clamp(cos_phi / sqrt(1.0 - cos_phi * cos_phi) * cv.ring_frame.w, 0.0, 1.0);
+            }
+        }
     }
     let a1 = cv.layer_a[1];
     var haze = 0.0;
@@ -866,19 +900,9 @@ fn giant_sample(x: vec3<f32>, h: f32, fp: f32) -> Sample {
         s.albedo = (s.albedo * main + cv.layer_c[1].rgb * haze + cv.layer_c[2].rgb * deep) * fade / s.sigma;
         s.layer = select(select(2, 1, haze > deep), 0, main >= max(haze, deep));
     }
+    above += cv.layer_b[1].z * a1.z * max(a1.y - max(h, a1.x), 0.0) + cv.layer_b[2].z * max(a2.y - max(h, a2.x), 0.0);
+    s.wx.x = above * fade;
     return s;
-}
-
-// A gas giant's optical depth straight up from height h to the top of its decks.
-fn giant_column(h: f32) -> f32 {
-    var col = 0.0;
-    for (var i = 0; i < 3; i++) {
-        let a = cv.layer_a[i];
-        // The main deck's mean top.
-        let top = select(a.y, a.x + (a.y - a.x) * 0.72, i == 0);
-        col += cv.layer_b[i].z * a.z * max(top - max(h, a.x), 0.0);
-    }
-    return col * cv.giant.y;
 }
 
 // The weather's own cloud (storms, anvils, fronts: the weather cube's coarse cells) shaped by its
@@ -902,9 +926,7 @@ fn sample_with(x: vec3<f32>, fp: f32, wx: vec4<f32>, erode: bool) -> Sample {
     s.wx = wx;
     let h = length(x) - cv.cam.w;
     if cv.giant.x > 0.5 {
-        s = giant_sample(x, h, fp);
-        s.wx = wx;
-        return s;
+        return giant_sample(x, h, fp);
     }
     var best = 0.0;
     for (var i = 0; i < LAYERS; i++) {
@@ -1070,6 +1092,33 @@ fn light_gen(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(od, col, 0.0, 1.0);
 }
 
+// The light the body's rings let through to x (sphere space) from the direction l (sphere space), as
+// planet.wesl `ring_shadow` gives the ground (SE's ring shadow: the density along the ray's crossing of
+// the ring plane, thicker for a low light). Saturn's flat bands carry the rings' shadow; without it its
+// decks were evenly lit.
+fn ring_shadow(x: vec3<f32>, l: vec3<f32>) -> f32 {
+    if cv.ring.w < 0.25 {
+        return 1.0;
+    }
+    // (In the body frame: in sphere space a flattened giant's ring plane and light were distorted.)
+    let p = x * cv.ring_frame.xyz / cv.cam.w;
+    let lb = normalize(l * cv.ring_frame.xyz);
+    let ly = lb.y;
+    let along = min(p.y / select(ly, 1e-12, abs(ly) < 1e-12), 0.0);
+    let proj = p - lb * along;
+    let u = (length(proj.xz) - cv.ring.x) / (cv.ring.y - cv.ring.x);
+    if u <= 0.0 || u >= 1.0 {
+        return 1.0;
+    }
+    var a = 0.6;
+    if cv.ring.w > 0.75 {
+        a = textureSampleLevel(ring_tex, clamp_smp, vec2<f32>(u, 0.75), 0.0).a;
+    }
+    let density = clamp(cv.ring.z * a, 0.0, 1.0);
+    let cos_phi = abs(ly);
+    return 1.0 - (1.0 - pow(1.0 - density, 1.0 / max(cos_phi, 0.333))) * smoothstep(0.001, 0.003, cos_phi);
+}
+
 fn hg(cos_t: f32, g: f32) -> f32 {
     let g2 = g * g;
     return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cos_t, 1e-4), 1.5));
@@ -1084,7 +1133,10 @@ const GROUND_ALBEDO: vec3<f32> = vec3<f32>(0.10, 0.11, 0.08);
 const FREEZE_K: f32 = 273.15;
 const DUST_ALBEDO: vec3<f32> = vec3<f32>(0.68, 0.5, 0.34);
 
-// Lightning's light at x (sphere space): each flash glows through the cloud around it.
+// Lightning's light at x (sphere space): each flash glows through the cloud around it, and dimmer
+// over some 20 km of the storm's top (the light it scatters out through the cloud: lightning seen
+// from orbit lights the cloud tops over tens of km; the near glow alone was a dim smudge). A gas
+// giant's, some 50 km deep under its main deck's tops, spread over 50 km.
 fn lightning_at(x: vec3<f32>) -> vec3<f32> {
     if cv.fx.y < 0.5 {
         return vec3<f32>(0.0);
@@ -1093,7 +1145,8 @@ fn lightning_at(x: vec3<f32>) -> vec3<f32> {
     for (var k = 0; k < 8; k++) {
         let f = flashes[k];
         if f.w > 0.0 {
-            e += f.w * exp(-length(x - f.xyz) / 6000.0);
+            let r = length(x - f.xyz);
+            e += f.w * select(exp(-r / 6000.0) + 0.2 * exp(-r / 20000.0), exp(-r / 6000.0) + 2.0 * exp(-r / 50000.0), cv.giant.x > 0.5);
         }
     }
     return FLASH_COLOR * (e * cv.fx2.z);
@@ -1281,6 +1334,98 @@ fn media(o: vec3<f32>, d: vec3<f32>, a: f32, b: f32, t_max: f32, cos_t: f32, l_s
     return m;
 }
 
+// The further lights' light scattered at x (sphere space, at radius r, `up` there) seen along the
+// sphere-space ray direction d: SE's other stars and the planets' and moons' shine, which the ground
+// takes too (what lights the night side; without them its clouds were black over a moonlit ground).
+// No march of their own: the cloud above (the light volume's column vx.y, else the area's mean,
+// `light_column`) along each light's slant dims the direct beam, a first bounce and the diffuse light
+// as the star's (`trace`); the sky they light as the star's sky light. Left out where the star's light
+// e_sun is over 50 times theirs (they would add under 2 %).
+fn night_light(x: vec3<f32>, r: f32, up: vec3<f32>, d: vec3<f32>, fp: f32, vx: vec3<f32>, open: f32, dense: f32, e_sun: vec3<f32>, smp: Sample) -> vec3<f32> {
+    if cv.extra_dir[0].w < 0.5 {
+        return vec3<f32>(0.0);
+    }
+    var total = 0.0;
+    for (var k = 0; k < 3; k++) {
+        total += max(cv.extra_light[k].r, max(cv.extra_light[k].g, cv.extra_light[k].b)) * cv.extra_dir[k].w;
+    }
+    let share = 1.0 - smoothstep(10.0, 50.0, max(e_sun.r, max(e_sun.g, e_sun.b)) / max(total, 1e-12));
+    if share <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    var col = 0.0;
+    if cv.giant.x > 0.5 {
+        col = smp.wx.x;
+    } else if vx.z < 1.0 {
+        col = light_column(x, fp, 1.0, smp.wx);
+    }
+    col = mix(col, vx.y, vx.z);
+    let v = normalize(d);
+    let rk = r * cv.atm.radii.x / cv.cam.w;
+    var e = vec3<f32>(0.0);
+    for (var k = 0; k < 3; k++) {
+        if cv.extra_dir[k].w < 0.5 {
+            break;
+        }
+        let l = normalize((cv.sphere_from_world * vec4<f32>(cv.extra_dir[k].xyz, 0.0)).xyz);
+        let mu = dot(up, l);
+        let tw = twilight(r, mu);
+        var e_l = cv.extra_light[k].rgb * tw;
+        var sky = vec3<f32>(0.0);
+        if cv.atm_flags.x > 0.5 {
+            e_l *= atm_transmittance_sun(cv.atm, transmittance_tex, clamp_smp, rk, mu);
+            sky = atm_irradiance(cv.atm, irradiance_tex, clamp_smp, rk, mu) * cv.atm.look.w;
+        }
+        // (The ray's direction and the light's in sphere space: their angle is the same to within
+        // the body's flattening.)
+        let cos_t = dot(v, l);
+        let od = col / max(mu, 0.08);
+        let direct = mix(hg(cos_t, 0.8), hg(cos_t, -0.25), 0.35) * exp(-od);
+        let bounce = 0.5 * mix(hg(cos_t, 0.4), hg(cos_t, -0.125), 0.35) * exp(-0.5 * od);
+        let flux = clamp(mu * 1.2 + 0.15 * tw, 0.0, 1.0);
+        e += e_l * (direct + dense * (bounce + 0.5 * flux / (PI * (1.0 + 0.11 * od))))
+            + cv.extra_light[k].rgb * ATM_AMBIENT_SCALE * (max(mu, 0.0) * cv.layer_c[smp.layer].w + sky) * open / PI * 2.0;
+    }
+    return e * share;
+}
+
+// The number of steps of q t (t the distance from the camera), within lo..hi, over the distances s.x
+// to s.y (none when s.y <= s.x).
+fn steps_over(s: vec2<f32>, q: f32, lo: f32, hi: f32) -> f32 {
+    if s.y <= s.x {
+        return 0.0;
+    }
+    let c1 = lo / q;
+    let c2 = max(hi / q, c1);
+    var n = max(min(s.y, c1) - s.x, 0.0) / lo;
+    let la = max(s.x, c1);
+    let lb = min(s.y, c2);
+    if lb > la {
+        n += log(lb / la) / q;
+    }
+    return n + max(s.y - max(s.x, c2), 0.0) / hi;
+}
+
+// The far trace's steps: q t (within lo..hi), q such that `steps` of them cover the ray's two pieces
+// of the shell s0 and s1 (bisected on ln q). Short next to the camera, long far away, where the
+// clouds are small. (Even steps, the path over MAX_STEPS, were kilometres long next to the camera
+// on a ray skimming a layer from inside it, 150-300 km of it: their footprint averaged the heaps
+// there into the layer's mean, a flat band over the far heaps' tops, as tall as the view was zoomed.)
+fn step_rate(s0: vec2<f32>, s1: vec2<f32>, lo: f32, hi: f32, steps: f32) -> f32 {
+    var a = -20.0;
+    var b = 1.0;
+    for (var k = 0; k < 12; k++) {
+        let m = 0.5 * (a + b);
+        let q = exp(m);
+        if steps_over(s0, q, lo, hi) + steps_over(s1, q, lo, hi) > steps {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    return exp(b);
+}
+
 struct Trace {
     @location(0) light: vec4<f32>,
     @location(1) dist: vec4<f32>,
@@ -1378,14 +1523,19 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         out.light = giant_dark(out.light);
         return out;
     }
-    // Steps of at least 1/MAX_STEPS of the path and no shorter than 50 m; near the camera shorter
-    // steps (the first quarter of the steps covers an eighth of the path). The reference
-    // (volumetric_clouds.rs `reference_on`) takes twice as many.
+    // The far trace's steps grow with the distance from the camera (`step_rate`), no shorter than 50 m,
+    // at least 24 over the path (fair-weather cumulus fill only the layer's lowest kilometre or so:
+    // fewer steps over it thinned them); the near pass's are even, 1/NEAR_STEPS of its 4 km. The
+    // reference (volumetric_clouds.rs `reference_on`) takes twice as many.
     let fine_n = select(1.0, 2.0, cs.params.y > 1.5);
-    let dt0 = max(total / (select(f32(MAX_STEPS), NEAR_STEPS, mode > 1.5) * fine_n), 50.0 / fine_n);
-    // Longer steps where a sample covers more cloud (far away), at least 24 over the path (fair-weather
-    // cumulus fill only the layer's lowest kilometre or so: fewer steps over it thinned them).
+    let n_steps = select(f32(MAX_STEPS), NEAR_STEPS, mode > 1.5) * fine_n;
+    let d_min = 50.0 / fine_n;
+    let dt0 = max(total / n_steps, d_min);
     let dt_cap = max(dt0, total / (24.0 * fine_n));
+    var q = 0.0;
+    if mode < 1.5 {
+        q = step_rate(vec2<f32>(seg0.x, seg0.x + len0), vec2<f32>(seg1.x, seg1.x + len1), d_min, dt_cap, n_steps);
+    }
     let has_atm = cv.atm_flags.x > 0.5;
     let to_km = cv.atm.radii.x / cv.cam.w;
     // A cloud pixel's angular size: the footprint of a sample is its distance times this.
@@ -1399,7 +1549,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     // light most of the march's cost).
     var last_k = vec3<f32>(0.0);
     var reuse_ok = false;
-    let t_first = jitter(in.position.xy) * dt0;
+    let t_first = jitter(in.position.xy) * select(dt0, clamp(q * seg0.x, d_min, dt_cap), mode < 1.5);
     var t = t_first;
     // Through clear air long steps (four fine ones, at least 24 over the path) that only ask whether a
     // cloud could be there (`maybe_cloud`); on a hit back one long step and on in fine ones, until a
@@ -1418,8 +1568,8 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         }
         let tw = select(seg1.x + (t - len0), seg0.x + t, t < len0);
         let x = o + d * tw;
-        let fp = max(tw * px_angle, dt0 * 0.25);
-        let dt = clamp(0.4 / fine_n * tw * px_angle, dt0, dt_cap);
+        let dt = clamp(max(0.4 / fine_n * tw * px_angle, q * tw), select(dt0, d_min, mode < 1.5), dt_cap);
+        let fp = max(tw * px_angle, dt * 0.25);
         if coarse {
             let long = min(4.0 * dt, dt_cap);
             if maybe_cloud(x, max(fp, long)) {
@@ -1453,14 +1603,16 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             // doubling to 3.1 km without the detail noise, then the cloud above's mean (`light_column`).
             // From 20 to 40 km on the light volume at the point alone, beyond it the mean (the steps'
             // self-shadows are smaller than a pixel there). (Taking the steps through the whole light
-            // volume, 60 km round, doubled the march's cost under a veil that fills every ray.)
+            // volume, 60 km round, doubled the march's cost under a veil that fills every ray.) None
+            // where the star has set (the night side's clouds take the further lights alone).
             let lw = select(smoothstep(20000.0, 40000.0, tw), 0.0, cv.giant.x > 0.5);
             var vx = vec3<f32>(0.0);
             if lv.h.z > 0.5 {
                 vx = light_at(x);
             }
+            let tw_l = twilight(r, mu) * cv.sun_dir.w;
             var od = 0.0;
-            if lw < 1.0 {
+            if lw < 1.0 && tw_l > 0.0 {
                 var lx = x;
                 for (var k = 0; k < 3; k++) {
                     let ls = select(select(180.0, 80.0, k == 1), 40.0, k == 0);
@@ -1485,16 +1637,17 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
                 }
                 od = mix(od_m, od + vs.x, vs.z);
             }
-            if lw > 0.0 {
+            if lw > 0.0 && tw_l > 0.0 {
                 var od_f = vx.x;
                 if vx.z < 1.0 {
                     od_f = mix(light_column(x, fp, mu, smp.wx), vx.x, vx.z);
                 }
                 od = mix(od, od_f, lw);
             }
-            // The star's light at this point: through the atmosphere (zero below the horizon).
-            let tw_l = twilight(r, mu);
-            var e_sun = cv.sun_light.rgb * cv.sun_dir.w * tw_l;
+            // The star's light at this point: through the atmosphere (zero below the horizon) and the
+            // rings (their shadow dims the sky's light here too, as on the ground).
+            let rs = ring_shadow(x, l_s);
+            var e_sun = cv.sun_light.rgb * tw_l * rs;
             var sky = vec3<f32>(0.0);
             if has_atm {
                 let rk = r * to_km;
@@ -1518,7 +1671,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             var absorb = vec3<f32>(1.0);
             var od_d = od;
             if cv.giant.x > 0.5 {
-                let col = giant_column(r - cv.cam.w);
+                let col = smp.wx.x;
                 od = max(od, col / max(mu, 0.08));
                 // The deck's top is as bright as SE's flat bands: diffuse light dims only with the
                 // cloud above it.
@@ -1528,13 +1681,14 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             let direct = phase.x * exp(-od);
             let bounce = 0.5 * phase.y * exp(-0.5 * od) + 0.25 * phase.z * exp(-0.25 * od) + 0.125 * phase.w * exp(-0.125 * od);
             let flux = clamp(mu * 1.2 + 0.15 * tw_l, 0.0, 1.0);
-            let dense = mix(0.5, 1.0, 1.0 - exp(-40.0 * smp.sigma));
-            // (A giant's deep decks under a bright top: a white surface's light at the top.)
-            let ms = direct + dense * (bounce + select(0.5, 1.2, cv.giant.x > 0.5) * flux / (PI * (1.0 + 0.11 * od_d)) * absorb);
+            // (A giant's decks are thin per metre and tens of km deep: all of them as dense; their tops a
+            // white surface's light, as SE's flat bands.)
+            let dense = select(mix(0.5, 1.0, 1.0 - exp(-40.0 * smp.sigma)), 1.0, cv.giant.x > 0.5);
+            let ms = direct + dense * (bounce + select(0.5, 0.8, cv.giant.x > 0.5) * flux / (PI * (1.0 + 0.11 * od_d)) * absorb);
             // Sky light from above, more of it near the tops; SE's day ambient as the flat shells.
             let la = cv.layer_a[li];
             let hf = clamp((r - cv.cam.w - la.x) / max(la.y - la.x, 1.0), 0.0, 1.0);
-            let e_top = cv.sun_light.rgb * cv.sun_dir.w;
+            let e_top = cv.sun_light.rgb * cv.sun_dir.w * rs;
             // The sky's light through the cloud above (the light volume's, as a thick slab passes diffuse
             // light: 1 / (1 + 0.11 tau)); beyond it, more of it near the layer's top.
             let open = mix(0.35 + 0.65 * hf, 1.0 / (1.0 + 0.11 * vx.y), vx.z);
@@ -1543,7 +1697,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             // a mean land's colour below.
             let ground = e_sun * (max(mu, 0.0) * (1.0 - open) * 0.8 / PI) * GROUND_ALBEDO * absorb;
             let albedo = smp.albedo;
-            last_k = albedo * (e_sun * ms + ambient + ground + lightning_at(x));
+            last_k = albedo * (e_sun * ms + ambient + ground + (night_light(x, r, up, d, fp, vx, open, dense, e_sun, smp) + cv.sun_light.w / PI) * absorb + lightning_at(x));
             }
             let src = last_k * smp.sigma;
             let step_t = exp(-smp.sigma * dt);
@@ -1561,14 +1715,32 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     }
     // The haze between the camera and the clouds: their light dimmed by it, and the air's own light
     // in front of them (the sky behind already holds it, so only for the part the clouds hide).
-    // (Not over a gas giant's decks: they are its cloud tops, which SE's flat bands draw without it;
-    // their own high haze stands in.)
-    if has_atm && trans < 0.999 && cv.giant.x < 0.5 {
+    // Over a gas giant's decks too, as over SE's flat bands (without it the decks were dull and
+    // darker than the bands), down to its radius, the tables' ground, and only from above it.
+    if has_atm && trans < 0.999 && (cv.giant.x < 0.5 || cv.cam2.y > 0.0) {
         let cam_km = o * to_km;
         let v = normalize(d);
-        let ps = atm_path(cv.atm, inscatter_tex, transmittance_tex, clamp_smp, cam_km, v, l_s, length(d) * dist * to_km);
-        let e_haze = cv.sun_light.rgb * cv.sun_dir.w * cv.atm_flags.y;
+        var hd = dist;
+        if cv.giant.x > 0.5 {
+            let g = sphere_hits(0.0, a, b);
+            if g.x <= g.y && g.x > 0.0 {
+                hd = min(hd, g.x);
+            }
+        }
+        let ps = atm_path(cv.atm, inscatter_tex, transmittance_tex, clamp_smp, cam_km, v, l_s, length(d) * hd * to_km);
+        // (In the rings' shadow at the clouds, dimmed, as the ground's haze.)
+        let e_haze = cv.sun_light.rgb * cv.sun_dir.w * cv.atm_flags.y * ring_shadow(o + d * dist, l_s);
         light = light * ps.transmittance + (1.0 - trans) * e_haze * ps.inscatter;
+        // The further lights' haze too (the ground's and the sky's hold it: the night side's clouds
+        // hid the moonlit air in front of them).
+        for (var k = 0; k < 3; k++) {
+            if cv.extra_dir[k].w < 0.5 {
+                break;
+            }
+            let lk = normalize((cv.sphere_from_world * vec4<f32>(cv.extra_dir[k].xyz, 0.0)).xyz);
+            let pk = atm_path(cv.atm, inscatter_tex, transmittance_tex, clamp_smp, cam_km, v, lk, length(d) * hd * to_km);
+            light += (1.0 - trans) * cv.extra_light[k].rgb * cv.atm_flags.y * pk.inscatter;
+        }
     }
     // Within the far cross-fade the flat shells draw the rest.
     light *= cv.lod.x;

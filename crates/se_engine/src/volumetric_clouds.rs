@@ -58,7 +58,7 @@ use crate::atmosphere::AtmosphereParamsUniform;
 use crate::camera::{FlyCamera, MainCamera};
 use crate::graphics::GraphicsSettings;
 use crate::switches::RenderSwitches;
-use crate::system::{BodyLighting, SystemBody};
+use crate::system::{AmbientLighting, BodyLighting, SystemBody, MAX_LIGHTS};
 use crate::terrain::{ATM_SUN_SCALE, CloudLayer, Terrain};
 use crate::universe::SimTime;
 
@@ -257,6 +257,8 @@ struct CloudBody {
     mapped_pending: bool,
     /// The body's scattering tables: inscatter, transmittance, irradiance.
     atm: Option<[Handle<Image>; 3]>,
+    /// Its rings' texture, for their shadow (`CloudView::ring`), set as their material appears.
+    ring: Option<Handle<Image>>,
 }
 
 /// The main camera's cloud pass inputs. Layout must match `volumetric_clouds.wesl` `CloudView`.
@@ -282,7 +284,8 @@ pub struct CloudView {
     pub layer_c: [Vec4; MAX_LAYERS],
     /// xyz: towards the star (world), w: 1 when lit.
     pub sun_dir: Vec4,
-    /// rgb: the star's light above the atmosphere, in the tables' scale.
+    /// rgb: the star's light above the atmosphere, in the tables' scale; w: SE's `AmbientLighting`, in
+    /// the same scale.
     pub sun_light: Vec4,
     /// x: 1 when drawn, y: shape noise frequency (1/m), z: detail noise frequency (1/m), w: divisor.
     pub params: Vec4,
@@ -314,6 +317,18 @@ pub struct CloudView {
     /// weather in the air's (fog, dust, rain shafts); the near pass: z its range (m, 0 off), w its
     /// divisor of the solids' size.
     pub lod: Vec4,
+    /// The further lights (`BodyLighting::extra`: SE's other stars, the planets' and moons' shine), which
+    /// light the night side: xyz towards each (world), w 1 when used; rgb their light above the
+    /// atmosphere, in the tables' scale.
+    pub extra_dir: [Vec4; MAX_LIGHTS - 1],
+    pub extra_light: [Vec4; MAX_LIGHTS - 1],
+    /// The body's rings, for their shadow on the clouds (as terrain.rs gives the ground): x inner, y
+    /// outer radius (radii), z opacity, w 0 none, 0.5 untextured, 1 textured; `ring_frame` xyz the
+    /// body's semi-axes over its radius (sphere space to the body frame, where the rings lie in the
+    /// equator: a flattened giant's ring shadow in sphere space fell in the wrong places), w SE's rings
+    /// winter strength (terrain.rs `ring_normal`).
+    pub ring: Vec4,
+    pub ring_frame: Vec4,
     /// Each layer's detail cover patches (`detail`, `DETAIL_LEVELS` a layer, finest first): xyz the
     /// centre in the layer's frame, w the tangent of the half-width (0: none).
     pub detail: [Vec4; MAX_LAYERS * detail::DETAIL_LEVELS],
@@ -426,6 +441,9 @@ struct LayerSpec {
     day_ambient: f32,
     /// Its catalog cloud map.
     map: Option<TileLayer>,
+    /// Some for a catalog gas giant's main deck: `map` is the giant's colour map, composed in colour
+    /// (`compose_face`) and tinted by this (SE's `ModulateColor`).
+    tint: Option<Vec3>,
 }
 
 /// The body's drawable cloud layers as volumes. SE's layer `Height` is the cloud shell's altitude and
@@ -464,16 +482,25 @@ fn layer_specs(terrain: &Terrain) -> Vec<LayerSpec> {
             color: c.color,
             day_ambient: c.look.x,
             map: map.filter(|_| !c.opaque_map),
+            tint: None,
         });
     }
     out
 }
 
-/// `SE_GIANT_DECKS=1` draws gas giants' volumetric decks (clouds plan step 8, still being tuned: until
-/// then the giants keep SE's flat bands).
+/// Gas giants' volumetric decks (clouds plan step 8) near and below their cloud tops; `SE_GIANT_DECKS=0`
+/// leaves SE's flat bands alone (comparisons).
 fn giant_decks_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SE_GIANT_DECKS").is_ok_and(|v| v.trim() == "1"))
+    *ON.get_or_init(|| std::env::var("SE_GIANT_DECKS").map_or(true, |v| v.trim() != "0"))
+}
+
+/// How deep the camera may go into a gas giant (m above its radius): two scale heights under the
+/// view's dark limit (`giant_dark` in the shader: the deep deck's bottom, -6 H, less two more). None for
+/// other bodies and while the decks are off (the flat bands are then its surface); terrain.rs
+/// `keep_camera_above_ground` also asks that the passes work on the giant.
+pub(crate) fn giant_floor_m(terrain: &Terrain) -> Option<f64> {
+    (terrain.proc.kind.is_giant() && giant_decks_on() && terrain.biome.is_some()).then(|| -10.0 * giant_scale_height(terrain))
 }
 
 /// A gas giant's atmosphere's scale height (m).
@@ -516,8 +543,10 @@ fn giant_fade(height: f64, scale: f64) -> f64 {
 }
 
 /// A gas giant's cloud decks (scale height H, the radius the flat bands' level): a thin haze high
-/// above (2-4 H), the main deck in SE's band colours with its zones higher than its belts (-2 to
-/// 1.5 H), and a dark deep deck (-6 to -3.5 H). Each deck is opaque or nearly so.
+/// above (2-4 H, off), the main deck in the band colours with its zones higher than its belts (-2 to
+/// 1.5 H), and a dark deep deck (-6 to -3.5 H). Each deck is opaque or nearly so. The main deck's
+/// colours are SE's generator's (its preset), or a catalog giant's own colour map (Jupiter), as its
+/// flat surface draws them.
 fn giant_specs(terrain: &Terrain) -> Vec<LayerSpec> {
     let h = giant_scale_height(terrain) as f32;
     let deck = |kind: f32, bottom: f32, top: f32, opacity: f32, cumulus: f32, tau: f32, color: Vec3| LayerSpec {
@@ -528,10 +557,19 @@ fn giant_specs(terrain: &Terrain) -> Vec<LayerSpec> {
         color,
         day_ambient: 0.0,
         map: None,
+        tint: None,
     };
+    let mut main = deck(5.0, -2.0, 1.5, 1.0, 0.6, 60.0, Vec3::ONE);
+    if let Some(color) = terrain.tile_layers().and_then(|l| l.color.clone()) {
+        main.cover.kind.y = 1.0;
+        main.map = Some(color);
+        main.tint = Some(terrain.surf_modulate.truncate());
+    }
     vec![
-        deck(5.0, -2.0, 1.5, 1.0, 0.6, 60.0, Vec3::ONE),
-        deck(6.0, 2.0, 4.0, 0.5, 0.0, 0.1, Vec3::new(0.9, 0.85, 0.75)),
+        main,
+        // Off (opacity 0): SE's atmosphere is the haze. (Even at a vertical optical depth of 0.015 it
+        // made a grey fog of the sky from inside it, where SE's sky is blue.)
+        deck(6.0, 2.0, 4.0, 0.0, 0.0, 0.03, Vec3::new(0.9, 0.85, 0.75)),
         deck(7.0, -6.0, -3.5, 1.0, 0.3, 80.0, Vec3::new(0.35, 0.25, 0.16)),
     ]
 }
@@ -580,7 +618,7 @@ fn layer_cover(terrain: &Terrain, c: &CloudLayer, index: usize, slot: usize, map
 /// The catalog cloud maps of the mapped layers resampled onto the cover map's faces: `MAPPED_SIZE`^2
 /// RGBA per face, layer `slot`'s opacity (the map's red) in channel `slot`, from the layer's tiles at
 /// level 4 (or its deepest), averaged down; a thread a face.
-fn compose_maps(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer)]) -> Vec<u8> {
+fn compose_maps(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer, Option<Vec3>)]) -> Vec<u8> {
     let started = std::time::Instant::now();
     let n = MAPPED_SIZE;
     let mut out = vec![0u8; 6 * n * n * 4];
@@ -589,14 +627,30 @@ fn compose_maps(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer)]) -> Vec<u8>
             scope.spawn(move || compose_face(vfs, maps, face, part));
         }
     });
+    // A giant's colour map: its cloud height from its brightness, spread over 0..1 about the mean
+    // (bright zones high, dark belts low, as on Jupiter).
+    if maps.iter().any(|m| m.2.is_some()) {
+        let n = out.len() / 4;
+        let mean = out.chunks_exact(4).map(|p| p[3] as f64).sum::<f64>() / n as f64;
+        let sd = (out.chunks_exact(4).map(|p| (p[3] as f64 - mean).powi(2)).sum::<f64>() / n as f64).sqrt().max(1.0);
+        for p in out.chunks_exact_mut(4) {
+            p[3] = ((0.5 + (p[3] as f64 - mean) / (4.0 * sd)).clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
     info!("volumetric clouds: cloud maps composed in {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
     out
 }
 
-/// One face of `compose_maps` (`out` its texels).
-fn compose_face(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer)], face: CubeFace, out: &mut [u8]) {
+/// One face of `compose_maps` (`out` its texels): a cloud map's red channel into its slot's channel; a
+/// giant's colour map (`tint` Some) into all four, rgb as the square root of its linear colour (as
+/// the generator's, `cover_gen`), a its brightness.
+fn compose_face(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer, Option<Vec3>)], face: CubeFace, out: &mut [u8]) {
     let n = MAPPED_SIZE;
-    for (slot, layer) in maps {
+    let linear = |v: f32| {
+        let s = v / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    for (slot, layer, tint) in maps {
         // Level 4 averaged down: about two of its texels to one of the face's.
         let level = layer.max_level.min(4);
         let tiles = 1usize << level;
@@ -608,11 +662,11 @@ fn compose_face(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer)], face: Cube
                 };
                 let (w, h) = img.dimensions();
                 let k = w as f32 / 256.0;
-                let red = |x: f32, y: f32| {
+                let channel = |c: usize, x: f32, y: f32| {
                     let (x0, y0) = (x.floor().clamp(0.0, w as f32 - 1.0), y.floor().clamp(0.0, h as f32 - 1.0));
                     let (x1, y1) = ((x0 + 1.0).min(w as f32 - 1.0), (y0 + 1.0).min(h as f32 - 1.0));
                     let (fx, fy) = ((x - x0).clamp(0.0, 1.0), (y - y0).clamp(0.0, 1.0));
-                    let p = |x: f32, y: f32| img.get_pixel(x as u32, y as u32)[0] as f32;
+                    let p = |x: f32, y: f32| img.get_pixel(x as u32, y as u32)[c] as f32;
                     let top = p(x0, y0) + (p(x1, y0) - p(x0, y0)) * fx;
                     let bot = p(x0, y1) + (p(x1, y1) - p(x0, y1)) * fx;
                     top + (bot - top) * fy
@@ -622,13 +676,26 @@ fn compose_face(vfs: &se_core::vfs::Vfs, maps: &[(usize, TileLayer)], face: Cube
                     for x in col * span..(col + 1) * span {
                         // The tile's inner 252 texels (as clouds.wesl `tile_uv`), 2 x 2 samples over the
                         // output texel's footprint.
-                        let mut v = 0.0;
+                        let mut v = Vec3::ZERO;
                         for (sx, sy) in [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)] {
                             let lu = ((x as f32 + 0.5 + sx) / n as f32) * tiles as f32 - col as f32;
                             let lv = ((y as f32 + 0.5 + sy) / n as f32) * tiles as f32 - row as f32;
-                            v += red((2.0 + lu * 252.0) * k - 0.5, (2.0 + lv * 252.0) * k - 0.5) / 4.0;
+                            let (tx, ty) = ((2.0 + lu * 252.0) * k - 0.5, (2.0 + lv * 252.0) * k - 0.5);
+                            v += match tint {
+                                Some(_) => Vec3::new(linear(channel(0, tx, ty)), linear(channel(1, tx, ty)), linear(channel(2, tx, ty))),
+                                None => Vec3::splat(channel(0, tx, ty)),
+                            } / 4.0;
                         }
-                        out[(y * n + x) * 4 + slot] = v.round().clamp(0.0, 255.0) as u8;
+                        let at = (y * n + x) * 4;
+                        match tint {
+                            Some(t) => {
+                                let c = (v * *t).clamp(Vec3::ZERO, Vec3::ONE);
+                                let rgb = c.to_array().map(|e| (e.sqrt() * 255.0).round() as u8);
+                                out[at..at + 3].copy_from_slice(&rgb);
+                                out[at + 3] = ((0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z).sqrt() * 255.0).round() as u8;
+                            }
+                            None => out[at + slot] = v.x.round().clamp(0.0, 255.0) as u8,
+                        }
                     }
                 }
             }
@@ -682,13 +749,14 @@ struct SetupState {
 #[allow(clippy::too_many_arguments)]
 fn update_cloud_view(
     mut commands: Commands,
-    (gs, switches, time, data, captures, real): (
+    (gs, switches, time, data, captures, real, ambient): (
         Res<GraphicsSettings>,
         Res<RenderSwitches>,
         Res<SimTime>,
         Res<crate::data::SeData>,
         Query<(), With<crate::capture::CaptureView>>,
         Res<Time<Real>>,
+        Res<AmbientLighting>,
     ),
     cam: Res<FlyCamera>,
     ready: Res<CloudsReady>,
@@ -696,6 +764,7 @@ fn update_cloud_view(
     (mut state, mut cloud_body, mut images): (ResMut<VolumetricClouds>, ResMut<CloudBody>, ResMut<Assets<Image>>),
     (assets, mut buffers, mut last_shadow): (Option<Res<CloudShadowAssets>>, ResMut<Assets<ShaderBuffer>>, Local<CloudShadow>),
     (mut detail_cover, mut detail_jobs): (ResMut<detail::DetailCover>, Local<detail::DetailJobs>),
+    (rings, ring_mats): (Query<&crate::rings::Rings>, Res<Assets<crate::rings::RingMaterial>>),
     bodies: Query<(Entity, &SystemBody, &Terrain, &BodyLighting)>,
     mut cams: Query<(Entity, &Projection, Option<&mut CloudView>), With<MainCamera>>,
     mut prev: Local<Option<PrevFrame>>,
@@ -745,7 +814,7 @@ fn update_cloud_view(
                 kinds.join(", ")
             );
         }
-        let maps: Vec<(usize, TileLayer)> = specs.iter().enumerate().filter_map(|(i, s)| s.map.clone().map(|m| (i, m))).collect();
+        let maps: Vec<(usize, TileLayer, Option<Vec3>)> = specs.iter().enumerate().filter_map(|(i, s)| s.map.clone().map(|m| (i, m, s.tint))).collect();
         setup.job = (!maps.is_empty()).then(|| {
             let vfs = data.vfs.clone();
             AsyncComputeTaskPool::get().spawn(async move { compose_maps(&vfs, &maps) })
@@ -770,6 +839,7 @@ fn update_cloud_view(
             mapped: None,
             mapped_pending: setup.job.is_some(),
             atm: active.and_then(|a| a.2.atmosphere.as_ref()).map(|a| [a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone()]),
+            ring: None,
         };
         *setup = SetupState { specs: specs.clone(), body, atm, job: setup.job.take() };
     }
@@ -812,6 +882,12 @@ fn update_cloud_view(
             let lowest = if specs.is_empty() { 0.0 } else { specs.iter().map(|s| s.geom.x).fold(f32::MAX, f32::min) };
             let highest = specs.iter().map(|s| s.geom.y).fold(0.0, f32::max);
             let lit = light.sun_intensity > 0.0;
+            let (extra_dirs, extra_colors) = light.extra_uniforms(false);
+            // Its rings (terrain.rs takes the ground's the same way).
+            let ring = rings.iter().find(|r| r.body == e).and_then(|r| ring_mats.get(&r.material)).map(|m| (m.texture.clone(), m.u.geom.truncate().extend(if m.u.params.z > 0.5 { 1.0 } else { 0.5 })));
+            if cloud_body.ring.as_ref() != ring.as_ref().map(|r| &r.0) {
+                cloud_body.ring = ring.as_ref().map(|r| r.0.clone());
+            }
             // The shadow map: under the camera, kept still until the camera is a quarter of its
             // width away (its texels stay put on the ground, so its shadows don't crawl).
             let under = cam_s.normalize_or(DVec3::Y) * terrain.radius;
@@ -837,7 +913,7 @@ fn update_cloud_view(
                 layer_b,
                 layer_c,
                 sun_dir: light.sun_dir.extend(if lit { 1.0 } else { 0.0 }),
-                sun_light: (light.sun_color * light.sun_intensity * ATM_SUN_SCALE).extend(0.0),
+                sun_light: (light.sun_color * light.sun_intensity * ATM_SUN_SCALE).extend(ambient.0 * ATM_SUN_SCALE),
                 params: Vec4::new(
                     1.0,
                     1.0 / if giant { GIANT_SHAPE_PERIOD_M } else { SHAPE_PERIOD_M },
@@ -873,6 +949,13 @@ fn update_cloud_view(
                     0.0,
                 ),
                 lod: Vec4::ONE,
+                extra_dir: extra_dirs,
+                extra_light: extra_colors.map(|c| (c.truncate() * ATM_SUN_SCALE).extend(0.0)),
+                ring: ring.as_ref().map_or(Vec4::ZERO, |r| r.1),
+                ring_frame: b.shape.as_vec3().extend(match (&ring, terrain.surface.rings_winter) {
+                    (Some((_, g)), Some(w)) => (w * 0.5 * (g.x + g.y) as f64) as f32,
+                    _ => 0.0,
+                }),
                 detail: [Vec4::ZERO; MAX_LAYERS * detail::DETAIL_LEVELS],
                 atm: atm_u.unwrap_or_default(),
             };
@@ -1151,6 +1234,7 @@ fn init_pipelines(
                 (28, texture_3d(TextureSampleType::Float { filterable: true })),
                 (29, uniform_buffer::<LightFrame>(false)),
                 (30, uniform_buffer::<LightGen>(false)),
+                (31, filterable()),
             ),
         ),
     );
@@ -1658,6 +1742,7 @@ fn draw_clouds(
         &layout(&pipelines.depth_layout[m]),
         &BindGroupEntries::with_indices(((0, binding.clone()), (11, size_buf.as_entire_binding()), (1, &depth_view))),
     );
+    let ring_view = body.ring.as_ref().and_then(|h| images.get(h)).map_or(&fallback.d2.texture_view, |i| &i.texture_view);
     let trace_group_with = |size_buf: &Buffer, low_depth: &TextureView, light_view: &TextureView, light_buf: &Buffer, gen_buf: &Buffer| device.create_bind_group(
         "vol_clouds_trace",
         &layout(&pipelines.trace_layout),
@@ -1681,6 +1766,7 @@ fn draw_clouds(
             (28, light_view),
             (29, light_buf.as_entire_binding()),
             (30, gen_buf.as_entire_binding()),
+            (31, ring_view),
         )),
     );
     if let Some(light_gen) = cache.get_render_pipeline(pipelines.light_gen).filter(|_| !slices.is_empty()) {

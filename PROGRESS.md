@@ -1,6 +1,6 @@
 # Progress
 
-## Current state (2026-11-03)
+## Current state (2026-11-04)
 
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, including its git history and the uncommitted surface-speed work below, for
@@ -11,7 +11,7 @@
   gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are
   done: on Ultra and High the planet you are at now has real volumetric clouds with ground shadows,
   weather that changes with the date, a live weather simulation, and rain, snow, lightning, fog and
-  dust. Step 8 (gas giants) is under way, see below. The user allowed moving from step to step
+  dust. Step 8 (gas giants) is done too, see below. The user allowed moving from step to step
   without asking (2026-11-02).
 - **2026-11-03: the new clouds plan** (`docs/spec-clouds-v3.md`), from the user's videos of their
   planet RS 8514-3620-1-7-69 1 and a Flight Simulator 2020 video of the look they want; the user
@@ -116,12 +116,42 @@
     fair-weather cumulus 10.7-17 km up, planet 2 too under its two high veils; Earth is unchanged.
     Clouds' ms at Ultra: the user's planet 1.2 / 1.7 / 1.8 / 1.7 (the veil was 1.8 / 3.0 / 3.4 / 3.4);
     planet 2 looking round 1.9 / 2.3 / 0.8 / 2.5 (was 1.4 / 2.2 / 0.7 / 2.6).
+  - **2026-11-04, three fixes from the user's videos:**
+    - *A flat band hid the far cloud tops* (video 1, zoomed in to a 10 degree view above the heaps):
+      the far pass spread its 112 steps evenly along each ray, and a ray skimming the cloud layer from
+      inside it is 150-300 km long, so its steps were 1.3-2.7 km even next to the camera and the heaps
+      along it were averaged into a flat band. It was always there as a thin strip at the horizon;
+      zooming in magnified it. The steps now grow with the distance (short near the camera, long far
+      away, the same number). The zoomed view now matches the slow reference; ordinary views are
+      unchanged (under one brightness level on average). Clouds' ms: the user's planet 1.17 / 1.72 /
+      1.89 / 1.84 (was 1.2 / 1.7 / 1.8 / 1.7); planet 2 1.67 / 1.59 / 0.80 / 2.19 (was 1.9 / 2.3 / 0.8 /
+      2.5).
+    - *Night-side clouds pitch black* (video 2): the 3D clouds took only the main star's light, while
+      the ground also takes the further lights (other stars, and the light moons and planets reflect,
+      SE's planet shine) and SE's ambient light. The clouds now take them too (without a light march of
+      their own: the cloud above dims them), with the moonlit haze in front of them; SE's flat clouds
+      now take the ambient light too. Where the sun has set its light march is skipped, so the night
+      side costs less. Checked on Earth under the full moon (2026-11-24) with auto exposure: the night
+      clouds show, lit as by day for the moon's strength. They stay darker than SE's flat clouds at
+      night (about a third): the 3D clouds are a little darker than a white surface by day too, where
+      the bright end of the picture hides it.
+    - *No lightning at night:* storms only formed in the afternoon; the flash picker took the strongest
+      of 32 tries, half of them anywhere on the planet, so it nearly always chose the afternoon side;
+      and its test read the broad convection, low at night even in a storm. Now there is convection at
+      night (half the afternoon's at midnight, least at 9 a.m.), 6 of the 8 flash slots look only
+      around the camera (300 km, or the camera's height), flashes go by the storms' own strength,
+      strokes fade over 50 ms (was 30) and light the storm's top over about 20 km. Checked: flashes over
+      the night side's tropics from 800 km (fewer than by day, as on Earth).
+    - New test commands: `photo 0|1|2` (photo mode; 2 is auto exposure, as the user plays) and
+      `ambient X` (SE's ambient light).
   - **Next:** step 7 (storms built from parts, lightning without smears, rain tuned, final measurements
     and docs). Seen while testing: far clouds' edges keep a faint grain; the cumulus heaps are all about
     the same size; over low basins of high-relief worlds the heaps stand high (their base follows the
     ground's middle, not the ground below); from 25 km on the user's planet a plateau's far ground shows
     sharp zig-zag edges (the ground's, older: the veil hid it). (The net of dark lines in the user's
     planet's veil from 3 km went with the veil.)
+    Seen while fixing the band: zoomed in, the clouds beyond about 100 km are still their smooth
+    average (the slow reference too), with a faint straight line where the ground's horizon is.
   - **Still open:** the faint straight line over Alaska from 11,000 km; SE's flat clouds (40-60 radii)
     still draw the weather's cloud without its pattern; faint grey specks at some cloud edges.
   - **Test switches:** `SE_CLOUD_QUARTER=0`, `SE_CLOUD_LOD=0` (a hard switch, no fades),
@@ -129,23 +159,33 @@
     reference: every pixel traced every frame at full size with twice the steps, no history; slow),
     `SE_WEATHER_DEBUG=1` (a weather map at the top of the screen);
     dev command `vclouds 0|1|2` (the 3D clouds off, High, Ultra, for side-by-side pictures).
-- **Step 8, gas giants: under way (2026-11-03).** Done so far:
-  - SE's gas giant cloud generator now sits in its own shader file (`gas_giant.wesl`), shared by the
-    planet shader, the brown dwarfs and the new giant decks; flat Jupiter checked identical (same
-    picture to within the run-to-run noise) and a brown dwarf still draws.
-  - Giant decks (only with `SE_GIANT_DECKS=1`, off by default so nothing changes in your game yet):
-    a thin high haze, the main deck in SE's band colours with its zones higher than its belts, and a
-    dark deep deck; light dims and reddens below the top and fades to black under the deep deck.
-    They fade in only within about 120 km of the cloud tops, because from higher up SE's own flat
-    bands are sharper than the decks' colour map (about 110 km a texel on Jupiter).
-  - Decision: from orbit gas giants keep SE's flat look; the volumetric decks are for coming down to
-    and into the clouds.
-  - Still to do: the deck looks dull brown and the haze grey near the cloud tops (lighting and colour
-    to match the flat bands); let the camera go below a giant's cloud-top radius (the ground collision
-    in `terrain.rs` pushes it back out); then check the descent to the dark limit, lightning in deep
-    storms, a procedural giant, cost; then turn the decks on by default.
+- **Step 8, gas giants: done (2026-11-04, the user asked for it while away).** Gas giants now have
+  volumetric cloud decks near and below their cloud tops, on by default (`SE_GIANT_DECKS=0` turns them
+  off for comparisons). From orbit they keep SE's flat look; the decks fade in within about 120 km of
+  the cloud tops (they match the flat bands there, so the change is hard to see).
+  - The decks: the main deck in the band colours, its zones standing higher than its belts, and a dark
+    deep deck below; the light dims and reddens inside them and fades to black under the deep deck.
+    The thin high haze is off (SE's atmosphere is the haze: from inside, the haze made a grey fog of
+    SE's blue sky).
+  - Colour and light matched to SE's flat bands: the belts were shaded as if under 10 km of cloud (the
+    cloud above was counted from the deck's average top, and belt tops lie below it), the atmosphere's
+    haze was left out and an Earth-cloud factor halved their light: Jupiter's deck was a dull olive,
+    four to six times too dark. A catalog giant (Jupiter, Saturn) now takes its own colour map, composed
+    from its tiles as the cloud maps are, its cloud height from its brightness (bright zones high);
+    procedural giants keep SE's generator. Checked against the flat bands: Jupiter at 30 km 192,170,136
+    against 192,169,136; your system's giant planet 3 the same within a few levels.
+  - Saturn: the rings' shadow falls on the decks (and on any ringed planet's clouds), with SE's "rings
+    winter" fading the shaded hemisphere, as on its flat surface.
+  - The camera can go down through the decks (to 10 scale heights below the cloud tops; Jupiter about
+    200 km): from 10 km over tan tops under a blue sky, into the main deck's orange fog, a gap between
+    the decks at -50 km, the dark red deep deck, then black past the dark limit (-160 km on Jupiter).
+  - Lightning in the deep water clouds (giants have no weather maps): storm cells about 180 km across on
+    Jupiter, the flashes some 50 km down lighting the deck above them over about 50 km.
+  - Cost at Ultra 3440x1440 on Jupiter: 1.0-1.4 ms (about 200 fps there).
+  - Not done: the decks' own storms (SE's spots and cyclones are only in their colour); the camera's
+    near plane under a giant's radius is not tuned (nothing wrong seen).
 - **Known gaps of the volumetric clouds so far** (later steps): HD screenshots, skybox export and the
-  projection modes still show the flat clouds (step 9); gas giants keep their flat look (step 8); a
+  projection modes still show the flat clouds (step 9); a
   few dark specks remain at some cloud edges seen from orbit; the detailed ground shadows reach about
   40 km around you (beyond that a gentler average). A full overcast looks smooth and featureless from
   low orbit (400 km) and from just above it, and Earth's cloud map is soft up close (SE's map is about

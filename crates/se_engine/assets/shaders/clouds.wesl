@@ -21,7 +21,7 @@ struct PatchLight {
     // The further stars: xyz direction, w 1 when used; rgb their light, intensity included.
     light_dir: array<vec4<f32>, 3>,
     light_color: array<vec4<f32>, 3>,
-    // The ground's (unused here).
+    // The ground's (unused here); levels x SE's AmbientLighting.
     glow_atmo: vec4<f32>,
     levels: vec4<f32>,
     // x: atmosphere enabled.
@@ -210,6 +210,8 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     // SE's ambient (day ambient and sky light, not divided by pi, at the ambient's share of the
     // light), only where the cloud is dense.
     var col = albedo / PI * e_sun * nl * hapke + albedo * a * e_top * ATM_AMBIENT_SCALE * (max(mu_s, 0.0) * clouds.look.x + sky);
+    // SE's AmbientLighting (its clouds' ambient starts from AmbientColor too), as on the ground.
+    col += albedo * a * lit[clouds.slot].levels.x * clouds.atm_flags.y / PI;
     // Subsurface scattering, brightest towards the star (SubsurfScatBright, SubsurfScatPower).
     if clouds.look.y > 0.0 {
         let thickness = 1.0 - a;

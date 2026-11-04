@@ -9,7 +9,7 @@
 //!   rotators, one on slow ones, following the subsolar latitude with the seasons;
 //! - mid-latitude storms along the wet belts, born, moving east with the westerlies and dying over a
 //!   few days, with a comma-shaped cloud spiral;
-//! - afternoon convection where the sun is high;
+//! - afternoon convection where the sun is high, and thunderstorms at night at half of it;
 //! - large weather patterns evolving over days, carried by the belts' winds;
 //! - fog on humid, calm nights and mornings, and dust storms on dry, windy worlds.
 //!
@@ -220,11 +220,15 @@ pub fn weather_at(c: &Climate, p: DVec3, sun: DVec3, jd: f64) -> Weather {
         }
     }
 
-    // Afternoon convection where the sun stands high (about 3 p.m. local).
+    // Convection where the sun stands high: most in the afternoon (about 3 p.m. local), least in the
+    // morning (under a tenth of it at 9 a.m.), and half of it at midnight (the night's storm systems,
+    // the oceans' storms before dawn). (With the afternoon's alone the night side had no
+    // thunderstorms: no lightning; at 40 % its storms stayed too weak to flash.)
     let hour = lon_of(p) - lon_of(sun);
     let afternoon = (hour - 0.7 * c.day_hours.signum()).cos().max(0.0);
+    let night = 0.5 * (0.5 - 0.5 * hour.cos());
     let sun_high = (lat - sub_lat).cos().max(0.0).powi(2);
-    let diurnal = if c.tidal_lock { p.dot(sun).max(0.0) } else { afternoon * afternoon * sun_high };
+    let diurnal = if c.tidal_lock { p.dot(sun).max(0.0) } else { (afternoon * afternoon + night).min(1.0) * sun_high };
     let wet = 0.5 + 0.5 * belt;
     let convection = (diurnal * 0.8 * wet * c.humidity + storm_rain * 0.3).clamp(0.0, 1.0);
 

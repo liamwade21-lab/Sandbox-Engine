@@ -1663,6 +1663,18 @@ fn run_commands(
                 p.mark(&arg);
             }
         }),
+        // photo 0|1|2: SE's photo mode, HDR, Manual or Auto (exposure); `ambient X`: SE's
+        // AmbientLighting (test runs skip the user's settings).
+        "photo" => commands.queue(move |w: &mut World| {
+            if let Some(mut p) = w.get_resource_mut::<crate::exposure::PhotoMode>() {
+                *p = crate::exposure::PhotoMode::new(arg.trim().parse::<u8>().unwrap_or(0));
+            }
+        }),
+        "ambient" => commands.queue(move |w: &mut World| {
+            if let Some(mut a) = w.get_resource_mut::<crate::system::AmbientLighting>() {
+                a.0 = arg.trim().parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0);
+            }
+        }),
         other => warn!("unknown command: {other}"),
     }
 }

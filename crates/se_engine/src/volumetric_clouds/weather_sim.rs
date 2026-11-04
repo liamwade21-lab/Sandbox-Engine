@@ -41,8 +41,10 @@ const STATE_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
 const FX_WRAP_S: f64 = 10_000.0;
 /// Lightning flash slots.
 const FLASHES: u64 = 8;
-/// Near flashes are looked for within this distance of the camera (m).
+/// Near flashes are looked for within this distance of the camera (m), or its height if more (up to
+/// about 70 degrees round); over a gas giant, whose storm cells are larger, `FLASH_NEAR_GIANT_M`.
 const FLASH_NEAR_M: f64 = 300_000.0;
+const FLASH_NEAR_GIANT_M: f64 = 600_000.0;
 
 /// The derived maps' image: two dates, each its weather and its wind layer (`weather_map`).
 pub(super) fn derived_image() -> Image {
@@ -363,7 +365,9 @@ pub(super) fn update_weather(
         // Lightning peaks at about Earth's sunlight on the cloud around it.
         v.fx2 = Vec4::new(drift.fx as f32, t.proc.temperature_k as f32, 0.6 * ATM_SUN_SCALE, debug_map() as u32 as f32);
         v.wind = (wind / b.shape).as_vec3().extend(0.0);
-        flash_h = Vec2::new(v.cam2.z, v.atm_flags.w.min(v.cam2.z + 10_000.0));
+        // (A gas giant's lightning is in its water clouds, about the main deck's base: -3.2 to -1.8
+        // scale heights.)
+        flash_h = if v.giant.x > 0.5 { Vec2::new(-3.2, -1.8) * v.giant.z } else { Vec2::new(v.cam2.z, v.atm_flags.w.min(v.cam2.z + 10_000.0)) };
     }
 
     let follow = matches!(mode, SimMode::Follow(_));
@@ -378,8 +382,8 @@ pub(super) fn update_weather(
             maps: Vec4::new(blend, t.radius as f32, c.humidity as f32, STEP_S as f32),
             step: Vec4::new(0.0, (c.seed % 10_000) as f32 / 10_000.0, (t.radius / 300_000.0).clamp(3.0, 25.0) as f32, 0.0),
             seed: Vec4::new(slice.floor().rem_euclid(4096.0) as f32, slice.fract() as f32, if follow { 1.0 } else { clock.frac(jd) }, cells_on() as u32 as f32),
-            flash: Vec4::new(drift.fx as f32, flash_h.x, flash_h.y, switches.lightning as u32 as f32),
-            cam: ((b.orient.inverse() * rel) / b.shape).normalize_or(DVec3::Y).as_vec3().extend((FLASH_NEAR_M / t.radius) as f32),
+            flash: Vec4::new(drift.fx as f32, flash_h.x, flash_h.y, if !switches.lightning { 0.0 } else if t.proc.kind.is_giant() { 2.0 } else { 1.0 }),
+            cam: ((b.orient.inverse() * rel) / b.shape).normalize_or(DVec3::Y).as_vec3().extend((if t.proc.kind.is_giant() { FLASH_NEAR_GIANT_M } else { FLASH_NEAR_M }.max(rel.length() - t.radius) / t.radius).min(1.2) as f32),
         },
     };
 }
@@ -430,7 +434,7 @@ pub(super) fn init_sim_pipelines(mut commands: Commands, device: Res<RenderDevic
     );
     let flash_layout = BindGroupLayoutDescriptor::new(
         "weather_sim_flash",
-        &BindGroupLayoutEntries::with_indices(cs, ((0, u()), (8, cube()), (4, smp()), (9, storage_buffer_sized(false, None)))),
+        &BindGroupLayoutEntries::with_indices(cs, ((0, u()), (8, cube()), (4, smp()), (9, storage_buffer_sized(false, None)), (10, cube()))),
     );
     let shader: Handle<Shader> = assets.load("shaders/weather_sim.wesl");
     let queue = |layout: &BindGroupLayoutDescriptor, entry: &'static str| {
@@ -616,7 +620,7 @@ pub(super) fn run_sim(
     let group = device.create_bind_group(
         "weather_sim_flash",
         &cache.get_bind_group_layout(&pipes.flash_layout),
-        &BindGroupEntries::with_indices(((0, buf.as_entire_binding()), (8, &weather.texture_view), (4, &pipes.smp), (9, tex.flashes.as_entire_binding()))),
+        &BindGroupEntries::with_indices(((0, buf.as_entire_binding()), (8, &weather.texture_view), (4, &pipes.smp), (9, tex.flashes.as_entire_binding()), (10, &tex.fx_cube))),
     );
     let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor { label: Some("weather_sim_flash"), ..default() });
     pass.set_pipeline(flash);

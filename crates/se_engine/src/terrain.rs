@@ -2885,7 +2885,8 @@ fn push_out(cam: &mut FlyCamera, center: UPos, rel: DVec3, dist: f64, min_r: f64
 /// below the camera in high mountains.
 fn keep_camera_above_ground(
     mut cam: ResMut<FlyCamera>,
-    bodies: Query<(&SystemBody, &Terrain)>,
+    clouds: Res<crate::volumetric_clouds::VolumetricClouds>,
+    bodies: Query<(Entity, &SystemBody, &Terrain)>,
     spheres: Query<&SystemBody, Without<Terrain>>,
     mut proj: Query<&mut Projection, With<crate::camera::MainCamera>>,
 ) {
@@ -2901,7 +2902,7 @@ fn keep_camera_above_ground(
         push_out(&mut cam, body.pos, rel, dist, min_r);
         clearance = clearance.min(dist.max(min_r) - body.radius_m);
     }
-    for (body, terrain) in &bodies {
+    for (e, body, terrain) in &bodies {
         let rel = cam.pos.delta_m(body.pos);
         let dist = rel.length();
         if dist > terrain.top_radius().max(body.radius_m) * 1.2 || dist <= 0.0 {
@@ -2924,9 +2925,12 @@ fn keep_camera_above_ground(
             }
             continue;
         }
+        // A gas giant whose volumetric decks are drawn: the camera goes down through them, to below the
+        // view's dark limit (its flat bands are only their tops).
+        let floor = crate::volumetric_clouds::giant_floor_m(terrain).filter(|_| clouds.active == Some(e));
         // Before any of the surface loads, a world without oceans has its ground at the
         // reference radius; one with oceans is left alone, as its seabed is unknown.
-        let Some(ground) = terrain.ground_height(dir_body).or((!terrain.has_ocean).then_some(0.0)) else {
+        let Some(ground) = floor.or_else(|| terrain.ground_height(dir_body)).or((!terrain.has_ocean).then_some(0.0)) else {
             clearance = clearance.min((dist - body.radius_m * k).abs());
             continue;
         };
