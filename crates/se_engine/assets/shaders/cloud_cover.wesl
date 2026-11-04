@@ -18,15 +18,27 @@ fn weather_cover(c: f32, mul: f32, add: f32, opacity: f32) -> f32 {
 
 // The weather's own cloud (its cover offset `add` where positive, taken as the share of the area its
 // clouds fill) shaped by its pattern's value `m` there (volumetric_clouds.wesl `weather_pattern`,
-// spread about 0.08 around 0.5): the pattern above the level that leaves that share, denser towards
-// its crests. A clearing (`add` negative) is left as it is. The volumetric clouds, their rain and the
-// ground's cloud shadows (planet.wesl) all shape it so.
+// spread about 0.08 around 0.5): the pattern above the level that leaves that share (a normal
+// distribution's), denser towards its crests, the clouds fading out with the share below 2 %. A
+// clearing (`add` negative) is left as it is. The volumetric clouds, their rain and the ground's cloud
+// shadows (planet.wesl) all shape it so. (Shaped from a 2 % share on, with a level that left 8 % of
+// the area cloudy there, the clouds ended in a cut along the weather's 2 % line, saw-toothed by the
+// weather cube's texels.)
 fn weather_shaped(add: f32, m: f32) -> f32 {
-    if add <= 0.02 {
+    if add <= 0.0 {
         return add;
     }
-    let th = 0.5 + 0.22 * (0.5 - min(add, 1.0));
-    return smoothstep(th - 0.05, th + 0.05, m) * (0.55 + 0.45 * smoothstep(th, th + 0.12, m));
+    let th = 0.5 + 0.08 * normal_above(min(add, 1.0));
+    return smoothstep(th - 0.05, th + 0.05, m) * (0.55 + 0.45 * smoothstep(th, th + 0.12, m)) * smoothstep(0.0, 0.02, add);
+}
+
+// The level a normal variate (mean 0, deviation 1) exceeds with probability p (Abramowitz and Stegun
+// 26.2.23, within 5e-4).
+fn normal_above(p: f32) -> f32 {
+    let q = clamp(min(p, 1.0 - p), 1e-6, 0.5);
+    let t = sqrt(-2.0 * log(q));
+    let z = t - (2.515517 + t * (0.802853 + t * 0.010328)) / (1.0 + t * (1.432788 + t * (0.189269 + t * 0.001308)));
+    return select(-z, z, p < 0.5);
 }
 
 // How far a ray from radius `r0`, rising at `mu` (the cosine of its angle from the vertical, >= 0), goes

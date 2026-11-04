@@ -15,7 +15,7 @@
   without asking (2026-11-02).
 - **2026-11-03: the new clouds plan** (`docs/spec-clouds-v3.md`), from the user's videos of their
   planet RS 8514-3620-1-7-69 1 and a Flight Simulator 2020 video of the look they want; the user
-  asked for the whole plan. Done: steps 1-4.
+  asked for the whole plan. Done: steps 1-6.
   - **Step 1, one cloud system:** the hand-over to SE's flat clouds is dropped (it caused the dark
     patches in the user's videos and made far views slower). SE's flat clouds only beyond 40-60 radii.
   - **Step 2, a quarter of the pixels a frame:** the far trace does one pixel of each 2x2 block a frame
@@ -60,16 +60,64 @@
     - *A line where the night side starts (the user's screenshot):* the shadows stopped where the sun
       sets on the ground, though the ground there is still lit. They now go on past it. Checked at the
       screenshot's spot from 1,058 km.
-    - Seen on the way, not fixed yet: saw-tooth edges on some clouds seen at a slant from 1,000 km.
-  - **Next:** step 5 (cloud shapes), 6 (light), 7 (storms, final measurements). Steps 5-7 were
-    revised on 2026-11-03 after a survey of other games' clouds (the plan's "What other games do"):
-    two height curves and varying tops (5), a light volume around the camera (6), storms built from
-    parts (7), and a reference switch to judge them against.
+  - **Step 4c, blackrack's clouds studied (2026-11-03):** how his volumetric clouds for Kerbal Space
+    Program work, written up in `docs/ksp-clouds-notes.md` (shapes, light, the light volume, how it
+    reuses the last frames without ghosts, ground shadows, lightning, rain, costs) and folded into
+    steps 5-7 of the plan. His C# is public (github.com/LGhassen/EnvironmentalVisualEnhancements); his
+    shaders were read from the user's download, whose shader bundle holds them as readable OpenGL code.
+    Everything taken from it is in `re/ksp_clouds/` (kept out of git; none of it goes into the port).
+    The user's download is his Release 3 line (2023, with 2024 fixes): its light volume came later, in
+    Release 4, so that part was learned from his newer C# and his wiki. Tools: UnityPy 1.25.4 (Python,
+    from PyPI, already installed) to export the shaders, `gh` and `git` for the source and wiki; no
+    decompiler was needed.
+  - **Step 5, cloud shapes: done (2026-11-03).** The reference switch `SE_CLOUD_REFERENCE=1` (slow, for
+    judging shapes and light); the saw-tooth edges of the weather's own clouds from far away fixed (they
+    were cut off where the weather's share of cloud passed 2 %; they now fade out). Cumulus are now
+    fields of separate heaps: a coarse noise lays out where heaps stand (SE's cloud map sets how much
+    of the ground they cover: 90 % at full cover, gaps between them), each heap a dome with a flat base
+    whose height follows its width (fair-weather cumulus about 0.6 times as tall as wide, taller with
+    the weather's convection), lumpy sides and billowed tops. Cloud types: fair-weather cumulus,
+    stratocumulus (a lumpy sheet with gaps), an overcast deck (a closed lumpy sheet), towering cumulus
+    up to 4 km (real storm cells are step 7), and veils for high layers. Before, each of SE's cloud
+    blobs (cover near 1 inside) was filled from the ground up: flat slabs with blurred edges.
+    Problems found and fixed on the way:
+    - far away the heaps were smaller than the cloud texels and turned into stripes (they now switch to
+      their average sooner);
+    - the shape noise repeats every 6 km and lined the gaps up in rows towards the horizon (a second,
+      turned layout fixes it);
+    - mixing the types by their density stood faint 8 km "ghost towers" over every heap (they now mix
+      their heights);
+    - stopping the billows far away made distant clouds fatter, a white wall at the horizon.
+  - **Step 6, light: done (2026-11-03).** A light volume (blackrack's design): a 3D grid of 160 x 160 x 32
+    over the cloud layers within 60 km of the spot under the camera, rebuilt 4 slices a frame (all of
+    it every 8 frames). For each point it holds how much sunlight gets through the clouds above it,
+    and how much cloud is straight overhead. The clouds take their long self-shadows from it (one heap
+    shading the next) and the sky's light (bases and lower parts dimmer). Also: denser cumulus (as real
+    ones; before they let too much light through to their bases), three bounce "octaves" for the soft
+    inner glow, dense cores brighter than thin edges, a little of the ground's light on the bases, and
+    shorter first light steps (40, 80, 180 m) for the billows' own shadows. The blend with the last
+    frames now uses a sharper filter (moving clouds stay crisp) and ignores neighbours at a very
+    different depth (clouds no longer bleed across mountain edges). Not taken from blackrack: keeping
+    the see-through-ness only from the fresh frame (it would make glowing ghosts here instead), and
+    storing the history squashed (not needed so far).
+  - **Speed (Ultra 3440x1440, clouds' ms):** the near pass now traces a quarter of its pixels each frame
+    at half size (it cost 15-23 ms inside Earth's low cumulus). Earth's central US cumulus from 400 km,
+    12 km, 4.5 km, 1.5 km: 1.4 / 2.2 / 2.8 / 2.8 (17-25 ms before at the low ones). The Amazon's dense
+    afternoon cumulus from 15 km, 2.5 km, 1.8 km, inside: 2.7 / 3.1 / 2.4 / 2.4. The user's planet from
+    3,400 km, 114 km, 3 km, the ground: 1.8 / 3.0 / 3.4 / 3.4 (after step 4: 1.4 / 2.4 / 2.7 / 2.5). The
+    march is built twice, with and without the cumulus code: for a body whose clouds are all veils
+    (the user's planet) the code it never uses slowed it by a third.
+  - **Next:** step 7 (storms built from parts, lightning without smears, rain tuned, final measurements
+    and docs). Seen while testing: from below at the user's planet's 3 km spot a net of dark lines in
+    the veil near the horizon (older than steps 5-6); far clouds' edges keep a faint grain; the cumulus
+    heaps are all about the same size.
   - **Still open:** the faint straight line over Alaska from 11,000 km; SE's flat clouds (40-60 radii)
     still draw the weather's cloud without its pattern; faint grey specks at some cloud edges.
   - **Test switches:** `SE_CLOUD_QUARTER=0`, `SE_CLOUD_LOD=0` (a hard switch, no fades),
-    `SE_DETAIL_COVER=0`, `SE_NEAR_PASS=0`, `SE_WEATHER_NEUTRAL=1`; dev command `vclouds 0|1|2` (the
-    3D clouds off, High, Ultra, for side-by-side pictures).
+    `SE_DETAIL_COVER=0`, `SE_NEAR_PASS=0`, `SE_WEATHER_NEUTRAL=1`, `SE_CLOUD_REFERENCE=1` (step 5's
+    reference: every pixel traced every frame at full size with twice the steps, no history; slow),
+    `SE_WEATHER_DEBUG=1` (a weather map at the top of the screen);
+    dev command `vclouds 0|1|2` (the 3D clouds off, High, Ultra, for side-by-side pictures).
 - **Step 8, gas giants: under way (2026-11-03).** Done so far:
   - SE's gas giant cloud generator now sits in its own shader file (`gas_giant.wesl`), shared by the
     planet shader, the brown dwarfs and the new giant decks; flat Jupiter checked identical (same

@@ -17,6 +17,10 @@ README.md explains the features, controls and command-line options; `docs/progre
 finished work's detailed notes moved out of PROGRESS.md; `docs/` holds the notes on
 SE's file formats and reverse engineering; `docs/missing_features.md` lists what still differs
 from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixed and left.
+`docs/ksp-clouds-notes.md` is how blackrack's volumetric clouds for Kerbal Space Program work (studied
+for the clouds plan); what it was learned from (his public C#, the user's download's shaders exported
+as GLSL, his wiki) is in `re/ksp_clouds/`, which stays out of git: someone else's code. Take methods
+from it, never its code, shaders or textures.
 
 ## Build and play
 
@@ -119,7 +123,7 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
   below 3.5x its half-width and re-centred after a quarter of it; catalog maps from their deepest
   tiles on a worker thread, generated layers by `cover_patch` on the GPU, one a frame); `cover_at`
   takes the finest that holds a point at its footprint (`CloudView::detail`, binding 19). The near
-  pass traces the first 4 km of the rays (Ultra, at the solids' size; High 2 km at half) with its own
+  pass traces the first 4 km of the rays (Ultra; High 2 km), at half the solids' size, a quarter of its texels a frame, with its own
   history, over the far trace (`CloudSize::params.w` the ray part, `CloudView::lod` z/w). The far
   trace does one texel of each 2x2 block a frame in turn (`CloudSize::trace`, `SE_CLOUD_QUARTER=0`
   all; the resolve reprojects each texel by the trace's distance, which must be the real scene
@@ -131,12 +135,33 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
   shaped by a baked pattern map (`weather_pattern`, `CloudShadowAssets::pattern`, binding 27; planet
   material binding 33) through `cloud_cover.wesl` `weather_shaped`: the march, the rain and the
   ground's shadows all use it (the flat shells not yet). `SE_DETAIL_COVER=0`, `SE_NEAR_PASS=0` leave
-  parts out; the dev command `vclouds 0|1|2` switches the 3D clouds off/High/Ultra within a run (flat
+  parts out; `SE_CLOUD_REFERENCE=1` draws the reference to judge shapes and light against (every pixel
+  at full size traced every frame over the whole ray, twice the steps, no history: slow); the dev command `vclouds 0|1|2` switches the 3D clouds off/High/Ultra within a run (flat
   vs 3D pictures; note the flat shells then draw without the weather). The march (`trace`) is nearly
   all of the clouds' cost; the worst case
   so far is the user's planet RS 8514-3620-1-7-69 1 (one high layer, 14-18 km, and the weather's cloud): 11-16 ms
   at Ultra 3440x1440 before the plan, 1.4-2.7 ms after its step 4 (`.optimize/bench/rs8514_ultra.sh NAME "extra commands"`; planet 2's
   thin high layers ~5.5 ms looking around).
+- Cloud shapes (the clouds plan's step 5): cumuliform layers are fields of heaps (`layer_density`,
+  `heaps`): the shape noise, spread evenly over 0..1 by a logistic fitted to its distribution (about
+  0.833 +- 0.041: se_core `cargo test -p se_core print_shape_quantiles -- --ignored --nocapture`; change
+  the shape volume and refit it), read on the layer's base in two layouts (one turned: the 6 km tile
+  alone lined the gaps up in rows), picks where heaps stand and each point's strength; the types blend
+  their tops (`type_top`, `type_height`, a heap's height from its width) by weight, never their
+  densities (that stood faint 8 km towers over every heap). Keep `heaps_ceiling` (the clear-air test's
+  limit) and the mean curves (`type_density`, the far mean and the light from above) in step with
+  `heaps`. Cloud types come from the regional cover (`regional_cover`, the cover map's mip 2), not the
+  local one: SE's maps give each cumulus blob a cover near 1. The weather's own cloud (`weather_shaped`)
+  must fade out with its share, never switch on at a level: a switch at 2 % cut its clouds into
+  saw-tooth walls along the weather cube's texels.
+- Cloud light (step 6): the light volume (`LightVolume` in volumetric_clouds.rs, `light_gen` and
+  `light_at` in the shader, bindings 28-30 of the trace's group): 160 x 160 x 32 over the layers within
+  60 km of the spot under the camera, two of them, the back one built 4 slices a frame, swapped when
+  complete; only while the camera is within 30 km of the clouds' top. The march takes its first three
+  light steps itself, the rest from the volume. The march (`trace`) is compiled twice (`HEAPS` set or
+  not, `CloudPipelines::trace`): code compiled into it costs registers even where it never runs (the
+  solid types' code slowed the user's planet's veils by a third), so measure the user's planet
+  (`.optimize/bench/rs8514_ultra.sh`) after adding to the march.
 - Weather effects (step 7): the trace draws rain/snow shafts, fog and dust (`media`) and lightning's
   glow in clouds; `weather_fx` (full resolution, after the composite) draws near rain streaks or snow
   flakes and lightning's light on the ground. A second cube holds fog and dust; `sim_flash` picks 8

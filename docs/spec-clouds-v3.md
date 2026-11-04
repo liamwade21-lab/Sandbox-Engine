@@ -116,8 +116,9 @@ The clouds read SE's cloud maps at the detail the screen needs, as SE's flat clo
   the layer's shape, no extra march).
 - The sky's colour from above, a little of the ground's colour on the bases, the bright rim towards
   the sun, sunset colours and haze from the atmosphere (as today).
-- **A light volume** (as in blackrack's clouds for Kerbal Space Program, which work from orbit to the
-  ground): a 3D grid around the camera, spanning the cloud layers and finer near the camera, holding
+- **A light volume** (as in blackrack's clouds for Kerbal Space Program from their Release 4, which
+  work from orbit to the ground; `docs/ksp-clouds-notes.md`): a 3D grid around the camera, spanning the
+  cloud layers and finer near the camera (his: a paraboloid out to the horizon), holding
   how much sunlight and sky light reaches each point through the clouds. It is refreshed a part at a
   time over several frames and moves with the camera. It gives the long self-shadow (grey bases and
   far sides) and the dark creases at once; the march's short sunlight steps stay for the fine detail.
@@ -162,9 +163,10 @@ Ultra 3440x1440 before the next.
 | 3 | Speed: long steps through clear air, cheaper sunlight, far steps (done 2026-11-03). | Same pictures; budget met at today's look. |
 | 4 | Sharp from far: the finer cloud map and the patch stack (done 2026-11-03, plus the composite sharpened by the cover and the weather's cloud pattern). | From orbit as sharp as SE's flat clouds; no seams. |
 | 4b | Fixes from the user's videos (2026-11-03): cloud ghosts beside a planet's edge when orbiting it fast; the ground's cloud shadows fading near the ground (done 2026-11-03, see Results). | No ghosts while orbiting fast; shadows as dark near the camera as far away. |
-| 5 | Shapes: a reference switch first; cloud types with their two height curves, varying tops, billows, wisps. | Test views look like the video's cumulus, decks and towers, and like the reference. |
-| 6 | Light: the light volume (long self-shadow, sky light, creases), bounces, ground colour. | Bases and creases dark, tops bright, as in the video. |
-| 7 | Storms from parts, lightning without smears, rain tuned; final measurements (the near pass's resolution too) and docs. | Budget met; README, PROGRESS, CLAUDE updated. |
+| 4c | Learn how blackrack's raymarched clouds for Kerbal Space Program (the user's download, the Release 3 line with 2024 backports; the light volume is Release 4's) work: its public source, or else its decompiled code and shaders, kept in `re/ksp_clouds/` (out of git); notes in `docs/ksp-clouds-notes.md`; steps 5-7 updated from it. Methods only: none of its code, shaders or textures in the port (done 2026-11-03: its C# is public, its shaders were read as the bundle's OpenGL GLSL). | The notes cover its shapes, light volume, temporal reconstruction, orbit-to-ground detail, ground shadows, lightning and rain, and costs, with the numbers scaled to our planets. |
+| 5 | Shapes: a reference switch first (`SE_CLOUD_REFERENCE=1`); the saw-tooth edges of the weather's own cloud; cloud types with their curves, varying tops, billows, wisps (done 2026-11-03: fields of heaps, see Results). | Test views look like the video's cumulus, decks and towers, and like the reference. |
+| 6 | Light: the light volume (long self-shadow, sky light, creases), scattering octaves and the dense cores' glow, ground colour; the temporal pass's defences from blackrack's (done 2026-11-03, see Results; fresh transmittance and a bounded history left out). | Bases and creases dark, tops bright, as in the video. |
+| 7 | Storms from parts, lightning (blackrack's schedule and light, scaled) without smears, rain tuned (his near-rain tricks); final measurements (the near pass's resolution too) and docs. | Budget met; README, PROGRESS, CLAUDE updated. |
 
 Then the old plan's steps 8 (gas giants), 9 (integration) and 10.
 
@@ -194,26 +196,48 @@ video and with the last step's picture:
 - Step 4: the cover cube at 2048 a face (from SE's tiles at about the cube's texel size, coarse levels
   first); `detail.rs` slots become three levels per layer (half-widths 400, 800, 1600 km on Earth,
   scaled by radius; R8 2D array of 12), `cover_at` takes the finest level whose patch and texel fit.
-- Step 5: first a reference switch (say `SE_CLOUD_REFERENCE=1`: every cloud pixel traced every frame,
-  no history, twice the steps; slow) to judge the shapes and the light against. Then a 64^3 billow
-  volume (inverted Worley, three octaves) and a 2D curl texture; `layer_density` per cloud type
-  (weights from the layer's cumulus share, the cover and the weather's convection), each type a
-  density curve D(h) and an erosion curve E(h) over the height fraction; the top per place from the
-  cover and the convection (today's `top` in `layer_density` is a start); billows and curl applied
-  after the bulk shape's threshold, scaled by E(h).
-- Step 6: a light volume around the camera (blackrack's design): about 128 x 128 x 32 texels over the
-  layers' height (settled by measuring), finer horizontally near the camera, re-centred as the camera
-  moves; per texel the sun's optical depth to the clouds' top (a march towards the sun through the
-  cheap density) and the sky light's visibility (a few upward directions); refreshed in slices over
-  about 8 frames. The march reads it for the shadow beyond its own five sunlight steps (only the part
-  of the path past them, so no cloud is counted twice) and for the ambient. A second scattering octave
-  (the direct beam plus two), more only if the pictures need it; the ground's colour into the bases.
+- Step 5: first a reference switch (`SE_CLOUD_REFERENCE=1`, done: every pixel at the solids' size
+  traced every frame over the whole ray, twice the steps, no history, no near pass; slow) to judge the
+  shapes and the light against. Then the saw-tooth edges of the weather's own cloud (terraces seen from
+  1,000 km on the moon RS 8514-3840-6-8364-20 3.3: the same in the reference, gone with
+  `SE_WEATHER_NEUTRAL=1`, still there without the simulation or the detail patches, not the march's
+  step jitter). Then, from blackrack's clouds (`docs/ksp-clouds-notes.md` section 1): cloud types in a
+  small height table (x the type, from the layer's cumulus share, the cover and the weather's
+  convection; y the height fraction; RG8: density curve D(h) and erosion curve E(h)), one fetch, types
+  blended by their curves (not by sampling the noise twice); the shape d0 = max(0, n + c - 1) with
+  c = cover x D(h) and the noise lifted to [0.5, 1], so the cover sets a cloud's reach and thickness at
+  once; erosion d = max(0, d0 - e) / (1 - e), e = strength x E(h) x (1 - detail); a 128^3 billow volume
+  (1 - F1 Worley, amplitudes halving, cells doubling, mips; cells of about 1-2 km, as blackrack's
+  physical sizes, not scaled by the radius) and curl moving only the noise lookup (about 3 % of a
+  tile) for wisps; the top per place from the cover and the convection (today's `top` is a start); the
+  noise's mip from the footprint, never finer than its mip 1 where the steps can't resolve it.
+- Step 6: a light volume around the camera (blackrack's design, `docs/ksp-clouds-notes.md` section 3:
+  his is 256 x 256 x (32 direct + 32 ambient) R16F, a paraboloid about a point on the camera's
+  vertical below it, out to the horizon, direct light in 4 slices a frame with 50 steps a texel, the
+  ambient 1 slice a frame blended 7 % falling to 1 %, re-centred only after a 3 % move with one
+  reprojection): ours about 128 x 128 x 32 texels over the layers' height to start (settled by
+  measuring); one paraboloid spans about 570 km on Earth (texels of several km), so finer near the
+  camera, or a second nested volume; per texel the sun's optical depth to the clouds' top (a march
+  towards the sun through the cheap density) and the sky light's visibility (a few upward directions);
+  the direct part refreshed in slices over about 8 frames, the sky light over about 32. The march reads it for the shadow beyond its own five sunlight steps (only the part
+  of the path past them, so no cloud is counted twice) and for the ambient. Scattering octaves as
+  blackrack's four (sum over k of 2^-k exp(-2^-k tau)) and his in-scatter boost growing with the local
+  density (dense cores glow, thin edges stay dim); the ground's colour into the bases. The temporal
+  pass's defences from his: the transmittance always from the fresh trace (only the light accumulates),
+  the clamp box widened to clear beside clear neighbours and its members within 10 % of the depth, a
+  Catmull-Rom history fetch, the history kept in a bounded space.
   Fallback: a cone light march of six steps over about 6 km, the creases as the sky light times
   exp(-k x the cloud column above, from cover and profile).
 - Step 7: storm cells from the weather's convection as an envelope (base radius, trunk, an anvil
   widening near the top, an overshoot, a lean along the upper wind) that sets the density curve and
-  the top, the noise on its surface. Lightning: the resolve skips the light history (not the
-  transmittance's) in texels near an active flash. Measure the near pass traced coarser than the far
+  the top, the noise on its surface (blackrack's towers are two types whose curves dip mid-height and
+  bump at 90 % for the anvil). Lightning (his, `docs/ksp-clouds-notes.md` section 6): random times at a
+  rate per type, a few live flashes in a box of max(range, 2 x the camera's altitude), where the cover
+  is > 0.1; 0.5 s with two or three bumps; the clouds lit by exp(-10 d / range) per sample, the ground
+  and the rain too, ranges scaled for Earth (his Jool's ~150 km); the resolve skips the light history
+  (not the transmittance's) in texels near an active flash (his Release 5 does the same). Near rain
+  (`weather_fx`): streaks thinned by a random number against a cover ramp (no pops), falling along
+  down + wind - the camera's velocity, faded 0.1 m from the camera and 1 m before a surface. Measure the near pass traced coarser than the far
   trace (Horizon Forbidden West draws its near clouds at half the far resolution).
 
 ## What other games do (survey, 2026-11-03)
@@ -233,6 +257,8 @@ Horizon's design (Guerrilla's "Nubis"). What came of it:
   clear whatever the last frames held, and true distances for moving the last frames (Star Citizen also
   weighs its history by motion and depth). If a ghost stays on the planet's side of its edge: trace
   every pixel there for a few frames.
+- **blackrack's clouds in depth** (step 4c): `docs/ksp-clouds-notes.md`, from their public C# and the
+  user's build's compiled shaders; folded into the implementation notes of steps 5-7.
 - **Not taken:** Horizon Forbidden West's voxel clouds (artists build each sky with fluid simulations:
   not possible for generated planets; perhaps later for a few storm shapes); Ghost of Tsushima's sky
   painted into a texture over 60 frames (made for a game on the ground, not for flying around planets);
@@ -291,8 +317,85 @@ Step 4b (2026-11-03), checked at Ultra 3440x1440 in pictures:
   - Shadow-only pictures (map and cover shadows in separate colours, and their difference as grey)
     agree inside and outside the map at 171 km, 390 km and 22 km on the moon, and from 30, 20 and 8 km
     over the user's planet's overcast spot.
-- Seen on the way, not fixed: saw-tooth edges on some clouds seen from 1,000 km at a slant (the
-  march's steps showing; time paused), to look at with step 5's reference switch.
+- Seen on the way: saw-tooth edges on some clouds seen from 1,000 km (fixed in step 5, below).
+
+Step 5 so far (2026-11-03):
+
+- The reference switch `SE_CLOUD_REFERENCE=1`.
+- Saw-tooth edges (the moon RS 8514-3840-6-8364-20 3.3 from 400-1,500 km): the weather's own cloud
+  was shaped only from a 2 % share on, with a pattern level that left 8 % of the area cloudy there,
+  so its clouds ended in a cut along the weather's 2 % line, kinked at each texel of the weather cube
+  (30 km there). `cloud_cover.wesl` `weather_shaped` now takes the level from a normal distribution
+  (`normal_above`) and fades the clouds out with the share below 2 %; `maybe_cloud` tests a share
+  over 0.2 %. Checked from 400 and 1,500 km straight down and 1,058 km at a slant: no teeth.
+- Cloud types (`type_weights`, `type_depth`, `type_density`, `type_erosion`, `layer_shape`): fair-weather
+  cumulus (1.8 km), stratocumulus (1 km), a deck (900 m), towers and veils, picked by the regional cover
+  (`regional_cover`, the cover map's mip 2, ~20 km: SE's maps fill each cumulus blob with a cover near
+  1, which the local cover took for an overcast); `light_column` reads their curves (`shape_above`).
+- Found on the way, the reasons Earth's cumulus were soft see-through pancakes:
+  - the shape value lay within 0.77-0.89 (se_core `print_shape_quantiles`: nearly normal about 0.833,
+    deviation 0.041, the same to mip 3), so any cover over a fifth filled the whole area: now spread
+    evenly (a logistic) before the threshold, so a share c of the area lies above 1 - c;
+  - a solid cloud's optical depth was capped at the cover's (5.3, about 0.005 /m in a 1.8 km
+    cumulus: fog): now 24 through its depth (0.02 /m), the mean seen from afar unchanged (the area
+    share sets it);
+  - the overcast closing filled clouds to the top wherever the local cover passed 0.75 (every blob of
+    SE's maps): now only their lower part;
+  - the shape noise's 1.5 km cells were larger than SE's cover texels near the camera (400 m), so the
+    outlines were the map's: cumuliform layers now use 500 m cells (veils keep 1.5 km).
+- Under a morning sun (Earth, central US, 2026-07-15 13:30 UTC) the cumulus are now solid with lumpy
+  tops, crisp edges and sharp ground shadows; still too flat-topped and pillowy for the video's
+  look. The user's planet (one stratiform layer) is unchanged from orbit, 114 km and 3 km.
+- Cost (Ultra 3440x1440, Earth's cumulus field, clouds' GPU ms before -> after): 400 km 1.9 -> 2.2,
+  12 km 3.5 -> 4.9, 4.5 km 12.3 -> 17.1, 1.5 km 19.3 -> 25.4. Nearly all of it is the near pass
+  (10.6 -> 14.9 and 17.6 -> 23.4 ms at 4.5 and 1.5 km): inside a low cumulus layer it traces every
+  pixel at full size with no history. Not caught before because the user's planet's clouds are at
+  14-18 km. Next: the near pass's cost (half size or a quarter a frame, as the far trace), then the
+  tops (taller heaps, billows), then step 6's light.
+
+Steps 5 and 6 finished (2026-11-03), checked at Ultra 3440x1440 in pictures (Earth's central US and
+Amazon cumulus, from below, among them, from 15 and 400 km; towering cumulus over the Caribbean; an
+overcast deck at 62 S from above, below and under a low sun; the user's planet from 3,400, 114 and 3 km):
+
+- Near pass: a quarter of its pixels a frame, at half the solids' size on Ultra too (full size cost
+  2.8 ms among the Amazon's afternoon cumulus).
+- Cumulus as fields of heaps (`heaps`): a coarse noise (1.5 km cells, read on the layer's base, and a
+  second layout 1.37 times as large and turned, the two combined so the share stays exact: the
+  noise's 6 km tile otherwise lined the gaps up in rows) picks where heaps stand, over the share
+  `type_field` x cover of the area (cumulus 0.9, a deck 1), and each point's strength; the cloud reaches
+  up to the types' blended top for that strength (`type_top`, `type_height`: fair-weather cumulus about
+  0.6 times as tall as wide, from the field's share; taller with convection; towers to 4 km), from a
+  flat base, under a 350 m skin (below the top and in from the side) that the erosion carves into
+  billows (the detail noise at a 450 m tile for solid clouds: cells of 225, 112 and 56 m), sharpened to
+  about 20 m, softer where the march's steps are long. Lumps (500 m cells) move the strength in 3D.
+  Inside an optical depth of 60 through 0.6 of the types' depth (0.055 /m: real cumulus'). The far
+  switch to the mean (`far_share`) for heaps from a quarter of a cell, before they shrink below the
+  traced texels; the erosion's mean kept where it is averaged out. The clear-air test knows the heaps'
+  ceiling (`heaps_ceiling`). Found on the way: SE's cover blobs (near 1 inside) filled from the ground
+  up were slabs; heaps 1.8 km tall whatever their width were spires; mixing the types by density
+  stood faint 8 km towers over every heap (now by height; halved the march's cost).
+- Light: the light volume (`LightVolume`, `light_gen`, `light_at`): 160 x 160 x 32 RG16F twice, over
+  the layers within 60 km of the spot under the camera (texels about 190 m at its centre, 1.3 km at its
+  edge; up the layers finer near their bottom), 4 slices a frame; R the sun's optical depth from each
+  point to the clouds' top (24 steps, then the mean), G the cloud's straight up (10 steps). The march:
+  three steps (40, 80, 180 m, the first two eroded), then the volume; from 20-40 km on the volume at the
+  point alone; elsewhere the old march and mean. Sky light through the cloud above as a thick slab
+  passes diffuse light, 1 / (1 + 0.11 tau). Three bounce octaves (amplitude, extinction and phase
+  halving) with the phases per ray, the bounces and the diffuse light brighter in dense parts, the
+  ground's light (a mean land's albedo) on the lower parts, a thin step's light reused from the last
+  one. Temporal: a 5-tap Catmull-Rom history; the clamp box from the neighbours within 10 % of the
+  scene's depth. Left out: the transmittance only from the fresh trace (the history's premultiplied
+  light would then glow where the fresh trace is clear) and a bounded history space (not needed so
+  far). The volume costs 0.25 ms.
+- The march is compiled twice (`HEAPS`): for a body whose clouds are all veils without the solid
+  types' code, whose registers slowed every veil sample by a third (the user's planet's trace 2.1 /
+  2.2 ms at 114 / 3 km instead of 3.0 / 3.3).
+- Measured (Ultra 3440x1440, clouds' GPU ms): Earth's central US cumulus from 400 / 12 / 4.5 / 1.5 km
+  1.4 / 2.2 / 2.8 / 2.8; the Amazon's afternoon cumulus from 15 / 2.5 / 1.8 km / inside 2.7 / 3.1 / 2.4
+  / 2.4; the user's planet from 3,400 / 114 / 3 km / the ground 1.8 / 3.0 / 3.4 / 3.4 (after step 4:
+  1.4 / 2.4 / 2.7 / 2.5).
+- Left for later: far clouds' edges keep a faint grain (the steps' jitter at their crisp skin); the
+  heaps are all about one size; a net of dark lines in the user's planet's veil seen from 3 km (older).
 
 ## Decisions
 
@@ -301,6 +404,9 @@ Step 4b (2026-11-03), checked at Ultra 3440x1440 in pictures:
 - Speed first (steps 2-3), so the new look has room in the budget.
 - SE's flat clouds stay for far bodies and on Medium and Low.
 - The survey of other games' clouds taken into steps 5-7 (the user, 2026-11-03).
+- blackrack's clouds studied (step 4c, the user, 2026-11-03) and their methods taken into steps 5-7;
+  not taken: their hand-over to flat clouds from 0.17-0.22 radii (ours stay volumetric to 40-60 radii)
+  and their ground shadow from one density slice.
 
 ## Open questions
 

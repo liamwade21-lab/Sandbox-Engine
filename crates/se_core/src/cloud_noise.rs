@@ -194,6 +194,31 @@ mod tests {
         }
     }
 
+    /// The quantiles of the clouds' shape value (`volumetric_clouds.wesl` `layer_density`'s `base`, from
+    /// the shape volume's channels) at mip levels 0 to 5, for the shader's table that spreads it evenly:
+    /// `cargo test -p se_core print_shape_quantiles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_shape_quantiles() {
+        let (all, levels) = with_mips(shape_volume(), SHAPE_SIZE);
+        let mut start = 0;
+        for level in 0..levels.min(6) {
+            let n = SHAPE_SIZE >> level;
+            let mut base: Vec<f32> = all[start..start + n * n * n * 4]
+                .chunks_exact(4)
+                .map(|t| {
+                    let [r, g, b, a] = [t[0], t[1], t[2], t[3]].map(|v| v as f32 / 255.0);
+                    let fbm = g * 0.625 + b * 0.25 + a * 0.125;
+                    ((r - (fbm - 1.0)) / (2.0 - fbm)).clamp(0.0, 1.0)
+                })
+                .collect();
+            base.sort_by(f32::total_cmp);
+            let q: Vec<String> = (0..=16).map(|k| format!("{:.3}", base[(k * (base.len() - 1)) / 16])).collect();
+            println!("mip {level}: {}", q.join(", "));
+            start += n * n * n * 4;
+        }
+    }
+
     #[test]
     fn detail_volume_is_deterministic_varied_and_mipped() {
         let a = detail_volume();

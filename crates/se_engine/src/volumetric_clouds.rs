@@ -88,9 +88,10 @@ const MAX_RANGE_RADII: f64 = 60.0;
 /// `GIANT_FULL`: from higher up SE's own flat bands are sharper than the decks' colour map.
 const GIANT_NEAR: f64 = 6.0;
 const GIANT_FULL: f64 = 2.0;
-/// The near pass (spec step 6): the clouds within this distance of the camera (m) traced at the
-/// solids' size on Ultra, at half of it on High (the rest at the cloud buffers' size). Near clouds move
-/// fast across the view, so the frames' blend cannot sharpen them as it does the far ones.
+/// The near pass (spec step 6): the clouds within this distance of the camera (m) traced at half the
+/// solids' size, with their own history and shorter steps (the rest at the cloud buffers' size). Near
+/// clouds move fast across the view, so the frames' blend cannot sharpen them as it does the far ones.
+/// (At the solids' size on Ultra it cost 2.8 ms among the Amazon's afternoon cumulus, 3440x1440.)
 const NEAR_RANGE_ULTRA_M: f32 = 4_000.0;
 const NEAR_RANGE_HIGH_M: f32 = 2_000.0;
 /// The passes fade in over this long (real seconds) once their body is ready.
@@ -103,6 +104,20 @@ const GIANT_SHAPE_PERIOD_M: f32 = 40_000.0;
 const GIANT_DETAIL_PERIOD_M: f32 = 6_000.0;
 
 const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+
+/// The light volume (clouds plan step 6, after blackrack's, docs/ksp-clouds-notes.md section 3): a grid
+/// over the cloud layers round the spot under the camera, `LIGHT_XY` x `LIGHT_XY` texels along the
+/// ground (finer near its centre) by `LIGHT_Z` up, holding the star's optical depth from each point to
+/// the clouds' top and the cloud's straight up (the sky light's). The march reads it for the long
+/// self-shadows and the sky light past its first two light steps. Built `LIGHT_SLICES_PER_FRAME`
+/// slices a frame into the back of two volumes, which then swap (all of it every 8 frames).
+const LIGHT_XY: u32 = 160;
+const LIGHT_Z: u32 = 32;
+const LIGHT_SLICES_PER_FRAME: u32 = 4;
+/// Its half-width (m): physical, as the clouds' sizes are (about 190 m texels at its centre, 1.3 km at
+/// its edge).
+const LIGHT_HALF_M: f32 = 60_000.0;
+const LIGHT_FORMAT: TextureFormat = TextureFormat::Rg16Float;
 const COVER_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 const PATTERN_FORMAT: TextureFormat = TextureFormat::R8Unorm;
 
@@ -341,6 +356,7 @@ impl Plugin for VolumetricCloudsPlugin {
             .insert_resource(ready)
             .init_resource::<CloudHistory>()
             .init_resource::<NearHistory>()
+            .init_resource::<LightVolume>()
             .init_resource::<CoverMap>()
             .init_resource::<weather_sim::SimGpu>()
             .init_resource::<detail::DetailGpu>()
@@ -474,7 +490,15 @@ fn lod_on() -> bool {
 /// `SE_NEAR_PASS=0` leaves the near pass out (comparisons).
 fn near_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SE_NEAR_PASS").map_or(true, |v| v.trim() != "0"))
+    *ON.get_or_init(|| std::env::var("SE_NEAR_PASS").map_or(true, |v| v.trim() != "0") && !reference_on())
+}
+
+/// `SE_CLOUD_REFERENCE=1`: the clouds as a reference to judge shapes and light against (slow): every
+/// pixel at the solids' size traced every frame over the whole ray with twice the steps, no history,
+/// no near pass.
+fn reference_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SE_CLOUD_REFERENCE").is_ok_and(|v| v.trim() == "1"))
 }
 
 fn smooth01(a: f64, b: f64, x: f64) -> f64 {
@@ -803,7 +827,13 @@ fn update_cloud_view(
                     1.0,
                     1.0 / if giant { GIANT_SHAPE_PERIOD_M } else { SHAPE_PERIOD_M },
                     1.0 / if giant { GIANT_DETAIL_PERIOD_M } else { DETAIL_PERIOD_M },
-                    if quality == 2 { 2.0 } else { 4.0 },
+                    if reference_on() {
+                        1.0
+                    } else if quality == 2 {
+                        2.0
+                    } else {
+                        4.0
+                    },
                 ),
                 atm_flags: Vec4::new(
                     atm_u.is_some() as u32 as f32,
@@ -836,7 +866,8 @@ fn update_cloud_view(
             // few degrees across. (A gas giant's decks keep their own fade, `giant_fade`.)
             let fade = if giant { 1.0 } else { smooth01(MAX_RANGE_RADII * terrain.radius, MEDIA_FULL_RADII * terrain.radius, r) };
             shares = (fade, fade);
-            let (range, near_div) = if quality == 2 { (NEAR_RANGE_ULTRA_M, 1.0) } else { (NEAR_RANGE_HIGH_M, 2.0) };
+            let range = if quality == 2 { NEAR_RANGE_ULTRA_M } else { NEAR_RANGE_HIGH_M };
+            let near_div = 2.0;
             if lod_on() && near_on() && !giant && !specs.is_empty() && r - terrain.radius < (highest + range) as f64 {
                 near_pass = Vec2::new(range, near_div);
             }
@@ -918,20 +949,110 @@ fn update_cloud_view(
 struct CloudSize {
     /// xy: the solids' size (px), zw: the cloud buffers' used size.
     size: Vec4,
-    /// x: divisor, y: 1 to drop the history, z: frame number, w: the part of the ray traced (0 all of
-    /// it, 1 beyond the near pass's range, 2 within it).
+    /// x: divisor, y: 1 to drop the history (2 also twice the steps: `reference_on`), z: frame number,
+    /// w: the part of the ray traced (0 all of it, 1 beyond the near pass's range, 2 within it).
     params: Vec4,
     /// The trace buffer: xy its used size, z this frame's phase (0..3), w 1 when it holds a quarter of
     /// the cloud texels (`quarter_on`).
     trace: Vec4,
 }
 
+/// The light volume's placement. Layout must match `volumetric_clouds.wesl` `LightFrame`.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct LightFrame {
+    /// xyz the unit direction (sphere space) of its centre, w its half-width (m).
+    c: Vec4,
+    /// Its axes along the ground.
+    e1: Vec4,
+    e2: Vec4,
+    /// x, y the heights (m above the radius) of its bottom and top, z 1 when it holds light, w the radius.
+    h: Vec4,
+    /// The star's direction (sphere space) it was built for.
+    sun: Vec4,
+}
+
+/// One slice's build. Layout must match `volumetric_clouds.wesl` `LightGen`.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct LightGen {
+    frame: LightFrame,
+    /// x the slice, y the texels a side, z the slices.
+    slice: Vec4,
+}
+
+/// The two light volumes: the front one read by the march, the back one being built.
+#[derive(Resource, Default)]
+struct LightVolume {
+    tex: Vec<(Texture, TextureView)>,
+    front: usize,
+    /// Their placements (the front's `h.z` 0 until one is complete).
+    frames: [LightFrame; 2],
+    /// The back one's next slice (`LIGHT_Z`: none being built).
+    next: u32,
+    /// The body (`CloudBody::id`) they are for.
+    body: u64,
+}
+
+impl LightVolume {
+    /// One frame's work: start a build round the spot under the camera when none is going (only while
+    /// the camera is near enough the clouds for the march to want it), and the slices to build now
+    /// (into the back volume, at its placement). Swaps the volumes once one is complete.
+    fn advance(&mut self, device: &RenderDevice, cv: &CloudView, body: u64) -> std::ops::Range<u32> {
+        if self.tex.is_empty() {
+            self.tex = ["vol_clouds_light_a", "vol_clouds_light_b"]
+                .map(|label| {
+                    let t = device.create_texture(&TextureDescriptor {
+                        label: Some(label),
+                        size: Extent3d { width: LIGHT_XY, height: LIGHT_XY, depth_or_array_layers: LIGHT_Z },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: TextureDimension::D3,
+                        format: LIGHT_FORMAT,
+                        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    });
+                    let v = t.create_view(&TextureViewDescriptor::default());
+                    (t, v)
+                })
+                .into();
+            self.next = LIGHT_Z;
+        }
+        if self.body != body {
+            self.body = body;
+            self.frames = Default::default();
+            self.next = LIGHT_Z;
+        }
+        let wanted = cv.giant.x < 0.5 && cv.atm_flags.w > 0.0 && cv.cam2.y < cv.atm_flags.w + 0.5 * LIGHT_HALF_M;
+        if !wanted {
+            self.frames[self.front].h.z = 0.0;
+            self.next = LIGHT_Z;
+            return 0..0;
+        }
+        if self.next >= LIGHT_Z {
+            let c = cv.cam.truncate().normalize_or(Vec3::Y);
+            let pole = if c.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+            let e1 = pole.cross(c).normalize();
+            let sun = (cv.sphere_from_world * cv.sun_dir.truncate().normalize_or(Vec3::Y).extend(0.0)).truncate().normalize_or(Vec3::Y);
+            self.frames[1 - self.front] = LightFrame {
+                c: c.extend(LIGHT_HALF_M),
+                e1: e1.extend(0.0),
+                e2: c.cross(e1).extend(0.0),
+                h: Vec4::new(cv.cam2.z, cv.atm_flags.w, 1.0, cv.cam.w),
+                sun: sun.extend(0.0),
+            };
+            self.next = 0;
+        }
+        let slices = self.next..(self.next + LIGHT_SLICES_PER_FRAME).min(LIGHT_Z);
+        self.next = slices.end;
+        slices
+    }
+}
+
 /// The far trace traces one texel of each 2 x 2 block a frame, taking turns, and the resolve fills in
-/// the rest from the history; `SE_CLOUD_QUARTER=0` traces them all (comparisons). The near pass always
-/// traces them all.
+/// the rest from the history; `SE_CLOUD_QUARTER=0` traces them all (comparisons). The near pass does the
+/// same (tracing them all, it cost 15-23 ms inside Earth's low cumulus at Ultra 3440x1440).
 fn quarter_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("SE_CLOUD_QUARTER").map_or(true, |v| v.trim() != "0"))
+    *ON.get_or_init(|| std::env::var("SE_CLOUD_QUARTER").map_or(true, |v| v.trim() != "0") && !reference_on())
 }
 
 /// The far trace buffer's size for a solids' size: whole 2 x 2 blocks of cloud texels (a quarter), or
@@ -956,7 +1077,9 @@ struct CloudPipelines {
     repeat: Sampler,
     clamp: Sampler,
     depth_down: [CachedRenderPipelineId; 2],
-    trace: CachedRenderPipelineId,
+    /// [only veils, with heaps]: the march without the solid types' code for a body whose clouds are all
+    /// veils (`HEAPS`).
+    trace: [CachedRenderPipelineId; 2],
     resolve: CachedRenderPipelineId,
     composite: [CachedRenderPipelineId; 2],
     fx: [CachedRenderPipelineId; 2],
@@ -968,6 +1091,8 @@ struct CloudPipelines {
     shadow_gen: CachedRenderPipelineId,
     /// The shadow map's mips (`cover_down`).
     shadow_down: CachedRenderPipelineId,
+    /// The light volume's slices.
+    light_gen: CachedRenderPipelineId,
 }
 
 fn init_pipelines(
@@ -1008,6 +1133,9 @@ fn init_pipelines(
                 (18, storage_buffer_read_only_sized(false, None)),
                 (19, texture_2d_array(TextureSampleType::Float { filterable: true })),
                 (27, texture_cube(TextureSampleType::Float { filterable: true })),
+                (28, texture_3d(TextureSampleType::Float { filterable: true })),
+                (29, uniform_buffer::<LightFrame>(false)),
+                (30, uniform_buffer::<LightGen>(false)),
             ),
         ),
     );
@@ -1019,6 +1147,7 @@ fn init_pipelines(
             (
                 (0, view_u()),
                 (11, size_u()),
+                (2, unfilterable()),
                 (6, filterable()),
                 (7, unfilterable()),
                 (8, filterable()),
@@ -1102,11 +1231,15 @@ fn init_pipelines(
         })
     };
     let shader: Handle<Shader> = assets.load("shaders/volumetric_clouds.wesl");
-    let queue = |layout: &BindGroupLayoutDescriptor, entry: &'static str, msaa: Option<bool>, targets: Vec<Option<ColorTargetState>>| {
-        let shader_defs = match msaa {
+    // `HEAPS`: the solid cloud types' heaps (`layer_density`); only the march has a variant without them.
+    let queue_with = |layout: &BindGroupLayoutDescriptor, entry: &'static str, msaa: Option<bool>, heaps: bool, targets: Vec<Option<ColorTargetState>>| {
+        let mut shader_defs: Vec<bevy::shader::ShaderDefVal> = match msaa {
             Some(true) => vec!["MSAA".into()],
             _ => vec!["NO_MSAA".into()],
         };
+        if heaps {
+            shader_defs.push("HEAPS".into());
+        }
         cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some(format!("vol_clouds_{entry}").into()),
             layout: vec![layout.clone()],
@@ -1121,6 +1254,7 @@ fn init_pipelines(
             ..default()
         })
     };
+    let queue = |layout: &BindGroupLayoutDescriptor, entry: &'static str, msaa: Option<bool>, targets: Vec<Option<ColorTargetState>>| queue_with(layout, entry, msaa, true, targets);
     let target = |format: TextureFormat, blend: Option<BlendState>| Some(ColorTargetState { format, blend, write_mask: ColorWrites::ALL });
     // Premultiplied light over the scene, dimmed by the clouds' transmittance.
     let over = BlendState {
@@ -1129,9 +1263,10 @@ fn init_pipelines(
     };
     let pipelines = CloudPipelines {
         depth_down: [0, 1].map(|m| queue(&depth_layout[m], "depth_down", Some(m == 1), vec![target(TextureFormat::R32Float, None)])),
-        trace: queue(&trace_layout, "trace", None, vec![target(HDR_FORMAT, None), target(TextureFormat::R32Float, None)]),
+        trace: [false, true].map(|heaps| queue_with(&trace_layout, "trace", None, heaps, vec![target(HDR_FORMAT, None), target(TextureFormat::R32Float, None)])),
         shadow_gen: queue(&trace_layout, "shadow_gen", None, vec![target(TextureFormat::R16Float, None)]),
         shadow_down: queue(&down_layout, "cover_down", None, vec![target(TextureFormat::R16Float, None)]),
+        light_gen: queue(&trace_layout, "light_gen", None, vec![target(LIGHT_FORMAT, None)]),
         resolve: queue(&resolve_layout, "resolve", None, vec![target(HDR_FORMAT, None), target(TextureFormat::R32Float, None)]),
         composite: [0, 1].map(|m| queue(&composite_layout[m], "composite", Some(m == 1), vec![target(HDR_FORMAT, Some(over))])),
         fx: [0, 1].map(|m| queue(&fx_layout[m], "weather_fx", Some(m == 1), vec![target(HDR_FORMAT, Some(over))])),
@@ -1237,11 +1372,13 @@ fn prepare_textures(
         let size = cloud_size(full, div);
         let tex = |cache: &mut TextureCache, label: &'static str, format: TextureFormat| tex_at(cache, label, format, size);
         let near = (view.lod.z > 0.0).then(|| {
-            let size = cloud_size(full, view.lod.w.max(1.0) as u32);
+            let ndiv = view.lod.w.max(1.0) as u32;
+            let size = cloud_size(full, ndiv);
+            let tsize = trace_size(full, ndiv);
             NearTextures {
                 low_depth: tex_at(&mut cache, "vol_clouds_near_low_depth", TextureFormat::R32Float, size),
-                trace: tex_at(&mut cache, "vol_clouds_near_trace", HDR_FORMAT, size),
-                trace_dist: tex_at(&mut cache, "vol_clouds_near_trace_dist", TextureFormat::R32Float, size),
+                trace: tex_at(&mut cache, "vol_clouds_near_trace", HDR_FORMAT, tsize),
+                trace_dist: tex_at(&mut cache, "vol_clouds_near_trace_dist", TextureFormat::R32Float, tsize),
                 history: [tex_at(&mut cache, "vol_clouds_near_history_a", HDR_FORMAT, size), tex_at(&mut cache, "vol_clouds_near_history_b", HDR_FORMAT, size)],
                 tau: tex_at(&mut cache, "vol_clouds_near_tau", TextureFormat::R32Float, size),
             }
@@ -1380,7 +1517,7 @@ fn clouds_pass(
     images: Res<RenderAssets<GpuImage>>,
     ready: Res<CloudsReady>,
     frame: Res<bevy::diagnostic::FrameCount>,
-    (mut history, mut near_history, mut cover): (ResMut<CloudHistory>, ResMut<NearHistory>, ResMut<CoverMap>),
+    (mut history, mut near_history, mut cover, mut light): (ResMut<CloudHistory>, ResMut<NearHistory>, ResMut<CoverMap>, ResMut<LightVolume>),
     (sim_pipes, sim_frame, mut sim_gpu): (Res<weather_sim::SimPipelines>, Res<weather_sim::SimFrame>, ResMut<weather_sim::SimGpu>),
     (detail_cover, mut detail_gpu): (Res<detail::DetailCover>, ResMut<detail::DetailGpu>),
     mut ctx: RenderContext,
@@ -1413,7 +1550,7 @@ fn clouds_pass(
     let simulated = complete && weather_sim::run_sim(encoder, &device, &sim_pipes, &cache, &sim_frame, &mut sim_gpu, derived, weather);
     span.end(encoder);
     let drawn = match sim_gpu.fx() {
-        Some(fx) if simulated && detailed => draw_clouds(encoder, diagnostics, &device, &pipelines, &cache, &uniforms, noise.as_deref(), &images, &fallback, (&cover_image.texture_view, map, &weather.texture_view, fx, detail_view, &pattern.texture_view), &body, (target, depth, camera, cv, index, tex, msaa, low), frame.0, (&mut history, &mut near_history.0)),
+        Some(fx) if simulated && detailed => draw_clouds(encoder, diagnostics, &device, &pipelines, &cache, &uniforms, noise.as_deref(), &images, &fallback, (&cover_image.texture_view, map, &weather.texture_view, fx, detail_view, &pattern.texture_view), &body, (target, depth, camera, cv, index, tex, msaa, low), frame.0, (&mut history, &mut near_history.0, &mut light)),
         _ => false,
     };
     encoder.pop_debug_group();
@@ -1445,12 +1582,12 @@ fn draw_clouds(
         Option<&MainPassResolutionOverride>,
     ),
     frame: u32,
-    (history, near_history): (&mut CloudHistory, &mut CloudHistory),
+    (history, near_history, light): (&mut CloudHistory, &mut CloudHistory, &mut LightVolume),
 ) -> bool {
     let m = (msaa.samples() > 1) as usize;
     let (Some(depth_down), Some(trace), Some(resolve), Some(composite), Some(fx), Some(binding)) = (
         cache.get_render_pipeline(pipelines.depth_down[m]),
-        cache.get_render_pipeline(pipelines.trace),
+        cache.get_render_pipeline(pipelines.trace[(0..MAX_LAYERS).any(|i| cv.layer_a[i].z > 0.0 && cv.layer_a[i].w > 0.0) as usize]),
         cache.get_render_pipeline(pipelines.resolve),
         cache.get_render_pipeline(pipelines.composite[m]),
         cache.get_render_pipeline(pipelines.fx[m]),
@@ -1482,18 +1619,31 @@ fn draw_clouds(
 
     let su = CloudSize {
         size: Vec4::new(solid.x as f32, solid.y as f32, size.x as f32, size.y as f32),
-        params: Vec4::new(div as f32, reset as u32 as f32, (frame % 4096) as f32, if cv.lod.z > 0.0 && tex.near.is_some() { 1.0 } else { 0.0 }),
+        params: Vec4::new(
+            div as f32,
+            if reference_on() { 2.0 } else { reset as u32 as f32 },
+            (frame % 4096) as f32,
+            if cv.lod.z > 0.0 && tex.near.is_some() { 1.0 } else { 0.0 },
+        ),
         trace: Vec4::new(tsize.x as f32, tsize.y as f32, (frame % 4) as f32, quarter_on() as u32 as f32),
     };
     let Some(size_buf) = uniform_buffer_of(device, "vol_clouds_size", &su) else { return false };
     let depth_view = depth.texture().create_view(&TextureViewDescriptor { aspect: TextureAspect::DepthOnly, ..Default::default() });
     let layout = |l: &BindGroupLayoutDescriptor| cache.get_bind_group_layout(l);
+    // The light volume: this frame's slices of the back one (read by nothing yet), then the front one for
+    // the march (swapped in when the back one is complete).
+    let slices = light.advance(device, cv, body.id);
+    let back = 1 - light.front;
+    let gen_frame = light.frames[back];
+    let complete = slices.end == LIGHT_Z && !slices.is_empty();
+    let Some(front_buf) = uniform_buffer_of(device, "vol_clouds_light_frame", &light.frames[light.front]) else { return false };
+    let Some(no_gen) = uniform_buffer_of(device, "vol_clouds_light_gen", &LightGen::default()) else { return false };
     let depth_group = device.create_bind_group(
         "vol_clouds_depth",
         &layout(&pipelines.depth_layout[m]),
         &BindGroupEntries::with_indices(((0, binding.clone()), (11, size_buf.as_entire_binding()), (1, &depth_view))),
     );
-    let trace_group_for = |size_buf: &Buffer, low_depth: &TextureView| device.create_bind_group(
+    let trace_group_with = |size_buf: &Buffer, low_depth: &TextureView, light_view: &TextureView, light_buf: &Buffer, gen_buf: &Buffer| device.create_bind_group(
         "vol_clouds_trace",
         &layout(&pipelines.trace_layout),
         &BindGroupEntries::with_indices((
@@ -1513,8 +1663,31 @@ fn draw_clouds(
             (18, flashes.as_entire_binding()),
             (19, detail_cover),
             (27, pattern),
+            (28, light_view),
+            (29, light_buf.as_entire_binding()),
+            (30, gen_buf.as_entire_binding()),
         )),
     );
+    if let Some(light_gen) = cache.get_render_pipeline(pipelines.light_gen).filter(|_| !slices.is_empty()) {
+        let span = diagnostics.time_span(encoder, "light");
+        for s in slices.clone() {
+            let slice_gen = LightGen { frame: gen_frame, slice: Vec4::new(s as f32, LIGHT_XY as f32, LIGHT_Z as f32, 0.0) };
+            let Some(gen_buf) = uniform_buffer_of(device, "vol_clouds_light_gen", &slice_gen) else { continue };
+            let group = trace_group_with(&size_buf, &tex.low_depth.default_view, &light.tex[light.front].1, &front_buf, &gen_buf);
+            let slice = RenderPassColorAttachment { view: &light.tex[back].1, depth_slice: Some(s), resolve_target: None, ops: Operations::default() };
+            fullscreen_pass(encoder, "vol_clouds_light", &[Some(slice)], light_gen, &group, &[index.index()], UVec2::splat(LIGHT_XY));
+        }
+        span.end(encoder);
+        if complete {
+            light.front = back;
+        }
+    } else if !slices.is_empty() {
+        // (The pipeline not ready yet: these slices again next frame.)
+        light.next = slices.start;
+    }
+    let Some(front_buf) = uniform_buffer_of(device, "vol_clouds_light_frame", &light.frames[light.front]) else { return false };
+    let light_view = &light.tex[light.front].1;
+    let trace_group_for = |size_buf: &Buffer, low_depth: &TextureView| trace_group_with(size_buf, low_depth, light_view, &front_buf, &no_gen);
     let trace_group = trace_group_for(&size_buf, &tex.low_depth.default_view);
     let fx_group = device.create_bind_group(
         "vol_clouds_fx",
@@ -1542,6 +1715,7 @@ fn draw_clouds(
         &BindGroupEntries::with_indices((
             (0, binding.clone()),
             (11, size_buf.as_entire_binding()),
+            (2, &tex.low_depth.default_view),
             (6, &tex.trace.default_view),
             (7, &tex.trace_dist.default_view),
             (8, &tex.history[read].default_view),
@@ -1612,14 +1786,15 @@ fn draw_clouds(
     if let Some(near) = tex.near.as_ref().filter(|_| cv.lod.z > 0.0) {
         let ndiv = cv.lod.w.max(1.0) as u32;
         let nsize = cloud_size(solid, ndiv);
-        if nsize.x <= near.trace.texture.width() && nsize.y <= near.trace.texture.height() {
+        let ntsize = trace_size(solid, ndiv);
+        if nsize.x <= near.history[0].texture.width() && nsize.y <= near.history[0].texture.height() && ntsize.x <= near.trace.texture.width() && ntsize.y <= near.trace.texture.height() {
             let nreset = near_history.size != nsize || near_history.frame.wrapping_add(1) != frame;
             let (nread, nwrite) = (near_history.parity, 1 - near_history.parity);
             *near_history = CloudHistory { size: nsize, frame, parity: nwrite };
             let nsu = CloudSize {
                 size: Vec4::new(solid.x as f32, solid.y as f32, nsize.x as f32, nsize.y as f32),
                 params: Vec4::new(ndiv as f32, nreset as u32 as f32, (frame % 4096) as f32, 2.0),
-                trace: Vec4::new(nsize.x as f32, nsize.y as f32, 0.0, 0.0),
+                trace: Vec4::new(ntsize.x as f32, ntsize.y as f32, (frame % 4) as f32, quarter_on() as u32 as f32),
             };
             if let Some(nbuf) = uniform_buffer_of(device, "vol_clouds_near_size", &nsu) {
                 let ndepth_group = device.create_bind_group(
@@ -1634,6 +1809,7 @@ fn draw_clouds(
                     &BindGroupEntries::with_indices((
                         (0, binding.clone()),
                         (11, nbuf.as_entire_binding()),
+                        (2, &near.low_depth.default_view),
                         (6, &near.trace.default_view),
                         (7, &near.trace_dist.default_view),
                         (8, &near.history[nread].default_view),
@@ -1667,7 +1843,7 @@ fn draw_clouds(
                     trace,
                     &ntrace_group,
                     &offsets,
-                    nsize,
+                    ntsize,
                 );
                 fullscreen_pass(
                     encoder,
