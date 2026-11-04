@@ -39,6 +39,7 @@ mod models;
 mod music;
 mod overlay;
 mod perf;
+mod pipeline_watch;
 mod procgalaxies;
 mod projection;
 mod procsystems;
@@ -173,7 +174,7 @@ fn main() {
     // Offscreen views: the HD screenshot tiles, skybox export and the projection modes' cube faces.
     .add_plugins((capture::CapturePlugin, projection::ProjectionPlugin))
     // Frame-time measurement (SE_PERF=FILE only).
-    .add_plugins(perf::PerfPlugin)
+    .add_plugins((perf::PerfPlugin, pipeline_watch::PipelineWatchPlugin))
     .add_systems(Startup, no_light_clustering);
     // Now that the log file is open.
     match user_dir {

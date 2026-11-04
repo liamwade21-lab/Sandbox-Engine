@@ -64,7 +64,7 @@ const GEN_TILE_KEEP_FRAMES: u64 = 600;
 
 /// The fixed part of a patch's material. What a relight changes is in the node's [`PatchLight`];
 /// the shader reads those components (marked "the slot's") from there.
-#[derive(Clone, Copy, Debug, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct PlanetUniform {
     /// xyz: planet centre in node-local (body-frame, meters) coordinates; w: radius (m).
     pub planet: Vec4,
@@ -219,7 +219,7 @@ impl LightPages {
 }
 
 /// A light page's storage buffer (render world only: the page keeps its own copy).
-fn light_buffer(lights: &[PatchLight]) -> ShaderBuffer {
+pub(crate) fn light_buffer(lights: &[PatchLight]) -> ShaderBuffer {
     let mut bytes = encase::StorageBuffer::new(Vec::<u8>::new());
     bytes.write(lights).expect("light page");
     ShaderBuffer::new(bytes.into_inner(), RenderAssetUsages::RENDER_WORLD)
@@ -560,6 +560,10 @@ pub struct PlanetMaterial {
     /// A node's skirts (the walls hung under its edges that close the cracks to coarser
     /// neighbours), drawn after every node's ground ([`Material::alpha_mode`]). Not a binding.
     pub skirt: bool,
+    /// The noises the node's pipeline works out at its vertices ([`VertexNoise`]; not a binding):
+    /// [`vertex_noise`]'s choice once that variant's pipelines are built, until then `None`, which
+    /// draws the same ground with every pixel working them out ([`NodeNoise`]).
+    pub variant: VertexNoise,
 }
 
 /// Pipeline key: the water surface is drawn from both sides with its own entry points; ground nodes
@@ -573,17 +577,57 @@ pub struct PlanetMaterialKey {
 impl From<&PlanetMaterial> for PlanetMaterialKey {
     fn from(m: &PlanetMaterial) -> Self {
         let water = m.u.water.w > 0.5;
-        let u = &m.u;
-        let noise = if water { VertexNoise::None } else { vertex_noise(&m.biome, u.rect_color.w > 0.5, u.soil_tile.z, u.proc_params2.x) };
-        Self { water, noise }
+        Self { water, noise: if water { VertexNoise::None } else { m.variant } }
+    }
+}
+
+/// A ground node's [`VertexNoise`]: the one it should use (`want`) and the one its ground and skirt
+/// materials use (`used`). The driver builds each variant's pipeline in seconds (5-6 s for
+/// planet.wesl on the user's RTX 5080), and a node whose pipeline is not built is not drawn: landing
+/// once hid the ground for 10 s while the finer nodes' variants were built (the user's 2026-11-04
+/// video). A node uses `None` until its own variant is ready (`pipeline_watch::GroundPipelines`),
+/// then [`upgrade_node_noise`] switches it.
+#[derive(Component)]
+pub(crate) struct NodeNoise {
+    want: VertexNoise,
+    pub(crate) used: VertexNoise,
+    pub(crate) sea: bool,
+    ground: Handle<PlanetMaterial>,
+    skirt: Handle<PlanetMaterial>,
+}
+
+/// Switches the ground nodes waiting for their [`VertexNoise`] variant to it once its pipelines are
+/// built (a material change only then, never every frame).
+fn upgrade_node_noise(
+    pipes: Res<crate::pipeline_watch::GroundPipelines>,
+    mut seen: Local<u32>,
+    mut nodes: Query<&mut NodeNoise, Allow<Disabled>>,
+    mut materials: ResMut<Assets<PlanetMaterial>>,
+) {
+    let rev = pipes.revision();
+    if rev == *seen {
+        return;
+    }
+    *seen = rev;
+    for mut n in &mut nodes {
+        if n.used != n.want && pipes.usable(n.want) == n.want {
+            let want = n.want;
+            for h in [n.ground.clone(), n.skirt.clone()] {
+                if let Some(mut m) = materials.get_mut(&h) {
+                    m.variant = want;
+                }
+            }
+            n.used = want;
+        }
     }
 }
 
 /// Which of SE's colour generator noises a ground node works out at its vertices for its pixels to
 /// interpolate (`planet.wesl`), instead of every pixel working them out: most of the ground's cost
 /// on procedural worlds, though they vary only over kilometres.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub enum VertexNoise {
+    #[default]
     None,
     /// The airless worlds' (`selena_noise`, 43 noises a pixel).
     Selena,
@@ -600,7 +644,20 @@ pub enum VertexNoise {
 }
 
 impl VertexNoise {
-    fn shader_defs(self) -> &'static [&'static str] {
+    pub(crate) const ALL: [VertexNoise; 5] =
+        [VertexNoise::None, VertexNoise::Selena, VertexNoise::Terra, VertexNoise::TerraClimate, VertexNoise::TerraPartial];
+
+    pub(crate) fn index(self) -> usize {
+        Self::ALL.iter().position(|&v| v == self).unwrap_or(0)
+    }
+
+    /// The variant a planet.wesl pipeline was built for, from whether each define is set.
+    pub(crate) fn from_defs(has: impl Fn(&str) -> bool) -> VertexNoise {
+        let set = |v: VertexNoise| Self::ALL.iter().flat_map(|a| a.shader_defs()).all(|d| has(d) == v.shader_defs().contains(d));
+        Self::ALL.into_iter().find(|&v| set(v)).unwrap_or(VertexNoise::None)
+    }
+
+    pub(crate) fn shader_defs(self) -> &'static [&'static str] {
         match self {
             VertexNoise::None => &[],
             VertexNoise::Selena => &["SELENA_AT_VERTICES"],
@@ -1402,7 +1459,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<SelfEmission>()
             .init_resource::<WaterDisplay>()
             .add_systems(Startup, (make_default_textures, load_surface_settings))
-            .add_systems(Update, animate_water_display)
+            .add_systems(Update, (animate_water_display, upgrade_node_noise))
             .add_observer(forget_gen_jobs)
             .add_systems(
                 PostUpdate,
@@ -2159,13 +2216,14 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain, Option<&crate::eclipse::EclipseCasters>)>,
-    (ambient, emission, water_display, switches, volumetric, cloud_assets): (
+    (ambient, emission, water_display, switches, volumetric, cloud_assets, pipes): (
         Res<crate::system::AmbientLighting>,
         Res<SelfEmission>,
         Res<WaterDisplay>,
         Res<crate::switches::RenderSwitches>,
         Res<crate::volumetric_clouds::VolumetricClouds>,
         Option<Res<crate::volumetric_clouds::CloudShadowAssets>>,
+        Res<crate::pipeline_watch::GroundPipelines>,
     ),
     clouds_q: Query<&CloudNode, Allow<Disabled>>,
     mut vis_q: Query<(&mut Visibility, Has<Disabled>), (Or<(With<TerrainNode>, With<CloudNode>)>, Allow<Disabled>)>,
@@ -2374,6 +2432,10 @@ fn update_terrain(
                 },
             );
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
+            // Its own noise variant once that pipeline is built, until then the per-pixel one (`NodeNoise`).
+            let biome_u = terrain.biome.unwrap_or_default();
+            let want_noise = vertex_noise(&biome_u, u.rect_color.w > 0.5, u.soil_tile.z, u.proc_params2.x);
+            let used_noise = pipes.usable(want_noise);
             let ground = PlanetMaterial {
                 u,
                 color: tex(&pc, &defaults.white),
@@ -2384,7 +2446,7 @@ fn update_terrain(
                 transmittance: terrain.atmosphere.as_ref().map(|a| a.transmittance.clone()).unwrap_or_else(|| defaults.black.clone()),
                 irradiance: terrain.atmosphere.as_ref().map(|a| a.irradiance.clone()).unwrap_or_else(|| defaults.black.clone()),
                 ring: ring.as_ref().map_or_else(|| defaults.white.clone(), |r| r.0.clone()),
-                biome: terrain.biome.unwrap_or_default(),
+                biome: biome_u,
                 samples: surface_tex.samples.clone(),
                 soils: surface_tex.soils.clone(),
                 normals: images.add(build.normals),
@@ -2399,6 +2461,7 @@ fn update_terrain(
                 cloud_weather: cloud_assets.weather.clone(),
                 cloud_pattern: cloud_assets.pattern.clone(),
                 skirt: false,
+                variant: used_noise,
             };
             let skirt_mat = materials.add(PlanetMaterial { skirt: true, ..ground.clone() });
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
@@ -2475,9 +2538,11 @@ fn update_terrain(
                 .collect();
             let mesh = meshes.add(build.mesh);
             let center_u = body.pos.offset_m(body.orient * body.to_shape(build.center));
+            let node_noise = NodeNoise { want: want_noise, used: used_noise, sea: build.water.is_some(), ground: material.clone(), skirt: skirt_mat.clone() };
             let mut node = commands.spawn((
                     SystemMember,
                     TerrainNode,
+                    node_noise,
                     BodyAttached {
                         body: body_entity,
                         center: build.center,

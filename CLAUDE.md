@@ -273,12 +273,21 @@ from it, never its code, shaders or textures.
   without the soils, a terra-only one: no gain). Probes that change the colour also change which
   soils the ground picks, which moves the soils' cost: read them with care.
 - Measuring speed: `SE_PERF=FILE` turns on the frame-time logger (`perf.rs`); the dev command
-  `perf NAME` … `perf end` marks a segment. The scripts in `.optimize/bench/` (`all.sh` scenes,
+  `perf NAME` … `perf end` marks a segment (it runs until the next `perf`: rs8514_ultra.sh's
+  `km114` also holds the jump to 3 km). The scripts in `.optimize/bench/` (`all.sh` scenes,
   `refs.sh` reference shots, `compare.py`) do this for fixed scenes; `.optimize/REPORT.md` has the
   2026-11-02 optimization results. A segment whose median sits at ~16.6 ms was capped at 60 fps from
   outside the port (window not in focus): rerun it with the window in front. A segment with passes'
   GPU times missing or tiny (seen once with the clouds off) is broken the same way: rerun it. The
   clouds' parts show as `volumetric_clouds/sim`, `shadow`, `trace`, `resolve`, `near`, `fx`.
+- GPU pipelines (`pipeline_watch.rs`): Bevy builds each one the first time something draws with it,
+  and nothing using it is drawn until then; the NVIDIA driver takes 5-6 s for each planet.wesl
+  variant. The ground's variants (terrain.rs `VertexNoise` x ground / skirt / sea) are built ahead at
+  start (`WARM_ORDER`: add any new variant there), and a node draws with `VertexNoise::None` until
+  its own is built (`NodeNoise`, `upgrade_node_noise`): without that the planet was see-through for
+  seconds after loading and on landing. The loading screen (splash.rs) waits until the first view is
+  loaded. se.log lists each pipeline that took over 0.5 s. A settings change that changes the view's
+  pipelines (MSAA) still builds them on demand: the ground can be missing for seconds after it.
 - Never change a Bevy material asset every frame (`Assets::get_mut`, `iter_mut`): Bevy then
   re-prepares every object using it. Per-frame values go in a storage buffer written in place: the
   star/galaxy sprites' camera values (`stars.rs` `SPRITE_CAMERA`) and terrain lighting (`terrain.rs`

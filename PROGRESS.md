@@ -29,6 +29,33 @@
   - Still costly near the ground: the soils within 2 km (~7 ms), the sample layers (3-4 ms), the haze
     and the cloud shadows (~1.7 ms each); from high up, SE's climate noise per pixel on far patches.
     The same split could be done for airless worlds' colour noise (the user's RSN planet 4).
+  - (Correction, found later the same day: the bench's "114 km" segment also holds the jump to 3 km
+    and its first 600 frames. Before the fix below, the finest patches there were not drawn while
+    their shader was being prepared, so it read low: 3.1 ms. It now reads about 10 ms, the real cost;
+    measured at 114 km alone, both versions take 4.7 ms.)
+- **2026-11-04, the ground missing after loading and on landing (fixed and committed; the
+  user's video 10-40-37):**
+  - *Why:* the graphics card's version of each ground shader variant is made the first time a patch
+    needs it, and the patch is not drawn until then. The NVIDIA driver takes 5-6 s for each of the
+    ground's 11 variants (the port's own part is 0.1 s). After loading, the planet was see-through for
+    about 7 s; landing asked for the finer patches' variants and the ground vanished again for about
+    10 s. (NVIDIA's own shader cache folder is full, 1.1 GB against its 1 GB default limit, so it
+    rarely helps across starts.)
+  - *Fix* (`pipeline_watch.rs`): all 11 variants are prepared in the background from the start, 3 at
+    a time (all ready about 18 s after starting); a patch whose own variant is not ready yet draws with
+    the plain per-pixel one (the same picture, a little slower) and switches when it is; the loading
+    screen now stays until the saved place's planet is loaded and can be drawn (8.2 s in a test start
+    from the user's saved place), not a fixed 3 s. se.log now names every shader that took over half
+    a second and when the loading screen closed.
+  - Checked: landing 30 frames after a jump to 3 km shows the ground; the speed at 114 km alone and on
+    the ground is unchanged.
+- **2026-11-04, thin clouds warping while moving (not found yet):** the user's video shows the thin
+  cloud layers smearing and breaking into small squares while flying in and out (2,000-2,300 km up,
+  122 fps, 0.011 c). Test runs at the user's settings (Ultra clouds, 3440x1440, solids 85% of 1080)
+  flying in and out at the same speed, orbiting and turning, paused and with time running, against the
+  reference clouds: the clouds stay as close to the reference while moving as when still, and a change
+  to how the reused frames are kept in range made no measurable difference (not kept). The video's
+  low bit rate (1.8 Mbit/s) adds blocks of its own. Waiting for more detail from the user.
 - **In progress: volumetric clouds and weather.** The plan is `docs/spec-volumetric-clouds-weather.md`
   (2026-11-02): volumetric clouds and a hybrid weather system on all worlds with an atmosphere,
   gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are
@@ -167,7 +194,7 @@
       the night side's tropics from 800 km (fewer than by day, as on Earth).
     - New test commands: `photo 0|1|2` (photo mode; 2 is auto exposure, as the user plays) and
       `ambient X` (SE's ambient light).
-  - **2026-11-04, two more bugs from the user's videos (fixed, not yet committed):**
+  - **2026-11-04, two more bugs from the user's videos (fixed, committed as 7ad5b7c):**
     - *Going into a gas giant you first went through its "floor"* (a hot giant, RS 8514-3620-0-0-70 2):
       under the cloud-top radius the flat bands' surface was still drawn, and from below only its tiles'
       edges showed, a red grid over the sky. It is now hidden while the camera is under it and the 3D

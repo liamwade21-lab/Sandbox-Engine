@@ -2,8 +2,9 @@
 //! `logo0990_1024` logo 5% from its top, a progress bar and loading line at 90% of its height, a
 //! random quote (SE's 25, in the interface language) right-aligned at 66%, and the copyright and
 //! version along the bottom (from SpaceEngine.exe's version resource). SE shows it in its own window
-//! 480 px high at 1080p before the main window opens; here it covers the window while the first
-//! seconds of loading run, then fades. Scripted runs skip it (unless `SE_SPLASH` is set).
+//! 480 px high at 1080p before the main window opens; here it covers the window while loading runs,
+//! at least `SHOW_S`, until the first view is loaded and can be drawn ([`check_loaded`]), then fades.
+//! Scripted runs skip it (unless `SE_SPLASH` is set).
 //!
 //! Not done: SE's in-session loading bar (MainMenu.cfg LoadingBarParams).
 
@@ -16,9 +17,12 @@ use crate::i18n::I18n;
 
 /// banner.cfg `DesiredHeight` at a 1080 px screen.
 const DESIRED_HEIGHT: f32 = 480.0;
-/// The splash stays this long (s), then fades over `FADE_S`.
+/// The splash stays at least this long (s), then fades over `FADE_S` once the first view is loaded
+/// and has been for `READY_HOLD_S`, or after `MAX_WAIT_S` whatever is left.
 const SHOW_S: f32 = 3.0;
 const FADE_S: f32 = 0.6;
+const READY_HOLD_S: f32 = 0.5;
+const MAX_WAIT_S: f32 = 60.0;
 
 pub struct SplashPlugin;
 
@@ -26,6 +30,7 @@ impl Plugin for SplashPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Splash>()
             .add_systems(Startup, prepare.after(crate::i18n::init_i18n))
+            .add_systems(Update, check_loaded)
             .add_systems(EguiPrimaryContextPass, draw.after(crate::skin::UiSet::Backdrop));
     }
 }
@@ -40,6 +45,36 @@ struct Splash {
     copyright: String,
     version: String,
     age: f32,
+    /// Seconds since it opened, unclamped (`age` takes at most 0.1 s a frame, for the drawing).
+    waited: f32,
+    /// How long the first view has been loaded without a break.
+    ready_s: f32,
+    /// The `age` it began to fade at.
+    fade_at: Option<f32>,
+}
+
+/// Whether the first view is loaded: the saved session's body found (a procedural one waits for its
+/// system), every terrain's nodes built, the ground's pipelines its nodes draw with built (the driver
+/// takes seconds for each: the ground was missing for 7 s after the splash, the user's 2026-11-04
+/// video), and no other pipeline still building.
+fn check_loaded(
+    mut splash: ResMut<Splash>,
+    time: Res<Time>,
+    pending: Option<Res<crate::session::PendingRef>>,
+    terrains: Query<&crate::terrain::Terrain>,
+    nodes: Query<&crate::terrain::NodeNoise, With<crate::terrain::TerrainNode>>,
+    pipes: Res<crate::pipeline_watch::GroundPipelines>,
+) {
+    if !splash.active || splash.fade_at.is_some() {
+        return;
+    }
+    use crate::pipeline_watch::GroundKind as K;
+    let ground = nodes.iter().all(|n| {
+        pipes.ready(n.used, K::Ground) && pipes.ready(n.used, K::Skirt) && (!n.sea || pipes.ready(crate::terrain::VertexNoise::None, K::Sea))
+    });
+    let loaded = pending.is_none() && terrains.iter().all(|t| t.loading_nodes() == 0) && ground && pipes.others_building() == 0;
+    splash.waited += time.delta_secs();
+    splash.ready_s = if loaded { splash.ready_s + time.delta_secs() } else { 0.0 };
 }
 
 fn load_image(data: &SeData, path: &str) -> Option<egui::ColorImage> {
@@ -105,7 +140,14 @@ fn draw(mut contexts: EguiContexts, mut splash: ResMut<Splash>, time: Res<Time>)
     }
     let ctx = contexts.ctx_mut()?;
     splash.age += time.delta_secs().min(0.1);
-    let alpha = 1.0 - ((splash.age - SHOW_S) / FADE_S).clamp(0.0, 1.0);
+    if splash.fade_at.is_none() && splash.age >= SHOW_S && (splash.ready_s >= READY_HOLD_S || splash.waited >= MAX_WAIT_S) {
+        if splash.ready_s < READY_HOLD_S {
+            warn!("splash: still loading after {MAX_WAIT_S} s, opening the view anyway");
+        }
+        info!("splash: the first view loaded after {:.1} s", splash.waited);
+        splash.fade_at = Some(splash.age);
+    }
+    let alpha = splash.fade_at.map_or(1.0, |t| 1.0 - ((splash.age - t) / FADE_S).clamp(0.0, 1.0));
     if alpha <= 0.0 {
         splash.active = false;
         splash.textures = None;
@@ -140,7 +182,8 @@ fn draw(mut contexts: EguiContexts, mut splash: ResMut<Splash>, time: Res<Time>)
         let k = h / DESIRED_HEIGHT;
         // Progress bar (ProgressBar label) with the loading line in it.
         let bar = egui::Rect::from_min_size(at(0.0625, 0.90), egui::vec2(w * 0.875, h * 0.03125));
-        let progress = (splash.age / SHOW_S).clamp(0.0, 1.0);
+        // Towards 95 % while loading, full once it fades.
+        let progress = if splash.fade_at.is_some() { 1.0 } else { 0.95 * (1.0 - (-splash.age / 3.0).exp()) };
         p.rect_stroke(bar, 0.0, egui::Stroke::new(1.0, fade(egui::Color32::from_gray(204))), egui::StrokeKind::Inside);
         p.rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * progress, bar.height())), 0.0, fade(egui::Color32::from_white_alpha(77)));
         p.text(at(0.07, 0.90 + 0.03125 * 0.5), egui::Align2::LEFT_CENTER, "Loading...", egui::FontId::proportional(14.0 * k), fade(egui::Color32::WHITE));
