@@ -157,7 +157,9 @@ from it, never its code, shaders or textures.
   gaps between layers, each piece from its own jittered start. With the whole shell from the lowest
   layer to the highest as its path, a moon's heaps under veils 70 km higher got km-long steps: rings
   round the spot under the camera, heaps that appeared only lower down. Cloud density must stay inside
-  each layer's bottom..top (the march never samples outside the bands). With even steps (path / MAX_STEPS) a ray skimming a layer from inside it (150-300 km) had km-long
+  each layer's bottom..top (the march never samples outside the bands). Each piece gets at least 8
+  steps and starts jittered over its whole first step (`march_dt`): with 2 km steps over a 4 km layer
+  and a start jittered over less, whole features came and went as the camera's height changed. With even steps (path / MAX_STEPS) a ray skimming a layer from inside it (150-300 km) had km-long
   steps next to the camera: the heaps there became the layer's mean, a flat band over the far heaps'
   tops that zooming in magnified (the user's 2026-11-04 video, a 10 degree view). The near pass keeps
   even steps.

@@ -1464,6 +1464,17 @@ fn step_rate(pcs: array<vec2<f32>, 8>, lo: f32, hi: f32, steps: f32) -> f32 {
     return exp(b);
 }
 
+// The march's step at the distance tw in a piece `piece` long: q tw within lo..cap, no shorter than
+// `foot` tw (a part of the pixel's footprint), and in the far trace (`per_piece`) at most an eighth of
+// the piece. (Without that last limit a thin layer seen from thousands of km got steps of 2 km for its
+// 4 km, each step at nearly the same heights in it: as the camera's height changed the steps' heights
+// moved, and whole cloud features in the layer came and went as the user zoomed, the user's
+// 2026-11-04 video.)
+fn march_dt(tw: f32, q: f32, lo: f32, cap: f32, foot: f32, piece: f32, per_piece: bool) -> f32 {
+    let dt = max(clamp(q * tw, lo, cap), foot * tw);
+    return select(dt, min(dt, max(piece * 0.125, lo)), per_piece);
+}
+
 // The ray's k-th piece inside the cloud bands (`CloudView::bands`, highest first), in order along it:
 // for k < 4 on the way down through band k (in through its top, out through its bottom, or all of it
 // where the ray turns inside the band), for k >= 4 on the way back up through band 7 - k; clipped to
@@ -1582,9 +1593,9 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     }
     // The far trace's steps grow with the distance from the camera (`step_rate`), no shorter than 50 m
     // or a 500th of the distance, at least 24 over the path (fair-weather cumulus fill only the layer's
-    // lowest kilometre or so: fewer steps over it thinned them) unless a pixel's footprint is longer;
-    // the near pass's are even, 1/NEAR_STEPS of its 4 km. The reference (volumetric_clouds.rs
-    // `reference_on`) takes twice as many. (With the path the cloud pieces alone, all of MAX_STEPS
+    // lowest kilometre or so: fewer steps over it thinned them) unless a pixel's footprint is longer,
+    // and at least 8 over each piece (`march_dt`); the near pass's are even, 1/NEAR_STEPS of its 4 km.
+    // The reference (volumetric_clouds.rs `reference_on`) takes twice as many. (With the path the cloud pieces alone, all of MAX_STEPS
     // went into a few km of cloud seen from hundreds of km: three times the cost for nothing seen.)
     let fine_n = select(1.0, 2.0, cs.params.y > 1.5);
     let n_steps = select(f32(MAX_STEPS), NEAR_STEPS, mode > 1.5) * fine_n;
@@ -1609,7 +1620,12 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     var last_k = vec3<f32>(0.0);
     var reuse_ok = false;
     let jit = jitter(in.position.xy);
-    let t_first = jit * select(dt0, clamp(q * first.x, d_min, dt_cap), mode < 1.5);
+    let lo = select(dt0, d_min, mode < 1.5);
+    let foot = 0.4 / fine_n * px_angle;
+    let far = mode < 1.5;
+    // Each piece from a start jittered over its whole first step (over less of it, the steps sat at
+    // the same distances into the piece on every frame).
+    let t_first = jit * march_dt(first.x, q, lo, dt_cap, foot, first.y - first.x, far);
     var t = t_first;
     // The piece the march is in (`ray_piece` pk) and the path before it.
     var pk = 0;
@@ -1640,12 +1656,12 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             moved = true;
         }
         if moved {
-            t = t_off + jit * select(dt0, clamp(q * pc.x, d_min, dt_cap), mode < 1.5);
+            t = t_off + jit * march_dt(pc.x, q, lo, dt_cap, foot, pc.y - pc.x, far);
             fine_end = t;
         }
         let tw = pc.x + (t - t_off);
         let x = o + d * tw;
-        let dt = max(clamp(q * tw, select(dt0, d_min, mode < 1.5), dt_cap), 0.4 / fine_n * tw * px_angle);
+        let dt = march_dt(tw, q, lo, dt_cap, foot, pc.y - pc.x, far);
         let fp = max(tw * px_angle, dt * 0.25);
         if coarse {
             let long = max(min(4.0 * dt, dt_cap), dt);

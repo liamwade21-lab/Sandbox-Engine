@@ -49,13 +49,18 @@
     a second and when the loading screen closed.
   - Checked: landing 30 frames after a jump to 3 km shows the ground; the speed at 114 km alone and on
     the ground is unchanged.
-- **2026-11-04, thin clouds warping while moving (not found yet):** the user's video shows the thin
-  cloud layers smearing and breaking into small squares while flying in and out (2,000-2,300 km up,
-  122 fps, 0.011 c). Test runs at the user's settings (Ultra clouds, 3440x1440, solids 85% of 1080)
-  flying in and out at the same speed, orbiting and turning, paused and with time running, against the
-  reference clouds: the clouds stay as close to the reference while moving as when still, and a change
-  to how the reused frames are kept in range made no measurable difference (not kept). The video's
-  low bit rate (1.8 Mbit/s) adds blocks of its own. Waiting for more detail from the user.
+- **2026-11-04, thin clouds changing as the camera zooms in and out (fixed and committed; the
+  user's videos 10-40-37 and 13-07-25):** over the user's planet RS 8514-912-7-1071286-73 2, from
+  1,800 to 3,200 km up, whole cloud features (an S-shaped band, long streaks) came and went with the
+  camera's height, and the thin layers looked dotted. It was the morning's cost fix for the moon's
+  rings (7ad5b7c): it let a step of the far trace grow past 1/24 of the path, up to 2 km here for a
+  4.4 km layer, while each ray's random start still spanned only 0.46 km of it, so the steps sat at
+  nearly the same heights in the layer and those heights moved with the camera's. Now every piece of
+  a ray inside a cloud layer gets at least 8 steps, and each piece's start is jittered over its whole
+  first step. Pictures from 7 heights now keep the same clouds and match the reference; Earth looks
+  as before. Clouds' ms at Ultra 3440x1440: the user's planet RS 8514-3620-1-7-69 1 1.0 / 1.7 / 1.9 /
+  1.8 (was 1.0 / 1.6 / 1.75 / 1.7), the moon 5.1 2.2 / 1.9 / 2.1 / 2.6 / 2.6 / 2.0 (was 2.0 / 1.9 /
+  1.9 / 2.4 / 2.4 / 2.3).
 - **In progress: volumetric clouds and weather.** The plan is `docs/spec-volumetric-clouds-weather.md`
   (2026-11-02): volumetric clouds and a hybrid weather system on all worlds with an atmosphere,
   gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are
