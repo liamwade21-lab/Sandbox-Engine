@@ -557,6 +557,9 @@ pub struct PlanetMaterial {
     pub cloud_weather: Handle<Image>,
     #[texture(33, dimension = "cube")]
     pub cloud_pattern: Handle<Image>,
+    /// A node's skirts (the walls hung under its edges that close the cracks to coarser
+    /// neighbours), drawn after every node's ground ([`Material::alpha_mode`]). Not a binding.
+    pub skirt: bool,
 }
 
 /// Pipeline key: the water surface is drawn from both sides with its own entry points; ground nodes
@@ -589,6 +592,11 @@ pub enum VertexNoise {
     /// Those and the flatland climate distortion (`terra_climate_noise`, 28 more), whose ridges
     /// by SE's hillsFreq are finer: only the nodes nearest the camera.
     TerraClimate,
+    /// Nodes too coarse for all of `terra_noise`: the vertices carry its warp and the octaves of its
+    /// sums that fit (`planet.wesl` `vertex_octaves`), each pixel adds its own finer ones. Measured
+    /// on the moon RS 8514-916-6-8246-147 5.1 the per-pixel noise on such nodes was about half the
+    /// ground's GPU time from 13 to 350 km up (2026-11-04).
+    TerraPartial,
 }
 
 impl VertexNoise {
@@ -598,6 +606,7 @@ impl VertexNoise {
             VertexNoise::Selena => &["SELENA_AT_VERTICES"],
             VertexNoise::Terra => &["TERRA_AT_VERTICES"],
             VertexNoise::TerraClimate => &["TERRA_AT_VERTICES", "TERRA_CLIMATE_AT_VERTICES"],
+            VertexNoise::TerraPartial => &["TERRA_AT_VERTICES", "TERRA_PARTIAL"],
         }
     }
 }
@@ -639,7 +648,8 @@ fn vertex_noise(b: &crate::surface_tex::BiomeUniform, textured: bool, edge_m: f3
         freq = freq.max(1.73 * lac.powi(7));
     }
     if !fits(freq) {
-        return VertexNoise::None;
+        // The warp (4 octaves from 0.07) whole at the vertices, the sums split.
+        return if fits(0.07 * lac.powi(3)) { VertexNoise::TerraPartial } else { VertexNoise::None };
     }
     let pf = 0.0005 * c[7].x as f64 / (c[7].y as f64 * c[7].y as f64).max(1e-6);
     let df = c[5].y as f64 * 0.005;
@@ -655,7 +665,18 @@ impl Material for PlanetMaterial {
     }
     fn alpha_mode(&self) -> AlphaMode {
         // The sea surface lets the seabed (drawn by the ground pass) show through from above.
-        if self.u.water.w > 0.5 { AlphaMode::Premultiplied } else { AlphaMode::Opaque }
+        // A node's skirts in the alpha-mask phase, which Bevy draws after the opaque one in the same
+        // pass (nothing is discarded): hidden behind the neighbours' ground already drawn, their
+        // pixels fail the depth test before shading. Drawn with their node they were shaded in full
+        // wherever they came before the neighbour that hides them: a third of the ground's GPU time
+        // near the surface (2026-11-04, the user's planet at Ultra 3440x1440: 9 of 25 ms).
+        if self.u.water.w > 0.5 {
+            AlphaMode::Premultiplied
+        } else if self.skirt {
+            AlphaMode::Mask(0.5)
+        } else {
+            AlphaMode::Opaque
+        }
     }
     fn depth_bias(&self) -> f32 {
         // The sea surface after the sky shells, as the clouds: from under water the sky shows through
@@ -1355,7 +1376,9 @@ struct DecodedTexture {
 }
 
 struct NodeBuild {
+    /// The ground's grid, and its skirts apart (drawn after all the ground, [`PlanetMaterial::skirt`]).
     mesh: Mesh,
+    skirt: Mesh,
     /// GRID x GRID heights above the reference radius (m), for ground queries.
     grid_heights: Vec<f32>,
     /// Sea surface patch (same centre as `mesh`), where the node reaches below sea level.
@@ -1841,6 +1864,40 @@ fn build_node(input: BuildInput) -> NodeBuild {
             .with_inserted_attribute(ATTRIBUTE_BODY_DIR, wd)
             .with_inserted_indices(Indices::U32(wi))
     });
+    // The skirts in a mesh of their own: their triangles and the vertices they use (the grid's edge
+    // rows and the copies pushed down), renumbered; the grid keeps the rest.
+    let n_tri = (GRID - 1) * (GRID - 1) * 6;
+    let mut remap = vec![u32::MAX; positions.len()];
+    let mut keep: Vec<usize> = Vec::with_capacity(8 * GRID);
+    let skirt_indices: Vec<u32> = indices[n_tri..]
+        .iter()
+        .map(|&v| {
+            let r = &mut remap[v as usize];
+            if *r == u32::MAX {
+                *r = keep.len() as u32;
+                keep.push(v as usize);
+            }
+            *r
+        })
+        .collect();
+    fn pick<T: Copy>(a: &[T], keep: &[usize]) -> Vec<T> {
+        keep.iter().map(|&k| a[k]).collect()
+    }
+    let skirt = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pick(&positions, &keep))
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, pick(&normals, &keep))
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, pick(&uvs, &keep))
+        .with_inserted_attribute(ATTRIBUTE_HEIGHT, pick(&heights, &keep))
+        .with_inserted_attribute(ATTRIBUTE_BODY_DIR, pick(&dirs, &keep))
+        .with_inserted_attribute(ATTRIBUTE_MORPH, pick(&morph, &keep))
+        .with_inserted_indices(Indices::U32(skirt_indices));
+    positions.truncate(GRID * GRID);
+    normals.truncate(GRID * GRID);
+    uvs.truncate(GRID * GRID);
+    heights.truncate(GRID * GRID);
+    dirs.truncate(GRID * GRID);
+    morph.truncate(GRID * GRID);
+    indices.truncate(n_tri);
     let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
@@ -1892,6 +1949,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
     debug!("node {key:?} built in {:.1} ms", started.elapsed().as_secs_f64() * 1e3);
     NodeBuild {
         mesh,
+        skirt,
         grid_heights,
         water,
         cloud,
@@ -2340,7 +2398,9 @@ fn update_terrain(
                 cloud_map: cloud_assets.map.clone(),
                 cloud_weather: cloud_assets.weather.clone(),
                 cloud_pattern: cloud_assets.pattern.clone(),
+                skirt: false,
             };
+            let skirt_mat = materials.add(PlanetMaterial { skirt: true, ..ground.clone() });
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
             let ground_u = ground.u;
             let ground_atm = (ground.inscatter.clone(), ground.transmittance.clone(), ground.irradiance.clone());
@@ -2437,6 +2497,8 @@ fn update_terrain(
                 let extent_m = terrain.radius * node_angle(key.level);
                 node.with_child((SeaPatch { extent_m }, Mesh3d(meshes.add(wm)), MeshMaterial3d(wmat), Transform::IDENTITY, Visibility::Inherited, Disabled));
             }
+            // Its skirts, drawn after all the ground (`PlanetMaterial::skirt`), go with it as the sea does.
+            node.with_child((Mesh3d(meshes.add(build.skirt)), MeshMaterial3d(skirt_mat), Transform::IDENTITY, Visibility::Inherited, Disabled));
             let e = node.id();
             let range = build.grid_heights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
             terrain.node_hrange.insert(key, range);
@@ -3163,13 +3225,15 @@ mod tests {
         b.climate[7] = Vec4::new(400.0, 0.13, 0.0, 0.0);
         b.climate[5].y = 800.0;
         let r = 4_376_000.0;
-        assert_eq!(vertex_noise(&b, false, 23_000.0, r), V::None);
+        // Coarser nodes split it: the warp's finest features (1.3 radii) fit even the roots'.
+        assert_eq!(vertex_noise(&b, false, 23_000.0, r), V::TerraPartial);
+        assert_eq!(vertex_noise(&b, false, r * std::f32::consts::FRAC_PI_2, r), V::TerraPartial);
         assert_eq!(vertex_noise(&b, false, 20_000.0, r), V::Terra);
         assert_eq!(vertex_noise(&b, false, 500.0, r), V::Terra);
         assert_eq!(vertex_noise(&b, false, 400.0, r), V::TerraClimate);
         // With plants the humidity's 9.6 km features are the finest of the first set.
         b.flags.z = 1.0;
-        assert_eq!(vertex_noise(&b, false, 20_000.0, r), V::None);
+        assert_eq!(vertex_noise(&b, false, 20_000.0, r), V::TerraPartial);
         assert_eq!(vertex_noise(&b, false, 12_000.0, r), V::Terra);
         // Not SE's generator (the designed biomes of Earth and other catalog worlds).
         b.climate[4].w = 0.0;

@@ -6,6 +6,29 @@
   made on 2026-11-02, including its git history and the uncommitted surface-speed work below, for
   better visuals, add-ons and the like. It has its own settings folder since 2026-11-02 (below).
   Still to decide: its own window title / exe name.
+- **2026-11-04, the ground drawn faster (committed):** the ground's
+  share of each frame was measured piece by piece at Ultra 3440x1440 (one piece switched off at a
+  time in a test copy of the game). Two changes, built into `target\release`:
+  - *The skirts.* Every terrain patch hangs short walls under its edges to close cracks to its
+    neighbours. They were drawn together with their patch, and the patches are drawn in no
+    particular distance order, so wherever a wall came before the neighbour that hides it, it was
+    fully coloured and then covered: about a third of the ground's time near the surface. The walls
+    are now drawn after all the ground, so their hidden parts are skipped before colouring.
+  - *SE's colour noise on far patches.* Patches too coarse to carry the noise at their corners now
+    carry its broad layers there, and each pixel works out only the fine ones (the same accuracy
+    rule the near patches already use).
+  - Ground's GPU time in ms, before -> after (one run of each with the release build):
+    the user's planet RS 8514-3620-1-7-69 1 from 3,400 km / 114 km / 3 km / the ground:
+    6.3 / 4.1 / 21.2 / 25.4 -> 4.7 / 3.1 / 14.2 / 16.4; RSN planet 2 at the horizon / looking down /
+    looking around: 25.0 / 14.4 / 8.4 -> 13.5 / 5.6 / 5.5; the moon 5.1 from 346 / 72 / 30 / 13 / 7 km:
+    8.4 / 9.9 / 9.9 / 6.6 / 7.6 -> 6.5 / 7.5 / 7.6 / 5.3 / 6.0, flying as in the user's video (72, 22,
+    5 km up): 8.7 / 8.8 / 10.5 -> 6.2 / 6.2 / 7.3.
+  - Pictures: cloud-free views from 30 to 3,400 km are the same to within one brightness level;
+    near-ground views differ from before only as much as two runs of the old version differ from each
+    other (clouds and patch loading vary a little between runs).
+  - Still costly near the ground: the soils within 2 km (~7 ms), the sample layers (3-4 ms), the haze
+    and the cloud shadows (~1.7 ms each); from high up, SE's climate noise per pixel on far patches.
+    The same split could be done for airless worlds' colour noise (the user's RSN planet 4).
 - **In progress: volumetric clouds and weather.** The plan is `docs/spec-volumetric-clouds-weather.md`
   (2026-11-02): volumetric clouds and a hybrid weather system on all worlds with an atmosphere,
   gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are
@@ -251,8 +274,8 @@
   the look, for the user's call: bake the clouds into per-patch textures as SE itself does, or draw
   them at a lower resolution.
 - Next: the clouds plan's steps 5-7 (`docs/spec-clouds-v3.md`), then the gas giants. Other big costs
-  left on planet surfaces at Ultra 3440x1440: the ground itself (18-24 ms near the surface on the
-  user's planet), the volumetric nebula when a planet sits in one, and the biome detail textures with
+  left on planet surfaces at Ultra 3440x1440: the ground itself (14-16 ms near the surface on the
+  user's planet since 2026-11-04, was 21-25), the volumetric nebula when a planet sits in one, and the biome detail textures with
   4x MSAA.
 
 ## Recently done

@@ -248,7 +248,30 @@ from it, never its code, shaders or textures.
   `TERRA_CLIMATE_AT_VERTICES`, chosen per node by terrain.rs `vertex_noise`), coarser nodes per
   pixel; both paths must keep calling the same `selena_noise` / `terra_noise` /
   `terra_climate_noise`. A new noise term with features finer than kilometres stays per pixel (or
-  gets its own frequency in `vertex_noise`).
+  gets its own frequency in `vertex_noise`). Terra nodes too coarse for all of `terra_noise` split it
+  (`TERRA_PARTIAL`, since 2026-11-04): the vertices carry its warp and each sum's coarse octaves
+  (`vertex_octaves`, passed to the pixels as a flat value so the two stages never disagree), the
+  pixels add the finer ones (`ter_fbm_from`, the same points and amplitudes as `ter_fbm`), and a pixel
+  that keeps fewer octaves than the vertices works the whole sum out itself. `from` is a reserved
+  word in WGSL (a shader using it fails to compile and the ground vanishes).
+- Ground node skirts (the walls hung under each node's edges that close the cracks to coarser
+  neighbours) are a mesh of their own, a child entity of the node, with the node's material cloned
+  with `skirt: true`: `PlanetMaterial::alpha_mode` puts it in Bevy's alpha-mask phase, drawn after all
+  the opaque ground in the same pass, so hidden skirt pixels fail the depth test before they are
+  shaded. Bevy orders opaque draws by pipeline and material, not by distance: drawn with their node,
+  the skirts were shaded wherever they came before the neighbour hiding them, a third of the ground's
+  GPU time near the surface (2026-11-04). Keep them apart, and never `discard` in the ground's
+  `fragment` (it would turn the early depth test off).
+- What the ground costs (2026-11-04, Ultra 3440x1440, `main_opaque_pass_3d`): found by switching one
+  part of planet.wesl off at a time in a copy of the exe with its own `assets/shaders` beside it (the
+  exe reads those first; run the benches with `PORT_BIN=` that copy, so the repo's shaders stay as
+  they are). The pixel shader alone is nearly all of it (a flat colour: 2.5-3 ms is raster, vertices
+  and MSAA). Near the ground on the user's planet: the soils (within 2 km) ~7 ms, the sample layers
+  3-4, the haze 1.7, cloud shadows 1.6, the normal map's jitter 0.3, sky light 0. From altitude SE's
+  colour noise per pixel on coarse nodes is about half (the moon 5.1: the colour generator is ~80% of
+  the ground from 13 to 350 km). Code that never runs cost nothing measurable (a far-only shader
+  without the soils, a terra-only one: no gain). Probes that change the colour also change which
+  soils the ground picks, which moves the soils' cost: read them with care.
 - Measuring speed: `SE_PERF=FILE` turns on the frame-time logger (`perf.rs`); the dev command
   `perf NAME` … `perf end` marks a segment. The scripts in `.optimize/bench/` (`all.sh` scenes,
   `refs.sh` reference shots, `compare.py`) do this for fixed scenes; `.optimize/REPORT.md` has the

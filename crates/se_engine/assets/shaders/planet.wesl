@@ -264,6 +264,12 @@ struct VertexOut {
     // The same for SE's terra worlds (terrain.rs `vertex_noise`): xyz `terra_noise`, w with
     // `TERRA_CLIMATE_AT_VERTICES` `terra_climate_noise`. A world has one generator, so never both.
     @if(TERRA_AT_VERTICES) @location(13) terra: vec4<f32>,
+    // With `TERRA_PARTIAL` (coarser nodes): `terra` holds the first `vertex_octaves` of each of
+    // `terra_noise`'s sums, and this their shared warp (`terra_noise`'s `avd`).
+    @if(TERRA_PARTIAL) @location(14) terra_avd: vec3<f32>,
+    // How many octaves of each sum the vertices took (the same at all of a node's vertices; passed
+    // on so the pixels never disagree with them by an octave at a rounding edge).
+    @if(TERRA_PARTIAL) @location(15) @interpolate(flat) terra_k: vec3<f32>,
 };
 
 // Camera height above the sphere of radius planet.w (m). Exact to centimetres: worked out from
@@ -340,7 +346,15 @@ fn vertex(v: Vertex) -> VertexOut {
         o.selena = selena_noise(normalize(v.body_dir), 0.0);
     }
     @if(TERRA_AT_VERTICES) {
-        o.terra = vec4<f32>(terra_noise(normalize(v.body_dir), 0.0), 0.0);
+        @if(!TERRA_PARTIAL) {
+            o.terra = vec4<f32>(terra_noise(normalize(v.body_dir), 0.0), 0.0);
+        }
+        @if(TERRA_PARTIAL) {
+            let tp = terra_noise_coarse(normalize(v.body_dir));
+            o.terra = vec4<f32>(tp.sums, 0.0);
+            o.terra_avd = tp.avd;
+            o.terra_k = tp.k;
+        }
         @if(TERRA_CLIMATE_AT_VERTICES) {
             o.terra.w = terra_climate_noise(normalize(v.body_dir), 0.0);
         }
@@ -1082,6 +1096,8 @@ var<private> g_sun_body: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 // The pixel's `VertexOut::selena` and `terra` (set by `fragment`).
 @if(SELENA_AT_VERTICES) var<private> g_selena: vec3<f32>;
 @if(TERRA_AT_VERTICES) var<private> g_terra: vec4<f32>;
+@if(TERRA_PARTIAL) var<private> g_terra_avd: vec3<f32>;
+@if(TERRA_PARTIAL) var<private> g_terra_k: vec3<f32>;
 
 // SE's PlantsBlendCoeff, its 0.025 ramps widened by `cw` (the climate's change across the pixel).
 fn plants_coeff(lo: f32, hi: f32, climate: f32, fade: f32, trans_fractal: f32, cw: f32) -> f32 {
@@ -1273,6 +1289,101 @@ fn terra_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
     return vec3<f32>(lat_noise, av, humidity);
 }
 
+// The finest frequency on the unit sphere whose features a node's vertices carry for its pixels to
+// interpolate: cells (1.5 times their mean on the cube face) at most 1/16 of the feature, as
+// terrain.rs `vertex_noise` decides it.
+fn vertex_freq() -> f32 {
+    return planet.proc_params2.x / max(16.0 * planet.soil_tile.z / 32.0 * 1.5, 1e-6);
+}
+
+// How many of a sum's octaves, from frequency `freq` by `lac`, the node's vertices carry.
+fn vertex_octaves(octaves: f32, freq: f32, lac: f32) -> f32 {
+    return clamp(floor(log2(vertex_freq() / freq) / log2(lac)) + 1.0, 0.0, octaves);
+}
+
+// Octaves `first` and on of `ter_fbm(point, octaves, lac)` (the same points and amplitudes as its loop).
+fn ter_fbm_from(point: vec3<f32>, octaves: f32, lac: f32, first: f32) -> f32 {
+    var pt = point;
+    var sum = 0.0;
+    var ampl = 1.0;
+    let gain = pow(lac, -0.5);
+    for (var i = 0; f32(i) < octaves; i++) {
+        if f32(i) >= first {
+            sum += gg_noise(pt) * ampl;
+        }
+        ampl *= gain;
+        pt *= lac;
+    }
+    return sum;
+}
+
+struct TerraCoarse {
+    // The latitude's, the variation's and the humidity's Fbm over their first `vertex_octaves`.
+    sums: vec3<f32>,
+    avd: vec3<f32>,
+    // Their octave counts.
+    k: vec3<f32>,
+};
+
+// The vertex stage's share of `terra_noise` on nodes too coarse for all of it (`TERRA_PARTIAL`):
+// each sum's octaves fine enough for the vertices, and the warp whole (`vertex_noise` asks it to fit).
+fn terra_noise_coarse(point: vec3<f32>) -> TerraCoarse {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    var o: TerraCoarse;
+    o.k = vec3<f32>(vertex_octaves(6.0, 0.7, lac), vertex_octaves(8.0, 1.0, lac), vertex_octaves(8.0, 1.73, lac));
+    o.avd = ter_fbm3d((point + rnd) * 0.07, 4.0) * 1.3;
+    o.sums.x = ter_fbm(point * 0.7 + rnd, o.k.x, lac);
+    o.sums.y = ter_fbm(point + o.avd, o.k.y, lac);
+    o.sums.z = 0.0;
+    if biomes.flags.z > 0.5 {
+        o.sums.z = ter_fbm((point + o.avd) * 1.73, o.k.z, lac);
+    }
+    return o;
+}
+
+// `terra_noise` with the vertices' share (`terra_noise_coarse`, interpolated: `v`, `avd_v`; `k` its
+// octave counts) and the
+// pixel's own finer octaves. A sum of which the pixel keeps fewer octaves than the vertices carry,
+// or whose warp it cuts, is worked out whole here, as `terra_noise` does.
+fn terra_noise_split(point: vec3<f32>, fp: f32, v: vec3<f32>, avd_v: vec3<f32>, k: vec3<f32>) -> vec3<f32> {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    let n_lat = ter_oct(6.0, 0.7, lac, fp);
+    let k_lat = k.x;
+    var lat: f32;
+    if n_lat >= k_lat {
+        lat = v.x + ter_fbm_from(point * 0.7 + rnd, n_lat, lac, k_lat);
+    } else {
+        lat = ter_fbm(point * 0.7 + rnd, n_lat, lac);
+    }
+    let n_avd = ter_oct(4.0, 0.07, lac, fp);
+    let whole_warp = n_avd >= 4.0;
+    var avd = avd_v;
+    if !whole_warp {
+        avd = ter_fbm3d((point + rnd) * 0.07, n_avd) * 1.3;
+    }
+    let n_av = ter_oct(8.0, 1.0, lac, fp);
+    let k_av = k.y;
+    var avf: f32;
+    if whole_warp && n_av >= k_av {
+        avf = v.y + ter_fbm_from(point + avd, n_av, lac, k_av);
+    } else {
+        avf = ter_fbm(point + avd, n_av, lac);
+    }
+    var humidity = 0.0;
+    if biomes.flags.z > 0.5 {
+        let n_h = ter_oct(8.0, 1.73, lac, fp);
+        let k_h = k.z;
+        if whole_warp && n_h >= k_h {
+            humidity = v.z + ter_fbm_from((point + avd) * 1.73, n_h, lac, k_h);
+        } else {
+            humidity = ter_fbm((point + avd) * 1.73, n_h, lac);
+        }
+    }
+    return vec3<f32>(0.15 * (lat - 1.0), 1.0 - 0.5 * avf, humidity);
+}
+
 // SE's flatland climate distortion (tg_terra_color.glsl): ridged multifractals by hillsFreq /
 // hillsMagn, then an Fbm by colorDistFreq, warped.
 fn terra_climate_noise(point: vec3<f32>, fp: f32) -> f32 {
@@ -1461,7 +1572,11 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
                 @if(!TERRA_CLIMATE_AT_VERTICES) {
                     cv = terra_climate_noise(dir, fp);
                 }
-                m = se_terra_mix_n(dir, hv, slope, fp, g_terra.xyz, cv);
+                var tn = g_terra.xyz;
+                @if(TERRA_PARTIAL) {
+                    tn = terra_noise_split(dir, fp, g_terra.xyz, g_terra_avd, g_terra_k);
+                }
+                m = se_terra_mix_n(dir, hv, slope, fp, tn, cv);
             }
             @if(!TERRA_AT_VERTICES) {
                 m = se_terra_mix(dir, hv, slope, fp);
@@ -2625,6 +2740,10 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     }
     @if(TERRA_AT_VERTICES) {
         g_terra = in.terra;
+    }
+    @if(TERRA_PARTIAL) {
+        g_terra_avd = in.terra_avd;
+        g_terra_k = in.terra_k;
     }
     let n = ground_normal(in);
     let up = normalize(in.up);
