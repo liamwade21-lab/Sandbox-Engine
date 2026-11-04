@@ -22,6 +22,14 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
 for the clouds plan); what it was learned from (his public C#, the user's download's shaders exported
 as GLSL, his wiki) is in `re/ksp_clouds/`, which stays out of git: someone else's code. Take methods
 from it, never its code, shaders or textures.
+`docs/spec-vegetation-civilizations.md` is the plan for vegetation and intelligent civilizations (the
+user's interview of 2026-11-04 is in its Decisions table). Its reference is the game Megaton Rainfall
+(the user's GOG copy in `C:\Users\liamw\Downloads\Megaton Rainfall`): how it draws plants and cities is in
+`docs/megaton-rainfall-vegetation.md` and `docs/megaton-rainfall-cities.md`; its text files and shaders
+are unpacked in `re/megaton_rainfall/extract` and the scripts that read its formats are in
+`re/megaton_rainfall/tools` (both out of git). Its methods are learned, not its code; its assets (trees,
+grass, facade kit, window textures, roads, props, cars) the user chose to reuse, read at run time from
+that install, never copied into the project.
 
 ## Build and play
 
@@ -34,15 +42,15 @@ from it, never its code, shaders or textures.
 ## Rules from the user
 
 - Vulkan only. VR and SE's editors are out of scope.
-- Game assets are read from the install, never copied into the project.
-- Ask before taking over the screen to run SpaceEngine. When it is allowed, a Sonnet agent
-  (high effort) drives SE and takes the screenshots.
-- No Opus high-effort subagents, except in the /bugfinder and /optimize skills, which may use
-  any agents they want.
-- Commit only when asked; never push. Commit messages end with
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Game assets are read from the install, never copied into the project. That holds for Megaton
+  Rainfall's assets too (read from the user's copy at run time; several come from store packs).
+- When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
+  SE and takes the screenshots.
+- Commit each piece of work once it builds, passes the tests and is checked; never push. Commit
+  messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Keep each file's line endings (many files are CRLF): don't use `sed -i` on them.
-- Don't defeat DRM; don't delete data without asking.
+- Don't defeat DRM. Never delete the user's own data (settings, saved sessions, places,
+  screenshots, the game installs); scratch, build and test files may go.
 
 ## Gotchas
 

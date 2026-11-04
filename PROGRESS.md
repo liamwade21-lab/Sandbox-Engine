@@ -39,7 +39,14 @@
 
 ## Next
 
-- The user is about to give the next steps (2026-11-04).
+- **Vegetation and intelligent civilizations** (the plan, from the user's interview of 2026-11-04:
+  `docs/spec-vegetation-civilizations.md`). Grass, bushes and forests on planets whose life and climate
+  allow them, from orbit to the ground; a new life class, multicellular intelligent life (about 1 in 20
+  planets with land life; Earth is one), at four levels: primitive villages, modern cities like Earth's,
+  futuristic cities, interstellar (stations, colonized moons, space traffic). Budget about 3 ms at Ultra.
+  It reuses Megaton Rainfall's trees, grass, building parts, roads and cars, read from the user's copy
+  of that game. Another session builds it step by step; **step 1 (reading Megaton Rainfall's files) is
+  next**. Research notes: `docs/megaton-rainfall-vegetation.md`, `docs/megaton-rainfall-cities.md`.
 
 ## Notes
 
