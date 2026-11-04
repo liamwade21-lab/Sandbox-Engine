@@ -95,6 +95,14 @@ struct CloudView {
     // body frame, the rings in its equator), w SE's rings winter.
     ring: vec4<f32>,
     ring_frame: vec4<f32>,
+    // A hot gas giant's own glow (as its flat bands', planet.wesl `thermal_emission`): x its temperature
+    // (thousand K), y the star's heating at the subsolar point, z the glow's scale (0 none), w the star's
+    // temperature (K); glow_atmo rgb a glowing atmosphere's light in its haze.
+    glow: vec4<f32>,
+    glow_atmo: vec4<f32>,
+    // The cloud bands, highest first: x bottom, y top (m above the radius), the layers' heights merged
+    // where they overlap; unused ones y < x (`ray_piece`).
+    bands: array<vec4<f32>, 4>,
     // Each layer's detail cover patches (volumetric_clouds/detail.rs, DETAIL_LEVELS a layer, finest
     // first): xyz the centre in the layer's frame, w the tangent of the half-width (0: none).
     detail: array<vec4<f32>, 12>,
@@ -857,6 +865,7 @@ fn giant_sample(x: vec3<f32>, h: f32, fp: f32) -> Sample {
     let a0 = cv.layer_a[0];
     var main = 0.0;
     var above = 0.0;
+    var depth = 0.0;
     if h < a0.y {
         let lod = clamp(log2(max(fp / cv.atm_flags.z, 1e-6)), 0.0, 11.0);
         let gc = textureSampleLevel(cover_tex, clamp_smp, x, lod);
@@ -870,6 +879,7 @@ fn giant_sample(x: vec3<f32>, h: f32, fp: f32) -> Sample {
         // (Above the deck's own top here, not its mean: a belt's tops lie below the mean, and were
         // shaded as if under 10 km of cloud, five times too dark and reddened.)
         above = cv.layer_b[0].z * max(top - 0.04 * (top - a0.x) - max(h, a0.x), 0.0);
+        depth = max(top - h, 0.0);
         if h > a0.x {
             let hf = (h - a0.x) / max(top - a0.x, 1.0);
             main = cv.layer_b[0].z * smoothstep(1.0, 0.92, hf) * smoothstep(0.0, 0.05, hf);
@@ -902,7 +912,30 @@ fn giant_sample(x: vec3<f32>, h: f32, fp: f32) -> Sample {
     }
     above += cv.layer_b[1].z * a1.z * max(a1.y - max(h, a1.x), 0.0) + cv.layer_b[2].z * max(a2.y - max(h, a2.x), 0.0);
     s.wx.x = above * fade;
+    // (wx.y: how deep x lies below the main deck's top here, m, for the glow.)
+    s.wx.y = depth;
     return s;
+}
+
+// A hot gas giant's own glow at a point `depth` m below its main deck's top, the star `mu` above the
+// horizon (planet.wesl `thermal_emission`, SE's tg_gasgiant_glow: its flat bands glow all over at its
+// temperature, heated by the star): at the tops as the bands, hotter deeper down (a tenth more for each
+// scale height, up to 1.6 times). Without it a torrid giant's decks were a dark navy where its bands
+// glow purple, and black inside.
+fn deck_glow(depth: f32, mu: f32) -> vec3<f32> {
+    if cv.glow.z <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let t = cv.glow.x * min(1.0 + 0.1 * depth / max(cv.giant.z, 1.0), 1.6);
+    let tk = sqrt(sqrt(cv.glow.y * max(mu, 0.0) + t * t * t * t)) * 1000.0;
+    // Below 450 K nothing visible glows.
+    if tk < 450.0 {
+        return vec3<f32>(0.0);
+    }
+    let ts = cv.glow.w;
+    let c = vec3<f32>(23587.0, 26160.0, 30942.0);
+    let ratio = exp(c * (1.0 / ts - 1.0 / tk)) * (1.0 - exp(-c / ts)) / (1.0 - exp(-c / tk));
+    return dot(cv.sun_light.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)) * cv.glow.z * ratio;
 }
 
 // The weather's own cloud (storms, anvils, fronts: the weather cube's coarse cells) shaped by its
@@ -1406,24 +1439,51 @@ fn steps_over(s: vec2<f32>, q: f32, lo: f32, hi: f32) -> f32 {
     return n + max(s.y - max(s.x, c2), 0.0) / hi;
 }
 
-// The far trace's steps: q t (within lo..hi), q such that `steps` of them cover the ray's two pieces
-// of the shell s0 and s1 (bisected on ln q). Short next to the camera, long far away, where the
-// clouds are small. (Even steps, the path over MAX_STEPS, were kilometres long next to the camera
-// on a ray skimming a layer from inside it, 150-300 km of it: their footprint averaged the heaps
-// there into the layer's mean, a flat band over the far heaps' tops, as tall as the view was zoomed.)
-fn step_rate(s0: vec2<f32>, s1: vec2<f32>, lo: f32, hi: f32, steps: f32) -> f32 {
+// The far trace's steps: q t (within lo..hi), q such that `steps` of them cover the ray's pieces
+// inside the cloud bands (`ray_piece`; bisected on ln q). Short next to the camera, long far away,
+// where the clouds are small. (Even steps, the path over MAX_STEPS, were kilometres long next to the
+// camera on a ray skimming a layer from inside it, 150-300 km of it: their footprint averaged the
+// heaps there into the layer's mean, a flat band over the far heaps' tops, as tall as the view was
+// zoomed.)
+fn step_rate(pcs: array<vec2<f32>, 8>, lo: f32, hi: f32, steps: f32) -> f32 {
     var a = -20.0;
     var b = 1.0;
     for (var k = 0; k < 12; k++) {
         let m = 0.5 * (a + b);
         let q = exp(m);
-        if steps_over(s0, q, lo, hi) + steps_over(s1, q, lo, hi) > steps {
+        var n = 0.0;
+        for (var j = 0; j < 8; j++) {
+            n += steps_over(pcs[j], q, lo, hi);
+        }
+        if n > steps {
             a = m;
         } else {
             b = m;
         }
     }
     return exp(b);
+}
+
+// The ray's k-th piece inside the cloud bands (`CloudView::bands`, highest first), in order along it:
+// for k < 4 on the way down through band k (in through its top, out through its bottom, or all of it
+// where the ray turns inside the band), for k >= 4 on the way back up through band 7 - k; clipped to
+// lo..hi (empty: y <= x). The gaps between the bands are left out of the march.
+fn ray_piece(k: i32, a: f32, b: f32, lo: f32, hi: f32) -> vec2<f32> {
+    let band = cv.bands[select(7 - k, k, k < 4)];
+    if band.y <= band.x {
+        return vec2<f32>(1.0, -1.0);
+    }
+    let top = sphere_hits(band.y, a, b);
+    if top.x > top.y {
+        return vec2<f32>(1.0, -1.0);
+    }
+    let bot = sphere_hits(band.x, a, b);
+    let through = bot.x <= bot.y;
+    var p = vec2<f32>(top.x, select(top.y, bot.x, through));
+    if k >= 4 {
+        p = select(vec2<f32>(1.0, -1.0), vec2<f32>(bot.y, top.y), through);
+    }
+    return vec2<f32>(max(p.x, lo), min(p.y, hi));
 }
 
 struct Trace {
@@ -1500,33 +1560,32 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         out.light = giant_dark(out.light);
         return out;
     }
-    let bottom = sphere_hits(bottom_h, a, b);
-    // Up to two pieces of the shell along the ray: before the bottom sphere and after it.
-    var seg0 = vec2<f32>(max(top.x, 0.0), min(top.y, t_max));
-    var seg1 = vec2<f32>(1.0, -1.0);
-    if bottom.x <= bottom.y && bottom.y > 0.0 {
-        if cv.cam2.y < bottom_h {
-            seg0.x = max(seg0.x, bottom.y);
-        } else {
-            seg1 = vec2<f32>(bottom.y, min(top.y, t_max));
-            seg0.y = min(seg0.y, bottom.x);
+    // The ray's pieces inside the cloud bands (`ray_piece`): the march goes through them alone, its
+    // steps spread over them (the gaps between the layers left out).
+    let t_lo = select(0.0, r_near, mode > 0.5 && mode < 1.5);
+    var pcs: array<vec2<f32>, 8>;
+    var total = 0.0;
+    var first = vec2<f32>(-1.0);
+    for (var k = 0; k < 8; k++) {
+        let p = ray_piece(k, a, b, t_lo, t_max);
+        pcs[k] = p;
+        if p.y > p.x {
+            total += p.y - p.x;
+            if first.x < 0.0 {
+                first = p;
+            }
         }
     }
-    if mode > 0.5 && mode < 1.5 {
-        seg0.x = max(seg0.x, r_near);
-        seg1.x = max(seg1.x, r_near);
-    }
-    let len0 = max(seg0.y - seg0.x, 0.0);
-    let len1 = max(seg1.y - seg1.x, 0.0);
-    let total = len0 + len1;
     if total <= 0.0 {
         out.light = giant_dark(out.light);
         return out;
     }
-    // The far trace's steps grow with the distance from the camera (`step_rate`), no shorter than 50 m,
-    // at least 24 over the path (fair-weather cumulus fill only the layer's lowest kilometre or so:
-    // fewer steps over it thinned them); the near pass's are even, 1/NEAR_STEPS of its 4 km. The
-    // reference (volumetric_clouds.rs `reference_on`) takes twice as many.
+    // The far trace's steps grow with the distance from the camera (`step_rate`), no shorter than 50 m
+    // or a 500th of the distance, at least 24 over the path (fair-weather cumulus fill only the layer's
+    // lowest kilometre or so: fewer steps over it thinned them) unless a pixel's footprint is longer;
+    // the near pass's are even, 1/NEAR_STEPS of its 4 km. The reference (volumetric_clouds.rs
+    // `reference_on`) takes twice as many. (With the path the cloud pieces alone, all of MAX_STEPS
+    // went into a few km of cloud seen from hundreds of km: three times the cost for nothing seen.)
     let fine_n = select(1.0, 2.0, cs.params.y > 1.5);
     let n_steps = select(f32(MAX_STEPS), NEAR_STEPS, mode > 1.5) * fine_n;
     let d_min = 50.0 / fine_n;
@@ -1534,7 +1593,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     let dt_cap = max(dt0, total / (24.0 * fine_n));
     var q = 0.0;
     if mode < 1.5 {
-        q = step_rate(vec2<f32>(seg0.x, seg0.x + len0), vec2<f32>(seg1.x, seg1.x + len1), d_min, dt_cap, n_steps);
+        q = max(step_rate(pcs, d_min, dt_cap, n_steps), 0.004 / fine_n);
     }
     let has_atm = cv.atm_flags.x > 0.5;
     let to_km = cv.atm.radii.x / cv.cam.w;
@@ -1549,8 +1608,13 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     // light most of the march's cost).
     var last_k = vec3<f32>(0.0);
     var reuse_ok = false;
-    let t_first = jitter(in.position.xy) * select(dt0, clamp(q * seg0.x, d_min, dt_cap), mode < 1.5);
+    let jit = jitter(in.position.xy);
+    let t_first = jit * select(dt0, clamp(q * first.x, d_min, dt_cap), mode < 1.5);
     var t = t_first;
+    // The piece the march is in (`ray_piece` pk) and the path before it.
+    var pk = 0;
+    var pc = pcs[0];
+    var t_off = 0.0;
     // Through clear air long steps (four fine ones, at least 24 over the path) that only ask whether a
     // cloud could be there (`maybe_cloud`); on a hit back one long step and on in fine ones, until a
     // few fine samples in a row past the hit find nothing. (Never back over what the fine steps
@@ -1566,17 +1630,30 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         if t >= total || trans < 0.005 || fine >= max_fine {
             break;
         }
-        let tw = select(seg1.x + (t - len0), seg0.x + t, t < len0);
+        // On into the next piece past this one's end (over the gap to it), from its own jittered start
+        // (carried on over the gap, the steps' phase lined up across neighbouring rays).
+        var moved = false;
+        while t >= t_off + max(pc.y - pc.x, 0.0) && pk < 7 {
+            t_off += max(pc.y - pc.x, 0.0);
+            pk += 1;
+            pc = ray_piece(pk, a, b, t_lo, t_max);
+            moved = true;
+        }
+        if moved {
+            t = t_off + jit * select(dt0, clamp(q * pc.x, d_min, dt_cap), mode < 1.5);
+            fine_end = t;
+        }
+        let tw = pc.x + (t - t_off);
         let x = o + d * tw;
-        let dt = clamp(max(0.4 / fine_n * tw * px_angle, q * tw), select(dt0, d_min, mode < 1.5), dt_cap);
+        let dt = max(clamp(q * tw, select(dt0, d_min, mode < 1.5), dt_cap), 0.4 / fine_n * tw * px_angle);
         let fp = max(tw * px_angle, dt * 0.25);
         if coarse {
-            let long = min(4.0 * dt, dt_cap);
+            let long = max(min(4.0 * dt, dt_cap), dt);
             if maybe_cloud(x, max(fp, long)) {
                 coarse = false;
                 empty = 0;
                 fine_until = t + long;
-                t = max(t - long, fine_end);
+                t = max(max(t - long, fine_end), t_off);
             } else {
                 t += long;
             }
@@ -1698,6 +1775,9 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             let ground = e_sun * (max(mu, 0.0) * (1.0 - open) * 0.8 / PI) * GROUND_ALBEDO * absorb;
             let albedo = smp.albedo;
             last_k = albedo * (e_sun * ms + ambient + ground + (night_light(x, r, up, d, fp, vx, open, dense, e_sun, smp) + cv.sun_light.w / PI) * absorb + lightning_at(x));
+            if cv.giant.x > 0.5 {
+                last_k += deck_glow(smp.wx.y, mu);
+            }
             }
             let src = last_k * smp.sigma;
             let step_t = exp(-smp.sigma * dt);
@@ -1709,7 +1789,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         t += dt;
         fine_end = t;
     }
-    var dist = min(seg0.x + len0 * 0.5, out.dist.x);
+    var dist = min(0.5 * (first.x + first.y), out.dist.x);
     if w_sum > 1e-4 {
         dist = t_sum / w_sum;
     }
@@ -1741,6 +1821,13 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
             let pk = atm_path(cv.atm, inscatter_tex, transmittance_tex, clamp_smp, cam_km, v, lk, length(d) * hd * to_km);
             light += (1.0 - trans) * cv.extra_light[k].rgb * cv.atm_flags.y * pk.inscatter;
         }
+        // A glowing atmosphere's own light (planet.wesl: its inscatter as if lit from the planet's
+        // centre, times GlowColorAtmo), as over the ground.
+        let ga = cv.glow_atmo.rgb;
+        if ga.r + ga.g + ga.b > 0.0 {
+            let pg = atm_path(cv.atm, inscatter_tex, transmittance_tex, clamp_smp, cam_km, v, vec3<f32>(0.0), length(d) * hd * to_km);
+            light += (1.0 - trans) * ga * cv.atm_flags.y * pg.inscatter;
+        }
     }
     // Within the far cross-fade the flat shells draw the rest.
     light *= cv.lod.x;
@@ -1763,7 +1850,8 @@ fn giant_dark(l: vec4<f32>) -> vec4<f32> {
         return l;
     }
     let dark = smoothstep(cv.cam2.z, cv.cam2.z - 2.0 * cv.giant.z, cv.cam2.y) * cv.giant.y;
-    return l * (1.0 - dark);
+    // (A hot giant's into the glow of its depths.)
+    return vec4<f32>(mix(l.rgb, deck_glow(1.0e9, 0.0), dark), l.a * (1.0 - dark));
 }
 
 // The ground's shadow map: the light the clouds let through to a point on the reference sphere from

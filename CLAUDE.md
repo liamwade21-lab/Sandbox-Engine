@@ -9,7 +9,8 @@ history. Version 2 keeps the user's settings, log, saved session, places and shi
 `%APPDATA%\SpaceEngine-rs-v2` folder (`settings.rs` `USER_DIR`; the atmosphere cache too). On its
 first run it copied version 1's `%APPDATA%\SpaceEngine-rs` there (done 2026-11-02, by a test run);
 it never writes version 1's folder. Screenshots still go to the shared `Pictures\SpaceEngine-rs`.
-Test runs also write `se.log` in the v2 folder (they skip only the settings and session).
+Test runs write `se-test.log` there (since 2026-11-04; the user's own `se.log` is kept for looking
+into what they saw), and skip the settings and session.
 
 A private rebuild of SpaceEngine 0.991 in Rust (Bevy 0.20), drawn with Vulkan. It reads the
 game's own files from the SpaceEngine install at run time; nothing from the game is copied here.
@@ -150,8 +151,13 @@ from it, never its code, shaders or textures.
   (the ground's middle 10 km up) then got veils alone (the user: "procedural planets are missing the
   detail"). Earth's middle is 0.
 - The far trace's steps grow with the distance from the camera (`step_rate`: q t, q bisected so the
-  steps cover the ray's pieces of the shell), and a sample's footprint is at least a quarter of its own
-  step. With even steps (path / MAX_STEPS) a ray skimming a layer from inside it (150-300 km) had km-long
+  steps cover the ray's pieces inside the cloud bands, at least 0.004 t), and a sample's footprint is at
+  least a quarter of its own step. The march goes through the cloud bands alone (`ray_piece`,
+  `CloudView::bands` from `cloud_bands`: the layers' heights merged where they overlap), skipping the
+  gaps between layers, each piece from its own jittered start. With the whole shell from the lowest
+  layer to the highest as its path, a moon's heaps under veils 70 km higher got km-long steps: rings
+  round the spot under the camera, heaps that appeared only lower down. Cloud density must stay inside
+  each layer's bottom..top (the march never samples outside the bands). With even steps (path / MAX_STEPS) a ray skimming a layer from inside it (150-300 km) had km-long
   steps next to the camera: the heaps there became the layer's mean, a flat band over the far heaps'
   tops that zooming in magnified (the user's 2026-11-04 video, a 10 degree view). The near pass keeps
   even steps.
@@ -206,7 +212,11 @@ from it, never its code, shaders or textures.
   generator. The rings shade every body's clouds (`ring_shadow`, in the body frame: in sphere space a
   flattened giant's shadow fell in the wrong places) and SE's rings winter fades a giant's deck. The
   camera may go down to 10 scale heights under a giant's radius while the passes work on it
-  (`giant_floor_m`, terrain.rs `keep_camera_above_ground`). Giant lightning: `sim_flash` with
+  (`giant_floor_m`, terrain.rs `keep_camera_above_ground`); below the radius terrain.rs hides the
+  giant's flat bands (seen from below, their nodes' skirts were a grid of lines). A hot giant's decks
+  glow as its bands do (`deck_glow`, `CloudView::glow` from terrain.rs `thermal_uniform`; hotter with
+  depth below the main deck's top, `giant_sample` puts that depth in `wx.y`), and a glowing atmosphere's
+  light is in the decks' haze (`glow_atmo`). Giant lightning: `sim_flash` with
   `flash.w` 2 (`giant_storm` cells, flashes about the main deck's base). Compare with `SE_GIANT_DECKS=0`
   and `photo 0` (fixed exposure); find a giant's day side first (look down from 3,000 km at four
   longitudes).

@@ -144,6 +144,29 @@
       the night side's tropics from 800 km (fewer than by day, as on Earth).
     - New test commands: `photo 0|1|2` (photo mode; 2 is auto exposure, as the user plays) and
       `ambient X` (SE's ambient light).
+  - **2026-11-04, two more bugs from the user's videos (fixed, not yet committed):**
+    - *Going into a gas giant you first went through its "floor"* (a hot giant, RS 8514-3620-0-0-70 2):
+      under the cloud-top radius the flat bands' surface was still drawn, and from below only its tiles'
+      edges showed, a red grid over the sky. It is now hidden while the camera is under it and the 3D
+      decks draw the giant. The decks also lacked the giant's own heat glow (SE's flat bands glow on a hot
+      giant): they turned from purple to navy as they faded in and were black inside. They now glow as
+      the bands do at their tops (checked: 66,68,119 against the bands' 62,65,118 at 6 km) and hotter
+      deeper down (red, then orange, then gold), and a glowing atmosphere's haze is in front of them.
+      Cool giants such as Jupiter don't glow, so nothing changes there.
+    - *Rings and clouds appearing from nowhere* on the user's moon RS 8514-916-6-8246-147 5.1 (heaps at
+      12-21 km, veils at 90-137 km): the far trace spread its steps over the whole height from the lowest
+      cloud to the highest, gaps included, so from between the layers (72 km) or above them its steps were
+      kilometres long by the heaps: they showed as rings round the spot under the camera, and the heaps
+      appeared only lower down. The steps now go over the cloud layers' heights alone and skip the gaps
+      (each part from its own random start). The heaps now show from 72 km and through the veils.
+      Clouds' ms at Ultra 3440x1440 on that moon: 2.0 / 1.9 / 1.9 / 2.4 / 2.4 / 2.3 from 4,782 / 346 /
+      72 / 30 / 13 / 7 km (was 1.8 / 1.6 / 1.3 / 2.0 / 2.0 / 1.8); the user's planet 1.0 / 1.6 / 1.9 /
+      1.7 (unchanged); Jupiter's decks 1.2-1.5 (was 1.0-1.4).
+    - *The moon's slowness:* in test runs the same views run at 70-100 fps near the moon and 220 fps
+      out at 8,000 km; the clouds are about 2 ms of a 10-14 ms frame there, the ground 6-11 ms. Both of
+      the user's videos ran about 2.5 times slower than test runs of the same views (the giant at 80 fps
+      against 200), so something on the PC during the recording slowed everything. Test runs now write
+      `se-test.log`, so the user's own `se.log` stays for looking into such things.
   - **Next:** step 7 (storms built from parts, lightning without smears, rain tuned, final measurements
     and docs). Seen while testing: far clouds' edges keep a faint grain; the cumulus heaps are all about
     the same size; over low basins of high-relief worlds the heaps stand high (their base follows the
@@ -178,7 +201,8 @@
     winter" fading the shaded hemisphere, as on its flat surface.
   - The camera can go down through the decks (to 10 scale heights below the cloud tops; Jupiter about
     200 km): from 10 km over tan tops under a blue sky, into the main deck's orange fog, a gap between
-    the decks at -50 km, the dark red deep deck, then black past the dark limit (-160 km on Jupiter).
+    the decks at -50 km, the dark red deep deck, then black past the dark limit (-160 km on Jupiter). A
+    hot giant glows instead, brighter with depth.
   - Lightning in the deep water clouds (giants have no weather maps): storm cells about 180 km across on
     Jupiter, the flashes some 50 km down lighting the deck above them over about 50 km.
   - Cost at Ultra 3440x1440 on Jupiter: 1.0-1.4 ms (about 200 fps there).

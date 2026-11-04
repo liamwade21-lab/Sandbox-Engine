@@ -329,6 +329,17 @@ pub struct CloudView {
     /// winter strength (terrain.rs `ring_normal`).
     pub ring: Vec4,
     pub ring_frame: Vec4,
+    /// A hot gas giant's own glow (terrain.rs `thermal_uniform`, as its flat bands take it): x its
+    /// temperature (thousand K), y the star's heating at the subsolar point, z the glow's scale (SE's
+    /// `thermal2.x` times the self-emission scale; 0 none), w the star's temperature (K).
+    pub glow: Vec4,
+    /// rgb: SE's GlowColorAtmo (a glowing atmosphere's light in its haze, as the ground's), in the
+    /// tables' scale.
+    pub glow_atmo: Vec4,
+    /// The cloud bands, highest first: x bottom, y top (m above the radius), the layers' heights merged
+    /// where they overlap (`cloud_bands`); unused ones y < x. The march spreads its steps over the ray's
+    /// pieces inside them alone.
+    pub bands: [Vec4; MAX_LAYERS],
     /// Each layer's detail cover patches (`detail`, `DETAIL_LEVELS` a layer, finest first): xyz the
     /// centre in the layer's frame, w the tangent of the half-width (0: none).
     pub detail: [Vec4; MAX_LAYERS * detail::DETAIL_LEVELS],
@@ -507,6 +518,29 @@ pub(crate) fn giant_floor_m(terrain: &Terrain) -> Option<f64> {
 fn giant_scale_height(terrain: &Terrain) -> f64 {
     // (SE's model atmosphere gives Jupiter a few km; its decks span tens of km.)
     terrain.atmosphere.as_ref().map_or(25_000.0, |a| a.uniform().radii.z as f64 * 1000.0).clamp(20_000.0, 200_000.0)
+}
+
+/// The cloud bands (`CloudView::bands`): the drawn layers' heights merged where they overlap or lie
+/// within 500 m, highest first. (The march once spread its steps over the whole shell from the lowest
+/// layer's bottom to the highest's top: from between a moon's heaps at 12-21 km and its veils at 90-137
+/// km they were kilometres long at the heaps, which became rings round the spot under the camera, and
+/// the heaps appeared only lower down: the user's 2026-11-04 video.)
+fn cloud_bands(specs: &[LayerSpec]) -> [Vec4; MAX_LAYERS] {
+    let mut h: Vec<(f32, f32)> = specs.iter().filter(|s| s.geom.z > 0.0 && s.geom.y > s.geom.x).map(|s| (s.geom.x, s.geom.y)).collect();
+    h.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut out = [Vec4::new(0.0, -1.0, 0.0, 0.0); MAX_LAYERS];
+    let mut n = 0;
+    for (lo, hi) in h {
+        if n > 0 && hi >= out[n - 1].x - 500.0 {
+            out[n - 1].x = out[n - 1].x.min(lo);
+        } else if n < MAX_LAYERS {
+            out[n] = Vec4::new(lo, hi, 0.0, 0.0);
+            n += 1;
+        } else {
+            out[n - 1].x = out[n - 1].x.min(lo);
+        }
+    }
+    out
 }
 
 /// `SE_CLOUD_LOD=0` brings back the hard switch: the passes alone within `MAX_RANGE_RADII`, the flat
@@ -749,7 +783,7 @@ struct SetupState {
 #[allow(clippy::too_many_arguments)]
 fn update_cloud_view(
     mut commands: Commands,
-    (gs, switches, time, data, captures, real, ambient): (
+    (gs, switches, time, data, captures, real, ambient, emission): (
         Res<GraphicsSettings>,
         Res<RenderSwitches>,
         Res<SimTime>,
@@ -757,6 +791,7 @@ fn update_cloud_view(
         Query<(), With<crate::capture::CaptureView>>,
         Res<Time<Real>>,
         Res<AmbientLighting>,
+        Res<crate::terrain::SelfEmission>,
     ),
     cam: Res<FlyCamera>,
     ready: Res<CloudsReady>,
@@ -898,6 +933,15 @@ fn update_cloud_view(
                 (e, under, e1, n.cross(e1))
             });
             *map_frame = Some((e, mc, e1, e2));
+            // A hot giant's glow, as terrain.rs gives its flat bands (planet.wesl `thermal_emission`).
+            let thermal = crate::terrain::thermal_uniform(terrain, light);
+            let glow = if giant && (thermal.x > 0.45 || thermal.z > 0.04) && emission.scale() > 0.0 {
+                let d = light.star_pos.delta_m(b.pos).length().max(1.0);
+                let omega = (light.star_radius_m / d).powi(2).max(1e-30);
+                Vec4::new(thermal.x, thermal.z, (1.0 / (std::f64::consts::PI * omega)) as f32 * emission.scale(), light.star_teff)
+            } else {
+                Vec4::ZERO
+            };
             let atm_u = terrain
                 .atmosphere
                 .as_ref()
@@ -956,6 +1000,9 @@ fn update_cloud_view(
                     (Some((_, g)), Some(w)) => (w * 0.5 * (g.x + g.y) as f64) as f32,
                     _ => 0.0,
                 }),
+                glow,
+                bands: cloud_bands(&specs),
+                glow_atmo: (terrain.glow_atmo(emission.scale()) * ATM_SUN_SCALE).extend(0.0),
                 detail: [Vec4::ZERO; MAX_LAYERS * detail::DETAIL_LEVELS],
                 atm: atm_u.unwrap_or_default(),
             };

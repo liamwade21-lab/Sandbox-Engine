@@ -310,7 +310,7 @@ const THERMAL_EMISSION_SHIFT: f32 = 0.0;
 /// temperature as SE's surfTemperature (giants glow all over at it, `tg_gasgiant_glow`; rocky worlds
 /// only where lava covers them, `tg_terra_glow` / `tg_selena_glow`), and the sun's heating
 /// `0.010673289 L / d^2` (L in solar luminosities, d in AU) at the subsolar point.
-fn thermal_uniform(terrain: &Terrain, light: &crate::system::BodyLighting) -> Vec4 {
+pub(crate) fn thermal_uniform(terrain: &Terrain, light: &crate::system::BodyLighting) -> Vec4 {
     // SE's bulk class decides the generator: Neptune, Jupiter and Chthonia use the gas giant glow.
     let giant = terrain.proc.kind.is_giant() || terrain.surf_gen.classes.bulk >= se_core::surface_gen::bulk::NEPTUNE;
     let lava = terrain
@@ -2474,6 +2474,12 @@ fn update_terrain(
         let mut visible: Vec<TileKey> = Vec::new();
         let mut requests: Vec<TileKey> = Vec::new();
         select_all(terrain, &cam_body, frame, &mut visible, &mut requests, quality.split_scale);
+        // Under a gas giant's flat bands (its cloud tops' surface) while the volumetric clouds draw its
+        // decks, the bands are hidden: seen from below only the nodes' skirts showed, a grid of lines
+        // over the sky (the user's 2026-11-04 video). (Its nodes still load, for the way back up.)
+        if terrain.proc.kind.is_giant() && volumetric.body == Some(body_entity) && cam_body.length() < terrain.radius {
+            visible.clear();
+        }
         // A turned cloud layer (FlipMap, Velocity) shows each node's patch elsewhere: its patches are
         // those of the nodes a camera turned back by the layer's spin would see.
         let cloud_visible: Vec<Option<Vec<TileKey>>> = (0..terrain.clouds.len())

@@ -122,11 +122,14 @@ impl<S: Subscriber> Layer<S> for FileLayer {
 }
 
 /// The log file layer for Bevy's `LogPlugin::custom_layer`: `se.log` in the port's user folder,
-/// rewritten on every start. None when the file can't be created.
+/// rewritten on every start; scripted test runs write `se-test.log` instead, so the user's own last
+/// log stays for looking into what they saw. None when the file can't be created.
 pub fn layer(app: &mut App) -> Option<BoxedLayer> {
-    let settings = app.world().get_resource::<crate::config::EngineConfig>().map(LogSettings::load).unwrap_or_default();
+    let cfg = app.world().get_resource::<crate::config::EngineConfig>();
+    let settings = cfg.map(LogSettings::load).unwrap_or_default();
+    let name = if cfg.is_some_and(crate::settings::scripted) { "se-test.log" } else { "se.log" };
     app.insert_resource(CatalogLog(settings));
-    let path = crate::settings::user_file("se.log");
+    let path = crate::settings::user_file(name);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
