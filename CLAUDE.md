@@ -242,9 +242,11 @@ from it, never its code, shaders or textures.
   `goto RSN …` (put a harmless command such as `spin 0` before it after a long wait: the name
   resolver gives up after 3000 frames of a name waiting at the front of the queue).
 - Test runs skip the user's settings: they use the High preset (solids at 85% of 1080 lines, no
-  MSAA) and a 1920x1080 window. The user plays Ultra (4x MSAA, full resolution) maximised on a
-  3440x1440 screen (RTX 5080), which costs several times more GPU time. Measure what they see with
-  the `preset Ultra` dev command and `--size 3440x1440` (`.optimize/bench/rsn_ultra.sh`).
+  MSAA) and a 1600x900 window. The user plays maximised on a 3440x1440 screen (RTX 5080), since
+  2026-11-04 with Custom settings (no MSAA, solids 85% of 1080 lines, VSync on, Ultra clouds; it was
+  Ultra with 4x MSAA at full resolution, several times the GPU time). Measure what they see with
+  `--size 3440x1440` and `vclouds 2` (or the `preset Ultra` dev command for the old settings,
+  `.optimize/bench/rsn_ultra.sh`).
 - Ground shader: on procedural worlds' fine nodes the colour generator's kilometre-scale noises are
   worked out per vertex (`planet.wesl` `SELENA_AT_VERTICES`, `TERRA_AT_VERTICES`,
   `TERRA_CLIMATE_AT_VERTICES`, chosen per node by terrain.rs `vertex_noise`), coarser nodes per
