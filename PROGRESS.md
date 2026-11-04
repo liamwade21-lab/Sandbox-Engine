@@ -51,8 +51,14 @@
     time: its trees, grass, building parts, props and cars (549 of its 557 models; only animated
     people are left out) and all 587 of its textures. Nothing is copied into the project. Without the
     game the port runs as before and se.log says so.
-  - **Step 2 next:** the GPU placement system ("scatter"), first tested with one MR tree scattered
-    evenly over a planet.
+  - **Step 2 done (2026-11-04): the GPU placement system ("scatter").** Trees (for now MR's tree_0,
+    evenly, as a test: `SE_SCATTER_TEST=1` or the dev command `scatter test`) stand exactly on the
+    drawn ground of any planet, Earth's flattened shape too, as the ground's detail changes; real
+    meshes near the camera, baked pictures (impostors) to 3 km, lit and hazed like the ground (the
+    ground's lighting is now a shared shader module; the ground looks the same as before). Cost at
+    Ultra 3440x1440 with the test cover: 0.1-0.6 ms; GPU objects stay flat over a session.
+  - **Step 3 next:** real vegetation on Earth and SE's worlds (where plants grow, MR's 16 trees,
+    grass, the canopy seen from altitude).
 
 ## Notes
 

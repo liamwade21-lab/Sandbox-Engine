@@ -145,8 +145,9 @@ pattern).
 
 **GPU scatter system** (`scatter.rs` + `scatter.wesl`): MR's methods 3-5 on our quadtree, built
 once and used by grass, trees, buildings, props and traffic.
-- *Cells.* Objects belong to fixed cells of the cube-sphere quadtree at a fixed level per object
-  class (trees about 500 m, buildings by city sector). A cell's objects come from a hash of its
+- *Cells.* Objects belong to fixed cells of the cube-sphere quadtree (trees: the nodes split until
+  their real edge is at most 800 m, so 400-800 m everywhere; buildings by city sector). (Step 2: one
+  fixed level gave cells nine times apart in area; see the build log.) A cell's objects come from a hash of its
   key, so the same tree always stands in the same place.
   - Positions are stored in the cell's 2D frame. Every frame the cull pass lifts them onto the
     ground drawn there: the height of the resident terrain node that covers them, read from a GPU
@@ -183,7 +184,8 @@ once and used by grass, trees, buildings, props and traffic.
   module used by `planet.wesl` and the new shaders. A tree, a building and the ground under them
   must take the same stars, planet shine, eclipses, cloud shadows, ambient light and atmosphere,
   or forests and towns show as wrongly lit patches from altitude.
-- New pipelines go into `WARM_ORDER`, or the first forest draws seconds late.
+- New pipelines are queued at `RenderStartup` (the loading screen waits for them); `WARM_ORDER` is
+  only for the ground's Material pipelines (step 2).
 
 ### 1. Vegetation
 
@@ -473,6 +475,83 @@ Fixed scripted views (time paused), screenshots after the shaders are fully load
   model, material and texture, the whole archive) and `cargo test -p se_engine --release mr_assets`
   (images and meshes). They pass (and say "skipping") without the install.
 
+### Step 2: GPU scatter system (done 2026-11-04)
+
+- Code: `se_engine/src/scatter.rs` (main world: cells, slots, height pages, each cell's tree of drawn
+  nodes), `scatter/gpu.rs` (render world: pooled buffers, the compute passes, the phase item and its
+  draw command), `scatter/library.rs` (models packed into one vertex and one index buffer, buckets,
+  draws), `scatter/impostor.rs` (the impostor bake), shaders `scatter.wesl` (compute: `place`, `cull`,
+  `finish`), `scatter_draw.wesl` (meshes and impostors) and `ground_light.wesl` (the lighting shared
+  with the ground). The test: `SE_SCATTER_TEST=1` or the dev command `scatter test|off` scatters
+  `tree_0` evenly (one per 900 m^2) over the land of the planet the camera is at; `SE_SCATTER_DEBUG=1`
+  logs the resident cells, pages and each bucket's instance count (read back from the GPU) every
+  120 frames.
+- **What changed from the design, and why:**
+  - **Cells are the quadtree's nodes split until their real edge is at most 800 m** (`CELL_EDGE_M`),
+    not one fixed level per class. The cube's gnomonic mapping makes one level's cells differ about
+    5x in area across a face, and the level's rounding 2x more: with a fixed cap per cell the small
+    cells filled every slot (256 of 256 on the user's planet) and the big ones could not hold a
+    dense forest. Cells are now 400-800 m everywhere (a fixed rule of position, so still repeatable).
+  - **The drawn ground is geomorphed** (planet.wesl's vertex shader moves vertices towards the
+    parent's surface by distance), which the plan missed. The cull pass rebuilds it: a page holds the
+    node's own 33 x 33 positions (and heights), and each vertex's morph target is the mean of two
+    neighbours by parity, exactly as `build_node` makes `morph`. So the trees follow the ground as it
+    morphs and splits.
+  - **A page holds positions, not heights**: the node's vertices relative to its centre (f64 maths,
+    then f32), remade from the height grid by `terrain::node_vertices` as `build_node` makes them.
+    The page's per-frame record is the node's centre relative to the camera and the camera in the
+    node's frame; the body's matrix (orientation x ellipsoid x the space's scale) is shared. A tree's
+    base is then the drawn triangle in the node's own frame: exact on flattened planets, with no f32
+    planet-scale positions anywhere.
+  - **Instances are 4 bytes**: the candidate's number in its cell (and model). The cull pass
+    re-derives its place, turn and size from the cell's seed and that number (`candidate`), so 384
+    slots of 8,192 cost 12.6 MB.
+  - **Placement cannot be lost**: the main world sends every resident cell's job each frame; the
+    render world places the slots it has not placed yet, a few a frame, and marks a job done only when
+    the passes are ready. Sent once, jobs issued while the pipelines were still compiling were lost
+    and those cells stayed empty.
+  - **WARM_ORDER is only for the ground's Material pipelines.** Pipelines queued directly at
+    `RenderStartup` start building at once and the loading screen waits for them; the scatter's
+    (compute, and the draws for no MSAA and 4x) are queued there.
+  - **Bevy 0.20 has no render graph**: `Core3d` is a schedule. The compute passes are a system in
+    `Core3dSystems::Prepass` before `main_opaque_pass_3d`; the draws are one non-mesh item in
+    `AlphaMask3d` (drawn after the ground in the main pass, in render_scale's corner, with the view's
+    MSAA, before the clouds read the depth).
+  - **The light is worked out per vertex**: the normal-free part (the star through the atmosphere,
+    its cloud and eclipse shadow, the sky light, day ambient, the further stars on level ground,
+    AmbientLighting, the haze's transmittance and inscatter) in the vertex stage (impostors at the
+    tree's centre), the normal's part in the pixel. Per pixel the same light cost 1.5 ms on the
+    ground at Ultra; per vertex 0.6 ms.
+- **Shared lighting (`ground_light.wesl`)**: `PatchLight`, `CloudShadow`, `cloud_shadow_at`,
+  `horizon_shadow_at` and `ground_haze` moved out of planet.wesl, which now calls them. Checked
+  against the old shader with the same binary: with the 3D clouds off, the ground at 300 m and 3 km
+  is identical (no pixel differs); from 400 km 7 % of pixels differ by one level (the haze's
+  rounding now that it is a shared function); with the 3D clouds on the differences are their
+  frame-phase noise (two runs of the old shader differ as much).
+- **Review (a four-angle review with every finding checked):** fixed: height pages lost in a frame
+  without the main view (they are uploaded first now); a cell with no drawn ground under it (past the
+  horizon) built its node tree down to level 20 and filled the tree buffer (the tree now descends only
+  into ancestors of drawn nodes); impostors drawn twice too bright (their colour was divided by an
+  alpha it was not multiplied by); impostors 5 % too large (pulled towards the camera, not shrunk);
+  the trees' cloud shadow read at the sphere frame's height instead of the ground's (they differ on
+  flattened planets); trees on giants in the test.
+- **Still to do in later steps:** HD screenshots, skybox export and the projection modes do not draw
+  the scatter (as the volumetric clouds; its passes run for the main view only); the rings' shadow on the trees (the ground's `ring_shadow` uses
+  `fwidth`; a shared version needs the width passed in); the soils' "3D stones" move the near ground
+  by decimetres that the pages do not hold, so trees stand 0.4 m into the drawn ground (`SINK_M`);
+  from 3 km up no tree is within the 3 km range (the canopy shading of step 3 covers it).
+- **Measured** (Ultra 3440x1440, Ultra clouds, the test cover of one tree per 900 m^2,
+  `.optimize/bench/scatter_ultra.sh`): the compute passes under 0.05 ms; the draws add 0.1 ms to the
+  main pass at 300 m (1,600 impostors) and 0.6 ms on the ground (40 meshes, 2,700 impostors). The
+  whole frame on the ground was faster with the trees (16.2 against 16.8 ms): they hide sky the
+  clouds would trace. Over a session (`.optimize/bench/session_scatter.sh`, 6 rounds of new places)
+  bind groups and buffers stay flat (the scatter adds a fixed 23 bind groups and 41 buffers); the
+  textures grow as much without the trees (Earth's tile cache filling, 4,900 to 7,300). At that
+  session's fixed view (300 m) the trees cost 0.4 ms of the frame.
+- Checked in pictures: Earth's Black Forest from 3 km down to 2 m (trunks on the ground at every
+  height while the nodes split), the user's planet RS 8514-3620-1-7-69 1 from the ground and 300 m,
+  the clouds hiding the trees (depth), Ultra 3440x1440.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind
@@ -480,8 +559,9 @@ Fixed scripted views (time paused), screenshots after the shaders are fully load
   `SE_PERF`'s wgpu counts over `session_rs.sh`.
 - **Materials.** Never change a Bevy material asset every frame. Per-frame values go in storage
   buffers written in place.
-- **Pipelines.** Add every new pipeline variant to `pipeline_watch.rs` `WARM_ORDER`. After a
-  shader edit, wait 2,400+ frames before judging a picture.
+- **Pipelines.** Queue every new pipeline variant at `RenderStartup` (custom pipelines) or add it
+  to `pipeline_watch.rs` `WARM_ORDER` (Material pipelines). After a shader edit, wait 2,400+ frames
+  before judging a picture, and after a camera jump let the ground load (1,200+ frames).
 - **Ground pixel shader.** Never `discard` in the ground's `fragment` (it would turn off the early
   depth test). The new objects use their own pipelines for that.
 - **Depth.** Vegetation and buildings must be in the depth buffer before the volumetric clouds'

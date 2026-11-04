@@ -62,6 +62,21 @@ that install, never copied into the project.
   buildings). A model's own embedded material is the source for most props (global.txt lacks them);
   `MrInstall::resolve` picks. A few textures its models name are not in the game's files
   (`brick_1`..`6`): draw those with a neutral texture, never fail.
+- GPU scatter (`scatter.rs`, `scatter/`, `scatter.wesl`, `scatter_draw.wesl`; the vegetation and cities
+  plan's step 2): objects on the ground are placed and culled on the GPU from fixed cells (the quadtree's
+  nodes split to at most 800 m) and drawn with indirect draws in the alpha-mask phase. Test with
+  `SE_SCATTER_TEST=1` or the dev command `scatter test|off` (MR's tree_0 evenly on any planet);
+  `SE_SCATTER_DEBUG=1` logs cells, pages and the buckets' instance counts. A tree stands on the drawn
+  triangle: the cull pass rebuilds it from the node's vertices (`terrain::node_vertices`, as
+  `build_node` makes them) and the geomorph (planet.wesl's vertex shader, `scatter.wesl`
+  `drawn_vertex`). Change the ground's vertex positions, triangle split or geomorph only together with
+  those, or trees float. The objects' light comes from `ground_light.wesl` (the light record, cloud
+  shadows, terminator, haze), shared with planet.wesl: change the ground's lighting there so both keep
+  it. The scatter's pipelines are built at start even when it is off, so a validation error in them
+  quits the port.
+- Test runs' `shot PATH` needs a Windows path (`C:/...`): a Git Bash `/c/...` path inside `--run` is
+  not converted and the picture is not saved. After a camera jump let the ground load before judging
+  a picture (`wait 1200` or more): its fine nodes arrive over hundreds of frames.
 - Shaders are loaded at run time from `crates/se_engine/assets/shaders` (no rebuild needed to
   try a shader change), but an edited shader takes a few hundred frames to compile in a test
   run: the ground is missing until then, so wait ~900 frames before judging a screenshot.

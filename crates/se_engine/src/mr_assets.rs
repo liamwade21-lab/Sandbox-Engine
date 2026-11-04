@@ -147,6 +147,7 @@ pub fn dds_image(bytes: &[u8], info: &DdsInfo, srgb: bool) -> Result<Image, Stri
 /// position, normal, UV0 and, where the model has them, tangent (w = 1) and colour (the raw
 /// bytes as 0..1: MR keeps data there, e.g. the facade's window type in blue). Vertices beyond
 /// a stream's length get an up normal, UV 0 and white.
+#[allow(dead_code)] // Props drawn as Bevy meshes (the cities' street furniture, later steps).
 pub fn submesh_mesh(model: &MrModel, sub: &MrSubMesh) -> Mesh {
     let range = sub.first_vertex as usize..(sub.first_vertex + sub.vertex_count) as usize;
     let pos: Vec<[f32; 3]> = model.positions[range.clone()].to_vec();

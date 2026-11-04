@@ -50,6 +50,7 @@ mod rings3d;
 mod messages;
 mod script_gui;
 mod script_vars;
+mod scatter;
 mod scripting;
 mod render_scale;
 mod screenshot;
@@ -149,8 +150,8 @@ fn main() {
         eclipse::EclipsePlugin,
         lensflare::LensFlarePlugin,
     ))
-    // Volumetric clouds and weather; Megaton Rainfall's assets for the vegetation and cities.
-    .add_plugins((volumetric_clouds::VolumetricCloudsPlugin, mr_assets::MrAssetsPlugin))
+    // Volumetric clouds and weather; Megaton Rainfall's assets and the GPU scatter (vegetation, cities).
+    .add_plugins((volumetric_clouds::VolumetricCloudsPlugin, mr_assets::MrAssetsPlugin, scatter::ScatterPlugin))
     // Interface and audio.
     .add_plugins((
         i18n::I18nPlugin,

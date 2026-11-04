@@ -51,3 +51,4 @@ bevy = { version = "0.20", default-features = false, features = [
 # Without its `bevy_ui` and `picking` defaults, which pull those Bevy features back in.
 bevy_egui = { version = "0.43", default-features = false, features = ["render", "default_fonts", "manage_clipboard", "open_url"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+bytemuck = { version = "1", features = ["derive"] }

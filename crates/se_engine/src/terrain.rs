@@ -51,9 +51,9 @@ pub const ATM_SUN_SCALE: f32 = 5.0;
 pub const ATM_SCATTER_SCALE: f32 = 1.0;
 
 /// Grid resolution of a node patch (vertices per side).
-const GRID: usize = 33;
+pub(crate) const GRID: usize = 33;
 /// Deepest geometric subdivision.
-const MAX_GEOM_LEVEL: u8 = 20;
+pub(crate) const MAX_GEOM_LEVEL: u8 = 20;
 /// Split when the camera is closer than this many node edge lengths.
 const SPLIT_DISTANCE: f64 = 2.2;
 const MAX_IN_FLIGHT: usize = 24;
@@ -926,6 +926,14 @@ pub struct Terrain {
     node_hrange: NodeMap<TileKey, (f32, f32)>,
     /// Nodes drawn this frame (sorted): the ground the camera collides with.
     visible: Vec<TileKey>,
+    /// Bumped whenever `visible` changes (the scatter's height pages follow it).
+    pub(crate) visible_rev: u64,
+    /// The body's lighting as every node's light record holds it (without the geomorph distance),
+    /// for objects standing on the ground (`scatter.rs`).
+    pub(crate) body_light: PatchLight,
+    /// A built node's material uniform: its per-body fields (atmosphere, rings, glow, the cloud key)
+    /// are the same for every node, for objects standing on the ground.
+    pub(crate) body_uniform: Option<PlanetUniform>,
     /// Nodes with a patch (ground or cloud) shown: the only ones whose visibility can change next
     /// frame, so the thousands of cached ones are not touched every frame.
     drawn: Vec<TileKey>,
@@ -1159,6 +1167,9 @@ impl Terrain {
             node_heights: NodeMap::new(),
             node_hrange: NodeMap::new(),
             visible: Vec::new(),
+            visible_rev: 0,
+            body_light: PatchLight::default(),
+            body_uniform: None,
             drawn: Vec::new(),
             vis_inputs: None,
             drawn_lit: None,
@@ -1244,6 +1255,21 @@ impl Terrain {
 
     pub fn ground_height(&self, dir: DVec3) -> Option<f64> {
         self.ground_sample(dir).map(|s| s.0)
+    }
+
+    /// The nodes drawn this frame (sorted): a partition of the ground up to the horizon.
+    pub(crate) fn drawn_nodes(&self) -> &[TileKey] {
+        &self.visible
+    }
+
+    /// A loaded node's height grid (`GRID` x `GRID`, m above the radius, row by row along v).
+    pub(crate) fn node_grid(&self, key: &TileKey) -> Option<&Arc<Vec<f32>>> {
+        self.node_heights.get(key)
+    }
+
+    /// The graphics quality's split factor the nodes' geomorph distance is set from.
+    pub(crate) fn split_scale(&self) -> f64 {
+        self.last_split
     }
 
     /// [`Self::ground_height`] and the level of the node it comes from.
@@ -2184,8 +2210,26 @@ fn wants_split(key: TileKey, dir: DVec3, radius: f64, cam_body: DVec3, scale: f6
 
 /// A node material's `soil_tile.w`: the split distance in node edges at quality `scale`, for the
 /// geomorph (0 on the roots, which do not morph).
-fn node_split(level: u8, scale: f64) -> f32 {
+pub(crate) fn node_split(level: u8, scale: f64) -> f32 {
     if level == 0 { 0.0 } else { (SPLIT_DISTANCE * scale) as f32 }
+}
+
+/// A node's vertex positions as `build_node` makes them (`dir * (radius + h) - centre`, worked
+/// out in f64, body frame on the sphere) with the height in w, from its height grid.
+pub(crate) fn node_vertices(key: TileKey, radius: f64, grid: &[f32]) -> Vec<[f32; 4]> {
+    let (u0, v0, size) = key.uv_rect();
+    let center = key.center_dir() * radius;
+    let mut out = Vec::with_capacity(GRID * GRID);
+    for j in 0..GRID {
+        for i in 0..GRID {
+            let u = u0 + size * i as f64 / (GRID - 1) as f64;
+            let v = v0 + size * j as f64 / (GRID - 1) as f64;
+            let h = grid[j * GRID + i] as f64;
+            let p = key.face.uv_to_dir(u, v) * (radius + h) - center;
+            out.push([p.x as f32, p.y as f32, p.z as f32, h as f32]);
+        }
+    }
+    out
 }
 
 /// Whether node `key` lies wholly past the horizon: ground no lower than `floor` (radius) hides
@@ -2468,6 +2512,7 @@ fn update_terrain(
                     flags: Vec4::new(u.atm_flags.x, u.soil_tile.w, 0.0, 0.0),
                 },
             );
+            terrain.body_uniform = Some(u);
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             // Its own noise variant once that pipeline is built, until then the per-pixel one (`NodeNoise`).
             let biome_u = terrain.biome.unwrap_or_default();
@@ -2614,6 +2659,7 @@ fn update_terrain(
         if !resolved {
             terrain.lights.upload(&mut shader_buffers);
             terrain.visible.clear();
+            terrain.visible_rev += 1;
             terrain.vis_inputs = None;
             terrain.drawn_lit = None;
             // Hide what is shown; keep nodes cached for a while.
@@ -2789,6 +2835,7 @@ fn update_terrain(
             touch.sort_unstable();
             touch.dedup();
             terrain.visible = visible;
+            terrain.visible_rev += 1;
             let visible = &terrain.visible;
             let mut drawn = Vec::with_capacity(touch.len());
             for key in touch {
@@ -2862,6 +2909,7 @@ fn update_terrain(
             levels: Vec4::new(ambient.0, glow_bright, emission.scale(), water_display.level),
             flags: Vec4::new(atm_on, 0.0, 0.0, 0.0),
         };
+        terrain.body_light = lit;
         // Lit for this generation already and none shown since: nothing to relight.
         if terrain.drawn_lit != Some(light_gen) {
             for key in &terrain.drawn {

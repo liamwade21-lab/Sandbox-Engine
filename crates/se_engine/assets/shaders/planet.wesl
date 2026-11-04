@@ -8,26 +8,10 @@ import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irra
 import super::eclipse::{EclipseLight, eclipse_light};
 import super::cloud_cover::{weather_cover, weather_shaped, climb_dist};
 import super::gas_giant::{GiantParams, gas_giant_albedo, gg_fbm, gg_hash, gg_hash1, gg_isf, gg_noise, gg_rotate};
-
-// The node's lighting (terrain.rs PatchLight): what a relight changes, one record per node in the
-// material's light page, at `planet.slot`. Clouds.wesl has the same struct.
-struct PatchLight {
-    sun_dir: vec4<f32>,
-    sun_color: vec4<f32>,
-    // Each light's casters: [0] the brightest star, then the extra lights in order.
-    eclipse: array<EclipseLight, 4>,
-    // The further stars (SE lights a body by up to 4, planet.glsl's NLights loop): xyz direction,
-    // w 1 when used; rgb their light, intensity included.
-    light_dir: array<vec4<f32>, 3>,
-    light_color: array<vec4<f32>, 3>,
-    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none.
-    glow_atmo: vec4<f32>,
-    // Planet's relit components: x base_color.w (ambient), y params.x (glow brightness), z thermal2.w
-    // (self-emission scale), w ice.w (water display level).
-    levels: vec4<f32>,
-    // x atm_flags.x (atmosphere enabled), y soil_tile.w (geomorph split distance).
-    flags: vec4<f32>,
-};
+// The light record, the clouds' shadow, the terminator and the haze, shared with the objects on the
+// ground (scatter_draw.wesl). PatchLight: the node's lighting (terrain.rs), one record per node in the
+// material's light page, at `planet.slot`.
+import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_shadow_at, ground_haze};
 
 // The fixed part of the material. The components marked "slot" are read from `lit`.
 struct Planet {
@@ -150,21 +134,6 @@ struct Biomes {
 // The volumetric clouds' shadow on the ground of the body they draw (volumetric_clouds.rs
 // `CloudShadow`): their cover map (a cube, a channel per layer, each in its layer's frame) and the
 // layers.
-struct CloudShadow {
-    // x: the body's radius (m), y: its seed fraction (as `planet.proc_params2.xy`), z: 1 on.
-    key: vec4<f32>,
-    // xyz: towards the star in the body frame.
-    sun: vec4<f32>,
-    // Per layer: x bottom, y top (m above the radius), z opacity (0: none), w how cumuliform.
-    layer_a: array<vec4<f32>, 4>,
-    // Per layer: x, y cos and sin of the layer's turn about the pole.
-    layer_b: array<vec4<f32>, 4>,
-    // The shadow map around the camera: xyz its centre in the body's frame on the reference sphere
-    // (m, the ellipsoid undone), w its half-width (m); its two axes.
-    map_c: vec4<f32>,
-    map_e1: vec4<f32>,
-    map_e2: vec4<f32>,
-};
 @group(constants::MATERIAL_BIND_GROUP) @binding(27) var cloud_cover: texture_cube<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(28) var cloud_cover_smp: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(29) var<storage, read> cloud_sh: CloudShadow;
@@ -180,48 +149,7 @@ struct CloudShadow {
 // the camera their shadow map (traced through the clouds themselves), farther out each layer's cover
 // where the star's ray crosses the layer's cloud mass, as the map's mean.
 fn cloud_shadow(bdir: vec3<f32>, height: f32) -> f32 {
-    if cloud_sh.key.z < 0.5 || abs(cloud_sh.key.x - planet.proc_params2.x) > 0.5 || abs(cloud_sh.key.y - planet.proc_params2.y) > 1e-4 {
-        return 1.0;
-    }
-    let l = cloud_sh.sun.xyz;
-    // (Past the terminator the ground still takes some of the star's light, so the shadow goes on there as
-    // for a grazing star: cut off at the terminator, the clouds' shadows once ended in a line.)
-    let mu = max(dot(bdir, l), 0.0);
-    let r = planet.planet.w;
-    var t = 1.0;
-    for (var i = 0; i < 4; i++) {
-        let a = cloud_sh.layer_a[i];
-        if a.z <= 0.0 {
-            continue;
-        }
-        let mid = mix(a.x, a.y, 0.25 + 0.25 * (1.0 - a.w));
-        let q = normalize(bdir * (r + height) + l * climb_dist(r + height, mu, max(mid - height, 0.0)));
-        let cs = cloud_sh.layer_b[i].xy;
-        let d = vec3<f32>(cs.x * q.x - cs.y * q.z, q.y, cs.y * q.x + cs.x * q.z);
-        let w = textureSampleLevel(cloud_weather, cloud_cover_smp, q, 0.0);
-        let add = weather_shaped(w.g * 2.0 - 1.0, textureSampleLevel(cloud_pattern, cloud_cover_smp, q, 2.0).r);
-        let cover = weather_cover(textureSampleLevel(cloud_cover, cloud_cover_smp, d, 2.0)[i], w.r * 2.0, add, a.z);
-        // As the shadow map near the camera gives it (volumetric_clouds.wesl `shadow_gen`, a quarter of
-        // the light through thick cloud): solid clouds over their share of the area, a veil along the
-        // star's slant path (the map's shadows were once far fainter: a square of sunlit ground around
-        // the camera).
-        let solid = a.w * smoothstep(0.02, 0.25, cover);
-        let veil = 0.25 + 0.75 * pow(max(1.0 - 0.995 * cover, 0.0), 1.0 / max(mu, 0.08));
-        t *= mix(veil, 1.0 - 0.75 * cover, solid);
-    }
-    let rel = bdir * r - cloud_sh.map_c.xyz;
-    let uv = vec2<f32>(dot(rel, cloud_sh.map_e1.xyz), dot(rel, cloud_sh.map_e2.xyz)) / cloud_sh.map_c.w * 0.5 + 0.5;
-    let edge = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;
-    if edge < 1.0 {
-        // The map's own shapes at the cover's mean darkness: the map over its mean across 10 km (its last
-        // mip), times the cover's shadow. (A patchy cloud lets more light through than an even one of the
-        // same depth, so the map alone was lighter than the cover's shadow: a lighter square round the
-        // camera.)
-        let m = textureSampleLevel(cloud_map, cloud_map_smp, uv, 0.0).r;
-        let mean = textureSampleLevel(cloud_map, cloud_map_smp, uv, 6.0).r;
-        t = mix(min(t * m / max(mean, 0.25), 1.0), t, smoothstep(0.75, 1.0, edge));
-    }
-    return t;
+    return cloud_shadow_at(cloud_sh, cloud_cover, cloud_cover_smp, cloud_map, cloud_map_smp, cloud_weather, cloud_pattern, planet.planet.w, planet.proc_params2.xy, bdir, height);
 }
 
 const PI: f32 = 3.14159265359;
@@ -2387,8 +2315,7 @@ struct Surf {
 // (at `mu` = cos of its zenith angle) sets below the point's own horizon, with a sharp edge, so
 // peaks and crater rims catch the light past the terminator.
 fn horizon_shadow(height: f32, mu: f32) -> f32 {
-    let rr = clamp(1.0 / (1.0 + max(height, 0.0) / max(planet.planet.w, 1.0)), 0.0, 0.9999);
-    return clamp((sqrt(1.0 - rr * rr) + mu) * 500.0, 0.0, 1.0);
+    return horizon_shadow_at(planet.planet.w, height, mu);
 }
 
 // The ground's colour lit at `pos_km` (no water, clouds or haze yet).
@@ -2649,21 +2576,9 @@ fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: 
         // Lift the point out to the ground's radius at its height (never down).
         let r_ground = planet.atm.radii.x * (1.0 + in.height / max(planet.planet.w, 1.0));
         view_km *= max(r_ground / max(length(view_km), 1e-6), 1.0);
-        col = atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, body_axes(in, l), e_sun * planet.atm_flags.z);
-        // The further stars' haze.
-        for (var i = 0; i < 3; i++) {
-            if lit[planet.slot].light_dir[i].w < 0.5 {
-                break;
-            }
-            let e_x = lit[planet.slot].light_color[i].rgb * planet.atm_flags.y * planet.atm_flags.z;
-            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, body_axes(in, normalize(lit[planet.slot].light_dir[i].xyz)), e_x);
-        }
-        // A glowing atmosphere over the ground (planet.glsl THERM): its inscatter as if lit from the
-        // planet's centre times GlowColorAtmo.
-        let g = lit[planet.slot].glow_atmo.rgb;
-        if g.r + g.g + g.b > 0.0 {
-            col += atm_apply_aerial(planet.atm, inscatter_tex, transmittance_tex, atm_smp, vec3<f32>(0.0), cam_km, view_km, vec3<f32>(0.0), g * planet.atm_flags.y * planet.atm_flags.z);
-        }
+        // The brightest star's, the further stars' and a glowing atmosphere's haze (shared with the
+        // objects on the ground).
+        col = ground_haze(planet.atm, inscatter_tex, transmittance_tex, atm_smp, col, cam_km, view_km, in.axis_x, in.axis_y, in.axis_z, l, e_sun, lit[planet.slot], planet.atm_flags);
     }
     return col;
 }

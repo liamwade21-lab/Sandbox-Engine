@@ -1658,6 +1658,12 @@ fn run_commands(
                 g.quality.volumetric_clouds = arg.trim().parse::<u32>().unwrap_or(2).min(2);
             }
         }),
+        // scatter test|off: the GPU scatter's test (Megaton Rainfall's tree_0 evenly on any planet).
+        "scatter" => commands.queue(move |w: &mut World| {
+            if let Some(mut s) = w.get_resource_mut::<crate::scatter::Scatter>() {
+                s.enabled = !matches!(arg.trim(), "off" | "0");
+            }
+        }),
         "perf" => commands.queue(move |w: &mut World| {
             if let Some(mut p) = w.get_resource_mut::<crate::perf::PerfLog>() {
                 p.mark(&arg);
