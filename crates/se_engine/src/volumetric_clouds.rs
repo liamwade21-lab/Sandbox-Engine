@@ -430,13 +430,15 @@ struct LayerSpec {
 
 /// The body's drawable cloud layers as volumes. SE's layer `Height` is the cloud shell's altitude and
 /// `BumpHeight` its tops' relief. The lowest layer stands for the clouds of the lower atmosphere, as a
-/// single cloud map does (Earth's): from a base at an eighth of its height up to the shell, its clouds
-/// rising higher where the cover is denser. Higher layers are thinner sheets around their shells.
+/// single cloud map does (Earth's), on every body: cumuliform, from a base an eighth of its height over
+/// the ground (`Terrain::ground_mid_m`) up to the shell, its clouds rising higher where the cover is
+/// denser. Higher layers are thinner sheets around their shells.
 fn layer_specs(terrain: &Terrain) -> Vec<LayerSpec> {
     if terrain.proc.kind.is_giant() {
         return giant_specs(terrain);
     }
     let layers = terrain.tile_layers();
+    let ground = terrain.ground_mid_m();
     let mut out = Vec::new();
     let mut mapped = 0;
     for (i, c) in terrain.clouds.iter().enumerate() {
@@ -453,7 +455,7 @@ fn layer_specs(terrain: &Terrain) -> Vec<LayerSpec> {
         };
         let slot = out.len();
         let cover = layer_cover(terrain, c, i, slot, &map, &mut mapped);
-        let (bottom, top, cumulus) = layer_volume(c, out.is_empty());
+        let (bottom, top, cumulus) = layer_volume(c, out.is_empty(), ground);
         out.push(LayerSpec {
             index: i,
             cover,
@@ -534,15 +536,22 @@ fn giant_specs(terrain: &Terrain) -> Vec<LayerSpec> {
     ]
 }
 
-fn layer_volume(c: &CloudLayer, lowest: bool) -> (f32, f32, f32) {
+/// A layer's bottom, top (m above the radius) and how cumuliform it is, its heights counted over the
+/// ground (m above the radius). (SE's generated layers stand 4-30 km over the ground; once only a
+/// lowest layer under 15 km was cumuliform, which left most generated worlds with veils alone.) The
+/// lowest layer reaches at most 9 km over its base (Earth's 8.1): its heaps stand within 4 km of it,
+/// and a thicker layer spreads the march's steps. A layer with an opaque map (Venus's deck) stays a
+/// sheet round its shell.
+fn layer_volume(c: &CloudLayer, lowest: bool, ground: f32) -> (f32, f32, f32) {
     let h = c.height as f32;
-    if lowest && h < 15_000.0 {
-        let bottom = (0.125 * h).clamp(400.0, 2000.0);
-        return (bottom, (h + 0.5 * c.bump_m).max(bottom + 1500.0), 1.0);
+    let over = (h - ground).max(0.0);
+    if lowest && !c.opaque_map {
+        let bottom = ground + (0.125 * over).clamp(400.0, 2000.0);
+        return (bottom, (h + 0.5 * c.bump_m).clamp(bottom + 1500.0, bottom + 9000.0), 1.0);
     }
-    let cumulus = (1.0 - (h - 3000.0) / 5000.0).clamp(0.0, 1.0);
-    let thick = (c.bump_m * 1.5).max(1500.0 * (0.4 + 0.6 * cumulus)).min(h.max(1000.0) * 1.6);
-    let bottom = (h - 0.3 * thick).max(150.0);
+    let cumulus = (1.0 - (over - 3000.0) / 5000.0).clamp(0.0, 1.0);
+    let thick = (c.bump_m * 1.5).max(1500.0 * (0.4 + 0.6 * cumulus)).min(over.max(1000.0) * 1.6);
+    let bottom = (h - 0.3 * thick).max(ground + 150.0);
     (bottom, bottom + thick, cumulus)
 }
 
@@ -728,7 +737,13 @@ fn update_cloud_view(
                 .iter()
                 .map(|s| format!("{:.1}-{:.1} km kind {} cover {:.2}", s.geom.x / 1000.0, s.geom.y / 1000.0, s.cover.kind.x, s.cover.kind.z))
                 .collect();
-            info!("volumetric clouds: {} layers on body {e:?} (radius {:.0} km): {}", specs.len(), t.radius / 1000.0, kinds.join(", "));
+            info!(
+                "volumetric clouds: {} layers on body {e:?} (radius {:.0} km, ground {:.1} km): {}",
+                specs.len(),
+                t.radius / 1000.0,
+                t.ground_mid_m() / 1000.0,
+                kinds.join(", ")
+            );
         }
         let maps: Vec<(usize, TileLayer)> = specs.iter().enumerate().filter_map(|(i, s)| s.map.clone().map(|m| (i, m))).collect();
         setup.job = (!maps.is_empty()).then(|| {
@@ -1923,12 +1938,13 @@ mod tests {
 
     #[test]
     fn layers_become_volumes_by_height() {
-        let layer = |height: f64, bump_m: f32| {
+        let layer_over = |height: f64, bump_m: f32, ground: f32| {
             let mut c = CloudLayer::test_layer();
             c.height = height;
             c.bump_m = bump_m;
-            (layer_volume(&c, true), layer_volume(&c, false))
+            (layer_volume(&c, true, ground), layer_volume(&c, false, ground))
         };
+        let layer = |height: f64, bump_m: f32| layer_over(height, bump_m, 0.0);
         // Earth's single layer (its map's shell 9 km up): the lower atmosphere's clouds, 1.1 to 9 km.
         let ((b, t, cu), _) = layer(9000.0, 0.0);
         assert!(cu == 1.0 && (b - 1125.0).abs() < 1.0 && (t - 9000.0).abs() < 1.0);
@@ -1941,5 +1957,20 @@ mod tests {
         assert!(cu == 0.0 && (t - b - 600.0).abs() < 1.0 && b > 11_000.0);
         // Never below the ground.
         assert!(layer(100.0, 5000.0).1.0 >= 150.0 && layer(100.0, 5000.0).0.0 >= 400.0);
+        // SE's generated layer over a dry world's 20 km relief (the user's planet: 15.7 km up, the
+        // ground's middle at 10 km): cumuliform from just over the ground's middle.
+        let ((b, t, cu), _) = layer_over(15_700.0, 2600.0, 10_000.0);
+        assert!(cu == 1.0 && (b - 10_712.5).abs() < 1.0 && (t - 17_000.0).abs() < 1.0);
+        // A layer high in a dense atmosphere: still the lower atmosphere's heaps, at most 9 km deep.
+        let ((b, t, cu), _) = layer(30_000.0, 0.0);
+        assert!(cu == 1.0 && b == 2000.0 && t == 11_000.0);
+        // A layer 2 km over a high ground's middle: cumuliform, as over Earth's sea.
+        assert!(layer_over(12_000.0, 2500.0, 10_000.0).1 .2 > 0.99);
+        // An opaque map (Venus's deck) stays a sheet round its shell.
+        let mut c = CloudLayer::test_layer();
+        c.height = 60_000.0;
+        c.opaque_map = true;
+        let (b, _, cu) = layer_volume(&c, true, 0.0);
+        assert!(cu == 0.0 && b > 59_000.0);
     }
 }

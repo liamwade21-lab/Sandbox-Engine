@@ -107,10 +107,21 @@
     3,400 km, 114 km, 3 km, the ground: 1.8 / 3.0 / 3.4 / 3.4 (after step 4: 1.4 / 2.4 / 2.7 / 2.5). The
     march is built twice, with and without the cumulus code: for a body whose clouds are all veils
     (the user's planet) the code it never uses slowed it by a third.
+  - **2026-11-04, the same cloud detail on every planet (user's request):** procedural planets had only
+    thin veils. A planet's lowest layer became cumulus heaps only when it was under 15 km up, and SE
+    puts its generated layers over the middle of the ground's relief: on dry worlds with 20 km of relief
+    (the user's planet, planet 2) that middle is 10 km up, so their layers stood at 15-16 km. Heights now
+    count from that middle (`Terrain::ground_mid_m`): every planet's lowest layer is cumulus heaps, as
+    Earth's (at most 9 km deep; an opaque deck like Venus's stays a sheet). The user's planet now has
+    fair-weather cumulus 10.7-17 km up, planet 2 too under its two high veils; Earth is unchanged.
+    Clouds' ms at Ultra: the user's planet 1.2 / 1.7 / 1.8 / 1.7 (the veil was 1.8 / 3.0 / 3.4 / 3.4);
+    planet 2 looking round 1.9 / 2.3 / 0.8 / 2.5 (was 1.4 / 2.2 / 0.7 / 2.6).
   - **Next:** step 7 (storms built from parts, lightning without smears, rain tuned, final measurements
-    and docs). Seen while testing: from below at the user's planet's 3 km spot a net of dark lines in
-    the veil near the horizon (older than steps 5-6); far clouds' edges keep a faint grain; the cumulus
-    heaps are all about the same size.
+    and docs). Seen while testing: far clouds' edges keep a faint grain; the cumulus heaps are all about
+    the same size; over low basins of high-relief worlds the heaps stand high (their base follows the
+    ground's middle, not the ground below); from 25 km on the user's planet a plateau's far ground shows
+    sharp zig-zag edges (the ground's, older: the veil hid it). (The net of dark lines in the user's
+    planet's veil from 3 km went with the veil.)
   - **Still open:** the faint straight line over Alaska from 11,000 km; SE's flat clouds (40-60 radii)
     still draw the weather's cloud without its pattern; faint grey specks at some cloud edges.
   - **Test switches:** `SE_CLOUD_QUARTER=0`, `SE_CLOUD_LOD=0` (a hard switch, no fades),

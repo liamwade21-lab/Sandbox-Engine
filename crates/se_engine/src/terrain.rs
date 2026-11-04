@@ -931,6 +931,18 @@ impl Terrain {
         self.loading.len()
     }
 
+    /// The middle of the ground's relief (m above the radius), never below the sea at the radius: where
+    /// SE's generated cloud layers count their heights from (se_core `cloud_layers`' base), and where
+    /// the volumetric clouds' lower atmosphere begins.
+    pub fn ground_mid_m(&self) -> f32 {
+        let mid = if self.proc.se.is_some() {
+            (0.5 - gen_ref(&self.proc)) * self.proc.bump_m
+        } else {
+            (0.5 * self.surface.bump_height_km - self.surface.bump_offset_km) * 1000.0
+        };
+        mid.max(0.0) as f32
+    }
+
     /// SE's GlowColorAtmo for this body's atmosphere at self-emission scale `emission`; 0 without one.
     pub fn glow_atmo(&self, emission: f32) -> Vec3 {
         if self.atmosphere.is_none() {

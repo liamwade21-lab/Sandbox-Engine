@@ -139,9 +139,15 @@ from it, never its code, shaders or textures.
   at full size traced every frame over the whole ray, twice the steps, no history: slow); the dev command `vclouds 0|1|2` switches the 3D clouds off/High/Ultra within a run (flat
   vs 3D pictures; note the flat shells then draw without the weather). The march (`trace`) is nearly
   all of the clouds' cost; the worst case
-  so far is the user's planet RS 8514-3620-1-7-69 1 (one high layer, 14-18 km, and the weather's cloud): 11-16 ms
+  so far is the user's planet RS 8514-3620-1-7-69 1 (one layer, then a high veil at 14-18 km, and the weather's cloud): 11-16 ms
   at Ultra 3440x1440 before the plan, 1.4-2.7 ms after its step 4 (`.optimize/bench/rs8514_ultra.sh NAME "extra commands"`; planet 2's
-  thin high layers ~5.5 ms looking around).
+  thin high layers ~5.5 ms looking around). Since 2026-11-04 that layer is cumulus heaps at 10.7-17 km, 1.2-1.8 ms.
+- Layer heights (`layer_volume`) count from the ground's middle (`Terrain::ground_mid_m`: the middle of
+  the relief, never below the sea; SE's generated layers stand on it). Every body's lowest layer is the
+  lower atmosphere's cumulus, as Earth's (at most 9 km deep; an opaque map like Venus's stays a sheet).
+  Once only a lowest layer under 15 km above the radius was cumulus: dry worlds with 20 km of relief
+  (the ground's middle 10 km up) then got veils alone (the user: "procedural planets are missing the
+  detail"). Earth's middle is 0.
 - Cloud shapes (the clouds plan's step 5): cumuliform layers are fields of heaps (`layer_density`,
   `heaps`): the shape noise, spread evenly over 0..1 by a logistic fitted to its distribution (about
   0.833 +- 0.041: se_core `cargo test -p se_core print_shape_quantiles -- --ignored --nocapture`; change
@@ -160,8 +166,8 @@ from it, never its code, shaders or textures.
   complete; only while the camera is within 30 km of the clouds' top. The march takes its first three
   light steps itself, the rest from the volume. The march (`trace`) is compiled twice (`HEAPS` set or
   not, `CloudPipelines::trace`): code compiled into it costs registers even where it never runs (the
-  solid types' code slowed the user's planet's veils by a third), so measure the user's planet
-  (`.optimize/bench/rs8514_ultra.sh`) after adding to the march.
+  solid types' code slowed a body of veils alone by a third), so measure the user's planet
+  (`.optimize/bench/rs8514_ultra.sh`, heaps) and a body of veils alone after adding to the march.
 - Weather effects (step 7): the trace draws rain/snow shafts, fog and dust (`media`) and lightning's
   glow in clouds; `weather_fx` (full resolution, after the composite) draws near rain streaks or snow
   flakes and lightning's light on the ground. A second cube holds fog and dust; `sim_flash` picks 8
