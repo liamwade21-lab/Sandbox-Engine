@@ -40,6 +40,15 @@ fn size_atmosphere_cache(limits: Res<MemoryLimits>, cfg: Res<EngineConfig>, cach
     }
 }
 
+/// The most terrain nodes the port keeps, whatever `CacheSizeLandNode` says (SE's main-def.cfg: 10000,
+/// "at least 4000 for LOD 0, 10000 for LOD 1"). Each of the port's nodes holds about six GPU buffers,
+/// four bind groups and a texture (its materials' uniforms, its normal map), and wgpu's work for
+/// every command buffer (its resource tracking) grows with the GPU objects ever alive at once: with 10000 nodes kept
+/// (60000 buffers) a planet's same view took 16 ms after some minutes of flying about against 9.5 ms at
+/// first, with 4000 at most 11.8 ms (the user's 2026-11-04 report: "the more time you play, the worse
+/// the performance gets"). Only nodes unused for a while are dropped, so a view needing more keeps them.
+pub const PORT_LAND_NODES: usize = 4000;
+
 /// main-def.cfg `Memory`.
 #[derive(Resource, Debug, Clone, PartialEq)]
 pub struct MemoryLimits {
@@ -108,7 +117,13 @@ impl MemoryLimits {
     }
 
     pub fn load(cfg: &EngineConfig) -> Self {
-        std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).map_or_else(|_| Self::default(), |t| Self::from_main_def(&t))
+        let mut m = std::fs::read_to_string(cfg.se_path.join("config/main-def.cfg")).map_or_else(|_| Self::default(), |t| Self::from_main_def(&t));
+        // The port keeps at most PORT_LAND_NODES terrain nodes (`SE_LAND_NODES` overrides it, for tests).
+        m.land_nodes = m.land_nodes.min(PORT_LAND_NODES);
+        if let Some(n) = std::env::var("SE_LAND_NODES").ok().and_then(|v| v.trim().parse().ok()) {
+            m.land_nodes = n;
+        }
+        m
     }
 
     /// SE's "Max SE RAM" (MB): `RAMSizeMaxPercentage` of the physical RAM, at most `RAMSizeMax`.
@@ -195,6 +210,40 @@ fn ram_mb() -> Option<(u64, u64)> {
 
 #[cfg(not(windows))]
 fn ram_mb() -> Option<(u64, u64)> {
+    None
+}
+
+/// The port's own memory (MB): its working set and its private (committed) bytes
+/// (K32GetProcessMemoryInfo), for perf.rs.
+#[cfg(windows)]
+pub fn process_mb() -> Option<(u64, u64)> {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota_peak_paged: usize,
+        quota_paged: usize,
+        quota_peak_nonpaged: usize,
+        quota_nonpaged: usize,
+        pagefile: usize,
+        peak_pagefile: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> isize;
+        fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
+    }
+    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+    // SAFETY: `c` is a PROCESS_MEMORY_COUNTERS with its size set; the pseudo handle needs no closing.
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) } != 0;
+    ok.then_some(((c.working_set >> 20) as u64, (c.pagefile >> 20) as u64))
+}
+
+#[cfg(not(windows))]
+pub fn process_mb() -> Option<(u64, u64)> {
     None
 }
 

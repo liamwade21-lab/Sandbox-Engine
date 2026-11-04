@@ -61,6 +61,23 @@
   as before. Clouds' ms at Ultra 3440x1440: the user's planet RS 8514-3620-1-7-69 1 1.0 / 1.7 / 1.9 /
   1.8 (was 1.0 / 1.6 / 1.75 / 1.7), the moon 5.1 2.2 / 1.9 / 2.1 / 2.6 / 2.6 / 2.0 (was 2.0 / 1.9 /
   1.9 / 2.4 / 2.4 / 2.3).
+- **2026-11-04, the game getting slower the longer it is played (fixed and committed; the user's
+  find):** test runs always start fresh, so they never saw it. Session tests that keep exploring
+  (`.optimize/bench/session_long.sh`, `session_rs.sh`) showed the same view of the user's planet
+  RS 8514-912-7-1071286-73 2 going from 10 to 16.8 ms in five rounds of landing elsewhere on it (the
+  graphics card's own time unchanged), and Earth's view and video memory creeping up too. Two causes:
+  - *Ground patches kept:* SE's CacheSizeLandNode keeps 10,000 terrain nodes; each of the port's holds
+    about 6 GPU buffers, 4 bind groups and a texture, so a full cache meant 60,000 buffers, and wgpu's
+    bookkeeping for every command buffer grows with the GPU objects ever alive at once (a Chrome trace
+    of the render thread: every pass's command buffer took three times longer to finish; the game's
+    own systems stayed at 4.5 ms). The port now keeps at most 4,000 (`memory.rs` `PORT_LAND_NODES`,
+    SE's own advice for LandLOD 0). The same test: 9.0 / 10.8 / 10.5 / 11.1 / 11.0 ms, and nine rounds
+    stay within 11-14 ms instead of climbing.
+  - *SE's planet texture tiles* (Earth, Mars, the Moon: colour, lights, water, cloud tiles, 0.25-1 MB
+    each) were never released: video memory grew all session. They now go, least recently used first,
+    beyond 1 GB (`terrain.rs` `TEXTURE_CACHE_MB`).
+  - The speed logger (`SE_PERF`) now also records the main asset counts, wgpu's live objects, the
+    render world's mesh instances, the tile cache, the terrain caches and the game's memory, per segment.
 - **In progress: volumetric clouds and weather.** The plan is `docs/spec-volumetric-clouds-weather.md`
   (2026-11-02): volumetric clouds and a hybrid weather system on all worlds with an atmosphere,
   gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are

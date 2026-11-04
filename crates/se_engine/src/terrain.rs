@@ -1009,6 +1009,11 @@ impl Terrain {
         self.loading.len()
     }
 
+    /// The terrain's resident nodes and kept generated grids (perf.rs).
+    pub fn resident(&self) -> (usize, usize) {
+        (self.nodes.len(), self.gen_tiles.len())
+    }
+
     /// The middle of the ground's relief (m above the radius), never below the sea at the radius: where
     /// SE's generated cloud layers count their heights from (se_core `cloud_layers`' base), and where
     /// the volumetric clouds' lower atmosphere begins.
@@ -1414,8 +1419,32 @@ fn catmull_rom(r: [f64; 4], t: f64) -> f64 {
 #[derive(Resource, Clone, Default)]
 pub struct TileCaches {
     heights: Arc<Mutex<HashMap<String, Arc<HeightTile>>>>,
-    textures: Arc<Mutex<HashMap<String, Handle<Image>>>>,
+    textures: Arc<Mutex<HashMap<String, CachedTexture>>>,
 }
+
+impl TileCaches {
+    /// The texture tiles kept: their count and size (MB), and the height tiles kept (perf.rs).
+    pub fn sizes(&self) -> (usize, usize, usize) {
+        let (n, bytes) = self.textures.lock().map_or((0, 0), |c| (c.len(), c.values().map(|t| t.bytes).sum::<usize>()));
+        (n, bytes >> 20, self.heights.lock().map_or(0, |c| c.len()))
+    }
+}
+
+/// A catalog planet's texture tile (SE's colour, lights, water and cloud tiles) kept for the nodes
+/// that use it, with its size and the frame it was last handed to a node.
+struct CachedTexture {
+    handle: Handle<Image>,
+    bytes: usize,
+    used: u32,
+}
+
+/// The texture tiles kept beyond what the drawn nodes hold (MB). Over it the least recently used go
+/// (their nodes keep their own handles; a node that needs one again decodes it anew). Kept without a
+/// limit, every tile of every catalog planet visited stayed in video memory for the session (0.25 to
+/// 1 MB each, decoded): the longer the user explored, the slower the game became (2026-11-04).
+const TEXTURE_CACHE_MB: usize = 1024;
+/// A tile handed to a node within this many frames is never dropped.
+const TEXTURE_KEEP_FRAMES: u32 = 600;
 
 #[derive(Resource)]
 pub struct DefaultTextures {
@@ -2316,12 +2345,20 @@ fn update_terrain(
             let mut tex_cache = caches.textures.lock().unwrap();
             for t in build.textures {
                 if !tex_cache.contains_key(&t.path) {
-                    let h = images.add(t.image);
-                    tex_cache.insert(t.path, h);
+                    let bytes = t.image.data.as_ref().map_or(0, |d| d.len());
+                    let handle = images.add(t.image);
+                    tex_cache.insert(t.path, CachedTexture { handle, bytes, used: *tick });
                 }
             }
-            let tex = |path: &Option<String>, fallback: &Handle<Image>| {
-                path.as_ref().and_then(|p| tex_cache.get(p).cloned()).unwrap_or_else(|| fallback.clone())
+            let now = *tick;
+            let mut tex = |path: &Option<String>, fallback: &Handle<Image>| {
+                path.as_ref()
+                    .and_then(|p| tex_cache.get_mut(p))
+                    .map(|c| {
+                        c.used = now;
+                        c.handle.clone()
+                    })
+                    .unwrap_or_else(|| fallback.clone())
             };
             let (pc, rc) = layer_rect(layers.color.as_ref(), key);
             let (pl, rl) = layer_rect(layers.lights.as_ref(), key);
@@ -2847,6 +2884,9 @@ fn update_terrain(
     let total: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.len()).sum();
     let cap = memory.land_nodes;
     *tick += 1;
+    if *tick % 60 == 0 {
+        trim_texture_cache(&caches, *tick);
+    }
     if *tick % 300 == 0 {
         debug!("terrain: {total} resident nodes (cache {cap})");
     }
@@ -2898,6 +2938,28 @@ fn show_patch(commands: &mut Commands, children: &Query<&Children, Allow<Disable
 /// the ground, or its own list) and clouds switch.
 fn vis_inputs_same(t: &Terrain, visible: &[TileKey], cloud_visible: &[Option<Vec<TileKey>>], clouds_on: bool) -> bool {
     t.vis_inputs.as_ref().is_some_and(|(c, on)| *on == clouds_on && c.as_slice() == cloud_visible) && t.visible == visible
+}
+
+/// Drops the least recently used texture tiles beyond [`TEXTURE_CACHE_MB`].
+fn trim_texture_cache(caches: &TileCaches, now: u32) {
+    // (`SE_TILE_CACHE_MB` overrides the limit, for comparisons.)
+    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let cap = *CAP.get_or_init(|| std::env::var("SE_TILE_CACHE_MB").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(TEXTURE_CACHE_MB)) << 20;
+    let Ok(mut c) = caches.textures.lock() else { return };
+    let mut total: usize = c.values().map(|t| t.bytes).sum();
+    if total <= cap {
+        return;
+    }
+    let mut old: Vec<(u32, String, usize)> =
+        c.iter().filter(|(_, t)| now.wrapping_sub(t.used) > TEXTURE_KEEP_FRAMES).map(|(p, t)| (t.used, p.clone(), t.bytes)).collect();
+    old.sort_unstable_by_key(|o| o.0);
+    for (_, path, bytes) in old {
+        if total <= cap {
+            break;
+        }
+        c.remove(&path);
+        total -= bytes;
+    }
 }
 
 /// A node unused for this many frames may be evicted.

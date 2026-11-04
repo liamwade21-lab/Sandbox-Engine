@@ -290,6 +290,13 @@ from it, never its code, shaders or textures.
   seconds after loading and on landing. The loading screen (splash.rs) waits until the first view is
   loaded. se.log lists each pipeline that took over 0.5 s. A settings change that changes the view's
   pipelines (MSAA) still builds them on demand: the ground can be missing for seconds after it.
+- Slowdowns over a session (the user plays for hours; test runs start fresh): measure with
+  `.optimize/bench/session_rs.sh` / `session_long.sh` (the same view each round between trips) and read
+  the counts `SE_PERF` writes per segment. wgpu's per-command-buffer work grows with the GPU objects ever
+  alive at once (buffers, textures), so caches of GPU objects need limits: the terrain keeps at most
+  `PORT_LAND_NODES` (4000) nodes, the tile textures `TEXTURE_CACHE_MB`. A per-system timeline: build
+  `CARGO_TARGET_DIR=target-trace cargo build --release -p se_engine --features bevy/trace_chrome` and run
+  that exe with `TRACE_CHROME=FILE` (about 2 GB a minute; `perf NAME` marks a `perf_mark` span).
 - Never change a Bevy material asset every frame (`Assets::get_mut`, `iter_mut`): Bevy then
   re-prepares every object using it. Per-frame values go in a storage buffer written in place: the
   star/galaxy sprites' camera values (`stars.rs` `SPRITE_CAMERA`) and terrain lighting (`terrain.rs`

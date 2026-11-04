@@ -64,6 +64,16 @@ struct Shared {
     others: AtomicU32,
     /// Bumped whenever a slot changes.
     revision: AtomicU32,
+    /// Pipelines in the cache (perf.rs logs it: the cache only grows).
+    count: AtomicU32,
+    /// The render world's images and their size on the GPU (MB, mips included), for perf.rs.
+    gpu_images: AtomicU32,
+    gpu_image_mb: AtomicU32,
+    /// wgpu's live objects: bind groups, buffers, textures, texture views (its report), for perf.rs.
+    wgpu: [AtomicU32; 4],
+    /// The render world's entities and its mesh instances (perf.rs).
+    render_entities: AtomicU32,
+    mesh_instances: AtomicU32,
 }
 
 /// The ground's pipeline variants as the render world last saw them, shared with the main world.
@@ -96,6 +106,26 @@ impl GroundPipelines {
     /// Pipelines other than the ground's still building.
     pub fn others_building(&self) -> u32 {
         self.0.others.load(Ordering::Relaxed)
+    }
+
+    /// Pipelines in Bevy's cache.
+    pub fn count(&self) -> u32 {
+        self.0.count.load(Ordering::Relaxed)
+    }
+
+    /// The render world's entities and mesh instances.
+    pub fn render_counts(&self) -> (u32, u32) {
+        (self.0.render_entities.load(Ordering::Relaxed), self.0.mesh_instances.load(Ordering::Relaxed))
+    }
+
+    /// wgpu's live bind groups, buffers, textures and texture views.
+    pub fn wgpu_objects(&self) -> [u32; 4] {
+        self.0.wgpu.each_ref().map(|a| a.load(Ordering::Relaxed))
+    }
+
+    /// The images on the GPU: their count and size (MB).
+    pub fn gpu_images(&self) -> (u32, u32) {
+        (self.0.gpu_images.load(Ordering::Relaxed), self.0.gpu_image_mb.load(Ordering::Relaxed))
     }
 }
 
@@ -148,7 +178,45 @@ fn describe(d: &PipelineDescriptor) -> String {
     format!("{} [{}] ({})", label.unwrap_or("-"), file, defs.join(", "))
 }
 
-fn watch_pipelines(cache: Res<PipelineCache>, pipes: Res<GroundPipelines>, mut seen: Local<Seen>) {
+fn watch_pipelines(
+    cache: Res<PipelineCache>,
+    pipes: Res<GroundPipelines>,
+    gpu_images: Res<bevy::render::render_asset::RenderAssets<bevy::render::texture::GpuImage>>,
+    instance: Res<bevy::render::renderer::RenderInstance>,
+    entities: &bevy::ecs::entity::Entities,
+    mesh_instances: Option<Res<bevy::pbr::RenderMeshInstances>>,
+    mut seen: Local<Seen>,
+    mut frame: Local<u32>,
+) {
+    *frame += 1;
+    if *frame % 60 == 1 {
+        let mut bytes = 0u64;
+        let mut n = 0u32;
+        for (_, g) in gpu_images.iter() {
+            let t = &g.texture_descriptor;
+            let (bw, bh) = t.format.block_dimensions();
+            let block = t.format.block_copy_size(None).unwrap_or(4) as u64;
+            let level0 = t.size.width.div_ceil(bw) as u64 * t.size.height.div_ceil(bh) as u64 * t.size.depth_or_array_layers as u64 * block;
+            bytes += if t.mip_level_count > 1 { level0 * 4 / 3 } else { level0 };
+            n += 1;
+        }
+        pipes.0.gpu_images.store(n, Ordering::Relaxed);
+        pipes.0.render_entities.store(entities.count_spawned() as u32, Ordering::Relaxed);
+        if let Some(m) = mesh_instances {
+            let n = match &*m {
+                bevy::pbr::RenderMeshInstances::CpuBuilding(c) => c.len(),
+                bevy::pbr::RenderMeshInstances::GpuBuilding(g) => g.len(),
+            };
+            pipes.0.mesh_instances.store(n as u32, Ordering::Relaxed);
+        }
+        if let Some(r) = instance.generate_report() {
+            let h = r.hub_report();
+            for (a, c) in pipes.0.wgpu.iter().zip([&h.bind_groups, &h.buffers, &h.textures, &h.texture_views]) {
+                a.store(c.num_allocated as u32, Ordering::Relaxed);
+            }
+        }
+        pipes.0.gpu_image_mb.store((bytes >> 20) as u32, Ordering::Relaxed);
+    }
     let start = *seen.start.get_or_insert_with(std::time::Instant::now);
     let now = start.elapsed().as_secs_f64();
     let mut slots = [UNKNOWN; SLOTS];
@@ -194,6 +262,7 @@ fn watch_pipelines(cache: Res<PipelineCache>, pipes: Res<GroundPipelines>, mut s
         pipes.0.revision.fetch_add(1, Ordering::Relaxed);
     }
     pipes.0.others.store(others, Ordering::Relaxed);
+    pipes.0.count.store(n as u32, Ordering::Relaxed);
 }
 
 /// Building wins over built, built over failed.
