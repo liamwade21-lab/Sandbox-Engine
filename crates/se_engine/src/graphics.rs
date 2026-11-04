@@ -5,7 +5,8 @@
 //! and `LandTargetRes` (terrain subdivision), `MaxTilesPerFrame` (terrain tiles started per frame),
 //! `VolumResolution` (ray-march steps of the nebula volumes), `StarPointMethod` (star points) and
 //! `WarpPrecision` (black hole ray-march step), and the solids' render resolution `SolidResolution`,
-//! `SolidTargetRes`, `SolidUpscaleMode` and `SolidFXAA` (`render_scale.rs`). The others (VideoMemorySize, TextureCompress,
+//! `SolidTargetRes`, `SolidUpscaleMode` and `SolidFXAA` (`render_scale.rs`), and the port's own
+//! `VolumetricClouds`, which SE's preset files lack ([`preset_volumetric_clouds`]). The others (VideoMemorySize, TextureCompress,
 //! PlanetPointMethod, PlanetShineMode, AuroraQuality, ShipEngineQuality, BlackHoleQuality,
 //! ShipWarpQuality, the other TextureRendering resolutions and environment maps, the loader time limits) drive
 //! SE features the port draws differently; they are kept as read ([`Quality::keys`]), saved with the
@@ -23,7 +24,7 @@ use crate::surface_tex::SurfaceTextures;
 pub const PRESET_NAMES: [&str; 5] = ["Potato", "Low", "Medium", "High", "Ultra"];
 
 /// Keys read into [`Quality`]'s own fields (the rest go to [`Quality::keys`]).
-const MAPPED: [&str; 13] = [
+const MAPPED: [&str; 14] = [
     "MSAALevel",
     "FXAA",
     "AnisotropyLevel",
@@ -37,6 +38,7 @@ const MAPPED: [&str; 13] = [
     "SolidTargetRes",
     "SolidUpscaleMode",
     "SolidFXAA",
+    "VolumetricClouds",
 ];
 
 /// The values of one preset.
@@ -61,6 +63,9 @@ pub struct Quality {
     pub solid_upscale_mode: u32,
     /// `SolidFXAA`: FXAA on the solids before upscaling.
     pub solid_fxaa: bool,
+    /// `VolumetricClouds` (the port's own key): 0 the flat cloud shells, 1 ray-marched clouds at a
+    /// quarter of the solids' resolution, 2 at half.
+    pub volumetric_clouds: u32,
     /// The preset's other keys and values, as written (`"true"`, `"0.85"`, ...), in file order.
     pub keys: Vec<(String, String)>,
 }
@@ -82,6 +87,7 @@ impl Default for Quality {
             solid_target_res: 1080,
             solid_upscale_mode: 8,
             solid_fxaa: true,
+            volumetric_clouds: 1,
             keys: Vec::new(),
         }
     }
@@ -143,6 +149,9 @@ impl Quality {
         if let Some(v) = doc.find_deep("SolidFXAA").and_then(|i| i.bool()) {
             q.solid_fxaa = v;
         }
+        if let Some(v) = num("VolumetricClouds") {
+            q.volumetric_clouds = v.clamp(0.0, 2.0) as u32;
+        }
         // Every other leaf key, in file order (blocks are SE's groups: Memory, RenderingQuality, ...).
         fn walk(b: &se_core::sc::Block, out: &mut Vec<(String, String)>) {
             for item in &b.items {
@@ -167,8 +176,8 @@ impl Quality {
             self.msaa, self.fxaa, self.anisotropy, self.land_lod, self.land_target_res, self.max_tiles_per_frame, self.volume_resolution, self.star_points, self.warp_precision
         );
         out += &format!(
-            "\tSolidResolution   {}\n\tSolidTargetRes    {}\n\tSolidUpscaleMode  {}\n\tSolidFXAA         {}\n",
-            self.solid_resolution, self.solid_target_res, self.solid_upscale_mode, self.solid_fxaa
+            "\tSolidResolution   {}\n\tSolidTargetRes    {}\n\tSolidUpscaleMode  {}\n\tSolidFXAA         {}\n\tVolumetricClouds  {}\n",
+            self.solid_resolution, self.solid_target_res, self.solid_upscale_mode, self.solid_fxaa, self.volumetric_clouds
         );
         for (k, v) in &self.keys {
             out += &format!("\t{k} {v}\n");
@@ -184,6 +193,21 @@ impl Quality {
         let res = (screen_height.min(self.land_target_res) / 1080.0).max(1.0);
         2f64.powf(self.land_lod as f64) * res as f64
     }
+}
+
+/// `VolumetricClouds` for a preset whose file doesn't set it (SE's never do): half resolution on Ultra,
+/// quarter on High, the flat cloud shells on Medium, Low and Potato.
+pub fn preset_volumetric_clouds(name: &str) -> u32 {
+    match name.to_ascii_lowercase().as_str() {
+        "ultra" => 2,
+        "high" => 1,
+        _ => 0,
+    }
+}
+
+/// One of the install's preset files, over the defaults and the port's own keys for that preset.
+fn preset_quality(name: &str, text: &str) -> Quality {
+    Quality::from_cfg(text, &Quality { volumetric_clouds: preset_volumetric_clouds(name), ..Quality::default() })
 }
 
 /// FUN_14030b0e0's "optimal config" on a hardware or version change: the preset for the video memory
@@ -307,13 +331,12 @@ impl Plugin for GraphicsPlugin {
 }
 
 fn load_presets(cfg: Res<EngineConfig>, mut gs: ResMut<GraphicsSettings>) {
-    let base = Quality::default();
     gs.presets = PRESET_NAMES
         .iter()
         .filter_map(|n| {
             let path = cfg.se_path.join(format!("config/preset-{}.cfg", n.to_ascii_lowercase()));
             let text = std::fs::read_to_string(path).ok()?;
-            Some((n.to_string(), Quality::from_cfg(&text, &base)))
+            Some((n.to_string(), preset_quality(n, &text)))
         })
         .collect();
     info!("graphics presets: {}", gs.presets.len());
@@ -410,6 +433,22 @@ mod tests {
         assert_eq!(q.keys, vec![("VideoMemorySize".to_string(), "4096".to_string()), ("TextureCompress".to_string(), "false".to_string())]);
         let again = Quality::from_cfg(&format!("Graphics\n{{\n{}}}\n", q.cfg_lines()), &Quality::default());
         assert_eq!(again, q);
+    }
+
+    #[test]
+    fn presets_set_volumetric_clouds() {
+        let file = "TextureRendering\n{\n\tSolidResolution 0.85\n}\n";
+        let got: Vec<u32> = PRESET_NAMES.iter().map(|n| preset_quality(n, file).volumetric_clouds).collect();
+        assert_eq!(got, [0, 0, 0, 1, 2]);
+        // A file that sets it wins; out-of-range values are clamped, a non-number is ignored.
+        assert_eq!(preset_quality("Low", "VolumetricClouds 2\n").volumetric_clouds, 2);
+        assert_eq!(preset_quality("Ultra", "VolumetricClouds 9\n").volumetric_clouds, 2);
+        assert_eq!(preset_quality("Ultra", "VolumetricClouds -1\n").volumetric_clouds, 0);
+        assert_eq!(preset_quality("Ultra", "VolumetricClouds yes\n").volumetric_clouds, 2);
+        // Saved with the other preset keys, and not listed among the unmapped ones.
+        let q = preset_quality("Ultra", file);
+        assert!(q.keys.is_empty());
+        assert_eq!(Quality::from_cfg(&format!("Graphics\n{{\n{}}}\n", q.cfg_lines()), &Quality::default()), q);
     }
 
     #[test]

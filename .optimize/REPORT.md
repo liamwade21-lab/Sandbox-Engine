@@ -265,8 +265,7 @@ alike). The memory items (08-2, -350 MB) wait for approval.
   volumetric resolution).
 - The remaining frame time is spread thin; a new profile of the final build would be the place to
   start a next round.
-- Housekeeping, left for you: the eight implementer worktrees (`.claude/worktrees/agent-*`, with
-  100 MB+ exe copies in their `.optimize-out`), the 6 GB trace files in `scratch/trace`, the trace
-  build in `target/trace`, the saved exes in `scratch/baseexe` and `scratch/stage1exe`, and the
-  diagnostic builds in `scratch/01` and `scratch/09`. None are needed any more (`git worktree
-  remove` for the worktrees).
+- Housekeeping: done on 2026-11-02 at the user's request. The agent worktrees, everything in
+  `.optimize/scratch` (traces, saved exes, the A/B and reference-shot outputs named above) and the
+  trace build in `target/trace` were deleted (about 100 GB); the worktrees' changes were checked to
+  be in `083e5d7` first (all but the reverted 08-7). The bench scripts recreate their output folders.

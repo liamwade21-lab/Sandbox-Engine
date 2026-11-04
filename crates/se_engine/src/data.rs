@@ -51,7 +51,7 @@ impl SeData {
 #[derive(Resource, Default, Clone)]
 pub struct Places(pub Vec<se_core::places::Place>);
 
-/// The user's saved places: `%APPDATA%/SpaceEngine-rs/places.cfg`, never the install folder.
+/// The user's saved places: `%APPDATA%/SpaceEngine-rs-v2/places.cfg`, never the install folder.
 pub fn user_places_file() -> std::path::PathBuf {
     crate::settings::user_file("places.cfg")
 }

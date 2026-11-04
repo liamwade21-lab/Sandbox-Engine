@@ -5,7 +5,8 @@
 //! ToggleAtmospheres Shift+A, ToggleClouds Shift+C, ToggleAurora Shift+Ctrl+A, ToggleCometTails
 //! Shift+Ctrl+C, ToggleEclipses Ctrl+L, TogglePlanetShine Shift+L (ToggleSkyRingsShadows and
 //! ToggleEclipseMask have no default key). Also SE's atmosphere-at-a-distance and aurora keys
-//! (`AtmoMinWidthPix`, `AtmoDistanceLimit`, `AuroraBright`).
+//! (`AtmoMinWidthPix`, `AtmoDistanceLimit`, `AuroraBright`). The weather effects' switches `ShowRain`,
+//! `ShowLightning`, `ShowFog` and `ShowDust` are the port's own (SE has no weather), on by default.
 
 use bevy::prelude::*;
 
@@ -31,6 +32,14 @@ pub struct RenderSwitches {
     pub atmo_extinction: bool,
     /// `EnablePlanetShine` (mirrored into `system::LightingFade::planet_shine`).
     pub planet_shine: bool,
+    /// `ShowRain`: rain and snow.
+    pub rain: bool,
+    /// `ShowLightning`.
+    pub lightning: bool,
+    /// `ShowFog`: fog and haze near the ground.
+    pub fog: bool,
+    /// `ShowDust`: dust devils and dust storms.
+    pub dust: bool,
     /// `AtmoMinWidthPix`: the least thickness of an atmosphere on screen (px).
     pub atmo_min_width_px: f32,
     /// `AtmoDistanceLimit`: the farthest eye distance (planet radii) the atmosphere is computed from.
@@ -52,6 +61,10 @@ impl Default for RenderSwitches {
             sky_rings_shadows: true,
             atmo_extinction: true,
             planet_shine: true,
+            rain: true,
+            lightning: true,
+            fog: true,
+            dust: true,
             atmo_min_width_px: 2.0,
             atmo_distance_limit: 30.0,
             aurora_bright: 1.0,
@@ -61,7 +74,7 @@ impl Default for RenderSwitches {
 
 impl RenderSwitches {
     /// The persisted switches by SE's keys (settings.rs).
-    pub const KEYS: [&'static str; 9] = [
+    pub const KEYS: [&'static str; 13] = [
         "ShowAtmospheres",
         "ShowClouds",
         "ShowAurora",
@@ -71,9 +84,13 @@ impl RenderSwitches {
         "AtmoRingsShadow",
         "AtmoExtinction",
         "EnablePlanetShine",
+        "ShowRain",
+        "ShowLightning",
+        "ShowFog",
+        "ShowDust",
     ];
 
-    pub fn saved(&self) -> [bool; 9] {
+    pub fn saved(&self) -> [bool; 13] {
         [
             self.atmospheres,
             self.clouds,
@@ -84,6 +101,10 @@ impl RenderSwitches {
             self.sky_rings_shadows,
             self.atmo_extinction,
             self.planet_shine,
+            self.rain,
+            self.lightning,
+            self.fog,
+            self.dust,
         ]
     }
 
@@ -98,6 +119,10 @@ impl RenderSwitches {
             "AtmoRingsShadow" => &mut self.sky_rings_shadows,
             "AtmoExtinction" => &mut self.atmo_extinction,
             "EnablePlanetShine" => &mut self.planet_shine,
+            "ShowRain" => &mut self.rain,
+            "ShowLightning" => &mut self.lightning,
+            "ShowFog" => &mut self.fog,
+            "ShowDust" => &mut self.dust,
             _ => return,
         };
         *v = on;

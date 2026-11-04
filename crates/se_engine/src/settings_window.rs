@@ -103,11 +103,12 @@ fn settings_window(
         ResMut<crate::settings::ResetRequest>,
         ResMut<crate::rings3d::RingSettings>,
     ),
-    (mut proj, mut sky, mut sky_req, mut hires_ui): (
+    (mut proj, mut sky, mut sky_req, mut hires_ui, mut switches): (
         ResMut<crate::projection::ProjectionSettings>,
         ResMut<crate::capture::SkyboxSettings>,
         ResMut<crate::capture::SkyboxRequest>,
         ResMut<crate::screenshot::HiresUi>,
+        ResMut<crate::switches::RenderSwitches>,
     ),
 ) -> Result {
     if !state.env_read {
@@ -146,6 +147,8 @@ fn settings_window(
     let mut em = emission.as_deref().copied();
     let mut wa = water.as_deref().map(|w| w.show);
     let mut vr = rings.volumetric;
+    // Written back only on a toggle: the terrain rewrites every node's material when the switches change.
+    let mut sw = switches.clone();
     let bcsg0 = cc.iter().next().map(|c| c.values());
     let mut bcsg = bcsg0;
     let WindowState { tab, confirm_reset: confirm, .. } = &mut *state;
@@ -192,6 +195,18 @@ fn settings_window(
                         }
                     });
                     ui.checkbox(&mut q.fxaa, "FXAA");
+                });
+                group(ui, "Clouds and weather", &i18n, |ui| {
+                    ui.checkbox(&mut sw.clouds, i18n.tr("Clouds"));
+                    // `VolumetricClouds` (graphics.rs), set by the presets.
+                    let mut v = q.volumetric_clouds.min(2) as usize;
+                    if combo(ui, "volumetric_clouds", "Volumetric clouds", &mut v, &["Off", "Quarter resolution", "Half resolution"], &i18n) {
+                        q.volumetric_clouds = v as u32;
+                    }
+                    ui.checkbox(&mut sw.rain, i18n.tr("Rain and snow"));
+                    ui.checkbox(&mut sw.lightning, i18n.tr("Lightning"));
+                    ui.checkbox(&mut sw.fog, i18n.tr("Fog and haze"));
+                    ui.checkbox(&mut sw.dust, i18n.tr("Dust storms"));
                 });
                 group(ui, "Post-effects", &i18n, |ui| {
                     combo(ui, "photo_mode", "Photo mode", &mut ph, &PhotoMode::NAMES, &i18n);
@@ -422,6 +437,9 @@ fn settings_window(
     }
     if vr != rings.volumetric {
         rings.volumetric = vr;
+    }
+    if sw != *switches {
+        *switches = sw;
     }
     if let (Some(v), true) = (bcsg, bcsg != bcsg0) {
         for mut c in &mut cc {

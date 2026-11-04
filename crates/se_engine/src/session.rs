@@ -1,6 +1,6 @@
 //! SE's planetarium state (save/save-def.cfg `Planetarium`): `MoveMode`, `BindMode`, `RefBody`, the
 //! position, `Orientation`, `Velocity`, `TimeScale` and `Time`/`Date`, saved on exit and restored on the
-//! next start ("Continue"). The port writes `%APPDATA%/SpaceEngine-rs/save.cfg` in that syntax, with the
+//! next start ("Continue"). The port writes `%APPDATA%/SpaceEngine-rs-v2/save.cfg` in that syntax, with the
 //! position as the port's own fixed-point universe coordinates (`AbsPosition`, exact) and the time as
 //! SE's Julian Date * 2^80 hex (`places.rs`).
 //!

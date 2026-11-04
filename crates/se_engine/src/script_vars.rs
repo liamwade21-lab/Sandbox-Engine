@@ -117,6 +117,10 @@ pub const SCALARS: &[&str] = &[
     "atmoringsshadow",
     "atmoextinction",
     "enableplanetshine",
+    "showrain",
+    "showlightning",
+    "showfog",
+    "showdust",
     "atmominwidthpix",
     "atmodistancelimit",
     "aurorabright",
@@ -223,6 +227,11 @@ impl View<'_> {
             "atmoringsshadow" => b(self.switches?.sky_rings_shadows),
             "atmoextinction" => b(self.switches?.atmo_extinction),
             "enableplanetshine" => b(self.switches?.planet_shine),
+            // The port's weather switches (SE has none).
+            "showrain" => b(self.switches?.rain),
+            "showlightning" => b(self.switches?.lightning),
+            "showfog" => b(self.switches?.fog),
+            "showdust" => b(self.switches?.dust),
             "atmominwidthpix" => self.switches?.atmo_min_width_px as f64,
             "atmodistancelimit" => self.switches?.atmo_distance_limit as f64,
             "aurorabright" => self.switches?.aurora_bright as f64,
@@ -341,9 +350,14 @@ impl Settings<'_, '_> {
             "linkscaletoscreenres" => s.link_screen_res = on,
             // switches.rs (rings, skies and eclipses): the planet drawing switches.
             "showatmospheres" | "showclouds" | "showaurora" | "showcomettails" | "showeclipsemask" | "enableeclipses" | "atmoringsshadow"
-            | "atmoextinction" | "enableplanetshine" | "atmominwidthpix" | "atmodistancelimit" | "aurorabright" => {
+            | "atmoextinction" | "enableplanetshine" | "atmominwidthpix" | "atmodistancelimit" | "aurorabright" | "showrain" | "showlightning"
+            | "showfog" | "showdust" => {
                 let Some(sw) = self.switches.as_mut() else { return false };
                 match k.as_str() {
+                    "showrain" => sw.rain = on,
+                    "showlightning" => sw.lightning = on,
+                    "showfog" => sw.fog = on,
+                    "showdust" => sw.dust = on,
                     "showatmospheres" => sw.atmospheres = on,
                     "showclouds" => sw.clouds = on,
                     "showaurora" => sw.aurora = on,

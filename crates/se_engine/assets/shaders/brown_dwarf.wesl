@@ -6,7 +6,7 @@
 // (star_surface.wesl), whose uniform, noise texture and vertex stage this material shares.
 
 import super::star_surface::{star, glow_map_sun, VertexOut, GRAN_MEAN};
-import super::planet::{gg_noise, gg_fbm, gg_isf, gg_hash1, gg_rotate};
+import super::gas_giant::{gg_noise, gg_fbm, gg_isf, gg_hash1, gg_rotate};
 
 struct BrownDwarf {
     // As surface_tex::BiomeUniform::giant: (cloudsFreq, cloudsOctaves, stripeZones, stripeTwist),

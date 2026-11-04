@@ -2,7 +2,7 @@
 //! then one line per message, `[MT] ` from the main thread or `[NN] ` from worker NN
 //! (LogThreadStamp), after an optional time stamp (LogTimeStamp), with `ERROR: ` / `WARNING: ` in
 //! front of problems. The port never writes into the install, so its log is `se.log` in its user
-//! folder (`%APPDATA%/SpaceEngine-rs`), next to its settings.
+//! folder (`%APPDATA%/SpaceEngine-rs-v2`), next to its settings.
 
 use std::fmt::Write as _;
 use std::io::Write as _;

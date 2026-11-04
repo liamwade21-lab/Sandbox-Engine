@@ -6,6 +6,8 @@ import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::globals;
 import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, atm_surface_irradiance, atm_apply_aerial, atm_transmittance_sun};
 import super::eclipse::{EclipseLight, eclipse_light};
+import super::cloud_cover::{weather_cover, weather_shaped, climb_dist};
+import super::gas_giant::{GiantParams, gas_giant_albedo, gg_fbm, gg_hash, gg_hash1, gg_isf, gg_noise, gg_rotate};
 
 // The node's lighting (terrain.rs PatchLight): what a relight changes, one record per node in the
 // material's light page, at `planet.slot`. Clouds.wesl has the same struct.
@@ -145,6 +147,83 @@ struct Biomes {
 // The light page holding this node's PatchLight (at `planet.slot`).
 @group(constants::MATERIAL_BIND_GROUP) @binding(26) var<storage, read> lit: array<PatchLight>;
 
+// The volumetric clouds' shadow on the ground of the body they draw (volumetric_clouds.rs
+// `CloudShadow`): their cover map (a cube, a channel per layer, each in its layer's frame) and the
+// layers.
+struct CloudShadow {
+    // x: the body's radius (m), y: its seed fraction (as `planet.proc_params2.xy`), z: 1 on.
+    key: vec4<f32>,
+    // xyz: towards the star in the body frame.
+    sun: vec4<f32>,
+    // Per layer: x bottom, y top (m above the radius), z opacity (0: none), w how cumuliform.
+    layer_a: array<vec4<f32>, 4>,
+    // Per layer: x, y cos and sin of the layer's turn about the pole.
+    layer_b: array<vec4<f32>, 4>,
+    // The shadow map around the camera: xyz its centre in the body's frame on the reference sphere
+    // (m, the ellipsoid undone), w its half-width (m); its two axes.
+    map_c: vec4<f32>,
+    map_e1: vec4<f32>,
+    map_e2: vec4<f32>,
+};
+@group(constants::MATERIAL_BIND_GROUP) @binding(27) var cloud_cover: texture_cube<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(28) var cloud_cover_smp: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(29) var<storage, read> cloud_sh: CloudShadow;
+@group(constants::MATERIAL_BIND_GROUP) @binding(30) var cloud_map: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(31) var cloud_map_smp: sampler;
+// The body's weather (volumetric_clouds weather_sim.wesl `sim_out`): R the cover multiplier / 2, G
+// the cover offset x 0.5 + 0.5.
+@group(constants::MATERIAL_BIND_GROUP) @binding(32) var cloud_weather: texture_cube<f32>;
+// The weather's own cloud's pattern (volumetric_clouds.wesl `weather_pattern`), with the cover's sampler.
+@group(constants::MATERIAL_BIND_GROUP) @binding(33) var cloud_pattern: texture_cube<f32>;
+
+// The light left by the volumetric clouds over the body-frame direction `bdir` at `height` m: near
+// the camera their shadow map (traced through the clouds themselves), farther out each layer's cover
+// where the star's ray crosses the layer's cloud mass, as the map's mean.
+fn cloud_shadow(bdir: vec3<f32>, height: f32) -> f32 {
+    if cloud_sh.key.z < 0.5 || abs(cloud_sh.key.x - planet.proc_params2.x) > 0.5 || abs(cloud_sh.key.y - planet.proc_params2.y) > 1e-4 {
+        return 1.0;
+    }
+    let l = cloud_sh.sun.xyz;
+    // (Past the terminator the ground still takes some of the star's light, so the shadow goes on there as
+    // for a grazing star: cut off at the terminator, the clouds' shadows once ended in a line.)
+    let mu = max(dot(bdir, l), 0.0);
+    let r = planet.planet.w;
+    var t = 1.0;
+    for (var i = 0; i < 4; i++) {
+        let a = cloud_sh.layer_a[i];
+        if a.z <= 0.0 {
+            continue;
+        }
+        let mid = mix(a.x, a.y, 0.25 + 0.25 * (1.0 - a.w));
+        let q = normalize(bdir * (r + height) + l * climb_dist(r + height, mu, max(mid - height, 0.0)));
+        let cs = cloud_sh.layer_b[i].xy;
+        let d = vec3<f32>(cs.x * q.x - cs.y * q.z, q.y, cs.y * q.x + cs.x * q.z);
+        let w = textureSampleLevel(cloud_weather, cloud_cover_smp, q, 0.0);
+        let add = weather_shaped(w.g * 2.0 - 1.0, textureSampleLevel(cloud_pattern, cloud_cover_smp, q, 2.0).r);
+        let cover = weather_cover(textureSampleLevel(cloud_cover, cloud_cover_smp, d, 2.0)[i], w.r * 2.0, add, a.z);
+        // As the shadow map near the camera gives it (volumetric_clouds.wesl `shadow_gen`, a quarter of
+        // the light through thick cloud): solid clouds over their share of the area, a veil along the
+        // star's slant path (the map's shadows were once far fainter: a square of sunlit ground around
+        // the camera).
+        let solid = a.w * smoothstep(0.02, 0.25, cover);
+        let veil = 0.25 + 0.75 * pow(max(1.0 - 0.995 * cover, 0.0), 1.0 / max(mu, 0.08));
+        t *= mix(veil, 1.0 - 0.75 * cover, solid);
+    }
+    let rel = bdir * r - cloud_sh.map_c.xyz;
+    let uv = vec2<f32>(dot(rel, cloud_sh.map_e1.xyz), dot(rel, cloud_sh.map_e2.xyz)) / cloud_sh.map_c.w * 0.5 + 0.5;
+    let edge = max(abs(uv.x - 0.5), abs(uv.y - 0.5)) * 2.0;
+    if edge < 1.0 {
+        // The map's own shapes at the cover's mean darkness: the map over its mean across 10 km (its last
+        // mip), times the cover's shadow. (A patchy cloud lets more light through than an even one of the
+        // same depth, so the map alone was lighter than the cover's shadow: a lighter square round the
+        // camera.)
+        let m = textureSampleLevel(cloud_map, cloud_map_smp, uv, 0.0).r;
+        let mean = textureSampleLevel(cloud_map, cloud_map_smp, uv, 6.0).r;
+        t = mix(min(t * m / max(mean, 0.25), 1.0), t, smoothstep(0.75, 1.0, edge));
+    }
+    return t;
+}
+
 const PI: f32 = 3.14159265359;
 
 struct Vertex {
@@ -179,6 +258,12 @@ struct VertexOut {
     @location(11) @interpolate(flat) axis_z: vec3<f32>,
     // The node frame's scale along those axes (render units per node unit): the body's ellipsoid.
     @location(12) @interpolate(flat) axis_len: vec3<f32>,
+    // The airless worlds' kilometre-scale colour noises (`selena_noise`), on nodes fine enough to
+    // carry them at their vertices (terrain.rs `vertex_noise`).
+    @if(SELENA_AT_VERTICES) @location(13) selena: vec3<f32>,
+    // The same for SE's terra worlds (terrain.rs `vertex_noise`): xyz `terra_noise`, w with
+    // `TERRA_CLIMATE_AT_VERTICES` `terra_climate_noise`. A world has one generator, so never both.
+    @if(TERRA_AT_VERTICES) @location(13) terra: vec4<f32>,
 };
 
 // Camera height above the sphere of radius planet.w (m). Exact to centimetres: worked out from
@@ -250,6 +335,16 @@ fn vertex(v: Vertex) -> VertexOut {
     o.axis_len = vec3<f32>(length(world_from_local[0].xyz), length(world_from_local[1].xyz), length(world_from_local[2].xyz));
     o.centre = vec4<f32>(centre, planet.planet.w * length(world_from_local[0].xyz));
     o.body_dir = v.body_dir;
+    // All octaves: on these nodes every pixel keeps them.
+    @if(SELENA_AT_VERTICES) {
+        o.selena = selena_noise(normalize(v.body_dir), 0.0);
+    }
+    @if(TERRA_AT_VERTICES) {
+        o.terra = vec4<f32>(terra_noise(normalize(v.body_dir), 0.0), 0.0);
+        @if(TERRA_CLIMATE_AT_VERTICES) {
+            o.terra.w = terra_climate_noise(normalize(v.body_dir), 0.0);
+        }
+    }
     o.cam_alt = camera_altitude(world_from_local);
     o.tangent_u = normalize((world_from_local * vec4<f32>(planet.water.xyz, 0.0)).xyz);
     return o;
@@ -314,236 +409,6 @@ fn fbm3_aa(p: vec3<f32>, octaves: i32, feature_m: f32, footprint_m: f32) -> f32 
         size *= 0.5;
     }
     return sum;
-}
-
-// ---------------------------------------------------------------------------
-// SE's gas giant clouds (tg_common.glh HeightMapCloudsGasGiant, TurbulenceGasGiant,
-// CycloneNoiseGasGiant; tg_gasgiant_color.glsl), with SE's hash Perlin noise, Fbm (lacunarity
-// 2.218, H 0.5) and spherical Fibonacci cells as in tg_height.wesl. The point is the unit
-// direction in the body frame (y the pole).
-
-fn gg_hash(gridcell_in: vec3<f32>) -> array<vec4<f32>, 6> {
-    const OFFSET = vec2<f32>(50.0, 161.0);
-    const DOMAIN: f32 = 69.0;
-    const SOMELARGEFLOATS = vec3<f32>(635.298681, 682.357502, 668.926525);
-    const ZINC = vec3<f32>(48.500388, 65.294118, 63.934599);
-    var gridcell = gridcell_in;
-    gridcell = gridcell - floor(gridcell * (1.0 / DOMAIN)) * DOMAIN;
-    let inc1 = select(gridcell + vec3<f32>(1.0), vec3<f32>(0.0), gridcell > vec3<f32>(DOMAIN - 1.5));
-    var P = vec4<f32>(gridcell.xy, inc1.xy) + OFFSET.xyxy;
-    P *= P;
-    P = P.xzxz * P.yyww;
-    let lowz = vec4<f32>(1.0) / (SOMELARGEFLOATS.xyzx + vec2<f32>(gridcell.z, inc1.z).xxxy * ZINC.xyzx);
-    let highz = vec2<f32>(1.0) / (SOMELARGEFLOATS.yz + inc1.zz * ZINC.yz);
-    return array<vec4<f32>, 6>(fract(P * lowz.xxxx), fract(P * lowz.yyyy), fract(P * lowz.zzzz), fract(P * lowz.wwww), fract(P * highz.xxxx), fract(P * highz.yyyy));
-}
-
-fn gg_noise(p: vec3<f32>) -> f32 {
-    let Pi = floor(p);
-    let Pf = p - Pi;
-    let Pf1 = Pf - 1.0;
-    let h = gg_hash(Pi);
-    let C = vec4<f32>(0.49999);
-    let gx0 = h[0] - C;
-    let gy0 = h[1] - C;
-    let gz0 = h[2] - C;
-    let gx1 = h[3] - C;
-    let gy1 = h[4] - C;
-    let gz1 = h[5] - C;
-    let r0 = inverseSqrt(gx0 * gx0 + gy0 * gy0 + gz0 * gz0) * (vec2<f32>(Pf.x, Pf1.x).xyxy * gx0 + vec2<f32>(Pf.y, Pf1.y).xxyy * gy0 + Pf.zzzz * gz0);
-    let r1 = inverseSqrt(gx1 * gx1 + gy1 * gy1 + gz1 * gz1) * (vec2<f32>(Pf.x, Pf1.x).xyxy * gx1 + vec2<f32>(Pf.y, Pf1.y).xxyy * gy1 + Pf1.zzzz * gz1);
-    let b = Pf * Pf * Pf * (Pf * (Pf * 6.0 - 15.0) + 10.0);
-    let m0 = mix(r0, r1, b.z);
-    let m1 = mix(m0.xy, m0.zw, b.y);
-    return mix(m1.x, m1.y, b.x) * 1.1547005383792515;
-}
-
-fn gg_fbm(point: vec3<f32>, octaves: f32) -> f32 {
-    var pt = point;
-    var sum = 0.0;
-    var ampl = 1.0;
-    let gain = pow(2.218281828459, -0.5);
-    for (var i = 0; f32(i) < octaves; i++) {
-        sum += gg_noise(pt) * ampl;
-        ampl *= gain;
-        pt *= 2.218281828459;
-    }
-    return sum;
-}
-
-fn gg_hash1(p: f32) -> f32 {
-    return fract(sin(p) * 158.5453123);
-}
-
-fn gg_rotate(angle: f32, axis: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
-    let c = cos(angle);
-    let s = sin(angle);
-    let t = 1.0 - c;
-    let m = mat3x3<f32>(
-        t * axis.x * axis.x + c, t * axis.x * axis.y - s * axis.z, t * axis.x * axis.z + s * axis.y,
-        t * axis.x * axis.y + s * axis.z, t * axis.y * axis.y + c, t * axis.y * axis.z - s * axis.x,
-        t * axis.x * axis.z - s * axis.y, t * axis.y * axis.z + s * axis.x, t * axis.z * axis.z + c);
-    return v * m;
-}
-
-// SE's inverseSF: the nearest of n spherical Fibonacci points (cell index, distance) and the point.
-fn gg_isf(p: vec3<f32>, n: f32, nearest: ptr<function, vec3<f32>>) -> vec2<f32> {
-    const phi: f32 = 1.61803398875;
-    let m = 1.0 - 1.0 / n;
-    let fi = min(atan2(p.y, p.x), PI);
-    let cosTheta = p.z;
-    let k = max(2.0, floor(log(n * PI * sqrt(5.0) * (1.0 - cosTheta * cosTheta)) / log(phi + 1.0)));
-    let Fk = pow(phi, k) / sqrt(5.0);
-    let F = vec2<f32>(floor(Fk + 0.5), floor(Fk * phi + 0.5));
-    let ka = 2.0 * F / n;
-    let kb = 2.0 * PI * (fract((F + 1.0) * phi) - (phi - 1.0));
-    let det = ka.y * kb.x - ka.x * kb.y;
-    let iB = mat2x2<f32>(ka.y / det, -ka.x / det, kb.y / det, -kb.x / det);
-    let c = floor(iB * vec2<f32>(fi, cosTheta - m));
-    var d = 8.0;
-    var j = 0.0;
-    for (var s = 0; s < 4; s++) {
-        let uv = vec2<f32>(f32(s - 2 * (s / 2)), f32(s / 2));
-        let i = dot(F, uv + c);
-        let fs = 2.0 * PI * fract(i * phi);
-        let ct = m - 2.0 * i / n;
-        // Past the pole SE's sqrt is NaN and the candidate never wins.
-        if abs(ct) > 1.0 {
-            continue;
-        }
-        let st = sqrt(1.0 - ct * ct);
-        let q = vec3<f32>(cos(fs) * st, sin(fs) * st, ct);
-        let rr = q - p;
-        let d2 = dot(rr, rr);
-        if d2 < d {
-            *nearest = q;
-            d = d2;
-            j = i;
-        }
-    }
-    return vec2<f32>(j, sqrt(d));
-}
-
-fn gg_turbulence(point_in: vec3<f32>) -> vec3<f32> {
-    let twist = biomes.giant[0].w;
-    var point = point_in;
-    var twisted = point;
-    var center = vec3<f32>(0.0);
-    var strength = 5.5;
-    var freq = 800.0 * 0.7;
-    var size = 15.0 * 0.7;
-    let dens = 0.8;
-    for (var i = 0; i < 5; i++) {
-        let cell = gg_isf(point, freq, &center);
-        let rnd = gg_hash1(cell.x);
-        let r = size * cell.y;
-        if rnd < dens && r < 1.0 {
-            let dir = sign(0.5 * dens - rnd);
-            let dist = clamp(1.0 - r, 0.0, 1.0);
-            let dist2 = clamp(0.5 - r, 0.0, 1.0);
-            let fi = pow(dist, strength) * (exp(-6.0 * dist2) + 0.25);
-            twisted = gg_rotate(dir * twist * sign(center.y) * fi, center, point);
-        }
-        freq = min(freq * 2.0, 1600.0);
-        size = min(size * 1.2, 30.0);
-        strength = strength * 1.5;
-        point = twisted;
-    }
-    return twisted;
-}
-
-fn gg_cyclones(point_in: vec3<f32>, offset: ptr<function, f32>) -> vec3<f32> {
-    let cy = biomes.giant[2];
-    let cy2 = biomes.giant[3];
-    var point = point_in;
-    var twisted = point;
-    var center = vec3<f32>(0.0);
-    // Equatorial oval cyclones.
-    var offs = 0.6;
-    var squeeze = 2.27;
-    var strength = 2.5;
-    var freq = cy.y * 50.0;
-    var dens = cy.z * 0.02;
-    var size = 5.0;
-    for (var i = 0; f32(i) < cy.w; i++) {
-        let cell = gg_isf(vec3<f32>(point.x, point.y * squeeze, point.z), freq, &center);
-        let rnd = gg_hash1(cell.x);
-        let r = size * cell.y;
-        if rnd < dens && r < 1.0 {
-            let dir = sign(0.7 * dens - rnd);
-            let dist = clamp(1.0 - r, 0.0, 1.0);
-            let dist2 = clamp(0.5 - r, 0.0, 1.0);
-            let fi = pow(dist, strength) * (exp(-6.0 * dist2) + 0.5);
-            twisted = gg_rotate(cy.x * dir * sign(center.y + 0.001) * fi, center, point);
-            *offset += offs * fi * dir;
-        }
-        freq = min(freq * 2.0, 6400.0);
-        dens = min(dens * 3.5, 0.3);
-        size = min(size * 1.5, 15.0);
-        offs = offs * 0.85;
-        squeeze = max(squeeze - 0.3, 1.0);
-        strength *= 1.3;
-        point = twisted;
-    }
-    // Polar round cyclones.
-    strength = 7.125;
-    freq = cy2.y * 800.0;
-    dens = 0.5;
-    size = 8.0;
-    offs = cy2.x * smoothstep(cy2.z - 0.1, cy2.z + 0.1, abs(point.y));
-    for (var i = 0; f32(i) < cy2.w; i++) {
-        let cell = gg_isf(point, freq, &center);
-        let rnd = gg_hash1(cell.x);
-        let r = size * cell.y;
-        if rnd < dens && r < 1.0 {
-            let dir = sign(0.7 * dens - rnd);
-            let dist = clamp(1.0 - r, 0.0, 1.0);
-            let dist2 = clamp(0.5 - r, 0.0, 1.0);
-            let fi = pow(dist, strength) * (exp(-6.0 * dist2) + 0.5);
-            twisted = gg_rotate(cy.x * dir * sign(center.y + 0.001) * fi, center, point);
-            *offset += offs * fi * dir;
-        }
-        freq = min(freq * 1.8, 6400.0);
-        size = min(size * 1.2, 15.0);
-        offs = offs * 0.95;
-        strength *= 1.3;
-        point = twisted;
-    }
-    return twisted;
-}
-
-fn gg_height(point: vec3<f32>) -> f32 {
-    let g0 = biomes.giant[0];
-    let randomize = biomes.giant[4].xyz;
-    var twisted = point;
-    // Zones.
-    var zp = randomize * 7.1563;
-    zp.y += twisted.y * g0.z * 0.5;
-    let zones = gg_noise(zp) * 0.6 + 0.25;
-    var offset = 0.0;
-    if biomes.giant[2].w > 0.0 {
-        twisted = gg_cyclones(twisted, &offset);
-    }
-    twisted = gg_turbulence(twisted);
-    // Stripes.
-    let turb = gg_fbm(twisted * 0.2, g0.y);
-    twisted = twisted * (0.00515 * g0.x) - turb * 0.0005;
-    twisted.y *= 100.0 + turb;
-    let height = biomes.giant[1].x * (gg_fbm(twisted, g0.y) * 0.7 + 0.5);
-    return zones + height + offset;
-}
-
-// tg_gasgiant_color: the cloud height times the palette's colour at that height (SE's
-// GetGasGiantCloudsColor over its 8 layers), then from gamma to linear (`colorGamma`).
-fn gas_giant_albedo(dir: vec3<f32>) -> vec3<f32> {
-    let h = gg_height(dir);
-    let hs = 7.0 / 21.0;
-    let y = clamp(h * hs, 0.5 * hs, 1.0 - 0.5 * hs);
-    let f = (y - 0.5 * hs) / (1.0 - hs) * 7.0;
-    let i0 = u32(clamp(floor(f), 0.0, 7.0));
-    let i1 = min(i0 + 1u, 7u);
-    let c = mix(biomes.giant_palette[i0].rgb, biomes.giant_palette[i1].rgb, fract(f));
-    return pow(clamp(h * c, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(2.2));
 }
 
 fn proc_albedo(dir: vec3<f32>, height: f32, slope: f32, footprint_m: f32) -> vec3<f32> {
@@ -1214,6 +1079,10 @@ fn se_crack_color(point_in: vec3<f32>, fp: f32, mask: ptr<function, f32>) -> f32
 // colour shaders put on +x for tidally locked worlds.
 var<private> g_sun_body: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 
+// The pixel's `VertexOut::selena` and `terra` (set by `fragment`).
+@if(SELENA_AT_VERTICES) var<private> g_selena: vec3<f32>;
+@if(TERRA_AT_VERTICES) var<private> g_terra: vec4<f32>;
+
 // SE's PlantsBlendCoeff, its 0.025 ramps widened by `cw` (the climate's change across the pixel).
 fn plants_coeff(lo: f32, hi: f32, climate: f32, fade: f32, trans_fractal: f32, cw: f32) -> f32 {
     let t = fade * smoothstep(lo - cw, lo + 0.025 + cw, climate) * (1.0 - smoothstep(hi - 0.025 - cw, hi + cw, climate));
@@ -1238,6 +1107,22 @@ struct TerraMix {
     white: f32,
 };
 
+// The airless worlds' colour noises that vary only over kilometres (tg_selena_color.glsl): x the
+// latitude's noise, y the albedo variation's Fbm, z the young terrain's Fbm (0 without young terrain).
+fn selena_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
+    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(3.0, 0.07, lac, fp)) * (1.5 + biomes.climate[8].y);
+    let vary = ter_fbm((point + avd) * 0.378, ter_oct(8.0, 0.378, lac, fp), lac);
+    var young = 0.0;
+    if biomes.climate[7].w > 0.05 {
+        let yd = ter_fbm3d((point - rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.1;
+        young = ter_fbm(point + yd, ter_oct(8.0, 1.0, lac, fp), lac);
+    }
+    return vec3<f32>(lat_noise, vary, young);
+}
+
 // SE's ColorMapSelena (tg_selena_color.glsl), airless worlds: the base surface by height bands, an
 // albedo variation weakened on slopes and, on cratered worlds, outside younger patches, cut by the
 // ice cracks' lines (CrackColorNoise) and the Europa-like freckles (JordanTurbulence in the hills
@@ -1248,15 +1133,14 @@ struct TerraMix {
 // freckles, rays and the asteroid look only on `procedural` worlds: a colour map has its own (the
 // Moon's Tycho).
 fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool) -> TerraMix {
-    let c0 = biomes.climate[0];
-    let rnd = biomes.climate[6].xyz;
-    let sea = c0.x;
-    let lac = 2.218281828459;
-    var o: TerraMix;
-    o.rock_tint = vec3<f32>(1.0);
-    o.dark = 1.0;
-    var w: array<f32, 12>;
     if biomes.climate[7].z > 1.5 && procedural {
+        let c0 = biomes.climate[0];
+        let rnd = biomes.climate[6].xyz;
+        let sea = c0.x;
+        let lac = 2.218281828459;
+        var o: TerraMix;
+        o.rock_tint = vec3<f32>(1.0);
+        var w: array<f32, 12>;
         let hn = se_dist_fbm(point * 3.7 + rnd, 1.5, ter_oct(5.0, 3.7, lac, fp));
         let ha = (hn - sea) / max(1.0 - sea, 1e-3) * 4.0 + 2.0;
         let a0 = clamp(i32(floor(ha)), 0, 5);
@@ -1269,7 +1153,23 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool
         o.white = 0.0;
         return o;
     }
-    let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
+    return se_selena_terms(point, h, slope, fp, procedural, selena_noise(point, fp));
+}
+
+// `se_selena_mix` past the asteroids, given `selena_noise` (`n`). The nodes that carry it at their
+// vertices (`SELENA_AT_VERTICES`) pass the pixel's interpolated values: their cells are so fine
+// against its features that the two differ by under a thousandth (below what 8-bit colour shows),
+// and their pixels skip its 43 noises, most of the ground's cost on such worlds.
+fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool, n: vec3<f32>) -> TerraMix {
+    let c0 = biomes.climate[0];
+    let rnd = biomes.climate[6].xyz;
+    let sea = c0.x;
+    let lac = 2.218281828459;
+    var o: TerraMix;
+    o.rock_tint = vec3<f32>(1.0);
+    o.dark = 1.0;
+    var w: array<f32, 12>;
+    let lat_noise = n.x;
     var latitude: f32;
     if biomes.climate[6].w <= 0.0 {
         latitude = saturate(abs(point.y) + lat_noise);
@@ -1282,12 +1182,10 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool
     let dh = fract(hb);
     w[h0] += 1.0 - dh;
     w[h1] += dh;
-    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(3.0, 0.07, lac, fp)) * (1.5 + biomes.climate[8].y);
     let slope_mod = 1.0 - slope;
-    var vary = saturate(1.0 - ter_fbm((point + avd) * 0.378, ter_oct(8.0, 0.378, lac, fp), lac) * slope_mod * slope_mod * 2.0);
+    var vary = saturate(1.0 - n.y * slope_mod * slope_mod * 2.0);
     if biomes.climate[7].w > 0.05 {
-        let yd = ter_fbm3d((point - rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.1;
-        var young = 1.0 - ter_fbm(point + yd, ter_oct(8.0, 1.0, lac, fp), lac);
+        var young = 1.0 - n.z;
         young = smoothstep(0.0, 1.0, young * young * young);
         vary = mix(0.0, vary, young);
     }
@@ -1338,20 +1236,62 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool
 // SE's ColorMapTerra in three stages, so the vertex stage can run it (`se_terra_mix_v`): the
 // fragment softens its two sharp transitions by their screen derivatives between them.
 fn se_terra_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
-    let s = se_terra_snow(point, h, slope, fp);
-    let c = se_terra_climate(point, slope, fp, s, fwidth(s.y));
-    return se_terra_weights(point, h, slope, fp, c, fwidth(c.x));
+    return se_terra_mix_n(point, h, slope, fp, terra_noise(point, fp), terra_climate_noise(point, fp));
+}
+
+// `se_terra_mix` given `terra_noise` (`n`) and `terra_climate_noise` (`cv`). The nodes that carry
+// them at their vertices (`TERRA_AT_VERTICES`, `TERRA_CLIMATE_AT_VERTICES`) pass the pixel's
+// interpolated values: their cells are so fine against those noises' features that the colour
+// differs by far less than 8-bit colour shows, and their pixels skip most of the ground's cost.
+fn se_terra_mix_n(point: vec3<f32>, h: f32, slope: f32, fp: f32, n: vec3<f32>, cv: f32) -> TerraMix {
+    let s = se_terra_snow(point, h, slope, fp, n.x);
+    let c = se_terra_climate(slope, s, fwidth(s.y), cv);
+    return se_terra_weights(point, h, slope, fp, c, fwidth(c.x), n);
 }
 
 // The vertex stage's: transitions as sharp as SE's.
 fn se_terra_mix_v(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
-    let s = se_terra_snow(point, h, slope, fp);
-    let c = se_terra_climate(point, slope, fp, s, 0.0);
-    return se_terra_weights(point, h, slope, fp, c, 0.0);
+    let n = terra_noise(point, fp);
+    let s = se_terra_snow(point, h, slope, fp, n.x);
+    let c = se_terra_climate(slope, s, 0.0, terra_climate_noise(point, fp));
+    return se_terra_weights(point, h, slope, fp, c, 0.0, n);
 }
 
-// x the climate (before the snow), y the snow line, z the latitude.
-fn se_terra_snow(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> vec3<f32> {
+// SE's ColorMapTerra noises that vary only over kilometres: x the latitude's noise, y the albedo
+// variation (albedoVary before its curve), z on worlds with plants the humidity's Fbm (else 0).
+// SE warps the humidity and the albedo variation alike, by 1.3 Fbm3D((point + Randomize) 0.07).
+fn terra_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
+    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.3;
+    let av = 1.0 - 0.5 * ter_fbm(point + avd, ter_oct(8.0, 1.0, lac, fp), lac);
+    var humidity = 0.0;
+    if biomes.flags.z > 0.5 {
+        humidity = ter_fbm((point + avd) * 1.73, ter_oct(8.0, 1.73, lac, fp), lac);
+    }
+    return vec3<f32>(lat_noise, av, humidity);
+}
+
+// SE's flatland climate distortion (tg_terra_color.glsl): ridged multifractals by hillsFreq /
+// hillsMagn, then an Fbm by colorDistFreq, warped.
+fn terra_climate_noise(point: vec3<f32>, fp: f32) -> f32 {
+    let rnd = biomes.climate[6].xyz;
+    let lac = 2.218281828459;
+    let hills = biomes.climate[7];
+    let pf = 0.0005 * hills.x / max(hills.y * hills.y, 1e-6);
+    let pp = (point + rnd) * pf;
+    let fr = 0.20 * (1.5 - ter_rmf(pp, 2.0, ter_oct(4.0, pf, lac, fp)))
+        + 0.05 * (1.5 - ter_rmf(pp * 10.0, 2.0, ter_oct(4.0, pf * 10.0, lac, fp)))
+        + 0.02 * (1.5 - ter_rmf(pp * 100.0, 2.0, ter_oct(4.0, pf * 100.0, lac, fp)));
+    let df = biomes.climate[5].y * 0.005;
+    var p = point * df + vec3<f32>(fr);
+    p += ter_fbm3d(p * 0.38, ter_oct(4.0, df * 0.38, lac, fp)) * 1.2;
+    return ter_fbm(p, ter_oct(4.0, df, lac, fp), lac) * 0.35 + 0.245;
+}
+
+// x the climate (before the snow), y the snow line, z the latitude. `lat_noise`: `terra_noise`'s x.
+fn se_terra_snow(point: vec3<f32>, h: f32, slope: f32, fp: f32, lat_noise: f32) -> vec3<f32> {
     let c0 = biomes.climate[0];
     let c1 = biomes.climate[1];
     let c2 = biomes.climate[2];
@@ -1366,7 +1306,6 @@ fn se_terra_snow(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> vec3<f32> {
     let lac = 2.218281828459;
     var latitude: f32;
     var climate: f32;
-    let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
     if biomes.climate[6].w <= 0.0 {
         latitude = saturate(abs(point.y) + lat_noise);
         if latitude < lat_tropic - tropic_width {
@@ -1387,35 +1326,24 @@ fn se_terra_snow(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> vec3<f32> {
     return vec3<f32>(climate, snow_line, latitude);
 }
 
-// x the climate, y the ice cap. `ws`: the snow line's change over a pixel.
-fn se_terra_climate(point: vec3<f32>, slope: f32, fp: f32, s: vec3<f32>, ws: f32) -> vec2<f32> {
+// x the climate, y the ice cap. `ws`: the snow line's change over a pixel; `vary`:
+// `terra_climate_noise`.
+fn se_terra_climate(slope: f32, s: vec3<f32>, ws: f32, vary: f32) -> vec2<f32> {
     let snow_level = biomes.climate[0].y;
     let lat_ice = biomes.climate[0].z;
     let pole = biomes.climate[1].x;
-    let rnd = biomes.climate[6].xyz;
-    let lac = 2.218281828459;
     // SE's sharp transitions, softened where they would change within a pixel: the slope comes from
     // the node's normal map, coarser than SE's colour tiles, and would flip whole texels.
     var climate = mix(s.x, pole, saturate((s.y - snow_level) * min(100.0, 0.5 / max(ws, 1e-6))));
     let ice_cap = saturate((s.z / lat_ice - 1.0) * 50.0);
     climate = mix(climate, pole, ice_cap);
-
-    let hills = biomes.climate[7];
-    let pf = 0.0005 * hills.x / max(hills.y * hills.y, 1e-6);
-    let pp = (point + rnd) * pf;
-    let fr = 0.20 * (1.5 - ter_rmf(pp, 2.0, ter_oct(4.0, pf, lac, fp)))
-        + 0.05 * (1.5 - ter_rmf(pp * 10.0, 2.0, ter_oct(4.0, pf * 10.0, lac, fp)))
-        + 0.02 * (1.5 - ter_rmf(pp * 100.0, 2.0, ter_oct(4.0, pf * 100.0, lac, fp)));
-    let df = biomes.climate[5].y * 0.005;
-    var p = point * df + vec3<f32>(fr);
-    p += ter_fbm3d(p * 0.38, ter_oct(4.0, df * 0.38, lac, fp)) * 1.2;
-    let vary = ter_fbm(p, ter_oct(4.0, df, lac, fp), lac) * 0.35 + 0.245;
     climate += vary * saturate(1.0 - 3.0 * slope) * saturate(1.0 - 1.333 * climate);
     return vec2<f32>(climate, ice_cap);
 }
 
-// The slots' weights. `c`: the climate and ice cap; `cw`: the climate's change over a pixel.
-fn se_terra_weights(point: vec3<f32>, h: f32, slope: f32, fp: f32, c: vec2<f32>, cw: f32) -> TerraMix {
+// The slots' weights. `c`: the climate and ice cap; `cw`: the climate's change over a pixel;
+// `n`: `terra_noise`.
+fn se_terra_weights(point: vec3<f32>, h: f32, slope: f32, fp: f32, c: vec2<f32>, cw: f32, n: vec3<f32>) -> TerraMix {
     let c2 = biomes.climate[2];
     let c3 = biomes.climate[3];
     let c4 = biomes.climate[4];
@@ -1440,8 +1368,7 @@ fn se_terra_weights(point: vec3<f32>, h: f32, slope: f32, fp: f32, c: vec2<f32>,
 
     if biomes.flags.z > 0.5 {
         let ptf = abs(0.125 * ter_fbm(point * 3.0e5, ter_oct(2.0, 3.0e5, lac, fp), lac) + 0.125 * ter_fbm(point * 1.0e3, ter_oct(2.0, 1.0e3, lac, fp), lac));
-        let pavd = ter_fbm3d((point + rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.3;
-        let humidity = ter_fbm((point + pavd) * 1.73, ter_oct(8.0, 1.73, lac, fp), lac) - 1.0 + c2.z * 2.0;
+        let humidity = n.z - 1.0 + c2.z * 2.0;
         let beach = c2.w;
         let fade = smoothstep(beach, beach * 2.0, h - sea) * (1.0 - smoothstep(0.65, 0.75, slope)) * smoothstep(-0.5, 0.5, humidity);
         var t = plants_coeff(c3.x, c3.y, climate, fade, ptf, cw);
@@ -1468,10 +1395,8 @@ fn se_terra_weights(point: vec3<f32>, h: f32, slope: f32, fp: f32, c: vec2<f32>,
         o.rock_tint = mix(vec3<f32>(1.0), vec3<f32>(1.0) - vec3<f32>(0.0, 0.5, 1.0) * layers, t / max(w[5] * (1.0 - t) + t, 1e-4));
         blend_slot(&w, 5, t);
     }
-    // SE's albedoVary: 1 - 0.5 Fbm of the point distorted by 1.3 Fbm3D((point + Randomize) 0.07),
-    // cubed and smoothstepped.
-    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.3;
-    let av = 1.0 - 0.5 * ter_fbm(point + avd, ter_oct(8.0, 1.0, lac, fp), lac);
+    // SE's albedoVary (`terra_noise`'s y), cubed and smoothstepped.
+    let av = n.y;
     o.vary = smoothstep(0.0, 1.0, av * av * av);
     o.w = w;
     return o;
@@ -1520,9 +1445,27 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
         // BumpHeights. SE's generator: 0 terra, 1 selena (airless), 2 asteroid (as selena here).
         let hv = biomes.climate[5].z + h / max(biomes.climate[4].z, 1.0);
         if biomes.climate[7].z > 0.5 {
-            m = se_selena_mix(dir, hv, slope, fp, tinted);
+            // On nodes that carry them, the kilometre-scale noises come from the vertices.
+            @if(SELENA_AT_VERTICES) {
+                m = se_selena_terms(dir, hv, slope, fp, tinted, g_selena);
+            }
+            @if(!SELENA_AT_VERTICES) {
+                m = se_selena_mix(dir, hv, slope, fp, tinted);
+            }
         } else {
-            m = se_terra_mix(dir, hv, slope, fp);
+            @if(TERRA_AT_VERTICES) {
+                var cv: f32;
+                @if(TERRA_CLIMATE_AT_VERTICES) {
+                    cv = g_terra.w;
+                }
+                @if(!TERRA_CLIMATE_AT_VERTICES) {
+                    cv = terra_climate_noise(dir, fp);
+                }
+                m = se_terra_mix_n(dir, hv, slope, fp, g_terra.xyz, cv);
+            }
+            @if(!TERRA_AT_VERTICES) {
+                m = se_terra_mix(dir, hv, slope, fp);
+            }
         }
         w = m.w;
         rock_tint = m.rock_tint;
@@ -2337,13 +2280,14 @@ fn horizon_shadow(height: f32, mu: f32) -> f32 {
 fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: vec3<f32>) -> Surf {
     let has_atm = lit[planet.slot].flags.x > 0.5;
     let p_rel = (in.world_pos - in.centre.xyz) / max(in.centre.w, 1e-30);
-    let shadow = eclipse_light(lit[planet.slot].eclipse[0], p_rel, l) * ring_shadow(p_rel, l);
+    let bdir = normalize(in.body_dir);
+    let clouds = cloud_shadow(bdir, (length(p_rel) - 1.0) * planet.planet.w);
+    let shadow = eclipse_light(lit[planet.slot].eclipse[0], p_rel, l) * ring_shadow(p_rel, l) * clouds;
     let sun = lit[planet.slot].sun_color.rgb * lit[planet.slot].sun_dir.w * shadow;
     let e_sun = sun * planet.atm_flags.y;
 
     var albedo = planet.base_color.rgb;
     var emission = vec3<f32>(0.0);
-    let bdir = normalize(in.body_dir);
     // The pixel's footprint on the unit sphere, for SE's terrain colour noise.
     let fp = max(length(fwidth(bdir)), 1e-9);
     g_sun_body = normalize(vec3<f32>(dot(in.axis_x, l), dot(in.axis_y, l), dot(in.axis_z, l)) + vec3<f32>(1e-12));
@@ -2392,7 +2336,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         albedo *= clamp(luma(biome), 0.0, 3.0);
     } else if planet.proc_params2.z > 0.5 {
         if biomes.giant[1].y > 0.5 {
-            albedo = gas_giant_albedo(bdir);
+            albedo = gas_giant_albedo(bdir, GiantParams(biomes.giant_palette, biomes.giant));
         } else if biomes.flags.x > 0.5 && planet.proc_params.x < 5.5 {
             albedo = biome;
         } else {
@@ -2676,6 +2620,12 @@ fn water_depth(in: VertexOut) -> f32 {
 
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
+    @if(SELENA_AT_VERTICES) {
+        g_selena = in.selena;
+    }
+    @if(TERRA_AT_VERTICES) {
+        g_terra = in.terra;
+    }
     let n = ground_normal(in);
     let up = normalize(in.up);
     let l = normalize(lit[planet.slot].sun_dir.xyz);

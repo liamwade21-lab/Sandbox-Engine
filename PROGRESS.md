@@ -1,7 +1,108 @@
 # Progress
 
-## Current state (2026-11-02)
+## Current state (2026-11-03)
 
+- **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
+  made on 2026-11-02, including its git history and the uncommitted surface-speed work below, for
+  better visuals, add-ons and the like. It has its own settings folder since 2026-11-02 (below).
+  Still to decide: its own window title / exe name.
+- **In progress: volumetric clouds and weather.** The plan is `docs/spec-volumetric-clouds-weather.md`
+  (2026-11-02): volumetric clouds and a hybrid weather system on all worlds with an atmosphere,
+  gas giants included, plus rain/snow, lightning, fog and dust storms, in 10 steps. Steps 1 to 7 are
+  done: on Ultra and High the planet you are at now has real volumetric clouds with ground shadows,
+  weather that changes with the date, a live weather simulation, and rain, snow, lightning, fog and
+  dust. Step 8 (gas giants) is under way, see below. The user allowed moving from step to step
+  without asking (2026-11-02).
+- **2026-11-03: the new clouds plan** (`docs/spec-clouds-v3.md`), from the user's videos of their
+  planet RS 8514-3620-1-7-69 1 and a Flight Simulator 2020 video of the look they want; the user
+  asked for the whole plan. Done: steps 1-4.
+  - **Step 1, one cloud system:** the hand-over to SE's flat clouds is dropped (it caused the dark
+    patches in the user's videos and made far views slower). SE's flat clouds only beyond 40-60 radii.
+  - **Step 2, a quarter of the pixels a frame:** the far trace does one pixel of each 2x2 block a frame
+    in turn; the blend fills in the rest (`SE_CLOUD_QUARTER=0` traces all). About 2.3x cheaper.
+  - **Step 3, cheaper march:** long steps through clear air, steps growing with distance (at least 24
+    over a ray), the light towards the sun cheaper (its far samples without the fine noise) and from
+    20-40 km on worked out from the cloud above instead of marched. Two bugs found on the way and
+    fixed: re-marching the same stretch hid whole decks; the low sun's estimate turned sunsets grey.
+  - **Step 4, sharp from far:** the cloud map is twice as fine (2048 a face, from SE's tiles one level
+    deeper, a thread a face); the detail patch is now a stack of three per layer (Earth 800, 1,600 and
+    3,200 km across, 2048 texels, made from about 1,400 / 2,800 / 5,600 km down); far-away clouds are
+    sharpened to full resolution by the cloud map in the composite (`cover_tau`). The weather's own
+    cloud got a real pattern (a baked map, `weather_pattern`, shaped by `weather_shaped`): it made
+    the honeycomb veil and the soft round blobs from orbit (the user's "splotchy"). The ground's cloud
+    shadows use the same pattern. Earth from 400 km went from blurry blobs to crisp clouds; the
+    user's planet from orbit is about as sharp as SE's flat clouds.
+  - **Measured at Ultra 3440x1440 on the user's planet** (clouds' ms: start of the plan -> now): from
+    3,400 km 14.5 -> 1.4, from 114 km 15.9 -> 2.4, 3 km up 11.0 -> 2.7, on the ground 11.2 -> 2.5.
+    Planet 2 looking around: 2.6. The ground itself still costs 18-24 ms near the surface.
+  - **2026-11-03, two bugs from the user's videos fixed (before step 5):**
+    - *Ghosting while swinging round a planet:* clouds turned into blocky squares and hung out into
+      space beside the planet's edge. A cloud-free spot stored its distance capped at 10,000 km, so
+      from farther away the last frame's picture was moved to the wrong place and its clouds were
+      kept next to the real ones. Now it stores the real distance, and a spot whose view misses the
+      cloud layers is always clear. Checked orbiting the moon RS 8514-3840-6-8364-20 3.3 at Ultra and
+      High and the user's planet from 3,000 and 300 km (new dev command `orbit DEG`, degrees a second).
+    - *Ground shadows fading near the ground:* within 40 km of the spot under the camera the shadow
+      comes from a shadow map traced through the clouds, farther out from the cloud map. The map let
+      about 0.56 of the sunlight through a thick cloud, the cloud map 0.25, so a bright square of
+      ground followed the camera (the V-shaped edge in the user's video). Both now give a quarter
+      under thick cloud, and the far shadows of thin veils follow the sun's slant path as the map's
+      do. Under an overcast the ground near the camera is now darker, as it already was farther away.
+    - *The square was still there in the user's next video* (the moon RS 8514-3840-6-8364-20 3.3, its
+      clouds 14-18 km up, the sun low): the shadow map took the sun's ray as rising over flat ground
+      and stopped it after 40 km, so with a low sun the ray passed above the clouds that should shade
+      the ground. Both shadows now follow the ray over the round planet. Checked from 171, 390 and
+      22 km at the video's spot: no square. On the user's planet the map was still a little lighter
+      than the far shadow under patchy cloud (it lets more light through than an even one), so near
+      the camera the ground now takes the map's shapes at the far shadow's average darkness (the map
+      got mips; its 10 km average is read from the last). The gap went from about 0.1-0.17 to a few
+      hundredths.
+    - *A line where the night side starts (the user's screenshot):* the shadows stopped where the sun
+      sets on the ground, though the ground there is still lit. They now go on past it. Checked at the
+      screenshot's spot from 1,058 km.
+    - Seen on the way, not fixed yet: saw-tooth edges on some clouds seen at a slant from 1,000 km.
+  - **Next:** step 5 (cloud shapes), 6 (light), 7 (storms, final measurements). Steps 5-7 were
+    revised on 2026-11-03 after a survey of other games' clouds (the plan's "What other games do"):
+    two height curves and varying tops (5), a light volume around the camera (6), storms built from
+    parts (7), and a reference switch to judge them against.
+  - **Still open:** the faint straight line over Alaska from 11,000 km; SE's flat clouds (40-60 radii)
+    still draw the weather's cloud without its pattern; faint grey specks at some cloud edges.
+  - **Test switches:** `SE_CLOUD_QUARTER=0`, `SE_CLOUD_LOD=0` (a hard switch, no fades),
+    `SE_DETAIL_COVER=0`, `SE_NEAR_PASS=0`, `SE_WEATHER_NEUTRAL=1`; dev command `vclouds 0|1|2` (the
+    3D clouds off, High, Ultra, for side-by-side pictures).
+- **Step 8, gas giants: under way (2026-11-03).** Done so far:
+  - SE's gas giant cloud generator now sits in its own shader file (`gas_giant.wesl`), shared by the
+    planet shader, the brown dwarfs and the new giant decks; flat Jupiter checked identical (same
+    picture to within the run-to-run noise) and a brown dwarf still draws.
+  - Giant decks (only with `SE_GIANT_DECKS=1`, off by default so nothing changes in your game yet):
+    a thin high haze, the main deck in SE's band colours with its zones higher than its belts, and a
+    dark deep deck; light dims and reddens below the top and fades to black under the deep deck.
+    They fade in only within about 120 km of the cloud tops, because from higher up SE's own flat
+    bands are sharper than the decks' colour map (about 110 km a texel on Jupiter).
+  - Decision: from orbit gas giants keep SE's flat look; the volumetric decks are for coming down to
+    and into the clouds.
+  - Still to do: the deck looks dull brown and the haze grey near the cloud tops (lighting and colour
+    to match the flat bands); let the camera go below a giant's cloud-top radius (the ground collision
+    in `terrain.rs` pushes it back out); then check the descent to the dark limit, lightning in deep
+    storms, a procedural giant, cost; then turn the decks on by default.
+- **Known gaps of the volumetric clouds so far** (later steps): HD screenshots, skybox export and the
+  projection modes still show the flat clouds (step 9); gas giants keep their flat look (step 8); a
+  few dark specks remain at some cloud edges seen from orbit; the detailed ground shadows reach about
+  40 km around you (beyond that a gentler average). A full overcast looks smooth and featureless from
+  low orbit (400 km) and from just above it, and Earth's cloud map is soft up close (SE's map is about
+  10 km a pixel): to tune in step 10. The storm clusters may be a little too widespread, and the
+  storm-track storms are too evenly spaced and alike (seen on the weather map); lightning seen from
+  orbit is only a pinprick; rain near the camera falls straight down whatever the wind (tuning). The
+  live weather's storm-track storms (`se_core` weather) on Jupiter-sized worlds took 32 ms to map; gas
+  giants now skip the weather maps (SE's own bands and storms stand in). Since
+  step 5 the log shows one or two lines "RenderMesh ... cannot be extracted" while the galaxies load
+  (probably a galaxy's sprite re-sort skipped once; nothing visible found; cause not traced yet).
+- **Your planet 2 spot is now clear-skied:** with the weather, the place of your video (25.5 N,
+  48.2 W) lies in a dry subtropical belt, so its sky is clear where step 4 showed clouds overhead.
+  Clouds are in the wet belts and storm tracks (e.g. 52 N there has an overcast).
+- **Camera oddity seen in tests (not from the clouds):** the `surface` dev command sometimes leaves the
+  camera 1 m above the sea instead of at the height asked for (the info panel then shows a negative
+  height above the surface). Not traced yet.
 - The port runs and covers most of SpaceEngine; see README.md "Status" and
   `docs/missing_features.md` for what is left.
 - **V1:** `main` at 97094fd is the port's official V1, tagged `v1.0` (local only).
@@ -14,9 +115,208 @@
   "needs your call" items that would change the picture (the biggest: render nebulae at SE's own
   lower volumetric resolution, ~3 ms of GPU time). Also added: a frame-time logger for measuring
   (`perf.rs`, the `perf` dev command; only active with `SE_PERF=FILE`).
-- Next: the user playtests the faster build; then maybe the "needs your call" items.
+- **Surface FPS fix (user's video, 2026-11-02 afternoon, not committed):** on procedural planets
+  (airless and Earth-like) the ground's colour noise is now worked out per terrain vertex where the
+  terrain is fine enough, instead of per pixel. On the user's planet at their settings: horizon
+  30 → 44 fps, looking down 67 → 120 fps; on an Earth-like planet looking down 56 → 107 fps.
+  Also added the `preset NAME` dev command for measuring at the user's Ultra settings.
+- **Clouds (tried, reverted, 2026-11-02):** on Earth-like procedural planets the cloud layer is the
+  biggest cost left (~17 ms at the horizon, ~24 ms looking up at Ultra 3440x1440), nearly all of it
+  SE's warped cloud noise per pixel. The per-vertex trick does not fit it: every generated layer has
+  relief, whose lighting comes from the density's fine per-pixel slopes, and vertex values changed
+  that lighting on ~97% of cloud pixels (by over 1/64 on a third). Reverted. Options that would change
+  the look, for the user's call: bake the clouds into per-patch textures as SE itself does, or draw
+  them at a lower resolution.
+- Next: the clouds plan's steps 5-7 (`docs/spec-clouds-v3.md`), then the gas giants. Other big costs
+  left on planet surfaces at Ultra 3440x1440: the ground itself (18-24 ms near the surface on the
+  user's planet), the volumetric nebula when a planet sits in one, and the biome detail textures with
+  4x MSAA.
 
 ## Recently done
+
+- **Weather effects (2026-11-03, clouds plan step 7):** rain, snow, lightning, fog and dust, each with
+  its own switch (Settings > Graphics > Clouds and weather).
+  - Rain and snow: grey shafts under raining clouds (steady rain under a deck, showers in shafts,
+    slanted by the wind), and around you, when under a raining cloud, falling streaks of rain or
+    snowflakes; snow where the air is below freezing (from the planet's temperature, the latitude and
+    the height). Checked: snow falling near Antarctica, the sea's horizon greying out in rain.
+  - Lightning: in thunderstorms, flashes of three quick strokes every few seconds, lighting the
+    clouds from inside and the ground around them; they stop when paused.
+  - Fog: on calm, humid nights and mornings, mostly over the cool subtropical seas, in patches.
+    Checked: a morning sea fog off California with the sun diffused through it.
+  - Dust: dry, windy worlds lift regional dust storms that drift with the winds (Mars shows big
+    butterscotch veils over its surface). Planets with an atmosphere but no cloud layers now get the
+    effects too.
+  - Cost at your settings (Ultra, 3440x1440): planet 2's clouds and effects 0.4-2.2 ms (about 0.2 ms
+    more than before), frames unchanged; Earth in falling snow 1.1 ms at the horizon, 3.7 ms looking
+    up into the snowing clouds (frames 10 and 5 ms).
+  - Test tools: `SE_WEATHER_DEBUG=1` shows a weather map at the top of the screen; the dev command
+    `switch KEY on|off` turns a render switch on or off.
+  - Tests pass (315 core, 209 engine), with a new one for fog and dust.
+
+- **Live weather on the graphics card (2026-11-03, clouds plan step 6):** the planet you are at now
+  has a small weather simulation running on the graphics card (a grid of 6 x 128 x 128 cells over the
+  planet), on top of the date's weather.
+  - What it does: thunderstorm clusters start in the afternoon where the weather allows them, grow,
+    tower up, rain, leave cooled air behind that keeps new storms away for a while, spread anvils that
+    linger into the evening, and die out at night; everything is carried by the winds. From orbit an
+    afternoon over a warm ocean gains big bright storm systems.
+  - The date's weather now blends smoothly between maps 10 simulated minutes apart (no more jumps
+    every 10 minutes), and its winds now also blow north-south (the trade winds meet at the equator)
+    and swirl a little.
+  - Near you the clouds drift with the local wind (checked: 8 m/s from the east on Earth's trades).
+  - Time rules: up to x1000 and within 20 planet radii it runs live; faster, farther or with time
+    running backwards it follows the date's weather (blending over a fraction of a second); paused
+    it stands still (two paused runs give the same picture: on average 0.02 out of 255 apart); a date
+    jump shows the new date's weather at once (checked against a fresh start at that date).
+  - The far ground shadows now follow the weather too.
+  - Cost at your settings (Ultra, 3440x1440, planet 2): the clouds take 0.7 ms at the horizon, 0.8 ms
+    looking up, 0.2 ms at the ground, 2.0 ms looking around; frames 30, 19, 10 and 20 ms (same as
+    before). High: clouds 0.1-0.6 ms, frames unchanged.
+  - New dev commands for tests: `timing frame` / `timing real`, `resume`. `SE_WEATHER_SIM=0` turns the
+    simulation's storms off for comparisons.
+  - Tests pass (314 core, 209 engine), new ones for the simulation's clock and the winds.
+
+- **Weather that changes with the date (2026-11-03, clouds plan step 5):** the clouds of the planet
+  you are at now follow a weather pattern worked out from its climate and the date, on top of SE's
+  own cloud layers.
+  - The climate comes from the planet: its day length (from the catalog; slow spinners get one wide
+    belt per hemisphere, fast ones up to 7), how wet it is (its ocean), whether it is tidally locked.
+  - The pattern: cloudy and clear latitude belts that move north and south with the seasons, storms
+    that drift east along the storm tracks and live about 5 days (with a comma-shaped spiral), towers
+    that grow in the afternoon, and patches that slowly change and drift with the wind.
+  - It is a small map (256x128) made again every 10 simulated minutes on a worker thread; on arrival
+    at a planet or after a jump of more than a day it is made at once (2.4 ms on your planet 2, 4.5 ms
+    on Earth) so the new weather shows in the same frame.
+  - Checked: Earth at the same spot on Nov 2 and Nov 4 shows different clouds while its cloud map's
+    look stays recognisable; after three hours at x3600 the clouds have moved on.
+  - Cost at your settings (Ultra, 3440x1440, planet 2): the clouds take 0.9-1.7 ms (horizon 0.86,
+    looking up 1.05, at the ground 0.18, looking around 1.72); High 0.1-0.5 ms. Frames: horizon 30 ms,
+    looking up 19 ms, looking around 21 ms.
+  - Tests pass (313 core, 207 engine), with 6 new ones for the weather.
+
+- **Volumetric clouds on solid worlds (2026-11-03, clouds plan step 4):** on Ultra (half resolution)
+  and High (quarter), the planet you are at draws its SE cloud layers as 3D clouds; Medium and below
+  keep the flat clouds. Your game now shows them (the step 3 test switch is gone).
+  - Where the clouds are: a cover map per planet (a cube of six 1024x1024 faces, a channel per layer)
+    built in about half a second on arrival, from SE's own cloud generator for procedural planets
+    (each texel averages 3x3 samples, as the flat clouds' fine wisps average out per pixel) or from
+    the catalog cloud map for Earth and the like (its tiles read from the install). SE's layer drift
+    turns them as before. The flat clouds' shader was split so both use the same generator code
+    (checked: the flat clouds are unchanged, at most 2 levels out of 255 on a procedural planet).
+  - What they look like: the lowest layer stands for the clouds of the lower air (Earth: 1.1 to 9 km),
+    cumulus about 1 km deep under a thin cover, towers only under a dense one, flat sheets under a full
+    overcast; higher layers are thin veils. Seen from afar the clouds are exactly as opaque as the flat
+    ones (Earth and your planet 2 from orbit match their flat cover); up close they break into clouds
+    with gaps. Lit by the star through the atmosphere (sunset colours at the terminator), by the sky,
+    with light passing diffusely through thick clouds (an overcast's base is grey, not black), and with
+    the haze in front of them.
+  - Ground shadows: traced through the clouds themselves in an 80 km square around you each frame,
+    with the light that still gets through an overcast; farther out a gentler average from the cover.
+  - Cost at your settings (Ultra, 3440x1440, planet 2 of your system): the clouds take 1.7 ms at the
+    horizon, 2.6 ms looking up, 3.2 ms looking around (budget 12 ms); High 0.4-0.8 ms (budget 6 ms).
+    Frames are faster than with the flat clouds: horizon 43 -> 32 ms, looking up 45 -> 22 ms, looking
+    around 45 -> 24 ms.
+  - Tests pass (308 core, 207 engine), with new ones for the layer heights.
+  - Lessons (the user caught both): a screenshot file reused between runs kept the old picture (the
+    test script now deletes it first), and after a shader edit the game needs time to load fully
+    before a picture means anything (a milky picture without ground was the ground shader still
+    compiling). Both are in CLAUDE.md.
+
+- **Volumetric clouds, drawing skeleton (2026-11-02, clouds plan step 3):** new `volumetric_clouds.rs`
+  and `volumetric_clouds.wesl`. Four passes after the main picture is drawn: the scene's distance at
+  the cloud resolution, the ray-march through the cloud layer, blending with the previous frames, and a
+  depth-aware blend into the picture. Ultra traces at half the solids' resolution, High at a quarter;
+  Medium and below keep today's flat clouds. The cloud noise (two tiling 3D noise volumes, new
+  `se_core/src/cloud_noise.rs`) is built in about 0.3 s on worker threads the first time it is needed.
+  - For now it draws only one fixed test layer (1.5 to 6 km up), and only with env `SE_CLOUDS_TEST=1`
+    (`SE_CLOUDS_COVER=0..1` sets its coverage). Without it the game is as before: you keep today's
+    clouds until step 4 draws the real ones. While it draws a body, that body's flat cloud shells are
+    hidden; until the cloud shaders are ready, the shells stay.
+  - Checked: Earth from orbit and from the ground at Ultra and High (3D cumulus-like clouds on the
+    horizon); with the test switch on, cloudless scenes (the Moon) and Earth at Medium differ from
+    switch-off runs no more than two identical runs differ. New tests: the reprojection maths that
+    carries the clouds across the floating origin and the planet's turn, the buffer sizes, the noise
+    volumes. All tests pass (308 core, 206 engine).
+  - Cost (Ultra, 3440x1440): the cloud passes themselves 0.3-0.6 ms, High about 0.1 ms (timed as
+    `volumetric_clouds` in `SE_PERF`). Whole frames are faster than with today's flat clouds because the
+    shells are gone: Earth horizon 23.4 -> 14.1 ms (half covered); planet 2 of your system horizon 43 ->
+    30 ms, looking up 45 -> 19 ms, looking around 45 -> 20 ms. The test layer is cheap partly because it
+    is simple; the real clouds of step 4 will cost more.
+  - Bug found and fixed on the way: wgpu's default for a render pass clears the target, which wiped
+    the picture under the clouds (black sky); the blend pass now loads it.
+
+- **Cloud and weather settings (2026-11-02, clouds plan step 2):** the Settings window's Graphics tab
+  has a new "Clouds and weather" group: Clouds (the same switch as Shift+C), Volumetric clouds (Off,
+  Quarter resolution, Half resolution), Rain and snow, Lightning, Fog and haze, Dust storms.
+  - The graphics presets set Volumetric clouds: Ultra half resolution, High quarter, Medium, Low and
+    Potato off (today's flat clouds). Changing it by hand makes the preset "Custom", like the other
+    quality settings. Your saved settings (Ultra) had no such key yet, so they get half resolution.
+  - Saved in settings.cfg as `VolumetricClouds` (with the graphics keys) and `ShowRain`,
+    `ShowLightning`, `ShowFog`, `ShowDust` (with the other switches, on by default). SE scripts can
+    read and set them too (`Set ShowRain false`).
+  - Nothing is drawn by them yet: the volumetric clouds come in step 3, the weather effects in step 7.
+  - Checked: the settings window shows half resolution at Ultra and Off at Medium; two runs with a
+    scratch settings folder showed the switches and the cloud setting are written and read back. Your
+    own settings file was not touched. Tests pass (306 core, 204 engine, a new one for the presets).
+  - Frame times unchanged (your planet and planet 2 at Ultra 3440x1440, within run-to-run noise).
+
+- **Version 2's own settings folder (2026-11-02, clouds plan step 1):** version 2 now keeps its
+  settings, log, saved session, places, ships, tutorial progress and atmosphere cache in
+  `%APPDATA%\SpaceEngine-rs-v2`; version 1 keeps `%APPDATA%\SpaceEngine-rs`.
+  - On its first run version 2 copies version 1's folder (only if version 2's doesn't exist yet). That
+    first run was a test run on 2026-11-02, so version 2 starts with your settings, session and ships
+    as they were then. From now on changes in one version no longer reach the other.
+  - Checked: version 1's files unchanged byte for byte, the copy identical, no second copy on the next
+    run. If a copy ever fails, version 2 starts with default settings and says so in its log.
+  - Screenshots still go to `Pictures\SpaceEngine-rs` for both versions.
+  - New test for the copy; all tests pass (306 core, 203 engine). Frame times unchanged (your planet,
+    Ultra at 3440x1440: horizon 22.8 ms, looking up 16.6, looking down 8.3, looking around 12.2).
+  - Baseline for the cloud work, planet 2 of your system (the Earth-like one), Ultra 3440x1440, today's
+    flat clouds: horizon 43 ms (23 fps), looking up 45 ms, looking around 45 ms; the see-through pass
+    (clouds, sky, nebula) takes 24-37 ms of GPU time of that; looking down 8.5 ms. Rerun with the
+    computer idle: the same (the first run's 16.6 ms looking down and 124 ms hitches came from other
+    use of the computer). `.optimize/bench/rsn_ultra.sh` now takes the planet number as its fifth
+    argument.
+
+- **Clean-up (2026-11-02, user's request):** deleted about 108 GB of leftovers: the 10 agent worktrees
+  (their changes checked to be in `main` first), `.optimize/scratch` (traces, saved exes, benchmark
+  outputs), the profiling and agent builds (`target/trace`, `target/agent`), `.bugfinder/scratch`,
+  the old test screenshots and logs in `.audit/work` (its decompile cache and text extracts kept),
+  `shots/` and `water_vs_se.jpg`. Kept: `target/release`, `target/debug`, `re/` (Ghidra project and
+  SE's shaders). The leftover `worktree-agent-*` git branches were left in place (no files).
+
+- **Surface FPS on Earth-like procedural planets (2026-11-02):** the same per-vertex trick for SE's
+  terra colour generator (rocky worlds with a real atmosphere). Tested on RSN
+  0-7-460129-1254-197-12 2 (in the user's system), Ultra at 3440x1440.
+  - Its planet-wide noises (latitude, albedo variation, humidity on plant worlds; features 10+ km)
+    go to the vertices on nodes up to ~20 km across; the climate distortion's ridges (features
+    ~160 m on that planet) only on the nearest nodes; metre-scale detail stays per pixel. Plant
+    worlds also stop computing one warp twice (12 noises a pixel, identical result).
+  - Picture: ground colour terms within 1/1024 everywhere tested except 0.004-0.007% of pixels,
+    none off by a full 8-bit step. Earth and Mars shots byte-identical (Earth uses its own designed
+    biomes, not SE's generator).
+  - Result: ground GPU time at the horizon 30.8 → 18.7 ms, looking down 16.4 → 8.1 ms (whole frame
+    17.9 → 9.4 ms, 56 → 107 fps). The horizon frame only went 57.5 → 43.1 ms: that planet's cloud
+    layer costs ~17 ms there (~24 ms looking up), the next big cost. Tests pass (202 engine).
+
+- **Surface FPS on the user's planet (2026-11-02, user's video):** RSN 0-7-460129-1254-197-12 4,
+  played on Ultra at 3440x1440. The drops to 25-30 fps came when looking towards the horizon.
+  - Why: at Ultra on that screen the GPU shades 2.5 times the pixels of the test runs, with 4x MSAA.
+    Half the ground's cost was one step, the airless worlds' planet-wide colour noise (43 noise
+    evaluations per pixel), though its features are kilometres across. The rest of the frame is the
+    biome detail textures (~7 ms) and, looking up, the volumetric nebula the planet sits in
+    (~5 ms at the horizon, ~11 ms looking up).
+  - Fix: terrain nodes fine enough (cells at most 1/16 of the noise's finest feature) work it out at
+    their vertices and the pixels interpolate it, in a second version of the ground shader; coarser
+    nodes and other planets are unchanged. The colour differs by under 1/16384 (measured per pixel),
+    far below what the screen shows; Earth and Mars shots are byte-identical; the earlier RS test
+    planet changes by a fraction of one colour level on under 1% of pixels.
+  - Result (median frame time, the user's spot and settings): horizon 33.5 → 22.9 ms
+    (30 → 44 fps), looking down 14.9 → 8.4 ms (67 → 120 fps), looking around 15.6 → 12.3 ms,
+    looking up 17.3 → 16.6 ms. At 1080p High the RS test planet's ground went 6.0 → 5.3 ms.
+    No holes when the new shader version is first compiled (two descents checked). Tests pass
+    (202 engine).
 
 - **Optimization (2026-11-02, `083e5d7`):** measured side by side with the morning build
   (typical frame time):

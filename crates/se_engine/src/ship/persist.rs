@@ -1,6 +1,6 @@
 //! Ships kept between sessions, as SE's `spacecraft.cfg` (seSpacecraftsList::SaveSpacecraftsConfig
 //! FUN_1401f5510 writes one block per ship with FUN_1405339e0; seSpacecraftList::ReadShipsConfig FUN_1401f56c0
-//! reads them back, skipping a block without `ShipID`). The port writes `%APPDATA%/SpaceEngine-rs/spacecraft.cfg`
+//! reads them back, skipping a block without `ShipID`). The port writes `%APPDATA%/SpaceEngine-rs-v2/spacecraft.cfg`
 //! on exit with SE's keys (`ShipID`, `RefBodyID`, `Model`, `UnivPos`, `Orientation`, `Velocity`,
 //! `AngVelocity`, `WarpBoost`), the position in the port's fixed-point universe coordinates (as `save.cfg`),
 //! velocities in m/s and rad/s, plus `Mine`, `Piloted` and, for a landed ship, `LandedPos`, `LandedRot` and

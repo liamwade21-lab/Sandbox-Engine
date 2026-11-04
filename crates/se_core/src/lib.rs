@@ -9,6 +9,7 @@ pub mod body_params;
 pub mod catalog;
 pub mod classname;
 pub mod climate;
+pub mod cloud_noise;
 pub mod cluster_stars;
 pub mod coords;
 pub mod custom_model;
@@ -44,5 +45,6 @@ pub mod time;
 pub mod units;
 pub mod upos;
 pub mod vfs;
+pub mod weather;
 
 pub use glam;

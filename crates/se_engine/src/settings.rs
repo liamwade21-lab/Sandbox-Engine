@@ -1,5 +1,5 @@
 //! Persistent user settings, stored in SpaceEngine's own `.cfg` syntax at
-//! `%APPDATA%/SpaceEngine-rs/settings.cfg` (or `./settings.cfg` elsewhere), never in the SE install.
+//! `%APPDATA%/SpaceEngine-rs-v2/settings.cfg` (or `./settings.cfg` elsewhere), never in the SE install.
 //!
 //! As SE's `config/main-user.cfg` over `main-def.cfg`: the defaults come from the install's main-def.cfg
 //! (each module reads its keys), and this file holds the user's values by SE's key names, in SE's blocks
@@ -50,11 +50,66 @@ pub fn scripted(cfg: &EngineConfig) -> bool {
     !cfg.commands.is_empty() || cfg.screenshot.is_some() || cfg.script.is_some()
 }
 
-/// A user file in `%APPDATA%/SpaceEngine-rs/` (or the working directory when APPDATA is unset).
+/// Version 2's user folder in `%APPDATA%`. Version 1 (a separate copy of the port) keeps
+/// `SpaceEngine-rs`: the two must not write each other's files (version 1 would drop the keys it doesn't
+/// know), so version 2 starts from a copy of version 1's folder (`prepare_user_dir`).
+pub const USER_DIR: &str = "SpaceEngine-rs-v2";
+const V1_USER_DIR: &str = "SpaceEngine-rs";
+
+/// A user file in `%APPDATA%/SpaceEngine-rs-v2/` (or the working directory when APPDATA is unset).
 pub fn user_file(name: &str) -> PathBuf {
     std::env::var_os("APPDATA")
-        .map(|p| PathBuf::from(p).join("SpaceEngine-rs").join(name))
+        .map(|p| PathBuf::from(p).join(USER_DIR).join(name))
         .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// First run of version 2: copy version 1's user folder (settings, saved session, places, ships) into
+/// version 2's when only version 1's exists. Called first thing in `main`, before anything (the log file)
+/// creates the folder; returns a line for the log once logging is up (`Err` for a warning). A failed copy
+/// starts with defaults; version 1's folder is only ever read.
+pub fn prepare_user_dir() -> Option<Result<String, String>> {
+    let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
+    let (v1, v2) = (appdata.join(V1_USER_DIR), appdata.join(USER_DIR));
+    match copy_v1_folder(&v1, &v2) {
+        Ok(true) => Some(Ok(format!("first run of version 2: copied {} to {}", v1.display(), v2.display()))),
+        Ok(false) => None,
+        Err(e) => Some(Err(format!("could not copy {} to {} ({e}); starting with default settings", v1.display(), v2.display()))),
+    }
+}
+
+/// Copies `v1` to `v2` when `v2` doesn't exist and `v1` does; `Ok(true)` when it did. The copy is made in a
+/// sibling `<v2>.partial` and renamed into place, so a failed copy leaves no half-filled `v2` behind.
+fn copy_v1_folder(v1: &std::path::Path, v2: &std::path::Path) -> std::io::Result<bool> {
+    if v2.exists() || !v1.is_dir() {
+        return Ok(false);
+    }
+    let mut partial = v2.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    // A leftover from an interrupted first run: this function's own scratch folder.
+    if partial.exists() {
+        std::fs::remove_dir_all(&partial)?;
+    }
+    let done = copy_dir(v1, &partial).and_then(|()| std::fs::rename(&partial, v2));
+    if done.is_err() {
+        let _ = std::fs::remove_dir_all(&partial);
+    }
+    done.map(|()| true)
+}
+
+/// Copies a folder's files and subfolders (links are skipped).
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_dir(&entry.path(), &to.join(entry.file_name()))?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 fn settings_path() -> PathBuf {
@@ -110,7 +165,7 @@ struct Snapshot {
     /// SE's constellation and grid switches ([`SkySwitches::KEYS`]).
     sky: [bool; 12],
     /// SE's switches for what is drawn around planets ([`RenderSwitches::KEYS`]).
-    render: [bool; 9],
+    render: [bool; 13],
     /// `ShowProcGalaxies`, `ShowProcClusters`, `ShowProcNebulae`, `ShowCatClusters`.
     deep_sky: [bool; 4],
     star_label_mag: f32,
@@ -703,5 +758,29 @@ mod tests {
         load_graphics(doc.sub("Graphics").unwrap(), &mut back, &mut lens, &mut bloom);
         assert_eq!(back.preset, "Custom");
         assert_eq!(back.quality, gfx.quality);
+    }
+
+    #[test]
+    fn first_run_copies_version_1_folder_once() {
+        let root = std::env::temp_dir().join(format!("se-rs-user-dir-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (v1, v2) = (root.join("SpaceEngine-rs"), root.join("SpaceEngine-rs-v2"));
+        // No version 1 folder: nothing to copy, nothing created.
+        assert!(!copy_v1_folder(&v1, &v2).unwrap());
+        assert!(!v2.exists());
+        std::fs::create_dir_all(v1.join("cache")).unwrap();
+        std::fs::write(v1.join("settings.cfg"), "Settings\n{\n}\n").unwrap();
+        std::fs::write(v1.join("cache").join("a.atm"), [1u8, 2, 3]).unwrap();
+        assert!(copy_v1_folder(&v1, &v2).unwrap());
+        assert_eq!(std::fs::read_to_string(v2.join("settings.cfg")).unwrap(), "Settings\n{\n}\n");
+        assert_eq!(std::fs::read(v2.join("cache").join("a.atm")).unwrap(), [1u8, 2, 3]);
+        assert!(!root.join("SpaceEngine-rs-v2.partial").exists());
+        // Version 2's own changes are never overwritten, and version 1's files are untouched.
+        std::fs::write(v2.join("settings.cfg"), "v2").unwrap();
+        std::fs::write(v1.join("settings.cfg"), "v1 changed").unwrap();
+        assert!(!copy_v1_folder(&v1, &v2).unwrap());
+        assert_eq!(std::fs::read_to_string(v2.join("settings.cfg")).unwrap(), "v2");
+        assert_eq!(std::fs::read_to_string(v1.join("settings.cfg")).unwrap(), "v1 changed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

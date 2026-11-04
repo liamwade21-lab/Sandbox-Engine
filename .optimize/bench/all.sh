@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # All benchmark scenes, one after another: bash .optimize/bench/all.sh [OUTDIR] [SCENE...]
 # Each scene marks segments with `perf NAME`; see scene.sh. Summary lines go to OUTDIR/*.perf.
-B="/c/Users/liamw/Desktop/Space Engine Recomp/.optimize/bench"
-OUT="${1:-/c/Users/liamw/Desktop/Space Engine Recomp/.optimize/scratch/run}"; shift
+B="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2/.optimize/bench"
+OUT="${1:-/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2/.optimize/scratch/run}"; shift
 D="date 2026-06-21 12:00:00"
 declare -A S
 S[start]="perf startup; wait 300; perf end"

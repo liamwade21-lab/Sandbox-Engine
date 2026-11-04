@@ -379,7 +379,13 @@ fn spawn_camera(mut commands: Commands) {
     // color_correction.rs; Bevy's pass only applies the exposure (exposure.rs), linearly.
     let (tonemapping, grading) = (Tonemapping::Linear, ColorGrading::default());
     commands.spawn((
-        Camera3d::default(),
+        // The volumetric clouds read the depth buffer (volumetric_clouds.rs).
+        Camera3d {
+            depth_texture_usages: (bevy::render::render_resource::TextureUsages::RENDER_ATTACHMENT
+                | bevy::render::render_resource::TextureUsages::TEXTURE_BINDING)
+                .into(),
+            ..default()
+        },
         Camera {
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
@@ -1037,6 +1043,7 @@ fn update_nearest(
     mut cam: ResMut<FlyCamera>,
     mut space: ResMut<ScaledSpace>,
     bodies: Query<&crate::system::SystemBody>,
+    clouds: Res<crate::volumetric_clouds::VolumetricClouds>,
 ) {
     let cat = &data.catalog;
     let cam_pc = cam.pos.to_parsecs();
@@ -1066,8 +1073,10 @@ fn update_nearest(
     }
     cam.nearest_surface = best.max(1.0);
     cam.nearest_name = best_name;
-    // Keep the nearest body (and its neighbourhood) in linear space.
-    space.linear_radius = (best_center + best_radius * 3.0).clamp(1.0e5, 1.0e13);
+    // Keep the nearest body (and its neighbourhood) in linear space, and the volumetric clouds' body
+    // (it may lie beyond a nearer moon).
+    let clouds_reach = clouds.active.and_then(|e| bodies.get(e).ok()).map_or(0.0, |b| b.pos.delta_m(cam.pos).length() + b.radius_m * 3.0);
+    space.linear_radius = (best_center + best_radius * 3.0).max(clouds_reach).clamp(1.0e5, 1.0e13);
 }
 
 pub fn travel_and_move(
@@ -1262,9 +1271,10 @@ fn run_commands(
     procstars: Option<Res<crate::procstars::ProcStarField>>,
     mut commands: Commands,
     mut search: ResMut<crate::star_search::SearchState>,
-    (mut stars, mut spin): (ResMut<crate::stars::StarSettings>, Local<f64>),
+    (mut stars, mut spin, mut orbit): (ResMut<crate::stars::StarSettings>, Local<f64>, Local<f64>),
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
     (wps, mut wait_wp): (Option<Res<crate::waypoints::Waypoints>>, Local<usize>),
+    (mut timing, mut switches): (ResMut<crate::universe::TimingMode>, ResMut<crate::switches::RenderSwitches>),
 ) {
     let active_root = active.root;
     // `waitwp N`: hold the queue until a script has defined N waypoints.
@@ -1279,6 +1289,15 @@ fn run_commands(
     if *spin != 0.0 {
         let r = cam.rot * DQuat::from_rotation_y((*spin / 200.0).to_radians());
         cam.rot = r.normalize();
+    }
+    // `orbit DEG`: dev orbit about the selection (as the right mouse button drags it), DEG degrees per
+    // second about the view's up axis at a nominal 200 frames/s.
+    if let (true, Some(p)) = (*orbit != 0.0, cam.selected) {
+        let center = Ephemeris::new(&data.catalog).position(p, sim.jd);
+        let q = DQuat::from_axis_angle(cam.rot * DVec3::Y, (*orbit / 200.0).to_radians());
+        let off = cam.pos.delta_m(center);
+        cam.pos = center.offset_m(q * off);
+        cam.rot = (q * cam.rot).normalize();
     }
     // `fly KMS`: dev flight along the view direction, KMS km/s at a nominal 200 frames/s (fixed step per frame,
     // so runs are repeatable). `fly 0` stops it.
@@ -1354,6 +1373,16 @@ fn run_commands(
         "waitwp" => *wait_wp = arg.parse().unwrap_or(1),
         "rate" => sim.rate = arg.parse().unwrap_or(1.0),
         "pause" => sim.paused = true,
+        "resume" => sim.paused = false,
+        // SE's TimingMode: `timing frame` steps the clock a fixed 1/60 s a frame (test runs then
+        // reach the same date whatever their frame rate), `timing real` goes back.
+        "timing" => timing.real_time = arg != "frame",
+        // A render filter by its settings key, e.g. `switch ShowRain off` (dev: comparisons).
+        "switch" => {
+            if let Some((key, on)) = arg.split_once(' ') {
+                switches.set_var(key.trim(), on.trim() != "off");
+            }
+        }
         "fly" => *fly = arg.parse().unwrap_or(0.0),
         "go" => {
             // go [KM]: Go to the selection (like G), arriving at once.
@@ -1387,6 +1416,7 @@ fn run_commands(
             stars.mag_limit = arg.parse().unwrap_or(stars.mag_limit).clamp(crate::stars::MAG_LIMIT_MIN, crate::stars::MAG_LIMIT_MAX)
         }
         "spin" => *spin = arg.parse().unwrap_or(0.0),
+        "orbit" => *orbit = arg.parse().unwrap_or(0.0),
         "date" => {
             let p: Vec<f64> = arg.split(['-', ' ', ':', 'T']).filter_map(|s| s.parse().ok()).collect();
             if p.len() >= 3 {
@@ -1615,6 +1645,19 @@ fn run_commands(
             ship_cmds.write(crate::ship::ShipCommand { verb: verb.clone(), arg: arg.clone() });
         }
         // `perf NAME` / `perf end`: frame-time segments for SE_PERF (perf.rs).
+        // preset NAME: pick a graphics preset (Low ... Ultra), as the Graphics settings do; test runs
+        // otherwise keep High, since they skip the user's settings.
+        "preset" => commands.queue(move |w: &mut World| {
+            if let Some(mut g) = w.get_resource_mut::<crate::graphics::GraphicsSettings>() {
+                g.pick_preset(&arg);
+            }
+        }),
+        // vclouds 0|1|2: the volumetric clouds off (SE's flat clouds), High or Ultra (comparisons).
+        "vclouds" => commands.queue(move |w: &mut World| {
+            if let Some(mut g) = w.get_resource_mut::<crate::graphics::GraphicsSettings>() {
+                g.quality.volumetric_clouds = arg.trim().parse::<u32>().unwrap_or(2).min(2);
+            }
+        }),
         "perf" => commands.queue(move |w: &mut World| {
             if let Some(mut p) = w.get_resource_mut::<crate::perf::PerfLog>() {
                 p.mark(&arg);

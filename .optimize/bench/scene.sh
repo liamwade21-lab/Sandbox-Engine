@@ -3,7 +3,7 @@
 # Runs the release port uncapped (SE_NO_VSYNC) with the frame-time logger (SE_PERF, perf.rs).
 # The commands mark segments with `perf SEG` ... `perf end`. Writes OUTDIR/NAME.perf (one line
 # per segment), OUTDIR/NAME.png (final frame), OUTDIR/NAME.mem (peak working set, MB).
-REPO="/c/Users/liamw/Desktop/Space Engine Recomp"
+REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"
 NAME="$1"; CMDS="$2"; OUT="${3:-$REPO/.optimize/scratch}"
 mkdir -p "$OUT"; rm -f "$OUT/$NAME.perf"
 ( peak=0; while sleep 2; do

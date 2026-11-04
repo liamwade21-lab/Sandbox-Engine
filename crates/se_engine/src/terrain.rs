@@ -541,18 +541,109 @@ pub struct PlanetMaterial {
     /// The light page holding the node's [`PatchLight`] (at `u.slot`).
     #[storage(26, read_only)]
     pub light_page: Handle<ShaderBuffer>,
+    /// The volumetric clouds' cover map and shadow record, for their shadows on the ground of the
+    /// body they draw (volumetric_clouds.rs `CloudShadowAssets`).
+    #[texture(27, dimension = "cube")]
+    #[sampler(28)]
+    pub cloud_cover: Handle<Image>,
+    #[storage(29, read_only)]
+    pub cloud_shadow: Handle<ShaderBuffer>,
+    #[texture(30)]
+    #[sampler(31)]
+    pub cloud_map: Handle<Image>,
+    /// The body's weather cube shaping that cover, and the weather's cloud pattern (read with the
+    /// cover's sampler).
+    #[texture(32, dimension = "cube")]
+    pub cloud_weather: Handle<Image>,
+    #[texture(33, dimension = "cube")]
+    pub cloud_pattern: Handle<Image>,
 }
 
-/// Pipeline key: the water surface is drawn from both sides with its own entry points.
+/// Pipeline key: the water surface is drawn from both sides with its own entry points; ground nodes
+/// fine enough for it carry the colour generator's kilometre-scale noises at their vertices.
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct PlanetMaterialKey {
     water: bool,
+    noise: VertexNoise,
 }
 
 impl From<&PlanetMaterial> for PlanetMaterialKey {
     fn from(m: &PlanetMaterial) -> Self {
-        Self { water: m.u.water.w > 0.5 }
+        let water = m.u.water.w > 0.5;
+        let u = &m.u;
+        let noise = if water { VertexNoise::None } else { vertex_noise(&m.biome, u.rect_color.w > 0.5, u.soil_tile.z, u.proc_params2.x) };
+        Self { water, noise }
     }
+}
+
+/// Which of SE's colour generator noises a ground node works out at its vertices for its pixels to
+/// interpolate (`planet.wesl`), instead of every pixel working them out: most of the ground's cost
+/// on procedural worlds, though they vary only over kilometres.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum VertexNoise {
+    None,
+    /// The airless worlds' (`selena_noise`, 43 noises a pixel).
+    Selena,
+    /// The terra worlds' planet-wide ones (`terra_noise`, 26 a pixel, 34 with plants).
+    Terra,
+    /// Those and the flatland climate distortion (`terra_climate_noise`, 28 more), whose ridges
+    /// by SE's hillsFreq are finer: only the nodes nearest the camera.
+    TerraClimate,
+}
+
+impl VertexNoise {
+    fn shader_defs(self) -> &'static [&'static str] {
+        match self {
+            VertexNoise::None => &[],
+            VertexNoise::Selena => &["SELENA_AT_VERTICES"],
+            VertexNoise::Terra => &["TERRA_AT_VERTICES"],
+            VertexNoise::TerraClimate => &["TERRA_AT_VERTICES", "TERRA_CLIMATE_AT_VERTICES"],
+        }
+    }
+}
+
+/// [`VertexNoise`] for a ground node: a set of noises goes to the vertices only where the node's
+/// cells (up to 1.5 times their mean size on the cube face) are at most 1/16 of the finest of their
+/// features, which their warps can halve. The colour terms then differ from the per-pixel ones by
+/// under 1/1000, a quarter of an 8-bit step (measured on RSN 0-7-460129-1254-197-12 4: under
+/// 1/16384 with cells of 1/64, and the error grows with the cell's square), and every pixel there
+/// keeps all their octaves, as the vertices do. Coarser nodes, and other worlds, keep them per
+/// pixel. `textured`: the body has a colour map; `edge_m` the node's edge, `radius_m` the body's
+/// (the material's `soil_tile.z`, `proc_params2.x`).
+fn vertex_noise(b: &crate::surface_tex::BiomeUniform, textured: bool, edge_m: f32, radius_m: f32) -> VertexNoise {
+    let c = &b.climate;
+    // The biomes on and SE's own colour generators; not the procedural asteroids' own colour,
+    // which reads none of these noises.
+    if b.flags.x < 0.5 || c[4].w < 0.5 || (c[7].z > 1.5 && !textured) {
+        return VertexNoise::None;
+    }
+    let lac = 2.218281828459_f64;
+    let cell_m = edge_m as f64 / (GRID - 1) as f64 * 1.5;
+    // Whether the node is fine enough for noises whose finest octave has frequency `freq` on the
+    // unit sphere.
+    let fits = |freq: f64| cell_m * 16.0 * freq <= radius_m as f64;
+    if c[7].z > 0.5 {
+        // Airless: the latitude's (6 octaves from 0.7), the variation's (8 from 0.378) and, on
+        // cratered worlds, the young terrain's (8 from 1).
+        let mut freq = (0.7 * lac.powi(5)).max(0.378 * lac.powi(7));
+        if c[7].w > 0.05 {
+            freq = freq.max(lac.powi(7));
+        }
+        return if fits(freq) { VertexNoise::Selena } else { VertexNoise::None };
+    }
+    // Terra: the latitude's, the albedo variation's (8 from 1) and with plants the humidity's (8
+    // from 1.73); then the climate distortion's ridges (4 octaves from 100 pf) and its colour Fbm (4
+    // from df), whose own warp (1.2 Fbm3D at 0.38 df) can shorten its features three times.
+    let mut freq = (0.7 * lac.powi(5)).max(lac.powi(7));
+    if b.flags.z > 0.5 {
+        freq = freq.max(1.73 * lac.powi(7));
+    }
+    if !fits(freq) {
+        return VertexNoise::None;
+    }
+    let pf = 0.0005 * c[7].x as f64 / (c[7].y as f64 * c[7].y as f64).max(1e-6);
+    let df = c[5].y as f64 * 0.005;
+    if fits((100.0 * pf).max(3.0 * df) * lac.powi(3)) { VertexNoise::TerraClimate } else { VertexNoise::Terra }
 }
 
 impl Material for PlanetMaterial {
@@ -579,6 +670,12 @@ impl Material for PlanetMaterial {
         key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         let water = key.bind_group_data.water;
+        for def in key.bind_group_data.noise.shader_defs() {
+            descriptor.vertex.shader_defs.push((*def).into());
+            if let Some(f) = descriptor.fragment.as_mut() {
+                f.shader_defs.push((*def).into());
+            }
+        }
         if water {
             descriptor.primitive.cull_mode = None;
             // Still hides what is drawn after it beyond it (far from the camera it is opaque).
@@ -671,6 +768,12 @@ impl CloudLayer {
         l
     }
 
+    /// SE's default layer (5 km up, no relief) on an Earth-sized body, for tests.
+    #[cfg(test)]
+    pub fn test_layer() -> Self {
+        Self::from_block(&se_core::sc::Block::default(), 6.4e6, 1.0)
+    }
+
     /// The layer's turn about the body's pole (rad) at simulation time `jd`.
     pub fn spin_at(&self, jd: f64) -> f64 {
         let drift = (self.rad_per_s * (jd - se_core::time::J2000) * 86_400.0).rem_euclid(std::f64::consts::TAU);
@@ -736,7 +839,7 @@ pub struct Terrain {
     /// ([`glow_color_atmo`]).
     pub glow_temps: (f32, f32),
     /// Biome texturing; `None` until chosen (and for bodies without a preset).
-    biome: Option<BiomeUniform>,
+    pub(crate) biome: Option<BiomeUniform>,
     biome_chosen: bool,
     layers: Option<Arc<TerrainLayers>>,
     /// Height grids of loaded nodes, for ground-height queries.
@@ -1350,6 +1453,11 @@ fn discover_layers(vfs: &Vfs, t: &Terrain) -> TerrainLayers {
 }
 
 impl Terrain {
+    /// The body's tile layers, once discovered.
+    pub fn tile_layers(&self) -> Option<&Arc<TerrainLayers>> {
+        self.layers.as_ref()
+    }
+
     /// The cloud layers drawn as shells: (layer index, shell radius m). A layer is drawn with its
     /// map, or procedurally without one.
     fn drawn_clouds(&self, layers: &TerrainLayers) -> Vec<(usize, f64)> {
@@ -1981,11 +2089,13 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain, Option<&crate::eclipse::EclipseCasters>)>,
-    (ambient, emission, water_display, switches): (
+    (ambient, emission, water_display, switches, volumetric, cloud_assets): (
         Res<crate::system::AmbientLighting>,
         Res<SelfEmission>,
         Res<WaterDisplay>,
         Res<crate::switches::RenderSwitches>,
+        Res<crate::volumetric_clouds::VolumetricClouds>,
+        Option<Res<crate::volumetric_clouds::CloudShadowAssets>>,
     ),
     clouds_q: Query<&CloudNode, Allow<Disabled>>,
     mut vis_q: Query<(&mut Visibility, Has<Disabled>), (Or<(With<TerrainNode>, With<CloudNode>)>, Allow<Disabled>)>,
@@ -2003,7 +2113,7 @@ fn update_terrain(
         Query<&Children, Allow<Disabled>>,
     ),
 ) {
-    let (Some(defaults), Some(surface_tex)) = (defaults, surface_tex) else { return };
+    let (Some(defaults), Some(surface_tex), Some(cloud_assets)) = (defaults, surface_tex, cloud_assets) else { return };
     let mut in_flight: usize = bodies.iter().map(|(_, _, _, t, _)| t.loading.len()).sum();
     // Tiles started this frame, over all bodies (SE's `MaxTilesPerFrame`).
     let mut started = 0usize;
@@ -2213,6 +2323,11 @@ fn update_terrain(
                 sample_relief: surface_tex.sample_relief.clone(),
                 noise: defaults.noise3d.clone(),
                 light_page: light_page.clone(),
+                cloud_cover: cloud_assets.cover.clone(),
+                cloud_shadow: cloud_assets.shadow.clone(),
+                cloud_map: cloud_assets.map.clone(),
+                cloud_weather: cloud_assets.weather.clone(),
+                cloud_pattern: cloud_assets.pattern.clone(),
             };
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
             let ground_u = ground.u;
@@ -2246,9 +2361,9 @@ fn update_terrain(
                             proc2: Vec4::new(
                                 // Each layer its own pattern.
                                 (terrain.proc.seed as f32 / u64::MAX as f32 + layer as f32 * 0.379).fract(),
-                                0.0,
+                                layer as f32,
                                 if terrain.proc.kind.is_giant() { 0.0 } else { 1.0 },
-                                0.0,
+                                (terrain.proc.seed % 10_000) as f32 / 10_000.0,
                             ),
                             se: se_cloud_uniform(&terrain.surf_gen, terrain.tidal_lock, procedural, layer),
                             color: c.color.extend(1.0),
@@ -2262,6 +2377,8 @@ fn update_terrain(
                         transmittance: ground_atm.1.clone(),
                         irradiance: ground_atm.2.clone(),
                         light_page: light_page.clone(),
+                        cloud_weather: cloud_assets.weather.clone(),
+                        cloud_shadow: cloud_assets.shadow.clone(),
                     });
                     commands
                         .spawn((
@@ -2479,7 +2596,10 @@ fn update_terrain(
         // Visibility: of the nodes drawn now and those shown last frame (every other is hidden).
         // The same lists as last frame change nothing (their nodes are all ready and, touched every
         // frame, cannot be evicted), so the pass is skipped and `drawn` stays.
-        if !vis_inputs_same(terrain, &visible, &cloud_visible, switches.clouds) {
+        // The flat cloud shells, unless the volumetric clouds draw this body's alone (within 40 radii,
+        // volumetric_clouds.rs).
+        let flat_clouds = switches.clouds && !(volumetric.body == Some(body_entity) && volumetric.flat_hidden);
+        if !vis_inputs_same(terrain, &visible, &cloud_visible, flat_clouds) {
             let mut touch: Vec<TileKey> = std::mem::take(&mut terrain.drawn);
             let before = touch.clone();
             touch.extend(visible.iter().copied());
@@ -2498,7 +2618,7 @@ fn update_terrain(
                     let want = match cloud.and_then(|cn| cloud_visible.get(cn.layer)?.as_ref()) {
                         Some(v) => v.binary_search(&key).is_ok(),
                         None => want,
-                    } && (cloud.is_none() || switches.clouds);
+                    } && (cloud.is_none() || flat_clouds);
                     shown |= want;
                     if let Ok((mut vis, disabled)) = vis_q.get_mut(e) {
                         show_patch(&mut commands, &children, e, &mut vis, disabled, want);
@@ -2512,7 +2632,7 @@ fn update_terrain(
                 terrain.drawn_lit = None;
             }
             terrain.drawn = drawn;
-            terrain.vis_inputs = Some((cloud_visible, switches.clouds));
+            terrain.vis_inputs = Some((cloud_visible, flat_clouds));
         }
         // Update lighting on materials when the sun moves noticeably.
         let sun = light.sun_dir.extend(light.sun_intensity);
@@ -2862,7 +2982,7 @@ fn update_node_transforms(
 /// 1 (cycloneMagn, cycloneFreq, cycloneDensity, cycloneOctaves), 2 (Randomize, tidal lock +-1);
 /// zeros (the port's own clouds) for mapped layers and giants. SE moves the k-th layer's (from 1)
 /// Randomize by k (0.716, -0.239, 0.381) (FUN_1402fba00; 0 is the ground), so each has its pattern.
-fn se_cloud_uniform(g: &se_core::surface_gen::SurfaceGen, tidal_lock: bool, procedural: bool, layer: usize) -> [Vec4; 3] {
+pub(crate) fn se_cloud_uniform(g: &se_core::surface_gen::SurfaceGen, tidal_lock: bool, procedural: bool, layer: usize) -> [Vec4; 3] {
     use se_core::surface_gen as sg;
     if !procedural || g.get(sg::CLOUDS_MAIN_FREQ).is_none() || (sg::bulk::NEPTUNE..=sg::bulk::BROWN_DWARF).contains(&g.classes.bulk) {
         return [Vec4::ZERO; 3];
@@ -2893,7 +3013,8 @@ pub struct CloudUniform {
     pub planet: Vec4,
     /// Procedural clouds (no texture): x coverage, y base frequency, z octaves, w enabled.
     pub proc: Vec4,
-    /// x seed, y unused (the layer's drift turns the shell), z latitude belt strength.
+    /// x seed, y the layer's index in `Terrain::clouds`, z latitude belt strength, w the body's seed
+    /// fraction (with `planet.w`, which body the volumetric clouds' record is for).
     pub proc2: Vec4,
     /// SE's terra clouds ([`se_cloud_uniform`]).
     pub se: [Vec4; 3],
@@ -2927,6 +3048,13 @@ pub struct CloudMaterial {
     /// The light page of the patch's node ([`PlanetMaterial::light_page`]).
     #[storage(7, read_only)]
     pub light_page: Handle<ShaderBuffer>,
+    /// The volumetric clouds' weather cube and record (as on [`PlanetMaterial`]): for the body they
+    /// draw, the weather shapes the shell's cover and the far cross-fade fades it.
+    #[texture(8, dimension = "cube")]
+    #[sampler(9)]
+    pub cloud_weather: Handle<Image>,
+    #[storage(10, read_only)]
+    pub cloud_shadow: Handle<ShaderBuffer>,
 }
 
 impl Material for CloudMaterial {
@@ -2979,6 +3107,51 @@ mod tests {
         // The colour follows the surface temperature.
         let w = glow_color_atmo(2500.0, 6000.0, 1.0);
         assert!(w.z / w.x > g.z / g.x);
+    }
+
+    #[test]
+    fn colour_noises_at_vertices_only_on_fine_nodes() {
+        use VertexNoise as V;
+        // An airless world (SE's generator 1) with young terrain, like RSN 0-7-460129-1254-197-12 4
+        // (radius 2909.6 km): its finest noise feature is 2909.6 km / 2.218^7 = 11 km, so the nodes
+        // carry the noises at their vertices up to cells of 11 km / 16 / 1.5 = 459 m (15 km edges).
+        let mut b = crate::surface_tex::BiomeUniform::default();
+        b.flags.x = 1.0;
+        b.climate[4].w = 1.0;
+        b.climate[7].z = 1.0;
+        b.climate[7].w = 0.3;
+        let r = 2_909_640.0;
+        assert_eq!(vertex_noise(&b, false, 14_000.0, r), V::Selena);
+        assert_eq!(vertex_noise(&b, false, 16_000.0, r), V::None);
+        // Without young terrain the finest is the variation's, 2.6 times coarser.
+        b.climate[7].w = 0.0;
+        assert_eq!(vertex_noise(&b, false, 30_000.0, r), V::Selena);
+        // Not for the procedural asteroids' own colour, or with the biomes off.
+        b.climate[7].z = 2.0;
+        assert_eq!(vertex_noise(&b, false, 100.0, r), V::None);
+        assert_eq!(vertex_noise(&b, true, 100.0, r), V::Selena);
+        b.climate[7].z = 1.0;
+        b.flags.x = 0.0;
+        assert_eq!(vertex_noise(&b, false, 100.0, r), V::None);
+
+        // A terra world (generator 0) like RSN 0-7-460129-1254-197-12 2 (radius 4376 km): the
+        // albedo variation's finest feature is 16.6 km (nodes up to 22 km), the climate ridges' by
+        // hillsFreq 400 and hillsMagn 0.13 are 339 m (nodes up to 452 m).
+        b.flags.x = 1.0;
+        b.climate[7] = Vec4::new(400.0, 0.13, 0.0, 0.0);
+        b.climate[5].y = 800.0;
+        let r = 4_376_000.0;
+        assert_eq!(vertex_noise(&b, false, 23_000.0, r), V::None);
+        assert_eq!(vertex_noise(&b, false, 20_000.0, r), V::Terra);
+        assert_eq!(vertex_noise(&b, false, 500.0, r), V::Terra);
+        assert_eq!(vertex_noise(&b, false, 400.0, r), V::TerraClimate);
+        // With plants the humidity's 9.6 km features are the finest of the first set.
+        b.flags.z = 1.0;
+        assert_eq!(vertex_noise(&b, false, 20_000.0, r), V::None);
+        assert_eq!(vertex_noise(&b, false, 12_000.0, r), V::Terra);
+        // Not SE's generator (the designed biomes of Earth and other catalog worlds).
+        b.climate[4].w = 0.0;
+        assert_eq!(vertex_noise(&b, false, 100.0, r), V::None);
     }
 
     #[test]

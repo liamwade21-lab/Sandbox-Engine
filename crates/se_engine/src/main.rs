@@ -67,6 +67,7 @@ mod sysbrowser;
 mod terrain;
 mod terrain_gen;
 mod universe;
+mod volumetric_clouds;
 mod waypoints;
 mod wiki;
 
@@ -76,6 +77,8 @@ use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
 use bevy_egui::EguiPlugin;
 
 fn main() {
+    // Before anything reads or creates the user folder (version 2's first run copies version 1's).
+    let user_dir = settings::prepare_user_dir();
     let cfg = config::EngineConfig::from_args();
     // Mount the install and load the catalogs while Bevy builds its plugins (data.rs).
     let data_load = data::DataLoad::start(&cfg);
@@ -144,6 +147,8 @@ fn main() {
         eclipse::EclipsePlugin,
         lensflare::LensFlarePlugin,
     ))
+    // Volumetric clouds and weather.
+    .add_plugins(volumetric_clouds::VolumetricCloudsPlugin)
     // Interface and audio.
     .add_plugins((
         i18n::I18nPlugin,
@@ -170,6 +175,12 @@ fn main() {
     // Frame-time measurement (SE_PERF=FILE only).
     .add_plugins(perf::PerfPlugin)
     .add_systems(Startup, no_light_clustering);
+    // Now that the log file is open.
+    match user_dir {
+        Some(Ok(line)) => info!("{line}"),
+        Some(Err(line)) => warn!("{line}"),
+        None => {}
+    }
     app.run();
 }
 

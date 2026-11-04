@@ -142,6 +142,7 @@ impl Plugin for RenderScalePlugin {
                 Core3d,
                 solid_upscale
                     .in_set(Core3dSystems::EarlyPostProcess)
+                    .in_set(SolidUpscaleSet)
                     .before(crate::projection::ProjectionPassSet)
                     .before(crate::blackholes::LensPassSet)
                     .before(crate::bloom::SeBloomSet)
@@ -303,6 +304,10 @@ fn init_pipeline(
 
 /// The solids' corner of the main texture into the scratch texture (FXAA'd or copied), then upscaled
 /// back over the whole main texture.
+/// The solids' upscale (Core3d): passes drawing into the solids' corner run before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SolidUpscaleSet;
+
 fn solid_upscale(
     view: ViewQuery<(&ViewTarget, &SolidUpscale, &DynamicUniformIndex<SolidUpscale>, &LowTexture, &MainPassResolutionOverride)>,
     pipeline: Res<UpscalePipeline>,

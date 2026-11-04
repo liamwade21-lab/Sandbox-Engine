@@ -74,7 +74,7 @@ impl AtmosphereCache {
     /// Start parsing every `models/atmospheres/*.atm` in the background (once), then generating the
     /// tables of every model of the `models/atmospheres/*.cfg` scripts that has no `.atm` file, as SE's
     /// `seAtmosphereModelCache` does (`se_core::atm_gen`, about 12 s a model). Generated tables are
-    /// cached in the port's own folder (`%APPDATA%/SpaceEngine-rs/cache/atmospheres`), never the install.
+    /// cached in the port's own folder (`%APPDATA%/SpaceEngine-rs-v2/cache/atmospheres`), never the install.
     pub fn start_preload(&mut self, vfs: std::sync::Arc<Vfs>) {
         if std::mem::replace(&mut self.started, true) {
             return;
@@ -95,8 +95,8 @@ impl AtmosphereCache {
                 .filter_map(|p| vfs.read_string(&p).ok())
                 .flat_map(|t| se_core::atm_gen::parse_models(&t))
                 .collect();
-            // The port's folder (settings.rs `user_file`; this file is also built into atmo_demo).
-            let dir = std::env::var_os("APPDATA").map_or_else(|| std::path::PathBuf::from("cache"), |p| std::path::PathBuf::from(p).join("SpaceEngine-rs").join("cache")).join("atmospheres");
+            // The port's folder (settings.rs `user_file` and `USER_DIR`, spelled out: this file is also built into atmo_demo).
+            let dir = std::env::var_os("APPDATA").map_or_else(|| std::path::PathBuf::from("cache"), |p| std::path::PathBuf::from(p).join("SpaceEngine-rs-v2").join("cache")).join("atmospheres");
             for (name, params) in models {
                 let key = name.to_ascii_lowercase();
                 if out.iter().any(|(n, _)| *n == key) {
@@ -275,7 +275,7 @@ pub fn transmittance_to_space(p: &AtmParams, x: DVec3, v: DVec3) -> DVec3 {
 }
 
 /// GPU mirror of the shaders' `AtmParams` struct.
-#[derive(Clone, Copy, Debug, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
 pub struct AtmosphereParamsUniform {
     /// x: Rg (km), y: Rt (km), z: Rayleigh scale height (km), w: Mie scale height (km).
     pub radii: Vec4,
