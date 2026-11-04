@@ -22,6 +22,7 @@ pub mod locale;
 pub mod model_script;
 pub mod model_sm;
 pub mod moon_theories;
+pub mod mr;
 pub mod noise;
 pub mod orbit;
 pub mod places;

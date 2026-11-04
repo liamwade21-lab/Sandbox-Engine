@@ -29,6 +29,7 @@ cargo run --release -p se_engine -- --se-path "D:/SteamLibrary/steamapps/common/
 | Option | Meaning |
 |---|---|
 | `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory |
+| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, whose trees, building parts and cars the vegetation and cities read (default `C:/Users/liamw/Downloads/Megaton Rainfall`; optional) |
 | `--start NAME` | object to start next to (default Earth) |
 | `--size WxH` | window size |
 | `--run "cmd; cmd; ..."` | scripted commands (see below), useful for demos and tests |

@@ -45,8 +45,14 @@
   planets with land life; Earth is one), at four levels: primitive villages, modern cities like Earth's,
   futuristic cities, interstellar (stations, colonized moons, space traffic). Budget about 3 ms at Ultra.
   It reuses Megaton Rainfall's trees, grass, building parts, roads and cars, read from the user's copy
-  of that game. Another session builds it step by step; **step 1 (reading Megaton Rainfall's files) is
-  next**. Research notes: `docs/megaton-rainfall-vegetation.md`, `docs/megaton-rainfall-cities.md`.
+  of that game, built step by step (the plan's Steps table; what each step learned is in its "Build
+  log"). Research notes: `docs/megaton-rainfall-vegetation.md`, `docs/megaton-rainfall-cities.md`.
+  - **Step 1 done (2026-11-04): the port reads Megaton Rainfall's files** from the user's copy at run
+    time: its trees, grass, building parts, props and cars (549 of its 557 models; only animated
+    people are left out) and all 587 of its textures. Nothing is copied into the project. Without the
+    game the port runs as before and se.log says so.
+  - **Step 2 next:** the GPU placement system ("scatter"), first tested with one MR tree scattered
+    evenly over a planet.
 
 ## Notes
 

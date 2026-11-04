@@ -36,6 +36,7 @@ mod nebulae;
 mod hud;
 mod i18n;
 mod models;
+mod mr_assets;
 mod music;
 mod overlay;
 mod perf;
@@ -148,8 +149,8 @@ fn main() {
         eclipse::EclipsePlugin,
         lensflare::LensFlarePlugin,
     ))
-    // Volumetric clouds and weather.
-    .add_plugins(volumetric_clouds::VolumetricCloudsPlugin)
+    // Volumetric clouds and weather; Megaton Rainfall's assets for the vegetation and cities.
+    .add_plugins((volumetric_clouds::VolumetricCloudsPlugin, mr_assets::MrAssetsPlugin))
     // Interface and audio.
     .add_plugins((
         i18n::I18nPlugin,

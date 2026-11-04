@@ -9,6 +9,9 @@ const DEFAULT_SE_PATH: &str = "D:/SteamLibrary/steamapps/common/SpaceEngine";
 pub struct EngineConfig {
     /// Root of the SpaceEngine installation (contains `data/`).
     pub se_path: PathBuf,
+    /// Root of the user's Megaton Rainfall install (contains `Assets/`), whose trees, buildings
+    /// and cars the vegetation and cities read (`mr_assets.rs`). `--mr-path` or `MR_PATH`.
+    pub mr_path: PathBuf,
     pub width: u32,
     pub height: u32,
     /// Object to start at (catalog name).
@@ -32,6 +35,9 @@ impl EngineConfig {
             se_path: std::env::var_os("SE_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SE_PATH)),
+            mr_path: std::env::var_os("MR_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(se_core::mr::DEFAULT_MR_PATH)),
             width: 1600,
             height: 900,
             start_at: "Earth".into(),
@@ -46,6 +52,7 @@ impl EngineConfig {
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--se-path" => cfg.se_path = args.next().map(PathBuf::from).unwrap_or(cfg.se_path),
+                "--mr-path" => cfg.mr_path = args.next().map(PathBuf::from).unwrap_or(cfg.mr_path),
                 "--size" => {
                     if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {
                         cfg.width = w.parse().unwrap_or(cfg.width);
@@ -67,7 +74,7 @@ impl EngineConfig {
                 "--script-auto" => cfg.script_auto = true,
                 "--help" | "-h" => {
                     println!(
-                        "spaceengine-rs [--se-path DIR] [--size WxH] [--start NAME] \
+                        "spaceengine-rs [--se-path DIR] [--mr-path DIR] [--size WxH] [--start NAME] \
                          [--run \"cmd; cmd\"] [--script PATH.se [--script-auto]] [--screenshot FILE.png --frames N]"
                     );
                     std::process::exit(0);

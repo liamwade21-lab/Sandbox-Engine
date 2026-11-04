@@ -54,6 +54,14 @@ that install, never copied into the project.
 
 ## Gotchas
 
+- Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
+  models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
+  `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). Its folder is
+  `--mr-path` / `MR_PATH` (default `C:\Users\liamw\Downloads\Megaton Rainfall`); without it the
+  port must keep working (the vegetation and cities fall back to generated trees and code-built
+  buildings). A model's own embedded material is the source for most props (global.txt lacks them);
+  `MrInstall::resolve` picks. A few textures its models name are not in the game's files
+  (`brick_1`..`6`): draw those with a neutral texture, never fail.
 - Shaders are loaded at run time from `crates/se_engine/assets/shaders` (no rebuild needed to
   try a shader change), but an edited shader takes a few hundred frames to compile in a test
   run: the ground is missing until then, so wait ~900 frames before judging a screenshot.

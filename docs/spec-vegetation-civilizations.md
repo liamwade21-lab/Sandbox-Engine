@@ -437,6 +437,42 @@ Fixed scripted views (time paused), screenshots after the shaders are fully load
 8. **A flight from orbit to the ground over a forest and into a city**, as a video: no pops, no
    colour changes, no floating objects.
 
+## Build log (what each step learned)
+
+### Step 1: MR asset reader (done 2026-11-04)
+
+- Code: `se_core/src/mr.rs` (archives, models, material records, global.txt), `se_core/src/dds.rs`
+  `parse_dds` / `decode_level` (layouts with every mip and layer), `se_engine/src/mr_assets.rs`
+  (`MrAssets` resource, `dds_image` to a Bevy image, `submesh_mesh` to a Bevy mesh). The folder is
+  `EngineConfig::mr_path` (`--mr-path`, `MR_PATH`, default the user's copy). Opening takes 12 ms.
+- The `.fcm` archives mount with the port's own `Vfs::mount_pak` (their entries already start with
+  `Models/`, `Textures/`, `Data/`).
+- **Model materials are a tree, not a flat list** (the notes left it undecoded): each node is
+  `u8 child count, u8 payload size, u32 key hash, payload`, then its children. The root has 15
+  children: the name (key `0xde08cb97`), the effect (`0x722146f4`, its children are the effect's
+  parameters; `g_vDiffuse` is `0xb0256f2a` with x, y, z, w children), the texture list
+  (`0xe7595b09`, one string child per texture) and render flags. The hash function is unknown
+  (not FNV, CRC32, djb2, sdbm or murmur3); the keys were identified on the files. The tree parse
+  consumes every record of all 549 readable models exactly.
+- **Most props' materials are not in global.txt** (231 names such as `bench_0_Vertex`): the record
+  embedded in the model is the source for those. `MrInstall::resolve` takes global.txt's entry of
+  the same name where one exists, else the embedded one.
+- 549 of 557 models parse. Not read: the skinned people, hands, `_anim_test` (bone streams with
+  larger elements) and `white_house_inner` (version flags `0x20000001`). The three extra 4-byte
+  streams are filled on a few models (galaxies, giza, tunnels): they are skipped.
+- All 587 DDS files parse. Formats: DXT1/3/5, 32-bit BGRA (with and without alpha), FourCC 114
+  (R32F, the height maps) and 116 (RGBA32F, the impostor index sheets), DX10 with DXGI 31
+  (RGBA8 snorm), 51 (**`NoiseTileableR8G8` is R8G8_SNORM**, not unorm), 61 (R8) and 77 (BC3 arrays:
+  `windows`, `windows_NG`), and one cube map (`NoiseCube`).
+- Textures named by models but **not shipped with the game**: `brick_1`..`brick_6` (+ `_ng`) of the
+  window modules' embedded materials and `AC_Hvac_Units\20_Dish_512`. The window modules' walls
+  are drawn with the `windows` material in MR's cities anyway; the port draws missing textures
+  with a neutral one.
+- The notes' example "UV half 0x33ae = 0.2257" is 0.24 (a misreading; the decoder is right).
+- Tests: `cargo test -p se_core --release mr::` (the 16 trees' counts and heights, every named
+  model, material and texture, the whole archive) and `cargo test -p se_engine --release mr_assets`
+  (images and meshes). They pass (and say "skipping") without the install.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind
