@@ -74,6 +74,14 @@ that install, never copied into the project.
   shadows, terminator, haze), shared with planet.wesl: change the ground's lighting there so both keep
   it. The scatter's pipelines are built at start even when it is off, so a validation error in them
   quits the port.
+- Civilizations (the plan's step 5): `Life { Type "Intelligent" Civilization 1..4 }`. Generated
+  bodies get them in `se_core/src/procgen/civilization.rs`, run inside SE's life generator with its
+  own hash: it must never draw from SE's streams (every generated system would change), which
+  `cargo test -p se_core civilizations_only_add_tags -- --ignored` checks. Read a body's level with
+  `BodyRecord::civilization()` (Sol's Earth is level 2 built in, its catalog unchanged) and count
+  Intelligent as multicellular (`LifeParams::multicellular()`). `print_civ_stats` (ignored) re-fits
+  the base chance and level weights to the decisions (1 in 20 land-life planets; 45/15/20/20). The
+  dev command `search LY civ` logs every civilization the star browser finds.
 - Vegetation (the plan's step 3, on by default, `SE_SCATTER=0` or `scatter off` turns it off): bodies
   whose catalog Life has multicellular land life (`scatter::land_plants`, `Terrain::land_plants`) get
   trees and grass. Where: on Earth (any body with a colour map) from a 512-texel patch of its map round

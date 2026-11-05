@@ -266,15 +266,29 @@ pub struct LifeParams {
     pub kind: Option<String>,
     /// `Biome`, e.g. `"Marine/Terrestrial"`.
     pub biome: Option<String>,
+    /// The port's `Civilization 1..4` with `Type "Intelligent"` (1 primitive, 2 modern, 3
+    /// futuristic, 4 interstellar; an Intelligent life without the key is level 2).
+    pub civilization: Option<u8>,
 }
 
 impl LifeParams {
     pub fn from_block(b: &Block) -> Self {
+        let kind = b.str("Type").map(str::to_string);
+        let intelligent = kind.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("intelligent"));
         Self {
             class: b.str("Class").map(str::to_string),
-            kind: b.str("Type").map(str::to_string),
+            civilization: intelligent.then(|| b.f64("Civilization").map_or(2, |v| v.round().clamp(1.0, 4.0) as u8)),
+            kind,
             biome: b.str("Biome").map(str::to_string),
         }
+    }
+
+    /// Multicellular life (intelligent life is multicellular too).
+    pub fn multicellular(&self) -> bool {
+        self.kind.as_deref().is_some_and(|k| {
+            let k = k.to_ascii_lowercase();
+            k.contains("multi") || k == "intelligent"
+        })
     }
 
     pub fn all_from_body(b: &Block) -> Vec<Self> {

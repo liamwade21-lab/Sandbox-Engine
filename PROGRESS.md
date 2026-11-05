@@ -74,7 +74,15 @@
     its own 8 species, shaped by its gravity (low: tall and thin; high: squat) and its air (dense:
     wide crowns), coloured by its ground: five such planets near the Sun all look different. The trees
     appear about a second after arriving (their pictures are made then). Cost: 0.6-1.1 ms.
-  - **Step 5 next:** the intelligent life class (which planets have civilizations, and their level).
+  - **Step 5 done (2026-11-04): civilizations exist.** About 1 in 20 generated planets with land plants
+    now carries an intelligent civilization: level 1 primitive, 2 modern, 3 futuristic or 4
+    interstellar (about 45 / 15 / 20 / 20 %); Earth is level 2. Nothing else about any planet changed.
+    The info panel says so ("Organic multicellular intelligent, Level 2 civilization (modern)") and the
+    star browser can search for them (Life type "Intelligent", a Civilization filter). Nothing is drawn
+    for them yet (steps 6-10). Test planets: level 1 WISE 19101+56342 3, level 2 2MASSI
+    J1029216+162652 2, level 3 2MASSW J1338261+414034 4.3, level 4 SDSS J212413.88+010000.2 1 (all
+    within 70 light-years). Calibration: 20,000 generated systems, 1 in 20.1.
+  - **Step 6 next:** the settlement map and the view from orbit (cities' lights and land use).
 
 ## Notes
 

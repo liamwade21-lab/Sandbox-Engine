@@ -716,6 +716,49 @@ beside it got grey leaf cards (the cards now also come from the source tree); th
 were measured from the radius, so on worlds without a sea every forest tree was a highland one (now
 from SE's sea level).
 
+### Step 5: intelligent life class (done 2026-11-04)
+
+What was built:
+- **Data:** `Life { Type "Intelligent" Civilization 1..4 }` (1 primitive, 2 modern, 3 futuristic, 4
+  interstellar; Intelligent without the key is level 2). `LifeParams::civilization`,
+  `LifeParams::multicellular()` (intelligent counts as multicellular: the ground's life colours,
+  the vegetation), `BodyRecord::civilization()` (Sol's Earth is level 2 built in; its catalog is left
+  as it is). A catalog add-on may set its own.
+- **Generation** (`se_core/src/procgen/civilization.rs`, run inside SE's life generator `se_life::apply`
+  for generated bodies, after SE's draws): its own hash of the system's seed and the body's place,
+  never SE's streams. Eligible: organic multicellular life on land, SE's complex stage reached (the
+  value SE's generator drew, kept in `LifeOut::complex_gyr`: no new draw), 250-370 K, 0.1-30 atm.
+  Intelligence a lognormal time after complex life (median 0.5 Gyr, sigma 0.8); then the base chance;
+  the level from weights shifted towards the later levels the longer ago it appeared; then capped
+  (oxygen under 12 %: level 1 at most; over 2 g: level 3 at most).
+- **Info panel:** "Organic multicellular intelligent, Level 2 civilization (modern)".
+- **Star browser:** life type "Intelligent" (and Multicellular includes it), a Civilization filter
+  (any level, 1-4); the dev command `search LY civ` lists and logs the civilizations found.
+
+What changed from the plan, and why:
+- **The bands are wider:** 250-370 K and 0.1-30 atm, not 260-310 K and 0.3-5 atm. SE's planets with
+  multicellular land life are mostly warm and dense-aired (of 1,672 in 20,000 generated systems: median
+  354 K and 84 atm, a quarter over 445 K or 247 atm); Earth's bands kept 3 % of them, so the decided
+  1 in 20 could not be reached at any base chance.
+- **Oxygen from the biosphere:** SE's completed atmospheres hold no oxygen made by life (every
+  eligible world's completion has under 12 %), so the cap would have made nearly every civilization
+  primitive. A land biosphere's own oxygen counts: Earth's 21 % after the first 0.5 Gyr of complex
+  life (photosynthesis), so only young biospheres stay at level 1.
+
+Calibration (`cargo test -p se_core print_civ_stats -- --ignored --nocapture`, 20,000 systems round
+stars of 0.25-1.45 solar masses and 1-11 Gyr): 83.6 planets with multicellular land life per 1,000
+systems, 4.15 civilizations per 1,000 (1 in 20.1 land-life planets); eligible 311, intelligence reached
+273, over 2 g 12. Base chance 0.30 and level weights 0.641 / 0.157 / 0.133 / 0.069 give the levels 45 /
+15 / 19 / 20 % (the pool of worlds intelligence reached). Every generated system is otherwise
+unchanged (`civilizations_only_add_tags`: 1,500 systems, SE's life identical, the Life text identical
+apart from `Type "Intelligent"` and the `Civilization` line).
+
+Test planets (`search 140 civ`, the star browser within 140 light-years: 8,109 systems, 14
+civilizations besides Earth): level 1 WISE 19101+56342 3 (63.6 ly), level 2 2MASSI J1029216+162652 2
+(62.4 ly), level 3 2MASSW J1338261+414034 4.3 (68.9 ly), level 4 SDSS J212413.88+010000.2 1 (58.7 ly;
+its info panel reads "Organic multicellular intelligent, Level 4 civilization (interstellar)"). Most
+hosts nearby are brown dwarfs' generated systems (the nearest catalog stars).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

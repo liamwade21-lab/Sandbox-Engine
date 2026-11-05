@@ -1069,6 +1069,12 @@ impl Completion {
         self.pressure_atm > 1e-9
     }
 
+    /// The oxygen share (0..1) of the gas phase.
+    pub fn o2_share(&self) -> f32 {
+        let n = sum28(&self.volatiles.gas);
+        if n > 0.0 { self.volatiles.gas[O2] / n } else { 0.0 }
+    }
+
     /// Gas-phase composition in volume percent, largest first.
     pub fn gas_percent<'a>(&self, tab: &'a ClimateTables) -> Vec<(&'a str, f32)> {
         let n = sum28(&self.volatiles.gas);

@@ -341,14 +341,28 @@ fn grid_switches(ui: &mut egui::Ui, sky: &mut crate::overlay::SkySwitches, i18n:
 /// type ("Organic multicellular"), the biomes ("marine, terrestrial") and the origin, `Panspermia true`
 /// or else "Abiogenesis" (SE's flags 0x4000 / 0x8000, FUN_1404eb190). The rows' wording is assumed
 /// from SE's strings; several blocks (organic and exotic life) are joined with "; ".
-fn life_lines(block: &se_core::sc::Block, i18n: &I18n) -> Option<(String, String, String)> {
+///
+/// Intelligent life (the port's civilizations, `civ` its level: Earth's is built in) reads
+/// "Organic multicellular intelligent, Level 2 civilization (modern)".
+fn life_lines(block: &se_core::sc::Block, civ: Option<u8>, i18n: &I18n) -> Option<(String, String, String)> {
     let (mut forms, mut biomes, mut origins) = (Vec::new(), Vec::new(), Vec::new());
     for l in block.all("Life").filter_map(|i| i.block()) {
         let class = l.str("Class").unwrap_or("Organic");
+        let intelligent = l.str("Type").is_some_and(|t| t.eq_ignore_ascii_case("intelligent"))
+            || (civ.is_some() && class.eq_ignore_ascii_case("organic") && l.str("Type").is_some_and(|t| t.to_ascii_lowercase().contains("multi")));
         let kind = l.str("Type").map(|t| i18n.tr(&t.to_ascii_lowercase()).to_string());
-        forms.push(match kind {
-            Some(k) => format!("{} {k}", i18n.tr(class)),
-            None => i18n.tr(class).to_string(),
+        forms.push(match (intelligent, civ, kind) {
+            (true, Some(level), _) => format!(
+                "{} {} {}, {} {level} {} ({})",
+                i18n.tr(class),
+                i18n.tr("multicellular"),
+                i18n.tr("intelligent"),
+                i18n.tr("Level"),
+                i18n.tr("civilization"),
+                i18n.tr(se_core::procgen::civilization::level_name(level))
+            ),
+            (_, _, Some(k)) => format!("{} {k}", i18n.tr(class)),
+            _ => i18n.tr(class).to_string(),
         });
         if let Some(b) = l.str("Biome") {
             biomes.push(b.split('/').map(|x| i18n.tr(&x.trim().to_ascii_lowercase()).to_string()).collect::<Vec<_>>().join(", "));
@@ -899,7 +913,7 @@ fn draw_hud(
                     if b.mass_kg > 0.0 {
                         line(ui, "Roche limit for satellites", format_distance(se_core::orbit::roche_limit_for_satellites(b.mass_kg)));
                     }
-                    if let Some((forms, biomes, origin)) = life_lines(&b.block, &i18n) {
+                    if let Some((forms, biomes, origin)) = life_lines(&b.block, b.civilization(), &i18n) {
                         line(ui, "Life forms", forms);
                         if !biomes.is_empty() {
                             line(ui, "Life biomes", biomes);

@@ -702,7 +702,7 @@ pub fn body_info(cat: &se_core::catalog::Catalog, b: &BodyRecord, temperature_k:
         has_ocean,
         life_organic: has("Organic"),
         life_exotic: has("Exotic"),
-        multicellular: life.iter().any(|l| l.kind.as_deref().is_some_and(|k| k.to_ascii_lowercase().contains("multi"))),
+        multicellular: life.iter().any(|l| l.multicellular()),
         se: None,
         sun_temp: None,
         surf_style: b

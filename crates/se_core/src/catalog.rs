@@ -116,6 +116,15 @@ pub struct StarRecord {
     pub block: Block,
 }
 
+impl BodyRecord {
+    /// The civilization level (1-4) the body's `Life` gives it (`Type "Intelligent"
+    /// Civilization N`); Sol's Earth is level 2 built in (its catalog is left as it is).
+    pub fn civilization(&self) -> Option<u8> {
+        let given = crate::body_params::LifeParams::all_from_body(&self.block).iter().filter_map(|l| l.civilization).max();
+        given.or_else(|| (self.names.first().is_some_and(|n| n == "Earth") && self.source.to_ascii_lowercase().contains("solarsys")).then_some(2))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BodyRecord {
     pub tag: BodyTag,

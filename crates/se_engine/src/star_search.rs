@@ -76,6 +76,8 @@ struct BodyFacts {
     ocean: bool,
     /// Life class, type and biome.
     life: Option<(String, String, String)>,
+    /// Civilization level (0 none).
+    civ: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -120,8 +122,10 @@ struct Filter {
     atmosphere: usize,
     /// 0 any, 1 any life, 2 organic, 3 exotic, 4 lifeless.
     life: usize,
-    /// 0 any, 1 unicellular, 2 multicellular.
+    /// 0 any, 1 unicellular, 2 multicellular (intelligent too), 3 intelligent.
     complexity: usize,
+    /// 0 any, 1 any civilization, 2-5 levels 1-4.
+    civ: usize,
     /// 0 any, 1 marine, 2 terrestrial.
     biome: usize,
     /// 0 all, 1 catalog systems only, 2 procedural only.
@@ -176,8 +180,16 @@ impl Filter {
                 _ => life.is_none(),
             })
             && pick(self.complexity, &|i| {
-                has(&life, &|l| l.1.to_ascii_lowercase().starts_with(if i == 1 { "uni" } else { "multi" }))
+                has(&life, &|l| {
+                    let t = l.1.to_ascii_lowercase();
+                    match i {
+                        1 => t.starts_with("uni"),
+                        2 => t.starts_with("multi") || t == "intelligent",
+                        _ => t == "intelligent",
+                    }
+                })
             })
+            && pick(self.civ, &|i| if i == 1 { b.civ > 0 } else { b.civ as usize == i - 1 })
             && pick(self.biome, &|i| has(&life, &|l| l.2.to_ascii_lowercase().contains(if i == 1 { "marine" } else { "terrestrial" })))
             && (self.radius_min <= 0.0 || re >= self.radius_min)
             && (self.radius_max <= 0.0 || re <= self.radius_max)
@@ -288,6 +300,7 @@ fn catalog_bodies(cat: &Catalog, eph: &Ephemeris, root: u32, jd: f64) -> Vec<Bod
             atmosphere: b.block.sub("Atmosphere").is_some(),
             ocean: b.block.sub("Ocean").is_some(),
             life,
+            civ: b.civilization().unwrap_or(0),
         });
     }
     out
@@ -333,10 +346,14 @@ fn procedural_system(info: &ProcStarInfo, pos_pc: DVec3, tables: Option<&Arc<se_
 /// in the system's parsed script `doc`.
 fn generated_bodies(bodies: Vec<se_core::procgen::BodySummary>, doc: Option<&se_core::sc::Block>) -> Vec<BodyFacts> {
     let mut lives = std::collections::HashMap::new();
+    let mut civs = std::collections::HashMap::new();
     for it in doc.iter().flat_map(|d| &d.items) {
         if let (Some(name), Some(l)) = (it.name(), it.block().and_then(|b| b.sub("Life"))) {
             let s = |k: &str| l.str(k).unwrap_or_default().to_string();
             lives.insert(name.to_string(), (s("Class"), s("Type"), s("Biome")));
+            if let Some(c) = se_core::body_params::LifeParams::from_block(l).civilization {
+                civs.insert(name.to_string(), c);
+            }
         }
     }
     bodies
@@ -348,7 +365,9 @@ fn generated_bodies(bodies: Vec<se_core::procgen::BodySummary>, doc: Option<&se_
                 _ => return None,
             };
             let life = lives.remove(&b.name);
+            let civ = civs.remove(&b.name).unwrap_or(0);
             Some(BodyFacts {
+                civ,
                 temp: b.class_desc.split_whitespace().next().and_then(temp_word),
                 moon,
                 class: b.class,
@@ -547,10 +566,12 @@ impl SearchState {
         self.filter = Filter::default();
         match what {
             "life" => self.filter.life = 1,
+            // Planets with a civilization (each found is logged).
+            "civ" => self.filter.civ = 1,
             "bh" => (self.filter.object, self.filter.star) = (3, 1),
             _ => {}
         }
-        self.hide_empty = what == "life";
+        self.hide_empty = what == "life" || what == "civ";
         self.start(data, cam, field, jd);
     }
 
@@ -583,6 +604,9 @@ impl SearchState {
                 if !v.is_empty() {
                     let f = &self.filter;
                     for r in v.drain(..) {
+                        for b in r.bodies.iter().filter(|b| b.civ > 0) {
+                            info!("star search: civilization level {} on {} ({:.1} ly)", b.civ, b.name, r.dist_pc * LY_PER_PC);
+                        }
                         self.matches.push(f.row_matches(&r));
                         self.cycle.push(0);
                         self.rows.push(r);
@@ -763,7 +787,8 @@ fn filter_window(ctx: &egui::Context, st: &mut SearchState, i18n: &I18n) {
             combo(ui, i18n, "Water", &mut f.water, &["any", "non-arid", "arid"]);
             combo(ui, i18n, "Atmosphere", &mut f.atmosphere, &["any", "yes", "no"]);
             combo(ui, i18n, "Life", &mut f.life, &["any", "any life", "Organic", "Exotic", "no life"]);
-            combo(ui, i18n, "Life type", &mut f.complexity, &["any", "Unicellular", "Multicellular"]);
+            combo(ui, i18n, "Life type", &mut f.complexity, &["any", "Unicellular", "Multicellular", "Intelligent"]);
+            combo(ui, i18n, "Civilization", &mut f.civ, &["any", "any level", "1 primitive", "2 modern", "3 futuristic", "4 interstellar"]);
             combo(ui, i18n, "Biome", &mut f.biome, &["any", "Marine", "Terrestrial"]);
             ui.label(i18n.tr("Radius (Earth radii)"));
             ui.horizontal(|ui| {

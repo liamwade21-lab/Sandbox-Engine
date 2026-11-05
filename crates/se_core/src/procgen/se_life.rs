@@ -62,15 +62,24 @@ pub(super) struct LifeIn {
     pub ice_world: bool,
     pub radius_km: f32,
     pub age_gyr: f32,
+    /// Not SE's (they draw nothing from its streams): for the civilizations
+    /// ([`super::civilization`]): the air's pressure (atm) and oxygen share, the surface gravity (g).
+    pub pressure_atm: f32,
+    pub o2: f32,
+    pub gravity_g: f32,
 }
 
 /// One kind of life a body ends up with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct LifeOut {
     pub exotic: bool,
     pub multicellular: bool,
     pub biome: &'static str,
     pub panspermia: bool,
+    /// The age (Gyr) SE's generator drew for this life's complex stage, and the civilization the
+    /// port gives it (0 none; [`super::civilization`]).
+    pub complex_gyr: f32,
+    pub civilization: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,7 +226,7 @@ fn stage(r: &mut SeRng, b: &LifeIn, exotic: bool, panspermia: bool) -> Option<Li
     let ages = if exotic { EXO_AGES } else { ORG_AGES };
     let [uni, multi, complex] = ages.map(|(m, s)| r.gauss(m, s).clamp(0.1, 100.0));
     let age = b.age_gyr;
-    let life = |multicellular: bool, biome: &'static str| Some(LifeOut { exotic, multicellular, biome, panspermia });
+    let life = |multicellular: bool, biome: &'static str| Some(LifeOut { exotic, multicellular, biome, panspermia, complex_gyr: complex, civilization: 0 });
     let giant = b.bulk == bulk::NEPTUNE || b.bulk == bulk::JUPITER;
     if giant {
         if complex < age || multi < age {
@@ -261,7 +270,20 @@ fn stage(r: &mut SeRng, b: &LifeIn, exotic: bool, panspermia: bool) -> Option<Li
 /// will complete it ([`crate::climate::complete`]) and given `Life` blocks. Returns the number of
 /// bodies with life.
 pub fn apply(cat: &mut Catalog, root: u32, seed: u32, jd: f64) -> usize {
-    let Some(tables) = cat.climate.clone() else { return 0 };
+    let Some((ids, inputs)) = inputs(cat, root, jd) else { return 0 };
+    let mut n = 0;
+    let mut all = generate(seed, &inputs);
+    super::civilization::assign(seed, &inputs, &mut all);
+    for (i, lives) in ids.into_iter().zip(all) {
+        n += !lives.is_empty() as usize;
+        cat.bodies[i].block.items.extend(lives.iter().map(life_item));
+    }
+    n
+}
+
+/// The system's bodies (catalog indices) and what the life generator reads of each, in order.
+fn inputs(cat: &Catalog, root: u32, jd: f64) -> Option<(Vec<usize>, Vec<LifeIn>)> {
+    let tables = cat.climate.clone()?;
     let name = cat.stars[root as usize].names[0].clone();
     let ids: Vec<usize> = cat
         .system_members(&name)
@@ -292,6 +314,9 @@ pub fn apply(cat: &mut Catalog, root: u32, seed: u32, jd: f64) -> usize {
                         ice_world: ice_world(c.bulk, c.t_eq, &c.composition, bi.mass_earth, bi.radius_km),
                         radius_km: bi.radius_km,
                         age_gyr: bi.age_gyr,
+                        pressure_atm: c.pressure_atm,
+                        o2: c.o2_share(),
+                        gravity_g: bi.mass_earth / ((bi.radius_km / 6371.0) * (bi.radius_km / 6371.0)).max(1e-9),
                     }
                 }
                 _ => LifeIn { skip: true, ..Default::default() },
@@ -299,18 +324,20 @@ pub fn apply(cat: &mut Catalog, root: u32, seed: u32, jd: f64) -> usize {
         })
         .collect();
     drop(eph);
-    let mut n = 0;
-    for (i, lives) in ids.into_iter().zip(generate(seed, &inputs)) {
-        n += !lives.is_empty() as usize;
-        cat.bodies[i].block.items.extend(lives.iter().map(life_item));
-    }
-    n
+    Some((ids, inputs))
 }
 
-/// A body's `Life { Class Type Biome [Panspermia] }` item.
+/// A body's `Life { Class Type Biome [Panspermia] [Civilization] }` item.
 fn life_item(l: &LifeOut) -> crate::sc::Item {
+    crate::sc::Item { key: "Life".into(), args: Vec::new(), block: Some(crate::sc::parse(&life_text(l))), line: 0 }
+}
+
+/// The inside of a body's `Life` block.
+fn life_text(l: &LifeOut) -> String {
     let mut text = format!("Class \"{}\"\n", if l.exotic { "Exotic" } else { "Organic" });
-    if !l.biome.is_empty() || l.multicellular {
+    if l.civilization > 0 {
+        text += "Type \"Intelligent\"\n";
+    } else if !l.biome.is_empty() || l.multicellular {
         text += &format!("Type \"{}\"\n", if l.multicellular { "Multicellular" } else { "Unicellular" });
     }
     if !l.biome.is_empty() {
@@ -319,7 +346,10 @@ fn life_item(l: &LifeOut) -> crate::sc::Item {
     if l.panspermia {
         text += "Panspermia true\n";
     }
-    crate::sc::Item { key: "Life".into(), args: Vec::new(), block: Some(crate::sc::parse(&text)), line: 0 }
+    if l.civilization > 0 {
+        text += &format!("Civilization {}\n", l.civilization);
+    }
+    text
 }
 
 /// [`apply`] for a generated system before it joins the engine's catalog (off the main thread, and
@@ -360,7 +390,7 @@ mod tests {
     use super::*;
 
     fn earth(age: f32) -> LifeIn {
-        LifeIn { skip: false, bulk: bulk::TERRA, volq: 3, t_surf: 288.0, rock_floor: true, ice_world: false, radius_km: 6371.0, age_gyr: age }
+        LifeIn { skip: false, bulk: bulk::TERRA, volq: 3, t_surf: 288.0, rock_floor: true, ice_world: false, radius_km: 6371.0, age_gyr: age, pressure_atm: 1.0, o2: 0.0, gravity_g: 1.0 }
     }
 
     #[test]
@@ -433,6 +463,179 @@ mod tests {
         }
         eprintln!("bodies with life in 60 Sun-like systems: {living}: {kinds:?}");
         assert!(living > 0);
+    }
+
+    /// The civilizations' calibration (reads SE's gas table from the install): generates systems
+    /// round varied stars and prints planets with multicellular land life, the civilizations among
+    /// them and the level mix, and the base chance and level weights that would hit the decisions
+    /// (1 in 20; 45 / 15 / 20 / 20 %). `cargo test -p se_core print_civ_stats -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_civ_stats() {
+        use super::super::civilization as civ;
+        let tables = std::sync::Arc::new(crate::climate::ClimateTables::from_install(std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine")).expect("tables"));
+        let systems = std::env::var("CIV_SYSTEMS").ok().and_then(|v| v.parse().ok()).unwrap_or(4000u64);
+        let (mut land, mut civs, mut levels) = (0usize, 0usize, [0usize; 4]);
+        // Every eligible world that intelligence reached: its draws and inputs, for the calibration.
+        let mut pool: Vec<(civ::Draw, LifeIn, LifeOut)> = Vec::new();
+        let mut spread: Vec<(f32, f32, f32, f32)> = Vec::new();
+        let (mut eligible, mut o2_low, mut heavy) = (0usize, 0usize, 0usize);
+        for k in 0..systems {
+            let h = (k as u32).wrapping_mul(0x9e37_79b9) ^ 0x5bd1_e995;
+            let f = |i: u32| ((h.rotate_left(i * 7) ^ (h >> i)) % 10_000) as f64 / 10_000.0;
+            let mass = 0.25 * (1.45f64 / 0.25).powf(f(1));
+            let age = 1.0 + 10.0 * f(2);
+            let lum = mass.powf(if mass < 0.43 { 2.3 } else { 4.0 }) * if mass < 0.43 { 0.23 } else { 1.0 };
+            let radius = mass.powf(0.8);
+            let teff = 5778.0 * (lum / (radius * radius)).powf(0.25);
+            let name = format!("RS 0-9-7-{k}");
+            let s = crate::procgen::StarParams {
+                name: name.clone(),
+                mass_sol: mass,
+                lum_bol: lum,
+                teff,
+                radius_sol: radius,
+                age_gyr: age,
+                feh: 0.0,
+                kind: crate::star::StarKind::Normal,
+                class: None,
+                c_to_o: None,
+                se_seed: Some(h),
+            };
+            let g = crate::procgen::generate_planets(&s, k);
+            let mut cat = Catalog::new();
+            cat.climate = Some(tables.clone());
+            // (Each star at its own place: SE's system seed comes from the position.)
+            let (ra, dec, dist) = ((k as f64 * 0.3719) % 24.0, (k as f64 * 1.7131) % 160.0 - 80.0, 5.0 + (k % 97) as f64 * 3.1);
+            cat.load_sc(&format!("Star \"{name}\" {{ RA {ra} Dec {dec} Dist {dist} Class \"G2V\" MassSol {mass} Age {age} }}"), "s.sc");
+            cat.load_doc(crate::sc::parse(&g.sc), crate::climate::PROCEDURAL_SOURCE);
+            cat.finalize();
+            let seed = super::super::se_system_seed(&cat.stars[0]);
+            let Some((_, inputs)) = inputs(&cat, 0, crate::time::J2000) else { continue };
+            let mut all = generate(seed, &inputs);
+            civ::assign(seed, &inputs, &mut all);
+            for (i, (b, ls)) in inputs.iter().zip(&all).enumerate() {
+                if ls.iter().any(|l| l.multicellular && l.biome.contains("Terrestrial")) {
+                    land += 1;
+                    if let Some(l) = ls.iter().find(|l| civ::land_life(l)) {
+                        spread.push((b.t_surf, b.pressure_atm, b.gravity_g, (b.age_gyr - l.complex_gyr)));
+                    }
+                }
+                for l in ls {
+                    if l.civilization > 0 {
+                        civs += 1;
+                        levels[l.civilization as usize - 1] += 1;
+                    }
+                    if civ::eligible(b, l) {
+                        eligible += 1;
+                        o2_low += (b.o2 < 0.12) as usize;
+                        heavy += (b.gravity_g > 2.0) as usize;
+                        let d = civ::draw(seed, i, b, l);
+                        if d.emerged_ago.is_some() {
+                            pool.push((d, *b, l.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        let per = |n: usize| n as f64 * 1000.0 / systems as f64;
+        eprintln!("{systems} systems: land-life planets {land} ({:.1} per 1000 systems), civilizations {civs} ({:.2} per 1000, 1 in {:.1} land-life planets)", per(land), per(civs), land as f64 / civs.max(1) as f64);
+        eprintln!("levels now {:?} ({:.0} / {:.0} / {:.0} / {:.0} %)", levels, levels[0] as f64 * 100.0 / civs.max(1) as f64, levels[1] as f64 * 100.0 / civs.max(1) as f64, levels[2] as f64 * 100.0 / civs.max(1) as f64, levels[3] as f64 * 100.0 / civs.max(1) as f64);
+        eprintln!("eligible {eligible}, intelligence emerged {}, completion O2 under 12 % {o2_low}, over 2 g {heavy}", pool.len());
+        let q = |v: &mut Vec<f32>| -> String {
+            v.sort_by(|a, b| a.total_cmp(b));
+            [0.05, 0.25, 0.5, 0.75, 0.95].iter().map(|f| format!("{:.2}", v[((v.len() as f32 - 1.0) * f) as usize])).collect::<Vec<_>>().join(" ")
+        };
+        if !spread.is_empty() {
+            eprintln!("organic land life (5/25/50/75/95 %): T {} K | p {} atm | g {} | since complex {} Gyr",
+                q(&mut spread.iter().map(|x| x.0).collect()), q(&mut spread.iter().map(|x| x.1).collect()),
+                q(&mut spread.iter().map(|x| x.2).collect()), q(&mut spread.iter().map(|x| x.3).collect()));
+        }
+        // The calibration: the base chance for 1 in 20, and weights whose capped mix is the target.
+        let p0 = (land as f64 / 20.0) / pool.len().max(1) as f64;
+        let target = [0.45f64, 0.15, 0.20, 0.20];
+        let mut w = [0.25f32; 4];
+        for _ in 0..200 {
+            let mut got = [0.0f64; 4];
+            for (d, b, l) in &pool {
+                got[civ::cap(civ::pick_level(d, &w), b, l) as usize - 1] += 1.0;
+            }
+            let n: f64 = got.iter().sum();
+            for k in 0..4 {
+                let r = (target[k] / (got[k] / n).max(1e-6)).powf(0.5);
+                w[k] = (w[k] as f64 * r) as f32;
+            }
+            let s: f32 = w.iter().sum();
+            w.iter_mut().for_each(|x| *x /= s);
+        }
+        let mut got = [0usize; 4];
+        for (d, b, l) in &pool {
+            got[civ::cap(civ::pick_level(d, &w), b, l) as usize - 1] += 1;
+        }
+        let mut raw = [0usize; 4];
+        let mut ss = Vec::new();
+        for (d, _, _) in &pool {
+            raw[civ::pick_level(d, &w) as usize - 1] += 1;
+            ss.push(((d.emerged_ago.unwrap_or(0.0) - 0.6) / 1.5).clamp(-1.0, 1.0));
+        }
+        eprintln!("uncapped {raw:?}, shift s {}", q(&mut ss));
+        eprintln!("calibrated: BASE_CHANCE {p0:.4}, LEVEL_WEIGHTS [{:.3}, {:.3}, {:.3}, {:.3}] -> mix {:?}", w[0], w[1], w[2], w[3], got);
+        assert!(land > 0);
+    }
+
+    /// Civilizations change nothing but their tag: each generated system's Life blocks written with
+    /// them and without them are the same text once `Type "Intelligent"` reads `"Multicellular"`
+    /// and the `Civilization` lines are left out; and the civilizations draw nothing from SE's
+    /// streams (the lives SE's generator gives are the same with them).
+    /// `cargo test -p se_core civilizations_only_add_tags -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn civilizations_only_add_tags() {
+        use super::super::civilization as civ;
+        let tables = std::sync::Arc::new(crate::climate::ClimateTables::from_install(std::path::Path::new("D:/SteamLibrary/steamapps/common/SpaceEngine")).expect("tables"));
+        let (mut systems, mut tagged) = (0, 0);
+        for k in 0..1500u64 {
+            let h = (k as u32).wrapping_mul(0x9e37_79b9) ^ 0x1234_5677;
+            let mass = 0.3 + (h % 1000) as f64 / 1000.0;
+            let name = format!("RS 0-9-6-{k}");
+            let s = crate::procgen::StarParams {
+                name: name.clone(),
+                mass_sol: mass,
+                lum_bol: mass.powf(4.0),
+                teff: 5778.0 * mass.powf(0.5),
+                radius_sol: mass.powf(0.8),
+                age_gyr: 2.0 + (k % 9) as f64,
+                feh: 0.0,
+                kind: crate::star::StarKind::Normal,
+                class: None,
+                c_to_o: None,
+                se_seed: Some(h),
+            };
+            let g = crate::procgen::generate_planets(&s, k);
+            let mut cat = Catalog::new();
+            cat.climate = Some(tables.clone());
+            let (ra, dec) = ((k as f64 * 0.517) % 24.0, (k as f64 * 2.31) % 160.0 - 80.0);
+            cat.load_sc(&format!("Star \"{name}\" {{ RA {ra} Dec {dec} Dist 20 Class \"G2V\" MassSol {mass} Age 5 }}"), "s.sc");
+            cat.load_doc(crate::sc::parse(&g.sc), crate::climate::PROCEDURAL_SOURCE);
+            cat.finalize();
+            let seed = super::super::se_system_seed(&cat.stars[0]);
+            let Some((_, inputs)) = inputs(&cat, 0, crate::time::J2000) else { continue };
+            let plain = generate(seed, &inputs);
+            let mut with = generate(seed, &inputs);
+            civ::assign(seed, &inputs, &mut with);
+            systems += 1;
+            for (a, b) in plain.iter().zip(&with) {
+                assert_eq!(a.len(), b.len());
+                for (la, lb) in a.iter().zip(b) {
+                    assert_eq!(LifeOut { civilization: 0, ..lb.clone() }, *la, "{name}: SE's life changed");
+                    let norm: String = life_text(lb).replace("\"Intelligent\"", "\"Multicellular\"").lines().filter(|x| !x.starts_with("Civilization")).map(|x| format!("{x}\n")).collect();
+                    assert_eq!(life_text(la), norm, "{name}");
+                    tagged += (lb.civilization > 0) as usize;
+                }
+            }
+        }
+        eprintln!("{systems} systems compared, {tagged} lives tagged with a civilization, nothing else changed");
+        assert!(systems > 1000);
     }
 
     #[test]
