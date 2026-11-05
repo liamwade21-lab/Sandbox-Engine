@@ -115,7 +115,14 @@
     modelled in Blender by script (its 3D generators are switched off: they need an API key or the
     Premium plan). Costs about 1.6 ms over a dense core at the user's settings. Not done: elevated
     roads, 3D flying cars close up.
-  - **Step 10 next:** level 4: orbital stations, colonized moons and planets, space traffic.
+  - **Step 10 done (2026-11-05): interstellar civilizations in space.** A level 4 civilization has
+    colonized many of its system's moons and planets: level 3 towns, under glass domes where there is
+    no air. Orbital stations (a spinning ring station and a truss station, modelled in Blender by
+    script) circle its home world and its big moons, lit by the stars; streams of ship lights arc
+    between the home world, its stations and its colonies. The dev command `station N KM` looks at a
+    station. Nothing of it costs anything outside such a system, and nothing measurable inside.
+  - **Step 11 next:** polish: graphics settings and presets for vegetation and cities, seasons and snow
+    on plants, roads flattening steep ground, final measurements, docs.
 
 ## Notes
 

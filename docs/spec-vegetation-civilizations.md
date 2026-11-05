@@ -1067,6 +1067,74 @@ generator (the user's add-on has every generator switched off; it needs their AP
 the temple, watchtower and landmark are simple shapes modelled in code there. Elevated roads were
 left out (the flying lanes and skybridges carry the look); they can come with step 11's polish.
 
+### Step 10: level 4 in space (done 2026-11-05)
+
+What was built:
+- **Colonies** (`se_core` `civilization::colonized`, chosen when a system loads: `system.rs`
+  `colonies_of`, `ActiveSystem::home`/`colonies`): a level 4 civilization has colonized the solid
+  bodies of its system (150-12,000 km, no giants) by its culture's hash: its own moons 4 in 5, the other
+  planets 1 in 2, their moons 1 in 4. A colony gets level 3 towns of the home world's culture
+  (`Terrain::civ` 3 and the home's seed); without air (under 0.05 atm, `Terrain::domes`) three town
+  districts in four stand under a **glass dome** (`city.wesl` `ct_dome`: on the district's middle,
+  135-180 face m in radius, 0.8 of that high; dark glass in a lattice of struts, a tight glint of the
+  star, by night the town's glow and lights where the struts cross), the buildings that fit beneath it
+  (lowered to fit), the ground's streets and lights under the domes alone, no farmland, no flying lanes,
+  arcologies or skybridges. The scatter now also runs on bodies without plants that have a
+  civilization.
+- **Stations** (`orbital.rs`, `civilization::stations`): 3-12 round the home world in low and middle
+  orbits (tilted, at their Kepler rates on the simulation's clock) and a big ring station round each of
+  its moons of 400 km or more. Two designs modelled in Blender by script (`make_heroes.py`): a ring
+  station (a 1.4 km habitat ring on six spokes round a hub, solar wings, rings of light; it spins for a
+  gravity on its ring) and a truss station (a 900 m truss with habitat modules, solar wings, radiators).
+  Drawn with the ship material (`HullMaterial`, its parts by material: hull and solar cells made with the
+  image generator, `assets/textures/station/`; lit windows; lights in the culture's colour), lit by the
+  system's stars, dark in the shadow of the body they orbit; their meshes within 30,000 km, a light of
+  two pixels from afar.
+- **Space traffic** (`traffic.wesl`): streams of ship lights along arcs from just above the home world
+  to each station, from each moon to its station, from the home world to each colony, both ways (42
+  streams in the test system), the dots at least 1.6 pixels, moving on the real clock; the arcs'
+  points compressed as the universe's scaled space is, so they meet the bodies as drawn. Drawn within
+  40 AU of the home world; nothing at all outside a level 4 system.
+- The dev command `station N KM` looks at station N from KM away; `town` finds a colony's towns.
+
+Checked on the level 4 test system (SDSS J212413.88+010000.2: its home world 1, 10 colonies of which
+8 domed, 11 stations): from 50,000 km the streams arcing out to the stations and the stations' lights;
+a ring station and a truss station close up (lit red by the red dwarf, dark solar wings, glowing light
+rings); the domed colony planet 3 from orbit by night (its towns' green lights), from 3 km a field of
+domes, from 500 m their lattice, from inside a dome its town. Cost at Ultra 3440x1440: nothing
+measurable from 50,000 km; over a domed colony at 500 m the stations and traffic add nothing beyond the
+runs' own spread (about +-0.6 ms with the window unfocused).
+
+Learned:
+- Changing a material asset every frame costs on the GPU too: 53 traffic materials updated each frame
+  added about a millisecond to the opaque pass even with the streams hidden. Their values now live in
+  one storage buffer written in place (as the star sprites' camera values); each material holds only
+  its record's index and never changes.
+- A `perf NAME` segment runs to the next `perf`: put a `perf jump` before each camera jump, or a jump
+  and the new view's frames count in the old segment (it once looked like the traffic cost 1.2 ms).
+- An independent review (two reviewers, each finding checked by another) found 13 real faults, all
+  fixed: the arcs to the home world bowed by the positions' rounding noise (flickering sideways; now
+  across the chord, or along the pole where the chord runs through the world); the orbits turned with
+  the planet's daily spin (now on its pole alone, prograde); the traffic's points were compressed by
+  their own distance while a body shrinks by its centre's (near a planet beyond the linear radius they
+  fell behind it; now each end takes its body's factor, the stations' meshes their parent's); the
+  camera's near plane cut into a station up close (now pulled in, as for ships); a `station` request
+  outside a level 4 system stayed pending; the stations' lights ignored changes of the ambient and the
+  other lights, and their light colour stayed the first civilization's; the domes stood where the
+  ground drew no town and the reverse (one threshold now), sank whole on a slope (now stretched down as
+  the boxes), had a sphere's normals on an ellipsoid; a megatower too tall for its dome left its block
+  empty; Neptune-class bodies could be colonized.
+- The hero models' texture layer sits in v with a 5,000 m offset: uv must be measured from each model's
+  own middle (the truss station, modelled 6 km from Blender's origin, decoded as the wrong layer).
+
+Left open: ships as 3D models close up; the traffic's arcs are fixed curves (not orbital transfers); the
+colonies have no ports or landing fields; the stations do not cast shadows.
+
+Step 10's revision (2026-11-05): the level 4 colonies reuse the settlement field at level 3 with an
+"airless: domes" rule (the open question below, decided): a dome over three town districts in four.
+The traffic is drawn by its own small material (a storage buffer of the streams), not the ship
+shader; the stations' points of light from afar are that material too.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

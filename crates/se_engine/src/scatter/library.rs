@@ -279,7 +279,7 @@ fn texture_array(dir: &str, names: &[&str], s: u32, alpha: ArrayAlpha) -> Image 
     image
 }
 
-type Mesh4 = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
+pub(crate) type Mesh4 = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
 
 /// A round hut in unit size (walls' diameter 1, height 1): walls to 0.42, a thatched cone from its
 /// eave (radius 0.62: overhanging the walls, at 0.38) to the top, and the eave's underside.
@@ -503,6 +503,11 @@ fn tower(sections: &[Section], sides: u32, spire: f32, floor: bool) -> Mesh4 {
 /// normals, and uv in metres with the texture layer in v's ten-thousands. Header: `SEHM`, version 1,
 /// the real width, height and depth (m), the vertex and index counts.
 fn hero_model(name: &str) -> Option<Mesh4> {
+    hero_file(name).map(|(m, _)| m)
+}
+
+/// A hero model's file (`hero_model`) and its real width, height and depth (m).
+pub(crate) fn hero_file(name: &str) -> Option<(Mesh4, [f32; 3])> {
     let rel = std::path::Path::new("models").join("hero").join(format!("{name}.bin"));
     let mut path = crate::config::asset_dir().join(&rel);
     if !path.is_file() {
@@ -527,7 +532,40 @@ fn hero_model(name: &str) -> Option<Mesh4> {
     }
     let o = 28 + nv * 32;
     m.3 = (0..ni).map(|i| u32::from_le_bytes(b[o + i * 4..o + i * 4 + 4].try_into().unwrap())).collect();
-    Some(m)
+    Some((m, [f(8), f(12), f(16)]))
+}
+
+/// A colony's dome in unit size: a half ellipsoid over x and z -0.5..0.5 up to y 1 (the instance
+/// scales it to its radius and height), uv x around (0..1), y down from the top (0..1).
+fn dome_mesh() -> Mesh4 {
+    const AROUND: u32 = 48;
+    const DOWN: u32 = 12;
+    let mut m: Mesh4 = Default::default();
+    for j in 0..=DOWN {
+        let t = j as f32 / DOWN as f32 * std::f32::consts::FRAC_PI_2;
+        for i in 0..=AROUND {
+            let a = i as f32 / AROUND as f32 * std::f32::consts::TAU;
+            let (x, y, z) = (0.5 * t.sin() * a.cos(), t.cos(), 0.5 * t.sin() * a.sin());
+            m.0.push([x, y, z]);
+            // The unit-space normal of the half ellipsoid (semi-axes 0.5, 1, 0.5: along 4x, y, 4z; the
+            // shader takes it through the stretch).
+            m.1.push(Vec3::new(x * 4.0, y, z * 4.0).normalize().to_array());
+            m.2.push([i as f32 / AROUND as f32, j as f32 / DOWN as f32]);
+        }
+    }
+    let row = AROUND + 1;
+    for j in 0..DOWN {
+        for i in 0..AROUND {
+            let (a, b, c, d) = (j * row + i, j * row + i + 1, (j + 1) * row + i + 1, (j + 1) * row + i);
+            // Counter-clockwise seen from outside.
+            for t in [[a, c, b], [a, d, c]] {
+                let [p0, p1, p2] = t.map(|k| Vec3::from(m.0[k as usize]));
+                let mid = (p0 + p1 + p2) / 3.0;
+                if (p1 - p0).cross(p2 - p0).dot(mid) >= 0.0 { m.3.extend(t) } else { m.3.extend([t[0], t[2], t[1]]) }
+            }
+        }
+    }
+    m
 }
 
 /// The flying lanes' segment: two ribbons (z -0.5 and 0.5: the instance's depth sets them 12 m apart)
@@ -905,6 +943,10 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let n = idx.len() as u32;
             models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), crown: Some((0.5, 0.0)) });
         }
+        // A level 4 civilization's colonies' domes (city.wesl M_DOME), with level 3's material.
+        let (positions, normals, uvs, idx) = dome_mesh();
+        let n = idx.len() as u32;
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (4000, 0), crown: Some((0.5, 0.0)) });
     }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());
@@ -1111,6 +1153,53 @@ mod tests {
                 assert!(n.dot(Vec3::new(mid.x, 0.0, mid.z)) > 0.0 || n.y > 0.0 || floor, "model {k}: a face turned inwards at {mid}");
             }
         }
+    }
+
+    /// Copies the Megaton Rainfall files the port uses from the user's install (`MR_PATH`, else
+    /// `se_core::mr::DEFAULT_MR_PATH`) into `assets/mr` (the user's choice of 2026-11-05: the port
+    /// must work without the game; the copy is for private use, not for sharing the port): its 16
+    /// trees, every texture their materials name, the generated species' barks and branch cards, the
+    /// grass and the window array, and `Data/global.txt`, as the game's own bytes. Run
+    /// `cargo test -p se_engine --release copy_megaton_rainfall -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn copy_megaton_rainfall() {
+        use std::path::PathBuf;
+        let root = std::env::var("MR_PATH").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(se_core::mr::DEFAULT_MR_PATH));
+        let mr = se_core::mr::MrInstall::open(&root).expect("Megaton Rainfall's install");
+        let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mr");
+        let mut files = std::collections::BTreeSet::new();
+        files.insert("Data/global.txt".to_string());
+        let mut textures = Vec::new();
+        for name in TREES {
+            files.insert(format!("Models/{name}.bin"));
+            let model = mr.model(name).expect("tree model");
+            for s in &model.submeshes {
+                textures.extend(mr.resolve(&s.material).textures.iter().cloned());
+            }
+        }
+        textures.extend(trees::BARKS.iter().chain(trees::BRANCHES.iter()).map(|t| t.to_string()));
+        textures.extend([GRASS_TEXTURE.to_string(), "windows".to_string()]);
+        for t in &textures {
+            if mr.has_texture(t) {
+                files.insert(se_core::mr::texture_path(t));
+            } else {
+                println!("not in the game's files: {t}");
+            }
+        }
+        let mut total = 0;
+        for f in &files {
+            let bytes = mr.vfs().read(f).expect("file");
+            let path = out.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            total += bytes.len();
+        }
+        println!("{} files, {:.1} MB, in {}", files.len(), total as f64 / 1e6, out.display());
+        // The copy opens as the install does, with every file the library reads.
+        let copy = se_core::mr::MrInstall::open_copy(&out).expect("the copy");
+        assert!(TREES.iter().all(|t| copy.model(t).is_ok()));
+        assert!(textures.iter().filter(|t| mr.has_texture(t)).all(|t| copy.has_texture(t)));
     }
 
     /// The hero models (made in Blender) load, inside the unit box.

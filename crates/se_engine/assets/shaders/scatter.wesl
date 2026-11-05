@@ -11,13 +11,13 @@
 import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
 import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
 import super::settlement::settlements;
-import super::city::{city_pos, ct_building, ct_hut, Building, CityPos, ct_block, ct_block_mid, ct_arcology, ct_on_arcology, ct_mega, ct_bridge, ct_lane, ct_temple, ct_district, M_FUTURE, M_ARCO, M_BRIDGE, M_LANE, M_TEMPLE, M_LANDMARK};
+import super::city::{city_pos, ct_building, ct_hut, Building, CityPos, ct_block, ct_block_mid, ct_arcology, ct_on_arcology, ct_mega, ct_bridge, ct_lane, ct_temple, ct_district, ct_dome, ct_under_dome, M_FUTURE, M_ARCO, M_BRIDGE, M_LANE, M_TEMPLE, M_LANDMARK, M_DOME};
 
 const SLOT_CAP: u32 = 8192u;
 // The library's building models from the box on (ScatterLibrary::building): the box, the villages'
 // hut and longhouse, level 3's future box, four towers, the arcology, the skybridge, the flying lane,
-// the hero models (level 1's temple and watchtower, level 3's landmark).
-const BUILDING_MODELS: u32 = 14u;
+// the hero models (level 1's temple and watchtower, level 3's landmark), a colony's dome.
+const BUILDING_MODELS: u32 = 15u;
 const GRID: u32 = 33u;
 const PAGE_VERTS: u32 = 1089u;
 const LEAF: u32 = 0x80000000u;
@@ -423,7 +423,7 @@ fn put_building(job: Job, i: u32, gi: vec2<u32>, tile: vec2<i32>, b: Building) {
     if !in_square(gi, fc) {
         return;
     }
-    let big = b.model == M_ARCO || b.model == M_LANDMARK;
+    let big = b.model == M_ARCO || b.model == M_LANDMARK || b.model == M_DOME;
     let step = select(select(2.0, 1.0, b.model == M_BRIDGE), 0.25, big);
     let w = u32(clamp(round(b.size.x * step), 1.0, 255.0));
     let d = u32(clamp(round(b.size.y * select(2.0, 0.25, big)), 1.0, 255.0));
@@ -436,6 +436,30 @@ fn put_building(job: Job, i: u32, gi: vec2<u32>, tile: vec2<i32>, b: Building) {
 // the block's megatower and its skybridge, else the lot's building (the towns' box, taller, in the
 // future facades).
 fn place_future(job: Job, i: u32, gi: vec2<u32>, cp: CityPos, k: f32, urban: f32, seed: u32, level: u32) {
+    // A colony without air (the scatter's `flora_k.w`): each town district under its dome, where the
+    // town is dense enough at its middle; the buildings that fit beneath it; no lanes, arcologies or
+    // skybridges.
+    if body.flora_k.w > 0.5 {
+        let dome = ct_dome(cp, ct_district(cp, seed).cell, k, seed);
+        if !dome.ok || town_at(city_dir(job, cp.tile, dome.centre)) < 0.06 {
+            return;
+        }
+        put_building(job, i, gi, cp.tile, dome);
+        let blk = ct_block(cp, seed, body.city.z);
+        let mega = ct_mega(cp, blk, k, town_at(city_dir(job, cp.tile, ct_block_mid(cp, blk))), seed);
+        if mega.ok {
+            let m = ct_under_dome(mega, dome, k);
+            if m.ok {
+                put_building(job, i, gi, cp.tile, m);
+                return;
+            }
+        }
+        var b = ct_building(cp, k, urban, seed, body.city.z);
+        b.model = M_FUTURE;
+        b.height *= 1.4;
+        put_building(job, i, gi, cp.tile, ct_under_dome(b, dome, k));
+        return;
+    }
     // The lanes (dense town): two heights a segment (an instance each, its two ribbons the two ways).
     if urban >= 0.3 {
         for (var axis = 0; axis < 2; axis++) {
@@ -900,7 +924,7 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
         cull_lane(rec, lf, info, cell, kind, model);
         return;
     }
-    let big = mk == M_ARCO || mk == M_LANDMARK;
+    let big = mk == M_ARCO || mk == M_LANDMARK || mk == M_DOME;
     let wstep = select(select(0.5, 1.0, mk == M_BRIDGE), 4.0, big);
     let w = f32(rec.y & 0xffu) * wstep;
     let dpt = f32((rec.y >> 8u) & 0xffu) * select(0.5, 4.0, big);
@@ -925,7 +949,7 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
         // A skybridge: 5 m deep at its height over the street.
         plinth = -h - body.lod2.y;
         scale = 5.0;
-    } else if mk >= M_TEMPLE {
+    } else if mk >= M_TEMPLE && mk != M_DOME {
         // A hero model keeps its shape: it sinks into the slope (its lowest 0.8 m below the ground
         // on the level).
         plinth -= 0.2;

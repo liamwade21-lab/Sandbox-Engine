@@ -745,7 +745,7 @@ pub(crate) fn box_down(src: &[u8], w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-fn image_with_mips(rgba: Vec<u8>, w: u32, h: u32, format: TextureFormat) -> Image {
+pub(crate) fn image_with_mips(rgba: Vec<u8>, w: u32, h: u32, format: TextureFormat) -> Image {
     let mut data = rgba.clone();
     let level0 = rgba.clone();
     let (mut cw, mut ch, mut cur) = (w, h, rgba);

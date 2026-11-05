@@ -199,6 +199,77 @@ pub fn culture_seed(name: &str) -> u32 {
     name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
 }
 
+/// Where a body stands to a level 4 civilization's home world (the plan's step 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColonySite {
+    /// One of the home world's moons.
+    HomeMoon,
+    /// Another planet of the system.
+    Planet,
+    /// A moon of another planet.
+    OtherMoon,
+}
+
+/// Whether a level 4 civilization of culture seed `seed` has colonized the body called `name` (a solid
+/// body of `radius_km` and `mass_earth`: no giants, at least 150 km across): the home world's moons 4 in
+/// 5, the other planets 1 in 2, their moons 1 in 4, by the culture's hash.
+pub fn colonized(seed: u32, name: &str, site: ColonySite, radius_km: f64, mass_earth: f64) -> bool {
+    if !(150.0..12_000.0).contains(&radius_km) || mass_earth > 10.0 {
+        return false;
+    }
+    let chance = match site {
+        ColonySite::HomeMoon => 0.8,
+        ColonySite::Planet => 0.5,
+        ColonySite::OtherMoon => 0.25,
+    };
+    let h = culture_seed(name) ^ seed.wrapping_mul(0x9e37_79b9);
+    st_hash([h as i32, 17, 4], seed)[0] < chance
+}
+
+/// A level 4 civilization's orbital station: round its home world (`moon` None) or one of its moons
+/// (the index into the moons given), the orbit's radius in the body's radii, its tilt from the
+/// equator and its node (rad), its phase (rad), its design (0 the ring station, 1 the truss station)
+/// and its scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StationSpec {
+    pub moon: Option<usize>,
+    pub radius: f64,
+    pub tilt: f64,
+    pub node: f64,
+    pub phase: f64,
+    pub design: u8,
+    pub scale: f64,
+}
+
+/// The stations of a level 4 civilization of culture seed `seed` (the plan: 3-12 round the home world,
+/// big ones at its moons): round the home world 3 to 12 in low and middle orbits, and a big ring
+/// station round each of its moons of `big_moon_km` radius or more (`moon_radii_km`).
+pub fn stations(seed: u32, moon_radii_km: &[f64]) -> Vec<StationSpec> {
+    const BIG_MOON_KM: f64 = 400.0;
+    let n = 3 + (st_hash([seed as i32, 5, 9], seed)[0] * 10.0) as usize;
+    let mut out = Vec::new();
+    for i in 0..n.min(12) {
+        let h = st_hash([i as i32, 11, 3], seed);
+        let h2 = st_hash([i as i32, 12, 3], seed);
+        out.push(StationSpec {
+            moon: None,
+            radius: 1.05 + 0.6 * h[0] as f64 * h[0] as f64,
+            tilt: (h[1] as f64 - 0.5) * 1.2,
+            node: h[2] as f64 * std::f64::consts::TAU,
+            phase: h[3] as f64 * std::f64::consts::TAU,
+            design: (h2[0] < 0.4) as u8,
+            scale: 0.6 + 0.6 * h2[1] as f64,
+        });
+    }
+    for (m, &r) in moon_radii_km.iter().enumerate() {
+        if r >= BIG_MOON_KM {
+            let h = st_hash([m as i32, 13, 3], seed);
+            out.push(StationSpec { moon: Some(m), radius: 1.3 + 0.5 * h[0] as f64, tilt: (h[1] as f64 - 0.5) * 0.4, node: h[2] as f64 * std::f64::consts::TAU, phase: h[3] as f64 * std::f64::consts::TAU, design: 0, scale: 1.5 });
+        }
+    }
+    out
+}
+
 /// settlement.wesl's `st_hash` on the CPU (the same u32 arithmetic): four numbers in 0..1 for cell
 /// `c` and seed `seed`.
 pub fn st_hash(c: [i32; 3], seed: u32) -> [f32; 4] {
@@ -266,6 +337,27 @@ pub fn nearest_settlement(dir: glam::DVec3, radius_m: f64, level: u8, seed: u32,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Level 4's colonies and stations: the shares the plan asks for, every count in range.
+    #[test]
+    fn colonies_and_stations() {
+        let (mut home, mut planet, mut other) = (0, 0, 0);
+        for i in 0..2000u32 {
+            let seed = culture_seed(&format!("Home {i}"));
+            home += colonized(seed, &format!("Moon {i}"), ColonySite::HomeMoon, 800.0, 0.01) as u32;
+            planet += colonized(seed, &format!("Planet {i}"), ColonySite::Planet, 3000.0, 0.3) as u32;
+            other += colonized(seed, &format!("Far moon {i}"), ColonySite::OtherMoon, 600.0, 0.005) as u32;
+            assert!(!colonized(seed, "Giant", ColonySite::Planet, 60_000.0, 300.0));
+            assert!(!colonized(seed, "Pebble", ColonySite::HomeMoon, 50.0, 1e-6));
+            let s = stations(seed, &[1700.0, 100.0]);
+            let round_home = s.iter().filter(|s| s.moon.is_none()).count();
+            assert!((3..=12).contains(&round_home), "{round_home}");
+            assert_eq!(s.iter().filter(|s| s.moon == Some(0)).count(), 1);
+            assert!(s.iter().all(|s| s.moon != Some(1) && s.radius > 1.0));
+        }
+        let share = |n: u32| n as f64 / 2000.0;
+        assert!((share(home) - 0.8).abs() < 0.05 && (share(planet) - 0.5).abs() < 0.05 && (share(other) - 0.25).abs() < 0.05, "{home} {planet} {other}");
+    }
 
     #[test]
     fn cultures_suit_their_levels() {

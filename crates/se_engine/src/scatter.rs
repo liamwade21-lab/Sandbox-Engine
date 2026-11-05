@@ -27,7 +27,7 @@
 pub mod earth;
 mod gpu;
 mod impostor;
-mod library;
+pub(crate) mod library;
 pub mod trees;
 
 use std::collections::{HashMap, HashSet};
@@ -334,6 +334,8 @@ pub struct BodyFrame {
     /// The culture's light colour (its brightest channel 1; 6 bits a channel, r * 4096 + g * 64 + b):
     /// level 3's windows, light strips.
     pub civ_light: u32,
+    /// A colony without air: its towns under domes (`Terrain::domes`).
+    pub domes: bool,
 }
 
 /// What the render world needs this frame (extracted).
@@ -383,7 +385,7 @@ pub fn city_test() -> bool {
 /// from the settlement field) or on Earth (from its lights map), the library holding the box, and
 /// not the test cover.
 fn buildings_on(sc: &Scatter, lib: &ScatterLibrary, terrain: &Terrain) -> bool {
-    let towns = sc.veg == VegKind::SeTerra || (sc.veg == VegKind::Map && sc.earth.lights.is_some());
+    let towns = matches!(sc.veg, VegKind::SeTerra | VegKind::None) || (sc.veg == VegKind::Map && sc.earth.lights.is_some());
     terrain.civ.is_some() && towns && (lib.building as usize) < lib.models.len()
 }
 
@@ -580,7 +582,9 @@ fn update_scatter(
         sc.flora_want = (sc.veg == VegKind::SeTerra).then(|| flora_want(body, terrain, data.as_deref()));
         info!("scatter: {:?} on the body at {:.0} km radius", sc.veg, terrain.radius / 1000.0);
     }
-    if sc.veg == VegKind::None {
+    // (A body without plants may still have a civilization's buildings: a level 4 civilization's
+    // colonies on airless moons.)
+    if sc.veg == VegKind::None && terrain.civ.is_none() {
         return;
     }
     let r = terrain.radius;
@@ -605,13 +609,16 @@ fn update_scatter(
         sc.wind = data.as_deref().map_or(DVec3::ZERO, |d| crate::volumetric_clouds::wind_at(d, body, terrain, dir, sun_body, sim.jd));
     }
     let mut wanted = Vec::new();
-    cells_in_range(dir, height, r, range, CELL_EDGE_M, &mut wanted);
     // Keep cells a little past the range (no thrashing at the edge).
     let mut keep: Vec<(TileKey, f64)> = Vec::new();
-    cells_in_range(dir, height, r, range * 1.15, CELL_EDGE_M, &mut keep);
+    let plants = sc.veg != VegKind::None;
+    if plants {
+        cells_in_range(dir, height, r, range, CELL_EDGE_M, &mut wanted);
+        cells_in_range(dir, height, r, range * 1.15, CELL_EDGE_M, &mut keep);
+    }
     // The grass's finer cells near the camera (not in the test).
     let mut grass_cells = HashSet::new();
-    if sc.veg != VegKind::Test && lib.grass > 0 {
+    if plants && sc.veg != VegKind::Test && lib.grass > 0 {
         let mut g = Vec::new();
         cells_in_range(dir, height, r, GRASS_RANGE_M as f64 + 10.0, GRASS_EDGE_M, &mut g);
         grass_cells.extend(g.iter().map(|c| c.0));
@@ -825,6 +832,7 @@ fn update_scatter(
             let c = se_core::procgen::civilization::culture(seed, level);
             Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.grid_turn, r as f32)
         }),
+        domes: terrain.domes,
         civ_light: terrain.civ.map_or(0, |(level, seed)| {
             let l = se_core::procgen::civilization::culture(seed, level).light;
             let m = l[0].max(l[1]).max(l[2]).max(1e-3);

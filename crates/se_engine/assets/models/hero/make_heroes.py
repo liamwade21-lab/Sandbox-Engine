@@ -77,8 +77,7 @@ def export(collection, path):
             for li in lt.loops:
                 p = ob.matrix_world @ me.vertices[me.loops[li].vertex_index].co
                 n = (nm @ Vector(cn[li].vector)).normalized()
-                uv = (p.x, p.y) if ax == 2 else ((p.y, p.z) if ax == 0 else (p.x, p.z))
-                corner.append(((p.x, p.z, -p.y), (n.x, n.z, -n.y), (uv[0], uv[1] + 5000.0 + layer * 10000.0)))
+                corner.append(((p.x, p.z, -p.y), (n.x, n.z, -n.y), (ax, layer)))
             tris.append(corner)
         ev.to_mesh_clear()
     xs = [c[0][0] for t in tris for c in t]
@@ -86,10 +85,15 @@ def export(collection, path):
     zs = [c[0][2] for t in tris for c in t]
     W, H, D = max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)
     cx, cz, y0 = 0.5 * (max(xs) + min(xs)), 0.5 * (max(zs) + min(zs)), min(ys)
+    ym = y0 + 0.5 * H
     out = bytearray(b"SEHM") + struct.pack("<I3f2I", 1, W, H, D, 3 * len(tris), 3 * len(tris))
     for t in tris:
-        for (p, n, uv) in t:
-            out += struct.pack("<8f", (p[0] - cx) / W, (p[1] - y0) / H, (p[2] - cz) / D, n[0], n[1], n[2], uv[0], uv[1])
+        for (p, n, (ax, layer)) in t:
+            # uv by the face's main axis (Blender's z, x or y), in metres from the model's middle (so
+            # every model's lie within +-5000 m of the layer's offset).
+            rx, ry, rz = p[0] - cx, p[1] - ym, p[2] - cz
+            uv = (rx, -rz) if ax == 2 else ((-rz, ry) if ax == 0 else (rx, ry))
+            out += struct.pack("<8f", (p[0] - cx) / W, (p[1] - y0) / H, (p[2] - cz) / D, n[0], n[1], n[2], uv[0], uv[1] + 5000.0 + layer * 10000.0)
     out += struct.pack("<%dI" % (3 * len(tris)), *range(3 * len(tris)))
     with open(path, "wb") as f:
         f.write(out)
@@ -170,8 +174,89 @@ def landmark():
     cone("l_needle", L, 4, (0, oy, 880), 9.0, 0.0, 120.0, 8, smooth=True)
 
 
+def cyl(name, collection, layer, a, b, radius, segs=16, smooth=True):
+    """A cylinder from point a to point b."""
+    a, b = Vector(a), Vector(b)
+    d = b - a
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=segs, radius1=radius, radius2=radius, depth=d.length)
+    rot = Vector((0, 0, 1)).rotation_difference(d.normalized()).to_matrix().to_4x4()
+    bmesh.ops.transform(bm, matrix=Matrix.Translation((a + b) / 2) @ rot, verts=bm.verts)
+    for f in bm.faces:
+        f.smooth = smooth
+    return new_obj(name, bm, collection, layer)
+
+
+def torus(name, collection, layer, centre, R, r, M=64, N=12):
+    """A torus round the z axis."""
+    bm = bmesh.new()
+    rings = []
+    for i in range(M):
+        u = 2 * math.pi * i / M
+        ring = []
+        for j in range(N):
+            v = 2 * math.pi * j / N
+            ring.append(bm.verts.new(Vector(centre) + Vector(((R + r * math.cos(v)) * math.cos(u), (R + r * math.cos(v)) * math.sin(u), r * math.sin(v)))))
+        rings.append(ring)
+    for i in range(M):
+        for j in range(N):
+            a, b = rings[i][j], rings[i][(j + 1) % N]
+            c, d = rings[(i + 1) % M][(j + 1) % N], rings[(i + 1) % M][j]
+            bm.faces.new((a, d, c, b))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    for f in bm.faces:
+        f.smooth = True
+    return new_obj(name, bm, collection, layer)
+
+
+# Level 4's orbital stations (step 10), drawn with the ship material: layers 4 hull, 5 lights,
+# 6 solar cells, 7 habitat (hull with lit windows). Real size, the spin axis up.
+def station_ring():
+    S = "SE_station_ring"
+    clear(S)
+    o = (0.0, -3000.0, 0.0)
+    ox, oy, oz = o
+    cyl("s_hub", S, 4, (ox, oy, oz - 260), (ox, oy, oz + 260), 70.0, 24)
+    cyl("s_hub_band", S, 5, (ox, oy, oz - 4), (ox, oy, oz + 4), 72.0, 24)
+    torus("s_ring", S, 7, o, 700.0, 48.0, 96, 14)
+    torus("s_ring_light", S, 5, (ox, oy, oz + 46.0), 700.0, 4.0, 96, 6)
+    for k in range(6):
+        a = 2 * math.pi * k / 6
+        d = Vector((math.cos(a), math.sin(a), 0.0))
+        cyl(f"s_spoke{k}", S, 4, Vector(o) + d * 66, Vector(o) + d * 660, 14.0, 10)
+    for z in (-1, 1):
+        cyl(f"s_mast{z}", S, 4, (ox, oy, oz + z * 260), (ox, oy, oz + z * 520), 10.0, 8)
+        box(f"s_dock{z}", S, 5, (ox, oy, oz + z * 525), (30, 30, 10))
+        for k in range(4):
+            a = math.pi / 2 * k + math.pi / 4
+            d = Vector((math.cos(a), math.sin(a), 0.0))
+            c = Vector((ox, oy, oz + z * 430)) + d * 230
+            box(f"s_solar{z}{k}", S, 6, c, (380, 110, 2), rot_z=a)
+            cyl(f"s_arm{z}{k}", S, 4, Vector((ox, oy, oz + z * 430)), c - d * 190, 4.0, 6)
+
+
+def station_truss():
+    S = "SE_station_truss"
+    clear(S)
+    ox, oy, oz = 0.0, -6000.0, 0.0
+    box("t_truss", S, 4, (ox, oy, oz), (900, 22, 22))
+    for k in range(4):
+        x = ox - 270 + 180 * k
+        cyl(f"t_hab{k}", S, 7, (x - 60, oy, oz + 36), (x + 60, oy, oz + 36), 26.0, 20)
+        box(f"t_hab_light{k}", S, 5, (x, oy, oz + 64), (8, 8, 4))
+    for side in (-1, 1):
+        x = ox + side * 380
+        for z in (-1, 1):
+            box(f"t_solar{side}{z}", S, 6, (x, oy + z * 120, oz), (150, 200, 2))
+        box(f"t_rad{side}", S, 4, (ox + side * 150, oy, oz - 70), (120, 4, 110))
+        box(f"t_tip{side}", S, 5, (ox + side * 452, oy, oz), (6, 6, 6))
+    cyl("t_core", S, 4, (ox, oy, oz - 40), (ox, oy, oz + 90), 34.0, 20)
+
+
 temple()
 watchtower()
 landmark()
-for name in ("temple", "watchtower", "landmark"):
+station_ring()
+station_truss()
+for name in ("temple", "watchtower", "landmark", "station_ring", "station_truss"):
     print(name, export("SE_" + name, os.path.join(HERE, name + ".bin")))

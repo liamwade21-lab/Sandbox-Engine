@@ -111,7 +111,19 @@ that install, never copied into the project.
   re-export, then update those. Level 3's textures: `assets/textures/future/`. Every scatter point
   of a block or district must reach the same decision: decide a shared object (arcology, landmark,
   temple, megatower) from the town's density at its own middle (`town_at(city_dir(..))`), never the
-  point's own, and clear lots only when it stands. Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
+  point's own, and clear lots only when it stands.
+- Level 4 in space (the plan's step 10): colonies are chosen when a system loads (`system.rs`
+  `colonies_of`, `ActiveSystem::home`/`colonies`; `se_core` `civilization::colonized`) and get level 3
+  towns of the home's culture, under domes without air (`Terrain::domes`, `PlanetUniform::city_land.z`,
+  the scatter's `flora_k.w`; `city.wesl` `ct_dome*`, decided by the unbent district cell). Stations and
+  traffic are `orbital.rs` (`SE_ORBITAL=0` leaves them out, for comparisons; `s` the stations alone,
+  `t` the traffic alone): the stations' models are `assets/models/hero/station_*.bin` (`make_heroes.py`,
+  the layer in uv: 4 hull, 5 lights, 6 solar cells, 7 habitat), drawn with `HullMaterial`, whose lights
+  are written only when the star's direction or the shadow changes. The traffic's per-frame values are
+  records of one storage buffer written in place (`write_records`); never put them in its materials
+  (changed every frame they cost a millisecond). The dev command `station N KM` looks at station N.
+- A `perf NAME` segment runs until the next `perf`: put `perf jump` before a camera jump, or the jump
+  and the next view count in the segment being measured. Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel

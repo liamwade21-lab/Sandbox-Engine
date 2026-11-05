@@ -1470,6 +1470,14 @@ fn run_commands(
             }
             .normalize();
         }
+        "station" => {
+            // station N [KM]: look at a level 4 civilization's station N from KM (default 3) away,
+            // on its sunlit side (orbital.rs; pause first: stations move along their orbits).
+            let mut it = arg.split_whitespace();
+            let n = it.next().and_then(|w| w.parse::<usize>().ok()).unwrap_or(0);
+            let km = it.next().and_then(|w| w.parse::<f64>().ok()).unwrap_or(3.0);
+            commands.insert_resource(crate::orbital::StationGoto(Some((n, km))));
+        }
         "agl" => {
             // agl M: hold the camera M metres above the ground under it (`agl off` ends it).
             cam.hold_agl = arg.trim().parse().ok();
@@ -1538,17 +1546,22 @@ fn run_commands(
             }
             if let Some(target @ ObjectRef::Body(i)) = cam.selected {
                 let b = &cat.bodies[i as usize];
-                let test = std::env::var("SE_CIV_TEST").ok().and_then(|v| v.parse::<u8>().ok()).filter(|l| (1..=4).contains(l));
-                let civ = b.civilization().or(test.filter(|_| crate::scatter::land_plants(&b.block)));
+                // The body's civilization as its terrain has it (a level 4 civilization's colonies too),
+                // else as the catalog and `SE_CIV_TEST` give it.
                 let name = b.names.first().cloned().unwrap_or_default();
-                if let Some(level) = civ {
+                let civ = bodies.iter().find(|(sb, _)| sb.obj == target).and_then(|(_, t)| t.and_then(|t| t.civ)).or_else(|| {
+                    b.civilization()
+                        .or(crate::system::civ_test().filter(|_| crate::scatter::land_plants(&b.block)))
+                        .map(|l| (l, se_core::procgen::civilization::culture_seed(&name)))
+                });
+                if let Some((level, culture)) = civ {
                     let eph = Ephemeris::new(cat);
                     let radius = eph.radius_m(target);
                     let q = eph.orientation(target, sim.jd);
                     let tp = eph.position(target, sim.jd);
                     let dir = (q.inverse() * cam.pos.delta_m(tp)).normalize_or(DVec3::Y);
                     // The ground's seed: the culture seed's four digits through f32, as the shader takes them.
-                    let frac = (se_core::procgen::civilization::culture_seed(&name) % 10_000) as f32 / 10_000.0;
+                    let frac = (culture % 10_000) as f32 / 10_000.0;
                     let seed = (frac * 10_000.0) as u32;
                     let kinds: Vec<u8> = kind.map_or_else(|| (0..=3).rev().collect(), |k| vec![k]);
                     let found = kinds.iter().find_map(|&k| {

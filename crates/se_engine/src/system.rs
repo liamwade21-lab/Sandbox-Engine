@@ -169,6 +169,54 @@ pub struct ActiveSystem {
     pub bodies: Vec<Entity>,
     /// Nearest catalog star and its distance in parsecs.
     pub nearest_star: Option<(u32, f64)>,
+    /// A level 4 civilization's home world in this system (its body index and culture seed) and the
+    /// bodies it has colonized (the vegetation and civilizations plan, step 10).
+    pub home: Option<(u32, u32)>,
+    pub colonies: Vec<u32>,
+}
+
+/// `SE_CIV_TEST=LEVEL` (tests only): the level every body with land plants gets.
+pub fn civ_test() -> Option<u8> {
+    std::env::var("SE_CIV_TEST").ok().and_then(|v| v.parse::<u8>().ok()).filter(|l| (1..=4).contains(l))
+}
+
+/// The home world of a level 4 civilization among `objs` (`SE_CIV_TEST=4`: the first body with land
+/// plants) and the bodies it has colonized (`civilization::colonized`).
+fn colonies_of(cat: &se_core::catalog::Catalog, objs: &[ObjectRef]) -> (Option<(u32, u32)>, Vec<u32>) {
+    use se_core::procgen::civilization::{ColonySite, colonized, culture_seed};
+    let home = objs.iter().find_map(|o| match *o {
+        ObjectRef::Body(i) => {
+            let b = &cat.bodies[i as usize];
+            let level = b.civilization().or(civ_test().filter(|_| crate::scatter::land_plants(&b.block)));
+            (level == Some(4)).then_some(i)
+        }
+        _ => None,
+    });
+    let Some(h) = home else { return (None, Vec::new()) };
+    let hb = &cat.bodies[h as usize];
+    let seed = culture_seed(hb.names.first().map_or("", |n| n.as_str()));
+    let mut colonies = Vec::new();
+    for o in objs {
+        let ObjectRef::Body(i) = *o else { continue };
+        let b = &cat.bodies[i as usize];
+        // (No giants: Neptune-class bodies and bigger, as the scatter's test.)
+        if i == h || b.civilization().is_some() || se_core::surface_gen::catalog_bulk(b) >= se_core::surface_gen::bulk::NEPTUNE {
+            continue;
+        }
+        let site = if hb.names.iter().any(|n| *n == b.parent) {
+            ColonySite::HomeMoon
+        } else if matches!(b.tag, BodyTag::Planet | BodyTag::DwarfPlanet) {
+            ColonySite::Planet
+        } else if matches!(b.tag, BodyTag::Moon | BodyTag::DwarfMoon) {
+            ColonySite::OtherMoon
+        } else {
+            continue;
+        };
+        if colonized(seed, b.names.first().map_or("", |n| n.as_str()), site, b.radius_km, b.mass_kg / se_core::units::EARTH_MASS_KG) {
+            colonies.push(i);
+        }
+    }
+    (Some((h, seed)), colonies)
 }
 
 /// Env `SE_FRAMETIME_LOG=path`: appends one line per frame, `frame ms nearest-star`, for hitch hunting.
@@ -653,6 +701,7 @@ fn select_active_system(
     }
     active.name = cat.stars[root as usize].names[0].clone();
     let mut objs = cat.system_members(&active.name);
+    (active.home, active.colonies) = colonies_of(cat, &objs);
     objs.push(ObjectRef::Star(root));
     objs.sort_by_key(|o| match o {
         ObjectRef::Star(_) => 0,
@@ -789,13 +838,23 @@ fn spawn_system_members(
             terrain.pressure_atm = gen_in.pressure_atm;
             // `SE_CIV_TEST=LEVEL` (tests only) gives every body with land plants a civilization of that
             // level: the nearby real ones all orbit deep-red dwarfs, whose light hides the towns by day.
-            let civ_test = std::env::var("SE_CIV_TEST").ok().and_then(|v| v.parse::<u8>().ok()).filter(|l| (1..=4).contains(l));
             terrain.civ = b
                 .civilization()
-                .or(civ_test.filter(|_| terrain.land_plants))
+                .or(civ_test().filter(|_| terrain.land_plants))
                 .map(|l| (l, se_core::procgen::civilization::culture_seed(b.names.first().map_or("", |n| n.as_str()))));
             if let Some((level, _)) = terrain.civ {
                 info!("{}: a level {level} civilization", b.names.first().map_or("", |n| n.as_str()));
+            } else if let (true, Some((h, seed))) = (active.colonies.contains(&i), active.home) {
+                // A level 4 civilization's colony: level 3 towns of its culture, under domes where
+                // there is no air to breathe.
+                terrain.civ = Some((3, seed));
+                terrain.domes = gen_in.pressure_atm < 0.05;
+                info!(
+                    "{}: a colony of {}{}",
+                    b.names.first().map_or("", |n| n.as_str()),
+                    cat.bodies[h as usize].names.first().map_or("", |n| n.as_str()),
+                    if terrain.domes { ", domed" } else { "" }
+                );
             }
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.

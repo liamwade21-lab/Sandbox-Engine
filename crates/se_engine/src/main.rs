@@ -33,6 +33,7 @@ mod memory;
 mod color_correction;
 mod nebula_raymarch;
 mod nebulae;
+mod orbital;
 mod hud;
 mod i18n;
 mod models;
@@ -151,7 +152,7 @@ fn main() {
         lensflare::LensFlarePlugin,
     ))
     // Volumetric clouds and weather; Megaton Rainfall's assets and the GPU scatter (vegetation, cities).
-    .add_plugins((volumetric_clouds::VolumetricCloudsPlugin, mr_assets::MrAssetsPlugin, scatter::ScatterPlugin))
+    .add_plugins((volumetric_clouds::VolumetricCloudsPlugin, mr_assets::MrAssetsPlugin, scatter::ScatterPlugin, orbital::OrbitalPlugin))
     // Interface and audio.
     .add_plugins((
         i18n::I18nPlugin,

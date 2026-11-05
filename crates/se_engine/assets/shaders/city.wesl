@@ -806,3 +806,67 @@ fn ct_lane(cp: CityPos, axis: i32, k: f32, seed: u32) -> Lane {
     o.line = line;
     return o;
 }
+
+// ---- domes (a level 4 civilization's colonies without air) ----------------------------------
+// Three town districts in four stand under a glass dome on their middle, 135-180 face m in radius
+// (inside their arterials, which bend at most 55 m), 0.8 of that high; their buildings fit beneath it;
+// the arterials run between the domes as roads. A dome's district is the unbent cell of the point (the
+// same as the bent one everywhere under a dome).
+
+const DOME_R: f32 = 180.0;
+const M_DOME: u32 = 14u;
+
+// District `cell`'s dome: whether it has one and its radius's share of DOME_R.
+fn ct_dome_scale(cell: vec2<i32>, seed: u32) -> f32 {
+    let h = st_hash(vec3<i32>(cell, 4141), seed + 53u);
+    return select(0.0, mix(0.75, 1.0, h.y), h.x < 0.75);
+}
+
+// A point's distance from its district's middle over its dome's radius (0 the middle, 1 the rim; 2
+// where the district has none).
+fn ct_dome_r(cp: CityPos, seed: u32) -> f32 {
+    let c = floor(cp.q / DISTRICT_M);
+    let s = ct_dome_scale(cp.tile * 8 + vec2<i32>(c), seed);
+    if s <= 0.0 {
+        return 2.0;
+    }
+    return length(cp.q - (c + 0.5) * DISTRICT_M) / (DOME_R * s);
+}
+
+// The share of a pixel of footprint `fp` (face m) under a dome: sharp near, the domes' share of the
+// districts (pi 180^2 / 512^2, times 3 in 4 and their sizes' mean square) once it spans districts.
+fn ct_dome_mask(cp: CityPos, fp: f32, seed: u32) -> f32 {
+    let sharp = 1.0 - smoothstep(0.97, 1.0, ct_dome_r(cp, seed));
+    return mix(sharp, 0.225, smoothstep(0.1 * DISTRICT_M, DISTRICT_M, fp));
+}
+
+// District `cell`'s dome (its true size from the metric `k`; `ok` false where it has none).
+fn ct_dome(cp: CityPos, cell: vec2<i32>, k: f32, seed: u32) -> Building {
+    var o: Building;
+    let s = ct_dome_scale(cell, seed);
+    o.ok = s > 0.0;
+    o.model = M_DOME;
+    o.centre = vec2<f32>(cell - cp.tile * 8) * DISTRICT_M + 0.5 * DISTRICT_M;
+    o.size = vec2<f32>(2.0 * DOME_R * s * k);
+    o.height = 0.8 * DOME_R * s * k;
+    o.rot = vec2<f32>(1.0, 0.0);
+    o.hash = vec4<f32>(0.5);
+    return o;
+}
+
+// Building `b` under dome `d`: its footprint inside 92 % of the radius, its top 3 m under the dome
+// (lowered to fit; none where too little room is left).
+fn ct_under_dome(b: Building, d: Building, k: f32) -> Building {
+    var o = b;
+    let r = 0.5 * d.size.x;
+    let reach = length(b.centre - d.centre) * k + 0.5 * length(b.size);
+    let x = reach / (0.92 * r);
+    if !b.ok || x >= 1.0 {
+        o.ok = false;
+        return o;
+    }
+    let room = d.height * sqrt(1.0 - x * x) - 3.0;
+    o.height = min(b.height, room);
+    o.ok = room > 5.0;
+    return o;
+}

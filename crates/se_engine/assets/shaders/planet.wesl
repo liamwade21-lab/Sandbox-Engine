@@ -17,7 +17,7 @@ import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_s
 // pass them this material's values.
 import super::vegetation::{lin_to_srgb255, veg_classes, map_noise, map_forest, canopy_shade};
 import super::settlement::{settlements, st_fields, st_points};
-import super::city::{city_pos, city_ground, village_ground, CityGround};
+import super::city::{city_pos, city_ground, village_ground, CityGround, ct_dome_mask};
 import super::surface_class::{TerraMix, hash31, vnoise, fbm3, ter_oct, ter_fbm, ter_fbm3d, terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at, designed_noise_at, biome_weights_at};
 
 // The fixed part of the material. The components marked "slot" are read from `lit`.
@@ -2157,16 +2157,20 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             let k = smoothstep(0.03, 0.3, suit);
             let st = settlements(bdir, planet.proc_params2.x, u32(planet.civ.x + 0.5), u32(planet.civ.y * 10000.0), g_footprint_m);
             let urban = clamp(st.x * k, 0.0, 1.0);
-            let farm = clamp(st.y * k, 0.0, 1.0) * fert * (1.0 - urban);
+            // (No farmland on a colony without air.)
+            let airless = planet.city_land.z > 0.5;
+            let farm = clamp(st.y * k, 0.0, 1.0) * fert * (1.0 - urban) * select(1.0, 0.0, airless);
             albedo *= mix(vec3<f32>(1.0), st_fields(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m), farm * 0.7);
             // The towns' streets, sidewalks and lots and the roads through the farmland (city.wesl);
             // villages too small for streets take the towns' colour.
             let kl = smoothstep(0.03, 0.3, land);
             // (`SE_CITY_TEST`: towns on all suitable land.)
-            let town = clamp(max(st.x, planet.city_frame.w) * kl, 0.0, 1.0);
-            albedo = mix(albedo, planet.civ_urban.rgb, urban * 0.85 * (1.0 - smoothstep(0.06, 0.2, town)));
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
+            // A colony without air: its towns under their domes alone (city.wesl `ct_dome_mask`).
+            let domed = select(1.0, ct_dome_mask(cp, g_footprint_m / max(metric, 1e-3), u32(planet.civ.y * 10000.0) + 100u), airless);
+            let town = clamp(max(st.x, planet.city_frame.w) * kl, 0.0, 1.0) * domed;
+            albedo = mix(albedo, planet.civ_urban.rgb, urban * domed * 0.85 * (1.0 - smoothstep(0.06, 0.2, town)));
             let rural = smoothstep(0.1, 0.3, st.y * kl);
             var cg: CityGround;
             if planet.civ.x < 1.5 {
@@ -2181,7 +2185,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             lamp = cg.lamp * select(1.0, mix(0.45, 1.0, smoothstep(30.0, 400.0, g_footprint_m)), planet.civ.x > 2.5);
             city_emit = cg.emit;
             // Their lights: the towns, and the countryside round them (farms, hamlets, roads).
-            city = urban + RURAL_LIGHT * farm * farm * st_points(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m);
+            city = urban * domed + RURAL_LIGHT * farm * farm * st_points(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m);
         }
     }
     // A textured body's civilization (Earth): its towns' layout where its lights map says they are.

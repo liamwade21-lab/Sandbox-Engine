@@ -577,6 +577,7 @@ const K_BRIDGE: u32 = 9u;
 const K_LANE: u32 = 10u;
 const K_TEMPLE: u32 = 11u;
 const K_LANDMARK: u32 = 13u;
+const K_DOME: u32 = 14u;
 
 @if(BUILDING)
 @vertex
@@ -592,7 +593,7 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
     // The code-built models' normals are the unit box's: through the instance's stretch (the inverse
     // scale) for the tapering and twisted walls' slopes. The hero models' are their real ones.
     var nl = v.normal;
-    if kind < K_TEMPLE && kind != K_LANE {
+    if (kind < K_TEMPLE || kind == K_DOME) && kind != K_LANE {
         nl = nl / vec3<f32>(max(wd.x, 1e-3), max(inst.scale, 1e-3), max(wd.y, 1e-3));
     }
     o.normal = normalize(xa * nl.x + up * nl.y + za * nl.z);
@@ -811,6 +812,32 @@ fn hero_surface(in: BuildingOut, night: f32) -> FutSurface {
     return o;
 }
 
+// A colony's dome (kind 14): dark glass in a lattice of struts (uv: around and down from the top),
+// glinting in the star's light; by night the town's light glows through it and lights stud the
+// struts.
+@if(BUILDING)
+fn dome_surface(in: BuildingOut, n: vec3<f32>, night: f32) -> FutSurface {
+    var o: FutSurface;
+    let g = vec2<f32>(in.uv.x * 48.0, in.uv.y * 9.0);
+    let fw = max(fwidth(g), vec2<f32>(1e-4));
+    let d = abs(fract(g + 0.5) - 0.5);
+    // The struts (0.06 of a cell), box-filtered: their share of the pixel from afar.
+    let sx = clamp((0.03 - d.x) / fw.x + 0.5, 0.0, 1.0);
+    let sy = clamp((0.03 - d.y) / fw.y + 0.5, 0.0, 1.0);
+    let strut = mix(max(sx, sy), 0.12, smoothstep(0.3, 1.0, max(fw.x, fw.y)));
+    o.albedo = mix(vec3<f32>(0.035, 0.045, 0.06), vec3<f32>(0.55, 0.56, 0.58), strut);
+    // The glass's glint (a tight highlight of the star round its mirror direction, in its light).
+    let l = normalize(body.light.sun_dir.xyz);
+    let v = -normalize(in.world);
+    let spec = pow(max(dot(reflect(-v, n), l), 0.0), 400.0) * (1.0 - strut);
+    o.emit = in.l_sun * (spec * 0.6);
+    // By night: the town's glow through the glass, lights where the struts cross.
+    let lc = civ_light();
+    let cross = clamp((0.08 - d.x) / fw.x + 0.5, 0.0, 1.0) * clamp((0.08 - d.y) / fw.y + 0.5, 0.0, 1.0);
+    o.emit += (lc * 0.07 * (1.0 - strut) + lc * 2.0 * mix(cross, 0.02, smoothstep(0.3, 1.0, max(fw.x, fw.y)))) * night;
+    return o;
+}
+
 // A flying lane's ribbon (kind 10): cars of 4.8 m in slots of 32 face m moving at about 52 face m/s, each slot holding a car with chance 0.55; the two ribbons go opposite ways. Near:
 // the car's body with its headlights at the front and tail lights at the back; far (a car under two
 // pixels): a point of light, white coming towards the camera and red going away. Discards elsewhere.
@@ -896,7 +923,9 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
     var emit = vec3<f32>(0.0);
     if in.kind >= K_FUTURE {
         var f: FutSurface;
-        if in.kind >= K_TEMPLE {
+        if in.kind == K_DOME {
+            f = dome_surface(in, n, night);
+        } else if in.kind >= K_TEMPLE {
             f = hero_surface(in, night);
         } else if in.kind == K_LANE {
             f = lane_car(in, night);

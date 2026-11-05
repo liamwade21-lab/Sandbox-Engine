@@ -1,5 +1,6 @@
-//! Megaton Rainfall's files, read at run time from the user's copy of the game (nothing is copied
-//! into the project): its `.fcm` archives (plain ZIP), the model `.bin` files with the materials
+//! Megaton Rainfall's files: from the port's own copy of the ones it uses (`se_engine/assets/mr`, the
+//! user's decision of 2026-11-05; [`MrInstall::open_copy`]) or the user's install of the game (the
+//! copy is made from it): its `.fcm` archives (plain ZIP), the model `.bin` files with the materials
 //! embedded in them, `Data/global.txt`'s `MATERIAL` entries, and its DDS textures (decoded by
 //! [`crate::dds`]). The vegetation and cities plan (`docs/spec-vegetation-civilizations.md`) reuses
 //! its trees, grass, building parts, roads, props and cars. Formats:
@@ -517,6 +518,19 @@ impl MrInstall {
         }
         let materials = parse_materials(&vfs.read_string("Data/global.txt")?);
         Ok(MrInstall { root: root.to_path_buf(), vfs, materials })
+    }
+
+    /// Mounts a copy of the files the port uses (`dir/Models`, `dir/Textures`, `dir/Data/global.txt`:
+    /// the port's `assets/mr`, made from the user's install by `scatter::library`'s ignored test
+    /// `copy_megaton_rainfall`).
+    pub fn open_copy(dir: &Path) -> Result<Self, MrError> {
+        if !dir.join("Data").join("global.txt").is_file() {
+            return Err(MrError::NotInstalled(dir.to_path_buf(), "Data/global.txt"));
+        }
+        let mut vfs = Vfs::new();
+        vfs.mount_dir(dir)?;
+        let materials = parse_materials(&vfs.read_string("Data/global.txt")?);
+        Ok(MrInstall { root: dir.to_path_buf(), vfs, materials })
     }
 
     pub fn root(&self) -> &Path {

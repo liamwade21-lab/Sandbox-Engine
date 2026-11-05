@@ -971,8 +971,11 @@ pub struct Terrain {
     /// The surface air pressure (atm) SE's generator works with (catalog or completed), 0 unknown:
     /// the generated flora's crowns.
     pub pressure_atm: f32,
-    /// Its civilization's level (1-4) and culture seed (`BodyRecord::civilization`).
+    /// Its civilization's level (1-4) and culture seed (`BodyRecord::civilization`; a level 4
+    /// civilization's colony: 3 and the home world's seed).
     pub civ: Option<(u8, u32)>,
+    /// A colony without air: its towns stand under domes (`city.wesl` `ct_dome`).
+    pub domes: bool,
     /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
     last_veg: Vec2,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
@@ -1211,6 +1214,7 @@ impl Terrain {
             land_plants: false,
             pressure_atm: 0.0,
             civ: None,
+            domes: false,
             last_veg: Vec2::ZERO,
             gen_jobs: NodeMap::new(),
             gen_tiles: NodeMap::new(),
@@ -2561,7 +2565,7 @@ fn update_terrain(
                 },
                 city_land: {
                     let (lo, span) = ground_range(&terrain.proc, &terrain.surface);
-                    Vec4::new(lo, span, 0.0, 0.0)
+                    Vec4::new(lo, span, if terrain.domes { 1.0 } else { 0.0 }, 0.0)
                 },
                 slot: page_slot,
             };
