@@ -154,7 +154,7 @@ const SPECIES_MESH_CAP: u32 = 4096;
 const SPECIES_IMPOSTOR_CAP: u32 = 40_000;
 const GRASS_CAP: u32 = 40_000;
 /// Buildings drawn at most (cities: the box class within its range).
-const BUILDING_CAP: u32 = 60_000;
+const BUILDING_CAP: u32 = 120_000;
 
 /// The buildings' box: x and z -0.5..0.5, y 0..1 (the instance scales it to its footprint and
 /// height), its four walls and roof (no floor); uv in metres-to-be: x across the face, y up.

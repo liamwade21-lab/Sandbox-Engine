@@ -255,6 +255,69 @@ fn ct_building(cp: CityPos, k: f32, urban: f32, seed: u32, spread: f32) -> Build
 // density here, `roads` (0-1) the countryside's road network here (arterials run through farmland),
 // `spread` the culture's grid turn, `paved` its towns' colour. Returns the albedo and, in w, the
 // built share (pavement and roads: no plants there).
+// A small light (radius `r`) at distance `d` (all face m), blurred to the footprint `fp` keeping its
+// light (as settlement.wesl's blobs): a point from afar, a spot close up.
+fn ct_glow(d: f32, r: f32, fp: f32) -> f32 {
+    let re2 = r * r + 0.25 * fp * fp;
+    return r * r / re2 * exp(-d * d / re2);
+}
+
+// The traffic on a lane: cars of 4.5 x 1.8 m in slots of `period` face m (a divisor of 4,096) moving
+// at `v` face m/s along it, each slot holding a car with chance `busy`; `x` the pixel along the lane
+// (face m, in the lane's own frame), `y` across from its middle, `base` the slot number where `x` is 0
+// (whole tiles of slots: a car keeps its slot across tile edges), `key` the lane. No state: a car's
+// place is a hash of its slot and the clock `t`. Returns x the car's body over the pixel (its paint's
+// brightness in y), z its headlights', w its tail lights' light (the lights face the way it drives).
+fn ct_traffic(x: f32, y: f32, v: f32, period: f32, busy: f32, t: f32, base: i32, key: vec2<i32>, seed: u32, k: f32, fp: f32) -> vec4<f32> {
+    let xm = x - v * t;
+    let slot = floor(xm / period);
+    let h = st_hash(vec3<i32>(key, base + i32(slot)), seed + 57u);
+    if h.w >= busy {
+        return vec4<f32>(0.0);
+    }
+    let len = 4.5 / k;
+    let wid = 1.8 / k;
+    let cx = xm - slot * period - h.x * (period - len);
+    // The body: its box over the pixel.
+    let f = max(fp, 1e-4);
+    let bx = clamp((min(cx + 0.5 * f, len) - max(cx - 0.5 * f, 0.0)) / f, 0.0, 1.0);
+    let body = bx * ct_cover(abs(y), wid, fp);
+    // Its lights: two at the front, two at the back (the front is the end it drives towards).
+    let front = select(0.0, len, v > 0.0);
+    let back = len - front;
+    let side = abs(abs(y) - 0.65 / k);
+    let head = ct_glow(length(vec2<f32>(cx - front, side)), 0.22 / k, fp);
+    let tail = ct_glow(length(vec2<f32>(cx - back, side)), 0.18 / k, fp);
+    return vec4<f32>(body, h.y, head, tail);
+}
+
+// A car's paint by its hash: white, black, silver, grey, blue, red, green (Earth's mix).
+fn ct_paint(h: f32) -> vec3<f32> {
+    if h < 0.22 { return vec3<f32>(0.62, 0.62, 0.60); }
+    if h < 0.42 { return vec3<f32>(0.025, 0.025, 0.028); }
+    if h < 0.6 { return vec3<f32>(0.40, 0.41, 0.42); }
+    if h < 0.74 { return vec3<f32>(0.16, 0.16, 0.17); }
+    if h < 0.85 { return vec3<f32>(0.04, 0.09, 0.28); }
+    if h < 0.95 { return vec3<f32>(0.42, 0.04, 0.03); }
+    return vec3<f32>(0.05, 0.16, 0.08);
+}
+
+// The street lamps along a street (one a kerb every 32 face m, the two kerbs staggered): `x` along the
+// street, `y` across from its middle, `half` half its carriageway (face m). x their pools of light on
+// the ground (about 1 on a street's mean), y their heads' light.
+fn ct_lamps(x: f32, y: f32, half: f32, k: f32, fp: f32) -> vec2<f32> {
+    let kerb = half + 0.6 / k;
+    let side = select(-1.0, 1.0, y > 0.0);
+    let off = select(0.0, 16.0, y > 0.0);
+    let lx = floor((x - off) / 32.0 + 0.5) * 32.0 + off;
+    let d = vec2<f32>(x - lx, y - side * kerb);
+    let r = 9.0 / k;
+    let pool = exp(-dot(d, d) / (r * r)) * 1.9 + 0.15;
+    let head = ct_glow(length(d), 0.35 / k, fp);
+    // Far: the pools' mean.
+    return vec2<f32>(mix(pool, 1.0, smoothstep(8.0, 32.0, fp)), head);
+}
+
 // What `city_ground` gives: the albedo, the built share (pavement and roads: no plants there) and
 // the street lamps' share of the town's night light here: 1 from afar (where the pixel spans blocks,
 // the glow map's or the field's light as it is); near, about 0.4 of it on a block's mean, the streets
@@ -263,9 +326,11 @@ struct CityGround {
     col: vec3<f32>,
     built: f32,
     lamp: f32,
+    // The street lamps' heads and the cars' lights (glow map units, before the night switch).
+    emit: vec3<f32>,
 }
 
-fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>) -> CityGround {
+fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>, t: f32) -> CityGround {
     let fp = fp_m / max(k, 1e-3);
     let asphalt = vec3<f32>(0.055, 0.055, 0.06);
     let walk = vec3<f32>(0.19, 0.185, 0.175);
@@ -273,6 +338,10 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
     var col = base;
     var built = 0.0;
     var lamp = 1.0;
+    var emit = vec3<f32>(0.0);
+    let head_c = vec3<f32>(1.0, 0.92, 0.75);
+    let tail_c = vec3<f32>(1.0, 0.06, 0.02);
+    let lamp_c = vec3<f32>(1.0, 0.68, 0.32);
 
     let d = ct_district(cp, seed);
     let streets = smoothstep(0.06, 0.2, urban);
@@ -310,6 +379,25 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
         let zebra = smoothstep(s_road * 0.5, s_road * 0.5 + 0.3 / k, cross_d) * (1.0 - smoothstep(s_all * 0.5 + 0.5 / k, s_all * 0.5 + 0.8 / k, cross_d));
         let bars = ct_dash(select(lp.x, lp.y, on_u) * k, 0.5, 1.0, fp * k);
         road = mix(road, paint, zebra * bars * 0.85 * fine);
+        // Traffic and lamps on the street the pixel is nearest (signed across its middle; right-hand
+        // traffic), while cars are bigger than a few pixels' worth.
+        var pools = 1.0;
+        if road_c > 0.0 && fp < 12.0 {
+            let half_s = 0.5 * select(g.size.x, g.size.y, on_u);
+            let bv = select(b.x, b.y, on_u);
+            let ys = select(bv, bv - 2.0 * half_s, bv > half_s);
+            let line = vec2<i32>(floor(lp / g.size + 0.5));
+            let lane = select(1, -1, ys > 0.0);
+            let v = f32(lane) * 9.0 / k;
+            let yl = ys + f32(lane) * 0.25 * s_road;
+            let key = vec2<i32>(d.cell.x * 4096 + select(line.x, line.y, on_u) * 2 + select(0, 1, on_u), d.cell.y * 4 + lane + 2);
+            let car = ct_traffic(along_l, yl, v, 24.0, 0.25 * streets + 0.1, t, 0, key, seed, k, fp) * (1.0 - smoothstep(4.0, 12.0, fp));
+            road = mix(road, ct_paint(car.y), car.x);
+            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5);
+            let lm = ct_lamps(along_l, ys, 0.5 * s_road, k, fp);
+            pools = lm.x;
+            emit += lamp_c * lm.y * 4.0;
+        }
         c = mix(c, road, road_c);
         // The mean when the pixel spans blocks: lots, sidewalks and roads by their areas.
         let road_share = clamp(s_road / g.size.x + s_road / g.size.y, 0.0, 1.0);
@@ -320,7 +408,7 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
         let near_built = max(pave, max(walk_c, road_c));
         let mean_built = road_share + walk_share + (1.0 - road_share - walk_share) * mix(0.25, 0.95, down);
         built = streets * mix(mean_built, near_built, fine);
-        lamp = mix(1.0, 0.06 + 0.64 * max(walk_c, road_c), fine * streets);
+        lamp = mix(1.0, 0.06 + 0.64 * max(walk_c, road_c) * pools, fine * streets);
     }
     // The arterials (in town with sidewalks, in the countryside narrow and plain, every other line:
     // about a kilometre apart).
@@ -335,6 +423,21 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
         let dbl = max(ct_cover(abs(d.across - 0.2 / k), 0.12 / k, fp), ct_cover(abs(d.across + 0.2 / k), 0.12 / k, fp));
         let lanes = ct_cover(abs(abs(d.across) - 3.6 / k), 0.12 / k, fp) * ct_dash(d.along, 3.0, 16.0, fp) * streets;
         road = mix(road, paint, max(dbl, lanes) * 0.8);
+        if road_c > 0.0 && fp < 12.0 {
+            // Four lanes in town (two out of it), right-hand traffic, slots of 32 face m (128 a tile).
+            let lane = select(1, -1, d.across > 0.0);
+            let outer = abs(d.across) > 3.6 / k && streets > 0.5;
+            let yl = d.across + f32(lane) * select(1.9, 6.0, outer) / k;
+            let v = f32(lane) * select(13.0, 16.0, outer) / k;
+            let tile_a = select(cp.tile.x, cp.tile.y, d.axis == 0);
+            let key = vec2<i32>(d.line * 8 + d.axis * 4 + lane + 1 + select(0, 2, outer), 77);
+            let car = ct_traffic(d.along, yl, v, 32.0, 0.35 + 0.35 * streets, t, tile_a * 128, key, seed, k, fp) * (1.0 - smoothstep(4.0, 12.0, fp));
+            road = mix(road, ct_paint(car.y), car.x);
+            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5);
+            let lm = ct_lamps(d.along, d.across, 0.5 * a_road, k, fp);
+            emit += lamp_c * lm.y * 4.0 * streets;
+            lamp = max(lamp, mix(lamp, 0.8 * lm.x, road_c * streets * smoothstep(0.0, 1.0, 1.0 - fp / 64.0)));
+        }
         // Far: the road's share of the district.
         let fine = 1.0 - smoothstep(0.1 * DISTRICT_M, DISTRICT_M, fp);
         let share = clamp(2.0 * a_all / DISTRICT_M * mix(0.5, 1.0, streets), 0.0, 1.0);
@@ -348,5 +451,6 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
     o.col = col;
     o.built = built;
     o.lamp = lamp;
+    o.emit = emit;
     return o;
 }

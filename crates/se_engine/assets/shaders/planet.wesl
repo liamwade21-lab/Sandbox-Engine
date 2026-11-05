@@ -2130,8 +2130,10 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     // fields' patchwork round them, where the land suits (low, flat, fertile, the coast as the
     // culture likes it); their lights by night (`finish`). Earth draws its own from its maps.
     var city = 0.0;
-    // The street lamps' share of the town's night light (city.wesl CityGround::lamp).
+    // The street lamps' share of the town's night light (city.wesl CityGround::lamp), and the lamps'
+    // heads and the cars' lights (lit by night: the star under the horizon).
     var lamp = 1.0;
+    var city_emit = vec3<f32>(0.0);
     if planet.civ.x > 0.5 && !textured && planet.proc_params2.z > 0.5 {
         let sea = planet.ocean_sea.w > 0.5;
         let h = in.height;
@@ -2166,9 +2168,10 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
             let rural = smoothstep(0.1, 0.3, st.y * kl);
-            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6);
+            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, globals.time);
             albedo = cg.col;
             lamp = cg.lamp;
+            city_emit = cg.emit;
             // Their lights: the towns, and the countryside round them (farms, hamlets, roads).
             city = urban + RURAL_LIGHT * farm * farm * st_points(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m);
         }
@@ -2187,9 +2190,10 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         if rural > 0.0 {
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
-            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13));
+            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13), globals.time);
             albedo = cg.col;
             lamp = cg.lamp;
+            city_emit = cg.emit;
         }
     }
     // SE's "rings winter" (planet.glsl RINGS, light 0): on the hemisphere the rings shade, the
@@ -2283,6 +2287,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     }
     // SE's AmbientLighting (the AmbientColor its light sums start from), in the light's units.
     s.col += albedo / PI * lit[planet.slot].levels.x * planet.atm_flags.y + emission;
+    s.col += city_emit * ((1.0 - smoothstep(-0.12, 0.03, dot(up, l))) * lit[planet.slot].levels.z);
     s.e_level += vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y);
     // The soils' sheen: GGX with their roughness (dielectric, F0 0.04), only where the
     // mesh's own surface faces the star.

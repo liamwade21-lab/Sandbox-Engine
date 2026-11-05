@@ -98,7 +98,7 @@ struct BodyGpu {
     grass: Vec4,
     /// Earth's species' first model, the flora's, 1 when the flora is this body's.
     species: UVec4,
-    /// x the ground's relief (m).
+    /// x the ground's relief (m), y the far buildings' range (m).
     flora_k: Vec4,
     /// Cities: the body's civilization (`BodyFrame::city`, `city2`).
     city: Vec4,
@@ -572,7 +572,7 @@ fn prepare(
         tint_gain: b.tint_gain.extend(0.0),
         grass: b.grass,
         species: b.species,
-        flora_k: Vec4::new(b.relief_m, 0.0, 0.0, 0.0),
+        flora_k: Vec4::new(b.relief_m, super::FAR_RANGE_M as f32, 0.0, 0.0),
         city: b.city,
         city2: b.city2,
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),

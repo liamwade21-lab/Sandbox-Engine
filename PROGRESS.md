@@ -95,11 +95,13 @@
   - **Step 7 under way (2026-11-05): cities up close.** Towns now have streets, sidewalks, crossings
     and lots drawn in the ground, rural roads through the farmland, and buildings: houses in gardens,
     blocks, and towers in the business cores, with windows that light up at night; streets glow at
-    night near the ground. Earth's cities come from its lights map (New York looks like a city from
-    300 m and 1.5 km, by day and night). Buildings show within 7 km. Cost over New York's core: about
-    0.55 ms. Test switches: `SE_CIV_TEST=2` (a civilization on generated life worlds), `SE_CITY_TEST=1`
+    night near the ground, with lamps along them and traffic (cars by day, head and tail lights by
+    night). Earth's cities come from its lights map (New York looks like a city from 80 m to 10 km, by
+    day and night). All buildings show within 7 km, the tall ones to 20 km (the skyline). Cost over
+    New York's core: about 0.6 ms. Test switches: `SE_CIV_TEST=2` (a civilization on generated life worlds), `SE_CITY_TEST=1`
     (towns everywhere they can stand). Still to come in step 7: street lamps and traffic, buildings
-    farther away, close-up detail.
+    close-up detail (3D cars, street furniture, Megaton Rainfall's facades), Tokyo and a generated
+    planet's real towns checked.
 
 ## Notes
 

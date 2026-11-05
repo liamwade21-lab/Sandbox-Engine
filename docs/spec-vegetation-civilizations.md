@@ -908,6 +908,32 @@ city's edge shows); near detail (MR's facade modules, roof clutter, street furni
 window light colour; a real town on a generated planet checked by daylight (the nearby ones orbit red
 dwarfs); streets meet a different grid across the cube's 12 edges.
 
+### Step 7c: street lamps, traffic and the far buildings (2026-11-05)
+
+What was built:
+- **Street lamps** in the ground (`ct_lamps`): a lamp every 32 face m along each kerb, the kerbs
+  staggered; their pools of light shape the street glow near the ground, their heads are small
+  lights that keep their light from afar (strings of lights from altitude).
+- **Traffic** in the ground (`ct_traffic`): cars of 4.5 x 1.8 m in slots along every lane (two on a
+  street, four on an urban arterial, right-hand traffic), each slot holding a car by a hash, moving
+  with the clock: no state, nothing to cull, nothing to float. By day a car is its paint on the
+  asphalt (Earth's mix of colours), by night its head and tail lights (the night switch is the sun's
+  height). Arterial slots are numbered across the 4,096 m tiles, so a car keeps its identity across a
+  tile edge.
+- **The far buildings**: a second building class in cells of up to 3.2 km out to 20 km, the buildings
+  over 25 m alone, drawn from 85 % of the near range (where both classes draw the same box: no seam);
+  the near range is 7 km. Slots raised to 1,024, the buildings' bucket to 120,000.
+
+Learned:
+- Plans said instanced sprites and cars moved by the cull pass; drawn in the ground instead, the lamps
+  and cars cost a few instructions on street pixels, can never float, and need no GPU objects. 3D
+  cars belong to the near detail (step 7d), where a flat car would show.
+
+Checked: New York by day from 80 m (cars in the lanes and at the crossings), by night from 300 m and
+1.5 km (lit windows, strings of lamp pools along the streets); from 10 km, 3 km and 1.5 km the skyline
+reaches 20 km (51,000 buildings). Cost over New York's core at Ultra 3440x1440: the opaque pass as
+before (3.46 ms with the city, 3.07 without), the scatter's passes 0.21 ms.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

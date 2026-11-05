@@ -47,9 +47,10 @@ use crate::universe::{ScaledSpace, UniverseSet};
 pub use library::ScatterLibrary;
 
 /// Instance slots (one per resident cell): enough for the impostors' range at Ultra with the
-/// smallest cells (400 m) and the 15 % kept past it (up to about 270), and the grass's cells (20-40 m
-/// within 150 m: up to about 180; nearest first, they would otherwise take the far trees' slots).
-pub const SLOTS: u32 = 640;
+/// smallest cells (400 m) and the 15 % kept past it (up to about 270), the grass's cells (20-40 m
+/// within 150 m: up to about 180; nearest first, they would otherwise take the far trees' slots), and
+/// the cities' buildings (about 320 near cells within 7 km, up to 200 far ones within 20 km).
+pub const SLOTS: u32 = 1024;
 /// Candidates (and so at most instances) per cell.
 pub const SLOT_CAP: u32 = 8192;
 /// Pages of the height atlas (drawn nodes under resident cells).
@@ -171,8 +172,8 @@ pub struct Scatter {
     wind: DVec3,
     wind_frame: u64,
     cells: HashMap<TileKey, CellSlot>,
-    /// The buildings' cells (cities), sharing the slots with the plants'.
-    bcells: HashMap<TileKey, CellSlot>,
+    /// The buildings' cells (cities) by class (1 near, 2 far), sharing the slots with the plants'.
+    bcells: HashMap<(TileKey, u32), CellSlot>,
     free_slots: Vec<u32>,
     pages: HashMap<TileKey, PageSlot>,
     free_pages: Vec<u32>,
@@ -361,6 +362,10 @@ pub const CELL_EDGE_M: f64 = 800.0;
 /// Cities (the plan's step 7): buildings stand within this range (m) of the camera, one a lot of
 /// the city layout (`city.wesl`), in the plants' 800 m cells (a cell of their own class).
 pub const BUILD_RANGE_M: f64 = 7000.0;
+/// The far buildings (the tall ones alone, from 85 % of the near range) to this range (m), in cells
+/// of at most this edge (m): the city's skyline from afar.
+pub const FAR_RANGE_M: f64 = 20000.0;
+const FAR_EDGE_M: f64 = 3200.0;
 /// The city layout's tile of face metres (`city.wesl` CITY_TILE, the ground's `SOIL_WRAP_M`).
 const CITY_TILE_M: f64 = 4096.0;
 
@@ -614,12 +619,17 @@ fn update_scatter(
     let keep: std::collections::HashSet<TileKey> = keep.into_iter().map(|c| c.0).collect();
     sc.cells.retain(|k, _| keep.contains(k));
     // The buildings' cells (a civilization's generated planet; not in the test).
-    let mut bwanted = Vec::new();
+    let mut bwanted: Vec<(TileKey, f64, u32)> = Vec::new();
     if buildings_on(&sc, &lib, terrain) {
-        cells_in_range(dir, height, r, BUILD_RANGE_M, CELL_EDGE_M, &mut bwanted);
-        let mut bk = Vec::new();
-        cells_in_range(dir, height, r, BUILD_RANGE_M * 1.15, CELL_EDGE_M, &mut bk);
-        let bk: HashSet<TileKey> = bk.into_iter().map(|c| c.0).collect();
+        let (mut near, mut far, mut nk, mut fk) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        cells_in_range(dir, height, r, BUILD_RANGE_M, CELL_EDGE_M, &mut near);
+        cells_in_range(dir, height, r, FAR_RANGE_M, FAR_EDGE_M, &mut far);
+        bwanted.extend(near.into_iter().map(|(k, d)| (k, d, 1)));
+        // Not the far cells wholly inside the near buildings' range (they would draw none there).
+        bwanted.extend(far.into_iter().filter(|&(k, d)| d + node_edge(k, r) * 1.5 > BUILD_RANGE_M * 0.85).map(|(k, d)| (k, d, 2)));
+        cells_in_range(dir, height, r, BUILD_RANGE_M * 1.15, CELL_EDGE_M, &mut nk);
+        cells_in_range(dir, height, r, FAR_RANGE_M * 1.15, FAR_EDGE_M, &mut fk);
+        let bk: HashSet<(TileKey, u32)> = nk.into_iter().map(|c| (c.0, 1)).chain(fk.into_iter().map(|c| (c.0, 2))).collect();
         sc.bcells.retain(|k, _| bk.contains(k));
     } else {
         sc.bcells.clear();
@@ -665,8 +675,8 @@ fn update_scatter(
     }
     // The buildings' cells, nearest first, after the plants' (one building a lot: the layout's).
     bwanted.sort_by(|a, b| a.1.total_cmp(&b.1));
-    for (key, _) in &bwanted {
-        if let Some(c) = sc.bcells.get_mut(key) {
+    for &(key, _, kind) in &bwanted {
+        if let Some(c) = sc.bcells.get_mut(&(key, kind)) {
             c.used = frame;
         } else if let Some(slot) = sc.free_slots.pop() {
             let edge = r * std::f64::consts::FRAC_PI_2 / (1u64 << key.level) as f64;
@@ -679,18 +689,18 @@ fn update_scatter(
                 row: key.row,
                 col: key.col,
                 keep: 1.0,
-                seed: cell_seed(*key, seed ^ 0xb11d_0c75),
+                seed: cell_seed(key, seed ^ 0xb11d_0c75),
                 models: lib.building | (1 << 16),
-                kind: 1,
+                kind,
                 tile: [tile[0] as i32, tile[1] as i32],
                 local: [(x0 - tile[0] * CITY_TILE_M) as f32, (y0 - tile[1] * CITY_TILE_M) as f32],
                 edge: edge as f32,
             };
-            sc.bcells.insert(*key, CellSlot { slot, used: frame, job });
+            sc.bcells.insert((key, kind), CellSlot { slot, used: frame, job });
         } else {
             continue;
         }
-        out.jobs.push(sc.bcells[key].job);
+        out.jobs.push(sc.bcells[&(key, kind)].job);
     }
     // Cells kept past the range (not wanted this frame) last.
     for c in sc.cells.values().chain(sc.bcells.values()) {
@@ -717,7 +727,7 @@ fn update_scatter(
     let mut tree: Vec<u32> = Vec::with_capacity(4096);
     let mut cells = vec![CellGpu::default(); SLOTS as usize];
     let mut uploads = Vec::new();
-    let resident: Vec<(TileKey, u32, u32)> = sc.cells.iter().chain(sc.bcells.iter()).map(|(k, c)| (*k, c.slot, c.job.seed)).collect();
+    let resident: Vec<(TileKey, u32, u32)> = sc.cells.iter().map(|(k, c)| (*k, c.slot, c.job.seed)).chain(sc.bcells.iter().map(|(k, c)| (k.0, c.slot, c.job.seed))).collect();
     let mut max_slot = 0;
     let mut full = false;
     for (key, slot, seed) in resident {

@@ -87,12 +87,14 @@ that install, never copied into the project.
   the scatter jobs' `tile`/`local`); every period in it divides 4,096. The ground draws its roads
   (`city_ground`) and the scatter places one building a lot (`ct_building`): both use `ct_lot`, so
   change the lots only there. Buildings are a scatter class of their own (`Scatter::bcells`, jobs of
-  kind 1, `BUILD_RANGE_M`), their record in the candidate's noise slot, the box the library's last model
+  kind 1 near within `BUILD_RANGE_M`, kind 2 far: the tall ones to `FAR_RANGE_M`, both drawing the
+  same box where they overlap), their record in the candidate's noise slot, the box the library's last model
   (`ScatterLibrary::building`, the body's `species.w`), drawn by `vertex_building`/`fragment_building`.
   The towns' land is measured on `Terrain::ground_range_m` (SE's bump height), never the relief value
   (`proc_params.y` is not the height range). Earth's towns come from its lights map (the ground's tiles,
   the scatter's patch `veg_lights`). Near the ground a town's night light comes from its streets
-  (`CityGround::lamp`). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
+  (`CityGround::lamp`); the lamps and the traffic are drawn by the ground too (`ct_lamps`,
+  `ct_traffic`: no state, moved by the clock). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel

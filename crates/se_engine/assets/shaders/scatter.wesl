@@ -56,7 +56,7 @@ struct Body {
     grass: vec4<f32>,
     // x Earth's species' first model, y the flora's, z 1 when the flora is this body's
     species: vec4<u32>,
-    // x the ground's relief (m)
+    // x the ground's relief (m), y the far buildings' range (m)
     flora_k: vec4<f32>,
     // Cities: x the civilization's level (0 none), y its culture seed (fraction), z its grid turn,
     // w the radius (m); city2 x the buildings' range (m), y 1 under SE_CITY_TEST, z the ground's
@@ -395,7 +395,8 @@ fn place_building(job: Job, i: u32) {
         return;
     }
     let b = ct_building(cp, k, urban, u32(body.city.y * 10000.0) + 100u, body.city.z);
-    if !b.ok {
+    // (The far class: the tall ones alone, the skyline from afar.)
+    if !b.ok || (job.kind == 2u && b.height < 25.0) {
         return;
     }
     // Its middle in this point's square of the cell?
@@ -408,7 +409,7 @@ fn place_building(job: Job, i: u32) {
     if ks >= SLOT_CAP {
         return;
     }
-    instances[job.slot * SLOT_CAP + ks] = i | ((job.models & 0xffffu) << 16u);
+    instances[job.slot * SLOT_CAP + ks] = i | ((job.models & 0xffu) << 16u) | (job.kind << 24u);
     // Its record: its middle in the cell (u16 x2); its width and depth (0.5 m steps), height (the
     // square root of a share of 600 m, a byte) and turn (a byte over -pi..pi).
     let w = u32(clamp(round(b.size.x * 2.0), 1.0, 255.0));
@@ -423,7 +424,7 @@ fn place_building(job: Job, i: u32) {
 fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let job = jobs[gid.y];
     let i = gid.x;
-    if job.kind == 1u {
+    if job.kind >= 1u {
         place_building(job, i);
         return;
     }
@@ -611,7 +612,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let packed = instances[slot * SLOT_CAP + i];
     if ((packed >> 16u) & 0xffu) == body.species.w && body.city.x > 0.5 {
-        cull_building(slot, i, cell);
+        cull_building(slot, i, cell, packed >> 24u);
         return;
     }
     let c = candidate(cell.seed, packed & 0xffffu);
@@ -755,7 +756,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // A building: its record lifted onto the drawn ground, standing on a plinth down to the lowest ground
 // under its footprint, turned with its street grid, faded out over the last 15 % of the range.
-fn cull_building(slot: u32, i: u32, cell: Cell) {
+fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32) {
     let rec = noises[slot * SLOT_CAP + i];
     let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
     if !lf.ok {
@@ -794,7 +795,15 @@ fn cull_building(slot: u32, i: u32, cell: Cell) {
     let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
     let scale = h + plinth;
     let dist = length(pos);
-    let range = body.city2.x;
+    // The near class to its range; the far class (the tall ones) from 85 % of it to its own (the two
+    // draw the same box between: no seam, no flicker).
+    var range = body.city2.x;
+    if kind == 2u {
+        if dist < 0.85 * body.city2.x {
+            return;
+        }
+        range = body.flora_k.y;
+    }
     let fade = clamp((range - dist) / (range * 0.15), 0.0, 1.0);
     if fade <= 0.0 {
         return;
