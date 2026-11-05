@@ -28,8 +28,10 @@ user's interview of 2026-11-04 is in its Decisions table). Its reference is the 
 `docs/megaton-rainfall-vegetation.md` and `docs/megaton-rainfall-cities.md`; its text files and shaders
 are unpacked in `re/megaton_rainfall/extract` and the scripts that read its formats are in
 `re/megaton_rainfall/tools` (both out of git). Its methods are learned, not its code; its assets (trees,
-grass, facade kit, window textures, roads, props, cars) the user chose to reuse, read at run time from
-that install, never copied into the project.
+grass, facade kit, window textures, roads, props, cars) the user chose to reuse. Since 2026-11-05 the
+ones the port uses are copied into the project (`crates/se_engine/assets/mr`, the user's decision: the
+port must work without the game installed); the copy is for the user's private use, never for sharing
+or publishing the port.
 
 ## Build and play
 
@@ -42,8 +44,11 @@ that install, never copied into the project.
 ## Rules from the user
 
 - Vulkan only. VR and SE's editors are out of scope.
-- Game assets are read from the install, never copied into the project. That holds for Megaton
-  Rainfall's assets too (read from the user's copy at run time; several come from store packs).
+- SpaceEngine's assets are read from its install, never copied into the project. Megaton Rainfall's
+  are the exception (the user, 2026-11-05: the port must not rely on that game): the files the port
+  uses are copied into `crates/se_engine/assets/mr` and read from there. They are a commercial game's
+  files (several from store packs): for the user's private use, never shared or published. Any other
+  game's assets stay in their installs.
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
   SE and takes the screenshots.
 - Commit each piece of work once it builds, passes the tests and is checked; never push. Commit
@@ -56,10 +61,14 @@ that install, never copied into the project.
 
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
-  `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). Its folder is
-  `--mr-path` / `MR_PATH` (default `C:\Users\liamw\Downloads\Megaton Rainfall`); without it the
-  port must keep working (the vegetation and cities fall back to generated trees and code-built
-  buildings). A model's own embedded material is the source for most props (global.txt lacks them);
+  `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its
+  own copy of the files it uses (`crates/se_engine/assets/mr`: the 16 trees, their textures, the
+  generated species' barks and branch cards, the grass, the window array, `Data/global.txt`; 47 files,
+  51 MB; `MrInstall::open_copy`), the install (`--mr-path` / `MR_PATH`, default
+  `C:\Users\liamw\Downloads\Megaton Rainfall`) only when the copy is missing. A new use of one of its
+  files must add it to the copy: list it in `scatter::library`'s ignored test `copy_megaton_rainfall`
+  and run it (`cargo test -p se_engine --release copy_megaton_rainfall -- --ignored --nocapture`); the
+  `mr` tests still read the install. A model's own embedded material is the source for most props (global.txt lacks them);
   `MrInstall::resolve` picks. A few textures its models name are not in the game's files
   (`brick_1`..`6`): draw those with a neutral texture, never fail.
 - GPU scatter (`scatter.rs`, `scatter/`, `scatter.wesl`, `scatter_draw.wesl`; the vegetation and cities

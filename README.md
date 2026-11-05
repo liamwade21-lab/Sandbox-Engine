@@ -29,7 +29,7 @@ cargo run --release -p se_engine -- --se-path "D:/SteamLibrary/steamapps/common/
 | Option | Meaning |
 |---|---|
 | `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory |
-| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, whose trees, building parts and cars the vegetation and cities read (default `C:/Users/liamw/Downloads/Megaton Rainfall`; optional) |
+| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`) is missing (default `C:/Users/liamw/Downloads/Megaton Rainfall`; optional) |
 | `--start NAME` | object to start next to (default Earth) |
 | `--size WxH` | window size |
 | `--run "cmd; cmd; ..."` | scripted commands (see below), useful for demos and tests |
@@ -239,8 +239,9 @@ Key rendering decisions:
   Settings > Graphics > Clouds and weather sets the quality (`VolumetricClouds`) and the weather effects' switches (`ShowRain`,
   `ShowLightning`, `ShowFog`, `ShowDust`). Medium and below, other bodies, HD screenshots and the
   projection modes keep the flat cloud shells for now.
-- **Vegetation and cities (being built, `docs/spec-vegetation-civilizations.md`).** Megaton Rainfall's assets are read from
-  your copy of that game (`--mr-path`). The GPU scatter places objects on the ground and culls them on the GPU, standing
+- **Vegetation and cities (being built, `docs/spec-vegetation-civilizations.md`).** The Megaton Rainfall files they use
+  (trees, grass, window tiles) are copied into the project (`crates/se_engine/assets/mr`): the game need not be installed.
+  The copy is for private use, not for sharing. The GPU scatter places objects on the ground and culls them on the GPU, standing
   exactly on the drawn ground at every distance; meshes up close, baked impostors to 3 km, lit and hazed as the ground.
   Planets with land plants in their catalog Life (Earth, SE's generated terra worlds with multicellular land life) get
   Megaton Rainfall's 16 trees and its grass, and trees grown by the port's generator: Earth's conifers (cold forests),

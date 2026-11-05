@@ -121,6 +121,11 @@
     script) circle its home world and its big moons, lit by the stars; streams of ship lights arc
     between the home world, its stations and its colonies. The dev command `station N KM` looks at a
     station. Nothing of it costs anything outside such a system, and nothing measurable inside.
+  - **The port no longer needs Megaton Rainfall (2026-11-05, the user's decision).** The files it uses
+    (its 16 trees, their bark and leaves, the grass, the window tiles: 47 files, 51 MB) are copied into
+    `crates/se_engine/assets/mr` and read from there; the game's folder only when that copy is missing.
+    Checked with the game's folder pointed nowhere: trees, cities, stations all there. The copy is for
+    private use only, not for sharing the port.
   - **Step 11 next:** polish: graphics settings and presets for vegetation and cities, seasons and snow
     on plants, roads flattening steep ground, final measurements, docs.
 

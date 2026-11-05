@@ -1130,6 +1130,12 @@ Learned:
 Left open: ships as 3D models close up; the traffic's arcs are fixed curves (not orbital transfers); the
 colonies have no ports or landing fields; the stations do not cast shadows.
 
+The user's decision of 2026-11-05 (after step 10): the port must not rely on Megaton Rainfall. The files
+it uses (the 16 trees, their textures, the generated species' barks and branch cards, the grass, the
+window array, `Data/global.txt`) are copied into `crates/se_engine/assets/mr` (47 files, 51 MB) and read
+from there (`MrInstall::open_copy`); the install only when the copy is missing. This reverses the plan's
+"read from the user's copy, never copied" for those files; the copy is for private use only.
+
 Step 10's revision (2026-11-05): the level 4 colonies reuse the settlement field at level 3 with an
 "airless: domes" rule (the open question below, decided): a dome over three town districts in four.
 The traffic is drawn by its own small material (a storage buffer of the streams), not the ship

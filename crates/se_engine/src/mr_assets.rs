@@ -21,9 +21,19 @@ pub struct MrAssetsPlugin;
 
 impl Plugin for MrAssetsPlugin {
     fn build(&self, app: &mut App) {
-        let path = app.world().resource::<EngineConfig>().mr_path.clone();
+        // The copy of the files the port uses, in its own assets (the user's choice of 2026-11-05:
+        // the port must not need the game; made by `scatter::library`'s ignored test
+        // `copy_megaton_rainfall`); the user's install only when the copy is missing.
+        let copy = [crate::config::asset_dir().join("mr"), std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mr")]
+            .into_iter()
+            .find(|d| d.join("Data").join("global.txt").is_file());
+        let path = copy.clone().unwrap_or_else(|| app.world().resource::<EngineConfig>().mr_path.clone());
         let t0 = std::time::Instant::now();
-        let install = match MrInstall::open(&path) {
+        let opened = match &copy {
+            Some(dir) => MrInstall::open_copy(dir),
+            None => MrInstall::open(&path),
+        };
+        let install = match opened {
             Ok(mr) => {
                 info!(
                     "Megaton Rainfall assets: {} ({} models, {} materials, opened in {:.0} ms)",
@@ -35,7 +45,7 @@ impl Plugin for MrAssetsPlugin {
                 Some(Arc::new(mr))
             }
             Err(e) => {
-                warn!("{e}: vegetation and cities use generated trees and code-built buildings only, no cars");
+                warn!("{e}: no vegetation or buildings (the port's copy, assets/mr, is missing too)");
                 None
             }
         };
