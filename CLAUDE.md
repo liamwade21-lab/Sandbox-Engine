@@ -74,6 +74,21 @@ that install, never copied into the project.
   shadows, terminator, haze), shared with planet.wesl: change the ground's lighting there so both keep
   it. The scatter's pipelines are built at start even when it is off, so a validation error in them
   quits the port.
+- Vegetation (the plan's step 3, on by default, `SE_SCATTER=0` or `scatter off` turns it off): bodies
+  whose catalog Life has multicellular land life (`scatter::land_plants`, `Terrain::land_plants`) get
+  trees and grass. Where: on Earth (any body with a colour map) from a 512-texel patch of its map round
+  the camera classified into forest, grass and steppe (`scatter/earth.rs` `classify` and
+  `vegetation.wesl` `veg_classes`: keep them the same) and sharpened by the woods' noise; on SE's
+  terra worlds by the ground's own biome weights, which live in `surface_class.wesl` (shared by
+  planet.wesl and the cull pass: change a biome rule there and both follow). The ground darkens the
+  forest floor under the trees and draws the crowns past their 3 km range (planet.wesl `lit_ground`,
+  `vegetation.wesl` `canopy_shade`); it learns the body's vegetation from its light record
+  (`PatchLight::flags` z the kind, w the trees' range, written by terrain.rs). The trees take the
+  ground's colour where they stand over their own mean colour times a gain matched by pixel means to
+  the ground with the trees off (`BodyFrame::tint_gain`; re-match it if the ground's colours change).
+  Grass is the same scatter in 40 m cells within 120 m (4 tufts built in code with MR's grass atlas).
+  The meshes' light is worked out once per instance by the compute pass `light` in scatter_draw.wesl
+  (per vertex it cost 0.9 ms on a forest floor).
 - Test runs' `shot PATH` needs a Windows path (`C:/...`): a Git Bash `/c/...` path inside `--run` is
   not converted and the picture is not saved. After a camera jump let the ground load before judging
   a picture (`wait 1200` or more): its fine nodes arrive over hundreds of frames.

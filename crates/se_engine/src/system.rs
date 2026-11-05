@@ -785,6 +785,7 @@ fn spawn_system_members(
             let mut terrain = crate::terrain::Terrain::new(radius_m, b, temperature, surf_gen, completion.as_ref(), bump_km);
             terrain.glow_temps = (gen_in.t_eq, gen_in.t_surf);
             terrain.tidal_lock = body_in.as_ref().is_some_and(|c| c.tidally_locked);
+            terrain.land_plants = crate::scatter::land_plants(&b.block);
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.
             // Look: Opacity, Hue, Saturation, SkyLight (`AtmosphereParamsUniform::look`).

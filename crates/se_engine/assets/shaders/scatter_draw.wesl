@@ -21,6 +21,26 @@ struct Body {
     sun_color: vec4<f32>,
     levels: vec4<f32>,
     atm_flags: vec4<f32>,
+    // x how plants are decided (scatter.rs VegKind: 0 none, 1 the test, 2 SE's terra bands), y the
+    // noises' footprint on the unit sphere
+    veg: vec4<f32>,
+    // towards the star in the body frame
+    sun_body: vec4<f32>,
+    // SE's climate parameters (surface_tex.rs climate_uniform 0-7) and the biomes' flags
+    climate: array<vec4<f32>, 8>,
+    biome_flags: vec4<f32>,
+    // veg 3 (a colour map's plants, scatter/earth.rs): the patch's centre (body frame) and the tan of
+    // its half-angle, its two axes
+    patch_c: vec4<f32>,
+    patch_e1: vec4<f32>,
+    patch_e2: vec4<f32>,
+    // the wind (render frame, m/s)
+    wind: vec4<f32>,
+    // SE's forest slot colour (linear), the trees' tint gain (scatter_draw.wesl inst_tint)
+    forest: vec4<f32>,
+    tint_gain: vec4<f32>,
+    // rgb SE's grass slot colour (linear), w the grass's range (m)
+    grass: vec4<f32>,
     // x, y the ground's cloud key (radius m, seed fraction); z 1 with atmosphere tables bound.
     key: vec4<f32>,
     atm: AtmParams,
@@ -51,6 +71,8 @@ struct Model {
     crown_r: f32,
     mesh_bucket: u32,
     impostor_bucket: u32,
+    // The model's mean colour (linear, from its impostor views) and how much of its quad it covers.
+    mean: vec4<f32>,
 }
 
 struct Material {
@@ -68,6 +90,16 @@ const EL2: f32 = 1.221730;
 @group(0) @binding(1) var<uniform> body: Body;
 @group(0) @binding(2) var<storage, read> insts: array<Inst>;
 @group(0) @binding(3) var<storage, read> models: array<Model>;
+// Per drawn mesh instance (as `insts`), its light (PointLight in f16): `light` writes it, once per
+// instance (per vertex it was a third of the trees' cost on the ground).
+struct LightRec {
+    a: vec4<u32>,
+    b: vec4<u32>,
+}
+@group(0) @binding(4) var<storage, read> inst_lights: array<LightRec>;
+@group(0) @binding(5) var<storage, read_write> inst_lights_w: array<LightRec>;
+@group(0) @binding(6) var<storage, read> light_counts: array<u32>;
+@group(0) @binding(7) var<storage, read> light_buckets: array<vec4<u32>>;
 
 fn oct_decode(p: u32) -> vec3<f32> {
     let e = unpack2x16snorm(p);
@@ -186,6 +218,47 @@ fn point_light(world: vec3<f32>) -> PointLight {
     return o;
 }
 
+fn pack_light(pl: PointLight) -> LightRec {
+    return LightRec(
+        vec4<u32>(pack2x16float(pl.sun.xy), pack2x16float(vec2<f32>(pl.sun.z, pl.sky.x)), pack2x16float(pl.sky.yz), pack2x16float(pl.flat_e.xy)),
+        vec4<u32>(pack2x16float(vec2<f32>(pl.flat_e.z, pl.haze_t.x)), pack2x16float(pl.haze_t.yz), pack2x16float(pl.haze_a.xy), pack2x16float(vec2<f32>(pl.haze_a.z, 0.0))),
+    );
+}
+
+fn unpack_light(r: LightRec) -> PointLight {
+    let a0 = unpack2x16float(r.a.x);
+    let a1 = unpack2x16float(r.a.y);
+    let a2 = unpack2x16float(r.a.z);
+    let a3 = unpack2x16float(r.a.w);
+    let b0 = unpack2x16float(r.b.x);
+    let b1 = unpack2x16float(r.b.y);
+    let b2 = unpack2x16float(r.b.z);
+    let b3 = unpack2x16float(r.b.w);
+    var o: PointLight;
+    o.sun = vec3<f32>(a0, a1.x);
+    o.sky = vec3<f32>(a1.y, a2);
+    o.flat_e = vec3<f32>(a3, b0.x);
+    o.haze_t = vec3<f32>(b0.y, b1);
+    o.haze_a = vec3<f32>(b2, b3.x);
+    return o;
+}
+
+// The meshes' light, one invocation per drawn instance of a mesh bucket (gid.y the bucket pair):
+// the ground's light at the middle of its crown (or its half height).
+@compute @workgroup_size(64)
+fn light(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let b = light_buckets[gid.y * 2u];
+    if gid.x >= min(light_counts[gid.y * 2u], b.y) {
+        return;
+    }
+    let idx = b.x + gid.x;
+    let inst = insts[idx];
+    let md = models[inst.model & 0xffu];
+    let up = oct_decode(inst.up);
+    let h = select(md.centre_y, md.crown_y, md.crown_y > 0.0);
+    inst_lights_w[idx] = pack_light(point_light(inst.pos + up * h * inst.scale));
+}
+
 // A surface's colour from its point's light, albedo and normal `n`: `wrap` softens the star's term
 // (leaves), `trans` adds the light through them.
 fn surface_color(pl: PointLight, albedo: vec3<f32>, n: vec3<f32>, up: vec3<f32>, wrap: f32, trans: f32) -> vec3<f32> {
@@ -214,6 +287,47 @@ struct MeshOut {
     @location(8) l_flat: vec3<f32>,
     @location(9) haze_t: vec3<f32>,
     @location(10) haze_a: vec3<f32>,
+    @location(11) @interpolate(flat) tint: vec3<f32>,
+}
+
+// The trees' colour where they stand (scatter.wesl: the map's forest colour, or SE's forest slot)
+// over the model's mean, times the body's gain (`Body::tint_gain`, scatter.rs): the trees then have
+// the ground's own forest colour, and it never changes as they come and go. 1 when the instance has
+// none. Earth's gain was matched by eye and by pixel means to its ground with the trees off, 0.7-3
+// km away (2026-11-04, Black Forest): the ground brightens its colour map by its biome detail
+// textures' brightness (planet.wesl `luma(biome)`), and the crowns' ball shading is darker than
+// level ground.
+
+fn inst_tint(packed: u32, md: Model) -> vec3<f32> {
+    if (packed >> 8u) == 0u {
+        return vec3<f32>(1.0);
+    }
+    let s = unpack4x8unorm(packed).yzw;
+    return clamp(s * s / max(md.mean.rgb, vec3<f32>(1e-3)) * body.tint_gain.xyz, vec3<f32>(0.0), vec3<f32>(16.0));
+}
+
+// How far the wind moves a tree's point `local` (model space, m; y up) of height `height`: the
+// whole tree leans and sways about its base, more towards the top, at its own phase; the leaves
+// flutter as well. `up` is the tree's up, the result in the render frame.
+fn wind_offset(local: vec3<f32>, height: f32, up: vec3<f32>, phase: f32, leaves: bool) -> vec3<f32> {
+    let w = body.wind.xyz - up * dot(body.wind.xyz, up);
+    let ws = min(length(w), 25.0);
+    if ws < 0.05 {
+        return vec3<f32>(0.0);
+    }
+    let dir = w / length(w);
+    let t = body.lod2.z;
+    let h = clamp(local.y / max(height, 1.0), 0.0, 1.2);
+    let gust = 0.6 + 0.4 * sin(t * 0.31 + phase * 0.7) * sin(t * 0.17 + phase);
+    let lean = (0.0012 * ws + 0.00015 * ws * ws) * gust;
+    // (Every frequency a whole multiple of 0.01 rad/s: the clock wraps at 200 pi s, scatter.rs.)
+    let sway = 0.0012 * ws * sin(t * (round((1.1 + 0.3 * fract(phase)) * 100.0) * 0.01) + phase);
+    var o = dir * ((lean + sway) * h * h * height);
+    if leaves {
+        let f = sin(t * 7.0 + dot(local, vec3<f32>(2.3, 1.7, 2.9)) + phase);
+        o += (dir * 0.6 + up * 0.4) * (0.004 * ws * f * h);
+    }
+    return o;
 }
 
 struct VertexIn {
@@ -227,12 +341,18 @@ struct VertexIn {
 @vertex
 fn vertex_mesh(v: VertexIn) -> MeshOut {
     let inst = insts[v.instance];
-    let md = models[inst.model];
+    let md = models[inst.model & 0xffu];
     let up = oct_decode(inst.up);
     let xa = oct_decode(inst.xa);
     let za = cross(xa, up);
     let basis = mat3x3<f32>(xa, up, za);
-    let world = inst.pos + basis * (v.pos * inst.scale);
+    let height = md.centre_y * 2.0 * inst.scale;
+    let phase = f32(inst.xa & 0xffffu) * (6.2831853 / 65536.0);
+    var leaves = false;
+@if(LEAVES) {
+    leaves = true;
+}
+    let world = inst.pos + basis * (v.pos * inst.scale) + wind_offset(v.pos * inst.scale, height, up, phase, leaves);
     var o: MeshOut;
     o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
     o.world = world;
@@ -242,12 +362,13 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
     o.up = up;
     // The crown shades as a ball (Megaton Rainfall's leaves): the direction from its centre.
     o.ball = basis * ((v.pos - vec3<f32>(0.0, md.crown_y, 0.0)) / max(md.crown_r, 0.1));
-    let pl = point_light(world);
+    let pl = unpack_light(inst_lights[v.instance]);
     o.l_sun = pl.sun;
     o.l_sky = pl.sky;
     o.l_flat = pl.flat_e;
     o.haze_t = pl.haze_t;
     o.haze_a = pl.haze_a;
+    o.tint = inst_tint(inst.model, md);
     return o;
 }
 
@@ -275,7 +396,12 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
     n = normalize(n * 0.3 + normalize(in.ball + vec3<f32>(1e-5)) * 0.7);
     wrap = 0.5;
 }
-    let albedo = tex.rgb * material.tint.rgb;
+    // The tint in full on the leaves, half on the bark.
+    var tint = sqrt(in.tint);
+@if(LEAVES) {
+    tint = in.tint;
+}
+    let albedo = tex.rgb * material.tint.rgb * tint;
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     var trans = 0.0;
     if wrap > 0.0 {
@@ -301,13 +427,14 @@ struct ImpostorOut {
     @location(9) l_flat: vec3<f32>,
     @location(10) haze_t: vec3<f32>,
     @location(11) haze_a: vec3<f32>,
+    @location(12) @interpolate(flat) tint: vec3<f32>,
 }
 
 @if(IMPOSTOR)
 @vertex
 fn vertex_impostor(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> ImpostorOut {
     let inst = insts[ii];
-    let md = models[inst.model];
+    let md = models[inst.model & 0xffu];
     let up = oct_decode(inst.up);
     let xa = oct_decode(inst.xa);
     let za = cross(xa, up);
@@ -361,6 +488,7 @@ fn vertex_impostor(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: 
     o.l_flat = pl.flat_e;
     o.haze_t = pl.haze_t;
     o.haze_a = pl.haze_a;
+    o.tint = inst_tint(inst.model, md);
     return o;
 }
 
@@ -394,5 +522,5 @@ fn fragment_impostor(in: ImpostorOut) -> @location(0) vec4<f32> {
     let n = normalize(mat3x3<f32>(xa, up, za) * nl + vec3<f32>(1e-6));
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     // The bake stores straight colour (spread into the clear texels), not premultiplied.
-    return vec4<f32>(surface_color(pl, c.rgb, n, up, 0.5, leaf_trans(in.world)), 1.0);
+    return vec4<f32>(surface_color(pl, c.rgb * in.tint, n, up, 0.5, leaf_trans(in.world)), 1.0);
 }

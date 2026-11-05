@@ -552,6 +552,97 @@ Fixed scripted views (time paused), screenshots after the shaders are fully load
   height while the nodes split), the user's planet RS 8514-3620-1-7-69 1 from the ground and 300 m,
   the clouds hiding the trees (depth), Ultra 3440x1440.
 
+### Step 3: vegetation on Earth and SE's worlds (done 2026-11-04)
+
+What was built:
+- **Which bodies.** Those whose catalog Life has multicellular (or intelligent) organic or exotic life
+  on land (`Terrestrial`, `Marine/Terrestrial`; `scatter::land_plants`, kept in `Terrain::land_plants`).
+  Unicellular or sea-only life keeps the ground's colours alone. On by default; `SE_SCATTER=0` or the
+  dev command `scatter off` turns it off, `scatter test` is step 2's even test cover.
+- **`surface_class.wesl`** (done by a helper agent, checked pixel-identical on 11 views and no slower):
+  the ground's biome weights moved out of planet.wesl into a module without bindings, shared with the
+  cull pass. The scatter works out SE's slow noises once per tree at placement (f16, the `noises`
+  buffer) and the rest per frame from the drawn ground's height and slope.
+- **Earth (any body with a colour map): a vegetation patch from its map.** 512 x 512 texels, 600 km
+  across, round the camera, made on a worker thread from the colour map's deepest tiles (Earth's level
+  5, 1.2 km a texel; 12 tiles, 50-60 ms) and the water mask, again once the camera is a quarter of its
+  half-width from its centre. Each texel is classified from its colour (`scatter/earth.rs` `classify`,
+  `vegetation.wesl` `veg_classes`), with thresholds from Earth's map sampled at the test places:
+  forest is dark and strongly green (excess green 0.56-0.66 under 45-75 brightness: Black Forest,
+  Congo, the taiga), farmland green but redder (0.39-0.43), tundra 0.24, dry savanna and desert about
+  0 (deserts bright), ice white. The woods' shapes come from a noise of 100 m - 1.5 km over the map's
+  forest class (`map_noise`, `map_forest`), so the 1.2 km texels become woods with edges and
+  clearings; copses and hedgerows stand in grassland, lone trees on the steppe; none on steep ground.
+- **MR's 16 trees** (all broadleaf: conifers and palms come with step 4's generator), one picked per
+  tree by its candidate number; 1 tree per 90 m^2 in a full forest.
+- **Colour matching.** Each tree takes the ground's colour where it stands (Earth: the map's colour;
+  SE: its forest slot colour) over the model's mean colour (measured from its impostor views at the
+  bake) times a gain (`BodyFrame::tint_gain`) matched by pixel means to the ground with the trees off,
+  0.7-3 km away: Earth (2.6, 2.3, 3.5), SE's terra worlds (1.7, 1.8, 1.8). The crowns' ball shading is
+  about 1.5 times darker than level ground; Earth's ground also brightens its map by its detail
+  textures' brightness (about 1.6), SE's draws its slot colours. Copses in grassland are darker than
+  the fields round them (Earth's forest over its farmland), lone steppe trees olive, not the dry
+  ground's beige. The bark takes the square root of the tint.
+- **The ground's part** (planet.wesl `lit_ground`, told the body's vegetation by its light record,
+  `PatchLight::flags` z and w): the forest floor darkens by 0.45 under the trees; past them the ground
+  draws the crowns (`canopy_shade`: crowns 14 m apart lit on the star's side, dark gaps, groups of
+  trees lighter and darker, the mean kept at 1 so the forest keeps its colour), faded out as a crown
+  shrinks under 0.7 pixel footprints (about 15 km straight down). The hand-over takes the last quarter
+  of the trees' range: the trees shrink and thin out as the canopy comes in (a sharp end showed as a
+  circle round the camera from above).
+- **Grass:** the same scatter in cells of at most 40 m within 120 m of the camera (MR: a fixed cloud of
+  50,000 points wrapped round the camera; cells reuse the placement, the drawn-ground lift and the
+  culling), 2.5 tufts a square metre (MR 2.2), shrinking to nothing over the last 10 m. Four tufts are
+  built in code (three quads crossed at 60 degrees, 0.66 m, MR's `bunch_N` are made by its code, not
+  stored) with MR's `Billboard_Grass` atlas and tint. Grassland and steppe grow it, the woods a little
+  undergrowth; none on rock over about 14 degrees or within 8 m of the sea. Tinted as the trees at half
+  the gain, shaded under the woods like the floor.
+- **Wind:** the derived weather's wind at the camera (`volumetric_clouds::wind_at`, worked out every
+  second): trees lean and sway about their base, more towards the top, each at its own phase; leaves
+  and grass flutter.
+- **The meshes' light once per instance:** a compute pass (`scatter_draw.wesl` `light`) after the cull
+  works out the ground's light at each mesh instance's crown into an f16 record the vertex shader reads.
+  Per vertex it was 0.9 ms of a forest floor's 2.3 ms.
+
+What changed from the plan, and why:
+- Grass is scatter cells rather than MR's wrapped point cloud: the cells already stand objects on the
+  drawn ground exactly and cull them; a point cloud would need the ground's height under each point
+  every frame.
+- The trees' colour is the ground's colour where they stand (per tree), not one biome colour: Earth's
+  forests differ (taiga darker, tropics bluer), and a tree then never changes the ground's colour.
+- The canopy's mean is kept at the ground's colour, and the hand-over is a quarter of the range wide.
+
+Measured (Ultra 3440x1440 with 4x MSAA, Ultra clouds, Black Forest, `.optimize/bench/scatter_ultra.sh`,
+the main pass's GPU time with the vegetation against `SE_SCATTER=0`, means of 2-3 runs):
+- 3 km up over the forest: +1.7 ms (target 1.5); 300 m up: +1.7 ms; on the forest floor: +1.4 ms
+  (target 2). Before the light pass the floor was +2.3 ms. The compute passes take 0.06-0.10 ms. Runs
+  vary by about 1 ms; the user's own settings (no MSAA) cost less. At 3 km most of the cost is the
+  ground's canopy code (the woods' noise and the crowns: six value noises a forest pixel); a noise
+  texture instead of hashed value noise is the next saving if it is needed.
+
+Review (three angles, each finding checked by a second agent), fixed: about 4 % of candidates came
+through where the share was 0 (trees and grass in deserts and on ice: the threshold's soft edge was
+centred on it); grass cells took the far tree cells' slots (slots 384 to 640); the ground drew its
+forest floor and canopy before the trees could be drawn (no Megaton Rainfall, impostors baking); a
+missing patch read as full forest (Bevy's white fallback, now its black one, and a new patch waits for
+its image); after a jump the old patch folded the far side of the body into itself; the wind snapped
+once an hour (Bevy's clock wraps at 3600 s; the scatter's at 200 pi s with whole-multiple
+frequencies); the trees classified filtered classes and the ground a filtered colour, so woods' edges
+differed (both classify the colour now; the patch holds only the colour, land in alpha).
+
+Checked in pictures: the Black Forest from 4 km down to the forest floor, the Amazon, the Siberian
+taiga, the Paris basin's fields and woods, the Sahel's lone trees and the Sahara bare, and SE's warm
+arid life world RS 8514-928-8-5906585-158 3 from 600 m and the ground.
+
+Left open:
+- Earth's taiga and tropics have MR's broadleaf trees (step 4: conifers and palms where they belong).
+- The canopy is faint from 3-5 km up on Earth: the port's haze there is strong (the ground's own look).
+- From above the trees look a little brighter than the canopy beyond them (the gain was matched at
+  grazing angles).
+- MR's grass atlas has leafy plants as well as grass: a meadow reads as scattered tufts.
+- From step 2: the rings' shadow on the trees, the capture views, the 0.4 m sink.
+- No Vegetation graphics setting yet (Off / Low / High / Ultra, the plan's budget section).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind
@@ -594,7 +685,8 @@ Fixed scripted views (time paused), screenshots after the shaders are fully load
 
 - MR's tree impostors are baked by its exe, with distances set in its C++. Ours are tuned by the
   budget, not copied.
-- How far the canopy shading can go before it costs too much in the ground's pixel shader:
-  measure it in step 3.
+- How far the canopy shading can go before it costs too much in the ground's pixel shader: measured
+  in step 3 (its build log): it fades by the pixel's footprint, about 15 km straight down, and costs
+  most of the 1.7 ms at 3 km up.
 - Whether level 4's colonized moons need their own settlement maps or reuse the field with an
   "airless: domes" rule (decide in step 10).

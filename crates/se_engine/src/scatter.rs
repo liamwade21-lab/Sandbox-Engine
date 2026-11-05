@@ -24,6 +24,7 @@
 //! the camera is at, when `SE_SCATTER_TEST=1` (or the dev command `scatter test`). The vegetation
 //! itself (where plants grow, the species) is step 3.
 
+pub mod earth;
 mod gpu;
 mod impostor;
 mod library;
@@ -45,8 +46,9 @@ use crate::universe::{ScaledSpace, UniverseSet};
 pub use library::ScatterLibrary;
 
 /// Instance slots (one per resident cell): enough for the impostors' range at Ultra with the
-/// smallest cells (400 m) and the 15 % kept past it.
-pub const SLOTS: u32 = 384;
+/// smallest cells (400 m) and the 15 % kept past it (up to about 270), and the grass's cells (20-40 m
+/// within 150 m: up to about 180; nearest first, they would otherwise take the far trees' slots).
+pub const SLOTS: u32 = 640;
 /// Candidates (and so at most instances) per cell.
 pub const SLOT_CAP: u32 = 8192;
 /// Pages of the height atlas (drawn nodes under resident cells).
@@ -86,6 +88,34 @@ impl Default for LodDistances {
 const SINK_M: f32 = 0.4;
 /// Mean ground area (m^2) per tree in the step 2 test (even cover).
 const TEST_AREA_PER_TREE: f64 = 900.0;
+/// Ground area (m^2) per tree in the densest forest (MR's trees: 12-30 m tall, crowns 11-22 m).
+const FOREST_AREA_PER_TREE: f64 = 90.0;
+
+/// How a body's plants are decided (`scatter.wesl` `Body::veg.x`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VegKind {
+    /// No land plants.
+    #[default]
+    None = 0,
+    /// The step 2 test: an even cover of one tree over any land.
+    Test = 1,
+    /// SE's terra generator's climate bands (planet.wesl `se_terra_weights`, `surface_class.wesl`).
+    SeTerra = 2,
+    /// A colour map's forests, grassland and steppe (Earth's: `earth.rs`).
+    Map = 3,
+}
+
+/// Whether a body's catalog Life gives it land plants: multicellular (organic or exotic) life whose
+/// biome takes in land (`Terrestrial`, `Marine/Terrestrial`). Unicellular life keeps the ground's
+/// colours only; ocean-only life has no land plants.
+pub fn land_plants(block: &se_core::sc::Block) -> bool {
+    se_core::body_params::LifeParams::all_from_body(block).iter().any(|l| {
+        let class = l.class.as_deref().unwrap_or("").to_ascii_lowercase();
+        let kind = l.kind.as_deref().unwrap_or("").to_ascii_lowercase();
+        let biome = l.biome.as_deref().unwrap_or("").to_ascii_lowercase();
+        (class == "organic" || class == "exotic") && (kind.contains("multi") || kind.contains("intelligent")) && biome.contains("terrestrial")
+    })
+}
 
 pub struct ScatterPlugin;
 
@@ -93,7 +123,8 @@ impl Plugin for ScatterPlugin {
     fn build(&self, app: &mut App) {
         let test = std::env::var("SE_SCATTER_TEST").is_ok_and(|v| v != "0");
         let debug = std::env::var("SE_SCATTER_DEBUG").is_ok_and(|v| v != "0");
-        app.insert_resource(Scatter { enabled: test, debug, ..default() })
+        let off = std::env::var("SE_SCATTER").is_ok_and(|v| v == "0");
+        app.insert_resource(Scatter { enabled: !off, test, debug, ..default() })
             .init_resource::<ScatterFrame>()
             .add_plugins(ExtractResourcePlugin::<ScatterFrame>::default())
             .add_plugins(library::LibraryPlugin)
@@ -118,10 +149,22 @@ struct PageSlot {
 /// The main-world state: which cells and pages are resident.
 #[derive(Resource, Default)]
 pub struct Scatter {
-    /// On (step 2: the test only).
+    /// On (the vegetation).
     pub enabled: bool,
+    /// The step 2 test (`SE_SCATTER_TEST=1`, dev command `scatter test`): MR's trees evenly on any land.
+    pub test: bool,
+    /// The library is ready (MR's models read and their impostors baked): the ground draws its
+    /// forest floor and canopy only then (terrain.rs).
+    pub ready: bool,
     body: Option<Entity>,
     seed: u32,
+    /// How the body's plants are decided.
+    veg: VegKind,
+    /// The colour map's plants around the camera (`VegKind::Map`).
+    earth: earth::EarthVeg,
+    /// The wind at the camera (body frame, m/s), worked out every second.
+    wind: DVec3,
+    wind_frame: u64,
     cells: HashMap<TileKey, CellSlot>,
     free_slots: Vec<u32>,
     pages: HashMap<TileKey, PageSlot>,
@@ -139,6 +182,11 @@ pub struct Scatter {
 }
 
 impl Scatter {
+    /// Starts over with the body (after a switch of the test or of the vegetation).
+    pub fn reset_body(&mut self) {
+        self.reset();
+    }
+
     fn reset(&mut self) {
         self.cells.clear();
         self.pages.clear();
@@ -146,6 +194,7 @@ impl Scatter {
         self.free_pages = (0..PAGES).rev().collect();
         self.body = None;
         self.split_rev = None;
+        self.earth = default();
     }
 
     /// The page holding node `key`, allocated (and queued for upload) when new. `None` when the
@@ -203,6 +252,9 @@ pub struct PageGpu {
     /// The camera in the node's frame (body frame on the sphere, m from the node's centre).
     pub cam: [f32; 3],
     pub _pad: f32,
+    /// The node's centre direction (body frame, the sphere's).
+    pub dir: [f32; 3],
+    pub _pad2: f32,
 }
 
 /// A placement job (`scatter.wesl` `Job`).
@@ -217,7 +269,8 @@ pub struct PlaceJob {
     /// The chance a candidate is kept.
     pub keep: f32,
     pub seed: u32,
-    pub _pad: u32,
+    /// The models its candidates take: the first, and how many in the high 16 bits.
+    pub models: u32,
 }
 
 /// The body the objects stand on, per frame.
@@ -232,6 +285,25 @@ pub struct BodyFrame {
     pub uniform: terrain::PlanetUniform,
     /// The atmosphere tables (inscatter, transmittance, irradiance), if the body has them.
     pub atmosphere: Option<(Handle<Image>, Handle<Image>, Handle<Image>)>,
+    pub veg: VegKind,
+    /// SE's climate parameters (`BiomeUniform::climate`) and the biomes' flags.
+    pub climate: [Vec4; 8],
+    pub biome_flags: Vec4,
+    /// Towards the star in the body frame (the ground's `g_sun_body`).
+    pub sun_body: Vec3,
+    /// `VegKind::Map`: the plants' patch (classes, colour) and its frame (centre and tan of the
+    /// half-angle, then its two axes).
+    pub patch: Option<Handle<Image>>,
+    pub patch_frame: [Vec4; 3],
+    /// The wind (render frame, m/s).
+    pub wind: Vec3,
+    /// SE's forest slot colour (`BiomeUniform::color[11]`, linear), the trees' colour on its terra
+    /// worlds, and the gain from the trees' tint colour to the ground's look (`scatter_draw.wesl`).
+    pub forest: Vec4,
+    /// SE's grass slot colour (`color[10]`), the grass's there; the first grass model and how many.
+    pub grass: Vec4,
+    pub grass_models: UVec2,
+    pub tint_gain: Vec3,
 }
 
 /// What the render world needs this frame (extracted).
@@ -260,6 +332,12 @@ pub struct ScatterFrame {
 /// level's rounding).
 pub const CELL_EDGE_M: f64 = 800.0;
 
+/// Grass: cells of at most this edge (m) within this range of the camera (Megaton Rainfall's 140-150
+/// m), about this many tufts a square metre (MR: 2.2), shrinking to nothing over the last 10 m.
+pub const GRASS_EDGE_M: f64 = 40.0;
+pub const GRASS_RANGE_M: f32 = 120.0;
+const GRASS_PER_M2: f64 = 2.5;
+
 /// The longest edge (m) of node `key` on a sphere of radius `r` (chords of its corners).
 fn node_edge(key: TileKey, r: f64) -> f64 {
     let (u0, v0, s) = key.uv_rect();
@@ -269,8 +347,8 @@ fn node_edge(key: TileKey, r: f64) -> f64 {
 }
 
 /// Whether node `key` is a cell (no longer split) on a body of radius `r`.
-fn is_cell(key: TileKey, r: f64) -> bool {
-    key.level >= MAX_GEOM_LEVEL || node_edge(key, r) <= CELL_EDGE_M
+fn is_cell(key: TileKey, r: f64, edge: f64) -> bool {
+    key.level >= MAX_GEOM_LEVEL || node_edge(key, r) <= edge
 }
 
 /// Angular radius (rad) of node `key` about its centre direction.
@@ -285,24 +363,24 @@ fn angular_radius(key: TileKey) -> f64 {
 
 /// Cells whose nearest point lies within `range` (m) of a camera at direction `dir` (body frame,
 /// unit) and `height` m above the ground, on a body of radius `r`.
-fn cells_in_range(dir: DVec3, height: f64, r: f64, range: f64, out: &mut Vec<(TileKey, f64)>) {
-    fn walk(key: TileKey, dir: DVec3, height: f64, r: f64, range: f64, out: &mut Vec<(TileKey, f64)>) {
+fn cells_in_range(dir: DVec3, height: f64, r: f64, range: f64, edge: f64, out: &mut Vec<(TileKey, f64)>) {
+    fn walk(key: TileKey, dir: DVec3, height: f64, r: f64, range: f64, edge: f64, out: &mut Vec<(TileKey, f64)>) {
         let ang = key.center_dir().dot(dir).clamp(-1.0, 1.0).acos();
         let ground = ((ang - angular_radius(key)).max(0.0)) * r;
         let d = (ground * ground + height * height).sqrt();
         if d > range {
             return;
         }
-        if is_cell(key, r) {
+        if is_cell(key, r, edge) {
             out.push((key, d));
             return;
         }
         for c in key.children() {
-            walk(c, dir, height, r, range, out);
+            walk(c, dir, height, r, range, edge, out);
         }
     }
     for face in CubeFace::ALL {
-        walk(TileKey::root(face), dir, height, r, range, out);
+        walk(TileKey::root(face), dir, height, r, range, edge, out);
     }
 }
 
@@ -394,12 +472,18 @@ fn update_scatter(
     space: Res<ScaledSpace>,
     time: Res<Time>,
     lib: Res<ScatterLibrary>,
+    data: Option<Res<crate::data::SeData>>,
+    sim: Res<crate::universe::SimTime>,
+    mut images: ResMut<Assets<Image>>,
     bodies: Query<(Entity, &SystemBody, &Terrain)>,
 ) {
     out.jobs.clear();
     out.page_uploads.clear();
     out.active = false;
-    out.time = time.elapsed_secs_wrapped();
+    // Wrapped at 200 pi s: the wind's frequencies are whole multiples of 0.01 rad/s, so its sines
+    // never jump at the wrap (Bevy's own wrap is an hour).
+    out.time = (time.elapsed_secs_f64() % (200.0 * std::f64::consts::PI)) as f32;
+    sc.ready = lib.ready();
     if sc.free_slots.is_empty() && sc.cells.is_empty() {
         sc.reset();
     }
@@ -435,6 +519,11 @@ fn update_scatter(
         sc.reset();
         sc.body = Some(entity);
         sc.seed = (terrain.proc.seed as u32) ^ (terrain.radius as u32).rotate_left(7);
+        sc.veg = veg_kind(sc.test, terrain);
+        info!("scatter: {:?} on the body at {:.0} km radius", sc.veg, terrain.radius / 1000.0);
+    }
+    if sc.veg == VegKind::None {
+        return;
     }
     let r = terrain.radius;
     // The camera in the body frame, on the sphere the terrain is built on.
@@ -442,11 +531,37 @@ fn update_scatter(
     let dir = cam_body.normalize();
     let ground = terrain.ground_height(dir).unwrap_or(0.0);
     let height = (cam_body.length() - r - ground).max(0.0);
+    if sc.veg == VegKind::Map {
+        // The colour map's plants around the camera; nothing until the first patch is made.
+        let (Some(d), Some(layers)) = (data.as_deref(), terrain.tile_layers()) else { return };
+        let Some(color) = layers.color.as_ref() else { return };
+        sc.earth.update(&d.vfs, color, layers.water.as_ref(), r, dir, &mut images);
+        if sc.earth.color.is_none() {
+            return;
+        }
+    }
+    // The wind the trees sway in: the derived weather's at the camera, near the ground.
+    let sun_body = (body.orient.inverse() * terrain.body_light.sun_dir.truncate().as_dvec3()).normalize_or_zero();
+    if sc.frame >= sc.wind_frame + 60 || sc.wind_frame == 0 {
+        sc.wind_frame = sc.frame;
+        sc.wind = data.as_deref().map_or(DVec3::ZERO, |d| crate::volumetric_clouds::wind_at(d, body, terrain, dir, sun_body, sim.jd));
+    }
     let mut wanted = Vec::new();
-    cells_in_range(dir, height, r, range, &mut wanted);
+    cells_in_range(dir, height, r, range, CELL_EDGE_M, &mut wanted);
     // Keep cells a little past the range (no thrashing at the edge).
     let mut keep: Vec<(TileKey, f64)> = Vec::new();
-    cells_in_range(dir, height, r, range * 1.15, &mut keep);
+    cells_in_range(dir, height, r, range * 1.15, CELL_EDGE_M, &mut keep);
+    // The grass's finer cells near the camera (not in the test).
+    let mut grass_cells = HashSet::new();
+    if sc.veg != VegKind::Test && lib.grass > 0 {
+        let mut g = Vec::new();
+        cells_in_range(dir, height, r, GRASS_RANGE_M as f64 + 10.0, GRASS_EDGE_M, &mut g);
+        grass_cells.extend(g.iter().map(|c| c.0));
+        wanted.extend(g);
+        let mut gk = Vec::new();
+        cells_in_range(dir, height, r, (GRASS_RANGE_M as f64 + 10.0) * 1.15, GRASS_EDGE_M, &mut gk);
+        keep.extend(gk);
+    }
     let keep: std::collections::HashSet<TileKey> = keep.into_iter().map(|c| c.0).collect();
     sc.cells.retain(|k, _| keep.contains(k));
     let used: std::collections::HashSet<u32> = sc.cells.values().map(|c| c.slot).collect();
@@ -461,7 +576,16 @@ fn update_scatter(
         if let Some(c) = sc.cells.get_mut(key) {
             c.used = frame;
         } else if let Some(slot) = sc.free_slots.pop() {
-            let keep = (cell_area(*key, r) / TEST_AREA_PER_TREE / SLOT_CAP as f64).min(1.0) as f32;
+            let grass = grass_cells.contains(key);
+            let per_tree = if grass {
+                1.0 / GRASS_PER_M2
+            } else if sc.veg == VegKind::Test {
+                TEST_AREA_PER_TREE
+            } else {
+                FOREST_AREA_PER_TREE
+            };
+            let keep = (cell_area(*key, r) / per_tree / SLOT_CAP as f64).min(1.0) as f32;
+            let models = if grass { lib.trees | (lib.grass << 16) } else { lib.trees << 16 };
             let job = PlaceJob {
                 slot,
                 face: key.face as u32,
@@ -470,7 +594,7 @@ fn update_scatter(
                 col: key.col,
                 keep,
                 seed: cell_seed(*key, seed),
-                _pad: 0,
+                models,
             };
             sc.cells.insert(*key, CellSlot { slot, used: frame, job });
         } else {
@@ -547,6 +671,8 @@ fn update_scatter(
             split_m: (edge as f32) * terrain::node_split(key.level, split_scale),
             cam: cam_local.as_vec3().to_array(),
             _pad: 0.0,
+            dir: key.center_dir().as_vec3().to_array(),
+            _pad2: 0.0,
         };
     }
     let m = DMat3Ext::from_quat_scale(orient, body.shape * k);
@@ -576,7 +702,48 @@ fn update_scatter(
         light: terrain.body_light,
         uniform: terrain.body_uniform.unwrap_or_default(),
         atmosphere: terrain.atmosphere.as_ref().map(|a| (a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone())),
+        veg: sc.veg,
+        climate: terrain.biome.as_ref().map_or([Vec4::ZERO; 8], |b| std::array::from_fn(|i| b.climate[i])),
+        biome_flags: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.flags),
+        sun_body: sun_body.as_vec3(),
+        wind: (body.orient * sc.wind).as_vec3(),
+        forest: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[11]),
+        grass: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[10]).truncate().extend(GRASS_RANGE_M),
+        grass_models: UVec2::new(lib.trees, lib.grass),
+        // Matched to the ground with the trees off (2026-11-04, pixel means 0.7-3 km away): the
+        // crowns' ball shading is about 1.5 times darker than level ground; Earth's ground also
+        // brightens its colour map by its detail textures' brightness (about 1.6), SE's terra ground
+        // draws its slot colours (its sample layers keep their mean at 1).
+        tint_gain: if sc.veg == VegKind::Map { Vec3::new(2.6, 2.3, 3.5) } else { Vec3::new(1.7, 1.8, 1.8) },
+        patch: sc.earth.color.clone(),
+        patch_frame: {
+            let (e1, e2) = earth::frame_axes(sc.earth.centre);
+            [sc.earth.centre.as_vec3().extend(sc.earth.tan_a as f32), e1.as_vec3().extend(0.0), e2.as_vec3().extend(0.0)]
+        },
     };
+}
+
+/// How the plants of `body` are decided: the test's even cover; for bodies with land plants, a
+/// colour map's forests (Earth) or SE's climate bands on its generated worlds; else none.
+/// The ground (terrain.rs, planet.wesl) asks the same for its forest floor and canopy.
+pub fn veg_kind(test: bool, terrain: &Terrain) -> VegKind {
+    if test {
+        return VegKind::Test;
+    }
+    if !terrain.land_plants {
+        return VegKind::None;
+    }
+    // A colour map: its plants come from its colours (the ground's `proc_params2.z` 0).
+    let Some(layers) = terrain.tile_layers() else { return VegKind::None };
+    if layers.color.is_some() {
+        return VegKind::Map;
+    }
+    // SE's generator (climate[4].w), its terra colour (climate[7].z 0) and plants on (flags.z).
+    let Some(b) = terrain.biome.as_ref() else { return VegKind::None };
+    if b.climate[4].w > 0.5 && b.climate[7].z < 0.5 && b.flags.z > 0.5 {
+        return VegKind::SeTerra;
+    }
+    VegKind::None
 }
 
 /// Body frame to render frame as an f32 matrix: rotation `q` after a per-axis scale `s`.
@@ -599,7 +766,7 @@ mod tests {
         let r = 6_371_000.0;
         for (u, v) in [(0.5, 0.5), (0.01, 0.5), (0.002, 0.003)] {
             let mut key = TileKey::root(CubeFace::PosY);
-            while !is_cell(key, r) {
+            while !is_cell(key, r, CELL_EDGE_M) {
                 let l = key.level + 1;
                 let n = (1u64 << l) as f64;
                 key = TileKey { face: key.face, level: l, row: (v * n) as u32, col: (u * n) as u32 };

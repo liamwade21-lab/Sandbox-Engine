@@ -77,6 +77,15 @@ pub(super) fn weather_cube() -> Image {
 
 /// A body's climate for `se_core::weather`: its spin from the catalog (signed, retrograde negative),
 /// how wet it is (its ocean), whether it is tidally locked.
+/// The derived weather's wind (m/s, body frame) at body-frame direction `p`: the trees sway with it.
+pub(crate) fn wind_at(data: &crate::data::SeData, body: &SystemBody, terrain: &Terrain, p: DVec3, sun: DVec3, jd: f64) -> DVec3 {
+    let c = climate(data, body, terrain);
+    let w = se_core::weather::weather_at(&c, p, sun, jd).wind;
+    let east = DVec3::new(p.z, 0.0, -p.x).normalize_or(DVec3::Z);
+    let north = p.cross(east);
+    east * w[0] as f64 + north * w[1] as f64
+}
+
 fn climate(data: &crate::data::SeData, body: &SystemBody, terrain: &Terrain) -> Climate {
     use se_core::rotation::RotationModel;
     let day_hours = match body.obj {

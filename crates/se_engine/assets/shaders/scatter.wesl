@@ -5,6 +5,11 @@
 //   there, geomorph included), tested against the view, given its LOD by distance and appended to
 //   its (model, LOD) bucket up to the bucket's cap;
 // - finish: the indirect draws' instance counts and first instances from the buckets.
+// Where plants grow comes from the ground's own biome weights (surface_class.wesl): their noises once
+// per candidate at placement, the rest every frame from the ground as it is drawn.
+
+import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
+import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
 
 const SLOT_CAP: u32 = 8192u;
 const GRID: u32 = 33u;
@@ -27,6 +32,26 @@ struct Body {
     sun_color: vec4<f32>,
     levels: vec4<f32>,
     atm_flags: vec4<f32>,
+    // x how plants are decided (scatter.rs VegKind: 0 none, 1 the test, 2 SE's terra bands), y the
+    // noises' footprint on the unit sphere
+    veg: vec4<f32>,
+    // towards the star in the body frame
+    sun_body: vec4<f32>,
+    // SE's climate parameters (surface_tex.rs climate_uniform 0-7) and the biomes' flags
+    climate: array<vec4<f32>, 8>,
+    biome_flags: vec4<f32>,
+    // veg 3 (a colour map's plants, scatter/earth.rs): the patch's centre (body frame) and the tan of
+    // its half-angle, its two axes
+    patch_c: vec4<f32>,
+    patch_e1: vec4<f32>,
+    patch_e2: vec4<f32>,
+    // the wind (render frame, m/s)
+    wind: vec4<f32>,
+    // SE's forest slot colour (linear), the trees' tint gain (scatter_draw.wesl inst_tint)
+    forest: vec4<f32>,
+    tint_gain: vec4<f32>,
+    // rgb SE's grass slot colour (linear), w the grass's range (m)
+    grass: vec4<f32>,
 }
 
 struct Camera {
@@ -43,7 +68,8 @@ struct Job {
     col: u32,
     keep: f32,
     seed: u32,
-    pad: u32,
+    // the first model its candidates take, and how many in the high 16 bits
+    models: u32,
 }
 
 struct Cell {
@@ -60,6 +86,9 @@ struct PageInfo {
     split_m: f32,
     cam: vec3<f32>,
     pad: f32,
+    // the node's centre direction (body frame)
+    dir: vec3<f32>,
+    pad2: f32,
 }
 
 struct Model {
@@ -71,6 +100,8 @@ struct Model {
     crown_r: f32,
     mesh_bucket: u32,
     impostor_bucket: u32,
+    // The model's mean colour (linear, from its impostor views) and how much of its quad it covers.
+    mean: vec4<f32>,
 }
 
 struct Bucket {
@@ -115,6 +146,92 @@ struct Inst {
 @group(0) @binding(12) var<storage, read_write> counters: array<atomic<u32>>;
 @group(0) @binding(13) var<storage, read_write> args: array<u32>;
 @group(0) @binding(14) var<storage, read_write> drawn: array<Inst>;
+// Per kept candidate, the plants' noises at its spot (f16 x4: the latitude noise, the humidity, the
+// climate noise, the snow line's noise).
+@group(0) @binding(15) var<storage, read_write> noises: array<vec2<u32>>;
+// veg 3: the plants' map patch (scatter/earth.rs): the map's colour, the land in alpha.
+@group(0) @binding(16) var veg_color: texture_2d<f32>;
+@group(0) @binding(17) var veg_smp: sampler;
+
+// The forest, grassland and steppe shares at `uv` on the patch (none on water), as the ground
+// classifies the colour it draws.
+fn patch_classes(uv: vec2<f32>) -> vec3<f32> {
+    let c = textureSampleLevel(veg_color, veg_smp, uv, 0.0);
+    return veg_classes(lin_to_srgb255(c.rgb)) * c.a;
+}
+
+// The share of trees at body-frame direction `dir` from the map patch: its forests sharpened into
+// woods with edges and clearings by the woods' noise `n` (vegetation.wesl, the map's texels are 1.2
+// km on Earth), copses and hedgerows in grassland, lone trees on the steppe; fewer on steep ground.
+// Where direction `dir` (body frame) falls on the map patch (0..1, outside when off it). A patch's
+// corners are at most 0.66 rad from its centre (half-width 0.5 rad), so a point farther is off it,
+// the far side of the body too (the projection would fold it back into the patch).
+fn patch_uv(dir: vec3<f32>) -> vec2<f32> {
+    let c = body.patch_c.xyz;
+    if dot(dir, c) < 0.75 {
+        return vec2<f32>(-1.0);
+    }
+    let q = dir / dot(dir, c) - c;
+    return vec2<f32>(dot(q, body.patch_e1.xyz), dot(q, body.patch_e2.xyz)) / body.patch_c.w * 0.5 + 0.5;
+}
+
+// The trees' colour at `uv` for their tint: its square root in bytes 1-3 (the low byte is the
+// model), 0 for none. In a forest the map's own colour; copses in grassland are darker than the
+// fields round them, by Earth's forest over its farmland (24,39,12 over 39,45,13 sRGB, the Black
+// Forest and the Paris basin); lone trees on the steppe olive, not the colour of the dry ground
+// (about 60,64,36 on the Sahel's 154,132,91).
+fn map_tint(uv: vec2<f32>) -> u32 {
+    let c = textureSampleLevel(veg_color, veg_smp, uv, 0.0).rgb;
+    let k = patch_classes(uv);
+    let sum = k.x + k.y + k.z;
+    var f = vec3<f32>(0.14, 0.22, 0.16);
+    if sum > 0.01 {
+        f = (k.x * vec3<f32>(1.0) + k.y * vec3<f32>(0.45, 0.77, 0.92) + k.z * vec3<f32>(0.14, 0.22, 0.16)) / sum;
+    }
+    return pack4x8unorm(vec4<f32>(0.0, sqrt(max(c * f, vec3<f32>(0.0))))) | 0x100u;
+}
+
+// The grass's share from the map patch: grassland and steppe, a little undergrowth in the woods,
+// in patches by the woods' noise; none on rock steeper than about 14 degrees (Megaton Rainfall's rule).
+fn map_grass(dir: vec3<f32>, slope: f32, n: f32) -> f32 {
+    let uv = patch_uv(dir);
+    if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) {
+        return 0.0;
+    }
+    let k = patch_classes(uv);
+    return clamp(k.y + 0.7 * k.z + 0.35 * k.x, 0.0, 1.0) * mix(0.55, 1.0, n) * (1.0 - smoothstep(0.03, 0.08, slope));
+}
+
+// A colour (linear) for the instances' tint (scatter_draw.wesl inst_tint): its square root in bytes
+// 1-3 (the low byte is the model), never 0.
+fn pack_tint(c: vec3<f32>) -> u32 {
+    return pack4x8unorm(vec4<f32>(0.0, sqrt(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0))))) | 0x100u;
+}
+
+fn map_share(dir: vec3<f32>, slope: f32, n: f32) -> f32 {
+    let uv = patch_uv(dir);
+    if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) {
+        return 0.0;
+    }
+    let k = patch_classes(uv);
+    let copses = k.y * 0.25 * smoothstep(0.6, 0.72, n);
+    let lone = k.z * 0.05;
+    return max(map_forest(k.x, n, slope), (copses + lone) * (1.0 - smoothstep(0.18, 0.45, slope)));
+}
+
+// The unit-cube point of face `f` at face coordinates (u right, v down), as planet_tiles.rs uv_to_cube.
+fn uv_to_cube(f: u32, u: f32, v: f32) -> vec3<f32> {
+    let s = 2.0 * u - 1.0;
+    let t = 2.0 * v - 1.0;
+    switch f {
+        case 0u: { return vec3<f32>(1.0, -t, -s); }
+        case 1u: { return vec3<f32>(-1.0, -t, s); }
+        case 2u: { return vec3<f32>(s, 1.0, t); }
+        case 3u: { return vec3<f32>(s, -1.0, -t); }
+        case 4u: { return vec3<f32>(s, -t, 1.0); }
+        default: { return vec3<f32>(-s, -t, -1.0); }
+    }
+}
 
 fn hash_u32(x: u32) -> u32 {
     var h = x;
@@ -151,8 +268,43 @@ fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
     if k >= SLOT_CAP {
         return;
     }
-    let model = 0u;
+    // One of the job's models (the trees, or the grass tufts).
+    let model = (job.models & 0xffffu) + (c.z >> 24u) % max(job.models >> 16u, 1u);
     instances[job.slot * SLOT_CAP + k] = i | (model << 16u);
+    if body.veg.x > 2.5 {
+        // The woods' noise at the candidate's spot, once.
+        let n = 1.0 / f32(1u << job.level);
+        let f = (vec2<f32>(f32(c.x & 0xffffu), f32(c.x >> 16u)) + 0.5) / 65536.0;
+        let dir = normalize(uv_to_cube(job.face, (f32(job.col) + f.x) * n, (f32(job.row) + f.y) * n));
+        noises[job.slot * SLOT_CAP + k] = vec2<u32>(pack2x16float(vec2<f32>(map_noise(dir, body.centre.w), 0.0)), 0u);
+    } else if body.veg.x > 1.5 {
+        // The plants' noises that vary only over kilometres, once: at the candidate's spot on the sphere.
+        let n = 1.0 / f32(1u << job.level);
+        let f = (vec2<f32>(f32(c.x & 0xffffu), f32(c.x >> 16u)) + 0.5) / 65536.0;
+        let dir = normalize(uv_to_cube(job.face, (f32(job.col) + f.x) * n, (f32(job.row) + f.y) * n));
+        let fp = body.veg.y;
+        let rnd = body.climate[6].xyz;
+        let tn = terra_noise_at(dir, fp, rnd, true);
+        let cv = terra_climate_noise_at(dir, fp, rnd, body.climate[7], body.climate[5].y);
+        let vary = snow_vary_at(dir, fp, rnd);
+        noises[job.slot * SLOT_CAP + k] = vec2<u32>(pack2x16float(vec2<f32>(tn.x, tn.z)), pack2x16float(vec2<f32>(cv, vary)));
+    }
+}
+
+// SE's steppe, grass and forest weights (slots 9-11) at body-frame direction `dir`, `h` m above
+// the radius, on ground of `slope` (1 - cos of its tilt), from the candidate's stored noises: the
+// ground's own weights there (planet.wesl biome_albedo's SE terra path, sharp as at its vertices).
+fn plant_weights(dir: vec3<f32>, h: f32, slope: f32, nz: vec2<u32>) -> vec3<f32> {
+    let a = unpack2x16float(nz.x);
+    let b = unpack2x16float(nz.y);
+    let fp = body.veg.y;
+    let hv = body.climate[5].z + h / max(body.climate[4].z, 1.0);
+    let s = se_terra_snow_at(dir, hv, slope, a.x, b.y, body.climate[0], body.climate[1], body.climate[2], body.climate[6].w > 0.0, body.sun_body.xyz);
+    let c = se_terra_climate_at(slope, s, 0.0, b.x, body.climate[0], body.climate[1]);
+    let ptf = plants_ptf_at(dir, fp);
+    // (The weights leave out n.y, the colour's vary: not stored.)
+    let m = se_terra_weights_at(dir, hv, slope, fp, c, 0.0, vec3<f32>(a.x, 0.0, a.y), ptf, body.climate[0], body.climate[2], body.climate[3], body.climate[4], true, false);
+    return vec3<f32>(m.w[9], m.w[10], m.w[11]);
 }
 
 // ---- cull ------------------------------------------------------------------------------------
@@ -237,19 +389,73 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x0 = min(u32(g.x), 31u);
     let y0 = min(u32(g.y), 31u);
     let t = g - vec2<f32>(f32(x0), f32(y0));
-    var p: vec4<f32>;
+    var va: vec4<f32>;
+    var vb: vec4<f32>;
+    var vc: vec4<f32>;
+    var w: vec3<f32>;
     if t.x + t.y <= 1.0 {
-        p = drawn_vertex(page, x0, y0, info) * (1.0 - t.x - t.y)
-            + drawn_vertex(page, x0 + 1u, y0, info) * t.x
-            + drawn_vertex(page, x0, y0 + 1u, info) * t.y;
+        va = drawn_vertex(page, x0, y0, info);
+        vb = drawn_vertex(page, x0 + 1u, y0, info);
+        vc = drawn_vertex(page, x0, y0 + 1u, info);
+        w = vec3<f32>(1.0 - t.x - t.y, t.x, t.y);
     } else {
-        p = drawn_vertex(page, x0 + 1u, y0 + 1u, info) * (t.x + t.y - 1.0)
-            + drawn_vertex(page, x0, y0 + 1u, info) * (1.0 - t.x)
-            + drawn_vertex(page, x0 + 1u, y0, info) * (1.0 - t.y);
+        va = drawn_vertex(page, x0 + 1u, y0 + 1u, info);
+        vb = drawn_vertex(page, x0, y0 + 1u, info);
+        vc = drawn_vertex(page, x0 + 1u, y0, info);
+        w = vec3<f32>(t.x + t.y - 1.0, 1.0 - t.x, 1.0 - t.y);
     }
+    let p = va * w.x + vb * w.y + vc * w.z;
     // No trees in the sea or on its shore.
     if p.w < body.lod2.w {
         return;
+    }
+    // Where plants grow: the ground's weights at this point of the drawn ground.
+    var share = 1.0;
+    var tint = 0u;
+    // Grass tufts (models from veg.z on): lit as level ground, half the crowns' tint for the same
+    // gain (matched by eye to Earth's forest floor, 2026-11-04).
+    let grass = (attr & 0xffu) >= u32(body.veg.z) && body.veg.w > 0.5;
+    if body.veg.x > 1.5 {
+        let rd = body.centre.w;
+        let dir = normalize(info.dir * rd + p.xyz);
+        let tri_n = cross(vb.xyz - va.xyz, vc.xyz - va.xyz);
+        let slope = 1.0 - clamp(abs(dot(normalize(tri_n), dir)), 0.0, 1.0);
+        if body.veg.x > 2.5 {
+            let n = unpack2x16float(noises[slot * SLOT_CAP + i].x).x;
+            if grass {
+                share = map_grass(dir, slope, n);
+                // Shaded under the woods as the forest floor (planet.wesl FLOOR_DARK).
+                let k = patch_classes(patch_uv(dir)).x;
+                let shade = 1.0 - 0.45 * map_forest(k, n, slope);
+                tint = pack_tint(textureSampleLevel(veg_color, veg_smp, patch_uv(dir), 0.0).rgb * (0.5 * shade));
+            } else {
+                share = map_share(dir, slope, n);
+                tint = map_tint(patch_uv(dir));
+            }
+        } else {
+            let w = plant_weights(dir, p.w, slope, noises[slot * SLOT_CAP + i]);
+            if grass {
+                share = clamp(w.y + 0.7 * w.x + 0.35 * w.z, 0.0, 1.0) * (1.0 - smoothstep(0.03, 0.08, slope));
+                tint = pack_tint(body.grass.rgb * (0.5 * (1.0 - 0.45 * w.z)));
+            } else {
+                share = w.z;
+                tint = pack_tint(body.forest.rgb);
+            }
+        }
+        // No grass within 8 m (height) of the sea.
+        if grass && p.w < body.lod2.w + 8.0 {
+            return;
+        }
+        // A second number of the candidate against the share, with a soft edge: trees near it
+        // stand smaller (a dithered fade showed as hatching), so they grow and shrink rather than
+        // switch where the ground's detail changes the share a little.
+        // (d over 0..0.92 so a full share keeps every candidate at full size; a share of 0 none.)
+        let d = f32((c.y >> 0u) & 0xffu) / 255.0 * 0.92;
+        share = clamp((share - d) / 0.08, 0.0, 1.0);
+        if share <= 0.0 {
+            return;
+        }
+        share = 0.4 + 0.6 * share;
     }
     let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
     let up = cell.up;
@@ -259,15 +465,28 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     let rnd = f32((attr >> 24u) & 0xffu) / 255.0;
     var scale = 0.8 + 0.4 * f32((attr >> 16u) & 0xffu) / 255.0;
     let d = length(pos);
-    // Thinning: three trees in four fade out, the fourth grows to keep the cover.
     var fade = 1.0;
+    if grass {
+        // The grass shrinks to nothing over its last 10 m (Megaton Rainfall's).
+        scale *= share * clamp((body.grass.w - d) / 10.0, 0.0, 1.0);
+        if scale <= 0.0 {
+            return;
+        }
+    } else {
+    // Thinning: three trees in four fade out, the fourth grows to keep the cover.
     let thin = clamp((d - body.lod.w) / max(body.lod2.x - body.lod.w, 1.0), 0.0, 1.0);
     if rnd >= 0.25 {
         fade = 1.0 - thin;
     } else {
         scale *= 1.0 + thin;
     }
-    fade *= clamp((body.lod.z - d) / (body.lod.y * 4.0), 0.0, 1.0);
+    // The hand-over to the ground's canopy (planet.wesl) over the last quarter of the range: the
+    // trees shrink and thin out as the canopy comes in (a sharp end showed as a circle round the
+    // camera from above).
+    let far_k = clamp((body.lod.z - d) / (body.lod.z * 0.25), 0.0, 1.0);
+    fade *= smoothstep(0.0, 0.6, far_k);
+    scale *= share * mix(0.5, 1.0, far_k);
+    }
     if fade <= 0.0 {
         return;
     }
@@ -292,7 +511,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The mesh draws to mesh_far, the impostor from a band below it: the mesh where the pixel's
     // dither is under `mesh`, the impostor elsewhere (scatter_draw.wesl).
     let mesh = clamp((body.lod.x - d) / body.lod.y, 0.0, 1.0);
-    let o = Inst(pos, pack2x16unorm(vec2<f32>(fade, mesh)), oct_encode(xa), oct_encode(up), scale, model);
+    let o = Inst(pos, pack2x16unorm(vec2<f32>(fade, mesh)), oct_encode(xa), oct_encode(up), scale, model | tint);
     if mesh > 0.0 {
         append(md.mesh_bucket, o);
     }

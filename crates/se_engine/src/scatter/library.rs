@@ -67,6 +67,9 @@ pub struct ModelGpu {
     /// Mesh and impostor buckets.
     pub mesh_bucket: u32,
     pub impostor_bucket: u32,
+    /// The mean colour of its impostor views (linear) and their coverage, for the tint that gives
+    /// the trees the ground's forest colour (set when the bake is done).
+    pub mean: [f32; 4],
 }
 
 /// The library, extracted to the render world once ready (and when it changes).
@@ -75,6 +78,9 @@ pub struct ModelGpu {
 pub struct ScatterLibrary {
     /// Bumped when the content changes (the render world re-uploads it).
     pub generation: u32,
+    /// The trees (models 0..trees) and the grass tufts after them.
+    pub trees: u32,
+    pub grass: u32,
     pub vertices: Arc<Vec<LibVertex>>,
     pub indices: Arc<Vec<u32>>,
     pub materials: Vec<LibMaterial>,
@@ -108,12 +114,25 @@ impl Plugin for LibraryPlugin {
 #[derive(Resource)]
 struct BakeTask(Task<Option<Baked>>);
 
-/// Instances per bucket at most: the meshes near the camera, the impostors farther out.
-const MESH_CAP: u32 = 8192;
-const IMPOSTOR_CAP: u32 = 65_536;
+/// Instances per bucket (one model) at most: the meshes near the camera, the impostors farther out;
+/// a grass tuft's meshes (about 2.5 a square metre within 120 m, over 4 tufts).
+const MESH_CAP: u32 = 2048;
+const IMPOSTOR_CAP: u32 = 16_384;
+const GRASS_CAP: u32 = 40_000;
 
-/// The MR trees the library holds (step 2: one).
-const TREES: [&str; 1] = ["tree_0"];
+/// Megaton Rainfall's grass: its `billboard_grass` material (the 2x2 tuft atlas `Billboard_Grass`,
+/// tint 0.45 0.50 0.29), one tuft per atlas cell as its `bunch_N` models (made by its code, not
+/// stored: crossed quads); here three quads crossed at 60 degrees, 0.66 m high and wide (MR's tuft).
+pub const GRASS_TUFTS: u32 = 4;
+const GRASS_TEXTURE: &str = "Billboard_Grass";
+const GRASS_TINT: [f32; 4] = [0.45, 0.50, 0.29, 1.0];
+const GRASS_SIZE: f32 = 0.66;
+
+/// Megaton Rainfall's 16 trees (temperate broadleaf; "Realtime 3D Trees XL", the pack's LOD1 meshes).
+const TREES: [&str; 16] = [
+    "tree_0", "tree_1", "tree_2", "tree_3", "tree_4", "tree_5", "tree_6", "tree_7", "tree_8", "tree_9", "tree_10", "tree_11", "tree_12",
+    "tree_13", "tree_14", "tree_15",
+];
 
 fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: ResMut<Assets<Image>>, mut lib: ResMut<ScatterLibrary>) {
     let Some(install) = mr.install.clone() else { return };
@@ -153,7 +172,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let material = materials.len() as u32;
             materials.push(LibMaterial { color, tint: mat.diffuse(), leaves });
             let first_index = indices.len() as u32;
-            // MR's indices are absolute: made relative to the model's first vertex.
+            // MR's indices are absolute within the model: the draw's base vertex is the model's first.
             indices.extend(model.indices[s.first_index as usize..(s.first_index + s.index_count) as usize].iter());
             draws.push(DrawEntry {
                 bucket: mesh_bucket,
@@ -197,15 +216,57 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             crown_r: cr,
             mesh_bucket,
             impostor_bucket,
+            mean: [0.25, 0.25, 0.25, 0.5],
         });
         bake.push(BakeModel { positions: model.positions.clone(), normals: model.normals.clone(), uvs: model.uvs.clone(), indices: model.indices.clone(), subs, half, centre_y, crown_y: cy, crown_r: cr });
     }
     if models.is_empty() {
         return;
     }
+    let trees = models.len() as u32;
+    // The grass tufts.
+    if let Some(color) = mr.image(&mut images, GRASS_TEXTURE, true) {
+        let material = materials.len() as u32;
+        materials.push(LibMaterial { color, tint: GRASS_TINT, leaves: true });
+        let tex = decoded(&install, GRASS_TEXTURE);
+        for t in 0..GRASS_TUFTS {
+            let m = models.len() as u32;
+            let (mesh_bucket, impostor_bucket) = (caps.len() as u32, caps.len() as u32 + 1);
+            caps.extend([GRASS_CAP, 64]);
+            let (positions, normals, uvs, idx) = tuft(t);
+            let base_vertex = vertices.len() as i32;
+            for i in 0..positions.len() {
+                vertices.push(LibVertex { pos: positions[i], normal: normals[i], uv: uvs[i] });
+            }
+            let first_index = indices.len() as u32;
+            indices.extend(idx.iter());
+            draws.push(DrawEntry { bucket: mesh_bucket, first_index, index_count: idx.len() as u32, base_vertex, kind: DrawKind::Mesh { material, leaves: true } });
+            draws.push(DrawEntry { bucket: impostor_bucket, first_index: 0, index_count: 6, base_vertex: 0, kind: DrawKind::Impostor });
+            let half = GRASS_SIZE * 0.52;
+            // The tuft shades as the ground under it: its "crown" far below makes the leaves' ball
+            // normals point up (scatter_draw.wesl).
+            let (crown_y, crown_r) = (-50.0, 50.0);
+            models.push(ModelGpu {
+                half,
+                centre_y: GRASS_SIZE * 0.5,
+                radius: GRASS_SIZE * 0.75,
+                layer0: m * impostor::VIEWS,
+                crown_y,
+                crown_r,
+                mesh_bucket,
+                impostor_bucket,
+                mean: [0.25, 0.25, 0.25, 0.5],
+            });
+            let subs = vec![BakeSub { first_index: 0, index_count: idx.len() as u32, texture: tex.clone(), tint: GRASS_TINT, leaves: true }];
+            bake.push(BakeModel { positions, normals, uvs, indices: idx, subs, half, centre_y: GRASS_SIZE * 0.5, crown_y, crown_r });
+        }
+    }
+    let grass = models.len() as u32 - trees;
     info!("scatter: library of {} models, {} vertices, {} draws; baking impostors", models.len(), vertices.len(), draws.len());
     *lib = ScatterLibrary {
         generation: 0,
+        trees,
+        grass,
         vertices: Arc::new(vertices),
         indices: Arc::new(indices),
         materials,
@@ -217,6 +278,27 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
     };
     let task = AsyncComputeTaskPool::get().spawn(async move { Some(impostor::bake(&bake)) });
     commands.insert_resource(BakeTask(task));
+}
+
+/// Grass tuft `t`: three quads crossed at 60 degrees about the up axis, textured with atlas cell `t`
+/// (positions, normals, uvs, indices). The normals point up: the tuft is lit as the ground.
+#[allow(clippy::type_complexity)]
+fn tuft(t: u32) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) {
+    let (u0, v0) = ((t % 2) as f32 * 0.5, (t / 2) as f32 * 0.5);
+    let (mut p, mut n, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let h = GRASS_SIZE * 0.5;
+    for q in 0..3 {
+        let a = q as f32 * std::f32::consts::PI / 3.0;
+        let (dx, dz) = (a.cos() * h, a.sin() * h);
+        let b = p.len() as u32;
+        for (x, y, z, s, tt) in [(-dx, 0.0, -dz, 0.0, 1.0), (dx, 0.0, dz, 1.0, 1.0), (-dx, GRASS_SIZE, -dz, 0.0, 0.0), (dx, GRASS_SIZE, dz, 1.0, 0.0)] {
+            p.push([x, y, z]);
+            n.push([0.0, 1.0, 0.0]);
+            uv.push([u0 + s * 0.5, v0 + tt * 0.5]);
+        }
+        idx.extend([b, b + 1, b + 2, b + 2, b + 1, b + 3]);
+    }
+    (p, n, uv, idx)
 }
 
 /// A texture decoded to RGBA8 at its top level (the bake samples it), or a grey square.
@@ -235,6 +317,9 @@ fn finish_bake(mut commands: Commands, task: Option<ResMut<BakeTask>>, mut lib: 
     commands.remove_resource::<BakeTask>();
     let Some(baked) = result else { return };
     let (color, normal) = impostor::images(&baked);
+    for (m, mean) in lib.models.iter_mut().zip(&baked.means) {
+        m.mean = *mean;
+    }
     lib.impostor_color = Some(images.add(color));
     lib.impostor_normal = Some(images.add(normal));
     lib.generation += 1;

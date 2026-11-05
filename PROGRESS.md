@@ -57,8 +57,18 @@
     meshes near the camera, baked pictures (impostors) to 3 km, lit and hazed like the ground (the
     ground's lighting is now a shared shader module; the ground looks the same as before). Cost at
     Ultra 3440x1440 with the test cover: 0.1-0.6 ms; GPU objects stay flat over a session.
-  - **Step 3 next:** real vegetation on Earth and SE's worlds (where plants grow, MR's 16 trees,
-    grass, the canopy seen from altitude).
+  - **Step 3 done (2026-11-04): real vegetation.** Planets whose life includes plants on land (Earth,
+    and SE's generated terra worlds with multicellular land life) get forests, copses, lone trees and
+    grass, on by default (`scatter off` / `SE_SCATTER=0` to turn it off). Earth's forests come from
+    its own map (dark green = forest; fields, steppe, deserts and ice told apart by colour); SE's
+    worlds use the ground's own biome rules, so trees stand where the ground is drawn as forest. The
+    trees take the ground's colour, the forest floor darkens under them, and past 3 km the ground
+    draws the treetops instead, so a forest looks the same colour from orbit to the ground. Grass
+    within 120 m, trees and grass sway in the weather's wind. Cost at Ultra 3440x1440 (with 4x MSAA):
+    about 1.4-1.7 ms. Left open: Earth's taiga and tropics have broadleaf trees until step 4; the
+    treetop pattern is faint under Earth's haze from 3-5 km; no Vegetation setting yet.
+  - **Step 4 next:** the tree generator (different floras on different planets; conifers and palms on
+    Earth where they belong).
 
 ## Notes
 

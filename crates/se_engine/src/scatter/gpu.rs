@@ -78,6 +78,24 @@ struct BodyGpu {
     levels: Vec4,
     /// As the ground's: x atmosphere on, y sun scale, z scatter scale, w DayAmbient.
     atm_flags: Vec4,
+    /// x how plants are decided (`VegKind`), y the noises' footprint on the unit sphere.
+    veg: Vec4,
+    /// Towards the star in the body frame.
+    sun_body: Vec4,
+    /// SE's climate parameters (`BiomeUniform::climate` 0-7) and the biomes' flags.
+    climate: [Vec4; 8],
+    biome_flags: Vec4,
+    /// `VegKind::Map`: the plants' patch frame (centre and tan of its half-angle, its two axes).
+    patch_c: Vec4,
+    patch_e1: Vec4,
+    patch_e2: Vec4,
+    /// The wind (render frame, m/s).
+    wind: Vec4,
+    /// SE's forest colour (linear) and the trees' tint gain.
+    forest: Vec4,
+    tint_gain: Vec4,
+    /// rgb SE's grass colour (linear), w the grass's range (m).
+    grass: Vec4,
     /// The ground's cloud key (radius m, seed fraction) and x, y of `proc_params2`; z 1 when the body
     /// has atmosphere tables bound.
     key: Vec4,
@@ -113,6 +131,9 @@ struct LibGpu {
     counters: Buffer,
     args: Buffer,
     out: Buffer,
+    /// Per drawn instance (as `out`), the meshes' light (f16), and the largest mesh bucket.
+    lights: Buffer,
+    max_mesh_cap: u32,
     n_buckets: u32,
     n_draws: u32,
     n_models: u32,
@@ -128,6 +149,8 @@ struct ScatterGpu {
     /// `SE_SCATTER_DEBUG=1`: the bucket counters are read back every 120 frames and logged.
     debug: Option<DebugReadback>,
     instances: Buffer,
+    /// Per kept candidate, the plants' noises at its spot (f16 x4), worked out by the placement.
+    noises: Buffer,
     counts: Buffer,
     cells: Buffer,
     tree: Buffer,
@@ -144,6 +167,13 @@ struct ScatterGpu {
     compute_group: Option<BindGroup>,
     draw_group: Option<BindGroup>,
     light_group: Option<BindGroup>,
+    /// The meshes' light, once per instance (`scatter_draw.wesl` `light`): its pipeline, its own view
+    /// group and an empty group 1 (the light group is the draws' group 2).
+    light: CachedComputePipelineId,
+    light_view_layout: BindGroupLayoutDescriptor,
+    empty_layout: BindGroupLayoutDescriptor,
+    light_view_group: Option<BindGroup>,
+    empty_group: Option<BindGroup>,
     active: bool,
     n_jobs: u32,
     slots_used: u32,
@@ -246,13 +276,16 @@ fn init_gpu(
                 ro(32),  // cells
                 ro(4),   // tree
                 ro(16),  // page positions
-                ro(32),  // page info
-                ro(32),  // models
+                ro(48),  // page info
+                ro(48),  // models
                 ro(16),  // buckets
                 ro(16),  // draws
                 rw(4),   // counters
                 rw(4),   // args
                 rw(32),  // out
+                rw(8),   // noises
+                texture_2d(TextureSampleType::Float { filterable: true }), // the plants' map patch
+                sampler(SamplerBindingType::Filtering),
             ),
         ),
     );
@@ -271,7 +304,7 @@ fn init_gpu(
         "scatter_view",
         &BindGroupLayoutEntries::sequential(
             ShaderStages::VERTEX_FRAGMENT,
-            (uniform_buffer::<CameraGpu>(false), uniform_buffer::<BodyGpu>(false), ro(32), ro(32)),
+            (uniform_buffer::<CameraGpu>(false), uniform_buffer::<BodyGpu>(false), ro(32), ro(48), ro(32)),
         ),
     );
     let material_layout = BindGroupLayoutDescriptor::new(
@@ -296,7 +329,7 @@ fn init_gpu(
     let light_layout = BindGroupLayoutDescriptor::new(
         "scatter_light",
         &BindGroupLayoutEntries::sequential(
-            ShaderStages::VERTEX_FRAGMENT,
+            ShaderStages::VERTEX_FRAGMENT | ShaderStages::COMPUTE,
             (
                 texture_3d(filt()),
                 texture_2d(filt()),
@@ -313,6 +346,23 @@ fn init_gpu(
         ),
     );
     let draw = DrawPipeline { view_layout, light_layout, material_layout, impostor_layout, shader: assets.load("shaders/scatter_draw.wesl") };
+    // The meshes' light pass: the body, the drawn instances and models, the light records (written),
+    // the bucket counters and the buckets; group 1 empty, group 2 the draws' light.
+    let light_view_layout = BindGroupLayoutDescriptor::new(
+        "scatter_light_view",
+        &BindGroupLayoutEntries::with_indices(
+            ShaderStages::COMPUTE,
+            ((1, uniform_buffer::<BodyGpu>(false)), (2, ro(32)), (3, ro(48)), (5, rw(32)), (6, ro(4)), (7, ro(16))),
+        ),
+    );
+    let empty_layout = BindGroupLayoutDescriptor::new("scatter_empty", &[]);
+    let light = cache.queue_compute_pipeline(ComputePipelineDescriptor {
+        label: Some("scatter_light".into()),
+        layout: vec![light_view_layout.clone(), empty_layout.clone(), draw.light_layout.clone()],
+        shader: draw.shader.clone(),
+        entry_point: Some("light".into()),
+        ..default()
+    });
     // Built at start (the loading screen waits for them): no MSAA and 4x, the HDR target.
     for samples in [1, 4] {
         for kind in 0..3 {
@@ -322,11 +372,12 @@ fn init_gpu(
     commands.insert_resource(draw);
     commands.insert_resource(ScatterGpu {
         instances: buffer(&device, "scatter_instances", SLOTS as u64 * SLOT_CAP as u64 * 4, storage),
+        noises: buffer(&device, "scatter_noises", SLOTS as u64 * SLOT_CAP as u64 * 8, storage),
         counts: buffer(&device, "scatter_counts", SLOTS as u64 * 4, storage),
         cells: buffer(&device, "scatter_cells", SLOTS as u64 * 32, storage),
         tree: buffer(&device, "scatter_tree", TREE_MAX as u64 * 4, storage),
         page_pos: buffer(&device, "scatter_page_pos", PAGES as u64 * PAGE_VERTS as u64 * 16, storage),
-        page_info: buffer(&device, "scatter_page_info", PAGES as u64 * 32, storage),
+        page_info: buffer(&device, "scatter_page_info", PAGES as u64 * 48, storage),
         jobs: buffer(&device, "scatter_jobs", MAX_JOBS as u64 * 32, storage),
         body: UniformBuffer::default(),
         camera: UniformBuffer::default(),
@@ -338,6 +389,11 @@ fn init_gpu(
         compute_group: None,
         draw_group: None,
         light_group: None,
+        light,
+        light_view_layout,
+        empty_layout,
+        light_view_group: None,
+        empty_group: None,
         active: false,
         n_jobs: 0,
         slots_used: 0,
@@ -391,6 +447,8 @@ fn upload_library(gpu: &mut ScatterGpu, lib: &ScatterLibrary, device: &RenderDev
         counters: buffer(device, "scatter_counters", lib.bucket_caps.len() as u64 * 4, storage | BufferUsages::COPY_SRC),
         args: buffer(device, "scatter_args", lib.draws.len() as u64 * 20, storage | BufferUsages::INDIRECT),
         out: buffer(device, "scatter_out", base as u64 * 32, storage),
+        lights: buffer(device, "scatter_lights", base as u64 * 32, storage),
+        max_mesh_cap: lib.bucket_caps.iter().step_by(2).copied().max().unwrap_or(0),
         n_buckets: lib.bucket_caps.len() as u32,
         n_draws: lib.draws.len() as u32,
         n_models: lib.models.len() as u32,
@@ -486,6 +544,18 @@ fn prepare(
         sun_color: b.light.sun_color,
         levels: b.light.levels,
         atm_flags: Vec4::new(b.light.flags.x, u.atm_flags.y, u.atm_flags.z, u.atm_flags.w),
+        // The plants' noises at about 4 m (their spacing).
+        veg: Vec4::new(b.veg as u32 as f32, 4.0 / b.radius_m.max(1.0), b.grass_models.x as f32, b.grass_models.y as f32),
+        sun_body: b.sun_body.extend(0.0),
+        climate: b.climate,
+        biome_flags: b.biome_flags,
+        patch_c: b.patch_frame[0],
+        patch_e1: b.patch_frame[1],
+        patch_e2: b.patch_frame[2],
+        wind: b.wind.extend(0.0),
+        forest: b.forest,
+        tint_gain: b.tint_gain.extend(0.0),
+        grass: b.grass,
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,
@@ -513,6 +583,7 @@ fn prepare_bind_groups(
     shadow: Option<Res<crate::volumetric_clouds::CloudShadowAssets>>,
     buffers: Res<RenderAssets<bevy::render::storage::GpuShaderBuffer>>,
     fallback: Res<bevy::render::texture::FallbackImage>,
+    zero: Res<bevy::render::texture::FallbackImageZero>,
     draw: Res<DrawPipeline>,
     cache: Res<PipelineCache>,
     device: Res<RenderDevice>,
@@ -521,6 +592,8 @@ fn prepare_bind_groups(
     gpu.compute_group = None;
     gpu.draw_group = None;
     gpu.light_group = None;
+    gpu.light_view_group = None;
+    gpu.empty_group = None;
     if !gpu.active {
         return;
     }
@@ -528,6 +601,8 @@ fn prepare_bind_groups(
     let (Some(body), Some(camera)) = (gpu.body.binding(), gpu.camera.binding()) else { return };
     let Some(l) = gpu.lib.as_mut() else { return };
     let compute_layout = cache.get_bind_group_layout(&gpu.compute_layout);
+    // The plants' map patch (Bevy's black fallback until it is on the GPU: no plants from it).
+    let patch = frame.as_deref().and_then(|f| f.body.patch.as_ref()).and_then(|p| images.get(p)).unwrap_or(&**zero);
     gpu.compute_group = Some(device.create_bind_group(
         "scatter_compute",
         &compute_layout,
@@ -547,14 +622,32 @@ fn prepare_bind_groups(
             l.counters.as_entire_binding(),
             l.args.as_entire_binding(),
             l.out.as_entire_binding(),
+            gpu.noises.as_entire_binding(),
+            &patch.texture_view,
+            &patch.sampler,
         )),
     ));
     let view_layout = cache.get_bind_group_layout(&draw.view_layout);
     gpu.draw_group = Some(device.create_bind_group(
         "scatter_view",
         &view_layout,
-        &BindGroupEntries::sequential((camera, body, l.out.as_entire_binding(), l.models.as_entire_binding())),
+        &BindGroupEntries::sequential((camera, body.clone(), l.out.as_entire_binding(), l.models.as_entire_binding(), l.lights.as_entire_binding())),
     ));
+    let light_view_layout = cache.get_bind_group_layout(&gpu.light_view_layout);
+    gpu.light_view_group = Some(device.create_bind_group(
+        "scatter_light_view",
+        &light_view_layout,
+        &BindGroupEntries::with_indices((
+            (1, body),
+            (2, l.out.as_entire_binding()),
+            (3, l.models.as_entire_binding()),
+            (5, l.lights.as_entire_binding()),
+            (6, l.counters.as_entire_binding()),
+            (7, l.buckets.as_entire_binding()),
+        )),
+    ));
+    let empty_layout = cache.get_bind_group_layout(&gpu.empty_layout);
+    gpu.empty_group = Some(device.create_bind_group("scatter_empty", &empty_layout, &[]));
     // The ground's light: the body's atmosphere tables (Bevy's fallbacks without) and the clouds'
     // shadow (the record says whether it is this body's).
     if let (Some(f), Some(sh)) = (frame.as_deref(), shadow.as_deref()) {
@@ -670,6 +763,16 @@ fn scatter_compute(_view: ViewQuery<&ExtractedView, MainView>, gpu: Res<ScatterG
         }
         pass.set_pipeline(finish);
         pass.dispatch_workgroups(l.n_draws.div_ceil(64), 1, 1);
+        // The meshes' light, once per instance (the mesh buckets are the even ones).
+        if let (Some(light), Some(g0), Some(g1), Some(g2)) =
+            (cache.get_compute_pipeline(gpu.light), gpu.light_view_group.as_ref(), gpu.empty_group.as_ref(), gpu.light_group.as_ref())
+        {
+            pass.set_pipeline(light);
+            pass.set_bind_group(0, g0, &[]);
+            pass.set_bind_group(1, g1, &[]);
+            pass.set_bind_group(2, g2, &[]);
+            pass.dispatch_workgroups(l.max_mesh_cap.div_ceil(64), l.n_buckets.div_ceil(2), 1);
+        }
     }
     span.end(ctx.command_encoder());
     if let Some(d) = &gpu.debug {

@@ -58,6 +58,8 @@ pub struct Baked {
     /// Per layer, its mip chain, RGBA8.
     pub color: Vec<Vec<Vec<u8>>>,
     pub normal: Vec<Vec<Vec<u8>>>,
+    /// Per model: the mean colour of its views (linear, covered texels) and their mean coverage.
+    pub means: Vec<[f32; 4]>,
 }
 
 fn srgb_to_linear(c: u8) -> f32 {
@@ -79,18 +81,39 @@ pub fn view_dir(v: u32) -> Vec3 {
     Vec3::new(el.cos() * az.sin(), el.sin(), el.cos() * az.cos())
 }
 
-/// Bakes every model's views.
+/// Bakes every model's views, the models spread over the machine's cores.
 pub fn bake(models: &[BakeModel]) -> Baked {
-    let mut color = Vec::new();
-    let mut normal = Vec::new();
-    for m in models {
-        for v in 0..VIEWS {
-            let (c, n) = bake_view(m, view_dir(v));
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+    let mut per_model: Vec<Vec<(Vec<Vec<u8>>, Vec<Vec<u8>>)>> = Vec::with_capacity(models.len());
+    std::thread::scope(|scope| {
+        let chunk = models.len().div_ceil(threads).max(1);
+        let handles: Vec<_> = models
+            .chunks(chunk)
+            .map(|ms| scope.spawn(move || ms.iter().map(|m| (0..VIEWS).map(|v| bake_view(m, view_dir(v))).collect::<Vec<_>>()).collect::<Vec<_>>()))
+            .collect();
+        for h in handles {
+            per_model.extend(h.join().expect("impostor bake thread"));
+        }
+    });
+    let (mut color, mut normal, mut means) = (Vec::new(), Vec::new(), Vec::new());
+    for views in per_model {
+        let (mut sum, mut cover, mut texels) = ([0.0f64; 3], 0.0f64, 0.0f64);
+        for (c, n) in views {
+            for p in c[0].chunks_exact(4) {
+                let a = p[3] as f64 / 255.0;
+                for i in 0..3 {
+                    sum[i] += srgb_to_linear(p[i]) as f64 * a;
+                }
+                cover += a;
+                texels += 1.0;
+            }
             color.push(c);
             normal.push(n);
         }
+        let k = 1.0 / cover.max(1e-9);
+        means.push([(sum[0] * k) as f32, (sum[1] * k) as f32, (sum[2] * k) as f32, (cover / texels.max(1.0)) as f32]);
     }
-    Baked { layers: color.len() as u32, color, normal }
+    Baked { layers: color.len() as u32, color, normal, means }
 }
 
 /// Bilinear sample of a texture at (u, v) (repeating), linear rgb and alpha.

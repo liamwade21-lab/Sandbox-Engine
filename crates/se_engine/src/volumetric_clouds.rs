@@ -64,6 +64,7 @@ use crate::universe::SimTime;
 
 mod detail;
 mod weather_sim;
+pub(crate) use weather_sim::wind_at;
 
 /// The most cloud layers of a body drawn volumetric (SE gives terrestrial bodies at most 3).
 pub const MAX_LAYERS: usize = 4;

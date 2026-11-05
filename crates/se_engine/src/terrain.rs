@@ -951,6 +951,10 @@ pub struct Terrain {
     loading: Vec<TileKey>,
     /// SE's record flag "locked to a star" (+0x165c bit 2), for its height generator's climate.
     pub tidal_lock: bool,
+    /// The catalog's Life gives land plants (`scatter::land_plants`): the scatter's vegetation.
+    pub land_plants: bool,
+    /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
+    last_veg: Vec2,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
     /// and no height data: requested grids (job id, frame) and the grids read back (with the frame
     /// they last served a request).
@@ -1178,6 +1182,8 @@ impl Terrain {
             nodes: NodeMap::new(),
             loading: Vec::new(),
             tidal_lock: false,
+            land_plants: false,
+            last_veg: Vec2::ZERO,
             gen_jobs: NodeMap::new(),
             gen_tiles: NodeMap::new(),
             gen_failed: false,
@@ -2289,7 +2295,7 @@ fn update_terrain(
     mut materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_mats: ResMut<Assets<CloudMaterial>>,
     mut bodies: Query<(Entity, &SystemBody, &BodyLighting, &mut Terrain, Option<&crate::eclipse::EclipseCasters>)>,
-    (ambient, emission, water_display, switches, volumetric, cloud_assets, pipes): (
+    (ambient, emission, water_display, switches, volumetric, cloud_assets, pipes, scatter): (
         Res<crate::system::AmbientLighting>,
         Res<SelfEmission>,
         Res<WaterDisplay>,
@@ -2297,6 +2303,7 @@ fn update_terrain(
         Res<crate::volumetric_clouds::VolumetricClouds>,
         Option<Res<crate::volumetric_clouds::CloudShadowAssets>>,
         Res<crate::pipeline_watch::GroundPipelines>,
+        Option<Res<crate::scatter::Scatter>>,
     ),
     clouds_q: Query<&CloudNode, Allow<Disabled>>,
     mut vis_q: Query<(&mut Visibility, Has<Disabled>), (Or<(With<TerrainNode>, With<CloudNode>)>, Allow<Disabled>)>,
@@ -2509,7 +2516,7 @@ fn update_terrain(
                     light_color: extra_color,
                     glow_atmo: glow_atmo_u,
                     levels: Vec4::new(u.base_color.w, u.params.x, u.thermal2.w, u.ice.w),
-                    flags: Vec4::new(u.atm_flags.x, u.soil_tile.w, 0.0, 0.0),
+                    flags: Vec4::new(u.atm_flags.x, u.soil_tile.w, terrain.last_veg.x, terrain.last_veg.y),
                 },
             );
             terrain.body_uniform = Some(u);
@@ -2885,11 +2892,19 @@ fn update_terrain(
         // A new LandLOD, graphics preset or window height changes the split distance: the nodes
         // built before morph over the old one unless it is set again (with the lighting).
         let split_scale = quality.split_scale;
+        // The vegetation the ground draws its forest floor and canopy for (planet.wesl): the
+        // scatter's kind for this body while the scatter is on, and the trees' range.
+        let veg = match scatter.as_deref() {
+            Some(sc) if sc.enabled && sc.ready && !sc.test => Vec2::new(crate::scatter::veg_kind(false, &terrain) as u32 as f32, sc.lod.impostor_far),
+            _ => Vec2::ZERO,
+        };
         if (sun - terrain.last_sun).length() > 1e-3
             || extra_moved
             || casters_differ(&eclipse, &terrain.last_casters)
             || terrain.last_split != split_scale
+            || terrain.last_veg != veg
         {
+            terrain.last_veg = veg;
             terrain.last_sun = sun;
             terrain.last_extra = extra_dir;
             terrain.last_casters = eclipse;
@@ -2907,7 +2922,7 @@ fn update_terrain(
             light_color: extra_color,
             glow_atmo,
             levels: Vec4::new(ambient.0, glow_bright, emission.scale(), water_display.level),
-            flags: Vec4::new(atm_on, 0.0, 0.0, 0.0),
+            flags: Vec4::new(atm_on, 0.0, veg.x, veg.y),
         };
         terrain.body_light = lit;
         // Lit for this generation already and none shown since: nothing to relight.
@@ -2919,7 +2934,7 @@ fn update_terrain(
                 }
                 slot.light_gen = light_gen;
                 if let NodeState::Ready(..) = &slot.state {
-                    terrain.lights.set(slot.light, PatchLight { flags: Vec4::new(atm_on, node_split(key.level, split_scale), 0.0, 0.0), ..lit });
+                    terrain.lights.set(slot.light, PatchLight { flags: Vec4::new(atm_on, node_split(key.level, split_scale), veg.x, veg.y), ..lit });
                 }
             }
             terrain.drawn_lit = Some(light_gen);
