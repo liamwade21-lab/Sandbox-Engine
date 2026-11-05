@@ -10,6 +10,8 @@
 
 import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
 import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
+import super::settlement::settlements;
+import super::city::{city_pos, ct_building};
 
 const SLOT_CAP: u32 = 8192u;
 const GRID: u32 = 33u;
@@ -56,6 +58,11 @@ struct Body {
     species: vec4<u32>,
     // x the ground's relief (m)
     flora_k: vec4<f32>,
+    // Cities: x the civilization's level (0 none), y its culture seed (fraction), z its grid turn,
+    // w the radius (m); city2 x the buildings' range (m), y 1 under SE_CITY_TEST, z the ground's
+    // lowest point and w its height range (m)
+    city: vec4<f32>,
+    city2: vec4<f32>,
 }
 
 struct Camera {
@@ -74,6 +81,14 @@ struct Job {
     seed: u32,
     // the first model its candidates take, and how many in the high 16 bits
     models: u32,
+    // 0 plants, 1 buildings; the cell's corner in the city layout's frame (its 4,096 m tile, the
+    // face metres in it) and its edge (face metres)
+    kind: u32,
+    tile_x: i32,
+    tile_y: i32,
+    local_x: f32,
+    local_y: f32,
+    edge: f32,
 }
 
 struct Cell {
@@ -156,6 +171,26 @@ struct Inst {
 // veg 3: the plants' map patch (scatter/earth.rs): the map's colour, the land in alpha.
 @group(0) @binding(16) var veg_color: texture_2d<f32>;
 @group(0) @binding(17) var veg_smp: sampler;
+// Its lights map (Earth's towns for the cities): the brightest channel.
+@group(0) @binding(18) var veg_lights: texture_2d<f32>;
+
+// The towns' density at body-frame direction `dir`: from the lights map's patch on a map body (as
+// the ground's from its lights tiles: planet.wesl), else the settlement field; 1 under SE_CITY_TEST.
+fn town_at(dir: vec3<f32>) -> f32 {
+    if body.city2.y > 0.5 {
+        return 1.0;
+    }
+    if body.veg.x > 2.5 {
+        let uv = patch_uv(dir);
+        if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) {
+            return 0.0;
+        }
+        let lum = textureSampleLevel(veg_lights, veg_smp, uv, 0.0).r;
+        let land = textureSampleLevel(veg_color, veg_smp, uv, 0.0).a;
+        return smoothstep(0.04, 0.5, lum) * (1.0 - smoothstep(0.2, 0.6, 1.0 - land));
+    }
+    return settlements(dir, body.city.w, u32(body.city.x + 0.5), u32(body.city.y * 10000.0), 0.0).x;
+}
 
 // The forest, grassland and steppe shares at `uv` on the patch (none on water), as the ground
 // classifies the colour it draws.
@@ -327,13 +362,87 @@ fn candidate(seed: u32, i: u32) -> vec3<u32> {
     return vec3<u32>((h0 & 0xffffu) | (h1 << 16u), h2, h3);
 }
 
+// ---- buildings (cities) ----------------------------------------------------------------------
+
+// The buildings' candidates: the points of a 90 x 90 grid over the cell (about 9 m apart in an 800 m
+// cell); a point keeps the building of the lot whose middle falls in its square (one a lot).
+const BGRID: u32 = 90u;
+
+// True metres per face metre at face coordinates (u, v) (the mean of the two axes): terrain.rs's
+// `city_frame` at a node's centre.
+fn face_metric(u: f32, v: f32) -> f32 {
+    let s = 2.0 * u - 1.0;
+    let t = 2.0 * v - 1.0;
+    let q = 1.0 + s * s + t * t;
+    return 2.0 * (sqrt(1.0 + t * t) + sqrt(1.0 + s * s)) / (3.14159265 * q);
+}
+
+fn place_building(job: Job, i: u32) {
+    if i >= BGRID * BGRID {
+        return;
+    }
+    let gi = vec2<u32>(i % BGRID, i / BGRID);
+    let f = (vec2<f32>(gi) + 0.5) / f32(BGRID);
+    let corner = vec2<f32>(job.local_x, job.local_y);
+    let tile0 = vec2<i32>(job.tile_x, job.tile_y);
+    let cp = city_pos(tile0, corner + f * job.edge);
+    let n = 1.0 / f32(1u << job.level);
+    let uv = (vec2<f32>(f32(job.col), f32(job.row)) + f) * n;
+    let k = face_metric(uv.x, uv.y);
+    // The town's density at the point (as the ground's; it varies over km).
+    let urban = town_at(normalize(uv_to_cube(job.face, uv.x, uv.y)));
+    if urban < 0.06 {
+        return;
+    }
+    let b = ct_building(cp, k, urban, u32(body.city.y * 10000.0) + 100u, body.city.z);
+    if !b.ok {
+        return;
+    }
+    // Its middle in this point's square of the cell?
+    let rel = vec2<f32>(cp.tile - tile0) * 4096.0 + b.centre - corner;
+    let fc = rel / job.edge;
+    if any(floor(fc * f32(BGRID)) != vec2<f32>(gi)) {
+        return;
+    }
+    let ks = atomicAdd(&counts[job.slot], 1u);
+    if ks >= SLOT_CAP {
+        return;
+    }
+    instances[job.slot * SLOT_CAP + ks] = i | ((job.models & 0xffffu) << 16u);
+    // Its record: its middle in the cell (u16 x2); its width and depth (0.5 m steps), height (the
+    // square root of a share of 600 m, a byte) and turn (a byte over -pi..pi).
+    let w = u32(clamp(round(b.size.x * 2.0), 1.0, 255.0));
+    let d = u32(clamp(round(b.size.y * 2.0), 1.0, 255.0));
+    let hc = u32(clamp(round(sqrt(b.height / 600.0) * 255.0), 1.0, 255.0));
+    let ac = u32(clamp(round((atan2(b.rot.y, b.rot.x) / 6.2831853 + 0.5) * 255.0), 0.0, 255.0));
+    let q = vec2<u32>(clamp(fc * 65536.0, vec2<f32>(0.0), vec2<f32>(65535.0)));
+    noises[job.slot * SLOT_CAP + ks] = vec2<u32>(q.x | (q.y << 16u), w | (d << 8u) | (hc << 16u) | (ac << 24u));
+}
+
 @compute @workgroup_size(64)
 fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let job = jobs[gid.y];
     let i = gid.x;
+    if job.kind == 1u {
+        place_building(job, i);
+        return;
+    }
     let c = candidate(job.seed, i);
     if f32(c.y >> 8u) * (1.0 / 16777216.0) >= job.keep {
         return;
+    }
+    // In a civilization's towns (the settlement field, as the ground's streets) a few garden trees
+    // and no grass: the streets, lots and buildings take the ground.
+    if body.city.x > 0.5 {
+        let n0 = 1.0 / f32(1u << job.level);
+        let f0 = (vec2<f32>(f32(c.x & 0xffffu), f32(c.x >> 16u)) + 0.5) / 65536.0;
+        let urban = town_at(normalize(uv_to_cube(job.face, (f32(job.col) + f0.x) * n0, (f32(job.row) + f0.y) * n0)));
+        let streets = smoothstep(0.06, 0.2, urban);
+        let grass_m = job.models >> 16u > 1u && (job.models & 0xffffu) >= u32(body.veg.z);
+        let keep_town = select(1.0 - 0.9 * streets, 1.0 - streets, grass_m);
+        if f32(c.z & 0xffu) / 255.0 >= keep_town {
+            return;
+        }
     }
     let k = atomicAdd(&counts[job.slot], 1u);
     if k >= SLOT_CAP {
@@ -422,19 +531,24 @@ fn append(bucket: u32, inst: Inst) {
     }
 }
 
-@compute @workgroup_size(64)
-fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let slot = gid.y;
-    let i = gid.x;
-    let cell = cells[slot];
-    if (cell.shift_live & 0x100u) == 0u || i >= atomicLoad(&counts[slot]) {
-        return;
-    }
-    let packed = instances[slot * SLOT_CAP + i];
-    let c = candidate(cell.seed, packed & 0xffffu);
-    let attr = ((packed >> 16u) & 0xffu) | (c.z & 0xffffff00u);
-    // The instance's place in the cell, then in the drawn node under it.
-    var f = (vec2<f32>(f32(c.x & 0xffffu), f32(c.x >> 16u)) + 0.5) / 65536.0;
+// A point of a cell (`f` 0..1 over it) lifted onto the drawn ground: the triangle the mesh draws
+// there (its corners `va`, `vb`, `vc`, node-local), the point `p` (height in w), the node's page.
+struct Lift {
+    ok: bool,
+    p: vec4<f32>,
+    va: vec4<f32>,
+    vb: vec4<f32>,
+    vc: vec4<f32>,
+    page: u32,
+    // The page's vertex step along the face's u and v there (node-local).
+    du: vec3<f32>,
+    dv: vec3<f32>,
+}
+
+fn lift(cell: Cell, f_in: vec2<f32>) -> Lift {
+    var o: Lift;
+    o.ok = false;
+    var f = f_in;
     var e = tree[cell.root];
     var g: vec2<f32>;
     let shift = cell.shift_live & 0xffu;
@@ -449,11 +563,11 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
         g = f * 32.0;
     }
     if (e & LEAF) == 0u {
-        return;
+        return o;
     }
     let page = e & NO_PAGE;
     if page == NO_PAGE {
-        return;
+        return o;
     }
     let info = page_info[page];
     // The triangle the mesh draws there: cells split along the (x+1, y)-(x, y+1) diagonal.
@@ -475,7 +589,43 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
         vc = drawn_vertex(page, x0 + 1u, y0, info);
         w = vec3<f32>(t.x + t.y - 1.0, 1.0 - t.x, 1.0 - t.y);
     }
-    let p = va * w.x + vb * w.y + vc * w.z;
+    o.p = va * w.x + vb * w.y + vc * w.z;
+    o.va = va;
+    o.vb = vb;
+    o.vc = vc;
+    o.page = page;
+    let base = page * PAGE_VERTS + y0 * GRID + x0;
+    o.du = page_pos[base + 1u].xyz - page_pos[base].xyz;
+    o.dv = page_pos[base + GRID].xyz - page_pos[base].xyz;
+    o.ok = true;
+    return o;
+}
+
+@compute @workgroup_size(64)
+fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let slot = gid.y;
+    let i = gid.x;
+    let cell = cells[slot];
+    if (cell.shift_live & 0x100u) == 0u || i >= atomicLoad(&counts[slot]) {
+        return;
+    }
+    let packed = instances[slot * SLOT_CAP + i];
+    if ((packed >> 16u) & 0xffu) == body.species.w && body.city.x > 0.5 {
+        cull_building(slot, i, cell);
+        return;
+    }
+    let c = candidate(cell.seed, packed & 0xffffu);
+    let attr = ((packed >> 16u) & 0xffu) | (c.z & 0xffffff00u);
+    // The instance's place in the cell, then in the drawn node under it.
+    let lf = lift(cell, (vec2<f32>(f32(c.x & 0xffffu), f32(c.x >> 16u)) + 0.5) / 65536.0);
+    if !lf.ok {
+        return;
+    }
+    let p = lf.p;
+    let va = lf.va;
+    let vb = lf.vb;
+    let vc = lf.vc;
+    let info = page_info[lf.page];
     // No trees in the sea or on its shore.
     if p.w < body.lod2.w {
         return;
@@ -601,6 +751,71 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     if mesh < 1.0 {
         append(md.impostor_bucket, o);
     }
+}
+
+// A building: its record lifted onto the drawn ground, standing on a plinth down to the lowest ground
+// under its footprint, turned with its street grid, faded out over the last 15 % of the range.
+fn cull_building(slot: u32, i: u32, cell: Cell) {
+    let rec = noises[slot * SLOT_CAP + i];
+    let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
+    if !lf.ok {
+        return;
+    }
+    let p = lf.p;
+    let info = page_info[lf.page];
+    // The land as the ground's town needs it (planet.wesl's civ block: not the highlands, off the
+    // sea; on a map body its water mask, as the ground's: Earth's coastal towns stand a few metres up).
+    let sea = body.lod2.w > -1e8;
+    let hr = (p.w - select(body.city2.z, 0.0, sea)) / max(body.city2.w, 100.0);
+    var land = 1.0 - smoothstep(select(0.55, 0.25, sea), select(0.8, 0.5, sea), hr);
+    if body.veg.x > 2.5 {
+        let dir_l = normalize(info.dir * body.centre.w + p.xyz);
+        let uv = patch_uv(dir_l);
+        land *= select(0.0, textureSampleLevel(veg_color, veg_smp, uv, 0.0).a, all(uv > vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)));
+    } else if sea {
+        land *= smoothstep(2.0, 20.0, p.w);
+    }
+    if smoothstep(0.03, 0.3, land) < 0.5 {
+        return;
+    }
+    let w = f32(rec.y & 0xffu) * 0.5;
+    let dpt = f32((rec.y >> 8u) & 0xffu) * 0.5;
+    let hq = f32((rec.y >> 16u) & 0xffu) / 255.0;
+    let h = hq * hq * 600.0;
+    let ang = (f32(rec.y >> 24u) / 255.0 - 0.5) * 6.2831853;
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    let up = cell.up;
+    // The plinth: down by the footprint's half width times the ground's slope, and a metre.
+    let rd = body.centre.w;
+    let dir = normalize(info.dir * rd + p.xyz);
+    let tri_n = normalize(cross(lf.vb.xyz - lf.va.xyz, lf.vc.xyz - lf.va.xyz));
+    let cs = clamp(abs(dot(tri_n, dir)), 0.2, 1.0);
+    let plinth = 1.0 + 0.5 * max(w, dpt) * sqrt(1.0 - cs * cs) / cs;
+    let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
+    let scale = h + plinth;
+    let dist = length(pos);
+    let range = body.city2.x;
+    let fade = clamp((range - dist) / (range * 0.15), 0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let r = 0.5 * sqrt(w * w + dpt * dpt + scale * scale);
+    let bc = pos + up * (0.5 * scale);
+    for (var k = 0u; k < 5u; k++) {
+        let pl = cam.planes[k];
+        if dot(pl.xyz, bc) + pl.w < -r {
+            return;
+        }
+    }
+    // Its x axis: the street grid's u axis (turned from the face's u towards its v), on the ground.
+    let fu = normalize(m * lf.du);
+    let fv = normalize(m * lf.dv);
+    var xa = cos(ang) * fu + sin(ang) * fv;
+    xa = normalize(xa - up * dot(xa, up));
+    let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
+    let model = body.species.w;
+    let o = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
+    append(models[model].mesh_bucket, o);
 }
 
 // ---- finish ----------------------------------------------------------------------------------

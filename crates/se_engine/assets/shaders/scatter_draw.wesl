@@ -45,6 +45,9 @@ struct Body {
     species: vec4<u32>,
     // x the ground's relief (m)
     flora_k: vec4<f32>,
+    // Cities (scatter.wesl's Body): the civilization, the buildings' range
+    city: vec4<f32>,
+    city2: vec4<f32>,
     // x, y the ground's cloud key (radius m, seed fraction); z 1 with atmosphere tables bound.
     key: vec4<f32>,
     atm: AtmParams,
@@ -527,4 +530,137 @@ fn fragment_impostor(in: ImpostorOut) -> @location(0) vec4<f32> {
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     // The bake stores straight colour (spread into the clear texels), not premultiplied.
     return vec4<f32>(surface_color(pl, c.rgb * in.tint, n, up, 0.5, leaf_trans(in.world)), 1.0);
+}
+
+// ---- buildings (cities) ----------------------------------------------------------------------
+// One box an instance (scatter.wesl cull_building): `scale` its height from the bottom of its plinth,
+// `fades` its width and depth (f16), the model word its fade (bits 8-15) and a hash (16-31). The
+// facade is drawn by the pixel: storeys of about 3 m, bays of windows, the walls' material and the
+// roof by the building's hash and height; by night a share of its windows lit (one hash a window,
+// Megaton Rainfall's rule: no state, stable).
+
+struct BuildingOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    // x across the face (m), y down from the roof (m), z along the roof's second axis (m)
+    @location(2) facade: vec3<f32>,
+    @location(3) @interpolate(flat) up: vec3<f32>,
+    @location(4) l_sun: vec3<f32>,
+    @location(5) l_sky: vec3<f32>,
+    @location(6) l_flat: vec3<f32>,
+    @location(7) haze_t: vec3<f32>,
+    @location(8) haze_a: vec3<f32>,
+    // x, y the hash's two bytes (0-1), z the fade, w the height (m)
+    @location(9) @interpolate(flat) style: vec4<f32>,
+    // the footprint (m) and whether this is the roof
+    @location(10) @interpolate(flat) size: vec3<f32>,
+}
+
+@if(BUILDING)
+@vertex
+fn vertex_building(v: VertexIn) -> BuildingOut {
+    let inst = insts[v.instance];
+    let up = oct_decode(inst.up);
+    let xa = oct_decode(inst.xa);
+    let za = cross(xa, up);
+    let wd = unpack2x16float(inst.fades);
+    let world = inst.pos + xa * (v.pos.x * wd.x) + up * (v.pos.y * inst.scale) + za * (v.pos.z * wd.y);
+    var o: BuildingOut;
+    o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
+    o.world = world;
+    o.normal = xa * v.normal.x + up * v.normal.y + za * v.normal.z;
+    let roof = v.normal.y > 0.5;
+    let across = select(v.pos.z * wd.y, v.pos.x * wd.x, abs(v.normal.z) > 0.5);
+    o.facade = vec3<f32>(select(across, v.pos.x * wd.x, roof), (1.0 - v.pos.y) * inst.scale, v.pos.z * wd.y);
+    o.up = up;
+    let pl = unpack_light(inst_lights[v.instance]);
+    o.l_sun = pl.sun;
+    o.l_sky = pl.sky;
+    o.l_flat = pl.flat_e;
+    o.haze_t = pl.haze_t;
+    o.haze_a = pl.haze_a;
+    let hash = inst.model >> 16u;
+    o.style = vec4<f32>(f32(hash & 0xffu) / 255.0, f32(hash >> 8u) / 255.0, f32((inst.model >> 8u) & 0xffu) / 255.0, inst.scale);
+    o.size = vec3<f32>(wd, select(0.0, 1.0, roof));
+    return o;
+}
+
+fn bd_hash(a: u32) -> f32 {
+    var h = a * 0x9e3779b9u;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
+// A box's share of a cell (0..1 over `x`) covered by the middle `frac` of it, box-filtered by the
+// footprint `fp` (in cells).
+fn bd_band(x: f32, frac: f32, fp: f32) -> f32 {
+    let lo = 0.5 - 0.5 * frac;
+    let hi = 0.5 + 0.5 * frac;
+    let f = max(fp, 1e-4);
+    let a = clamp((min(x + 0.5 * f, hi) - max(x - 0.5 * f, lo)) / f, 0.0, 1.0);
+    return mix(a, frac, smoothstep(0.35, 1.0, fp));
+}
+
+@if(BUILDING)
+@fragment
+fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
+    // The far fade (the range's last 15 %).
+    if dither2(in.clip.xy) >= in.style.z {
+        discard;
+    }
+    let s0 = in.style.x;
+    let s1 = in.style.y;
+    let h = in.style.w;
+    let n = normalize(in.normal);
+    let l = normalize(body.light.sun_dir.xyz);
+    // By night (the star under the horizon there) a share of the windows is lit.
+    let night = 1.0 - smoothstep(-0.12, 0.03, dot(in.up, l));
+    var albedo: vec3<f32>;
+    var emit = vec3<f32>(0.0);
+    if in.size.z > 0.5 {
+        // The roof: tar and gravel, a parapet round its edge; houses' roofs tiled or slate.
+        let edge = min(0.5 * in.size.x - abs(in.facade.x), 0.5 * in.size.y - abs(in.facade.z));
+        let house = h < 12.0;
+        var roof = mix(vec3<f32>(0.16, 0.16, 0.155), vec3<f32>(0.24, 0.235, 0.22), s1);
+        if house {
+            roof = select(vec3<f32>(0.20, 0.21, 0.23), vec3<f32>(0.38, 0.19, 0.13), s1 > 0.45);
+        }
+        let fp = length(fwidth(in.facade.xz));
+        albedo = mix(roof, vec3<f32>(0.32, 0.31, 0.29), (1.0 - smoothstep(0.5 - fp, 0.5 + fp, edge)) * select(1.0, 0.0, house));
+    } else {
+        // The walls: storeys of 3.1 m (houses 2.9), bays of windows, the material by the hash and
+        // the height (houses rendered or brick, blocks concrete or brick, towers glass or panels).
+        let tall = smoothstep(25.0, 45.0, h);
+        let storey = select(3.1, 2.9, h < 12.0);
+        let bay = mix(mix(2.6, 4.2, s1), 1.6, tall * step(0.5, s0));
+        let wall_a = array<vec3<f32>, 4>(vec3<f32>(0.55, 0.50, 0.42), vec3<f32>(0.42, 0.24, 0.17), vec3<f32>(0.60, 0.59, 0.56), vec3<f32>(0.38, 0.37, 0.36));
+        var wall = wall_a[min(u32(s0 * 4.0), 3u)];
+        let glassy = tall * step(0.5, s0);
+        wall = mix(wall, vec3<f32>(0.10, 0.12, 0.14), glassy);
+        let wx = mix(mix(0.38, 0.7, s1), 0.92, glassy);
+        let wy = mix(mix(0.45, 0.62, s0), 0.85, glassy);
+        let cx = in.facade.x / bay;
+        let cy = in.facade.y / storey;
+        let fx = fract(cx);
+        let fy = fract(cy);
+        let fpx = length(vec2<f32>(dpdx(cx), dpdy(cx)));
+        let fpy = length(vec2<f32>(dpdx(cy), dpdy(cy)));
+        // The window's share of the pixel (the cell's mean when the pixel spans cells).
+        let win = bd_band(fx, wx, fpx) * bd_band(fy, wy, fpy);
+        let glass = mix(vec3<f32>(0.05, 0.06, 0.07), vec3<f32>(0.08, 0.10, 0.12), glassy);
+        albedo = mix(wall, glass, win);
+        // The window's light by night: a hash per window, about 45 % lit, warm, of various strength.
+        let wid = u32(floor(cx) + 4096.0) * 7919u + u32(floor(cy)) * 104729u + u32(s0 * 255.0) * 31u + u32(s1 * 255.0) * 65537u;
+        let lit = bd_hash(wid);
+        let on = select(0.0, 0.35 + 0.65 * bd_hash(wid ^ 0x5bd1e995u), lit < 0.45);
+        // Far: the lit share of the windows' area.
+        let far = smoothstep(0.35, 1.0, max(fpx, fpy));
+        let lit_w = mix(on, 0.45 * 0.68, far) * win;
+        emit = vec3<f32>(1.0, 0.74, 0.46) * (0.55 * lit_w * night);
+    }
+    let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
+    return vec4<f32>(surface_color(pl, albedo, n, in.up, 0.0, 0.0) + emit * in.haze_t, 1.0);
 }

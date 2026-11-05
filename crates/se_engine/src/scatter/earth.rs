@@ -64,35 +64,38 @@ pub struct EarthVeg {
     pub id: u32,
     /// The map's colour (sRGB) with the land in alpha.
     pub color: Option<Handle<Image>>,
-    task: Option<Task<(DVec3, f64, Vec<u8>)>>,
-    /// A finished patch waiting a few frames for its image to reach the GPU (until then the old one
+    /// The lights map's brightness (the towns' density for the cities: scatter.wesl), when the body has one.
+    pub lights: Option<Handle<Image>>,
+    task: Option<Task<(DVec3, f64, Vec<u8>, Option<Vec<u8>>)>>,
+    /// A finished patch waiting a few frames for its images to reach the GPU (until then the old one
     /// stays bound; a missing one would leave no plants for a frame).
-    pending: Option<(DVec3, f64, Handle<Image>, u32)>,
+    pending: Option<(DVec3, f64, Handle<Image>, Option<Handle<Image>>, u32)>,
 }
 
 impl Default for EarthVeg {
     fn default() -> Self {
-        EarthVeg { centre: DVec3::Y, tan_a: 0.0, id: 0, color: None, task: None, pending: None }
+        EarthVeg { centre: DVec3::Y, tan_a: 0.0, id: 0, color: None, lights: None, task: None, pending: None }
     }
 }
 
 impl EarthVeg {
     /// Starts a new patch around `cam_dir` (body frame, unit) when the camera has left the middle of
     /// the current one; takes a finished one.
-    pub fn update(&mut self, vfs: &Arc<Vfs>, color: &TileLayer, water: Option<&TileLayer>, radius: f64, cam_dir: DVec3, images: &mut Assets<Image>) {
-        if let Some((c, tan_a, image, frames)) = self.pending.take() {
+    pub fn update(&mut self, vfs: &Arc<Vfs>, color: &TileLayer, water: Option<&TileLayer>, lights: Option<&TileLayer>, radius: f64, cam_dir: DVec3, images: &mut Assets<Image>) {
+        if let Some((c, tan_a, image, lit, frames)) = self.pending.take() {
             if frames > 0 && self.color.is_some() {
-                self.pending = Some((c, tan_a, image, frames - 1));
+                self.pending = Some((c, tan_a, image, lit, frames - 1));
             } else {
-                (self.centre, self.tan_a, self.color) = (c, tan_a, Some(image));
+                (self.centre, self.tan_a, self.color, self.lights) = (c, tan_a, Some(image), lit);
                 self.id += 1;
             }
             return;
         }
         if let Some(task) = self.task.as_mut() {
-            if let Some((c, tan_a, col)) = check_ready(task) {
+            if let Some((c, tan_a, col, lit)) = check_ready(task) {
                 self.task = None;
-                self.pending = Some((c, tan_a, images.add(patch_image(col)), 3));
+                let lit = lit.map(|l| images.add(patch_image_format(l, TextureFormat::R8Unorm)));
+                self.pending = Some((c, tan_a, images.add(patch_image(col)), lit, 3));
             }
             return;
         }
@@ -101,21 +104,26 @@ impl EarthVeg {
         if self.color.is_some() && away < half * 0.25 {
             return;
         }
-        let (vfs, color, water) = (vfs.clone(), color.clone(), water.cloned());
+        let (vfs, color, water, lights) = (vfs.clone(), color.clone(), water.cloned(), lights.cloned());
         let tan_a = half.tan();
         self.task = Some(AsyncComputeTaskPool::get().spawn(async move {
             let col = build_patch(&vfs, &color, water.as_ref(), cam_dir, tan_a);
-            (cam_dir, tan_a, col)
+            let lit = lights.map(|l| build_lights(&vfs, &l, cam_dir, tan_a));
+            (cam_dir, tan_a, col, lit)
         }));
     }
 }
 
 fn patch_image(data: Vec<u8>) -> Image {
+    patch_image_format(data, TextureFormat::Rgba8UnormSrgb)
+}
+
+fn patch_image_format(data: Vec<u8>, format: TextureFormat) -> Image {
     let mut image = Image::new(
         Extent3d { width: PATCH_SIZE, height: PATCH_SIZE, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
-        TextureFormat::Rgba8UnormSrgb,
+        format,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -195,6 +203,26 @@ fn build_patch(vfs: &Vfs, color: &TileLayer, water: Option<&TileLayer>, c: DVec3
         started.elapsed().as_secs_f64() * 1e3
     );
     col
+}
+
+/// The lights map's brightness over the patch (its brightest channel, a byte a texel): the towns'
+/// density for the cities (scatter.wesl's buildings, as the ground's from its lights tiles).
+fn build_lights(vfs: &Vfs, lights: &TileLayer, c: DVec3, tan_a: f64) -> Vec<u8> {
+    let n = PATCH_SIZE as usize;
+    let (e1, e2) = frame_axes(c);
+    let mut tiles = Tiles { vfs, layer: lights, level: lights.max_level, cache: HashMap::new() };
+    let mut out = vec![0u8; n * n];
+    for y in 0..n {
+        for x in 0..n {
+            let u = (x as f64 + 0.5) / n as f64 * 2.0 - 1.0;
+            let v = (y as f64 + 0.5) / n as f64 * 2.0 - 1.0;
+            let d = (c + (e1 * u + e2 * v) * tan_a).normalize();
+            if let Some(l) = tiles.sample(d) {
+                out[y * n + x] = l[0].max(l[1]).max(l[2]).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -328,6 +328,26 @@ bodies only).
   make cities findable from space.
 
 **City sectors.**
+
+> **Changed at the start of step 7 (2026-11-05): the layout is a function, not a CPU graph.** The
+> ground draws roads per pixel and the scatter places objects on the GPU, so the city's layout is a
+> WGSL function both evaluate at any point (`city.wesl`): districts bounded by arterials on a bent
+> 512 m grid, each district's streets on its own turned grid, blocks cut into lots, one building per
+> lot. Its frame is the cube face's (face, 4,096 m tile, position in the tile: the ground's exact
+> soil coordinate, which the scatter's cells also know as integers), so the layout never loses
+> precision, never repeats and joins across sectors by itself; no CPU layout, cache, readback or
+> per-sector buffers. What it gives up: a road graph cars can route on (traffic drives along the
+> grid's streets instead), streets bending round single obstacles (they stop where the land does not
+> suit instead) and continuity across the cube's 12 edges (a street meets a different grid there).
+> Face metres are not true metres (0.64-1.27 of them across a face): widths are corrected by the
+> local metric, block sizes simply vary with it.
+>
+> Sub-steps: **7a** the layout function and roads in the ground (generated planets and Earth from
+> its lights); **7b** buildings as instanced boxes from the scatter (a new class with bigger cells),
+> facades and night windows in their shader; **7c** street lamps and traffic (glow sprites, cars);
+> **7d** near detail (MR's facade modules, roof props, street furniture, parked cars); **7e** Earth's
+> big cities checked (Tokyo, New York) and the budget.
+
 - Cities are built in fixed 5 km sectors (MR's size) on the cube-sphere.
 - A sector's layout comes from a hash of its key, the settlement density and the culture seed:
   1. a road graph (arterials first, then streets, in the culture's pattern, bent around steep
@@ -829,6 +849,64 @@ Left open:
   drawn ground; the rural light's share (0.2) is set by eye.
 - Clouds cover the lights as they cover the ground (the flat and volumetric clouds draw over it); a
   lit town does not light its clouds from below.
+
+### Step 7a-7b: the city layout, roads in the ground, buildings (2026-11-05)
+
+What was built:
+- **`city.wesl`**: the layout as a function of a point in the cube face's frame (face, 4,096 m tile of
+  face metres, the ground's exact soil coordinate inside it): districts of 512 face m bounded by
+  arterials on a bent grid, each district's streets on its own turned grid (the culture's `grid_turn`
+  sets how far), blocks cut into lots (`ct_lot`, shared by the ground and the buildings), one building
+  a lot (`ct_building`: setbacks, footprint, storeys), business cores as a smooth noise (`ct_core`).
+- **Roads in the ground** (`city_ground`, planet.wesl): asphalt, sidewalks, centre lines and lane
+  dashes, zebra crossings in line with the crossing street's sidewalks, paved lots and gardens; every
+  feature box-filtered by the pixel's footprint and turned into its mean once the pixel spans a block,
+  so roads draw thinner from altitude and never shimmer. Rural roads (every other arterial, about a
+  kilometre apart) through farmland. Generated planets take the towns' density from the settlement
+  field, Earth from its lights tiles (off its water mask).
+- **Buildings** (the scatter, a class of their own in the plants' 800 m cells within 7 km): a cell's
+  candidates are a 90 x 90 grid; a point keeps the building whose lot's middle falls in its square,
+  its record (place in the cell, width, depth, height, turn) in the candidate's noise slot; the cull
+  pass lifts it onto the drawn ground with a plinth down the slope and turns it with its street grid.
+  One box an instance (the library's last model), drawn by its own pipeline: storeys, bays of
+  windows, the walls' material and the roof by the building's hash and height, lit windows by night
+  (a hash a window, about 45 %). Lit as the ground (the per-instance light pass).
+- Earth's buildings take the towns' density from its lights map, built into the plants' map patch
+  (a second image, `veg_lights`). Plants thin out in towns at placement (a few garden trees, no grass).
+- By night, near the ground, a town's light (Earth's glow map, a civilization's field) comes from its
+  streets (`CityGround::lamp`: the streets bright, the lots dim, about 0.4 of the light on a block's
+  mean; the windows give the rest); from afar it is unchanged.
+- Test switches: `SE_CIV_TEST=LEVEL` gives every body with land plants a civilization of that level;
+  `SE_CITY_TEST=1` puts towns on all suitable land (both test only).
+
+Learned:
+- A city layout per pixel needs an exact frame: a direction in f32 is only good to about 0.4 m on
+  Earth. The ground's soil coordinate (face metres modulo 4,096 m, exact per node) plus the node's
+  tile index is, and the scatter's cells know the same integers. Every period in the layout divides
+  4,096 so the tile edges never show.
+- Lot widths must come from the block's own hash, never the pixel's density (the lots' edges would
+  wander across a block where the density changes).
+- The ground's `proc_params.y` (relief) is not its height range: on an arid world the ground stood
+  more than twice it above the radius, so "low on the relief" left no land for towns at all (step 6's
+  rule worked by luck on lacustrine worlds). The towns' land is now measured on SE's bump height
+  (`Terrain::ground_range_m`): only highlands and the sea are excluded; the fertility, the coast and the
+  settlement field say where towns cluster. On Earth the water mask, not the height: its coastal towns
+  stand a few metres up.
+- Earth's lights are bright over whole metro areas: towers everywhere until they were kept to the
+  business cores (a smooth 1 km noise, a core's odds rising with the density), which now cluster as
+  real cities' do, with low-rise neighbourhoods round them.
+- SE's lights map, spread evenly at street level, lit the whole ground like a floodlit car park.
+
+Checked: New York by day and night from 300 m and 1.5 km (towers in cores, low-rise round them, lit
+windows, lit streets); the generated world RS 8514-928-8-5906585-158 3 under the test switches (a
+dense city at 300 m and 1.5 km, its rural roads without them). Cost at Ultra 3440x1440 over New York's
+core from 300 m (about 24,500 buildings): buildings 0.26 ms, the ground's streets 0.14 ms, the
+scatter's passes 0.14 ms; 0.55 ms in all against the 2.5 ms budget.
+
+Left open (7c-7e): street lamps and traffic; the far buildings (they end at 7 km: from 1.5 km the
+city's edge shows); near detail (MR's facade modules, roof clutter, street furniture); the culture's
+window light colour; a real town on a generated planet checked by daylight (the nearby ones orbit red
+dwarfs); streets meet a different grid across the cube's 12 edges.
 
 ## Implementation notes (from the port's gotchas: keep these)
 

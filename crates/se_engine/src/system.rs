@@ -787,7 +787,13 @@ fn spawn_system_members(
             terrain.tidal_lock = body_in.as_ref().is_some_and(|c| c.tidally_locked);
             terrain.land_plants = crate::scatter::land_plants(&b.block);
             terrain.pressure_atm = gen_in.pressure_atm;
-            terrain.civ = b.civilization().map(|l| (l, se_core::procgen::civilization::culture_seed(b.names.first().map_or("", |n| n.as_str()))));
+            // `SE_CIV_TEST=LEVEL` (tests only) gives every body with land plants a civilization of that
+            // level: the nearby real ones all orbit deep-red dwarfs, whose light hides the towns by day.
+            let civ_test = std::env::var("SE_CIV_TEST").ok().and_then(|v| v.parse::<u8>().ok()).filter(|l| (1..=4).contains(l));
+            terrain.civ = b
+                .civilization()
+                .or(civ_test.filter(|_| terrain.land_plants))
+                .map(|l| (l, se_core::procgen::civilization::culture_seed(b.names.first().map_or("", |n| n.as_str()))));
             if let Some((level, _)) = terrain.civ {
                 info!("{}: a level {level} civilization", b.names.first().map_or("", |n| n.as_str()));
             }

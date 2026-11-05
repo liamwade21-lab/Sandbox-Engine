@@ -82,6 +82,18 @@ that install, never copied into the project.
   Intelligent as multicellular (`LifeParams::multicellular()`). `print_civ_stats` (ignored) re-fits
   the base chance and level weights to the decisions (1 in 20 land-life planets; 45/15/20/20). The
   dev command `search LY civ` logs every civilization the star browser finds.
+- Cities (the plan's step 7): the layout is a WGSL function (`city.wesl`) in the cube face's frame
+  (face, 4,096 m tile of face metres, the ground's soil coordinate in it: `PlanetUniform::city_tile`,
+  the scatter jobs' `tile`/`local`); every period in it divides 4,096. The ground draws its roads
+  (`city_ground`) and the scatter places one building a lot (`ct_building`): both use `ct_lot`, so
+  change the lots only there. Buildings are a scatter class of their own (`Scatter::bcells`, jobs of
+  kind 1, `BUILD_RANGE_M`), their record in the candidate's noise slot, the box the library's last model
+  (`ScatterLibrary::building`, the body's `species.w`), drawn by `vertex_building`/`fragment_building`.
+  The towns' land is measured on `Terrain::ground_range_m` (SE's bump height), never the relief value
+  (`proc_params.y` is not the height range). Earth's towns come from its lights map (the ground's tiles,
+  the scatter's patch `veg_lights`). Near the ground a town's night light comes from its streets
+  (`CityGround::lamp`). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
+  all suitable land), or Earth (New York 40.75 -73.98).
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel
   spans a good part of a cell, or towns vanish from orbit) and planet.wesl's civ block in `lit_ground`

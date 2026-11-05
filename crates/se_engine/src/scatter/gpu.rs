@@ -100,6 +100,9 @@ struct BodyGpu {
     species: UVec4,
     /// x the ground's relief (m).
     flora_k: Vec4,
+    /// Cities: the body's civilization (`BodyFrame::city`, `city2`).
+    city: Vec4,
+    city2: Vec4,
     /// The ground's cloud key (radius m, seed fraction) and x, y of `proc_params2`; z 1 when the body
     /// has atmosphere tables bound.
     key: Vec4,
@@ -183,8 +186,8 @@ struct ScatterGpu {
     slots_used: u32,
     /// Per slot, the job it was last placed with (its cell and seed).
     placed: Vec<Option<[u32; 7]>>,
-    /// This frame's draw pipelines: bark, leaves, impostor.
-    pipelines: [Option<CachedRenderPipelineId>; 3],
+    /// This frame's draw pipelines: bark, leaves, impostor, building.
+    pipelines: [Option<CachedRenderPipelineId>; 4],
 }
 
 /// The draw pipelines' layouts and shader.
@@ -202,7 +205,7 @@ struct DrawPipeline {
 struct DrawKey {
     samples: u32,
     format: TextureFormat,
-    /// 0 bark, 1 leaves, 2 impostor.
+    /// 0 bark, 1 leaves, 2 impostor, 3 building.
     kind: u8,
 }
 
@@ -211,10 +214,17 @@ impl SpecializedRenderPipeline for DrawPipeline {
 
     fn specialize(&self, key: DrawKey) -> RenderPipelineDescriptor {
         let impostor = key.kind == 2;
-        let (vs, fs) = if impostor { ("vertex_impostor", "fragment_impostor") } else { ("vertex_mesh", "fragment_mesh") };
+        let (vs, fs) = match key.kind {
+            2 => ("vertex_impostor", "fragment_impostor"),
+            3 => ("vertex_building", "fragment_building"),
+            _ => ("vertex_mesh", "fragment_mesh"),
+        };
         let mut defs: Vec<bevy::shader::ShaderDefVal> = Vec::new();
         if key.kind == 1 {
             defs.push("LEAVES".into());
+        }
+        if key.kind == 3 {
+            defs.push("BUILDING".into());
         }
         if impostor {
             defs.push("IMPOSTOR".into());
@@ -225,7 +235,7 @@ impl SpecializedRenderPipeline for DrawPipeline {
             vec![VertexBufferLayout::from_vertex_formats(VertexStepMode::Vertex, [VertexFormat::Float32x3, VertexFormat::Float32x3, VertexFormat::Float32x2])]
         };
         RenderPipelineDescriptor {
-            label: Some(format!("scatter_draw_{}", ["bark", "leaves", "impostor"][key.kind as usize]).into()),
+            label: Some(format!("scatter_draw_{}", ["bark", "leaves", "impostor", "building"][key.kind as usize]).into()),
             layout: vec![
                 self.view_layout.clone(),
                 if impostor { self.impostor_layout.clone() } else { self.material_layout.clone() },
@@ -239,7 +249,7 @@ impl SpecializedRenderPipeline for DrawPipeline {
                 targets: vec![Some(ColorTargetState { format: key.format, blend: None, write_mask: ColorWrites::ALL })],
                 ..default()
             }),
-            primitive: PrimitiveState { cull_mode: if key.kind == 0 { Some(Face::Back) } else { None }, ..default() },
+            primitive: PrimitiveState { cull_mode: if key.kind == 0 || key.kind == 3 { Some(Face::Back) } else { None }, ..default() },
             depth_stencil: Some(DepthStencilState {
                 format: CORE_3D_DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
@@ -274,7 +284,7 @@ fn init_gpu(
             (
                 uniform_buffer::<BodyGpu>(false),
                 uniform_buffer::<CameraGpu>(false),
-                ro(32),  // jobs
+                ro(std::mem::size_of::<super::PlaceJob>() as u64),  // jobs
                 rw(4),   // instances
                 rw(4),   // counts
                 ro(32),  // cells
@@ -290,6 +300,7 @@ fn init_gpu(
                 rw(8),   // noises
                 texture_2d(TextureSampleType::Float { filterable: true }), // the plants' map patch
                 sampler(SamplerBindingType::Filtering),
+                texture_2d(TextureSampleType::Float { filterable: true }), // its lights (Earth's towns)
             ),
         ),
     );
@@ -382,7 +393,7 @@ fn init_gpu(
         tree: buffer(&device, "scatter_tree", TREE_MAX as u64 * 4, storage),
         page_pos: buffer(&device, "scatter_page_pos", PAGES as u64 * PAGE_VERTS as u64 * 16, storage),
         page_info: buffer(&device, "scatter_page_info", PAGES as u64 * 48, storage),
-        jobs: buffer(&device, "scatter_jobs", MAX_JOBS as u64 * 32, storage),
+        jobs: buffer(&device, "scatter_jobs", MAX_JOBS as u64 * std::mem::size_of::<super::PlaceJob>() as u64, storage),
         body: UniformBuffer::default(),
         camera: UniformBuffer::default(),
         lib: None,
@@ -402,7 +413,7 @@ fn init_gpu(
         n_jobs: 0,
         slots_used: 0,
         placed: vec![None; SLOTS as usize],
-        pipelines: [None; 3],
+        pipelines: [None; 4],
         debug: std::env::var("SE_SCATTER_DEBUG").is_ok_and(|v| v != "0").then(|| DebugReadback {
             staging: buffer(&device, "scatter_debug", 4096, BufferUsages::MAP_READ | BufferUsages::COPY_DST),
             state: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -562,6 +573,8 @@ fn prepare(
         grass: b.grass,
         species: b.species,
         flora_k: Vec4::new(b.relief_m, 0.0, 0.0, 0.0),
+        city: b.city,
+        city2: b.city2,
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,
@@ -609,6 +622,7 @@ fn prepare_bind_groups(
     let compute_layout = cache.get_bind_group_layout(&gpu.compute_layout);
     // The plants' map patch (Bevy's black fallback until it is on the GPU: no plants from it).
     let patch = frame.as_deref().and_then(|f| f.body.patch.as_ref()).and_then(|p| images.get(p)).unwrap_or(&**zero);
+    let patch_lights = frame.as_deref().and_then(|f| f.body.patch_lights.as_ref()).and_then(|p| images.get(p)).unwrap_or(&**zero);
     gpu.compute_group = Some(device.create_bind_group(
         "scatter_compute",
         &compute_layout,
@@ -631,6 +645,7 @@ fn prepare_bind_groups(
             gpu.noises.as_entire_binding(),
             &patch.texture_view,
             &patch.sampler,
+            &patch_lights.texture_view,
         )),
     ));
     let view_layout = cache.get_bind_group_layout(&draw.view_layout);
@@ -728,7 +743,7 @@ fn queue(
             continue;
         }
         let key = |kind| DrawKey { samples: msaa.samples(), format: view.target_format, kind };
-        let ids = [0u8, 1, 2].map(|k| specialized.specialize(&cache, &draw, key(k)));
+        let ids = [0u8, 1, 2, 3].map(|k| specialized.specialize(&cache, &draw, key(k)));
         gpu.pipelines = ids.map(Some);
         phase.add(
             OpaqueNoLightmap3dBatchSetKey { pipeline: ids[0], draw_function: draw_fn, material_bind_group_index: None, slabs: MeshSlabs::default() },
@@ -874,6 +889,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawScatter {
             let (pipe, group) = match *kind {
                 DrawKind::Mesh { material, leaves } => (pipes[leaves as usize], l.material_groups[material as usize].as_ref()),
                 DrawKind::Impostor => (pipes[2], l.impostor_group.as_ref()),
+                DrawKind::Building { material } => (pipes[3], l.material_groups[material as usize].as_ref()),
             };
             let (Some(pipe), Some(group)) = (pipe, group) else { continue };
             pass.set_render_pipeline(pipe);

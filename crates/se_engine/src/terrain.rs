@@ -133,6 +133,15 @@ pub struct PlanetUniform {
     pub civ: Vec4,
     pub civ_light: Vec4,
     pub civ_urban: Vec4,
+    /// The city layout's frame (city.wesl): xy the node corner's 4,096 m tile of face metres (the
+    /// tile `soil_tile.xy` is the offset into), z the cube face, w 0.
+    pub city_tile: IVec4,
+    /// x, y true metres per face metre along the face's u and v at the node's centre; z the
+    /// culture's grid turn (0 aligned, 1 any angle); w 1 under `SE_CITY_TEST` (towns on all suitable
+    /// land).
+    pub city_frame: Vec4,
+    /// x the ground's lowest point (m above the radius), y its height range (m): `Terrain::ground_range_m`.
+    pub city_land: Vec4,
     /// The node's record in the material's light page (`PlanetMaterial::light_page`).
     pub slot: u32,
 }
@@ -1035,6 +1044,12 @@ impl Terrain {
     /// The terrain's resident nodes and kept generated grids (perf.rs).
     pub fn resident(&self) -> (usize, usize) {
         (self.nodes.len(), self.gen_tiles.len())
+    }
+
+    /// The ground's height range: its lowest point (m above the radius; with a sea, under it) and its
+    /// span (m), SE's bump height. The towns' land (planet.wesl, scatter.wesl) is measured on it.
+    pub fn ground_range_m(&self) -> (f32, f32) {
+        ground_range(&self.proc, &self.surface)
     }
 
     /// The middle of the ground's relief (m above the radius), never below the sea at the radius: where
@@ -2166,6 +2181,17 @@ fn layer_rect(layer: Option<&TileLayer>, key: TileKey) -> (Option<String>, Vec4)
 /// where `BumpOffset` is the ocean's height, and 0 without one (FUN_1405057e0 sets it; the renderer,
 /// FUN_1404ae4a0, puts height 0 at `R - BumpOffset`). So the ground of a dry world or an asteroid
 /// rises from the radius, and sea level is the radius of an ocean world.
+/// [`Terrain::ground_range_m`] from the body's surface: SE's generated ground spans `bump_m` from its
+/// sea's reference down; a catalog surface its BumpHeight from -BumpOffset.
+fn ground_range(proc: &ProcSurface, surface: &SurfaceParams) -> (f32, f32) {
+    let (lo, span) = if proc.se.is_some() {
+        (-gen_ref(proc) * proc.bump_m as f64, proc.bump_m as f64)
+    } else {
+        (-surface.bump_offset_km * 1000.0, surface.bump_height_km * 1000.0)
+    };
+    (lo as f32, span.max(100.0) as f32)
+}
+
 fn gen_ref(proc: &ProcSurface) -> f64 {
     match &proc.se {
         Some(g) if proc.ocean_fraction > 0.0 => g.v(se_core::surface_gen::SEA_LEVEL) as f64,
@@ -2520,6 +2546,23 @@ fn update_terrain(
                 civ: culture.map_or(Vec4::ZERO, |(level, seed, c)| Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.brightness, c.coast)),
                 civ_light: culture.map_or(Vec4::ZERO, |(_, _, c)| Vec3::from_array(c.light).extend(0.0)),
                 civ_urban: culture.map_or(Vec4::ZERO, |(_, _, c)| Vec3::from_array(c.urban).extend(0.0)),
+                city_tile: {
+                    let edge = terrain.radius * std::f64::consts::FRAC_PI_2 / (1u64 << key.level) as f64;
+                    let tile = |i: u32| (i as f64 * edge / SOIL_WRAP_M).floor() as i32;
+                    IVec4::new(tile(key.col), tile(key.row), key.face as i32, 0)
+                },
+                city_frame: {
+                    let (cu, cv) = (u0n + sizen * 0.5, v0n + sizen * 0.5);
+                    let e = sizen * 0.01;
+                    let du = (key.face.uv_to_dir(cu + e, cv) - key.face.uv_to_dir(cu - e, cv)).length() / (2.0 * e);
+                    let dv = (key.face.uv_to_dir(cu, cv + e) - key.face.uv_to_dir(cu, cv - e)).length() / (2.0 * e);
+                    let face_m = std::f64::consts::FRAC_PI_2;
+                    Vec4::new((du / face_m) as f32, (dv / face_m) as f32, culture.map_or(0.0, |(_, _, c)| c.grid_turn), if crate::scatter::city_test() { 1.0 } else { 0.0 })
+                },
+                city_land: {
+                    let (lo, span) = ground_range(&terrain.proc, &terrain.surface);
+                    Vec4::new(lo, span, 0.0, 0.0)
+                },
                 slot: page_slot,
             };
             // The node's lighting now (its patches all take the same).

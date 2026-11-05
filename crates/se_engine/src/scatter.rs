@@ -171,6 +171,8 @@ pub struct Scatter {
     wind: DVec3,
     wind_frame: u64,
     cells: HashMap<TileKey, CellSlot>,
+    /// The buildings' cells (cities), sharing the slots with the plants'.
+    bcells: HashMap<TileKey, CellSlot>,
     free_slots: Vec<u32>,
     pages: HashMap<TileKey, PageSlot>,
     free_pages: Vec<u32>,
@@ -194,6 +196,7 @@ impl Scatter {
 
     fn reset(&mut self) {
         self.cells.clear();
+        self.bcells.clear();
         self.pages.clear();
         self.free_slots = (0..SLOTS).rev().collect();
         self.free_pages = (0..PAGES).rev().collect();
@@ -276,6 +279,13 @@ pub struct PlaceJob {
     pub seed: u32,
     /// The models its candidates take: the first, and how many in the high 16 bits.
     pub models: u32,
+    /// 0 plants, 1 buildings (cities: one candidate a point of a 90 x 90 grid over the cell).
+    pub kind: u32,
+    /// The cell's corner in the city layout's frame (`city.wesl`): its 4,096 m tile of face metres,
+    /// the corner's face metres in it, and the cell's edge in face metres.
+    pub tile: [i32; 2],
+    pub local: [f32; 2],
+    pub edge: f32,
 }
 
 /// The body the objects stand on, per frame.
@@ -299,6 +309,8 @@ pub struct BodyFrame {
     /// `VegKind::Map`: the plants' patch (classes, colour) and its frame (centre and tan of the
     /// half-angle, then its two axes).
     pub patch: Option<Handle<Image>>,
+    /// The lights map over the patch (Earth's towns for the cities).
+    pub patch_lights: Option<Handle<Image>>,
     pub patch_frame: [Vec4; 3],
     /// The wind (render frame, m/s).
     pub wind: Vec3,
@@ -308,11 +320,16 @@ pub struct BodyFrame {
     /// SE's grass slot colour (`color[10]`), the grass's there; the first grass model and how many.
     pub grass: Vec4,
     pub grass_models: UVec2,
-    /// Earth's species' first model, the flora's, 1 when the flora is this body's; the ground's relief
-    /// (m) for the flora's highland species.
+    /// Earth's species' first model, the flora's, 1 when the flora is this body's, the buildings' box
+    /// model; the ground's relief (m) for the flora's highland species.
     pub species: UVec4,
     pub relief_m: f32,
     pub tint_gain: Vec3,
+    /// The body's civilization (cities): x its level (0 none), y the culture seed (fraction, as the
+    /// ground's `civ.y`), z its grid turn, w the radius (m); `city2` x the buildings' range (m), y 1
+    /// under `SE_CITY_TEST`, z the ground's lowest point and w its height range (m, the towns' land).
+    pub city: Vec4,
+    pub city2: Vec4,
 }
 
 /// What the render world needs this frame (extracted).
@@ -340,6 +357,27 @@ pub struct ScatterFrame {
 /// cube (one fixed level would give cells differing nine times in area: the cube's corners and the
 /// level's rounding).
 pub const CELL_EDGE_M: f64 = 800.0;
+
+/// Cities (the plan's step 7): buildings stand within this range (m) of the camera, one a lot of
+/// the city layout (`city.wesl`), in the plants' 800 m cells (a cell of their own class).
+pub const BUILD_RANGE_M: f64 = 7000.0;
+/// The city layout's tile of face metres (`city.wesl` CITY_TILE, the ground's `SOIL_WRAP_M`).
+const CITY_TILE_M: f64 = 4096.0;
+
+/// `SE_CITY_TEST=1` (tests only): a civilization's towns cover all its suitable land (the ground's
+/// streets and the buildings), to check them anywhere.
+pub fn city_test() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SE_CITY_TEST").is_ok_and(|v| v == "1"))
+}
+
+/// Whether the active body's buildings are placed: a civilization on a generated planet (its towns
+/// from the settlement field) or on Earth (from its lights map), the library holding the box, and
+/// not the test cover.
+fn buildings_on(sc: &Scatter, lib: &ScatterLibrary, terrain: &Terrain) -> bool {
+    let towns = sc.veg == VegKind::SeTerra || (sc.veg == VegKind::Map && sc.earth.lights.is_some());
+    terrain.civ.is_some() && towns && (lib.building as usize) < lib.models.len()
+}
 
 /// Grass: cells of at most this edge (m) within this range of the camera (Megaton Rainfall's 140-150
 /// m), about this many tufts a square metre (MR: 2.2), shrinking to nothing over the last 10 m.
@@ -494,7 +532,7 @@ fn update_scatter(
     out.time = (time.elapsed_secs_f64() % (200.0 * std::f64::consts::PI)) as f32;
     sc.ready = lib.ready();
     sc.flora_ready = sc.flora_want.is_none_or(|w| w.key == lib.flora_key);
-    if sc.free_slots.is_empty() && sc.cells.is_empty() {
+    if sc.free_slots.is_empty() && sc.cells.is_empty() && sc.bcells.is_empty() {
         sc.reset();
     }
     if !sc.enabled || !lib.ready() {
@@ -546,7 +584,7 @@ fn update_scatter(
         // The colour map's plants around the camera; nothing until the first patch is made.
         let (Some(d), Some(layers)) = (data.as_deref(), terrain.tile_layers()) else { return };
         let Some(color) = layers.color.as_ref() else { return };
-        sc.earth.update(&d.vfs, color, layers.water.as_ref(), r, dir, &mut images);
+        sc.earth.update(&d.vfs, color, layers.water.as_ref(), layers.lights.as_ref(), r, dir, &mut images);
         if sc.earth.color.is_none() {
             return;
         }
@@ -575,7 +613,18 @@ fn update_scatter(
     }
     let keep: std::collections::HashSet<TileKey> = keep.into_iter().map(|c| c.0).collect();
     sc.cells.retain(|k, _| keep.contains(k));
-    let used: std::collections::HashSet<u32> = sc.cells.values().map(|c| c.slot).collect();
+    // The buildings' cells (a civilization's generated planet; not in the test).
+    let mut bwanted = Vec::new();
+    if buildings_on(&sc, &lib, terrain) {
+        cells_in_range(dir, height, r, BUILD_RANGE_M, CELL_EDGE_M, &mut bwanted);
+        let mut bk = Vec::new();
+        cells_in_range(dir, height, r, BUILD_RANGE_M * 1.15, CELL_EDGE_M, &mut bk);
+        let bk: HashSet<TileKey> = bk.into_iter().map(|c| c.0).collect();
+        sc.bcells.retain(|k, _| bk.contains(k));
+    } else {
+        sc.bcells.clear();
+    }
+    let used: std::collections::HashSet<u32> = sc.cells.values().chain(sc.bcells.values()).map(|c| c.slot).collect();
     sc.free_slots = (0..SLOTS).rev().filter(|s| !used.contains(s)).collect();
     // New cells, nearest first. Every resident cell's job goes to the render world, nearest first:
     // it places the slots it has not placed yet, a few a frame (`gpu.rs` `prepare`), so a job is
@@ -606,6 +655,7 @@ fn update_scatter(
                 keep,
                 seed: cell_seed(*key, seed),
                 models,
+                ..default()
             };
             sc.cells.insert(*key, CellSlot { slot, used: frame, job });
         } else {
@@ -613,8 +663,37 @@ fn update_scatter(
         }
         out.jobs.push(sc.cells[key].job);
     }
+    // The buildings' cells, nearest first, after the plants' (one building a lot: the layout's).
+    bwanted.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for (key, _) in &bwanted {
+        if let Some(c) = sc.bcells.get_mut(key) {
+            c.used = frame;
+        } else if let Some(slot) = sc.free_slots.pop() {
+            let edge = r * std::f64::consts::FRAC_PI_2 / (1u64 << key.level) as f64;
+            let (x0, y0) = (key.col as f64 * edge, key.row as f64 * edge);
+            let tile = [(x0 / CITY_TILE_M).floor(), (y0 / CITY_TILE_M).floor()];
+            let job = PlaceJob {
+                slot,
+                face: key.face as u32,
+                level: key.level as u32,
+                row: key.row,
+                col: key.col,
+                keep: 1.0,
+                seed: cell_seed(*key, seed ^ 0xb11d_0c75),
+                models: lib.building | (1 << 16),
+                kind: 1,
+                tile: [tile[0] as i32, tile[1] as i32],
+                local: [(x0 - tile[0] * CITY_TILE_M) as f32, (y0 - tile[1] * CITY_TILE_M) as f32],
+                edge: edge as f32,
+            };
+            sc.bcells.insert(*key, CellSlot { slot, used: frame, job });
+        } else {
+            continue;
+        }
+        out.jobs.push(sc.bcells[key].job);
+    }
     // Cells kept past the range (not wanted this frame) last.
-    for c in sc.cells.values() {
+    for c in sc.cells.values().chain(sc.bcells.values()) {
         if c.used != frame {
             out.jobs.push(c.job);
         }
@@ -638,7 +717,7 @@ fn update_scatter(
     let mut tree: Vec<u32> = Vec::with_capacity(4096);
     let mut cells = vec![CellGpu::default(); SLOTS as usize];
     let mut uploads = Vec::new();
-    let resident: Vec<(TileKey, u32, u32)> = sc.cells.iter().map(|(k, c)| (*k, c.slot, c.job.seed)).collect();
+    let resident: Vec<(TileKey, u32, u32)> = sc.cells.iter().chain(sc.bcells.iter()).map(|(k, c)| (*k, c.slot, c.job.seed)).collect();
     let mut max_slot = 0;
     let mut full = false;
     for (key, slot, seed) in resident {
@@ -721,14 +800,23 @@ fn update_scatter(
         forest: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[11]),
         grass: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[10]).truncate().extend(GRASS_RANGE_M),
         grass_models: UVec2::new(lib.trees, lib.grass),
-        species: UVec4::new(lib.earth0, lib.flora0, sc.flora_want.is_some_and(|w| w.key == lib.flora_key) as u32, 0),
+        species: UVec4::new(lib.earth0, lib.flora0, sc.flora_want.is_some_and(|w| w.key == lib.flora_key) as u32, lib.building),
         relief_m: terrain.proc.relief_m as f32,
         // Matched to the ground with the trees off (2026-11-04, pixel means 0.7-3 km away): the
         // crowns' ball shading is about 1.5 times darker than level ground; Earth's ground also
         // brightens its colour map by its detail textures' brightness (about 1.6), SE's terra ground
         // draws its slot colours (its sample layers keep their mean at 1).
         tint_gain: if sc.veg == VegKind::Map { Vec3::new(2.6, 2.3, 3.5) } else { Vec3::new(1.7, 1.8, 1.8) },
+        city: terrain.civ.map_or(Vec4::ZERO, |(level, seed)| {
+            let c = se_core::procgen::civilization::culture(seed, level);
+            Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.grid_turn, r as f32)
+        }),
+        city2: {
+            let (lo, span) = terrain.ground_range_m();
+            Vec4::new(BUILD_RANGE_M as f32, if city_test() { 1.0 } else { 0.0 }, lo, span)
+        },
         patch: sc.earth.color.clone(),
+        patch_lights: sc.earth.lights.clone(),
         patch_frame: {
             let (e1, e2) = earth::frame_axes(sc.earth.centre);
             [sc.earth.centre.as_vec3().extend(sc.earth.tan_a as f32), e1.as_vec3().extend(0.0), e2.as_vec3().extend(0.0)]

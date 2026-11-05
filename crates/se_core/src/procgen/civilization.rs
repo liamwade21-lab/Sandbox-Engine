@@ -160,6 +160,9 @@ pub struct Culture {
     pub brightness: f32,
     pub urban: [f32; 3],
     pub coast: f32,
+    /// How far its street grids turn from the cube face's axes: 0 all aligned (planned grids), 1 any
+    /// angle (grown towns).
+    pub grid_turn: f32,
 }
 
 /// The culture of a civilization of `level` with seed `seed` (a hash of the planet's name): primitive
@@ -187,7 +190,8 @@ pub fn culture(seed: u32, level: u8) -> Culture {
             [v * (1.0 + s * h.cos()), v * (1.0 + s * (h - 2.09).cos()), v * (1.0 + s * (h + 2.09).cos())]
         }
     };
-    Culture { light, brightness, urban, coast: 0.5 + d.next() }
+    let coast = 0.5 + d.next();
+    Culture { light, brightness, urban, coast, grid_turn: d.next() }
 }
 
 /// The culture seed of a planet: a hash of its name.

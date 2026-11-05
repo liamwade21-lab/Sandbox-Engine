@@ -40,6 +40,8 @@ pub enum DrawKind {
     Mesh { material: u32, leaves: bool },
     /// The model's impostor quads.
     Impostor,
+    /// The buildings' boxes (one instance a building, sized by its record).
+    Building { material: u32 },
 }
 
 /// One indirect draw: a bucket's instances drawn with an index range.
@@ -58,6 +60,8 @@ pub struct LibMaterial {
     pub color: Handle<Image>,
     pub tint: [f32; 4],
     pub leaves: bool,
+    /// The buildings' box (its draws take the building pipeline: `scatter_draw.wesl` `vertex_building`).
+    pub building: bool,
 }
 
 /// A model's numbers the shaders need (`scatter.wesl` / `scatter_draw.wesl` `Model`).
@@ -96,6 +100,8 @@ pub struct ScatterLibrary {
     pub flora0: u32,
     /// The flora's key (`flora_key`) the flora models were made for.
     pub flora_key: u64,
+    /// The buildings' box model (after the grass), `u32::MAX` when there is none.
+    pub building: u32,
     pub vertices: Arc<Vec<LibVertex>>,
     pub indices: Arc<Vec<u32>>,
     pub materials: Vec<LibMaterial>,
@@ -147,6 +153,30 @@ const IMPOSTOR_CAP: u32 = 16_384;
 const SPECIES_MESH_CAP: u32 = 4096;
 const SPECIES_IMPOSTOR_CAP: u32 = 40_000;
 const GRASS_CAP: u32 = 40_000;
+/// Buildings drawn at most (cities: the box class within its range).
+const BUILDING_CAP: u32 = 60_000;
+
+/// The buildings' box: x and z -0.5..0.5, y 0..1 (the instance scales it to its footprint and
+/// height), its four walls and roof (no floor); uv in metres-to-be: x across the face, y up.
+fn building_box() -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) {
+    let (mut p, mut n, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut quad = |corners: [[f32; 3]; 4], normal: [f32; 3]| {
+        let b = p.len() as u32;
+        for (i, c) in corners.iter().enumerate() {
+            p.push(*c);
+            n.push(normal);
+            uv.push([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][i]);
+        }
+        idx.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+    };
+    // Walls (counter-clockwise seen from outside), then the roof.
+    quad([[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 1.0, 0.5], [-0.5, 1.0, 0.5]], [0.0, 0.0, 1.0]);
+    quad([[0.5, 0.0, -0.5], [-0.5, 0.0, -0.5], [-0.5, 1.0, -0.5], [0.5, 1.0, -0.5]], [0.0, 0.0, -1.0]);
+    quad([[0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [0.5, 1.0, -0.5], [0.5, 1.0, 0.5]], [1.0, 0.0, 0.0]);
+    quad([[-0.5, 0.0, -0.5], [-0.5, 0.0, 0.5], [-0.5, 1.0, 0.5], [-0.5, 1.0, -0.5]], [-1.0, 0.0, 0.0]);
+    quad([[-0.5, 1.0, 0.5], [0.5, 1.0, 0.5], [0.5, 1.0, -0.5], [-0.5, 1.0, -0.5]], [0.0, 1.0, 0.0]);
+    (p, n, uv, idx)
+}
 
 /// Megaton Rainfall's grass: its `billboard_grass` material (the 2x2 tuft atlas `Billboard_Grass`,
 /// tint 0.45 0.50 0.29), one tuft per atlas cell as its `bunch_N` models (made by its code, not
@@ -234,7 +264,8 @@ fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor:
             let first_index = a.indices.len() as u32;
             // The indices are absolute within the model: the draw's base vertex is the model's first.
             a.indices.extend(&src.indices[first as usize..(first + count) as usize]);
-            a.draws.push(DrawEntry { bucket: mesh_bucket, first_index, index_count: count, base_vertex, kind: DrawKind::Mesh { material: mat, leaves: material.leaves } });
+            let kind = if material.building { DrawKind::Building { material: mat } } else { DrawKind::Mesh { material: mat, leaves: material.leaves } };
+            a.draws.push(DrawEntry { bucket: mesh_bucket, first_index, index_count: count, base_vertex, kind });
             subs.push(BakeSub { first_index: first, index_count: count, texture: decoded[mat as usize].clone(), tint: material.tint, leaves: material.leaves });
             if material.leaves {
                 for &i in &src.indices[first as usize..(first + count) as usize] {
@@ -327,7 +358,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let Some(tex) = mat.textures.first() else { continue };
             let Some(color) = mr.image(&mut images, tex, true) else { continue };
             let material = materials.len() as u32;
-            materials.push(LibMaterial { color, tint: mat.diffuse(), leaves });
+            materials.push(LibMaterial { color, tint: mat.diffuse(), leaves, building: false });
             decoded_all.push(decoded(&install, tex));
             subs.push((s.first_index, s.index_count, material));
         }
@@ -347,7 +378,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
     // The generated species' materials.
     let mut mat = |images: &mut Assets<Image>, mr: &mut MrAssets, name: &str, leaves: bool| -> Option<u32> {
         let color = mr.image(images, name, true)?;
-        materials.push(LibMaterial { color, tint: [1.0; 4], leaves });
+        materials.push(LibMaterial { color, tint: [1.0; 4], leaves, building: false });
         decoded_all.push(decoded(&install, name));
         Some(materials.len() as u32 - 1)
     };
@@ -365,7 +396,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
     }
     let mut card = |name: &str| -> u32 {
         let (image, tex) = own_card(name);
-        materials.push(LibMaterial { color: images.add(image), tint: [1.0; 4], leaves: true });
+        materials.push(LibMaterial { color: images.add(image), tint: [1.0; 4], leaves: true, building: false });
         decoded_all.push(tex);
         materials.len() as u32 - 1
     };
@@ -388,7 +419,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
     let mut grass = 0;
     if let Some(color) = mr.image(&mut images, GRASS_TEXTURE, true) {
         let material = materials.len() as u32;
-        materials.push(LibMaterial { color, tint: GRASS_TINT, leaves: true });
+        materials.push(LibMaterial { color, tint: GRASS_TINT, leaves: true, building: false });
         decoded_all.push(decoded(&install, GRASS_TEXTURE));
         for t in 0..GRASS_TUFTS {
             let (positions, normals, uvs, idx) = tuft(t);
@@ -399,6 +430,24 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             grass += 1;
         }
     }
+    // The buildings' box: one instance a building (cities, the plan's step 7), sized and turned by
+    // its record; no impostor.
+    let building = models.len() as u32;
+    {
+        let material = materials.len() as u32;
+        let white = Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        );
+        materials.push(LibMaterial { color: images.add(white), tint: [1.0; 4], leaves: false, building: true });
+        decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![255; 4]) });
+        let (positions, normals, uvs, idx) = building_box();
+        let n = idx.len() as u32;
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), crown: Some((0.5, 0.0)) });
+    }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());
     *lib = ScatterLibrary {
@@ -408,6 +457,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         earth0,
         flora0,
         flora_key: key,
+        building,
         vertices: Arc::new(a.vertices),
         indices: Arc::new(a.indices),
         materials,
