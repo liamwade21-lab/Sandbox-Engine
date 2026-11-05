@@ -243,8 +243,10 @@ Key rendering decisions:
   your copy of that game (`--mr-path`). The GPU scatter places objects on the ground and culls them on the GPU, standing
   exactly on the drawn ground at every distance; meshes up close, baked impostors to 3 km, lit and hazed as the ground.
   Planets with land plants in their catalog Life (Earth, SE's generated terra worlds with multicellular land life) get
-  Megaton Rainfall's 16 trees and its grass: Earth's from its colour map (forests, copses in fields, lone trees on the
-  steppe), SE's worlds by the ground's own biome weights. The trees take the ground's colour, the forest floor darkens
+  Megaton Rainfall's 16 trees and its grass, and trees grown by the port's generator: Earth's conifers (cold forests),
+  palms (tropical coasts), acacias and shrubs (steppe), and for every generated life planet a flora of its own, shaped
+  by its gravity and air. Earth's from its colour map (forests, copses in fields, lone trees on the steppe), SE's worlds
+  by the ground's own biome weights. The trees take the ground's colour, the forest floor darkens
   under them and past 3 km the ground draws the treetops; trees and grass sway in the weather's wind. On by default:
   `SE_SCATTER=0` or the dev command `scatter off` turns it off, `scatter test` (or `SE_SCATTER_TEST=1`) is the even test
   cover of one tree over any land; `SE_SCATTER_DEBUG=1` logs its cells and counts.

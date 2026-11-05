@@ -87,6 +87,11 @@ that install, never copied into the project.
   ground's colour where they stand over their own mean colour times a gain matched by pixel means to
   the ground with the trees off (`BodyFrame::tint_gain`; re-match it if the ground's colours change).
   Grass is the same scatter in 40 m cells within 120 m (4 tufts built in code with MR's grass atlas).
+  Species (step 4): the library's models are MR's 16 trees, Earth's 8 generated species, the active
+  planet's flora (8, rebuilt with their impostors on arrival: `library.rs` `update_flora`) and the
+  grass, in that order; the cull picks a tree's species from its climate (scatter.wesl
+  `earth_species`, `flora_species`, by the places listed at `trees::SPECIES`: keep them in step). The
+  port's own leaf cards are in `assets/textures/vegetation/` (power-of-two squares, alpha cut-out).
   The meshes' light is worked out once per instance by the compute pass `light` in scatter_draw.wesl
   (per vertex it cost 0.9 ms on a forest floor).
 - Test runs' `shot PATH` needs a Windows path (`C:/...`): a Git Bash `/c/...` path inside `--run` is

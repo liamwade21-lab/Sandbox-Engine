@@ -953,6 +953,9 @@ pub struct Terrain {
     pub tidal_lock: bool,
     /// The catalog's Life gives land plants (`scatter::land_plants`): the scatter's vegetation.
     pub land_plants: bool,
+    /// The surface air pressure (atm) SE's generator works with (catalog or completed), 0 unknown:
+    /// the generated flora's crowns.
+    pub pressure_atm: f32,
     /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
     last_veg: Vec2,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
@@ -1183,6 +1186,7 @@ impl Terrain {
             loading: Vec::new(),
             tidal_lock: false,
             land_plants: false,
+            pressure_atm: 0.0,
             last_veg: Vec2::ZERO,
             gen_jobs: NodeMap::new(),
             gen_tiles: NodeMap::new(),
@@ -2895,7 +2899,15 @@ fn update_terrain(
         // The vegetation the ground draws its forest floor and canopy for (planet.wesl): the
         // scatter's kind for this body while the scatter is on, and the trees' range.
         let veg = match scatter.as_deref() {
-            Some(sc) if sc.enabled && sc.ready && !sc.test => Vec2::new(crate::scatter::veg_kind(false, &terrain) as u32 as f32, sc.lod.impostor_far),
+            Some(sc) if sc.enabled && sc.ready && !sc.test => {
+                let kind = crate::scatter::veg_kind(false, &terrain);
+                // A generated planet's trees wait for its flora: so does its forest floor.
+                if kind == crate::scatter::VegKind::SeTerra && !sc.flora_ready {
+                    Vec2::ZERO
+                } else {
+                    Vec2::new(kind as u32 as f32, sc.lod.impostor_far)
+                }
+            }
             _ => Vec2::ZERO,
         };
         if (sun - terrain.last_sun).length() > 1e-3

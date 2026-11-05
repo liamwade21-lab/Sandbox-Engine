@@ -643,6 +643,79 @@ Left open:
 - From step 2: the rings' shadow on the trees, the capture views, the 0.4 m sink.
 - No Vegetation graphics setting yet (Off / Low / High / Ultra, the plan's budget section).
 
+### Step 4: tree generator (done 2026-11-04)
+
+What was built:
+- **`scatter/trees.rs`:** a species is a recipe (crown shape: broad, cone, column, umbrella, palm,
+  shrub; height, trunk radius, where the crown starts, its spread, branches with their tilt and
+  droop, leaf cards and their size, the trunk's lean, bark set and leaf card) grown into one mesh:
+  tapered tubes (7 sides for the trunk, 3-4 for branches) dressed in MR's bark (`Trees/Bark1A`..10A)
+  and leaf cards along the branches' outer parts (two crossed per spot): MR's 8 broadleaf branch
+  cards (`Trees/Branch1A`..), the port's conifer spray and palm frond (below). Palms are a bare
+  curved trunk and a fan of fronds (strips of 4 pieces bending down, folded into a shallow V); shrubs
+  a clump of cards on three short stems. 700-1,500 triangles each (tested: 100-2,600 for every
+  species and seed).
+- **Earth's species** (fixed recipes, beside MR's 16 broadleaf): spruce, pine, fir; coconut palm
+  (21 m) and date palm (13 m); an acacia; two shrubs. The cull picks per tree (scatter.wesl
+  `earth_species`): coldness = latitude + 9 degrees a km of height; conifers from 42 to 58 (so the
+  boreal forests, and the Black Forest at its height, are mostly spruce and fir), palms in the
+  tropics (12 % inland, up to 70 % within 60 m of sea level), the steppe's lone trees acacias where
+  it is warm and shrubs where cooler, MR's broadleaf elsewhere.
+- **Floras:** every generated planet with land plants gets 8 species from its seed (`trees::flora`):
+  three forest trees, two highland trees (the upper part of the relief), two of the dry land (the
+  steppe's lone trees, which SE's terra worlds now get too) and one of the shore (within 30 m of
+  the sea). Gravity sets height and girth (height x (g / 9.81)^-0.5, girth x its inverse, both
+  clamped); the air's pressure sets the crowns' spread (x p^0.2, 0.7-1.5). The pressure is the one
+  SE's generator works with (`Terrain::pressure_atm`; generated planets carry no `Atmosphere`
+  block when SE completes them). The leaves' colour is still the ground's (the tint), so a red or
+  yellow world gets red or yellow forests.
+- **The library** (`library.rs`, rewritten): model sources packed by `assemble`; a fixed material set
+  (MR's trees' own, its 9 barks and 8 branch cards, the port's 2 cards, the grass atlas); 36 models
+  (16 MR, 8 Earth, 8 flora, 4 grass; 864 impostor layers, baked in 3.6 s at start). Arriving at a
+  generated life planet grows its flora and bakes only those 8 models' impostors on a worker thread
+  (about 1 s); the library switches to it when done (meshes, layers and mean colours together), and
+  until then the planet shows no trees. Earth's and the flora's species get larger buckets (4,096
+  meshes, 40,000 impostors): a taiga is three species.
+- A log line names a generated system's bodies with land plants ("generated bodies with land
+  plants: ..."), for finding test planets.
+
+Textures made for it (`crates/se_engine/assets/textures/vegetation/`, the port's own):
+- `conifer_branch.png` and `palm_frond.png`: made with the `codex-image` skill (2026-11-04; prompts:
+  a flat spruce/fir branch spray, and a single coconut palm frond, seen from above, filling the
+  square, on a flat magenta background, even light), then keyed (magenta to alpha, the spill taken
+  out of the edges, the leaves' colour bled into the clear texels so filtering never shows pink) and
+  scaled to 512 px (`scratchpad/key_cards.py` of that session; its method is in this note). Their
+  mips are made at load with the alpha kept to the top level's coverage, as the impostors'.
+
+Checked in pictures: Earth's taiga from 300 m and 60 m (a conifer forest), the Sahel (acacias and
+shrubs), the Amazon delta's coast (palms through the broadleaf canopy), the test cover on the ground
+(every species); five generated life planets, each with a flora of its own: RS 8514-928-8-5906585-158
+3 (g 6.2, 0.07 atm: yellow spires on sand), RS 8514-928-8-5794236-229 4 (g 14.9, 223 atm: squat dark
+trees on red ground), RS 8514-928-8-5794238-114 B3 (g 11.1, 147 atm: a dense dark red forest in thick
+haze), RS 8514-928-8-5906584-114 A2 (g 3.4, 0.01 atm: tall thin spikes) and RS 8514-928-8-5906586-28
+B1 (g 3.3, 2.07 atm: tall rust conifers).
+
+Measured (Ultra 3440x1440 with 4x MSAA, Black Forest, now mostly the generated conifers, against the
+vegetation off): +0.9 ms 3 km up (target 1.5), +1.1 ms at 300 m, +0.6 ms on the forest floor (target
+2): less than step 3 with MR's broadleaf meshes everywhere, the generated trees having fewer vertices.
+
+Left open:
+- The generated trees' crowns are thin from close up (cards along few branches): a denser crown
+  (more cards, a second card size) would read better under the camera.
+- A flora is 8 species; the plan said 6-10. Nothing yet ties a species to SE's own biome slots
+  beyond forest / steppe / height / shore.
+- Arriving at a life planet re-uploads the whole impostor atlas (about 90 MB with its normals), a
+  short hitch once per arrival; the atlas copy kept for the splicing holds the same on the CPU.
+
+Review (two angles, each finding checked), fixed: the generated bark tubes were wound inside out
+(back-face culling hid their outer walls); a flora's arrival copied and flattened the whole atlas
+(about 150 MB) on the main thread (now on the worker, which also makes the images); a flora bake
+that finished after the camera came back to the previous body replaced the right flora; the ground
+drew its forest floor while a planet's flora was still baking; an exe copy with only its shaders
+beside it got grey leaf cards (the cards now also come from the source tree); the highland species
+were measured from the radius, so on worlds without a sea every forest tree was a highland one (now
+from SE's sea level).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind
@@ -679,7 +752,8 @@ Left open:
   features fall back to the generator and code-built parts.
 - Textures made with `codex-image` and models made with the Blender tool belong in the project:
   keep them in `crates/se_engine/assets/` (small: compressed, one size each), with a note in this
-  file of how each was made.
+  file of how each was made. So far: `textures/vegetation/conifer_branch.png` and `palm_frond.png`
+  (step 4's build log says how).
 
 ## Open questions
 

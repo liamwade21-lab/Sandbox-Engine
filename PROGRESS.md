@@ -67,8 +67,14 @@
     within 120 m, trees and grass sway in the weather's wind. Cost at Ultra 3440x1440 (with 4x MSAA):
     about 1.4-1.7 ms. Left open: Earth's taiga and tropics have broadleaf trees until step 4; the
     treetop pattern is faint under Earth's haze from 3-5 km; no Vegetation setting yet.
-  - **Step 4 next:** the tree generator (different floras on different planets; conifers and palms on
-    Earth where they belong).
+  - **Step 4 done (2026-11-04): the tree generator.** Trees are grown from recipes (six crown shapes,
+    Megaton Rainfall's bark and leaves, two leaf cards made with the image generator). Earth now has
+    spruce, pine and fir in its cold forests (the taiga, mountains), palms on tropical coasts, acacias
+    and shrubs on the steppe, MR's broadleaf elsewhere. Each generated planet with land plants gets
+    its own 8 species, shaped by its gravity (low: tall and thin; high: squat) and its air (dense:
+    wide crowns), coloured by its ground: five such planets near the Sun all look different. The trees
+    appear about a second after arriving (their pictures are made then). Cost: 0.6-1.1 ms.
+  - **Step 5 next:** the intelligent life class (which planets have civilizations, and their level).
 
 ## Notes
 

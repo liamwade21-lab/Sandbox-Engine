@@ -41,6 +41,10 @@ struct Body {
     tint_gain: vec4<f32>,
     // rgb SE's grass slot colour (linear), w the grass's range (m)
     grass: vec4<f32>,
+    // x Earth's species' first model, y the flora's, z 1 when the flora is this body's
+    species: vec4<u32>,
+    // x the ground's relief (m)
+    flora_k: vec4<f32>,
     // x, y the ground's cloud key (radius m, seed fraction); z 1 with atmosphere tables bound.
     key: vec4<f32>,
     atm: AtmParams,

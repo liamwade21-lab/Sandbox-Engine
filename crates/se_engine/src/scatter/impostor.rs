@@ -62,12 +62,12 @@ pub struct Baked {
     pub means: Vec<[f32; 4]>,
 }
 
-fn srgb_to_linear(c: u8) -> f32 {
+pub(super) fn srgb_to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn linear_to_srgb(c: f32) -> u8 {
+pub(super) fn linear_to_srgb(c: f32) -> u8 {
     let c = c.clamp(0.0, 1.0);
     let s = if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
     (s * 255.0).round() as u8
@@ -304,7 +304,7 @@ fn coverage(l: &[[f32; 4]], scale: f32) -> f32 {
 }
 
 /// The mip chain: alpha-weighted colour, and alpha rescaled to keep the top level's coverage.
-fn mips(top: Vec<[f32; 4]>, s: usize) -> Vec<Vec<[f32; 4]>> {
+pub(super) fn mips(top: Vec<[f32; 4]>, s: usize) -> Vec<Vec<[f32; 4]>> {
     let target = coverage(&top, 1.0);
     let mut out = vec![top];
     let mut size = s;
@@ -349,7 +349,13 @@ fn mips(top: Vec<[f32; 4]>, s: usize) -> Vec<Vec<[f32; 4]>> {
 pub fn images(b: &Baked) -> (Image, Image) {
     let make = |layers: &Vec<Vec<Vec<u8>>>, format: TextureFormat| {
         let mips = layers.first().map_or(1, |l| l.len()) as u32;
-        let data: Vec<u8> = layers.iter().flat_map(|l| l.iter().flatten().copied()).collect();
+        let total: usize = layers.iter().flat_map(|l| l.iter().map(Vec::len)).sum();
+        let mut data = Vec::with_capacity(total);
+        for l in layers {
+            for m in l {
+                data.extend_from_slice(m);
+            }
+        }
         let mut image = Image::new_uninit(
             Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: b.layers },
             TextureDimension::D2,

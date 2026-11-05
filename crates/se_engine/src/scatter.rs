@@ -28,6 +28,7 @@ pub mod earth;
 mod gpu;
 mod impostor;
 mod library;
+pub mod trees;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -156,6 +157,10 @@ pub struct Scatter {
     /// The library is ready (MR's models read and their impostors baked): the ground draws its
     /// forest floor and canopy only then (terrain.rs).
     pub ready: bool,
+    /// The flora the active body wants (a generated life planet's: `library.rs` makes it), and
+    /// whether the library holds it (until then the ground draws no forest floor: terrain.rs).
+    pub flora_want: Option<library::FloraWant>,
+    pub flora_ready: bool,
     body: Option<Entity>,
     seed: u32,
     /// How the body's plants are decided.
@@ -303,6 +308,10 @@ pub struct BodyFrame {
     /// SE's grass slot colour (`color[10]`), the grass's there; the first grass model and how many.
     pub grass: Vec4,
     pub grass_models: UVec2,
+    /// Earth's species' first model, the flora's, 1 when the flora is this body's; the ground's relief
+    /// (m) for the flora's highland species.
+    pub species: UVec4,
+    pub relief_m: f32,
     pub tint_gain: Vec3,
 }
 
@@ -484,6 +493,7 @@ fn update_scatter(
     // never jump at the wrap (Bevy's own wrap is an hour).
     out.time = (time.elapsed_secs_f64() % (200.0 * std::f64::consts::PI)) as f32;
     sc.ready = lib.ready();
+    sc.flora_ready = sc.flora_want.is_none_or(|w| w.key == lib.flora_key);
     if sc.free_slots.is_empty() && sc.cells.is_empty() {
         sc.reset();
     }
@@ -520,6 +530,7 @@ fn update_scatter(
         sc.body = Some(entity);
         sc.seed = (terrain.proc.seed as u32) ^ (terrain.radius as u32).rotate_left(7);
         sc.veg = veg_kind(sc.test, terrain);
+        sc.flora_want = (sc.veg == VegKind::SeTerra).then(|| flora_want(body, terrain, data.as_deref()));
         info!("scatter: {:?} on the body at {:.0} km radius", sc.veg, terrain.radius / 1000.0);
     }
     if sc.veg == VegKind::None {
@@ -710,6 +721,8 @@ fn update_scatter(
         forest: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[11]),
         grass: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[10]).truncate().extend(GRASS_RANGE_M),
         grass_models: UVec2::new(lib.trees, lib.grass),
+        species: UVec4::new(lib.earth0, lib.flora0, sc.flora_want.is_some_and(|w| w.key == lib.flora_key) as u32, 0),
+        relief_m: terrain.proc.relief_m as f32,
         // Matched to the ground with the trees off (2026-11-04, pixel means 0.7-3 km away): the
         // crowns' ball shading is about 1.5 times darker than level ground; Earth's ground also
         // brightens its colour map by its detail textures' brightness (about 1.6), SE's terra ground
@@ -744,6 +757,26 @@ pub fn veg_kind(test: bool, terrain: &Terrain) -> VegKind {
         return VegKind::SeTerra;
     }
     VegKind::None
+}
+
+/// The flora a generated life planet wants: its seed, its surface gravity and its air's pressure
+/// (the catalog's mass; the pressure SE's generator works with, else the catalog's `Atmosphere {
+/// Pressure }`, else Earth's).
+fn flora_want(body: &SystemBody, terrain: &Terrain, data: Option<&crate::data::SeData>) -> library::FloraWant {
+    let rec = match (data, body.obj) {
+        (Some(d), se_core::catalog::ObjectRef::Body(i)) => d.catalog.bodies.get(i as usize),
+        _ => None,
+    };
+    let r = terrain.radius.max(1.0);
+    let gravity = rec.map_or(9.81, |b| (se_core::units::G * b.mass_kg / (r * r)) as f32);
+    let gravity = if gravity.is_finite() && gravity > 0.01 { gravity } else { 9.81 };
+    let pressure = Some(terrain.pressure_atm)
+        .filter(|p| *p > 0.0)
+        .or_else(|| rec.and_then(|b| b.block.sub("Atmosphere").map(|a| se_core::body_params::AtmosphereParams::from_block(a).pressure_atm as f32)))
+        .filter(|p| *p > 0.0)
+        .unwrap_or(1.0);
+    let seed = (terrain.proc.seed as u32) ^ (terrain.radius as u32).rotate_left(11);
+    library::FloraWant { key: library::flora_key(seed, gravity, pressure), seed, gravity, pressure }
 }
 
 /// Body frame to render frame as an f32 matrix: rotation `q` after a per-axis scale `s`.

@@ -96,6 +96,10 @@ struct BodyGpu {
     tint_gain: Vec4,
     /// rgb SE's grass colour (linear), w the grass's range (m).
     grass: Vec4,
+    /// Earth's species' first model, the flora's, 1 when the flora is this body's.
+    species: UVec4,
+    /// x the ground's relief (m).
+    flora_k: Vec4,
     /// The ground's cloud key (radius m, seed fraction) and x, y of `proc_params2`; z 1 when the body
     /// has atmosphere tables bound.
     key: Vec4,
@@ -556,6 +560,8 @@ fn prepare(
         forest: b.forest,
         tint_gain: b.tint_gain.extend(0.0),
         grass: b.grass,
+        species: b.species,
+        flora_k: Vec4::new(b.relief_m, 0.0, 0.0, 0.0),
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,

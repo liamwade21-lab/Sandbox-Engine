@@ -786,6 +786,7 @@ fn spawn_system_members(
             terrain.glow_temps = (gen_in.t_eq, gen_in.t_surf);
             terrain.tidal_lock = body_in.as_ref().is_some_and(|c| c.tidally_locked);
             terrain.land_plants = crate::scatter::land_plants(&b.block);
+            terrain.pressure_atm = gen_in.pressure_atm;
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.
             // Look: Opacity, Hue, Saturation, SkyLight (`AtmosphereParamsUniform::look`).
@@ -999,6 +1000,11 @@ fn systems_to_unload(entered: &std::collections::VecDeque<u32>, count: usize, ca
 /// into the catalog.
 fn load_generated(cat: &mut se_core::catalog::Catalog, idx: u32, (g, doc, took, living): Generated) {
     let t = std::time::Instant::now();
+    // The bodies whose life has land plants (the scatter's vegetation), for finding them.
+    let plants: Vec<&str> = doc.items.iter().filter(|it| it.block.as_ref().is_some_and(crate::scatter::land_plants)).filter_map(|it| it.name()).collect();
+    if !plants.is_empty() {
+        info!("generated bodies with land plants: {}", plants.join(", "));
+    }
     cat.load_doc(doc, se_core::climate::PROCEDURAL_SOURCE);
     if let Some(m) = g.root_mass_sol {
         // The record becomes the system's barycentre, of all its stars' mass; the star's own is

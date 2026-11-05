@@ -52,6 +52,10 @@ struct Body {
     tint_gain: vec4<f32>,
     // rgb SE's grass slot colour (linear), w the grass's range (m)
     grass: vec4<f32>,
+    // x Earth's species' first model, y the flora's, z 1 when the flora is this body's
+    species: vec4<u32>,
+    // x the ground's relief (m)
+    flora_k: vec4<f32>,
 }
 
 struct Camera {
@@ -208,15 +212,82 @@ fn pack_tint(c: vec3<f32>) -> u32 {
     return pack4x8unorm(vec4<f32>(0.0, sqrt(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0))))) | 0x100u;
 }
 
-fn map_share(dir: vec3<f32>, slope: f32, n: f32) -> f32 {
+// (x the share, y the part of it that is the dry land's lone trees: acacias and shrubs.)
+fn map_share(dir: vec3<f32>, slope: f32, n: f32) -> vec2<f32> {
     let uv = patch_uv(dir);
     if any(uv <= vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) {
-        return 0.0;
+        return vec2<f32>(0.0);
     }
     let k = patch_classes(uv);
-    let copses = k.y * 0.25 * smoothstep(0.6, 0.72, n);
-    let lone = k.z * 0.05;
-    return max(map_forest(k.x, n, slope), (copses + lone) * (1.0 - smoothstep(0.18, 0.45, slope)));
+    let flat = 1.0 - smoothstep(0.18, 0.45, slope);
+    let copses = k.y * 0.25 * smoothstep(0.6, 0.72, n) * flat;
+    let lone = k.z * 0.05 * flat;
+    let share = max(map_forest(k.x, n, slope), copses + lone);
+    return vec2<f32>(share, select(0.0, lone / max(copses + lone, 1e-4), copses + lone >= share));
+}
+
+fn mix32(x: u32) -> u32 {
+    var h = x * 0x9e3779b9u;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    return h ^ (h >> 16u);
+}
+
+// A species from a family (first model, count) by the random number `u` (0..1).
+fn in_family(first: u32, count: u32, u: f32) -> u32 {
+    return first + min(u32(u * f32(count)), count - 1u);
+}
+
+// Earth's species at body-frame direction `dir`, `h` m above the radius (`dry` the share of the
+// dry land's lone trees, `u`, `u2` random): the coldness is the latitude plus 9 degrees a km of
+// height; conifers in the cold (boreal forests, mountains), palms in the tropics (most on the
+// coasts), acacias on the warm steppe and shrubs on the cooler one, MR's broadleaf elsewhere.
+fn earth_species(dir: vec3<f32>, h: f32, dry: f32, u: f32, u2: f32) -> u32 {
+    let e0 = body.species.x;
+    let cold = degrees(asin(clamp(abs(dir.y), 0.0, 1.0))) + h * 0.009;
+    if u < dry {
+        if cold < 32.0 {
+            return e0 + 5u;
+        }
+        return in_family(e0 + 6u, 2u, u2);
+    }
+    let v = (u - dry) / max(1.0 - dry, 1e-4);
+    let conifer = smoothstep(42.0, 58.0, cold);
+    let coast = 1.0 - smoothstep(5.0, 60.0, h);
+    let palm = (1.0 - smoothstep(16.0, 26.0, cold)) * mix(0.12, 0.7, coast) * (1.0 - conifer);
+    if v < conifer {
+        return in_family(e0, 3u, u2);
+    }
+    if v < conifer + palm {
+        return in_family(e0 + 3u, 2u, u2);
+    }
+    return in_family(0u, e0, u2);
+}
+
+// A generated planet's species (its flora, trees.rs: forest 0-2, highland 3-4, dry 5-6, shore 7)
+// at `h` m above the radius: highland trees over the upper part of the relief, shore trees near the
+// sea, dry land trees where the steppe's lone trees stand.
+fn flora_species(h: f32, dry: f32, u: f32, u2: f32) -> u32 {
+    let f0 = body.species.y;
+    if u < dry {
+        return in_family(f0 + 5u, 2u, u2);
+    }
+    let v = (u - dry) / max(1.0 - dry, 1e-4);
+    // (Measured from SE's sea level: climate[5].z is it with an ocean and 0 without, climate[0].x
+    // always, climate[4].z the relief's scale.)
+    let above = h + (body.climate[5].z - body.climate[0].x) * body.climate[4].z;
+    let high = smoothstep(0.3, 0.6, above / max(body.flora_k.x, 100.0));
+    var shore = 0.0;
+    if body.lod2.w > -1e8 {
+        shore = (1.0 - smoothstep(3.0, 30.0, h - body.lod2.w)) * 0.6;
+    }
+    if v < high {
+        return in_family(f0 + 3u, 2u, u2);
+    }
+    if v < high + shore * (1.0 - high) {
+        return f0 + 7u;
+    }
+    return in_family(f0, 3u, u2);
 }
 
 // The unit-cube point of face `f` at face coordinates (u right, v down), as planet_tiles.rs uv_to_cube.
@@ -412,6 +483,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Where plants grow: the ground's weights at this point of the drawn ground.
     var share = 1.0;
     var tint = 0u;
+    var model = attr & 0xffu;
     // Grass tufts (models from veg.z on): lit as level ground, half the crowns' tint for the same
     // gain (matched by eye to Earth's forest floor, 2026-11-04).
     let grass = (attr & 0xffu) >= u32(body.veg.z) && body.veg.w > 0.5;
@@ -420,6 +492,9 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dir = normalize(info.dir * rd + p.xyz);
         let tri_n = cross(vb.xyz - va.xyz, vc.xyz - va.xyz);
         let slope = 1.0 - clamp(abs(dot(normalize(tri_n), dir)), 0.0, 1.0);
+        let rs = mix32(c.x ^ (c.z * 0x632be5abu));
+        let u = f32(rs & 0xffffu) / 65536.0;
+        let u2 = f32(rs >> 16u) / 65536.0;
         if body.veg.x > 2.5 {
             let n = unpack2x16float(noises[slot * SLOT_CAP + i].x).x;
             if grass {
@@ -429,8 +504,10 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let shade = 1.0 - 0.45 * map_forest(k, n, slope);
                 tint = pack_tint(textureSampleLevel(veg_color, veg_smp, patch_uv(dir), 0.0).rgb * (0.5 * shade));
             } else {
-                share = map_share(dir, slope, n);
+                let ms = map_share(dir, slope, n);
+                share = ms.x;
                 tint = map_tint(patch_uv(dir));
+                model = earth_species(dir, p.w, ms.y, u, u2);
             }
         } else {
             let w = plant_weights(dir, p.w, slope, noises[slot * SLOT_CAP + i]);
@@ -438,8 +515,15 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
                 share = clamp(w.y + 0.7 * w.x + 0.35 * w.z, 0.0, 1.0) * (1.0 - smoothstep(0.03, 0.08, slope));
                 tint = pack_tint(body.grass.rgb * (0.5 * (1.0 - 0.45 * w.z)));
             } else {
-                share = w.z;
+                // The forest, and the steppe's lone trees (its dry species), once the planet's
+                // flora is made (until then none).
+                if body.species.z == 0u {
+                    return;
+                }
+                let lone = w.x * 0.06;
+                share = max(w.z, lone);
                 tint = pack_tint(body.forest.rgb);
+                model = flora_species(p.w, select(0.0, 1.0, lone > w.z), u, u2);
             }
         }
         // No grass within 8 m (height) of the sea.
@@ -460,7 +544,6 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
     let up = cell.up;
     let pos = m * p.xyz + info.t - up * body.lod2.y;
-    let model = attr & 0xffu;
     let md = models[model];
     let rnd = f32((attr >> 24u) & 0xffu) / 255.0;
     var scale = 0.8 + 0.4 * f32((attr >> 16u) & 0xffu) / 255.0;
