@@ -197,6 +197,8 @@ struct DrawPipeline {
     /// The ground's light: atmosphere tables and the clouds' shadow (`ground_light.wesl`).
     light_layout: BindGroupLayoutDescriptor,
     material_layout: BindGroupLayoutDescriptor,
+    /// The buildings' material: MR's window array.
+    building_layout: BindGroupLayoutDescriptor,
     impostor_layout: BindGroupLayoutDescriptor,
     shader: Handle<Shader>,
 }
@@ -238,7 +240,11 @@ impl SpecializedRenderPipeline for DrawPipeline {
             label: Some(format!("scatter_draw_{}", ["bark", "leaves", "impostor", "building"][key.kind as usize]).into()),
             layout: vec![
                 self.view_layout.clone(),
-                if impostor { self.impostor_layout.clone() } else { self.material_layout.clone() },
+                match key.kind {
+                    2 => self.impostor_layout.clone(),
+                    3 => self.building_layout.clone(),
+                    _ => self.material_layout.clone(),
+                },
                 self.light_layout.clone(),
             ],
             vertex: VertexState { shader: self.shader.clone(), shader_defs: defs.clone(), entry_point: Some(vs.into()), buffers, ..default() },
@@ -329,6 +335,13 @@ fn init_gpu(
             (texture_2d(TextureSampleType::Float { filterable: true }), sampler(SamplerBindingType::Filtering), uniform_buffer::<MaterialGpu>(false)),
         ),
     );
+    let building_layout = BindGroupLayoutDescriptor::new(
+        "scatter_building",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (texture_2d_array(TextureSampleType::Float { filterable: true }), sampler(SamplerBindingType::Filtering), uniform_buffer::<MaterialGpu>(false)),
+        ),
+    );
     let impostor_layout = BindGroupLayoutDescriptor::new(
         "scatter_impostor",
         &BindGroupLayoutEntries::sequential(
@@ -360,7 +373,7 @@ fn init_gpu(
             ),
         ),
     );
-    let draw = DrawPipeline { view_layout, light_layout, material_layout, impostor_layout, shader: assets.load("shaders/scatter_draw.wesl") };
+    let draw = DrawPipeline { view_layout, light_layout, material_layout, building_layout, impostor_layout, shader: assets.load("shaders/scatter_draw.wesl") };
     // The meshes' light pass: the body, the drawn instances and models, the light records (written),
     // the bucket counters and the buckets; group 1 empty, group 2 the draws' light.
     let light_view_layout = BindGroupLayoutDescriptor::new(
@@ -701,6 +714,7 @@ fn prepare_bind_groups(
     // Materials: made once their textures are on the GPU.
     let Some(lib) = lib else { return };
     let material_layout = cache.get_bind_group_layout(&draw.material_layout);
+    let building_layout = cache.get_bind_group_layout(&draw.building_layout);
     for (i, m) in lib.materials.iter().enumerate() {
         if l.material_groups[i].is_some() {
             continue;
@@ -708,7 +722,7 @@ fn prepare_bind_groups(
         let Some(img) = images.get(&m.color) else { continue };
         l.material_groups[i] = Some(device.create_bind_group(
             "scatter_material",
-            &material_layout,
+            if m.building { &building_layout } else { &material_layout },
             &BindGroupEntries::sequential((&img.texture_view, &img.sampler, l.material_params[i].as_entire_binding())),
         ));
     }

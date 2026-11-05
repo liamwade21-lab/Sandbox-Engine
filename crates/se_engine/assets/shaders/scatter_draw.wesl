@@ -344,7 +344,7 @@ struct VertexIn {
     @location(2) uv: vec2<f32>,
 }
 
-@if(!IMPOSTOR)
+@if(!IMPOSTOR && !BUILDING)
 @vertex
 fn vertex_mesh(v: VertexIn) -> MeshOut {
     let inst = insts[v.instance];
@@ -379,11 +379,13 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
     return o;
 }
 
-@if(!IMPOSTOR) @group(1) @binding(0) var color_tex: texture_2d<f32>;
+@if(!IMPOSTOR && !BUILDING) @group(1) @binding(0) var color_tex: texture_2d<f32>;
 @if(!IMPOSTOR) @group(1) @binding(1) var color_smp: sampler;
 @if(!IMPOSTOR) @group(1) @binding(2) var<uniform> material: Material;
+// The buildings: MR's window array (18 facade tiles, the windows' mask in alpha).
+@if(BUILDING) @group(1) @binding(0) var windows_tex: texture_2d_array<f32>;
 
-@if(!IMPOSTOR)
+@if(!IMPOSTOR && !BUILDING)
 @fragment
 fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // The mesh's share of the LOD band.
@@ -604,13 +606,16 @@ fn bd_band(x: f32, frac: f32, fp: f32) -> f32 {
     return mix(a, frac, smoothstep(0.35, 1.0, fp));
 }
 
+// MR's window tiles (`windows`, 18 layers): storeys a tile holds (its width is the same), and which
+// suit houses (big windows), blocks (rows of flats) and offices and towers (ribbons, curtain walls).
+const WIN_ROWS = array<f32, 18>(4.0, 4.0, 8.0, 7.0, 4.0, 6.0, 8.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0, 8.0, 8.0, 8.0);
+const WIN_HOUSE = array<u32, 4>(10u, 11u, 1u, 9u);
+const WIN_BLOCK = array<u32, 6>(0u, 2u, 4u, 7u, 12u, 17u);
+const WIN_TOWER = array<u32, 8>(6u, 5u, 8u, 13u, 14u, 15u, 16u, 3u);
+
 @if(BUILDING)
 @fragment
 fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
-    // The far fade (the range's last 15 %).
-    if dither2(in.clip.xy) >= in.style.z {
-        discard;
-    }
     let s0 = in.style.x;
     let s1 = in.style.y;
     let h = in.style.w;
@@ -640,18 +645,24 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
         var wall = wall_a[min(u32(s0 * 4.0), 3u)];
         let glassy = tall * step(0.5, s0);
         wall = mix(wall, vec3<f32>(0.10, 0.12, 0.14), glassy);
-        let wx = mix(mix(0.38, 0.7, s1), 0.92, glassy);
-        let wy = mix(mix(0.45, 0.62, s0), 0.85, glassy);
-        let cx = in.facade.x / bay;
-        let cy = in.facade.y / storey;
-        let fx = fract(cx);
-        let fy = fract(cy);
+        // MR's tile for the building's use: houses, blocks, offices and towers.
+        let pick = u32(s1 * 255.0);
+        var layer = WIN_BLOCK[pick % 6u];
+        if h < 12.0 {
+            layer = WIN_HOUSE[pick % 4u];
+        } else if tall > 0.5 || glassy > 0.5 {
+            layer = WIN_TOWER[pick % 8u];
+        }
+        let rows = WIN_ROWS[layer];
+        let uv = in.facade.xy / (rows * storey);
+        let tex = textureSample(windows_tex, color_smp, uv, layer);
+        // Its windows over the wall (glassy towers: the tile over dark glass).
+        let win = tex.a;
+        albedo = mix(wall, tex.rgb * mix(1.0, 0.6, glassy), win);
+        let cx = uv.x * rows * 2.0;
+        let cy = uv.y * rows;
         let fpx = length(vec2<f32>(dpdx(cx), dpdy(cx)));
         let fpy = length(vec2<f32>(dpdx(cy), dpdy(cy)));
-        // The window's share of the pixel (the cell's mean when the pixel spans cells).
-        let win = bd_band(fx, wx, fpx) * bd_band(fy, wy, fpy);
-        let glass = mix(vec3<f32>(0.05, 0.06, 0.07), vec3<f32>(0.08, 0.10, 0.12), glassy);
-        albedo = mix(wall, glass, win);
         // The window's light by night: a hash per window, about 45 % lit, warm, of various strength.
         let wid = u32(floor(cx) + 4096.0) * 7919u + u32(floor(cy)) * 104729u + u32(s0 * 255.0) * 31u + u32(s1 * 255.0) * 65537u;
         let lit = bd_hash(wid);
@@ -662,5 +673,9 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
         emit = vec3<f32>(1.0, 0.74, 0.46) * (0.55 * lit_w * night);
     }
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
+    // The far fade (the range's last 15 %), after the texture's samples (their derivatives).
+    if dither2(in.clip.xy) >= in.style.z {
+        discard;
+    }
     return vec4<f32>(surface_color(pl, albedo, n, in.up, 0.0, 0.0) + emit * in.haze_t, 1.0);
 }

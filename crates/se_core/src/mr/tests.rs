@@ -447,3 +447,31 @@ fn all_textures_parse() {
     // The one volume texture is the only format not read.
     assert!(bad.len() <= 2, "{bad:#?}");
 }
+
+/// Writes MR's window array (`windows`, 18 layers) as a contact sheet to `MR_DUMP` (a PNG path), to
+/// see what its layers hold (cities, step 7d). `cargo test -p se_core dump_windows -- --ignored`.
+#[test]
+#[ignore]
+fn dump_windows() {
+    let Some(mr) = install() else { return };
+    let Ok(out) = std::env::var("MR_DUMP") else { return };
+    for name in ["windows", "windows_NG", "Windows_ceiling", "noise"] {
+        let Ok((bytes, info)) = mr.texture(name) else {
+            println!("{name}: missing");
+            continue;
+        };
+        println!("{name}: {}x{} layers {} mips {} format {:?}", info.width, info.height, info.layers, info.mips, info.format);
+        let n = info.layers.max(1);
+        let s = 256u32;
+        let mut sheet = image::RgbaImage::new(s * 6, s * n.div_ceil(6));
+        for l in 0..n {
+            let mip = (info.width / s).max(1).trailing_zeros().min(info.mips.saturating_sub(1));
+            let Ok(rgba) = crate::dds::decode_level(&bytes, &info, l, mip) else { continue };
+            let (w, h) = ((info.width >> mip).max(1), (info.height >> mip).max(1));
+            let img = image::RgbaImage::from_raw(w, h, rgba).unwrap();
+            let img = image::imageops::resize(&img, s, s, image::imageops::FilterType::Triangle);
+            image::imageops::overlay(&mut sheet, &img, ((l % 6) * s) as i64, ((l / 6) * s) as i64);
+        }
+        sheet.save(format!("{out}_{name}.png")).unwrap();
+    }
+}

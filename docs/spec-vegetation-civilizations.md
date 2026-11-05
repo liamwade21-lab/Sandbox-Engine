@@ -934,6 +934,21 @@ Checked: New York by day from 80 m (cars in the lanes and at the crossings), by 
 reaches 20 km (51,000 buildings). Cost over New York's core at Ultra 3440x1440: the opaque pass as
 before (3.46 ms with the city, 3.07 without), the scatter's passes 0.21 ms.
 
+### Step 7d: facades from Megaton Rainfall's window tiles (2026-11-05)
+
+- MR's `windows` array (18 layers, 1024 px, BC3) is not one window a layer but whole facade tiles of
+  4-8 storeys (rows of flats, ribbon windows, curtain walls, ornate frames), the windows in colour and
+  their mask in alpha (0 on the wall): `mr::tests::dump_windows` (ignored) writes them as a contact
+  sheet. The buildings' facades lay a tile over the wall colour by its alpha, a tile a storey-count
+  square, the tile chosen by the building's use (houses, blocks, offices and towers); by night the
+  glass lights up a window cell at a time (the hash rule). Without MR a blank array: walls alone.
+- Instead of MR's facade modules as geometry (a tower would need hundreds of instances), the tiles in
+  the shader give the same look at a box's cost; the boxes keep flat walls up close.
+- The sampling comes before the far fade's `discard` (derivatives need uniform control flow).
+
+Left open: street furniture and 3D cars near the camera (step 11's polish), roof clutter, interior
+mapping; buildings when MR's install is missing (the scatter's library needs it: no city then).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

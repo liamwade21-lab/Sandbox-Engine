@@ -435,14 +435,23 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
     let building = models.len() as u32;
     {
         let material = materials.len() as u32;
-        let white = Image::new_fill(
-            bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            bevy::render::render_resource::TextureDimension::D2,
-            &[255, 255, 255, 255],
-            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-            bevy::asset::RenderAssetUsages::RENDER_WORLD,
-        );
-        materials.push(LibMaterial { color: images.add(white), tint: [1.0; 4], leaves: false, building: true });
+        // MR's window array (18 facade tiles: the windows in colour, their mask in alpha); without
+        // it a blank array (walls alone: the shader's own windows).
+        let windows = mr.image(&mut images, "windows", true).unwrap_or_else(|| {
+            let mut blank = Image::new_fill(
+                bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 2 },
+                bevy::render::render_resource::TextureDimension::D2,
+                &[0, 0, 0, 0],
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
+            );
+            blank.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {
+                dimension: Some(bevy::render::render_resource::TextureViewDimension::D2Array),
+                ..default()
+            });
+            images.add(blank)
+        });
+        materials.push(LibMaterial { color: windows, tint: [1.0; 4], leaves: false, building: true });
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![255; 4]) });
         let (positions, normals, uvs, idx) = building_box();
         let n = idx.len() as u32;
