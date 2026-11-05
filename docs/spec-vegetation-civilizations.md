@@ -949,6 +949,23 @@ before (3.46 ms with the city, 3.07 without), the scatter's passes 0.21 ms.
 Left open: street furniture and 3D cars near the camera (step 11's polish), roof clutter, interior
 mapping; buildings when MR's install is missing (the scatter's library needs it: no city then).
 
+### Step 7e: the flights checked (step 7 done, 2026-11-05)
+
+- Tokyo, a flight from orbit (400 km, 50 km, 10 km, 3 km, 300 m, by day): Earth's own map from orbit,
+  the city under its haze, the business cores rising as clusters of towers from 10 km (the far class),
+  the street grid and the low-rise joining them below 7 km, towers over streets of houses and blocks
+  at 300 m. New York the same, by day and night, down to 60 m (facades, cars at the crossings).
+- The level 2 test planet (WISEPA J090649.36+473538.6 1) by night from 300 km: its towns glow as
+  patches of light; up close two tries found its outskirts (scattered lamp and car lights). Finding a
+  generated town by hand is slow: the next step starts with a dev command that goes to the nearest
+  one.
+- Nothing floats (every building stands on the drawn triangle with a plinth down the slope), the roads
+  are the ground's own, the fades are dithered (no pops in the stills; no video taken). Budget: about
+  0.6 ms over New York's core at Ultra 3440x1440 against 2.5 ms.
+
+Step 7's plan said modular facades, street furniture and 3D cars; facades came as MR's window tiles in
+the shader, furniture and 3D cars are left for the polish (step 11).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind
