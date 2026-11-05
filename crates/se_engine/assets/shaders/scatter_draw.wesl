@@ -80,6 +80,8 @@ struct Model {
     impostor_bucket: u32,
     // The model's mean colour (linear, from its impostor views) and how much of its quad it covers.
     mean: vec4<f32>,
+    // x 1 for a broadleaf tree (its leaves follow the seasons: scatter_draw.wesl tree_season)
+    flags: vec4<u32>,
 }
 
 struct Material {
@@ -286,7 +288,8 @@ struct MeshOut {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
-    @location(3) @interpolate(flat) fades: vec2<f32>,
+    // x the far fade, y the mesh's share of the LOD band, z the tree's hash
+    @location(3) @interpolate(flat) fades: vec4<f32>,
     @location(4) @interpolate(flat) up: vec3<f32>,
     @location(5) ball: vec3<f32>,
     @location(6) l_sun: vec3<f32>,
@@ -295,6 +298,72 @@ struct MeshOut {
     @location(9) haze_t: vec3<f32>,
     @location(10) haze_a: vec3<f32>,
     @location(11) @interpolate(flat) tint: vec3<f32>,
+    @location(12) @interpolate(flat) season: vec4<f32>,
+}
+
+// A tree's season (the plan's step 11): x its leaves' autumn colour, y the share of its leaves gone
+// (fallen, or not yet out), z spring's fresh green, w the snow on it (`snow`: the ground's snow at its
+// place, from the cull). The seasons follow the star's declination at the tree's latitude
+// (`Body::sun_body` y, w +1 while it climbs; `tint_gain.w` the sine of the axial tilt; `wind.w` 1 when
+// the body has seasons): broadleaf models alone (`Model::flags.x`), none in the tropics, fading out
+// towards the trees' far range, where the ground's own forest colour (it has no seasons) takes over.
+// `h` the tree's hash (each turns a little early or late), `d` its distance (m).
+fn tree_season(md: Model, up: vec3<f32>, h: f32, d: f32, snow: f32) -> vec4<f32> {
+    var o = vec4<f32>(0.0, 0.0, 0.0, snow);
+    if md.flags.x == 0u || body.wind.w < 0.5 {
+        return o;
+    }
+    let sl = dot(up, normalize(body.m1.xyz));
+    let sin_t = body.tint_gain.w;
+    let amp = smoothstep(0.3, 0.55, abs(sl)) * smoothstep(0.05, 0.15, sin_t) * (1.0 - smoothstep(0.5, 0.95, d / max(body.lod.z, 1.0)));
+    if amp <= 0.0 {
+        return o;
+    }
+    let hemi = select(-1.0, 1.0, sl >= 0.0);
+    let s = clamp(body.sun_body.y / max(sin_t, 0.05), -1.0, 1.0) * hemi;
+    // The local year's angle (degrees): -90 midwinter, 0 the spring equinox, 90 midsummer, 180 the
+    // autumn equinox; then -40..320.
+    var p = asin(s) * 57.29578;
+    if body.sun_body.w * hemi < 0.0 {
+        p = 180.0 - p;
+    }
+    p += (h - 0.5) * 24.0;
+    if p < -40.0 {
+        p += 360.0;
+    }
+    // (The autumn colour fades out while the tree is bare, before spring: a tree that keeps some
+    // leaves would otherwise turn from orange to green at once at the wrap.)
+    o.x = max(smoothstep(150.0, 195.0, p), 1.0 - smoothstep(-40.0, -20.0, p)) * amp;
+    o.y = max(1.0 - smoothstep(-20.0, 30.0, p), smoothstep(190.0, 235.0, p)) * amp;
+    o.z = smoothstep(-20.0, 0.0, p) * (1.0 - smoothstep(30.0, 70.0, p)) * amp;
+    return o;
+}
+
+// Leaves' colour in the season `s` (tree_season): autumn's yellow, orange or red by the tree's hash,
+// as bright as the green they replace and a half more; spring's lighter, yellower green.
+fn season_albedo(albedo: vec3<f32>, s: vec4<f32>, h: f32) -> vec3<f32> {
+    var c = albedo;
+    if s.x > 0.0 {
+        let lum = vec3<f32>(0.2126, 0.7152, 0.0722);
+        var aut = vec3<f32>(0.60, 0.26, 0.04);
+        if h < 0.4 {
+            aut = vec3<f32>(0.58, 0.44, 0.06);
+        } else if h > 0.8 {
+            aut = vec3<f32>(0.52, 0.10, 0.05);
+        }
+        c = mix(c, aut * (dot(c, lum) * 1.5 / dot(aut, lum)), s.x);
+    }
+    return mix(c, c * vec3<f32>(1.2, 1.3, 0.85), s.z);
+}
+
+// Snow on the faces that look up (`top`: the normal's part along the up).
+fn snow_on(albedo: vec3<f32>, snow: f32, top: f32) -> vec3<f32> {
+    return mix(albedo, vec3<f32>(0.8), snow * smoothstep(0.15, 0.6, top));
+}
+
+// A stable number in 0..1 for a cell of a texture's or quad's coordinates (`seed`: the tree's hash).
+fn cell_hash(cell: vec2<f32>, seed: f32) -> f32 {
+    return fract(sin(dot(cell, vec2<f32>(12.9898, 78.233)) + seed * 437.0) * 43758.5453);
 }
 
 // The trees' colour where they stand (scatter.wesl: the map's forest colour, or SE's forest slot)
@@ -365,7 +434,10 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
     o.world = world;
     o.normal = basis * v.normal;
     o.uv = v.uv;
-    o.fades = unpack2x16unorm(inst.fades);
+    let fd = unpack4x8unorm(inst.fades);
+    let h = phase / 6.2831853;
+    o.fades = vec4<f32>(fd.xy, h, 0.0);
+    o.season = tree_season(md, up, h, length(inst.pos), fd.z);
     o.up = up;
     // The crown shades as a ball (Megaton Rainfall's leaves): the direction from its centre.
     o.ball = basis * ((v.pos - vec3<f32>(0.0, md.crown_y, 0.0)) / max(md.crown_r, 0.1));
@@ -395,10 +467,17 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
     let tex = textureSample(color_tex, color_smp, in.uv);
     var n = normalize(in.normal);
     var wrap = 0.0;
+    // The snow lies on what looks up: the crown's top, the branches' upper sides.
+    var top = dot(n, in.up);
 @if(LEAVES) {
     if tex.a < 0.5 {
         discard;
     }
+    // The leaves gone (fallen in autumn, not yet out in spring): patches of the card at a time.
+    if in.season.y > 0.0 && cell_hash(floor(in.uv * 6.0), in.fades.z) < in.season.y {
+        discard;
+    }
+    top = dot(normalize(in.ball + vec3<f32>(1e-5)), in.up);
     if !front {
         n = -n;
     }
@@ -410,7 +489,11 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
 @if(LEAVES) {
     tint = in.tint;
 }
-    let albedo = tex.rgb * material.tint.rgb * tint;
+    var albedo = tex.rgb * material.tint.rgb * tint;
+@if(LEAVES) {
+    albedo = season_albedo(albedo, in.season, in.fades.z);
+}
+    albedo = snow_on(albedo, in.season.w, top);
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     var trans = 0.0;
     if wrap > 0.0 {
@@ -424,7 +507,8 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
 struct ImpostorOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) quad: vec2<f32>,
-    @location(1) @interpolate(flat) fades: vec2<f32>,
+    // x the far fade, y the mesh's share of the LOD band, z the tree's hash
+    @location(1) @interpolate(flat) fades: vec4<f32>,
     @location(2) @interpolate(flat) up: vec3<f32>,
     // The atlas views to blend: azimuth pair, elevation pair (layers), and their weights.
     @location(3) @interpolate(flat) layers: vec4<u32>,
@@ -437,6 +521,7 @@ struct ImpostorOut {
     @location(10) haze_t: vec3<f32>,
     @location(11) haze_a: vec3<f32>,
     @location(12) @interpolate(flat) tint: vec3<f32>,
+    @location(13) @interpolate(flat) season: vec4<f32>,
 }
 
 @if(IMPOSTOR)
@@ -484,7 +569,10 @@ fn vertex_impostor(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: 
     var o: ImpostorOut;
     o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
     o.quad = vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
-    o.fades = unpack2x16unorm(inst.fades);
+    let fd = unpack4x8unorm(inst.fades);
+    let h = f32(inst.xa & 0xffffu) / 65536.0;
+    o.fades = vec4<f32>(fd.xy, h, 0.0);
+    o.season = tree_season(md, up, h, dist, fd.z);
     o.up = up;
     o.layers = vec4<u32>(md.layer0 + e0 * 8u + a0, md.layer0 + e0 * 8u + a1, md.layer0 + e1 * 8u + a0, md.layer0 + e1 * 8u + a1);
     o.weights = vec2<f32>(fract(az), we);
@@ -531,7 +619,17 @@ fn fragment_impostor(in: ImpostorOut) -> @location(0) vec4<f32> {
     let n = normalize(mat3x3<f32>(xa, up, za) * nl + vec3<f32>(1e-6));
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     // The bake stores straight colour (spread into the clear texels), not premultiplied.
-    return vec4<f32>(surface_color(pl, c.rgb * in.tint, n, up, 0.5, leaf_trans(in.world)), 1.0);
+    var albedo = season_albedo(c.rgb * in.tint, in.season, in.fades.z);
+    if in.season.y > 0.0 {
+        // A bare tree: a third of its crown's texels left (patches fixed on the tree), in the
+        // branches' grey brown.
+        if cell_hash(floor(in.quad * 40.0), in.fades.z) < in.season.y * 0.7 {
+            discard;
+        }
+        albedo = mix(albedo, vec3<f32>(0.075, 0.068, 0.06), in.season.y);
+    }
+    albedo = snow_on(albedo, in.season.w, dot(n, up));
+    return vec4<f32>(surface_color(pl, albedo, n, up, 0.5, leaf_trans(in.world)), 1.0);
 }
 
 // ---- buildings (cities) ----------------------------------------------------------------------

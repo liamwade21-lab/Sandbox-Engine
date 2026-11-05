@@ -1736,6 +1736,17 @@ fn run_commands(
                 g.quality.volumetric_clouds = arg.trim().parse::<u32>().unwrap_or(2).min(2);
             }
         }),
+        // levels V [C]: the Vegetation and Cities settings (0 Off, 1 Low, 2 High, 3 Ultra; C defaults to
+        // V). Test runs use the High preset: `levels 3` measures what the user's Custom settings draw.
+        "levels" => commands.queue(move |w: &mut World| {
+            let mut it = arg.split_whitespace().filter_map(|a| a.parse::<u32>().ok());
+            let v = it.next().unwrap_or(3).min(3);
+            let c = it.next().unwrap_or(v).min(3);
+            if let Some(mut g) = w.get_resource_mut::<crate::graphics::GraphicsSettings>() {
+                g.quality.vegetation = v;
+                g.quality.cities = c;
+            }
+        }),
         // scatter on|off|test: the GPU scatter (vegetation) on or off, or its test (Megaton Rainfall's
         // trees evenly on any planet's land).
         "scatter" => commands.queue(move |w: &mut World| {

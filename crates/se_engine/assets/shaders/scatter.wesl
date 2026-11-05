@@ -125,6 +125,8 @@ struct Model {
     impostor_bucket: u32,
     // The model's mean colour (linear, from its impostor views) and how much of its quad it covers.
     mean: vec4<f32>,
+    // x 1 for a broadleaf tree (its leaves follow the seasons: scatter_draw.wesl tree_season)
+    flags: vec4<u32>,
 }
 
 struct Bucket {
@@ -614,7 +616,7 @@ fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
 // SE's steppe, grass and forest weights (slots 9-11) at body-frame direction `dir`, `h` m above
 // the radius, on ground of `slope` (1 - cos of its tilt), from the candidate's stored noises: the
 // ground's own weights there (planet.wesl biome_albedo's SE terra path, sharp as at its vertices).
-fn plant_weights(dir: vec3<f32>, h: f32, slope: f32, nz: vec2<u32>) -> vec3<f32> {
+fn plant_weights(dir: vec3<f32>, h: f32, slope: f32, nz: vec2<u32>) -> vec4<f32> {
     let a = unpack2x16float(nz.x);
     let b = unpack2x16float(nz.y);
     let fp = body.veg.y;
@@ -624,7 +626,8 @@ fn plant_weights(dir: vec3<f32>, h: f32, slope: f32, nz: vec2<u32>) -> vec3<f32>
     let ptf = plants_ptf_at(dir, fp);
     // (The weights leave out n.y, the colour's vary: not stored.)
     let m = se_terra_weights_at(dir, hv, slope, fp, c, 0.0, vec3<f32>(a.x, 0.0, a.y), ptf, body.climate[0], body.climate[2], body.climate[3], body.climate[4], true, false);
-    return vec3<f32>(m.w[9], m.w[10], m.w[11]);
+    // (w the snow and ice: the trees near them take snow.)
+    return vec4<f32>(m.w[9], m.w[10], m.w[11], m.w[6] + m.w[7]);
 }
 
 // ---- cull ------------------------------------------------------------------------------------
@@ -774,6 +777,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Where plants grow: the ground's weights at this point of the drawn ground.
     var share = 1.0;
     var tint = 0u;
+    var snow = 0.0;
     var model = attr & 0xffu;
     // Grass tufts (models from veg.z on): lit as level ground, half the crowns' tint for the same
     // gain (matched by eye to Earth's forest floor, 2026-11-04).
@@ -813,6 +817,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
                 let lone = w.x * 0.06;
                 share = max(w.z, lone);
+                snow = smoothstep(0.05, 0.4, w.w);
                 tint = pack_tint(body.forest.rgb);
                 model = flora_species(p.w, select(0.0, 1.0, lone > w.z), u, u2);
             }
@@ -885,7 +890,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     // The mesh draws to mesh_far, the impostor from a band below it: the mesh where the pixel's
     // dither is under `mesh`, the impostor elsewhere (scatter_draw.wesl).
     let mesh = clamp((body.lod.x - d) / body.lod.y, 0.0, 1.0);
-    let o = Inst(pos, pack2x16unorm(vec2<f32>(fade, mesh)), oct_encode(xa), oct_encode(up), scale, model | tint);
+    let o = Inst(pos, pack4x8unorm(vec4<f32>(fade, mesh, snow, 0.0)), oct_encode(xa), oct_encode(up), scale, model | tint);
     if mesh > 0.0 {
         append(md.mesh_bucket, o);
     }

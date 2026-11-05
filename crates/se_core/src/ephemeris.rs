@@ -76,7 +76,7 @@ impl<'a> Ephemeris<'a> {
 
     /// The object whose position `r`'s hangs from (outside the JPL ephemeris), found by name;
     /// none for system roots, objects whose parent is missing and stars fixed in space.
-    fn parent_of(&self, r: ObjectRef) -> Option<ObjectRef> {
+    pub fn parent_of(&self, r: ObjectRef) -> Option<ObjectRef> {
         let c = self.catalog;
         let name = match r {
             ObjectRef::Star(i) => {

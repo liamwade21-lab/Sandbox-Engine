@@ -145,6 +145,20 @@ or publishing the port.
   `PlanetUniform::civ`, `civ_light`, `civ_urban`. The test planets orbit deep-red dwarfs, several
   tidally locked: look down on a night side with `surface LAT LON 15000 -90` (level 2's best is
   WISEPA J090649.36+473538.6 1 at 35 130).
+- Vegetation and Cities settings (the plan's step 11): graphics.rs `Quality::vegetation` / `cities`
+  (keys `Vegetation`, `Cities`: 0 Off, 1 Low, 2 High, 3 Ultra; `preset_scatter`; a Custom block saved
+  without them gets 3), read by `scatter.rs` `Levels` (the trees' distances, grass range, buildings'
+  ranges; a change starts the cells over) and by orbital.rs (Off hides the stations and traffic). Test
+  runs use the High preset (2): put `levels 3` in a run to see or measure what the user plays with.
+- Seasons on the trees (step 11): `scatter_draw.wesl` `tree_season`, broadleaf models only
+  (`Model::flags.x`, from `ModelSrc::deciduous`: MR's trees and the species with branch cards), from the
+  star's declination (`sun_body.y`), its trend (`sun_body.w`) and the axial tilt (`tint_gain.w`),
+  worked out by scatter.rs `season_of` from the ephemeris (`wind.w` 1 when on; from the orbit that
+  makes the seasons, a moon's planet's, never the body's own motion). Snow on trees comes
+  from the ground's snow at their place (the cull's `plant_weights` w, SE's terra worlds only), packed
+  with the two fades in `Inst::fades` (`pack4x8unorm`). The seasons fade out from half the trees'
+  range, because the ground's forest colour has no seasons. The model record is `ModelGpu` (64
+  bytes): scatter/gpu.rs's layouts take its size (`MODEL_SIZE`); change both shaders' `Model` with it.
 - Vegetation (the plan's step 3, on by default, `SE_SCATTER=0` or `scatter off` turns it off): bodies
   whose catalog Life has multicellular land life (`scatter::land_plants`, `Terrain::land_plants`) get
   trees and grass. Where: on Earth (any body with a colour map) from a 512-texel patch of its map round

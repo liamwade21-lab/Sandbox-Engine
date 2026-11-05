@@ -282,6 +282,8 @@ fn init_gpu(
 ) {
     let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
     let rw = |n: u64| storage_buffer_sized(false, std::num::NonZero::new(n));
+    // (A model's record: scatter.wesl's and scatter_draw.wesl's `Model`.)
+    const MODEL_SIZE: u64 = std::mem::size_of::<super::library::ModelGpu>() as u64;
     let ro = |n: u64| storage_buffer_read_only_sized(false, std::num::NonZero::new(n));
     let compute_layout = BindGroupLayoutDescriptor::new(
         "scatter_compute",
@@ -297,7 +299,7 @@ fn init_gpu(
                 ro(4),   // tree
                 ro(16),  // page positions
                 ro(48),  // page info
-                ro(48),  // models
+                ro(MODEL_SIZE),  // models
                 ro(16),  // buckets
                 ro(16),  // draws
                 rw(4),   // counters
@@ -325,7 +327,7 @@ fn init_gpu(
         "scatter_view",
         &BindGroupLayoutEntries::sequential(
             ShaderStages::VERTEX_FRAGMENT,
-            (uniform_buffer::<CameraGpu>(false), uniform_buffer::<BodyGpu>(false), ro(32), ro(48), ro(32)),
+            (uniform_buffer::<CameraGpu>(false), uniform_buffer::<BodyGpu>(false), ro(32), ro(MODEL_SIZE), ro(32)),
         ),
     );
     let material_layout = BindGroupLayoutDescriptor::new(
@@ -380,7 +382,7 @@ fn init_gpu(
         "scatter_light_view",
         &BindGroupLayoutEntries::with_indices(
             ShaderStages::COMPUTE,
-            ((1, uniform_buffer::<BodyGpu>(false)), (2, ro(32)), (3, ro(48)), (5, rw(32)), (6, ro(4)), (7, ro(16))),
+            ((1, uniform_buffer::<BodyGpu>(false)), (2, ro(32)), (3, ro(MODEL_SIZE)), (5, rw(32)), (6, ro(4)), (7, ro(16))),
         ),
     );
     let empty_layout = BindGroupLayoutDescriptor::new("scatter_empty", &[]);
@@ -574,18 +576,18 @@ fn prepare(
         atm_flags: Vec4::new(b.light.flags.x, u.atm_flags.y, u.atm_flags.z, u.atm_flags.w),
         // The plants' noises at about 4 m (their spacing).
         veg: Vec4::new(b.veg as u32 as f32, 4.0 / b.radius_m.max(1.0), b.grass_models.x as f32, b.grass_models.y as f32),
-        sun_body: b.sun_body.extend(0.0),
+        sun_body: b.sun_body.extend(b.season.y),
         climate: b.climate,
         biome_flags: b.biome_flags,
         patch_c: b.patch_frame[0],
         patch_e1: b.patch_frame[1],
         patch_e2: b.patch_frame[2],
-        wind: b.wind.extend(0.0),
+        wind: b.wind.extend(b.season.w),
         forest: b.forest,
-        tint_gain: b.tint_gain.extend(0.0),
+        tint_gain: b.tint_gain.extend(b.season.z),
         grass: b.grass,
         species: b.species,
-        flora_k: Vec4::new(b.relief_m, super::FAR_RANGE_M as f32, b.civ_light as f32, if b.domes { 1.0 } else { 0.0 }),
+        flora_k: Vec4::new(b.relief_m, b.far_range, b.civ_light as f32, if b.domes { 1.0 } else { 0.0 }),
         city: b.city,
         city2: b.city2,
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),

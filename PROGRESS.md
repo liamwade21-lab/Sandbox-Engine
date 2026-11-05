@@ -126,8 +126,22 @@
     `crates/se_engine/assets/mr` and read from there; the game's folder only when that copy is missing.
     Checked with the game's folder pointed nowhere: trees, cities, stations all there. The copy is for
     private use only, not for sharing the port.
-  - **Step 11 next:** polish: graphics settings and presets for vegetation and cities, seasons and snow
-    on plants, roads flattening steep ground, final measurements, docs.
+  - **Step 11 done (2026-11-05): polish.** Two new graphics settings, **Vegetation** and **Cities**
+    (Off / Low / High / Ultra), in Settings > Graphics > "Vegetation and cities" and in every preset
+    (Ultra on Ultra, High on High, Low on Medium and Low, Off on Potato). Ultra is what all the step
+    pictures showed; High draws trees to 2.2 km and grass to 80 m, Low trees to 1.5 km and no grass;
+    Cities High and Low draw the buildings less far. Off leaves the trees (or the buildings, stations
+    and space traffic) out; the towns' streets and lights in the ground stay. Settings saved before
+    these keys (the user's Custom ones) get Ultra. Broadleaf trees now follow the seasons by latitude
+    and date: autumn colours in October, bare in winter, a fresh light green in spring (the tropics
+    stay green; conifers and palms stay green). Trees near snow take snow on their tops. Measured at
+    the user's screen size, every view is inside the plan's budget (numbers below in the plan).
+    **Not done:** roads flattening steep ground (it changes the ground's heights, which trees and
+    buildings stand on: a careful job of its own; San Francisco's hills look fine without it), street
+    furniture and 3D cars up close, the ground's own forest colour does not change with the seasons
+    (the trees fade back to it from 1.5 km, so a forest seen from high up stays green).
+  - **The vegetation and civilizations plan is finished** (all 11 steps). Next: whatever the user
+    picks; the open items above are the natural follow-ups.
 
 ## Notes
 

@@ -6,7 +6,8 @@
 //! `VolumResolution` (ray-march steps of the nebula volumes), `StarPointMethod` (star points) and
 //! `WarpPrecision` (black hole ray-march step), and the solids' render resolution `SolidResolution`,
 //! `SolidTargetRes`, `SolidUpscaleMode` and `SolidFXAA` (`render_scale.rs`), and the port's own
-//! `VolumetricClouds`, which SE's preset files lack ([`preset_volumetric_clouds`]). The others (VideoMemorySize, TextureCompress,
+//! `VolumetricClouds`, `Vegetation` and `Cities`, which SE's preset files lack ([`preset_volumetric_clouds`],
+//! [`preset_scatter`]). The others (VideoMemorySize, TextureCompress,
 //! PlanetPointMethod, PlanetShineMode, AuroraQuality, ShipEngineQuality, BlackHoleQuality,
 //! ShipWarpQuality, the other TextureRendering resolutions and environment maps, the loader time limits) drive
 //! SE features the port draws differently; they are kept as read ([`Quality::keys`]), saved with the
@@ -24,7 +25,7 @@ use crate::surface_tex::SurfaceTextures;
 pub const PRESET_NAMES: [&str; 5] = ["Potato", "Low", "Medium", "High", "Ultra"];
 
 /// Keys read into [`Quality`]'s own fields (the rest go to [`Quality::keys`]).
-const MAPPED: [&str; 14] = [
+const MAPPED: [&str; 16] = [
     "MSAALevel",
     "FXAA",
     "AnisotropyLevel",
@@ -39,6 +40,8 @@ const MAPPED: [&str; 14] = [
     "SolidUpscaleMode",
     "SolidFXAA",
     "VolumetricClouds",
+    "Vegetation",
+    "Cities",
 ];
 
 /// The values of one preset.
@@ -66,6 +69,12 @@ pub struct Quality {
     /// `VolumetricClouds` (the port's own key): 0 the flat cloud shells, 1 ray-marched clouds at a
     /// quarter of the solids' resolution, 2 at half.
     pub volumetric_clouds: u32,
+    /// `Vegetation` (the port's own key): 0 no trees or grass, 1 Low, 2 High, 3 Ultra (the scatter's
+    /// distances, `scatter.rs` `Levels`).
+    pub vegetation: u32,
+    /// `Cities` (the port's own key): 0 no buildings, stations or space traffic (the towns in the
+    /// ground stay), 1 Low, 2 High, 3 Ultra (how far the buildings stand).
+    pub cities: u32,
     /// The preset's other keys and values, as written (`"true"`, `"0.85"`, ...), in file order.
     pub keys: Vec<(String, String)>,
 }
@@ -88,6 +97,8 @@ impl Default for Quality {
             solid_upscale_mode: 8,
             solid_fxaa: true,
             volumetric_clouds: 1,
+            vegetation: 2,
+            cities: 2,
             keys: Vec::new(),
         }
     }
@@ -152,6 +163,12 @@ impl Quality {
         if let Some(v) = num("VolumetricClouds") {
             q.volumetric_clouds = v.clamp(0.0, 2.0) as u32;
         }
+        if let Some(v) = num("Vegetation") {
+            q.vegetation = v.clamp(0.0, 3.0) as u32;
+        }
+        if let Some(v) = num("Cities") {
+            q.cities = v.clamp(0.0, 3.0) as u32;
+        }
         // Every other leaf key, in file order (blocks are SE's groups: Memory, RenderingQuality, ...).
         fn walk(b: &se_core::sc::Block, out: &mut Vec<(String, String)>) {
             for item in &b.items {
@@ -179,6 +196,7 @@ impl Quality {
             "\tSolidResolution   {}\n\tSolidTargetRes    {}\n\tSolidUpscaleMode  {}\n\tSolidFXAA         {}\n\tVolumetricClouds  {}\n",
             self.solid_resolution, self.solid_target_res, self.solid_upscale_mode, self.solid_fxaa, self.volumetric_clouds
         );
+        out += &format!("\tVegetation        {}\n\tCities            {}\n", self.vegetation, self.cities);
         for (k, v) in &self.keys {
             out += &format!("\t{k} {v}\n");
         }
@@ -205,9 +223,21 @@ pub fn preset_volumetric_clouds(name: &str) -> u32 {
     }
 }
 
+/// `Vegetation` and `Cities` for a preset whose file doesn't set them (SE's never do): Ultra on
+/// Ultra, High on High, Low on Medium and Low, off on Potato.
+pub fn preset_scatter(name: &str) -> u32 {
+    match name.to_ascii_lowercase().as_str() {
+        "ultra" => 3,
+        "high" => 2,
+        "potato" => 0,
+        _ => 1,
+    }
+}
+
 /// One of the install's preset files, over the defaults and the port's own keys for that preset.
 fn preset_quality(name: &str, text: &str) -> Quality {
-    Quality::from_cfg(text, &Quality { volumetric_clouds: preset_volumetric_clouds(name), ..Quality::default() })
+    let scatter = preset_scatter(name);
+    Quality::from_cfg(text, &Quality { volumetric_clouds: preset_volumetric_clouds(name), vegetation: scatter, cities: scatter, ..Quality::default() })
 }
 
 /// FUN_14030b0e0's "optimal config" on a hardware or version change: the preset for the video memory
@@ -445,6 +475,10 @@ mod tests {
         assert_eq!(preset_quality("Ultra", "VolumetricClouds 9\n").volumetric_clouds, 2);
         assert_eq!(preset_quality("Ultra", "VolumetricClouds -1\n").volumetric_clouds, 0);
         assert_eq!(preset_quality("Ultra", "VolumetricClouds yes\n").volumetric_clouds, 2);
+        let veg: Vec<(u32, u32)> = PRESET_NAMES.iter().map(|n| preset_quality(n, file)).map(|q| (q.vegetation, q.cities)).collect();
+        assert_eq!(veg, [(0, 0), (1, 1), (1, 1), (2, 2), (3, 3)]);
+        let q = preset_quality("High", "Vegetation 0\nCities 7\n");
+        assert_eq!((q.vegetation, q.cities), (0, 3));
         // Saved with the other preset keys, and not listed among the unmapped ones.
         let q = preset_quality("Ultra", file);
         assert!(q.keys.is_empty());

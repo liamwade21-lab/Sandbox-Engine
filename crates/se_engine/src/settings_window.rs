@@ -208,6 +208,18 @@ fn settings_window(
                     ui.checkbox(&mut sw.fog, i18n.tr("Fog and haze"));
                     ui.checkbox(&mut sw.dust, i18n.tr("Dust storms"));
                 });
+                group(ui, "Vegetation and cities", &i18n, |ui| {
+                    // `Vegetation` and `Cities` (graphics.rs), set by the presets.
+                    const LEVELS: [&str; 4] = ["Off", "Low", "High", "Ultra"];
+                    let mut v = q.vegetation.min(3) as usize;
+                    if combo(ui, "vegetation", "Vegetation", &mut v, &LEVELS, &i18n) {
+                        q.vegetation = v as u32;
+                    }
+                    let mut c = q.cities.min(3) as usize;
+                    if combo(ui, "cities", "Cities", &mut c, &LEVELS, &i18n) {
+                        q.cities = c as u32;
+                    }
+                });
                 group(ui, "Post-effects", &i18n, |ui| {
                     combo(ui, "photo_mode", "Photo mode", &mut ph, &PhotoMode::NAMES, &i18n);
                     let (lo, hi) = (ex.min, ex.max);

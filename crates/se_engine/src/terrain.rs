@@ -2959,7 +2959,7 @@ fn update_terrain(
         // The vegetation the ground draws its forest floor and canopy for (planet.wesl): the
         // scatter's kind for this body while the scatter is on, and the trees' range.
         let veg = match scatter.as_deref() {
-            Some(sc) if sc.enabled && sc.ready && !sc.test => {
+            Some(sc) if sc.enabled && sc.ready && !sc.test && sc.plants_on() => {
                 let kind = crate::scatter::veg_kind(false, &terrain);
                 // A generated planet's trees wait for its flora: so does its forest floor.
                 if kind == crate::scatter::VegKind::SeTerra && !sc.flora_ready {

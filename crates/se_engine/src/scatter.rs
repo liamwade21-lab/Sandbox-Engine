@@ -85,6 +85,41 @@ impl Default for LodDistances {
     }
 }
 
+/// What the Vegetation and Cities settings (graphics.rs, 0 Off, 1 Low, 2 High, 3 Ultra) set: the
+/// trees' distances, the grass's range (0: none), the near and far buildings' ranges (m). Ultra is
+/// what the plan's budget was measured with; High about half its objects, Low less again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Levels {
+    pub veg: u32,
+    pub city: u32,
+    pub lod: LodDistances,
+    pub grass_range: f32,
+    pub build_range: f64,
+    pub far_range: f64,
+}
+
+impl Levels {
+    pub fn new(veg: u32, city: u32) -> Self {
+        let (lod, grass_range) = match veg {
+            0 | 1 => (LodDistances { mesh_far: 100.0, band: 10.0, impostor_far: 1500.0, thin_start: 500.0, thin_end: 750.0 }, 0.0),
+            2 => (LodDistances { mesh_far: 170.0, band: 12.0, impostor_far: 2200.0, thin_start: 750.0, thin_end: 1100.0 }, 80.0),
+            _ => (LodDistances::default(), GRASS_RANGE_M),
+        };
+        let (build_range, far_range) = match city {
+            0 | 1 => (3000.0, 9000.0),
+            2 => (5000.0, 14000.0),
+            _ => (BUILD_RANGE_M, FAR_RANGE_M),
+        };
+        Levels { veg: veg.min(3), city: city.min(3), lod, grass_range, build_range, far_range }
+    }
+}
+
+impl PartialEq for LodDistances {
+    fn eq(&self, o: &Self) -> bool {
+        (self.mesh_far, self.band, self.impostor_far, self.thin_start, self.thin_end) == (o.mesh_far, o.band, o.impostor_far, o.thin_start, o.thin_end)
+    }
+}
+
 /// How far below the drawn ground a tree's base stands (m): the soils' "3D stones" move the near
 /// ground up and down by decimetres that the pages do not hold.
 const SINK_M: f32 = 0.4;
@@ -171,6 +206,10 @@ pub struct Scatter {
     /// The wind at the camera (body frame, m/s), worked out every second.
     wind: DVec3,
     wind_frame: u64,
+    /// The season (`season_of`), worked out with the wind and at once after a jump in the date, and
+    /// the date (JD) it was worked out for.
+    season: Vec4,
+    season_jd: f64,
     cells: HashMap<TileKey, CellSlot>,
     /// The buildings' cells (cities) by class (1 near, 2 far), sharing the slots with the plants'.
     bcells: HashMap<(TileKey, u32), CellSlot>,
@@ -187,9 +226,20 @@ pub struct Scatter {
     split: HashSet<TileKey>,
     split_rev: Option<u64>,
     pub lod: LodDistances,
+    /// The Vegetation and Cities settings' distances (`None` until the first frame reads them).
+    pub levels: Option<Levels>,
 }
 
 impl Scatter {
+    /// The Vegetation setting is not Off (the ground's forest floor and canopy go with the trees).
+    pub fn plants_on(&self) -> bool {
+        self.levels.is_none_or(|l| l.veg > 0)
+    }
+
+    fn levels(&self) -> Levels {
+        self.levels.unwrap_or_else(|| Levels::new(3, 3))
+    }
+
     /// Starts over with the body (after a switch of the test or of the vegetation).
     pub fn reset_body(&mut self) {
         self.reset();
@@ -307,6 +357,8 @@ pub struct BodyFrame {
     pub biome_flags: Vec4,
     /// Towards the star in the body frame (the ground's `g_sun_body`).
     pub sun_body: Vec3,
+    /// The trees' season (`season_of`; zero without seasons).
+    pub season: Vec4,
     /// `VegKind::Map`: the plants' patch (classes, colour) and its frame (centre and tan of the
     /// half-angle, then its two axes).
     pub patch: Option<Handle<Image>>,
@@ -336,6 +388,8 @@ pub struct BodyFrame {
     pub civ_light: u32,
     /// A colony without air: its towns under domes (`Terrain::domes`).
     pub domes: bool,
+    /// The far buildings' range (m; the Cities setting's).
+    pub far_range: f32,
 }
 
 /// What the render world needs this frame (extracted).
@@ -385,6 +439,9 @@ pub fn city_test() -> bool {
 /// from the settlement field) or on Earth (from its lights map), the library holding the box, and
 /// not the test cover.
 fn buildings_on(sc: &Scatter, lib: &ScatterLibrary, terrain: &Terrain) -> bool {
+    if sc.levels().city == 0 {
+        return false;
+    }
     let towns = matches!(sc.veg, VegKind::SeTerra | VegKind::None) || (sc.veg == VegKind::Map && sc.earth.lights.is_some());
     terrain.civ.is_some() && towns && (lib.building as usize) < lib.models.len()
 }
@@ -523,6 +580,7 @@ fn cell_area(key: TileKey, r: f64) -> f64 {
 
 #[allow(clippy::too_many_arguments)]
 fn update_scatter(
+    gfx: Res<crate::graphics::GraphicsSettings>,
     mut sc: ResMut<Scatter>,
     mut out: ResMut<ScatterFrame>,
     cam: Res<FlyCamera>,
@@ -533,6 +591,7 @@ fn update_scatter(
     sim: Res<crate::universe::SimTime>,
     mut images: ResMut<Assets<Image>>,
     bodies: Query<(Entity, &SystemBody, &Terrain)>,
+    stars: Query<&SystemBody>,
 ) {
     out.jobs.clear();
     out.page_uploads.clear();
@@ -551,6 +610,18 @@ fn update_scatter(
         }
         return;
     }
+    // The Vegetation and Cities settings. The cells follow the new ranges by themselves (those out of
+    // range go, new ones come); starting over would also drop Earth's plants' patch, and nothing
+    // would draw until it was made again.
+    let want = Levels::new(gfx.quality.vegetation, gfx.quality.cities);
+    if sc.levels != Some(want) {
+        if sc.levels.is_some() {
+            info!("scatter: vegetation {} cities {}", want.veg, want.city);
+        }
+        sc.levels = Some(want);
+        sc.lod = want.lod;
+    }
+    let lv = want;
     sc.frame += 1;
     let lod = sc.lod;
     let range = lod.impostor_far as f64 + 50.0;
@@ -561,7 +632,7 @@ fn update_scatter(
         .filter(|(_, b, t)| !b.star && !t.proc.kind.is_giant() && t.surf_gen.classes.bulk < se_core::surface_gen::bulk::NEPTUNE)
         .map(|(e, b, t)| (e, b, t, cam.pos.delta_m(b.pos).length() - t.radius))
         // (A civilization's skyline shows from its far buildings' range, over high ground too.)
-        .filter(|x| x.3 < (range * 4.0).max(if x.2.civ.is_some() { FAR_RANGE_M * 1.5 } else { 0.0 }))
+        .filter(|x| x.3 < (range * 4.0).max(if x.2.civ.is_some() { lv.far_range * 1.5 } else { 0.0 }))
         .min_by(|a, b| a.3.total_cmp(&b.3));
     let Some((entity, body, terrain, _)) = best else {
         if sc.body.is_some() {
@@ -584,7 +655,8 @@ fn update_scatter(
     }
     // (A body without plants may still have a civilization's buildings: a level 4 civilization's
     // colonies on airless moons.)
-    if sc.veg == VegKind::None && terrain.civ.is_none() {
+    let plants = sc.veg != VegKind::None && lv.veg > 0;
+    if !plants && (terrain.civ.is_none() || lv.city == 0) {
         return;
     }
     let r = terrain.radius;
@@ -608,23 +680,27 @@ fn update_scatter(
         sc.wind_frame = sc.frame;
         sc.wind = data.as_deref().map_or(DVec3::ZERO, |d| crate::volumetric_clouds::wind_at(d, body, terrain, dir, sun_body, sim.jd));
     }
+    if sc.wind_frame == sc.frame || (sim.jd - sc.season_jd).abs() > 0.5 {
+        let sun_dir = terrain.body_light.sun_dir.truncate().as_dvec3();
+        sc.season = data.as_deref().map_or(Vec4::ZERO, |d| season_of(&d.catalog, body, &stars, sun_dir, sim.jd));
+        sc.season_jd = sim.jd;
+    }
     let mut wanted = Vec::new();
     // Keep cells a little past the range (no thrashing at the edge).
     let mut keep: Vec<(TileKey, f64)> = Vec::new();
-    let plants = sc.veg != VegKind::None;
     if plants {
         cells_in_range(dir, height, r, range, CELL_EDGE_M, &mut wanted);
         cells_in_range(dir, height, r, range * 1.15, CELL_EDGE_M, &mut keep);
     }
     // The grass's finer cells near the camera (not in the test).
     let mut grass_cells = HashSet::new();
-    if plants && sc.veg != VegKind::Test && lib.grass > 0 {
+    if plants && sc.veg != VegKind::Test && lib.grass > 0 && lv.grass_range > 0.0 {
         let mut g = Vec::new();
-        cells_in_range(dir, height, r, GRASS_RANGE_M as f64 + 10.0, GRASS_EDGE_M, &mut g);
+        cells_in_range(dir, height, r, lv.grass_range as f64 + 10.0, GRASS_EDGE_M, &mut g);
         grass_cells.extend(g.iter().map(|c| c.0));
         wanted.extend(g);
         let mut gk = Vec::new();
-        cells_in_range(dir, height, r, (GRASS_RANGE_M as f64 + 10.0) * 1.15, GRASS_EDGE_M, &mut gk);
+        cells_in_range(dir, height, r, (lv.grass_range as f64 + 10.0) * 1.15, GRASS_EDGE_M, &mut gk);
         keep.extend(gk);
     }
     let keep: std::collections::HashSet<TileKey> = keep.into_iter().map(|c| c.0).collect();
@@ -633,13 +709,13 @@ fn update_scatter(
     let mut bwanted: Vec<(TileKey, f64, u32)> = Vec::new();
     if buildings_on(&sc, &lib, terrain) {
         let (mut near, mut far, mut nk, mut fk) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        cells_in_range(dir, height, r, BUILD_RANGE_M, CELL_EDGE_M, &mut near);
-        cells_in_range(dir, height, r, FAR_RANGE_M, FAR_EDGE_M, &mut far);
+        cells_in_range(dir, height, r, lv.build_range, CELL_EDGE_M, &mut near);
+        cells_in_range(dir, height, r, lv.far_range, FAR_EDGE_M, &mut far);
         bwanted.extend(near.into_iter().map(|(k, d)| (k, d, 1)));
         // Not the far cells wholly inside the near buildings' range (they would draw none there).
-        bwanted.extend(far.into_iter().filter(|&(k, d)| d + node_edge(k, r) * 1.5 > BUILD_RANGE_M * 0.85).map(|(k, d)| (k, d, 2)));
-        cells_in_range(dir, height, r, BUILD_RANGE_M * 1.15, CELL_EDGE_M, &mut nk);
-        cells_in_range(dir, height, r, FAR_RANGE_M * 1.15, FAR_EDGE_M, &mut fk);
+        bwanted.extend(far.into_iter().filter(|&(k, d)| d + node_edge(k, r) * 1.5 > lv.build_range * 0.85).map(|(k, d)| (k, d, 2)));
+        cells_in_range(dir, height, r, lv.build_range * 1.15, CELL_EDGE_M, &mut nk);
+        cells_in_range(dir, height, r, lv.far_range * 1.15, FAR_EDGE_M, &mut fk);
         let bk: HashSet<(TileKey, u32)> = nk.into_iter().map(|c| (c.0, 1)).chain(fk.into_iter().map(|c| (c.0, 2))).collect();
         sc.bcells.retain(|k, _| bk.contains(k));
     } else {
@@ -817,9 +893,10 @@ fn update_scatter(
         climate: terrain.biome.as_ref().map_or([Vec4::ZERO; 8], |b| std::array::from_fn(|i| b.climate[i])),
         biome_flags: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.flags),
         sun_body: sun_body.as_vec3(),
+        season: if matches!(sc.veg, VegKind::Map | VegKind::SeTerra) { sc.season } else { Vec4::ZERO },
         wind: (body.orient * sc.wind).as_vec3(),
         forest: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[11]),
-        grass: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[10]).truncate().extend(GRASS_RANGE_M),
+        grass: terrain.biome.as_ref().map_or(Vec4::ZERO, |b| b.color[10]).truncate().extend(lv.grass_range),
         grass_models: UVec2::new(lib.trees, lib.grass),
         species: UVec4::new(lib.earth0, lib.flora0, sc.flora_want.is_some_and(|w| w.key == lib.flora_key) as u32, lib.building),
         relief_m: terrain.proc.relief_m as f32,
@@ -833,6 +910,7 @@ fn update_scatter(
             Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.grid_turn, r as f32)
         }),
         domes: terrain.domes,
+        far_range: lv.far_range as f32,
         civ_light: terrain.civ.map_or(0, |(level, seed)| {
             let l = se_core::procgen::civilization::culture(seed, level).light;
             let m = l[0].max(l[1]).max(l[2]).max(1e-3);
@@ -841,7 +919,7 @@ fn update_scatter(
         }),
         city2: {
             let (lo, span) = terrain.ground_range_m();
-            Vec4::new(BUILD_RANGE_M as f32, if city_test() { 1.0 } else { 0.0 }, lo, span)
+            Vec4::new(lv.build_range as f32, if city_test() { 1.0 } else { 0.0 }, lo, span)
         },
         patch: sc.earth.color.clone(),
         patch_lights: sc.earth.lights.clone(),
@@ -850,6 +928,38 @@ fn update_scatter(
             [sc.earth.centre.as_vec3().extend(sc.earth.tan_a as f32), e1.as_vec3().extend(0.0), e2.as_vec3().extend(0.0)]
         },
     };
+}
+
+/// The season at `body` for its trees (the plan's step 11): x the sine of its star's declination
+/// now, y +1 while it climbs (towards the northern summer) and -1 while it falls, z the sine of the
+/// body's axial tilt to the orbit that makes its seasons, w 1. The star is the one its light comes
+/// from (the best aligned with `sun_dir`, render frame). The orbit is the body's own round that star,
+/// a moon's planet's (never the moon's month), a circumbinary planet's round the barycentre holding
+/// the star (never the star's own motion in the binary), from the ephemeris 90 s either side (a
+/// day was a large part of a short year: the trend came out backwards).
+fn season_of(cat: &se_core::catalog::Catalog, body: &SystemBody, stars: &Query<&SystemBody>, sun_dir: DVec3, jd: f64) -> Vec4 {
+    let towards = |s: &SystemBody| s.pos.delta_m(body.pos).normalize_or_zero().dot(sun_dir);
+    let Some(star) = stars.iter().filter(|s| s.star).max_by(|a, b| towards(a).total_cmp(&towards(b))) else {
+        return Vec4::ZERO;
+    };
+    let eph = se_core::ephemeris::Ephemeris::new(cat);
+    let star_chain: Vec<se_core::catalog::ObjectRef> = std::iter::successors(Some(star.obj), |&o| eph.parent_of(o)).take(8).collect();
+    let (mut orb, mut centre, mut cur) = (body.obj, star.obj, body.obj);
+    for _ in 0..8 {
+        let Some(p) = eph.parent_of(cur) else { break };
+        if star_chain.contains(&p) {
+            (orb, centre) = (cur, p);
+            break;
+        }
+        cur = p;
+    }
+    const STEP_DAYS: f64 = 1.0e-3;
+    let to_star = |t: f64| eph.position(centre, t).delta_m(eph.position(orb, t));
+    let (s1, s2) = (to_star(jd - STEP_DAYS), to_star(jd + STEP_DAYS));
+    let pole = (body.orient * DVec3::Y).normalize();
+    let orbit_n = s1.cross(s2).normalize_or_zero();
+    let (d1, d2) = (pole.dot(s1.normalize_or_zero()), pole.dot(s2.normalize_or_zero()));
+    Vec4::new(d1 as f32, if d2 >= d1 { 1.0 } else { -1.0 }, pole.cross(orbit_n).length() as f32, 1.0)
 }
 
 /// How the plants of `body` are decided: the test's even cover; for bodies with land plants, a

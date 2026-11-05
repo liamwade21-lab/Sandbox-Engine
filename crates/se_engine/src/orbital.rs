@@ -330,7 +330,7 @@ fn set_station_lights(u: &mut crate::ship_assets::HullUniform, light: &BodyLight
 fn update_orbital(
     mut commands: Commands,
     mut orb: ResMut<Orbital>,
-    (active, data, sim, time): (Res<ActiveSystem>, Res<SeData>, Res<SimTime>, Res<Time>),
+    (active, data, sim, time, gfx): (Res<ActiveSystem>, Res<SeData>, Res<SimTime>, Res<Time>, Res<crate::graphics::GraphicsSettings>),
     (mut cam, space, ambient, defaults, goto): (ResMut<FlyCamera>, Res<ScaledSpace>, Res<AmbientLighting>, Res<HullDefaults>, Option<ResMut<StationGoto>>),
     (mut meshes, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>),
     (mut hull_mats, mut traffic_mats, mut buffers): (ResMut<Assets<HullMaterial>>, ResMut<Assets<TrafficMaterial>>, ResMut<Assets<ShaderBuffer>>),
@@ -469,7 +469,8 @@ fn update_orbital(
     let Some(home) = orb.home else { return };
     let Ok((_, home_b, _)) = bodies.get(home) else { return };
     let cam_pos = cam.pos;
-    let near = cam_pos.delta_m(home_b.pos).length() < TRAFFIC_DRAW_M;
+    // (The Cities setting Off hides the stations and the traffic.)
+    let near = gfx.quality.cities > 0 && cam_pos.delta_m(home_b.pos).length() < TRAFFIC_DRAW_M;
     let t_s = (sim.jd - 2_451_545.0) * 86_400.0;
     let clock = (time.elapsed_secs_f64() % 86_400.0) as f32;
     let rel = |p: UPos| -> Vec3 { p.delta_m(cam_pos).as_vec3() };

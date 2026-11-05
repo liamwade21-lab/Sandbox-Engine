@@ -1141,6 +1141,61 @@ Step 10's revision (2026-11-05): the level 4 colonies reuse the settlement field
 The traffic is drawn by its own small material (a storage buffer of the streams), not the ship
 shader; the stations' points of light from afar are that material too.
 
+### Step 11: polish (done 2026-11-05)
+
+What was built:
+- **Graphics settings** `Vegetation` and `Cities` (0 Off, 1 Low, 2 High, 3 Ultra; graphics.rs, the
+  Graphics tab's "Vegetation and cities", every preset: Ultra 3, High 2, Medium and Low 1, Potato 0; a
+  Custom block saved before them gets 3). `scatter.rs` `Levels`: Ultra the distances the budget was
+  measured with (meshes 250 m, impostors 3 km, grass 120 m; buildings 7 km, the tall ones 20 km);
+  High meshes 170 m, impostors 2.2 km, grass 80 m, buildings 5 / 14 km; Low meshes 100 m, impostors
+  1.5 km, no grass, buildings 3 / 9 km. Vegetation Off: no trees or grass, and the ground's forest floor
+  and canopy go too. Cities Off: no buildings, stations or space traffic; the ground's streets and
+  lights stay (they are the planet's surface, as SE's own city lights). Dev command `levels V C`,
+  script variables `Vegetation`, `Cities`.
+- **Seasons**: broadleaf trees (MR's 16, the generated species with branch cards) take autumn colours
+  (yellow, orange or red by the tree) as the star's declination falls past the autumn equinox, lose
+  their leaves in patches over October and November, stand bare to March and leaf out in a lighter
+  green, at their latitude (none within about 17 degrees of the equator, full beyond 33) and by the
+  body's own tilt and orbit (scatter.rs `season_of`, from the ephemeris a day apart); each tree a few
+  days early or late. Bare trees from afar keep a third of their crown's texels, grey brown.
+- **Snow on trees** where the ground has snow (SE's terra worlds: the snow and ice weights at the
+  tree's place, which SE moves with the seasons): white on what looks up, the crowns' tops and the
+  branches' upper sides.
+- Final measurements at Ultra 3440x1440 (Ultra clouds; GPU time of the opaque pass, which holds the
+  trees and buildings, plus the scatter's compute passes, against Vegetation and Cities Off in the
+  same run; the window was not in front, so the frames were held at 60 fps and these GPU times are on
+  the high side):
+
+MEAS
+
+Checked: Earth's Ozark forests (37 N, 91.5 W) in July, October, January and late April from 150 m and
+the ground; snow forced on Earth's trees for one test (the Black Forest's conifers, bare broadleaf
+trees); the levels on the Black Forest from 3 km and the ground (Low has no grass, Off no trees).
+
+Learned:
+- The ground has no seasons (Earth's colour map is a summer one; SE's ground has none). The trees fade
+  back to the ground's forest colour from half their range, or an autumn forest would end in a green
+  ring at 3 km.
+- Snow on trees only where the ground has snow: white trees standing on green ground looked wrong.
+- A storage buffer's record that grows needs the bind group layouts' minimum sizes changed with it
+  (three of them in scatter/gpu.rs; wgpu refuses the pipelines, and the port quits).
+- An independent review (three reviewers, each finding checked by another) confirmed four faults, all
+  fixed: a change of either setting started the scatter over, which on Earth also dropped its plants'
+  map patch, so everything vanished until it was made again (the cells follow new ranges by
+  themselves: no restart now); the seasons took the body's own motion, so a moon's month (or a star's
+  motion in a binary) mixed into its tilt and trend (now the orbit that makes the seasons: a moon's
+  planet's round the star, a circumbinary planet's round the barycentre); a day's step was a large
+  part of a short year and read the trend backwards (now 90 s either side); trees that keep some leaves
+  in winter turned from orange to green at once (the autumn colour now fades while they are bare).
+  Found in the checks after it: after a jump in the date the season waited up to 60 frames (now worked
+  out at once when the date moves by half a day).
+
+Left open: **roads flattening steep ground** (the ground's vertex heights near roads would change, and
+the scatter's rebuilt triangles must change identically, or trees and buildings float; San Francisco's
+hills look right without it); street furniture and 3D cars up close; the ground's forest colour
+following the seasons (canopy and floor in planet.wesl).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

@@ -84,6 +84,8 @@ pub struct ModelGpu {
     /// The mean colour of its impostor views (linear) and their coverage, for the tint that gives
     /// the trees the ground's forest colour (set when the bake is done).
     pub mean: [f32; 4],
+    /// x 1 for a broadleaf tree (its leaves follow the seasons).
+    pub flags: [u32; 4],
 }
 
 /// The library, extracted to the render world once ready (and when it changes).
@@ -645,6 +647,9 @@ pub struct ModelSrc {
     pub caps: (u32, u32),
     /// The crown (centre height, radius) for the leaves' ball normals; `None`: from the leaves.
     pub crown: Option<(f32, f32)>,
+    /// A broadleaf tree: its leaves turn and fall with the seasons (MR's trees, the species with
+    /// branch cards; not the conifers, palms, grass or buildings).
+    pub deciduous: bool,
 }
 
 /// The main world's copy of what the library was built from (for the flora's rebuilds).
@@ -738,6 +743,7 @@ fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor:
             mesh_bucket,
             impostor_bucket,
             mean: [0.25, 0.25, 0.25, 0.5],
+            flags: [src.deciduous as u32, 0, 0, 0],
         });
         bake.push(BakeModel {
             positions: src.positions.clone(),
@@ -774,6 +780,7 @@ fn species_model(r: &Recipe, src: &LibrarySources) -> ModelSrc {
         subs: vec![(0, nb, bark_mat), (nb, g.leaves.len() as u32, leaf_mat)],
         caps: (SPECIES_MESH_CAP, SPECIES_IMPOSTOR_CAP),
         crown: None,
+        deciduous: matches!(r.leaf, Leaf::Branch(_)),
     }
 }
 
@@ -810,6 +817,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             subs,
             caps: (MESH_CAP, IMPOSTOR_CAP),
             crown: None,
+            deciduous: true,
         });
     }
     if models.is_empty() {
@@ -866,7 +874,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let n = idx.len() as u32;
             // The tuft shades as the ground under it: its "crown" far below makes the leaves' ball
             // normals point up (scatter_draw.wesl).
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (GRASS_CAP, 64), crown: Some((-50.0, 50.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (GRASS_CAP, 64), deciduous: false, crown: Some((-50.0, 50.0)) });
             grass += 1;
         }
     }
@@ -895,7 +903,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![255; 4]) });
         let (positions, normals, uvs, idx) = building_box();
         let n = idx.len() as u32;
-        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), crown: Some((0.5, 0.0)) });
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), deciduous: false, crown: Some((0.5, 0.0)) });
         // The villages' round hut and longhouse (level 1), the box's next two models, with their
         // own material: the port's thatch, mud brick, timber and stone (made with the image
         // generator) in an array.
@@ -904,7 +912,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![160, 130, 90, 255]) });
         for (positions, normals, uvs, idx) in [round_hut(), longhouse()] {
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), deciduous: false, crown: Some((0.5, 0.0)) });
         }
         // Level 3's cities, the box's next eight models (city.wesl M_FUTURE..M_LANE): the future
         // box, four towers (tapering, stepped, twisted, round), the arcology, the skybridge and the
@@ -930,7 +938,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         ];
         for ((positions, normals, uvs, idx), cap) in shapes {
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), deciduous: false, crown: Some((0.5, 0.0)) });
         }
         // The hero models (city.wesl M_TEMPLE, M_WATCH, M_LANDMARK), made in Blender by script
         // (`assets/models/hero`): level 1's temple and watchtower with the villages' textures, level
@@ -941,12 +949,12 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
                 building_box()
             });
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), deciduous: false, crown: Some((0.5, 0.0)) });
         }
         // A level 4 civilization's colonies' domes (city.wesl M_DOME), with level 3's material.
         let (positions, normals, uvs, idx) = dome_mesh();
         let n = idx.len() as u32;
-        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (4000, 0), crown: Some((0.5, 0.0)) });
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (4000, 0), deciduous: false, crown: Some((0.5, 0.0)) });
     }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());

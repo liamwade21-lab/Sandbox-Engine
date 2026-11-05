@@ -706,6 +706,16 @@ fn load_graphics(g: &se_core::sc::Block, gfx: &mut GraphicsSettings, lens: &mut 
     if !preset_keys.is_empty() {
         q.keys.retain(|(k, _)| preset_keys.contains(k));
     }
+    // A Custom block saved before the Vegetation and Cities keys keeps what the port drew then (Ultra's
+    // distances); a named preset gives its own.
+    if gfx.preset.eq_ignore_ascii_case("Custom") {
+        if g.f64("Vegetation").is_none() {
+            q.vegetation = 3;
+        }
+        if g.f64("Cities").is_none() {
+            q.cities = 3;
+        }
+    }
     gfx.quality = q;
     gfx.loaded = true;
     let f = |k: &str, v: &mut f32| {
