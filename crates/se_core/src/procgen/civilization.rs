@@ -150,3 +150,74 @@ pub fn level_name(level: u8) -> &'static str {
         _ => "",
     }
 }
+
+/// A civilization's look from orbit (the plan's culture seed): its lights' colour (linear, about
+/// unit brightness) and how bright they are, its towns' colour by day (linear albedo), and how much
+/// it likes the coast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Culture {
+    pub light: [f32; 3],
+    pub brightness: f32,
+    pub urban: [f32; 3],
+    pub coast: f32,
+}
+
+/// The culture of a civilization of `level` with seed `seed` (a hash of the planet's name): primitive
+/// peoples' fires, modern sodium or white lamps, futuristic and interstellar ones any hue (alien
+/// tastes); thatch and earth, concrete, or a palette of its own by day.
+pub fn culture(seed: u32, level: u8) -> Culture {
+    let mut d = Draws(hash(seed ^ 0x0c17_7a2e));
+    let (u1, u2, u3) = (d.next(), d.next(), d.next());
+    const MODERN: [[f32; 3]; 3] = [[1.0, 0.62, 0.28], [1.0, 0.85, 0.65], [0.88, 0.94, 1.0]];
+    const ALIEN: [[f32; 3]; 6] = [[1.0, 0.62, 0.28], [0.88, 0.94, 1.0], [0.55, 1.0, 0.55], [0.5, 0.9, 1.0], [0.8, 0.55, 1.0], [1.0, 0.5, 0.7]];
+    let (light, brightness) = match level {
+        1 => ([1.0, 0.55, 0.2], 0.12),
+        2 => (MODERN[(u1 * 3.0) as usize % 3], 1.0),
+        3 => (ALIEN[(u1 * 6.0) as usize % 6], 1.6),
+        _ => (ALIEN[(u1 * 6.0) as usize % 6], 2.2),
+    };
+    let urban = match level {
+        1 => [0.30, 0.25, 0.18],
+        2 => [0.32, 0.31, 0.29],
+        _ => {
+            // Pale, dark or tinted: a hue of its own at a modest saturation.
+            let v = 0.18 + 0.32 * u2;
+            let h = u3 * std::f32::consts::TAU;
+            let s = 0.12;
+            [v * (1.0 + s * h.cos()), v * (1.0 + s * (h - 2.09).cos()), v * (1.0 + s * (h + 2.09).cos())]
+        }
+    };
+    Culture { light, brightness, urban, coast: 0.5 + d.next() }
+}
+
+/// The culture seed of a planet: a hash of its name.
+pub fn culture_seed(name: &str) -> u32 {
+    name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cultures_suit_their_levels() {
+        let mut hues = std::collections::HashSet::new();
+        for i in 0..200u32 {
+            let seed = culture_seed(&format!("Test planet {i}"));
+            for level in 1..=4u8 {
+                let c = culture(seed, level);
+                assert!(c.light.iter().chain(&c.urban).all(|v| v.is_finite() && *v > 0.0 && *v <= 1.0));
+                assert!((0.5..1.5).contains(&c.coast));
+                // Fires are dim; the higher levels brighter.
+                assert!(c.brightness == [0.12, 1.0, 1.6, 2.2][level as usize - 1]);
+                if level == 3 {
+                    hues.insert(c.light.map(|v| (v * 100.0) as u32));
+                }
+            }
+            // The same name always gives the same culture.
+            assert_eq!(culture(seed, 3), culture(culture_seed(&format!("Test planet {i}")), 3));
+        }
+        // Futuristic peoples' lights come in every hue of the palette.
+        assert_eq!(hues.len(), 6);
+    }
+}

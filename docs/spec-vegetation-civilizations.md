@@ -759,6 +759,77 @@ civilizations besides Earth): level 1 WISE 19101+56342 3 (63.6 ly), level 2 2MAS
 its info panel reads "Organic multicellular intelligent, Level 4 civilization (interstellar)"). Most
 hosts nearby are brown dwarfs' generated systems (the nearest catalog stars).
 
+### Step 6: settlement map and the view from orbit (done 2026-11-05)
+
+What was built:
+- **`settlement.wesl`** (no bindings): a generated planet's settlements as a density field over the
+  sphere: Gaussian blobs in cells of three sizes (villages in 14 km cells, towns in 55 km, cities in
+  280 km; megalopolises in 420 km cells for level 4), each cell holding one with a chance, at a random
+  point, of a random size (log-uniform), with a farmland halo a few times wider. The level sets which
+  sizes and how big; the field's mean (the urban share where the land suits fully) is 0.2 % for level
+  1, about 3 % for level 2, 8 % for level 3, 17 % for level 4. The culture seed (a hash of the planet's
+  name) moves every settlement. The countryside's lights (`st_points`) are points about 400 m apart
+  whose mean is 1: an even glow from afar, separate lights close up.
+- **The ground** (planet.wesl `lit_ground`, generated planets only: Earth draws its own from its
+  maps): the land's suitability (flat, low on the relief, above the sea and more so near the coast as
+  the culture likes it, fertile by the biome weights) says where settlements stand (a soft threshold:
+  full density from about 0.3); by day the towns take the culture's colour and the fields round them a
+  patchwork of about 300 m; by night the towns glow in the culture's light colour, with the
+  countryside round them at a fifth of a town's light times the farmland's share squared.
+- **The culture** (`se_core::procgen::civilization::culture`): its lights (level 1 firelight, dim;
+  2 sodium, warm or cool white; 3 and 4 any hue, alien ones too, brighter), its towns' colour by day
+  (earth and thatch; concrete; a palette of its own), its liking for the coast.
+- The terrain keeps the planet's level and culture seed (`Terrain::civ`), the ground's uniform
+  carries them (`PlanetUniform::civ`, `civ_light`, `civ_urban`); a log line names a loaded planet's
+  civilization.
+
+Learned:
+- Seen from afar, a blob smaller than the pixel must keep its light (blurred to the pixel's size:
+  radius sqrt(r^2 + s^2), height r^2 / (r^2 + s^2)), not be spread over its whole cell: spread over
+  14-280 km cells, every town's light vanished from orbit (the field's mean was 0.3 %). Only when the
+  pixel spans a good part of a cell does the field turn into its mean.
+- Lights are not the urban share: Earth's populated land glows well beyond its towns at night
+  (suburbs, roads, farms). With the towns alone (3 %) a level 2 night side was nearly black; the
+  countryside's glow round them makes it read as Earth's does. Squared, it stays brightest near the
+  towns (as a plain share, all land glowed alike).
+- The suitability as a density factor (towns x a world's typical 0.1-0.3) left almost nothing: it
+  must say where settlements stand, not thin them out.
+- The civilizations' lights switch by the main star's light alone. In SE's light scale
+  (`(F / F_max)^0.35`) a moon's or a close planet's shine lights a night side at about 1 % of the star,
+  ten times SE's city-light cutoff: by `e_city` (every light) no night with a moon up was dark enough.
+  (Earth's own lights keep SE's switch.)
+- The glow map's brightness (`levels.y`) is 0 on bodies without a glow map: the civilizations' lights
+  take the self-emission setting (`levels.z`) and their own brightness (Earth's city cores, 0.6 in its
+  lights tiles x SE's 1.5).
+- All the test planets within 140 light-years orbit brown dwarfs and late M dwarfs (the nearest
+  systems): their deep red light hides the towns' colours by day. Several are tidally locked, and the
+  level 2 test planet (2MASSI J1029216+162652 2) has light on every side (a second light and a moon):
+  its night lights never show. WISEPA J090649.36+473538.6 1 (level 2, tidally locked, night side round
+  35 N 130 E) is the better level 2 test view. The star browser's search stops at 10,000 systems
+  (about 75 pc), so no civilization round a Sun-like star was found nearby to judge the day side by.
+
+Test views (looking down from 15,000 km over 35 N 130 E and 35 S 50 W, 3440x1440 for the cost):
+- Level 1, WISE 19101+56342 3: no lights from orbit (fires at an eighth of a town's light, villages
+  alone); by day nothing shows either, as it should from space.
+- Level 2, WISEPA J090649.36+473538.6 1: clusters of town lights with a dim glow round them, dark seas
+  and highlands between: it reads as Earth's night side does. The first level 2 test planet shows none
+  (light on every side, above).
+- Level 3, 2MASSW J1338261+414034 4.3 (a giant's moon, its night side lit orange by the giant): white
+  megacities and their bright countryside.
+- Level 4, SDSS J212413.88+010000.2 1: green light over whole continents.
+- Earth's night side unchanged (its own lights tiles; the generated planets' code never runs on it).
+- Cost (level 4 planet, the ground's pass): 3.45 / 4.55 / 4.67 ms from 15,000 km / 30 km / 1 km
+  against 3.41 / 4.39 / 4.62 ms with the civilization left out: 0.04-0.16 ms.
+
+Left open:
+- The day side seen under a white sun (no test planet has one nearby).
+- Earth's settlement density from its lights tiles (for its cities, step 7): its view from orbit is
+  its own maps, unchanged.
+- The urban shares per level are worked out from the field's sizes and chances, not measured on the
+  drawn ground; the rural light's share (0.2) is set by eye.
+- Clouds cover the lights as they cover the ground (the flat and volumetric clouds draw over it); a
+  lit town does not light its clouds from below.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

@@ -127,6 +127,12 @@ pub struct PlanetUniform {
     /// alpha is the ice mask (`DiffMapAlpha "Ice"`), else 0 (no glint); w SE's WaterSurfColor.a, the
     /// water display level ([`WaterDisplay`]; the slot's).
     pub ice: Vec4,
+    /// A generated planet's civilization (settlement.wesl): x level (0 none), y culture seed
+    /// (fraction), z its lights' brightness, w its liking for the coast; its lights' colour; its
+    /// towns' colour by day.
+    pub civ: Vec4,
+    pub civ_light: Vec4,
+    pub civ_urban: Vec4,
     /// The node's record in the material's light page (`PlanetMaterial::light_page`).
     pub slot: u32,
 }
@@ -956,6 +962,8 @@ pub struct Terrain {
     /// The surface air pressure (atm) SE's generator works with (catalog or completed), 0 unknown:
     /// the generated flora's crowns.
     pub pressure_atm: f32,
+    /// Its civilization's level (1-4) and culture seed (`BodyRecord::civilization`).
+    pub civ: Option<(u8, u32)>,
     /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
     last_veg: Vec2,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
@@ -1187,6 +1195,7 @@ impl Terrain {
             tidal_lock: false,
             land_plants: false,
             pressure_atm: 0.0,
+            civ: None,
             last_veg: Vec2::ZERO,
             gen_jobs: NodeMap::new(),
             gen_tiles: NodeMap::new(),
@@ -2424,6 +2433,7 @@ fn update_terrain(
             let (extra_dir, extra_color) = light.extra_uniforms(false);
             let light_slot = terrain.lights.alloc(&mut shader_buffers);
             let (light_page, page_slot) = terrain.lights.page(light_slot);
+            let culture = terrain.civ.map(|(level, seed)| (level, seed, se_core::procgen::civilization::culture(seed, level)));
             let u = PlanetUniform {
                 planet: (-build.center).as_vec3().extend(terrain.radius as f32),
                 rect_color: rc,
@@ -2507,6 +2517,9 @@ fn update_terrain(
                     if s.diff_map_alpha_ice && layers.color.is_some() { 1.0 } else { 0.0 },
                     water_display.level,
                 ),
+                civ: culture.map_or(Vec4::ZERO, |(level, seed, c)| Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.brightness, c.coast)),
+                civ_light: culture.map_or(Vec4::ZERO, |(_, _, c)| Vec3::from_array(c.light).extend(0.0)),
+                civ_urban: culture.map_or(Vec4::ZERO, |(_, _, c)| Vec3::from_array(c.urban).extend(0.0)),
                 slot: page_slot,
             };
             // The node's lighting now (its patches all take the same).

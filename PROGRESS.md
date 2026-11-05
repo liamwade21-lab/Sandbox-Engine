@@ -1,6 +1,6 @@
 # Progress
 
-## Current state (2026-11-04)
+## Current state (2026-11-05)
 
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, with its git history, for better visuals, add-ons and the like. It has its own
@@ -80,9 +80,20 @@
     The info panel says so ("Organic multicellular intelligent, Level 2 civilization (modern)") and the
     star browser can search for them (Life type "Intelligent", a Civilization filter). Nothing is drawn
     for them yet (steps 6-10). Test planets: level 1 WISE 19101+56342 3, level 2 2MASSI
-    J1029216+162652 2, level 3 2MASSW J1338261+414034 4.3, level 4 SDSS J212413.88+010000.2 1 (all
+    J1029216+162652 2 (better: WISEPA J090649.36+473538.6 1), level 3 2MASSW J1338261+414034 4.3, level 4 SDSS J212413.88+010000.2 1 (all
     within 70 light-years). Calibration: 20,000 generated systems, 1 in 20.1.
-  - **Step 6 next:** the settlement map and the view from orbit (cities' lights and land use).
+  - **Step 6 done (2026-11-05): civilizations seen from orbit.** A generated planet's civilization
+    now has towns, cities and villages spread over its land (flat, low, fertile land near the coast
+    first), each people with its own taste (its lights' colour, its towns' colour, how much it likes
+    the coast). By night their lights show from orbit: level 1's fires are too dim to see from space,
+    level 2 looks like Earth at night (clusters of town lights and a glow round them), level 3 has
+    bright megacities, level 4 whole continents of light. By day the towns and a patchwork of fields
+    colour the ground (hard to judge yet: every test planet nearby orbits a deep-red dwarf star).
+    Earth is unchanged (its own maps). A better level 2 test planet is WISEPA J090649.36+473538.6 1
+    (night side round 35 N 130 E): the first one has light on every side. Cost: 0.04-0.16 ms at
+    3440x1440 (part of the ground's pixel).
+  - **Step 7 next:** level 2 cities up close: streets, buildings, windows lit at night, street lamps,
+    traffic; Earth's cities from its lights map.
 
 ## Notes
 

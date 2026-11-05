@@ -787,6 +787,10 @@ fn spawn_system_members(
             terrain.tidal_lock = body_in.as_ref().is_some_and(|c| c.tidally_locked);
             terrain.land_plants = crate::scatter::land_plants(&b.block);
             terrain.pressure_atm = gen_in.pressure_atm;
+            terrain.civ = b.civilization().map(|l| (l, se_core::procgen::civilization::culture_seed(b.names.first().map_or("", |n| n.as_str()))));
+            if let Some((level, _)) = terrain.civ {
+                info!("{}: a level {level} civilization", b.names.first().map_or("", |n| n.as_str()));
+            }
             let extras = se_core::body_params::BodyExtras::from_body_block(&b.block);
             // The catalog's atmosphere, or the look SE gives a generated one.
             // Look: Opacity, Hue, Saturation, SkyLight (`AtmosphereParamsUniform::look`).

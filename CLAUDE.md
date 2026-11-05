@@ -82,6 +82,17 @@ that install, never copied into the project.
   Intelligent as multicellular (`LifeParams::multicellular()`). `print_civ_stats` (ignored) re-fits
   the base chance and level weights to the decisions (1 in 20 land-life planets; 45/15/20/20). The
   dev command `search LY civ` logs every civilization the star browser finds.
+- Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
+  cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel
+  spans a good part of a cell, or towns vanish from orbit) and planet.wesl's civ block in `lit_ground`
+  (generated planets only; Earth keeps its maps). The land's suitability says where towns stand (a soft
+  threshold), never how dense they are. Their lights switch by the main star's light alone (`s.city`):
+  in SE's light scale a moon's shine is ten times SE's city-light cutoff. Their brightness takes the
+  self-emission setting (`levels.z`), never `levels.y` (0 without a glow map). The culture (lights'
+  colour, towns' colour, coast) is `se_core::procgen::civilization::culture`, carried by
+  `PlanetUniform::civ`, `civ_light`, `civ_urban`. The test planets orbit deep-red dwarfs, several
+  tidally locked: look down on a night side with `surface LAT LON 15000 -90` (level 2's best is
+  WISEPA J090649.36+473538.6 1 at 35 130).
 - Vegetation (the plan's step 3, on by default, `SE_SCATTER=0` or `scatter off` turns it off): bodies
   whose catalog Life has multicellular land life (`scatter::land_plants`, `Terrain::land_plants`) get
   trees and grass. Where: on Earth (any body with a colour map) from a 512-texel patch of its map round
@@ -102,6 +113,10 @@ that install, never copied into the project.
   port's own leaf cards are in `assets/textures/vegetation/` (power-of-two squares, alpha cut-out).
   The meshes' light is worked out once per instance by the compute pass `light` in scatter_draw.wesl
   (per vertex it cost 0.9 ms on a forest floor).
+- Keep test runs short (the user, 2026-11-04): the ground loads in about 30 s after a jump, so wait
+  about that (`wait 1500`-`2400` with `timing frame`, which runs as fast as it can), take the picture
+  and end the run; never a fixed wait of several minutes "to be safe". The star browser's search
+  (`search LY life|civ`) finishes in about 30 s (it stops at 10,000 systems): end the run then.
 - Test runs' `shot PATH` needs a Windows path (`C:/...`): a Git Bash `/c/...` path inside `--run` is
   not converted and the picture is not saved. After a camera jump let the ground load before judging
   a picture (`wait 1200` or more): its fine nodes arrive over hundreds of frames.

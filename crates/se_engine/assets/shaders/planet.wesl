@@ -16,6 +16,7 @@ import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_s
 // pass). The wrappers below (`terra_noise`, `se_terra_snow`, `se_terra_weights`, `biome_weights`, ...)
 // pass them this material's values.
 import super::vegetation::{lin_to_srgb255, veg_classes, map_noise, map_forest, canopy_shade};
+import super::settlement::{settlements, st_fields, st_points};
 import super::surface_class::{TerraMix, hash31, vnoise, fbm3, ter_oct, ter_fbm, ter_fbm3d, terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at, designed_noise_at, biome_weights_at};
 
 // The fixed part of the material. The components marked "slot" are read from `lit`.
@@ -69,6 +70,11 @@ struct Planet {
     // SE's ice glint: x SpecBrightIce, y RoughnessIce, z 1 when the colour map's alpha is the ice mask;
     // w (slot) SE's WaterSurfColor.a, the water display (ShowWater) level.
     ice: vec4<f32>,
+    // A generated planet's civilization (settlement.wesl): x level (0 none), y culture seed, z its
+    // lights' brightness, w its liking for the coast; its lights' colour; its towns' colour by day.
+    civ: vec4<f32>,
+    civ_light: vec4<f32>,
+    civ_urban: vec4<f32>,
     // The node's record in `lit`.
     slot: u32,
 };
@@ -1115,8 +1121,10 @@ struct BiomeLook {
     vary: f32,
     dark: f32,
     white: f32,
-    // The forest slot's weight (the scatter's trees stand by it on SE's terra worlds).
+    // The forest slot's weight (the scatter's trees stand by it on SE's terra worlds), and how
+    // fertile the ground is (steppe, grass, forest: settlements prefer it).
     forest: f32,
+    fertile: f32,
 };
 
 // One biome slot: its large and small sample layers (colours multiplied, reliefs added), times
@@ -1228,6 +1236,7 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
     o.dark = m.dark;
     o.white = m.white;
     o.forest = w[11];
+    o.fertile = clamp(w[9] * 0.5 + w[10] + w[11] * 0.8, 0.0, 1.0);
     var total = 0.0;
     for (var k = 0; k < 12; k = k + 1) {
         total += max(w[k], 0.0);
@@ -1973,6 +1982,8 @@ struct Surf {
     e_direct: vec3<f32>,
     // The further stars' light at the ground (as `sun_at_ground`), for the sea's glint.
     sun_x: array<vec3<f32>, 3>,
+    // A generated planet's civilization: its towns' density here (their lights by night).
+    city: f32,
 };
 
 // SE's planetary sphere shadow (planet.glsl:1087-1095): a point `height` m up is lit until the star
@@ -2011,10 +2022,12 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     var sample_rough = 1.0;
     var sample_k = 0.0;
     var forest = 0.0;
+    var fertile = 0.0;
     if biomes.flags.x > 0.5 {
         let b = biome_albedo(bdir, in.height, slope, !textured, fp);
         biome = b.col;
         forest = b.forest;
+        fertile = b.fertile;
         // SE's ColorVary (tg_terra_color.glsl:82-158): the colour darkens towards it over
         // planet-wide patches, `mix(colorVary, 1, albedoVary)`, albedoVary = 1 - 0.5 Fbm of the
         // point distorted by 1.3 Fbm3D((point + Randomize) 0.07), cubed and smoothstepped.
@@ -2104,6 +2117,34 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             }
         }
     }
+    // A generated planet's civilization (settlement.wesl): its towns by day in their colour, the
+    // fields' patchwork round them, where the land suits (low, flat, fertile, the coast as the
+    // culture likes it); their lights by night (`finish`). Earth draws its own from its maps.
+    var city = 0.0;
+    if planet.civ.x > 0.5 && !textured && planet.proc_params2.z > 0.5 {
+        let relief = max(planet.proc_params.y, 100.0);
+        let sea = planet.ocean_sea.w > 0.5;
+        let h = in.height;
+        var suit = (1.0 - smoothstep(0.04, 0.14, slope)) * (1.0 - smoothstep(0.25, 0.6, h / relief));
+        if sea {
+            suit *= smoothstep(2.0, 20.0, h) * (1.0 + planet.civ.w * (1.0 - smoothstep(0.0, 0.08, h / relief)));
+        }
+        let fert = select(1.0, mix(0.3, 1.0, fertile), biomes.flags.x > 0.5);
+        suit *= fert;
+        if suit > 0.0 {
+            // The suitability says where settlements stand, not how dense they are: from about 0.3
+            // the land takes them at full density (a people on poor land still fill its best land;
+            // as a factor, towns x a world's typical 0.1-0.3 left its night side dark).
+            let k = smoothstep(0.03, 0.3, suit);
+            let st = settlements(bdir, planet.proc_params2.x, u32(planet.civ.x + 0.5), u32(planet.civ.y * 10000.0), g_footprint_m);
+            let urban = clamp(st.x * k, 0.0, 1.0);
+            let farm = clamp(st.y * k, 0.0, 1.0) * fert * (1.0 - urban);
+            albedo *= mix(vec3<f32>(1.0), st_fields(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m), farm * 0.7);
+            albedo = mix(albedo, planet.civ_urban.rgb, urban * 0.85);
+            // Their lights: the towns, and the countryside round them (farms, hamlets, roads).
+            city = urban + RURAL_LIGHT * farm * farm * st_points(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m);
+        }
+    }
     // SE's "rings winter" (planet.glsl RINGS, light 0): on the hemisphere the rings shade, the
     // surface colour fades by tan(the sun's elevation over the ring plane) x the strength.
     if planet.ring_normal.w > 0.0 {
@@ -2130,6 +2171,12 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.e_level = max(dot(up, l), 0.0) * terminator * e_sun;
     }
     s.e_city = s.e_level;
+    // The civilization's lights are on where the main star's light on level ground is under SE's
+    // city-light cutoff (as `city_lights_on`), not counting the further lights: in SE's light scale
+    // (`(F / F_max)^0.35`) a moon's or a close planet's shine lights the night side at about 1 % of
+    // the star, ten times the cutoff, and every night with a moon up would be dark.
+    let civ_cut = max(CITY_LIGHTS_CUTOFF * lit[planet.slot].sun_dir.w * planet.atm_flags.y, 1e-12);
+    s.city = city * (1.0 - smoothstep(civ_cut * 0.2, civ_cut, dot(s.e_level, vec3<f32>(0.3, 0.59, 0.11))));
     s.e_direct = s.sun_at_ground * (planet.atm_flags.y * max(dot(up, l), 0.0));
     s.sun_x = array<vec3<f32>, 3>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     // SE's Hapke BRDF (terrain_pbr.glh) on the direct light: Lommel-Seeliger with the opposition
@@ -2234,6 +2281,14 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     return s;
 }
 
+// A civilization's lights at full density in the glow map's units: Earth's city cores (about 0.6
+// in its lights tiles, times SE's 1.5 on the glow brightness).
+const CIV_LIGHT: f32 = 0.9;
+// The countryside's lights over farmland, as a share of a town's, times the farmland's share squared
+// (brightest near the towns): from orbit Earth's populated land glows well beyond its towns, but
+// unevenly (as the plain share, every land glowed alike).
+const RURAL_LIGHT: f32 = 0.2;
+
 // SE's city-light cutoff, per unit of the main light's intensity (SurfParams4.x = 0.001 with HDR,
 // 0.05 without, times light 0's intensity at +0x58: FUN_1404ae4a0, FUN_1404bf5c0).
 const CITY_LIGHTS_CUTOFF: f32 = 0.001;
@@ -2251,8 +2306,15 @@ fn city_lights_on(e_city: vec3<f32>) -> f32 {
 // City lights at night and aerial perspective, for a camera above the sea. SE's surface pass casts
 // no cloud shadows (planet.glsl's Shadow is rings x eclipse only; the clouds are their own shell
 // drawn over the ground, which also covers the city lights).
-fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>, e_city: vec3<f32>) -> vec3<f32> {
+fn finish(in: VertexOut, col_in: vec3<f32>, up: vec3<f32>, l: vec3<f32>, e_sun: vec3<f32>, e_city: vec3<f32>, city: f32) -> vec3<f32> {
     var col = col_in;
+
+    // A generated planet's civilization's lights (settlement.wesl): `city` is their density, already
+    // switched by the night (`lit_ground`). Times the self-emission setting (`levels.z`), not the
+    // glow map's brightness (`levels.y`: 0 on bodies without a glow map).
+    if city > 0.0 {
+        col += planet.civ_light.rgb * (planet.civ.z * CIV_LIGHT * city * lit[planet.slot].levels.z);
+    }
 
     // The glow map (city lights, Io's lava) in the catalog's GlowColor, by SE's switch.
     if planet.rect_lights.w > 0.5 {
@@ -2372,7 +2434,7 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         col = se_ground_water(in, s, col, up, v);
     }
     // Under water the view is all water: no aerial perspective or night lights over it.
-    return vec4<f32>(select(finish(in, col, up, l, s.e_sun, s.e_city), col, under), 1.0);
+    return vec4<f32>(select(finish(in, col, up, l, s.e_sun, s.e_city, s.city), col, under), 1.0);
 }
 
 // SE's 3D water (water.glsl): the sea surface near the camera, drawn over the ground pass with
@@ -2411,7 +2473,7 @@ fn water_fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let sa = sea_light(s, nw, v, planet.params.w);
     let alpha_a = clamp(0.02 + horizon * 0.98 * pow(1.0 - abs(dot(v, nw)), 4.0), 0.0, 1.0) * a * fade;
     let surf = sa.spec * (planet.params.y * a * fade) + col * (sa.diff + water_amb_light(s, col)) * alpha_a;
-    let above = vec4<f32>(finish(in, surf, up, l, s.e_sun, s.e_city) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city) * (1.0 - alpha_a), alpha_a);
+    let above = vec4<f32>(finish(in, surf, up, l, s.e_sun, s.e_city, 0.0) - finish(in, vec3<f32>(0.0), up, l, s.e_sun, s.e_city, 0.0) * (1.0 - alpha_a), alpha_a);
 
     // From under water the whole path is in the water: the surface (lit from above, so no glint
     // towards the camera) fades through the absorption into the underwater fog, which also makes it
