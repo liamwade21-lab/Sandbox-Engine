@@ -997,6 +997,76 @@ Learned:
 Left open: the hero models (a temple, a watchtower) from the Blender tool's generator: Blender was not
 running; fences, field strips and smoke; level 1 lights only near the ground (as planned).
 
+### Step 9: level 3 cities (done 2026-11-05)
+
+What was built:
+- **The layout** (`city.wesl`, placed by `scatter.wesl` `place_future`): the same districts, blocks and
+  lots, in wider business cores than level 2's. There whole blocks become **megatowers** of 150-1,500 m
+  (at most 14 times their width; the tallest in the cores' peaks) in four code-built shapes (tapering
+  with a spire, stepped with terraces, twisted a quarter turn, round with a dome: `library.rs`
+  `tower`). Six in ten pairs of megatowers side by side along a block row are joined by a
+  **skybridge** at 30-65 % of the lower one's height. A few districts of the strongest cores hold an
+  **arcology** (a five-tier stepped pyramid 260-360 m across, 350-800 m high) or the **landmark** (the
+  hero tower, 700-1,000 m); the lots under them stay empty. The other lots keep the towns' boxes, 1.4
+  times taller, in the future facades.
+- **Flying traffic**: lanes over every other arterial (about a kilometre apart) at two heights (70-110 m
+  and 180-280 m, by the line), in segments of 128 face metres along the bent arterial; each a pair of
+  crossed ribbons (one each way) that the shader widens to a car or three quarters of a pixel. The cars
+  come from a hash of their slot and the clock (no state, as on the ground): near, a body with its
+  headlights and tail lights; far, a point of light, white coming towards the camera, red going away.
+- **The facades**: made with the image generator (`assets/textures/future/`): a glass curtain wall,
+  white panels with ribbon windows and gold fins over dark glass (cropped to whole repeats so they
+  tile; their windows in alpha from the dark glass), and a sheet of 16 neon signs. By night 40 % of
+  the windows are lit, warm, neutral, cool or in the culture's colour; light strips run up the towers'
+  corners (rings round the round ones) in the culture's colour; neon signs hang on the lower storeys
+  (4-28 m); the towers over 300 m have a ring of lights round a landing pad on the roof, and red
+  beacons blink on the spires.
+- **The hero models**, made in Blender by script (its 3D generators are all switched off: they need an
+  API key or the Premium plan): level 1's temple (stone tiers with stairs, a mud-brick shrine on timber
+  posts, a thatched pyramid roof; on the middle of 4 in 10 village districts) and watchtower (now and
+  then on a village's edge), level 3's landmark (three curved legs joining a glass core, two sky decks
+  with rings of light, a needle). Exported by the script (`assets/models/hero/make_heroes.py`) to
+  `assets/models/hero/*.bin`, drawn by the building pipeline with the villages' or level 3's textures.
+- The street lamps take the culture's light colour on generated planets; at level 3 and up, near the
+  ground, the streets give less of a town's light (the windows give the rest).
+- The scatter now runs to 30 km above the radius on a body with a civilization (it stopped at 12 km:
+  from 10 km over a city on a 4.4 km plateau no building showed). The dev command `town` takes a pitch.
+
+Checked on the level 3 test planet 2MASSW J1338261+414034 4.3 (`town city`): from orbit its night side's
+white megacities (step 6's); from 10 km the skyline over the street grid with streams of car lights;
+from 600 m the megatowers, the landmark, twisted and round towers, a skybridge; at 120 m the streets
+with neon, flying cars overhead; by night (the giant's orange light) and by day. Level 1's temple on
+the generated world RS 8514-928-8-5906585-158 3 (`SE_CIV_TEST=1`). Cost at Ultra 3440x1440 with the
+3D clouds, buildings on against `scatter off`: 600 m over the core +1.4 ms in the main pass and 0.2 ms
+of the scatter's passes, 120 m in the streets +0.6 and 0.14, 10 km nothing measurable: within the
+2.5 ms budget.
+
+Learned:
+- WGSL: `meta` is a reserved word; `*` and `^` cannot be mixed without brackets; a helper function
+  that uses a binding of one pipeline variant only (`windows_tex`, `BUILDING`) needs the same `@if`.
+- At 55 % lit windows in pure white the night city was a white glare: 40 %, mixed tints and a wide
+  spread of brightness read as lit offices.
+- Generated texture images do not repeat exactly: measure the repeat (autocorrelation of the rows and
+  columns) and crop to whole repeats (the panels hold 7 storeys, the others 8).
+- An independent review (three reviewers, each finding checked by another) found 13 real faults, all
+  fixed: every point of a block or district must reach the same decision about what stands there, so a
+  shared object (an arcology, a landmark, a temple) is decided by the town's density at its own middle,
+  and the lots it clears follow that decision; an object whose middle lies on the line between two
+  blocks (a skybridge) must be tried from both; the code-built models' normals go through the inverse
+  of the instance's stretch (twisted and tapering walls were lit with the wrong slope); the flying cars
+  run in face metres (each segment exactly 128), at a speed of whole slots over the clock's wrap, keyed
+  modulo the segments' wrap, or they jump; the hero models' texture layer sits in v with a 5,000 m
+  offset (negative metres fell into the layer below); the skybridge needs a floor.
+
+Left open (the plan's revision below): elevated roads; flying cars as 3D models close up; the tallest
+towers beyond the far range (20 km) are not drawn; the landmark's place is decided by the core field
+alone, so one can stand at a city's thin edge.
+
+Step 9's revision (2026-11-05): the hero models come from the Blender tool by script, not its
+generator (the user's add-on has every generator switched off; it needs their API key or Premium):
+the temple, watchtower and landmark are simple shapes modelled in code there. Elevated roads were
+left out (the flying lanes and skybridges carry the look); they can come with step 11's polish.
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

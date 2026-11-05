@@ -2173,10 +2173,12 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
                 // A primitive people's villages: dirt paths, huts, hearth fires.
                 cg = village_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, albedo, globals.time);
             } else {
-                cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, globals.time);
+                cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, planet.civ_light.rgb / max(max(planet.civ_light.r, planet.civ_light.g), max(planet.civ_light.b, 1e-3)), globals.time);
             }
             albedo = cg.col;
-            lamp = cg.lamp;
+            // Level 3 and up: near the ground the towers' windows give much of a town's light, the
+            // streets less of it (their cultures are 1.6-2.2 times as bright from orbit).
+            lamp = cg.lamp * select(1.0, mix(0.45, 1.0, smoothstep(30.0, 400.0, g_footprint_m)), planet.civ.x > 2.5);
             city_emit = cg.emit;
             // Their lights: the towns, and the countryside round them (farms, hamlets, roads).
             city = urban + RURAL_LIGHT * farm * farm * st_points(bdir, planet.proc_params2.x, u32(planet.civ.y * 10000.0), g_footprint_m);
@@ -2196,9 +2198,11 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         if rural > 0.0 {
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
-            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13), globals.time);
+            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13), vec3<f32>(1.0, 0.68, 0.32), globals.time);
             albedo = cg.col;
-            lamp = cg.lamp;
+            // Level 3 and up: near the ground the towers' windows give much of a town's light, the
+            // streets less of it (their cultures are 1.6-2.2 times as bright from orbit).
+            lamp = cg.lamp * select(1.0, mix(0.45, 1.0, smoothstep(30.0, 400.0, g_footprint_m)), planet.civ.x > 2.5);
             city_emit = cg.emit;
         }
     }

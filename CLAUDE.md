@@ -99,7 +99,19 @@ that install, never copied into the project.
   `ct_hut`, the huts and longhouses the box's next two models with the port's own textures in
   `assets/textures/village/`) (the settlement field on the
   CPU: `civilization::nearest_settlement`, same hash as the shader); follow it with `agl M` (the
-  ground can stand kilometres above the radius). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
+  ground can stand kilometres above the radius). `town KIND ALT_KM PITCH` looks across a city.
+  Level 3 (step 9): `scatter.wesl` `place_future` places the lanes, arcologies, megatowers, skybridges
+  and the lots' boxes; the library's models after the box are city.wesl's `M_*` (3 the future box,
+  4-7 the towers, 8 the arcology, 9 the skybridge, 10 the flying lanes, 11-13 the hero models; keep
+  `BUILDING_MODELS` and library.rs's order in step). A building's record packs its size in 0.5 m steps
+  (1 m for skybridges and lanes, 4 m for the arcology and landmark) and its height as the square root
+  of a share of 1,600 m: change `put_building` and `cull_building` together. The hero models are
+  `assets/models/hero/*.bin`, written by `make_heroes.py` beside them (run it in Blender: it models
+  and exports them); their real sizes are constants in city.wesl (`TEMPLE_SIZE` and so on):
+  re-export, then update those. Level 3's textures: `assets/textures/future/`. Every scatter point
+  of a block or district must reach the same decision: decide a shared object (arcology, landmark,
+  temple, megatower) from the town's density at its own middle (`town_at(city_dir(..))`), never the
+  point's own, and clear lots only when it stands. Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel

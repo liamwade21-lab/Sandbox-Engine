@@ -331,6 +331,9 @@ pub struct BodyFrame {
     /// under `SE_CITY_TEST`, z the ground's lowest point and w its height range (m, the towns' land).
     pub city: Vec4,
     pub city2: Vec4,
+    /// The culture's light colour (its brightest channel 1; 6 bits a channel, r * 4096 + g * 64 + b):
+    /// level 3's windows, light strips.
+    pub civ_light: u32,
 }
 
 /// What the render world needs this frame (extracted).
@@ -555,7 +558,8 @@ fn update_scatter(
         // Bodies with land: not stars, nor giants (gas and ice giants, brown dwarfs: terrain.rs's test).
         .filter(|(_, b, t)| !b.star && !t.proc.kind.is_giant() && t.surf_gen.classes.bulk < se_core::surface_gen::bulk::NEPTUNE)
         .map(|(e, b, t)| (e, b, t, cam.pos.delta_m(b.pos).length() - t.radius))
-        .filter(|x| x.3 < range * 4.0)
+        // (A civilization's skyline shows from its far buildings' range, over high ground too.)
+        .filter(|x| x.3 < (range * 4.0).max(if x.2.civ.is_some() { FAR_RANGE_M * 1.5 } else { 0.0 }))
         .min_by(|a, b| a.3.total_cmp(&b.3));
     let Some((entity, body, terrain, _)) = best else {
         if sc.body.is_some() {
@@ -820,6 +824,12 @@ fn update_scatter(
         city: terrain.civ.map_or(Vec4::ZERO, |(level, seed)| {
             let c = se_core::procgen::civilization::culture(seed, level);
             Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.grid_turn, r as f32)
+        }),
+        civ_light: terrain.civ.map_or(0, |(level, seed)| {
+            let l = se_core::procgen::civilization::culture(seed, level).light;
+            let m = l[0].max(l[1]).max(l[2]).max(1e-3);
+            let q = |c: f32| ((c / m).clamp(0.0, 1.0) * 63.0).round() as u32;
+            q(l[0]) * 4096 + q(l[1]) * 64 + q(l[2])
         }),
         city2: {
             let (lo, span) = terrain.ground_range_m();

@@ -558,10 +558,25 @@ struct BuildingOut {
     // the footprint (m) and whether this is the roof
     @location(10) @interpolate(flat) size: vec3<f32>,
     // the point on the model (m from its base's middle) and the model: 0 the box, 1 a round hut,
-    // 2 a longhouse (villages)
+    // 2 a longhouse (villages), 3-10 level 3's (the future box, four towers, the arcology, the
+    // skybridge, the flying lanes: city.wesl M_FUTURE..M_LANE)
     @location(11) local: vec3<f32>,
     @location(12) @interpolate(flat) kind: u32,
+    // Level 3: what the face is (library.rs `tower`: 0, 1 a wall, 2 the spire, 3 a roof), and across
+    // the wall from -1 at one edge to 1 at the other (round towers: 0)
+    @location(13) @interpolate(flat) flag: f32,
+    @location(14) edge: f32,
+    // The hero models' uv (metres, the texture layer in v's ten-thousands).
+    @location(15) uv: vec2<f32>,
 }
+
+// Level 3's models (city.wesl M_FUTURE..M_LANE, offsets from the box).
+const K_FUTURE: u32 = 3u;
+const K_ARCO: u32 = 8u;
+const K_BRIDGE: u32 = 9u;
+const K_LANE: u32 = 10u;
+const K_TEMPLE: u32 = 11u;
+const K_LANDMARK: u32 = 13u;
 
 @if(BUILDING)
 @vertex
@@ -571,14 +586,48 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
     let xa = oct_decode(inst.xa);
     let za = cross(xa, up);
     let wd = unpack2x16float(inst.fades);
-    let world = inst.pos + xa * (v.pos.x * wd.x) + up * (v.pos.y * inst.scale) + za * (v.pos.z * wd.y);
+    let kind = (inst.model & 0xffu) - body.species.w;
+    var world = inst.pos + xa * (v.pos.x * wd.x) + up * (v.pos.y * inst.scale) + za * (v.pos.z * wd.y);
     var o: BuildingOut;
-    o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
-    o.world = world;
-    o.normal = xa * v.normal.x + up * v.normal.y + za * v.normal.z;
-    let roof = v.normal.y > 0.5;
+    // The code-built models' normals are the unit box's: through the instance's stretch (the inverse
+    // scale) for the tapering and twisted walls' slopes. The hero models' are their real ones.
+    var nl = v.normal;
+    if kind < K_TEMPLE && kind != K_LANE {
+        nl = nl / vec3<f32>(max(wd.x, 1e-3), max(inst.scale, 1e-3), max(wd.y, 1e-3));
+    }
+    o.normal = normalize(xa * nl.x + up * nl.y + za * nl.z);
+    var roof = v.normal.y > 0.5;
     let across = select(v.pos.z * wd.y, v.pos.x * wd.x, abs(v.normal.z) > 0.5);
     o.facade = vec3<f32>(select(across, v.pos.x * wd.x, roof), (1.0 - v.pos.y) * inst.scale, v.pos.z * wd.y);
+    o.flag = 0.0;
+    o.edge = 0.0;
+    o.uv = v.uv;
+    var lane_towards = 0.0;
+    if kind == K_LANE {
+        // A flying lane's ribbon, widened to a car (1.6 m high, 2.2 m wide) or 1.5 pixels.
+        let base = inst.pos + xa * (v.pos.x * wd.x) + za * (v.pos.z * wd.y);
+        let row1 = vec3<f32>(cam.clip_from_world[0][1], cam.clip_from_world[1][1], cam.clip_from_world[2][1]);
+        let px = 2.0 * length(base) / (cam.viewport.y * max(length(row1), 1e-6));
+        let flat_part = v.uv.y > 0.5;
+        let half = max(select(0.8, 1.1, flat_part), 0.75 * px);
+        world = base + select(up, za, flat_part) * (v.uv.x * half);
+        // along the segment from its middle (m), across the ribbon (-1..1), the ribbon (-0.5, 0.5)
+        o.facade = vec3<f32>(v.pos.x * wd.x, v.uv.x, v.pos.z);
+        o.edge = px;
+        roof = false;
+        // Whether its cars come towards the camera (the ribbon at -z goes along x).
+        lane_towards = select(0.0, 1.0, dot(-base, xa) * select(-1.0, 1.0, v.pos.z < 0.0) > 0.0);
+    } else if kind >= K_FUTURE && kind < K_TEMPLE {
+        // Level 3's towers: across from the mesh's uv (a wall's own width, scaled by the footprint's
+        // width or depth; round ones along the perimeter).
+        o.flag = v.uv.y;
+        roof = v.uv.y > 2.5;
+        let a_m = v.uv.x * select(wd.x, wd.y, v.uv.y > 0.5 && v.uv.y < 1.5);
+        o.facade = vec3<f32>(select(a_m, v.pos.x * wd.x, roof), (1.0 - v.pos.y) * inst.scale, v.pos.z * wd.y);
+        o.edge = select(0.0, sign(v.uv.x), kind != 7u && v.uv.y < 1.5);
+    }
+    o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
+    o.world = world;
     o.up = up;
     let pl = unpack_light(inst_lights[v.instance]);
     o.l_sun = pl.sun;
@@ -589,8 +638,222 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
     let hash = inst.model >> 16u;
     o.style = vec4<f32>(f32(hash & 0xffu) / 255.0, f32(hash >> 8u) / 255.0, f32((inst.model >> 8u) & 0xffu) / 255.0, inst.scale);
     o.size = vec3<f32>(wd, select(0.0, 1.0, roof));
+    if kind == K_LANE {
+        o.size.y = lane_towards;
+    }
     o.local = vec3<f32>(v.pos.x * wd.x, v.pos.y * inst.scale, v.pos.z * wd.y);
-    o.kind = (inst.model & 0xffu) - body.species.w;
+    o.kind = kind;
+    return o;
+}
+
+// The culture's light colour (scatter.rs `civ_light`, its brightest channel 1).
+fn civ_light() -> vec3<f32> {
+    let v = u32(body.flora_k.z + 0.5);
+    return vec3<f32>(f32(v >> 12u), f32((v >> 6u) & 63u), f32(v & 63u)) / 63.0;
+}
+
+// Level 3's facades (layers 0-2 of their array: glass curtain walls of 8 storeys and 4 bays a tile,
+// white panels with ribbon windows of 7 storeys, gold fins over dark glass of 8 storeys and 8 bays).
+const FUT_ROWS = array<f32, 3>(8.0, 7.0, 8.0);
+const FUT_BAYS = array<f32, 3>(4.0, 4.0, 8.0);
+const FUT_STOREY: f32 = 3.6;
+
+// A level 3 building's surface (not the lanes): its albedo (rgb) and light (the second).
+struct FutSurface {
+    albedo: vec3<f32>,
+    emit: vec3<f32>,
+}
+
+@if(BUILDING)
+fn future_surface(in: BuildingOut, n: vec3<f32>, night: f32, glow_t: f32) -> FutSurface {
+    var o: FutSurface;
+    let s0 = in.style.x;
+    let s1 = in.style.y;
+    let h = in.style.w;
+    let lc = civ_light();
+    let time = body.lod2.z;
+    // The sign's and facade's texture coordinates and their derivatives in uniform control flow.
+    let layer = select(select(2u, 1u, s0 < 0.75), 0u, s0 < 0.45);
+    let tile = FUT_ROWS[layer] * FUT_STOREY;
+    let uv = in.facade.xy / tile;
+    let tex = textureSampleGrad(windows_tex, color_smp, uv, layer, dpdx(uv), dpdy(uv));
+    // Neon signs on the lower storeys (4-28 m up): 8 m by 6 m cells, a sign in 45 % of them.
+    let up_m = in.local.y;
+    let sc = vec2<f32>(in.facade.x / 8.0, (up_m - 4.0) / 6.0);
+    let cell = floor(sc);
+    let hs = bd_hash((u32(cell.x + 4096.0) * 7919u) ^ (u32(cell.y + 64.0) * 104729u) ^ (u32(s0 * 255.0) * 31u) ^ (u32(s1 * 255.0) * 65537u));
+    let pick = u32(hs * 4093.0) % 16u;
+    let su = (fract(sc) - 0.1) / 0.8;
+    let auv = (vec2<f32>(f32(pick % 4u), f32(pick / 4u)) + clamp(su, vec2<f32>(0.0), vec2<f32>(1.0))) * 0.25;
+    let sgn = textureSampleGrad(windows_tex, color_smp, vec2<f32>(auv.x, auv.y), 3u, dpdx(sc) * 0.25 / 0.8, dpdy(sc) * 0.25 / 0.8);
+    let fp = length(fwidth(in.facade.xy));
+    if in.flag > 2.5 {
+        // Roofs and terraces: dark composite; the arcology's terraces gardens; a tall tower's roof a
+        // landing pad (a ring of lights by night) and a light strip round its edge.
+        var c = mix(vec3<f32>(0.10, 0.105, 0.11), vec3<f32>(0.2, 0.2, 0.21), s1);
+        if in.kind == K_ARCO {
+            c = mix(vec3<f32>(0.05, 0.09, 0.035), vec3<f32>(0.09, 0.12, 0.05), s1);
+        }
+        let r = length(in.facade.xz);
+        // The top roof's share of the footprint (library.rs's future box and towers: tapering,
+        // stepped, twisted, round).
+        let top = array<f32, 5>(1.0, 0.55, 0.56, 0.8, 0.45);
+        let pad_r = 0.3 * top[min(in.kind - K_FUTURE, 4u)] * min(in.size.x, in.size.y);
+        let ring = 1.0 - smoothstep(0.3, 0.3 + fp, abs(r - pad_r));
+        let tall = h > 300.0 && in.kind <= 7u && in.local.y > 0.8 * h;
+        if tall {
+            c = mix(c, vec3<f32>(0.6, 0.6, 0.55), ring);
+            o.emit += lc * ring * 1.2 * night;
+        }
+        o.albedo = c;
+    } else if in.flag > 1.5 {
+        // The spire: metal, a red beacon at its top blinking by night.
+        o.albedo = vec3<f32>(0.42, 0.43, 0.45);
+        let top = h - in.local.y;
+        let blink = step(0.0, sin(time * 2.6 + s0 * 30.0));
+        o.emit = vec3<f32>(1.0, 0.05, 0.02) * (1.0 - smoothstep(0.0, max(4.0, 3.0 * fp), top)) * 12.0 * blink * night;
+    } else {
+        // The walls: the facade's tile over the wall (its windows in alpha); by night lit windows (a
+        // hash a window, about 40 %). Flat colours when the facades are missing (a blank array).
+        let flat_c = array<vec3<f32>, 3>(vec3<f32>(0.10, 0.12, 0.14), vec3<f32>(0.6, 0.6, 0.58), vec3<f32>(0.12, 0.11, 0.09));
+        o.albedo = select(flat_c[layer], tex.rgb, dot(tex, vec4<f32>(1.0)) > 0.002);
+        if in.kind == K_BRIDGE {
+            o.albedo = mix(tex.rgb, vec3<f32>(0.06, 0.08, 0.1), 0.6);
+        }
+        let bays = FUT_BAYS[layer];
+        let rows = FUT_ROWS[layer];
+        let cx = uv.x * bays;
+        let cy = uv.y * rows;
+        let fpx = length(vec2<f32>(dpdx(cx), dpdy(cx)));
+        let fpy = length(vec2<f32>(dpdx(cy), dpdy(cy)));
+        let wid = u32(floor(cx) + 4096.0) * 7919u + u32(floor(cy) + 4096.0) * 104729u + u32(s0 * 255.0) * 31u + u32(s1 * 255.0) * 65537u;
+        let b = bd_hash(wid ^ 0x5bd1e995u);
+        let on = select(0.0, 0.15 + 0.85 * b * b, bd_hash(wid) < 0.4);
+        let far = smoothstep(0.35, 1.0, max(fpx, fpy));
+        let lit_w = mix(on, 0.4 * 0.433, far) * tex.a;
+        // Each window's light: warm, neutral, cool or the culture's own (their mean from afar).
+        let tc = bd_hash(wid ^ 0x68e31da4u);
+        var wc = select(select(vec3<f32>(0.8, 0.9, 1.0), vec3<f32>(1.0, 0.95, 0.9), tc < 0.6), vec3<f32>(1.0, 0.8, 0.58), tc < 0.3);
+        wc = select(wc, lc, tc > 0.85);
+        wc = mix(wc, mix(vec3<f32>(0.95, 0.88, 0.8), lc, 0.15), far);
+        o.emit = wc * (0.35 * lit_w * night);
+        // Light strips up the towers' corners (0.6 m), the culture's colour; brighter by night.
+        if in.edge != 0.0 || in.kind == 7u {
+            let half_w = abs(in.facade.x) / max(abs(in.edge), 1e-3);
+            let d_edge = (1.0 - abs(in.edge)) * half_w;
+            var strip = clamp((0.6 - d_edge) / max(fp, 1e-3) + 0.5, 0.0, 1.0);
+            // Far: the strip's share of the wall (it never vanishes into the pixel).
+            strip = mix(strip, min(0.6 / max(fp, 0.6), 1.0), smoothstep(0.5, 3.0, fp));
+            if in.kind == 7u {
+                // Round towers: rings of light every 8 storeys.
+                let ry = in.facade.y / (8.0 * FUT_STOREY);
+                let fw = max(fwidth(ry), 1e-4);
+                let d = 0.5 - abs(fract(ry) - 0.5);
+                strip = clamp((0.021 - d) / fw + 0.5, 0.0, 1.0);
+                strip = mix(strip, 0.042, smoothstep(0.02, 0.1, fw));
+            }
+            if in.kind >= 4u && in.kind <= 8u {
+                o.emit += lc * strip * mix(0.3, 1.5, night) * glow_t;
+                o.albedo = mix(o.albedo, lc * 0.6, strip * 0.5);
+            }
+        }
+        // Neon on the lower storeys of the future box and the towers' bases.
+        if in.kind <= 7u && up_m > 4.0 && up_m < 28.0 && hs < 0.45 && all(fract(sc) > vec2<f32>(0.1)) && all(fract(sc) < vec2<f32>(0.9)) {
+            o.albedo = mix(o.albedo, vec3<f32>(0.03), 0.8);
+            o.emit += sgn.rgb * mix(0.6, 2.5, night);
+        }
+    }
+    return o;
+}
+
+// A hero model (kinds 11-13): its texture layer and metres from its uv. The temple and the watchtower
+// take the villages' textures (3 m a tile: 0 thatch, 1 mud brick, 2 timber, 3 stone); the landmark
+// level 3's facades (layers 0-2, lit windows by night), metal (4) and light rings (5, the culture's
+// colour), a red beacon on its needle.
+@if(BUILDING)
+fn hero_surface(in: BuildingOut, night: f32) -> FutSurface {
+    var o: FutSurface;
+    let layer = u32(clamp(floor(in.uv.y / 10000.0), 0.0, 7.0));
+    let t = vec2<f32>(in.uv.x, in.uv.y - f32(layer) * 10000.0 - 5000.0);
+    let s1 = in.style.y;
+    if in.kind < K_LANDMARK {
+        let l = min(layer, 3u);
+        let tex = textureSampleGrad(windows_tex, color_smp, t / 3.0, l, dpdx(t) / 3.0, dpdy(t) / 3.0);
+        let flat_c = array<vec3<f32>, 4>(vec3<f32>(0.42, 0.33, 0.18), vec3<f32>(0.42, 0.30, 0.19), vec3<f32>(0.30, 0.23, 0.16), vec3<f32>(0.40, 0.38, 0.34));
+        o.albedo = mix(flat_c[l], tex.rgb, tex.a) * (0.85 + 0.3 * s1);
+        return o;
+    }
+    let lc = civ_light();
+    if layer >= 5u {
+        o.albedo = lc * 0.5;
+        o.emit = lc * mix(0.8, 4.0, night);
+    } else if layer == 4u {
+        o.albedo = vec3<f32>(0.42, 0.43, 0.45);
+        let top = in.style.w - in.local.y;
+        let blink = step(0.0, sin(body.lod2.z * 2.6));
+        let fp = length(fwidth(in.local));
+        o.emit = vec3<f32>(1.0, 0.05, 0.02) * (1.0 - smoothstep(0.0, max(6.0, 3.0 * fp), top)) * 12.0 * blink * night;
+    } else {
+        let l = min(layer, 2u);
+        let tile = FUT_ROWS[l] * FUT_STOREY;
+        let uv = t / tile;
+        let tex = textureSampleGrad(windows_tex, color_smp, uv, l, dpdx(uv), dpdy(uv));
+        o.albedo = tex.rgb;
+        let cx = uv.x * FUT_BAYS[l];
+        let cy = uv.y * FUT_ROWS[l];
+        let fpw = max(length(vec2<f32>(dpdx(cx), dpdy(cx))), length(vec2<f32>(dpdx(cy), dpdy(cy))));
+        let wid = u32(floor(cx) + 65536.0) * 7919u + u32(floor(cy) + 65536.0) * 104729u;
+        let b = bd_hash(wid ^ 0x5bd1e995u);
+        let on = select(0.0, 0.15 + 0.85 * b * b, bd_hash(wid) < 0.4);
+        let lit_w = mix(on, 0.4 * 0.433, smoothstep(0.35, 1.0, fpw)) * tex.a;
+        o.emit = mix(vec3<f32>(1.0, 0.86, 0.68), lc, 0.3) * (0.45 * lit_w * night);
+    }
+    return o;
+}
+
+// A flying lane's ribbon (kind 10): cars of 4.8 m in slots of 32 face m moving at about 52 face m/s, each slot holding a car with chance 0.55; the two ribbons go opposite ways. Near:
+// the car's body with its headlights at the front and tail lights at the back; far (a car under two
+// pixels): a point of light, white coming towards the camera and red going away. Discards elsewhere.
+@if(BUILDING)
+fn lane_car(in: BuildingOut, night: f32) -> FutSurface {
+    var o: FutSurface;
+    let hash = u32(in.style.x * 255.0 + 0.5) | (u32(in.style.y * 255.0 + 0.5) << 8u);
+    let seg = f32(hash & 0xffu);
+    let high = (hash >> 14u) & 1u;
+    let len_m = in.size.x;
+    let px = in.edge;
+    let fwd = select(-1.0, 1.0, in.facade.z < 0.0);
+    // Along the line in face metres (each segment exactly 128 of them, so the cars run on across the
+    // joins), true metres per face metre this segment's.
+    let km = len_m / 128.0;
+    let x = (in.facade.x / len_m + 0.5 + seg) * 128.0;
+    // About 52 face m/s: the 1,024 slots of the segments' wrap (256 of 128 face m) exactly once over
+    // the clock's wrap (200 pi s), the slots keyed modulo them: no jump when either wraps.
+    let period = 32.0;
+    let v = fwd * 1024.0 * period / 628.3185307;
+    let xm = x - v * body.lod2.z;
+    let slot = floor(xm / period);
+    let key = (hash >> 8u) * 0x9e3779b9u + select(0u, 0x632be5abu, fwd > 0.0) + u32(i32(slot) & 1023) * 0x85ebca6bu;
+    if bd_hash(key) >= 0.55 {
+        discard;
+    }
+    let car = max(4.8, 2.0 * px) / km;
+    let cx = xm - slot * period - bd_hash(key ^ 0x27d4eb2fu) * (period - car);
+    if cx < 0.0 || cx > car {
+        discard;
+    }
+    // Its front (the way it moves).
+    let t = select(car - cx, cx, fwd < 0.0) / car;
+    let paint = mix(vec3<f32>(0.75, 0.76, 0.78), civ_light() * 0.5, bd_hash(key ^ 0x165667b1u));
+    let far = smoothstep(1.0, 3.0, px / 1.6);
+    let head = (1.0 - smoothstep(0.08, 0.16, t)) * (1.0 - far);
+    let tail = smoothstep(0.84, 0.92, t) * (1.0 - far);
+    // Towards the camera: the car's front faces it.
+    let towards = in.size.y;
+    var e = vec3<f32>(1.0, 0.95, 0.85) * head * 6.0 + vec3<f32>(1.0, 0.05, 0.02) * tail * 4.0;
+    e += mix(vec3<f32>(1.0, 0.06, 0.03) * 3.0, vec3<f32>(1.0, 0.95, 0.85) * 5.0, towards) * far;
+    o.albedo = paint * (1.0 - far);
+    o.emit = e * mix(0.35, 1.0, night);
     return o;
 }
 
@@ -631,7 +894,18 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(in.up, l));
     var albedo: vec3<f32>;
     var emit = vec3<f32>(0.0);
-    if in.kind >= 1u {
+    if in.kind >= K_FUTURE {
+        var f: FutSurface;
+        if in.kind >= K_TEMPLE {
+            f = hero_surface(in, night);
+        } else if in.kind == K_LANE {
+            f = lane_car(in, night);
+        } else {
+            f = future_surface(in, n, night, 1.0);
+        }
+        albedo = f.albedo;
+        emit = f.emit;
+    } else if in.kind >= 1u {
         // A village's hut or longhouse: thatch on the roof, the walls mud brick, timber or stone
         // (the port's textures, layers 0-3; flat colours without them).
         let hut = in.kind == 1u;

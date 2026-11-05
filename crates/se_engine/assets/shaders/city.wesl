@@ -326,6 +326,36 @@ fn ct_hut(cp: CityPos, k: f32, urban: f32, seed: u32) -> Building {
     o.rot = g.rot;
     o.ok = true;
     o.model = select(1u, 2u, long);
+    // A watchtower now and then on the village's edges (the hero model).
+    if h2.z < 0.05 && streets < 0.6 {
+        let s = mix(0.85, 1.15, h.z);
+        o.model = M_WATCH;
+        o.size = WATCH_SIZE.xz * s;
+        o.height = WATCH_SIZE.y * s;
+    }
+    return o;
+}
+
+// The hero models' real sizes (width, height, depth; m) as made in Blender (assets/models/hero).
+const M_TEMPLE: u32 = 11u;
+const M_WATCH: u32 = 12u;
+const M_LANDMARK: u32 = 13u;
+const TEMPLE_SIZE = vec3<f32>(22.0, 15.8, 23.5);
+const WATCH_SIZE = vec3<f32>(5.23, 14.0, 5.23);
+const LANDMARK_SIZE = vec3<f32>(290.74, 1000.0, 251.78);
+
+// A village district's temple (4 in 10 districts): on its middle, along its grid, about 22 m across.
+fn ct_temple(cp: CityPos, cell: vec2<i32>, seed: u32) -> Building {
+    var o: Building;
+    let h = st_hash(vec3<i32>(cell, 4131), seed + 47u);
+    o.ok = h.x < 0.4;
+    o.model = M_TEMPLE;
+    let s = mix(0.85, 1.15, h.y);
+    o.centre = vec2<f32>(cell - cp.tile * 8) * DISTRICT_M + 0.5 * DISTRICT_M;
+    o.size = TEMPLE_SIZE.xz * s;
+    o.height = TEMPLE_SIZE.y * s;
+    o.rot = ct_grid(cell, seed, 1.0).rot;
+    o.hash = h;
     return o;
 }
 
@@ -473,7 +503,8 @@ struct CityGround {
     emit: vec3<f32>,
 }
 
-fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>, t: f32) -> CityGround {
+// `lamp_c` the street lamps' colour (Earth's sodium; a generated planet's culture's light).
+fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>, lamp_c: vec3<f32>, t: f32) -> CityGround {
     let fp = fp_m / max(k, 1e-3);
     let asphalt = vec3<f32>(0.055, 0.055, 0.06);
     let walk = vec3<f32>(0.19, 0.185, 0.175);
@@ -484,7 +515,6 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
     var emit = vec3<f32>(0.0);
     let head_c = vec3<f32>(1.0, 0.92, 0.75);
     let tail_c = vec3<f32>(1.0, 0.06, 0.02);
-    let lamp_c = vec3<f32>(1.0, 0.68, 0.32);
 
     let d = ct_district(cp, seed);
     let streets = smoothstep(0.06, 0.2, urban);
@@ -595,5 +625,184 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
     o.built = built;
     o.lamp = lamp;
     o.emit = emit;
+    return o;
+}
+
+// ---- futuristic cities (level 3 and up) ------------------------------------------------------
+// The same districts, blocks and lots, denser and taller. In the business cores (wider than level
+// 2's) whole blocks become megatowers of 150-1,500 m (tapering, stepped, twisted or round), joined
+// across their streets by skybridges; a few districts hold an arcology (a stepped pyramid over most of
+// the district); the lots' buildings are the towns' boxes, taller, in the future facades. Flying
+// traffic streams along lanes over the arterials at two heights.
+
+// The models, as offsets from the box (the library's models after the villages').
+const M_FUTURE: u32 = 3u;
+const M_TAPER: u32 = 4u;
+const M_STEP: u32 = 5u;
+const M_TWIST: u32 = 6u;
+const M_ROUND: u32 = 7u;
+const M_ARCO: u32 = 8u;
+const M_BRIDGE: u32 = 9u;
+const M_LANE: u32 = 10u;
+
+// A point's block: its district, the district's grid, the block and the point in it (face m).
+struct Block {
+    d: District,
+    g: Grid,
+    bc: vec2<i32>,
+    b: vec2<f32>,
+}
+
+fn ct_block(cp: CityPos, seed: u32, spread: f32) -> Block {
+    var o: Block;
+    o.d = ct_district(cp, seed);
+    o.g = ct_grid(o.d.cell, seed, spread);
+    let lp = ct_local(cp, o.d.cell, o.g);
+    o.bc = vec2<i32>(floor(lp / o.g.size));
+    o.b = lp - vec2<f32>(o.bc) * o.g.size;
+    return o;
+}
+
+// A point of a district's grid back in the tile frame of `cp` (`ct_local`'s inverse).
+fn ct_unlocal(cp: CityPos, cell: vec2<i32>, g: Grid, lp: vec2<f32>) -> vec2<f32> {
+    let c = lp - g.off;
+    let p = vec2<f32>(g.rot.x * c.x - g.rot.y * c.y, g.rot.y * c.x + g.rot.x * c.y);
+    return p + vec2<f32>(cell - cp.tile * 8) * DISTRICT_M + 0.5 * DISTRICT_M;
+}
+
+// The middle of block `k` in the tile frame of `cp`.
+fn ct_block_mid(cp: CityPos, k: Block) -> vec2<f32> {
+    return ct_unlocal(cp, k.d.cell, k.g, (vec2<f32>(k.bc) + 0.5) * k.g.size);
+}
+
+// The district's arcology if it has one: in its middle, 260-360 m across (the face's axes), 350-800 m
+// high. Decided by its hash and the core field alone (never the town's density: every point of the
+// district must agree, and the scatter's points see different densities).
+fn ct_arcology(cp: CityPos, cell: vec2<i32>, k: f32, seed: u32, level: u32) -> Building {
+    var o: Building;
+    o.ok = false;
+    o.model = M_ARCO;
+    let h = st_hash(vec3<i32>(cell, 4127), seed + 43u);
+    let centre = vec2<f32>(cell - cp.tile * 8) * DISTRICT_M + 0.5 * DISTRICT_M;
+    let chance = select(0.07, 0.14, level >= 4u);
+    let core = smoothstep(0.55, 0.8, ct_core(cp, centre, seed));
+    if h.x >= chance * core {
+        // The landmark (the hero model, 700-1,000 m) in a few of the strongest cores.
+        if h.x < (chance + 0.02) * core * core {
+            // (Inside its district, as the arcology.)
+            let s = min(mix(0.7, 1.0, h.w), 0.62 * DISTRICT_M * k / LANDMARK_SIZE.x);
+            o.ok = true;
+            o.model = M_LANDMARK;
+            o.centre = centre;
+            o.size = LANDMARK_SIZE.xz * s;
+            o.height = LANDMARK_SIZE.y * s;
+            o.rot = vec2<f32>(1.0, 0.0);
+            o.hash = st_hash(vec3<i32>(cell, 4128), seed + 43u);
+        }
+        return o;
+    }
+    o.centre = centre;
+    o.size = vec2<f32>(min(mix(260.0, 360.0, h.y), 0.62 * DISTRICT_M * k));
+    o.height = mix(350.0, 800.0, h.z);
+    o.rot = vec2<f32>(1.0, 0.0);
+    o.hash = st_hash(vec3<i32>(cell, 4128), seed + 43u);
+    o.ok = true;
+    return o;
+}
+
+// Whether building `b` (its middle, footprint) stands on the arcology's or landmark's `a` footprint
+// (and a margin).
+fn ct_on_arcology(a: Building, b: Building, k: f32) -> bool {
+    let d = abs(b.centre - a.centre) * k;
+    return a.ok && all(d < vec2<f32>(0.5 * max(a.size.x, a.size.y) + 0.5 * length(b.size) + 10.0));
+}
+
+// The megatower of block `k` if the block is one: in its middle, the block's interior less a plaza
+// (6-16 m), at most 120 m across, 150-1,500 m high (the tallest in the cores' peaks, at most 14 times
+// its width), tapering, stepped, twisted or round (the last two square). `urban` the town's density at
+// the block's middle (every point of the block must agree).
+fn ct_mega(cp: CityPos, k: Block, km: f32, urban: f32, seed: u32) -> Building {
+    var o: Building;
+    o.ok = false;
+    let centre = ct_block_mid(cp, k);
+    let core = smoothstep(0.45, 0.8, ct_core(cp, centre, seed)) * smoothstep(0.35, 0.8, urban);
+    let key = vec3<i32>(k.d.cell.x * 64 + k.bc.x, k.d.cell.y * 64 + k.bc.y, 4111);
+    let bh = st_hash(key, seed + 41u);
+    if bh.x >= 0.85 * core {
+        return o;
+    }
+    // The whole block in its district, clear of the arterials.
+    let s_all = (STREET_ROAD_M + STREET_WALK_M) * 2.0 / km;
+    let half = 0.5 * (k.g.size - vec2<f32>(s_all));
+    let dc = ct_district(city_pos(cp.tile, centre), seed);
+    let a_all = (ART_ROAD_M + ART_WALK_M) * 2.0 / km;
+    if any(dc.cell != k.d.cell) || dc.art < 0.5 * a_all + length(half) {
+        return o;
+    }
+    let room = 2.0 * half * km - vec2<f32>(2.0 * mix(6.0, 16.0, bh.z));
+    if any(room < vec2<f32>(30.0)) {
+        return o;
+    }
+    let h2 = st_hash(key + vec3<i32>(0, 0, 1), seed + 41u);
+    var size = min(room, vec2<f32>(120.0));
+    o.model = M_TAPER + min(u32(h2.x * 4.0), 3u);
+    if o.model == M_TWIST || o.model == M_ROUND {
+        size = vec2<f32>(min(size.x, size.y));
+    }
+    o.height = min(150.0 + 1350.0 * pow(bh.y, 1.6) * smoothstep(0.25, 1.0, core), 14.0 * min(size.x, size.y));
+    o.centre = centre;
+    o.size = size;
+    o.rot = k.g.rot;
+    o.hash = h2;
+    o.ok = true;
+    return o;
+}
+
+// The skybridge from block `k`'s megatower `a` to its neighbour's `b` along the grid's u axis (across
+// the street between them), on 60 % of such pairs: from middle to middle (its ends inside the towers),
+// 6 m wide, at 30-65 % of the lower one's height (`height` its elevation; the cull makes it 5 m deep).
+fn ct_bridge(k: Block, a: Building, b: Building, km: f32, seed: u32) -> Building {
+    var o: Building;
+    let h = st_hash(vec3<i32>(k.d.cell.x * 64 + k.bc.x, k.d.cell.y * 64 + k.bc.y, 4113), seed + 41u);
+    o.ok = a.ok && b.ok && h.x < 0.6;
+    o.model = M_BRIDGE;
+    o.centre = 0.5 * (a.centre + b.centre);
+    o.size = vec2<f32>(length(b.centre - a.centre) * km, 6.0);
+    o.height = min(a.height, b.height) * mix(0.3, 0.65, h.y);
+    o.rot = a.rot;
+    o.hash = h;
+    return o;
+}
+
+// A flying lane's segment over the arterial line of `axis` nearest the point (axis 0 the lines of
+// constant x, running along y): pieces of 128 face m of the bent line, their ends on it. Its middle
+// (tile frame), true length, angle in the face frame (from u towards v), and its index along the line
+// and the line's (global).
+struct Lane {
+    centre: vec2<f32>,
+    len: f32,
+    ang: f32,
+    seg: i32,
+    line: i32,
+}
+
+fn ct_lane(cp: CityPos, axis: i32, k: f32, seed: u32) -> Lane {
+    // (across, along) in the axis's frame.
+    let q = select(cp.q.yx, cp.q, axis == 0);
+    let t = select(cp.tile.yx, cp.tile, axis == 0);
+    let line = t.x * 8 + i32(round(q.x / DISTRICT_M));
+    let seg = t.y * 32 + i32(floor(q.y / 128.0));
+    let x0 = ct_bend(line, seg >> 2u, f32(seg & 3) * 128.0, axis, seed);
+    let x1 = ct_bend(line, (seg + 1) >> 2u, f32((seg + 1) & 3) * 128.0, axis, seed);
+    let base = f32(line - t.x * 8) * DISTRICT_M;
+    let a0 = f32(seg - t.y * 32) * 128.0;
+    let mid = vec2<f32>(base + 0.5 * (x0 + x1), a0 + 64.0);
+    var o: Lane;
+    o.centre = select(mid.yx, mid, axis == 0);
+    o.len = length(vec2<f32>(x1 - x0, 128.0)) * k;
+    let dir = select(vec2<f32>(128.0, x1 - x0), vec2<f32>(x1 - x0, 128.0), axis == 0);
+    o.ang = atan2(dir.y, dir.x);
+    o.seg = seg;
+    o.line = line;
     return o;
 }

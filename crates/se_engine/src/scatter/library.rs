@@ -158,29 +158,83 @@ const BUILDING_CAP: u32 = 120_000;
 /// Huts and longhouses drawn at most (villages), each.
 const VILLAGE_CAP: u32 = 30_000;
 
+/// Buildings of level 3's cities (the future box, each tower, the skybridge) drawn at most.
+const TOWER_CAP: u32 = 6000;
+/// Flying lanes' segments drawn at most.
+const LANE_CAP: u32 = 40_000;
+
+/// What a texture array's alpha holds: the file's own (none: opaque), the windows (the dark glass of
+/// a facade), a glow (a neon sign's brightest channel).
+#[derive(Clone, Copy, PartialEq)]
+enum ArrayAlpha {
+    Keep,
+    Windows,
+    Glow,
+}
+
 /// The villages' textures (`assets/textures/village/NAME.png`, made with the image generator): thatch,
 /// mud brick, timber, stone, in a 512 px array with its mips; a blank array (flat colours) without.
 fn village_array() -> Image {
-    const NAMES: [&str; 4] = ["thatch", "mud_brick", "timber", "stone"];
-    const S: u32 = 512;
+    texture_array("village", &["thatch", "mud_brick", "timber", "stone"], 512, ArrayAlpha::Keep)
+}
+
+/// Level 3's facades and signs (`assets/textures/future/`, made with the image generator): a glass
+/// curtain wall (8 storeys, 4 bays a tile), white panels with ribbon windows (7 storeys), gold fins
+/// over dark glass (8 storeys) with their windows in alpha, and 16 neon signs (4 x 4) with their glow
+/// in alpha.
+fn future_array() -> Image {
+    let mut a = texture_array("future", &["glass", "panels", "fins"], 1024, ArrayAlpha::Windows);
+    if a.texture_descriptor.size.depth_or_array_layers != 3 {
+        return a;
+    }
+    // The signs' layer (a blank one without them: no signs, the facades kept).
+    let signs = texture_array("future", &["neon"], 1024, ArrayAlpha::Glow);
+    let one = signs.data.filter(|_| signs.texture_descriptor.size.depth_or_array_layers == 1);
+    if let Some(d) = a.data.as_mut() {
+        let layer = d.len() / 3;
+        d.extend(one.filter(|s| s.len() == layer).unwrap_or_else(|| vec![0; layer]));
+        a.texture_descriptor.size.depth_or_array_layers = 4;
+    }
+    a
+}
+
+/// The images `assets/textures/DIR/NAME.png` in an array of `S` px layers with their mips; a blank
+/// array (the shader's flat colours) when one is missing.
+fn texture_array(dir: &str, names: &[&str], s: u32, alpha: ArrayAlpha) -> Image {
     let mut layers = Vec::new();
-    for name in NAMES {
-        let rel = std::path::Path::new("textures").join("village").join(format!("{name}.png"));
+    for name in names {
+        let rel = std::path::Path::new("textures").join(dir).join(format!("{name}.png"));
         let mut path = crate::config::asset_dir().join(&rel);
         if !path.is_file() {
             path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
         }
         match std::fs::read(&path).ok().and_then(|b| image::load_from_memory(&b).ok()) {
-            Some(img) => layers.push(image::imageops::resize(&img.to_rgba8(), S, S, image::imageops::FilterType::Triangle)),
+            Some(img) => {
+                let mut l = image::imageops::resize(&img.to_rgba8(), s, s, image::imageops::FilterType::Triangle);
+                if alpha != ArrayAlpha::Keep {
+                    for px in l.pixels_mut() {
+                        let [r, g, b, _] = px.0;
+                        px.0[3] = if alpha == ArrayAlpha::Glow {
+                            r.max(g).max(b)
+                        } else {
+                            // The facade's dark glass: its windows.
+                            let lum = (r as f32 + g as f32 + b as f32) / (3.0 * 255.0);
+                            let t = ((lum - 0.12) / 0.18).clamp(0.0, 1.0);
+                            (255.0 * (1.0 - t * t * (3.0 - 2.0 * t))) as u8
+                        };
+                    }
+                }
+                layers.push(l);
+            }
             None => {
-                warn!("scatter: village texture {} missing: flat colours", path.display());
+                warn!("scatter: building texture {} missing: flat colours", path.display());
                 layers.clear();
                 break;
             }
         }
     }
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension};
-    if layers.len() != NAMES.len() {
+    if layers.is_empty() || layers.len() != names.len() {
         let mut blank = Image::new_fill(
             Extent3d { width: 1, height: 1, depth_or_array_layers: 2 },
             TextureDimension::D2,
@@ -192,20 +246,20 @@ fn village_array() -> Image {
         return blank;
     }
     // Every layer with its mip chain, layer after layer.
-    let mips = S.trailing_zeros() + 1;
+    let mips = s.trailing_zeros() + 1;
     let mut data = Vec::new();
     for l in &layers {
         let mut m = l.clone();
         for level in 0..mips {
             data.extend_from_slice(m.as_raw());
             if level + 1 < mips {
-                let n = (S >> (level + 1)).max(1);
+                let n = (s >> (level + 1)).max(1);
                 m = image::imageops::resize(&m, n, n, image::imageops::FilterType::Triangle);
             }
         }
     }
     let mut image = Image::new_uninit(
-        Extent3d { width: S, height: S, depth_or_array_layers: NAMES.len() as u32 },
+        Extent3d { width: s, height: s, depth_or_array_layers: names.len() as u32 },
         TextureDimension::D2,
         TextureFormat::Rgba8UnormSrgb,
         bevy::asset::RenderAssetUsages::RENDER_WORLD,
@@ -320,6 +374,188 @@ fn longhouse() -> Mesh4 {
     }
     idx.extend([b, b + 1, b + 2, b + 3, b + 4, b + 5]);
     (p, n, uv, idx)
+}
+
+/// A section of a level 3 tower: from height `y[0]` to `y[1]` (unit), its half-widths scaled from
+/// `s[0]` to `s[1]` and turned from `a[0]` to `a[1]` (rad), in `rings` steps.
+#[derive(Clone, Copy)]
+struct Section {
+    y: [f32; 2],
+    s: [f32; 2],
+    a: [f32; 2],
+    rings: u32,
+}
+
+/// Adds the triangle (a, b, c) facing `out` (its winding counter-clockwise seen from that side, as
+/// the building pipeline culls), with its normal and the uv's flag (see `tower`).
+fn tri_facing(m: &mut Mesh4, v: [[f32; 3]; 3], uvx: [f32; 3], flag: f32, out: Vec3) {
+    let [a, b, c] = v.map(Vec3::from);
+    let mut nrm = (b - a).cross(c - a);
+    if nrm.length_squared() < 1e-12 {
+        return;
+    }
+    nrm = nrm.normalize();
+    let order = if nrm.dot(out) < 0.0 {
+        nrm = -nrm;
+        [0, 2, 1]
+    } else {
+        [0, 1, 2]
+    };
+    let base = m.0.len() as u32;
+    for i in order {
+        m.0.push(v[i]);
+        m.1.push(nrm.to_array());
+        m.2.push([uvx[i], flag]);
+    }
+    m.3.extend([base, base + 1, base + 2]);
+}
+
+/// A level 3 tower in unit size (x and z -0.5..0.5 at the base, y 0..1): `sides` walls (4 square,
+/// more round) through `sections` (each from where the last ended; a narrower one leaves a terrace),
+/// the roof, and a spire to the top (its base's half-width) when the last section ends below 1. The
+/// uv tells the shader what a face is: x the point across its face (footprint units: a wall's own
+/// width; round ones along the perimeter), y 0 a wall scaled by the width, 1 by the depth, 2 the
+/// spire, 3 a roof or terrace.
+fn tower(sections: &[Section], sides: u32, spire: f32, floor: bool) -> Mesh4 {
+    let mut m: Mesh4 = Default::default();
+    let ring = |s: f32, a: f32, j: u32, y: f32| -> [f32; 3] {
+        if sides == 4 {
+            let ang = a + std::f32::consts::FRAC_PI_4 + j as f32 * std::f32::consts::FRAC_PI_2;
+            let r = 0.5 * s * std::f32::consts::SQRT_2;
+            [r * ang.cos(), y, r * ang.sin()]
+        } else {
+            let ang = a + j as f32 / sides as f32 * std::f32::consts::TAU;
+            [0.5 * s * ang.cos(), y, 0.5 * s * ang.sin()]
+        }
+    };
+    // Across a wall from its corner j to j + 1: a square's from -s/2 to s/2, a round one's along its
+    // perimeter.
+    let across = |s: f32, j: u32, end: bool| -> f32 {
+        if sides == 4 {
+            if end { 0.5 * s } else { -0.5 * s }
+        } else {
+            (j + end as u32) as f32 / sides as f32 * std::f32::consts::PI * s
+        }
+    };
+    let up = Vec3::Y;
+    // The floor (a skybridge's underside), facing down.
+    if let (true, Some(s0)) = (floor, sections.first()) {
+        for j in 0..sides {
+            tri_facing(&mut m, [[0.0, s0.y[0], 0.0], ring(s0.s[0], s0.a[0], j, s0.y[0]), ring(s0.s[0], s0.a[0], j + 1, s0.y[0])], [0.0; 3], 3.0, -up);
+        }
+    }
+    let mut prev: Option<(f32, f32, f32)> = None;
+    for sec in sections {
+        // A terrace where this section starts narrower than the last ended.
+        if let Some((py, ps, pa)) = prev {
+            if ps > sec.s[0] + 1e-4 {
+                for j in 0..sides {
+                    let (o0, o1) = (ring(ps, pa, j, py), ring(ps, pa, j + 1, py));
+                    let (i0, i1) = (ring(sec.s[0], sec.a[0], j, py), ring(sec.s[0], sec.a[0], j + 1, py));
+                    tri_facing(&mut m, [o0, o1, i1], [0.0; 3], 3.0, up);
+                    tri_facing(&mut m, [o0, i1, i0], [0.0; 3], 3.0, up);
+                }
+            }
+        }
+        for r in 0..sec.rings {
+            let t0 = r as f32 / sec.rings as f32;
+            let t1 = (r + 1) as f32 / sec.rings as f32;
+            let lerp = |v: [f32; 2], t: f32| v[0] + (v[1] - v[0]) * t;
+            let (y0, y1) = (lerp(sec.y, t0), lerp(sec.y, t1));
+            let (s0, s1) = (lerp(sec.s, t0), lerp(sec.s, t1));
+            let (a0, a1) = (lerp(sec.a, t0), lerp(sec.a, t1));
+            for j in 0..sides {
+                let (pb, qb) = (ring(s0, a0, j, y0), ring(s0, a0, j + 1, y0));
+                let (pt, qt) = (ring(s1, a1, j, y1), ring(s1, a1, j + 1, y1));
+                let mid = (Vec3::from(pb) + Vec3::from(qb) + Vec3::from(pt) + Vec3::from(qt)) * 0.25;
+                let out = Vec3::new(mid.x, 0.0, mid.z);
+                let (ub0, ub1) = (across(s0, j, false), across(s0, j, true));
+                let (ut0, ut1) = (across(s1, j, false), across(s1, j, true));
+                let flag = if sides == 4 { (j % 2) as f32 } else { 0.0 };
+                tri_facing(&mut m, [pb, qb, qt], [ub0, ub1, ut1], flag, out);
+                tri_facing(&mut m, [pb, qt, pt], [ub0, ut1, ut0], flag, out);
+            }
+        }
+        prev = Some((sec.y[1], sec.s[1], sec.a[1]));
+    }
+    // The roof.
+    if let Some((y, s, a)) = prev {
+        for j in 0..sides {
+            tri_facing(&mut m, [[0.0, y, 0.0], ring(s, a, j, y), ring(s, a, j + 1, y)], [0.0; 3], 3.0, up);
+        }
+        // The spire: four faces up to the top.
+        if y < 0.999 && spire > 0.0 {
+            for j in 0..4 {
+                let a = std::f32::consts::FRAC_PI_4 + j as f32 * std::f32::consts::FRAC_PI_2;
+                let b = a + std::f32::consts::FRAC_PI_2;
+                let r = spire * std::f32::consts::SQRT_2;
+                let (p, q) = ([r * a.cos(), y, r * a.sin()], [r * b.cos(), y, r * b.sin()]);
+                let out = Vec3::new(p[0] + q[0], 0.0, p[2] + q[2]);
+                tri_facing(&mut m, [p, q, [0.0, 1.0, 0.0]], [0.0; 3], 2.0, out);
+            }
+        }
+    }
+    m
+}
+
+/// A hero model (`assets/models/hero/NAME.bin`, written by the port's Blender script): its triangles
+/// in a unit box (x and z -0.5..0.5, y 0..1; the record's size scales it to its real one), their
+/// normals, and uv in metres with the texture layer in v's ten-thousands. Header: `SEHM`, version 1,
+/// the real width, height and depth (m), the vertex and index counts.
+fn hero_model(name: &str) -> Option<Mesh4> {
+    let rel = std::path::Path::new("models").join("hero").join(format!("{name}.bin"));
+    let mut path = crate::config::asset_dir().join(&rel);
+    if !path.is_file() {
+        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
+    }
+    let b = std::fs::read(&path).ok()?;
+    let u = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
+    if b.get(0..4) != Some(b"SEHM".as_slice()) || u(4)? != 1 {
+        return None;
+    }
+    let (nv, ni) = (u(20)? as usize, u(24)? as usize);
+    if b.len() < 28 + nv * 32 + ni * 4 {
+        return None;
+    }
+    let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let mut m: Mesh4 = Default::default();
+    for i in 0..nv {
+        let o = 28 + i * 32;
+        m.0.push([f(o), f(o + 4), f(o + 8)]);
+        m.1.push([f(o + 12), f(o + 16), f(o + 20)]);
+        m.2.push([f(o + 24), f(o + 28)]);
+    }
+    let o = 28 + nv * 32;
+    m.3 = (0..ni).map(|i| u32::from_le_bytes(b[o + i * 4..o + i * 4 + 4].try_into().unwrap())).collect();
+    Some(m)
+}
+
+/// The flying lanes' segment: two ribbons (z -0.5 and 0.5: the instance's depth sets them 12 m apart)
+/// along x -0.5..0.5, each a vertical and a flat strip of no width that the shader widens to a car or a
+/// pixel (uv x the side, y 0 the vertical strip, 1 the flat one), both sides.
+fn lane_mesh() -> Mesh4 {
+    let mut m: Mesh4 = Default::default();
+    for z in [-0.5f32, 0.5] {
+        for part in [0.0f32, 1.0] {
+            for back in [false, true] {
+                let base = m.0.len() as u32;
+                let s = if back { -1.0 } else { 1.0 };
+                // (Widened along z the flat strip's winding faces down: its front is the underside.)
+                let normal = if part == 0.0 { [0.0, 0.0, s] } else { [0.0, -s, 0.0] };
+                for (x, side) in [(-0.5f32, -1.0f32), (0.5, -1.0), (0.5, 1.0), (-0.5, 1.0)] {
+                    m.0.push([x, 0.0, z]);
+                    m.1.push(normal);
+                    m.2.push([side, part]);
+                }
+                if back {
+                    m.3.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+                } else {
+                    m.3.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+            }
+        }
+    }
+    m
 }
 
 /// The buildings' box: x and z -0.5..0.5, y 0..1 (the instance scales it to its footprint and
@@ -632,6 +868,43 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let n = idx.len() as u32;
             models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), crown: Some((0.5, 0.0)) });
         }
+        // Level 3's cities, the box's next eight models (city.wesl M_FUTURE..M_LANE): the future
+        // box, four towers (tapering, stepped, twisted, round), the arcology, the skybridge and the
+        // flying lanes, with level 3's facades and signs.
+        let future = materials.len() as u32;
+        materials.push(LibMaterial { color: images.add(future_array()), tint: [1.0; 4], leaves: false, building: true });
+        decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![40, 50, 60, 255]) });
+        let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let arco: Vec<Section> = (0..5).map(|i| {
+            let (y0, s0) = (i as f32 * 0.184, 1.0 - 0.18 * i as f32);
+            sec([y0, y0 + 0.184], [s0, s0 - 0.04], [0.0; 2], 1)
+        }).collect();
+        let shapes: [(Mesh4, u32); 8] = [
+            (tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, false), BUILDING_CAP),
+            (tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false), TOWER_CAP),
+            (tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false), TOWER_CAP),
+            (tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, quarter], 16)], 4, 0.04, false), TOWER_CAP),
+            (tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false), TOWER_CAP),
+            (tower(&arco, 4, 0.03, false), 400),
+            (tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true), TOWER_CAP),
+            (lane_mesh(), LANE_CAP),
+        ];
+        for ((positions, normals, uvs, idx), cap) in shapes {
+            let n = idx.len() as u32;
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), crown: Some((0.5, 0.0)) });
+        }
+        // The hero models (city.wesl M_TEMPLE, M_WATCH, M_LANDMARK), made in Blender by script
+        // (`assets/models/hero`): level 1's temple and watchtower with the villages' textures, level
+        // 3's landmark tower with its facades. A missing one draws as a box.
+        for (name, material, cap) in [("temple", village, 2000), ("watchtower", village, 2000), ("landmark", future, 200)] {
+            let (positions, normals, uvs, idx) = hero_model(name).unwrap_or_else(|| {
+                warn!("scatter: hero model {name} missing: a box instead");
+                building_box()
+            });
+            let n = idx.len() as u32;
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), crown: Some((0.5, 0.0)) });
+        }
     }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());
@@ -808,4 +1081,47 @@ fn own_card(name: &str) -> (Image, impostor::Texture) {
         ..default()
     });
     (image, impostor::Texture { width: w, height: h, rgba: Arc::new(px) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Level 3's towers: every wall faces away from the axis and every roof up, with its normal on
+    /// the side its winding faces (the building pipeline culls back faces: a reversed triangle would
+    /// leave a hole).
+    #[test]
+    fn towers_face_out() {
+        let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
+        let meshes = [
+            tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false),
+            tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false),
+            tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, std::f32::consts::FRAC_PI_2], 16)], 4, 0.04, false),
+            tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false),
+            tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true),
+        ];
+        for (k, m) in meshes.iter().enumerate() {
+            assert!(!m.3.is_empty());
+            for t in m.3.chunks(3) {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| Vec3::from(m.0[i as usize]));
+                let n = (b - a).cross(c - a);
+                assert!(n.dot(Vec3::from(m.1[t[0] as usize])) > 0.0, "model {k}: normal against the winding");
+                let mid = (a + b + c) / 3.0;
+                let floor = k == 4 && mid.y == 0.0 && n.y < 0.0;
+                assert!(n.dot(Vec3::new(mid.x, 0.0, mid.z)) > 0.0 || n.y > 0.0 || floor, "model {k}: a face turned inwards at {mid}");
+            }
+        }
+    }
+
+    /// The hero models (made in Blender) load, inside the unit box.
+    #[test]
+    fn hero_models_load() {
+        for name in ["temple", "watchtower", "landmark"] {
+            let m = hero_model(name).unwrap_or_else(|| panic!("{name} missing"));
+            assert!(!m.3.is_empty() && m.0.len() == m.1.len() && m.0.len() == m.2.len());
+            for p in &m.0 {
+                assert!(p[0].abs() <= 0.5001 && p[2].abs() <= 0.5001 && (-1e-4..=1.0001).contains(&p[1]), "{name}: {p:?}");
+            }
+        }
+    }
 }

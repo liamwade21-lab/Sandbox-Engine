@@ -1513,19 +1513,27 @@ fn run_commands(
             }
         }
         "town" => {
-            // town [village|town|city|mega] [ALT_KM]: to the nearest settlement of that size (the
-            // largest the civilization has by default) of the selected body's civilization
-            // (`SE_CIV_TEST` too), looking down at it from ALT_KM (default 2) at 35 degrees. The land
-            // there is not checked: the field may put it in the sea or on mountains (try the next size).
+            // town [village|town|city|mega] [ALT_KM] [PITCH]: to the nearest settlement of that size
+            // (the largest the civilization has by default) of the selected body's civilization
+            // (`SE_CIV_TEST` too), looking at it from ALT_KM (default 2) at PITCH degrees (default
+            // -35; at most -2, the camera back far enough to see the middle ahead). The land there is
+            // not checked: the field may put it in the sea or on mountains (try the next size).
             let mut kind = None;
             let mut alt = 2.0;
+            let mut pitch_deg = -35.0f64;
+            let mut numbers = 0;
             for w in arg.split_whitespace() {
                 match w {
                     "village" => kind = Some(0u8),
                     "town" => kind = Some(1),
                     "city" => kind = Some(2),
                     "mega" => kind = Some(3),
-                    _ => alt = w.parse().unwrap_or(alt),
+                    _ => {
+                        if let Ok(v) = w.parse::<f64>() {
+                            if numbers == 0 { alt = v } else { pitch_deg = v.min(-2.0) }
+                            numbers += 1;
+                        }
+                    }
                 }
             }
             if let Some(target @ ObjectRef::Body(i)) = cam.selected {
@@ -1551,7 +1559,7 @@ fn run_commands(
                         info!("town: a {} of {:.1} km at {:.3} {:.3} on {name} (level {level})", ["village", "town", "city", "megalopolis"][k as usize], r_km, lat.to_degrees(), lon.to_degrees());
                         let up = DVec3::new(lat.cos() * lon.cos(), lat.sin(), -lat.cos() * lon.sin());
                         let north = (DVec3::Y - up * up.y).normalize_or(DVec3::X);
-                        let pitch = (-35.0f64).to_radians();
+                        let pitch = pitch_deg.to_radians();
                         let fwd = (north * pitch.cos() + up * pitch.sin()).normalize();
                         let shape = DVec3::from_array(b.shape());
                         // Back from the middle by the view's run, so the town is ahead.

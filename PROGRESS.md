@@ -105,9 +105,17 @@
   - **Step 8 done (2026-11-05): primitive villages.** Level 1 civilizations live in villages of round
     thatched huts and longhouses (mud brick, timber or stone walls) on yards of packed earth, with
     wandering dirt paths and tracks between villages; by night hearth fires glow before the huts. The
-    textures were made with the image generator. Not done: the hero buildings (a temple, a
-    watchtower) from the Blender tool: Blender was not running.
-  - **Step 9 next:** level 3 (futuristic) cities: megatowers, neon, flying traffic.
+    textures were made with the image generator. A temple stands in many villages and watchtowers
+    on their edges (made in step 9).
+  - **Step 9 done (2026-11-05): futuristic cities.** Level 3 cities have megatowers of 150-1,500 m in
+    their business cores (tapering, stepped, twisted and round), skybridges between them, a few
+    arcologies (stepped pyramids) and a landmark tower, flying traffic in two layers of lanes (streams
+    of lights from afar), neon signs on the lower storeys, light strips and lit windows by night. The
+    facades and signs were made with the image generator; the temple, watchtower and landmark were
+    modelled in Blender by script (its 3D generators are switched off: they need an API key or the
+    Premium plan). Costs about 1.6 ms over a dense core at the user's settings. Not done: elevated
+    roads, 3D flying cars close up.
+  - **Step 10 next:** level 4: orbital stations, colonized moons and planets, space traffic.
 
 ## Notes
 

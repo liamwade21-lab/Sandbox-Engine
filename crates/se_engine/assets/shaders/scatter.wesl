@@ -11,9 +11,13 @@
 import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
 import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
 import super::settlement::settlements;
-import super::city::{city_pos, ct_building, ct_hut, Building};
+import super::city::{city_pos, ct_building, ct_hut, Building, CityPos, ct_block, ct_block_mid, ct_arcology, ct_on_arcology, ct_mega, ct_bridge, ct_lane, ct_temple, ct_district, M_FUTURE, M_ARCO, M_BRIDGE, M_LANE, M_TEMPLE, M_LANDMARK};
 
 const SLOT_CAP: u32 = 8192u;
+// The library's building models from the box on (ScatterLibrary::building): the box, the villages'
+// hut and longhouse, level 3's future box, four towers, the arcology, the skybridge, the flying lane,
+// the hero models (level 1's temple and watchtower, level 3's landmark).
+const BUILDING_MODELS: u32 = 14u;
 const GRID: u32 = 33u;
 const PAGE_VERTS: u32 = 1089u;
 const LEAF: u32 = 0x80000000u;
@@ -377,6 +381,122 @@ fn face_metric(u: f32, v: f32) -> f32 {
     return 2.0 * (sqrt(1.0 + t * t) + sqrt(1.0 + s * s)) / (3.14159265 * q);
 }
 
+// Where a point of the city frame (tile `tile`, face m `p` in it) falls in the job's cell: 0..1 over
+// the cell.
+fn cell_frac(job: Job, tile: vec2<i32>, p: vec2<f32>) -> vec2<f32> {
+    let rel = vec2<f32>(tile - vec2<i32>(job.tile_x, job.tile_y)) * 4096.0 + p - vec2<f32>(job.local_x, job.local_y);
+    return rel / job.edge;
+}
+
+// Whether the grid point `gi` is the one whose square holds the cell point `fc` (so each object of the
+// layout is placed by one point alone).
+fn in_square(gi: vec2<u32>, fc: vec2<f32>) -> bool {
+    return all(floor(fc * f32(BGRID)) == vec2<f32>(gi));
+}
+
+// The body-frame direction of a point of the city frame (for the town's density there).
+fn city_dir(job: Job, tile: vec2<i32>, p: vec2<f32>) -> vec3<f32> {
+    let uv = (vec2<f32>(f32(job.col), f32(job.row)) + cell_frac(job, tile, p)) / f32(1u << job.level);
+    return normalize(uv_to_cube(job.face, uv.x, uv.y));
+}
+
+// Appends one object of the layout to the job's slot: the model (an offset from the box) and its record
+// (its middle in the cell, u16 x2, and `rec` the rest).
+fn put_record(job: Job, i: u32, model: u32, fc: vec2<f32>, rec: u32) {
+    let ks = atomicAdd(&counts[job.slot], 1u);
+    if ks >= SLOT_CAP {
+        return;
+    }
+    instances[job.slot * SLOT_CAP + ks] = i | (((job.models & 0xffu) + model) << 16u) | (job.kind << 24u);
+    let q = vec2<u32>(clamp(fc * 65536.0, vec2<f32>(0.0), vec2<f32>(65535.0)));
+    noises[job.slot * SLOT_CAP + ks] = vec2<u32>(q.x | (q.y << 16u), rec);
+}
+
+// A building's record: its width and depth (0.5 m steps; the arcology 4 m, the skybridge's length 1 m),
+// height (the square root of a share of 1,600 m, a byte) and turn (a byte over -pi..pi). Placed by the
+// grid point whose square holds its middle; the far class takes the tall ones alone (the skyline).
+fn put_building(job: Job, i: u32, gi: vec2<u32>, tile: vec2<i32>, b: Building) {
+    if !b.ok || (job.kind == 2u && b.height < 25.0) {
+        return;
+    }
+    let fc = cell_frac(job, tile, b.centre);
+    if !in_square(gi, fc) {
+        return;
+    }
+    let big = b.model == M_ARCO || b.model == M_LANDMARK;
+    let step = select(select(2.0, 1.0, b.model == M_BRIDGE), 0.25, big);
+    let w = u32(clamp(round(b.size.x * step), 1.0, 255.0));
+    let d = u32(clamp(round(b.size.y * select(2.0, 0.25, big)), 1.0, 255.0));
+    let hc = u32(clamp(round(sqrt(b.height / 1600.0) * 255.0), 1.0, 255.0));
+    let ac = u32(clamp(round((atan2(b.rot.y, b.rot.x) / 6.2831853 + 0.5) * 255.0), 0.0, 255.0));
+    put_record(job, i, b.model, fc, w | (d << 8u) | (hc << 16u) | (ac << 24u));
+}
+
+// Level 3's objects at a point: the flying lanes' segments over the arterials, the district's arcology,
+// the block's megatower and its skybridge, else the lot's building (the towns' box, taller, in the
+// future facades).
+fn place_future(job: Job, i: u32, gi: vec2<u32>, cp: CityPos, k: f32, urban: f32, seed: u32, level: u32) {
+    // The lanes (dense town): two heights a segment (an instance each, its two ribbons the two ways).
+    if urban >= 0.3 {
+        for (var axis = 0; axis < 2; axis++) {
+            let ln = ct_lane(cp, axis, k, seed);
+            let fc = cell_frac(job, cp.tile, ln.centre);
+            // Over every other arterial (about a kilometre apart).
+            if (ln.line & 1) == 0 && in_square(gi, fc) {
+                // Its record: length (1 m), the angle's offset from the axis (6 bits over +-0.2 rad),
+                // the axis, the height (low, high), the segment and the line (8 bits each).
+                let base = select(0.0, 1.5707963, axis == 0);
+                let off = u32(clamp(round((ln.ang - base) / 0.4 * 63.0 + 31.5), 0.0, 63.0));
+                let len = u32(clamp(round(ln.len), 1.0, 255.0));
+                // (The axis bit: 1 for a line along v.)
+                let lane_meta = off | (select(0u, 1u, axis == 0) << 6u);
+                let tail = ((u32(ln.seg) & 0xffu) << 16u) | ((u32(ln.line) & 0xffu) << 24u);
+                put_record(job, i, M_LANE, fc, len | (lane_meta << 8u) | tail);
+                put_record(job, i, M_LANE, fc, len | ((lane_meta | 0x80u) << 8u) | tail);
+            }
+        }
+    }
+    let blk = ct_block(cp, seed, body.city.z);
+    // The district's arcology or landmark, where the town is dense enough at its middle (every point
+    // of the district asks there, so the lots under it are cleared only when it stands).
+    var arco = ct_arcology(cp, blk.d.cell, k, seed, level);
+    if arco.ok {
+        arco.ok = town_at(city_dir(job, cp.tile, arco.centre)) >= 0.25;
+        put_building(job, i, gi, cp.tile, arco);
+    }
+    // The block's megatower, by the town's density at its middle (the block's points agree).
+    let mid = ct_block_mid(cp, blk);
+    let mega = ct_mega(cp, blk, k, town_at(city_dir(job, cp.tile, mid)), seed);
+    if mega.ok {
+        if ct_on_arcology(arco, mega, k) {
+            return;
+        }
+        put_building(job, i, gi, cp.tile, mega);
+        // Its skybridges to the blocks on either side along u: a bridge's middle lies on the street
+        // between them, so the point that places it may be in either block.
+        var nb = blk;
+        nb.bc.x += 1;
+        let mega_n = ct_mega(cp, nb, k, town_at(city_dir(job, cp.tile, ct_block_mid(cp, nb))), seed);
+        if mega_n.ok && !ct_on_arcology(arco, mega_n, k) {
+            put_building(job, i, gi, cp.tile, ct_bridge(blk, mega, mega_n, k, seed));
+        }
+        var pb = blk;
+        pb.bc.x -= 1;
+        let mega_p = ct_mega(cp, pb, k, town_at(city_dir(job, cp.tile, ct_block_mid(cp, pb))), seed);
+        if mega_p.ok && !ct_on_arcology(arco, mega_p, k) {
+            put_building(job, i, gi, cp.tile, ct_bridge(pb, mega_p, mega, k, seed));
+        }
+        return;
+    }
+    var b = ct_building(cp, k, urban, seed, body.city.z);
+    if ct_on_arcology(arco, b, k) {
+        return;
+    }
+    b.model = M_FUTURE;
+    b.height *= 1.4;
+    put_building(job, i, gi, cp.tile, b);
+}
+
 fn place_building(job: Job, i: u32) {
     if i >= BGRID * BGRID {
         return;
@@ -394,35 +514,25 @@ fn place_building(job: Job, i: u32) {
     if urban < 0.06 {
         return;
     }
-    var b: Building;
-    if body.city.x < 1.5 {
-        b = ct_hut(cp, k, urban, u32(body.city.y * 10000.0) + 100u);
+    let seed = u32(body.city.y * 10000.0) + 100u;
+    let level = u32(body.city.x + 0.5);
+    if level >= 3u {
+        place_future(job, i, gi, cp, k, urban, seed, level);
+    } else if level == 2u {
+        put_building(job, i, gi, cp.tile, ct_building(cp, k, urban, seed, body.city.z));
     } else {
-        b = ct_building(cp, k, urban, u32(body.city.y * 10000.0) + 100u, body.city.z);
+        // The district's temple where the village is dense enough at its middle (every point of the
+        // district asks there), the huts kept clear of its square.
+        var tp = ct_temple(cp, ct_district(cp, seed).cell, seed);
+        if tp.ok {
+            tp.ok = town_at(city_dir(job, cp.tile, tp.centre)) >= 0.15;
+            put_building(job, i, gi, cp.tile, tp);
+        }
+        let b = ct_hut(cp, k, urban, seed);
+        if !(tp.ok && b.ok && length(b.centre - tp.centre) * k < 0.5 * length(tp.size) + 0.5 * length(b.size) + 8.0) {
+            put_building(job, i, gi, cp.tile, b);
+        }
     }
-    // (The far class: the tall ones alone, the skyline from afar.)
-    if !b.ok || (job.kind == 2u && b.height < 25.0) {
-        return;
-    }
-    // Its middle in this point's square of the cell?
-    let rel = vec2<f32>(cp.tile - tile0) * 4096.0 + b.centre - corner;
-    let fc = rel / job.edge;
-    if any(floor(fc * f32(BGRID)) != vec2<f32>(gi)) {
-        return;
-    }
-    let ks = atomicAdd(&counts[job.slot], 1u);
-    if ks >= SLOT_CAP {
-        return;
-    }
-    instances[job.slot * SLOT_CAP + ks] = i | (((job.models & 0xffu) + b.model) << 16u) | (job.kind << 24u);
-    // Its record: its middle in the cell (u16 x2); its width and depth (0.5 m steps), height (the
-    // square root of a share of 600 m, a byte) and turn (a byte over -pi..pi).
-    let w = u32(clamp(round(b.size.x * 2.0), 1.0, 255.0));
-    let d = u32(clamp(round(b.size.y * 2.0), 1.0, 255.0));
-    let hc = u32(clamp(round(sqrt(b.height / 600.0) * 255.0), 1.0, 255.0));
-    let ac = u32(clamp(round((atan2(b.rot.y, b.rot.x) / 6.2831853 + 0.5) * 255.0), 0.0, 255.0));
-    let q = vec2<u32>(clamp(fc * 65536.0, vec2<f32>(0.0), vec2<f32>(65535.0)));
-    noises[job.slot * SLOT_CAP + ks] = vec2<u32>(q.x | (q.y << 16u), w | (d << 8u) | (hc << 16u) | (ac << 24u));
 }
 
 @compute @workgroup_size(64)
@@ -617,7 +727,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let packed = instances[slot * SLOT_CAP + i];
     let pm = (packed >> 16u) & 0xffu;
-    if pm >= body.species.w && pm < body.species.w + 3u && body.city.x > 0.5 {
+    if pm >= body.species.w && pm < body.species.w + BUILDING_MODELS && body.city.x > 0.5 {
         cull_building(slot, i, cell, packed >> 24u, pm);
         return;
     }
@@ -785,10 +895,17 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     if smoothstep(0.03, 0.3, land) < 0.5 {
         return;
     }
-    let w = f32(rec.y & 0xffu) * 0.5;
-    let dpt = f32((rec.y >> 8u) & 0xffu) * 0.5;
+    let mk = model - body.species.w;
+    if mk == M_LANE {
+        cull_lane(rec, lf, info, cell, kind, model);
+        return;
+    }
+    let big = mk == M_ARCO || mk == M_LANDMARK;
+    let wstep = select(select(0.5, 1.0, mk == M_BRIDGE), 4.0, big);
+    let w = f32(rec.y & 0xffu) * wstep;
+    let dpt = f32((rec.y >> 8u) & 0xffu) * select(0.5, 4.0, big);
     let hq = f32((rec.y >> 16u) & 0xffu) / 255.0;
-    let h = hq * hq * 600.0;
+    let h = hq * hq * 1600.0;
     let ang = (f32(rec.y >> 24u) / 255.0 - 0.5) * 6.2831853;
     let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
     let up = cell.up;
@@ -799,10 +916,19 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     let cs = clamp(abs(dot(tri_n, dir)), 0.2, 1.0);
     var plinth = 1.0 + 0.5 * max(w, dpt) * sqrt(1.0 - cs * cs) / cs;
     var scale = h + plinth;
-    if model != body.species.w {
+    if mk == 1u || mk == 2u {
         // A village's hut or longhouse keeps its own height (a plinth would stretch its walls into
         // the ground): it only sinks a little into the slope.
         plinth = min(plinth, 0.5) - body.lod2.y;
+        scale = h;
+    } else if mk == M_BRIDGE {
+        // A skybridge: 5 m deep at its height over the street.
+        plinth = -h - body.lod2.y;
+        scale = 5.0;
+    } else if mk >= M_TEMPLE {
+        // A hero model keeps its shape: it sinks into the slope (its lowest 0.8 m below the ground
+        // on the level).
+        plinth -= 0.2;
         scale = h;
     }
     let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
@@ -835,6 +961,51 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     xa = normalize(xa - up * dot(xa, up));
     let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
     let o = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
+    append(models[model].mesh_bucket, o);
+}
+
+// A flying lane's segment: its middle lifted onto the drawn ground and raised to its height (by the
+// line: low lanes 70-110 m, high ones 180-280 m), along its line (tilted with the ground), its two
+// ribbons 12 m apart. The draw's hash: the segment, the line, the axis and the height.
+fn cull_lane(rec: vec2<u32>, lf: Lift, info: PageInfo, cell: Cell, kind: u32, model: u32) {
+    let len = f32(rec.y & 0xffu);
+    let lane_meta = (rec.y >> 8u) & 0xffu;
+    let axis = (lane_meta >> 6u) & 1u;
+    let high = lane_meta >> 7u;
+    let seg = (rec.y >> 16u) & 0xffu;
+    let line = rec.y >> 24u;
+    let hl = f32(mix32(line * 0x9e3779b9u + axis * 0x85ebca6bu) & 0xffffu) / 65535.0;
+    let hgt = select(mix(70.0, 110.0, hl), mix(180.0, 280.0, hl), high == 1u);
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    let up = cell.up;
+    let pos = m * lf.p.xyz + info.t + up * (hgt - body.lod2.y);
+    let dist = length(pos);
+    var range = body.city2.x;
+    if kind == 2u {
+        if dist < 0.85 * body.city2.x {
+            return;
+        }
+        range = body.flora_k.y;
+    }
+    let fade = clamp((range - dist) / (range * 0.15), 0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let r = 0.5 * len + 10.0;
+    for (var k = 0u; k < 5u; k++) {
+        let pl = cam.planes[k];
+        if dot(pl.xyz, pos) + pl.w < -r {
+            return;
+        }
+    }
+    let ang = f32(axis) * 1.5707963 + (f32(lane_meta & 63u) - 31.5) / 63.0 * 0.4;
+    let fu = normalize(m * lf.du);
+    let fv = normalize(m * lf.dv);
+    var xa = cos(ang) * fu + sin(ang) * fv;
+    let tri_n = normalize(m * cross(lf.vb.xyz - lf.va.xyz, lf.vc.xyz - lf.va.xyz));
+    xa = normalize(xa - tri_n * dot(xa, tri_n));
+    let hash = seg | ((line & 0x1fu) << 8u) | (axis << 13u) | (high << 14u);
+    let o = Inst(pos, pack2x16float(vec2<f32>(len, 12.0)), oct_encode(xa), oct_encode(up), 2.0, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
     append(models[model].mesh_bucket, o);
 }
 
