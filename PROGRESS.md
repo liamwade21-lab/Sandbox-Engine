@@ -102,7 +102,12 @@
     (towns everywhere they can stand). Facades use Megaton Rainfall's own window tiles. Checked:
     flights into Tokyo and New York, the level 2 test planet's towns by night from orbit. Left for
     later: street furniture and 3D cars, a generated planet's town up close.
-  - **Step 8 next:** level 1 (primitive) villages: huts, fields, paths, fire glows.
+  - **Step 8 done (2026-11-05): primitive villages.** Level 1 civilizations live in villages of round
+    thatched huts and longhouses (mud brick, timber or stone walls) on yards of packed earth, with
+    wandering dirt paths and tracks between villages; by night hearth fires glow before the huts. The
+    textures were made with the image generator. Not done: the hero buildings (a temple, a
+    watchtower) from the Blender tool: Blender was not running.
+  - **Step 9 next:** level 3 (futuristic) cities: megatowers, neon, flying traffic.
 
 ## Notes
 

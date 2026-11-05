@@ -95,7 +95,9 @@ that install, never copied into the project.
   the scatter's patch `veg_lights`). Near the ground a town's night light comes from its streets
   (`CityGround::lamp`); the lamps and the traffic are drawn by the ground too (`ct_lamps`,
   `ct_traffic`: no state, moved by the clock). The dev command `town [village|town|city|mega] [ALT_KM]`
-  goes to the nearest settlement of the selected body's civilization (the settlement field on the
+  goes to the nearest settlement of the selected body's civilization (level 1 villages: `village_ground`,
+  `ct_hut`, the huts and longhouses the box's next two models with the port's own textures in
+  `assets/textures/village/`) (the settlement field on the
   CPU: `civilization::nearest_settlement`, same hash as the shader); follow it with `agl M` (the
   ground can stand kilometres above the radius). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).

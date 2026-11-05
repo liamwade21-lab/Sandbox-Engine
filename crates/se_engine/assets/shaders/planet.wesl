@@ -17,7 +17,7 @@ import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_s
 // pass them this material's values.
 import super::vegetation::{lin_to_srgb255, veg_classes, map_noise, map_forest, canopy_shade};
 import super::settlement::{settlements, st_fields, st_points};
-import super::city::{city_pos, city_ground, CityGround};
+import super::city::{city_pos, city_ground, village_ground, CityGround};
 import super::surface_class::{TerraMix, hash31, vnoise, fbm3, ter_oct, ter_fbm, ter_fbm3d, terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at, designed_noise_at, biome_weights_at};
 
 // The fixed part of the material. The components marked "slot" are read from `lit`.
@@ -2168,7 +2168,13 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
             let rural = smoothstep(0.1, 0.3, st.y * kl);
-            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, globals.time);
+            var cg: CityGround;
+            if planet.civ.x < 1.5 {
+                // A primitive people's villages: dirt paths, huts, hearth fires.
+                cg = village_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, albedo, globals.time);
+            } else {
+                cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, globals.time);
+            }
             albedo = cg.col;
             lamp = cg.lamp;
             city_emit = cg.emit;

@@ -966,6 +966,37 @@ mapping; buildings when MR's install is missing (the scatter's library needs it:
 Step 7's plan said modular facades, street furniture and 3D cars; facades came as MR's window tiles in
 the shader, furniture and 3D cars are left for the polish (step 11).
 
+### Step 8: level 1 villages (done 2026-11-05)
+
+What was built:
+- **The village layout** (`city.wesl` `village_ground`, `ct_hut`): a primitive people's villages use
+  the same districts and lots, but each district's grid is bent by a smooth warp (up to 16 face m over
+  128 m) so the paths meander; dirt paths (2.6 m) and tracks between villages (4.4 m, every other
+  arterial line), no kerbs, lamps or traffic; yards of packed earth round the huts. A hut's lot
+  middle goes back through the warp by a few fixed-point steps (the warp bends gently).
+- **Huts and longhouses**: two code-built models after the box (a round hut with a thatched cone over
+  its mud walls and an eave ring; a longhouse with a thatched gable roof), drawn by the building
+  pipeline with their own material: the port's thatch, mud brick, timber and stone (made with the
+  image generator, `assets/textures/village/`, 512 px) in an array; flat colours without them. A hut
+  keeps its own height and sinks only half a metre into its slope (a plinth would stretch its walls).
+- **Hearth fires** by night before each hut's door (flickering glows; near the ground the village's
+  light comes from them); from orbit the step 6 field (fires: too dim to see from space).
+- **The dev command `town`** (with the settlement field's hash on the CPU) finds villages, towns,
+  cities and megalopolises.
+
+Checked: the generated world RS 8514-928-8-5906585-158 3 under `SE_CIV_TEST=1` (a village from 300 m,
+80 m and 50 m by day, from 80 m and 400 m by night with its fires), the level 1 test planet WISE
+19101+56342 3 (a village from 1 km and 40 m). Cheap: a village is a few dozen instances; the ground's
+village code replaces the town's.
+
+Learned:
+- `target` is a reserved word in WGSL (as `from`): a shader using it fails and the ground vanishes.
+- A hut's ring, wound as the box's quads, faced inwards: the ring runs from +x towards +z, clockwise
+  seen from above.
+
+Left open: the hero models (a temple, a watchtower) from the Blender tool's generator: Blender was not
+running; fences, field strips and smoke; level 1 lights only near the ground (as planned).
+
 ## Implementation notes (from the port's gotchas: keep these)
 
 - **GPU objects.** Pooled buffers only, no per-cell or per-instance buffers, textures or bind

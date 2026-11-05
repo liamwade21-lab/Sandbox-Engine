@@ -185,6 +185,8 @@ struct Building {
     rot: vec2<f32>,
     hash: vec4<f32>,
     ok: bool,
+    // The model: 0 the box (towns), 1 a round hut, 2 a longhouse (villages).
+    model: u32,
 }
 
 fn ct_building(cp: CityPos, k: f32, urban: f32, seed: u32, spread: f32) -> Building {
@@ -247,6 +249,147 @@ fn ct_building(cp: CityPos, k: f32, urban: f32, seed: u32, spread: f32) -> Build
     o.height = storeys * 3.1 + 0.5;
     o.rot = g.rot;
     o.ok = true;
+    o.model = 0u;
+    return o;
+}
+
+// ---- villages (level 1) ----------------------------------------------------------------------
+// A primitive people's villages: the same districts and lots, but the paths meander (each district's
+// grid bent by a smooth warp of up to 16 face m over 128 m), dirt, without kerbs, lamps or traffic;
+// round huts and longhouses on yards of packed earth; hearth fires by night.
+
+const PATH_M: f32 = 1.3;
+const TRACK_M: f32 = 2.2;
+
+// The warp of a district's grid at its point `lp` (face m): a smooth value noise.
+fn ct_warp(lp: vec2<f32>, cell: vec2<i32>, seed: u32) -> vec2<f32> {
+    let q = lp / 128.0;
+    let c = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let s = f * f * (3.0 - 2.0 * f);
+    let key = cell.x * 977 + cell.y * 131;
+    let a = st_hash(vec3<i32>(c, key), seed + 31u).xy;
+    let b = st_hash(vec3<i32>(c + vec2<i32>(1, 0), key), seed + 31u).xy;
+    let e = st_hash(vec3<i32>(c + vec2<i32>(0, 1), key), seed + 31u).xy;
+    let g = st_hash(vec3<i32>(c + vec2<i32>(1, 1), key), seed + 31u).xy;
+    return (mix(mix(a, b, s.x), mix(e, g, s.x), s.y) - 0.5) * 32.0;
+}
+
+// A village's hut or longhouse on the lot a point lies in (as `ct_building`).
+fn ct_hut(cp: CityPos, k: f32, urban: f32, seed: u32) -> Building {
+    var o: Building;
+    o.ok = false;
+    let d = ct_district(cp, seed);
+    let g = ct_grid(d.cell, seed, 1.0);
+    let l0 = ct_local(cp, d.cell, g);
+    let lp = l0 + ct_warp(l0, d.cell, seed);
+    let bc = vec2<i32>(floor(lp / g.size));
+    let b = lp - vec2<f32>(bc) * g.size;
+    let lot = ct_lot(b, bc, d.cell, g.size, PATH_M / k, seed);
+    let h = st_hash(lot.key, seed + 21u);
+    let h2 = st_hash(lot.key, seed + 29u);
+    o.hash = h2;
+    let streets = smoothstep(0.06, 0.2, urban);
+    if h.w > streets * 0.93 {
+        return o;
+    }
+    // A round hut (5-8 m) or a longhouse (6-8 m by 11-18 m along the lot), in the lot's middle.
+    let room = (lot.hi - lot.lo) * k - vec2<f32>(3.0);
+    let long = h.y >= 0.6;
+    var size = vec2<f32>(mix(5.0, 8.0, h.x));
+    var height = mix(5.0, 7.0, h2.x);
+    if long {
+        size = vec2<f32>(mix(6.0, 8.0, h.x), mix(11.0, 18.0, h2.y));
+        height = mix(6.0, 8.0, h2.x);
+    }
+    if any(room < vec2<f32>(5.0)) {
+        return o;
+    }
+    size = min(size, room);
+    // Back through the warp (a few steps: it bends gently), then the grid, to the face's frame.
+    let aim = vec2<f32>(bc) * g.size + 0.5 * (lot.lo + lot.hi);
+    var l = aim;
+    for (var i = 0; i < 4; i++) {
+        l = aim - ct_warp(l, d.cell, seed);
+    }
+    let c_lp = l - g.off;
+    let p = vec2<f32>(g.rot.x * c_lp.x - g.rot.y * c_lp.y, g.rot.y * c_lp.x + g.rot.x * c_lp.y);
+    let centre = p + vec2<f32>(d.cell - cp.tile * 8) * DISTRICT_M + 0.5 * DISTRICT_M;
+    let at = city_pos(cp.tile, centre);
+    let dc = ct_district(at, seed);
+    if any(dc.cell != d.cell) || dc.art < (TRACK_M + 0.5 * length(size)) / k {
+        return o;
+    }
+    o.centre = centre;
+    o.size = size;
+    o.height = height;
+    o.rot = g.rot;
+    o.ok = true;
+    o.model = select(1u, 2u, long);
+    return o;
+}
+
+// A village's ground (as `city_ground`): yards of packed earth round the huts, the natural ground
+// between, dirt paths, tracks between villages; by night the hearth fires (flickering) beside the huts.
+fn village_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, base: vec3<f32>, t: f32) -> CityGround {
+    let fp = fp_m / max(k, 1e-3);
+    let dirt = vec3<f32>(0.19, 0.15, 0.105);
+    let earth = vec3<f32>(0.25, 0.20, 0.14);
+    var col = base;
+    var built = 0.0;
+    var lamp = 1.0;
+    var emit = vec3<f32>(0.0);
+    let d = ct_district(cp, seed);
+    let streets = smoothstep(0.06, 0.2, urban);
+    if streets > 0.0 {
+        let g = ct_grid(d.cell, seed, 1.0);
+        let l0 = ct_local(cp, d.cell, g);
+        let lp = l0 + ct_warp(l0, d.cell, seed);
+        let bc = vec2<i32>(floor(lp / g.size));
+        let b = lp - vec2<f32>(bc) * g.size;
+        let su = min(b.x, g.size.x - b.x);
+        let sv = min(b.y, g.size.y - b.y);
+        let lot = ct_lot(b, bc, d.cell, g.size, PATH_M / k, seed);
+        let lh = st_hash(lot.key, seed + 21u);
+        let mid = 0.5 * (lot.lo + lot.hi);
+        let dm = length(b - mid) * k;
+        let fine = 1.0 - smoothstep(0.25 * g.size.y, g.size.y, fp);
+        let yard = (1.0 - smoothstep(5.0, 11.0, dm)) * select(0.0, 1.0, lh.w <= streets * 0.93);
+        var c = mix(base, earth * (0.9 + 0.2 * lh.y), yard * 0.85);
+        let path = max(ct_cover(su, 2.0 * PATH_M / k, fp), ct_cover(sv, 2.0 * PATH_M / k, fp));
+        c = mix(c, dirt * (0.9 + 0.2 * lh.z), path);
+        // The hearth: a fire before the hut's door (towards the lot's path), flickering.
+        var fire = 0.0;
+        if lh.w <= streets * 0.93 && fp < 40.0 {
+            let door = vec2<f32>(mid.x, mid.y + lot.front * 6.0 / k);
+            let fd = length(b - door);
+            let flick = 0.75 + 0.25 * sin(t * (7.0 + 3.0 * lh.x) + lh.y * 40.0) * sin(t * 2.3 + lh.z * 17.0);
+            fire = ct_glow(fd, 0.6 / k, fp) * flick;
+            emit += vec3<f32>(1.0, 0.42, 0.10) * (2.5 * fire);
+            // Its light on the yard round it.
+            c += vec3<f32>(0.0);
+            lamp = mix(1.0, 0.05 + 4.0 * exp(-fd * fd * k * k / 25.0), fine * streets);
+        }
+        let mean = mix(mix(base, earth, 0.3), dirt, 0.15);
+        c = mix(mean, c, fine);
+        col = mix(col, c, streets);
+        built = streets * mix(0.3, max(path, yard * 0.6), fine);
+    }
+    // The tracks between villages (every other arterial line, about a kilometre apart).
+    let art_on = max(roads * select(0.0, 1.0, (d.line & 1) == 0), streets);
+    if art_on > 0.0 {
+        let track = ct_cover(d.art, 2.0 * TRACK_M / k, fp);
+        let fine = 1.0 - smoothstep(0.1 * DISTRICT_M, DISTRICT_M, fp);
+        let share = clamp(4.0 * TRACK_M / k / DISTRICT_M, 0.0, 1.0);
+        let c = mix(mix(col, dirt, share), mix(col, dirt, track), fine);
+        col = mix(col, c, art_on);
+        built = max(built, art_on * mix(share, track, fine));
+    }
+    var o: CityGround;
+    o.col = col;
+    o.built = built;
+    o.lamp = lamp;
+    o.emit = emit;
     return o;
 }
 

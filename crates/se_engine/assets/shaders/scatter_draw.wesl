@@ -557,6 +557,10 @@ struct BuildingOut {
     @location(9) @interpolate(flat) style: vec4<f32>,
     // the footprint (m) and whether this is the roof
     @location(10) @interpolate(flat) size: vec3<f32>,
+    // the point on the model (m from its base's middle) and the model: 0 the box, 1 a round hut,
+    // 2 a longhouse (villages)
+    @location(11) local: vec3<f32>,
+    @location(12) @interpolate(flat) kind: u32,
 }
 
 @if(BUILDING)
@@ -585,6 +589,8 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
     let hash = inst.model >> 16u;
     o.style = vec4<f32>(f32(hash & 0xffu) / 255.0, f32(hash >> 8u) / 255.0, f32((inst.model >> 8u) & 0xffu) / 255.0, inst.scale);
     o.size = vec3<f32>(wd, select(0.0, 1.0, roof));
+    o.local = vec3<f32>(v.pos.x * wd.x, v.pos.y * inst.scale, v.pos.z * wd.y);
+    o.kind = (inst.model & 0xffu) - body.species.w;
     return o;
 }
 
@@ -625,7 +631,30 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(in.up, l));
     var albedo: vec3<f32>;
     var emit = vec3<f32>(0.0);
-    if in.size.z > 0.5 {
+    if in.kind >= 1u {
+        // A village's hut or longhouse: thatch on the roof, the walls mud brick, timber or stone
+        // (the port's textures, layers 0-3; flat colours without them).
+        let hut = in.kind == 1u;
+        let roofed = select(n.y > 0.3, in.local.y > 0.37 * in.style.w && dot(n, in.up) > 0.2, hut) || dot(n, in.up) > 0.3;
+        let flat_c = array<vec3<f32>, 4>(vec3<f32>(0.42, 0.33, 0.18), vec3<f32>(0.42, 0.30, 0.19), vec3<f32>(0.30, 0.23, 0.16), vec3<f32>(0.40, 0.38, 0.34));
+        var layer = 1u + min(u32(s0 * 3.0), 2u);
+        var uv: vec2<f32>;
+        if roofed {
+            layer = 0u;
+            if hut {
+                let r = 0.5 * in.size.x;
+                uv = vec2<f32>(atan2(in.local.z, in.local.x) * r / 2.5, (in.style.w - in.local.y) / 2.5);
+            } else {
+                uv = vec2<f32>(in.local.z / 2.5, abs(in.local.x) / 2.0);
+            }
+        } else if hut {
+            uv = vec2<f32>(atan2(in.local.z, in.local.x) * 0.5 * in.size.x / 3.0, in.local.y / 3.0);
+        } else {
+            uv = vec2<f32>((in.local.x + in.local.z) / 3.0, in.local.y / 3.0);
+        }
+        let tex = textureSample(windows_tex, color_smp, uv, layer);
+        albedo = mix(flat_c[layer], tex.rgb, tex.a) * (0.85 + 0.3 * s1);
+    } else if in.size.z > 0.5 {
         // The roof: tar and gravel, a parapet round its edge; houses' roofs tiled or slate.
         let edge = min(0.5 * in.size.x - abs(in.facade.x), 0.5 * in.size.y - abs(in.facade.z));
         let house = h < 12.0;

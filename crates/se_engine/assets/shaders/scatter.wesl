@@ -11,7 +11,7 @@
 import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
 import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
 import super::settlement::settlements;
-import super::city::{city_pos, ct_building};
+import super::city::{city_pos, ct_building, ct_hut, Building};
 
 const SLOT_CAP: u32 = 8192u;
 const GRID: u32 = 33u;
@@ -394,7 +394,12 @@ fn place_building(job: Job, i: u32) {
     if urban < 0.06 {
         return;
     }
-    let b = ct_building(cp, k, urban, u32(body.city.y * 10000.0) + 100u, body.city.z);
+    var b: Building;
+    if body.city.x < 1.5 {
+        b = ct_hut(cp, k, urban, u32(body.city.y * 10000.0) + 100u);
+    } else {
+        b = ct_building(cp, k, urban, u32(body.city.y * 10000.0) + 100u, body.city.z);
+    }
     // (The far class: the tall ones alone, the skyline from afar.)
     if !b.ok || (job.kind == 2u && b.height < 25.0) {
         return;
@@ -409,7 +414,7 @@ fn place_building(job: Job, i: u32) {
     if ks >= SLOT_CAP {
         return;
     }
-    instances[job.slot * SLOT_CAP + ks] = i | ((job.models & 0xffu) << 16u) | (job.kind << 24u);
+    instances[job.slot * SLOT_CAP + ks] = i | (((job.models & 0xffu) + b.model) << 16u) | (job.kind << 24u);
     // Its record: its middle in the cell (u16 x2); its width and depth (0.5 m steps), height (the
     // square root of a share of 600 m, a byte) and turn (a byte over -pi..pi).
     let w = u32(clamp(round(b.size.x * 2.0), 1.0, 255.0));
@@ -611,8 +616,9 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let packed = instances[slot * SLOT_CAP + i];
-    if ((packed >> 16u) & 0xffu) == body.species.w && body.city.x > 0.5 {
-        cull_building(slot, i, cell, packed >> 24u);
+    let pm = (packed >> 16u) & 0xffu;
+    if pm >= body.species.w && pm < body.species.w + 3u && body.city.x > 0.5 {
+        cull_building(slot, i, cell, packed >> 24u, pm);
         return;
     }
     let c = candidate(cell.seed, packed & 0xffffu);
@@ -756,7 +762,7 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // A building: its record lifted onto the drawn ground, standing on a plinth down to the lowest ground
 // under its footprint, turned with its street grid, faded out over the last 15 % of the range.
-fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32) {
+fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     let rec = noises[slot * SLOT_CAP + i];
     let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
     if !lf.ok {
@@ -791,9 +797,15 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32) {
     let dir = normalize(info.dir * rd + p.xyz);
     let tri_n = normalize(cross(lf.vb.xyz - lf.va.xyz, lf.vc.xyz - lf.va.xyz));
     let cs = clamp(abs(dot(tri_n, dir)), 0.2, 1.0);
-    let plinth = 1.0 + 0.5 * max(w, dpt) * sqrt(1.0 - cs * cs) / cs;
+    var plinth = 1.0 + 0.5 * max(w, dpt) * sqrt(1.0 - cs * cs) / cs;
+    var scale = h + plinth;
+    if model != body.species.w {
+        // A village's hut or longhouse keeps its own height (a plinth would stretch its walls into
+        // the ground): it only sinks a little into the slope.
+        plinth = min(plinth, 0.5) - body.lod2.y;
+        scale = h;
+    }
     let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
-    let scale = h + plinth;
     let dist = length(pos);
     // The near class to its range; the far class (the tall ones) from 85 % of it to its own (the two
     // draw the same box between: no seam, no flicker).
@@ -822,7 +834,6 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32) {
     var xa = cos(ang) * fu + sin(ang) * fv;
     xa = normalize(xa - up * dot(xa, up));
     let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
-    let model = body.species.w;
     let o = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
     append(models[model].mesh_bucket, o);
 }

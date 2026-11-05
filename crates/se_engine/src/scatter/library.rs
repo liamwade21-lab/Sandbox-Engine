@@ -155,6 +155,172 @@ const SPECIES_IMPOSTOR_CAP: u32 = 40_000;
 const GRASS_CAP: u32 = 40_000;
 /// Buildings drawn at most (cities: the box class within its range).
 const BUILDING_CAP: u32 = 120_000;
+/// Huts and longhouses drawn at most (villages), each.
+const VILLAGE_CAP: u32 = 30_000;
+
+/// The villages' textures (`assets/textures/village/NAME.png`, made with the image generator): thatch,
+/// mud brick, timber, stone, in a 512 px array with its mips; a blank array (flat colours) without.
+fn village_array() -> Image {
+    const NAMES: [&str; 4] = ["thatch", "mud_brick", "timber", "stone"];
+    const S: u32 = 512;
+    let mut layers = Vec::new();
+    for name in NAMES {
+        let rel = std::path::Path::new("textures").join("village").join(format!("{name}.png"));
+        let mut path = crate::config::asset_dir().join(&rel);
+        if !path.is_file() {
+            path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
+        }
+        match std::fs::read(&path).ok().and_then(|b| image::load_from_memory(&b).ok()) {
+            Some(img) => layers.push(image::imageops::resize(&img.to_rgba8(), S, S, image::imageops::FilterType::Triangle)),
+            None => {
+                warn!("scatter: village texture {} missing: flat colours", path.display());
+                layers.clear();
+                break;
+            }
+        }
+    }
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension};
+    if layers.len() != NAMES.len() {
+        let mut blank = Image::new_fill(
+            Extent3d { width: 1, height: 1, depth_or_array_layers: 2 },
+            TextureDimension::D2,
+            &[0, 0, 0, 0],
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::RENDER_WORLD,
+        );
+        blank.texture_view_descriptor = Some(TextureViewDescriptor { dimension: Some(TextureViewDimension::D2Array), ..default() });
+        return blank;
+    }
+    // Every layer with its mip chain, layer after layer.
+    let mips = S.trailing_zeros() + 1;
+    let mut data = Vec::new();
+    for l in &layers {
+        let mut m = l.clone();
+        for level in 0..mips {
+            data.extend_from_slice(m.as_raw());
+            if level + 1 < mips {
+                let n = (S >> (level + 1)).max(1);
+                m = image::imageops::resize(&m, n, n, image::imageops::FilterType::Triangle);
+            }
+        }
+    }
+    let mut image = Image::new_uninit(
+        Extent3d { width: S, height: S, depth_or_array_layers: NAMES.len() as u32 },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = mips;
+    image.texture_view_descriptor = Some(TextureViewDescriptor { dimension: Some(TextureViewDimension::D2Array), ..default() });
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
+    image
+}
+
+type Mesh4 = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
+
+/// A round hut in unit size (walls' diameter 1, height 1): walls to 0.42, a thatched cone from its
+/// eave (radius 0.62: overhanging the walls, at 0.38) to the top, and the eave's underside.
+fn round_hut() -> Mesh4 {
+    // (The ring runs from +x towards +z: clockwise seen from above, so each strip's triangles are
+    // wound as seen from outside: counter-clockwise.)
+    const N: u32 = 16;
+    let (mut p, mut n, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let ring = |i: u32| {
+        let a = i as f32 / N as f32 * std::f32::consts::TAU;
+        (a.cos(), a.sin())
+    };
+    // Walls.
+    for i in 0..=N {
+        let (c, s) = ring(i);
+        for y in [0.0, 0.42] {
+            p.push([0.5 * c, y, 0.5 * s]);
+            n.push([c, 0.0, s]);
+            uv.push([i as f32 / N as f32, y]);
+        }
+    }
+    for i in 0..N {
+        let b = i * 2;
+        idx.extend([b, b + 1, b + 2, b + 1, b + 3, b + 2]);
+    }
+    // The cone: slope from (0.62, 0.38) to (0, 1).
+    let (rr, y0) = (0.62f32, 0.38f32);
+    let len = (rr * rr + (1.0 - y0) * (1.0 - y0)).sqrt();
+    let (ny, nr) = (rr / len, (1.0 - y0) / len);
+    let base = p.len() as u32;
+    for i in 0..=N {
+        let (c, s) = ring(i);
+        p.push([rr * c, y0, rr * s]);
+        n.push([nr * c, ny, nr * s]);
+        uv.push([i as f32 / N as f32, 0.0]);
+        p.push([0.0, 1.0, 0.0]);
+        n.push([nr * c, ny, nr * s]);
+        uv.push([i as f32 / N as f32, 1.0]);
+    }
+    for i in 0..N {
+        let b = base + i * 2;
+        idx.extend([b, b + 1, b + 2]);
+    }
+    // The eave's underside (a ring facing down).
+    let base = p.len() as u32;
+    for i in 0..=N {
+        let (c, s) = ring(i);
+        p.push([0.5 * c, y0, 0.5 * s]);
+        p.push([rr * c, y0, rr * s]);
+        n.extend([[0.0, -1.0, 0.0]; 2]);
+        uv.extend([[0.0, 0.0]; 2]);
+    }
+    for i in 0..N {
+        let b = base + i * 2;
+        idx.extend([b, b + 2, b + 1, b + 1, b + 2, b + 3]);
+    }
+    (p, n, uv, idx)
+}
+
+/// A longhouse in unit size (x across 1, z along 1, height 1): walls to 0.5, a thatched gable roof
+/// with its ridge along z at the top, its eaves at 0.45 overhanging to 0.6 across, and the gables.
+fn longhouse() -> Mesh4 {
+    let (mut p, mut n, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut quad = |c: [[f32; 3]; 4], normal: [f32; 3]| {
+        let b = p.len() as u32;
+        for (i, v) in c.iter().enumerate() {
+            p.push(*v);
+            n.push(normal);
+            uv.push([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]][i]);
+        }
+        idx.extend([b, b + 1, b + 2, b, b + 2, b + 3]);
+    };
+    // The long walls (x = +-0.5) and the end walls (z = +-0.5).
+    quad([[0.5, 0.0, 0.5], [0.5, 0.0, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5]], [1.0, 0.0, 0.0]);
+    quad([[-0.5, 0.0, -0.5], [-0.5, 0.0, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5]], [-1.0, 0.0, 0.0]);
+    quad([[-0.5, 0.0, 0.5], [0.5, 0.0, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]], [0.0, 0.0, 1.0]);
+    quad([[0.5, 0.0, -0.5], [-0.5, 0.0, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]], [0.0, 0.0, -1.0]);
+    // The roof's two slopes, from the eaves (0.6 across, 0.45 up) to the ridge (0, 1).
+    let (rx, ry) = (0.6f32, 1.0 - 0.45f32);
+    let l = (rx * rx + ry * ry).sqrt();
+    quad([[0.6, 0.45, 0.55], [0.6, 0.45, -0.55], [0.0, 1.0, -0.55], [0.0, 1.0, 0.55]], [ry / l, rx / l, 0.0]);
+    quad([[-0.6, 0.45, -0.55], [-0.6, 0.45, 0.55], [0.0, 1.0, 0.55], [0.0, 1.0, -0.55]], [-ry / l, rx / l, 0.0]);
+    // The gables (end walls' triangles up to the ridge).
+    let b = p.len() as u32;
+    for (z, nz) in [(0.5f32, 1.0f32), (-0.5, -1.0)] {
+        let tri = if nz > 0.0 { [[-0.5, 0.5, z], [0.5, 0.5, z], [0.0, 0.95, z]] } else { [[0.5, 0.5, z], [-0.5, 0.5, z], [0.0, 0.95, z]] };
+        for v in tri {
+            p.push(v);
+            n.push([0.0, 0.0, nz]);
+            uv.push([0.0, 0.0]);
+        }
+    }
+    idx.extend([b, b + 1, b + 2, b + 3, b + 4, b + 5]);
+    (p, n, uv, idx)
+}
 
 /// The buildings' box: x and z -0.5..0.5, y 0..1 (the instance scales it to its footprint and
 /// height), its four walls and roof (no floor); uv in metres-to-be: x across the face, y up.
@@ -456,6 +622,16 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         let (positions, normals, uvs, idx) = building_box();
         let n = idx.len() as u32;
         models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), crown: Some((0.5, 0.0)) });
+        // The villages' round hut and longhouse (level 1), the box's next two models, with their
+        // own material: the port's thatch, mud brick, timber and stone (made with the image
+        // generator) in an array.
+        let village = materials.len() as u32;
+        materials.push(LibMaterial { color: images.add(village_array()), tint: [1.0; 4], leaves: false, building: true });
+        decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![160, 130, 90, 255]) });
+        for (positions, normals, uvs, idx) in [round_hut(), longhouse()] {
+            let n = idx.len() as u32;
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), crown: Some((0.5, 0.0)) });
+        }
     }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());
