@@ -1512,6 +1512,63 @@ fn run_commands(
                 });
             }
         }
+        "town" => {
+            // town [village|town|city|mega] [ALT_KM]: to the nearest settlement of that size (the
+            // largest the civilization has by default) of the selected body's civilization
+            // (`SE_CIV_TEST` too), looking down at it from ALT_KM (default 2) at 35 degrees. The land
+            // there is not checked: the field may put it in the sea or on mountains (try the next size).
+            let mut kind = None;
+            let mut alt = 2.0;
+            for w in arg.split_whitespace() {
+                match w {
+                    "village" => kind = Some(0u8),
+                    "town" => kind = Some(1),
+                    "city" => kind = Some(2),
+                    "mega" => kind = Some(3),
+                    _ => alt = w.parse().unwrap_or(alt),
+                }
+            }
+            if let Some(target @ ObjectRef::Body(i)) = cam.selected {
+                let b = &cat.bodies[i as usize];
+                let test = std::env::var("SE_CIV_TEST").ok().and_then(|v| v.parse::<u8>().ok()).filter(|l| (1..=4).contains(l));
+                let civ = b.civilization().or(test.filter(|_| crate::scatter::land_plants(&b.block)));
+                let name = b.names.first().cloned().unwrap_or_default();
+                if let Some(level) = civ {
+                    let eph = Ephemeris::new(cat);
+                    let radius = eph.radius_m(target);
+                    let q = eph.orientation(target, sim.jd);
+                    let tp = eph.position(target, sim.jd);
+                    let dir = (q.inverse() * cam.pos.delta_m(tp)).normalize_or(DVec3::Y);
+                    // The ground's seed: the culture seed's four digits through f32, as the shader takes them.
+                    let frac = (se_core::procgen::civilization::culture_seed(&name) % 10_000) as f32 / 10_000.0;
+                    let seed = (frac * 10_000.0) as u32;
+                    let kinds: Vec<u8> = kind.map_or_else(|| (0..=3).rev().collect(), |k| vec![k]);
+                    let found = kinds.iter().find_map(|&k| {
+                        se_core::procgen::civilization::nearest_settlement(dir, radius, level, seed, k, 3000.0).map(|t| (k, t))
+                    });
+                    if let Some((k, (d, r_km))) = found {
+                        let (lat, lon) = (d.y.asin(), (-d.z).atan2(d.x));
+                        info!("town: a {} of {:.1} km at {:.3} {:.3} on {name} (level {level})", ["village", "town", "city", "megalopolis"][k as usize], r_km, lat.to_degrees(), lon.to_degrees());
+                        let up = DVec3::new(lat.cos() * lon.cos(), lat.sin(), -lat.cos() * lon.sin());
+                        let north = (DVec3::Y - up * up.y).normalize_or(DVec3::X);
+                        let pitch = (-35.0f64).to_radians();
+                        let fwd = (north * pitch.cos() + up * pitch.sin()).normalize();
+                        let shape = DVec3::from_array(b.shape());
+                        // Back from the middle by the view's run, so the town is ahead.
+                        let back = alt * 1000.0 / (-pitch).tan();
+                        let at = (up * radius - north * back).normalize();
+                        cam.pos = tp.offset_m(q * (at * radius * shape + at * (alt * 1000.0)));
+                        cam.rot = look_rotation(q * fwd, q * up);
+                        cam.velocity = DVec3::ZERO;
+                        cam.follow = Some(Follow { target, last_pos: tp, last_rot: q, locked: true, sync: true });
+                    } else {
+                        info!("town: no settlement within 3000 km on {name}");
+                    }
+                } else {
+                    info!("town: {name} has no civilization");
+                }
+            }
+        }
         "search" => {
             // search LY [life|bh]: the Star browser's search (shown with SE_BROWSER_OPEN=search).
             let mut it = arg.split_whitespace();

@@ -94,7 +94,10 @@ that install, never copied into the project.
   (`proc_params.y` is not the height range). Earth's towns come from its lights map (the ground's tiles,
   the scatter's patch `veg_lights`). Near the ground a town's night light comes from its streets
   (`CityGround::lamp`); the lamps and the traffic are drawn by the ground too (`ct_lamps`,
-  `ct_traffic`: no state, moved by the clock). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
+  `ct_traffic`: no state, moved by the clock). The dev command `town [village|town|city|mega] [ALT_KM]`
+  goes to the nearest settlement of the selected body's civilization (the settlement field on the
+  CPU: `civilization::nearest_settlement`, same hash as the shader); follow it with `agl M` (the
+  ground can stand kilometres above the radius). Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel

@@ -199,6 +199,70 @@ pub fn culture_seed(name: &str) -> u32 {
     name.bytes().fold(0x811c_9dc5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193))
 }
 
+/// settlement.wesl's `st_hash` on the CPU (the same u32 arithmetic): four numbers in 0..1 for cell
+/// `c` and seed `seed`.
+pub fn st_hash(c: [i32; 3], seed: u32) -> [f32; 4] {
+    let mut h = (c[0] as u32).wrapping_mul(0x8da6_b343) ^ (c[1] as u32).wrapping_mul(0xd816_3841) ^ (c[2] as u32).wrapping_mul(0xcb1a_b31f) ^ seed.wrapping_mul(0x9e37_79b9);
+    let mut o = [0.0; 4];
+    for v in &mut o {
+        h = (h ^ (h >> 16)).wrapping_mul(0x7feb_352d);
+        h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
+        h ^= h >> 16;
+        *v = (h >> 8) as f32 * (1.0 / 16_777_216.0);
+    }
+    o
+}
+
+/// A settlement size of settlement.wesl `settlements` for `level`: (cell km, chance, radius km low,
+/// high, seed offset). `kind` 0 villages, 1 towns, 2 cities, 3 megalopolises; `None` when the level
+/// has none of that size.
+pub fn settlement_size(level: u8, kind: u8) -> Option<(f64, f32, f32, f32, u32)> {
+    let big = level >= 3;
+    match kind {
+        0 => Some((14.0, 0.45, 0.25, 0.9, 0)),
+        1 if level >= 2 => Some((55.0, 0.9, if big { 2.5 } else { 1.5 }, if big { 10.0 } else { 7.0 }, 1)),
+        2 if level >= 2 => Some((280.0, if big { 0.7 } else { 0.65 }, if big { 20.0 } else { 10.0 }, if big { 70.0 } else { 35.0 }, 2)),
+        3 if level >= 4 => Some((420.0, 0.7, 45.0, 130.0, 3)),
+        _ => None,
+    }
+}
+
+/// The settlement of size `kind` (see [`settlement_size`]) nearest body-frame direction `dir` on a
+/// body of `radius_m` whose civilization has `level` and culture seed `seed` (the ground's: the
+/// seed fraction's 4 digits): its middle's direction and its radius (km). Only settlements whose
+/// middle lies within half their radius of the surface (they reach the ground); within `search_km`.
+/// The land there is not checked (it may be sea or mountains, where the ground draws no town).
+pub fn nearest_settlement(dir: glam::DVec3, radius_m: f64, level: u8, seed: u32, kind: u8, search_km: f64) -> Option<(glam::DVec3, f64)> {
+    let (cell, chance, r_lo, r_hi, off) = settlement_size(level, kind)?;
+    let rk = radius_m / 1000.0;
+    let p = dir.normalize() * rk;
+    let n = (search_km / cell).ceil() as i32 + 1;
+    let c0 = (p / cell).floor();
+    let mut best: Option<(f64, glam::DVec3, f64)> = None;
+    for dz in -n..=n {
+        for dy in -n..=n {
+            for dx in -n..=n {
+                let c = [c0.x as i32 + dx, c0.y as i32 + dy, c0.z as i32 + dz];
+                let h = st_hash(c, seed.wrapping_add(off));
+                if h[3] >= chance {
+                    continue;
+                }
+                let t = (h[3] * 7.31 + h[0] * 3.17).fract();
+                let r = (r_lo * (r_hi / r_lo).powf(t)) as f64;
+                let q = (glam::DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64) + glam::DVec3::new(h[0] as f64, h[1] as f64, h[2] as f64)) * cell;
+                if (q.length() - rk).abs() > 0.5 * r {
+                    continue;
+                }
+                let d = q.normalize().dot(dir.normalize()).clamp(-1.0, 1.0).acos() * rk;
+                if d <= search_km && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, q.normalize(), r));
+                }
+            }
+        }
+    }
+    best.map(|(_, d, r)| (d, r))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
