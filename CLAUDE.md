@@ -230,6 +230,15 @@ or publishing the port.
     pipelines compile for a long time and the ground or clouds are missing meanwhile (a milky or
     hazy picture with no ground is that, not a lighting bug): wait 2400+ frames, and compare with
     a run of the unedited shader before blaming the change.
+- Disk space: what grows is `target/` (`target/agent`, the `--profile agent` builds, reached 6 GB;
+  `target/debug`; old unused files in `target/release/deps`), `target-trace/` and the test pictures in
+  `.optimize/scratch/run` (up to 8 MB each). All of that can go, builds come back by themselves. Keep
+  `target/release/spaceengine-rs.exe` (what the user plays) and the folders git does not hold, which
+  nothing can restore: `re/` (the Ghidra project, SE's shaders, the notes on other games) and `.audit/work`.
+  Use the Recycle Bin, never a hard delete: emptying it is the user's step. A full release build is slow, so
+  to thin `target/release/deps` list what is in use (`cargo build --release --message-format=json` and
+  `cargo test -p se_engine --release --no-run --message-format=json`, the `filenames` of each artifact) and
+  take only the rest; `cargo build --release` should then compile nothing.
 - Test runs: `bash .audit/tools/runport.sh OUT.png FRAMES "cmds"` (one run at a time). Useful
   dev commands: `select NAME`, `surface LAT LON ALT_KM PITCH`, `agl M` (hold M metres above
   the ground), `fly KMS`, `spin DEG` (turn in place), `orbit DEG` (swing round the selection, as the

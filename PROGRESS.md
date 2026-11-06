@@ -165,6 +165,10 @@
 
 ## Notes
 
+- **Folder cleaned up (2026-11-06):** from 16.7 GB to 2.8 GB. Old builds and test pictures went to the
+  Recycle Bin; the source, the game's exe, the assets, the notes and the reverse-engineering folders stayed.
+  `target/debug` and `target/agent` come back when next used. How to do it again: CLAUDE.md, "Disk space".
+
 - The user's SpaceEngine has a graphics mod installed, so SE screenshots don't show vanilla
   SE's exact textures.
 - Seen while comparing: SE has Eris's spot at lat -36.29 lon -0.65 near nightfall around
