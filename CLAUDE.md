@@ -22,6 +22,9 @@ from SE. `.bugfinder/REPORT.md` is the 2026-11-01 bug hunt: what was found, fixe
 for the clouds plan); what it was learned from (his public C#, the user's download's shaders exported
 as GLSL, his wiki) is in `re/ksp_clouds/`, which stays out of git: someone else's code. Take methods
 from it, never its code, shaders or textures.
+`docs/spec-mods-viltrumite-powers.md` is the plan for the Mods menu and its first mod, a playable Omni-Man (the
+user's interview of 2026-11-06 is in its Decisions log; its research tools are in `re/viltrumite/tools/research`, out of
+git, and `re/` must be kept).
 `docs/spec-vegetation-civilizations.md` is the plan for vegetation and intelligent civilizations (the
 user's interview of 2026-11-04 is in its Decisions table). Its reference is the game Megaton Rainfall
 (the user's GOG copy in `C:\Users\liamw\Downloads\Megaton Rainfall`): how it draws plants and cities is in
@@ -47,8 +50,11 @@ or publishing the port.
 - SpaceEngine's assets are read from its install, never copied into the project. Megaton Rainfall's
   are the exception (the user, 2026-11-05: the port must not rely on that game): the files the port
   uses are copied into `crates/se_engine/assets/mr` and read from there. They are a commercial game's
-  files (several from store packs): for the user's private use, never shared or published. Any other
-  game's assets stay in their installs.
+  files (several from store packs): for the user's private use, never shared or published. The Viltrumite
+  powers mod is the second exception (the user, 2026-11-06): the Omni-Man model and the parts of a GTA 5
+  Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
+  under the same terms; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
+  archives are never opened. Any other game's assets stay in their installs.
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
   SE and takes the screenshots.
 - Commit each piece of work once it builds, passes the tests and is checked; never push. Commit
