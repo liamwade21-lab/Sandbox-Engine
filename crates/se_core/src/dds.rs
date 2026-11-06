@@ -294,6 +294,10 @@ pub fn parse_dds(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
     }
     // DDSD_MIPMAPCOUNT; files without it have one level.
     let mips = if flags & 0x20000 != 0 { u32_at(bytes, 28)?.max(1) } else { 1 };
+    // A rubbish count would hang the size sums below or overflow their shifts.
+    if mips > 32 {
+        return Err(DdsError::Unsupported(format!("{mips} mips")));
+    }
     let caps2 = u32_at(bytes, 112)?;
     if caps2 & 0x20_0000 != 0 {
         return Err(DdsError::Unsupported("volume texture".into()));
@@ -314,6 +318,9 @@ pub fn parse_dds(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
                 let dxgi = u32_at(bytes, 128)?;
                 let misc = u32_at(bytes, 136)?;
                 layers = u32_at(bytes, 140)?.max(1);
+                if layers > 2048 {
+                    return Err(DdsError::Unsupported(format!("{layers} layers")));
+                }
                 data_offset = 148;
                 if misc & 0x4 != 0 && !cube {
                     return Err(DdsError::Unsupported("DX10 cube map".into()));
@@ -544,6 +551,20 @@ mod tests {
         assert!(matches!(decode_dds(&d), Err(DdsError::Unsupported(_))));
         let d = header(8, 8, b"DXT1");
         assert_eq!(decode_dds(&d).unwrap_err(), DdsError::Truncated);
+    }
+
+    /// A rubbish count in a header is a refusal at once: as a size it would hang or overflow.
+    #[test]
+    fn rubbish_counts_are_refused() {
+        let mut d = header(8, 8, b"DXT5");
+        d[8..12].copy_from_slice(&(0x20000u32 | 0x1007).to_le_bytes());
+        d[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(parse_dds(&d), Err(DdsError::Unsupported(_))));
+        let mut d = header(8, 8, b"DX10");
+        d.resize(148, 0);
+        d[128..132].copy_from_slice(&71u32.to_le_bytes());
+        d[140..144].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(parse_dds(&d), Err(DdsError::Unsupported(_))));
     }
 
     #[test]

@@ -83,6 +83,10 @@ or publishing the port.
   `mods::check_sound` (the guard, and the decoder's own panic caught) before anything plays it. A looping Ogg's length must be a whole number of 2048 samples
   (`make_loop`): otherwise the encoder pads the end with silence and the loop gaps. The Mixamo clips: FBX files in `re/viltrumite/mixamo`, re-run, they replace the stand-ins
   (`Clip::stand_in`); the retarget needs the file's rest pose to be the T-pose and warns if not; `make_test_fbx.py` and `--check-test-fbx` test the route without them.
+  Clips that aren't plain loops: the 14 lean clips (`CLIP_LEAN`) are one-way ramps, sampled at `lean * duration` and never looped or mirrored (a held lean would come and go); `fall` settles and
+  goes on as `fall_loop`; walks, runs and sprints are never mirrored (`close_loop`'s `mirror`: the feet would slide backwards). Normalise quaternions before comparing them: their length errors read as a degree of turn.
+  First enable looks inside every `Need` by its extension (`mods::check_files`: `parse_dds`, `check_sehm`, `check_sound`), so a new kind of file gets its check there; a refusal greys the row
+  (`ModRegistry::mark`: `Missing` if the file has gone, `Bad` if it's wrong).
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its

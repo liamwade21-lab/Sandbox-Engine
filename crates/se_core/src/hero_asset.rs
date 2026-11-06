@@ -24,7 +24,7 @@
 //!
 //! SEVC: "SEVC", version u32 (1), clips u32, bones u32 (the model's), fps f32, tracks u32, events u32,
 //!       quats u32, roots u32: 36 bytes
-//!       clips x 124: name [u8; 64], flags u32 (1 loop, 2 partial, 4 stand-in), frames u32, duration f32,
+//!       clips x 124: name [u8; 64], flags u32 (1 loop, 2 partial, 4 stand-in, 8 lean), frames u32, duration f32,
 //!                    ground_z f32, stride_speed f32 (m/s, 0 if it doesn't walk), first_track, track_count,
 //!                    first_root, root_count (0, 1 or frames), first_event, event_count u32,
 //!                    mask [u8; 16] (bit n: this clip has a rotation track for bone n)
@@ -37,6 +37,13 @@
 //! Sampling a clip: frames are `1 / fps` apart and `duration` is `(frames - 1) / fps`; a looping clip's
 //! last frame equals its first, so `t = duration` and `t = 0` are the same pose. A full clip starts from the
 //! bones' local rest poses and overlays its tracks; a partial clip (`mask`) only overlays what lies under it.
+//!
+//! A lean clip (`CLIP_LEAN`, 14 of them) doesn't play in time: its time is how far he leans, one way, from about
+//! the base pose at frame 0 to the full lean at the last frame. Sample it at `t = lean * duration`, with `lean` 0..1
+//! from the steering, and let the base clip under it carry the looping motion. Its frame 0 is near the base pose,
+//! not on it, so its weight should reach 0 with the lean.
+//!
+//! The props are the hero models' `SEHM` format (`scatter/library.rs`); [`check_sehm`] is the check on them.
 
 use glam::{Mat4, Quat, Vec3, Vec4};
 use thiserror::Error;
@@ -53,6 +60,8 @@ pub const DRAW_CAPE: u32 = 2;
 pub const CLIP_LOOP: u32 = 1;
 pub const CLIP_PARTIAL: u32 = 2;
 pub const CLIP_STAND_IN: u32 = 4;
+/// Its time is how far he leans, not time: see the file's comment.
+pub const CLIP_LEAN: u32 = 8;
 
 const MODEL_HEADER: usize = 60;
 const BONE_SIZE: usize = 112;
@@ -196,6 +205,11 @@ impl Clip {
 
     pub fn stand_in(&self) -> bool {
         self.flags & CLIP_STAND_IN != 0
+    }
+
+    /// Sampled at `lean * duration`, never played: see the file's comment.
+    pub fn lean(&self) -> bool {
+        self.flags & CLIP_LEAN != 0
     }
 }
 
@@ -537,6 +551,39 @@ pub fn check_pair(model: &HeroModel, clips: &ClipSet) -> Result<(), HeroAssetErr
     Ok(())
 }
 
+/// Whether a prop's file can be drawn: `SEHM`, version 1, sizes that are real, as many bytes as its counts say,
+/// finite vertices, whole triangles, and indices that stay on its vertices. Layout: `scatter/library.rs` `hero_file`.
+pub fn check_sehm(b: &[u8]) -> Result<(), HeroAssetError> {
+    const HEADER: usize = 28;
+    const VERTEX: usize = 32;
+    check_magic(b, "SEHM")?;
+    let mut f = Fields::new(b, 8);
+    if b.len() < HEADER {
+        return Err(HeroAssetError::Size { expected: HEADER as u64, found: b.len() as u64 });
+    }
+    let size: [f32; 3] = f.f32s()?;
+    let (nv, ni) = (f.u32()?, f.u32()?);
+    check_size(b.len(), &[(nv, VERTEX), (ni, 4)], HEADER)?;
+    if size.iter().any(|s| !s.is_finite() || *s <= 0.0) {
+        return Err(bad("its size"));
+    }
+    if ni % 3 != 0 {
+        return Err(bad("its triangles"));
+    }
+    for i in 0..nv {
+        let v: [f32; 8] = f.f32s()?;
+        if v.iter().any(|x| !x.is_finite()) {
+            return Err(bad(format!("vertex {i}")));
+        }
+    }
+    for i in 0..ni {
+        if f.u32()? >= nv {
+            return Err(bad(format!("index {i}")));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,9 +907,18 @@ mod tests {
                 assert!(c.mask & 1 != 0, "{name}: a full clip turns the root");
             }
         }
-        for (name, flags) in [("bf_idle", CLIP_LOOP), ("male@jump_fall_loop", CLIP_LOOP), ("walk", CLIP_LOOP), ("bf_idle_left_add", CLIP_LOOP | CLIP_PARTIAL), ("land_punch", 0)] {
+        for (name, flags) in [
+            ("bf_idle", CLIP_LOOP),
+            ("male@jump_fall_loop", CLIP_LOOP),
+            ("fall", 0),
+            ("fall_loop", CLIP_LOOP),
+            ("walk", CLIP_LOOP),
+            ("bf_idle_left_add", CLIP_PARTIAL | CLIP_LEAN),
+            ("bf_fast_botharmsback_left", CLIP_LEAN),
+            ("land_punch", 0),
+        ] {
             let c = s.clip(name).unwrap();
-            assert_eq!(c.flags & (CLIP_LOOP | CLIP_PARTIAL), flags, "{name}");
+            assert_eq!(c.flags & (CLIP_LOOP | CLIP_PARTIAL | CLIP_LEAN), flags, "{name}");
         }
         for (name, event, time) in [("land_punch", "contact", 0.27), ("ground_punch", "contact", 0.27), ("thunderclap", "hold", 0.6), ("thunderclap", "clap", 1.23)] {
             let c = s.clip(name).unwrap();
@@ -904,6 +960,86 @@ mod tests {
         }
     }
 
+    /// The angle between a track's samples at two frames, degrees.
+    fn turn(s: &ClipSet, t: &ClipTrack, a: u32, b: u32) -> f32 {
+        s.rotation(t, a).angle_between(s.rotation(t, b)).to_degrees()
+    }
+
+    fn real_clips() -> (HeroModel, ClipSet) {
+        let m = parse_model(&std::fs::read(real_dir().join("omniman.sevm")).unwrap()).unwrap();
+        (m, parse_clips(&std::fs::read(real_dir().join("clips.sevc")).unwrap()).unwrap())
+    }
+
+    /// The lean clips stay as authored, one way: looped or mirrored, a held lean would come and go, and with it the
+    /// lean you steer. Each ends on its full lean, so sampling at `lean * duration` is right at both ends.
+    #[test]
+    fn the_lean_clips_go_one_way() {
+        let (_, s) = real_clips();
+        let leans: Vec<&Clip> = s.clips.iter().filter(|c| c.lean()).collect();
+        assert_eq!(leans.len(), 14);
+        for c in leans {
+            assert!(!c.looping(), "{}", c.name);
+            assert_eq!(c.frames, 101, "{}: mirrored? {} frames", c.name, c.frames);
+            assert_eq!(c.partial(), c.name.ends_with("_add"), "{}", c.name);
+            let reach = s.tracks_of(c).iter().map(|t| turn(&s, t, 0, c.frames - 1)).fold(0.0, f32::max);
+            assert!(reach > 4.0, "{}: only {reach} degrees from its first frame to its last", c.name);
+        }
+    }
+
+    /// `fall` settles and goes on as `fall_loop`: same bones, no jump where one meets the other, and the loop barely
+    /// moves. Mirrored, as it was, the limbs swung 42 degrees out and back every 11 s of a long fall.
+    #[test]
+    fn the_fall_settles_into_its_own_loop() {
+        let (_, s) = real_clips();
+        let (fall, held) = (s.clip("fall").unwrap(), s.clip("fall_loop").unwrap());
+        assert_eq!((fall.frames, fall.looping()), (171, false));
+        assert_eq!((held.frames, held.looping()), (101, true));
+        assert_eq!(fall.mask, held.mask);
+        let (settle, loop_tracks) = (s.tracks_of(fall), s.tracks_of(held));
+        let mut jump = 0.0f32;
+        for (a, b) in settle.iter().zip(loop_tracks) {
+            assert_eq!(a.bone, b.bone);
+            jump = jump.max(s.rotation(a, fall.frames - 1).angle_between(s.rotation(b, 0)).to_degrees());
+            for f in 0..held.frames {
+                assert!(turn(&s, b, 0, f) < 8.0, "bone {} frame {f}", b.bone);
+            }
+        }
+        assert!(jump < 0.2, "{jump} degrees where `fall` hands over");
+        let gap = s.root(fall, fall.frames - 1).unwrap() - s.root(held, 0).unwrap();
+        assert!(gap.length() < 0.002, "{gap}");
+    }
+
+    /// No bone goes right round between two close poses (`bf_idle_to_fast`'s left thumb did: 362 degrees of path
+    /// for 8 of turn, in 0.2 s). The limit is far over the mod's clips' real fast limbs. The walks are left out: a
+    /// sprint's legs swing there and back inside the window, which is no whirl.
+    #[test]
+    fn no_bone_whirls() {
+        const WINDOW: u32 = 8;
+        let (_, s) = real_clips();
+        for c in s.clips.iter().filter(|c| c.name.starts_with("export@")) {
+            for t in s.tracks_of(c).iter().filter(|t| t.count as u32 > WINDOW) {
+                for f in 0..c.frames - WINDOW {
+                    let path: f32 = (f..f + WINDOW).map(|k| turn(&s, t, k, k + 1)).sum();
+                    let extra = path - turn(&s, t, f, f + WINDOW);
+                    assert!(extra < 180.0, "{} bone {} frame {f}: {path} degrees of path, {extra} over its turn", c.name, t.bone);
+                }
+            }
+        }
+    }
+
+    /// The stand-in idle's breath: its chest and neck turn under a degree or so, and must not read as "at rest".
+    #[test]
+    fn the_stand_in_idle_breathes() {
+        let (m, s) = real_clips();
+        let idle = s.clip("idle").unwrap();
+        for (bone, least) in [("SKEL_Spine2", 0.2), ("SKEL_Spine3", 0.5), ("SKEL_Neck_1", 0.1)] {
+            let i = m.bones.iter().position(|b| b.name == bone).unwrap() as u16;
+            let t = s.tracks_of(idle).iter().find(|t| t.bone == i).unwrap_or_else(|| panic!("{bone} has no track"));
+            let most = (0..idle.frames).map(|f| turn(&s, t, 0, f)).fold(0.0, f32::max);
+            assert!(most > least, "{bone} moves {most} degrees");
+        }
+    }
+
     /// Every texture the draws name and the props' and sprites': real BC3 with whole mip chains, read by the
     /// parser the game's textures go through. No top mip is smaller than 64, so block sizes stay sane.
     #[test]
@@ -927,6 +1063,7 @@ mod tests {
     fn the_real_props_read_back() {
         for name in ["nibsuper_ground_break1", "nibsuper_rock1", "nibsuper_rock2"] {
             let b = std::fs::read(real_dir().join("props").join(format!("{name}.sehm"))).unwrap();
+            check_sehm(&b).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(&b[..4], b"SEHM", "{name}");
             let u = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
             let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -945,6 +1082,39 @@ mod tests {
                 assert!((u(o + i * 4) as usize) < nv, "{name}: index {i}");
             }
         }
+    }
+
+    /// A prop's file that's wrong in any way is an error, never a panic.
+    #[test]
+    fn check_sehm_refuses_what_cant_be_drawn() {
+        let mut good = b"SEHM".to_vec();
+        u32s(&mut good, &[1]);
+        floats(&mut good, &[2.0, 3.0, 4.0]);
+        u32s(&mut good, &[3, 3]);
+        for i in 0..3 {
+            floats(&mut good, &[0.1 * i as f32, 0.2, 0.3, 0.0, 1.0, 0.0, 0.5, 0.5]);
+        }
+        u32s(&mut good, &[0, 1, 2]);
+        check_sehm(&good).unwrap();
+        for n in 0..good.len() {
+            assert!(check_sehm(&good[..n]).is_err(), "cut at {n}");
+        }
+        for (at, bytes, what) in [
+            (0, b"NOPE".as_slice(), "magic"),
+            (4, &9u32.to_le_bytes(), "version"),
+            (8, &(-1.0f32).to_le_bytes(), "size"),
+            (20, &u32::MAX.to_le_bytes(), "vertex count"),
+            (24, &u32::MAX.to_le_bytes(), "index count"),
+            (28, &f32::NAN.to_le_bytes(), "a vertex"),
+            (good.len() - 4, &3u32.to_le_bytes(), "an index past the vertices"),
+        ] {
+            let mut b = good.clone();
+            set(&mut b, at, bytes);
+            assert!(check_sehm(&b).is_err(), "{what}");
+        }
+        let mut b = good.clone();
+        b.extend_from_slice(&[0, 0, 0, 0]);
+        assert!(check_sehm(&b).is_err(), "bytes past the counts");
     }
 
     /// What must never be in the copy (spec, C4).
@@ -972,7 +1142,7 @@ mod tests {
     /// The clips the plan's F4 table names, by the short names later steps use.
     const F4_CLIPS: &[&str] = &[
         "idle", "turn_left", "turn_right", "walk", "run", "sprint", "punch_cross", "punch_hook",
-        "male@jump_fall_start_stopped", "male@jump_fall_loop", "fall", "male@jump_fall_down_loop", "male@jump_fall_land_hard", "land_r",
+        "male@jump_fall_start_stopped", "male@jump_fall_loop", "fall", "fall_loop", "male@jump_fall_down_loop", "male@jump_fall_land_hard", "land_r",
         "land_punch", "bf_idle", "bf_idle_arms_crossed", "bf_idle_fwd_add", "bf_idle_bwd_add", "bf_idle_left_add", "bf_idle_right_add",
         "bf_idle_up_add", "bf_idle_down_add", "bf_idle_combat2", "bf_fast_botharmsback", "bf_fast_botharmsback_left", "bf_fast_botharmsback_right",
         "bf_fast_botharmsback_up", "bf_fast_botharmsback_down", "bf_fast_rightarmpointingahead", "bf_fast_left_add", "bf_fast_right_add",

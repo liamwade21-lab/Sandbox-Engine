@@ -37,7 +37,7 @@ pub enum GreyReason {
     /// A file the mod needs isn't there (the path as its `mod.cfg` gives it).
     Missing(String),
     /// A file the mod needs is there but can't be used: empty, unreadable, not a file, a path that
-    /// leaves the mod's folder, or (from later steps) a parser's refusal.
+    /// leaves the mod's folder, or a refusal when first enable looks inside it.
     Bad(String),
     /// Its `Code` is unknown to this build.
     NewerBuild,
@@ -67,6 +67,8 @@ pub struct ModInfo {
     pub code: String,
     /// What keeps it off whatever the game is doing: a bad file or an unknown `Code`.
     pub fault: Option<GreyReason>,
+    /// The `Need` lines of its `mod.cfg`. The scan only looks at their sizes; first enable looks inside.
+    pub needs: Vec<String>,
 }
 
 /// The mods found on disk, scanned once at start.
@@ -89,11 +91,11 @@ impl ModRegistry {
         self.get(id).map_or(id, |m| &m.name)
     }
 
-    /// A file turned out unusable when a mod loaded it (the parsers run on first enable): grey from now on.
-    pub fn mark_bad(&mut self, id: &str, path: &str) {
-        warn!("mods: {id} cannot be turned on: Bad {path}");
+    /// A file turned out unusable when a mod loaded it (the checks and parsers run on first enable): grey from now on.
+    pub fn mark(&mut self, id: &str, why: GreyReason) {
+        warn!("mods: {id} cannot be turned on: {why}");
         if let Some(m) = self.mods.iter_mut().find(|m| m.id == id) {
-            m.fault = Some(GreyReason::Bad(path.to_string()));
+            m.fault = Some(why);
         }
     }
 }
@@ -143,18 +145,48 @@ pub struct HeroAssets {
     pub clips: ClipSet,
 }
 
+/// What greys a row at first enable, and what to log about it.
+type FileFault = (GreyReason, String);
+
+/// A file a mod needs, read now: `Missing` if it has gone since the scan, `Bad` if it can't be read.
+fn read_need(roots: &[PathBuf], id: &str, rel: &str) -> Result<Vec<u8>, FileFault> {
+    if let Some(why) = check_need(roots, id, rel) {
+        return Err((why, "at first enable".to_string()));
+    }
+    let path = find_file(roots, id, rel).ok_or_else(|| (GreyReason::Missing(rel.to_string()), "at first enable".to_string()))?;
+    std::fs::read(path).map_err(|e| (GreyReason::Bad(rel.to_string()), e.to_string()))
+}
+
 /// The mod's model and clips from the first root that has them, or the file that's wrong and why.
-fn load_hero_assets(roots: &[PathBuf], id: &str) -> Result<HeroAssets, (&'static str, String)> {
+fn load_hero_assets(roots: &[PathBuf], id: &str) -> Result<HeroAssets, FileFault> {
     const MODEL: &str = "omniman.sevm";
     const CLIPS: &str = "clips.sevc";
-    let read = |rel: &'static str| {
-        let path = find_file(roots, id, rel).ok_or((rel, "not found".to_string()))?;
-        std::fs::read(path).map_err(|e| (rel, e.to_string()))
-    };
-    let model = hero_asset::parse_model(&read(MODEL)?).map_err(|e| (MODEL, e.to_string()))?;
-    let clips = hero_asset::parse_clips(&read(CLIPS)?).map_err(|e| (CLIPS, e.to_string()))?;
-    hero_asset::check_pair(&model, &clips).map_err(|e| (CLIPS, e.to_string()))?;
+    let refused = |rel: &str, e: hero_asset::HeroAssetError| (GreyReason::Bad(rel.to_string()), e.to_string());
+    let model = hero_asset::parse_model(&read_need(roots, id, MODEL)?).map_err(|e| refused(MODEL, e))?;
+    let clips = hero_asset::parse_clips(&read_need(roots, id, CLIPS)?).map_err(|e| refused(CLIPS, e))?;
+    hero_asset::check_pair(&model, &clips).map_err(|e| refused(CLIPS, e))?;
     Ok(HeroAssets { model, clips })
+}
+
+/// Looks inside one file by its kind, as the part of the game that will use it reads it. Rubbish in a texture's
+/// blocks passes (any bytes are blocks) and draws as rubbish; everything that could crash or fail to load doesn't.
+/// The model and clips are `load_hero_assets`'s; any other kind has only the scan's checks.
+fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
+    match std::path::Path::new(rel).extension().and_then(|e| e.to_str()) {
+        Some("dds") => se_core::dds::parse_dds(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("sehm") => hero_asset::check_sehm(&bytes).map_err(|e| e.to_string()),
+        Some("ogg") => check_sound(bytes).map(|_| ()),
+        _ => Ok(()),
+    }
+}
+
+/// First enable: every file the mod needs is still there and is what it should be. The first wrong one greys the
+/// row, so a damaged file is found here and not when a later part of the mod first reaches for it.
+fn check_files(roots: &[PathBuf], id: &str, needs: &[String]) -> Result<(), FileFault> {
+    for rel in needs {
+        check_inside(rel, read_need(roots, id, rel)?).map_err(|why| (GreyReason::Bad(rel.clone()), why))?;
+    }
+    Ok(())
 }
 
 /// What a sound decodes to.
@@ -280,7 +312,7 @@ fn scan(roots: &[PathBuf]) -> Vec<ModInfo> {
 
 /// A folder's `mod.cfg`, and the checks on what it needs. Whatever is wrong makes a grey row, never a panic.
 fn read_mod(roots: &[PathBuf], id: &str) -> ModInfo {
-    let mut info = ModInfo { id: id.to_string(), name: id.to_string(), description: String::new(), code: String::new(), fault: None };
+    let mut info = ModInfo { id: id.to_string(), name: id.to_string(), description: String::new(), code: String::new(), fault: None, needs: Vec::new() };
     let Some(path) = find_file(roots, id, "mod.cfg") else {
         info.fault = Some(GreyReason::Missing("mod.cfg".into()));
         return info;
@@ -306,11 +338,12 @@ fn read_mod(roots: &[PathBuf], id: &str) -> ModInfo {
         Some(rel) => check_need(roots, id, rel),
         None => bad_cfg(),
     });
+    info.needs = cfg.all("Need").filter_map(|need| need.str()).map(str::to_string).collect();
     info
 }
 
 /// What's wrong with a file a mod needs, if anything. A path that leaves the mod's folder is bad, and an
-/// empty file is: a copy cut short. The parsers look inside on first enable (`ModRegistry::mark_bad`).
+/// empty file is: a copy cut short. First enable looks inside (`check_files`, `load_hero_assets`).
 fn check_need(roots: &[PathBuf], id: &str, rel: &str) -> Option<GreyReason> {
     let bad = || Some(GreyReason::Bad(rel.to_string()));
     let stays_inside = std::path::Path::new(rel).components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
@@ -389,17 +422,21 @@ fn apply_request(
             // First enable: look inside the files. A refusal greys the row for good.
             if m.code == "viltrumite" && hero.is_none() {
                 let started = std::time::Instant::now();
-                let loaded = load_hero_assets(&mod_roots(), &id);
+                let roots = mod_roots();
+                let checked = check_files(&roots, &id, &m.needs);
+                let check_ms = started.elapsed().as_millis();
+                let loaded = checked.and_then(|()| load_hero_assets(&roots, &id));
                 match loaded {
                     Ok(assets) => {
                         let (model, clips) = (&assets.model, &assets.clips);
                         info!(
-                            "mods: {id}: {} bones, {} draws, {} vertices, {} triangles; {} clips; read in {} ms",
+                            "mods: {id}: {} bones, {} draws, {} vertices, {} triangles; {} clips; {} files checked in {check_ms} ms, all read in {} ms",
                             model.bones.len(),
                             model.draws.len(),
                             model.vertices.len(),
                             model.indices.len() / 3,
                             clips.clips.len(),
+                            m.needs.len(),
                             started.elapsed().as_millis()
                         );
                         if clips.stand_ins() > 0 {
@@ -407,9 +444,9 @@ fn apply_request(
                         }
                         commands.insert_resource(assets);
                     }
-                    Err((rel, why)) => {
-                        warn!("mods: {id}: {rel}: {why}");
-                        reg.mark_bad(&id, rel);
+                    Err((grey, why)) => {
+                        warn!("mods: {id}: {grey}: {why}");
+                        reg.mark(&id, grey);
                         return;
                     }
                 }
@@ -600,28 +637,68 @@ mod tests {
         assert!(assets.clips.clip("bf_idle").is_some());
     }
 
-    /// A file the parsers refuse names itself; the registry greys the row with it (`apply_request`).
+    /// A file the parsers refuse names itself; the registry greys the row with it (`apply_request`). One that isn't
+    /// there says Missing, not Bad, whether it went after the scan or `mod.cfg` never named it.
     #[test]
     fn a_bad_model_or_clip_file_is_named_and_greys_the_row() {
         let root = scratch("bad_hero");
         let real = tree().join("viltrumite");
         let copy = |name: &str| fs::copy(real.join(name), root.join("m").join(name)).unwrap();
         write(&root, "m", "mod.cfg", "Name \"x\"\nCode \"viltrumite\"\n");
-        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, "omniman.sevm");
+        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, GreyReason::Missing("omniman.sevm".into()));
         write(&root, "m", "omniman.sevm", "not a model");
-        copy("clips.sevc");
-        let (rel, why) = load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap();
-        assert_eq!(rel, "omniman.sevm");
+        let (grey, why) = load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap();
+        assert_eq!(grey, GreyReason::Bad("omniman.sevm".into()));
         assert!(why.contains("SEVM"), "{why}");
         copy("omniman.sevm");
+        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, GreyReason::Missing("clips.sevc".into()));
         write(&root, "m", "clips.sevc", "SEVC and then nonsense");
-        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, "clips.sevc");
+        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, GreyReason::Bad("clips.sevc".into()));
+        copy("clips.sevc");
+        assert!(load_hero_assets(std::slice::from_ref(&root), "m").is_ok());
 
         let mut reg = ModRegistry { mods: vec![read_mod(std::slice::from_ref(&root), "m")] };
         assert_eq!(reg.mods[0].fault, None, "the Need check only looks at sizes");
-        reg.mark_bad("m", "clips.sevc");
+        reg.mark("m", GreyReason::Bad("clips.sevc".into()));
         assert_eq!(grey_reason(&reg.mods[0], false, false).unwrap().to_string(), "Bad clips.sevc");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Rubbish in, or a cut-short copy of, each kind of file the mod has: its own path greys the row, whichever
+    /// file is damaged. A real file of each kind passes. The whole real mod passes too.
+    #[test]
+    fn first_enable_looks_inside_every_kind_of_file() {
+        let root = scratch("kinds");
+        let real = tree().join("viltrumite");
+        let roots = [root.clone()];
+        for rel in ["tex/feet_normal_000.dds", "sprites/ptfx_smoke_wispy_anim.dds", "props/nibsuper_rock1.sehm", "sfx/punch_1.ogg"] {
+            let whole = fs::read(real.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            let needs = [rel.to_string()];
+            fs::create_dir_all(root.join("m").join(rel).parent().unwrap()).unwrap();
+            fs::write(root.join("m").join(rel), &whole).unwrap();
+            check_files(&roots, "m", &needs).unwrap_or_else(|e| panic!("{rel}: {e:?}"));
+            for damaged in [b"a few bytes of rubbish".to_vec(), vec![0xA5; 4096]] {
+                fs::write(root.join("m").join(rel), &damaged).unwrap();
+                let (grey, why) = check_files(&roots, "m", &needs).err().unwrap_or_else(|| panic!("{rel} passed with rubbish in it"));
+                assert_eq!(grey, GreyReason::Bad(rel.to_string()), "{why}");
+            }
+            fs::remove_file(root.join("m").join(rel)).unwrap();
+            assert_eq!(check_files(&roots, "m", &needs).err().unwrap().0, GreyReason::Missing(rel.to_string()), "gone since the scan");
+        }
+        // Cut short: the textures' and props' sizes no longer add up. (A sound cut short may still play, shorter.)
+        for rel in ["tex/feet_normal_000.dds", "props/nibsuper_rock1.sehm"] {
+            let whole = fs::read(real.join(rel)).unwrap();
+            fs::create_dir_all(root.join("m").join(rel).parent().unwrap()).unwrap();
+            fs::write(root.join("m").join(rel), &whole[..whole.len() - 1]).unwrap();
+            assert_eq!(check_files(&roots, "m", &[rel.to_string()]).err().unwrap().0, GreyReason::Bad(rel.to_string()));
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        let m = read_mod(&[tree()], "viltrumite");
+        assert_eq!(m.needs.len(), 55);
+        let started = std::time::Instant::now();
+        check_files(&[tree()], "viltrumite", &m.needs).unwrap();
+        println!("the whole mod checked in {} ms", started.elapsed().as_millis());
     }
 
     /// Every sound through the guard and the real decoder, as `mods sound` and step 6 play them. The loops: at
@@ -780,7 +857,7 @@ mod tests {
 
     #[test]
     fn a_file_fault_comes_before_what_the_game_is_doing() {
-        let mut m = ModInfo { id: "m".into(), name: "M".into(), description: String::new(), code: "viltrumite".into(), fault: None };
+        let mut m = ModInfo { id: "m".into(), name: "M".into(), description: String::new(), code: "viltrumite".into(), fault: None, needs: Vec::new() };
         assert_eq!(grey_reason(&m, false, false), None);
         assert_eq!(grey_reason(&m, true, false), Some(GreyReason::Piloting));
         assert_eq!(grey_reason(&m, false, true), Some(GreyReason::Script));
@@ -792,11 +869,13 @@ mod tests {
     #[test]
     fn a_parser_refusing_a_file_greys_the_row_from_then_on() {
         let mut reg = ModRegistry {
-            mods: vec![ModInfo { id: "m".into(), name: "M".into(), description: String::new(), code: "viltrumite".into(), fault: None }],
+            mods: vec![ModInfo { id: "m".into(), name: "M".into(), description: String::new(), code: "viltrumite".into(), fault: None, needs: Vec::new() }],
         };
-        reg.mark_bad("m", "omniman.sevm");
-        reg.mark_bad("nobody", "x");
+        reg.mark("m", GreyReason::Bad("omniman.sevm".into()));
+        reg.mark("nobody", GreyReason::Bad("x".into()));
         assert_eq!(grey_reason(reg.get("m").unwrap(), false, false), Some(GreyReason::Bad("omniman.sevm".into())));
+        reg.mark("m", GreyReason::Missing("sfx/a.ogg".into()));
+        assert_eq!(grey_reason(reg.get("m").unwrap(), false, false).unwrap().to_string(), "Missing sfx/a.ogg");
     }
 
     /// The two systems that decide what is on, without the rest of the game.
@@ -815,7 +894,7 @@ mod tests {
         ask(&mut app, on("no_files_here"));
         assert_eq!(active(&app), None);
         let row = app.world().resource::<ModRegistry>().get("no_files_here").unwrap().clone();
-        assert_eq!(grey_reason(&row, false, false).unwrap().to_string(), "Bad omniman.sevm");
+        assert_eq!(grey_reason(&row, false, false).unwrap().to_string(), "Missing omniman.sevm");
         assert!(!app.world().contains_resource::<HeroAssets>());
         ask(&mut app, on("viltrumite"));
         assert_eq!(active(&app).as_deref(), Some("viltrumite"));
@@ -829,7 +908,7 @@ mod tests {
         let mut app = App::new();
         let mods = mods
             .iter()
-            .map(|(id, fault)| ModInfo { id: id.to_string(), name: id.to_string(), description: String::new(), code: "viltrumite".into(), fault: fault.clone() })
+            .map(|(id, fault)| ModInfo { id: id.to_string(), name: id.to_string(), description: String::new(), code: "viltrumite".into(), fault: fault.clone(), needs: Vec::new() })
             .collect();
         app.insert_resource(ModRegistry { mods })
             .insert_resource(no_assets())
@@ -917,7 +996,7 @@ mod tests {
                 app.insert_resource(no_assets());
                 app.update(); // Startup's scan of the real folders: the test's own list replaces it.
                 app.world_mut().resource_mut::<ModRegistry>().mods =
-                    vec![ModInfo { id: "a".into(), name: "a".into(), description: String::new(), code: "viltrumite".into(), fault: None }];
+                    vec![ModInfo { id: "a".into(), name: "a".into(), description: String::new(), code: "viltrumite".into(), fault: None, needs: Vec::new() }];
                 if already_on {
                     ask(&mut app, on("a"));
                     assert_eq!(active(&app).as_deref(), Some("a"));

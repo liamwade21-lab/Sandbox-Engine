@@ -71,12 +71,12 @@
     runs: the button and the row clicked, grey rows, ships, scripts, `SE_MODS=0`.
   - **Step 2 done (2026-11-06): his files are in the project.** A one-time converter (`re/viltrumite/tools/convert.py`, outside git) reads the Omni-Man pack and
     the Superman mod's zips, and refuses by itself to open the mod's compiled code, GTA's archives or the blood suit. It wrote 52 MB into `assets/mods/viltrumite`
-    (estimate 50): his model (225,011 triangles, 98 bones plus 30 for the cape), 44 animations under their real names, 18 textures, 29 sounds (real Ogg files made by
+    (estimate 50): his model (225,011 triangles, 98 bones plus 30 for the cape), 45 animations under their real names, 18 textures, 29 sounds (real Ogg files made by
     Blender's own encoder; the loops trimmed to 10 s and closed without a click), the crater and rock models, the smoke sprite. Checked: he posed by 21 real clips from those
-    files alone, front and side, looks right, stands on his feet, and the cape hangs (`re/viltrumite/sheets/contact_step2.png`); the game reads every file, a damaged file
+    files alone, front and side, looks right, stands on his feet, and the cape hangs (`re/viltrumite/sheets/contact_step2.png`); when first turned on the game looks inside every file, and a damaged file
     greys the row (never a crash), and sounds really play in a test run. **You can't see or hear any of it in the game yet** (step 3 draws him, step 6 plays the sounds).
     Eight animations are simple stand-ins until you download the Mixamo clips (walks and turns hand-keyed, the punches are the mod's own): drop the files in
-    `re/viltrumite/mixamo` and re-run the converter (tested with made-up files Blender wrote). Not judged: how the sounds sound, how the stand-ins feel. **Next: step 3**, drawing him.
+    `re/viltrumite/mixamo` and re-run the converter (tested with made-up files Blender wrote). A review then corrected the leaning and falling animations (they would have come and gone in play), gave the idle back its breath and stopped a thumb spinning on take-off. Not judged: how the sounds sound, how the stand-ins feel, and the real Mixamo files are still untried. **Next: step 3**, drawing him.
 - **Vegetation and intelligent civilizations** (the plan, from the user's interview of 2026-11-04:
   `docs/spec-vegetation-civilizations.md`). Grass, bushes and forests on planets whose life and climate
   allow them, from orbit to the ground; a new life class, multicellular intelligent life (about 1 in 20
