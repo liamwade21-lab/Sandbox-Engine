@@ -71,6 +71,10 @@ struct Shared {
     gpu_image_mb: AtomicU32,
     /// wgpu's live objects: bind groups, buffers, textures, texture views (its report), for perf.rs.
     wgpu: [AtomicU32; 4],
+    /// Their most alive at once so far (sampled every frame under `SE_PERF`): wgpu sizes every pass's
+    /// resource tracking by the most buffers and textures ever alive at once, so a peak slows every
+    /// frame after it for the rest of the session.
+    wgpu_peak: [AtomicU32; 4],
     /// The render world's entities and its mesh instances (perf.rs).
     render_entities: AtomicU32,
     mesh_instances: AtomicU32,
@@ -123,6 +127,11 @@ impl GroundPipelines {
         self.0.wgpu.each_ref().map(|a| a.load(Ordering::Relaxed))
     }
 
+    /// The most of each of those alive at once so far (perf.rs).
+    pub fn wgpu_peaks(&self) -> [u32; 4] {
+        self.0.wgpu_peak.each_ref().map(|a| a.load(Ordering::Relaxed))
+    }
+
     /// The images on the GPU: their count and size (MB).
     pub fn gpu_images(&self) -> (u32, u32) {
         (self.0.gpu_images.load(Ordering::Relaxed), self.0.gpu_image_mb.load(Ordering::Relaxed))
@@ -149,6 +158,8 @@ fn ground_slot(d: &PipelineDescriptor) -> Option<usize> {
 #[derive(Default)]
 struct Seen {
     start: Option<std::time::Instant>,
+    /// The buffers' peak last logged.
+    logged_peak: u32,
     /// When each pipeline still building was first seen.
     waiting: HashMap<usize, f64>,
     /// How many pipelines were ever seen (the cache only grows).
@@ -189,6 +200,23 @@ fn watch_pipelines(
     mut frame: Local<u32>,
 ) {
     *frame += 1;
+    // wgpu's live objects: every frame for the speed logger (their peaks), else once a second.
+    static PERF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *frame % 60 == 1 || *PERF.get_or_init(|| std::env::var_os("SE_PERF").is_some()) {
+        if let Some(r) = instance.generate_report() {
+            let h = r.hub_report();
+            for ((a, p), c) in pipes.0.wgpu.iter().zip(&pipes.0.wgpu_peak).zip([&h.bind_groups, &h.buffers, &h.textures, &h.texture_views]) {
+                a.store(c.num_allocated as u32, Ordering::Relaxed);
+                p.fetch_max(c.num_allocated as u32, Ordering::Relaxed);
+            }
+            // (A new peak of buffers in the log, to find what raised it.)
+            let peak = pipes.0.wgpu_peak[1].load(Ordering::Relaxed);
+            if peak >= seen.logged_peak + 2000 {
+                seen.logged_peak = peak;
+                info!("wgpu: a new peak of {peak} buffers ({} bind groups, {} textures)", h.bind_groups.num_allocated, h.textures.num_allocated);
+            }
+        }
+    }
     if *frame % 60 == 1 {
         let mut bytes = 0u64;
         let mut n = 0u32;
@@ -208,12 +236,6 @@ fn watch_pipelines(
                 bevy::pbr::RenderMeshInstances::GpuBuilding(g) => g.len(),
             };
             pipes.0.mesh_instances.store(n as u32, Ordering::Relaxed);
-        }
-        if let Some(r) = instance.generate_report() {
-            let h = r.hub_report();
-            for (a, c) in pipes.0.wgpu.iter().zip([&h.bind_groups, &h.buffers, &h.textures, &h.texture_views]) {
-                a.store(c.num_allocated as u32, Ordering::Relaxed);
-            }
         }
         pipes.0.gpu_image_mb.store((bytes >> 20) as u32, Ordering::Relaxed);
     }
@@ -363,7 +385,6 @@ fn warm_ground(
             transmittance: d.black.clone(),
             irradiance: d.black.clone(),
             ring: d.white.clone(),
-            biome: default(),
             samples: s.samples.clone(),
             soils: s.soils.clone(),
             normals: d.white.clone(),

@@ -322,11 +322,15 @@ pub struct TerrainQuality {
     /// has gone by in a frame, and new loads are not counted; `None` for 0, SE's default, which counts
     /// tiles (`MaxTilesPerFrame`).
     pub time_budget_ms: Option<f32>,
+    /// Fine ground nodes carry flat cloud shells too: the volumetric clouds are off or an offscreen
+    /// view exists (else the shells show only from afar, on coarse nodes: terrain.rs
+    /// `FLAT_CLOUD_MAX_LEVEL`).
+    pub fine_flat_clouds: bool,
 }
 
 impl Default for TerrainQuality {
     fn default() -> Self {
-        Self { split_scale: 1.0, tiles_per_frame: 8, reverse_loading: true, time_budget_ms: None }
+        Self { split_scale: 1.0, tiles_per_frame: 8, reverse_loading: true, time_budget_ms: None, fine_flat_clouds: true }
     }
 }
 
@@ -384,10 +388,15 @@ fn apply_quality(
     mut images: ResMut<Assets<Image>>,
     (mut stars, holes): (ResMut<crate::stars::StarSettings>, Option<ResMut<crate::blackholes::BlackHoleSettings>>),
     mut last_aniso: Local<Option<u16>>,
+    captures: Query<(), With<crate::capture::CaptureView>>,
 ) {
     let q = gs.quality.clone();
     let h = windows.iter().next().map(|w| w.resolution.physical_height() as f32).unwrap_or(1080.0);
     terrain.split_scale = q.terrain_split_scale(h);
+    // (`SE_FLAT_FINE=1`: every node keeps its flat shells, for comparisons.)
+    static FLAT_FINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // (The offscreen views draw no volumetric clouds: while one exists the flat shells stand in.)
+    terrain.fine_flat_clouds = q.volumetric_clouds == 0 || !captures.is_empty() || *FLAT_FINE.get_or_init(|| std::env::var("SE_FLAT_FINE").is_ok_and(|v| v == "1"));
     terrain.tiles_per_frame = (q.max_tiles_per_frame as usize * 2).max(1);
     if !gs.is_changed() && last_aniso.is_some() == surface.is_some() {
         return;

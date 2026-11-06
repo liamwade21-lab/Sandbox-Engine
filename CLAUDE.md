@@ -433,10 +433,21 @@ or publishing the port.
   loaded. se.log lists each pipeline that took over 0.5 s. A settings change that changes the view's
   pipelines (MSAA) still builds them on demand: the ground can be missing for seconds after it.
 - Slowdowns over a session (the user plays for hours; test runs start fresh): measure with
-  `.optimize/bench/session_rs.sh` / `session_long.sh` (the same view each round between trips) and read
-  the counts `SE_PERF` writes per segment. wgpu's per-command-buffer work grows with the GPU objects ever
-  alive at once (buffers, textures), so caches of GPU objects need limits: the terrain keeps at most
-  `PORT_LAND_NODES` (4000) nodes, the tile textures `TEXTURE_CACHE_MB`. A per-system timeline: build
+  `.optimize/bench/session_explore.sh NAME ROUNDS [ENV=..]` (the same two views each round between trips;
+  `session_table.py` prints the table) and read the counts `SE_PERF` writes per segment, `cpu_main`,
+  `cpu_render`, `cpu_graph` (the render graph: recording, finishing and submitting command buffers) and
+  `wgpu_peak`. wgpu sizes every pass's tracking by the most buffers and textures EVER alive at once (a
+  peak never comes down, only a restart clears it), so one moment with too many GPU objects slows every
+  later frame: this was the user's 80 to 40 fps. Keep the peak down: a limit on every cache of GPU
+  objects (at most `PORT_LAND_NODES`, 4000, terrain nodes, the tile textures `TEXTURE_CACHE_MB`), a pool
+  instead of a buffer per object, and no extra buffer per material (`PlanetMaterial` has one uniform; the
+  biome's values live inside `Planet`; a second uniform doubled the ground's buffers). se.log says
+  "wgpu: a new peak" every 2,000 buffers. Flat cloud shells (a material and a buffer each) are made only
+  for nodes down to `FLAT_CLOUD_MAX_LEVEL` while the 3D clouds draw the clouds; when flat clouds are
+  really drawn (`TerrainQuality::fine_flat_clouds`: clouds off, capture views) the drawn nodes get theirs
+  on demand (`shell_jobs`). `SE_FLAT_FINE=1` makes them all for comparisons. When comparing GPU times
+  alternate back to back (`ab_nodes.sh`): a capped or unfocused window clocks the card down, and rows with
+  GPU 0.00 mean the window was minimised. A test's `agl M` stays on until `agl off`. A per-system timeline: build
   `CARGO_TARGET_DIR=target-trace cargo build --release -p se_engine --features bevy/trace_chrome` and run
   that exe with `TRACE_CHROME=FILE` (about 2 GB a minute; `perf NAME` marks a `perf_mark` span).
 - Never change a Bevy material asset every frame (`Assets::get_mut`, `iter_mut`): Bevy then

@@ -84,6 +84,8 @@ struct Planet {
     city_land: vec4<f32>,
     // The node's record in `lit`.
     slot: u32,
+    // The body's biome tints, sample layers and soils (`terrain.rs` `PlanetUniform::biome`).
+    biomes: Biomes,
 };
 
 // Biome texturing of the body (see surface_tex.rs). Slots: 0 bottom, 1 shelf, 2 beach,
@@ -131,7 +133,6 @@ struct Biomes {
 @group(constants::MATERIAL_BIND_GROUP) @binding(12) var irradiance_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(13) var ring_tex: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(14) var ring_smp: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(15) var<uniform> biomes: Biomes;
 @group(constants::MATERIAL_BIND_GROUP) @binding(16) var sample_tex: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(17) var sample_smp: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(18) var soil_tex: texture_2d_array<f32>;
@@ -251,7 +252,7 @@ fn vertex(v: Vertex) -> VertexOut {
     var height = v.height + v.morph.w * (1.0 - morph);
     // SE's detail displacement ("3D stones", planet.glsl DET + DISP): within the soils' 2 km the
     // ground rises and falls by the soils' height maps. Not on the water surface.
-    if biomes.flags.y > 0.5 && planet.water.w < 0.5 {
+    if planet.biomes.flags.y > 0.5 && planet.water.w < 0.5 {
         let scale = length(world_from_local[0].xyz);
         let w0 = (world_from_local * vec4<f32>(local, 1.0)).xyz;
         let fade = clamp(2.0 - length(w0) / max(scale, 1e-30) / 1000.0, 0.0, 1.0);
@@ -571,7 +572,7 @@ fn sample_layer(l: vec4<f32>, lp: LayerPos, w: vec3<f32>) -> SampleLook {
     let f = mix(vec3<f32>(luma(n)), n, l.w);
     o.col = mix(vec3<f32>(1.0), f, k * mix(0.5, 1.0, close));
     // Up close the relief has faded and the soils' roughness takes over (where there are soils).
-    if close > 0.0 || biomes.flags.y < 0.5 {
+    if close > 0.0 || planet.biomes.flags.y < 0.5 {
         var ra = vec4<f32>(0.0);
         var rb = vec4<f32>(0.0);
         if m < 1.0 {
@@ -590,7 +591,7 @@ fn sample_layer(l: vec4<f32>, lp: LayerPos, w: vec3<f32>) -> SampleLook {
 // with this material's values. SE's terrain noises (`ter_oct`, `ter_fbm`, `ter_fbm3d`, `ter_rmf`) are
 // there too.
 fn biome_weights(h: f32, slope: f32, lat: f32, n: f32, moist: f32) -> array<f32, 12> {
-    return biome_weights_at(h, slope, lat, n, moist, planet.proc_params, planet.ocean_sea.w > 0.5, biomes.flags.z > 0.5);
+    return biome_weights_at(h, slope, lat, n, moist, planet.proc_params, planet.ocean_sea.w > 0.5, planet.biomes.flags.z > 0.5);
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +757,7 @@ fn se_rayed_color_func(r: f32, fi: f32, rnd: f32, k: f32) -> f32 {
 // Fibonacci cells (and per-octave rotations) as the generator's RayedCraterNoise. Octaves whose
 // craters are below about a pixel (`fp`) are left out.
 fn se_rayed_crater_color(point_in: vec3<f32>, freq: f32, sqrt_density: f32, octaves: f32, fp: f32) -> f32 {
-    let rnd = biomes.climate[6].xyz;
+    let rnd = planet.biomes.climate[6].xyz;
     let lac = 2.218281828459;
     var point = point_in;
     let binormal = normalize(vec3<f32>(-point.z, 0.0, point.x));
@@ -802,15 +803,15 @@ fn se_crack_func(last: f32, lastlast: f32, r: f32, p_in: vec3<f32>, noise_ok: bo
 // the freckles off. SE's lines are 1/250 of a cell wide; thinner than a pixel they widen to it and
 // fade by the share of it they cover.
 fn se_crack_color(point_in: vec3<f32>, fp: f32, mask: ptr<function, f32>) -> f32 {
-    let rnd = biomes.climate[6].xyz;
+    let rnd = planet.biomes.climate[6].xyz;
     let lac = 2.218281828459;
-    var scale = biomes.climate[9].w;
+    var scale = planet.biomes.climate[9].w;
     var point = (point_in + rnd) * scale;
     var new_land = 0.0;
     var last = 0.0;
     var lastlast = 0.0;
     *mask = 1.0;
-    for (var i = 0; f32(i) < biomes.climate[10].x; i++) {
+    for (var i = 0; f32(i) < planet.biomes.climate[10].x; i++) {
         let w = max(1.0 / 250.0, fp * scale);
         let cover = (1.0 / 250.0) / w;
         let cell = se_cell2_noise2(point + 0.02 * ter_fbm3d(1.8 * point, ter_oct(6.0, 1.8 * scale, lac, fp)));
@@ -841,13 +842,13 @@ var<private> g_sun_body: vec3<f32> = vec3<f32>(1.0, 0.0, 0.0);
 // The airless worlds' colour noises that vary only over kilometres (tg_selena_color.glsl): x the
 // latitude's noise, y the albedo variation's Fbm, z the young terrain's Fbm (0 without young terrain).
 fn selena_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
-    let rnd = biomes.climate[6].xyz;
+    let rnd = planet.biomes.climate[6].xyz;
     let lac = 2.218281828459;
     let lat_noise = 0.15 * (ter_fbm(point * 0.7 + rnd, ter_oct(6.0, 0.7, lac, fp), lac) - 1.0);
-    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(3.0, 0.07, lac, fp)) * (1.5 + biomes.climate[8].y);
+    let avd = ter_fbm3d((point + rnd) * 0.07, ter_oct(3.0, 0.07, lac, fp)) * (1.5 + planet.biomes.climate[8].y);
     let vary = ter_fbm((point + avd) * 0.378, ter_oct(8.0, 0.378, lac, fp), lac);
     var young = 0.0;
-    if biomes.climate[7].w > 0.05 {
+    if planet.biomes.climate[7].w > 0.05 {
         let yd = ter_fbm3d((point - rnd) * 0.07, ter_oct(4.0, 0.07, lac, fp)) * 1.1;
         young = ter_fbm(point + yd, ter_oct(8.0, 1.0, lac, fp), lac);
     }
@@ -864,9 +865,9 @@ fn selena_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
 // freckles, rays and the asteroid look only on `procedural` worlds: a colour map has its own (the
 // Moon's Tycho).
 fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool) -> TerraMix {
-    if biomes.climate[7].z > 1.5 && procedural {
-        let c0 = biomes.climate[0];
-        let rnd = biomes.climate[6].xyz;
+    if planet.biomes.climate[7].z > 1.5 && procedural {
+        let c0 = planet.biomes.climate[0];
+        let rnd = planet.biomes.climate[6].xyz;
         let sea = c0.x;
         let lac = 2.218281828459;
         var o: TerraMix;
@@ -892,8 +893,8 @@ fn se_selena_mix(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool
 // against its features that the two differ by under a thousandth (below what 8-bit colour shows),
 // and their pixels skip its 43 noises, most of the ground's cost on such worlds.
 fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bool, n: vec3<f32>) -> TerraMix {
-    let c0 = biomes.climate[0];
-    let rnd = biomes.climate[6].xyz;
+    let c0 = planet.biomes.climate[0];
+    let rnd = planet.biomes.climate[6].xyz;
     let sea = c0.x;
     let lac = 2.218281828459;
     var o: TerraMix;
@@ -902,7 +903,7 @@ fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bo
     var w: array<f32, 12>;
     let lat_noise = n.x;
     var latitude: f32;
-    if biomes.climate[6].w <= 0.0 {
+    if planet.biomes.climate[6].w <= 0.0 {
         latitude = saturate(abs(point.y) + lat_noise);
     } else {
         latitude = 1.0 - dot(point, g_sun_body) + lat_noise;
@@ -915,18 +916,18 @@ fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bo
     w[h1] += dh;
     let slope_mod = 1.0 - slope;
     var vary = saturate(1.0 - n.y * slope_mod * slope_mod * 2.0);
-    if biomes.climate[7].w > 0.05 {
+    if planet.biomes.climate[7].w > 0.05 {
         var young = 1.0 - n.z;
         young = smoothstep(0.0, 1.0, young * young * young);
         vary = mix(0.0, vary, young);
     }
     var mask = 1.0;
-    if biomes.climate[10].x > 0.0 && procedural {
+    if planet.biomes.climate[10].x > 0.0 && procedural {
         vary *= se_crack_color(point, fp, &mask);
     }
     // The freckles, in the generator's hills biome (its Cell3Noise2Color domains by mainFreq).
-    let c10 = biomes.climate[10];
-    let hills_freq = biomes.climate[7].x;
+    let c10 = planet.biomes.climate[10];
+    let hills_freq = planet.biomes.climate[7].x;
     if c10.z > c10.y && procedural && ter_oct(10.0, hills_freq, 2.0, fp) > 0.0 {
         let p = point * c10.w + rnd;
         var col: vec4<f32>;
@@ -937,7 +938,7 @@ fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bo
         }
     }
     o.vary = vary;
-    let dd = biomes.climate[8].x;
+    let dd = planet.biomes.climate[8].x;
     if dd != 0.0 {
         var z = -point.z * sign(dd) + 0.2 * ter_fbm(point * 1.63, ter_oct(3.0, 1.63, lac, fp), lac);
         z = saturate(1.0 - z);
@@ -945,8 +946,8 @@ fn se_selena_terms(point: vec3<f32>, h: f32, slope: f32, fp: f32, procedural: bo
         o.dark = mix(1.0 - abs(dd), 1.0, z);
     }
     // The rayed craters (the generator's craterRayed density and octaves), then the frost.
-    let c9 = biomes.climate[9];
-    let sd = biomes.climate[7].w;
+    let c9 = planet.biomes.climate[9];
+    let sd = planet.biomes.climate[7].w;
     var rays = 0.0;
     if sd * sd * c9.z > 0.05 * 0.05 && procedural {
         rays = se_rayed_crater_color(point, c9.x, sd * sqrt(c9.z), floor(c9.y * c9.z), fp);
@@ -991,7 +992,7 @@ fn se_terra_mix_v(point: vec3<f32>, h: f32, slope: f32, fp: f32) -> TerraMix {
 // SE's ColorMapTerra noises that vary only over kilometres (surface_class.wesl `terra_noise_at`): x
 // the latitude's noise, y the albedo variation, z on worlds with plants the humidity's Fbm (else 0).
 fn terra_noise(point: vec3<f32>, fp: f32) -> vec3<f32> {
-    return terra_noise_at(point, fp, biomes.climate[6].xyz, biomes.flags.z > 0.5);
+    return terra_noise_at(point, fp, planet.biomes.climate[6].xyz, planet.biomes.flags.z > 0.5);
 }
 
 // The finest frequency on the unit sphere whose features a node's vertices carry for its pixels to
@@ -1033,7 +1034,7 @@ struct TerraCoarse {
 // The vertex stage's share of `terra_noise` on nodes too coarse for all of it (`TERRA_PARTIAL`):
 // each sum's octaves fine enough for the vertices, and the warp whole (`vertex_noise` asks it to fit).
 fn terra_noise_coarse(point: vec3<f32>) -> TerraCoarse {
-    let rnd = biomes.climate[6].xyz;
+    let rnd = planet.biomes.climate[6].xyz;
     let lac = 2.218281828459;
     var o: TerraCoarse;
     o.k = vec3<f32>(vertex_octaves(6.0, 0.7, lac), vertex_octaves(8.0, 1.0, lac), vertex_octaves(8.0, 1.73, lac));
@@ -1041,7 +1042,7 @@ fn terra_noise_coarse(point: vec3<f32>) -> TerraCoarse {
     o.sums.x = ter_fbm(point * 0.7 + rnd, o.k.x, lac);
     o.sums.y = ter_fbm(point + o.avd, o.k.y, lac);
     o.sums.z = 0.0;
-    if biomes.flags.z > 0.5 {
+    if planet.biomes.flags.z > 0.5 {
         o.sums.z = ter_fbm((point + o.avd) * 1.73, o.k.z, lac);
     }
     return o;
@@ -1052,7 +1053,7 @@ fn terra_noise_coarse(point: vec3<f32>) -> TerraCoarse {
 // pixel's own finer octaves. A sum of which the pixel keeps fewer octaves than the vertices carry,
 // or whose warp it cuts, is worked out whole here, as `terra_noise` does.
 fn terra_noise_split(point: vec3<f32>, fp: f32, v: vec3<f32>, avd_v: vec3<f32>, k: vec3<f32>) -> vec3<f32> {
-    let rnd = biomes.climate[6].xyz;
+    let rnd = planet.biomes.climate[6].xyz;
     let lac = 2.218281828459;
     let n_lat = ter_oct(6.0, 0.7, lac, fp);
     let k_lat = k.x;
@@ -1077,7 +1078,7 @@ fn terra_noise_split(point: vec3<f32>, fp: f32, v: vec3<f32>, avd_v: vec3<f32>, 
         avf = ter_fbm(point + avd, n_av, lac);
     }
     var humidity = 0.0;
-    if biomes.flags.z > 0.5 {
+    if planet.biomes.flags.z > 0.5 {
         let n_h = ter_oct(8.0, 1.73, lac, fp);
         let k_h = k.z;
         if whole_warp && n_h >= k_h {
@@ -1091,30 +1092,30 @@ fn terra_noise_split(point: vec3<f32>, fp: f32, v: vec3<f32>, avd_v: vec3<f32>, 
 
 // SE's flatland climate distortion (surface_class.wesl `terra_climate_noise_at`).
 fn terra_climate_noise(point: vec3<f32>, fp: f32) -> f32 {
-    return terra_climate_noise_at(point, fp, biomes.climate[6].xyz, biomes.climate[7], biomes.climate[5].y);
+    return terra_climate_noise_at(point, fp, planet.biomes.climate[6].xyz, planet.biomes.climate[7], planet.biomes.climate[5].y);
 }
 
 // x the climate (before the snow), y the snow line, z the latitude. `lat_noise`: `terra_noise`'s x.
 fn se_terra_snow(point: vec3<f32>, h: f32, slope: f32, fp: f32, lat_noise: f32) -> vec3<f32> {
-    let vary = snow_vary_at(point, fp, biomes.climate[6].xyz);
-    return se_terra_snow_at(point, h, slope, lat_noise, vary, biomes.climate[0], biomes.climate[1], biomes.climate[2], biomes.climate[6].w > 0.0, g_sun_body);
+    let vary = snow_vary_at(point, fp, planet.biomes.climate[6].xyz);
+    return se_terra_snow_at(point, h, slope, lat_noise, vary, planet.biomes.climate[0], planet.biomes.climate[1], planet.biomes.climate[2], planet.biomes.climate[6].w > 0.0, g_sun_body);
 }
 
 // x the climate, y the ice cap. `ws`: the snow line's change over a pixel; `vary`:
 // `terra_climate_noise`.
 fn se_terra_climate(slope: f32, s: vec3<f32>, ws: f32, vary: f32) -> vec2<f32> {
-    return se_terra_climate_at(slope, s, ws, vary, biomes.climate[0], biomes.climate[1]);
+    return se_terra_climate_at(slope, s, ws, vary, planet.biomes.climate[0], planet.biomes.climate[1]);
 }
 
 // The slots' weights. `c`: the climate and ice cap; `cw`: the climate's change over a pixel;
 // `n`: `terra_noise`.
 fn se_terra_weights(point: vec3<f32>, h: f32, slope: f32, fp: f32, c: vec2<f32>, cw: f32, n: vec3<f32>) -> TerraMix {
-    let plants = biomes.flags.z > 0.5;
+    let plants = planet.biomes.flags.z > 0.5;
     var ptf = 0.0;
     if plants {
         ptf = plants_ptf_at(point, fp);
     }
-    return se_terra_weights_at(point, h, slope, fp, c, cw, n, ptf, biomes.climate[0], biomes.climate[2], biomes.climate[3], biomes.climate[4], plants, true);
+    return se_terra_weights_at(point, h, slope, fp, c, cw, n, ptf, planet.biomes.climate[0], planet.biomes.climate[2], planet.biomes.climate[3], planet.biomes.climate[4], plants, true);
 }
 
 // The ground's biome look: colour, relief gradient (body axes, m per m), roughness and how much
@@ -1137,9 +1138,9 @@ struct BiomeLook {
 // One biome slot: its large and small sample layers (colours multiplied, reliefs added), times
 // its tint if `tinted`. `la`/`lb` are the layers' `layer_pos`.
 fn biome_look(k: i32, la: LayerPos, lb: LayerPos, tw: vec3<f32>, tinted: bool) -> BiomeLook {
-    let tint = select(vec3<f32>(1.0), biomes.color[k].rgb, tinted);
-    let a = sample_layer(biomes.large[k], la, tw);
-    let b = sample_layer(biomes.small[k], lb, tw);
+    let tint = select(vec3<f32>(1.0), planet.biomes.color[k].rgb, tinted);
+    let a = sample_layer(planet.biomes.large[k], la, tw);
+    let b = sample_layer(planet.biomes.small[k], lb, tw);
     var o: BiomeLook;
     o.col = tint * a.col * b.col;
     o.grad = a.grad + b.grad;
@@ -1155,15 +1156,15 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
     let seed = vec3<f32>(planet.proc_params2.y * 917.0, planet.proc_params2.y * 331.0, planet.proc_params2.y * 613.0);
     var w: array<f32, 12>;
     var rock_tint = vec3<f32>(1.0);
-    let se = biomes.climate[4].w > 0.5;
+    let se = planet.biomes.climate[4].w > 0.5;
     var m: TerraMix;
     m.vary = -1.0;
     m.dark = 1.0;
     if se {
         // SE's height map value: sea level (or the dry worlds' reference) plus the height in
         // BumpHeights. SE's generator: 0 terra, 1 selena (airless), 2 asteroid (as selena here).
-        let hv = biomes.climate[5].z + h / max(biomes.climate[4].z, 1.0);
-        if biomes.climate[7].z > 0.5 {
+        let hv = planet.biomes.climate[5].z + h / max(planet.biomes.climate[4].z, 1.0);
+        if planet.biomes.climate[7].z > 0.5 {
             // On nodes that carry them, the kilometre-scale noises come from the vertices.
             @if(SELENA_AT_VERTICES) {
                 m = se_selena_terms(dir, hv, slope, fp, tinted, g_selena);
@@ -1216,14 +1217,14 @@ fn biome_albedo(dir: vec3<f32>, h: f32, slope: f32, tinted: bool, fp: f32) -> Bi
     var tw = pow(abs(dir), vec3<f32>(4.0));
     tw = tw / (tw.x + tw.y + tw.z);
     let t = clamp(max(w2, 0.0) / max(w1 + max(w2, 0.0), 1e-4), 0.0, 0.5);
-    var b1 = biome_look(k1, layer_pos(biomes.large[k1], pos_m), layer_pos(biomes.small[k1], pos_m), tw, tinted);
+    var b1 = biome_look(k1, layer_pos(planet.biomes.large[k1], pos_m), layer_pos(planet.biomes.small[k1], pos_m), tw, tinted);
     if k1 == 5 {
         b1.col *= rock_tint;
     }
     // The second biome is read only where it shows (t > 0; at t = 0 the mixes below give b1
     // exactly). Its derivatives are taken here, outside the per-pixel branch.
-    let l2a = layer_pos(biomes.large[k2], pos_m);
-    let l2b = layer_pos(biomes.small[k2], pos_m);
+    let l2a = layer_pos(planet.biomes.large[k2], pos_m);
+    let l2b = layer_pos(planet.biomes.small[k2], pos_m);
     var b2 = b1;
     if t > 0.0 {
         b2 = biome_look(k2, l2a, l2b, tw, tinted);
@@ -1372,9 +1373,9 @@ fn soil_zoned(l: i32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, n: i32, seed:
 // (HSV, gamma). No parallax: SE never reads the height channel. `xy`, `dx`, `dy`: node-local
 // metres and their screen derivatives; `q`: how far the detail layer can be trusted.
 fn soil_look(k: i32, xy: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, q: f32, surf: vec3<f32>) -> SoilLook {
-    let s = biomes.soil[k];
-    let md = biomes.soil_mod[k];
-    let b = biomes.soil_bias[k];
+    let s = planet.biomes.soil[k];
+    let md = planet.biomes.soil_mod[k];
+    let b = planet.biomes.soil_bias[k];
     // The port's own fades: a layer whose repeat spans only a few dozen pixels would still show
     // as a fine grid through the zones; it gives way to its mean.
     let fp = max(max(length(dx), length(dy)), 1e-6);
@@ -1440,7 +1441,7 @@ const SOIL_MIX_SOFTNESS: f32 = 0.05;
 // d^-1/2. `g`: the ground's colour in HSV (gamma); `slope6`: SE's slope, 1 - cos^6 of the tilt.
 // The soil's HSV and Slope come in `soil_color` (surface_tex.rs).
 fn soil_weight(k: i32, g: vec3<f32>, slope6: f32) -> f32 {
-    let sc = biomes.soil_color[k];
+    let sc = planet.biomes.soil_color[k];
     let ds = slope6 - sc.w;
     var delta = g - sc.xyz;
     delta.x = min(delta.x, 1.0 - delta.x);
@@ -1493,7 +1494,7 @@ fn soil_detail(sc: SoilCoords, n: vec3<f32>, slope: f32, ground: vec3<f32>, surf
     var k2 = -1;
     var w1 = 0.0;
     var w2 = 0.0;
-    for (var k = 0; k < i32(biomes.flags.w); k++) {
+    for (var k = 0; k < i32(planet.biomes.flags.w); k++) {
         let w = soil_weight(k, g, slope6);
         if w > w1 {
             k2 = k1;
@@ -1565,15 +1566,15 @@ fn soil_layer_h(l: i32, uv: vec2<f32>, lod: f32, period_m: f32, rot: bool) -> f3
 // x ScaleHeight) around the textures' means. The layers are read at the mip of the vertex spacing
 // (1024 texels a period), `shift` mips coarser.
 fn soil_disp(k: i32, xy: vec2<f32>, spacing: f32, shift: f32) -> f32 {
-    if k < 0 || k >= i32(biomes.flags.w) {
+    if k < 0 || k >= i32(planet.biomes.flags.w) {
         return 0.0;
     }
-    let hs = biomes.soil_height[k];
+    let hs = planet.biomes.soil_height[k];
     if hs.z <= 0.0 {
         return 0.0;
     }
-    let s = biomes.soil[k];
-    let b = biomes.soil_bias[k];
+    let s = planet.biomes.soil[k];
+    let b = planet.biomes.soil_bias[k];
     var h = vec2<f32>(0.0);
     var hm = vec2<f32>(0.0);
     if s.x >= 0.0 {
@@ -1585,7 +1586,7 @@ fn soil_disp(k: i32, xy: vec2<f32>, spacing: f32, shift: f32) -> f32 {
         let l = i32(s.z);
         let lod = max(log2(max(spacing * 1024.0 / s.w, 1e-6)) + shift, 0.0);
         hm = vec2<f32>(soil_layer_h(l, xy / s.w, lod, s.w, b.w > 0.5), textureSampleLevel(soil_rhao_tex, soil_smp, vec2<f32>(0.5), l, 20.0).g);
-        let a = select(1.0, biomes.soil_mod[k].w * min(s.y / s.w, s.w / s.y), s.x >= 0.0);
+        let a = select(1.0, planet.biomes.soil_mod[k].w * min(s.y / s.w, s.w / s.y), s.x >= 0.0);
         h = mix(h, hm, a);
     }
     return (h.x - h.y) * hs.x * hs.z;
@@ -1602,7 +1603,7 @@ fn soil_disp_v(xy: vec2<f32>, spacing: f32, shift: f32, ground: vec3<f32>, slope
     var k2 = -1;
     var w1 = 0.0;
     var w2 = 0.0;
-    for (var k = 0; k < i32(biomes.flags.w); k++) {
+    for (var k = 0; k < i32(planet.biomes.flags.w); k++) {
         let w = soil_weight(k, g, slope6);
         if w > w1 {
             k2 = k1;
@@ -1637,13 +1638,13 @@ fn soil_ground_v(uv: vec2<f32>, dir: vec3<f32>, h: f32, slope: f32, spacing: f32
     if planet.proc_params2.z < 0.5 {
         return planet.base_color.rgb;
     }
-    if biomes.flags.x < 0.5 || planet.proc_params.x >= 5.5 {
+    if planet.biomes.flags.x < 0.5 || planet.proc_params.x >= 5.5 {
         return proc_albedo(dir, h, slope, spacing);
     }
     let radius = planet.proc_params2.x;
     let fp = spacing / max(radius, 1.0);
     let seed = vec3<f32>(planet.proc_params2.y * 917.0, planet.proc_params2.y * 331.0, planet.proc_params2.y * 613.0);
-    let se = biomes.climate[4].w > 0.5;
+    let se = planet.biomes.climate[4].w > 0.5;
     var w: array<f32, 12>;
     var m: TerraMix;
     m.rock_tint = vec3<f32>(1.0);
@@ -1651,8 +1652,8 @@ fn soil_ground_v(uv: vec2<f32>, dir: vec3<f32>, h: f32, slope: f32, spacing: f32
     m.dark = 1.0;
     m.white = 0.0;
     if se {
-        let hv = biomes.climate[5].z + h / max(biomes.climate[4].z, 1.0);
-        if biomes.climate[7].z > 0.5 {
+        let hv = planet.biomes.climate[5].z + h / max(planet.biomes.climate[4].z, 1.0);
+        if planet.biomes.climate[7].z > 0.5 {
             m = se_selena_mix(dir, hv, slope, fp, true);
         } else {
             m = se_terra_mix_v(dir, hv, slope, fp);
@@ -1679,12 +1680,12 @@ fn soil_ground_v(uv: vec2<f32>, dir: vec3<f32>, h: f32, slope: f32, spacing: f32
         }
     }
     let t = clamp(max(w2, 0.0) / max(w1 + max(w2, 0.0), 1e-4), 0.0, 0.5);
-    let c1 = biomes.color[k1].rgb * select(vec3<f32>(1.0), m.rock_tint, k1 == 5);
-    let c2 = biomes.color[k2].rgb * select(vec3<f32>(1.0), m.rock_tint, k2 == 5);
+    let c1 = planet.biomes.color[k1].rgb * select(vec3<f32>(1.0), m.rock_tint, k1 == 5);
+    let c2 = planet.biomes.color[k2].rgb * select(vec3<f32>(1.0), m.rock_tint, k2 == 5);
     let patches = select(1.0, 1.0 + 0.22 * fbm3(dir * (radius / 250000.0) + seed.yzx, 4), !se);
     var b = mix(c1, c2, t) * patches;
-    if biomes.color_vary.w > 0.5 && m.vary >= 0.0 {
-        b *= mix(biomes.color_vary.xyz, vec3<f32>(1.0), m.vary);
+    if planet.biomes.color_vary.w > 0.5 && m.vary >= 0.0 {
+        b *= mix(planet.biomes.color_vary.xyz, vec3<f32>(1.0), m.vary);
     }
     if m.vary >= 0.0 {
         b = mix(b * m.dark, vec3<f32>(1.0), m.white);
@@ -2032,7 +2033,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     var sample_k = 0.0;
     var forest = 0.0;
     var fertile = 0.0;
-    if biomes.flags.x > 0.5 {
+    if planet.biomes.flags.x > 0.5 {
         let b = biome_albedo(bdir, in.height, slope, !textured, fp);
         biome = b.col;
         forest = b.forest;
@@ -2040,8 +2041,8 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         // SE's ColorVary (tg_terra_color.glsl:82-158): the colour darkens towards it over
         // planet-wide patches, `mix(colorVary, 1, albedoVary)`, albedoVary = 1 - 0.5 Fbm of the
         // point distorted by 1.3 Fbm3D((point + Randomize) 0.07), cubed and smoothstepped.
-        if biomes.color_vary.w > 0.5 && b.vary >= 0.0 {
-            biome *= mix(biomes.color_vary.xyz, vec3<f32>(1.0), b.vary);
+        if planet.biomes.color_vary.w > 0.5 && b.vary >= 0.0 {
+            biome *= mix(planet.biomes.color_vary.xyz, vec3<f32>(1.0), b.vary);
         }
         if b.vary >= 0.0 {
             biome = mix(biome * b.dark, vec3<f32>(1.0), b.white);
@@ -2072,9 +2073,9 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         // The colour map carries the hue; the biome textures add relief in brightness.
         albedo *= clamp(luma(biome), 0.0, 3.0);
     } else if planet.proc_params2.z > 0.5 {
-        if biomes.giant[1].y > 0.5 {
-            albedo = gas_giant_albedo(bdir, GiantParams(biomes.giant_palette, biomes.giant));
-        } else if biomes.flags.x > 0.5 && planet.proc_params.x < 5.5 {
+        if planet.biomes.giant[1].y > 0.5 {
+            albedo = gas_giant_albedo(bdir, GiantParams(planet.biomes.giant_palette, planet.biomes.giant));
+        } else if planet.biomes.flags.x > 0.5 && planet.proc_params.x < 5.5 {
             albedo = biome;
         } else {
             albedo = proc_albedo(bdir, in.height, slope, g_footprint_m);
@@ -2090,7 +2091,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     var ns = nb;
     var rough = sample_rough;
     var fade = 0.0;
-    if biomes.flags.y > 0.5 {
+    if planet.biomes.flags.y > 0.5 {
         let sc = soil_coords(in);
         fade = clamp(2.0 - length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30) / 1000.0, 0.0, 1.0);
         // Only where they show: past 2 km they would cost the most and add nothing.
@@ -2147,7 +2148,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         if sea {
             land *= smoothstep(2.0, 20.0, h) * (1.0 + planet.civ.w * (1.0 - smoothstep(0.0, 0.03, hr)));
         }
-        let fert = select(1.0, mix(0.3, 1.0, fertile), biomes.flags.x > 0.5);
+        let fert = select(1.0, mix(0.3, 1.0, fertile), planet.biomes.flags.x > 0.5);
         land *= fert;
         let suit = land * (1.0 - smoothstep(0.04, 0.14, slope));
         if land > 0.0 {

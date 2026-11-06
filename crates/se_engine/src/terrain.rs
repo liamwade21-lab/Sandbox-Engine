@@ -144,6 +144,12 @@ pub struct PlanetUniform {
     pub city_land: Vec4,
     /// The node's record in the material's light page (`PlanetMaterial::light_page`).
     pub slot: u32,
+    /// Biome tints, sample layers and soils of the body (`surface_tex.rs`). In this uniform, not a
+    /// binding of its own: each of the thousands of node materials would have one more buffer, and
+    /// wgpu's per-pass tracking grows with the most buffers ever alive at once (a session got slower
+    /// after every landing that set a new peak). Not a storage buffer shared by the body's nodes
+    /// either: the ground reads it many times a pixel, and that cost over a millisecond on NVIDIA.
+    pub biome: BiomeUniform,
 }
 
 /// The lighting of a node's patches (ground, sea surface, cloud layers): what a relight changes,
@@ -528,9 +534,6 @@ pub struct PlanetMaterial {
     #[texture(13)]
     #[sampler(14)]
     pub ring: Handle<Image>,
-    /// Biome tints, sample layers and soils of the body (`surface_tex.rs`).
-    #[uniform(15)]
-    pub biome: BiomeUniform,
     #[texture(16, dimension = "2d_array")]
     #[sampler(17)]
     pub samples: Handle<Image>,
@@ -611,21 +614,35 @@ pub(crate) struct NodeNoise {
     skirt: Handle<PlanetMaterial>,
 }
 
+/// Nodes switched to their variant a frame at most: each switch re-prepares two materials (a new
+/// uniform buffer and bind group each, the old ones freed a few frames later). All at once, a landing's
+/// thousands of nodes held twice their materials for a moment, a peak of GPU objects that slowed every
+/// frame after it (wgpu sizes each pass's tracking by the most buffers ever alive at once).
+const NOISE_UPGRADES_PER_FRAME: usize = 128;
+
 /// Switches the ground nodes waiting for their [`VertexNoise`] variant to it once its pipelines are
-/// built (a material change only then, never every frame).
+/// built (a material change only then, never every frame), [`NOISE_UPGRADES_PER_FRAME`] at a time.
 fn upgrade_node_noise(
     pipes: Res<crate::pipeline_watch::GroundPipelines>,
-    mut seen: Local<u32>,
+    mut seen: Local<(u32, bool)>,
     mut nodes: Query<&mut NodeNoise, Allow<Disabled>>,
     mut materials: ResMut<Assets<PlanetMaterial>>,
 ) {
     let rev = pipes.revision();
-    if rev == *seen {
+    if rev == seen.0 && !seen.1 {
         return;
     }
-    *seen = rev;
+    seen.0 = rev;
+    seen.1 = false;
+    let mut budget = NOISE_UPGRADES_PER_FRAME;
     for mut n in &mut nodes {
         if n.used != n.want && pipes.usable(n.want) == n.want {
+            if budget == 0 {
+                // (More next frame.)
+                seen.1 = true;
+                break;
+            }
+            budget -= 1;
             let want = n.want;
             for h in [n.ground.clone(), n.skirt.clone()] {
                 if let Some(mut m) = materials.get_mut(&h) {
@@ -976,6 +993,13 @@ pub struct Terrain {
     pub civ: Option<(u8, u32)>,
     /// A colony without air: its towns stand under domes (`city.wesl` `ct_dome`).
     pub domes: bool,
+    /// Fine nodes were built here without flat shells (`FLAT_CLOUD_MAX_LEVEL`): they get theirs when
+    /// wanted, and until then nothing need look for them.
+    shells_missing: bool,
+    /// Flat shells being made for nodes built without them.
+    shell_jobs: Vec<(TileKey, Task<ShellBuild>)>,
+    /// Drawn nodes still waiting for theirs (counts as loading, for the captures).
+    shells_waiting: usize,
     /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
     last_veg: Vec2,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
@@ -1041,7 +1065,7 @@ impl Terrain {
     /// Nodes whose tiles are still being built (the HD screenshot's and skybox export's "Wait
     /// loading completeness", `capture.rs`).
     pub fn loading_nodes(&self) -> usize {
-        self.loading.len()
+        self.loading.len() + self.shell_jobs.len() + self.shells_waiting
     }
 
     /// The terrain's resident nodes and kept generated grids (perf.rs).
@@ -1194,6 +1218,9 @@ impl Terrain {
             atm_look: crate::atmosphere::ATM_LOOK_DEFAULT,
             glow_temps: (0.0, 0.0),
             biome: None,
+            shells_missing: false,
+            shell_jobs: Vec::new(),
+            shells_waiting: 0,
             biome_chosen: false,
             has_ocean,
             layers: None,
@@ -1715,6 +1742,145 @@ struct BuildInput {
     generated: Option<(TileKey, Arc<HeightTile>, f64, f64)>,
 }
 
+/// A node's flat cloud shell patches for the layers `cloud_radii` (layer, shell radius m): each one's
+/// mesh and centre (body frame).
+fn cloud_patches(key: TileKey, cloud_radii: Vec<(usize, f64)>) -> Vec<(usize, Mesh, DVec3)> {
+    let (u0, v0, size) = key.uv_rect();
+    let idx = |i: usize, j: usize| (j * GRID + i) as u32;
+    cloud_radii.into_iter().map(|(layer, rc)| {
+        // Lifted by its cells' sag (cell^2 / 8 r): the flat cells of a coarse node otherwise dip
+        // below the cloud height, on a giant down through the ground (5 km for a level-1 node of
+        // Jupiter, shown while the finer ones load).
+        let cell = rc * std::f64::consts::FRAC_PI_2 * size / (GRID - 1) as f64;
+        let rc = rc + cell * cell / (8.0 * rc);
+        let c_center = key.center_dir() * rc;
+        let (mut cp, mut cn, mut cu) = (Vec::new(), Vec::new(), Vec::new());
+        for j in 0..GRID {
+            for i in 0..GRID {
+                let u = u0 + size * i as f64 / (GRID - 1) as f64;
+                let v = v0 + size * j as f64 / (GRID - 1) as f64;
+                let dir = key.face.uv_to_dir(u, v);
+                cp.push((dir * rc - c_center).as_vec3().to_array());
+                cn.push(dir.as_vec3().to_array());
+                cu.push([i as f32 / (GRID - 1) as f32, j as f32 / (GRID - 1) as f32]);
+            }
+        }
+        let mut ci: Vec<u32> = Vec::with_capacity((GRID - 1) * (GRID - 1) * 6);
+        for j in 0..GRID - 1 {
+            for i in 0..GRID - 1 {
+                let (a, b, c, d) = (idx(i, j), idx(i + 1, j), idx(i, j + 1), idx(i + 1, j + 1));
+                ci.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+        let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, cp)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, cn)
+            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, cu)
+            .with_inserted_indices(Indices::U32(ci));
+        (layer, m, c_center)
+    }).collect()
+}
+
+/// Decodes texture tiles (path, sRGB) on a worker thread.
+fn decode_tiles(vfs: &Vfs, textures: Vec<(String, bool)>) -> Vec<DecodedTexture> {
+    let mut decoded = Vec::new();
+    for (path, srgb) in textures {
+        if let Ok(bytes) = vfs.read(&path) {
+            if let Some(image) = decode_texture(&bytes, srgb) {
+                decoded.push(DecodedTexture { path, image });
+            }
+        }
+    }
+    decoded
+}
+
+/// Flat shell patches for a node built without them, and the tiles they need.
+struct ShellBuild {
+    cloud: Vec<(usize, Mesh, DVec3)>,
+    textures: Vec<DecodedTexture>,
+}
+
+/// What all of a node's flat cloud patches take from it.
+struct CloudPatchShared<'a> {
+    body_entity: Entity,
+    body: &'a SystemBody,
+    atm_flags: Vec4,
+    atm: AtmosphereParamsUniform,
+    inscatter: Handle<Image>,
+    transmittance: Handle<Image>,
+    irradiance: Handle<Image>,
+    light_page: Handle<ShaderBuffer>,
+    page_slot: u32,
+    cloud_weather: Handle<Image>,
+    cloud_shadow: Handle<ShaderBuffer>,
+}
+
+/// Spawns a node's flat cloud patch of layer `layer` (hidden, as the node's patches start).
+#[allow(clippy::too_many_arguments)]
+fn spawn_cloud_patch(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    cloud_mats: &mut Assets<CloudMaterial>,
+    terrain: &Terrain,
+    s: &CloudPatchShared,
+    (layer, cmesh, ccenter): (usize, Mesh, DVec3),
+    (ctex, crect): (Handle<Image>, Vec4),
+) -> Entity {
+    let c = &terrain.clouds[layer];
+    let procedural = c.map.is_none();
+    let cmat = cloud_mats.add(CloudMaterial {
+        u: CloudUniform {
+            rect: crect,
+            params: Vec4::new(c.opacity.min(1.0), c.bump_m, if c.opaque_map { 1.0 } else { 0.0 }, 0.0),
+            planet: (-ccenter).as_vec3().extend(terrain.radius as f32),
+            proc: terrain
+                .cloud_proc
+                .filter(|_| procedural)
+                .map_or(Vec4::ZERO, |p| p.truncate().extend(1.0)),
+            proc2: Vec4::new(
+                // Each layer its own pattern.
+                (terrain.proc.seed as f32 / u64::MAX as f32 + layer as f32 * 0.379).fract(),
+                layer as f32,
+                if terrain.proc.kind.is_giant() { 0.0 } else { 1.0 },
+                (terrain.proc.seed % 10_000) as f32 / 10_000.0,
+            ),
+            se: se_cloud_uniform(&terrain.surf_gen, terrain.tidal_lock, procedural, layer),
+            color: c.color.extend(1.0),
+            look: c.look,
+            atm_flags: Vec4::new(s.atm_flags.x, ATM_SUN_SCALE, s.atm_flags.z, 0.0),
+            atm: s.atm,
+            slot: s.page_slot,
+        },
+        clouds: ctex,
+        inscatter: s.inscatter.clone(),
+        transmittance: s.transmittance.clone(),
+        irradiance: s.irradiance.clone(),
+        light_page: s.light_page.clone(),
+        cloud_weather: s.cloud_weather.clone(),
+        cloud_shadow: s.cloud_shadow.clone(),
+    });
+    let body = s.body;
+    commands
+        .spawn((
+            SystemMember,
+            CloudNode { layer },
+            BodyAttached {
+                body: s.body_entity,
+                center: ccenter,
+            },
+            Mesh3d(meshes.add(cmesh)),
+            MeshMaterial3d(cmat),
+            UPosition(body.pos.offset_m(body.orient * body.to_shape(ccenter))),
+            UOrientation(body.orient),
+            ScaleAnchor(body.pos),
+            MeterScale(body.shape),
+            Transform::IDENTITY,
+            Visibility::Hidden,
+            Disabled,
+        ))
+        .id()
+}
+
 fn build_node(input: BuildInput) -> NodeBuild {
     let started = std::time::Instant::now();
     let BuildInput {
@@ -2056,46 +2222,8 @@ fn build_node(input: BuildInput) -> NodeBuild {
         .with_inserted_attribute(ATTRIBUTE_BODY_DIR, dirs)
         .with_inserted_attribute(ATTRIBUTE_MORPH, morph)
         .with_inserted_indices(Indices::U32(indices));
-    let cloud = cloud_radii.into_iter().map(|(layer, rc)| {
-        // Lifted by its cells' sag (cell^2 / 8 r): the flat cells of a coarse node otherwise dip
-        // below the cloud height, on a giant down through the ground (5 km for a level-1 node of
-        // Jupiter, shown while the finer ones load).
-        let cell = rc * std::f64::consts::FRAC_PI_2 * size / (GRID - 1) as f64;
-        let rc = rc + cell * cell / (8.0 * rc);
-        let c_center = key.center_dir() * rc;
-        let (mut cp, mut cn, mut cu) = (Vec::new(), Vec::new(), Vec::new());
-        for j in 0..GRID {
-            for i in 0..GRID {
-                let u = u0 + size * i as f64 / (GRID - 1) as f64;
-                let v = v0 + size * j as f64 / (GRID - 1) as f64;
-                let dir = key.face.uv_to_dir(u, v);
-                cp.push((dir * rc - c_center).as_vec3().to_array());
-                cn.push(dir.as_vec3().to_array());
-                cu.push([i as f32 / (GRID - 1) as f32, j as f32 / (GRID - 1) as f32]);
-            }
-        }
-        let mut ci: Vec<u32> = Vec::with_capacity((GRID - 1) * (GRID - 1) * 6);
-        for j in 0..GRID - 1 {
-            for i in 0..GRID - 1 {
-                let (a, b, c, d) = (idx(i, j), idx(i + 1, j), idx(i, j + 1), idx(i + 1, j + 1));
-                ci.extend_from_slice(&[a, c, b, b, c, d]);
-            }
-        }
-        let m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, cp)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, cn)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, cu)
-            .with_inserted_indices(Indices::U32(ci));
-        (layer, m, c_center)
-    }).collect();
-    let mut decoded = Vec::new();
-    for (path, srgb) in textures {
-        if let Ok(bytes) = vfs.read(&path) {
-            if let Some(image) = decode_texture(&bytes, srgb) {
-                decoded.push(DecodedTexture { path, image });
-            }
-        }
-    }
+    let cloud = cloud_patches(key, cloud_radii);
+    let decoded = decode_tiles(&vfs, textures);
     debug!("node {key:?} built in {:.1} ms", started.elapsed().as_secs_f64() * 1e3);
     NodeBuild {
         mesh,
@@ -2464,7 +2592,9 @@ fn update_terrain(
             let light_slot = terrain.lights.alloc(&mut shader_buffers);
             let (light_page, page_slot) = terrain.lights.page(light_slot);
             let culture = terrain.civ.map(|(level, seed)| (level, seed, se_core::procgen::civilization::culture(seed, level)));
+            let biome_u = terrain.biome.unwrap_or_default();
             let u = PlanetUniform {
+                biome: biome_u,
                 planet: (-build.center).as_vec3().extend(terrain.radius as f32),
                 rect_color: rc,
                 rect_lights: rl,
@@ -2586,7 +2716,6 @@ fn update_terrain(
             terrain.body_uniform = Some(u);
             let water_u = PlanetUniform { water: u.water.truncate().extend(1.0), ..u };
             // Its own noise variant once that pipeline is built, until then the per-pixel one (`NodeNoise`).
-            let biome_u = terrain.biome.unwrap_or_default();
             let want_noise = vertex_noise(&biome_u, u.rect_color.w > 0.5, u.soil_tile.z, u.proc_params2.x);
             let used_noise = pipes.usable(want_noise);
             let ground = PlanetMaterial {
@@ -2599,7 +2728,6 @@ fn update_terrain(
                 transmittance: terrain.atmosphere.as_ref().map(|a| a.transmittance.clone()).unwrap_or_else(|| defaults.black.clone()),
                 irradiance: terrain.atmosphere.as_ref().map(|a| a.irradiance.clone()).unwrap_or_else(|| defaults.black.clone()),
                 ring: ring.as_ref().map_or_else(|| defaults.white.clone(), |r| r.0.clone()),
-                biome: biome_u,
                 samples: surface_tex.samples.clone(),
                 soils: surface_tex.soils.clone(),
                 normals: images.add(build.normals),
@@ -2618,8 +2746,19 @@ fn update_terrain(
             };
             let skirt_mat = materials.add(PlanetMaterial { skirt: true, ..ground.clone() });
             let water_mat = build.water.as_ref().map(|_| materials.add(PlanetMaterial { u: water_u, ..ground.clone() }));
-            let ground_u = ground.u;
-            let ground_atm = (ground.inscatter.clone(), ground.transmittance.clone(), ground.irradiance.clone());
+            let shared = CloudPatchShared {
+                body_entity,
+                body,
+                atm_flags: ground.u.atm_flags,
+                atm: ground.u.atm,
+                inscatter: ground.inscatter.clone(),
+                transmittance: ground.transmittance.clone(),
+                irradiance: ground.irradiance.clone(),
+                light_page: light_page.clone(),
+                page_slot,
+                cloud_weather: cloud_assets.weather.clone(),
+                cloud_shadow: cloud_assets.shadow.clone(),
+            };
             let material = materials.add(ground);
             let cloud_texs: Vec<(Handle<Image>, Vec4)> = build
                 .cloud
@@ -2634,60 +2773,7 @@ fn update_terrain(
                 .cloud
                 .into_iter()
                 .zip(cloud_texs)
-                .map(|((layer, cmesh, ccenter), (ctex, crect))| {
-                    let c = &terrain.clouds[layer];
-                    let procedural = c.map.is_none();
-                    let cmat = cloud_mats.add(CloudMaterial {
-                        u: CloudUniform {
-                            rect: crect,
-                            params: Vec4::new(c.opacity.min(1.0), c.bump_m, if c.opaque_map { 1.0 } else { 0.0 }, 0.0),
-                            planet: (-ccenter).as_vec3().extend(terrain.radius as f32),
-                            proc: terrain
-                                .cloud_proc
-                                .filter(|_| procedural)
-                                .map_or(Vec4::ZERO, |p| p.truncate().extend(1.0)),
-                            proc2: Vec4::new(
-                                // Each layer its own pattern.
-                                (terrain.proc.seed as f32 / u64::MAX as f32 + layer as f32 * 0.379).fract(),
-                                layer as f32,
-                                if terrain.proc.kind.is_giant() { 0.0 } else { 1.0 },
-                                (terrain.proc.seed % 10_000) as f32 / 10_000.0,
-                            ),
-                            se: se_cloud_uniform(&terrain.surf_gen, terrain.tidal_lock, procedural, layer),
-                            color: c.color.extend(1.0),
-                            look: c.look,
-                            atm_flags: Vec4::new(ground_u.atm_flags.x, ATM_SUN_SCALE, ground_u.atm_flags.z, 0.0),
-                            atm: ground_u.atm,
-                            slot: page_slot,
-                        },
-                        clouds: ctex,
-                        inscatter: ground_atm.0.clone(),
-                        transmittance: ground_atm.1.clone(),
-                        irradiance: ground_atm.2.clone(),
-                        light_page: light_page.clone(),
-                        cloud_weather: cloud_assets.weather.clone(),
-                        cloud_shadow: cloud_assets.shadow.clone(),
-                    });
-                    commands
-                        .spawn((
-                            SystemMember,
-                            CloudNode { layer },
-                            BodyAttached {
-                                body: body_entity,
-                                center: ccenter,
-                            },
-                            Mesh3d(meshes.add(cmesh)),
-                            MeshMaterial3d(cmat),
-                            UPosition(body.pos.offset_m(body.orient * body.to_shape(ccenter))),
-                            UOrientation(body.orient),
-                            ScaleAnchor(body.pos),
-                            MeterScale(body.shape),
-                            Transform::IDENTITY,
-                            Visibility::Hidden,
-                            Disabled,
-                        ))
-                        .id()
-                })
+                .map(|(patch, tex)| spawn_cloud_patch(&mut commands, &mut meshes, &mut cloud_mats, terrain, &shared, patch, tex))
                 .collect();
             let mesh = meshes.add(build.mesh);
             let center_u = body.pos.offset_m(body.orient * body.to_shape(build.center));
@@ -2721,10 +2807,69 @@ fn update_terrain(
             let range = build.grid_heights.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
             terrain.node_hrange.insert(key, range);
             terrain.node_heights.insert(key, Arc::new(build.grid_heights));
+            let slot = terrain.nodes.get_mut(&key).unwrap();
             slot.state = NodeState::Ready(e, cloud_entities);
             slot.light_gen = terrain.light_gen;
             slot.light = light_slot;
             slot.ready_frame = frame;
+        }
+        // Flat shells finished for nodes built without them: they join their nodes (the ground is never
+        // disturbed), and the visibility pass below places them.
+        terrain.shells_waiting = 0;
+        let mut j = 0;
+        while j < terrain.shell_jobs.len() {
+            let Some(built) = check_ready(&mut terrain.shell_jobs[j].1) else {
+                j += 1;
+                continue;
+            };
+            let (key, _) = terrain.shell_jobs.swap_remove(j);
+            let (Some(light_slot), Some(u), Some(layers)) = (
+                terrain.nodes.get(&key).filter(|s| matches!(s.state, NodeState::Ready(..))).map(|s| s.light),
+                terrain.body_uniform,
+                terrain.layers.clone(),
+            ) else {
+                continue;
+            };
+            let mut tex_cache = caches.textures.lock().unwrap();
+            for t in built.textures {
+                if !tex_cache.contains_key(&t.path) {
+                    let bytes = t.image.data.as_ref().map_or(0, |d| d.len());
+                    let handle = images.add(t.image);
+                    tex_cache.insert(t.path, CachedTexture { handle, bytes, used: *tick });
+                }
+            }
+            let (light_page, page_slot) = terrain.lights.page(light_slot);
+            let shared = CloudPatchShared {
+                body_entity,
+                body,
+                atm_flags: u.atm_flags,
+                atm: u.atm,
+                inscatter: terrain.atmosphere.as_ref().map(|a| a.inscatter.clone()).unwrap_or_else(|| defaults.black3d.clone()),
+                transmittance: terrain.atmosphere.as_ref().map(|a| a.transmittance.clone()).unwrap_or_else(|| defaults.black.clone()),
+                irradiance: terrain.atmosphere.as_ref().map(|a| a.irradiance.clone()).unwrap_or_else(|| defaults.black.clone()),
+                light_page,
+                page_slot,
+                cloud_weather: cloud_assets.weather.clone(),
+                cloud_shadow: cloud_assets.shadow.clone(),
+            };
+            let mut made = Vec::with_capacity(built.cloud.len());
+            for patch in built.cloud {
+                let (path, rect) = layer_rect(layers.clouds[patch.0].as_ref(), key);
+                let used = *tick;
+                let ctex = path.as_ref().and_then(|p| tex_cache.get_mut(p)).map_or_else(
+                    || defaults.black.clone(),
+                    |c| {
+                        c.used = used;
+                        c.handle.clone()
+                    },
+                );
+                made.push(spawn_cloud_patch(&mut commands, &mut meshes, &mut cloud_mats, terrain, &shared, patch, (ctex, rect)));
+            }
+            drop(tex_cache);
+            if let Some(NodeSlot { state: NodeState::Ready(_, c), .. }) = terrain.nodes.get_mut(&key) {
+                c.extend(made);
+            }
+            terrain.vis_inputs = None;
         }
 
         if !resolved {
@@ -2762,15 +2907,23 @@ fn update_terrain(
             visible.clear();
         }
         // A turned cloud layer (FlipMap, Velocity) shows each node's patch elsewhere: its patches are
-        // those of the nodes a camera turned back by the layer's spin would see.
+        // those of the nodes a camera turned back by the layer's spin would see. Not while the flat
+        // shells are hidden or their nodes have none (near a body with the volumetric clouds on): all
+        // those nodes, loaded for a view nobody sees, once made up half of a planet's. Such a layer's
+        // list is empty then, never the ground's: its patches would stand at the wrong longitudes in
+        // the seconds after arriving, before the volumetric clouds draw.
+        let flat_wanted = quality.fine_flat_clouds
+            || (!(volumetric.body == Some(body_entity) && volumetric.flat_hidden) && cam_body.length() > 3.0 * terrain.radius);
         let cloud_visible: Vec<Option<Vec<TileKey>>> = (0..terrain.clouds.len())
             .map(|i| {
                 let c = &terrain.clouds[i];
                 let spin = (c.flip || c.rad_per_s != 0.0).then(|| c.spin_at(time.jd));
                 spin.map(|spin| {
-                    let cam_l = DQuat::from_rotation_y(-spin) * cam_body;
                     let mut v = Vec::new();
-                    select_all(terrain, &cam_l, frame, &mut v, &mut requests, quality.split_scale);
+                    if flat_wanted {
+                        let cam_l = DQuat::from_rotation_y(-spin) * cam_body;
+                        select_all(terrain, &cam_l, frame, &mut v, &mut requests, quality.split_scale);
+                    }
                     v
                 })
             })
@@ -2847,6 +3000,8 @@ fn update_terrain(
                     }
                 }
             }
+            let with_shells = key.level <= FLAT_CLOUD_MAX_LEVEL || quality.fine_flat_clouds || terrain.proc.kind.is_giant();
+            terrain.shells_missing |= !with_shells;
             let tex_cache = caches.textures.lock().unwrap();
             let mut textures = Vec::new();
             for (layer, srgb) in [
@@ -2855,7 +3010,16 @@ fn update_terrain(
                 (layers.water.as_ref(), false),
             ]
             .into_iter()
-            .chain(layers.clouds.iter().zip(&terrain.clouds).map(|(l, c)| (l.as_ref(), c.opaque_map)))
+            .chain(
+                // (Without shells only the layer that shadows the ground.)
+                layers
+                    .clouds
+                    .iter()
+                    .zip(&terrain.clouds)
+                    .enumerate()
+                    .filter(|(i, _)| with_shells || shadow == Some(*i))
+                    .map(|(_, (l, c))| (l.as_ref(), c.opaque_map)),
+            )
             {
                 if let (Some(path), _) = layer_rect(layer, key) {
                     if !tex_cache.contains_key(&path) && !textures.iter().any(|(p, _)| *p == path) {
@@ -2872,7 +3036,7 @@ fn update_terrain(
                 vfs: data.vfs.clone(),
                 caches: caches.clone(),
                 textures,
-                cloud_radii: terrain.drawn_clouds(&layers),
+                cloud_radii: if with_shells { terrain.drawn_clouds(&layers) } else { Vec::new() },
                 proc: terrain.proc.clone(),
                 ocean: terrain.has_ocean,
                 generated,
@@ -2891,6 +3055,35 @@ fn update_terrain(
             terrain.loading.push(key);
             in_flight += 1;
             started += 1;
+        }
+        // Flat shells wanted on fine nodes built without them (the volumetric clouds turned off, an
+        // offscreen view): made on worker threads, the drawn nodes' alone.
+        if terrain.shells_missing && quality.fine_flat_clouds {
+            let radii = terrain.drawn_clouds(&layers);
+            if !radii.is_empty() {
+                let tex_cache = caches.textures.lock().unwrap();
+                for key in visible.iter().chain(cloud_visible.iter().flatten().flatten()).copied() {
+                    let Some(NodeSlot { state: NodeState::Ready(_, c), .. }) = terrain.nodes.get(&key) else { continue };
+                    if !c.is_empty() || terrain.shell_jobs.iter().any(|(k, _)| *k == key) {
+                        continue;
+                    }
+                    if terrain.shell_jobs.len() >= SHELL_JOBS_MAX {
+                        terrain.shells_waiting += 1;
+                        continue;
+                    }
+                    let mut textures: Vec<(String, bool)> = Vec::new();
+                    for (i, _) in &radii {
+                        if let (Some(path), _) = layer_rect(layers.clouds[*i].as_ref(), key) {
+                            if !tex_cache.contains_key(&path) && !textures.iter().any(|(p, _)| *p == path) {
+                                textures.push((path, terrain.clouds[*i].opaque_map));
+                            }
+                        }
+                    }
+                    let (radii, vfs) = (radii.clone(), data.vfs.clone());
+                    let task = AsyncComputeTaskPool::get().spawn(async move { ShellBuild { cloud: cloud_patches(key, radii), textures: decode_tiles(&vfs, textures) } });
+                    terrain.shell_jobs.push((key, task));
+                }
+            }
         }
         // Visibility: of the nodes drawn now and those shown last frame (every other is hidden).
         // The same lists as last frame change nothing (their nodes are all ready and, touched every
@@ -3026,28 +3219,37 @@ fn update_terrain(
         debug!("terrain: {total} resident nodes (cache {cap})");
     }
     if total > cap {
-        let mut stale: Vec<(u64, Entity, TileKey)> = bodies
-            .iter()
-            .flat_map(|(e, _, _, t, _)| {
-                t.nodes
-                    .iter()
-                    .filter(|(k, s)| k.level > 0 && !matches!(s.state, NodeState::Loading(_)) && t.frame - s.last_used > STALE_FRAMES)
-                    .map(move |(k, s)| (t.frame - s.last_used, e, *k))
-            })
-            .collect();
+        // Unused for a while first; when that leaves more than a tenth over the cache, any node the
+        // walk did not use this frame too (least recently used first). With the stale ones alone, a
+        // landing held twice the cache for seconds (every node it passed was used within the last
+        // 30 frames), and that peak of GPU objects slowed every frame after it (wgpu sizes each
+        // pass's tracking by the most buffers ever alive at once).
+        let unused = |min_age: u64| -> Vec<(u64, Entity, TileKey)> {
+            bodies
+                .iter()
+                .flat_map(|(e, _, _, t, _)| {
+                    t.nodes
+                        .iter()
+                        .filter(move |(k, s)| k.level > 0 && !matches!(s.state, NodeState::Loading(_)) && t.frame - s.last_used >= min_age)
+                        .map(move |(k, s)| (t.frame - s.last_used, e, *k))
+                })
+                .collect()
+        };
+        let mut stale = unused(STALE_FRAMES + 1);
+        let mut n = evict_count(total, cap);
+        if total > cap + cap / 4 && *tick % 30 == 0 {
+            let loading: usize = bodies.iter().map(|(_, _, _, t, _)| t.nodes.values().filter(|s| matches!(s.state, NodeState::Loading(_))).count()).sum();
+            let fresh = unused(1).len();
+            debug!("terrain: {total} nodes over the cache of {cap}: {loading} loading, {} stale, {fresh} unused this frame, {} bodies", stale.len(), bodies.iter().filter(|(_, _, _, t, _)| !t.nodes.is_empty()).count());
+        }
+        if total - n.min(stale.len()) > cap + cap / 10 {
+            stale = unused(1);
+            n = total - cap;
+        }
         stale.sort_unstable_by_key(|s| std::cmp::Reverse(s.0));
-        for (_, e, k) in stale.into_iter().take(evict_count(total, cap)) {
+        for (_, e, k) in stale.into_iter().take(n) {
             let Ok((_, _, _, mut terrain, _)) = bodies.get_mut(e) else { continue };
-            terrain.node_heights.remove(&k);
-            terrain.node_hrange.remove(&k);
-            if let Some(slot) = terrain.nodes.remove(&k) {
-                if let NodeState::Ready(e, c) = slot.state {
-                    for e in std::iter::once(e).chain(c) {
-                        commands.entity(e).despawn();
-                    }
-                    terrain.lights.release(slot.light);
-                }
-            }
+            drop_node(&mut commands, &mut terrain, k);
         }
     }
 }
@@ -3099,6 +3301,30 @@ fn trim_texture_cache(caches: &TileCaches, now: u32) {
 
 /// A node unused for this many frames may be evicted.
 const STALE_FRAMES: u64 = 30;
+
+/// The finest level whose nodes carry flat cloud shells while the volumetric clouds are on. Those draw
+/// a body's clouds within 40 radii, and from farther only coarse nodes show (level 8 is 39 km on Earth,
+/// seen from within a thousand km). On every fine node the shells were thousands of hidden materials
+/// and meshes, a buffer and a bind group each per layer, for nothing: wgpu's per-pass tracking grows
+/// with the most buffers ever alive at once, so they slowed every frame of the session.
+const FLAT_CLOUD_MAX_LEVEL: u8 = 8;
+
+/// Flat shells made for nodes built without them at once (a few dozen meshes and a tile or two).
+const SHELL_JOBS_MAX: usize = 16;
+
+/// Drops a built node: its entities and its light record.
+fn drop_node(commands: &mut Commands, terrain: &mut Terrain, k: TileKey) {
+    terrain.node_heights.remove(&k);
+    terrain.node_hrange.remove(&k);
+    if let Some(slot) = terrain.nodes.remove(&k) {
+        if let NodeState::Ready(e, c) = slot.state {
+            for e in std::iter::once(e).chain(c) {
+                commands.entity(e).despawn();
+            }
+            terrain.lights.release(slot.light);
+        }
+    }
+}
 
 /// Nodes to evict from `total` over the cache size `cap`: the excess, at least 64 at a time.
 pub fn evict_count(total: usize, cap: usize) -> usize {
@@ -3164,8 +3390,12 @@ fn select(
                 return true;
             }
         } else {
+            // A child already here (built, or loading) is in use while it waits for its siblings: the
+            // eviction would drop it, and a view needing more nodes than the cache would reload it for ever.
             for (c, g) in children.iter().zip(gaps) {
-                if !t.nodes.contains_key(c) && !beyond_horizon(g) {
+                if let Some(slot) = t.nodes.get_mut(c) {
+                    slot.last_used = frame;
+                } else if !beyond_horizon(g) {
                     requests.push(*c);
                 }
             }
@@ -3663,7 +3893,9 @@ mod tests {
                 }
             } else {
                 for c in children {
-                    if !t.nodes.contains_key(&c) && !old_beyond_horizon(c, *cam_body, t.cull_top(), t.horizon_floor) {
+                    if let Some(slot) = t.nodes.get_mut(&c) {
+                        slot.last_used = frame;
+                    } else if !old_beyond_horizon(c, *cam_body, t.cull_top(), t.horizon_floor) {
                         requests.push(c);
                     }
                 }
