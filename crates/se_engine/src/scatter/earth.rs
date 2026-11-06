@@ -66,8 +66,6 @@ pub struct EarthVeg {
     pub color: Option<Handle<Image>>,
     /// The lights map's brightness (the towns' density for the cities: scatter.wesl), when the body has one.
     pub lights: Option<Handle<Image>>,
-    /// The same bytes for the CPU, with the patch's centre and tan (the Viltrumite mod's hero: is he in a town?).
-    lights_cpu: Option<(DVec3, f64, Vec<u8>)>,
     task: Option<Task<(DVec3, f64, Vec<u8>, Option<Vec<u8>>)>>,
     /// A finished patch waiting a few frames for its images to reach the GPU (until then the old one
     /// stays bound; a missing one would leave no plants for a frame).
@@ -76,29 +74,11 @@ pub struct EarthVeg {
 
 impl Default for EarthVeg {
     fn default() -> Self {
-        EarthVeg { centre: DVec3::Y, tan_a: 0.0, id: 0, color: None, lights: None, lights_cpu: None, task: None, pending: None }
+        EarthVeg { centre: DVec3::Y, tan_a: 0.0, id: 0, color: None, lights: None, task: None, pending: None }
     }
 }
 
 impl EarthVeg {
-    /// The lights map's brightness (0..1) at body-frame direction `dir`, if it lies inside the patch.
-    pub fn lights_at(&self, dir: DVec3) -> Option<f32> {
-        let (c, tan_a, data) = self.lights_cpu.as_ref()?;
-        let k = dir.dot(*c);
-        if k <= 0.0 {
-            return None;
-        }
-        let (e1, e2) = frame_axes(*c);
-        let p = dir / k;
-        let (u, v) = (p.dot(e1) / tan_a, p.dot(e2) / tan_a);
-        if u.abs() >= 1.0 || v.abs() >= 1.0 {
-            return None;
-        }
-        let n = PATCH_SIZE as f64;
-        let (x, y) = (((u + 1.0) * 0.5 * n) as usize, ((v + 1.0) * 0.5 * n) as usize);
-        data.get(y * PATCH_SIZE as usize + x).map(|&b| b as f32 / 255.0)
-    }
-
     /// Starts a new patch around `cam_dir` (body frame, unit) when the camera has left the middle of
     /// the current one; takes a finished one.
     pub fn update(&mut self, vfs: &Arc<Vfs>, color: &TileLayer, water: Option<&TileLayer>, lights: Option<&TileLayer>, radius: f64, cam_dir: DVec3, images: &mut Assets<Image>) {
@@ -114,7 +94,6 @@ impl EarthVeg {
         if let Some(task) = self.task.as_mut() {
             if let Some((c, tan_a, col, lit)) = check_ready(task) {
                 self.task = None;
-                self.lights_cpu = lit.as_ref().map(|l| (c, tan_a, l.clone()));
                 let lit = lit.map(|l| images.add(patch_image_format(l, TextureFormat::R8Unorm)));
                 self.pending = Some((c, tan_a, images.add(patch_image(col)), lit, 3));
             }

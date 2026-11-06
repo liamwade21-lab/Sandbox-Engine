@@ -172,7 +172,7 @@ pub fn despawn_views(commands: &mut Commands, images: &mut Assets<Image>, views:
 
 /// Turn the views with the main camera and give them its near plane, layers and post-processing.
 #[allow(clippy::type_complexity)]
-fn follow_main(
+pub(crate) fn follow_main(
     mut commands: Commands,
     scene: Res<SceneLayers>,
     main: Query<

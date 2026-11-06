@@ -88,12 +88,12 @@ or publishing the port.
   First enable looks inside every `Need` by its extension (`mods::check_files`: `parse_dds`, `check_sehm`, `check_sound`), so a new kind of file gets its check there; a refusal greys the row
   (`ModRegistry::mark`: `Missing` if the file has gone, `Bad` if it's wrong).
 - Drawing the hero (`viltrumite/draw.rs`, `anim.rs`, `hero.wesl`, `hero_light.wesl`, `hero_frame.wesl`; spec F13): his light is `ground_light.wesl` `point_light_at`, the same
-  function the scatter's objects use (change the ground's lighting there and all follow), run once a frame by a compute pass; his draws read the result. Near a body with drawn ground, under
+  function the scatter's objects use (change the ground's lighting there and all follow), run once a frame by a compute pass; his draws read the result. Near a body whose light record is fresh (`Terrain::body_light_fresh`; an empty `drawn_nodes()` doesn't say so: under a giant's radius the list is empty and the record fresh), under
   its atmosphere's top, `HeroFrame` copies the body's light record and atmosphere (as scatter/gpu.rs); otherwise `free_light` fills the same record on the CPU, further lights in `free_*` taken with
   his normals. `planet_intensities` can return fewer values than lights (it ends at the first too faint): never index it blindly. Palette: one `ShaderBuffer` written in place, never a material; meshes at identity,
   camera-relative, `update_hero` after `update_node_transforms` and before `CameraUpdateSystems` (the near plane too). His pipelines queue on first enable under a palette of zeros (`HERO_PIPELINES`: add any new pipeline of
   his there, and its shader file to `pipeline_watch::hero_pipeline`). Skinned normals: green of the normal maps points down the image, as +v: `b = cross(t, n) * w` (it was found by the curl of the maps, not by eye). A cape joint's rotation must include the chest's
-  (`hang_cape`), or the normals stay on the cloth's far side and it looks pale. The main world has no vertices after first enable (`HeroAssets.model.vertices` is emptied once the meshes are made). `hero here|stand|face|clip|light|state` place him for pictures (a test's `mods on` needs a `wait` before them). His white suit reads 15-25 times brighter than Earth's forests: that is albedo (conifers are about 4 %, and the trees take the map's dark colour), not a light bug. Pixel comparisons that are bit-exact: `.optimize/bench/pixel_scenes.sh`, `freeze_clocks.py`, `pixel_cmp.py`.
+  (`hang_cape`), or the normals stay on the cloth's far side and it looks pale. The main world has no vertices after first enable (`HeroAssets.model.vertices` is emptied once the meshes are made). `hero here|stand|face|clip|light|state` place him for pictures (a test's `mods on` needs a `wait` before them). Heights that compare with an atmosphere or a cloud layer (the fade in `hero_light.wesl`, `update_hero`'s limit) are the body's sphere frame's: the radial distance reads up to flattening x radius too low, 21 km at Earth's poles, 6,000 km at Saturn's. Until step 4's frames he rides what carries the camera (`Place::Rides`, from `Follow::last_pos` and `last_rot`), whatever the distance to a body: in any other frame he leaves the view in a frame or two. The street lamps on him are `RoadCtx::town_at` (`Terrain::town_ctx`, level 2 and up: the ground's own density, so none over the sea or in a village), on a worker thread because a map body's reads a lights tile. `update_hero` runs before `capture::follow_main` (the capture views copy his near plane, or he is cut from hi-res shots). `free_light` takes the stars through `star_tint(.., true)`: `sun_sprite_tint`'s sphere hides the star from a point above a flattened giant's pole. His white suit reads 15-25 times brighter than Earth's forests: that is albedo (conifers are about 4 %, and the trees take the map's dark colour), not a light bug. Pixel comparisons that are bit-exact: `.optimize/bench/pixel_scenes.sh`, `freeze_clocks.py`, `pixel_cmp.py`.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its
@@ -277,7 +277,7 @@ or publishing the port.
 - Test runs: `bash .audit/tools/runport.sh OUT.png FRAMES "cmds"` (one run at a time). Useful
   dev commands: `select NAME`, `surface LAT LON ALT_KM PITCH`, `agl M` (hold M metres above
   the ground), `fly KMS`, `spin DEG` (turn in place), `orbit DEG` (swing round the selection, as the
-  right mouse button does; degrees a second), `photo 0|1|2` (photo mode: 2 is auto exposure), `ambient X` (SE's
+  right mouse button does; degrees a second), `photo 0|1|2` (photo mode: 2 is auto exposure), `exposure STOPS` (compensation, to measure dark pictures: a night's trees are level 0 or 1 in a PNG), `ambient X` (SE's
   ambient light), `shot FILE`, `wait N`, `date`, `pause`, `mods list|on NAME|off|window [off]|sound NAME` (the Mods menu; `sound` plays `sfx/NAME.ogg`, the log says decoded, playing, finished), `script PATH`
   (start a script, a file on disk too), `uiclick X Y` (a real left click for egui at that window point: the menus' buttons
   can be tested). A 1x1 screenshot
@@ -433,7 +433,7 @@ or publishing the port.
   generator. The rings shade every body's clouds (`ring_shadow`, in the body frame: in sphere space a
   flattened giant's shadow fell in the wrong places) and SE's rings winter fades a giant's deck. The
   camera may go down to 10 scale heights under a giant's radius while the passes work on it
-  (`giant_floor_m`, terrain.rs `keep_camera_above_ground`); below the radius terrain.rs hides the
+  (`giant_floor_m`, terrain.rs `keep_camera_above_ground`; `trace` takes out of the depth only the flat surface, by the ray's own hit with the radius, so a ship or the hero in front of it stays in front of the decks); below the radius terrain.rs hides the
   giant's flat bands (seen from below, their nodes' skirts were a grid of lines). A hot giant's decks
   glow as its bands do (`deck_glow`, `CloudView::glow` from terrain.rs `thermal_uniform`; hotter with
   depth below the main deck's top, `giant_sample` puts that depth in `wx.y`), and a glowing atmosphere's

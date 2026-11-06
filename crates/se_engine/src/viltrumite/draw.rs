@@ -6,7 +6,7 @@
 //!   Bevy's joint attributes would switch its pipeline to its own skinning.
 //! - **Light.** One path: the ground's (`ground_light.wesl` `point_light_at`), run once a frame by a compute
 //!   pass (`hero_light.wesl`; per vertex it would read 30 textures 165,706 times), its result read by his
-//!   draws. Near a body with drawn ground the frame holds that body's own light record and atmosphere, as the
+//!   draws. Near a body with a fresh light record the frame holds that body's own light record and atmosphere, as the
 //!   scatter's do. Otherwise (a body's record goes stale when it isn't resolved, its tables end at their top,
 //!   and its own shine isn't in its record) the CPU fills the same record: the stars with their shadows and
 //!   atmospheres on the way, no tables, and the further lights with his own normals.
@@ -39,9 +39,10 @@ use bevy::render::texture::{FallbackImage, GpuImage};
 use bevy::render::view::ExtractedView;
 use bevy::render::{Render, RenderApp, RenderSystems};
 use bevy::shader::ShaderRef;
+use bevy::tasks::{AsyncComputeTaskPool, Task, futures::check_ready};
 use se_core::catalog::ObjectRef;
 use se_core::hero_asset::{HeroDraw, HeroModel, MAX_BONES};
-use se_core::procgen::civilization::{culture, nearest_settlement};
+use se_core::procgen::civilization::culture;
 use se_core::upos::UPos;
 
 use crate::atmosphere::AtmosphereParamsUniform;
@@ -49,10 +50,9 @@ use crate::camera::{FlyCamera, MainCamera};
 use crate::color_correction::ColorCorrection;
 use crate::data::SeData;
 use crate::mods::{HeroAssets, ModControl};
-use crate::scatter::Scatter;
 use crate::stars::StarSettings;
-use crate::system::{AmbientLighting, BatchedSprite, LightingFade, SystemBody, illum_color, planet_shine, sun_sprite_tint};
-use crate::terrain::{ATM_SUN_SCALE, PatchLight, Terrain};
+use crate::system::{AmbientLighting, BatchedSprite, LightingFade, SystemBody, illum_color, planet_shine, star_tint};
+use crate::terrain::{ATM_SUN_SCALE, PatchLight, Terrain, TileCaches};
 use crate::volumetric_clouds::CloudShadowAssets;
 
 use super::tune;
@@ -202,6 +202,15 @@ pub struct HeroDraws {
     /// Which light he had last frame, for the log.
     was_near: Option<bool>,
     town_timer: u32,
+    /// How far into a town he is, being worked out, and the lamps' colour and strength it scales.
+    town_task: Option<(Vec3, Task<f32>)>,
+}
+
+impl HeroDraws {
+    /// The street lamps' light on him now (for the log).
+    pub(super) fn town(&self) -> [f32; 3] {
+        self.frame.town.truncate().to_array()
+    }
 }
 
 /// What the compute pass needs from the main world (made on first enable; off, `on` is false).
@@ -322,7 +331,7 @@ pub(super) fn spawn_hero(
     assets.model.indices = Vec::new();
     info!("viltrumite: meshes and {} textures made in {} ms", cache.len(), started.elapsed().as_millis());
     commands.insert_resource(HeroLightInput { on: true, frame: frame_buffer.clone(), light, tables: None });
-    commands.insert_resource(HeroDraws { entities, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0 });
+    commands.insert_resource(HeroDraws { entities, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
 }
 
 /// He shows while the mod is on. Runs only after the first enable.
@@ -353,7 +362,7 @@ pub(crate) struct LightParams<'w, 's> {
     fade: Res<'w, LightingFade>,
     settings: Res<'w, StarSettings>,
     ambient: Res<'w, AmbientLighting>,
-    scatter: Option<Res<'w, Scatter>>,
+    caches: Res<'w, TileCaches>,
     bodies: Query<'w, 's, (Entity, &'static SystemBody, Option<&'static Terrain>)>,
     occluders: Query<'w, 's, (&'static SystemBody, Option<&'static Terrain>)>,
     sprites: Query<'w, 's, &'static BatchedSprite>,
@@ -363,7 +372,7 @@ pub(crate) struct LightParams<'w, 's> {
 /// no such body.
 fn body_light(f: &mut HeroFrameGpu, b: &SystemBody, t: &Terrain, cam: UPos) -> bool {
     let Some(u) = t.body_uniform.as_ref() else { return false };
-    if t.drawn_nodes().is_empty() {
+    if !t.body_light_fresh {
         return false;
     }
     let m = crate::scatter::DMat3Ext::from_quat_scale(b.orient, b.shape);
@@ -404,7 +413,7 @@ fn free_light(f: &mut HeroFrameGpu, p: &LightParams, pos: UPos) {
             let lum = se_core::star::lum_from_abs_mag(s.abs_mag);
             let d = b.pos.delta_m(pos).length().max(1.0);
             let c = illum_color(Vec3::from_array(crate::stars::star_render_color(s.class.kind, s.teff)), s.teff as f32, &p.settings);
-            let tint = sun_sprite_tint(b, pos, &p.occluders);
+            let tint = star_tint(b, pos, &p.occluders, true);
             lights.push(FreeLight { flux: lum / (d / METERS_PER_AU).powi(2), dir: b.pos.delta_m(pos).normalize_or(DVec3::Y).as_vec3(), color: c * tint, star: true });
             stars.push((lum, b.pos, c));
         }
@@ -471,36 +480,29 @@ fn free_light(f: &mut HeroFrameGpu, p: &LightParams, pos: UPos) {
     f.atm = AtmosphereParamsUniform::default();
 }
 
-/// The street lamps' light where he is: the town's lights' colour times how far into a town he is (Earth's
-/// from its lights map, as the buildings'; a generated planet's from the settlement field), fading out a few
-/// hundred metres up.
-fn town_light(p: &LightParams, b: &SystemBody, t: &Terrain, pos: UPos) -> Vec3 {
-    let Some((level, seed)) = t.civ else { return Vec3::ZERO };
-    let local = b.orient.inverse() * pos.delta_m(b.pos);
-    let height = local.length() - crate::ship::ground_on(b.radius_m, b.shape, Some(t), local).0;
-    if t.domes || height > 800.0 {
-        return Vec3::ZERO;
+/// The street lamps where he is: their colour and strength, fading out a few hundred metres up, and a task
+/// asking how much town stands under him (the ground's own density, from the sources it draws its streets by; a
+/// map body's reads a lights tile, so never on the main thread). `None` where there are none: not over a colony's
+/// domes, and not below level 2 (a village has hearths, no street lamps).
+fn town_job(p: &LightParams, b: &SystemBody, t: &Terrain, pos: UPos) -> Option<(Vec3, Task<f32>)> {
+    let (level, seed) = t.civ?;
+    if t.domes {
+        return None;
     }
-    let dir = b.from_shape(local).normalize_or_zero();
-    let (share, rgb) = if t.has_color_map() {
-        let lum = p.scatter.as_deref().and_then(|s| s.earth_lights_at(dir)).unwrap_or(0.0);
-        (smooth(0.04, 0.5, lum as f64), [1.0, 0.68, 0.32])
-    } else {
-        // The ground's seed: the culture seed's four digits through f32, as the shader takes them.
-        let digits = ((seed % 10_000) as f32 / 10_000.0 * 10_000.0) as u32;
-        let share = (0..=3u8)
-            .filter_map(|kind| {
-                let search = se_core::procgen::civilization::settlement_size(level, kind)?.3 as f64 * tune::TOWN_EDGE;
-                let (mid, r_km) = nearest_settlement(dir, t.radius, level, digits, kind, search)?;
-                let d = mid.dot(dir).clamp(-1.0, 1.0).acos() * t.radius / 1000.0;
-                Some(1.0 - smooth(tune::TOWN_FULL, tune::TOWN_EDGE, d / r_km.max(1e-3)))
-            })
-            .fold(0.0, f64::max);
-        (share, culture(seed, level).light)
-    };
+    let local = b.from_shape(b.orient.inverse() * pos.delta_m(b.pos));
+    let dir = local.try_normalize()?;
+    let ground = t.surface_sample(dir)?.0;
+    let height = local.length() - t.radius - ground;
+    if height >= tune::TOWN_TOP_M {
+        return None;
+    }
+    let ctx = t.town_ctx(&p.caches)?;
+    let vfs = p.data.as_deref()?.vfs.clone();
+    let rgb = if t.has_color_map() { [1.0, 0.68, 0.32] } else { culture(seed, level).light };
     let m = rgb[0].max(rgb[1]).max(rgb[2]).max(1e-3);
-    let fade = 1.0 - smooth(50.0, 800.0, height);
-    Vec3::from_array(rgb) / m * (share * fade) as f32 * tune::TOWN_LAMPS
+    let fade = 1.0 - smooth(tune::TOWN_FADE_M, tune::TOWN_TOP_M, height);
+    let tint = Vec3::from_array(rgb) / m * fade as f32 * tune::TOWN_LAMPS;
+    Some((tint, AsyncComputeTaskPool::get().spawn(async move { ctx.town_at(dir, ground as f32, &vfs) })))
 }
 
 fn smooth(a: f64, b: f64, x: f64) -> f64 {
@@ -533,7 +535,7 @@ pub(crate) fn update_hero(
         hero.place_ahead(&cam, &p.bodies);
         hero.start_clip(&assets.clips, "bf_idle");
     }
-    // His place in the universe, on the body he's attached to.
+    // His place in the universe.
     hero.keep_standing(&assets, &p.bodies);
     let (pos, rot) = hero.world_pose(&cam, &p.bodies);
     let rel = pos.delta_m(cam.pos);
@@ -578,7 +580,9 @@ pub(crate) fn update_hero(
         .bodies
         .iter()
         .filter(|(_, b, _)| !b.star && b.radius_m > 0.0)
-        .map(|(_, b, t)| (b, t, b.pos.delta_m(pos).length() - b.radius_m))
+        // (Above the radius in the sphere frame, the atmosphere's and the clouds' heights: on a flattened body the
+        // radial distance reads up to flattening x radius too low.)
+        .map(|(_, b, t)| (b, t, b.from_shape(b.orient.inverse() * pos.delta_m(b.pos)).length() - b.radius_m))
         .min_by(|a, b| a.2.total_cmp(&b.2));
     let up = nearest.map_or(cam.rot * DVec3::Y, |(b, _, _)| pos.delta_m(b.pos).normalize_or(DVec3::Y)).as_vec3();
     f.point = (rel_f + up * 0.3).extend(0.0);
@@ -600,12 +604,21 @@ pub(crate) fn update_hero(
     if input.tables != tables {
         input.tables = tables;
     }
-    // How far into a town: not every frame (it hashes hundreds of cells).
-    if draws.town_timer == 0 {
+    // How far into a town: not every frame, and off the main thread.
+    if let Some((tint, task)) = draws.town_task.as_mut() {
+        if let Some(share) = check_ready(task) {
+            f.town = (*tint * share).extend(0.0);
+            draws.town_task = None;
+        }
+    } else if draws.town_timer == 0 {
         draws.town_timer = tune::TOWN_EVERY_FRAMES;
-        f.town = nearest.filter(|_| near_body.is_some()).and_then(|(b, t, _)| Some(town_light(&p, b, t?, pos))).unwrap_or(Vec3::ZERO).extend(0.0);
+        draws.town_task = nearest.filter(|_| near_body.is_some()).and_then(|(b, t, _)| town_job(&p, b, t?, pos));
+        if draws.town_task.is_none() {
+            f.town = Vec4::ZERO;
+        }
+    } else {
+        draws.town_timer -= 1;
     }
-    draws.town_timer -= 1;
     // In place: the buffer and his materials' bind groups stay.
     if let Some(mut b) = buffers.get_mut(&draws.frame_buffer) {
         if let Some(d) = b.cast_slice_mut::<u8>() {
@@ -706,7 +719,8 @@ fn light_pass(_view: ViewQuery<&ExtractedView, MainView>, pass: Res<HeroLightPas
 /// Where a `Place` puts him this frame, for the log.
 pub(super) fn describe(place: &Place, bodies: &Query<(Entity, &SystemBody, Option<&Terrain>)>) -> String {
     match place {
-        Place::Free(_) => "free".to_string(),
+        Place::Free => "free".to_string(),
+        Place::Rides { locked, local, .. } => format!("riding what carries the camera ({}), {:.0} m from its centre", if *locked { "turning with it" } else { "moving with it" }, local.length()),
         Place::On { body, local } => match bodies.get(*body) {
             Ok((_, b, _)) => format!("{:.0} m above the radius of the body at {:.0} km", local.length() - b.radius_m, b.radius_m / 1000.0),
             Err(_) => "on a body gone".to_string(),

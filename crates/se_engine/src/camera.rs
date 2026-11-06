@@ -1777,6 +1777,12 @@ fn run_commands(
                 *p = crate::exposure::PhotoMode::new(arg.trim().parse::<u8>().unwrap_or(0));
             }
         }),
+        // (Exposure compensation in stops, for measuring dark pictures: a night's trees are 0 or 1 in a PNG.)
+        "exposure" => commands.queue(move |w: &mut World| {
+            if let Some(mut e) = w.get_resource_mut::<crate::exposure::ExposureComp>() {
+                e.set(arg.trim().parse::<f32>().unwrap_or(0.0));
+            }
+        }),
         "ambient" => commands.queue(move |w: &mut World| {
             if let Some(mut a) = w.get_resource_mut::<crate::system::AmbientLighting>() {
                 a.0 = arg.trim().parse::<f32>().unwrap_or(0.0).clamp(0.0, 1.0);

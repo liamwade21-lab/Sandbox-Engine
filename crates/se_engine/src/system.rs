@@ -1722,12 +1722,19 @@ fn crescent_shift(rot: DQuat, body: DVec3, star: DVec3, radius_m: f64, lit: bool
 /// skies, scaled by the part of the star's disc no body hides and coloured by the atmospheres the
 /// line of sight crosses (a star behind a planet's limb is hidden whole, not cut by the planet).
 pub(crate) fn sun_sprite_tint(star: &SystemBody, cam: UPos, occluders: &Query<(&SystemBody, Option<&crate::terrain::Terrain>)>) -> Vec3 {
+    star_tint(star, cam, occluders, false)
+}
+
+/// The same with `flattened`: each body as the ellipsoid it is drawn as (worked out in its sphere frame), not a
+/// sphere of its equatorial radius. Above a flattened giant's pole the point can be under that radius by
+/// thousands of km with the star in full view.
+pub(crate) fn star_tint(star: &SystemBody, cam: UPos, occluders: &Query<(&SystemBody, Option<&crate::terrain::Terrain>)>, flattened: bool) -> Vec3 {
     let rel = star.pos.delta_m(cam);
     let dist = rel.length();
     if dist <= star.radius_m {
         return Vec3::ONE;
     }
-    let dir = rel / dist;
+    let star_dir = rel / dist;
     let ang_r = (star.radius_m / dist).asin().max(1e-9);
     let mut visible = 1.0;
     let mut tr = DVec3::ONE;
@@ -1735,7 +1742,12 @@ pub(crate) fn sun_sprite_tint(star: &SystemBody, cam: UPos, occluders: &Query<(&
         if b.star || b.radius_m <= 0.0 {
             continue;
         }
-        let o = b.pos.delta_m(cam);
+        let (o, dir) = if flattened {
+            let sphere = |v: DVec3| b.from_shape(b.orient.inverse() * v);
+            (sphere(b.pos.delta_m(cam)), sphere(star_dir).normalize_or(star_dir))
+        } else {
+            (b.pos.delta_m(cam), star_dir)
+        };
         let d_o = o.length();
         if d_o <= b.radius_m {
             // Below the body's radius: its horizon plane hides the lower sky.

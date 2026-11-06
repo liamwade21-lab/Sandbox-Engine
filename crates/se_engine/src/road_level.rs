@@ -193,6 +193,25 @@ pub struct NodeRoads<'a> {
 }
 
 impl RoadCtx {
+    /// The ground's town density (0..1) at body-frame direction `dir` (unit), on ground `height` m above the
+    /// radius: where it draws streets, so none over the sea or on land that doesn't suit. A map body's may
+    /// read and decode a tile: not for the main thread.
+    pub fn town_at(&self, dir: DVec3, height: f32, vfs: &Vfs) -> f32 {
+        match &self.towns {
+            TownSource::Field { lo, span, sea, coast, test, fert_min, .. } => {
+                let d = dir.as_vec3().to_array();
+                let st = NodeField::new(d, 0.05, self.radius as f32, self.level, self.field_seed).at(d);
+                city_roads::generated_density(st, height, *lo, *span, *sea, *coast, *test, *fert_min).0
+            }
+            TownSource::Lights { lights, water, cache } => {
+                let (face, u, v) = CubeFace::from_dir(dir);
+                let Some((tile, t)) = TileLook::new(lights).at(face, u, v, cache, vfs) else { return 0.0 };
+                let wet = water.as_ref().and_then(|w| TileLook::new(w).at(face, u, v, cache, vfs)).map_or(0.0, |(tile, t)| tile.red(t));
+                city_roads::lights_density(tile.lum(t), wet).0
+            }
+        }
+    }
+
     /// The levelling for node `key`, or `None` where no town can reach it (most of a planet: its
     /// heights stay as they are, at no cost).
     pub fn node<'a>(&'a self, key: TileKey, vfs: &'a Vfs) -> Option<NodeRoads<'a>> {
@@ -273,5 +292,31 @@ impl NodeRoads<'_> {
         // (Smoothstep over the face's edge band.)
         let t = ((edge_m - FACE_EDGE_M.0) / (FACE_EDGE_M.1 - FACE_EDGE_M.0)).clamp(0.0, 1.0);
         h + (lev - h) * t * t * (3.0 - 2.0 * t)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_core::procgen::civilization::nearest_settlement;
+
+    /// The ground's own rule: inside a settlement's disc, a town stands on land that suits, not over its sea.
+    #[test]
+    fn a_town_stands_only_on_land_that_suits() {
+        let (radius, seed) = (6.4e6, 1234);
+        let field_seed = city_roads::field_seed(seed);
+        let ctx = RoadCtx {
+            layout_seed: city_roads::layout_seed(seed),
+            field_seed,
+            level: 2,
+            spread: 0.0,
+            radius,
+            towns: TownSource::Field { lo: -5000.0, span: 10_000.0, sea: true, coast: 0.0, test: 0.0, airless: false, fert_min: 1.0 },
+        };
+        let vfs = Vfs::new();
+        let (mid, _) = nearest_settlement(DVec3::X, radius, 2, field_seed, 2, 5000.0).expect("a settlement");
+        assert!(ctx.town_at(mid, 200.0, &vfs) > 0.9, "{}", ctx.town_at(mid, 200.0, &vfs));
+        assert_eq!(ctx.town_at(mid, 0.0, &vfs), 0.0, "over the sea");
+        assert_eq!(ctx.town_at(mid, 4900.0, &vfs), 0.0, "high in the mountains");
     }
 }

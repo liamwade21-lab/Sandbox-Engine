@@ -963,6 +963,9 @@ pub struct Terrain {
     /// The body's lighting as every node's light record holds it (without the geomorph distance),
     /// for objects standing on the ground (`scatter.rs`).
     pub(crate) body_light: PatchLight,
+    /// `body_light` was written this frame: an unresolved body's stays as it was. (An empty `visible` doesn't
+    /// say so: under a gas giant's radius the list is empty and the record fresh.)
+    pub(crate) body_light_fresh: bool,
     /// A built node's material uniform: its per-body fields (atmosphere, rings, glow, the cloud key)
     /// are the same for every node, for objects standing on the ground.
     pub(crate) body_uniform: Option<PlanetUniform>,
@@ -1235,6 +1238,7 @@ impl Terrain {
             visible: Vec::new(),
             visible_rev: 0,
             body_light: PatchLight::default(),
+            body_light_fresh: false,
             body_uniform: None,
             drawn: Vec::new(),
             vis_inputs: None,
@@ -1327,6 +1331,12 @@ impl Terrain {
 
     pub fn ground_height(&self, dir: DVec3) -> Option<f64> {
         self.ground_sample(dir).map(|s| s.0)
+    }
+
+    /// The context for asking where this body's towns of streets are (`RoadCtx::town_at`): `None` below
+    /// level 2 (a level 1 village has no street lamps) or before its layers are known.
+    pub(crate) fn town_ctx(&self, caches: &TileCaches) -> Option<crate::road_level::RoadCtx> {
+        town_source(self, self.layers.as_ref()?, caches)
     }
 
     /// The nodes drawn this frame (sorted): a partition of the ground up to the horizon.
@@ -2329,12 +2339,20 @@ fn cull_sea_patches(
 /// and up), by planet.wesl's two paths: a generated planet's settlement field (no colour map) and a
 /// map body's lights (Earth). `SE_ROAD_LEVEL=0` turns it off.
 fn road_ctx(terrain: &Terrain, layers: &TerrainLayers, caches: &TileCaches) -> Option<crate::road_level::RoadCtx> {
+    // (`SE_ROAD_LEVEL=0`: the roads lie as the ground does, for comparisons.)
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("SE_ROAD_LEVEL").is_ok_and(|v| v == "0")) {
+        return None;
+    }
+    town_source(terrain, layers, caches)
+}
+
+/// Where a body's towns of streets are (level 2 and up), by planet.wesl's two paths.
+fn town_source(terrain: &Terrain, layers: &TerrainLayers, caches: &TileCaches) -> Option<crate::road_level::RoadCtx> {
     use crate::road_level::{RoadCtx, TownSource};
     use se_core::procgen::city_roads;
     let (level, seed) = terrain.civ?;
-    // (`SE_ROAD_LEVEL=0`: the roads lie as the ground does, for comparisons.)
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if level < 2 || *OFF.get_or_init(|| std::env::var("SE_ROAD_LEVEL").is_ok_and(|v| v == "0")) {
+    if level < 2 {
         return None;
     }
     let culture = se_core::procgen::civilization::culture(seed, level);
@@ -2941,6 +2959,7 @@ fn update_terrain(
         }
 
         if !resolved {
+            terrain.body_light_fresh = false;
             terrain.lights.upload(&mut shader_buffers);
             terrain.visible.clear();
             terrain.visible_rev += 1;
@@ -3265,6 +3284,7 @@ fn update_terrain(
             flags: Vec4::new(atm_on, 0.0, veg.x, veg.y),
         };
         terrain.body_light = lit;
+        terrain.body_light_fresh = true;
         // Lit for this generation already and none shown since: nothing to relight.
         if terrain.drawn_lit != Some(light_gen) {
             for key in &terrain.drawn {

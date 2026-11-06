@@ -1519,12 +1519,19 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     }
     let o = cv.cam.xyz;
     let d = (cv.sphere_from_world * vec4<f32>(dir, 0.0)).xyz;
-    // A gas giant's flat surface (SE's bands at its radius) lies inside its decks: they replace it.
-    if cv.giant.x > 0.5 && limit < FAR && length(o + d * limit) < cv.cam.w * 1.002 {
-        limit = FAR;
-    }
     let a = dot(d, d);
     let b = dot(o, d);
+    // A gas giant's flat surface (SE's bands at its radius) lies inside its decks: they replace it. Not what
+    // stands in front of it (a ship, the Viltrumite mod's hero; the decks once drew over them), and from under
+    // the radius the surface isn't drawn at all.
+    if cv.giant.x > 0.5 && limit < FAR && cv.cam2.y > 0.0 && length(o + d * limit) < cv.cam.w * 1.002 {
+        // Where this ray meets the surface, or comes nearest to it.
+        let s = sphere_hits(0.0, a, b);
+        let t = select(-b / a, s.x, s.x <= s.y);
+        if t > 0.0 && limit >= 0.5 * t {
+            limit = FAR;
+        }
+    }
     let bottom_h = cv.cam2.z;
     let top_h = cv.atm_flags.w;
     let ground = sphere_hits(min(bottom_h, 0.0) - 500.0, a, b);

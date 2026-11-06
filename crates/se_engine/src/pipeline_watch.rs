@@ -177,6 +177,8 @@ fn hero_pipeline(d: &PipelineDescriptor) -> bool {
 #[derive(Default)]
 struct Seen {
     start: Option<std::time::Instant>,
+    /// The pipelines of the Viltrumite mod's hero, in order.
+    hero_ids: Vec<usize>,
     /// The buffers' peak last logged.
     logged_peak: u32,
     /// When each pipeline still building was first seen.
@@ -264,6 +266,7 @@ fn watch_pipelines(
     let mut others = 0;
     let mut n = 0;
     let mut hero = [0u32; 3];
+    let mut next_hero = 0;
     for (id, p) in cache.pipelines().enumerate() {
         n = id + 1;
         let state = match p.state {
@@ -271,7 +274,12 @@ fn watch_pipelines(
             CachedPipelineState::Ok(_) => READY,
             CachedPipelineState::Err(_) => FAILED,
         };
-        if hero_pipeline(&p.descriptor) {
+        // (Recognised once, when they first appear: with the mod off, one comparison a pipeline.)
+        if id >= seen.count && hero_pipeline(&p.descriptor) {
+            seen.hero_ids.push(id);
+        }
+        if seen.hero_ids.get(next_hero) == Some(&id) {
+            next_hero += 1;
             hero[match state {
                 READY => 0,
                 BUILDING => 1,

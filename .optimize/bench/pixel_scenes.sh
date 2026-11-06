@@ -22,6 +22,8 @@ S[town_night]="$T; date 2026-06-22 03:00:00; select Earth; surface 40.7498 -73.9
 S[earth]="$D; select Earth; surface 45 90 0.3 -10 0; wait 2400"
 S[mars]="$D; select Mars; surface -14.6 175.5 0.3 -10 0; wait 2400"
 S[saturn]="$D; goto Saturn 300000; wait 900"
+S[jupiter]="$D; select Jupiter; surface 10 180 100 -5 0; wait 1500"
+S[jupiter_deep]="$D; select Jupiter; surface 10 180 -40 -5 0; wait 1500"
 for s in "$@"; do
   bash "$REPO/.audit/tools/runport.sh" "$OUT/$s.png" 5 "${S[$s]}" > /dev/null
   echo "$s panics $(grep -ciE 'panic' "$OUT/$s.png.log") saved $(grep -c 'Screenshot saved' "$OUT/$s.png.log")"

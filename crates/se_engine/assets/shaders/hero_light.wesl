@@ -24,9 +24,13 @@ import super::hero_frame::{HeroFrame, HeroLight};
 fn light() {
     // Only the clouds above him shade him: the record was written for the ground under the camera. A layer
     // fades as he climbs through it; past the highest the shadow is off, and with it the shadow map (its
-    // shapes are the ground's, seen through every layer).
+    // shapes are the ground's, seen through every layer). The layers' heights are the sphere frame's: on a
+    // flattened body the radial distance reads up to flattening x radius too low (Earth 21 km at the poles).
     var sh = cloud_sh;
-    let height = length(frame.point.xyz - frame.body.centre.xyz) - frame.body.centre.w;
+    let b = frame.body;
+    let rel = frame.point.xyz - b.centre.xyz;
+    let local = vec3<f32>(dot(rel, b.m0.xyz) / dot(b.m0.xyz, b.m0.xyz), dot(rel, b.m1.xyz) / dot(b.m1.xyz, b.m1.xyz), dot(rel, b.m2.xyz) / dot(b.m2.xyz, b.m2.xyz));
+    let height = length(local) - b.centre.w;
     var above = false;
     for (var i = 0; i < 4; i++) {
         let a = sh.layer_a[i];
