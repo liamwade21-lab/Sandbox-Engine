@@ -65,6 +65,15 @@ or publishing the port.
 
 ## Gotchas
 
+- Mods menu (`mods.rs`; the plan is `docs/spec-mods-viltrumite-powers.md`, its Build log says what each step did): a
+  mod is a folder under `assets/mods` with a `mod.cfg` (`Name`, `Description`, `Code`, repeated `Need "relative path"`).
+  The scan and `mod_file` look beside the exe first, then in the source tree, per file (as orbital.rs's textures). List
+  in `Need` only files that exist: one missing greys the row. A new mod's `Code` goes in `KNOWN_CODES`. Every way off goes
+  through `ModControl::off`; `off_for_pilot_or_script` runs after `ship_input` and `input_controls` and before `run_script`,
+  so the mod is off first. With the mod off only run conditions run; keep it so. `SE_MODS=0` hides it all. Test a grey row
+  with a copy of the exe beside `assets/shaders` and `assets/mods/NAME/mod.cfg` (`SE_UI_OPEN=mods` or `mods window`), and
+  wait 1500 frames before judging a picture: earlier ones can be black, even the panels. A pale Earth ground with the rocks
+  still brown (`refs.sh` used to catch it at 1200 frames) is the ground half loaded, not a bug: it is gone by 3000.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its
@@ -249,7 +258,9 @@ or publishing the port.
   dev commands: `select NAME`, `surface LAT LON ALT_KM PITCH`, `agl M` (hold M metres above
   the ground), `fly KMS`, `spin DEG` (turn in place), `orbit DEG` (swing round the selection, as the
   right mouse button does; degrees a second), `photo 0|1|2` (photo mode: 2 is auto exposure), `ambient X` (SE's
-  ambient light), `shot FILE`, `wait N`, `date`, `pause`. A 1x1 screenshot
+  ambient light), `shot FILE`, `wait N`, `date`, `pause`, `mods list|on NAME|off|window [off]` (the Mods menu), `script PATH`
+  (start a script, a file on disk too), `uiclick X Y` (a real left click for egui at that window point: the menus' buttons
+  can be tested). A 1x1 screenshot
   (72 bytes) means the window was minimised at that moment: take each picture twice.
 - The user's own `se.log` and `settings.cfg` (in `%APPDATA%\SpaceEngine-rs-v2`) can be hidden
   from Claude's shell by the desktop app's sandbox (they were readable on 2026-11-02); if so, copy
@@ -415,7 +426,8 @@ or publishing the port.
 - Reaching the user's RSN planets by dev commands (`.optimize/bench/rsn_ultra.sh`) needs the
   `--size 3440x1440` window: at the default size the nebula's star was "not found".
 - Python on Windows: `read_text`/`write_text` turn LF files into CRLF. Patch files with
-  `read_bytes`/`write_bytes` (and keep each file's own line endings).
+  `read_bytes`/`write_bytes` (and keep each file's own line endings: `git ls-files --eol FILE` says which it has; the repo is
+  a mix, and `grep -c $''` counted every line of LF files here).
 - wgpu's `Operations::default()` CLEARS the attachment: a pass that blends over the scene must use
   `LoadOp::Load`.
 - Reverse engineering: Ghidra project in `re/ghidra_projects/se`; decompile with

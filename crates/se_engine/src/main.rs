@@ -37,6 +37,7 @@ mod orbital;
 mod hud;
 mod i18n;
 mod models;
+mod mods;
 mod mr_assets;
 mod music;
 mod overlay;
@@ -171,6 +172,7 @@ fn main() {
         scripting::ScriptingPlugin,
         ship::ShipPlugin,
     ))
+    .add_plugins(mods::ModsPlugin)
     // Sky overlays: coordinate grids and constellations.
     .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin))
     // Settings window, screenshots and the saved session.

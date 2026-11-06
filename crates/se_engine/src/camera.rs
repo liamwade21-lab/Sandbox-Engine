@@ -531,7 +531,7 @@ pub fn look_rotation(dir: DVec3, up: DVec3) -> DQuat {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn input_controls(
+pub(crate) fn input_controls(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -1722,6 +1722,12 @@ fn run_commands(
             // Spacecraft commands are handled by ship.rs.
             ship_cmds.write(crate::ship::ShipCommand { verb: verb.clone(), arg: arg.clone() });
         }
+        // mods list | on NAME | off | window [off]: the Mods menu (mods.rs).
+        "mods" => commands.queue(move |w: &mut World| crate::mods::dev_command(w, &arg)),
+        // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
+        "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),
+        // script PATH: start a script, as the Scripts window does.
+        "script" => commands.queue(move |w: &mut World| w.resource_mut::<crate::scripting::ScriptRunner>().request(&arg)),
         // `perf NAME` / `perf end`: frame-time segments for SE_PERF (perf.rs).
         // preset NAME: pick a graphics preset (Low ... Ultra), as the Graphics settings do; test runs
         // otherwise keep High, since they skip the user's settings.

@@ -155,7 +155,7 @@ The interface follows SE's layout: the selection's info table as text in the upp
 (diameter, magnitudes, luminosity, gravity, density, albedo, temperature, pressure, orbit, rotation,
 apparent size, the ground under the camera; brief or full, saved as `TextMode`), and four toolbars:
 tools (Find object, **Places** with SpaceEngine's own saved places, **Scripts** for the shipped `.se`
-scripts, Search, Wiki, **Settings**, **Graphics** for quality presets, bloom and lens flares, Help)
+scripts, Search, Wiki, **Settings**, **Graphics** for quality presets, bloom and lens flares, Help, **Mods**)
 bottom left, filters (orbits, labels, markers, selection pointer, full info, FPS) on the right,
 navigation (date, time rate, Go to, Center, Clear) and camera (nearest body, velocity, FOV, and SE's
 "Mag limit": the star limit raised by the zoom, which typing sets back) along the bottom. They stay pinned (SE can auto-hide them) and use text, not SE's icons.
@@ -166,6 +166,15 @@ Orbits, labels and markers follow SE's overlay filters (off by default; per kind
 objects) in the skin's colour for each kind: orbits are SE's glowing lines with a trail behind the body, the
 selected one red; labels have SE's brief and detail modes and also name galaxies, clusters and nebulae. Key actions
 (time, overlays) show SE's short message in the middle of the screen.
+
+## Mods
+
+The **Mods** button (tools toolbar, bottom left) lists the mods built into the game: one folder each under
+`crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
+that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
+build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The
+first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`); so far it only switches on and off,
+and does nothing yet. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 
 ## Architecture
 

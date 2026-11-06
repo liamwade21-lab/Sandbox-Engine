@@ -664,3 +664,28 @@ Prototype risks in this order: the asset route (step 2), the shared-shader move 
 | C23 | Rule recorded | `CLAUDE.md` | Names Viltrumite beside Megaton Rainfall |
 
 Later: `/spec-interview --verify docs/spec-mods-viltrumite-powers.md`.
+
+## Build log
+
+One short paragraph per step: what was done, what later steps need, what differs from the spec and why.
+
+**Step 1, Mods menu (commit below this one in `git log`).** `src/mods.rs` holds `ModRegistry`, `ModControl`, the empty
+`ModInput`, the window, the grey reasons and the dev commands; `assets/mods/viltrumite/mod.cfg` has no `Need` lines yet, so
+each later step adds the files it creates. For later steps: `crate::mods::mod_file(id, rel)` finds a mod's file (beside the
+exe, then the source tree, per file); `ModRegistry::mark_bad(id, path)` greys the row when a parser refuses a file;
+`ModControl.loading` makes the row read `Loading` (step 3 sets it); `ModControl::off(&reg, why)` is the one way off, so hang
+the hand-back (F3) on it; `dev` says a dev command turned it on. `off_for_pilot_or_script` then `apply_request` run in `Update`
+after `ship::ship_input` and `camera::input_controls`, before `scripting::run_script` (all now `pub(crate)`, with `FlightKeys`);
+step 4's hero systems should run after them. `ScriptRunner::starting()` is `running()` or a script requested. `off_on_exit` is
+the `Last` hook before `session::save_on_exit`. New dev commands beyond the spec's: `mods window [off]`, `uiclick X Y` (a real
+egui click: at the test window's 1600x900 the Mods button is at 30 841, the first row at 930 71), `script PATH`; `SE_UI_OPEN=mods`
+also opens the window. Differs from the spec: `ModInfo.fault: Option<GreyReason>` instead of `missing: Option<path>`, because
+it also holds `Bad` and the unknown `Code`; `Bad` also covers an empty file, a folder where a file should be and a `Need` path
+leaving the mod's folder (deeper checks wait for the parsers); `active` is the mod's folder name, one mod at a time. A row's
+description is `ui.label`, since `ui.weak` is nearly invisible under the skin. Learned: pictures before about 1500 frames can be
+all black, even the panels, while the pipelines build, whatever the mods do. `refs.sh`'s ground scenes waited 1200 frames, about
+8 s on this machine: half the runs caught Earth's ground half loaded, pale, a 55-level difference that looked like a bug and has
+nothing to do with mods (the baseline does it too; never at 3000 frames, 10 runs). They now wait 3000. For "unchanged with the mod
+off", run the baseline from a folder with no `assets` beside it (`.optimize/scratch/baseline_noassets`, the same exe), so both read
+the same files. Earth's noise moves between runs (0.02 to 0.25 mean between the baseline and itself), so compare several; `rsground`
+is the sharp test: bit-identical with `SE_MODS=0`, and as played only the toolbar's rectangle differs.

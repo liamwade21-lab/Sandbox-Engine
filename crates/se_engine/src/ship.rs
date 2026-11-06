@@ -960,7 +960,7 @@ fn take_control(flight: &mut Flight, cam: &mut FlyCamera, e: Entity, design: &Sh
     }
 }
 
-fn ship_input(
+pub(crate) fn ship_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -1241,7 +1241,7 @@ fn disable_egui_keyboard_zoom(mut egui: EguiContexts, mut done: Local<bool>) {
 /// Keys SE uses in flight that other parts of the port bind globally (0 toggles the chart in
 /// `browser.rs`, P resets the magnitude limit in `stars.rs`): taken from the input while flying.
 #[derive(Resource, Default)]
-struct FlightKeys {
+pub(crate) struct FlightKeys {
     digit0: bool,
     p: bool,
 }

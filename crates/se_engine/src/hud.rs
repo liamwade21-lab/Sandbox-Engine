@@ -25,6 +25,8 @@ pub struct HudState {
     pub show_help: bool,
     pub hidden: bool,
     pub show_wiki: bool,
+    /// The Mods window (mods.rs).
+    pub show_mods: bool,
     /// SE's Find object dialog (F3).
     pub show_find: bool,
     /// The date being typed on the navigation bar (SE: click the date, Enter applies).
@@ -52,6 +54,7 @@ fn open_from_env(mut hud: ResMut<HudState>, mut gfx: ResMut<crate::graphics::Gra
             "places" => hud.show_places = true,
             "wiki" => hud.show_wiki = true,
             "help" => hud.show_help = true,
+            "mods" => hud.show_mods = true,
             "graphics" => gfx.open = true,
             _ => {}
         }
@@ -626,6 +629,9 @@ fn draw_hud(
                 }
                 if tool(ui, "Help", "Help (F1)", hud.show_help) {
                     hud.show_help = !hud.show_help;
+                }
+                if crate::mods::mods_enabled() && tool(ui, "Mods", "Mods", hud.show_mods) {
+                    hud.show_mods = !hud.show_mods;
                 }
             });
         });

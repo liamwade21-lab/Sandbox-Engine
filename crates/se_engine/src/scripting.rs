@@ -329,6 +329,11 @@ impl ScriptRunner {
         !self.frames.is_empty()
     }
 
+    /// A script runs, or starts on the next chance (`request`).
+    pub fn starting(&self) -> bool {
+        self.running() || self.pending.is_some()
+    }
+
     /// The script holds the user's settings to give back (a menu scene's slot, or a `SaveVars` not
     /// yet restored): what it changes meanwhile is its own, not the user's to save.
     pub fn holds_user_settings(&self) -> bool {
@@ -467,7 +472,7 @@ impl<'a> Cx<'a, '_, '_, '_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_script(
+pub(crate) fn run_script(
     time: Res<Time>,
     data: Res<SeData>,
     cfg: Res<EngineConfig>,
