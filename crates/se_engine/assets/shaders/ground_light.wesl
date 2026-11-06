@@ -1,11 +1,11 @@
-// Lighting shared by the ground (planet.wesl) and the objects that stand on it (scatter_draw.wesl:
-// trees now, buildings later): the light record, the clouds' shadow, the terminator and the haze.
-// A tree, a building and the ground under them must take the same light, or forests and towns show
-// as wrongly lit patches from altitude. Like the other shared modules this one has no bindings: the
-// textures and records are passed in.
+// Lighting shared by the ground (planet.wesl) and what stands on it (scatter_draw.wesl: trees and
+// buildings; hero.wesl: the Viltrumite mod's hero): the light record, the clouds' shadow, the terminator,
+// the haze and the normal-free light at a point. Everything on a body must take the same light, or
+// forests and towns show as wrongly lit patches from altitude. Like the other shared modules this one
+// has no bindings: the textures and records are passed in.
 
-import super::atmosphere_common::{AtmParams, atm_apply_aerial};
-import super::eclipse::EclipseLight;
+import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, ATM_PI, atm_transmittance_sun, atm_irradiance, atm_apply_aerial};
+import super::eclipse::{EclipseLight, eclipse_light};
 import super::cloud_cover::{weather_cover, weather_shaped, climb_dist};
 
 // A body's lighting (terrain.rs PatchLight): one record per ground node in the material's light page,
@@ -155,4 +155,138 @@ fn ground_haze(
         col += atm_apply_aerial(p, tex_s, tex_t, smp, vec3<f32>(0.0), cam_km, view_km, vec3<f32>(0.0), g * atm_flags.y * atm_flags.z);
     }
     return col;
+}
+
+// The light at a point that does not depend on the surface's normal: worked out per object or vertex
+// (the atmosphere tables, the clouds' shadow and the haze barely change across a tree), so the pixels
+// only add the normal's part (`lit_surface`).
+struct PointLight {
+    // The brightest star's direct light at the point: shadowed (eclipses, clouds), through the
+    // atmosphere, in the ground's scale.
+    sun: vec3<f32>,
+    // Its sky light (times 0.5 + 0.5 n.up in the pixel).
+    sky: vec3<f32>,
+    // Day ambient, the further stars (taken on level ground) and SE's AmbientLighting.
+    flat_e: vec3<f32>,
+    // The haze between the point and the camera: transmittance and inscattered light.
+    haze_t: vec3<f32>,
+    haze_a: vec3<f32>,
+}
+
+// What `point_light_at` reads of a body besides its atmosphere and light record: `m0`..`m2` its axes
+// scaled by the ellipsoid (render frame), `centre` xyz from the camera (m), w its radius (m), `atm_flags`
+// as the ground's, `key` x, y its cloud key (radius m, seed fraction), z 1 with atmosphere tables bound.
+struct LightBody {
+    m0: vec4<f32>,
+    m1: vec4<f32>,
+    m2: vec4<f32>,
+    centre: vec4<f32>,
+    atm_flags: vec4<f32>,
+    key: vec4<f32>,
+}
+
+// One star's light on level ground at the point, as lit_ground gives the ground: (direct through
+// the atmosphere, sky light) for irradiance `e`.
+fn star_terms(
+    atm: AtmParams,
+    tex_t: texture_2d<f32>,
+    tex_e: texture_2d<f32>,
+    smp: sampler,
+    radius: f32,
+    up: vec3<f32>,
+    pos_km: vec3<f32>,
+    height: f32,
+    l: vec3<f32>,
+    e: vec3<f32>,
+    has_atm: bool,
+) -> array<vec3<f32>, 2> {
+    if has_atm {
+        let r = length(pos_km);
+        let mu_s = dot(pos_km / r, l);
+        let t_sun = atm_transmittance_sun(atm, tex_t, smp, r, mu_s);
+        let e_sky = atm_irradiance(atm, tex_e, smp, r, mu_s) * (atm.look.w * ATM_PI * ATM_AMBIENT_SCALE);
+        return array<vec3<f32>, 2>(e * t_sun, e * e_sky);
+    }
+    return array<vec3<f32>, 2>(e * horizon_shadow_at(radius, height, dot(up, l)), vec3<f32>(0.0));
+}
+
+// The normal-free light at `world` (render frame, the camera at the origin), as the ground there
+// takes it (planet.wesl lit_ground and finish). `smp` samples the atmosphere tables; the clouds' textures
+// are as `cloud_shadow_at`'s.
+fn point_light_at(
+    b: LightBody,
+    atm: AtmParams,
+    light: PatchLight,
+    tex_s: texture_3d<f32>,
+    tex_t: texture_2d<f32>,
+    tex_e: texture_2d<f32>,
+    smp: sampler,
+    sh: CloudShadow,
+    cover: texture_cube<f32>,
+    cover_smp: sampler,
+    map: texture_2d<f32>,
+    map_smp: sampler,
+    weather: texture_cube<f32>,
+    pattern: texture_cube<f32>,
+    world: vec3<f32>,
+) -> PointLight {
+    let centre = b.centre.xyz;
+    let radius = b.centre.w;
+    let rel = world - centre;
+    // The body's axes and the ellipsoid's scale on them: its sphere frame, as the ground's table_local.
+    let ax = normalize(b.m0.xyz);
+    let ay = normalize(b.m1.xyz);
+    let az = normalize(b.m2.xyz);
+    let alen = vec3<f32>(length(b.m0.xyz), length(b.m1.xyz), length(b.m2.xyz));
+    let local = vec3<f32>(dot(rel, ax) / alen.x, dot(rel, ay) / alen.y, dot(rel, az) / alen.z);
+    let bdir = normalize(local);
+    let height = length(local) - radius;
+    let up = normalize(rel);
+    let p_rel = rel / radius;
+    let l = normalize(light.sun_dir.xyz);
+    let has_atm = b.atm_flags.x > 0.5 && b.key.z > 0.5;
+    let pos_km = up * atm.radii.x * (1.0 + max(height, 0.0) / radius);
+    // At the height the ground gives its cloud shadow (lit_ground: the radial distance in the render
+    // frame, the ellipsoid's), not the sphere frame's: on a flattened planet they differ by up to
+    // flattening x radius.
+    let clouds = cloud_shadow_at(sh, cover, cover_smp, map, map_smp, weather, pattern, radius, b.key.xy, bdir, length(rel) - radius);
+    let shadow = eclipse_light(light.eclipse[0], p_rel, l) * clouds;
+    let e_sun = light.sun_color.rgb * light.sun_dir.w * shadow * b.atm_flags.y;
+    var o: PointLight;
+    let t0 = star_terms(atm, tex_t, tex_e, smp, radius, up, pos_km, height, l, e_sun, has_atm);
+    o.sun = t0[0];
+    o.sky = t0[1];
+    // SE's day ambient (DayAmbient) on the day side, and its AmbientLighting.
+    o.flat_e = e_sun * (ATM_PI * ATM_AMBIENT_SCALE * b.atm_flags.w * max(dot(up, l), 0.0)) + vec3<f32>(light.levels.x * b.atm_flags.y);
+    // The further stars (no cloud shadow, as the ground's), on level ground.
+    for (var i = 0; i < 3; i++) {
+        if light.light_dir[i].w < 0.5 {
+            break;
+        }
+        let lx = normalize(light.light_dir[i].xyz);
+        let e_x = light.light_color[i].rgb * eclipse_light(light.eclipse[i + 1], p_rel, lx) * b.atm_flags.y;
+        let tx = star_terms(atm, tex_t, tex_e, smp, radius, up, pos_km, height, lx, e_x, has_atm);
+        o.flat_e += tx[0] * max(dot(up, lx), 0.0) + tx[1] + e_x * (ATM_PI * ATM_AMBIENT_SCALE * b.atm_flags.w * max(dot(up, lx), 0.0));
+    }
+    o.haze_t = vec3<f32>(1.0);
+    o.haze_a = vec3<f32>(0.0);
+    if has_atm {
+        let to_tables = atm.radii.x / max(radius, 1e-30);
+        let c = -centre;
+        let cam_km = vec3<f32>(dot(c, ax) / alen.x, dot(c, ay) / alen.y, dot(c, az) / alen.z) * to_tables;
+        var view_km = local * to_tables;
+        let r_ground = atm.radii.x * (1.0 + height / max(radius, 1.0));
+        view_km *= max(r_ground / max(length(view_km), 1e-6), 1.0);
+        o.haze_a = ground_haze(atm, tex_s, tex_t, smp, vec3<f32>(0.0), cam_km, view_km, ax, ay, az, l, e_sun, light, b.atm_flags);
+        o.haze_t = atm_apply_aerial(atm, tex_s, tex_t, smp, vec3<f32>(1.0), cam_km, view_km, l, vec3<f32>(0.0));
+    }
+    return o;
+}
+
+// A surface's colour from its point's light, albedo and normal `n`: `l` towards the brightest star, `wrap`
+// softens its term (leaves), `trans` adds the light through them.
+fn lit_surface(pl: PointLight, l: vec3<f32>, albedo: vec3<f32>, n: vec3<f32>, up: vec3<f32>, wrap: f32, trans: f32) -> vec3<f32> {
+    let direct = max((dot(n, l) + wrap) / (1.0 + wrap), 0.0) + trans;
+    let e = pl.sun * direct + pl.sky * (0.5 + 0.5 * dot(n, up)) + pl.flat_e;
+    return albedo / ATM_PI * e * pl.haze_t + pl.haze_a;
 }
