@@ -1722,7 +1722,7 @@ fn run_commands(
             // Spacecraft commands are handled by ship.rs.
             ship_cmds.write(crate::ship::ShipCommand { verb: verb.clone(), arg: arg.clone() });
         }
-        // mods list | on NAME | off | window [off]: the Mods menu (mods.rs).
+        // mods list | on NAME | off | window [off] | sound NAME: the Mods menu (mods.rs).
         "mods" => commands.queue(move |w: &mut World| crate::mods::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
         "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),

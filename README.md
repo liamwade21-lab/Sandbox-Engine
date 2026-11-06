@@ -173,8 +173,8 @@ The **Mods** button (tools toolbar, bottom left) lists the mods built into the g
 `crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
 that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
 build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The
-first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`); so far it only switches on and off,
-and does nothing yet. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
+first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`); so far it only switches on and off
+and checks its files (his model, 44 animations, sounds), and does nothing else yet. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 
 ## Architecture
 

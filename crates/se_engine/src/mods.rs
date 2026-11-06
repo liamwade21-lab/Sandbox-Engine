@@ -12,8 +12,10 @@
 
 use std::path::{Component, PathBuf};
 
+use bevy::audio::{Decodable, Source, Volume};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, PrimaryEguiContext, egui};
+use se_core::hero_asset::{self, ClipSet, HeroModel};
 
 use crate::hud::HudState;
 use crate::i18n::I18n;
@@ -88,7 +90,6 @@ impl ModRegistry {
     }
 
     /// A file turned out unusable when a mod loaded it (the parsers run on first enable): grey from now on.
-    #[allow(dead_code)] // for the mod's loader, from step 3
     pub fn mark_bad(&mut self, id: &str, path: &str) {
         warn!("mods: {id} cannot be turned on: Bad {path}");
         if let Some(m) = self.mods.iter_mut().find(|m| m.id == id) {
@@ -133,6 +134,72 @@ impl ModControl {
     }
 }
 
+/// The Viltrumite mod's parsed model and clips, from its first enable on (spec, F1: loaded once, kept
+/// until quit). Parsing is the check on them: a file the parsers refuse greys the row.
+#[derive(Resource)]
+#[allow(dead_code)] // drawn from step 3
+pub struct HeroAssets {
+    pub model: HeroModel,
+    pub clips: ClipSet,
+}
+
+/// The mod's model and clips from the first root that has them, or the file that's wrong and why.
+fn load_hero_assets(roots: &[PathBuf], id: &str) -> Result<HeroAssets, (&'static str, String)> {
+    const MODEL: &str = "omniman.sevm";
+    const CLIPS: &str = "clips.sevc";
+    let read = |rel: &'static str| {
+        let path = find_file(roots, id, rel).ok_or((rel, "not found".to_string()))?;
+        std::fs::read(path).map_err(|e| (rel, e.to_string()))
+    };
+    let model = hero_asset::parse_model(&read(MODEL)?).map_err(|e| (MODEL, e.to_string()))?;
+    let clips = hero_asset::parse_clips(&read(CLIPS)?).map_err(|e| (CLIPS, e.to_string()))?;
+    hero_asset::check_pair(&model, &clips).map_err(|e| (CLIPS, e.to_string()))?;
+    Ok(HeroAssets { model, clips })
+}
+
+/// What a sound decodes to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoundFacts {
+    pub channels: u32,
+    pub rate: u32,
+    pub seconds: f32,
+    pub peak: f32,
+}
+
+/// A mod's sound as a source the game can play, decoded once with the same decoder as playing it. bevy_audio
+/// panics on anything but Ogg Vorbis (spec, F10) and on a file whose headers are cut short: the guard goes first,
+/// and a panic of the decoder's here is only a refusal, before anything tries to play it.
+pub fn check_sound(bytes: Vec<u8>) -> Result<(AudioSource, SoundFacts), String> {
+    if !crate::music::is_ogg_vorbis(&bytes) {
+        return Err("not an Ogg Vorbis file".to_string());
+    }
+    let source = AudioSource { bytes: std::sync::Arc::from(bytes) };
+    let decode = std::panic::AssertUnwindSafe(|| {
+        let decoder = source.decoder();
+        let (channels, rate) = (u32::from(decoder.channels().get()), decoder.sample_rate().get());
+        let (mut samples, mut peak) = (0u64, 0.0f32);
+        for s in decoder {
+            samples += 1;
+            peak = peak.max(s.abs());
+        }
+        (channels, rate, samples, peak)
+    });
+    let (channels, rate, samples, peak) = std::panic::catch_unwind(decode).map_err(|_| "its decoder refused it".to_string())?;
+    if samples == 0 {
+        return Err("no samples".to_string());
+    }
+    let seconds = samples as f32 / (channels.max(1) * rate.max(1)) as f32;
+    Ok((source, SoundFacts { channels, rate, seconds, peak }))
+}
+
+/// A sound the dev command `mods sound` started: the log says when it really plays and when it ends.
+#[derive(Resource)]
+struct DevSound {
+    entity: Entity,
+    name: String,
+    playing: bool,
+}
+
 /// The snapshot of the player's keys and mouse for the mod that is on: filled from step 4.
 #[derive(Resource, Default)]
 pub struct ModInput {}
@@ -159,6 +226,7 @@ impl Plugin for ModsPlugin {
             )
             // After bevy_window turns the closed window into AppExit, before the session is saved.
             .add_systems(Last, off_on_exit.after(bevy::window::ExitSystems).before(crate::session::save_on_exit).run_if(mod_on))
+            .add_systems(Update, watch_dev_sound.run_if(resource_exists::<DevSound>))
             .add_systems(EguiPrimaryContextPass, draw_mods_window.in_set(crate::skin::UiSet::Draw).run_if(window_open));
     }
 }
@@ -187,7 +255,6 @@ fn mod_roots() -> Vec<PathBuf> {
 }
 
 /// A mod's file, by the path its `mod.cfg` gives, from the first root that has it.
-#[allow(dead_code)] // for the mod's loader, from step 3
 pub fn mod_file(id: &str, rel: &str) -> Option<PathBuf> {
     find_file(&mod_roots(), id, rel)
 }
@@ -297,7 +364,14 @@ fn off_for_pilot_or_script(mut control: ResMut<ModControl>, reg: Res<ModRegistry
     }
 }
 
-fn apply_request(mut control: ResMut<ModControl>, reg: Res<ModRegistry>, flight: Res<Flight>, runner: Res<ScriptRunner>) {
+fn apply_request(
+    mut commands: Commands,
+    mut control: ResMut<ModControl>,
+    mut reg: ResMut<ModRegistry>,
+    flight: Res<Flight>,
+    runner: Res<ScriptRunner>,
+    hero: Option<Res<HeroAssets>>,
+) {
     match control.request.take() {
         Some(ModRequest::Off) => control.off(&reg, "asked"),
         Some(ModRequest::On { id, dev }) => {
@@ -312,8 +386,37 @@ fn apply_request(mut control: ResMut<ModControl>, reg: Res<ModRegistry>, flight:
                 warn!("mods: {} stays off: {why}", m.name);
                 return;
             }
+            // First enable: look inside the files. A refusal greys the row for good.
+            if m.code == "viltrumite" && hero.is_none() {
+                let started = std::time::Instant::now();
+                let loaded = load_hero_assets(&mod_roots(), &id);
+                match loaded {
+                    Ok(assets) => {
+                        let (model, clips) = (&assets.model, &assets.clips);
+                        info!(
+                            "mods: {id}: {} bones, {} draws, {} vertices, {} triangles; {} clips; read in {} ms",
+                            model.bones.len(),
+                            model.draws.len(),
+                            model.vertices.len(),
+                            model.indices.len() / 3,
+                            clips.clips.len(),
+                            started.elapsed().as_millis()
+                        );
+                        if clips.stand_ins() > 0 {
+                            warn!("mods: {id}: {} clips are stand-ins until the Mixamo ones are converted", clips.stand_ins());
+                        }
+                        commands.insert_resource(assets);
+                    }
+                    Err((rel, why)) => {
+                        warn!("mods: {id}: {rel}: {why}");
+                        reg.mark_bad(&id, rel);
+                        return;
+                    }
+                }
+            }
+            let name = reg.name_of(&id).to_string();
             control.off(&reg, "another mod turned on");
-            info!("mods: {} on", m.name);
+            info!("mods: {name} on");
             control.active = Some(id);
             control.dev = dev;
         }
@@ -378,7 +481,40 @@ fn draw_mods_window(
     Ok(())
 }
 
-/// The dev command `mods list | on NAME | off | window [off]` (camera.rs's match).
+/// Plays a mod's sound once: `sfx/NAME.ogg`, as a test run's proof that its files play in the game.
+fn dev_play_sound(world: &mut World, name: &str) {
+    let rel = format!("sfx/{name}.ogg");
+    let Some(path) = mod_file("viltrumite", &rel) else {
+        warn!("mods: sound {rel} not found");
+        return;
+    };
+    let checked = std::fs::read(&path).map_err(|e| e.to_string()).and_then(check_sound);
+    let (source, facts) = match checked {
+        Ok(ok) => ok,
+        Err(why) => {
+            warn!("mods: sound {rel}: {why}");
+            return;
+        }
+    };
+    info!("mods: sound {rel}: decoded {} channels, {} Hz, {:.2} s, peak {:.2}", facts.channels, facts.rate, facts.seconds, facts.peak);
+    let volume = world.resource::<crate::sound::SoundSettings>().volume;
+    let handle = world.resource_mut::<Assets<AudioSource>>().add(source);
+    let entity = world.spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)))).id();
+    world.insert_resource(DevSound { entity, name: rel, playing: false });
+}
+
+fn watch_dev_sound(mut commands: Commands, mut sound: ResMut<DevSound>, sinks: Query<(), With<AudioSink>>, alive: Query<()>) {
+    if !sound.playing && sinks.contains(sound.entity) {
+        sound.playing = true;
+        info!("mods: sound {} is playing", sound.name);
+    }
+    if !alive.contains(sound.entity) {
+        info!("mods: sound {} finished", sound.name);
+        commands.remove_resource::<DevSound>();
+    }
+}
+
+/// The dev command `mods list | on NAME | off | window [off] | sound NAME` (camera.rs's match).
 pub fn dev_command(world: &mut World, arg: &str) {
     let (verb, name) = arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim()));
     match verb.to_ascii_lowercase().as_str() {
@@ -406,6 +542,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         "off" => world.resource_mut::<ModControl>().request = Some(ModRequest::Off),
         "window" => world.resource_mut::<HudState>().show_mods = name != "off",
+        "sound" => dev_play_sound(world, name),
         _ => warn!("mods: unknown command '{arg}'"),
     }
 }
@@ -436,6 +573,102 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The project's own mods folder.
+    fn tree() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mods")
+    }
+
+    #[test]
+    fn the_real_mod_is_found_with_every_need_there() {
+        let m = read_mod(&[tree()], "viltrumite");
+        assert_eq!(m.fault, None);
+        assert_eq!(m.code, "viltrumite");
+        let cfg = se_core::sc::parse(&fs::read_to_string(tree().join("viltrumite").join("mod.cfg")).unwrap());
+        let needs: Vec<&str> = cfg.all("Need").filter_map(|n| n.str()).collect();
+        for must in ["omniman.sevm", "clips.sevc", "sfx/sonic_boom_v2.ogg", "props/nibsuper_rock1.sehm", "sprites/ptfx_smoke_wispy_anim.dds"] {
+            assert!(needs.contains(&must), "{must} isn't a Need");
+        }
+        assert_eq!(needs.iter().filter(|n| n.starts_with("sfx/")).count(), 29, "the plan's sound tables");
+    }
+
+    #[test]
+    fn the_real_model_and_clips_load() {
+        let assets = load_hero_assets(&[tree()], "viltrumite").unwrap();
+        assert_eq!(assets.model.bones.len(), 128);
+        assert!(assets.clips.clip("bf_idle").is_some());
+    }
+
+    /// A file the parsers refuse names itself; the registry greys the row with it (`apply_request`).
+    #[test]
+    fn a_bad_model_or_clip_file_is_named_and_greys_the_row() {
+        let root = scratch("bad_hero");
+        let real = tree().join("viltrumite");
+        let copy = |name: &str| fs::copy(real.join(name), root.join("m").join(name)).unwrap();
+        write(&root, "m", "mod.cfg", "Name \"x\"\nCode \"viltrumite\"\n");
+        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, "omniman.sevm");
+        write(&root, "m", "omniman.sevm", "not a model");
+        copy("clips.sevc");
+        let (rel, why) = load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap();
+        assert_eq!(rel, "omniman.sevm");
+        assert!(why.contains("SEVM"), "{why}");
+        copy("omniman.sevm");
+        write(&root, "m", "clips.sevc", "SEVC and then nonsense");
+        assert_eq!(load_hero_assets(std::slice::from_ref(&root), "m").err().unwrap().0, "clips.sevc");
+
+        let mut reg = ModRegistry { mods: vec![read_mod(std::slice::from_ref(&root), "m")] };
+        assert_eq!(reg.mods[0].fault, None, "the Need check only looks at sizes");
+        reg.mark_bad("m", "clips.sevc");
+        assert_eq!(grey_reason(&reg.mods[0], false, false).unwrap().to_string(), "Bad clips.sevc");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Every sound through the guard and the real decoder, as `mods sound` and step 6 play them. The loops: at
+    /// most about 10 s (the plan's trim), no silence at the end, and no click at the seam.
+    #[test]
+    fn every_sound_decodes_and_the_loops_close() {
+        let dir = tree().join("viltrumite").join("sfx");
+        let mut count = 0;
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let bytes = fs::read(e.path()).unwrap();
+            let (source, facts) = check_sound(bytes).unwrap_or_else(|why| panic!("{name}: {why}"));
+            assert!(facts.seconds > 0.1 && facts.peak > 0.01, "{name}: {facts:?}");
+            count += 1;
+            if name.contains("_loop") {
+                assert!(facts.seconds <= 10.2, "{name}: {facts:?}");
+                let samples: Vec<f32> = source.decoder().collect();
+                let ch = facts.channels as usize;
+                let tail = &samples[samples.len() - 2048 * ch..];
+                let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt();
+                let whole = rms(&samples);
+                assert!(rms(tail) > 0.2 * whole, "{name}: the end is quiet ({} against {whole}): padding would gap the loop", rms(tail));
+                let jump = (0..ch).map(|c| (samples[samples.len() - ch + c] - samples[c]).abs()).fold(0.0f32, f32::max);
+                println!("{name}: {facts:?}, tail {} of {whole}, seam jump {jump}", rms(tail));
+                assert!(jump < 6.0 * rms(tail).max(0.01) * 0.5 + 0.08, "{name}: a click at the seam, {jump}");
+            }
+        }
+        assert_eq!(count, 29);
+    }
+
+    #[test]
+    fn what_isnt_ogg_vorbis_is_refused_before_the_decoder() {
+        assert!(check_sound(b"RIFF....WAVEfmt ".to_vec()).is_err());
+        assert!(check_sound(Vec::new()).is_err());
+        assert!(check_sound(b"OggS and not vorbis".to_vec()).is_err());
+    }
+
+    /// A sound cut short at any point: refused or a shorter sound, never a panic out of here.
+    #[test]
+    fn a_sound_cut_short_never_panics() {
+        let whole = fs::read(tree().join("viltrumite").join("sfx").join("punch_1.ogg")).unwrap();
+        let (_, full) = check_sound(whole.clone()).unwrap();
+        for n in [10, 40, 60, 100, 300, 1000, 3000, whole.len() / 2, whole.len() - 1] {
+            if let Ok((_, cut)) = check_sound(whole[..n].to_vec()) {
+                assert!(cut.seconds <= full.seconds, "{n} bytes: {cut:?}");
+            }
+        }
     }
 
     fn write(root: &std::path::Path, id: &str, rel: &str, text: &str) {
@@ -567,6 +800,31 @@ mod tests {
     }
 
     /// The two systems that decide what is on, without the rest of the game.
+    /// Empty assets: these tests turn mods on and off without reading the real files.
+    fn no_assets() -> HeroAssets {
+        let model = HeroModel { bones: vec![], draws: vec![], vertices: vec![], indices: vec![], cape_first: None, cape_chains: 0, cape_links: 0, bounds_min: Vec3::ZERO, bounds_max: Vec3::ZERO };
+        let clips = ClipSet { fps: 30.0, bone_count: 0, clips: vec![], tracks: vec![], events: vec![], quats: vec![], roots: vec![] };
+        HeroAssets { model, clips }
+    }
+
+    /// First enable: the real files parse and stay; a folder whose files don't turns grey and stays off.
+    #[test]
+    fn first_enable_reads_the_files_and_a_refusal_greys_the_row() {
+        let mut app = control_app(&[("viltrumite", None), ("no_files_here", None)]);
+        app.world_mut().remove_resource::<HeroAssets>();
+        ask(&mut app, on("no_files_here"));
+        assert_eq!(active(&app), None);
+        let row = app.world().resource::<ModRegistry>().get("no_files_here").unwrap().clone();
+        assert_eq!(grey_reason(&row, false, false).unwrap().to_string(), "Bad omniman.sevm");
+        assert!(!app.world().contains_resource::<HeroAssets>());
+        ask(&mut app, on("viltrumite"));
+        assert_eq!(active(&app).as_deref(), Some("viltrumite"));
+        app.update();
+        let assets = app.world().resource::<HeroAssets>();
+        assert_eq!(assets.model.bones.len(), 128);
+        assert!(!assets.clips.clips.is_empty());
+    }
+
     fn control_app(mods: &[(&str, Option<GreyReason>)]) -> App {
         let mut app = App::new();
         let mods = mods
@@ -574,6 +832,7 @@ mod tests {
             .map(|(id, fault)| ModInfo { id: id.to_string(), name: id.to_string(), description: String::new(), code: "viltrumite".into(), fault: fault.clone() })
             .collect();
         app.insert_resource(ModRegistry { mods })
+            .insert_resource(no_assets())
             .init_resource::<ModControl>()
             .init_resource::<Flight>()
             .init_resource::<ScriptRunner>()
@@ -655,6 +914,7 @@ mod tests {
                 } else {
                     app.add_plugins(ModsPlugin).add_systems(Update, crate::camera::move_mode_keys);
                 }
+                app.insert_resource(no_assets());
                 app.update(); // Startup's scan of the real folders: the test's own list replaces it.
                 app.world_mut().resource_mut::<ModRegistry>().mods =
                     vec![ModInfo { id: "a".into(), name: "a".into(), description: String::new(), code: "viltrumite".into(), fault: None }];

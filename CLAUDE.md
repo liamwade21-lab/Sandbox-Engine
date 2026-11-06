@@ -74,6 +74,15 @@ or publishing the port.
   with a copy of the exe beside `assets/shaders` and `assets/mods/NAME/mod.cfg` (`SE_UI_OPEN=mods` or `mods window`), and
   wait 1500 frames before judging a picture: earlier ones can be black, even the panels. A pale Earth ground with the rocks
   still brown (`refs.sh` used to catch it at 1200 frames) is the ground half loaded, not a bug: it is gone by 3000.
+- Viltrumite's files (`assets/mods/viltrumite`, 52 MB) are written only by `python -I re/viltrumite/tools/convert.py` (out of
+  git, its Blender and Mixamo routes too; `--check-guards` shows what it refuses to open, `sheet.py DIR OUT.png` draws him posed from the files alone:
+  look at it after any change). Never edit them by hand; re-running replaces everything (Ogg files differ byte for byte each run, the rest doesn't).
+  `se_core/src/hero_asset.rs` is the format (`omniman.sevm`, `clips.sevc`) and convert.py's `write_sevm`/`write_sevc` must change with it. Model space:
+  metres, Z up, +Y the way a clip faces, +X his right hand, origin at his pelvis; the bind pose faces -Y only because `SKEL_ROOT`'s rest rotation is 180 degrees about
+  Z, and a full clip's root track undoes that. Add a file: list it in convert.py, which writes the `Need` lines in `mod.cfg`. A sound goes through
+  `mods::check_sound` (the guard, and the decoder's own panic caught) before anything plays it. A looping Ogg's length must be a whole number of 2048 samples
+  (`make_loop`): otherwise the encoder pads the end with silence and the loop gaps. The Mixamo clips: FBX files in `re/viltrumite/mixamo`, re-run, they replace the stand-ins
+  (`Clip::stand_in`); the retarget needs the file's rest pose to be the T-pose and warns if not; `make_test_fbx.py` and `--check-test-fbx` test the route without them.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its
@@ -258,7 +267,7 @@ or publishing the port.
   dev commands: `select NAME`, `surface LAT LON ALT_KM PITCH`, `agl M` (hold M metres above
   the ground), `fly KMS`, `spin DEG` (turn in place), `orbit DEG` (swing round the selection, as the
   right mouse button does; degrees a second), `photo 0|1|2` (photo mode: 2 is auto exposure), `ambient X` (SE's
-  ambient light), `shot FILE`, `wait N`, `date`, `pause`, `mods list|on NAME|off|window [off]` (the Mods menu), `script PATH`
+  ambient light), `shot FILE`, `wait N`, `date`, `pause`, `mods list|on NAME|off|window [off]|sound NAME` (the Mods menu; `sound` plays `sfx/NAME.ogg`, the log says decoded, playing, finished), `script PATH`
   (start a script, a file on disk too), `uiclick X Y` (a real left click for egui at that window point: the menus' buttons
   can be tested). A 1x1 screenshot
   (72 bytes) means the window was minimised at that moment: take each picture twice.

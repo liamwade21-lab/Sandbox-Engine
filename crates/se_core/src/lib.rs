@@ -16,6 +16,7 @@ pub mod custom_model;
 pub mod dds;
 pub mod ephemeris;
 pub mod galaxy_model;
+pub mod hero_asset;
 pub mod jpl_de;
 pub mod lens_flare;
 pub mod locale;
