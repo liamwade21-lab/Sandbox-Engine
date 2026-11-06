@@ -3,14 +3,17 @@
 //!
 //! Layer order is the order they are applied. A full clip (not `CLIP_PARTIAL`) sends every bone under its
 //! mask to the clip's pose, and a bone without a track to its rest pose. A partial clip moves only the bones
-//! it has tracks for. Step 4 uses the slots for: crossfade A and B, a masked action, turning.
+//! it has tracks for. The slots: 0 the base clip, 1-3 the leans, 4 a masked action (step 8), 5 turning (step 5).
+//!
+//! A crossfade starts from a frozen copy of the pose as it stands ([`Sampler::crossfade`]), not from a second
+//! running clip: it can't pop however often the base changes, and it takes no slots.
 
 use bevy::math::{Affine3A, Mat3A, Quat, Vec3, Vec3A, Vec4};
 use se_core::hero_asset::{Clip, ClipSet, HeroModel, MAX_BONES};
 
 use super::tune::CAPE_HANG;
 
-pub const LAYERS: usize = 4;
+pub const LAYERS: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Layer {
@@ -30,11 +33,17 @@ impl Default for Layer {
     }
 }
 
-/// His pose, inline: 16 KB, boxed once by its owner.
+/// His pose, inline: about 22 KB, boxed once by its owner.
 pub struct Sampler {
     pub layers: [Layer; LAYERS],
     rot: [Quat; MAX_BONES],
     pos: [Vec3; MAX_BONES],
+    /// The pose a crossfade started from.
+    from_rot: [Quat; MAX_BONES],
+    from_pos: [Vec3; MAX_BONES],
+    /// The crossfade: seconds gone and how long it lasts (0: none).
+    fade_t: f32,
+    fade_s: f32,
     /// Bones in model space (metres, Z up, +Y forward, +X his right hand).
     world: [Affine3A; MAX_BONES],
     /// `world * inverse_bind`: what skins a vertex, in model space.
@@ -47,6 +56,10 @@ impl Default for Sampler {
             layers: [Layer::default(); LAYERS],
             rot: [Quat::IDENTITY; MAX_BONES],
             pos: [Vec3::ZERO; MAX_BONES],
+            from_rot: [Quat::IDENTITY; MAX_BONES],
+            from_pos: [Vec3::ZERO; MAX_BONES],
+            fade_t: 0.0,
+            fade_s: 0.0,
             world: [Affine3A::IDENTITY; MAX_BONES],
             skin: [Affine3A::IDENTITY; MAX_BONES],
         }
@@ -72,8 +85,22 @@ impl Sampler {
         self.layers[0] = Layer { clip: Some(clip), time, weight: 1.0, mask: u128::MAX };
     }
 
+    /// From now on, over `seconds`, the pose eases from what it is this moment to what the layers say.
+    pub fn crossfade(&mut self, seconds: f32) {
+        self.from_rot = self.rot;
+        self.from_pos = self.pos;
+        self.fade_t = 0.0;
+        self.fade_s = seconds;
+    }
+
     /// Moves the looping layers' clocks on by `dt` seconds. (Lean layers keep the time they are given.)
     pub fn advance(&mut self, clips: &ClipSet, dt: f32) {
+        if self.fade_s > 0.0 {
+            self.fade_t += dt;
+            if self.fade_t >= self.fade_s {
+                self.fade_s = 0.0;
+            }
+        }
         for l in &mut self.layers {
             let Some(c) = l.clip.and_then(|c| clips.clips.get(c as usize)) else { continue };
             if c.lean() {
@@ -122,10 +149,19 @@ impl Sampler {
                 let q = clips.rotation(t, f0).lerp(clips.rotation(t, f1), k);
                 self.rot[b] = if w >= 1.0 { q } else { self.rot[b].lerp(q, w) };
             }
-            if layer.mask & 1 != 0 {
+            // (A lean moves no root: `bf_fast_botharmsback_left` and `_right` would swing him 0.5 m sideways.)
+            if layer.mask & 1 != 0 && !clip.lean() {
                 if let (Some(p0), Some(p1)) = (clips.root(clip, f0), clips.root(clip, f1)) {
                     self.pos[0] = self.pos[0].lerp(p0.lerp(p1, k), w);
                 }
+            }
+        }
+        if self.fade_s > 0.0 {
+            let t = (self.fade_t / self.fade_s).clamp(0.0, 1.0);
+            let w = t * t * (3.0 - 2.0 * t);
+            for i in 0..n {
+                self.rot[i] = self.from_rot[i].lerp(self.rot[i], w);
+                self.pos[i] = self.from_pos[i].lerp(self.pos[i], w);
             }
         }
         for (i, b) in model.bones.iter().take(n).enumerate() {
@@ -351,6 +387,19 @@ mod tests {
             assert!(hem.z < top.z - 0.5, "chain {ch}: top {top} hem {hem}");
             assert!(hem.length() < 3.0, "chain {ch}: {hem}");
         }
+        // A crossfade starts where the pose is: no pop, whatever comes next.
+        let shin = |s: &Sampler| Vec3::from(s.world(12).translation);
+        s.layers[0].time = 0.7;
+        s.sample(&m, &c);
+        let before = shin(&s);
+        s.crossfade(0.35);
+        s.play(c.find("bf_fast_botharmsback").unwrap() as u16, 0.0);
+        s.sample(&m, &c);
+        assert!((shin(&s) - before).length() < 1e-3, "{} then {}", before, shin(&s));
+        s.advance(&c, 0.35);
+        s.sample(&m, &c);
+        assert!((shin(&s) - before).length() > 0.05, "the new pose takes over");
+        s.play(idle as u16, 0.0);
         // No allocation; the spec estimated 50 us.
         let t0 = std::time::Instant::now();
         for k in 0..100 {

@@ -29,7 +29,7 @@
 //! Shift+G Fly to target, Alt+G Warp to target, G Fly or warp to target, Alt+= / Alt+- (and
 //! PageUp / PageDown) warp drive +/-.
 
-mod air;
+pub(crate) mod air;
 mod autopilot;
 mod engine_sound;
 pub mod envmap;
@@ -486,7 +486,7 @@ fn body_frame_at(data: &SeData, eph: &Ephemeris, obj: ObjectRef, jd: f64) -> Opt
     (!data.catalog.display_name(obj).is_empty()).then(|| (eph.position(obj, jd), eph.orientation(obj, jd)))
 }
 
-fn velocity_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
+pub(crate) fn velocity_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
     let h = 0.5 / 86_400.0;
     eph.position(obj, jd + h).delta_m(eph.position(obj, jd - h))
 }
@@ -509,7 +509,7 @@ fn reference_velocity(eph: &Ephemeris, obj: ObjectRef, body_pos: UPos, radius: f
 /// A body's share of the blended frame at altitude `alt` over it (radius `r`): its weight
 /// (inverse square altitude), the fade of its orbital velocity (1 below 50 radii, 0 beyond 100)
 /// and of its rotation (1 below one radius, 0 beyond two).
-fn frame_terms(alt: f64, r: f64) -> (f64, f64, f64) {
+pub(crate) fn frame_terms(alt: f64, r: f64) -> (f64, f64, f64) {
     let r = r.max(1.0);
     let w = 1.0 / alt.max(1e-3 * r).powi(2);
     let fade = ((100.0 * r - alt) / (50.0 * r)).clamp(0.0, 1.0);
@@ -535,7 +535,7 @@ fn body_spin(eph: &Ephemeris, obj: ObjectRef, sim: &SimTime) -> DVec3 {
     spin_at(eph, obj, sim.jd)
 }
 
-fn spin_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
+pub(crate) fn spin_at(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
     let h = 0.5 / 86_400.0;
     turn_vector(eph.orientation(obj, jd + h) * eph.orientation(obj, jd - h).inverse())
 }
@@ -1399,15 +1399,22 @@ fn finish_ship_loading(
 // Physics
 // ------------------------------------------------------------------------------------
 
-struct BodyInfo<'a> {
-    obj: ObjectRef,
-    pos: UPos,
-    orient: DQuat,
-    radius: f64,
+pub(crate) struct BodyInfo<'a> {
+    pub(crate) obj: ObjectRef,
+    pub(crate) pos: UPos,
+    pub(crate) orient: DQuat,
+    pub(crate) radius: f64,
     /// SE's ellipsoid the terrain is drawn on ([`SystemBody::shape`]).
-    shape: DVec3,
-    gm: f64,
-    terrain: Option<&'a Terrain>,
+    pub(crate) shape: DVec3,
+    pub(crate) gm: f64,
+    pub(crate) terrain: Option<&'a Terrain>,
+}
+
+impl BodyInfo<'_> {
+    /// A body-frame point of the ellipsoid on the sphere the terrain is built on, as [`SystemBody::from_shape`].
+    pub(crate) fn from_shape(&self, p: DVec3) -> DVec3 {
+        p / self.shape
+    }
 }
 
 pub(crate) fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
@@ -1420,7 +1427,7 @@ pub(crate) fn body_mass(data: &SeData, obj: ObjectRef, radius: f64) -> f64 {
 }
 
 /// Gravitational acceleration at `pos` summed over `bodies` (m/s^2).
-fn gravity_at(bodies: &[BodyInfo], pos: UPos) -> DVec3 {
+pub(crate) fn gravity_at(bodies: &[BodyInfo], pos: UPos) -> DVec3 {
     let mut a = DVec3::ZERO;
     for b in bodies {
         let r = b.pos.delta_m(pos);

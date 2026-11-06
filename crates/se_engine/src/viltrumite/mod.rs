@@ -1,25 +1,40 @@
-//! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry
-//! and the files' checks are `crate::mods`. So far (step 3): he is drawn, lit as the ground and plays `bf_idle`,
-//! hovering in front of the camera; the camera stays free. Step 4 brings flight and the real frames (`Hero`'s
-//! `Place` is the simple version of them, and the dev commands' `here`, `stand` and `face` go with it).
+//! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry, the
+//! files' checks and the keys' snapshot (`ModInput`) are `crate::mods`.
+//!
+//! So far (step 4): he flies from hovering to far past light speed, falls and orbits under real gravity, and the camera
+//! follows him. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is, `camera.rs` the chase
+//! camera, `air.rs` the one source of air, `anim.rs` the sampler, `draw.rs` how he's drawn and lit, `readout.rs` the corner
+//! readout, `tune.rs` every number to tune.
 
+pub mod air;
 pub mod anim;
+pub mod camera;
 pub mod draw;
+pub mod frames;
+pub mod hero;
+pub mod readout;
 pub mod tune;
+
+use std::io::Write as _;
 
 use bevy::math::{DMat3, DQuat, DVec3};
 use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use se_core::catalog::ObjectRef;
+use se_core::ephemeris::Ephemeris;
 use se_core::upos::UPos;
 
-use crate::camera::FlyCamera;
-use crate::mods::{HeroAssets, ModControl};
+use crate::camera::{FlyCamera, Follow, TravelKind};
+use crate::data::SeData;
+use crate::mods::{HeroAssets, ModControl, ModInput};
 use crate::system::SystemBody;
-use crate::terrain::Terrain;
-use crate::universe::UniverseSet;
+use crate::universe::{SimTime, UniverseSet};
 
 use anim::Sampler;
 use draw::HeroDraws;
+use frames::Frame;
+use hero::{Director, State};
+use readout::Readout;
 
 pub struct ViltrumitePlugin;
 
@@ -27,13 +42,26 @@ impl Plugin for ViltrumitePlugin {
     fn build(&self, app: &mut App) {
         draw::build(app);
         app.init_resource::<Hero>()
+            .init_resource::<DevKeys>()
+            // Test runs press real keys into the frame's input, before the mod's snapshot and every other reader.
+            .add_systems(PreUpdate, dev_keys.run_if(dev_keys_held).after(bevy::input::InputSystems).before(crate::mods::snapshot_input))
             // First enable: `HeroAssets` arrives from the Mods menu's first enable, and these make the rest.
             .add_systems(Update, draw::spawn_hero.run_if(first_enable))
             .add_systems(Update, draw::sync_visibility.run_if(resource_exists::<HeroDraws>))
+            // Off: the camera handed back the frame it happens, before a script's first command.
+            .add_systems(Update, hand_back.run_if(to_hand_back).after(crate::mods::apply_request).before(crate::scripting::run_script))
+            // On closing: before the session is saved.
+            .add_systems(Last, hand_back.run_if(to_hand_back).after(crate::mods::off_on_exit).before(crate::session::save_on_exit))
+            .add_systems(
+                PostUpdate,
+                // With the camera's own motion (as a ship's), before its transform is set. Nothing here runs while the
+                // mod is off.
+                hero::hero_move.run_if(hero_shown).in_set(UniverseSet::Camera).after(crate::camera::travel_and_move).before(crate::camera::sync_camera_transform),
+            )
             .add_systems(
                 PostUpdate,
                 // After everything that moves the camera or sets the near plane (`keep_camera_above_ground`), before
-                // the projection turns into this frame's matrix. Nothing here runs while the mod is off.
+                // the projection turns into this frame's matrix.
                 draw::update_hero
                     .run_if(hero_shown)
                     .after(UniverseSet::Camera)
@@ -42,6 +70,10 @@ impl Plugin for ViltrumitePlugin {
                     .before(bevy::camera::CameraUpdateSystems)
                     // (The capture views copy the near plane he sets, in the same frame.)
                     .before(crate::capture::follow_main),
+            )
+            .add_systems(
+                bevy_egui::EguiPrimaryContextPass,
+                readout::draw.run_if(hero_shown).after(crate::skin::UiSet::Draw).before(crate::skin::UiSet::Backdrop),
             );
     }
 }
@@ -56,18 +88,8 @@ fn hero_shown(control: Res<ModControl>, assets: Option<Res<HeroAssets>>, draws: 
     control.hero && assets.is_some() && draws.is_some()
 }
 
-/// Where he is until step 4's frames. The camera stays free in this step, so he rides what carries it
-/// (`FlyCamera::follow`), whatever the distance to any body: bodies move at tens of km/s and turn at hundreds of
-/// m/s, so in any other frame he leaves the view within a frame or two.
-#[derive(Clone, Copy, Debug)]
-pub enum Place {
-    /// Fixed in the universe, as a camera bound to nothing.
-    Free,
-    /// With what the camera is bound to, in the frame that carries the camera (`Follow::last_rot`: it turns only
-    /// while the camera turns with the body). `local`: from its centre, in that frame (m).
-    Rides { target: ObjectRef, locked: bool, local: DVec3 },
-    /// On a body's ground (`hero stand`). `local`: in the body's frame, from its centre (m).
-    On { body: Entity, local: DVec3 },
+fn to_hand_back(control: Res<ModControl>, hero: Res<Hero>) -> bool {
+    !control.hero && hero.placed
 }
 
 /// Which light he takes (`hero light free` forces the CPU's, to compare them).
@@ -80,33 +102,58 @@ pub enum LightPath {
 
 #[derive(Resource)]
 pub struct Hero {
-    pub place: Place,
-    /// Port axes (-Z forward, +Y up) to the frame of his `place`: the universe's (`Free`), what carries the
-    /// camera (`Rides`), the body's (`On`).
+    pub frame: Frame,
+    pub state: State,
+    /// His body's turn in the universe's axes, port axes (-Z forward, +Y up).
     pub rot: DQuat,
     /// His position and rotation in the universe, as of the last time they were worked out.
     pub world: (UPos, DQuat),
-    /// Held on the ground under him as it loads (dev command `hero stand`).
-    pub stand: bool,
     /// Real seconds, whatever the game clock does (T8).
     pub clock: f64,
     pub sampler: Box<Sampler>,
+    pub director: Director,
     pub light_path: LightPath,
+    /// The camera's distance behind him (m), the wheel's.
+    pub dist: f64,
+    /// Seconds on the Shift ramp.
+    pub ramp_t: f64,
+    pub was_boost: bool,
+    pub readout: Readout,
+    /// Where he last put the camera: anything else moved it if it's now far from there.
+    pub cam_written: UPos,
+    /// A Go To or a landing carried him last frame.
+    pub carried: bool,
+    /// Placed since the last frame by something else: lift him if that's under the ground (F2).
+    spawned: bool,
     /// Placed since the mod was turned on.
-    placed: bool,
+    pub placed: bool,
+    /// `hero trace`: a test's log of every frame.
+    trace: Option<Trace>,
+    /// `hero orbit K`: a test puts him in orbit next frame, at K x the circular speed.
+    dev_orbit: Option<f64>,
 }
 
 impl Default for Hero {
     fn default() -> Self {
         Hero {
-            place: Place::Free,
+            frame: Frame::at(UPos::ZERO),
+            state: State::Hover,
             rot: DQuat::IDENTITY,
             world: (UPos::ZERO, DQuat::IDENTITY),
-            stand: false,
             clock: 0.0,
             sampler: Box::default(),
+            director: Director::default(),
             light_path: LightPath::Auto,
+            dist: tune::CAM_DIST_M,
+            ramp_t: 0.0,
+            was_boost: false,
+            readout: Readout::default(),
+            cam_written: UPos::ZERO,
+            carried: false,
+            spawned: false,
             placed: false,
+            trace: None,
+            dev_orbit: None,
         }
     }
 }
@@ -118,189 +165,293 @@ fn facing(look: DVec3, up: DVec3) -> DQuat {
     DQuat::from_mat3(&DMat3::from_cols(x, z.cross(x), z))
 }
 
-type Bodies<'w, 's> = Query<'w, 's, (Entity, &'static SystemBody, Option<&'static Terrain>)>;
-
-/// The body a point counts as near: the nearest within `ATTACH_RADII` of its radius.
-fn attach_body<'a>(pos: UPos, bodies: &'a Bodies) -> Option<(Entity, &'a SystemBody, Option<&'a Terrain>)> {
-    bodies
-        .iter()
-        .filter(|(_, b, _)| !b.star && b.radius_m > 0.0)
-        .map(|x| (x, x.1.pos.delta_m(pos).length() - x.1.radius_m))
-        .filter(|(x, h)| *h < x.1.radius_m * tune::ATTACH_RADII)
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(x, _)| x)
-}
-
-impl Hero {
-    /// F2: at the camera's spot plus forward, facing it (the camera stays free in this step), lifted if that's
-    /// under the ground.
-    fn place_ahead(&mut self, cam: &FlyCamera, bodies: &Bodies) {
-        self.placed = true;
-        self.stand = false;
-        self.put(cam, bodies, tune::SPAWN_AHEAD_M);
+/// F3: the camera stays where it is, still; within 2 radii of a body it's bound to it, or the planet leaves
+/// (`travel_and_move`, camera.rs). The cursor comes back. The aftermath (craters, collapses draining) is steps 8 and 10's.
+fn hand_back(
+    mut hero: ResMut<Hero>,
+    mut cam: ResMut<FlyCamera>,
+    data: Res<SeData>,
+    sim: Res<SimTime>,
+    bodies: Query<&SystemBody>,
+    mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    hero.placed = false;
+    hero.director.pinned = false;
+    hero.trace = None;
+    cam.velocity = DVec3::ZERO;
+    cam.travel = None;
+    cam.follow = None;
+    let eph = Ephemeris::new(&data.catalog);
+    let near = bodies.iter().filter(|b| b.radius_m > 0.0).map(|b| (b, b.pos.delta_m(cam.pos).length() / b.radius_m - 1.0)).min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((b, _)) = near.filter(|n| n.1 < tune::OFF_BIND_RADII) {
+        cam.follow = Some(Follow::new(b.obj, matches!(b.obj, ObjectRef::Body(_)), &eph, sim.jd));
+    } else if let Some(obj) = hero.frame.body() {
+        // Further out, what carried him: moving with it, no longer turning.
+        cam.follow = Some(Follow::new(obj, false, &eph, sim.jd));
     }
-
-    fn put(&mut self, cam: &FlyCamera, bodies: &Bodies, ahead: f64) {
-        let forward = cam.rot * DVec3::NEG_Z;
-        let mut pos = cam.pos.offset_m(forward * ahead);
-        // (A giant has no ground: the camera may be under its radius, and he with it.)
-        if let Some((_, b, t)) = attach_body(pos, bodies).filter(|(_, _, t)| !t.is_some_and(|t| t.proc.kind.is_giant())) {
-            let local = b.orient.inverse() * pos.delta_m(b.pos);
-            let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, t, local);
-            if local.length() < ground + 1.0 {
-                pos = b.pos.offset_m(b.orient * (local.normalize_or(DVec3::Y) * (ground + tune::SPAWN_LIFT_M)));
-            }
+    for mut c in &mut cursor {
+        if c.grab_mode != CursorGrabMode::None {
+            c.grab_mode = CursorGrabMode::None;
         }
-        self.ride(cam, pos, upright(cam, bodies, pos));
-    }
-
-    /// At `pos`, turned `rot` (both the universe's), in the frame that carries the camera.
-    fn ride(&mut self, cam: &FlyCamera, pos: UPos, rot: DQuat) {
-        match cam.follow {
-            Some(f) => {
-                let to_local = f.last_rot.inverse();
-                self.rot = to_local * rot;
-                self.place = Place::Rides { target: f.target, locked: f.locked, local: to_local * pos.delta_m(f.last_pos) };
-            }
-            None => {
-                self.rot = rot;
-                self.place = Place::Free;
-            }
-        }
-        self.world = (pos, rot);
-    }
-
-    /// Where riding the camera's carrier puts him now. If the camera's binding changed, he stays where he is and
-    /// rides what carries it from there.
-    fn carried(&mut self, cam: &FlyCamera) {
-        let rides = match self.place {
-            Place::Rides { target, locked, .. } => Some((target, locked)),
-            _ => None,
-        };
-        if cam.follow.map(|f| (f.target, f.locked)) != rides {
-            let (pos, rot) = self.world;
-            self.ride(cam, pos, rot);
-        }
-        if let (Place::Rides { local, .. }, Some(f)) = (self.place, cam.follow) {
-            self.world = (f.last_pos.offset_m(f.last_rot * local), f.last_rot * self.rot);
-        }
-    }
-
-    /// His position and rotation in the universe, this frame. If the body he stood on has gone (another system),
-    /// he appears in front of the camera again.
-    fn world_pose(&mut self, cam: &FlyCamera, bodies: &Bodies) -> (UPos, DQuat) {
-        match self.place {
-            Place::On { body, local } => match bodies.get(body) {
-                Ok((_, b, _)) => self.world = (b.pos.offset_m(b.orient * local), b.orient * self.rot),
-                Err(_) => self.place_ahead(cam, bodies),
-            },
-            _ => self.carried(cam),
-        }
-        self.world
-    }
-
-    /// `hero stand`: his soles on the ground as it loads and refines.
-    fn keep_standing(&mut self, assets: &HeroAssets, bodies: &Bodies) {
-        if !self.stand {
-            return;
-        }
-        let Place::On { body, local } = self.place else { return };
-        let Ok((_, b, t)) = bodies.get(body) else { return };
-        let (ground, level) = crate::ship::ground_on(b.radius_m, b.shape, t, local);
-        if level.is_some() {
-            let clip = self.sampler.layers[0].clip.and_then(|c| assets.clips.clips.get(c as usize));
-            let sole = clip.map_or(-1.0, |c| c.ground_z) as f64;
-            self.place = Place::On { body, local: local.normalize_or(DVec3::Y) * (ground - sole) };
-        }
-    }
-
-    fn start_clip(&mut self, clips: &se_core::hero_asset::ClipSet, name: &str) {
-        match clips.find(name) {
-            Some(c) => self.sampler.play(c as u16, 0.0),
-            None => warn!("viltrumite: no clip '{name}'"),
+        if !c.visible {
+            c.visible = true;
         }
     }
 }
 
-/// Facing the camera from `pos`, upright on the body near him, else (or looking straight along that up) as the
-/// camera.
-fn upright(cam: &FlyCamera, bodies: &Bodies, pos: UPos) -> DQuat {
-    let look = cam.pos.delta_m(pos);
-    let along = look.normalize_or_zero();
-    let up = attach_body(pos, bodies).map(|(_, b, _)| pos.delta_m(b.pos).normalize_or(DVec3::Y)).filter(|up| up.dot(along).abs() < 0.95);
-    facing(look, up.unwrap_or(cam.rot * DVec3::Y))
+// ---- Dev commands -------------------------------------------------------------------------------------------------
+
+/// `hero keys`: real keys held for a while. They go into `ButtonInput`, so every reader sees what a keyboard would give.
+#[derive(Resource, Default)]
+pub struct DevKeys {
+    keys: Vec<KeyCode>,
+    buttons: Vec<MouseButton>,
+    /// Real seconds left.
+    left: f64,
+    pressed: bool,
+    /// Keys to let go next frame (the ones a new `hero keys` replaced).
+    release: Vec<KeyCode>,
+    release_buttons: Vec<MouseButton>,
 }
 
-/// `hero here [M]` | `stand [M]` | `face DEG` | `clip NAME` | `light auto|free` | `state`: test runs put him where
-/// a picture needs him. `here`: M (default 6) in front of the camera, facing it. `stand`: on the ground M (default
-/// 6) ahead along the ground, facing the camera. Step 4 replaces the placing with `keys` and `aim`.
+fn dev_keys_held(dev: Res<DevKeys>) -> bool {
+    !dev.keys.is_empty() || !dev.buttons.is_empty() || !dev.release.is_empty() || !dev.release_buttons.is_empty()
+}
+
+fn dev_keys(mut dev: ResMut<DevKeys>, mut keys: ResMut<ButtonInput<KeyCode>>, mut buttons: ResMut<ButtonInput<MouseButton>>, time: Res<Time<Real>>) {
+    let dev = &mut *dev;
+    for k in dev.release.drain(..) {
+        keys.release(k);
+    }
+    for b in dev.release_buttons.drain(..) {
+        buttons.release(b);
+    }
+    if dev.keys.is_empty() && dev.buttons.is_empty() {
+        return;
+    }
+    if !dev.pressed {
+        dev.pressed = true;
+        for k in &dev.keys {
+            keys.press(*k);
+        }
+        for b in &dev.buttons {
+            buttons.press(*b);
+        }
+        return;
+    }
+    dev.left -= time.delta_secs_f64();
+    if dev.left <= 0.0 {
+        dev.pressed = false;
+        dev.release.append(&mut dev.keys);
+        dev.release_buttons.append(&mut dev.buttons);
+    }
+}
+
+/// A key's name in `hero keys`.
+fn key_named(name: &str) -> Option<KeyCode> {
+    Some(match name {
+        "w" => KeyCode::KeyW,
+        "a" => KeyCode::KeyA,
+        "s" => KeyCode::KeyS,
+        "d" => KeyCode::KeyD,
+        "x" => KeyCode::KeyX,
+        "z" => KeyCode::KeyZ,
+        "g" => KeyCode::KeyG,
+        "r" => KeyCode::KeyR,
+        "f" => KeyCode::KeyF,
+        "q" => KeyCode::KeyQ,
+        "e" => KeyCode::KeyE,
+        "c" => KeyCode::KeyC,
+        "t" => KeyCode::KeyT,
+        "up" => KeyCode::ArrowUp,
+        "down" => KeyCode::ArrowDown,
+        "left" => KeyCode::ArrowLeft,
+        "right" => KeyCode::ArrowRight,
+        "4" => KeyCode::Digit4,
+        "tab" => KeyCode::Tab,
+        "alt" => KeyCode::AltLeft,
+        "space" => KeyCode::Space,
+        "shift" => KeyCode::ShiftLeft,
+        "ctrl" => KeyCode::ControlLeft,
+        _ => return None,
+    })
+}
+
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `orbit K` | `clip NAME|auto` | `light auto|free`:
+/// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
+/// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
+/// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
+/// from here at K x the circular speed round the nearest body, the way he looks.
 pub fn dev_command(world: &mut World, arg: &str) {
     let (verb, rest) = arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim()));
-    let number = |d: f64| rest.parse::<f64>().unwrap_or(d);
-    let verb = verb.to_ascii_lowercase();
-    match verb.as_str() {
-        "here" | "stand" => {
-            let ahead = number(tune::SPAWN_AHEAD_M);
-            let stand = verb == "stand";
-            let _ = world.run_system_cached_with(place_hero, (ahead, stand));
+    match verb.to_ascii_lowercase().as_str() {
+        "keys" => {
+            let (names, secs) = rest.rsplit_once(' ').map_or((rest, 0.0), |(a, b)| (a, b.trim().parse().unwrap_or(0.0)));
+            let mut dev = world.resource_mut::<DevKeys>();
+            let dev = &mut *dev;
+            dev.release.append(&mut dev.keys);
+            dev.release_buttons.append(&mut dev.buttons);
+            dev.pressed = false;
+            dev.left = secs;
+            for name in names.to_ascii_lowercase().split('+').filter(|n| !n.is_empty() && *n != "off") {
+                match (name, key_named(name)) {
+                    ("lmb", _) => dev.buttons.push(MouseButton::Left),
+                    ("rmb", _) => dev.buttons.push(MouseButton::Right),
+                    (_, Some(k)) => dev.keys.push(k),
+                    _ => warn!("hero keys: no key '{name}'"),
+                }
+            }
         }
-        "face" => {
-            let deg = number(0.0);
+        "aim" => {
+            let v: Vec<f64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            let [yaw, pitch] = v[..] else {
+                warn!("hero aim: wants Y P, got '{rest}'");
+                return;
+            };
+            let _ = world.run_system_cached_with(aim, (yaw.to_radians(), pitch.to_radians()));
+        }
+        "state" => {
+            let _ = world.run_system_cached(log_state);
+        }
+        "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
+        "trace" => {
+            let (file, body) = rest.split_once(' ').map_or((rest, ""), |(a, b)| (a, b.trim()));
+            let body = if body.is_empty() { None } else { world.resource::<SeData>().catalog.find(body) };
             let mut hero = world.resource_mut::<Hero>();
-            let turn = DQuat::from_rotation_y(deg.to_radians());
-            hero.rot *= turn;
+            hero.trace = if file.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                match std::fs::File::create(file) {
+                    Ok(f) => {
+                        let mut w = std::io::BufWriter::new(f);
+                        let _ = writeln!(w, "clock,jd,rate,attached,state,pose,x,y,z,height,speed,vx,vy,vz,seen_x,seen_y,seen_z");
+                        Some(Trace { out: w, body })
+                    }
+                    Err(e) => {
+                        warn!("hero trace: {file}: {e}");
+                        None
+                    }
+                }
+            };
         }
         "clip" => {
             let name = rest.to_string();
             // (No clips until the mod's first enable, or if its files were refused.)
             let done = world.try_resource_scope(|world, assets: Mut<HeroAssets>| {
-                world.resource_mut::<Hero>().start_clip(&assets.clips, &name);
+                let mut hero = world.resource_mut::<Hero>();
+                if name.eq_ignore_ascii_case("auto") {
+                    hero.director = Director::default();
+                    return;
+                }
+                match assets.clips.find(&name) {
+                    Some(c) => {
+                        hero.director.pinned = true;
+                        hero.sampler.play(c as u16, 0.0);
+                    }
+                    None => warn!("viltrumite: no clip '{name}'"),
+                }
             });
             if done.is_none() {
                 warn!("hero clip: the mod's files aren't loaded (turn it on first)");
             }
         }
         "light" => world.resource_mut::<Hero>().light_path = if rest.eq_ignore_ascii_case("free") { LightPath::Free } else { LightPath::Auto },
-        "state" => {
-            let _ = world.run_system_cached(log_state);
-        }
         _ => warn!("hero: unknown command '{arg}'"),
     }
 }
 
-fn place_hero(In((ahead, stand)): In<(f64, bool)>, mut hero: ResMut<Hero>, cam: Res<FlyCamera>, bodies: Bodies) {
-    if !stand {
-        hero.stand = false;
-        hero.put(&cam, &bodies, ahead);
-        return;
-    }
-    // Along the ground from under the camera.
-    let Some((body, b, _)) = attach_body(cam.pos, &bodies) else {
-        warn!("hero stand: no body near");
-        return;
-    };
-    let up = cam.pos.delta_m(b.pos).normalize_or(DVec3::Y);
-    let forward = cam.rot * DVec3::NEG_Z;
-    let along = (forward - up * forward.dot(up)).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
-    let pos = cam.pos.offset_m(along * ahead);
-    let rot = upright(&cam, &bodies, pos);
-    hero.rot = b.orient.inverse() * rot;
-    hero.place = Place::On { body, local: b.orient.inverse() * pos.delta_m(b.pos) };
-    hero.world = (pos, rot);
-    hero.stand = true;
+/// A test's per-frame log.
+pub struct Trace {
+    out: std::io::BufWriter<std::fs::File>,
+    body: Option<ObjectRef>,
 }
 
-fn log_state(hero: Res<Hero>, control: Res<ModControl>, cam: Res<FlyCamera>, bodies: Bodies, pipes: Res<crate::pipeline_watch::GroundPipelines>, draws: Option<Res<HeroDraws>>) {
+impl Trace {
+    fn write(&mut self, line: &str) {
+        let _ = self.out.write_all(line.as_bytes());
+    }
+}
+
+fn aim(In((yaw, pitch)): In<(f64, f64)>, mut cam: ResMut<FlyCamera>, bodies: Query<&SystemBody>) {
+    let up = bodies
+        .iter()
+        .filter(|b| b.radius_m > 0.0)
+        .map(|b| (b, cam.pos.delta_m(b.pos)))
+        .min_by(|a, b| (a.1.length() - a.0.radius_m).total_cmp(&(b.1.length() - b.0.radius_m)))
+        .filter(|(b, rel)| rel.length() < b.radius_m * 1.5)
+        .map_or(cam.rot * DVec3::Y, |(_, rel)| rel.normalize_or(DVec3::Y));
+    let f = cam.rot * DVec3::NEG_Z;
+    let flat = (f - up * f.dot(up)).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
+    let heading = DQuat::from_axis_angle(up, yaw) * flat;
+    cam.rot = crate::camera::look_rotation(heading * pitch.cos() + up * pitch.sin(), up);
+}
+
+fn log_state(
+    hero: Res<Hero>,
+    control: Res<ModControl>,
+    cam: Res<FlyCamera>,
+    data: Res<SeData>,
+    sim: Res<SimTime>,
+    input: Res<ModInput>,
+    pipes: Res<crate::pipeline_watch::GroundPipelines>,
+    draws: Option<Res<HeroDraws>>,
+    cursor: Query<&CursorOptions, With<PrimaryWindow>>,
+    bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>,
+) {
+    // What the frames work with, for the nearest body.
+    let near = bodies
+        .iter()
+        .filter(|(b, _)| b.radius_m > 0.0)
+        .min_by(|a, b| (a.0.pos.delta_m(hero.world.0).length() - a.0.radius_m).total_cmp(&(b.0.pos.delta_m(hero.world.0).length() - b.0.radius_m)))
+        .map_or("no body near".to_string(), |(b, t)| {
+            let info = crate::ship::BodyInfo { obj: b.obj, pos: b.pos, orient: b.orient, radius: b.radius_m, shape: b.shape, gm: 0.0, terrain: t };
+            let local = frames::to_local(&info, hero.world.0);
+            format!(
+                "nearest {}: {:.3} m over its radius, in the sphere frame; attaches under {:.0} m, {:.0} m/s of ground under him",
+                data.catalog.display_name(b.obj),
+                frames::height_over(&info, local),
+                frames::attach_radius(&info) - b.radius_m,
+                crate::ship::spin_at(&Ephemeris::new(&data.catalog), b.obj, sim.jd).cross(b.orient * local).length(),
+            )
+        });
+    let body = hero.frame.body().map_or("none".to_string(), |o| data.catalog.display_name(o).to_string());
+    let frame = match hero.frame {
+        Frame::Attached { local_pos, local_vel, level, .. } => format!("attached to {body}, level {level:?}, {:.3} m from its centre, {:.3} m/s", local_pos.length(), local_vel.length()),
+        Frame::Free { vel, .. } => format!("free, carried by {body}, {:.3} m/s in the frame", vel.length()),
+    };
+    let r = &hero.readout;
+    let d = &hero.director;
+    let travel = cam.travel.as_ref().map(|t| matches!(t.kind, TravelKind::Goto | TravelKind::Land));
+    let grab = cursor.single().map_or("no window".to_string(), |c| format!("{:?} visible {}", c.grab_mode, c.visible));
+    let selected = cam.selected.map_or("nothing".to_string(), |o| data.catalog.display_name(o).to_string());
     info!(
-        "hero: on {} loading {} pipelines {:?}, {}, {:.2} m from the camera, clock {:.2} s, clip {:?} time {:.2} s, street lamps {:?}",
+        "hero: on {} loading {} pipelines {:?}, state {:?}, tier {:?}, pose {:?}, {frame}; {near}; speed {} ({:.3} m/s), mach {:?}, height {:?}, gravity {:.3} g; {:.2} m from the camera; ramp {:.2} s; clock {:.2} s, sim rate {} paused {}; menus {} unfocused {}; cursor {grab}; input {:?} {:?} {:?} shift {} ctrl {}; aim forward {:?}; follow {} track {} travel {travel:?}; selected {selected}; street lamps {:?}",
         control.hero,
         control.loading,
         pipes.hero(),
-        draw::describe(&hero.place, &bodies),
+        hero.state,
+        d.tier,
+        d.pose,
+        readout::format_speed(r.speed),
+        r.speed,
+        r.mach,
+        r.height,
+        r.gravity_g,
         hero.world.0.delta_m(cam.pos).length(),
+        hero.ramp_t,
         hero.clock,
-        hero.sampler.layers[0].clip,
-        hero.sampler.layers[0].time,
+        sim.rate,
+        sim.paused,
+        control.menus,
+        control.unfocused,
+        input.forward,
+        input.right,
+        input.up,
+        input.shift,
+        input.ctrl,
+        cam.rot * DVec3::NEG_Z,
+        cam.follow.is_some(),
+        cam.track,
         draws.map_or([0.0; 3], |d| d.town()),
     );
 }
@@ -308,70 +459,19 @@ fn log_state(hero: Res<Hero>, control: Res<ModControl>, cam: Res<FlyCamera>, bod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::Follow;
 
-    /// What `travel_and_move` does to the camera when its target has moved and turned.
-    fn carry(cam: &mut FlyCamera, pos: UPos, rot: DQuat) {
-        let mut f = cam.follow.unwrap();
-        let (off, turn) = (f.last_rot.inverse() * cam.pos.delta_m(f.last_pos), f.last_rot.inverse() * cam.rot);
-        cam.pos = pos.offset_m(rot * off);
-        cam.rot = rot * turn;
-        (f.last_pos, f.last_rot) = (pos, rot);
-        cam.follow = Some(f);
-    }
-
-    fn follow(locked: bool) -> Follow {
-        Follow { target: ObjectRef::Body(3), last_pos: UPos::ZERO.offset_m(DVec3::X * 1e11), last_rot: DQuat::from_rotation_y(0.3), locked, sync: locked }
-    }
-
-    /// He stays where the camera sees him: this was seconds' worth of km/s away before he rode what carries it.
     #[test]
-    fn he_rides_what_carries_the_camera() {
-        for locked in [false, true] {
-            let mut f = follow(locked);
-            if !locked {
-                f.last_rot = DQuat::IDENTITY;
-            }
-            let mut cam = FlyCamera { follow: Some(f), pos: f.last_pos.offset_m(DVec3::Y * 7e6), ..default() };
-            let mut hero = Hero::default();
-            hero.ride(&cam, cam.pos.offset_m(DVec3::NEG_Z * 6.0), DQuat::IDENTITY);
-            let seen = cam.rot.inverse() * hero.world.0.delta_m(cam.pos);
-            // A second of Earth's motion and, turning with it, of its spin.
-            let turn = if locked { DQuat::from_rotation_y(0.3 + 7.3e-5) } else { DQuat::IDENTITY };
-            carry(&mut cam, f.last_pos.offset_m(DVec3::Z * 3e4), turn);
-            hero.carried(&cam);
-            let now = cam.rot.inverse() * hero.world.0.delta_m(cam.pos);
-            assert!((now - seen).length() < 1e-3, "locked {locked}: {seen} then {now}");
+    fn keys_have_the_names_a_test_uses() {
+        for n in ["w", "a", "s", "d", "x", "z", "space", "shift", "ctrl", "tab"] {
+            assert!(key_named(n).is_some(), "{n}");
         }
+        assert_eq!(key_named("nope"), None);
     }
 
-    /// Bound to nothing, the camera stays and so does he.
     #[test]
-    fn he_stays_with_an_unbound_camera() {
-        let cam = FlyCamera { pos: UPos::ZERO.offset_m(DVec3::X * 1e11), ..default() };
-        let mut hero = Hero::default();
-        let at = cam.pos.offset_m(DVec3::NEG_Z * 6.0);
-        hero.ride(&cam, at, DQuat::IDENTITY);
-        hero.carried(&cam);
-        assert!(matches!(hero.place, Place::Free));
-        assert!(hero.world.0.delta_m(at).length() < 1e-3);
-    }
-
-    /// Binding or unbinding the camera leaves him where he is, in the new frame.
-    #[test]
-    fn a_new_binding_keeps_him_where_he_is() {
-        let f = follow(true);
-        let mut cam = FlyCamera { pos: f.last_pos.offset_m(DVec3::Y * 7e6), ..default() };
-        let mut hero = Hero::default();
-        let at = cam.pos.offset_m(DVec3::NEG_Z * 6.0);
-        hero.ride(&cam, at, DQuat::IDENTITY);
-        cam.follow = Some(f);
-        hero.carried(&cam);
-        assert!(matches!(hero.place, Place::Rides { locked: true, .. }));
-        assert!(hero.world.0.delta_m(at).length() < 1e-3, "{}", hero.world.0.delta_m(at));
-        cam.follow = None;
-        hero.carried(&cam);
-        assert!(matches!(hero.place, Place::Free));
-        assert!(hero.world.0.delta_m(at).length() < 1e-3);
+    fn facing_is_upright_and_looks_where_asked() {
+        let q = facing(DVec3::X, DVec3::Y);
+        assert!((q * DVec3::NEG_Z - DVec3::X).length() < 1e-9);
+        assert!((q * DVec3::Y - DVec3::Y).length() < 1e-9);
     }
 }

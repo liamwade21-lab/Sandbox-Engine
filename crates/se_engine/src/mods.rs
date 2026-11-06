@@ -13,7 +13,9 @@
 use std::path::{Component, PathBuf};
 
 use bevy::audio::{Decodable, Source, Volume};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, PrimaryEguiContext, egui};
 use se_core::hero_asset::{self, ClipSet, HeroModel};
 
@@ -124,16 +126,29 @@ pub struct ModControl {
     pub loading: bool,
     /// The mod that is on is Viltrumite powers (`Code "viltrumite"`): what the hero's systems run on.
     pub hero: bool,
+    /// The window has lost the focus: that counts as `menus` (the spec's F8).
+    pub unfocused: bool,
     request: Option<ModRequest>,
 }
 
 impl ModControl {
+    /// The mouse goes to egui and the cursor shows: Tab's menus, or the window has lost the focus.
+    pub fn menus_open(&self) -> bool {
+        self.menus || self.unfocused
+    }
+
+    /// He's on and playing: the panels are hidden.
+    pub fn panels_hidden(&self) -> bool {
+        self.hero && !self.menus_open()
+    }
+
     /// Turn the mod that is on off. Every way off comes through here.
     fn off(&mut self, reg: &ModRegistry, why: &str) {
         if let Some(id) = self.active.take() {
             info!("mods: {} off ({why})", reg.name_of(&id));
         }
         self.menus = false;
+        self.unfocused = false;
         self.dev = false;
         self.loading = false;
         self.hero = false;
@@ -235,9 +250,221 @@ struct DevSound {
     playing: bool,
 }
 
-/// The snapshot of the player's keys and mouse for the mod that is on: filled from step 4.
-#[derive(Resource, Default)]
-pub struct ModInput {}
+/// One frame of the player's keys and mouse for the mod that is on, all zero while a text field has the focus. Taken
+/// before anything else reads the frame's input: `snapshot_input`.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct ModInput {
+    /// W is +1, S -1.
+    pub forward: f32,
+    /// D is +1, A -1.
+    pub right: f32,
+    /// Space is +1, Ctrl -1.
+    pub up: f32,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    /// Pressed this frame.
+    pub space_pressed: bool,
+    pub x_pressed: bool,
+    pub z: bool,
+    /// The mouse, unless the menus have it. (From step 8: punches, the charge.)
+    pub left: bool,
+    pub left_pressed: bool,
+    pub left_released: bool,
+    pub right_button: bool,
+    pub right_pressed: bool,
+    pub right_released: bool,
+    pub mouse: Vec2,
+    /// Notches, +1 away from the player.
+    pub wheel: f32,
+}
+
+impl ModInput {
+    /// What the keys and buttons say. `menus`: the mouse isn't his.
+    fn read(keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, mouse: Vec2, wheel: f32, menus: bool) -> ModInput {
+        let axis = |plus: KeyCode, minus: KeyCode| keys.pressed(plus) as i32 as f32 - keys.pressed(minus) as i32 as f32;
+        let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+        let mut i = ModInput {
+            forward: axis(KeyCode::KeyW, KeyCode::KeyS),
+            right: axis(KeyCode::KeyD, KeyCode::KeyA),
+            up: keys.pressed(KeyCode::Space) as i32 as f32 - ctrl as i32 as f32,
+            shift: keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+            ctrl,
+            alt: keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
+            space_pressed: keys.just_pressed(KeyCode::Space),
+            x_pressed: keys.just_pressed(KeyCode::KeyX),
+            z: keys.just_pressed(KeyCode::KeyZ),
+            ..default()
+        };
+        if !menus {
+            i.left = buttons.pressed(MouseButton::Left);
+            i.left_pressed = buttons.just_pressed(MouseButton::Left);
+            i.left_released = buttons.just_released(MouseButton::Left);
+            i.right_button = buttons.pressed(MouseButton::Right);
+            i.right_pressed = buttons.just_pressed(MouseButton::Right);
+            i.right_released = buttons.just_released(MouseButton::Right);
+            i.mouse = mouse;
+            i.wheel = wheel;
+        }
+        i
+    }
+
+    /// The same frame with no mouse: just focused, or the cursor about to lock.
+    fn without_mouse(self) -> ModInput {
+        ModInput { left: false, left_pressed: false, left_released: false, right_button: false, right_pressed: false, right_released: false, mouse: Vec2::ZERO, wheel: 0.0, ..self }
+    }
+}
+
+/// The keys only he reads while on: nothing else sees their presses. (`pressed` stays: `reset` would drop a key held
+/// through the frame. The camera's readers of it are gated in `input_controls`.) F is the table's "does nothing": it would
+/// board a ship.
+const HIS_KEYS: [KeyCode; 7] = [KeyCode::Space, KeyCode::KeyX, KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::KeyF];
+
+/// Frames after the cursor comes back in which no mouse counts: the click that gave the focus, the jump of the lock.
+const SWALLOW_FRAMES: u8 = 3;
+
+/// What the snapshot remembers.
+#[derive(Default)]
+pub(crate) struct FocusState {
+    /// As last seen, once a frame has been seen.
+    focused: Option<bool>,
+    /// Frames left of swallowing the mouse. At `SWALLOW_FRAMES` the cursor goes to `None` and to the window's middle, after
+    /// that to `Locked`.
+    regain: u8,
+    /// The menus' state last frame: closing them locks the cursor anew.
+    menus: bool,
+    /// A held button that came before the cursor did stays swallowed until it's let go.
+    held_left: bool,
+    held_right: bool,
+}
+
+/// `--run` tests don't grab the cursor (`settings::scripted`) and have no focus to speak of, unless they say they drive
+/// the real window (`SE_HERO_GRAB=1`).
+fn real_window(cfg: &crate::config::EngineConfig) -> bool {
+    !crate::settings::scripted(cfg) || std::env::var_os("SE_HERO_GRAB").is_some()
+}
+
+/// The spec's F8. Runs right after the frame's input is read, before all its readers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn snapshot_input(
+    mut input: ResMut<ModInput>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut buttons: ResMut<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    scroll: Res<AccumulatedMouseScroll>,
+    mut control: ResMut<ModControl>,
+    mut egui: EguiContexts,
+    window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+    cfg: Res<crate::config::EngineConfig>,
+    hero: Res<crate::viltrumite::Hero>,
+    mut state: Local<FocusState>,
+) {
+    let (mut window, mut cursor) = window.into_inner();
+    let real = real_window(&cfg);
+    let focused = !real || window.focused;
+    if state.focused != Some(focused) {
+        if focused {
+            state.regain = SWALLOW_FRAMES;
+        }
+        state.focused = Some(focused);
+    }
+    // Just turned on: the click on the Mods row was the last the mouse did for the menus.
+    if !hero.placed {
+        state.regain = SWALLOW_FRAMES;
+    }
+    if control.unfocused == focused {
+        control.unfocused = !focused;
+    }
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
+    if keys.just_pressed(KeyCode::Tab) && !alt {
+        control.menus = !control.menus;
+        // Out of the menus no text field keeps the keys, or they'd stay dead with the cursor locked.
+        if !control.menus {
+            if let Ok(ctx) = egui.ctx_mut() {
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                });
+            }
+        }
+    }
+    let menus = control.menus_open();
+    if state.menus && !menus {
+        state.regain = SWALLOW_FRAMES;
+    }
+    state.menus = menus;
+    let typing = egui.ctx_mut().map(|c| c.egui_wants_keyboard_input()).unwrap_or(false);
+    let notches = match scroll.unit {
+        MouseScrollUnit::Line => scroll.delta.y,
+        MouseScrollUnit::Pixel => scroll.delta.y / 100.0,
+    };
+    let mut read = ModInput::read(&keys, &buttons, motion.delta, notches, menus);
+    if state.regain > 0 {
+        state.held_left = buttons.pressed(MouseButton::Left);
+        state.held_right = buttons.pressed(MouseButton::Right);
+        read = read.without_mouse();
+    }
+    // A button held from before stays out of it until it's let go.
+    if state.held_left {
+        state.held_left = buttons.pressed(MouseButton::Left);
+        (read.left, read.left_released) = (false, false);
+    }
+    if state.held_right {
+        state.held_right = buttons.pressed(MouseButton::Right);
+        (read.right_button, read.right_released) = (false, false);
+    }
+    *input = if typing { ModInput::default() } else { read };
+    take_presses(&mut keys, &mut buttons, menus);
+    if real {
+        // winit's lock is a 1x1 rect that a regained focus doesn't reapply: through `None`, then `Locked`. And it locks the
+        // cursor where it is: outside the window, a click would go to whatever is under it. So the window's middle first.
+        let want = if menus || state.regain == SWALLOW_FRAMES { CursorGrabMode::None } else { CursorGrabMode::Locked };
+        if !menus && state.regain == SWALLOW_FRAMES {
+            let middle = Vec2::new(window.width(), window.height()) * 0.5;
+            window.set_cursor_position(Some(middle));
+        }
+        if cursor.grab_mode != want {
+            cursor.grab_mode = want;
+        }
+        let visible = want == CursorGrabMode::None && menus;
+        if cursor.visible != visible {
+            cursor.visible = visible;
+        }
+    }
+    state.regain = state.regain.saturating_sub(1);
+}
+
+/// Nothing else sees his keys' presses, or the mouse buttons' unless the menus have them. (Held stays held.)
+fn take_presses(keys: &mut ButtonInput<KeyCode>, buttons: &mut ButtonInput<MouseButton>, menus: bool) {
+    for k in HIS_KEYS {
+        keys.clear_just_pressed(k);
+    }
+    if !menus {
+        for b in [MouseButton::Left, MouseButton::Right] {
+            buttons.clear_just_pressed(b);
+            buttons.clear_just_released(b);
+        }
+    }
+}
+
+/// Whether an input event reaches egui while he's on. Tab goes to him, never to egui: it would focus a widget,
+/// `egui_wants_keyboard_input` would turn true and every key's guard would go dead (hud.rs `hud_keys`). And with the cursor
+/// locked at its last place, a click there must not press what's under it.
+fn reaches_egui(e: &egui::Event, menus: bool) -> bool {
+    match e {
+        egui::Event::Key { key: egui::Key::Tab, .. } => false,
+        egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. } | egui::Event::PointerGone => menus,
+        _ => true,
+    }
+}
+
+pub(crate) fn strip_egui_input(control: Res<ModControl>, mut q: Query<&mut bevy_egui::EguiInput, With<PrimaryEguiContext>>) {
+    let menus = control.menus_open();
+    for mut input in &mut q {
+        input.events.retain(|e| reaches_egui(e, menus));
+    }
+}
 
 pub struct ModsPlugin;
 
@@ -247,6 +474,14 @@ impl Plugin for ModsPlugin {
             .init_resource::<ModControl>()
             .init_resource::<ModInput>()
             .add_systems(Startup, scan_at_start)
+            // His keys and mouse, before anything else reads the frame's: the spec's F8.
+            .add_systems(
+                PreUpdate,
+                (
+                    snapshot_input.run_if(hero_on).after(bevy::input::InputSystems),
+                    strip_egui_input.run_if(hero_on).after(bevy_egui::EguiPreUpdateSet::ProcessInput).before(bevy_egui::EguiPreUpdateSet::BeginPass),
+                ),
+            )
             // After whatever can start piloting this frame (`ship_input` and the commands chained before it:
             // Enter, F, the Ships window; `move_mode_keys`: key 4), and before a script's first command: the
             // mod goes off first.
@@ -270,12 +505,17 @@ fn mod_on(control: Res<ModControl>) -> bool {
     control.active.is_some()
 }
 
+fn hero_on(control: Res<ModControl>) -> bool {
+    control.hero
+}
+
 fn has_request(control: Res<ModControl>) -> bool {
     control.request.is_some()
 }
 
-fn window_open(hud: Res<HudState>) -> bool {
-    hud.show_mods && !hud.hidden && mods_enabled()
+fn window_open(hud: Res<HudState>, control: Res<ModControl>) -> bool {
+    // (While he plays it waits for Tab: the mouse couldn't reach it.)
+    hud.show_mods && !hud.hidden && mods_enabled() && !control.panels_hidden()
 }
 
 /// Where mods are looked for, in order: `asset_dir()` (the assets folder next to the exe when there is
@@ -400,7 +640,7 @@ fn off_for_pilot_or_script(mut control: ResMut<ModControl>, reg: Res<ModRegistry
     }
 }
 
-fn apply_request(
+pub(crate) fn apply_request(
     mut commands: Commands,
     mut control: ResMut<ModControl>,
     mut reg: ResMut<ModRegistry>,
@@ -467,7 +707,7 @@ fn apply_request(
     }
 }
 
-fn off_on_exit(mut exits: MessageReader<AppExit>, mut control: ResMut<ModControl>, reg: Res<ModRegistry>) {
+pub(crate) fn off_on_exit(mut exits: MessageReader<AppExit>, mut control: ResMut<ModControl>, reg: Res<ModRegistry>) {
     if exits.read().next().is_some() {
         control.off(&reg, "the game is closing");
     }
@@ -609,6 +849,95 @@ pub fn dev_ui_click(world: &mut World, arg: &str) {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn pressed(keys: &[KeyCode]) -> ButtonInput<KeyCode> {
+        let mut k = ButtonInput::default();
+        for key in keys {
+            k.press(*key);
+        }
+        k
+    }
+
+    #[test]
+    fn the_keys_map_as_the_spec_table_says() {
+        let none = ButtonInput::<MouseButton>::default();
+        let read = |keys: &[KeyCode]| ModInput::read(&pressed(keys), &none, Vec2::ZERO, 0.0, false);
+        assert_eq!(read(&[]), ModInput::default());
+        assert_eq!(read(&[KeyCode::KeyW]).forward, 1.0);
+        assert_eq!(read(&[KeyCode::KeyS]).forward, -1.0);
+        assert_eq!(read(&[KeyCode::KeyW, KeyCode::KeyS]).forward, 0.0);
+        assert_eq!(read(&[KeyCode::KeyD]).right, 1.0);
+        assert_eq!(read(&[KeyCode::KeyA]).right, -1.0);
+        let up = read(&[KeyCode::Space]);
+        assert!(up.up == 1.0 && up.space_pressed);
+        let down = read(&[KeyCode::ControlRight]);
+        assert!(down.up == -1.0 && down.ctrl && !down.space_pressed);
+        assert!(read(&[KeyCode::ShiftRight]).shift);
+        assert!(read(&[KeyCode::AltLeft]).alt);
+        assert!(read(&[KeyCode::KeyX]).x_pressed);
+        assert!(read(&[KeyCode::KeyZ]).z);
+        // Nothing else moves him: the keys that steered the free camera, and the others.
+        for k in [KeyCode::KeyR, KeyCode::KeyF, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::ArrowUp, KeyCode::ArrowLeft, KeyCode::Numpad8, KeyCode::KeyG, KeyCode::KeyC, KeyCode::Digit4] {
+            assert_eq!(read(&[k]), ModInput::default(), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn the_mouse_is_his_unless_the_menus_have_it() {
+        let mut b = ButtonInput::<MouseButton>::default();
+        b.press(MouseButton::Left);
+        let keys = pressed(&[KeyCode::KeyW]);
+        let his = ModInput::read(&keys, &b, Vec2::new(3.0, -2.0), 1.5, false);
+        assert!(his.left && his.left_pressed && his.mouse == Vec2::new(3.0, -2.0) && his.wheel == 1.5);
+        let menus = ModInput::read(&keys, &b, Vec2::new(3.0, -2.0), 1.5, true);
+        assert!(!menus.left && !menus.left_pressed && menus.mouse == Vec2::ZERO && menus.wheel == 0.0);
+        // The keys stay his in the menus.
+        assert_eq!(menus.forward, 1.0);
+        // Just focused: no mouse, keys kept.
+        let quiet = his.without_mouse();
+        assert!(!quiet.left && !quiet.left_pressed && quiet.mouse == Vec2::ZERO && quiet.wheel == 0.0 && quiet.forward == 1.0);
+    }
+
+    /// `clear_just_pressed`, never `reset`: a key held stays held, nothing else sees the press.
+    #[test]
+    fn nothing_else_sees_his_presses_and_held_stays_held() {
+        let mut keys = pressed(&[KeyCode::Space, KeyCode::KeyX, KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::KeyF, KeyCode::KeyG, KeyCode::KeyZ, KeyCode::ShiftLeft, KeyCode::Tab]);
+        let mut b = ButtonInput::<MouseButton>::default();
+        b.press(MouseButton::Left);
+        b.press(MouseButton::Middle);
+        take_presses(&mut keys, &mut b, false);
+        for k in HIS_KEYS {
+            assert!(!keys.just_pressed(k), "{k:?}");
+            assert!(keys.pressed(k), "{k:?} still held");
+        }
+        for k in [KeyCode::KeyG, KeyCode::KeyZ, KeyCode::ShiftLeft] {
+            assert!(keys.just_pressed(k), "{k:?} is for everybody");
+        }
+        assert!(b.pressed(MouseButton::Left) && !b.just_pressed(MouseButton::Left));
+        assert!(b.just_pressed(MouseButton::Middle));
+        // In the menus the buttons are egui's and the game's as usual; the keys stay his.
+        let mut keys = pressed(&[KeyCode::Space]);
+        let mut b = ButtonInput::<MouseButton>::default();
+        b.press(MouseButton::Left);
+        take_presses(&mut keys, &mut b, true);
+        assert!(!keys.just_pressed(KeyCode::Space));
+        assert!(b.just_pressed(MouseButton::Left));
+    }
+
+    #[test]
+    fn tab_never_reaches_egui_and_the_pointer_only_in_the_menus() {
+        let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let w = egui::Event::Key { key: egui::Key::W, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let text = egui::Event::Text("w".into());
+        let click = egui::Event::PointerButton { pos: egui::pos2(1.0, 1.0), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE };
+        let moved = egui::Event::PointerMoved(egui::pos2(1.0, 1.0));
+        for menus in [false, true] {
+            assert!(!reaches_egui(&tab, menus));
+            assert!(reaches_egui(&w, menus) && reaches_egui(&text, menus), "a text field still types");
+            assert_eq!(reaches_egui(&click, menus), menus);
+            assert_eq!(reaches_egui(&moved, menus), menus);
+        }
+    }
 
     /// An empty folder of the test's own in the system's temp folder.
     fn scratch(name: &str) -> PathBuf {
@@ -998,6 +1327,9 @@ mod tests {
                     .init_resource::<bevy_egui::EguiUserTextures>()
                     .init_resource::<Flight>()
                     .init_resource::<ScriptRunner>()
+                    .init_resource::<ButtonInput<MouseButton>>()
+                    .init_resource::<AccumulatedMouseMotion>()
+                    .init_resource::<AccumulatedMouseScroll>()
                     .insert_resource(crate::i18n::I18n::new(&se_core::vfs::Vfs::new(), "eng"));
                 if camera_first {
                     app.add_systems(Update, crate::camera::move_mode_keys).add_plugins(ModsPlugin);

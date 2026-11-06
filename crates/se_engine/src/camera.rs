@@ -479,7 +479,7 @@ const ROLL_KEY_RATE: f64 = 1.5;
 const LAND_ALTITUDE_M: f64 = 2.0;
 /// SE's auto horizon holds the view below max(this x radius, the atmosphere's height)
 /// (FUN_140576090: body radius x 0.005 against its atmosphere height).
-const HORIZON_RADII: f64 = 0.005;
+pub(crate) const HORIZON_RADII: f64 = 0.005;
 /// SE's pitch limit in horizon mode (FUN_140576090: +-pi/2, the yaw taken over at 1.5698).
 const HORIZON_PITCH_MAX: f64 = 1.5697963267948967;
 
@@ -547,7 +547,11 @@ pub(crate) fn input_controls(
     (mut msg, i18n, mut last_sel): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>, Local<Option<ObjectRef>>),
     // The camera's rotation when the Aircraft velocity was last turned, and that frame's number.
     (mut last_rot, frames): (Local<Option<(DQuat, u32)>>, Res<bevy::diagnostic::FrameCount>),
+    control: Res<crate::mods::ModControl>,
 ) {
+    // The Viltrumite mod is on: he owns the mouse, the wheel and the keys that steer or bind the free camera (the
+    // spec's F8 table, row by row, gates each below). The rest stays as it is: C, End, T, G, Z, the FOV, the speed.
+    let hero = control.hero;
     let (egui_pointer, egui_keys) = egui
         .ctx_mut()
         .map(|c| (c.egui_wants_pointer_input() || crate::hud::pointer_over_ui(c), c.egui_wants_keyboard_input()))
@@ -578,7 +582,9 @@ pub(crate) fn input_controls(
 
     // Mouse: left-drag looks, right-drag orbits, both zoom, Shift+left changes the FOV.
     let (left, right) = (buttons.pressed(MouseButton::Left), buttons.pressed(MouseButton::Right));
-    if !egui_pointer && (left || right) {
+    if hero {
+        // (The cursor is the mod's too: `mods::snapshot_input`.)
+    } else if !egui_pointer && (left || right) {
         cursor.grab_mode = CursorGrabMode::Locked;
         cursor.visible = false;
         let d = motion.delta.as_dvec2() * cam.mouse_sensitivity * (cam.fov_deg as f64 / 60.0);
@@ -623,7 +629,7 @@ pub(crate) fn input_controls(
         cursor.visible = true;
     }
     // SE's middle click zooms to ZoomFOV, and back to the default FOV.
-    if !egui_pointer && buttons.just_pressed(MouseButton::Middle) {
+    if !hero && !egui_pointer && buttons.just_pressed(MouseButton::Middle) {
         let to = if (cam.fov_target.unwrap_or(cam.fov_deg) - ZOOM_FOV_DEG).abs() < 0.01 { DEFAULT_FOV_DEG } else { ZOOM_FOV_DEG };
         cam.fov_target = Some(to);
     }
@@ -631,7 +637,7 @@ pub(crate) fn input_controls(
 
     // Assigned velocity: the wheel scales it smoothly (high-resolution wheels send
     // fractions of a notch), Ctrl+wheel steps through the presets.
-    if !egui_pointer && scroll.delta.y != 0.0 {
+    if !hero && !egui_pointer && scroll.delta.y != 0.0 {
         let notches = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
             MouseScrollUnit::Pixel => scroll.delta.y / 100.0,
@@ -676,7 +682,7 @@ pub(crate) fn input_controls(
     let num = |k: KeyCode| (keys.pressed(k) && !ctrl) as i32 as f64;
     let fov_k = (cam.fov_deg as f64 / DEFAULT_FOV_DEG as f64).min(1.0);
     let locks = cam.locks;
-    let turn_in = if locks.rotation {
+    let turn_in = if locks.rotation || hero {
         DVec3::ZERO
     } else {
         DVec3::new(
@@ -700,7 +706,7 @@ pub(crate) fn input_controls(
         cam.travel = None;
     }
     // Look back / left / right / up / down (Ctrl+Numpad 5/4/6/8/2).
-    if ctrl && !locks.rotation {
+    if ctrl && !locks.rotation && !hero {
         let look = [
             (KeyCode::Numpad5, DQuat::from_rotation_y(std::f64::consts::PI)),
             (KeyCode::Numpad4, DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2)),
@@ -722,7 +728,7 @@ pub(crate) fn input_controls(
     dir.z += mv(KeyCode::KeyS, KeyCode::ArrowDown) - mv(KeyCode::KeyW, KeyCode::ArrowUp);
     dir.x += mv(KeyCode::KeyD, KeyCode::ArrowRight) - mv(KeyCode::KeyA, KeyCode::ArrowLeft);
     dir.y += mv(KeyCode::KeyR, KeyCode::Numpad1) - mv(KeyCode::KeyF, KeyCode::Numpad0);
-    if locks.movement {
+    if locks.movement || hero {
         dir = DVec3::ZERO;
     }
     if keys.just_pressed(KeyCode::KeyZ) && plain {
@@ -802,7 +808,7 @@ pub(crate) fn input_controls(
             msg.show(i18n.tr("Free binding to object"));
         }
         for (k, sync, text) in [(KeyCode::KeyF, false, "Follow object"), (KeyCode::KeyR, true, "Rotate with object")] {
-            if let (true, Some(t), false) = (keys.just_pressed(k), cam.selected, locks.travel()) {
+            if let (false, true, Some(t), false) = (hero, keys.just_pressed(k), cam.selected, locks.travel()) {
                 cam.bind(Some(t), sync, &eph, sim.jd);
                 msg.show(format!("{}: {}", i18n.tr(text), data.catalog.display_name(t)));
             }
@@ -1086,8 +1092,10 @@ pub fn travel_and_move(
     mut cam: ResMut<FlyCamera>,
     hold: Res<FlightHold>,
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
+    control: Res<crate::mods::ModControl>,
 ) {
-    if hold.0 {
+    // A ship's camera, or the Viltrumite mod's, unless a Go To or the like is running: that carries him.
+    if hold.0 || (control.hero && cam.travel.is_none()) {
         return;
     }
     let dt = time.delta_secs_f64();
@@ -1724,7 +1732,8 @@ fn run_commands(
         }
         // mods list | on NAME | off | window [off] | sound NAME: the Mods menu (mods.rs).
         "mods" => commands.queue(move |w: &mut World| crate::mods::dev_command(w, &arg)),
-        // hero here [M] | stand [M] | face DEG | clip NAME | light auto|free | state: the Viltrumite mod's hero.
+        // hero keys KEYS SECS | aim Y P | state | trace FILE [BODY] | clip NAME|auto | light auto|free: the Viltrumite
+        // mod's hero (viltrumite::dev_command).
         "hero" => commands.queue(move |w: &mut World| crate::viltrumite::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
         "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),
@@ -1844,6 +1853,7 @@ Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 
         world.insert_resource(sim);
         world.insert_resource(cam);
         world.insert_resource(FlightHold::default());
+        world.insert_resource(crate::mods::ModControl::default());
         world.insert_resource(SeData { vfs: Arc::new(se_core::vfs::Vfs::new()), catalog: Arc::new(cat) });
         (world, planet)
     }

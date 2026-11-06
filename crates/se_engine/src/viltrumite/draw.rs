@@ -56,7 +56,7 @@ use crate::terrain::{ATM_SUN_SCALE, PatchLight, Terrain, TileCaches};
 use crate::volumetric_clouds::CloudShadowAssets;
 
 use super::tune;
-use super::{Hero, LightPath, Place};
+use super::{Hero, LightPath};
 
 pub const ATTR_HERO_JOINTS: MeshVertexAttribute = MeshVertexAttribute::new("HeroJoints", 0x5E56_1001, VertexFormat::Uint8x4);
 pub const ATTR_HERO_WEIGHTS: MeshVertexAttribute = MeshVertexAttribute::new("HeroWeights", 0x5E56_1002, VertexFormat::Unorm8x4);
@@ -335,7 +335,7 @@ pub(super) fn spawn_hero(
 }
 
 /// He shows while the mod is on. Runs only after the first enable.
-pub(super) fn sync_visibility(control: Res<ModControl>, draws: Res<HeroDraws>, mut vis: Query<&mut Visibility>, mut input: ResMut<HeroLightInput>, mut hero: ResMut<Hero>) {
+pub(super) fn sync_visibility(control: Res<ModControl>, draws: Res<HeroDraws>, mut vis: Query<&mut Visibility>, mut input: ResMut<HeroLightInput>) {
     if !control.is_changed() && !draws.is_added() {
         return;
     }
@@ -349,9 +349,6 @@ pub(super) fn sync_visibility(control: Res<ModControl>, draws: Res<HeroDraws>, m
     }
     if input.on != control.hero {
         input.on = control.hero;
-    }
-    if !control.hero {
-        hero.placed = false;
     }
 }
 
@@ -402,7 +399,7 @@ struct FreeLight {
 /// dimmed by what lies on its way, and the shine of the bodies around him (as system.rs `update_lighting`
 /// lights a body). No tables, true metres. The brightest star is the record's main light, so its highlight and
 /// the rest of `point_light_at` hold; the further lights go to `free_*`, taken with his own normals.
-fn free_light(f: &mut HeroFrameGpu, p: &LightParams, pos: UPos) {
+fn free_light(f: &mut HeroFrameGpu, p: &LightParams, pos: UPos, rel: Vec3, fill: f32) {
     use se_core::units::METERS_PER_AU;
     let mut lights: Vec<FreeLight> = Vec::with_capacity(8);
     let mut stars: Vec<(f64, UPos, Vec3)> = Vec::with_capacity(4);
@@ -463,9 +460,18 @@ fn free_light(f: &mut HeroFrameGpu, p: &LightParams, pos: UPos) {
     };
     f.free_dir = [Vec4::ZERO; 3];
     f.free_color = [Vec4::ZERO; 3];
+    let mut slots = 0;
     for (i, (l, k)) in lights.iter().zip(&k).skip(1).enumerate() {
         f.free_dir[i] = l.dir.extend(1.0);
         f.free_color[i] = (l.color * *k * ATM_SUN_SCALE).extend(0.0);
+        slots = i + 1;
+    }
+    // Far from any light he'd be black against the stars: a faint light from the camera keeps him in sight. It goes as the
+    // real light comes, so nothing near a star changes.
+    let seen = (color0 * k0).max_element() * ATM_SUN_SCALE;
+    if seen < fill && slots < f.free_dir.len() {
+        f.free_dir[slots] = (-rel).normalize_or(Vec3::Y).extend(1.0);
+        f.free_color[slots] = Vec3::splat(fill - seen).extend(0.0);
     }
     // `point_light_at` sees a body 1,000 km under him along the main light, so its horizon is no shadow; the
     // record's clouds never match it.
@@ -531,13 +537,8 @@ pub(crate) fn update_hero(
     p: LightParams,
 ) {
     let dt = time.delta_secs().min(0.1);
-    if !hero.placed {
-        hero.place_ahead(&cam, &p.bodies);
-        hero.start_clip(&assets.clips, "bf_idle");
-    }
-    // His place in the universe.
-    hero.keep_standing(&assets, &p.bodies);
-    let (pos, rot) = hero.world_pose(&cam, &p.bodies);
+    // His place in the universe (`hero::hero_move`, earlier this frame).
+    let (pos, rot) = hero.world;
     let rel = pos.delta_m(cam.pos);
     // F7: `near_plane` is 30 m at 30 km height: pull it in so he isn't cut.
     let dist = rel.length();
@@ -574,7 +575,6 @@ pub(crate) fn update_hero(
         let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: rel_f.into() };
         hero.sampler.write_palette(place, &mut f.joints);
     }
-    hero.clock += dt as f64;
     // His chest.
     let nearest = p
         .bodies
@@ -594,7 +594,17 @@ pub(crate) fn update_hero(
         (h < limit && body_light(f, b, t, cam.pos)).then_some(t)
     });
     if near_body.is_none() {
-        free_light(f, &p, pos);
+        // Near a body the night's level, in its shadow in orbit too; the top of its air mustn't be a step in his brightness.
+        let far = nearest.map_or(1.0, |(b, _, h)| smooth(tune::FILL_NEAR_RADII * b.radius_m, tune::FILL_FAR_RADII * b.radius_m, h)) as f32;
+        let fill = tune::FAINT_FILL_NIGHT + (tune::FAINT_FILL - tune::FAINT_FILL_NIGHT) * far;
+        free_light(f, &p, pos, rel_f, fill);
+    } else {
+        // The same faint light once the star has set: over a dark sea at night he'd be nowhere otherwise.
+        let night = smooth(tune::FILL_NIGHT_FROM, tune::FILL_NIGHT_TO, -(f.light.sun_dir.truncate().normalize_or(Vec3::Y).dot(up) as f64)) as f32;
+        if night > 0.0 {
+            f.free_dir[0] = (-rel_f).normalize_or(Vec3::Y).extend(1.0);
+            f.free_color[0] = Vec3::splat(tune::FAINT_FILL_NIGHT * night).extend(0.0);
+        }
     }
     if draws.was_near != Some(near_body.is_some()) {
         draws.was_near = Some(near_body.is_some());
@@ -714,16 +724,4 @@ fn light_pass(_view: ViewQuery<&ExtractedView, MainView>, pass: Res<HeroLightPas
     compute.set_pipeline(pipeline);
     compute.set_bind_group(0, group, &[]);
     compute.dispatch_workgroups(1, 1, 1);
-}
-
-/// Where a `Place` puts him this frame, for the log.
-pub(super) fn describe(place: &Place, bodies: &Query<(Entity, &SystemBody, Option<&Terrain>)>) -> String {
-    match place {
-        Place::Free => "free".to_string(),
-        Place::Rides { locked, local, .. } => format!("riding what carries the camera ({}), {:.0} m from its centre", if *locked { "turning with it" } else { "moving with it" }, local.length()),
-        Place::On { body, local } => match bodies.get(*body) {
-            Ok((_, b, _)) => format!("{:.0} m above the radius of the body at {:.0} km", local.length() - b.radius_m, b.radius_m / 1000.0),
-            Err(_) => "on a body gone".to_string(),
-        },
-    }
 }
