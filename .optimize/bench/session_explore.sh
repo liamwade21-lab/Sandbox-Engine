@@ -16,7 +16,7 @@ P="agl off; rs $U; wait 400; select $U 2; date 2026-11-03 22:10:00; pause; surfa
 C="preset Ultra; wait 300"
 for i in $(seq 1 $R); do
   C="$C; $P; perf p$i; wait 600; perf v_nyc$i; resume"
-  C="$C; agl off; select Earth; date 2026-11-04 15:00:00; pause; surface 40.75 -73.98 0.3 -10 40; agl 300; wait 1200; perf e$i; wait 600; perf v_forest$i; resume"
+  C="$C; agl off; select Earth; date 2026-11-04 15:00:00; pause; surface 40.75 -73.98 0.3 -10 40; agl 300; wait 1200; perf e$i; wait 600; perf v_street$i; surface 40.7498 -73.9796 0.3 -4 40; agl 4; wait 500; perf s$i; wait 500; perf v_forest$i; resume"
   C="$C; surface $((34 + i)) $((i * 3 - 95)) 0.2 -10 0; agl 60; wait 400"
   C="$C; perf v_life$i; agl off; rs $L; wait 400; select $L 3; surface $((i * 13)) $((i * 29)) 0.3 -10 0; agl 50; wait 500"
   C="$C; perf v_town$i; agl off; select $W; wait 200; go 300000000; wait 400; select $W 1; town city 3; wait 500"

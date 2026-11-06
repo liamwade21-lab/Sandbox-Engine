@@ -1002,6 +1002,7 @@ pub struct Terrain {
     shells_waiting: usize,
     /// The vegetation the light records last told the ground (`PatchLight::flags` z, w).
     last_veg: Vec2,
+    last_street: f32,
     /// SE's own height generator on the GPU (`terrain_gen`), for worlds with SE surface parameters
     /// and no height data: requested grids (job id, frame) and the grids read back (with the frame
     /// they last served a request).
@@ -1071,6 +1072,11 @@ impl Terrain {
     /// The terrain's resident nodes and kept generated grids (perf.rs).
     pub fn resident(&self) -> (usize, usize) {
         (self.nodes.len(), self.gen_tiles.len())
+    }
+
+    /// Whether the body draws from a colour map (Earth), not SE's generator.
+    pub fn has_color_map(&self) -> bool {
+        self.tile_layers().is_some_and(|l| l.color.is_some())
     }
 
     /// The ground's height range: its lowest point (m above the radius; with a sea, under it) and its
@@ -1243,6 +1249,7 @@ impl Terrain {
             civ: None,
             domes: false,
             last_veg: Vec2::ZERO,
+            last_street: 0.0,
             gen_jobs: NodeMap::new(),
             gen_tiles: NodeMap::new(),
             gen_failed: false,
@@ -2613,7 +2620,7 @@ fn update_terrain(
         let shadow = terrain.layers.as_ref().and_then(|l| terrain.shadow_clouds(l));
         let thermal = thermal_uniform(terrain, light);
         let keys = terrain.loading.clone();
-        let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(0.0);
+        let glow_atmo_u = terrain.glow_atmo(emission.scale()).extend(terrain.last_street);
         let setup_start = std::time::Instant::now();
         for key in keys {
             if quality.time_budget_ms.is_some_and(|ms| setup_start.elapsed().as_secs_f32() * 1000.0 >= ms) {
@@ -3204,7 +3211,11 @@ fn update_terrain(
             terrain.last_sun = Vec4::ZERO;
         }
         let glow_bright = terrain.surface.glow_bright as f32 * 1.5 * emission.scale();
-        let glow_atmo = terrain.glow_atmo(emission.scale()).extend(0.0);
+        // The 3D street objects' range while the scatter draws them on this body (planet.wesl
+        // `street_near`, in the light record's `glow_atmo.w`): the ground leaves its flat cars and lamp
+        // heads to them there, and keeps them everywhere else.
+        let street = scatter.as_deref().map_or(0.0, |sc| sc.street_range_on(&terrain));
+        let glow_atmo = terrain.glow_atmo(emission.scale()).extend(street);
         let eclipse = terrain.casters;
         let (extra_dir, extra_color) = light.extra_uniforms(false);
         let extra_moved = extra_dir.iter().zip(&terrain.last_extra).any(|(a, b)| (*a - *b).length() > 1e-3);
@@ -3230,8 +3241,10 @@ fn update_terrain(
             || casters_differ(&eclipse, &terrain.last_casters)
             || terrain.last_split != split_scale
             || terrain.last_veg != veg
+            || terrain.last_street != street
         {
             terrain.last_veg = veg;
+            terrain.last_street = street;
             terrain.last_sun = sun;
             terrain.last_extra = extra_dir;
             terrain.last_casters = eclipse;

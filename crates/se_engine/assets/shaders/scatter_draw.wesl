@@ -48,6 +48,8 @@ struct Body {
     // Cities (scatter.wesl's Body): the civilization, the buildings' range
     city: vec4<f32>,
     city2: vec4<f32>,
+    // The street objects: x their range (m), y the traffic's clock.
+    street: vec4<f32>,
     // x, y the ground's cloud key (radius m, seed fraction); z 1 with atmosphere tables bound.
     key: vec4<f32>,
     atm: AtmParams,
@@ -428,7 +430,10 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
 @if(LEAVES) {
     leaves = true;
 }
-    let world = inst.pos + basis * (v.pos * inst.scale) + wind_offset(v.pos * inst.scale, height, up, phase, leaves);
+    // A street object stands rigid.
+    let rigid = md.flags.y != 0u;
+    let sway = select(wind_offset(v.pos * inst.scale, height, up, phase, leaves), vec3<f32>(0.0), rigid);
+    let world = inst.pos + basis * (v.pos * inst.scale) + sway;
     var o: MeshOut;
     o.clip = cam.clip_from_world * vec4<f32>(world, 1.0);
     o.world = world;
@@ -436,7 +441,7 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
     o.uv = v.uv;
     let fd = unpack4x8unorm(inst.fades);
     let h = phase / 6.2831853;
-    o.fades = vec4<f32>(fd.xy, h, 0.0);
+    o.fades = vec4<f32>(fd.xy, h, f32(md.flags.y));
     o.season = tree_season(md, up, h, length(inst.pos), fd.z);
     o.up = up;
     // The crown shades as a ball (Megaton Rainfall's leaves): the direction from its centre.
@@ -448,6 +453,13 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
     o.haze_t = pl.haze_t;
     o.haze_a = pl.haze_a;
     o.tint = inst_tint(inst.model, md);
+    if rigid {
+        // For `street_surface`: its place in the model, its numbers, a car's paint.
+        o.ball = v.pos;
+        o.season = md.mean;
+        let s = unpack4x8unorm(inst.model).yzw;
+        o.tint = s * s;
+    }
     return o;
 }
 
@@ -456,6 +468,68 @@ fn vertex_mesh(v: VertexIn) -> MeshOut {
 @if(!IMPOSTOR) @group(1) @binding(2) var<uniform> material: Material;
 // The buildings: MR's window array (18 facade tiles, the windows' mask in alpha).
 @if(BUILDING) @group(1) @binding(0) var windows_tex: texture_2d_array<f32>;
+
+// A street object's surface (library.rs `street_models`; `Model::flags` y: 1 plain, 2 a painted car, 3 a
+// car with its paint in its texture, 4 a lamp, whose glass is its one bright colour). `in.ball` its place
+// in the model (m), `in.season` a car's numbers: x half its length, y its lights' height, z their offset
+// from its middle, w half its width. A car's windows are where its texture's alpha is low (as Megaton
+// Rainfall's). By night the lamps' glass and the cars' lights shine.
+@if(!IMPOSTOR && !BUILDING)
+fn street_surface(in: MeshOut, tex: vec4<f32>, n: vec3<f32>) -> vec4<f32> {
+    let kind = u32(in.fades.w + 0.5);
+    let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
+    let l = normalize(body.light.sun_dir.xyz);
+    let night = 1.0 - smoothstep(-0.12, 0.03, dot(in.up, l));
+    let p = in.ball;
+    let s = in.season;
+    var albedo = tex.rgb * material.tint.rgb;
+    var emit = vec3<f32>(0.0);
+    var spec = 0.04;
+    var sheen = 0.02;
+    var gloss = 20.0;
+    if kind == 4u {
+        if dot(albedo, vec3<f32>(1.0 / 3.0)) > 0.4 {
+            emit = civ_light() * 3.0 * night;
+        }
+    } else if kind == 2u || kind == 3u {
+        if p.y < 0.06 {
+            // The dark patch it stands on, its edges dithered soft.
+            let edge = min(s.x - 0.2 - abs(p.x), s.w - 0.1 - abs(p.z));
+            if dither2(in.clip.xy) >= smoothstep(0.0, 0.12, edge) {
+                discard;
+            }
+            return vec4<f32>(pl.haze_a, 1.0);
+        }
+        if tex.a < 0.7 {
+            albedo = vec3<f32>(0.02);
+            spec = 0.5;
+            sheen = 0.25;
+            gloss = 120.0;
+        } else {
+            if kind == 2u {
+                albedo *= in.tint;
+            }
+            spec = 0.2;
+            sheen = 0.06;
+            gloss = 50.0;
+        }
+        let d = vec2<f32>(abs(p.z) - s.z, p.y - s.y);
+        let spot = 1.0 - smoothstep(0.02, 0.06, dot(d, d));
+        if p.x > s.x - 0.35 {
+            emit = vec3<f32>(1.0, 0.92, 0.75) * 3.0 * spot * night;
+        } else if p.x < 0.35 - s.x {
+            emit = vec3<f32>(1.0, 0.06, 0.02) * 1.5 * spot * night;
+        }
+    }
+    // The star's highlight and the sky in what shines.
+    let v = normalize(-in.world);
+    let h = normalize(l + v);
+    let fres = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    let shine = (in.l_sun * pow(max(dot(n, h), 0.0), gloss) * max(dot(n, l), 0.0) * spec + in.l_sky * (1.0 + 2.0 * fres) * sheen) / PI;
+    // By night the street lamps light them from above, as they do the road (its `lamp`).
+    emit += albedo * civ_light() * night * (0.25 + 0.2 * max(dot(n, in.up), 0.0));
+    return vec4<f32>(surface_color(pl, albedo, n, in.up, 0.0, 0.0) + (shine + emit) * in.haze_t, 1.0);
+}
 
 @if(!IMPOSTOR && !BUILDING)
 @fragment
@@ -466,6 +540,11 @@ fn fragment_mesh(in: MeshOut, @builtin(front_facing) front: bool) -> @location(0
     }
     let tex = textureSample(color_tex, color_smp, in.uv);
     var n = normalize(in.normal);
+@if(!LEAVES) {
+    if in.fades.w > 0.5 {
+        return street_surface(in, tex, n);
+    }
+}
     var wrap = 0.0;
     // The snow lies on what looks up: the crown's top, the branches' upper sides.
     var top = dot(n, in.up);

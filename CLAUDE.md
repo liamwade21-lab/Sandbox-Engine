@@ -63,8 +63,8 @@ or publishing the port.
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its
   own copy of the files it uses (`crates/se_engine/assets/mr`: the 16 trees, their textures, the
-  generated species' barks and branch cards, the grass, the window array, `Data/global.txt`; 47 files,
-  51 MB; `MrInstall::open_copy`), the install (`--mr-path` / `MR_PATH`, default
+  generated species' barks and branch cards, the grass, the window array, the street furniture, 14 cars
+  and their textures, `Data/global.txt`; 85 files, 57 MB; `MrInstall::open_copy`), the install (`--mr-path` / `MR_PATH`, default
   `C:\Users\liamw\Downloads\Megaton Rainfall`) only when the copy is missing. A new use of one of its
   files must add it to the copy: list it in `scatter::library`'s ignored test `copy_megaton_rainfall`
   and run it (`cargo test -p se_engine --release copy_megaton_rainfall -- --ignored --nocapture`); the
@@ -134,6 +134,28 @@ or publishing the port.
 - A `perf NAME` segment runs until the next `perf`: put `perf jump` before a camera jump, or the jump
   and the next view count in the segment being measured. Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
+- Street furniture and 3D cars: the scatter's cells of kind 3 (`Scatter::bcells`, within
+  `Levels::street_range`: 250 m at Ultra, 150 High, 100 Low; towns of level 2 and up, not under domes).
+  `scatter.wesl` `place_street` reads the ground's layout the other way round: lamps where `ct_lamps` has
+  them (streets and arterials), furniture between them, traffic lights at street corners. Cars are not
+  stored: a record per grid square a lane passes through, and `cull_cars` works out every frame which
+  cars' middles are in that square from the same hash and clock as the ground's `ct_traffic`
+  (`ct_slot_car`, `ct_street_key`, `ct_art_key`; `street.y` is the ground's `globals.time`). So each car is
+  drawn once and nothing moves in memory. Change the lanes in `city_ground` and `cull_cars` together; car
+  speeds are in face metres (with true metres a car's place jumped where the metric changed). Models:
+  `library.rs` `STREET_PROPS`, `STREET_CARS`, in step with `scatter.wesl` `S_*`; new files go through
+  `copy_megaton_rainfall`. The furniture shares one palette texture (one material, whatever the model
+  count), each car has its own texture; cars are turned nose to +x (Megaton Rainfall's face -x) with a dark
+  patch under them; `street_surface` in `scatter_draw.wesl` draws them by `Model::flags` y. Models without
+  impostors (buildings, street objects) take no impostor draw or atlas layers. Inside the range the
+  ground stops drawing its flat cars and lamp heads, told through the light record's `glow_atmo.w`
+  (`Scatter::street_range_on`), so they stay wherever the scatter draws none (colonies, `scatter off`,
+  Cities Off, rural roads). A map body's scatter takes the ground's fixed grid spread 0.35 and sodium lamps
+  (`Terrain::has_color_map`). The street draws are skipped while no cell of them is resident
+  (`street_draw0`). A slot's "already placed" key holds the job's kind: a node's near buildings and
+  street objects are the same cell. `SE_STREET=0` leaves them out for comparisons (the painted cars then
+  show in the same places). Test: `surface 40.7498 -73.9796 0.3 -4 40; agl 4` in New York by day and night,
+  and the hillside below.
 - Roads on steep ground: the towns' streets and arterials are cut level into the ground's own heights
   when a node is built (`terrain.rs` `build_node`, `road_level.rs`, the layout's CPU mirror
   `se_core/src/procgen/city_roads.rs`). The layout in `city.wesl` (`ct_district`, `ct_grid`, `ct_local`,

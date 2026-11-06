@@ -464,6 +464,52 @@ fn ct_traffic(x: f32, y: f32, v: f32, period: f32, busy: f32, t: f32, base: i32,
     return vec4<f32>(body, h.y, head, tail);
 }
 
+// The car of slot `slot` of a lane (`ct_traffic`'s hash), for the 3D cars: whether the slot holds one,
+// its middle along the lane (face m) at the clock `t`, its paint's and its model's hash.
+struct SlotCar {
+    ok: bool,
+    x: f32,
+    paint: f32,
+    pick: f32,
+}
+
+fn ct_slot_car(slot: f32, v: f32, period: f32, busy: f32, t: f32, base: i32, key: vec2<i32>, seed: u32, k: f32) -> SlotCar {
+    let h = st_hash(vec3<i32>(key, base + i32(slot)), seed + 57u);
+    let len = 4.5 / k;
+    return SlotCar(h.w < busy, slot * period + h.x * (period - len) + 0.5 * len + v * t, h.y, h.z);
+}
+
+// A lane's key: of a street (`line` of its district's grid, `on_u` a line of constant v, `lane` -1 or
+// 1), and of an arterial (`outer` the outer lane of the two a way).
+fn ct_street_key(cell: vec2<i32>, line: i32, on_u: bool, lane: i32) -> vec2<i32> {
+    return vec2<i32>(cell.x * 4096 + line * 2 + select(0, 1, on_u), cell.y * 4 + lane + 2);
+}
+
+fn ct_art_key(line: i32, axis: i32, lane: i32, outer: bool) -> vec2<i32> {
+    return vec2<i32>(line * 8 + axis * 4 + lane + 1 + select(0, 2, outer), 77);
+}
+
+// The arterial line of `axis` nearest a point, and where line `line` runs (its coordinate across, in the
+// tile frame of `tile`) at `along` (`ct_district`'s bend read the other way round).
+fn ct_art_line(cp: CityPos, axis: i32) -> i32 {
+    if axis == 0 {
+        return cp.tile.x * 8 + i32(floor(cp.q.x / DISTRICT_M + 0.5));
+    }
+    return cp.tile.y * 8 + i32(floor(cp.q.y / DISTRICT_M + 0.5));
+}
+
+fn ct_art_at(tile: vec2<i32>, axis: i32, line: i32, along: f32, seed: u32) -> f32 {
+    let a = select(tile.x, tile.y, axis == 0);
+    let b = select(tile.y, tile.x, axis == 0);
+    let n = floor(along / DISTRICT_M);
+    return f32(line - b * 8) * DISTRICT_M + ct_bend(line, a * 8 + i32(n), along - n * DISTRICT_M, axis, seed);
+}
+
+// A hash for what stands along the streets.
+fn ct_street_hash(a: vec3<i32>, seed: u32) -> vec4<f32> {
+    return st_hash(a, seed);
+}
+
 // A car's paint by its hash: white, black, silver, grey, blue, red, green (Earth's mix).
 fn ct_paint(h: f32) -> vec3<f32> {
     if h < 0.22 { return vec3<f32>(0.62, 0.62, 0.60); }
@@ -503,8 +549,10 @@ struct CityGround {
     emit: vec3<f32>,
 }
 
-// `lamp_c` the street lamps' colour (Earth's sodium; a generated planet's culture's light).
-fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>, lamp_c: vec3<f32>, t: f32) -> CityGround {
+// `lamp_c` the street lamps' colour (Earth's sodium; a generated planet's culture's light). `near` 1
+// where the 3D street objects stand (planet.wesl `street_near`): in town there the ground draws no flat
+// cars or lamp heads of its own.
+fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32, spread: f32, base: vec3<f32>, paved: vec3<f32>, lamp_c: vec3<f32>, t: f32, near: f32) -> CityGround {
     let fp = fp_m / max(k, 1e-3);
     let asphalt = vec3<f32>(0.055, 0.055, 0.06);
     let walk = vec3<f32>(0.19, 0.185, 0.175);
@@ -518,6 +566,7 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
 
     let d = ct_district(cp, seed);
     let streets = smoothstep(0.06, 0.2, urban);
+    let flat_k = 1.0 - near * smoothstep(0.4, 0.6, streets);
     // Lots: downtown paved, in town gardens with a paved strip along the street.
     if streets > 0.0 {
         let g = ct_grid(d.cell, seed, spread);
@@ -561,15 +610,16 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
             let ys = select(bv, bv - 2.0 * half_s, bv > half_s);
             let line = vec2<i32>(floor(lp / g.size + 0.5));
             let lane = select(1, -1, ys > 0.0);
-            let v = f32(lane) * 9.0 / k;
+            // (The speed in face metres: with true metres a car's place would change where k does.)
+            let v = f32(lane) * 9.0;
             let yl = ys + f32(lane) * 0.25 * s_road;
-            let key = vec2<i32>(d.cell.x * 4096 + select(line.x, line.y, on_u) * 2 + select(0, 1, on_u), d.cell.y * 4 + lane + 2);
+            let key = ct_street_key(d.cell, select(line.x, line.y, on_u), on_u, lane);
             let car = ct_traffic(along_l, yl, v, 24.0, 0.25 * streets + 0.1, t, 0, key, seed, k, fp) * (1.0 - smoothstep(4.0, 12.0, fp));
-            road = mix(road, ct_paint(car.y), car.x);
-            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5);
+            road = mix(road, ct_paint(car.y), car.x * flat_k);
+            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5) * flat_k;
             let lm = ct_lamps(along_l, ys, 0.5 * s_road, k, fp);
             pools = lm.x;
-            emit += lamp_c * lm.y * 4.0;
+            emit += lamp_c * lm.y * 4.0 * flat_k;
         }
         c = mix(c, road, road_c);
         // The mean when the pixel spans blocks: lots, sidewalks and roads by their areas.
@@ -601,14 +651,14 @@ fn city_ground(cp: CityPos, k: f32, fp_m: f32, urban: f32, roads: f32, seed: u32
             let lane = select(1, -1, d.across > 0.0);
             let outer = abs(d.across) > 3.6 / k && streets > 0.5;
             let yl = d.across + f32(lane) * select(1.9, 6.0, outer) / k;
-            let v = f32(lane) * select(13.0, 16.0, outer) / k;
+            let v = f32(lane) * select(13.0, 16.0, outer);
             let tile_a = select(cp.tile.x, cp.tile.y, d.axis == 0);
-            let key = vec2<i32>(d.line * 8 + d.axis * 4 + lane + 1 + select(0, 2, outer), 77);
+            let key = ct_art_key(d.line, d.axis, lane, outer);
             let car = ct_traffic(d.along, yl, v, 32.0, 0.35 + 0.35 * streets, t, tile_a * 128, key, seed, k, fp) * (1.0 - smoothstep(4.0, 12.0, fp));
-            road = mix(road, ct_paint(car.y), car.x);
-            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5);
+            road = mix(road, ct_paint(car.y), car.x * flat_k);
+            emit += (head_c * car.z * 3.0 + tail_c * car.w * 1.5) * flat_k;
             let lm = ct_lamps(d.along, d.across, 0.5 * a_road, k, fp);
-            emit += lamp_c * lm.y * 4.0 * streets;
+            emit += lamp_c * lm.y * 4.0 * streets * flat_k;
             lamp = max(lamp, mix(lamp, 0.8 * lm.x, road_c * streets * smoothstep(0.0, 1.0, 1.0 - fp / 64.0)));
         }
         // Far: the road's share of the district.

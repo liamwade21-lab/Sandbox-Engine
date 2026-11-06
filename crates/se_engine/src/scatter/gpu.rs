@@ -103,6 +103,8 @@ struct BodyGpu {
     /// Cities: the body's civilization (`BodyFrame::city`, `city2`).
     city: Vec4,
     city2: Vec4,
+    /// The street objects: x their range (m), y the traffic's clock.
+    street: Vec4,
     /// The ground's cloud key (radius m, seed fraction) and x, y of `proc_params2`; z 1 when the body
     /// has atmosphere tables bound.
     key: Vec4,
@@ -145,6 +147,9 @@ struct LibGpu {
     n_draws: u32,
     n_models: u32,
     draw_kinds: Vec<DrawKind>,
+    /// The first draw of the street objects (they come last, and are left out while no cell of them is
+    /// resident: their empty draws would cost for nothing).
+    street_draw0: usize,
     /// Per material: its uniform buffer (tint) and bind group once its texture is on the GPU.
     material_params: Vec<Buffer>,
     material_groups: Vec<Option<BindGroup>>,
@@ -182,6 +187,8 @@ struct ScatterGpu {
     light_view_group: Option<BindGroup>,
     empty_group: Option<BindGroup>,
     active: bool,
+    /// Whether the street objects' draws are made this frame (`ScatterFrame::streets`).
+    streets: bool,
     n_jobs: u32,
     slots_used: u32,
     /// Per slot, the job it was last placed with (its cell and seed).
@@ -295,7 +302,7 @@ fn init_gpu(
                 ro(std::mem::size_of::<super::PlaceJob>() as u64),  // jobs
                 rw(4),   // instances
                 rw(4),   // counts
-                ro(32),  // cells
+                ro(std::mem::size_of::<super::CellGpu>() as u64),  // cells
                 ro(4),   // tree
                 ro(16),  // page positions
                 ro(48),  // page info
@@ -404,7 +411,7 @@ fn init_gpu(
         instances: buffer(&device, "scatter_instances", SLOTS as u64 * SLOT_CAP as u64 * 4, storage),
         noises: buffer(&device, "scatter_noises", SLOTS as u64 * SLOT_CAP as u64 * 8, storage),
         counts: buffer(&device, "scatter_counts", SLOTS as u64 * 4, storage),
-        cells: buffer(&device, "scatter_cells", SLOTS as u64 * 32, storage),
+        cells: buffer(&device, "scatter_cells", SLOTS as u64 * std::mem::size_of::<super::CellGpu>() as u64, storage),
         tree: buffer(&device, "scatter_tree", TREE_MAX as u64 * 4, storage),
         page_pos: buffer(&device, "scatter_page_pos", PAGES as u64 * PAGE_VERTS as u64 * 16, storage),
         page_info: buffer(&device, "scatter_page_info", PAGES as u64 * 48, storage),
@@ -425,6 +432,7 @@ fn init_gpu(
         light_view_group: None,
         empty_group: None,
         active: false,
+        streets: false,
         n_jobs: 0,
         slots_used: 0,
         placed: vec![None; SLOTS as usize],
@@ -483,6 +491,10 @@ fn upload_library(gpu: &mut ScatterGpu, lib: &ScatterLibrary, device: &RenderDev
         n_draws: lib.draws.len() as u32,
         n_models: lib.models.len() as u32,
         draw_kinds: lib.draws.iter().map(|d| d.kind).collect(),
+        street_draw0: {
+            let first = lib.models.get(lib.building as usize + super::library::BUILDING_MODELS).map_or(u32::MAX, |m| m.mesh_bucket);
+            lib.draws.iter().position(|d| d.bucket >= first).unwrap_or(lib.draws.len())
+        },
         material_groups: vec![None; lib.materials.len()],
         material_params,
         impostor_group: None,
@@ -519,7 +531,8 @@ fn prepare(
     // are ready (a job is marked done only when it runs). Their slots start empty and are not
     // drawn until placed.
     let ready = [gpu.place, gpu.cull, gpu.finish].iter().all(|&id| cache.get_compute_pipeline(id).is_some());
-    let key = |j: &super::PlaceJob| [j.face, j.level, j.row, j.col, j.seed, j.keep.to_bits(), 1];
+    // (With the kind: a node's near buildings and street objects are the same cell.)
+    let key = |j: &super::PlaceJob| [j.face, j.level, j.row, j.col, j.seed, j.keep.to_bits(), j.kind + 1];
     let mut jobs = Vec::new();
     let mut pending = vec![false; SLOTS as usize];
     for j in &frame.jobs {
@@ -590,6 +603,7 @@ fn prepare(
         flora_k: Vec4::new(b.relief_m, b.far_range, b.civ_light as f32, if b.domes { 1.0 } else { 0.0 }),
         city: b.city,
         city2: b.city2,
+        street: Vec4::new(b.street_range, frame.traffic, 0.0, 0.0),
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,
@@ -605,6 +619,7 @@ fn prepare(
     gpu.camera.set(CameraGpu { clip_from_world, planes, viewport: Vec4::new(w, h, 1.0 / w, 1.0 / h) });
     gpu.camera.write_buffer(&device, &queue);
     gpu.n_jobs = n_jobs as u32;
+    gpu.streets = frame.streets;
     gpu.slots_used = frame.cells.len() as u32;
     gpu.active = true;
 }
@@ -902,6 +917,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawScatter {
         pass.set_vertex_buffer(0, l.vertices.slice(..));
         pass.set_index_buffer(l.indices.slice(..), IndexFormat::Uint32);
         for (i, kind) in l.draw_kinds.iter().enumerate() {
+            if i >= l.street_draw0 && !gpu.streets {
+                break;
+            }
             let (pipe, group) = match *kind {
                 DrawKind::Mesh { material, leaves } => (pipes[leaves as usize], l.material_groups[material as usize].as_ref()),
                 DrawKind::Impostor => (pipes[2], l.impostor_group.as_ref()),

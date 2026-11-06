@@ -19,7 +19,8 @@ struct PatchLight {
     // w 1 when used; rgb their light, intensity included.
     light_dir: array<vec4<f32>, 3>,
     light_color: array<vec4<f32>, 3>,
-    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none.
+    // SE's GlowColorAtmo (terrain.rs glow_color_atmo), in the units of `light_color`; 0 none. w the 3D
+    // street objects' range (m; 0 none: planet.wesl `street_near`).
     glow_atmo: vec4<f32>,
     // Planet's relit components: x base_color.w (ambient), y params.x (glow brightness), z thermal2.w
     // (self-emission scale), w ice.w (water display level).

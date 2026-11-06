@@ -96,6 +96,8 @@ pub struct Levels {
     pub grass_range: f32,
     pub build_range: f64,
     pub far_range: f64,
+    /// The street objects' range (m; `STREET_RANGE_M` at Ultra).
+    pub street_range: f32,
 }
 
 impl Levels {
@@ -110,7 +112,17 @@ impl Levels {
             2 => (5000.0, 14000.0),
             _ => (BUILD_RANGE_M, FAR_RANGE_M),
         };
-        Levels { veg: veg.min(3), city: city.min(3), lod, grass_range, build_range, far_range }
+        // (`SE_STREET=0`: no street objects, for comparisons.)
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let off = *OFF.get_or_init(|| std::env::var("SE_STREET").is_ok_and(|v| v == "0"));
+        let street_range = match city {
+            _ if off => 0.0,
+            0 => 0.0,
+            1 => 100.0,
+            2 => 150.0,
+            _ => STREET_RANGE_M,
+        };
+        Levels { veg: veg.min(3), city: city.min(3), lod, grass_range, build_range, far_range, street_range }
     }
 }
 
@@ -236,6 +248,18 @@ impl Scatter {
         self.levels.is_none_or(|l| l.veg > 0)
     }
 
+    /// The street objects' range on `terrain` (m) while this scatter draws them there, else 0.
+    pub fn street_range_on(&self, terrain: &Terrain) -> f32 {
+        let lv = self.levels();
+        let kind = veg_kind(false, terrain);
+        let towns = matches!(kind, VegKind::SeTerra | VegKind::None) || (kind == VegKind::Map && self.earth.lights.is_some());
+        if self.enabled && self.ready && !self.test && lv.city > 0 && towns && terrain.civ.is_some_and(|c| c.0 >= 2) && !terrain.domes {
+            lv.street_range
+        } else {
+            0.0
+        }
+    }
+
     fn levels(&self) -> Levels {
         self.levels.unwrap_or_else(|| Levels::new(3, 3))
     }
@@ -294,6 +318,13 @@ pub struct CellGpu {
     pub shift_live: u32,
     /// The cell's placement seed (the cull pass re-derives each instance from it and its number).
     pub seed: u32,
+    /// Its corner in the city layout's frame and edge (`PlaceJob`), its metric at its middle: the cars
+    /// are worked out from them every frame (`scatter.wesl` `cull_cars`).
+    pub tile: [i32; 2],
+    pub local: [f32; 2],
+    pub edge: f32,
+    pub k: f32,
+    pub pad: [f32; 2],
 }
 
 impl CellGpu {
@@ -330,7 +361,8 @@ pub struct PlaceJob {
     pub seed: u32,
     /// The models its candidates take: the first, and how many in the high 16 bits.
     pub models: u32,
-    /// 0 plants, 1 buildings (cities: one candidate a point of a 90 x 90 grid over the cell).
+    /// 0 plants, 1 buildings near, 2 far (cities: one candidate a point of a 90 x 90 grid over the
+    /// cell), 3 street objects.
     pub kind: u32,
     /// The cell's corner in the city layout's frame (`city.wesl`): its 4,096 m tile of face metres,
     /// the corner's face metres in it, and the cell's edge in face metres.
@@ -390,6 +422,8 @@ pub struct BodyFrame {
     pub domes: bool,
     /// The far buildings' range (m; the Cities setting's).
     pub far_range: f32,
+    /// The street objects' range (m; the Cities setting's).
+    pub street_range: f32,
 }
 
 /// What the render world needs this frame (extracted).
@@ -410,6 +444,10 @@ pub struct ScatterFrame {
     pub sink: f32,
     /// The scatter's clock (s), for the wind.
     pub time: f32,
+    /// The ground's clock (its `globals.time`), for the traffic.
+    pub traffic: f32,
+    /// Whether any cell of street objects is resident (else their draws are left out).
+    pub streets: bool,
 }
 
 /// A cell's largest real edge (m): cells are the nodes of the cube-sphere quadtree split until
@@ -425,6 +463,9 @@ pub const BUILD_RANGE_M: f64 = 7000.0;
 /// of at most this edge (m): the city's skyline from afar.
 pub const FAR_RANGE_M: f64 = 20000.0;
 const FAR_EDGE_M: f64 = 3200.0;
+/// The street objects (lamps, furniture, cars: Megaton Rainfall's 150 m) stand within this range (m) of
+/// the camera at Ultra, in cells of their own (kind 3).
+pub const STREET_RANGE_M: f32 = 250.0;
 /// The city layout's tile of face metres (`city.wesl` CITY_TILE, the ground's `SOIL_WRAP_M`).
 const CITY_TILE_M: f64 = 4096.0;
 
@@ -599,6 +640,8 @@ fn update_scatter(
     // Wrapped at 200 pi s: the wind's frequencies are whole multiples of 0.01 rad/s, so its sines
     // never jump at the wrap (Bevy's own wrap is an hour).
     out.time = (time.elapsed_secs_f64() % (200.0 * std::f64::consts::PI)) as f32;
+    out.traffic = time.elapsed_secs_wrapped();
+    out.streets = false;
     sc.ready = lib.ready();
     sc.flora_ready = sc.flora_want.is_none_or(|w| w.key == lib.flora_key);
     if sc.free_slots.is_empty() && sc.cells.is_empty() && sc.bcells.is_empty() {
@@ -716,7 +759,16 @@ fn update_scatter(
         bwanted.extend(far.into_iter().filter(|&(k, d)| d + node_edge(k, r) * 1.5 > lv.build_range * 0.85).map(|(k, d)| (k, d, 2)));
         cells_in_range(dir, height, r, lv.build_range * 1.15, CELL_EDGE_M, &mut nk);
         cells_in_range(dir, height, r, lv.far_range * 1.15, FAR_EDGE_M, &mut fk);
-        let bk: HashSet<(TileKey, u32)> = nk.into_iter().map(|c| (c.0, 1)).chain(fk.into_iter().map(|c| (c.0, 2))).collect();
+        // The street objects' cells: towns of level 2 and up, not a colony's under its domes.
+        let mut sk = Vec::new();
+        if lv.street_range > 0.0 && terrain.civ.is_some_and(|c| c.0 >= 2) && !terrain.domes {
+            let mut st = Vec::new();
+            cells_in_range(dir, height, r, lv.street_range as f64, CELL_EDGE_M, &mut st);
+            cells_in_range(dir, height, r, lv.street_range as f64 * 1.15, CELL_EDGE_M, &mut sk);
+            out.streets = !st.is_empty();
+            bwanted.extend(st.into_iter().map(|(k, d)| (k, d, 3)));
+        }
+        let bk: HashSet<(TileKey, u32)> = nk.into_iter().map(|c| (c.0, 1)).chain(fk.into_iter().map(|c| (c.0, 2))).chain(sk.into_iter().map(|c| (c.0, 3))).collect();
         sc.bcells.retain(|k, _| bk.contains(k));
     } else {
         sc.bcells.clear();
@@ -814,10 +866,10 @@ fn update_scatter(
     let mut tree: Vec<u32> = Vec::with_capacity(4096);
     let mut cells = vec![CellGpu::default(); SLOTS as usize];
     let mut uploads = Vec::new();
-    let resident: Vec<(TileKey, u32, u32)> = sc.cells.iter().map(|(k, c)| (*k, c.slot, c.job.seed)).chain(sc.bcells.iter().map(|(k, c)| (k.0, c.slot, c.job.seed))).collect();
+    let resident: Vec<(TileKey, u32, PlaceJob)> = sc.cells.iter().map(|(k, c)| (*k, c.slot, c.job)).chain(sc.bcells.iter().map(|(k, c)| (k.0, c.slot, c.job))).collect();
     let mut max_slot = 0;
     let mut full = false;
-    for (key, slot, seed) in resident {
+    for (key, slot, job) in resident {
         let sc_ref = &mut *sc;
         let mut page = |n: TileKey| {
             let p = sc_ref.page(n, terrain, &mut uploads);
@@ -830,7 +882,8 @@ fn update_scatter(
         let live = if fits && tree.len() <= TREE_MAX as usize { CellGpu::LIVE } else { 0 };
         let c = key.center_dir();
         let up = (body.orient * (c / body.shape).normalize()).as_vec3();
-        cells[slot as usize] = CellGpu { up: up.to_array(), root, off, shift_live: shift | live, seed };
+        let k = if job.kind == 3 { crate::road_level::node_metric(key) } else { 1.0 };
+        cells[slot as usize] = CellGpu { up: up.to_array(), root, off, shift_live: shift | live, seed: job.seed, tile: job.tile, local: job.local, edge: job.edge, k, pad: [0.0; 2] };
         max_slot = max_slot.max(slot + 1);
     }
     sc.split = split;
@@ -907,12 +960,15 @@ fn update_scatter(
         tint_gain: if sc.veg == VegKind::Map { Vec3::new(2.6, 2.3, 3.5) } else { Vec3::new(1.7, 1.8, 1.8) },
         city: terrain.civ.map_or(Vec4::ZERO, |(level, seed)| {
             let c = se_core::procgen::civilization::culture(seed, level);
-            Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, c.grid_turn, r as f32)
+            // (A map body's ground draws its streets with a fixed spread and sodium lamps: planet.wesl.)
+            let spread = if terrain.has_color_map() { 0.35 } else { c.grid_turn };
+            Vec4::new(level as f32, (seed % 10_000) as f32 / 10_000.0, spread, r as f32)
         }),
         domes: terrain.domes,
         far_range: lv.far_range as f32,
+        street_range: lv.street_range,
         civ_light: terrain.civ.map_or(0, |(level, seed)| {
-            let l = se_core::procgen::civilization::culture(seed, level).light;
+            let l = if terrain.has_color_map() { [1.0, 0.68, 0.32] } else { se_core::procgen::civilization::culture(seed, level).light };
             let m = l[0].max(l[1]).max(l[2]).max(1e-3);
             let q = |c: f32| ((c / m).clamp(0.0, 1.0) * 63.0).round() as u32;
             q(l[0]) * 4096 + q(l[1]) * 64 + q(l[2])

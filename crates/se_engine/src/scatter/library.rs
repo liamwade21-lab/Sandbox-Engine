@@ -165,6 +165,34 @@ const TOWER_CAP: u32 = 6000;
 /// Flying lanes' segments drawn at most.
 const LANE_CAP: u32 = 40_000;
 
+/// The buildings' models in the library (`scatter.wesl` BUILDING_MODELS), the street objects after them.
+pub const BUILDING_MODELS: usize = 15;
+/// What the draw shader does with a street object (`ModelGpu::flags` y, `street_surface`).
+const STREET_PLAIN: u32 = 1;
+const STREET_CAR: u32 = 2;
+const STREET_CAR_OWN: u32 = 3;
+const STREET_LAMP: u32 = 4;
+/// Megaton Rainfall's street furniture, with how many of each are drawn at most (within 250 m), in
+/// `scatter.wesl`'s order (S_LAMP...). Its colours are its vertices' (or its material's).
+pub(crate) const STREET_PROPS: [(&str, u32, u32); 10] = [
+    ("streetlight_1", 512, STREET_LAMP),
+    ("streetlight_3", 512, STREET_LAMP),
+    ("streetlight_7", 512, STREET_LAMP),
+    ("bench_0", 128, STREET_PLAIN),
+    ("bench_4", 128, STREET_PLAIN),
+    ("dustbin_0", 128, STREET_PLAIN),
+    ("dustbin_2", 128, STREET_PLAIN),
+    ("hydrant_0", 128, STREET_PLAIN),
+    ("semaphore_1", 128, STREET_PLAIN),
+    ("semaphore_3", 128, STREET_PLAIN),
+];
+/// Its cars (`scatter.wesl` S_CARS, S_CAR): each with its own texture; the taxi wears its own paint.
+pub(crate) const STREET_CARS: [&str; 14] = [
+    "vehicle_0", "vehicle_1", "vehicle_3", "vehicle_6", "vehicle_8", "vehicle_12", "vehicle_14", "vehicle_16", "vehicle_17", "vehicle_19",
+    "vehicle_20", "vehicle_22", "vehicle_23", "vehicle_5",
+];
+const CAR_CAP: u32 = 128;
+
 /// What a texture array's alpha holds: the file's own (none: opaque), the windows (the dark glass of
 /// a facade), a glow (a neon sign's brightest channel).
 #[derive(Clone, Copy, PartialEq)]
@@ -650,6 +678,8 @@ pub struct ModelSrc {
     /// A broadleaf tree: its leaves turn and fall with the seasons (MR's trees, the species with
     /// branch cards; not the conifers, palms, grass or buildings).
     pub deciduous: bool,
+    /// A street object: its kind (`STREET_*`, 0 none) and its numbers for the shader (`ModelGpu::mean`).
+    pub street: (u32, [f32; 4]),
 }
 
 /// The main world's copy of what the library was built from (for the flora's rebuilds).
@@ -721,7 +751,11 @@ fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor:
                 }
             }
         }
-        a.draws.push(DrawEntry { bucket: impostor_bucket, first_index: 0, index_count: 6, base_vertex: 0, kind: DrawKind::Impostor });
+        // (A model without impostors takes no draw and no layers of the atlas: buildings, street objects.)
+        let has_impostor = src.caps.1 > 0;
+        if has_impostor {
+            a.draws.push(DrawEntry { bucket: impostor_bucket, first_index: 0, index_count: 6, base_vertex: 0, kind: DrawKind::Impostor });
+        }
         let (lo, hi) = src.positions.iter().fold((f32::MAX, f32::MIN), |acc, p| (acc.0.min(p[1]), acc.1.max(p[1])));
         let height = hi - lo.min(0.0);
         let horiz = src.positions.iter().map(|p| (p[0] * p[0] + p[2] * p[2]).sqrt()).fold(0.0f32, f32::max);
@@ -742,20 +776,22 @@ fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor:
             crown_r: cr,
             mesh_bucket,
             impostor_bucket,
-            mean: [0.25, 0.25, 0.25, 0.5],
-            flags: [src.deciduous as u32, 0, 0, 0],
+            mean: if src.street.0 != 0 { src.street.1 } else { [0.25, 0.25, 0.25, 0.5] },
+            flags: [src.deciduous as u32, src.street.0, 0, 0],
         });
-        bake.push(BakeModel {
-            positions: src.positions.clone(),
-            normals: src.normals.clone(),
-            uvs: src.uvs.clone(),
-            indices: src.indices.clone(),
-            subs,
-            half,
-            centre_y,
-            crown_y: cy,
-            crown_r: cr,
-        });
+        if has_impostor {
+            bake.push(BakeModel {
+                positions: src.positions.clone(),
+                normals: src.normals.clone(),
+                uvs: src.uvs.clone(),
+                indices: src.indices.clone(),
+                subs,
+                half,
+                centre_y,
+                crown_y: cy,
+                crown_r: cr,
+            });
+        }
     }
     (a, bake)
 }
@@ -781,7 +817,170 @@ fn species_model(r: &Recipe, src: &LibrarySources) -> ModelSrc {
         caps: (SPECIES_MESH_CAP, SPECIES_IMPOSTOR_CAP),
         crown: None,
         deciduous: matches!(r.leaf, Leaf::Branch(_)),
+        street: (0, [0.0; 4]),
     }
+}
+
+/// A model that draws nothing, keeping the others' places when a file is missing.
+fn no_model(cap: u32) -> ModelSrc {
+    ModelSrc { positions: vec![[0.0; 3]], normals: vec![[0.0, 1.0, 0.0]], uvs: vec![[0.0; 2]], indices: Vec::new(), subs: Vec::new(), caps: (cap.min(1), 0), deciduous: false, street: (STREET_PLAIN, [0.0; 4]), crown: Some((0.5, 0.0)) }
+}
+
+/// The street objects (`STREET_PROPS`, `STREET_CARS`). The furniture shares one material: a palette of
+/// its colours, each vertex's uv on its own (so they add one texture, not one each). The cars are turned
+/// nose to +x and centred on the ground (Megaton Rainfall's face -x, off centre), their sprites left out
+/// (the shader draws their lights), with a dark patch under them.
+fn street_models(install: &MrInstall, mr: &mut MrAssets, images: &mut Assets<Image>, materials: &mut Vec<LibMaterial>, decoded_all: &mut Vec<impostor::Texture>) -> Vec<ModelSrc> {
+    let mut out = Vec::new();
+    let mut palette: Vec<[u8; 4]> = Vec::new();
+    let mut palette_of = |c: [u8; 4]| -> usize {
+        palette.iter().position(|p| *p == c).unwrap_or_else(|| {
+            palette.push(c);
+            palette.len() - 1
+        })
+    };
+    let palette_mat = materials.len() as u32;
+    materials.push(LibMaterial { color: Handle::default(), tint: [1.0; 4], leaves: false, building: false });
+    decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![128, 128, 128, 255]) });
+    let mut entries: Vec<Vec<usize>> = Vec::new();
+    for (name, cap, kind) in STREET_PROPS {
+        let model = match install.model(name) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("scatter: {e}");
+                out.push(no_model(cap));
+                entries.push(Vec::new());
+                continue;
+            }
+        };
+        let mut ids = vec![0; model.positions.len()];
+        let mut subs = Vec::new();
+        for s in model.submeshes.iter().filter(|s| s.index_count > 0) {
+            let mat = install.resolve(&s.material);
+            // The material's colour where its effect is `Constant`, else its vertices' (BGRA): the game
+            // passes both on raw, so they are the same kind of value.
+            let d = mat.diffuse();
+            let raw = |c: f32| (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            let constant = [raw(d[0]), raw(d[1]), raw(d[2]), 255];
+            for v in s.first_vertex as usize..(s.first_vertex + s.vertex_count) as usize {
+                let c = match model.colors.get(v) {
+                    Some(c) if mat.effect == "Vertex" => [c[2], c[1], c[0], 255],
+                    _ => constant,
+                };
+                if let Some(id) = ids.get_mut(v) {
+                    *id = palette_of(c);
+                }
+            }
+            subs.push((s.first_index, s.index_count, palette_mat));
+        }
+        let top = model.positions.iter().fold(0.0f32, |m, p| m.max(p[1]));
+        // A triangle of mixed colours takes its first corner's, on vertices of its own: its uv would
+        // sweep across the palette through every colour between.
+        let (mut positions, mut normals, mut indices) = (model.positions.clone(), model.normals.clone(), model.indices.clone());
+        for &(first, count, _) in &subs {
+            for tri in indices[first as usize..(first + count) as usize].chunks_exact_mut(3) {
+                let c = ids[tri[0] as usize];
+                if ids[tri[1] as usize] != c || ids[tri[2] as usize] != c {
+                    for v in tri.iter_mut() {
+                        let (p, n) = (positions[*v as usize], normals.get(*v as usize).copied().unwrap_or([0.0, 1.0, 0.0]));
+                        *v = positions.len() as u32;
+                        positions.push(p);
+                        normals.push(n);
+                        ids.push(c);
+                    }
+                }
+            }
+        }
+        entries.push(ids);
+        out.push(ModelSrc {
+            positions,
+            normals,
+            uvs: Vec::new(),
+            indices,
+            subs,
+            caps: (cap, 0),
+            deciduous: false,
+            street: (kind, [0.0; 4]),
+            crown: Some((top * 0.5, 0.0)),
+        });
+    }
+    let width = palette.len().max(1).next_power_of_two();
+    for (m, ids) in out.iter_mut().zip(&entries) {
+        m.uvs = ids.iter().map(|&i| [(i as f32 + 0.5) / width as f32, 0.5]).collect();
+    }
+    let mut data = Vec::with_capacity(width * 4);
+    for i in 0..width {
+        data.extend(palette.get(i).copied().unwrap_or([128, 128, 128, 255]));
+    }
+    materials[palette_mat as usize].color = images.add(Image::new(
+        Extent3d { width: width as u32, height: 1, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ));
+    for name in STREET_CARS {
+        let car = (|| -> Option<ModelSrc> {
+            let model = install.model(name).map_err(|e| warn!("scatter: {e}")).ok()?;
+            let s = model.submeshes.iter().find(|s| s.index_count > 0)?;
+            let mat = install.resolve(&s.material);
+            let tex = mat.textures.first()?;
+            let color = mr.image(images, tex, true)?;
+            let material = materials.len() as u32;
+            materials.push(LibMaterial { color, tint: [1.0; 4], leaves: false, building: false });
+            decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![128, 128, 128, 255]) });
+            let range = s.first_index as usize..(s.first_index + s.index_count) as usize;
+            let src = &model.indices[range];
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            let mut map = vec![u32::MAX; model.positions.len()];
+            let (mut positions, mut normals, mut uvs, mut indices) = (Vec::new(), Vec::new(), Vec::new(), Vec::with_capacity(src.len() + 6));
+            for &i in src {
+                let p = model.positions[i as usize];
+                for a in 0..3 {
+                    lo[a] = lo[a].min(p[a]);
+                    hi[a] = hi[a].max(p[a]);
+                }
+            }
+            let (cx, cz) = ((lo[0] + hi[0]) * 0.5, (lo[2] + hi[2]) * 0.5);
+            for &i in src {
+                let v = i as usize;
+                if map[v] == u32::MAX {
+                    map[v] = positions.len() as u32;
+                    let p = model.positions[v];
+                    let n = model.normals.get(v).copied().unwrap_or([0.0, 1.0, 0.0]);
+                    positions.push([cx - p[0], p[1] - lo[1], cz - p[2]]);
+                    normals.push([-n[0], n[1], -n[2]]);
+                    uvs.push(model.uvs.get(v).copied().unwrap_or([0.0; 2]));
+                }
+                indices.push(map[v]);
+            }
+            let (hl, hw) = ((hi[0] - lo[0]) * 0.5, (hi[2] - lo[2]) * 0.5);
+            let v0 = positions.len() as u32;
+            for (x, z) in [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+                positions.push([x * (hl + 0.1), 0.03, z * (hw + 0.1)]);
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([0.0, 0.0]);
+            }
+            // Both windings: the patch shows whichever way the pipeline culls.
+            indices.extend([v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3, v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2]);
+            let painted = mat.textures.get(1).is_some_and(|t| t == "vehicles_colors");
+            let n = indices.len() as u32;
+            let height = hi[1] - lo[1];
+            Some(ModelSrc {
+                positions,
+                normals,
+                uvs,
+                indices,
+                subs: vec![(0, n, material)],
+                caps: (CAR_CAP, 0),
+                deciduous: false,
+                street: (if painted { STREET_CAR } else { STREET_CAR_OWN }, [hl, 0.7 - lo[1], 0.8, hw]),
+                crown: Some((height * 0.5, 0.0)),
+            })
+        })();
+        out.push(car.unwrap_or_else(|| no_model(CAR_CAP)));
+    }
+    out
 }
 
 fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: ResMut<Assets<Image>>, mut lib: ResMut<ScatterLibrary>) {
@@ -818,6 +1017,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             caps: (MESH_CAP, IMPOSTOR_CAP),
             crown: None,
             deciduous: true,
+            street: (0, [0.0; 4]),
         });
     }
     if models.is_empty() {
@@ -874,7 +1074,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
             let n = idx.len() as u32;
             // The tuft shades as the ground under it: its "crown" far below makes the leaves' ball
             // normals point up (scatter_draw.wesl).
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (GRASS_CAP, 64), deciduous: false, crown: Some((-50.0, 50.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (GRASS_CAP, 64), deciduous: false, street: (0, [0.0; 4]), crown: Some((-50.0, 50.0)) });
             grass += 1;
         }
     }
@@ -903,7 +1103,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![255; 4]) });
         let (positions, normals, uvs, idx) = building_box();
         let n = idx.len() as u32;
-        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), deciduous: false, crown: Some((0.5, 0.0)) });
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (BUILDING_CAP, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
         // The villages' round hut and longhouse (level 1), the box's next two models, with their
         // own material: the port's thatch, mud brick, timber and stone (made with the image
         // generator) in an array.
@@ -912,7 +1112,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![160, 130, 90, 255]) });
         for (positions, normals, uvs, idx) in [round_hut(), longhouse()] {
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), deciduous: false, crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, village)], caps: (VILLAGE_CAP, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
         }
         // Level 3's cities, the box's next eight models (city.wesl M_FUTURE..M_LANE): the future
         // box, four towers (tapering, stepped, twisted, round), the arcology, the skybridge and the
@@ -938,7 +1138,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         ];
         for ((positions, normals, uvs, idx), cap) in shapes {
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), deciduous: false, crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
         }
         // The hero models (city.wesl M_TEMPLE, M_WATCH, M_LANDMARK), made in Blender by script
         // (`assets/models/hero`): level 1's temple and watchtower with the villages' textures, level
@@ -949,12 +1149,13 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
                 building_box()
             });
             let n = idx.len() as u32;
-            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), deciduous: false, crown: Some((0.5, 0.0)) });
+            models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, material)], caps: (cap, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
         }
         // A level 4 civilization's colonies' domes (city.wesl M_DOME), with level 3's material.
         let (positions, normals, uvs, idx) = dome_mesh();
         let n = idx.len() as u32;
-        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (4000, 0), deciduous: false, crown: Some((0.5, 0.0)) });
+        models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (4000, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
+        models.extend(street_models(&install, &mut mr, &mut images, &mut materials, &mut decoded_all));
     }
     let (a, bake) = assemble(&models, &materials, &decoded_all);
     info!("scatter: library of {} models ({} generated), {} vertices, {} draws; baking impostors", a.models.len(), trees_n - earth0, a.vertices.len(), a.draws.len());
@@ -1186,6 +1387,14 @@ mod tests {
                 textures.extend(mr.resolve(&s.material).textures.iter().cloned());
             }
         }
+        for name in STREET_PROPS.iter().map(|p| p.0).chain(STREET_CARS) {
+            files.insert(format!("Models/{name}.bin"));
+            let model = mr.model(name).expect("street model");
+            for s in model.submeshes.iter().filter(|s| s.index_count > 0) {
+                // (A car's second texture, its paint's palette, is the shader's own: `ct_paint`.)
+                textures.extend(mr.resolve(&s.material).textures.first().cloned());
+            }
+        }
         textures.extend(trees::BARKS.iter().chain(trees::BRANCHES.iter()).map(|t| t.to_string()));
         textures.extend([GRASS_TEXTURE.to_string(), "windows".to_string()]);
         for t in &textures {
@@ -1207,6 +1416,7 @@ mod tests {
         // The copy opens as the install does, with every file the library reads.
         let copy = se_core::mr::MrInstall::open_copy(&out).expect("the copy");
         assert!(TREES.iter().all(|t| copy.model(t).is_ok()));
+        assert!(STREET_PROPS.iter().map(|p| p.0).chain(STREET_CARS).all(|t| copy.model(t).is_ok()));
         assert!(textures.iter().filter(|t| mr.has_texture(t)).all(|t| copy.has_texture(t)));
     }
 

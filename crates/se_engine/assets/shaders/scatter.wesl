@@ -11,13 +11,22 @@
 import super::surface_class::{terra_noise_at, terra_climate_noise_at, snow_vary_at, se_terra_snow_at, se_terra_climate_at, plants_ptf_at, se_terra_weights_at};
 import super::vegetation::{map_noise, map_forest, veg_classes, lin_to_srgb255};
 import super::settlement::settlements;
-import super::city::{city_pos, ct_building, ct_hut, Building, CityPos, ct_block, ct_block_mid, ct_arcology, ct_on_arcology, ct_mega, ct_bridge, ct_lane, ct_temple, ct_district, ct_dome, ct_under_dome, M_FUTURE, M_ARCO, M_BRIDGE, M_LANE, M_TEMPLE, M_LANDMARK, M_DOME};
+import super::city::{city_pos, ct_building, ct_hut, Building, CityPos, ct_block, ct_block_mid, ct_arcology, ct_on_arcology, ct_mega, ct_bridge, ct_lane, ct_temple, ct_district, ct_dome, ct_under_dome, M_FUTURE, M_ARCO, M_BRIDGE, M_LANE, M_TEMPLE, M_LANDMARK, M_DOME, ct_grid, ct_local, ct_unlocal, Grid, ct_paint, ct_slot_car, SlotCar, ct_street_key, ct_art_key, ct_art_line, ct_art_at, ct_street_hash, STREET_ROAD_M, STREET_WALK_M, ART_ROAD_M, ART_WALK_M, RURAL_ROAD_M};
 
 const SLOT_CAP: u32 = 8192u;
 // The library's building models from the box on (ScatterLibrary::building): the box, the villages'
 // hut and longhouse, level 3's future box, four towers, the arcology, the skybridge, the flying lane,
 // the hero models (level 1's temple and watchtower, level 3's landmark), a colony's dome.
 const BUILDING_MODELS: u32 = 15u;
+// The street objects, the library's models after those (library.rs STREET_PROPS, STREET_CARS: keep
+// them in step): three lamps, two benches, two bins, a hydrant, two traffic lights, the cars.
+const S_LAMP: u32 = 0u;
+const S_BENCH: u32 = 3u;
+const S_BIN: u32 = 5u;
+const S_HYDRANT: u32 = 7u;
+const S_SIGNAL: u32 = 8u;
+const S_CAR: u32 = 10u;
+const S_CARS: u32 = 14u;
 const GRID: u32 = 33u;
 const PAGE_VERTS: u32 = 1089u;
 const LEAF: u32 = 0x80000000u;
@@ -67,6 +76,8 @@ struct Body {
     // lowest point and w its height range (m)
     city: vec4<f32>,
     city2: vec4<f32>,
+    // The street objects: x their range (m), y the ground's clock for the traffic (its `globals.time`)
+    street: vec4<f32>,
 }
 
 struct Camera {
@@ -102,6 +113,13 @@ struct Cell {
     // bits 0-7 the level difference to a coarser drawn node, bit 8 placed
     shift_live: u32,
     seed: u32,
+    // Its corner in the city layout's frame and edge (`Job`), its metric at its middle (the cars).
+    tile: vec2<i32>,
+    local: vec2<f32>,
+    edge: f32,
+    k: f32,
+    pad0: f32,
+    pad1: f32,
 }
 
 struct PageInfo {
@@ -561,10 +579,163 @@ fn place_building(job: Job, i: u32) {
     }
 }
 
+// One street object of the grid point whose square holds it (`lp` in its district's grid), in that
+// district and clear of the arterials (`clear` from their middles). `dir` (the face's frame) the way it
+// faces: `cull_street`.
+fn put_street(job: Job, i: u32, gi: vec2<u32>, cp: CityPos, cell: vec2<i32>, g: Grid, lp: vec2<f32>, model: u32, dir: vec2<f32>, clear: f32, seed: u32) {
+    let p = ct_unlocal(cp, cell, g, lp);
+    let fc = cell_frac(job, cp.tile, p);
+    if !in_square(gi, fc) {
+        return;
+    }
+    let dc = ct_district(city_pos(cp.tile, p), seed);
+    if any(dc.cell != cell) || dc.art < clear {
+        return;
+    }
+    let ac = u32(clamp(round((atan2(dir.y, dir.x) / 6.2831853 + 0.5) * 65535.0), 0.0, 65535.0));
+    put_record(job, i, BUILDING_MODELS + model, fc, ac);
+}
+
+// A cell of street objects (kind 3): at each point the lamps along the kerbs where the ground's lamps
+// are (`ct_lamps`), the furniture between them, the traffic lights at the street corners and, where a
+// lane passes through its square, a record for the cars (worked out every frame: `cull_cars`).
+fn place_street(job: Job, i: u32) {
+    if i >= BGRID * BGRID {
+        return;
+    }
+    let gi = vec2<u32>(i % BGRID, i / BGRID);
+    let f = (vec2<f32>(gi) + 0.5) / f32(BGRID);
+    let cp = city_pos(vec2<i32>(job.tile_x, job.tile_y), vec2<f32>(job.local_x, job.local_y) + f * job.edge);
+    let n0 = 1.0 / f32(1u << job.level);
+    let uv = (vec2<f32>(f32(job.col), f32(job.row)) + f) * n0;
+    let k = face_metric(uv.x, uv.y);
+    let urban = town_at(normalize(uv_to_cube(job.face, uv.x, uv.y)));
+    let streets = smoothstep(0.06, 0.2, urban);
+    if streets < 0.5 {
+        return;
+    }
+    let seed = u32(body.city.y * 10000.0) + 100u;
+    let d = ct_district(cp, seed);
+    let g = ct_grid(d.cell, seed, body.city.z);
+    let lp = ct_local(cp, d.cell, g);
+    // Half the street's carriageway and its sidewalk; half the arterial's road, and with its sidewalks.
+    let half = STREET_ROAD_M / k;
+    let walk = STREET_WALK_M / k;
+    let a_half = mix(RURAL_ROAD_M, ART_ROAD_M, streets) / k;
+    let clear = a_half + ART_WALK_M * streets / k;
+    let reach = 0.75 * job.edge / f32(BGRID);
+    let off_line = lp - floor(lp / g.size + 0.5) * g.size;
+    var lanes = 0u;
+    if min(abs(off_line.x), abs(off_line.y)) < half + reach {
+        lanes |= 1u;
+    }
+    let ax = cp.q.x - ct_art_at(cp.tile, 0, ct_art_line(cp, 0), cp.q.y, seed);
+    let ay = cp.q.y - ct_art_at(cp.tile, 1, ct_art_line(cp, 1), cp.q.x, seed);
+    if min(abs(ax), abs(ay)) < a_half + reach + 2.0 {
+        lanes |= 2u;
+    }
+    if lanes != 0u {
+        put_record(job, i, BUILDING_MODELS + S_CAR, f, lanes | (u32(streets * 255.0) << 8u));
+    }
+    // The arterials' lamps, the tall kind, where the ground has them (`ct_lamps` on an arterial).
+    for (var axis = 0; axis < 2; axis++) {
+        let line = ct_art_line(cp, axis);
+        let along = select(cp.q.x, cp.q.y, axis == 0);
+        let across = select(cp.q.y, cp.q.x, axis == 0) - ct_art_at(cp.tile, axis, line, along, seed);
+        if abs(across) > a_half + 0.6 / k + reach + 2.0 {
+            continue;
+        }
+        for (var sd = -1; sd <= 1; sd += 2) {
+            let side = f32(sd);
+            let off = select(0.0, 16.0, sd > 0);
+            let lx = floor((along - off) / 32.0 + 0.5) * 32.0 + off;
+            let a0 = ct_art_at(cp.tile, axis, line, lx, seed) + side * (a_half + 0.6 / k);
+            let p = select(vec2<f32>(lx, a0), vec2<f32>(a0, lx), axis == 0);
+            let fc = cell_frac(job, cp.tile, p);
+            if !in_square(gi, fc) {
+                continue;
+            }
+            // Not where a crossing arterial takes the ground.
+            let dc = ct_district(city_pos(cp.tile, p), seed);
+            if dc.axis != axis || dc.line != line {
+                continue;
+            }
+            let dir = select(vec2<f32>(0.0, -side), vec2<f32>(-side, 0.0), axis == 0);
+            let ac = u32(clamp(round((atan2(dir.y, dir.x) / 6.2831853 + 0.5) * 65535.0), 0.0, 65535.0));
+            put_record(job, i, BUILDING_MODELS + S_LAMP + 1u, fc, ac);
+        }
+    }
+    let ux = g.rot;
+    let uy = vec2<f32>(-g.rot.y, g.rot.x);
+    let style = S_LAMP + min(u32(ct_street_hash(vec3<i32>(d.cell, 31), seed + 91u).x * 3.0), 2u);
+    for (var a = 0; a < 2; a++) {
+        // Streets of constant x (they run along y), then of constant y.
+        let across = select(lp.x, lp.y, a == 1);
+        let along = select(lp.y, lp.x, a == 1);
+        let size = select(g.size.x, g.size.y, a == 1);
+        let size_o = select(g.size.y, g.size.x, a == 1);
+        let line = floor(across / size + 0.5);
+        if abs(across - line * size) > half + walk + reach {
+            continue;
+        }
+        let ua = select(uy, ux, a == 1);
+        let uc = select(ux, uy, a == 1);
+        for (var sd = -1; sd <= 1; sd += 2) {
+            let side = f32(sd);
+            let off = select(0.0, 16.0, sd > 0);
+            let lx = floor((along - off) / 32.0 + 0.5) * 32.0 + off;
+            if abs(lx - floor(lx / size_o + 0.5) * size_o) > half + 0.5 / k {
+                let y = line * size + side * (half + 0.6 / k);
+                put_street(job, i, gi, cp, d.cell, g, select(vec2<f32>(y, lx), vec2<f32>(lx, y), a == 1), style, -side * uc, clear, seed);
+            }
+            // Between the lamps, clear of the crossing street's sidewalks.
+            let fx = floor((along - off - 16.0) / 32.0 + 0.5) * 32.0 + off + 16.0;
+            if abs(fx - floor(fx / size_o + 0.5) * size_o) > half + walk + 1.0 / k {
+                let h = ct_street_hash(vec3<i32>(i32(line) * 2 + a, i32(floor(fx / 16.0)), d.cell.x * 256 + d.cell.y + sd), seed + 92u);
+                var model = 255u;
+                var yo = half + 0.5 / k;
+                var dir = ua;
+                if h.x < 0.08 {
+                    // A bench on the sidewalk's far side, facing the road (its back, the model's +x,
+                    // away from it).
+                    model = S_BENCH + select(0u, 1u, h.y < 0.5);
+                    yo = half + 1.6 / k;
+                    dir = side * uc;
+                } else if h.x < 0.2 {
+                    model = S_BIN + select(0u, 1u, h.y < 0.5);
+                } else if h.x < 0.24 {
+                    model = S_HYDRANT;
+                }
+                if model != 255u {
+                    let y = line * size + side * yo;
+                    put_street(job, i, gi, cp, d.cell, g, select(vec2<f32>(y, fx), vec2<f32>(fx, y), a == 1), model, dir, clear, seed);
+                }
+            }
+        }
+    }
+    // The traffic lights downtown: at two opposite corners of a street junction, over the road.
+    if urban > 0.35 {
+        let nl = floor(lp / g.size + 0.5);
+        let h = ct_street_hash(vec3<i32>(vec2<i32>(nl), d.cell.x * 256 + d.cell.y), seed + 93u);
+        if h.x < 0.6 {
+            for (var sd = -1; sd <= 1; sd += 2) {
+                let sx = f32(sd);
+                let sy = select(-sx, sx, h.y < 0.5);
+                let c = nl * g.size + vec2<f32>(sx, sy) * (half + 0.6 / k);
+                put_street(job, i, gi, cp, d.cell, g, c, S_SIGNAL + select(0u, 1u, h.z < 0.5), -sx * ux, clear, seed);
+            }
+        }
+    }
+}
+
 @compute @workgroup_size(64)
 fn place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let job = jobs[gid.y];
     let i = gid.x;
+    if job.kind == 3u {
+        place_street(job, i);
+        return;
+    }
     if job.kind >= 1u {
         place_building(job, i);
         return;
@@ -754,6 +925,10 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let packed = instances[slot * SLOT_CAP + i];
     let pm = (packed >> 16u) & 0xffu;
+    if (packed >> 24u) == 3u {
+        cull_street(slot, i, cell, pm, packed & 0xffffu);
+        return;
+    }
     if pm >= body.species.w && pm < body.species.w + BUILDING_MODELS && body.city.x > 0.5 {
         cull_building(slot, i, cell, packed >> 24u, pm);
         return;
@@ -899,18 +1074,9 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-// A building: its record lifted onto the drawn ground, standing on a plinth down to the lowest ground
-// under its footprint, turned with its street grid, faded out over the last 15 % of the range.
-fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
-    let rec = noises[slot * SLOT_CAP + i];
-    let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
-    if !lf.ok {
-        return;
-    }
-    let p = lf.p;
-    let info = page_info[lf.page];
-    // The land as the ground's town needs it (planet.wesl's civ block: not the highlands, off the
-    // sea; on a map body its water mask, as the ground's: Earth's coastal towns stand a few metres up).
+// The land as the ground's town needs it (planet.wesl's civ block: not the highlands, off the
+// sea; on a map body its water mask, as the ground's: Earth's coastal towns stand a few metres up).
+fn town_land(p: vec4<f32>, info: PageInfo) -> bool {
     let sea = body.lod2.w > -1e8;
     let hr = (p.w - select(body.city2.z, 0.0, sea)) / max(body.city2.w, 100.0);
     var land = 1.0 - smoothstep(select(0.55, 0.25, sea), select(0.8, 0.5, sea), hr);
@@ -921,7 +1087,208 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     } else if sea {
         land *= smoothstep(2.0, 20.0, p.w);
     }
-    if smoothstep(0.03, 0.3, land) < 0.5 {
+    return smoothstep(0.03, 0.3, land) >= 0.5;
+}
+
+// A street object (kind 3 cells): its record lifted onto the drawn ground, within its range (dithered
+// out over the last 15 %, `street_near` handing over to the ground's flat ones there). The record's turn
+// is a lamp's or a traffic light's arm (the model's z), the others' x axis.
+fn cull_street(slot: u32, i: u32, cell: Cell, model: u32, gidx: u32) {
+    let rec = noises[slot * SLOT_CAP + i];
+    let mk = model - body.species.w - BUILDING_MODELS;
+    if mk == S_CAR {
+        cull_cars(cell, rec.y, gidx);
+        return;
+    }
+    let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
+    if !lf.ok {
+        return;
+    }
+    let info = page_info[lf.page];
+    if !town_land(lf.p, info) {
+        return;
+    }
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    let pos = m * lf.p.xyz + info.t;
+    let fade = clamp((body.street.x - length(pos)) / (body.street.x * 0.15), 0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let md = models[model];
+    let up = cell.up;
+    let bc = pos + up * md.centre_y;
+    for (var c = 0u; c < 5u; c++) {
+        let pl = cam.planes[c];
+        if dot(pl.xyz, bc) + pl.w < -md.radius {
+            return;
+        }
+    }
+    let ang = (f32(rec.y & 0xffffu) / 65535.0 - 0.5) * 6.2831853;
+    var dir = cos(ang) * normalize(m * lf.du) + sin(ang) * normalize(m * lf.dv);
+    dir = normalize(dir - up * dot(dir, up));
+    let arm = mk < S_BENCH || mk >= S_SIGNAL;
+    let xa = select(dir, cross(up, dir), arm);
+    append(md.mesh_bucket, Inst(pos, pack4x8unorm(vec4<f32>(1.0, fade, 0.0, 0.0)), oct_encode(xa), oct_encode(up), 1.0, model));
+}
+
+// A car with its middle at `p` (the tile frame of `tile`), driving along `ahead` (a unit vector in the
+// face's frame): on the drawn ground, its two ends on the road where they lie in the cell, its paint in
+// the instance's high bits (scatter_draw.wesl `vertex_mesh`).
+fn put_car(cell: Cell, tile: vec2<i32>, p: vec2<f32>, ahead: vec2<f32>, car: SlotCar) {
+    let fc = (vec2<f32>(tile - cell.tile) * 4096.0 + p - cell.local) / cell.edge;
+    let lf = lift(cell, fc);
+    if !lf.ok {
+        return;
+    }
+    let info = page_info[lf.page];
+    if !town_land(lf.p, info) {
+        return;
+    }
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    var pos = m * lf.p.xyz + info.t;
+    let fade = clamp((body.street.x - length(pos)) / (body.street.x * 0.15), 0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let model = body.species.w + BUILDING_MODELS + S_CAR + min(u32(car.pick * f32(S_CARS)), S_CARS - 1u);
+    let md = models[model];
+    let bc = pos + cell.up * md.centre_y;
+    for (var c = 0u; c < 5u; c++) {
+        let pl = cam.planes[c];
+        if dot(pl.xyz, bc) + pl.w < -md.radius {
+            return;
+        }
+    }
+    var fwd = normalize(ahead.x * normalize(m * lf.du) + ahead.y * normalize(m * lf.dv));
+    let reach = ahead * 2.0 / (cell.k * cell.edge);
+    let fa = fc + reach;
+    let fb = fc - reach;
+    var tilted = false;
+    if all(fa > vec2<f32>(0.0)) && all(fa < vec2<f32>(1.0)) && all(fb > vec2<f32>(0.0)) && all(fb < vec2<f32>(1.0)) {
+        let la = lift(cell, fa);
+        let lb = lift(cell, fb);
+        if la.ok && lb.ok {
+            let pa = m * la.p.xyz + page_info[la.page].t;
+            let pb = m * lb.p.xyz + page_info[lb.page].t;
+            pos = 0.5 * (pa + pb);
+            fwd = normalize(pa - pb);
+            tilted = true;
+        }
+    }
+    if !tilted {
+        var tri_n = normalize(m * cross(lf.vb.xyz - lf.va.xyz, lf.vc.xyz - lf.va.xyz));
+        fwd = normalize(fwd - tri_n * dot(fwd, tri_n));
+    }
+    let up = normalize(cell.up - fwd * dot(cell.up, fwd));
+    let paint = sqrt(ct_paint(car.paint));
+    let packed = model | pack4x8unorm(vec4<f32>(0.0, paint));
+    append(md.mesh_bucket, Inst(pos, pack4x8unorm(vec4<f32>(1.0, fade, 0.0, 0.0)), oct_encode(fwd), oct_encode(up), 1.0, packed));
+}
+
+// The cars whose middles are in a grid point's square this frame: the ground's traffic (`ct_traffic`:
+// no state, a hash of the slot and the clock), each car in one square alone. `rec`: bit 0 a street's lane
+// may pass here, bit 1 an arterial's, bits 8-15 the town's share (`streets`).
+fn cull_cars(cell: Cell, rec: u32, gidx: u32) {
+    let gi = vec2<u32>(gidx % BGRID, gidx / BGRID);
+    let cp = city_pos(cell.tile, cell.local + (vec2<f32>(gi) + 0.5) / f32(BGRID) * cell.edge);
+    let seed = u32(body.city.y * 10000.0) + 100u;
+    let t = body.street.y;
+    let k = cell.k;
+    let reach = 0.75 * cell.edge / f32(BGRID);
+    let streets = f32((rec >> 8u) & 0xffu) / 255.0;
+    if (rec & 1u) != 0u {
+        let half = STREET_ROAD_M / k;
+        let clear = (mix(RURAL_ROAD_M, ART_ROAD_M, streets) + ART_WALK_M * streets) / k;
+        let d = ct_district(cp, seed);
+        let g = ct_grid(d.cell, seed, body.city.z);
+        let lp = ct_local(cp, d.cell, g);
+        let ux = g.rot;
+        let uy = vec2<f32>(-g.rot.y, g.rot.x);
+        for (var a = 0; a < 2; a++) {
+            let across = select(lp.x, lp.y, a == 1);
+            let along = select(lp.y, lp.x, a == 1);
+            let size = select(g.size.x, g.size.y, a == 1);
+            let line = floor(across / size + 0.5);
+            if abs(across - line * size) > half + reach {
+                continue;
+            }
+            let ua = select(uy, ux, a == 1);
+            for (var lane = -1; lane <= 1; lane += 2) {
+                let v = f32(lane) * 9.0;
+                let yl = line * size - f32(lane) * 0.5 * half;
+                let key = ct_street_key(d.cell, i32(line), a == 1, lane);
+                let s1 = floor((along + reach - v * t) / 24.0);
+                for (var s = floor((along - reach - v * t) / 24.0); s <= s1; s += 1.0) {
+                    let car = ct_slot_car(s, v, 24.0, 0.25 * streets + 0.1, t, 0, key, seed, k);
+                    if !car.ok {
+                        continue;
+                    }
+                    let p = ct_unlocal(cp, d.cell, g, select(vec2<f32>(yl, car.x), vec2<f32>(car.x, yl), a == 1));
+                    let fc = (vec2<f32>(cp.tile - cell.tile) * 4096.0 + p - cell.local) / cell.edge;
+                    if !in_square(gi, fc) {
+                        continue;
+                    }
+                    let dc = ct_district(city_pos(cp.tile, p), seed);
+                    if any(dc.cell != d.cell) || dc.art < clear {
+                        continue;
+                    }
+                    put_car(cell, cp.tile, p, f32(lane) * ua, car);
+                }
+            }
+        }
+    }
+    if (rec & 2u) != 0u {
+        for (var axis = 0; axis < 2; axis++) {
+            let line = ct_art_line(cp, axis);
+            let along = select(cp.q.x, cp.q.y, axis == 0);
+            let across = select(cp.q.y, cp.q.x, axis == 0) - ct_art_at(cp.tile, axis, line, along, seed);
+            if abs(across) > mix(RURAL_ROAD_M, ART_ROAD_M, streets) / k + reach + 2.0 {
+                continue;
+            }
+            let tile_a = select(cp.tile.x, cp.tile.y, axis == 0);
+            for (var lane = -1; lane <= 1; lane += 2) {
+                for (var o = 0; o < 2; o++) {
+                    let outer = o == 1;
+                    // (The road narrows towards the town's edge: its outer lanes end before it.)
+                    if outer && streets < 0.7 {
+                        continue;
+                    }
+                    let off = -f32(lane) * select(1.9, 6.0, outer) / k;
+                    let v = f32(lane) * select(13.0, 16.0, outer);
+                    let key = ct_art_key(line, axis, lane, outer);
+                    let s1 = floor((along + reach - v * t) / 32.0);
+                    for (var s = floor((along - reach - v * t) / 32.0); s <= s1; s += 1.0) {
+                        let car = ct_slot_car(s, v, 32.0, 0.35 + 0.35 * streets, t, tile_a * 128, key, seed, k);
+                        if !car.ok {
+                            continue;
+                        }
+                        let a0 = ct_art_at(cp.tile, axis, line, car.x, seed) + off;
+                        let p = select(vec2<f32>(car.x, a0), vec2<f32>(a0, car.x), axis == 0);
+                        let fc = (vec2<f32>(cp.tile - cell.tile) * 4096.0 + p - cell.local) / cell.edge;
+                        if !in_square(gi, fc) {
+                            continue;
+                        }
+                        let a1 = ct_art_at(cp.tile, axis, line, car.x + f32(lane) * 2.0, seed) + off;
+                        let dv = vec2<f32>(f32(lane) * 2.0, a1 - a0);
+                        put_car(cell, cp.tile, p, normalize(select(dv, dv.yx, axis == 0)), car);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A building: its record lifted onto the drawn ground, standing on a plinth down to the lowest ground
+// under its footprint, turned with its street grid, faded out over the last 15 % of the range.
+fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
+    let rec = noises[slot * SLOT_CAP + i];
+    let lf = lift(cell, (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0);
+    if !lf.ok {
+        return;
+    }
+    let p = lf.p;
+    let info = page_info[lf.page];
+    if !town_land(p, info) {
         return;
     }
     let mk = model - body.species.w;

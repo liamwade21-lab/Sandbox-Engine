@@ -25,17 +25,27 @@
   banks either side and the buildings and trees following. Picture checked on a hilly planet; Earth's
   map data is too smooth to show it. Accepted: objects may be off by up to 2 m at 1-2 km on the first
   levelled level, and road middles by up to 0.4 m near a cube face's corners.
+- **Street furniture and 3D cars (2026-11-06):** within 250 m at Ultra (150 High, 100 Low) towns of level 2
+  and up have Megaton Rainfall's lamps, benches, bins, hydrants, traffic lights and 14 kinds of car, driving
+  the ground's own traffic with their lights on at night. Left as it is: cars pass through each other at
+  junctions and ignore the traffic lights (their places are a hash of the clock, which is why they cost
+  almost nothing), country roads keep the flat painted cars, level 3's future cities get the same modern
+  furniture and cars, and domed colonies keep the flat ones. Very steep test towns show road markings
+  stretched down the banks between roads.
 - **Speed (Ultra 3440x1440, the user's settings are Custom: no MSAA, solids 85% of 1080):** the ground
   is the biggest cost near a surface (14-16 ms on the user's planet RS 8514-3620-1-7-69 1, was 21-25);
   then the volumetric nebula when a planet sits in one, and the biome detail textures with 4x MSAA.
   The slowdown only a restart cleared is fixed (2026-11-06, the user's planet RS 8514-495-4-971-146 2
   fell from 80 to 40 fps): wgpu's work per pass grows with the most GPU buffers and textures ever alive
   at once, and exploring reached 44,600 buffers. Now about 10,200 and 5,300 textures (one uniform per
-  ground material, flat cloud shells only where they are drawn, a tighter node cache). Over 5 rounds of
-  trips the main thread stays at 2.8-3.6 ms on that planet and New York's 5.6-6.1 ms (9.9 ms before).
-  Still open: the graphics card's time on that planet sometimes reads 8.9 and sometimes 10.5 ms for the
-  same view (not explained yet), memory still grows about 100-150 MB a round, and the render graph's
-  time rose from 3.8 to 6.2-6.5 ms over those rounds though the peak stayed flat. The ground's
+  ground material, flat cloud shells only where they are drawn, a tighter node cache). Measured with roads,
+  street furniture and cars all in (5 rounds of trips, `session_explore.sh`): the main thread stays at
+  2.6-3.3 ms on that planet, 5.2-5.8 ms over New York (it reached 9.9 ms before) and 6.1-6.4 ms at street
+  level; the peak stays at 10,205 buffers. The street objects cost nothing measurable (15.6-16.3 ms with,
+  15.7 without). Still open: the graphics card's time on that planet reads 8.7 ms or 10.2 ms for the same
+  view (not explained yet), memory still grows round by round, and the render graph's time rises from
+  3.5 to about 6 ms over the first round. A patch to wgpu-core that could give some of that back (a
+  side session's idea, judged safe by reading the code, not built) waits on the user's yes. The ground's
   shaders are built at start and the loading screen waits for the first view. `.optimize/REPORT.md`
   lists 8 "needs your call" speedups that would change the picture.
 - **Open oddities:** the `surface` dev command sometimes leaves the camera 1 m above the sea instead of

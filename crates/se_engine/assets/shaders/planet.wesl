@@ -2009,6 +2009,18 @@ fn horizon_shadow(height: f32, mu: f32) -> f32 {
 const CANOPY_M: f32 = 14.0;
 const FLOOR_DARK: f32 = 0.45;
 
+// 1 inside the 3D street objects' range round the camera (the light record's `glow_atmo.w`: 0 where the
+// scatter draws none; scatter.wesl `cull_street`), 0 past it: the ground then leaves the cars and lamp
+// heads to them.
+fn street_near(in: VertexOut) -> f32 {
+    let r = lit[planet.slot].glow_atmo.w;
+    if r <= 0.0 {
+        return 0.0;
+    }
+    let d = length(in.world_pos) * planet.planet.w / max(in.centre.w, 1e-30);
+    return 1.0 - smoothstep(0.85 * r, r, d);
+}
+
 fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: vec3<f32>) -> Surf {
     let has_atm = lit[planet.slot].flags.x > 0.5;
     let p_rel = (in.world_pos - in.centre.xyz) / max(in.centre.w, 1e-30);
@@ -2178,7 +2190,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
                 // A primitive people's villages: dirt paths, huts, hearth fires.
                 cg = village_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, albedo, globals.time);
             } else {
-                cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, planet.civ_light.rgb / max(max(planet.civ_light.r, planet.civ_light.g), max(planet.civ_light.b, 1e-3)), globals.time);
+                cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, planet.city_frame.z, albedo, planet.civ_urban.rgb * 0.6, planet.civ_light.rgb / max(max(planet.civ_light.r, planet.civ_light.g), max(planet.civ_light.b, 1e-3)), globals.time, street_near(in));
             }
             albedo = cg.col;
             // Level 3 and up: near the ground the towers' windows give much of a town's light, the
@@ -2203,7 +2215,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         if rural > 0.0 {
             let cp = city_pos(planet.city_tile.xy, planet.soil_tile.xy + in.uv * planet.soil_tile.z);
             let metric = 0.5 * (planet.city_frame.x + planet.city_frame.y);
-            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13), vec3<f32>(1.0, 0.68, 0.32), globals.time);
+            let cg = city_ground(cp, metric, g_footprint_m, town, rural, u32(planet.civ.y * 10000.0) + 100u, 0.35, albedo, vec3<f32>(0.14, 0.135, 0.13), vec3<f32>(1.0, 0.68, 0.32), globals.time, street_near(in));
             albedo = cg.col;
             // Level 3 and up: near the ground the towers' windows give much of a town's light, the
             // streets less of it (their cultures are 1.6-2.2 times as bright from orbit).

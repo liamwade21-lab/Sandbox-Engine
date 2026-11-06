@@ -475,3 +475,54 @@ fn dump_windows() {
         sheet.save(format!("{out}_{name}.png")).unwrap();
     }
 }
+
+/// Prints the sizes, sub-meshes and textures of the street objects (for choosing them; run with
+/// `cargo test -p se_core print_street_models -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn print_street_models() {
+    let mr = MrInstall::open(std::path::Path::new(DEFAULT_MR_PATH)).expect("install");
+    let mut names: Vec<String> = mr
+        .model_names()
+        .into_iter()
+        .filter(|n| ["vehicle_", "streetlight", "bench_", "dustbin_", "hydrant_", "semaphore_"].iter().any(|p| n.starts_with(p)) && !n.contains("damaged"))
+        .collect();
+    names.sort();
+    for n in names {
+        let Ok(m) = mr.model(&n) else {
+            println!("{n}: unreadable");
+            continue;
+        };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &m.positions {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+        let subs: Vec<String> = m
+            .submeshes
+            .iter()
+            .map(|s| {
+                let r = mr.resolve(&s.material);
+                format!("{}:{}i/{}/{:?}", s.material.name, s.index_count, r.effect, r.textures)
+            })
+            .collect();
+        println!("{n}: {}v x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2} | {}", m.positions.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], subs.join(" ; "));
+        let mut cols: Vec<[u8; 4]> = m.colors.clone();
+        cols.sort();
+        cols.dedup();
+        let params: Vec<String> = m.submeshes.iter().flat_map(|s| mr.resolve(&s.material).params.iter().map(|(k, v)| format!("{k}={v:?}")).collect::<Vec<_>>()).collect();
+        println!("   colours {} {:?} params {:?}", cols.len(), &cols[..cols.len().min(6)], params);
+        for s in m.submeshes.iter().filter(|s| s.index_count == 0) {
+            let pts: Vec<[f32; 3]> = m.positions[s.first_vertex as usize..(s.first_vertex + s.vertex_count) as usize].to_vec();
+            let c: Vec<[u8; 4]> = m.colors[s.first_vertex as usize..(s.first_vertex + s.vertex_count) as usize].to_vec();
+            let (mut a, mut b) = (f32::MAX, f32::MIN);
+            for i in &m.indices {
+                a = a.min(m.positions[*i as usize][0]);
+                b = b.max(m.positions[*i as usize][0]);
+            }
+            println!("   sprites {} {:?} {:?} mesh x {a:.2}..{b:.2}", s.vertex_count, &pts[..pts.len().min(8)], c);
+        }
+    }
+}
