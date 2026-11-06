@@ -21,6 +21,10 @@
     wind, a few dark specks at some cloud edges from orbit; storms built from parts (second plan, step
     7); gas giants' own storms (SE's spots and cyclones are only in their colour). The detailed ground
     shadows reach about 40 km round the camera (a gentler average beyond).
+- **Roads on steep ground (2026-11-06):** streets and arterials are cut level across into hillsides, with
+  banks either side and the buildings and trees following. Picture checked on a hilly planet; Earth's
+  map data is too smooth to show it. Accepted: objects may be off by up to 2 m at 1-2 km on the first
+  levelled level, and road middles by up to 0.4 m near a cube face's corners.
 - **Speed (Ultra 3440x1440, the user's settings are Custom: no MSAA, solids 85% of 1080):** the ground
   is the biggest cost near a surface (14-16 ms on the user's planet RS 8514-3620-1-7-69 1, was 21-25);
   then the volumetric nebula when a planet sits in one, and the biome detail textures with 4x MSAA.

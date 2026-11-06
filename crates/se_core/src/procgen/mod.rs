@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 
 use glam::DVec3;
 
+pub mod city_roads;
 pub mod civilization;
 mod se_comets;
 mod se_layout;

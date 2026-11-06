@@ -134,6 +134,17 @@ or publishing the port.
 - A `perf NAME` segment runs until the next `perf`: put `perf jump` before a camera jump, or the jump
   and the next view count in the segment being measured. Test with `SE_CIV_TEST=2 SE_CITY_TEST=1` on a generated life world (towns on
   all suitable land), or Earth (New York 40.75 -73.98).
+- Roads on steep ground: the towns' streets and arterials are cut level into the ground's own heights
+  when a node is built (`terrain.rs` `build_node`, `road_level.rs`, the layout's CPU mirror
+  `se_core/src/procgen/city_roads.rs`). The layout in `city.wesl` (`ct_district`, `ct_grid`, `ct_local`,
+  widths, seeds) and that mirror must change together; its tests compare them with numbers worked out
+  from the shader. Levelled heights go to nodes of at most `LEVEL_SPACING_M` a vertex and into the normal
+  maps down to `LEVEL_NORMALS_SPACING_M`; the geomorph's parent heights follow the parent's own rule, or
+  nodes pop. The scatter stands on the drawn triangles, so trees and buildings follow by themselves.
+  `SE_ROAD_LEVEL=0` leaves it out for comparisons. Test on a hilly white-star planet:
+  `SE_CIV_TEST=2 SE_CITY_TEST=1`, `RS 8514-928-8-5906585-158 3`, `surface 26 -32 0.3 -22 40; agl 120` by
+  day (Earth's data is too smooth to show it: Hong Kong's hills come out flat). Put `wait 200` before a
+  first `rs` (the procedural stars load first) and `wait 800` before selecting its planet.
 - Settlements seen from orbit (the plan's step 6): `settlement.wesl` (the field: Gaussian blobs in
   cells, each blurred to the pixel keeping its light; turned into the field's mean only once the pixel
   spans a good part of a cell, or towns vanish from orbit) and planet.wesl's civ block in `lit_ground`

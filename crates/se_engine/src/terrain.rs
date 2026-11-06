@@ -1511,6 +1511,8 @@ fn catmull_rom(r: [f64; 4], t: f64) -> f64 {
 pub struct TileCaches {
     heights: Arc<Mutex<HashMap<String, Arc<HeightTile>>>>,
     textures: Arc<Mutex<HashMap<String, CachedTexture>>>,
+    /// Lights tiles decoded for levelling the roads (road_level.rs).
+    lums: crate::road_level::LumCache,
 }
 
 impl TileCaches {
@@ -1740,6 +1742,8 @@ struct BuildInput {
     /// SE's generator's grid for this node or its ancestor, and the height (SE's units) and
     /// metres per unit of the reference radius.
     generated: Option<(TileKey, Arc<HeightTile>, f64, f64)>,
+    /// The towns' roads to level the ground across (a civilization that builds streets).
+    roads: Option<crate::road_level::RoadCtx>,
 }
 
 /// A node's flat cloud shell patches for the layers `cloud_radii` (layer, shell radius m): each one's
@@ -1895,6 +1899,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
         proc,
         ocean,
         generated,
+        roads,
     } = input;
     // Heights.
     let height = layers.bump.as_ref().and_then(|bl| {
@@ -1959,13 +1964,31 @@ fn build_node(input: BuildInput) -> NodeBuild {
             }
         }
     };
+    // The towns' roads levelled into the ground (road_level.rs) on nodes fine enough to show them, in
+    // the normal maps of nodes a little coarser; the parent's heights for the geomorph by the parent's
+    // own rule, so a node morphs into exactly the surface its parent drew.
+    let spacing = radius * std::f64::consts::FRAC_PI_2 * size / (GRID - 1) as f64;
+    let node_roads = roads.as_ref().filter(|_| spacing <= crate::road_level::LEVEL_NORMALS_SPACING_M).and_then(|r| r.node(key, &vfs));
+    let parent_roads = roads
+        .as_ref()
+        .filter(|_| 2.0 * spacing <= crate::road_level::LEVEL_SPACING_M)
+        .and_then(|r| key.parent().and_then(|p| r.node(p, &vfs)));
+    let levelled = |r: &Option<crate::road_level::NodeRoads>, u: f64, v: f64, dir: DVec3| -> f64 {
+        let h = h_at(u, v, dir);
+        r.as_ref().map_or(h, |r| r.level(u, v, dir, h, &h_at))
+    };
+    let h_node = |u: f64, v: f64, dir: DVec3| -> f64 {
+        if spacing <= crate::road_level::LEVEL_SPACING_M { levelled(&node_roads, u, v, dir) } else { h_at(u, v, dir) }
+    };
+    let h_normals = |u: f64, v: f64, dir: DVec3| -> f64 { levelled(&node_roads, u, v, dir) };
+    let h_parent = |u: f64, v: f64, dir: DVec3| -> f64 { levelled(&parent_roads, u, v, dir) };
     // Position and true height. The ground keeps the seabed; an ocean's surface is a separate
     // mesh at sea level (SE's ocean sphere), below.
     let pos_at = |i: f64, j: f64| -> (DVec3, f64) {
         let u = u0 + size * i / (GRID - 1) as f64;
         let v = v0 + size * j / (GRID - 1) as f64;
         let dir = key.face.uv_to_dir(u, v);
-        let h = h_at(u, v, dir);
+        let h = h_node(u, v, dir);
         (dir * (radius + h), h)
     };
     let mut dirs: Vec<[f32; 3]> = Vec::with_capacity(GRID * GRID + 4 * GRID);
@@ -2012,7 +2035,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
                 let u = u0 + size * i / (GRID - 1) as f64;
                 let v = v0 + size * j / (GRID - 1) as f64;
                 let dir = key.face.uv_to_dir(u, v);
-                let h = h_at(u, v, dir);
+                let h = h_parent(u, v, dir);
                 (dir * (radius + h), h)
             })
             .collect()
@@ -2054,7 +2077,7 @@ fn build_node(input: BuildInput) -> NodeBuild {
                 let u = u0 + size * i / (n - 1) as f64;
                 let v = v0 + size * j / (n - 1) as f64;
                 let dir = key.face.uv_to_dir(u, v);
-                let h = h_at(u, v, dir);
+                let h = h_normals(u, v, dir);
                 (dir * (radius + h), h)
             })
             .collect();
@@ -2293,6 +2316,44 @@ fn cull_sea_patches(
         let near = reach.is_none_or(|r| (cam_body - node.center).length() - sea.extent_m < r);
         vis.set_if_neq(if near { Visibility::Inherited } else { Visibility::Hidden });
     }
+}
+
+/// The road levelling's context (road_level.rs) for a body whose civilization builds streets (level 2
+/// and up), by planet.wesl's two paths: a generated planet's settlement field (no colour map) and a
+/// map body's lights (Earth). `SE_ROAD_LEVEL=0` turns it off.
+fn road_ctx(terrain: &Terrain, layers: &TerrainLayers, caches: &TileCaches) -> Option<crate::road_level::RoadCtx> {
+    use crate::road_level::{RoadCtx, TownSource};
+    use se_core::procgen::city_roads;
+    let (level, seed) = terrain.civ?;
+    // (`SE_ROAD_LEVEL=0`: the roads lie as the ground does, for comparisons.)
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if level < 2 || *OFF.get_or_init(|| std::env::var("SE_ROAD_LEVEL").is_ok_and(|v| v == "0")) {
+        return None;
+    }
+    let culture = se_core::procgen::civilization::culture(seed, level);
+    let generated = layers.color.is_none();
+    let towns = if generated {
+        let (lo, span) = ground_range(&terrain.proc, &terrain.surface);
+        TownSource::Field {
+            lo,
+            span,
+            sea: terrain.has_ocean || layers.water.is_some(),
+            coast: culture.coast,
+            test: if crate::scatter::city_test() { 1.0 } else { 0.0 },
+            airless: terrain.domes,
+            fert_min: if terrain.biome.is_some_and(|b| b.flags.x > 0.5) { 0.3 } else { 1.0 },
+        }
+    } else {
+        TownSource::Lights { lights: layers.lights.clone()?, water: layers.water.clone(), cache: caches.lums.clone() }
+    };
+    Some(RoadCtx {
+        layout_seed: city_roads::layout_seed(seed),
+        field_seed: city_roads::field_seed(seed),
+        level: level as u32,
+        spread: if generated { culture.grid_turn } else { 0.35 },
+        radius: terrain.radius,
+        towns,
+    })
 }
 
 /// Layer rect for a node: (ancestor key, uniform rect).
@@ -3040,6 +3101,7 @@ fn update_terrain(
                 proc: terrain.proc.clone(),
                 ocean: terrain.has_ocean,
                 generated,
+                roads: road_ctx(terrain, &layers, &caches),
             };
             let task = AsyncComputeTaskPool::get().spawn(async move { build_node(input) });
             terrain.nodes.insert(

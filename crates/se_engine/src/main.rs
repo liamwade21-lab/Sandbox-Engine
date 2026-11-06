@@ -51,6 +51,7 @@ mod rings3d;
 mod messages;
 mod script_gui;
 mod script_vars;
+mod road_level;
 mod scatter;
 mod scripting;
 mod render_scale;
