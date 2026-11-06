@@ -67,8 +67,8 @@
   - **Step 1 done (2026-11-06): the Mods menu.** A **Mods** button at the end of the tools toolbar opens a window
     listing the mods found in `assets/mods`. Viltrumite powers is there and switches on and off, but does nothing yet.
     A row is grey with the reason when a file is missing or bad, when it needs a newer build, while a ship is piloted
-    or a script runs; starting either turns the mod off first. Checked in test runs: the button and the row clicked,
-    grey rows, ships, scripts, `SE_MODS=0`. **Next: step 2**, the asset proof and the converter.
+    or a script runs; starting either turns the mod off first. A script's HideAllDialogs closes the window. Checked in test
+    runs: the button and the row clicked, grey rows, ships, scripts, `SE_MODS=0`. **Next: step 2**, the asset proof and the converter.
 - **Vegetation and intelligent civilizations** (the plan, from the user's interview of 2026-11-04:
   `docs/spec-vegetation-civilizations.md`). Grass, bushes and forests on planets whose life and climate
   allow them, from orbit to the ground; a new life class, multicellular intelligent life (about 1 in 20

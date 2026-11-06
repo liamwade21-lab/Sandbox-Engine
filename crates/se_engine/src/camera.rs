@@ -849,7 +849,7 @@ pub fn aircraft_turn(prev: DQuat, rot: DQuat, v: DVec3) -> DVec3 {
 /// current spacecraft (FUN_1405b9420 -> FUN_1401f6aa0), which needs one (the Ships window), and SE
 /// then is in Free mode. Ctrl+1-5 are the flight HUD modes (ship/hud.rs) and 5-0 the flight
 /// attitudes and the auto horizon, so only plain 1-4 are taken here.
-fn move_mode_keys(
+pub(crate) fn move_mode_keys(
     keys: Res<ButtonInput<KeyCode>>,
     mut cam: ResMut<FlyCamera>,
     flight: Option<ResMut<crate::ship::Flight>>,

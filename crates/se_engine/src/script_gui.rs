@@ -238,6 +238,7 @@ impl Dialogs<'_> {
             self.set_open(d, false, None);
         }
         self.hud.show_help = false;
+        self.hud.show_mods = false;
         self.scripts.show = false;
     }
 }

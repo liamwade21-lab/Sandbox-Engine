@@ -69,7 +69,7 @@ or publishing the port.
   mod is a folder under `assets/mods` with a `mod.cfg` (`Name`, `Description`, `Code`, repeated `Need "relative path"`).
   The scan and `mod_file` look beside the exe first, then in the source tree, per file (as orbital.rs's textures). List
   in `Need` only files that exist: one missing greys the row. A new mod's `Code` goes in `KNOWN_CODES`. Every way off goes
-  through `ModControl::off`; `off_for_pilot_or_script` runs after `ship_input` and `input_controls` and before `run_script`,
+  through `ModControl::off`; `off_for_pilot_or_script` runs after `ship_input`, `move_mode_keys` (key 4) and `input_controls` and before `run_script`,
   so the mod is off first. With the mod off only run conditions run; keep it so. `SE_MODS=0` hides it all. Test a grey row
   with a copy of the exe beside `assets/shaders` and `assets/mods/NAME/mod.cfg` (`SE_UI_OPEN=mods` or `mods window`), and
   wait 1500 frames before judging a picture: earlier ones can be black, even the panels. A pale Earth ground with the rocks

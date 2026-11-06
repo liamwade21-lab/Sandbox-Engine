@@ -675,14 +675,18 @@ each later step adds the files it creates. For later steps: `crate::mods::mod_fi
 exe, then the source tree, per file); `ModRegistry::mark_bad(id, path)` greys the row when a parser refuses a file;
 `ModControl.loading` makes the row read `Loading` (step 3 sets it); `ModControl::off(&reg, why)` is the one way off, so hang
 the hand-back (F3) on it; `dev` says a dev command turned it on. `off_for_pilot_or_script` then `apply_request` run in `Update`
-after `ship::ship_input` and `camera::input_controls`, before `scripting::run_script` (all now `pub(crate)`, with `FlightKeys`);
+after `ship::ship_input` (Enter, F, the Ships window), `camera::move_mode_keys` (key 4) and `camera::input_controls`, before
+`scripting::run_script` (all now `pub(crate)`, with `FlightKeys`);
 step 4's hero systems should run after them. `ScriptRunner::starting()` is `running()` or a script requested. `off_on_exit` is
 the `Last` hook before `session::save_on_exit`. New dev commands beyond the spec's: `mods window [off]`, `uiclick X Y` (a real
 egui click: at the test window's 1600x900 the Mods button is at 30 841, the first row at 930 71), `script PATH`; `SE_UI_OPEN=mods`
 also opens the window. Differs from the spec: `ModInfo.fault: Option<GreyReason>` instead of `missing: Option<path>`, because
 it also holds `Bad` and the unknown `Code`; `Bad` also covers an empty file, a folder where a file should be and a `Need` path
 leaving the mod's folder (deeper checks wait for the parsers); `active` is the mod's folder name, one mod at a time. A row's
-description is `ui.label`, since `ui.weak` is nearly invisible under the skin. Learned: pictures before about 1500 frames can be
+description and "No mods found" are `ui.label`, since `ui.weak` is nearly invisible under the skin. A script's `HideAllDialogs`
+closes the window (`Dialogs::hide_all`). The one way to pilot not in the order is `ship/persist.rs` `restore_ships`: it runs once at
+start, with the mod off, so it needs none. A test drives the plugin's order against the real key 4
+(`key_4_turns_the_mod_off_in_the_frame_piloting_starts`; it fails without the `move_mode_keys` line). Learned: pictures before about 1500 frames can be
 all black, even the panels, while the pipelines build, whatever the mods do. `refs.sh`'s ground scenes waited 1200 frames, about
 8 s on this machine: half the runs caught Earth's ground half loaded, pale, a 55-level difference that looked like a bug and has
 nothing to do with mods (the baseline does it too; never at 3000 frames, 10 runs). They now wait 3000. For "unchanged with the mod

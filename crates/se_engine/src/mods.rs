@@ -145,13 +145,15 @@ impl Plugin for ModsPlugin {
             .init_resource::<ModControl>()
             .init_resource::<ModInput>()
             .add_systems(Startup, scan_at_start)
-            // After whatever can start piloting this frame, and before a script's first command: the
+            // After whatever can start piloting this frame (`ship_input` and the commands chained before it:
+            // Enter, F, the Ships window; `move_mode_keys`: key 4), and before a script's first command: the
             // mod goes off first.
             .add_systems(
                 Update,
                 (off_for_pilot_or_script.run_if(mod_on), apply_request.run_if(has_request))
                     .chain()
                     .after(crate::ship::ship_input)
+                    .after(crate::camera::move_mode_keys)
                     .after(crate::camera::input_controls)
                     .before(crate::scripting::run_script),
             )
@@ -340,7 +342,7 @@ fn draw_mods_window(
     let mut request = None;
     egui::Window::new(crate::skin::title(ctx, i18n.tr("Mods"))).open(&mut open).default_width(300.0).show(ctx, |ui| {
         if reg.mods.is_empty() {
-            ui.weak(i18n.tr("No mods found"));
+            ui.label(i18n.tr("No mods found")); // (weak text is nearly invisible under the skin)
         }
         egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
             for m in &reg.mods {
@@ -632,5 +634,43 @@ mod tests {
         assert_eq!(active(&app), None);
         ask(&mut app, on("a"));
         assert_eq!(active(&app), None);
+    }
+
+    /// The plugin's own order against the real key 4, whichever way round the systems were added: the mod
+    /// is off in the very frame piloting starts (flow F3), and asking for it that frame changes nothing.
+    #[test]
+    fn key_4_turns_the_mod_off_in_the_frame_piloting_starts() {
+        for camera_first in [true, false] {
+            for already_on in [true, false] {
+                let mut app = App::new();
+                app.init_resource::<ButtonInput<KeyCode>>()
+                    .init_resource::<crate::camera::FlyCamera>()
+                    .init_resource::<crate::messages::Messages>()
+                    .init_resource::<bevy_egui::EguiUserTextures>()
+                    .init_resource::<Flight>()
+                    .init_resource::<ScriptRunner>()
+                    .insert_resource(crate::i18n::I18n::new(&se_core::vfs::Vfs::new(), "eng"));
+                if camera_first {
+                    app.add_systems(Update, crate::camera::move_mode_keys).add_plugins(ModsPlugin);
+                } else {
+                    app.add_plugins(ModsPlugin).add_systems(Update, crate::camera::move_mode_keys);
+                }
+                app.update(); // Startup's scan of the real folders: the test's own list replaces it.
+                app.world_mut().resource_mut::<ModRegistry>().mods =
+                    vec![ModInfo { id: "a".into(), name: "a".into(), description: String::new(), code: "viltrumite".into(), fault: None }];
+                if already_on {
+                    ask(&mut app, on("a"));
+                    assert_eq!(active(&app).as_deref(), Some("a"));
+                } else {
+                    app.world_mut().resource_mut::<ModControl>().request = Some(on("a"));
+                }
+                let ship = app.world_mut().spawn_empty().id();
+                app.world_mut().resource_mut::<Flight>().ship = Some(ship);
+                app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Digit4);
+                app.update();
+                assert!(app.world().resource::<Flight>().active, "key 4 pilots the parked ship");
+                assert_eq!(active(&app), None, "camera_first {camera_first}, already_on {already_on}");
+            }
+        }
     }
 }
