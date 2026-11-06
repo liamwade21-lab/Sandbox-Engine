@@ -2081,7 +2081,7 @@ fn ground_radius_local(b: &BodyInfo, local: DVec3) -> (f64, Option<u8>) {
     ground_on(b.radius, b.shape, b.terrain, local)
 }
 
-fn ground_on(radius: f64, shape: DVec3, terrain: Option<&Terrain>, local: DVec3) -> (f64, Option<u8>) {
+pub(crate) fn ground_on(radius: f64, shape: DVec3, terrain: Option<&Terrain>, local: DVec3) -> (f64, Option<u8>) {
     let Some(dir) = (local / shape).try_normalize() else { return (radius, None) };
     let k = (dir * shape).length();
     let s = terrain.and_then(|t| t.surface_sample(dir));

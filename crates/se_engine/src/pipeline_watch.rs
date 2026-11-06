@@ -62,6 +62,8 @@ struct Shared {
     slots: [AtomicU8; SLOTS],
     /// The other pipelines still building.
     others: AtomicU32,
+    /// The hero's pipelines: built, building, failed.
+    hero: [AtomicU32; 3],
     /// Bumped whenever a slot changes.
     revision: AtomicU32,
     /// Pipelines in the cache (perf.rs logs it: the cache only grows).
@@ -105,6 +107,13 @@ impl GroundPipelines {
 
     pub fn revision(&self) -> u32 {
         self.0.revision.load(Ordering::Relaxed)
+    }
+
+    /// The Viltrumite mod's hero's pipelines: built, still building, failed (a shader not loaded yet counts as
+    /// failed until it is).
+    pub fn hero(&self) -> (u32, u32, u32) {
+        let [built, building, failed] = self.0.hero.each_ref().map(|a| a.load(Ordering::Relaxed));
+        (built, building, failed)
     }
 
     /// Pipelines other than the ground's still building.
@@ -153,6 +162,16 @@ fn ground_slot(d: &PipelineDescriptor) -> Option<usize> {
         GroundKind::Ground
     };
     Some(slot(VertexNoise::from_defs(has), kind))
+}
+
+/// A pipeline of the Viltrumite mod's hero.
+fn hero_pipeline(d: &PipelineDescriptor) -> bool {
+    let path = match d {
+        PipelineDescriptor::RenderPipelineDescriptor(r) => r.vertex.shader.path(),
+        PipelineDescriptor::ComputePipelineDescriptor(c) => c.shader.path(),
+        _ => None,
+    };
+    path.is_some_and(|p| p.path().ends_with("hero.wesl") || p.path().ends_with("hero_light.wesl"))
 }
 
 #[derive(Default)]
@@ -244,6 +263,7 @@ fn watch_pipelines(
     let mut slots = [UNKNOWN; SLOTS];
     let mut others = 0;
     let mut n = 0;
+    let mut hero = [0u32; 3];
     for (id, p) in cache.pipelines().enumerate() {
         n = id + 1;
         let state = match p.state {
@@ -251,6 +271,13 @@ fn watch_pipelines(
             CachedPipelineState::Ok(_) => READY,
             CachedPipelineState::Err(_) => FAILED,
         };
+        if hero_pipeline(&p.descriptor) {
+            hero[match state {
+                READY => 0,
+                BUILDING => 1,
+                _ => 2,
+            }] += 1;
+        }
         match ground_slot(&p.descriptor) {
             Some(s) => slots[s] = merge(slots[s], state),
             None if state == BUILDING => others += 1,
@@ -284,6 +311,9 @@ fn watch_pipelines(
         pipes.0.revision.fetch_add(1, Ordering::Relaxed);
     }
     pipes.0.others.store(others, Ordering::Relaxed);
+    for (a, h) in pipes.0.hero.iter().zip(hero) {
+        a.store(h, Ordering::Relaxed);
+    }
     pipes.0.count.store(n as u32, Ordering::Relaxed);
 }
 

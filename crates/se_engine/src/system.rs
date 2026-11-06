@@ -1338,7 +1338,7 @@ struct Light {
 /// `F` there, adds `F (R/d)^2 albedo Lambert(a) clamp(pi - asin(R/d) - a, 0, 1)` times the opposition
 /// surge, `a` the phase angle at `p`; the total is scaled by the luminance of `p`'s colour (its
 /// PlanetShineMode 1 colour) and the light's colour is `p`'s times the stars', brightest channel 1.
-fn planet_shine(pos: UPos, radius_m: f64, albedo: f64, color: Vec3, hapke: Option<(f32, f32, f32)>, stars: &[(f64, UPos, Vec3)], target: UPos) -> Option<(f64, Vec3)> {
+pub(crate) fn planet_shine(pos: UPos, radius_m: f64, albedo: f64, color: Vec3, hapke: Option<(f32, f32, f32)>, stars: &[(f64, UPos, Vec3)], target: UPos) -> Option<(f64, Vec3)> {
     use std::f64::consts::PI;
     let to_target = target.delta_m(pos);
     let d = to_target.length();

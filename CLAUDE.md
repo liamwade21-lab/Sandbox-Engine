@@ -87,6 +87,13 @@ or publishing the port.
   goes on as `fall_loop`; walks, runs and sprints are never mirrored (`close_loop`'s `mirror`: the feet would slide backwards). Normalise quaternions before comparing them: their length errors read as a degree of turn.
   First enable looks inside every `Need` by its extension (`mods::check_files`: `parse_dds`, `check_sehm`, `check_sound`), so a new kind of file gets its check there; a refusal greys the row
   (`ModRegistry::mark`: `Missing` if the file has gone, `Bad` if it's wrong).
+- Drawing the hero (`viltrumite/draw.rs`, `anim.rs`, `hero.wesl`, `hero_light.wesl`, `hero_frame.wesl`; spec F13): his light is `ground_light.wesl` `point_light_at`, the same
+  function the scatter's objects use (change the ground's lighting there and all follow), run once a frame by a compute pass; his draws read the result. Near a body with drawn ground, under
+  its atmosphere's top, `HeroFrame` copies the body's light record and atmosphere (as scatter/gpu.rs); otherwise `free_light` fills the same record on the CPU, further lights in `free_*` taken with
+  his normals. `planet_intensities` can return fewer values than lights (it ends at the first too faint): never index it blindly. Palette: one `ShaderBuffer` written in place, never a material; meshes at identity,
+  camera-relative, `update_hero` after `update_node_transforms` and before `CameraUpdateSystems` (the near plane too). His pipelines queue on first enable under a palette of zeros (`HERO_PIPELINES`: add any new pipeline of
+  his there, and its shader file to `pipeline_watch::hero_pipeline`). Skinned normals: green of the normal maps points down the image, as +v: `b = cross(t, n) * w` (it was found by the curl of the maps, not by eye). A cape joint's rotation must include the chest's
+  (`hang_cape`), or the normals stay on the cloth's far side and it looks pale. The main world has no vertices after first enable (`HeroAssets.model.vertices` is emptied once the meshes are made). `hero here|stand|face|clip|light|state` place him for pictures (a test's `mods on` needs a `wait` before them). His white suit reads 15-25 times brighter than Earth's forests: that is albedo (conifers are about 4 %, and the trees take the map's dark colour), not a light bug. Pixel comparisons that are bit-exact: `.optimize/bench/pixel_scenes.sh`, `freeze_clocks.py`, `pixel_cmp.py`.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its

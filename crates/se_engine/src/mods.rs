@@ -119,8 +119,11 @@ pub struct ModControl {
     pub aftermath: bool,
     /// Turned on by a dev command: a test run with no real keyboard or mouse.
     pub dev: bool,
-    /// Turned on and still loading its assets and pipelines: the row reads "Loading" (step 3).
+    /// Turned on and still loading its assets and pipelines: the row reads "Loading". `viltrumite::draw`
+    /// clears it when he can show.
     pub loading: bool,
+    /// The mod that is on is Viltrumite powers (`Code "viltrumite"`): what the hero's systems run on.
+    pub hero: bool,
     request: Option<ModRequest>,
 }
 
@@ -133,13 +136,13 @@ impl ModControl {
         self.menus = false;
         self.dev = false;
         self.loading = false;
+        self.hero = false;
     }
 }
 
 /// The Viltrumite mod's parsed model and clips, from its first enable on (spec, F1: loaded once, kept
 /// until quit). Parsing is the check on them: a file the parsers refuse greys the row.
 #[derive(Resource)]
-#[allow(dead_code)] // drawn from step 3
 pub struct HeroAssets {
     pub model: HeroModel,
     pub clips: ClipSet,
@@ -452,10 +455,13 @@ fn apply_request(
                 }
             }
             let name = reg.name_of(&id).to_string();
+            let is_hero = m.code == "viltrumite";
             control.off(&reg, "another mod turned on");
             info!("mods: {name} on");
             control.active = Some(id);
             control.dev = dev;
+            control.hero = is_hero;
+            control.loading = is_hero;
         }
         None => {}
     }
@@ -937,6 +943,9 @@ mod tests {
         let mut app = control_app(&[("a", None), ("b", None), ("grey", Some(GreyReason::Missing("x".into())))]);
         ask(&mut app, on("a"));
         assert_eq!(active(&app).as_deref(), Some("a"));
+        // Viltrumite's code: the hero's systems run, and the row reads Loading until he can show.
+        let control = app.world().resource::<ModControl>();
+        assert!(control.hero && control.loading);
         // One at a time; a grey or unknown mod changes nothing; off is always allowed.
         ask(&mut app, on("b"));
         assert_eq!(active(&app).as_deref(), Some("b"));
@@ -945,6 +954,8 @@ mod tests {
         assert_eq!(active(&app).as_deref(), Some("b"));
         ask(&mut app, ModRequest::Off);
         assert_eq!(active(&app), None);
+        let control = app.world().resource::<ModControl>();
+        assert!(!control.hero && !control.loading);
         ask(&mut app, ModRequest::Off);
         assert_eq!(active(&app), None);
     }

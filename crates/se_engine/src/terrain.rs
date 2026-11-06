@@ -3603,7 +3603,7 @@ fn keep_camera_above_ground(
 }
 
 /// Keep node world positions/orientations attached to their moving, rotating body.
-fn update_node_transforms(
+pub(crate) fn update_node_transforms(
     time: Res<crate::universe::SimTime>,
     bodies: Query<(&SystemBody, Option<&Terrain>)>,
     mut nodes: Query<(&BodyAttached, Option<&CloudNode>, &Visibility, &mut UPosition, &mut UOrientation, &mut ScaleAnchor)>,

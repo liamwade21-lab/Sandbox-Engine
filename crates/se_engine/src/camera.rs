@@ -1724,6 +1724,8 @@ fn run_commands(
         }
         // mods list | on NAME | off | window [off] | sound NAME: the Mods menu (mods.rs).
         "mods" => commands.queue(move |w: &mut World| crate::mods::dev_command(w, &arg)),
+        // hero here [M] | stand [M] | face DEG | clip NAME | light auto|free | state: the Viltrumite mod's hero.
+        "hero" => commands.queue(move |w: &mut World| crate::viltrumite::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
         "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),
         // script PATH: start a script, as the Scripts window does.

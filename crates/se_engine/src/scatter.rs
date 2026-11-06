@@ -371,6 +371,13 @@ pub struct PlaceJob {
     pub edge: f32,
 }
 
+impl Scatter {
+    /// Earth's lights map's brightness at body-frame direction `dir` (0..1), inside the plants' patch round the camera.
+    pub(crate) fn earth_lights_at(&self, dir: DVec3) -> Option<f32> {
+        self.earth.lights_at(dir)
+    }
+}
+
 /// The body the objects stand on, per frame.
 #[derive(Clone, Default, Debug)]
 pub struct BodyFrame {
@@ -1062,10 +1069,10 @@ fn flora_want(body: &SystemBody, terrain: &Terrain, data: Option<&crate::data::S
 }
 
 /// Body frame to render frame as an f32 matrix: rotation `q` after a per-axis scale `s`.
-struct DMat3Ext;
+pub(crate) struct DMat3Ext;
 
 impl DMat3Ext {
-    fn from_quat_scale(q: DQuat, s: DVec3) -> Mat3 {
+    pub(crate) fn from_quat_scale(q: DQuat, s: DVec3) -> Mat3 {
         let r = bevy::math::DMat3::from_quat(q);
         Mat3::from_cols((r.x_axis * s.x).as_vec3(), (r.y_axis * s.y).as_vec3(), (r.z_axis * s.z).as_vec3())
     }
