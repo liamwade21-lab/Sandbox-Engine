@@ -10,7 +10,7 @@ use se_core::hero_asset::ClipSet;
 use se_core::units::G;
 use se_core::upos::UPos;
 
-use crate::camera::{FlyCamera, TravelKind};
+use crate::camera::{FlyCamera, Follow, TravelKind};
 use crate::data::SeData;
 use crate::mods::{HeroAssets, ModInput};
 use crate::ship::air::AirCache;
@@ -479,8 +479,10 @@ fn smooth_velocity(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
 /// is known without loading, and a giant has its own floor, the camera's, only where its decks are drawn (F, Edge cases).
 fn ground_at(b: &BodyInfo, local: DVec3, decks: Option<ObjectRef>) -> Ground {
     let Some(t) = b.terrain else {
+        // (Never inside the plain sphere `keep_camera_above_ground` keeps the camera out of: pushed out, the camera would
+        // pull him to it, as if something else had moved it.)
         let k = (local / b.shape).try_normalize().map_or(1.0, |d| (d * b.shape).length());
-        return Ground { radial: b.radius * (1.0 + tune::SPHERE_STOP_SHARE) * k, level: Some(0) };
+        return Ground { radial: b.radius * (1.0 + tune::SPHERE_STOP_SHARE) * k.max(1.0), level: Some(0) };
     };
     if t.proc.kind.is_giant() && decks == Some(b.obj) {
         if let Some(floor) = giant_floor_m(t) {
@@ -492,6 +494,18 @@ fn ground_at(b: &BodyInfo, local: DVec3, decks: Option<ObjectRef>) -> Ground {
     Ground { radial, level }
 }
 
+/// The height the air (F9) and the readout count from: over the ground, but a giant's over its radius (`over_radius`,
+/// its 1 atm is there), whatever floor the camera has under it: that floor is 10 of its decks' scale heights down, and
+/// only when the clouds are on.
+fn air_height(giant: bool, over_radius: f64, local: DVec3, ground: Ground) -> f64 {
+    if giant { over_radius } else { local.length() - ground.radial }
+}
+
+/// The height the air counts from, at a point of the body's frame.
+fn air_height_on(b: &BodyInfo, local: DVec3, ground: Ground) -> f64 {
+    air_height(b.terrain.is_some_and(|t| t.proc.kind.is_giant()), height_over(b, local), local, ground)
+}
+
 /// F2: at the camera's spot, ahead of it, in Hover. The camera doesn't move: he appears where it looks.
 fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.placed = true;
@@ -499,6 +513,7 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.ramp_t = 0.0;
     hero.was_boost = false;
     hero.dist = tune::SPAWN_AHEAD_M;
+    hero.zoom = 0.0;
     let aim = cam.rot;
     hero.frame = Frame::at(cam.pos.offset_m(-camera::offset(aim, hero.dist)));
     hero.rot = aim;
@@ -513,7 +528,7 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
 
 /// He's where the camera says, from a Go To or a jump.
 fn follow_camera(hero: &mut Hero, cam: &FlyCamera) {
-    let dist = camera::distance(hero.dist, 0.0);
+    let dist = hero.dist + hero.zoom;
     hero.frame = Frame::at(cam.pos.offset_m(-camera::offset(cam.rot, dist)));
     hero.state = State::Hover;
     hero.spawned = true;
@@ -556,14 +571,29 @@ pub(crate) fn hero_move(
     cam.hold_agl = None;
     cam.velocity = DVec3::ZERO;
 
-    let moving_keys = input.forward != 0.0 || input.right != 0.0 || input.up != 0.0 || input.shift;
-    // A Go To or a landing carries him; WASD cancels it.
+    // A Go To or a landing carries him; WASD cancels it (F8). Shift, Ctrl and Space don't: Shift+G and Ctrl+G are held
+    // down to start one, so it would cancel itself in its first frame.
+    let moving_keys = input.forward != 0.0 || input.right != 0.0;
     if moving_keys && cam.travel.as_ref().is_some_and(|t| matches!(t.kind, TravelKind::Goto | TravelKind::Land)) {
         cam.travel = None;
     }
+    // A Go To into a body's centre (Ctrl+G) ends at its ground: he can't go in, and the spot ahead of a camera near the
+    // centre swings right round the body.
+    let mut at_ground = false;
+    let into_body = cam.travel.as_ref().filter(|t| t.kind == TravelKind::Goto && t.end_distance > 0.0).and_then(|t| Some((t.end_distance, bodies.iter().find(|b| b.obj == t.target && b.radius > 0.0)?)));
+    if let Some((end, b)) = into_body {
+        let local = to_local(b, cam.pos);
+        let g = ground(b, local);
+        // (Only a flight that ends under the ground: a plain G from the ground starts with the camera on its floor.)
+        if g.level.is_some() && end < g.radial && local.length() < g.radial + tune::CAM_FLOOR_M {
+            cam.pos = b.pos.offset_m(b.orient * (local.normalize_or(DVec3::Y) * (g.radial + tune::CAM_FLOOR_M)));
+            cam.travel = None;
+            at_ground = true;
+        }
+    }
     let travelling = cam.travel.as_ref().is_some_and(|t| matches!(t.kind, TravelKind::Goto | TravelKind::Land));
     // A jump of the camera by something else (Places, a dev command): he goes with it. The last frame of a Go To too.
-    if travelling || hero.carried || cam.pos.delta_m(hero.cam_written).length() > tune::TELEPORT_M {
+    if travelling || at_ground || hero.carried || cam.pos.delta_m(hero.cam_written).length() > tune::TELEPORT_M {
         follow_camera(hero, &cam);
     }
     hero.carried = travelling;
@@ -575,7 +605,7 @@ pub(crate) fn hero_move(
     };
     let air_model = near_of(pos0).filter(|(b, _)| !matches!(b.obj, ObjectRef::Star(_))).and_then(|(b, _)| Some((b.obj, AirModel::of(&mut air_cache, &data, &eph, sim.jd, b.obj, b.radius, b.terrain)?)));
     let drag = |b: &BodyInfo, local: DVec3| match &air_model {
-        Some((obj, a)) if *obj == b.obj => a.drag(local.length() - ground(b, local).radial),
+        Some((obj, a)) if *obj == b.obj => a.drag(air_height_on(b, local, ground(b, local))),
         _ => 0.0,
     };
     let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: tune::STAND_M };
@@ -585,12 +615,13 @@ pub(crate) fn hero_move(
         // Z stops him, whatever he's doing (Go To's stop is input_controls').
         hero.state = State::Hover;
         hero.frame.set_velocity(&scene, DVec3::ZERO);
-    } else if input.x_pressed && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
+    } else if input.x_pressed && !travelling && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
         hero.frame.to_ballistic(&scene);
         hero.state = State::Falling;
     } else if input.space_pressed && hero.state == State::Falling {
-        hero.frame.to_carried(&scene);
-        hero.state = State::Flight;
+        // F4: he holds still where he is, at once. (Space still held, he flies up from there.)
+        hero.frame.set_velocity(&scene, DVec3::ZERO);
+        hero.state = State::Hover;
     }
 
     // A test's orbit: at K x the circular speed round the nearest body, the way he looks.
@@ -656,7 +687,8 @@ pub(crate) fn hero_move(
     let (fwd, right, aim_up) = (aim * DVec3::NEG_Z, aim * DVec3::X, aim * DVec3::Y);
     let lift = up_here.unwrap_or(aim_up);
     let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * input.up as f64).normalize_or_zero();
-    let flight_in = FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 };
+    // (A Go To carries him: Shift and Ctrl held from Shift+G and Ctrl+G, or Space, fly nothing meanwhile.)
+    let flight_in = if travelling { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
     hero.was_boost = input.shift;
     let take_off = hero.state == State::Hover && flight_in.any();
     if take_off {
@@ -664,8 +696,11 @@ pub(crate) fn hero_move(
         hero.ramp_t = 0.0;
     }
     if hero.state == State::Flight {
-        let height = near.map_or(f64::INFINITY, |(b, local)| local.length() - ground(b, local).radial);
-        let cap = cap_at(air_model.as_ref().map(|(_, a)| (a, height)), cam.nearest_surface);
+        let height = near.map_or(f64::INFINITY, |(b, local)| air_height_on(b, local, ground(b, local)));
+        // The nearest surface from where he is against this frame's bodies. (`cam.nearest_surface` compares last frame's
+        // camera with them: at x1000 hundreds of km out, whichever side of a moon he's on.)
+        let surface = near.map_or(f64::INFINITY, |(b, local)| height_over(b, local).max(0.0)).min(cam.nearest_galaxy);
+        let cap = cap_at(air_model.as_ref().map(|(_, a)| (a, height)), surface);
         let v = hero.frame.velocity(&scene);
         let nv = flight_step(v, &mut hero.ramp_t, &flight_in, fwd, cap, dt);
         if !flight_in.any() && nv.length() < tune::HOVER_UNDER_MS {
@@ -686,7 +721,7 @@ pub(crate) fn hero_move(
     // Where that left him.
     let pos = hero.frame.world(&scene, hero.world.0);
     let near = near_of(pos).map(|(b, _)| (b, to_local(b, pos)));
-    let height = near.map(|(b, local)| local.length() - ground(b, local).radial);
+    let height = near.map(|(b, local)| air_height_on(b, local, ground(b, local)));
     let v = match hero.state {
         State::Falling => hero.frame.over_ground(&scene),
         _ => hero.frame.velocity(&scene),
@@ -739,11 +774,14 @@ pub(crate) fn hero_move(
     hero_ref.director.update(&cue, &mut hero_ref.sampler, &assets.clips, dt as f32);
 
     // The camera: exact, from his UPos. A floor over the ground of whatever it's in.
-    let back = camera::offset(cam.rot, camera::distance(hero.dist, speed));
+    hero.zoom = camera::ease_zoom(hero.zoom, speed, dt);
+    let back = camera::offset(cam.rot, hero.dist + hero.zoom);
     let mut cam_pos = pos.offset_m(back);
     for b in &bodies {
         let rel = cam_pos.delta_m(b.pos);
-        if rel.length() > b.radius * b.shape.max_element().max(1.0) * 1.2 {
+        // (As far out as `keep_camera_above_ground` looks, whose push he'd take for something else moving the camera.)
+        let top = b.terrain.map_or(b.radius, |t| t.top_radius().max(b.radius));
+        if rel.length() > top * b.shape.max_element().max(1.0) * 1.2 {
             continue;
         }
         let local = b.orient.inverse() * rel;
@@ -754,6 +792,10 @@ pub(crate) fn hero_move(
     cam.pos = cam_pos;
     hero.cam_written = cam_pos;
     hero.world = (pos, hero.rot);
+    hero.carrier = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map(|b| {
+        let locked = hero.frame.turn_share(&scene) >= 0.5;
+        Follow { target: b.obj, last_pos: b.pos, last_rot: if locked { b.orient } else { DQuat::IDENTITY }, locked, sync: locked }
+    });
 
     // The readout.
     let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
@@ -771,8 +813,10 @@ pub(crate) fn hero_move(
         let body = trace.body.and_then(|o| bodies.iter().find(|b| b.obj == o)).or(near.map(|n| n.0));
         let local = body.map_or(DVec3::ZERO, |b| to_local(b, pos));
         let seen = cam.rot.inverse() * pos.delta_m(cam.pos);
+        // How far the view is rolled off his horizon.
+        let roll = up_body.dot(cam.rot * DVec3::X).clamp(-1.0, 1.0).asin().to_degrees();
         trace.write(&format!(
-            "{:.7},{:.9},{},{},{:?},{:?},{:.5},{:.5},{:.5},{:.4},{:.4},{:.4},{:.4},{:.4},{:.5},{:.5},{:.5}\n",
+            "{:.7},{:.9},{},{},{:?},{:?},{:.5},{:.5},{:.5},{:.4},{:.4},{:.4},{:.4},{:.4},{:.5},{:.5},{:.5},{:.4}\n",
             hero.clock,
             sim.jd,
             sim.rate,
@@ -790,6 +834,7 @@ pub(crate) fn hero_move(
             seen.x,
             seen.y,
             seen.z,
+            roll,
         ));
     }
 }
@@ -968,6 +1013,36 @@ mod tests {
         // Close by it's the floor.
         assert_eq!(cap_at(None, 100.0), tune::CAP_AIR_MS);
         assert_eq!(cap_at(None, f64::INFINITY), tune::GUARD_MS);
+    }
+
+    /// A star's stop is never inside the plain sphere the camera is kept out of, at a flattened body's pole too.
+    #[test]
+    fn a_flattened_spheres_stop_is_outside_the_cameras_sphere() {
+        let r = 7.0e8;
+        let b = BodyInfo { obj: ObjectRef::Body(0), pos: UPos::ZERO, orient: DQuat::IDENTITY, radius: r, shape: DVec3::new(1.0, 0.9, 1.0), gm: 0.0, terrain: None };
+        for dir in [DVec3::Y, DVec3::X, DVec3::new(1.0, 1.0, 0.0).normalize()] {
+            let g = ground_at(&b, dir * r, None);
+            assert!(g.radial >= r * (1.0 + tune::SPHERE_STOP_SHARE) * 0.999_999_99, "{dir}: {}", g.radial - r);
+        }
+    }
+
+    /// A giant's air stands on its radius whatever floor the camera has under it: F9's 1 atm at the radius, and the same
+    /// with the clouds off. Elsewhere it's the ground.
+    #[test]
+    fn a_giants_air_counts_from_its_radius() {
+        let r = 7.0e7;
+        let local = DVec3::X * r;
+        // The decks' floor, 200 km down, and the radius itself: the same air.
+        for radial in [r - 200e3 + 50.0, r] {
+            assert_eq!(air_height(true, 0.0, local, Ground { radial, level: Some(0) }), 0.0);
+        }
+        let air = AirModel::from_params(se_core::ship::aero::AtmoParams { p0_atm: 1.0, t0_k: 165.0, molar_mass: 2.3, gravity: 24.8, adiabat: 0.25, height_m: 0.0 });
+        let at = air.at(air_height(true, 0.0, local, Ground { radial: r - 200e3, level: Some(0) }));
+        assert!((at.pressure_pa - 101_325.0).abs() < 1.0, "{at:?}");
+        let terminal = (24.8 / air.drag(0.0)).sqrt();
+        assert!((150.0..240.0).contains(&terminal), "{terminal}");
+        // Land: over the ground, whatever the radius says.
+        assert_eq!(air_height(false, 5000.0, local, Ground { radial: r - 1000.0, level: Some(3) }), 1000.0);
     }
 
     #[test]

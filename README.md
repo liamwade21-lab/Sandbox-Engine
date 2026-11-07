@@ -184,11 +184,12 @@ While he is on the panels are hidden and a small readout (speed, Mach in air, he
 | Shift | Boost: 300 m/s after 1 s, 3 km/s after 3 s, 30 km/s after 6 s. In air that's the limit (below 25 scale heights); in space it doubles every second, the speed of light about 13 s later, 1000 c about 23 s later, easing near anything (at most 3 times the distance to the nearest surface per second) |
 | Space, Ctrl | Fly up, down |
 | X | Stop flying: real gravity and drag, 45 m/s at the bottom of Earth's air, an orbit if he's fast enough |
-| Space while falling | Fly again |
+| Space while falling | Stops the fall at once: he hovers where he is |
 | Z | Stop dead, in the air |
 | Wheel | Camera nearer or further (2.5 to 200 m) |
 | Tab | The menus: the panels come back and the mouse goes to them, the keys stay his. Tab again to go back. The same happens by itself when the window loses the focus |
-| G, Shift+G, Ctrl+G | Go to the selection, as usual: it carries him; WASD or Z stop it |
+| G, Shift+G, Ctrl+G | Go to the selection, land on it, go to its centre, as usual: it carries him (into a solid body's centre, as far as its ground); WASD or Z stop it |
+| T | Nothing: the camera follows him, so it can't track |
 
 He plays on the real clock: the same at x1000 and when paused, and while hovering he holds his place over the ground whatever the clock does. Until walking arrives the ground simply stops him just above it. Starting to pilot a ship or a script turns the mod off first. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 

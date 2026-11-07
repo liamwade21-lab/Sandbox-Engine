@@ -44,6 +44,8 @@ pub struct Sampler {
     /// The crossfade: seconds gone and how long it lasts (0: none).
     fade_t: f32,
     fade_s: f32,
+    /// `rot` and `pos` hold a pose: a crossfade before that would ease from every bone at the origin.
+    sampled: bool,
     /// Bones in model space (metres, Z up, +Y forward, +X his right hand).
     world: [Affine3A; MAX_BONES],
     /// `world * inverse_bind`: what skins a vertex, in model space.
@@ -60,6 +62,7 @@ impl Default for Sampler {
             from_pos: [Vec3::ZERO; MAX_BONES],
             fade_t: 0.0,
             fade_s: 0.0,
+            sampled: false,
             world: [Affine3A::IDENTITY; MAX_BONES],
             skin: [Affine3A::IDENTITY; MAX_BONES],
         }
@@ -87,6 +90,9 @@ impl Sampler {
 
     /// From now on, over `seconds`, the pose eases from what it is this moment to what the layers say.
     pub fn crossfade(&mut self, seconds: f32) {
+        if !self.sampled {
+            return;
+        }
         self.from_rot = self.rot;
         self.from_pos = self.pos;
         self.fade_t = 0.0;
@@ -116,6 +122,7 @@ impl Sampler {
 
     /// Works the pose out from the layers, then the cape's joints and the skinning matrices.
     pub fn sample(&mut self, model: &HeroModel, clips: &ClipSet) {
+        self.sampled = true;
         let n = model.bones.len().min(MAX_BONES);
         for (i, b) in model.bones.iter().take(n).enumerate() {
             self.rot[i] = b.rotation;
@@ -328,6 +335,20 @@ mod tests {
         s.layers[1] = Layer::default();
         s.sample(&m, &c);
         assert!((above - s.world(2).translation).length() < 1e-5);
+    }
+
+    /// Before the first sample there's no pose to ease from: he'd unfold from every bone at the origin.
+    #[test]
+    fn a_crossfade_before_the_first_sample_is_no_crossfade() {
+        let (m, c) = (model(), clips());
+        let (mut s, mut plain) = (Sampler::default(), Sampler::default());
+        s.crossfade(0.35);
+        for x in [&mut s, &mut plain] {
+            x.layers[0] = Layer { clip: Some(1), time: 0.0, weight: 1.0, mask: u128::MAX };
+            x.sample(&m, &c);
+        }
+        assert_eq!(s.world(2).translation, plain.world(2).translation);
+        assert!(Vec3::from(s.world(2).translation).length() > 0.5);
     }
 
     #[test]

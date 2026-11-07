@@ -137,9 +137,9 @@ impl ModControl {
         self.menus || self.unfocused
     }
 
-    /// He's on and playing: the panels are hidden.
+    /// He's on and playing: the panels are hidden. (While he's loading they stay, and the row says so: F1.)
     pub fn panels_hidden(&self) -> bool {
-        self.hero && !self.menus_open()
+        self.hero && !self.loading && !self.menus_open()
     }
 
     /// Turn the mod that is on off. Every way off comes through here.
@@ -378,15 +378,16 @@ pub(crate) fn snapshot_input(
     let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     if keys.just_pressed(KeyCode::Tab) && !alt {
         control.menus = !control.menus;
-        // Out of the menus no text field keeps the keys, or they'd stay dead with the cursor locked.
-        if !control.menus {
-            if let Ok(ctx) = egui.ctx_mut() {
-                ctx.memory_mut(|m| {
-                    if let Some(id) = m.focused() {
-                        m.surrender_focus(id);
-                    }
-                });
-            }
+    }
+    // While he plays no text field keeps the keys, or they'd stay dead with the cursor locked: leaving the menus, turned on
+    // with Find open, the end of his loading (the panels are up till then). hud.rs's Find asks for the focus only with them up.
+    if control.panels_hidden() {
+        if let Ok(ctx) = egui.ctx_mut() {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
         }
     }
     let menus = control.menus_open();
@@ -435,10 +436,14 @@ pub(crate) fn snapshot_input(
     state.regain = state.regain.saturating_sub(1);
 }
 
-/// Nothing else sees his keys' presses, or the mouse buttons' unless the menus have them. (Held stays held.)
+/// Nothing else sees his keys' presses, or the mouse buttons' unless the menus have them. (Held stays held.) Alt+X isn't
+/// his: it stays the constellation names' switch. Shift+X and Ctrl+X are: he's holding those to boost and to fly down.
 fn take_presses(keys: &mut ButtonInput<KeyCode>, buttons: &mut ButtonInput<MouseButton>, menus: bool) {
+    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
     for k in HIS_KEYS {
-        keys.clear_just_pressed(k);
+        if !(alt && k == KeyCode::KeyX) {
+            keys.clear_just_pressed(k);
+        }
     }
     if !menus {
         for b in [MouseButton::Left, MouseButton::Right] {
@@ -450,10 +455,12 @@ fn take_presses(keys: &mut ButtonInput<KeyCode>, buttons: &mut ButtonInput<Mouse
 
 /// Whether an input event reaches egui while he's on. Tab goes to him, never to egui: it would focus a widget,
 /// `egui_wants_keyboard_input` would turn true and every key's guard would go dead (hud.rs `hud_keys`). And with the cursor
-/// locked at its last place, a click there must not press what's under it.
+/// locked at its last place, a click there must not press what's under it. A button's release always goes: held through
+/// Tab, egui would otherwise keep it down, and a window dragged then would stick to the cursor on the next Tab.
 fn reaches_egui(e: &egui::Event, menus: bool) -> bool {
     match e {
         egui::Event::Key { key: egui::Key::Tab, .. } => false,
+        egui::Event::PointerButton { pressed: false, .. } => true,
         egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. } | egui::Event::PointerGone => menus,
         _ => true,
     }
@@ -915,6 +922,15 @@ mod tests {
         }
         assert!(b.pressed(MouseButton::Left) && !b.just_pressed(MouseButton::Left));
         assert!(b.just_pressed(MouseButton::Middle));
+        // Alt+X stays the constellation names'; Shift+X and Ctrl+X are his.
+        let mut keys = pressed(&[KeyCode::KeyX, KeyCode::AltLeft]);
+        take_presses(&mut keys, &mut b, false);
+        assert!(keys.just_pressed(KeyCode::KeyX));
+        for m in [KeyCode::ShiftLeft, KeyCode::ControlLeft] {
+            let mut keys = pressed(&[KeyCode::KeyX, m]);
+            take_presses(&mut keys, &mut b, false);
+            assert!(!keys.just_pressed(KeyCode::KeyX), "{m:?}");
+        }
         // In the menus the buttons are egui's and the game's as usual; the keys stay his.
         let mut keys = pressed(&[KeyCode::Space]);
         let mut b = ButtonInput::<MouseButton>::default();
@@ -936,6 +952,8 @@ mod tests {
             assert!(reaches_egui(&w, menus) && reaches_egui(&text, menus), "a text field still types");
             assert_eq!(reaches_egui(&click, menus), menus);
             assert_eq!(reaches_egui(&moved, menus), menus);
+            let release = egui::Event::PointerButton { pos: egui::pos2(1.0, 1.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE };
+            assert!(reaches_egui(&release, menus), "a release always goes");
         }
     }
 

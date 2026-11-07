@@ -115,12 +115,17 @@ pub struct Hero {
     pub light_path: LightPath,
     /// The camera's distance behind him (m), the wheel's.
     pub dist: f64,
+    /// How much further back the speed has it, eased.
+    pub zoom: f64,
     /// Seconds on the Shift ramp.
     pub ramp_t: f64,
     pub was_boost: bool,
     pub readout: Readout,
     /// Where he last put the camera: anything else moved it if it's now far from there.
     pub cam_written: UPos,
+    /// What carries him, as a binding of the camera as he last wrote it: a Go To starting goes with it for its first
+    /// frame (`travel_and_move`), as the camera's own binding would have.
+    pub carrier: Option<Follow>,
     /// A Go To or a landing carried him last frame.
     pub carried: bool,
     /// Placed since the last frame by something else: lift him if that's under the ground (F2).
@@ -145,10 +150,12 @@ impl Default for Hero {
             director: Director::default(),
             light_path: LightPath::Auto,
             dist: tune::CAM_DIST_M,
+            zoom: 0.0,
             ramp_t: 0.0,
             was_boost: false,
             readout: Readout::default(),
             cam_written: UPos::ZERO,
+            carrier: None,
             carried: false,
             spawned: false,
             placed: false,
@@ -269,6 +276,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "right" => KeyCode::ArrowRight,
         "4" => KeyCode::Digit4,
         "tab" => KeyCode::Tab,
+        "f3" => KeyCode::F3,
         "alt" => KeyCode::AltLeft,
         "space" => KeyCode::Space,
         "shift" => KeyCode::ShiftLeft,
@@ -324,7 +332,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 match std::fs::File::create(file) {
                     Ok(f) => {
                         let mut w = std::io::BufWriter::new(f);
-                        let _ = writeln!(w, "clock,jd,rate,attached,state,pose,x,y,z,height,speed,vx,vy,vz,seen_x,seen_y,seen_z");
+                        let _ = writeln!(w, "clock,jd,rate,attached,state,pose,x,y,z,height,speed,vx,vy,vz,seen_x,seen_y,seen_z,roll");
                         Some(Trace { out: w, body })
                     }
                     Err(e) => {
@@ -407,11 +415,12 @@ fn log_state(
             let info = crate::ship::BodyInfo { obj: b.obj, pos: b.pos, orient: b.orient, radius: b.radius_m, shape: b.shape, gm: 0.0, terrain: t };
             let local = frames::to_local(&info, hero.world.0);
             format!(
-                "nearest {}: {:.3} m over its radius, in the sphere frame; attaches under {:.0} m, {:.0} m/s of ground under him",
+                "nearest {}: {:.3} m over its radius, in the sphere frame; attaches under {:.0} m, {:.0} m/s of ground under him; looking {:.1} degrees over its horizon",
                 data.catalog.display_name(b.obj),
                 frames::height_over(&info, local),
                 frames::attach_radius(&info) - b.radius_m,
                 crate::ship::spin_at(&Ephemeris::new(&data.catalog), b.obj, sim.jd).cross(b.orient * local).length(),
+                (cam.rot * DVec3::NEG_Z).dot(camera::vertical(&info, local)).clamp(-1.0, 1.0).asin().to_degrees(),
             )
         });
     let body = hero.frame.body().map_or("none".to_string(), |o| data.catalog.display_name(o).to_string());

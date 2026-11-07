@@ -54,6 +54,8 @@ pub struct FlyCamera {
     pub follow: Option<Follow>,
     /// Distance to the nearest surface (m), for auto speed and the HUD.
     pub nearest_surface: f64,
+    /// Distance to the edge of the nearest galaxy we are outside of (m), part of `nearest_surface`.
+    pub nearest_galaxy: f64,
     pub nearest_name: String,
     /// Depth under an ocean's surface (m), 0 above it.
     pub depth_m: f64,
@@ -201,6 +203,7 @@ impl Default for FlyCamera {
             travel: None,
             follow: None,
             nearest_surface: 1.0e12,
+            nearest_galaxy: f64::INFINITY,
             nearest_name: String::new(),
             depth_m: 0.0,
             hold_agl: None,
@@ -796,7 +799,8 @@ pub(crate) fn input_controls(
             start_horizon(&mut cam, t);
         }
     }
-    if keys.just_pressed(KeyCode::KeyT) && plain && !locks.rotation && (cam.track || cam.selected.is_some()) {
+    // (Not while he's on: the camera is his, and tracking is forced off every frame.)
+    if keys.just_pressed(KeyCode::KeyT) && plain && !hero && !locks.rotation && (cam.track || cam.selected.is_some()) {
         cam.track = !cam.track;
         msg.show(format!("{}: {}", i18n.tr("Track object"), i18n.tr(if cam.track { "enabled" } else { "disabled" })));
     }
@@ -1068,8 +1072,12 @@ fn update_nearest(
         }
     }
     // Galaxies we are outside of: distance to their disk extent.
+    let mut nearest_galaxy = f64::INFINITY;
     for g in &cat.galaxies {
         let d = (g.pos_pc.distance(cam_pc) - g.radius_pc) * se_core::units::METERS_PER_PC;
+        if d > 0.0 {
+            nearest_galaxy = nearest_galaxy.min(d);
+        }
         if d > 0.0 && d < best {
             best = d;
             best_center = d;
@@ -1078,6 +1086,7 @@ fn update_nearest(
         }
     }
     cam.nearest_surface = best.max(1.0);
+    cam.nearest_galaxy = nearest_galaxy;
     cam.nearest_name = best_name;
     // Keep the nearest body (and its neighbourhood) in linear space, and the volumetric clouds' body
     // (it may lie beyond a nearer moon).
@@ -1093,13 +1102,21 @@ pub fn travel_and_move(
     hold: Res<FlightHold>,
     bodies: Query<(&crate::system::SystemBody, Option<&crate::terrain::Terrain>)>,
     control: Res<crate::mods::ModControl>,
+    hero: Res<crate::viltrumite::Hero>,
 ) {
-    // A ship's camera, or the Viltrumite mod's, unless a Go To or the like is running: that carries him.
-    if hold.0 || (control.hero && cam.travel.is_none()) {
+    // A ship's camera, or the Viltrumite mod's, unless a Go To or the like is running: that carries him. (Until he's placed
+    // it goes on as it's bound, so he appears at its spot against this frame's bodies, not one frame of their motion off.)
+    let his = control.hero && hero.placed;
+    if hold.0 || (his && cam.travel.is_none()) {
         return;
     }
     let dt = time.delta_secs_f64();
     let eph = Ephemeris::new(&data.catalog);
+    // A Go To starting while he's on: what carries him has moved since he last wrote the camera. With it first, or the
+    // flight starts from one frame of its motion off.
+    if his && cam.travel.as_ref().is_some_and(|t| t.start_off.is_none() && matches!(t.kind, TravelKind::Goto | TravelKind::Land)) {
+        cam.follow = hero.carrier;
+    }
     // Carry the camera with the object it is bound to, also while a Go to or Center
     // flight runs: planets move at tens of km/s, which would otherwise sweep their
     // surface into a camera near them.
@@ -1854,6 +1871,7 @@ Planet "P" { ParentBody "Sun" Radius 6000 Mass 1 Orbit { SemiMajorAxis 1 Period 
         world.insert_resource(cam);
         world.insert_resource(FlightHold::default());
         world.insert_resource(crate::mods::ModControl::default());
+        world.insert_resource(crate::viltrumite::Hero::default());
         world.insert_resource(SeData { vfs: Arc::new(se_core::vfs::Vfs::new()), catalog: Arc::new(cat) });
         (world, planet)
     }

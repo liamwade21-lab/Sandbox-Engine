@@ -14,9 +14,14 @@ pub fn offset(aim: DQuat, dist: f64) -> DVec3 {
     aim * DVec3::new(0.0, tune::CAM_UP_M, dist)
 }
 
-/// How far back the camera sits: the player's distance, plus a little as he speeds up.
-pub fn distance(dist: f64, speed: f64) -> f64 {
-    dist + if speed > 30.0 { tune::CAM_SPEED_ZOOM * (speed / 30.0).log10() } else { 0.0 }
+/// How much further back the camera sits at this speed.
+pub fn speed_zoom(speed: f64) -> f64 {
+    if speed > 30.0 { tune::CAM_SPEED_ZOOM * (speed / 30.0).log10() } else { 0.0 }
+}
+
+/// The speed's part of the camera's distance one step on, eased: only the distance, his place stays exact.
+pub fn ease_zoom(zoom: f64, speed: f64, dt: f64) -> f64 {
+    zoom + (speed_zoom(speed) - zoom) * (1.0 - (-dt / tune::CAM_ZOOM_TAU_S).exp())
 }
 
 /// The body's local vertical at a point of its frame (the ellipsoid's normal), universe axes.
@@ -50,6 +55,9 @@ pub fn level_roll(aim: DQuat, up: DVec3, dt: f64) -> DQuat {
         return aim;
     }
     let q = look_rotation(f, up).inverse() * aim;
+    // (A quaternion and its negative are the same turn, and either can be `aim`'s or `look_rotation`'s: the short way
+    // round, or a level view reads as a roll of a whole turn and rolls it.)
+    let q = if q.w < 0.0 { -q } else { q };
     let roll = 2.0 * q.z.atan2(q.w);
     if roll.abs() < 1e-5 {
         return aim;
@@ -80,11 +88,25 @@ mod tests {
 
     #[test]
     fn the_speed_moves_it_back_a_little() {
-        assert_eq!(distance(6.0, 20.0), 6.0);
-        assert!((distance(6.0, 30.0) - 6.0).abs() < 1e-9);
+        assert_eq!(speed_zoom(20.0), 0.0);
+        assert!(speed_zoom(30.0).abs() < 1e-9);
         // At 1000 c: 8 m further.
-        let d = distance(6.0, 3e11);
-        assert!((d - 14.0).abs() < 0.1, "{d}");
+        let d = speed_zoom(3e11);
+        assert!((d - 8.0).abs() < 0.1, "{d}");
+    }
+
+    /// A sudden stop: the camera comes in over a moment, not in a frame.
+    #[test]
+    fn a_sudden_stop_does_not_jump_the_camera() {
+        let dt = 1.0 / 60.0;
+        let z0 = speed_zoom(30_000.0);
+        let z1 = ease_zoom(z0, 0.0, dt);
+        assert!(z0 - z1 < 0.2 && z1 < z0, "{z0} to {z1}");
+        let mut z = z0;
+        for _ in 0..180 {
+            z = ease_zoom(z, 0.0, dt);
+        }
+        assert!(z < 0.01, "{z}");
     }
 
     /// Below the horizon's height a sideways move never tilts the horizon, and pitch stops short of straight up.
@@ -118,6 +140,25 @@ mod tests {
         assert!((aim * DVec3::X).dot(up).abs() < 1e-3);
         // Heading unchanged.
         assert!((aim * DVec3::NEG_Z - DVec3::NEG_Z).length() < 1e-6);
+    }
+
+    /// A level view whose quaternion has the other sign is still level: no barrel roll. (`look_rotation` isn't continuous
+    /// in its sign, and a view carried round by the body's turn changes sign against it.)
+    #[test]
+    fn a_level_view_of_either_sign_stays_put() {
+        let up = DVec3::new(0.2, 0.9, 0.1).normalize();
+        let level = look_rotation(DVec3::X, up);
+        for aim in [level, -level] {
+            let got = level_roll(aim, up, 1.0 / 60.0);
+            assert!((got * DVec3::X - level * DVec3::X).length() < 1e-9, "{got}");
+            assert!((got * DVec3::Y - level * DVec3::Y).length() < 1e-9, "{got}");
+        }
+        // And a little roll of either sign goes out the short way.
+        for aim in [level * DQuat::from_rotation_z(0.2), -(level * DQuat::from_rotation_z(0.2))] {
+            let got = level_roll(aim, up, 1.0 / 60.0);
+            let left = (got * DVec3::X).angle_between(level * DVec3::X);
+            assert!(left < 0.2 && left > 0.19, "{left}");
+        }
     }
 
     #[test]

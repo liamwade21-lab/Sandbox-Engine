@@ -798,7 +798,8 @@ fn draw_hud(
         let mut close = false;
         egui::Window::new(crate::skin::title(ctx, &i18n.tr("Find object"))).open(&mut open).default_pos([120.0, 60.0]).default_width(260.0).show(ctx, |ui| {
             let resp = ui.text_edit_singleline(&mut hud.search);
-            if !resp.has_focus() && hud.search.is_empty() {
+            // (Not while he plays with the window waiting for Tab: it would take his keys back the moment the menus closed.)
+            if panels && !resp.has_focus() && hud.search.is_empty() {
                 resp.request_focus();
             }
             let results = cat.search(&hud.search, 12);

@@ -204,7 +204,9 @@ fn floor_at(s: &Scene, b: &BodyInfo, p: DVec3, held: f64) -> (f64, Option<u8>) {
 }
 
 /// The first point after `p0`, on the way to `p1`, under the floor, by sphere tracing. (He may start on it: flying
-/// along the ground he does, every frame.)
+/// along the ground he does, every frame.) The steps run out on a long path slanting past the body, each only a share of
+/// the height: then the path's lowest point says whether it goes in, and bisection finds where. Judged by its end alone
+/// he came out on the far side.
 fn trace_ground(s: &Scene, b: &BodyInfo, p0: DVec3, p1: DVec3) -> Option<DVec3> {
     let held = p0.length();
     let seg = p1 - p0;
@@ -215,7 +217,7 @@ fn trace_ground(s: &Scene, b: &BodyInfo, p0: DVec3, p1: DVec3) -> Option<DVec3> 
     for _ in 0..tune::TRACE_STEPS {
         t += (alt * tune::TRACE_SHARE).max(tune::TRACE_MIN_M);
         if t >= len {
-            break;
+            return (over(p1) <= 0.0).then_some(p1);
         }
         let p = p0 + seg * (t / len);
         alt = over(p);
@@ -223,7 +225,21 @@ fn trace_ground(s: &Scene, b: &BodyInfo, p0: DVec3, p1: DVec3) -> Option<DVec3> 
             return Some(p);
         }
     }
-    (over(p1) <= 0.0).then_some(p1)
+    let dir = seg / len;
+    let lowest = (-p0.dot(dir)).clamp(t, len);
+    if over(p0 + dir * lowest) > 0.0 {
+        return None;
+    }
+    let (mut above, mut under) = (t, lowest);
+    for _ in 0..tune::TRACE_BISECT {
+        let mid = 0.5 * (above + under);
+        if over(p0 + dir * mid) <= 0.0 {
+            under = mid;
+        } else {
+            above = mid;
+        }
+    }
+    Some(p0 + dir * under)
 }
 
 impl Frame {
@@ -408,6 +424,8 @@ impl Frame {
         let Frame::Attached { obj, local_pos, local_vel, level, .. } = self else { return Outcome::default() };
         let Some(b) = find(s, *obj) else { return Outcome::default() };
         let p0 = *local_pos;
+        // Where the step starts against the ground: `carry` turned a falling hero back by the ground's turn over the step.
+        let mut from = p0;
         let (p1, mut v1) = match motion {
             Motion::Held => (p0, DVec3::ZERO),
             Motion::Flown => (p0 + *local_vel * dt, *local_vel),
@@ -415,6 +433,7 @@ impl Frame {
                 // In the inertial frame, about the axes at the start of the step (`carry` turned him back for it):
                 // Coriolis and centrifugal exactly, at any spin.
                 let w = b.orient.inverse() * (s.spin)(b.obj);
+                from = DQuat::from_scaled_axis(w * dt) * p0;
                 let a_frame = gravity_at(s.bodies, b.pos);
                 let accel = |p: DVec3| b.orient.inverse() * (gravity_at(s.bodies, b.pos.offset_m(b.orient * p)) - a_frame);
                 let half = *local_vel + w.cross(p0) + accel(p0) * (dt * 0.5);
@@ -431,15 +450,24 @@ impl Frame {
         }
         let mut out = Outcome::default();
         let mut p = p1;
-        if let Some(hit) = trace_ground(s, b, p0, p1) {
-            let (floor, loaded) = floor_at(s, b, hit, p0.length());
+        if let Some(hit) = trace_ground(s, b, from, p1) {
+            let held = p0.length();
+            let (floor, loaded) = floor_at(s, b, hit, held);
             let up = hit.normalize_or(DVec3::Y);
             p = up * floor;
             let into = -v1.dot(up);
             match motion {
-                // Along the ground, what isn't into it.
-                Motion::Flown if into > 0.0 => v1 += up * into,
-                Motion::Flown | Motion::Held => {}
+                // Along the ground, the whole step, less what goes into it. (Stopped at the hit he crawled: on any rising
+                // ground the trace's first metre is under the floor, every frame.)
+                Motion::Flown => {
+                    if into > 0.0 {
+                        v1 += up * into;
+                    }
+                    let rest = p1 - hit;
+                    let along = hit + rest - up * rest.dot(up).min(0.0);
+                    p = along.normalize_or(up) * along.length().max(floor_at(s, b, along, held).0);
+                }
+                Motion::Held => {}
                 // Nothing loaded: held in the air, no landing, and the fall goes on when there's ground (F2).
                 Motion::Ballistic if loaded.is_none() => v1 = DVec3::ZERO,
                 Motion::Ballistic => {
@@ -486,12 +514,19 @@ impl Frame {
         }
     }
 
-    /// The share of the body's turn the `Free` frame goes with, and the velocity that gives his position.
+    /// The share of its body's turn the frame goes with.
+    pub fn turn_share(&self, s: &Scene) -> f64 {
+        match self {
+            Frame::Attached { .. } => 1.0,
+            Frame::Free { carrier: Some(c), .. } => find(s, c.obj).map_or(0.0, |b| frame_terms(c.rel.length() - b.radius, b.radius).2),
+            Frame::Free { .. } => 0.0,
+        }
+    }
+
+    /// The velocity the `Free` frame's turn gives his position.
     fn turning(&self, s: &Scene) -> DVec3 {
         let Frame::Free { carrier: Some(c), .. } = self else { return DVec3::ZERO };
-        let Some(b) = find(s, c.obj) else { return DVec3::ZERO };
-        let share = frame_terms(c.rel.length() - b.radius, b.radius).2;
-        ((s.spin)(c.obj) * share).cross(c.rel)
+        ((s.spin)(c.obj) * self.turn_share(s)).cross(c.rel)
     }
 
     /// Velocity relative to the ground (or what carries him), universe axes, while falling.
@@ -505,14 +540,6 @@ impl Frame {
         let t = self.turning(s);
         if let Frame::Free { vel, .. } = self {
             *vel += t;
-        }
-    }
-
-    /// From falling to flying.
-    pub fn to_carried(&mut self, s: &Scene) {
-        let t = self.turning(s);
-        if let Frame::Free { vel, .. } = self {
-            *vel -= t;
         }
     }
 }
@@ -789,6 +816,96 @@ mod tests {
             assert!(local_pos.length() >= EARTH_R + 1.0 - 1e-6, "{}", local_pos.length() - EARTH_R);
             assert!(local_vel.y.abs() < 1.0 && local_vel.x > 99.0, "{local_vel}");
         });
+    }
+
+    /// A path that runs out of trace steps: slanting past the body at speed. It stops at the ground if it goes in (every
+    /// frame's a chord of the body at these speeds), and goes straight on if it doesn't.
+    #[test]
+    fn a_fast_slanting_path_cannot_pass_through_the_body() {
+        let dt = 1.0 / 60.0;
+        let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, EARTH_R, 0.0)];
+        with_scene(&bodies, DVec3::ZERO, DVec3::ZERO, 0.0, |s| {
+            for motion in [Motion::Flown, Motion::Ballistic] {
+                for speed in [6e8, 3e9, 3e11] {
+                    for off in [0.6, 0.69, 0.8, 0.95, 0.995] {
+                        let side = DVec3::X * EARTH_R * off;
+                        let start = side + DVec3::Z * (attach_radius(&bodies[0]) * 1.5);
+                        let mut f = Frame::Free { pos: UPos::ZERO.offset_m(start), vel: DVec3::NEG_Z * speed, carrier: None };
+                        f.carry(s, dt, motion, UPos::ZERO);
+                        let o = f.advance(s, dt, motion);
+                        let r = f.world(s, UPos::ZERO).delta_m(UPos::ZERO);
+                        assert!(r.length() >= EARTH_R, "{motion:?} at {speed}, off {off}: under the ground at {r}");
+                        if motion == Motion::Ballistic {
+                            assert!(r.z > 0.0 && o.contact.is_some(), "at {speed}, off {off}: went on to {r}");
+                        } else {
+                            // Flying he goes on along the ground, off to the side he hit it: never straight on through.
+                            assert!(r.x > side.x + 1.0, "at {speed}, off {off}: went on to {r}");
+                        }
+                    }
+                    // Over the ground the whole way: nothing stops him.
+                    let start = DVec3::X * EARTH_R * 1.01 + DVec3::Z * (attach_radius(&bodies[0]) * 1.5);
+                    let mut f = Frame::Free { pos: UPos::ZERO.offset_m(start), vel: DVec3::NEG_Z * speed, carrier: None };
+                    f.carry(s, dt, motion, UPos::ZERO);
+                    let o = f.advance(s, dt, motion);
+                    let r = f.world(s, UPos::ZERO).delta_m(UPos::ZERO);
+                    let want = start.z - speed * dt;
+                    assert!(o.contact.is_none() && (r.z - want).abs() < want.abs().max(1e6) * 1e-3, "{motion:?} at {speed}: stopped at {r}, not {want}");
+                }
+            }
+        });
+    }
+
+    /// Flying into rising ground he slides along it at his whole speed; cut at the hit he crawled at 1 m a frame.
+    #[test]
+    fn flying_up_rising_ground_keeps_the_whole_step() {
+        let dt = 1.0 / 60.0;
+        let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, EARTH_R, 0.0)];
+        // A slope of 1 in 10 along +X.
+        let (spin, vel) = (|_| DVec3::ZERO, |_| DVec3::ZERO);
+        let ground = |b: &BodyInfo, l: DVec3| Ground { radial: b.radius + l.normalize().x * b.radius * 0.1, level: Some(3) };
+        let drag = |_: &BodyInfo, _: DVec3| 0.0;
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: 1.0 };
+        let top = (s.ground)(&bodies[0], DVec3::Y).radial + 1.0;
+        let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::X * 3000.0, level: None, last_orient: DQuat::IDENTITY };
+        for _ in 0..60 {
+            f.carry(&s, dt, Motion::Flown, UPos::ZERO);
+            f.advance(&s, dt, Motion::Flown);
+        }
+        let Frame::Attached { local_pos, local_vel, .. } = f else { panic!() };
+        assert!((local_pos.x - 3000.0).abs() < 30.0, "moved {}", local_pos.x);
+        assert!((local_vel.length() - 3000.0).abs() < 1.0, "{local_vel}");
+        assert!(local_pos.length() >= (s.ground)(&bodies[0], local_pos).radial + 1.0 - 1e-6);
+    }
+
+    /// X on the floor of a turning body: where he stood. (The path used to start from where `carry` turned him back to.)
+    #[test]
+    fn falling_from_the_floor_stays_where_he_stood() {
+        let dt = 1.0 / 60.0;
+        let w = DVec3::Y * 7.29e-5;
+        let gm = G * 5.97e24;
+        let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, EARTH_R, gm)];
+        let start = DVec3::X * (EARTH_R + 1.0);
+        with_scene(&bodies, w, DVec3::ZERO, 0.0, |s| {
+            let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::ZERO, level: None, last_orient: DQuat::IDENTITY };
+            f.carry(s, dt, Motion::Ballistic, UPos::ZERO);
+            let o = f.advance(s, dt, Motion::Ballistic);
+            assert!(o.contact.is_some());
+            let Frame::Attached { local_pos, .. } = f else { panic!() };
+            assert!((local_pos - start).length() < 1e-3, "moved {}", (local_pos - start).length());
+        });
+        // Falling and held over ground not yet loaded: no drift against the body either.
+        let (spin, vel) = (move |_| w, |_| DVec3::ZERO);
+        let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: None };
+        let drag = |_: &BodyInfo, _: DVec3| 0.0;
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: 1.0 };
+        let start = DVec3::X * (EARTH_R + 50.0);
+        let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::ZERO, level: None, last_orient: DQuat::IDENTITY };
+        for _ in 0..60 {
+            f.carry(&s, dt, Motion::Ballistic, UPos::ZERO);
+            f.advance(&s, dt, Motion::Ballistic);
+        }
+        let Frame::Attached { local_pos, .. } = f else { panic!() };
+        assert!((local_pos - start).length() < 1.0, "drifted {}", (local_pos - start).length());
     }
 
     /// The drag's implicit step: at any speed, no overshoot past zero; a fall reaches the terminal speed and stays.

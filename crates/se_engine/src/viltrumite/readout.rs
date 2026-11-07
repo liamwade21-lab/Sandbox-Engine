@@ -7,6 +7,7 @@ use se_core::units::SPEED_OF_LIGHT;
 
 use crate::hud::HudState;
 use crate::i18n::I18n;
+use crate::mods::ModControl;
 
 use super::Hero;
 
@@ -53,15 +54,16 @@ pub fn format_height(h: f64) -> String {
     }
 }
 
-pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudState>, i18n: Res<I18n>) -> Result {
+pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudState>, i18n: Res<I18n>, control: Res<ModControl>) -> Result {
     if hud.hidden {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
     let r = &hero.readout;
     let frame = egui::Frame::window(&ctx.global_style()).inner_margin(6.0);
-    // (Under the Ships button, which stays in the corner.)
-    egui::Area::new(egui::Id::new("hero_readout")).anchor(egui::Align2::RIGHT_TOP, [-10.0, 62.0]).interactable(false).show(ctx, |ui| {
+    // In the corner; in the menus under the Ships button, which comes back with the panels.
+    let y = if control.panels_hidden() { 10.0 } else { 62.0 };
+    egui::Area::new(egui::Id::new("hero_readout")).anchor(egui::Align2::RIGHT_TOP, [-10.0, y]).interactable(false).show(ctx, |ui| {
         frame.show(ui, |ui| {
             egui::Grid::new("hero_readout_grid").num_columns(2).spacing([8.0, 1.0]).show(ui, |ui| {
                 let mut row = |name: &str, value: String| {

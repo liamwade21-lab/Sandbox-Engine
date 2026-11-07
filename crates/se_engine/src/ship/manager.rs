@@ -100,19 +100,23 @@ pub fn draw_ship_window(
     cam: Res<FlyCamera>,
     ships: Query<(Entity, &Ship, &UPosition)>,
     mut writer: MessageWriter<ShipCommand>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if hud.hidden {
         return Ok(());
     }
-    egui::Area::new(egui::Id::new("ships_button"))
-        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 36.0])
-        .show(ctx, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            if ui.button(if flight.active { "Ships (flying)" } else { "Ships" }).clicked() {
-                ui_state.show = !ui_state.show;
-            }
-        });
+    // (With the panels: the Viltrumite mod hides them until Tab.)
+    if !control.panels_hidden() {
+        egui::Area::new(egui::Id::new("ships_button"))
+            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 36.0])
+            .show(ctx, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                if ui.button(if flight.active { "Ships (flying)" } else { "Ships" }).clicked() {
+                    ui_state.show = !ui_state.show;
+                }
+            });
+    }
     if !ui_state.show {
         return Ok(());
     }

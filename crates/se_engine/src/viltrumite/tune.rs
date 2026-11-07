@@ -92,6 +92,8 @@ pub const CARRIER_HYSTERESIS: f64 = 1.25;
 pub const TRACE_SHARE: f64 = 0.8;
 pub const TRACE_MIN_M: f64 = 1.0;
 pub const TRACE_STEPS: u32 = 16;
+/// Halvings to find where a path that ran out of those steps goes in.
+pub const TRACE_BISECT: u32 = 24;
 
 // ---- Ground, until step 5's walking ----
 /// His middle stays this far above the ground (m): his soles are about 1 m below it.
@@ -121,6 +123,8 @@ pub const ROLL_LEVEL_TAU_S: f64 = 1.0;
 pub const NEAR_SHARE: f64 = 0.05;
 pub const NEAR_MIN_M: f64 = 0.02;
 pub const NEAR_MAX_M: f64 = 0.5;
+/// How fast the speed's part of the camera's distance follows the speed (s): a sudden stop mustn't jump the camera.
+pub const CAM_ZOOM_TAU_S: f64 = 0.3;
 /// The camera moved this far (m) by anything but him (Places, a dev command): he goes with it.
 pub const TELEPORT_M: f64 = 50.0;
 
