@@ -252,6 +252,16 @@ impl HeroDraws {
         self.ready
     }
 
+    /// His frame's records (`HeroFrame`), written in place each frame: the rims read his light's direction and up from it.
+    pub(super) fn frame_buffer(&self) -> Handle<ShaderBuffer> {
+        self.frame_buffer.clone()
+    }
+
+    /// His up as last drawn: away from the body he is near, else the camera's up.
+    pub(super) fn up(&self) -> Vec3 {
+        self.frame.up.truncate()
+    }
+
     /// Towards the star his light comes from.
     pub(super) fn sun_dir(&self) -> Vec3 {
         self.frame.light.sun_dir.truncate().normalize_or(Vec3::Y)

@@ -197,6 +197,83 @@ pub const CRATER_MAX_M: f64 = 60.0;
 pub const THUNDERCLAP_HOLD_S: (f64, f64) = (0.4, 2.5);
 pub const THUNDERCLAP_RING_M: (f64, f64) = (30.0, 150.0);
 
+// ---- Impacts (step 8, F11) ----
+/// A punch's layer comes in and goes out over these (s); its hit, when the clip has no `hit` event, at this share of it.
+pub const PUNCH_FADE_IN_S: f32 = 0.08;
+pub const PUNCH_FADE_OUT_S: f32 = 0.2;
+pub const PUNCH_HIT_SHARE: f32 = 0.45;
+/// A new punch can start once the last one's hit is this long gone (s): a quick second click chains the other arm.
+pub const PUNCH_CHAIN_S: f32 = 0.12;
+/// The punch's ray starts this far (m) up from his middle, at his shoulders.
+pub const PUNCH_FROM_UP_M: f64 = 0.45;
+/// What a punch into the ground throws up (m) and shakes.
+pub const PUNCH_DUST_M: f64 = 0.9;
+/// The full-body actions' layer (the ground punch, the thunderclap) comes in and goes out over these (s).
+pub const ACTION_FADE_IN_S: f32 = 0.12;
+pub const ACTION_FADE_OUT_S: f32 = 0.35;
+/// The ground punch's crater lies this far (m) ahead of his feet, where the fist lands.
+pub const SMASH_AHEAD_M: f64 = 0.7;
+/// A thunderclap's ring lives this long (s), from the least charge to the most, and its light.
+pub const CLAP_RING_LIFE_S: (f64, f64) = (1.0, 2.2);
+pub const CLAP_RING_STRENGTH: (f64, f64) = (0.25, 0.5);
+/// The ring along the ground under him takes this share of that: a white line on the ground reads as paint.
+pub const CLAP_GROUND_RING: f64 = 0.4;
+/// Its ring starts at his hands, this far (m) ahead of his chest, and grows from this radius (m).
+pub const CLAP_AHEAD_M: f64 = 0.6;
+pub const CLAP_RING_START_M: f64 = 1.0;
+/// It goes ahead of him as it grows, this many times its radius: from a chase camera a ring round his hands is round the camera at once.
+pub const CLAP_TRAVEL: f64 = 2.0;
+/// It kicks up dust from the ground under him while that's within this share of the ring's radius.
+pub const CLAP_GROUND_SHARE: f64 = 0.5;
+/// The dust it kicks up: this share of the ring's radius across.
+pub const CLAP_DUST_SHARE: f64 = 0.16;
+/// Craters are freed once he and the camera are both this far (m) away: the buildings' far range plus 500 m, whatever the Cities
+/// setting (D3, F11). No fade before.
+pub const CRATER_FREE_M: f64 = crate::scatter::FAR_RANGE_M + 500.0;
+/// The rim's model is drawn within this distance (m) of the camera, half of its height under the ground (its across scaled to the
+/// crater, its height by the square root of that).
+pub const RIM_DRAW_M: f64 = 2000.0;
+pub const RIM_SINK: f64 = 0.5;
+/// The rim's rock, its texture times this: a little darker and warmer, the ground thrown up.
+pub const RIM_TINT: [f32; 3] = [0.62, 0.56, 0.5];
+/// Frames the last rim stays out as a speck at the camera after first enable, so its pipeline is built before the first crater.
+pub const RIM_WARM_FRAMES: u32 = 600;
+/// The rim's model across (its own 4.8 m) is the crater's diameter times this: the bowl's wall and lip show round it.
+pub const RIM_ACROSS_SHARE: f64 = 0.8;
+/// His capsule, which a crater leaves alone (he's drawn over it): half its length along his up and its radius (m), round his middle
+/// (`STAND_M` over his soles), so it stops just over the ground he stands on: a larger one left a light disc round his feet. (His legs
+/// stand up, and the craters leave whatever stands up alone anyway.)
+pub const CAPSULE_HALF_M: f64 = 0.55;
+pub const CAPSULE_RADIUS_M: f32 = 0.5;
+/// A crater comes in over this (s): the blast.
+pub const CRATER_IN_S: f64 = 0.08;
+/// The crater's look (`hero_fx.wesl` `decal_fragment`): the bowl's depth in radii (the slope of its walls), how dark the burnt
+/// ground is at its middle and at its edge, the raised lip's height in radii, and how far out (radii) the thrown-out ground goes.
+pub const CRATER_DEPTH: f32 = 0.32;
+pub const CRATER_DARK: (f32, f32) = (0.42, 0.72);
+pub const CRATER_LIP: f32 = 0.06;
+pub const CRATER_REACH: f32 = 1.9;
+/// Dust: a burst's quads (at least, and per metre of its size), its life in air (s) by size (at 1 m and 60 m), and the longest a
+/// burst lasts in vacuum, where it falls back as it was thrown.
+pub const DUST_QUADS: (u32, f64) = (16, 2.0);
+pub const DUST_LIFE_S: (f64, f64) = (3.0, 14.0);
+pub const DUST_VACUUM_MAX_S: f64 = 30.0;
+/// A burst's colour (its albedo): land, an airless body's, and the sea's spray.
+pub const DUST_LAND: [f32; 3] = [0.40, 0.35, 0.28];
+pub const DUST_AIRLESS: [f32; 3] = [0.30, 0.29, 0.28];
+pub const DUST_SPRAY: [f32; 3] = [0.85, 0.88, 0.90];
+/// The splash's size (m) by his speed into the sea: `clamp(SPLASH_K sqrt(v), from, to)`.
+pub const SPLASH_K: f64 = 0.6;
+pub const SPLASH_M: (f64, f64) = (0.6, 60.0);
+/// A hard landing's dust is this many times the crater's radius.
+pub const DUST_OF_CRATER: f64 = 1.0;
+/// The shake (F7): rotation only, at most this (degrees), from an impact of size `s` (m) at distance `d` (m): `SHAKE_K s / (d + s)`
+/// of the most, dying with this time constant (s), at about this many wobbles a second.
+pub const SHAKE_MAX_DEG: f64 = 1.0;
+pub const SHAKE_K: f64 = 1.6;
+pub const SHAKE_TAU_S: f64 = 0.35;
+pub const SHAKE_HZ: f64 = 13.0;
+
 // ---- Slopes (step 5) ----
 pub const SLOPE_WALK_DEG: f64 = 50.0;
 pub const SLOPE_SLIDE_DEG: f64 = 70.0;

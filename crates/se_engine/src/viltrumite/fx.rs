@@ -8,8 +8,12 @@
 //!   clouds in front dim it and clouds behind don't. It runs on the main camera alone (the `CloudView` filter), with the clouds on or off,
 //!   and does nothing at all while nothing shows: `FxInput::draw`.
 //! - **Off costs nothing:** one run condition. All of it is made on first enable.
-//! - **For step 8:** `FxRecordsGpu::craters` and `dust` wait for their records. The dust is a new draw in `fx_pass` (see the comment there),
-//!   the craters a new pass `fx_decals` before `clouds_pass`; `Hero.fx.add_ring` is the thunderclap's ring.
+//! - **Impacts (step 8, `impact.rs`):** the craters are a pass of their own, `fx_decals`, before the clouds: it multiplies what the main
+//!   pass drew, so a crater takes the ground's own light, night and cloud shadow, and it reads the depth, so it follows whatever ground is
+//!   drawn. The dust is a draw of its own in `fx_pass`, blended over (not additive), drawn first; it takes the colour of the lit ground
+//!   round where it rose (`fx_dust_tint`, a compute pass reading the scene before the craters darken it), so it's the ground's own
+//!   colour in the ground's own light, night and cloud shadow, whatever the planet. Both run in the aftermath too (the mod turned off
+//!   with craters or dust still there: `ModControl::aftermath`), when nothing of his draws.
 
 use bevy::camera::MainPassResolutionOverride;
 use bevy::core_pipeline::{Core3d, Core3dSystems};
@@ -17,12 +21,12 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_resource::binding_types::{storage_buffer_read_only_sized, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer};
+use bevy::render::render_resource::binding_types::{sampler, storage_buffer_read_only_sized, storage_buffer_sized, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer};
 use bevy::render::render_resource::encase;
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, ViewQuery};
 use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
-use bevy::render::texture::FallbackImage;
+use bevy::render::texture::{FallbackImage, GpuImage};
 use bevy::render::view::{Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms};
 use bevy::render::{Render, RenderApp, RenderSystems};
 use se_core::catalog::ObjectRef;
@@ -47,6 +51,8 @@ const FX_SHELL: u32 = 0;
 const FX_CONE: u32 = 1;
 const FX_TRAIL: u32 = 2;
 const FX_RING: u32 = 3;
+/// A crater's draw: the rectangle its box covers on the screen (`hero_fx.wesl` `decal_vertex`).
+const DECAL_VERTICES: u32 = 6;
 /// `hero_fx.wesl`'s `AROUND`, `SHELL_RINGS`, `CONE_BANDS`.
 const AROUND: u32 = 32;
 const SHELL_RINGS: u32 = 16;
@@ -65,6 +71,26 @@ struct FxPointGpu {
     light: Vec4,
 }
 
+/// `hero_fx.wesl` `FxCrater`: `at` xyz its middle on the ground as drawn now, from the camera, w its radius (m); `up` xyz the ground's
+/// normal there, w its seed (0..1); `look` x how far in (0..1), y the bowl's depth, z the lip's height, w how far out it reaches (radii).
+#[derive(Clone, Copy, Default, Debug, PartialEq, ShaderType)]
+pub struct FxCraterGpu {
+    pub at: Vec4,
+    pub up: Vec4,
+    pub look: Vec4,
+}
+
+/// `hero_fx.wesl` `FxDust`: `at` xyz where it rose from, from the camera, w its age (s); `up` xyz up there, w its size (m); `look` rgb its
+/// colour (albedo), w its seed; `motion` x its life (s), y gravity (m/s2), z the air's hold on it (s; 0 in vacuum), w its style
+/// (`impact::Style`).
+#[derive(Clone, Copy, Default, Debug, PartialEq, ShaderType)]
+pub struct FxDustGpu {
+    pub at: Vec4,
+    pub up: Vec4,
+    pub look: Vec4,
+    pub motion: Vec4,
+}
+
 /// `hero_fx.wesl` `FxRecords`.
 #[derive(Clone, Copy, ShaderType)]
 pub struct FxRecordsGpu {
@@ -75,10 +101,14 @@ pub struct FxRecordsGpu {
     cone: Vec4,
     cloud_px: Vec4,
     sun: Vec4,
+    /// His capsule, which the craters leave alone: xyz his up, w half its length (0 when he isn't drawn).
+    pub capsule: Vec4,
+    /// The craters' burnt ground: x at the middle, y at the edge; z his capsule's radius (m).
+    pub decal: Vec4,
     rings: [FxRingGpu; RINGS],
     trail: [FxPointGpu; TRAIL_POINTS],
-    craters: [[Vec4; 2]; CRATERS],
-    dust: [[Vec4; 2]; DUST_BURSTS],
+    pub craters: [FxCraterGpu; CRATERS],
+    pub dust: [FxDustGpu; DUST_BURSTS],
 }
 
 impl Default for FxRecordsGpu {
@@ -91,10 +121,12 @@ impl Default for FxRecordsGpu {
             cone: Vec4::ZERO,
             cloud_px: Vec4::ONE,
             sun: Vec4::Y,
+            capsule: Vec4::ZERO,
+            decal: Vec4::new(tune::CRATER_DARK.0, tune::CRATER_DARK.1, tune::CAPSULE_RADIUS_M, 0.0),
             rings: [FxRingGpu::default(); RINGS],
             trail: [FxPointGpu::default(); TRAIL_POINTS],
-            craters: [[Vec4::ZERO; 2]; CRATERS],
-            dust: [[Vec4::ZERO; 2]; DUST_BURSTS],
+            craters: [FxCraterGpu::default(); CRATERS],
+            dust: [FxDustGpu::default(); DUST_BURSTS],
         }
     }
 }
@@ -192,6 +224,26 @@ struct RingState {
     born: f64,
     /// How much of its light the air shows.
     show: f32,
+    /// Its size and life.
+    shape: RingShape,
+}
+
+/// A ring's size and life: the radius it starts at and ends at (m), its life (s), how long it rides with him (s), and how far it goes
+/// along its normal over its life (m: the thunderclap's ring travels away from his hands, so a chase camera sees it go).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RingShape {
+    pub start_m: f64,
+    pub end_m: f64,
+    pub life_s: f64,
+    pub ride_s: f64,
+    pub travel_m: f64,
+}
+
+impl Default for RingShape {
+    /// The boom's (F9).
+    fn default() -> Self {
+        RingShape { start_m: tune::RING_START_M, end_m: tune::RING_START_M + tune::RING_GROW_MS * tune::RING_LIFE_S * 0.5, life_s: tune::RING_LIFE_S, ride_s: tune::RING_RIDE_S, travel_m: 0.0 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -240,14 +292,19 @@ impl Default for FxState {
 }
 
 impl FxState {
-    /// A new ring at `local`, facing `normal`, both in `obj`'s frame: the oldest gives way.
+    /// A new ring at `local`, facing `normal`, both in `obj`'s frame: the oldest gives way. The boom's shape.
     pub fn add_ring(&mut self, obj: ObjectRef, local: DVec3, normal: DVec3, clock: f64, show: f32) {
+        self.add_ring_shaped(obj, local, normal, clock, show, RingShape::default());
+    }
+
+    /// The same, of any size and life (the thunderclap's).
+    pub fn add_ring_shaped(&mut self, obj: ObjectRef, local: DVec3, normal: DVec3, clock: f64, show: f32, shape: RingShape) {
         let slot = (0..RINGS).min_by(|&a, &b| {
             let age = |i: usize| if self.rings[i].obj.is_some() { self.rings[i].born } else { f64::NEG_INFINITY };
             age(a).total_cmp(&age(b))
         });
         if let Some(i) = slot {
-            self.rings[i] = RingState { obj: Some(obj), local, normal, born: clock, show };
+            self.rings[i] = RingState { obj: Some(obj), local, normal, born: clock, show, shape };
         }
     }
 
@@ -354,7 +411,7 @@ impl FxState {
 #[derive(Resource)]
 pub struct FxDraws {
     buffer: Handle<ShaderBuffer>,
-    records: Box<FxRecordsGpu>,
+    pub(super) records: Box<FxRecordsGpu>,
 }
 
 /// What the pass needs from the main world, made on first enable.
@@ -369,15 +426,29 @@ pub struct FxInput {
     cone: bool,
     segments: u32,
     rings: u32,
+    /// The craters drawn (bit n: slot n), and each dust burst's quads (0: none).
+    pub(super) craters: u32,
+    pub(super) dust: [u8; DUST_BURSTS],
     records: Handle<ShaderBuffer>,
-    light: Handle<ShaderBuffer>,
+    /// His light of this frame (`hero_light.wesl`'s output): the rims take it too (`impact::RimMaterial`).
+    pub(super) light: Handle<ShaderBuffer>,
+    /// The dust's sprites (`sprites/ptfx_smoke_wispy_anim.dds`, a 7 x 7 flipbook), set by `impact::spawn_impacts`.
+    pub(super) sprite: Handle<Image>,
 }
 
-/// The pass's pipelines, queued on first enable: [no MSAA, MSAA].
+/// The passes' pipelines, queued on first enable, each [no MSAA, MSAA]: the additive effects, the dust (blended over), the craters
+/// (multiplied).
 #[derive(Resource, Default)]
 struct FxPass {
     layouts: Option<[BindGroupLayoutDescriptor; 2]>,
     pipelines: [Option<CachedRenderPipelineId>; 2],
+    dust: [Option<CachedRenderPipelineId>; 2],
+    decals: [Option<CachedRenderPipelineId>; 2],
+    sampler: Option<Sampler>,
+    /// The dust's colour: each burst's lit ground round it and the seed of the burst it's for (`hero_fx.wesl` `dust_tint`), made once.
+    tint: Option<Buffer>,
+    tint_layouts: Option<[BindGroupLayoutDescriptor; 2]>,
+    tint_pipelines: [Option<CachedComputePipelineId>; 2],
 }
 
 pub fn build(app: &mut App) {
@@ -386,8 +457,11 @@ pub fn build(app: &mut App) {
     render_app
         .init_resource::<FxPass>()
         .add_systems(Render, queue_pipelines.in_set(RenderSystems::PrepareBindGroups).run_if(fx_made))
-        // After `clouds_pass`, before the solids' upscale. (Step 8: `fx_decals` goes `.before(CloudsPassSet)`.)
-        .add_systems(Core3d, fx_pass.in_set(Core3dSystems::EarlyPostProcess).after(CloudsPassSet).before(crate::render_scale::SolidUpscaleSet).run_if(fx_wanted));
+        // After `clouds_pass`, before the solids' upscale; the craters before the clouds, so clouds in front hide them (C17).
+        .add_systems(Core3d, fx_pass.in_set(Core3dSystems::EarlyPostProcess).after(CloudsPassSet).before(crate::render_scale::SolidUpscaleSet).run_if(fx_wanted))
+        .add_systems(Core3d, fx_decals.in_set(Core3dSystems::EarlyPostProcess).before(CloudsPassSet).run_if(decals_wanted))
+        // The dust's colour, from the scene before the craters darken it.
+        .add_systems(Core3d, fx_dust_tint.in_set(Core3dSystems::EarlyPostProcess).before(fx_decals).before(CloudsPassSet).run_if(dust_wanted));
 }
 
 fn fx_made(input: Option<Res<FxInput>>) -> bool {
@@ -398,18 +472,53 @@ fn fx_wanted(input: Option<Res<FxInput>>) -> bool {
     input.is_some_and(|i| i.on && i.draw)
 }
 
-/// First enable: the buffer. `light` is his own light's buffer, written before the main pass.
+fn decals_wanted(input: Option<Res<FxInput>>) -> bool {
+    input.is_some_and(|i| i.on && i.craters != 0)
+}
+
+fn dust_wanted(input: Option<Res<FxInput>>) -> bool {
+    input.is_some_and(|i| i.on && i.dust.iter().any(|&q| q > 0))
+}
+
+/// First enable: the buffer. `light` is his own light's buffer, written before the main pass. (The dust's sprite comes with the impacts.)
 pub(super) fn spawn(commands: &mut Commands, buffers: &mut Assets<ShaderBuffer>, light: Handle<ShaderBuffer>) {
     let records = Box::<FxRecordsGpu>::default();
     let buffer = buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&*records), bevy::asset::RenderAssetUsages::default()));
-    commands.insert_resource(FxInput { on: true, draw: false, shell: false, cone: false, segments: 0, rings: 0, records: buffer.clone(), light });
+    commands.insert_resource(FxInput { on: true, draw: false, shell: false, cone: false, segments: 0, rings: 0, craters: 0, dust: [0; DUST_BURSTS], records: buffer.clone(), light, sprite: Handle::default() });
     commands.insert_resource(FxDraws { buffer, records });
 }
 
-/// Off: nothing to draw.
+/// Off: nothing to draw, unless the aftermath is still draining (craters, dust).
 fn sync_on(control: Res<ModControl>, mut input: ResMut<FxInput>) {
-    if input.on != control.hero {
-        input.on = control.hero;
+    let on = control.hero || control.aftermath;
+    if input.on != on {
+        input.on = on;
+    }
+}
+
+/// After his effects and the impacts have been worked out: what draws, and the records written in place once. Runs while he's on or in
+/// the aftermath; with the mod off nothing of his draws (his effects were reset by the hand-back, these flags weren't).
+pub(super) fn upload(control: Res<ModControl>, draws: Res<HeroDraws>, mut fx: ResMut<FxDraws>, mut input: ResMut<FxInput>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+    if !control.hero && (input.shell || input.cone || input.segments != 0 || input.rings != 0) {
+        input.shell = false;
+        input.cone = false;
+        input.segments = 0;
+        input.rings = 0;
+    }
+    if !control.hero {
+        fx.records.capsule = Vec4::ZERO;
+    }
+    let draw = draws.ready() && (input.shell || input.cone || input.segments > 0 || input.rings != 0 || input.dust.iter().any(|&q| q > 0));
+    if input.draw != draw {
+        input.draw = draw;
+    }
+    if draw || input.craters != 0 {
+        // In place: the buffer stays.
+        if let Some(mut b) = buffers.get_mut(&fx.buffer) {
+            if let Some(d) = b.cast_slice_mut::<u8>() {
+                let _ = encase::StorageBuffer::new(d).write(&*fx.records);
+            }
+        }
     }
 }
 
@@ -432,7 +541,6 @@ pub(super) fn update_fx(
     draws: Res<HeroDraws>,
     mut fx: ResMut<FxDraws>,
     mut input: ResMut<FxInput>,
-    mut buffers: ResMut<Assets<ShaderBuffer>>,
     bodies: Query<&SystemBody>,
     views: Query<&CloudView, With<MainCamera>>,
 ) {
@@ -450,6 +558,7 @@ pub(super) fn update_fx(
     r.him = rel.extend((clock % 1000.0) as f32);
     r.along = going.extend(flow.speed as f32);
     r.sun = draws.sun_dir().extend(0.0);
+    r.capsule = if draws.ready() { draws.up().extend(tune::CAPSULE_HALF_M as f32) } else { Vec4::ZERO };
 
     // The shell.
     let look_t = heat.min(tune::HEAT_LOOK_K);
@@ -491,18 +600,21 @@ pub(super) fn update_fx(
             continue;
         };
         let age = clock - state.born;
-        if age >= tune::RING_LIFE_S {
+        let shape = state.shape;
+        if age >= shape.life_s {
             state.obj = None;
             continue;
         }
-        if age < tune::RING_RIDE_S {
+        if age < shape.ride_s {
             state.local = b.orient.inverse() * pos.delta_m(b.pos);
         }
-        let k = age / tune::RING_LIFE_S;
-        let radius = tune::RING_START_M + tune::RING_GROW_MS * tune::RING_LIFE_S * (1.0 - (1.0 - k).powi(2)) * 0.5;
+        let k = age / shape.life_s;
+        let grown = 1.0 - (1.0 - k).powi(2);
+        let radius = shape.start_m + (shape.end_m - shape.start_m) * grown;
+        let gone = state.normal * shape.travel_m * grown;
         let fade = (1.0 - k).powi(2) * smooth(0.0, 0.03, age);
         r.rings[i] = FxRingGpu {
-            centre: b.pos.offset_m(b.orient * state.local).delta_m(cam.pos).as_vec3().extend(radius as f32),
+            centre: b.pos.offset_m(b.orient * (state.local + gone)).delta_m(cam.pos).as_vec3().extend(radius as f32),
             normal: (b.orient * state.normal).as_vec3().extend((tune::RING_BAND_M.0 + tune::RING_BAND_M.1 * radius) as f32),
             tint: Vec4::new(tune::RING_OWN as f32, tune::RING_OWN as f32, tune::RING_OWN as f32, tune::RING_STRENGTH as f32 * state.show * fade as f32),
         };
@@ -521,28 +633,28 @@ pub(super) fn update_fx(
     }
 
     let (want_shell, want_cone) = (shell > 0.0, cone > 1e-3);
-    let draw = draws.ready() && (want_shell || want_cone || segments > 0 || ring_bits != 0);
-    if input.draw != draw || input.shell != want_shell || input.cone != want_cone || input.segments != segments || input.rings != ring_bits {
-        input.draw = draw;
+    if input.shell != want_shell || input.cone != want_cone || input.segments != segments || input.rings != ring_bits {
         input.shell = want_shell;
         input.cone = want_cone;
         input.segments = segments;
         input.rings = ring_bits;
     }
-    if draw {
-        // In place: the buffer stays.
-        if let Some(mut b) = buffers.get_mut(&fx.buffer) {
-            if let Some(d) = b.cast_slice_mut::<u8>() {
-                let _ = encase::StorageBuffer::new(d).write(r);
-            }
-        }
-    }
+    // (What draws, and the buffer's write: `upload`, after the impacts.)
 }
 
-fn queue_pipelines(mut pass: ResMut<FxPass>, cache: Res<PipelineCache>, assets: Res<AssetServer>) {
+fn queue_pipelines(mut pass: ResMut<FxPass>, cache: Res<PipelineCache>, assets: Res<AssetServer>, device: Res<bevy::render::renderer::RenderDevice>) {
     if pass.layouts.is_some() {
         return;
     }
+    // (Zeroed: no burst's seed.)
+    pass.tint = Some(device.create_buffer(&BufferDescriptor { label: Some("hero_fx_dust_tint"), size: (DUST_BURSTS * 16) as u64, usage: BufferUsages::STORAGE, mapped_at_creation: false }));
+    pass.sampler = Some(device.create_sampler(&SamplerDescriptor {
+        label: Some("hero_fx_sprite"),
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        mipmap_filter: MipmapFilterMode::Linear,
+        ..default()
+    }));
     let shader: Handle<Shader> = assets.load("shaders/hero_fx.wesl");
     let layouts = [false, true].map(|msaa| {
         let f = TextureSampleType::Float { filterable: false };
@@ -559,29 +671,191 @@ fn queue_pipelines(mut pass: ResMut<FxPass>, cache: Res<PipelineCache>, assets: 
                     (5, texture_2d(f)),
                     (6, texture_2d(f)),
                     (7, texture_2d(f)),
+                    (8, texture_2d(TextureSampleType::Float { filterable: true })),
+                    (9, sampler(SamplerBindingType::Filtering)),
+                    (10, storage_buffer_read_only_sized(false, None)),
+                ),
+            ),
+        )
+    });
+    let tint_layouts = [false, true].map(|msaa| {
+        BindGroupLayoutDescriptor::new(
+            "hero_fx_dust_tint",
+            &BindGroupLayoutEntries::with_indices(
+                ShaderStages::COMPUTE,
+                (
+                    (0, uniform_buffer::<ViewUniform>(true)),
+                    (1, storage_buffer_read_only_sized(false, None)),
+                    (3, if msaa { texture_depth_2d_multisampled() } else { texture_depth_2d() }),
+                    (11, texture_2d(TextureSampleType::Float { filterable: false })),
+                    (12, storage_buffer_sized(false, None)),
                 ),
             ),
         )
     });
     let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
     let keep = BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
+    // The dust over the scene, premultiplied; the craters times it.
+    let over = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::OneMinusSrcAlpha, operation: BlendOperation::Add };
+    let times = BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::Src, operation: BlendOperation::Add };
     for (i, def) in ["NO_MSAA", "MSAA"].into_iter().enumerate() {
-        pass.pipelines[i] = Some(cache.queue_render_pipeline(RenderPipelineDescriptor {
-            label: Some("hero_fx".into()),
+        let pipeline = |label: &'static str, (vertex, fragment): (&'static str, &'static str), color: BlendComponent| RenderPipelineDescriptor {
+            label: Some(label.into()),
             layout: vec![layouts[i].clone()],
-            vertex: VertexState { shader: shader.clone(), shader_defs: vec![def.into()], entry_point: Some("vertex".into()), ..default() },
+            vertex: VertexState { shader: shader.clone(), shader_defs: vec![def.into()], entry_point: Some(vertex.into()), ..default() },
             fragment: Some(FragmentState {
                 shader: shader.clone(),
                 shader_defs: vec![def.into()],
-                entry_point: Some("fragment".into()),
-                targets: vec![Some(ColorTargetState { format: HDR_FORMAT, blend: Some(BlendState { color: add, alpha: keep }), write_mask: ColorWrites::ALL })],
+                entry_point: Some(fragment.into()),
+                targets: vec![Some(ColorTargetState { format: HDR_FORMAT, blend: Some(BlendState { color, alpha: keep }), write_mask: ColorWrites::ALL })],
                 ..default()
             }),
             primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, cull_mode: None, ..default() },
             ..default()
+        };
+        pass.pipelines[i] = Some(cache.queue_render_pipeline(pipeline("hero_fx", ("vertex", "fragment"), add)));
+        pass.dust[i] = Some(cache.queue_render_pipeline(pipeline("hero_fx_dust", ("dust_vertex", "dust_fragment"), over)));
+        pass.decals[i] = Some(cache.queue_render_pipeline(pipeline("hero_fx_decals", ("decal_vertex", "decal_fragment"), times)));
+        pass.tint_pipelines[i] = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
+            label: Some("hero_fx_dust_tint".into()),
+            layout: vec![tint_layouts[i].clone()],
+            shader: shader.clone(),
+            shader_defs: vec![def.into()],
+            entry_point: Some("dust_tint".into()),
+            ..default()
         }));
     }
     pass.layouts = Some(layouts);
+    pass.tint_layouts = Some(tint_layouts);
+}
+
+/// Each burst's colour: the lit ground on a ring round where it rose, read from the scene after the main pass, before the craters darken
+/// it (`hero_fx.wesl` `dust_tint`): 64 invocations, one workgroup.
+#[allow(clippy::type_complexity)]
+fn fx_dust_tint(
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &ViewUniformOffset, &Msaa), With<CloudView>>,
+    pass: Res<FxPass>,
+    input: Res<FxInput>,
+    cache: Res<PipelineCache>,
+    uniforms: Res<ViewUniforms>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    mut ctx: RenderContext,
+) {
+    let (target, depth, offset, msaa) = view.into_inner();
+    let m = (msaa.samples() > 1) as usize;
+    let (Some(layouts), Some(pipeline), Some(view_binding), Some(tint)) =
+        (pass.tint_layouts.as_ref(), pass.tint_pipelines[m].and_then(|id| cache.get_compute_pipeline(id)), uniforms.uniforms.binding(), pass.tint.as_ref())
+    else {
+        return;
+    };
+    let Some(records) = buffers.get(&input.records) else { return };
+    if target.main_texture_format() != HDR_FORMAT {
+        return;
+    }
+    let device = ctx.render_device().clone();
+    let depth_view = depth.texture().create_view(&TextureViewDescriptor { aspect: TextureAspect::DepthOnly, ..default() });
+    let group = device.create_bind_group(
+        "hero_fx_dust_tint",
+        &cache.get_bind_group_layout(&layouts[m]),
+        &BindGroupEntries::with_indices((
+            (0, view_binding),
+            (1, records.buffer.as_entire_binding()),
+            (3, &depth_view),
+            (11, target.main_texture_view()),
+            (12, tint.as_entire_binding()),
+        )),
+    );
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    use bevy::render::diagnostic::RecordDiagnostics;
+    let span = diagnostics.time_span(ctx.command_encoder(), "hero_fx_dust_tint");
+    let mut compute = ctx.command_encoder().begin_compute_pass(&ComputePassDescriptor { label: Some("hero_fx_dust_tint"), ..default() });
+    compute.set_pipeline(pipeline);
+    compute.set_bind_group(0, &group, &[offset.offset]);
+    compute.dispatch_workgroups(1, 1, 1);
+    drop(compute);
+    span.end(ctx.command_encoder());
+}
+
+/// The passes' one bind group: the clouds' buffers are `drawn`, or the fallback where they didn't draw (the craters' pass, before them).
+#[allow(clippy::too_many_arguments)]
+fn bind_group(
+    device: &bevy::render::renderer::RenderDevice,
+    cache: &PipelineCache,
+    layout: &BindGroupLayoutDescriptor,
+    view_binding: BindingResource,
+    (records, light): (&GpuShaderBuffer, &GpuShaderBuffer),
+    depth: &TextureView,
+    clouds: [(&TextureView, &TextureView); 2],
+    (sprite, sampler): (&TextureView, &Sampler),
+    tint: &Buffer,
+) -> BindGroup {
+    device.create_bind_group(
+        "hero_fx",
+        &cache.get_bind_group_layout(layout),
+        &BindGroupEntries::with_indices((
+            (0, view_binding),
+            (1, records.buffer.as_entire_binding()),
+            (2, light.buffer.as_entire_binding()),
+            (3, depth),
+            (4, clouds[0].0),
+            (5, clouds[0].1),
+            (6, clouds[1].0),
+            (7, clouds[1].1),
+            (8, sprite),
+            (9, sampler),
+            (10, tint.as_entire_binding()),
+        )),
+    )
+}
+
+/// The craters: each multiplies what the main pass drew where its box covers the screen, before the clouds (`decal_fragment`).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn fx_decals(
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &bevy::render::camera::ExtractedCamera, &ViewUniformOffset, &Msaa, Option<&MainPassResolutionOverride>), With<CloudView>>,
+    pass: Res<FxPass>,
+    input: Res<FxInput>,
+    cache: Res<PipelineCache>,
+    uniforms: Res<ViewUniforms>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
+    fallback: Res<FallbackImage>,
+    mut ctx: RenderContext,
+) {
+    let (target, depth, camera, offset, msaa, low) = view.into_inner();
+    let m = (msaa.samples() > 1) as usize;
+    let (Some(layouts), Some(pipeline), Some(view_binding), Some(sampler), Some(tint)) =
+        (pass.layouts.as_ref(), pass.decals[m].and_then(|id| cache.get_render_pipeline(id)), uniforms.uniforms.binding(), pass.sampler.as_ref(), pass.tint.as_ref())
+    else {
+        return;
+    };
+    let (Some(records), Some(light)) = (buffers.get(&input.records), buffers.get(&input.light)) else { return };
+    let Some(solid) = low.map(|l| l.0).or(camera.physical_viewport_size).filter(|s| s.x > 0 && s.y > 0) else { return };
+    if target.main_texture_format() != HDR_FORMAT {
+        return;
+    }
+    let device = ctx.render_device().clone();
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    use bevy::render::diagnostic::RecordDiagnostics;
+    let span = diagnostics.time_span(ctx.command_encoder(), "fx_decals");
+    let depth_view = depth.texture().create_view(&TextureViewDescriptor { aspect: TextureAspect::DepthOnly, ..default() });
+    let none = &fallback.d2.texture_view;
+    let sprite = images.get(&input.sprite).map_or(none, |i| &i.texture_view);
+    let group = bind_group(&device, &cache, &layouts[m], view_binding, (records, light), &depth_view, [(none, none), (none, none)], (sprite, sampler), tint);
+    let scene = RenderPassColorAttachment { view: target.main_texture_view(), depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } };
+    let encoder = ctx.command_encoder();
+    let mut p = encoder.begin_render_pass(&RenderPassDescriptor { label: Some("fx_decals"), color_attachments: &[Some(scene)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+    p.set_viewport(0.0, 0.0, solid.x as f32, solid.y as f32, 0.0, 1.0);
+    p.set_pipeline(pipeline);
+    p.set_bind_group(0, &group, &[offset.offset]);
+    for i in 0..CRATERS as u32 {
+        if input.craters & (1 << i) != 0 {
+            p.draw(0..DECAL_VERTICES, i..i + 1);
+        }
+    }
+    drop(p);
+    span.end(ctx.command_encoder());
 }
 
 /// The effects, into the solids' corner of the main texture. With the clouds off, or before they've drawn, the fallback images dim nothing.
@@ -593,14 +867,21 @@ fn fx_pass(
     cache: Res<PipelineCache>,
     uniforms: Res<ViewUniforms>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    images: Res<RenderAssets<GpuImage>>,
     fallback: Res<FallbackImage>,
     (history, near_history, frame): (Res<CloudHistory>, Res<NearHistory>, Res<bevy::diagnostic::FrameCount>),
     mut ctx: RenderContext,
 ) {
     let (target, depth, camera, offset, msaa, low, clouds) = view.into_inner();
     let m = (msaa.samples() > 1) as usize;
-    let (Some(layouts), Some(pipeline), Some(view_binding)) = (pass.layouts.as_ref(), pass.pipelines[m].and_then(|id| cache.get_render_pipeline(id)), uniforms.uniforms.binding()) else { return };
+    let (Some(layouts), Some(pipeline), Some(view_binding), Some(sampler), Some(tint)) =
+        (pass.layouts.as_ref(), pass.pipelines[m].and_then(|id| cache.get_render_pipeline(id)), uniforms.uniforms.binding(), pass.sampler.as_ref(), pass.tint.as_ref())
+    else {
+        return;
+    };
     let (Some(records), Some(light)) = (buffers.get(&input.records), buffers.get(&input.light)) else { return };
+    // (The dust's pipeline may still be building: then it waits, the rest draws.)
+    let dust_pipeline = pass.dust[m].and_then(|id| cache.get_render_pipeline(id));
     let Some(solid) = low.map(|l| l.0).or(camera.physical_viewport_size).filter(|s| s.x > 0 && s.y > 0) else { return };
     if target.main_texture_format() != HDR_FORMAT {
         return;
@@ -613,28 +894,23 @@ fn fx_pass(
     let depth_view = depth.texture().create_view(&TextureViewDescriptor { aspect: TextureAspect::DepthOnly, ..default() });
     let none = &fallback.d2.texture_view;
     let [far, near] = clouds.map_or([None, None], |t| t.drawn(&history, &near_history, frame.0));
-    let (far_res, far_dist) = far.unwrap_or((none, none));
-    let (near_res, near_dist) = near.unwrap_or((none, none));
-    let group = device.create_bind_group(
-        "hero_fx",
-        &cache.get_bind_group_layout(&layouts[m]),
-        &BindGroupEntries::with_indices((
-            (0, view_binding),
-            (1, records.buffer.as_entire_binding()),
-            (2, light.buffer.as_entire_binding()),
-            (3, &depth_view),
-            (4, far_res),
-            (5, far_dist),
-            (6, near_res),
-            (7, near_dist),
-        )),
-    );
+    let sprite = images.get(&input.sprite).map_or(none, |i| &i.texture_view);
+    let group = bind_group(&device, &cache, &layouts[m], view_binding, (records, light), &depth_view, [far.unwrap_or((none, none)), near.unwrap_or((none, none))], (sprite, sampler), tint);
     let scene = RenderPassColorAttachment { view: target.main_texture_view(), depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } };
     let encoder = ctx.command_encoder();
     let mut p = encoder.begin_render_pass(&RenderPassDescriptor { label: Some("hero_fx"), color_attachments: &[Some(scene)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
     p.set_viewport(0.0, 0.0, solid.x as f32, solid.y as f32, 0.0, 1.0);
-    p.set_pipeline(pipeline);
     p.set_bind_group(0, &group, &[offset.offset]);
+    // The dust first, blended over the scene: the glowing effects add on top of it.
+    if let Some(dust) = dust_pipeline.filter(|_| input.dust.iter().any(|&q| q > 0)) {
+        p.set_pipeline(dust);
+        for (i, &quads) in input.dust.iter().enumerate() {
+            if quads > 0 {
+                p.draw(0..6 * quads as u32, i as u32..i as u32 + 1);
+            }
+        }
+    }
+    p.set_pipeline(pipeline);
     if input.segments > 0 {
         p.draw(0..6 * input.segments, FX_TRAIL..FX_TRAIL + 1);
     }
@@ -649,7 +925,6 @@ fn fx_pass(
             p.draw(0..6, FX_RING + i..FX_RING + i + 1);
         }
     }
-    // Step 8: the dust's draw goes here, out of `FxRecordsGpu::dust` (64 bursts of up to 64 quads, a kind of its own in `hero_fx.wesl`).
     drop(p);
     span.end(ctx.command_encoder());
 }

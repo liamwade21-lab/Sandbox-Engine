@@ -1,12 +1,13 @@
 //! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry, the
 //! files' checks and the keys' snapshot (`ModInput`) are `crate::mods`.
 //!
-//! So far (step 7): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
-//! and jumps, and the camera follows him; the air booms and heats him. `hero.rs` is his state machine and each frame's move,
-//! `frames.rs` where he is, `ground.rs` what he stands on and where his feet go, `camera.rs` the chase camera, `air.rs` the one
-//! source of air and the boom's states, `sound.rs` his sounds by that air, `fx.rs` what the air does round him, `anim.rs` the
-//! sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are drawn and lit, `readout.rs` the corner readout,
-//! `tune.rs` every number to tune.
+//! So far (step 8): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
+//! and jumps, and the camera follows him; the air booms and heats him; he punches, punches the ground and claps, and hard landings
+//! leave craters and dust. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is, `ground.rs` what he stands
+//! on and where his feet go, `camera.rs` the chase camera, `air.rs` the one source of air and the boom's states, `sound.rs` his sounds
+//! by that air, `fx.rs` what the air does round him and the passes that draw it and the impacts, `impact.rs` the punches, the clap,
+//! the crater and dust pools and the shake, `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are
+//! drawn and lit, `readout.rs` the corner readout, `tune.rs` every number to tune.
 
 pub mod air;
 pub mod anim;
@@ -17,6 +18,7 @@ pub mod frames;
 pub mod fx;
 pub mod ground;
 pub mod hero;
+pub mod impact;
 pub mod readout;
 pub mod sound;
 pub mod tune;
@@ -51,6 +53,7 @@ impl Plugin for ViltrumitePlugin {
     fn build(&self, app: &mut App) {
         draw::build(app);
         fx::build(app);
+        app.add_plugins(MaterialPlugin::<impact::RimMaterial>::default());
         app.init_resource::<Hero>()
             .init_resource::<DevKeys>()
             .init_resource::<sound::Voices>()
@@ -84,6 +87,30 @@ impl Plugin for ViltrumitePlugin {
             )
             // What the air does round him, from the camera as the frame draws it.
             .add_systems(PostUpdate, fx::update_fx.run_if(hero_shown).after(draw::update_hero).before(UniverseSet::FloatingOrigin))
+            // The impacts' pools (made once he is), then the records written once. They run on after the mod is turned off while
+            // anything is in the pools (the aftermath, F3).
+            .add_systems(Update, impact::spawn_impacts.run_if(impacts_to_make))
+            .add_systems(
+                PostUpdate,
+                (impact::update_impacts, fx::upload)
+                    .chain()
+                    .run_if(impacts_running)
+                    .after(fx::update_fx)
+                    .after(draw::update_hero)
+                    .after(crate::terrain::update_node_transforms)
+                    .before(UniverseSet::FloatingOrigin),
+            )
+            // F7's shake: after the camera's transform is set from it, before the view's matrices.
+            .add_systems(
+                PostUpdate,
+                impact::apply_shake
+                    .run_if(impacts_running)
+                    .after(impact::update_impacts)
+                    .after(crate::camera::sync_camera_transform)
+                    .before(bevy::camera::CameraUpdateSystems)
+                    .before(bevy::transform::TransformSystems::Propagate)
+                    .before(crate::capture::follow_main),
+            )
             // His sounds, after his move. While he's off this is the one check, once the last voice has faded.
             .add_systems(PostUpdate, sound::play_sounds.run_if(sound::sound_running).after(hero::hero_move))
             .add_systems(
@@ -101,6 +128,16 @@ fn first_enable(control: Res<ModControl>, assets: Option<Res<HeroAssets>>, draws
 /// The mod is on and he is made.
 fn hero_shown(control: Res<ModControl>, assets: Option<Res<HeroAssets>>, draws: Option<Res<HeroDraws>>) -> bool {
     control.hero && assets.is_some() && draws.is_some()
+}
+
+/// He's made and the impacts' pools aren't yet.
+fn impacts_to_make(draws: Option<Res<HeroDraws>>, impacts: Option<Res<impact::Impacts>>, input: Option<Res<fx::FxInput>>) -> bool {
+    draws.is_some() && input.is_some() && impacts.is_none()
+}
+
+/// The impacts' systems: while he's on, or while the pools still hold something after he's been turned off (C22).
+fn impacts_running(control: Res<ModControl>, impacts: Option<Res<impact::Impacts>>, draws: Option<Res<HeroDraws>>) -> bool {
+    impacts.is_some() && draws.is_some() && (control.hero || control.aftermath)
 }
 
 fn to_hand_back(control: Res<ModControl>, hero: Res<Hero>) -> bool {
@@ -203,6 +240,13 @@ pub struct Hero {
     boom_log: Option<Trace>,
     /// The sounds asked for this frame: one function per trigger, `play_sounds` plays them.
     pub sound: Cues,
+    /// What the buttons are doing (step 8), its layer, the clips it plays (found once), and which punch is next.
+    pub action: impact::Action,
+    pub act_layer: impact::ActLayer,
+    pub act_clips: Option<impact::ActClips>,
+    pub punches: u8,
+    /// This frame's impacts, for the pools (`impact::update_impacts` drains them).
+    pub blasts: impact::Blasts,
 }
 
 impl Default for Hero {
@@ -255,6 +299,11 @@ impl Default for Hero {
             cruise: None,
             boom_log: None,
             sound: Cues::default(),
+            action: impact::Action::None,
+            act_layer: impact::ActLayer::default(),
+            act_clips: None,
+            punches: 0,
+            blasts: impact::Blasts::default(),
         }
     }
 }
@@ -267,7 +316,7 @@ fn facing(look: DVec3, up: DVec3) -> DQuat {
 }
 
 /// F3: the camera stays where it is, still; within 2 radii of a body it's bound to it, or the planet leaves
-/// (`travel_and_move`, camera.rs). The cursor comes back. The aftermath (craters, collapses draining) is steps 8 and 10's.
+/// (`travel_and_move`, camera.rs). The cursor comes back. The craters and dust stay and drain (the aftermath: `impact.rs`).
 fn hand_back(
     mut hero: ResMut<Hero>,
     mut cam: ResMut<FlyCamera>,
@@ -291,6 +340,7 @@ fn hand_back(
     hero.fx = fx::FxState::default();
     hero.cruise = None;
     hero.boom_log = None;
+    impact::reset(&mut hero);
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.follow = None;
@@ -391,7 +441,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `sound ...` (`sound::dev_command`):
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `crater [R]` | `dust [SIZE]` | `splash [SIZE]` | `impacts` | `sound ...` (`sound::dev_command`):
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
@@ -524,6 +574,32 @@ pub fn dev_command(world: &mut World, arg: &str) {
             }
         }
         "light" => world.resource_mut::<Hero>().light_path = if rest.eq_ignore_ascii_case("free") { LightPath::Free } else { LightPath::Auto },
+        "crater" | "dust" | "splash" => {
+            // A test's impact under him: a crater of R m with its dust, or dust (or the sea's spray) of SIZE m, as an impact would leave.
+            let size: f64 = rest.split_whitespace().next().and_then(|v| v.parse().ok()).unwrap_or(if verb == "crater" { 10.0 } else { 3.0 });
+            let mut hero = world.resource_mut::<Hero>();
+            let Some(obj) = hero.frame.body() else {
+                warn!("hero {verb}: he's on no body");
+                return;
+            };
+            let Frame::Attached { local_pos, .. } = hero.frame else {
+                warn!("hero {verb}: he's too far from the ground");
+                return;
+            };
+            let kind = match verb {
+                "crater" => impact::BlastKind::Crater(size),
+                "splash" => impact::BlastKind::Dust(size, impact::Style::Spray),
+                _ => impact::BlastKind::Dust(size, impact::Style::Plume),
+            };
+            hero.blasts.push(impact::Blast { obj, local: local_pos, kind, shake_m: size });
+        }
+        "impacts" => {
+            if let Some(mut i) = world.get_resource_mut::<impact::Impacts>() {
+                i.log = true;
+            } else {
+                info!("hero impacts: none made (the mod hasn't been turned on)");
+            }
+        }
         _ => warn!("hero: unknown command '{arg}'"),
     }
 }

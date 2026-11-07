@@ -543,7 +543,11 @@ pub(crate) fn hero_file(name: &str) -> Option<(Mesh4, [f32; 3])> {
     if !path.is_file() {
         path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
     }
-    let b = std::fs::read(&path).ok()?;
+    sehm_from_bytes(&std::fs::read(&path).ok()?)
+}
+
+/// A `SEHM` file's mesh (`hero_file`) from its bytes: also the Viltrumite mod's props (`viltrumite/impact.rs`).
+pub(crate) fn sehm_from_bytes(b: &[u8]) -> Option<(Mesh4, [f32; 3])> {
     let u = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
     if b.get(0..4) != Some(b"SEHM".as_slice()) || u(4)? != 1 {
         return None;

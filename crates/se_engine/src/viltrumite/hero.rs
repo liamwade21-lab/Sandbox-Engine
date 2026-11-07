@@ -28,6 +28,7 @@ use super::cape::CapeIn;
 use super::frames::{Frame, Ground, Motion, Outcome, Scene, height_over, to_local};
 use super::fx::{self, FxState};
 use super::ground::{self, Footing, Landing, WalkEvent, WalkIn};
+use super::impact::{self, Blast, BlastKind, Style};
 use super::readout::Readout;
 use super::tune;
 use super::{Hero, facing};
@@ -54,7 +55,7 @@ pub enum State {
     Jump,
     /// The short stop.
     Land,
-    /// The hard one. (The crater and dust are step 8's: `Hero.impact`.)
+    /// The hard one: a crater and dust (`impact.rs`).
     HardLanding,
 }
 
@@ -728,6 +729,7 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.boom = Boom::default();
     hero.fx = FxState::default();
     hero.cruise = None;
+    impact::reset(hero);
     // (Turned off at speed it still says Hyper, and the first frame would sound like leaving it.)
     hero.director.tier = Tier::Hover;
     cam.travel = None;
@@ -786,11 +788,15 @@ fn touch_down(hero: &mut Hero, s: &Scene, into: f64, out: &Outcome) {
                 hero.frame.set_local_velocity(DVec3::ZERO);
                 hero.impact = Some(Impact::Hard { obj, local: local_pos, speed: out.speed });
                 hero.sound.hard_landing();
+                let radius = impact::crater_radius(out.speed);
+                hero.blasts.push(Blast { obj, local: local_pos, kind: BlastKind::Crater(radius), shake_m: radius });
             }
         },
         Footing::Sea => {
             hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
             hero.sound.splash(out.speed);
+            let size = impact::splash_size(out.speed);
+            hero.blasts.push(Blast { obj, local: local_pos, kind: BlastKind::Dust(size, Style::Spray), shake_m: size * 0.5 });
             hover_over_sea(hero, s);
         }
         Footing::Nothing => {
@@ -893,6 +899,7 @@ pub(crate) fn hero_move(
         hero.boom = Boom::default();
         // (Or the trail would run from where he was.)
         hero.fx = FxState::default();
+        impact::reset(hero);
     }
     hero.carried = travelling;
     let carried_cam = travelling.then_some(cam.pos);
@@ -913,6 +920,8 @@ pub(crate) fn hero_move(
     };
     let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: tune::STAND_M };
 
+    // A ground punch or the clap holds his moves (`impact.rs`): X and Space do nothing meanwhile.
+    let busy = hero.action.locks();
     // The keys that change how he moves, before the frame's carry: falling, it and the step belong together (`Frame::carry`).
     if input.z && !travelling && !input.shift && !input.ctrl && !input.alt {
         // Z stops him, whatever he's doing (Go To's stop is input_controls'). On his feet he stays on them.
@@ -920,17 +929,17 @@ pub(crate) fn hero_move(
             hero.state = State::Hover;
         }
         hero.frame.set_velocity(&scene, DVec3::ZERO);
-    } else if input.x_pressed && !travelling && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
+    } else if input.x_pressed && !travelling && !busy && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
         hero.frame.to_ballistic(&scene);
         hero.state = State::Falling;
         hero.short_fall = false;
         hero.sound.stop_flying();
-    } else if input.space_pressed && matches!(hero.state, State::Falling | State::Jump) {
+    } else if input.space_pressed && !busy && matches!(hero.state, State::Falling | State::Jump) {
         // F4: he holds still where he is, at once. (Space still held, he flies up from there.) That's the double tap too:
         // the first press jumped, this is the second.
         hero.frame.set_velocity(&scene, DVec3::ZERO);
         hero.state = State::Hover;
-    } else if input.space_pressed && hero.state == State::Grounded && !travelling {
+    } else if input.space_pressed && hero.state == State::Grounded && !travelling && !busy {
         hero.sound.jump(hero.frame.velocity(&scene).length() >= tune::GAIT_SPRINT_MS.1);
         hero.frame.kick_up(tune::JUMP_MS);
         hero.state = State::Jump;
@@ -1011,10 +1020,13 @@ pub(crate) fn hero_move(
     let mut fall_starts = false;
     let aim = cam.rot;
     let (fwd, right, aim_up) = (aim * DVec3::NEG_Z, aim * DVec3::X, aim * DVec3::Y);
+    // The buttons (step 8): a punch, the ground punch, the clap's charge and the clap. A ground punch or the clap holds his moves.
+    impact::start(hero, &input, &scene, fwd, travelling, &assets);
+    let locked = hero.action.locks();
     let lift = up_here.unwrap_or(aim_up);
     let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * input.up as f64).normalize_or_zero();
     // (A Go To carries him: Shift and Ctrl held from Shift+G and Ctrl+G, or Space, fly nothing meanwhile.)
-    let mut flight_in = if travelling { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
+    let mut flight_in = if travelling || locked { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
     // Off the shore with the keys down: he hovers there until they're let go, or running into the sea launches him.
     if hero.keys_up_first {
         if flight_in.any() {
@@ -1052,7 +1064,7 @@ pub(crate) fn hero_move(
     if hero.state.on_foot() {
         hero.state_t += dt;
         // The keys, along the ground. (Looking straight down, the view's up says which way forward is.)
-        let keys = hero.state == State::Grounded && !travelling;
+        let keys = hero.state == State::Grounded && !travelling && !locked;
         let up = near.map_or(lift, |(b, local)| b.orient * local.normalize_or(DVec3::Y));
         let flat = fwd - up * fwd.dot(up);
         let view_up = aim_up * -fwd.dot(up).signum();
@@ -1084,6 +1096,7 @@ pub(crate) fn hero_move(
                 WalkEvent::Sea => {
                     if let Frame::Attached { obj, local_pos, .. } = hero.frame {
                         hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
+                        hero.blasts.push(Blast { obj, local: local_pos, kind: BlastKind::Dust(impact::splash_size(out.speed), Style::Spray), shake_m: 0.0 });
                     }
                     hero.sound.splash(out.speed);
                     hover_over_sea(hero, &scene);
@@ -1139,6 +1152,8 @@ pub(crate) fn hero_move(
         }
     }
     hero.ease = (hero.ease * (-dt / tune::GROUND_EASE_TAU_S).exp()).clamp(-tune::GROUND_EASE_MAX_M, tune::GROUND_EASE_MAX_M);
+    // The action's clock: the ground punch takes him down to the ground and lands, the punch lands, the clap claps.
+    impact::act(hero, &scene, fwd, dt);
 
     // Where that left him.
     let pos = hero.frame.world(&scene, hero.world.0);

@@ -350,7 +350,10 @@ pub fn feet_on(s: &Soles, world: impl Fn(usize) -> Affine3A, to_local: Mat3A, mi
 /// ground, at most `ROOT_DROP_MAX_M`, smoothed. Two-bone IK would go here: it has the pose and the ground.
 pub fn post_pose(hero: &mut Hero, clips: &ClipSet, body: Option<&(BodyInfo, DVec3)>, dt: f64) -> f64 {
     let on_foot = hero.state.on_foot();
-    let ground_z = hero.sampler.layers[0].clip.and_then(|i| clips.clips.get(i as usize)).map(|k| k.ground_z as f64);
+    // (A full-body action over the base, the ground punch or the clap, puts its own soles on the ground: `impact.rs`.)
+    let action = hero.sampler.layers[super::impact::ACTION_LAYER];
+    let layer = if action.weight >= 0.5 && action.mask & 1 != 0 { action } else { hero.sampler.layers[0] };
+    let ground_z = layer.clip.and_then(|i| clips.clips.get(i as usize)).map(|k| k.ground_z as f64);
     let target = match ground_z.filter(|_| on_foot) {
         // (`ground_z` is where the clip's lowest sole gets to: his root's that far over the ground.)
         Some(z) => -z - tune::STAND_M,

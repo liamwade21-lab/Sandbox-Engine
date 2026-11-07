@@ -288,6 +288,23 @@ or publishing the port.
   on turns with the body. A run's command queue waits while a Go To lasts, so no picture catches one in mid-flight: use `hero boom`'s log.
   Under a giant's radius his air goes on denser and hotter (`air.rs` `AirModel::deep`, SE's polytrope; `AtmoParams::state`, the ship's,
   holds the radius's 1 atm all the way down): Jupiter 17 atm at -100 km, where he falls at 63 m/s.
+- The mod's impacts (`viltrumite/impact.rs`; spec F11, step 8): `impact::start` reads the buttons before the frame's keys and `impact::act`
+  runs the action after his step (`Hero.action`, its layer the sampler's slot 4, its clock its own: rate 0); a ground punch or a clap holds
+  his keys (`Action::locks`). What an impact leaves goes into `Hero.blasts` (8, drained every frame by `update_impacts`), never straight
+  into the pools. The pools (`Impacts`: 32 craters, 64 bursts, made at first enable) run while he's on or while they hold anything
+  (`ModControl::aftermath` is "the pools hold something", set by `update_impacts` even while he's on, or turning him off would stop them
+  before they're marked); a crater is freed only when both he and the camera are `CRATER_FREE_M` (the buildings' `FAR_RANGE_M` + 500)
+  away, the camera alone in the aftermath, and never faded before (D3). Anything placed from `hero_move` must use the frame's position
+  this frame (`Frame::world(scene, ..)`), never `Hero.world` (last frame's: Earth moves 500 m a frame, and the clap's dust landed 480 m
+  off). Craters: `fx_decals` (`hero_fx.wesl` `decal_*`) multiplies the scene before the clouds, from the depth, so it follows the drawn
+  ground and takes its light; a crater's middle is re-read from the ground each frame. It leaves alone what stands up (derivative normals:
+  computed before any `return`, or the WGSL won't validate) and his capsule (kept above his soles: larger, it left a light disc at his
+  feet). Dust: `fx_pass`'s first draw, premultiplied over; its colour is read from the lit scene round each burst by `fx_dust_tint`
+  (a compute pass before the craters, its buffer keyed by the burst's seed), so it's the ground's own colour, light, night and cloud shadow.
+  Rims are `RimMaterial` (`hero_rim.wesl`), lit by his light record, never changed (not `HullMaterial`: it has no cloud shadow). The rims'
+  pipeline is built by one rim kept as a speck at the camera for `RIM_WARM_FRAMES` after first enable. Dev verbs: `hero crater [R]`,
+  `hero dust [S]`, `hero splash [S]`, `hero impacts` (logs the pools, works in the aftermath). Scenes: `.optimize/bench/hero_crater.sh`,
+  `hero_actions.sh`, `hero_splash.sh`, `hero_keep.sh` (kept, freed at 20.5 km, the mod off), `hero_impact_cost.sh`.
 - Keep test runs short (the user, 2026-11-04): the ground loads in about 30 s after a jump, so wait
   about that (`wait 1500`-`2400` with `timing frame`, which runs as fast as it can), take the picture
   and end the run; never a fixed wait of several minutes "to be safe". The star browser's search
