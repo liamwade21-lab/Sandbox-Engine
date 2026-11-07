@@ -3,7 +3,8 @@
 // `point_light_at`). Once a frame instead of per vertex: it reads about 30 textures, and he has 165,706
 // vertices. Only his own draws read the result.
 
-import super::ground_light::{CloudShadow, point_light_at};
+import super::eclipse::eclipse_light;
+import super::ground_light::{CloudShadow, point_light_at, cloud_shadow_at};
 import super::hero_frame::{HeroFrame, HeroLight};
 
 @group(0) @binding(0) var<storage, read> frame: HeroFrame;
@@ -59,5 +60,9 @@ fn light() {
         cloud_pattern,
         frame.point.xyz,
     );
-    out_light = HeroLight(vec4<f32>(pl.sun, 0.0), vec4<f32>(pl.sky, 0.0), vec4<f32>(pl.flat_e, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
+    // How much of the star's direct light clouds and an eclipse let through here, for his shadow: they take the sky light in the same
+    // proportion (`point_light_at`), so the light alone doesn't say. The same call and arguments as its own.
+    let direct = cloud_shadow_at(sh, cloud_cover, cloud_cover_smp, cloud_map, cloud_map_smp, cloud_weather, cloud_pattern, b.centre.w, b.key.xy, normalize(local), length(rel) - b.centre.w)
+        * dot(eclipse_light(frame.light.eclipse[0], rel / b.centre.w, normalize(frame.light.sun_dir.xyz)), vec3<f32>(1.0 / 3.0));
+    out_light = HeroLight(vec4<f32>(pl.sun, direct), vec4<f32>(pl.sky, 0.0), vec4<f32>(pl.flat_e, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
 }

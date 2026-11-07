@@ -3,15 +3,15 @@
 //!
 //! Layer order is the order they are applied. A full clip (not `CLIP_PARTIAL`) sends every bone under its
 //! mask to the clip's pose, and a bone without a track to its rest pose. A partial clip moves only the bones
-//! it has tracks for. The slots: 0 the base clip, 1-3 the leans, 4 a masked action (step 8), 5 turning (step 5).
+//! it has tracks for. The slots: 0 the base clip, 1-3 the leans, 4 a masked action (step 8), 5 free.
 //!
 //! A crossfade starts from a frozen copy of the pose as it stands ([`Sampler::crossfade`]), not from a second
 //! running clip: it can't pop however often the base changes, and it takes no slots.
 
-use bevy::math::{Affine3A, Mat3A, Quat, Vec3, Vec3A, Vec4};
+use bevy::math::{Affine3A, Quat, Vec3, Vec4};
 use se_core::hero_asset::{Clip, ClipSet, HeroModel, MAX_BONES};
 
-use super::tune::CAPE_HANG;
+use super::cape::{Cape, CapeIn};
 
 pub const LAYERS: usize = 6;
 
@@ -25,11 +25,13 @@ pub struct Layer {
     pub weight: f32,
     /// The bones this layer may move (bit n, bone n).
     pub mask: u128,
+    /// How fast its clock runs (a gait's speed over its stride).
+    pub rate: f32,
 }
 
 impl Default for Layer {
     fn default() -> Self {
-        Layer { clip: None, time: 0.0, weight: 0.0, mask: u128::MAX }
+        Layer { clip: None, time: 0.0, weight: 0.0, mask: u128::MAX, rate: 1.0 }
     }
 }
 
@@ -50,6 +52,9 @@ pub struct Sampler {
     world: [Affine3A; MAX_BONES],
     /// `world * inverse_bind`: what skins a vertex, in model space.
     skin: [Affine3A; MAX_BONES],
+    /// The cape's springs and what moves them this frame (`dt` 0: it just keeps its place).
+    pub cape: Cape,
+    pub cape_in: CapeIn,
 }
 
 impl Default for Sampler {
@@ -65,6 +70,8 @@ impl Default for Sampler {
             sampled: false,
             world: [Affine3A::IDENTITY; MAX_BONES],
             skin: [Affine3A::IDENTITY; MAX_BONES],
+            cape: Cape::default(),
+            cape_in: CapeIn::default(),
         }
     }
 }
@@ -85,7 +92,7 @@ impl Sampler {
     /// Plays `clip` alone on the base layer from `time`.
     pub fn play(&mut self, clip: u16, time: f32) {
         self.layers = [Layer::default(); LAYERS];
-        self.layers[0] = Layer { clip: Some(clip), time, weight: 1.0, mask: u128::MAX };
+        self.layers[0] = Layer { clip: Some(clip), time, weight: 1.0, ..Layer::default() };
     }
 
     /// From now on, over `seconds`, the pose eases from what it is this moment to what the layers say.
@@ -97,6 +104,14 @@ impl Sampler {
         self.from_pos = self.pos;
         self.fade_t = 0.0;
         self.fade_s = seconds;
+    }
+
+    /// His body has just taken over `yaw` radians of turn (about model +Z) from the root's: turns the pose as it stands
+    /// the other way, so a crossfade starting now sees no jump.
+    pub fn rebase_yaw(&mut self, yaw: f32) {
+        let q = Quat::from_rotation_z(-yaw);
+        self.rot[0] = (q * self.rot[0]).normalize();
+        self.pos[0] = q * self.pos[0];
     }
 
     /// Moves the looping layers' clocks on by `dt` seconds. (Lean layers keep the time they are given.)
@@ -112,7 +127,7 @@ impl Sampler {
             if c.lean() {
                 continue;
             }
-            l.time += dt;
+            l.time += dt * l.rate;
             // Keeps float time accurate through a long session.
             if c.looping() && c.duration > 0.0 && l.time > c.duration {
                 l.time = l.time.rem_euclid(c.duration);
@@ -178,14 +193,14 @@ impl Sampler {
                 None => local,
             };
         }
-        hang_cape(model, &mut self.world);
+        let cape_in = std::mem::take(&mut self.cape_in);
+        self.cape.step(model, &mut self.world, cape_in);
         for (i, b) in model.bones.iter().take(n).enumerate() {
             self.skin[i] = self.world[i] * Affine3A::from_mat4(b.inverse_bind);
         }
     }
 
     /// A bone in model space.
-    #[cfg(test)]
     pub fn world(&self, bone: usize) -> Affine3A {
         self.world[bone]
     }
@@ -204,44 +219,10 @@ fn rows(m: Affine3A) -> [Vec4; 3] {
     [Vec4::new(x.x, y.x, z.x, t.x), Vec4::new(x.y, y.y, z.y, t.y), Vec4::new(x.z, y.z, z.z, t.z)]
 }
 
-/// The cape until its springs arrive (step 5): each chain's first joint stays rigid with the chest, the
-/// others ease most of the way to hanging straight down in model space, as the contact sheet's pose does. A
-/// link's bind world rotation is the identity, so its local position is its bind vector.
-fn hang_cape(model: &HeroModel, world: &mut [Affine3A; MAX_BONES]) {
-    let Some(first) = model.cape_first else { return };
-    let (first, chains, links) = (first as usize, model.cape_chains as usize, model.cape_links as usize);
-    let down = Vec3::new(0.0, 0.0, -1.0);
-    for c in 0..chains {
-        let root = first + c * links;
-        let top = world[root].matrix3;
-        for l in 1..links {
-            let i = root + l;
-            if i >= model.bones.len().min(MAX_BONES) {
-                return;
-            }
-            let bind = model.bones[i].position;
-            let length = bind.length();
-            if length < 1e-6 {
-                world[i] = world[i - 1];
-                continue;
-            }
-            let rest_dir = Vec3::from(top * Vec3A::from(bind)) / length;
-            let want = (rest_dir * 0.3 + down * CAPE_HANG).normalize_or(down);
-            // The chest's turn first, then from the chain's rest direction to hanging: he faces the other way
-            // from his bind pose, and without the chest's turn the normals stay in the bind's direction, on
-            // the side of the cloth away from what shows.
-            world[i] = Affine3A {
-                matrix3: Mat3A::from_quat(Quat::from_rotation_arc(rest_dir, want)) * top,
-                translation: world[i - 1].translation + Vec3A::from(want * length),
-            };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bevy::math::Mat4;
+    use bevy::math::{Mat4, Vec3A};
     use se_core::hero_asset::{CLIP_LOOP, CLIP_PARTIAL, ClipTrack, HeroBone};
 
     fn bone(parent: Option<u16>, position: Vec3, world: Mat4) -> HeroBone {
@@ -327,9 +308,9 @@ mod tests {
     fn a_partial_clip_leaves_the_rest_to_the_layer_below() {
         let (m, c) = (model(), clips());
         let mut s = Sampler::default();
-        s.layers[0] = Layer { clip: Some(0), time: 1.0 / 30.0 - 1e-5, weight: 1.0, mask: u128::MAX };
+        s.layers[0] = Layer { clip: Some(0), time: 1.0 / 30.0 - 1e-5, weight: 1.0, ..Layer::default() };
         // A partial layer on no bone it has a track for moves nothing.
-        s.layers[1] = Layer { clip: Some(1), time: 0.0, weight: 1.0, mask: 1 << 2 };
+        s.layers[1] = Layer { clip: Some(1), time: 0.0, weight: 1.0, mask: 1 << 2, ..Layer::default() };
         s.sample(&m, &c);
         let above = s.world(2).translation;
         s.layers[1] = Layer::default();
@@ -344,7 +325,7 @@ mod tests {
         let (mut s, mut plain) = (Sampler::default(), Sampler::default());
         s.crossfade(0.35);
         for x in [&mut s, &mut plain] {
-            x.layers[0] = Layer { clip: Some(1), time: 0.0, weight: 1.0, mask: u128::MAX };
+            x.layers[0] = Layer { clip: Some(1), time: 0.0, weight: 1.0, ..Layer::default() };
             x.sample(&m, &c);
         }
         assert_eq!(s.world(2).translation, plain.world(2).translation);
@@ -355,7 +336,7 @@ mod tests {
     fn weights_blend_and_quaternions_take_the_short_way() {
         let (m, c) = (model(), clips());
         let mut s = Sampler::default();
-        s.layers[0] = Layer { clip: Some(1), time: 1.0 / 30.0 - 1e-5, weight: 0.5, mask: u128::MAX };
+        s.layers[0] = Layer { clip: Some(1), time: 1.0 / 30.0 - 1e-5, weight: 0.5, ..Layer::default() };
         s.sample(&m, &c);
         // Half way from rest to 90 degrees, by nlerp (45 degrees here, by symmetry).
         let d = Vec3::from(s.world(2).translation - s.world(1).translation);

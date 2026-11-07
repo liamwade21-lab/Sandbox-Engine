@@ -255,7 +255,12 @@ fn vertex(v: Vertex) -> VertexOut {
     if planet.biomes.flags.y > 0.5 && planet.water.w < 0.5 {
         let scale = length(world_from_local[0].xyz);
         let w0 = (world_from_local * vec4<f32>(local, 1.0)).xyz;
-        let fade = clamp(2.0 - length(w0) / max(scale, 1e-30) / 1000.0, 0.0, 1.0);
+        var fade = clamp(2.0 - length(w0) / max(scale, 1e-30) / 1000.0, 0.0, 1.0);
+        // The Viltrumite mod's hero: his feet go by the ground's heights, which don't hold the stones, so they hold still round him
+        // (the normal maps keep them). With the mod off, nothing.
+        if cloud_sh.hero.w > 0.5 {
+            fade *= smoothstep(1.5, 8.0, length(w0 / max(scale, 1e-30) - cloud_sh.hero.xyz));
+        }
         if fade > 0.0 {
             let up_l = normalize(local - planet.planet.xyz);
             let slope = 1.0 - clamp(dot(normalize(v.normal), up_l), 0.0, 1.0);

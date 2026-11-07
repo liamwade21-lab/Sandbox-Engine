@@ -3,8 +3,9 @@
 // so he never goes through the scaled space. His light is the ground's (hero_light.wesl writes it once a
 // frame); the pixels add only the normal's part, the street_surface highlight and the lamps. The opaque
 // draws never discard, so the early depth test stays; cutouts (the hair) take `fragment_cutout` in the
-// alpha-mask phase.
+// alpha-mask phase. His shadow is the same meshes again (`vertex_shadow`, `fragment_shadow`, the Multiply phase).
 
+import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import super::ground_light::{PointLight, lit_surface};
 import super::hero_frame::{HeroFrame, HeroLight};
@@ -42,17 +43,26 @@ struct VertexOut {
     @location(8) @interpolate(flat) haze_a: vec3<f32>,
 }
 
-@vertex
-fn vertex(v: Vertex) -> VertexOut {
-    // The joints' rows, by weight.
+// The vertex's skinning matrix, as its three rows, by weight.
+fn skin_rows(v: Vertex) -> array<vec4<f32>, 3> {
     let w = v.weights;
     let j0 = frame.joints[v.joints.x];
     let j1 = frame.joints[v.joints.y];
     let j2 = frame.joints[v.joints.z];
     let j3 = frame.joints[v.joints.w];
-    let r0 = j0[0] * w.x + j1[0] * w.y + j2[0] * w.z + j3[0] * w.w;
-    let r1 = j0[1] * w.x + j1[1] * w.y + j2[1] * w.z + j3[1] * w.w;
-    let r2 = j0[2] * w.x + j1[2] * w.y + j2[2] * w.z + j3[2] * w.w;
+    return array<vec4<f32>, 3>(
+        j0[0] * w.x + j1[0] * w.y + j2[0] * w.z + j3[0] * w.w,
+        j0[1] * w.x + j1[1] * w.y + j2[1] * w.z + j3[1] * w.w,
+        j0[2] * w.x + j1[2] * w.y + j2[2] * w.z + j3[2] * w.w,
+    );
+}
+
+@vertex
+fn vertex(v: Vertex) -> VertexOut {
+    let rows = skin_rows(v);
+    let r0 = rows[0];
+    let r1 = rows[1];
+    let r2 = rows[2];
     let p = vec4<f32>(v.position, 1.0);
     let world = vec3<f32>(dot(r0, p), dot(r1, p), dot(r2, p));
     var o: VertexOut;
@@ -121,4 +131,53 @@ fn fragment_cutout(in: VertexOut, @builtin(front_facing) front: bool) -> @locati
         discard;
     }
     return shade(in, diff.rgb, select(-1.0, 1.0, front));
+}
+
+// His shadow: the vertex along the star onto the plane. A star on or under the plane's horizon, or no shadow, draws nothing.
+@vertex
+fn vertex_shadow(v: Vertex) -> @builtin(position) vec4<f32> {
+    let rows = skin_rows(v);
+    let p = vec4<f32>(v.position, 1.0);
+    let world = vec3<f32>(dot(rows[0], p), dot(rows[1], p), dot(rows[2], p));
+    let n = frame.shadow_plane.xyz;
+    let l = normalize(frame.light.sun_dir.xyz);
+    let denom = dot(n, l);
+    if denom < 0.02 || frame.shadow.x <= 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    // (Parts dipping under the plane stay on it.)
+    let over = max(dot(n, world) + frame.shadow_plane.w, 0.0);
+    return position_world_to_clip(world - l * over / denom);
+}
+
+struct ShadowFragment {
+    // The Multiply phase: what's there times this.
+    @location(0) factor: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
+// Each pixel's factor once, however many triangles cover it: the depth is this pixel's ray on the plane, the same bits from any
+// triangle, and the test is Greater, so the first wins. Through `main_pass_viewport`: under the render scale the pixels fill only a
+// corner of the target (`frag_coord_to_ndc` goes by `view.viewport`, the whole of it).
+@fragment
+fn fragment_shadow(@builtin(position) coord: vec4<f32>) -> ShadowFragment {
+    let vp = view.main_pass_viewport;
+    let ndc = vec2<f32>((coord.x - vp.x) / vp.z * 2.0 - 1.0, 1.0 - (coord.y - vp.y) / vp.w * 2.0);
+    let near = view.world_from_clip * vec4<f32>(ndc, 1.0, 1.0);
+    let origin = view.world_position;
+    let ray = near.xyz / near.w - origin;
+    let n = frame.shadow_plane.xyz;
+    let t = -(dot(n, origin) + frame.shadow_plane.w) / dot(n, ray);
+    let clip = view.clip_from_world * vec4<f32>(origin + ray * t, 1.0);
+    // The light the plane gets, without the star's: as the ground's `lit` term. Night fades it by itself, there's little star to take
+    // away. Clouds and an eclipse take the sky light with the star's (`point_light_at`), so that ratio stays: it's their share of the
+    // direct light that fades it, gone where nothing direct is left (the clouds' floor is a quarter: `cloud_shadow_at`).
+    let sun = hero_light.sun.rgb * max(dot(n, normalize(frame.light.sun_dir.xyz)), 0.0);
+    let rest = hero_light.sky.rgb + hero_light.flat_e.rgb + vec3<f32>(1e-6);
+    let factor = rest / (sun + rest);
+    let direct = clamp((hero_light.sun.w - 0.25) / 0.75, 0.0, 1.0);
+    var o: ShadowFragment;
+    o.factor = vec4<f32>(mix(vec3<f32>(1.0), factor, frame.shadow.x * direct), 1.0);
+    o.depth = clip.z / clip.w;
+    return o;
 }

@@ -173,25 +173,27 @@ The **Mods** button (tools toolbar, bottom left) lists the mods built into the g
 `crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
 that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
 build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The
-first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies and falls; walking, sound, the sonic boom and heat, impacts and breakable buildings are still to come. The row reads Loading for the moment before he appears, and a damaged file greys it. 
+first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies, falls, lands, walks, runs and jumps, with a shadow and a cape that moves; sound, the sonic boom and heat, impacts and breakable buildings are still to come. The row reads Loading for the moment before he appears, and a damaged file greys it. 
 
 While he is on the panels are hidden and a small readout (speed, Mach in air, height, gravity, heat) stands in the corner:
 
 | Input | What he does |
 |---|---|
 | Mouse | Looks. Below the atmosphere's height the view keeps the horizon level, above it it's free |
-| W, A, S, D | Fly at 20 m/s. W alone keeps the speed he has; with no keys the speed halves every 0.15 s and he hovers |
+| W, A, S, D | Fly at 20 m/s. W alone keeps the speed he has; with no keys the speed halves every 0.15 s and he hovers. On the ground: walk, 1.8 m/s |
 | Shift | Boost: 300 m/s after 1 s, 3 km/s after 3 s, 30 km/s after 6 s. In air that's the limit (below 25 scale heights); in space it doubles every second, the speed of light about 13 s later, 1000 c about 23 s later, easing near anything (at most 3 times the distance to the nearest surface per second) |
-| Space, Ctrl | Fly up, down |
+| Shift on the ground | Run, 5 m/s; held 1.5 s, sprint, 11 m/s |
+| Space, Ctrl | Fly up, down. Ctrl into the ground is a landing: without it he slides along it |
+| Space on the ground | Jump, 28 m/s up: 40 m on Earth, 242 m on the Moon. Press it again in the air (the double tap) and he hovers there |
 | X | Stop flying: real gravity and drag, 45 m/s at the bottom of Earth's air, an orbit if he's fast enough |
 | Space while falling | Stops the fall at once: he hovers where he is |
-| Z | Stop dead, in the air |
+| Z | Stop dead, in the air; on the ground he just stops walking |
 | Wheel | Camera nearer or further (2.5 to 200 m) |
 | Tab | The menus: the panels come back and the mouse goes to them, the keys stay his. Tab again to go back. The same happens by itself when the window loses the focus |
 | G, Shift+G, Ctrl+G | Go to the selection, land on it, go to its centre, as usual: it carries him (into a solid body's centre, as far as its ground); WASD or Z stop it |
 | T | Nothing: the camera follows him, so it can't track |
 
-He plays on the real clock: the same at x1000 and when paused, and while hovering he holds his place over the ground whatever the clock does. Until walking arrives the ground simply stops him just above it. Starting to pilot a ship or a script turns the mod off first. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
+He plays on the real clock: the same at x1000 and when paused, and while hovering he holds his place over the ground whatever the clock does. He lands by how fast he comes down: under 12 m/s he's straight on his feet, up to 35 m/s a short stop, faster a hard landing (the crater comes with a later step). On foot he walks up slopes to 50 degrees and slides down steeper ones, steeper than 70 is a wall, and he falls off ledges. Over the sea he stops 1.5 m up and hovers (fly to land to walk on); a gas giant, a star, a black hole or a comet model only stop him: he hovers there too. His shadow falls the way the sun says, fades as he climbs (gone by 200 m), under cloud and at dusk. Starting to pilot a ship or a script turns the mod off first. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 
 ## Architecture
 

@@ -24,6 +24,7 @@ use se_core::upos::UPos;
 
 use crate::ship::{BodyInfo, frame_terms, gravity_at};
 
+use super::ground::Footing;
 use super::tune;
 
 /// The body a `Free` hero goes with this frame.
@@ -87,6 +88,8 @@ pub struct Scene<'a> {
     pub vel: &'a dyn Fn(ObjectRef) -> DVec3,
     /// The ground at a point of the body's frame.
     pub ground: &'a dyn Fn(&BodyInfo<'_>, DVec3) -> Ground,
+    /// What's there to stand on at a point of the body's frame.
+    pub footing: &'a dyn Fn(&BodyInfo<'_>, DVec3) -> Footing,
     /// The drag per metre (`0.5 rho CdA/m`) at a point of the body's frame.
     pub drag: &'a dyn Fn(&BodyInfo<'_>, DVec3) -> f64,
     /// His middle stays this far over the ground.
@@ -96,11 +99,16 @@ pub struct Scene<'a> {
 /// What a step ran into.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Outcome {
-    /// He hit the ground: his speed towards it (m/s).
+    /// He fell onto the ground: his speed towards it (m/s).
     pub contact: Option<f64>,
+    /// He flew into the ground, and slid: his speed towards it (m/s). What Ctrl turns into a landing.
+    pub flown_into: Option<f64>,
+    /// With either: his speed over the ground, and his velocity along it (body frame), as they were.
+    pub speed: f64,
+    pub along: DVec3,
 }
 
-fn find<'b, 'a>(s: &'b Scene<'a>, obj: ObjectRef) -> Option<&'b BodyInfo<'a>> {
+pub(super) fn find<'b, 'a>(s: &'b Scene<'a>, obj: ObjectRef) -> Option<&'b BodyInfo<'a>> {
     s.bodies.iter().find(|b| b.obj == obj)
 }
 
@@ -461,7 +469,10 @@ impl Frame {
                 // ground the trace's first metre is under the floor, every frame.)
                 Motion::Flown => {
                     if into > 0.0 {
+                        out.flown_into = Some(into);
+                        out.speed = v1.length();
                         v1 += up * into;
+                        out.along = v1;
                     }
                     let rest = p1 - hit;
                     let along = hit + rest - up * rest.dot(up).min(0.0);
@@ -472,6 +483,8 @@ impl Frame {
                 Motion::Ballistic if loaded.is_none() => v1 = DVec3::ZERO,
                 Motion::Ballistic => {
                     out.contact = Some(into.max(0.0));
+                    out.speed = v1.length();
+                    out.along = v1 + up * into;
                     v1 = DVec3::ZERO;
                 }
             }
@@ -511,6 +524,20 @@ impl Frame {
         match self {
             Frame::Attached { obj, local_vel, last_orient, .. } => *local_vel = find(s, *obj).map_or(*last_orient, |b| b.orient).inverse() * v,
             Frame::Free { vel, .. } => *vel = v,
+        }
+    }
+
+    /// His velocity along the body's frame, in that frame: on the ground, what walking steers.
+    pub fn set_local_velocity(&mut self, v: DVec3) {
+        if let Frame::Attached { local_vel, .. } = self {
+            *local_vel = v;
+        }
+    }
+
+    /// The jump's fixed impulse: straight up from where he stands.
+    pub fn kick_up(&mut self, speed: f64) {
+        if let Frame::Attached { local_pos, local_vel, .. } = self {
+            *local_vel += local_pos.normalize_or(DVec3::Y) * speed;
         }
     }
 
@@ -561,7 +588,37 @@ mod tests {
         let (spin, vel) = (move |_| w, move |_| v);
         let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: Some(3) };
         let dragf = move |_: &BodyInfo, _: DVec3| drag;
-        f(&Scene { bodies, spin: &spin, vel: &vel, ground: &ground, drag: &dragf, stand_m: 1.0 })
+        let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
+        f(&Scene { bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &dragf, stand_m: 1.0 })
+    }
+
+    /// The jump: 28 m/s up, gravity alone. Six times higher on the Moon, as gravity is a sixth. (Drag is the caller's: none rising.)
+    #[test]
+    fn a_jump_is_six_times_higher_on_the_moon() {
+        let height = |radius: f64, gm: f64| {
+            let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, radius, gm)];
+            with_scene(&bodies, DVec3::ZERO, DVec3::ZERO, 0.0, |s| {
+                let start = DVec3::Y * (radius + s.stand_m);
+                let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::ZERO, level: Some(3), last_orient: DQuat::IDENTITY };
+                f.kick_up(tune::JUMP_MS);
+                let mut most: f64 = 0.0;
+                for _ in 0..60 * 60 {
+                    f.carry(s, 1.0 / 60.0, Motion::Ballistic, UPos::ZERO);
+                    let o = f.advance(s, 1.0 / 60.0, Motion::Ballistic);
+                    most = most.max(local_of(&f, s, &bodies[0]).length() - radius - s.stand_m);
+                    if o.contact.is_some() {
+                        assert!((o.contact.unwrap() - tune::JUMP_MS).abs() < 0.5, "back at {:?}", o.contact);
+                        break;
+                    }
+                }
+                most
+            })
+        };
+        let earth = height(EARTH_R, 3.986e14);
+        let moon = height(1.7374e6, 4.905e12);
+        assert!((earth - 40.1).abs() < 0.5, "Earth {earth}");
+        assert!((moon - 242.0).abs() < 2.0, "Moon {moon}");
+        assert!((moon / earth - 6.04).abs() < 0.1, "{}", moon / earth);
     }
 
     fn local_of(f: &Frame, s: &Scene, b: &BodyInfo) -> DVec3 {
@@ -864,7 +921,8 @@ mod tests {
         let (spin, vel) = (|_| DVec3::ZERO, |_| DVec3::ZERO);
         let ground = |b: &BodyInfo, l: DVec3| Ground { radial: b.radius + l.normalize().x * b.radius * 0.1, level: Some(3) };
         let drag = |_: &BodyInfo, _: DVec3| 0.0;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: 1.0 };
+        let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
         let top = (s.ground)(&bodies[0], DVec3::Y).radial + 1.0;
         let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::X * 3000.0, level: None, last_orient: DQuat::IDENTITY };
         for _ in 0..60 {
@@ -897,7 +955,8 @@ mod tests {
         let (spin, vel) = (move |_| w, |_| DVec3::ZERO);
         let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: None };
         let drag = |_: &BodyInfo, _: DVec3| 0.0;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: 1.0 };
+        let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
         let start = DVec3::X * (EARTH_R + 50.0);
         let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::ZERO, level: None, last_orient: DQuat::IDENTITY };
         for _ in 0..60 {

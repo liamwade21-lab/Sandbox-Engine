@@ -17,10 +17,13 @@ struct HeroFrame {
     // rgb the street lamps' light at his place (the town's lights' colour times how far into a town he
     // is); 0 away from towns.
     town: vec4<f32>,
-    // Later steps: the aerodynamic glow, the cape's wind, the plane his shadow falls on.
+    // Later steps: the aerodynamic glow, the cape's wind.
     heat: vec4<f32>,
     wind: vec4<f32>,
+    // The plane his shadow falls on: xyz its normal, w such that dot(n, x) + w is the height over it (render frame).
     shadow_plane: vec4<f32>,
+    // x: how strong his shadow is (0: none).
+    shadow: vec4<f32>,
     // Light from the further stars and shining planets where no body's light record is copied (the CPU's
     // path, in space): xyz towards it, w 1 when used; rgb its light, in the ground's scale. Taken with his
     // own normals, in the pixels. Near a body they are in `light`, as the ground takes them.
@@ -32,7 +35,8 @@ struct HeroFrame {
     light: PatchLight,
 }
 
-// `point_light_at`'s result at `point`, written by hero_light.wesl before the main pass.
+// `point_light_at`'s result at `point`, written by hero_light.wesl before the main pass. sun.w: the share of the star's direct light
+// clouds and an eclipse let through (his shadow's strength).
 struct HeroLight {
     sun: vec4<f32>,
     sky: vec4<f32>,

@@ -1,16 +1,19 @@
 //! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry, the
 //! files' checks and the keys' snapshot (`ModInput`) are `crate::mods`.
 //!
-//! So far (step 4): he flies from hovering to far past light speed, falls and orbits under real gravity, and the camera
-//! follows him. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is, `camera.rs` the chase
-//! camera, `air.rs` the one source of air, `anim.rs` the sampler, `draw.rs` how he's drawn and lit, `readout.rs` the corner
-//! readout, `tune.rs` every number to tune.
+//! So far (step 5): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
+//! and jumps, and the camera follows him. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is,
+//! `ground.rs` what he stands on and where his feet go, `camera.rs` the chase camera, `air.rs` the one source of air,
+//! `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are drawn and lit, `readout.rs` the
+//! corner readout, `tune.rs` every number to tune.
 
 pub mod air;
 pub mod anim;
 pub mod camera;
+pub mod cape;
 pub mod draw;
 pub mod frames;
+pub mod ground;
 pub mod hero;
 pub mod readout;
 pub mod tune;
@@ -33,7 +36,8 @@ use crate::universe::{SimTime, UniverseSet};
 use anim::Sampler;
 use draw::HeroDraws;
 use frames::Frame;
-use hero::{Director, State};
+use ground::Soles;
+use hero::{Director, Impact, State};
 use readout::Readout;
 
 pub struct ViltrumitePlugin;
@@ -136,6 +140,37 @@ pub struct Hero {
     trace: Option<Trace>,
     /// `hero orbit K`: a test puts him in orbit next frame, at K x the circular speed.
     dev_orbit: Option<f64>,
+    /// Real seconds in this landing.
+    pub state_t: f64,
+    /// Seconds Shift has been held on his feet: a sprint after a while.
+    pub shift_t: f64,
+    /// Falling from a jump or off a ledge, not from flight.
+    pub short_fall: bool,
+    /// The last landing's event, for the effects (step 8).
+    pub impact: Option<Impact>,
+    /// A finer node moved the ground: his and the camera's drawn place are this far from his real place, along his up (m).
+    pub ease: f64,
+    /// The slope under him (degrees), and whether it's too steep to stand on.
+    pub slope_deg: f64,
+    pub sliding: bool,
+    /// His sole points, once.
+    pub soles: Option<Soles>,
+    /// His drawn root over the capsule's middle by the clip (m), eased, and how far it's dropped to the lower foot's ground.
+    pub clip_lift: f64,
+    pub root_drop: f64,
+    /// Last frame's velocity over the ground, and what the cloth feels, smoothed.
+    pub last_vel: DVec3,
+    pub felt: DVec3,
+    /// `hero feet`: a test's log of his soles against the ground.
+    feet: Option<Trace>,
+    /// `hero soil off`: the ground keeps its stones round him, to compare.
+    pub soil_off: bool,
+    /// `hero shadow off`: his shadow isn't drawn, to measure it.
+    pub shadow_off: bool,
+    /// He came down on the sea with keys held: they count again once let go.
+    pub keys_up_first: bool,
+    /// `hero hold on`: his body keeps facing where it does, so a test's camera can go round him.
+    pub hold_body: bool,
 }
 
 impl Default for Hero {
@@ -161,6 +196,23 @@ impl Default for Hero {
             placed: false,
             trace: None,
             dev_orbit: None,
+            state_t: 0.0,
+            shift_t: 0.0,
+            short_fall: false,
+            impact: None,
+            ease: 0.0,
+            slope_deg: 0.0,
+            sliding: false,
+            soles: None,
+            clip_lift: 0.0,
+            root_drop: 0.0,
+            last_vel: DVec3::ZERO,
+            felt: DVec3::ZERO,
+            feet: None,
+            soil_off: false,
+            shadow_off: false,
+            keys_up_first: false,
+            hold_body: false,
         }
     }
 }
@@ -181,10 +233,16 @@ fn hand_back(
     sim: Res<SimTime>,
     bodies: Query<&SystemBody>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
+    mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
 ) {
     hero.placed = false;
+    soil.0 = Vec4::ZERO;
+    hero.state = State::Hover;
+    hero.ease = 0.0;
+    hero.impact = None;
     hero.director.pinned = false;
     hero.trace = None;
+    hero.feet = None;
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.follow = None;
@@ -285,7 +343,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `orbit K` | `clip NAME|auto` | `light auto|free`:
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free`:
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
@@ -322,6 +380,10 @@ pub fn dev_command(world: &mut World, arg: &str) {
             let _ = world.run_system_cached(log_state);
         }
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
+        "dist" => world.resource_mut::<Hero>().dist = rest.parse().unwrap_or(tune::CAM_DIST_M),
+        "soil" => world.resource_mut::<Hero>().soil_off = rest.eq_ignore_ascii_case("off"),
+        "hold" => world.resource_mut::<Hero>().hold_body = rest.eq_ignore_ascii_case("on"),
+        "shadow" => world.resource_mut::<Hero>().shadow_off = rest.eq_ignore_ascii_case("off"),
         "trace" => {
             let (file, body) = rest.split_once(' ').map_or((rest, ""), |(a, b)| (a, b.trim()));
             let body = if body.is_empty() { None } else { world.resource::<SeData>().catalog.find(body) };
@@ -337,6 +399,24 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     }
                     Err(e) => {
                         warn!("hero trace: {file}: {e}");
+                        None
+                    }
+                }
+            };
+        }
+        "feet" => {
+            let mut hero = world.resource_mut::<Hero>();
+            hero.feet = if rest.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                match std::fs::File::create(rest) {
+                    Ok(f) => {
+                        let mut w = std::io::BufWriter::new(f);
+                        let _ = writeln!(w, "clock,state,pose,time,speed,level,slope,gap_l,gap_r,lower,root_drop,clip_lift,ease,height");
+                        Some(Trace { out: w, body: None })
+                    }
+                    Err(e) => {
+                        warn!("hero feet: {rest}: {e}");
                         None
                     }
                 }
@@ -428,13 +508,14 @@ fn log_state(
         Frame::Attached { local_pos, local_vel, level, .. } => format!("attached to {body}, level {level:?}, {:.3} m from its centre, {:.3} m/s", local_pos.length(), local_vel.length()),
         Frame::Free { vel, .. } => format!("free, carried by {body}, {:.3} m/s in the frame", vel.length()),
     };
+    let on_foot = format!("slope {:.1} sliding {} ease {:.3} root drop {:.3} last impact {:?}", hero.slope_deg, hero.sliding, hero.ease, hero.root_drop, hero.impact);
     let r = &hero.readout;
     let d = &hero.director;
     let travel = cam.travel.as_ref().map(|t| matches!(t.kind, TravelKind::Goto | TravelKind::Land));
     let grab = cursor.single().map_or("no window".to_string(), |c| format!("{:?} visible {}", c.grab_mode, c.visible));
     let selected = cam.selected.map_or("nothing".to_string(), |o| data.catalog.display_name(o).to_string());
     info!(
-        "hero: on {} loading {} pipelines {:?}, state {:?}, tier {:?}, pose {:?}, {frame}; {near}; speed {} ({:.3} m/s), mach {:?}, height {:?}, gravity {:.3} g; {:.2} m from the camera; ramp {:.2} s; clock {:.2} s, sim rate {} paused {}; menus {} unfocused {}; cursor {grab}; input {:?} {:?} {:?} shift {} ctrl {}; aim forward {:?}; follow {} track {} travel {travel:?}; selected {selected}; street lamps {:?}",
+        "hero: on {} loading {} pipelines {:?}, state {:?}, tier {:?}, pose {:?}, {frame}; {on_foot}; {near}; speed {} ({:.3} m/s), mach {:?}, height {:?}, gravity {:.3} g; {:.2} m from the camera; ramp {:.2} s; clock {:.2} s, sim rate {} paused {}; menus {} unfocused {}; cursor {grab}; input {:?} {:?} {:?} shift {} ctrl {}; aim forward {:?}; follow {} track {} travel {travel:?}; selected {selected}; street lamps {:?}",
         control.hero,
         control.loading,
         pipes.hero(),

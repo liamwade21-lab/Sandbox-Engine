@@ -1,6 +1,7 @@
-//! His state machine (spec F4) and each frame's move: flight, X, falling, what the frames do, the camera and the clips.
-//! Walking, jumping and landings are step 5: until then the ground holds him at a safe height, and falling onto it
-//! stops him in Hover.
+//! His state machine (spec F4) and each frame's move: flight, X, falling, walking, jumps and landings, what the frames
+//! do, the camera and the clips. The ground itself is `ground.rs`.
+
+use std::cell::Cell;
 
 use bevy::math::{DQuat, DVec2, DVec3};
 use bevy::prelude::*;
@@ -14,37 +15,62 @@ use crate::camera::{FlyCamera, Follow, TravelKind};
 use crate::data::SeData;
 use crate::mods::{HeroAssets, ModInput};
 use crate::ship::air::AirCache;
-use crate::ship::{BodyInfo, body_mass, gravity_at, ground_on, velocity_at};
+use crate::ship::{BodyInfo, body_mass, gravity_at, velocity_at};
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
 use crate::universe::SimTime;
-use crate::volumetric_clouds::{VolumetricClouds, giant_floor_m};
+use crate::volumetric_clouds::VolumetricClouds;
 
 use super::air::AirModel;
 use super::anim::{Layer, Sampler};
 use super::camera;
-use super::frames::{Frame, Ground, Motion, Scene, height_over, to_local};
+use super::cape::CapeIn;
+use super::frames::{Frame, Ground, Motion, Outcome, Scene, height_over, to_local};
+use super::ground::{self, Footing, Landing, WalkEvent, WalkIn};
 use super::readout::Readout;
 use super::tune;
 use super::{Hero, facing};
 
-/// What he's doing. (Grounded, jump and landing states come with step 5.)
+/// What he's doing (F4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum State {
     #[default]
     Hover,
     Flight,
     Falling,
+    /// On his feet: standing, walking, running or sprinting, by his speed (the gaits are the clips').
+    Grounded,
+    /// Going up from a jump: gravity, no drag.
+    Jump,
+    /// The short stop.
+    Land,
+    /// The hard one. (The crater and dust are step 8's: `Hero.impact`.)
+    HardLanding,
 }
 
 impl State {
     fn motion(self) -> Motion {
         match self {
-            State::Hover => Motion::Held,
+            State::Hover | State::Grounded | State::Land | State::HardLanding => Motion::Held,
             State::Flight => Motion::Flown,
-            State::Falling => Motion::Ballistic,
+            State::Falling | State::Jump => Motion::Ballistic,
         }
     }
+
+    /// On the ground, moved by `ground::walk_step`.
+    pub fn on_foot(self) -> bool {
+        matches!(self, State::Grounded | State::Land | State::HardLanding)
+    }
+}
+
+/// A landing's event, for the effects (step 8: the crater and dust, the splash; step 6's sounds). Only ever overwritten:
+/// nothing builds up while nothing reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Impact {
+    /// `speed` m/s onto the ground, at this point of the body's frame.
+    Hard { obj: ObjectRef, local: DVec3, speed: f64 },
+    /// Into the sea.
+    Splash { obj: ObjectRef, local: DVec3, speed: f64 },
 }
 
 /// The flight tiers (F3's clips), by speed with hysteresis.
@@ -243,12 +269,25 @@ pub enum Pose {
     ToIdle,
     Fall,
     FallLoop,
+    /// On his feet, Mixamo's clips.
+    GroundIdle,
+    TurnLeft,
+    TurnRight,
+    Walk,
+    Run,
+    Sprint,
+    /// Off the ground, then rising, then coming down.
+    JumpStart,
+    JumpLoop,
+    JumpDown,
+    Land,
+    LandHard,
 }
 
-/// The clips he flies by, found once.
+/// The clips he plays, found once.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Clips {
-    pose: [Option<u16>; 12],
+    pose: [Option<u16>; 23],
     /// Forward, back, left, right, up, down.
     idle_lean: [Option<u16>; 6],
     /// Left, right, up, down.
@@ -279,6 +318,17 @@ impl Clips {
                 one("bf_fast_to_idle"),
                 one("fall"),
                 one("fall_loop"),
+                one("idle"),
+                one("turn_left"),
+                one("turn_right"),
+                one("walk"),
+                one("run"),
+                one("sprint"),
+                one("male@jump_fall_start_stopped"),
+                one("male@jump_fall_loop"),
+                one("male@jump_fall_down_loop"),
+                one("male@jump_fall_land_hard"),
+                one("land_punch"),
             ],
             idle_lean: [one("bf_idle_fwd_add"), one("bf_idle_bwd_add"), one("bf_idle_left_add"), one("bf_idle_right_add"), one("bf_idle_up_add"), one("bf_idle_down_add")],
             fast_lean: [one("bf_fast_botharmsback_left"), one("bf_fast_botharmsback_right"), one("bf_fast_botharmsback_up"), one("bf_fast_botharmsback_down")],
@@ -304,6 +354,8 @@ pub struct Director {
     /// A dev command plays one clip alone (`hero clip`).
     pub pinned: bool,
     started: bool,
+    /// A turn clip has ended: his body takes over this much of the root's turn (radians about his up, + to his left).
+    turned: Option<f64>,
 }
 
 /// One frame's facts for the clips.
@@ -321,13 +373,22 @@ pub struct Cue {
     pub keys: bool,
     /// Shift pressed.
     pub boost_edge: bool,
+    /// Falling from a jump or off a ledge, not from flight: the short fall's clip.
+    pub short_fall: bool,
+    /// On his feet: on what's too steep to stand on.
+    pub sliding: bool,
+    /// On his feet: W, A, S or D held.
+    pub walking: bool,
+    /// On his feet: how far the aim is off where he faces (degrees, + to his left).
+    pub off_aim_deg: f64,
 }
 
 impl Director {
     /// What the base layer should play for this frame's facts, one-shots aside.
     fn wanted(&self, c: &Cue) -> Pose {
         match c.state {
-            State::Falling => Pose::Fall,
+            State::Falling | State::Jump => Pose::Fall,
+            State::Grounded | State::Land | State::HardLanding => Pose::GroundIdle,
             State::Hover => {
                 if self.still > tune::ARMS_CROSSED_AFTER_S {
                     Pose::ArmsCrossed
@@ -350,10 +411,131 @@ impl Director {
     }
 
     fn go(&mut self, s: &mut Sampler, pose: Pose, fade: f32) {
+        self.go_at(s, pose, 0.0, 1.0, fade);
+    }
+
+    /// `pose` from `time` into its clip, at `rate`.
+    fn go_at(&mut self, s: &mut Sampler, pose: Pose, time: f32, rate: f32, fade: f32) {
         let Some(clips) = self.clips else { return };
         self.pose = pose;
         s.crossfade(fade);
-        s.layers[0] = Layer { clip: clips.of(pose), time: 0.0, weight: 1.0, mask: u128::MAX };
+        s.layers[0] = Layer { clip: clips.of(pose), time, weight: 1.0, rate, ..Layer::default() };
+    }
+
+    /// A turn clip is playing: his body holds still for it, its root does the turning.
+    pub fn turning(&self) -> bool {
+        matches!(self.pose, Pose::TurnLeft | Pose::TurnRight)
+    }
+
+    /// A turn clip ended since last asked: how much his body takes over.
+    pub fn take_turned(&mut self) -> Option<f64> {
+        self.turned.take()
+    }
+
+    /// The gait for this speed, coming from the one he has.
+    fn gait(&self, speed: f64) -> Pose {
+        let moving = matches!(self.pose, Pose::Walk | Pose::Run | Pose::Sprint);
+        let idle = if moving { tune::GAIT_IDLE_MS.1 } else { tune::GAIT_IDLE_MS.0 };
+        let run = if matches!(self.pose, Pose::Run | Pose::Sprint) { tune::GAIT_RUN_MS.1 } else { tune::GAIT_RUN_MS.0 };
+        let sprint = if self.pose == Pose::Sprint { tune::GAIT_SPRINT_MS.1 } else { tune::GAIT_SPRINT_MS.0 };
+        if speed < idle {
+            Pose::GroundIdle
+        } else if speed >= sprint {
+            Pose::Sprint
+        } else if speed >= run {
+            Pose::Run
+        } else {
+            Pose::Walk
+        }
+    }
+
+    /// On his feet, and in a jump or a short fall: the clips of F4's table.
+    fn on_foot(&mut self, c: &Cue, s: &mut Sampler, set: &ClipSet, clips: &Clips) {
+        let clip_of = |p: Pose| clips.of(p).and_then(|i| set.clips.get(i as usize));
+        let event = |p: Pose, name: &str| clip_of(p).and_then(|k| set.events_of(k).iter().find(|e| e.name == name)).map(|e| e.time);
+        let time = s.layers[0].time;
+        let end = s.layers[0].clip.and_then(|i| set.clips.get(i as usize)).map_or(0.0, |k| k.duration);
+        match c.state {
+            State::Land => {
+                if self.pose != Pose::Land {
+                    self.go_at(s, Pose::Land, tune::LAND_CLIP_FROM_S, tune::LAND_CLIP_RATE, tune::FADE_LAND_S);
+                }
+            }
+            State::HardLanding => {
+                if self.pose != Pose::LandHard {
+                    // From its contact: the ground has just been reached.
+                    self.go_at(s, Pose::LandHard, event(Pose::LandHard, "contact").unwrap_or(0.27), 1.0, tune::FADE_LAND_S);
+                }
+            }
+            State::Jump => match self.pose {
+                Pose::JumpStart => {
+                    if time >= tune::JUMP_CLIP_END_S {
+                        self.go(s, Pose::JumpLoop, tune::FADE_S);
+                    }
+                }
+                Pose::JumpLoop => {}
+                _ => self.go_at(s, Pose::JumpStart, tune::JUMP_CLIP_FROM_S, tune::JUMP_CLIP_RATE, tune::FADE_GAIT_S),
+            },
+            State::Falling => {
+                if self.pose != Pose::JumpDown {
+                    self.go(s, Pose::JumpDown, tune::FADE_S);
+                }
+            }
+            _ if c.sliding => {
+                if self.pose != Pose::JumpDown {
+                    self.go(s, Pose::JumpDown, tune::FADE_S);
+                }
+            }
+            _ if self.turning() => {
+                if c.walking {
+                    let want = self.gait(c.speed.max(tune::GAIT_IDLE_MS.0));
+                    let at = event(want, "foot_l").unwrap_or(0.0);
+                    self.go_at(s, want, at, 1.0, tune::FADE_GAIT_S);
+                } else if time >= end {
+                    // His body takes the root's turn over, and the pose as it stands goes the other way: no jump.
+                    let deg = if self.pose == Pose::TurnLeft { tune::TURN_CLIP_DEG } else { -tune::TURN_CLIP_DEG };
+                    self.turned = Some(deg.to_radians());
+                    s.rebase_yaw(deg.to_radians() as f32);
+                    self.go(s, Pose::GroundIdle, tune::FADE_S);
+                }
+            }
+            _ => {
+                let want = self.gait(c.speed);
+                let walked = matches!(self.pose, Pose::Walk | Pose::Run | Pose::Sprint);
+                if want != self.pose {
+                    match want {
+                        Pose::GroundIdle => {
+                            let fade = if matches!(self.pose, Pose::Land | Pose::LandHard) { tune::FADE_UP_S } else { tune::FADE_S };
+                            self.go(s, Pose::GroundIdle, fade);
+                        }
+                        _ => {
+                            // Starting: on left-foot contact. Changing gait: at the same place in the stride.
+                            let at = event(want, "foot_l").unwrap_or(0.0);
+                            let at = if walked && end > 0.0 {
+                                let was = event(self.pose, "foot_l").unwrap_or(0.0);
+                                let share = ((time - was) / end).rem_euclid(1.0);
+                                at + share * clip_of(want).map_or(0.0, |k| k.duration)
+                            } else {
+                                at
+                            };
+                            let fade = if matches!(self.pose, Pose::Land | Pose::LandHard) { tune::FADE_UP_S } else { tune::FADE_GAIT_S };
+                            self.go_at(s, want, at, 1.0, fade);
+                        }
+                    }
+                } else if want == Pose::GroundIdle && !c.walking && c.off_aim_deg.abs() > tune::TURN_CLIP_OVER_DEG {
+                    let turn = if c.off_aim_deg > 0.0 { Pose::TurnLeft } else { Pose::TurnRight };
+                    self.go(s, turn, tune::FADE_GAIT_S);
+                }
+                // A gait's clock by his speed over its stride, in the rate the spec allows.
+                if matches!(self.pose, Pose::Walk | Pose::Run | Pose::Sprint) {
+                    let stride = clip_of(self.pose).map_or(0.0, |k| k.stride_speed as f64);
+                    if stride > 0.0 {
+                        let (lo, hi) = tune::STRIDE_RATE;
+                        s.layers[0].rate = (c.speed / stride).clamp(lo, hi) as f32;
+                    }
+                }
+            }
+        }
     }
 
     /// Sets the layers for this frame.
@@ -369,6 +551,11 @@ impl Director {
         }
         self.tier = tier_at(self.tier, c.speed);
         self.still = if c.state == State::Hover { self.still + dt } else { 0.0 };
+        if c.state.on_foot() || c.state == State::Jump || (c.state == State::Falling && c.short_fall) {
+            self.on_foot(c, s, set, &clips);
+            self.set_leans(c, s, set, &clips, dt);
+            return;
+        }
         let want = self.wanted(c);
         let time = s.layers[0].time;
         let end = s.layers[0].clip.and_then(|i| set.clips.get(i as usize)).map_or(0.0, |k| k.duration);
@@ -380,7 +567,7 @@ impl Director {
             Pose::Fall if c.state == State::Falling => {
                 if time >= end {
                     self.pose = Pose::FallLoop;
-                    s.layers[0] = Layer { clip: clips.of(Pose::FallLoop), time: 0.0, weight: 1.0, mask: u128::MAX };
+                    s.layers[0] = Layer { clip: clips.of(Pose::FallLoop), time: 0.0, weight: 1.0, ..Layer::default() };
                 }
             }
             Pose::FallLoop if c.state == State::Falling => {}
@@ -428,7 +615,7 @@ impl Director {
         let lean_layer = |clip: Option<u16>, amount: f32| -> Layer {
             let a = amount.clamp(0.0, 1.0);
             let d = clip.and_then(|i| set.clips.get(i as usize)).map_or(0.0, |k| k.duration);
-            Layer { clip, time: a * d, weight: (a / tune::LEAN_FULL_WEIGHT_AT).min(1.0), mask: u128::MAX }
+            Layer { clip, time: a * d, weight: (a / tune::LEAN_FULL_WEIGHT_AT).min(1.0), ..Layer::default() }
         };
         let side = |pair: [Option<u16>; 2], v: f32| lean_layer(if v >= 0.0 { pair[0] } else { pair[1] }, v.abs());
         let none = Layer::default();
@@ -475,25 +662,6 @@ fn smooth_velocity(eph: &Ephemeris, obj: ObjectRef, jd: f64) -> DVec3 {
     if v.is_finite() { v } else { velocity_at(eph, obj, jd) }
 }
 
-/// The ground he and the camera stop at, at a point of the body's frame: `ground_on`, but a star's or a sphere's surface
-/// is known without loading, and a giant has its own floor, the camera's, only where its decks are drawn (F, Edge cases).
-fn ground_at(b: &BodyInfo, local: DVec3, decks: Option<ObjectRef>) -> Ground {
-    let Some(t) = b.terrain else {
-        // (Never inside the plain sphere `keep_camera_above_ground` keeps the camera out of: pushed out, the camera would
-        // pull him to it, as if something else had moved it.)
-        let k = (local / b.shape).try_normalize().map_or(1.0, |d| (d * b.shape).length());
-        return Ground { radial: b.radius * (1.0 + tune::SPHERE_STOP_SHARE) * k.max(1.0), level: Some(0) };
-    };
-    if t.proc.kind.is_giant() && decks == Some(b.obj) {
-        if let Some(floor) = giant_floor_m(t) {
-            let k = (local / b.shape).try_normalize().map_or(1.0, |d| (d * b.shape).length());
-            return Ground { radial: (b.radius + floor) * k + tune::GIANT_STOP_M, level: Some(0) };
-        }
-    }
-    let (radial, level) = ground_on(b.radius, b.shape, Some(t), local);
-    Ground { radial, level }
-}
-
 /// The height the air (F9) and the readout count from: over the ground, but a giant's over its radius (`over_radius`,
 /// its 1 atm is there), whatever floor the camera has under it: that floor is 10 of its decks' scale heights down, and
 /// only when the clouds are on.
@@ -520,6 +688,17 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.spawned = true;
     hero.cam_written = cam.pos;
     hero.carried = false;
+    hero.ease = 0.0;
+    hero.clip_lift = 0.0;
+    hero.root_drop = 0.0;
+    hero.shift_t = 0.0;
+    hero.state_t = 0.0;
+    hero.short_fall = false;
+    hero.sliding = false;
+    hero.keys_up_first = false;
+    hero.impact = None;
+    hero.last_vel = DVec3::ZERO;
+    hero.felt = DVec3::ZERO;
     cam.travel = None;
     cam.velocity = DVec3::ZERO;
     cam.thrust = DVec3::ZERO;
@@ -532,6 +711,61 @@ fn follow_camera(hero: &mut Hero, cam: &FlyCamera) {
     hero.frame = Frame::at(cam.pos.offset_m(-camera::offset(cam.rot, dist)));
     hero.state = State::Hover;
     hero.spawned = true;
+}
+
+/// He's over the sea: 1.5 m up, and hovering. To walk on, fly to land.
+fn hover_over_sea(hero: &mut Hero, s: &Scene) {
+    if let Frame::Attached { obj, local_pos, local_vel, .. } = &mut hero.frame {
+        if let Some(b) = s.bodies.iter().find(|b| b.obj == *obj) {
+            let g = (s.ground)(b, *local_pos);
+            let to = g.radial + s.stand_m + tune::SEA_HOVER_M;
+            hero.ease += local_pos.length() - to;
+            *local_pos = local_pos.normalize_or(DVec3::Y) * to;
+            *local_vel = DVec3::ZERO;
+        }
+    }
+    hero.state = State::Hover;
+    hero.keys_up_first = true;
+}
+
+/// He's come down: F4's three landings where there's land, the sea's hover, a stop on anything else.
+fn touch_down(hero: &mut Hero, s: &Scene, into: f64, out: &Outcome) {
+    let Frame::Attached { obj, local_pos, .. } = hero.frame else {
+        hero.state = State::Hover;
+        return;
+    };
+    let Some(b) = s.bodies.iter().find(|b| b.obj == obj) else { return };
+    hero.state_t = 0.0;
+    match (s.footing)(b, local_pos) {
+        Footing::Land => match ground::landing_of(into, out.speed) {
+            Landing::Soft => {
+                hero.state = State::Grounded;
+                hero.frame.set_local_velocity(out.along.clamp_length_max(tune::SPRINT_MS));
+            }
+            Landing::Short => {
+                hero.state = State::Land;
+                hero.frame.set_local_velocity(DVec3::ZERO);
+            }
+            Landing::Hard => {
+                hero.state = State::HardLanding;
+                hero.frame.set_local_velocity(DVec3::ZERO);
+                hero.impact = Some(Impact::Hard { obj, local: local_pos, speed: out.speed });
+            }
+        },
+        Footing::Sea => {
+            hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
+            hover_over_sea(hero, s);
+        }
+        Footing::Nothing => {
+            hero.state = State::Hover;
+            hero.frame.set_local_velocity(DVec3::ZERO);
+        }
+    }
+}
+
+/// Model space (Z up, +Y forward) to the port's (Y up, -Z forward): `draw.rs` `model_to_port` as a turn.
+fn model_to_port_q() -> Quat {
+    Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 
 /// One frame of him: every bit of his motion and the free camera's place, in `UniverseSet::Camera`.
@@ -557,7 +791,9 @@ pub(crate) fn hero_move(
         .map(|(b, terrain)| BodyInfo { obj: b.obj, pos: b.pos, orient: b.orient, radius: b.radius_m, shape: b.shape, gm: G * body_mass(&data, b.obj, b.radius_m), terrain })
         .collect();
     let decks = clouds.active.and_then(|e| q.get(e).ok()).map(|(b, _)| b.obj);
-    let ground = |b: &BodyInfo, local: DVec3| ground_at(b, local, decks);
+    let camera_m = hero.dist + hero.zoom;
+    let ground = |b: &BodyInfo, local: DVec3| ground::support_height(b, local, decks, camera_m);
+    let footing = |b: &BodyInfo, local: DVec3| ground::footing(b, local);
     let spin = |obj: ObjectRef| smooth_spin(&eph, obj, sim.jd);
     let vel = |obj: ObjectRef| smooth_velocity(&eph, obj, sim.jd);
 
@@ -604,24 +840,34 @@ pub(crate) fn hero_move(
         bodies.iter().filter(|b| b.radius > 0.0).map(|b| (b, height_over(b, to_local(b, pos)))).min_by(|a, b| a.1.total_cmp(&b.1))
     };
     let air_model = near_of(pos0).filter(|(b, _)| !matches!(b.obj, ObjectRef::Star(_))).and_then(|(b, _)| Some((b.obj, AirModel::of(&mut air_cache, &data, &eph, sim.jd, b.obj, b.radius, b.terrain)?)));
+    // F4: no drag rising from a jump.
+    let no_drag = Cell::new(false);
     let drag = |b: &BodyInfo, local: DVec3| match &air_model {
-        Some((obj, a)) if *obj == b.obj => a.drag(air_height_on(b, local, ground(b, local))),
+        Some((obj, a)) if *obj == b.obj && !no_drag.get() => a.drag(air_height_on(b, local, ground(b, local))),
         _ => 0.0,
     };
-    let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, drag: &drag, stand_m: tune::STAND_M };
+    let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: tune::STAND_M };
 
     // The keys that change how he moves, before the frame's carry: falling, it and the step belong together (`Frame::carry`).
     if input.z && !travelling && !input.shift && !input.ctrl && !input.alt {
-        // Z stops him, whatever he's doing (Go To's stop is input_controls').
-        hero.state = State::Hover;
+        // Z stops him, whatever he's doing (Go To's stop is input_controls'). On his feet he stays on them.
+        if !hero.state.on_foot() {
+            hero.state = State::Hover;
+        }
         hero.frame.set_velocity(&scene, DVec3::ZERO);
     } else if input.x_pressed && !travelling && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
         hero.frame.to_ballistic(&scene);
         hero.state = State::Falling;
-    } else if input.space_pressed && hero.state == State::Falling {
-        // F4: he holds still where he is, at once. (Space still held, he flies up from there.)
+        hero.short_fall = false;
+    } else if input.space_pressed && matches!(hero.state, State::Falling | State::Jump) {
+        // F4: he holds still where he is, at once. (Space still held, he flies up from there.) That's the double tap too:
+        // the first press jumped, this is the second.
         hero.frame.set_velocity(&scene, DVec3::ZERO);
         hero.state = State::Hover;
+    } else if input.space_pressed && hero.state == State::Grounded && !travelling {
+        hero.frame.kick_up(tune::JUMP_MS);
+        hero.state = State::Jump;
+        hero.short_fall = true;
     }
 
     // A test's orbit: at K x the circular speed round the nearest body, the way he looks.
@@ -646,9 +892,14 @@ pub(crate) fn hero_move(
 
     // What the bodies did since last frame. The view and his body turn with the frame.
     let motion = hero.state.motion();
+    let was_rot = hero.rot;
     let turn = hero.frame.carry(&scene, dt, motion, hero.world.0);
     cam.rot = (turn * cam.rot).normalize();
     hero.rot = (turn * hero.rot).normalize();
+    // What he stood on is gone (its system unloaded).
+    if hero.state.on_foot() && !hero.frame.attached() {
+        hero.state = State::Hover;
+    }
 
     // Spawned under the ground: lifted (F2). Ground not loaded: `advance` holds him in the air.
     if std::mem::take(&mut hero.spawned) {
@@ -683,19 +934,71 @@ pub(crate) fn hero_move(
     }
 
     // The keys.
+    let mut walking = false;
     let aim = cam.rot;
     let (fwd, right, aim_up) = (aim * DVec3::NEG_Z, aim * DVec3::X, aim * DVec3::Y);
     let lift = up_here.unwrap_or(aim_up);
     let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * input.up as f64).normalize_or_zero();
     // (A Go To carries him: Shift and Ctrl held from Shift+G and Ctrl+G, or Space, fly nothing meanwhile.)
-    let flight_in = if travelling { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
+    let mut flight_in = if travelling { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
+    // Off the shore with the keys down: he hovers there until they're let go, or running into the sea launches him.
+    if hero.keys_up_first {
+        if flight_in.any() {
+            flight_in = FlightIn::default();
+        } else {
+            hero.keys_up_first = false;
+        }
+    }
     hero.was_boost = input.shift;
     let take_off = hero.state == State::Hover && flight_in.any();
     if take_off {
         hero.state = State::Flight;
         hero.ramp_t = 0.0;
     }
-    if hero.state == State::Flight {
+    if hero.state.on_foot() {
+        hero.state_t += dt;
+        // The keys, along the ground. (Looking straight down, the view's up says which way forward is.)
+        let keys = hero.state == State::Grounded && !travelling;
+        let up = near.map_or(lift, |(b, local)| b.orient * local.normalize_or(DVec3::Y));
+        let flat = fwd - up * fwd.dot(up);
+        let view_up = aim_up * -fwd.dot(up).signum();
+        let ahead = if flat.length() < 0.05 { (view_up - up * view_up.dot(up)).normalize_or(right) } else { flat.normalize() };
+        let side = ahead.cross(up);
+        let wish = if keys { (ahead * input.forward as f64 + side * input.right as f64).normalize_or_zero() } else { DVec3::ZERO };
+        walking = wish != DVec3::ZERO;
+        hero.shift_t = if input.shift { hero.shift_t + dt } else { 0.0 };
+        let speed = if !input.shift {
+            tune::WALK_MS
+        } else if hero.shift_t >= tune::SPRINT_AFTER_S {
+            tune::SPRINT_MS
+        } else {
+            tune::RUN_MS
+        };
+        if let Some((b, local)) = near {
+            let a_frame = gravity_at(&bodies, b.pos);
+            let i = WalkIn { wish: b.orient.inverse() * wish, speed, gravity: (gravity_at(&bodies, b.pos.offset_m(b.orient * local)) - a_frame).length() };
+            let out = ground::walk_step(&mut hero.frame, &scene, &i, dt);
+            hero.ease += out.ease;
+            hero.slope_deg = out.slope_deg;
+            hero.sliding = out.sliding;
+            match out.event {
+                WalkEvent::Ledge => {
+                    hero.state = State::Falling;
+                    hero.short_fall = true;
+                }
+                WalkEvent::Sea => {
+                    if let Frame::Attached { obj, local_pos, .. } = hero.frame {
+                        hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: i.speed });
+                    }
+                    hover_over_sea(hero, &scene);
+                }
+                WalkEvent::Walked | WalkEvent::Held => {}
+            }
+        }
+        if hero.state == State::Land && hero.state_t >= tune::LAND_S || hero.state == State::HardLanding && hero.state_t >= tune::HARD_LANDING_S {
+            hero.state = State::Grounded;
+        }
+    } else if hero.state == State::Flight {
         let height = near.map_or(f64::INFINITY, |(b, local)| air_height_on(b, local, ground(b, local)));
         // The nearest surface from where he is against this frame's bodies. (`cam.nearest_surface` compares last frame's
         // camera with them: at x1000 hundreds of km out, whichever side of a moon he's on.)
@@ -710,23 +1013,32 @@ pub(crate) fn hero_move(
             hero.frame.set_velocity(&scene, nv);
         }
     }
-    let motion = hero.state.motion();
-    let out = hero.frame.advance(&scene, dt, motion);
-    // Until step 5's landings: the ground stops him, safely, and he hovers.
-    if out.contact.is_some() {
-        hero.state = State::Hover;
-        hero.frame.set_velocity(&scene, DVec3::ZERO);
+    if !hero.state.on_foot() {
+        let motion = hero.state.motion();
+        no_drag.set(hero.state == State::Jump);
+        let out = hero.frame.advance(&scene, dt, motion);
+        no_drag.set(false);
+        // F4: falling he lands; flying only with Ctrl, or he slides along the ground.
+        if let Some(into) = out.contact.or(out.flown_into.filter(|_| input.ctrl && hero.state == State::Flight)) {
+            touch_down(hero, &scene, into, &out);
+        }
     }
+    hero.ease = (hero.ease * (-dt / tune::GROUND_EASE_TAU_S).exp()).clamp(-tune::GROUND_EASE_MAX_M, tune::GROUND_EASE_MAX_M);
 
     // Where that left him.
     let pos = hero.frame.world(&scene, hero.world.0);
     let near = near_of(pos).map(|(b, _)| (b, to_local(b, pos)));
     let height = near.map(|(b, local)| air_height_on(b, local, ground(b, local)));
     let v = match hero.state {
-        State::Falling => hero.frame.over_ground(&scene),
+        State::Falling | State::Jump => hero.frame.over_ground(&scene),
         _ => hero.frame.velocity(&scene),
     };
     let speed = v.length();
+    // Past the top of the jump.
+    if hero.state == State::Jump && near.is_none_or(|(b, local)| v.dot(b.orient * local.normalize_or(DVec3::Y)) <= 0.0) {
+        hero.state = State::Falling;
+        hero.short_fall = true;
+    }
 
     // His body: along the aim when slow, along his velocity when fast (F4).
     let up_body = near.and_then(|(b, local)| camera::horizon_up(b, local)).unwrap_or(aim_up);
@@ -738,7 +1050,25 @@ pub(crate) fn hero_move(
     let dir = v.try_normalize().unwrap_or(fwd);
     let climb_deg = dir.dot(up_body).clamp(-1.0, 1.0).asin().to_degrees();
     let along = speed > tune::BODY_ALONG_VELOCITY_MS && hero.state == State::Flight;
-    let target = if hero.director.pose == Pose::HyperUp {
+    // On his feet: towards where he's going, or the aim when he stands; held for a turn clip and a landing.
+    let holds = hero.director.turning() || hero.hold_body;
+    let landing = matches!(hero.state, State::Land | State::HardLanding);
+    let stands = hero.state == State::Grounded && !walking && speed < tune::GAIT_IDLE_MS.0;
+    let body_tau = if landing {
+        tune::LAND_UPRIGHT_TAU_S
+    } else if stands {
+        tune::STAND_TURN_TAU_S
+    } else {
+        tune::BODY_TAU_S
+    };
+    let target = if landing {
+        // Down from a head-first dive he's upright at once, still facing where he was going.
+        level(hero.rot * DVec3::NEG_Z, up_body)
+    } else if holds {
+        hero.rot
+    } else if hero.state == State::Grounded && !stands {
+        level(dir, up_body)
+    } else if hero.director.pose == Pose::HyperUp {
         // Arm up: his head leads, and his back is to the camera.
         let flat = fwd - dir * fwd.dot(dir);
         facing(if flat.length() < 0.05 { -up_body } else { flat }, dir)
@@ -748,7 +1078,7 @@ pub(crate) fn hero_move(
     } else {
         level(fwd, up_body)
     };
-    hero.rot = hero.rot.slerp(target, 1.0 - (-dt / tune::BODY_TAU_S).exp()).normalize();
+    hero.rot = hero.rot.slerp(target, 1.0 - (-dt / body_tau).exp()).normalize();
 
     // The clips.
     let body_inv = hero.rot.inverse();
@@ -761,22 +1091,59 @@ pub(crate) fn hero_move(
         [(steer.x * 2.0) as f32, (steer.y * 2.0) as f32, 0.0]
     };
     let forwardish = dir.dot(fwd) > 0.7;
+    // On his feet: how far the aim is off where he faces.
+    let facing_now = hero.rot * DVec3::NEG_Z;
+    let aim_flat = fwd - up_body * fwd.dot(up_body);
+    let off_aim_deg = if hero.state == State::Grounded && aim_flat.length() > 0.05 {
+        facing_now.cross(aim_flat).dot(up_body).atan2(facing_now.dot(aim_flat)).to_degrees()
+    } else {
+        0.0
+    };
+    let air_moves = !hero.state.on_foot() && hero.state != State::Jump && !(hero.state == State::Falling && hero.short_fall);
     let cue = Cue {
         state: hero.state,
         speed,
         climb_deg,
         sideways: slow && !forwardish,
-        lean,
+        lean: if air_moves { lean } else { [0.0; 3] },
         keys: flight_in.any(),
         boost_edge: take_off && flight_in.boost,
+        short_fall: hero.short_fall,
+        sliding: hero.sliding && hero.state == State::Grounded,
+        walking,
+        off_aim_deg: if hero.hold_body { 0.0 } else { off_aim_deg },
     };
     let hero_ref = &mut *hero;
     hero_ref.director.update(&cue, &mut hero_ref.sampler, &assets.clips, dt as f32);
+    if let Some(yaw) = hero.director.take_turned() {
+        hero.rot = (hero.rot * DQuat::from_rotation_y(yaw)).normalize();
+    }
 
-    // The camera: exact, from his UPos. A floor over the ground of whatever it's in.
+    // The cape's frame (`cape.rs`): what the cloth feels, in his model's axes. Clamped here while it's still f64: at 1000 c
+    // what changes in a frame doesn't fit the cloth's numbers.
+    if dt > 1e-4 {
+        let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
+        let felt = gravity_at(&bodies, pos) - a_frame - (v - hero.last_vel) / dt;
+        let felt = if felt.is_finite() { felt.clamp_length_max(tune::CAPE_ACCEL_MAX as f64 * 2.0) } else { DVec3::ZERO };
+        hero.felt += (felt - hero.felt) * (1.0 - (-dt / 0.05).exp());
+        let air = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map_or(0.0, |((_, a), h)| a.at(h).density);
+        let to_model = (hero.rot.as_quat() * model_to_port_q()).inverse();
+        let turn = to_model * (was_rot.as_quat() * model_to_port_q());
+        hero.sampler.cape_in = CapeIn {
+            dt: dt as f32,
+            accel: to_model * hero.felt.as_vec3(),
+            wind: to_model * (-v).clamp_length_max(tune::CAPE_WIND_MAX_MS as f64).as_vec3(),
+            air: (air as f32 / tune::CAPE_AIR_FULL).clamp(0.0, 1.0),
+            turn: turn.normalize(),
+        };
+        hero.last_vel = v;
+    }
+
+    // The camera: exact, from his UPos (and the ground's new node, eased, as he's drawn). A floor over the ground of whatever it's in.
     hero.zoom = camera::ease_zoom(hero.zoom, speed, dt);
     let back = camera::offset(cam.rot, hero.dist + hero.zoom);
-    let mut cam_pos = pos.offset_m(back);
+    let eased = near.map_or(DVec3::ZERO, |(b, local)| b.orient * local.normalize_or(DVec3::Y) * hero.ease);
+    let mut cam_pos = pos.offset_m(back + eased);
     for b in &bodies {
         let rel = cam_pos.delta_m(b.pos);
         // (As far out as `keep_camera_above_ground` looks, whose push he'd take for something else moving the camera.)
@@ -800,10 +1167,12 @@ pub(crate) fn hero_move(
     // The readout.
     let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
     let air_now = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map(|((_, a), h)| a.at(h));
+    // The readout's height is his soles', where there's anything to stand on: nothing when he stands.
+    let soles = near.filter(|(b, local)| (scene.footing)(b, *local) != Footing::Nothing).map_or(0.0, |_| tune::STAND_M);
     hero.readout = Readout {
         speed,
         mach: air_now.filter(|a| a.density > 0.0 && a.sound_speed > 0.0).map(|a| speed / a.sound_speed),
-        height,
+        height: height.map(|h| (h - soles).max(if soles > 0.0 { 0.0 } else { h })),
         gravity_g: (gravity_at(&bodies, pos) - a_frame).length() / 9.806_65,
         heat: 0.0,
     };
@@ -1021,7 +1390,7 @@ mod tests {
         let r = 7.0e8;
         let b = BodyInfo { obj: ObjectRef::Body(0), pos: UPos::ZERO, orient: DQuat::IDENTITY, radius: r, shape: DVec3::new(1.0, 0.9, 1.0), gm: 0.0, terrain: None };
         for dir in [DVec3::Y, DVec3::X, DVec3::new(1.0, 1.0, 0.0).normalize()] {
-            let g = ground_at(&b, dir * r, None);
+            let g = ground::support_height(&b, dir * r, None, 0.0);
             assert!(g.radial >= r * (1.0 + tune::SPHERE_STOP_SHARE) * 0.999_999_99, "{dir}: {}", g.radial - r);
         }
     }
@@ -1126,6 +1495,117 @@ mod tests {
         assert_eq!(d.pose, Pose::FallLoop);
         step(fall, 20.0, &mut d, &mut s);
         assert_eq!(d.pose, Pose::FallLoop, "the loop stays");
+    }
+
+    /// F4's table on foot, by the real clips: standing, the gaits by speed at their stride's rate, the jump's clips, the landings.
+    #[test]
+    fn the_clips_on_foot_follow_his_speed() {
+        let Some(set) = real_clips() else { return };
+        let mut d = Director::default();
+        let mut s = Box::<Sampler>::default();
+        let dt = 1.0 / 60.0;
+        let step = |c: Cue, secs: f32, d: &mut Director, s: &mut Sampler| {
+            for _ in 0..(secs / dt) as usize {
+                d.update(&c, s, &set, dt);
+                s.advance(&set, dt);
+            }
+        };
+        let stand = Cue { state: State::Grounded, ..default() };
+        step(stand, 0.5, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::GroundIdle);
+        let name = |s: &Sampler| set.clips[s.layers[0].clip.unwrap() as usize].name.clone();
+        assert_eq!(name(&s), "idle");
+        // Starting: on left-foot contact.
+        let walk = Cue { speed: tune::WALK_MS, walking: true, ..stand };
+        d.update(&walk, &mut s, &set, dt);
+        assert_eq!(d.pose, Pose::Walk);
+        let walk_clip = &set.clips[s.layers[0].clip.unwrap() as usize];
+        let foot = set.events_of(walk_clip).iter().find(|e| e.name == "foot_l").unwrap().time;
+        assert!((s.layers[0].time - foot).abs() < 1e-3, "{}", s.layers[0].time);
+        // The rate is the speed over the stride, within the spec's limits.
+        let rate = (tune::WALK_MS as f32 / walk_clip.stride_speed).clamp(0.7, 1.5);
+        assert!((s.layers[0].rate - rate).abs() < 1e-3, "{}", s.layers[0].rate);
+        step(Cue { speed: tune::RUN_MS, ..walk }, 0.2, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::Run);
+        step(Cue { speed: tune::SPRINT_MS, ..walk }, 0.2, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::Sprint);
+        // Hugely over the stride the rate stops at its limit.
+        step(Cue { speed: 40.0, ..walk }, 0.1, &mut d, &mut s);
+        assert_eq!(s.layers[0].rate, 1.5);
+        step(stand, 0.2, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::GroundIdle);
+        // Off the ground.
+        step(Cue { state: State::Jump, short_fall: true, speed: 28.0, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::JumpStart);
+        assert!(name(&s).contains("jump_fall_start_stopped"));
+        step(Cue { state: State::Jump, short_fall: true, speed: 20.0, ..default() }, 1.0, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::JumpLoop);
+        step(Cue { state: State::Falling, short_fall: true, speed: 5.0, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::JumpDown);
+        // Falling from flight is the other clip.
+        step(Cue { state: State::Falling, speed: 5.0, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::Fall);
+        step(Cue { state: State::Land, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::Land);
+        step(Cue { state: State::HardLanding, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::LandHard);
+        assert!(s.layers[0].time >= 0.27, "from its contact: {}", s.layers[0].time);
+        step(stand, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::GroundIdle);
+        step(Cue { state: State::Hover, ..default() }, 0.1, &mut d, &mut s);
+        assert_eq!(d.pose, Pose::Idle);
+    }
+
+    /// Over 70 degrees off the aim he plays a turn clip, his body holding still; when it ends his body takes the root's turn over
+    /// with no jump in where he faces, and has gone the right way.
+    #[test]
+    fn a_turn_clip_turns_him_without_a_jump() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/mods/viltrumite");
+        let (Ok(mb), Some(set)) = (std::fs::read(root.join("omniman.sevm")), real_clips()) else { return };
+        let model = se_core::hero_asset::parse_model(&mb).unwrap();
+        let spine = model.bones.iter().position(|b| b.name == "SKEL_Spine3").unwrap();
+        for (off, sign) in [(120.0f64, 1.0f64), (-120.0, -1.0)] {
+            let mut d = Director::default();
+            let mut s = Box::<Sampler>::default();
+            let dt = 1.0f32 / 60.0;
+            let stand = Cue { state: State::Grounded, ..default() };
+            for _ in 0..30 {
+                d.update(&stand, &mut s, &set, dt);
+                s.advance(&set, dt);
+                s.sample(&model, &set);
+            }
+            // His chest's way in the model is Y, his body's turn about model Z is `body`.
+            let mut body = 0.0f64;
+            let heading = |s: &Sampler, body: f64| {
+                let f = s.world(spine).matrix3 * bevy::math::Vec3A::Y;
+                f.x.atan2(f.y) as f64 * -1.0 + body
+            };
+            let start = heading(&s, body);
+            let turned = Cue { off_aim_deg: off, ..stand };
+            d.update(&turned, &mut s, &set, dt);
+            assert_eq!(d.pose, if sign > 0.0 { Pose::TurnLeft } else { Pose::TurnRight });
+            assert!(d.turning());
+            let mut last = heading(&s, body);
+            let mut most: f64 = 0.0;
+            for _ in 0..120 {
+                d.update(&turned, &mut s, &set, dt);
+                if let Some(yaw) = d.take_turned() {
+                    body += yaw;
+                }
+                s.advance(&set, dt);
+                s.sample(&model, &set);
+                let h = heading(&s, body);
+                most = most.max((h - last).abs());
+                last = h;
+                if !d.turning() {
+                    break;
+                }
+            }
+            assert_eq!(d.pose, Pose::GroundIdle);
+            assert!(most < 0.2, "a jump of {most} radians a frame");
+            let turned_by = (last - start).to_degrees();
+            assert!((turned_by * sign - 90.0).abs() < 25.0, "{off}: turned {turned_by}");
+        }
     }
 
     #[test]

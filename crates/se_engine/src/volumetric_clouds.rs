@@ -174,7 +174,15 @@ struct CloudShadow {
     map_c: Vec4,
     map_e1: Vec4,
     map_e2: Vec4,
+    /// The Viltrumite mod's hero ([`HeroSoil`]).
+    hero: Vec4,
 }
+
+/// Where the ground should hold still under the Viltrumite mod's hero: xyz his soles from the camera (m), w 1; all 0 with the mod
+/// off or him in the air off any land. Goes in the `CloudShadow` record, the ground's one per-frame buffer that is written in
+/// place: `planet.wesl`'s soil displacement fades out round him.
+#[derive(Resource, Default, Clone, Copy, PartialEq)]
+pub(crate) struct HeroSoil(pub Vec4);
 
 fn shadow_buffer(s: &CloudShadow) -> ShaderBuffer {
     let mut bytes = encase::StorageBuffer::new(Vec::<u8>::new());
@@ -354,6 +362,7 @@ impl Plugin for VolumetricCloudsPlugin {
         let ready = CloudsReady::default();
         app.insert_resource(ready.clone())
             .init_resource::<VolumetricClouds>()
+            .init_resource::<HeroSoil>()
             .init_resource::<detail::DetailCover>()
             .init_resource::<NoiseJob>()
             .init_resource::<CloudBody>()
@@ -794,7 +803,7 @@ fn update_cloud_view(
         Res<AmbientLighting>,
         Res<crate::terrain::SelfEmission>,
     ),
-    cam: Res<FlyCamera>,
+    (cam, hero_soil): (Res<FlyCamera>, Res<HeroSoil>),
     ready: Res<CloudsReady>,
     noise: Option<Res<CloudNoise>>,
     (mut state, mut cloud_body, mut images): (ResMut<VolumetricClouds>, ResMut<CloudBody>, ResMut<Assets<Image>>),
@@ -1029,6 +1038,7 @@ fn update_cloud_view(
                 map_c: out.shadow_c,
                 map_e1: out.shadow_e1,
                 map_e2: out.shadow_e2,
+                hero: Vec4::ZERO,
             };
             // The detail cover's levels, each once the camera is low enough for its texels to show.
             detail::update(&mut detail_cover, &mut detail_jobs, cloud_body.id, &specs, &spins, cam_s, terrain.radius, lod_on() && !giant, &data.vfs);
@@ -1072,6 +1082,7 @@ fn update_cloud_view(
     }
     shadow.key.w = weather_share;
     shadow.sun.w = 1.0 - clouds_share;
+    shadow.hero = hero_soil.0;
     if let Some(a) = assets
         && shadow != *last_shadow
         && let Some(mut b) = buffers.get_mut(&a.shadow)

@@ -10,6 +10,10 @@
 //!   scatter's do. Otherwise (a body's record goes stale when it isn't resolved, its tables end at their top,
 //!   and its own shine isn't in its record) the CPU fills the same record: the stars with their shadows and
 //!   atmospheres on the way, no tables, and the further lights with his own normals.
+//! - **Shadow.** The game has no shadow maps. A second entity per draw, the same meshes in a Multiply material, its
+//!   vertices projected along the star onto the plane of the ground under him (`hero.wesl` `vertex_shadow`). To darken each
+//!   pixel once however many triangles cover it, each fragment writes the depth of its own pixel's ray on that plane, the same
+//!   bits for all of them, and the depth test is Greater, so the first one wins.
 //! - **Off costs nothing.** All of this is made on first enable and then hidden, never respawned; the compute
 //!   pipeline is queued then too, and no system does anything while the mod is off.
 //! - **Loading.** The real meshes queue their pipelines (Bevy builds one the first time something would draw
@@ -50,11 +54,14 @@ use crate::camera::{FlyCamera, MainCamera};
 use crate::color_correction::ColorCorrection;
 use crate::data::SeData;
 use crate::mods::{HeroAssets, ModControl};
+use crate::ship::BodyInfo;
 use crate::stars::StarSettings;
 use crate::system::{AmbientLighting, BatchedSprite, LightingFade, SystemBody, illum_color, planet_shine, star_tint};
 use crate::terrain::{ATM_SUN_SCALE, PatchLight, Terrain, TileCaches};
 use crate::volumetric_clouds::CloudShadowAssets;
 
+use super::frames::Frame;
+use super::ground::{self, Footing, Soles};
 use super::tune;
 use super::{Hero, LightPath};
 
@@ -82,6 +89,7 @@ pub struct HeroFrameGpu {
     heat: Vec4,
     wind: Vec4,
     shadow_plane: Vec4,
+    shadow: Vec4,
     free_dir: [Vec4; 3],
     free_color: [Vec4; 3],
     body: LightBodyGpu,
@@ -99,6 +107,7 @@ impl Default for HeroFrameGpu {
             heat: Vec4::ZERO,
             wind: Vec4::ZERO,
             shadow_plane: Vec4::ZERO,
+            shadow: Vec4::ZERO,
             free_dir: [Vec4::ZERO; 3],
             free_color: [Vec4::ZERO; 3],
             body: LightBodyGpu::default(),
@@ -136,17 +145,21 @@ pub struct HeroMaterial {
     #[sampler(7)]
     pub spec: Handle<Image>,
     pub cutout: bool,
+    /// His shadow's second draw of the mesh.
+    pub shadow: bool,
 }
 
-/// Cutouts take the entry point with the discard, in the alpha-mask phase; the opaque keep the early depth test.
+/// Cutouts take the entry point with the discard, in the alpha-mask phase; the opaque keep the early depth test; the shadow
+/// has its own entry points.
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct HeroMaterialKey {
     cutout: bool,
+    shadow: bool,
 }
 
 impl From<&HeroMaterial> for HeroMaterialKey {
     fn from(m: &HeroMaterial) -> Self {
-        Self { cutout: m.cutout }
+        Self { cutout: m.cutout, shadow: m.shadow }
     }
 }
 
@@ -158,7 +171,18 @@ impl Material for HeroMaterial {
         "shaders/hero.wesl".into()
     }
     fn alpha_mode(&self) -> AlphaMode {
-        if self.cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque }
+        if self.shadow {
+            AlphaMode::Multiply
+        } else if self.cutout {
+            AlphaMode::Mask(0.5)
+        } else {
+            AlphaMode::Opaque
+        }
+    }
+    /// The sort key of the transparent phase: the shadow goes after everything there, the sea above all (which writes no
+    /// depth, and would paint over it).
+    fn depth_bias(&self) -> f32 {
+        if self.shadow { 1.0e9 } else { 0.0 }
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -175,13 +199,22 @@ impl Material for HeroMaterial {
             ATTR_HERO_WEIGHTS.at_shader_location(5),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
-        let cutout = key.bind_group_data.cutout;
+        let (cutout, shadow) = (key.bind_group_data.cutout, key.bind_group_data.shadow);
+        descriptor.vertex.entry_point = Some(if shadow { "vertex_shadow" } else { "vertex" }.into());
         if let Some(f) = descriptor.fragment.as_mut() {
-            f.entry_point = Some(if cutout { "fragment_cutout" } else { "fragment" }.into());
+            f.entry_point = Some(if shadow { "fragment_shadow" } else if cutout { "fragment_cutout" } else { "fragment" }.into());
         }
-        if cutout {
-            // The hair is thin cards, seen from both sides.
+        if cutout || shadow {
+            // The hair is thin cards, seen from both sides; projected onto a plane either side of a triangle can face up.
             descriptor.primitive.cull_mode = None;
+        }
+        if shadow {
+            if let Some(d) = descriptor.depth_stencil.as_mut() {
+                // Strictly nearer than what's there: the plane's depth is the same bits for every triangle of a pixel, so the
+                // first one wins and the others don't darken it again.
+                d.depth_compare = Some(CompareFunction::Greater);
+                d.depth_write_enabled = Some(true);
+            }
         }
         Ok(())
     }
@@ -191,6 +224,9 @@ impl Material for HeroMaterial {
 #[derive(Resource)]
 pub struct HeroDraws {
     entities: Vec<Entity>,
+    /// His shadow's draws, and whether they're showing.
+    shadows: Vec<Entity>,
+    shadow_on: bool,
     frame_buffer: Handle<ShaderBuffer>,
     /// The record, kept here so nothing is allocated a frame.
     frame: Box<HeroFrameGpu>,
@@ -293,6 +329,7 @@ pub(super) fn spawn_hero(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<HeroMaterial>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
+    mut hero: ResMut<Hero>,
 ) {
     let started = std::time::Instant::now();
     let id = control.active.clone().unwrap_or_default();
@@ -301,6 +338,11 @@ pub(super) fn spawn_hero(
     let light = buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&HeroLightGpu::default()), RenderAssetUsages::RENDER_WORLD));
     let mut cache = HashMap::new();
     let model = &assets.model;
+    hero.soles = Soles::of(model);
+    if hero.soles.is_none() {
+        warn!("viltrumite: no foot bones in the model: his feet go by the clips alone");
+    }
+    let mut shadows = Vec::new();
     let entities = model
         .draws
         .iter()
@@ -312,11 +354,29 @@ pub(super) fn spawn_hero(
                 normal: texture(&id, &d.normal, false, [128, 128, 255, 255], &mut images, &mut cache),
                 spec: texture(&id, &d.spec, false, [0, 0, 0, 255], &mut images, &mut cache),
                 cutout: d.cutout(),
+                shadow: false,
             };
+            let mesh = meshes.add(draw_mesh(model, d));
+            // The shadow leaves out the cutouts (over half his triangles are hair, cut by a texture this draw doesn't read).
+            if !d.cutout() {
+                shadows.push(
+                    commands
+                        .spawn((
+                            Name::new(format!("Hero shadow {}", d.name)),
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(materials.add(HeroMaterial { shadow: true, ..material.clone() })),
+                            Transform::IDENTITY,
+                            Visibility::Visible,
+                            NoFrustumCulling,
+                            RenderLayers::layer(crate::ship::warp::SHIP_LAYER),
+                        ))
+                        .id(),
+                );
+            }
             commands
                 .spawn((
                     Name::new(format!("Hero {}", d.name)),
-                    Mesh3d(meshes.add(draw_mesh(model, d))),
+                    Mesh3d(mesh),
                     MeshMaterial3d(materials.add(material)),
                     Transform::IDENTITY,
                     Visibility::Visible,
@@ -331,11 +391,11 @@ pub(super) fn spawn_hero(
     assets.model.indices = Vec::new();
     info!("viltrumite: meshes and {} textures made in {} ms", cache.len(), started.elapsed().as_millis());
     commands.insert_resource(HeroLightInput { on: true, frame: frame_buffer.clone(), light, tables: None });
-    commands.insert_resource(HeroDraws { entities, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
+    commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
 }
 
 /// He shows while the mod is on. Runs only after the first enable.
-pub(super) fn sync_visibility(control: Res<ModControl>, draws: Res<HeroDraws>, mut vis: Query<&mut Visibility>, mut input: ResMut<HeroLightInput>) {
+pub(super) fn sync_visibility(control: Res<ModControl>, mut draws: ResMut<HeroDraws>, mut vis: Query<&mut Visibility>, mut input: ResMut<HeroLightInput>) {
     if !control.is_changed() && !draws.is_added() {
         return;
     }
@@ -344,6 +404,14 @@ pub(super) fn sync_visibility(control: Res<ModControl>, draws: Res<HeroDraws>, m
         if let Ok(mut v) = vis.get_mut(e) {
             if *v != want {
                 *v = want;
+            }
+        }
+    }
+    if !control.hero && draws.shadow_on {
+        draws.shadow_on = false;
+        for &e in &draws.shadows {
+            if let Ok(mut v) = vis.get_mut(e) {
+                *v = Visibility::Hidden;
             }
         }
     }
@@ -516,6 +584,47 @@ fn smooth(a: f64, b: f64, x: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// The body he's attached to, as the frames see it, and his place in its frame.
+fn attached_body<'a>(hero: &Hero, p: &'a LightParams) -> Option<(BodyInfo<'a>, DVec3)> {
+    let Frame::Attached { obj, local_pos, .. } = hero.frame else { return None };
+    let (_, b, t) = p.bodies.iter().find(|(_, b, _)| b.obj == obj)?;
+    Some((BodyInfo { obj, pos: b.pos, orient: b.orient, radius: b.radius_m, shape: b.shape, gm: 0.0, terrain: t }, local_pos))
+}
+
+/// The plane his shadow falls on, in the render frame (xyz its normal, w so `dot(n, x) + w` is the height over it), and how strong it
+/// is: from a triangle of the ground where the star's ray through him lands, lifted a little. Fades out as he climbs; none where he has
+/// nothing under him. `None`: no shadow.
+fn shadow_plane(body: &(BodyInfo, DVec3), sun: DVec3, cam: UPos) -> Option<(Vec4, f32)> {
+    let (b, local) = body;
+    if ground::footing(b, *local) == Footing::Nothing {
+        return None;
+    }
+    let ground = |p: DVec3| ground::support_height(b, p, None, 0.0);
+    let up = local.normalize_or(DVec3::Y);
+    let g = ground(*local);
+    g.level?;
+    let height = local.length() - g.radial - tune::STAND_M;
+    let (from, to) = tune::SHADOW_FADE_M;
+    let strength = 1.0 - smooth(from, to, height);
+    if strength <= 0.0 {
+        return None;
+    }
+    // Down the star's ray to the ground, twice: the second for what the first found. (A star under the horizon is the shader's.)
+    let l = (b.orient.inverse() * sun).normalize_or(up);
+    let cos = l.dot(up).max(0.05);
+    let mut at = *local;
+    for _ in 0..2 {
+        at -= l * ((at.length() - ground(at).radial) / cos);
+    }
+    let [p0, p1, p2] = ground::ground_triangle(ground, at, tune::SHADOW_SPAN_M)?;
+    let n = (p1 - p0).cross(p2 - p0).normalize_or(up);
+    let n = if n.dot(up) < 0.0 { -n } else { n };
+    let n_world = b.orient * n;
+    let base = b.pos.offset_m(b.orient * p0).delta_m(cam);
+    let plane = n_world.as_vec3().extend((-n_world.dot(base) - tune::SHADOW_LIFT_M) as f32);
+    Some((plane, strength as f32))
+}
+
 /// Model space (Z up, +Y forward) to the port's (Y up, -Z forward); +X stays his right hand.
 fn model_to_port() -> Mat3A {
     Mat3A::from_cols(Vec3A::X, Vec3A::new(0.0, 0.0, -1.0), Vec3A::Y)
@@ -534,6 +643,8 @@ pub(crate) fn update_hero(
     mut input: ResMut<HeroLightInput>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut proj: Query<&mut Projection, With<MainCamera>>,
+    mut vis: Query<&mut Visibility>,
+    mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
     p: LightParams,
 ) {
     let dt = time.delta_secs().min(0.1);
@@ -568,12 +679,26 @@ pub(crate) fn update_hero(
     let draws = &mut *draws;
     let f = &mut *draws.frame;
     let rel_f = rel.as_vec3();
+    let body = attached_body(&hero, &p);
+    let up_there = body.as_ref().map(|(b, local)| b.orient * local.normalize_or(DVec3::Y));
     if draws.ready {
         let hero = &mut *hero;
         hero.sampler.advance(&assets.clips, dt);
         hero.sampler.sample(&assets.model, &assets.clips);
-        let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: rel_f.into() };
+        let lift = ground::post_pose(hero, &assets.clips, body.as_ref(), dt as f64);
+        let lifted = rel + up_there.unwrap_or(DVec3::Y) * lift;
+        let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: lifted.as_vec3().into() };
         hero.sampler.write_palette(place, &mut f.joints);
+    }
+    // The ground under him holds still round his feet (`planet.wesl`): where his soles are, in the camera's frame.
+    let soil_now = match (&body, up_there) {
+        (Some((b, local)), Some(up)) if !hero.soil_off && ground::footing(b, *local) == Footing::Land && local.length() - ground::support_height(b, *local, None, 0.0).radial < tune::SOIL_HOLD_UNDER_M => {
+            (rel - up * tune::STAND_M).as_vec3().extend(1.0)
+        }
+        _ => Vec4::ZERO,
+    };
+    if soil.0 != soil_now {
+        soil.0 = soil_now;
     }
     // His chest.
     let nearest = p
@@ -610,6 +735,18 @@ pub(crate) fn update_hero(
         draws.was_near = Some(near_body.is_some());
         info!("viltrumite: his light is now {} ({:.0} m above the nearest radius)", if near_body.is_some() { "the near body's" } else { "the CPU's" }, nearest.map_or(0.0, |n| n.2));
     }
+    // His shadow: only while there's a plane to fall on; hidden, its 100,000 triangles aren't drawn.
+    let shadow = body.as_ref().filter(|_| !hero.shadow_off).and_then(|bd| shadow_plane(bd, f.light.sun_dir.truncate().as_dvec3(), cam.pos));
+    (f.shadow_plane, f.shadow) = shadow.map_or((Vec4::ZERO, Vec4::ZERO), |(plane, k)| (plane, Vec4::new(k, 0.0, 0.0, 0.0)));
+    if draws.ready && draws.shadow_on != shadow.is_some() {
+        draws.shadow_on = shadow.is_some();
+        let want = if shadow.is_some() { Visibility::Visible } else { Visibility::Hidden };
+        for &e in &draws.shadows {
+            if let Ok(mut v) = vis.get_mut(e) {
+                *v = want;
+            }
+        }
+    }
     let tables = near_body.and_then(|t| t.atmosphere.as_ref()).map(|a| (a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone()));
     if input.tables != tables {
         input.tables = tables;
@@ -637,8 +774,8 @@ pub(crate) fn update_hero(
     }
 }
 
-/// The pipelines he needs before he shows: opaque, cutout, the light's compute.
-const HERO_PIPELINES: u32 = 3;
+/// The pipelines he needs before he shows: opaque, cutout, the shadow, the light's compute.
+const HERO_PIPELINES: u32 = 4;
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_light_pass(

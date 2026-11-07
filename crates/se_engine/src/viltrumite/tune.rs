@@ -13,6 +13,53 @@ pub const SPRINT_AFTER_S: f64 = 1.5;
 pub const STRIDE_RATE: (f64, f64) = (0.7, 1.5);
 /// The jump's impulse up (m/s), no drag rising: Earth 40 m, the Moon about 242 m.
 pub const JUMP_MS: f64 = 28.0;
+/// How fast he reaches the speed the keys ask for, and comes to a stop (m/s2).
+pub const WALK_ACCEL: f64 = 12.0;
+/// Gaits by speed, rising and falling (m/s): idle under the first, walk under the second, run under the third.
+pub const GAIT_IDLE_MS: (f64, f64) = (0.35, 0.2);
+pub const GAIT_RUN_MS: (f64, f64) = (3.2, 2.8);
+pub const GAIT_SPRINT_MS: (f64, f64) = (8.0, 7.0);
+/// A gait's crossfade (s), and from standing to walking.
+pub const FADE_GAIT_S: f32 = 0.2;
+/// How fast his body turns to the aim while he stands (s): his feet don't step for it.
+pub const STAND_TURN_TAU_S: f64 = 0.45;
+/// Standing, more than this off the aim (degrees) he plays a turn clip.
+pub const TURN_CLIP_OVER_DEG: f64 = 70.0;
+/// A turn clip's root ends this far round, as authored (degrees): his body takes it over when it ends.
+pub const TURN_CLIP_DEG: f64 = 90.0;
+/// The jump's clips: from where in `jump_fall_start_stopped` (its crouch is over by then: he's already off the ground), at
+/// what rate, and where it has reached the air pose, when `jump_fall_loop` takes over.
+pub const JUMP_CLIP_FROM_S: f32 = 0.45;
+pub const JUMP_CLIP_RATE: f32 = 2.2;
+pub const JUMP_CLIP_END_S: f32 = 2.2;
+/// A landing's clips: `jump_fall_land_hard` from here (its air pose is before this) at this rate.
+pub const LAND_CLIP_FROM_S: f32 = 0.12;
+pub const LAND_CLIP_RATE: f32 = 1.3;
+/// Crossfade into a landing clip, and out of one to standing (s).
+pub const FADE_LAND_S: f32 = 0.08;
+pub const FADE_UP_S: f32 = 0.4;
+/// How fast he comes upright on landing (s): the impact hides it.
+pub const LAND_UPRIGHT_TAU_S: f64 = 0.05;
+/// Sliding down a slope too steep to stand on: this share of gravity along it, and at most this fast (m/s).
+pub const SLIDE_SHARE: f64 = 0.75;
+pub const SLIDE_MAX_MS: f64 = 25.0;
+/// F6: the ground under him drops further than `LEDGE_DROP_M + v dt tan(SLOPE_WALK_DEG)` in a frame on the same level: he falls.
+pub const LEDGE_DROP_M: f64 = 0.6;
+/// The side of the triangle of ground samples that gives the normal (m).
+pub const NORMAL_SPAN_M: f64 = 1.5;
+/// A finer node moved the ground under him: he's drawn where he was, easing out with this time constant (s).
+pub const GROUND_EASE_TAU_S: f64 = 0.15;
+/// Most the visual offset ever holds (m): beyond that it's a jump, not a new node.
+pub const GROUND_EASE_MAX_M: f64 = 40.0;
+/// His root drops to the lower foot's ground by at most this (m), smoothed.
+pub const ROOT_DROP_MAX_M: f64 = 0.25;
+pub const ROOT_DROP_TAU_S: f64 = 0.1;
+/// His drawn height over the capsule follows the clip's `ground_z` with this time constant (s).
+pub const CLIP_GROUND_TAU_S: f64 = 0.1;
+/// Under this height over the ground (m) the ground's stones hold still round him (`planet.wesl`).
+pub const SOIL_HOLD_UNDER_M: f64 = 12.0;
+/// Hovering over the sea, his soles are this far up (m).
+pub const SEA_HOVER_M: f64 = 1.5;
 
 // ---- Flight ----
 /// WASD alone.
@@ -95,8 +142,9 @@ pub const TRACE_STEPS: u32 = 16;
 /// Halvings to find where a path that ran out of those steps goes in.
 pub const TRACE_BISECT: u32 = 24;
 
-// ---- Ground, until step 5's walking ----
-/// His middle stays this far above the ground (m): his soles are about 1 m below it.
+// ---- Ground ----
+/// His middle (the capsule's) stays this far above the ground (m). Standing his soles reach the ground: his drawn root
+/// goes by the clip's own `ground_z` (`ground.rs` `drawn_lift`).
 pub const STAND_M: f64 = 1.1;
 /// Where nothing of the ground is loaded he isn't let lower than this over the highest ground could be (m).
 pub const UNLOADED_MARGIN_M: f64 = 100.0;
@@ -152,9 +200,41 @@ pub const THUNDERCLAP_RING_M: (f64, f64) = (30.0, 150.0);
 pub const SLOPE_WALK_DEG: f64 = 50.0;
 pub const SLOPE_SLIDE_DEG: f64 = 70.0;
 
-// ---- His light (step 3) ----
-/// How far the cape's links lean to straight down until the springs arrive (step 5).
+// ---- His shadow (step 5) ----
+/// The plane it falls on comes from a triangle of ground samples this far apart (m), lifted this far (m).
+pub const SHADOW_SPAN_M: f64 = 2.0;
+pub const SHADOW_LIFT_M: f64 = 0.03;
+/// It fades out as he climbs from and to this height (m over the ground).
+pub const SHADOW_FADE_M: (f64, f64) = (10.0, 200.0);
+
+// ---- His cape (step 5) ----
+/// The fixed time step (s), and at most this many steps a frame: a hitch runs less time, it never runs a long step.
+pub const CAPE_STEP_S: f32 = 1.0 / 120.0;
+pub const CAPE_MAX_STEPS: usize = 4;
+/// Solver passes over its lengths a step.
+pub const CAPE_SOLVE: usize = 4;
+/// The air's speed past him for the cloth stops counting at this (m/s): above it the cape just streams back.
+pub const CAPE_WIND_MAX_MS: f32 = 60.0;
+/// How hard the air takes the cloth with it (per second).
+pub const CAPE_WIND_K: f32 = 3.0;
+/// Air this dense or denser counts in full (kg/m3): less and it takes the cloth less. None: inertia only.
+pub const CAPE_AIR_FULL: f32 = 0.02;
+/// The most his own acceleration or gravity moves the cloth (m/s2): 1000 c is reached in 30 s, a hard stop is one frame.
+pub const CAPE_ACCEL_MAX: f32 = 40.0;
+/// A point's speed against his body is never more than this (m/s).
+pub const CAPE_SPEED_MAX: f32 = 45.0;
+/// Velocity kept per step, without air.
+pub const CAPE_DAMP: f32 = 0.992;
+/// How much the cloth turns with his chest: 0 stays put in space while he turns, 1 is rigid with him.
+pub const CAPE_FOLLOW: f32 = 0.7;
+/// How hard the cloth goes back to hanging behind him where nothing else moves it (per second squared).
+pub const CAPE_REST_K: f32 = 5.0;
+/// How much of the outer chains' extra length goes (1: every chain as long as the middle one, a level hem; 0: the diamond it's cut as).
+pub const CAPE_HEM_LEVEL: f32 = 0.85;
+/// How far the rest shape's links lean to straight down his body: the rest is the link's rest direction.
 pub const CAPE_HANG: f32 = 0.85;
+
+// ---- His light (step 3) ----
 /// Above a body's atmosphere (or this share of its radius, without one) his light is the CPU's: the body's own
 /// shine on him counts there, and the atmosphere's tables stop at their top.
 pub const BODY_LIGHT_AIRLESS_RADII: f64 = 0.02;

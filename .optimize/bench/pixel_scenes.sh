@@ -10,7 +10,7 @@ OUT="${1:?outdir}"; shift; mkdir -p "$OUT"
 T="pause; timing frame"
 D="$T; date 2026-06-21 12:00:00"
 declare -A S
-R="goto Earth 20000; wait 200; rs RS 8514-1828-5-27938-309; wait 300; select RS 8514-1828-5-27938-309 2"
+R="goto Earth 20000; wait 1000; rs RS 8514-1828-5-27938-309; wait 300; select RS 8514-1828-5-27938-309 2"
 S[space]="$D; goto Earth 20000; wait 600"
 S[rsplanet]="$D; $R; surface 20 30 0.3 -10 0; wait 2400"
 S[rsground]="$D; $R; surface -35 120 0.002 -5 0; wait 2400"
