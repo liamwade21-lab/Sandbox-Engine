@@ -77,9 +77,16 @@
     228 km/s at 5); the wind is louder and follows his speed through the air in any flight (the roar file was four times quieter than
     the others: each loop now has its own gain), and a dive roars too; past the sound barrier the view buffets steadily (more with
     Mach and stacks) and faint speed lines run out from the middle of the screen.
+  - **Your third round (2026-11-07): the lock-on and a new run.** In supersonic fast flight the left button selects what's under the
+    cross (a planet or moon, or a star or galaxy through the game's own pick) instead of punching; G locks on (G again lets go); holding
+    W flies him there, faster the further it is (to 10 million times light's speed), the view swinging round to it, easing in to stop
+    in a hover 1.5 radii from a planet's middle (10 from a star's). Nothing more than 5 minutes away can be selected or locked on (about
+    80 light years). A gold mark shows the target with its distance and time left. Checked: Earth to the Moon in about 10 s (from
+    orbit, and from the ground climbing out over the horizon), Alpha Centauri in 34 s, Betelgeuse refused. The run and the sprint are
+    new: leaning in, high knees, heel kicked up, a hop between steps, the arms pumping, the planted foot not sliding.
   - **Next:** step 11 (the rest of the spec's checks, the mod-off picture check, costs, notes).
-  - **For you to judge (U3):** how it all feels and sounds; every number is in `crates/se_engine/src/viltrumite/tune.rs`. Walks, runs,
-    turns and the first two punches are still stand-ins until you put the 8 Mixamo clips in `re/viltrumite/mixamo` and re-run the
+  - **For you to judge (U3):** how it all feels and sounds; every number is in `crates/se_engine/src/viltrumite/tune.rs`. The walk, the
+    run and sprint (now a solved running stride), turns and the first two punches are still stand-ins until you put the 8 Mixamo clips in `re/viltrumite/mixamo` and re-run the
     converter (U1); the mod author's note on reusing assets is still to read (U2).
   - **Known and left:** the uphill foot sinks on slopes over about 30 degrees (no foot IK); with the 3D clouds off his glow and trail
     show through flat clouds; in thin air at high speed the cape can stand up like a flag; deep in Jupiter with the mod off one shade in

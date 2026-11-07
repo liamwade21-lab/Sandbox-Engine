@@ -161,11 +161,16 @@ pub fn punch_charge(held: f64) -> f64 {
     ((held - tune::PUNCH_CHARGE_S) / (tune::PUNCH_FULL_S - tune::PUNCH_CHARGE_S)).clamp(0.0, 1.0)
 }
 
-/// The line of keys at the bottom of the screen, as the user's mod has it ("Key:Action|...").
+/// The line of keys at the bottom of the screen, as the user's mod has it ("Key:Action|..."). `locked`: on a target (`lock.rs`).
 #[allow(clippy::too_many_arguments)]
-pub fn prompt(state: super::hero::State, fast: bool, dive: bool, super_on: bool, stacks: u32, charging: bool, super_run: bool) -> String {
+pub fn prompt(state: super::hero::State, fast: bool, dive: bool, super_on: bool, stacks: u32, charging: bool, super_run: bool, locked: bool) -> String {
     use super::hero::State;
     let off = "|Tab:Menus";
+    if locked && !charging && !dive && matches!(state, State::Hover | State::Flight) {
+        let stack = if fast && super_on && stacks < tune::STACKS_MAX { "|Hold Space (full):Stack" } else { "" };
+        let left = if fast && super_on { "Select" } else { "Punch" };
+        return format!("Hold W:Fly to target|S:Brake|G:Release{stack}|LMB:{left}{off}");
+    }
     match state {
         _ if charging => "Release Space:Launch".to_string(),
         State::Grounded | State::Land | State::HardLanding if super_run => "Shift+W:Super run|Space:Take off".to_string() + off,
@@ -175,7 +180,7 @@ pub fn prompt(state: super::hero::State, fast: bool, dive: bool, super_on: bool,
         State::Flight if dive => "Release Ctrl:Pull up".to_string(),
         State::Flight if fast && super_on => {
             let stack = if stacks >= tune::STACKS_MAX { "|Max stacks".to_string() } else { format!("|Hold Space (full):Stack {}/{}", stacks + 1, tune::STACKS_MAX) };
-            format!("W/S:Speed|Ctrl:Dive|2xS:Hover{stack}|LMB:Punch{off}")
+            format!("W/S:Speed|Ctrl:Dive|2xS:Hover{stack}|LMB:Select|G:Lock on{off}")
         }
         State::Flight if fast => "W/S:Speed|Ctrl:Dive|2xS:Hover|Hold Space:Boost|LMB:Punch".to_string() + off,
         State::Hover | State::Flight => "WASD:Move|2xW:Fast|Hold Space:Boost|Space:Drop|Ctrl:Down|LMB:Punch|RMB:Thunderclap".to_string() + off,

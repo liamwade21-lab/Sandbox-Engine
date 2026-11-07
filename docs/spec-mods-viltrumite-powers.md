@@ -879,3 +879,28 @@ steady rumble on the view (`apply_shake`: four sines at odd ratios, 0.3 degrees 
 speed lines drawn on the screen (the user's mod draws them in its world, `Fx.SpeedLines`; here faint streaks running out from the
 middle, clear of him, more, longer and thicker per stack, on egui's Background layer so the panels stay over them). **Not checked:**
 how it sounds and feels (U3); only the tests and the build.
+
+**The lock-on and a new run (2026-11-07, the user's third round).** The user: "when i am flying supersonic, instead of left click
+punching, it will be to select object, then when you press G like in the port that is the button to go to planet, it will lock on to
+the planet and while you are holding W to go forward the viltrumite will speed up superfast or slower depending on how far the object
+is away from him (he cannot select things what will take him 5 minutes of irl time to travel to) and slow down so he can smoothly
+arrive to planets, also the running animation is terrible." (1) `viltrumite/lock.rs`: in supersonic fast flight (`lock::picks`, not
+diving) the left button selects the screen marker nearest the cross within 40 px at 1080 lines (the system's bodies always have one),
+else hands the port's own sky pick the cross's ray as a scripted click (stars, galaxies) and checks what it chose over the next frames;
+`hero_move` gives the punches an input without the left button meanwhile. Plain G is his while the mod is on (`camera.rs` skips its Go
+To; Shift+G and Ctrl+G stay the port's): it locks on to the selection, G again lets go. Locked, W in a hover goes into fast flight, and
+in fast flight `lock::fly` replaces W's ramp: speed = distance left to the stop / 0.6 s (exponential easing in), at most 1e7 c,
+climbing by doubling every 0.25 s; the view eases round to the heading (0.35 s); F7's caps still hold. The stop is 1.5 radii from a
+body's middle (10 for a star: 1.5 of Alpha Centauri A whited out the view; 2 for the rest); within 0.2 % of it he hovers. The body he's
+near, its air counted with it, is climbed over at 55 degrees while it's in the way: at 30 degrees, with the Moon just over the horizon,
+the straight line skimmed the upper air at the 30 km/s air cap for minutes. The 5-minute rule is `lock::trip_time` (the same speed
+steps without the caps or the target's motion, an estimate): over `LOCK_REACH_S` and a pick is undone, a lock refused; about 80 light
+years. The readout's guide marks the selection (a ring) and the lock (gold corners, the distance to the stop and the time; an arrow at
+the edge when off screen). Tests: Earth orbit (50,000 km) to the Moon, picked under the cross, 10 s estimated, arrived 2,611 km from
+its middle; from the ground (take off, W) it climbed out at 55 degrees and arrived; Betelgeuse refused both ways; Alpha Centauri A
+locked (34 s) and reached. (2) The run and sprint stand-ins are rewritten in convert.py (`run_clip`, `RUN_STYLE`, out of git): the
+first stood upright with both feet always down. Now 13 and 20 degrees of lean, knees to 109 and 129 degrees, a 3 cm hop between steps
+(both feet up: `keyed_clip`'s `stance`), arms swinging 38 and 56 degrees from the shoulder with bent elbows, hips and chest turning
+against each other, the head still. The planted foot is solved so its ball goes back at one speed (no slide), and the clips carry that
+speed as their stride (4.7 and 10.5 m/s: `gait` read the ankle and came out a quarter slow). Only `clips.sevc` changed. **Not
+checked:** how the lock-on and the run feel (U3).

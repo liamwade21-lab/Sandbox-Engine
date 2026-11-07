@@ -618,3 +618,27 @@ pub const BUFFET_AIR_PA: (f64, f64) = (10.0, 1000.0);
 pub const BUFFET_STACK: f64 = 0.08;
 pub const BUFFET_EASE: f64 = 3.0;
 pub const BUFFET_DEG: f64 = 0.3;
+/// The lock-on (`lock.rs`; the user, 2026-11-07). In supersonic fast flight the left button selects the marker nearest the cross within
+/// `LOCK_PICK_PX` (at 1080 lines; scaled with the window), else hands the port's own sky pick the cross's ray.
+pub const LOCK_PICK_PX: f32 = 40.0;
+/// Flying there: the distance left to the stop over `LOCK_TAU_S` (s), so it falls by e every `LOCK_TAU_S` and he eases in, at most
+/// `LOCK_TOP_MS` (ten million times light's: five minutes takes him about 80 light years); climbing to it by doubling every
+/// `LOCK_DOUBLE_S` (s), at least `LOCK_ACCEL_MIN` (m/s²).
+pub const LOCK_TAU_S: f64 = 0.6;
+pub const LOCK_TOP_MS: f64 = 1.0e7 * 299_792_458.0;
+pub const LOCK_DOUBLE_S: f64 = 0.25;
+pub const LOCK_ACCEL_MIN: f64 = 300.0;
+/// He stops `LOCK_ARRIVE_RADII` of the target's radius from its middle (the port's Go To stops at 4): a planet's or a moon's, a star's
+/// (1.5 of Alpha Centauri A's left the view white with its glare), anything else's; at least `LOCK_ARRIVE_MIN_M` over its surface. He has
+/// arrived within `LOCK_DONE_SHARE` of that of the stop: a hover there.
+pub const LOCK_ARRIVE_RADII: (f64, f64, f64) = (1.5, 10.0, 2.0);
+pub const LOCK_ARRIVE_MIN_M: f64 = 2_000.0;
+pub const LOCK_DONE_SHARE: f64 = 0.002;
+/// Nothing whose trip would take longer (s) can be selected or locked on (the user: "he cannot select things what will take him 5
+/// minutes of irl time to travel to").
+pub const LOCK_REACH_S: f64 = 300.0;
+/// While W flies him there the view swings round to it with this time constant (s).
+pub const LOCK_VIEW_TAU_S: f64 = 0.35;
+/// The body he's near in the way, its air with it: he climbs at this angle over its horizon until the way is clear (degrees). (A test
+/// from the ground at 30, with the Moon just over the horizon, skimmed the upper air at its cap: 30 km/s for minutes.)
+pub const LOCK_CLIMB_DEG: f64 = 55.0;

@@ -134,6 +134,13 @@ or publishing the port.
   `Hero::buffet` (`controls::buffet`) drives a steady rumble in `apply_shake` and the speed lines (`readout::speed_lines`, egui's
   Background layer, drawn with the panels hidden too). The loops' files differ four times in loudness: each has its own
   `tune::LOOP_GAIN` and a ceiling `LOOP_MOST` that keeps its peak from clipping; change those, not `SOUND_GAIN`, to balance them.
+- The lock-on (`viltrumite/lock.rs`, the user's 2026-11-07): in supersonic fast flight the left button selects (`lock::picks`;
+  `hero_move` hands the punches an input without the left button then, so the two must agree: both go by last frame's flow); plain
+  G is his while the mod is on (`camera.rs` `input_controls` skips its Go To; `ModInput::g_pressed`). A pick off the markers goes to
+  the port's own sky pick as `CommandQueue::click` and is checked over the next frames (`Hero.pick_wait`). The trip estimate
+  (`trip_time`) uses `step_speed` itself: change the speed rule there and the 5-minute reach follows. Messages from `hero_move` go
+  through `Hero.note` (shown by `lock_keys`). The run and sprint clips are `run_clip` in convert.py (a solved stance foot, their own
+  stride speed); the walk is still `gait_deltas`.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its

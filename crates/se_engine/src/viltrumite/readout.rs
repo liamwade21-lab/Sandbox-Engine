@@ -3,11 +3,15 @@
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
+use se_core::ephemeris::Ephemeris;
 use se_core::units::SPEED_OF_LIGHT;
 
+use crate::camera::{FlyCamera, MainCamera};
+use crate::data::SeData;
 use crate::hud::HudState;
 use crate::i18n::I18n;
 use crate::mods::ModControl;
+use crate::universe::SimTime;
 
 use super::Hero;
 
@@ -55,7 +59,17 @@ pub fn format_height(h: f64) -> String {
     }
 }
 
-pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudState>, i18n: Res<I18n>, control: Res<ModControl>) -> Result {
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw(
+    mut contexts: EguiContexts,
+    hero: Res<Hero>,
+    hud: Res<HudState>,
+    i18n: Res<I18n>,
+    control: Res<ModControl>,
+    cam: Res<FlyCamera>,
+    cams: Query<&Camera, With<MainCamera>>,
+    (data, sim): (Res<SeData>, Res<SimTime>),
+) -> Result {
     let ctx = contexts.ctx_mut()?;
     // A camera effect, not a panel: with the panels hidden too.
     speed_lines(ctx, &hero);
@@ -92,8 +106,70 @@ pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudStat
     });
     if control.panels_hidden() {
         guide(ctx, &hero);
+        if let Some(vp) = cams.single().ok().and_then(|c| c.logical_viewport_size()) {
+            targets(ctx, &hero, &cam, vp, &data, sim.jd);
+        }
     }
     Ok(())
+}
+
+/// The lock-on's marks (`lock.rs`): a thin ring on the selection while the left button selects, gold corners on what he's locked on,
+/// with its name, the distance to the stop and the trip's time from here (or an arrow at the screen's edge pointing round to it).
+fn targets(ctx: &egui::Context, hero: &Hero, cam: &FlyCamera, vp: Vec2, data: &SeData, jd: f64) {
+    let picking = super::lock::picks(hero);
+    let show_sel = cam.selected.filter(|s| picking && Some(*s) != hero.lock);
+    if hero.lock.is_none() && show_sel.is_none() {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let s = (screen.height() / 540.0).max(1.0);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hero_lock")));
+    let view = crate::overlay::View::new(cam, vp);
+    let eph = Ephemeris::new(&data.catalog);
+    let dir_of = |o| view.local(eph.position(o, jd).delta_m(cam.pos).normalize_or_zero());
+    let text = |at: egui::Pos2, align: egui::Align2, t: String, colour: egui::Color32| {
+        let font = egui::FontId::proportional(7.0 * s);
+        painter.text(at + egui::vec2(s, s), align, &t, font.clone(), egui::Color32::from_black_alpha(160));
+        painter.text(at, align, t, font, colour);
+    };
+    let gold = egui::Color32::from_rgb(255, 211, 107);
+    if let Some(sel) = show_sel {
+        if let Some(p) = view.project(dir_of(sel)) {
+            painter.circle_stroke(p, 9.0 * s, egui::Stroke::new(1.2 * s, egui::Color32::from_white_alpha(200)));
+            text(p + egui::vec2(12.0 * s, -4.0 * s), egui::Align2::LEFT_CENTER, data.catalog.display_name(sel).to_string(), egui::Color32::from_white_alpha(220));
+        }
+    }
+    let Some(lock) = hero.lock else { return };
+    let mut line = data.catalog.display_name(lock).to_string();
+    if let Some((left, eta)) = hero.lock_left {
+        line += &format!("  {}", super::lock::format_distance(left));
+        if let Some(t) = eta {
+            line += &format!("  {}", super::lock::format_time(t));
+        }
+    }
+    let d = dir_of(lock);
+    match view.project(d).filter(|p| screen.shrink(4.0 * s).contains(*p)) {
+        Some(p) => {
+            let (r, l) = (11.0 * s, 5.0 * s);
+            let stroke = egui::Stroke::new(1.6 * s, gold);
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                let corner = p + egui::vec2(sx * r, sy * r);
+                painter.line_segment([corner, corner - egui::vec2(sx * l, 0.0)], stroke);
+                painter.line_segment([corner, corner - egui::vec2(0.0, sy * l)], stroke);
+            }
+            text(p + egui::vec2(0.0, r + 3.0 * s), egui::Align2::CENTER_TOP, line, gold);
+        }
+        None => {
+            // Off the screen or behind: an arrow on a ring round the middle, the way to turn.
+            let way = egui::vec2(d.x as f32, -d.y as f32);
+            let way = if way.length() < 1e-6 { egui::vec2(0.0, -1.0) } else { way.normalized() };
+            let at = screen.center() + way * screen.height() * 0.26;
+            let tip = at + way * 8.0 * s;
+            let side = egui::vec2(-way.y, way.x) * 5.0 * s;
+            painter.add(egui::Shape::convex_polygon(vec![tip, at + side, at - side], gold, egui::Stroke::NONE));
+            text(at - way * 6.0 * s, egui::Align2::CENTER_CENTER, line, gold);
+        }
+    }
 }
 
 /// Speed lines past the barrier in air (the user, 2026-11-07; their mod's `Fx.SpeedLines`, drawn on the screen here): faint streaks
@@ -160,7 +236,7 @@ fn guide(ctx: &egui::Context, hero: &Hero) {
     }
     let speed = hero.flow.speed;
     let super_on = hero.fast && controls::supersonic(&hero.flow, speed);
-    let line = controls::prompt(hero.state, hero.fast, hero.dive, super_on, hero.stacks, hero.space.charging, hero.super_run);
+    let line = controls::prompt(hero.state, hero.fast, hero.dive, super_on, hero.stacks, hero.space.charging, hero.super_run, hero.lock.is_some());
     let size = (screen.height() / 72.0).clamp(11.0, 28.0);
     egui::Area::new(egui::Id::new("hero_guide_line"))
         .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -screen.height() * 0.12])

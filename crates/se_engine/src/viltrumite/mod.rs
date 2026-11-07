@@ -22,6 +22,7 @@ pub mod fx;
 pub mod ground;
 pub mod hero;
 pub mod impact;
+pub mod lock;
 pub mod readout;
 pub mod solid;
 pub mod sound;
@@ -79,6 +80,8 @@ impl Plugin for ViltrumitePlugin {
                 // mod is off.
                 hero::hero_move.run_if(hero_shown).in_set(UniverseSet::Camera).after(crate::camera::travel_and_move).before(crate::camera::sync_camera_transform),
             )
+            // The lock-on's keys: the left button selecting in supersonic flight, G; before his move reads the lock and the button.
+            .add_systems(PostUpdate, lock::lock_keys.run_if(hero_shown).before(hero::hero_move))
             .add_systems(
                 PostUpdate,
                 // After everything that moves the camera or sets the near plane (`keep_camera_above_ground`), before
@@ -287,6 +290,12 @@ pub struct Hero {
     pub combo: u32,
     pub last_punch: f64,
     pub punch_ready: bool,
+    /// The lock-on (`lock.rs`): what he's locked on, a sky pick the port is making for him, a line for the screen from `hero_move`
+    /// (shown by `lock::lock_keys`), and while locked the distance to the stop and the trip's time from here (m, s; `None` past reach).
+    pub lock: Option<ObjectRef>,
+    pub pick_wait: Option<lock::PickWait>,
+    pub note: Option<String>,
+    pub lock_left: Option<(f64, Option<f64>)>,
 }
 
 impl Default for Hero {
@@ -364,6 +373,10 @@ impl Default for Hero {
             combo: 0,
             last_punch: f64::NEG_INFINITY,
             punch_ready: false,
+            lock: None,
+            pick_wait: None,
+            note: None,
+            lock_left: None,
         }
     }
 }

@@ -198,7 +198,9 @@ the screen shows the keys for what he's doing, a cross marks the middle and a ba
 | Z | Stop dead, in the air; on the ground he just stops walking |
 | Wheel | Camera nearer or further (2.5 to 200 m) |
 | Tab | The menus: the panels come back and the mouse goes to them, the keys stay his. Tab again to go back. The same happens by itself when the window loses the focus |
-| G, Shift+G, Ctrl+G | Go to the selection, land on it, go to its centre, as usual: it carries him; WASD or Z stop it |
+| G | Lock on to the selection (G again lets go); then hold W and he flies there himself, faster the further it is, and eases in to stop in a hover near it. Anything more than 5 minutes away can't be locked on |
+| Shift+G, Ctrl+G | Land on the selection, go to its centre, as usual: it carries him; WASD or Z stop it |
+| Left button in supersonic fast flight | Select what's under the cross (a planet, a moon, a star, a galaxy) instead of punching; too far (over 5 minutes away) and it says so and keeps the old selection |
 | Left button | Click: a punch (a 5 m reach); quick clicks chain a combo, the fourth the superman punch. Hold, then let go: a charged punch (from 0.55 s, full at 2.2 s, the bar shows it) that blows up where it lands, a crater where that's near the ground. Aimed 45 degrees or more down within 15 m of the ground, a click is a ground punch: down to the ground and a 6 m crater |
 | Right button | Hold to charge the thunderclap (0.4 to 2.5 s), let go to clap: a ring of air 30 to 150 m in radius by the charge, and dust kicked up when he's over the ground |
 
@@ -207,6 +209,14 @@ moment; fast flight widens it a little with speed and each stack. Past the barri
 and each stack) and faint speed lines run out from the middle of the screen. The air rushes past by his speed in any flight, and past
 the barrier (or in a dive) the roar plays too. All his sounds are twice as loud as before (your note: too quiet). Each boost stack
 also lifts the speed limit near planets (30 km/s in the air, 1.5 times a stack).
+
+The lock-on: past the sound barrier in fast flight, put the cross on a planet, moon or star and click to select it, press G to lock
+on, and hold W. The view swings round to it and he speeds up by how far it is (doubling every quarter second, up to ten million times
+light's speed), then slows smoothly to stop in a hover 1.5 radii from a planet's or moon's middle (10 radii from a star's). A body in
+the way, its air with it, he climbs over at 55 degrees first. A gold mark shows the target, the distance left and the time to get
+there (an arrow when it's off the screen). Let go of W and he coasts, never faster than the lock allows that close; S brakes, Z stops
+and lets go of it. Earth to the Moon takes about 10 s, Alpha Centauri about 35; anything over 5 minutes (about 80 light years) can't
+be selected this way or locked on. The numbers are `LOCK_*` at the end of `tune.rs`.
 
 The air does what its physics says, on every world by its own air. Past the speed of sound (Earth about 335 m/s at sea level, Mars 233, Venus 449) a sonic boom goes off with a ring of cloud, and a cone of vapour hangs round him up to Mach 1.6; slowing back down it ends with a softer sound and a puff of the cone, no boom. Above the air, 55 km on Earth, 16 on Mars, 188 on Venus, there is no boom and no cone, so coming in from orbit doesn't boom, and a world with under 150 Pa of air never does. Faster still his skin heats: dull orange at 800 K (about 1 km/s at sea level on Earth, 7 times less speed on Venus), yellow at 2,000, white with a shell of plasma round him at 3,500, a blue-white trail from 6,000, and at 10,000 K (9.7 km/s at sea level) the look goes no further; only the shell and the trail get bigger. The heat bar in the readout shows it, in its colour. He cools over seconds when he slows. Neither hurts him or slows him. The trail lies behind the camera in a straight line: you see it when you turn, or with the view off to the side. A Go To through the air booms and heats him too, by its real speed through the air: a landing from orbit or a Go To leaving from near the ground makes him white-hot for a moment.
 

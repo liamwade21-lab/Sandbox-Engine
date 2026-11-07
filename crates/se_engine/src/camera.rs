@@ -783,7 +783,8 @@ pub(crate) fn input_controls(
             } else if ctrl && !shift {
                 // Go to object's centre (into a galaxy, a nebula, a barycentre).
                 start_travel(&mut cam, t, Some(GOTO_CENTER_M));
-            } else if !shift {
+            } else if !shift && !hero {
+                // (While the Viltrumite mod is on, plain G is his lock-on: `viltrumite/lock.rs`.)
                 // G again during a Go to to the same object: the fast Go to, from where the camera is.
                 let fast = cam.travel.as_ref().is_some_and(|tr| tr.target == t && tr.kind == TravelKind::Goto);
                 start_travel(&mut cam, t, None);

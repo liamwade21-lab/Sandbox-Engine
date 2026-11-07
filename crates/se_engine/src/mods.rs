@@ -274,6 +274,8 @@ pub struct ModInput {
     pub s_pressed: bool,
     pub x_pressed: bool,
     pub z: bool,
+    /// G pressed this frame (the lock-on: `viltrumite/lock.rs`; the camera's plain G is his while he's on).
+    pub g_pressed: bool,
     /// The mouse, unless the menus have it. (From step 8: punches, the charge.)
     pub left: bool,
     pub left_pressed: bool,
@@ -308,6 +310,7 @@ impl ModInput {
             s_pressed: keys.just_pressed(KeyCode::KeyS),
             x_pressed: keys.just_pressed(KeyCode::KeyX),
             z: keys.just_pressed(KeyCode::KeyZ),
+            g_pressed: keys.just_pressed(KeyCode::KeyG),
             mouse_lost: menus,
             ..default()
         };
@@ -900,8 +903,10 @@ mod tests {
         assert!(read(&[KeyCode::AltLeft]).alt);
         assert!(read(&[KeyCode::KeyX]).x_pressed);
         assert!(read(&[KeyCode::KeyZ]).z);
+        // G is the lock-on's (viltrumite/lock.rs).
+        assert_eq!(read(&[KeyCode::KeyG]), ModInput { g_pressed: true, ..default() });
         // Nothing else moves him: the keys that steered the free camera, and the others.
-        for k in [KeyCode::KeyR, KeyCode::KeyF, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::ArrowUp, KeyCode::ArrowLeft, KeyCode::Numpad8, KeyCode::KeyG, KeyCode::KeyC, KeyCode::Digit4] {
+        for k in [KeyCode::KeyR, KeyCode::KeyF, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::ArrowUp, KeyCode::ArrowLeft, KeyCode::Numpad8, KeyCode::KeyC, KeyCode::Digit4] {
             assert_eq!(read(&[k]), ModInput::default(), "{k:?}");
         }
     }

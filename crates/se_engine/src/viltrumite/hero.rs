@@ -1007,7 +1007,16 @@ pub(crate) fn hero_move(
     // The buttons (step 8): a punch, the ground punch, the clap's charge and the clap. Before the carry: a ground punch from a
     // jump or a fall holds him (Hover), and the carry and the step must take the same motion (`Frame::carry`), or the frame it
     // starts throws him by the ground's turn, 7.75 m at Earth's equator. (By last frame's aim: this frame's look comes later.)
-    impact::start(hero, &input, &scene, cam.rot * DVec3::NEG_Z, travelling, &assets);
+    // In supersonic fast flight the left button selects (`lock.rs`, the user, 2026-11-07), never punches.
+    let picking = super::lock::picks(hero);
+    if picking {
+        hero.punch_down = None;
+        if matches!(hero.action, impact::Action::WindUp { .. }) {
+            hero.action = impact::Action::None;
+        }
+    }
+    let punch_input = if picking { ModInput { left: false, left_pressed: false, left_released: false, ..*input } } else { *input };
+    impact::start(hero, &punch_input, &scene, cam.rot * DVec3::NEG_Z, travelling, &assets);
     // A ground punch or the clap holds his moves (`impact.rs`): X and Space do nothing meanwhile.
     let busy = hero.action.locks();
     // The controls as in the user's Viltrumite mod (`controls.rs`). Space: a tap takes off (on the ground) or drops (hovering); held
@@ -1037,6 +1046,7 @@ pub(crate) fn hero_move(
         hero.frame.set_velocity(&scene, DVec3::ZERO);
         (hero.fast, hero.dive, hero.stacks) = (false, false, 0);
         hero.space.cancel();
+        hero.lock = None;
     } else if input.x_pressed && !travelling && !busy && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
         // X drops him too (as a tap of Space hovering does).
         drop_out(hero, &scene);
@@ -1120,7 +1130,8 @@ pub(crate) fn hero_move(
             hero.super_run = true;
             stack_boom(hero, near_now, hero.flow.q.max(1.0));
         }
-        State::Hover | State::Flight if tap_w && !hero.fast && !hero.space.charging => {
+        // (Locked on, W alone: off to it.)
+        State::Hover | State::Flight if (tap_w || (input.w && hero.lock.is_some() && !travelling && !busy)) && !hero.fast && !hero.space.charging => {
             let v = hero.frame.velocity(&scene);
             hero.state = State::Flight;
             hero.fast = true;
@@ -1214,11 +1225,26 @@ pub(crate) fn hero_move(
     let near = near_of(pos).map(|(b, _)| (b, to_local(b, pos)));
     let up_here = near.and_then(|(b, local)| camera::horizon_up(b, local));
     let horizon = up_here.filter(|_| cam.auto_horizon);
+    // The lock-on (`lock.rs`): the way to it from here, and whether W is flying him there (fast flight; W in a hover went into it above).
+    let lock_way = hero.lock.filter(|_| !travelling).map(|t| {
+        // (Its air counts as part of it: a line skimming the upper air holds him to the air's cap.)
+        let near_body = near.filter(|(b, _)| b.obj != t).map(|(b, _)| (b.pos, b.radius + air_model.as_ref().filter(|(o, _)| *o == b.obj).map_or(0.0, |(_, a)| a.top_m())));
+        {
+            let (at, arrive) = super::lock::stop_of(&eph, t, sim.jd);
+            super::lock::way(at, arrive, pos, near_body)
+        }
+    });
+    let lock_go = lock_way.is_some() && hero.state == State::Flight && hero.fast && !hero.dive && input.w && !input.s && !busy;
 
     // The look.
     if input.mouse != Vec2::ZERO && cam.travel.is_none() && !cam.locks.rotation {
         let d = input.mouse.as_dvec2() * cam.mouse_sensitivity * (cam.fov_deg as f64 / 60.0);
         cam.rot = camera::turn_aim(cam.rot, DVec2::new(d.x, d.y), horizon);
+    }
+    // Flying to the lock, the view swings round to the way there (the mouse still turns it, against the pull).
+    if let Some(w) = lock_way.filter(|_| lock_go) {
+        let want = crate::camera::look_rotation(w.heading, up_here.unwrap_or(cam.rot * DVec3::Y));
+        cam.rot = cam.rot.slerp(want, 1.0 - (-dt / tune::LOCK_VIEW_TAU_S).exp()).normalize();
     }
     if let Some(up) = horizon.filter(|_| cam.travel.is_none()) {
         cam.rot = camera::level_roll(cam.rot, up, dt);
@@ -1349,7 +1375,11 @@ pub(crate) fn hero_move(
         } else if hero.fast {
             let steer = if super_on { tune::STEER_SUPER * (1.0 + tune::STEER_STACK * hero.stacks as f64) } else { tune::STEER_FAST };
             let (w, s) = (input.w && !travelling && !locked, input.s && !travelling && !locked);
-            let nv = controls::fast_step(v, &mut hero.ramp_t, fwd, w, input.w_pressed, s, steer, cap, dt);
+            let nv = match lock_way {
+                // Locked on: W flies him there at the lock's speed; without it he goes on as fast flight does, never faster than it.
+                Some(way) => super::lock::fly(v, if lock_go { way.heading } else { fwd }, lock_go, s, steer, cap, way.remaining, dt),
+                None => controls::fast_step(v, &mut hero.ramp_t, fwd, w, input.w_pressed, s, steer, cap, dt),
+            };
             if s && nv.length() < tune::FAST_MIN_MS * 0.9 {
                 // Braked out of fast flight: a hover.
                 hero.fast = false;
@@ -1440,6 +1470,29 @@ pub(crate) fn hero_move(
     let pos = hero.frame.world(&scene, hero.world.0);
     let near = near_of(pos).map(|(b, _)| (b, to_local(b, pos)));
     let height = near.map(|(b, local)| air_height_on(b, local, ground(b, local)));
+    // The lock-on: at the stop he's arrived, a hover there; until then, what's left and the trip's time for the readout.
+    hero.lock_left = None;
+    if let Some(t) = hero.lock.filter(|_| !travelling) {
+        // (Its air counts as part of it: a line skimming the upper air holds him to the air's cap.)
+        let near_body = near.filter(|(b, _)| b.obj != t).map(|(b, _)| (b.pos, b.radius + air_model.as_ref().filter(|(o, _)| *o == b.obj).map_or(0.0, |(_, a)| a.top_m())));
+        let w = {
+            let (at, arrive) = super::lock::stop_of(&eph, t, sim.jd);
+            super::lock::way(at, arrive, pos, near_body)
+        };
+        if w.remaining <= super::lock::done_m(w.arrive) && hero.state == State::Flight && hero.fast {
+            hero.lock = None;
+            (hero.fast, hero.dive, hero.stacks) = (false, false, 0);
+            hero.state = State::Hover;
+            hero.frame.set_velocity(&scene, DVec3::ZERO);
+            hero.sound.boost_end();
+            let name = data.catalog.display_name(t);
+            hero.note = Some(format!("Arrived at {name}"));
+            info!("viltrumite: lock-on arrived at {name}, {:.0} km from its middle", w.distance / 1e3);
+        } else {
+            let speed = hero.frame.velocity(&scene).length();
+            hero.lock_left = Some((w.remaining.max(0.0), super::lock::trip_time(w.distance, w.arrive, speed)));
+        }
+    }
     let v = match hero.state {
         State::Falling | State::Jump => hero.frame.over_ground(&scene),
         _ => hero.frame.velocity(&scene),
