@@ -272,6 +272,14 @@ or publishing the port.
   port's own leaf cards are in `assets/textures/vegetation/` (power-of-two squares, alpha cut-out).
   The meshes' light is worked out once per instance by the compute pass `light` in scatter_draw.wesl
   (per vertex it cost 0.9 ms on a forest floor).
+- The mod's effects in the air (`viltrumite/fx.rs`, `hero_fx.wesl`; spec F9): one additive pass after the clouds (`CloudsPassSet`), no depth
+  attachment, no vertex buffers, one record buffer written in place; it reads the depth for a soft edge and the clouds' `CloudTextures::drawn`
+  for what's behind them. The look is in `tune.rs`; `hero cruise V [M]` holds a speed and height whatever the view does (`hero aim` then goes round
+  him), `hero boom FILE` logs the air and the barrier, `hero air` prints a body's air and F9's table for it. Scenes: `.optimize/bench/hero_fx.sh`,
+  `hero_stages.sh`, `hero_dive.sh`, `hero_heat_table.sh`, `hero_fx_cost.sh`. A `shot` costs about 30 frames of a run, so plan pictures of a fast event
+  with no `wait` between them. `perf.rs` drops passes under 0.05 ms: `hero_fx` is under that. `giant_dark` (volumetric_clouds.wesl) must keep leaving
+  out what's within a few hundred metres of the camera, or the view's dark deep in a giant hides him 6 m away; his own light there goes by
+  `draw.rs` `deck_light`, measured against the decks' brightness: re-measure if those change.
 - Keep test runs short (the user, 2026-11-04): the ground loads in about 30 s after a jump, so wait
   about that (`wait 1500`-`2400` with `timing frame`, which runs as fast as it can), take the picture
   and end the run; never a fixed wait of several minutes "to be safe". The star browser's search

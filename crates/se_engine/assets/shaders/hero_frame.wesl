@@ -10,16 +10,18 @@ struct HeroFrame {
     // Each joint's world * inverse bind, camera-relative: the matrix's three rows (the transform of his
     // meshes is the identity, so he is never compressed by the scaled space at any speed).
     joints: array<array<vec4<f32>, 3>, 128>,
-    // xyz where his light is worked out (his chest, render frame), w unused.
+    // xyz where his light is worked out (his chest, render frame), w how much of it gets down to him (1; less deep in a giant's decks).
     point: vec4<f32>,
     // xyz up at his place: away from the body he is near, else the camera's up.
     up: vec4<f32>,
     // rgb the street lamps' light at his place (the town's lights' colour times how far into a town he
     // is); 0 away from towns.
     town: vec4<f32>,
-    // Later steps: the aerodynamic glow, the cape's wind.
+    // The aerodynamic glow (viltrumite/fx.rs `glow_record`): rgb its light on the windward side, w 1 when there's any; `heat_lee` rgb
+    // its light on the lee side; `heat_dir` xyz the way he's going through the air.
     heat: vec4<f32>,
-    wind: vec4<f32>,
+    heat_lee: vec4<f32>,
+    heat_dir: vec4<f32>,
     // The plane his shadow falls on: xyz its normal, w such that dot(n, x) + w is the height over it (render frame).
     shadow_plane: vec4<f32>,
     // x: how strong his shadow is (0: none).

@@ -64,5 +64,6 @@ fn light() {
     // proportion (`point_light_at`), so the light alone doesn't say. The same call and arguments as its own.
     let direct = cloud_shadow_at(sh, cloud_cover, cloud_cover_smp, cloud_map, cloud_map_smp, cloud_weather, cloud_pattern, b.centre.w, b.key.xy, normalize(local), length(rel) - b.centre.w)
         * dot(eclipse_light(frame.light.eclipse[0], rel / b.centre.w, normalize(frame.light.sun_dir.xyz)), vec3<f32>(1.0 / 3.0));
-    out_light = HeroLight(vec4<f32>(pl.sun, direct), vec4<f32>(pl.sky, 0.0), vec4<f32>(pl.flat_e, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
+    let down = frame.point.w;
+    out_light = HeroLight(vec4<f32>(pl.sun * down, direct), vec4<f32>(pl.sky * down, 0.0), vec4<f32>(pl.flat_e * down, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
 }

@@ -115,7 +115,17 @@ fn shade(in: VertexOut, albedo: vec3<f32>, flip: f32) -> vec4<f32> {
     // By night the street lamps light him from above, as they do the road (its `lamp`) and the cars.
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, l));
     let lamps = albedo * frame.town.rgb * night * (0.25 + 0.2 * max(dot(n, up), 0.0));
-    return vec4<f32>(color + (shine + lamps) * in.haze_t, 1.0);
+    // The heat of the air (F9): on the windward side at his skin's temperature, cooler round the back; in the main pass, so before bloom.
+    var glow = vec3<f32>(0.0);
+    if frame.heat.w > 0.0 {
+        // Hot gas flows round him, so his outline shows it from any side; the suit's own colours keep him readable.
+        let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.5;
+        let suit = 0.45 + 0.75 * dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+        glow = (mix(frame.heat_lee.rgb, frame.heat.rgb, smoothstep(-0.2, 0.9, dot(n, frame.heat_dir.xyz))) + frame.heat.rgb * rim) * suit;
+        // F9's limit (tune.rs GLOW_HDR), keeping the colour.
+        glow *= min(12.0 / max(max(glow.r, max(glow.g, glow.b)), 1e-6), 1.0);
+    }
+    return vec4<f32>(color + (shine + lamps + glow) * in.haze_t, 1.0);
 }
 
 @fragment

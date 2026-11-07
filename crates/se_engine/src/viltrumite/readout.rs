@@ -20,8 +20,9 @@ pub struct Readout {
     /// Over the nearest ground, `None` far from everything.
     pub height: Option<f64>,
     pub gravity_g: f64,
-    /// 0..1, until step 7's heat.
+    /// The bar, 0..1, and the look's colour at that temperature.
     pub heat: f32,
+    pub heat_colour: [f32; 3],
 }
 
 /// m/s, km/s, then multiples of c. (`format_speed` turns to ly/s at 1e4 c, which says less here.)
@@ -80,7 +81,8 @@ pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudStat
                 }
                 row("Gravity", format!("{:.2} g", r.gravity_g));
                 ui.label(i18n.tr("Heat"));
-                ui.add(egui::ProgressBar::new(r.heat).desired_width(70.0).desired_height(8.0));
+                let [cr, cg, cb] = r.heat_colour.map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
+                ui.add(egui::ProgressBar::new(r.heat).desired_width(70.0).desired_height(8.0).fill(egui::Color32::from_rgb(cr, cg, cb)));
                 ui.end_row();
             });
             ui.small(i18n.tr("Tab: menus"));

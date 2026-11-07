@@ -87,7 +87,8 @@ pub struct HeroFrameGpu {
     up: Vec4,
     town: Vec4,
     heat: Vec4,
-    wind: Vec4,
+    heat_lee: Vec4,
+    heat_dir: Vec4,
     shadow_plane: Vec4,
     shadow: Vec4,
     free_dir: [Vec4; 3],
@@ -105,7 +106,8 @@ impl Default for HeroFrameGpu {
             up: Vec4::Y,
             town: Vec4::ZERO,
             heat: Vec4::ZERO,
-            wind: Vec4::ZERO,
+            heat_lee: Vec4::ZERO,
+            heat_dir: Vec4::ZERO,
             shadow_plane: Vec4::ZERO,
             shadow: Vec4::ZERO,
             free_dir: [Vec4::ZERO; 3],
@@ -245,6 +247,16 @@ pub struct HeroDraws {
 }
 
 impl HeroDraws {
+    /// His pipelines are built: he shows.
+    pub(super) fn ready(&self) -> bool {
+        self.ready
+    }
+
+    /// Towards the star his light comes from.
+    pub(super) fn sun_dir(&self) -> Vec3 {
+        self.frame.light.sun_dir.truncate().normalize_or(Vec3::Y)
+    }
+
     /// The street lamps' light on him now (for the log).
     pub(super) fn town(&self) -> [f32; 3] {
         self.frame.town.truncate().to_array()
@@ -392,6 +404,7 @@ pub(super) fn spawn_hero(
     assets.model.vertices = Vec::new();
     assets.model.indices = Vec::new();
     info!("viltrumite: meshes and {} textures made in {} ms", cache.len(), started.elapsed().as_millis());
+    super::fx::spawn(&mut commands, &mut buffers, light.clone());
     commands.insert_resource(HeroLightInput { on: true, frame: frame_buffer.clone(), light, tables: None });
     commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, shadow_normal: None, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
 }
@@ -432,6 +445,7 @@ pub(crate) struct LightParams<'w, 's> {
     caches: Res<'w, TileCaches>,
     bodies: Query<'w, 's, (Entity, &'static SystemBody, Option<&'static Terrain>)>,
     occluders: Query<'w, 's, (&'static SystemBody, Option<&'static Terrain>)>,
+    clouds: Res<'w, crate::volumetric_clouds::VolumetricClouds>,
     sprites: Query<'w, 's, &'static BatchedSprite>,
 }
 
@@ -584,6 +598,14 @@ fn town_job(p: &LightParams, b: &SystemBody, t: &Terrain, pos: UPos) -> Option<(
 fn smooth(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// How much of the light above gets down to him in a giant's decks, `h` m over its radius, its scale height `scale` m. (The ground's rule
+/// for a cloud shadow, whose floor is a quarter, would leave him brighter than the deck round him by ten times and more.)
+fn deck_light(h: f64, scale: f64) -> f64 {
+    let d = (tune::DECK_TOP_H - h / scale).max(0.0);
+    let share = (tune::DECK_NEAR.0 * (-d / tune::DECK_NEAR.1).exp() + tune::DECK_FAR.0 * (-d / tune::DECK_FAR.1).exp()).min(1.0);
+    share * (1.0 - smooth(tune::DECK_DARK_H.0, tune::DECK_DARK_H.1, -(-h / scale)))
 }
 
 /// The body he's attached to, as the frames see it, and his place in its frame.
@@ -763,7 +785,13 @@ pub(crate) fn update_hero(
         .map(|(_, b, t)| (b, t, b.from_shape(b.orient.inverse() * pos.delta_m(b.pos)).length() - b.radius_m))
         .min_by(|a, b| a.2.total_cmp(&b.2));
     let up = nearest.map_or(cam.rot * DVec3::Y, |(b, _, _)| pos.delta_m(b.pos).normalize_or(DVec3::Y)).as_vec3();
-    f.point = (rel_f + up * 0.3).extend(0.0);
+    // Deep in the decks of a giant whose clouds are on: only they can take him under its radius, and only what they let through reaches him.
+    let down = nearest.and_then(|(b, t, h)| {
+        let t = t?;
+        let decks = t.proc.kind.is_giant() && p.bodies.iter().any(|(e, o, _)| o.obj == b.obj && p.clouds.active == Some(e));
+        decks.then(|| deck_light(h, crate::volumetric_clouds::giant_scale_height(t)))
+    });
+    f.point = (rel_f + up * 0.3).extend(down.unwrap_or(1.0) as f32);
     f.up = up.extend(0.0);
     // The body whose light he takes: the nearest, under its atmosphere's top.
     let near_body = nearest.filter(|_| hero.light_path == LightPath::Auto).and_then(|(b, t, h)| {
@@ -779,9 +807,11 @@ pub(crate) fn update_hero(
     } else {
         // The same faint light once the star has set: over a dark sea at night he'd be nowhere otherwise.
         let night = smooth(tune::FILL_NIGHT_FROM, tune::FILL_NIGHT_TO, -(f.light.sun_dir.truncate().normalize_or(Vec3::Y).dot(up) as f64)) as f32;
-        if night > 0.0 {
+        // (Below a giant's decks, where no light gets down.)
+        let fill = (tune::FAINT_FILL_NIGHT * night).max(tune::FAINT_FILL_DEEP * (1.0 - smooth(0.0, 0.03, down.unwrap_or(1.0)) as f32));
+        if fill > 0.0 {
             f.free_dir[0] = (-rel_f).normalize_or(Vec3::Y).extend(1.0);
-            f.free_color[0] = Vec3::splat(tune::FAINT_FILL_NIGHT * night).extend(0.0);
+            f.free_color[0] = Vec3::splat(fill).extend(0.0);
         }
     }
     if draws.was_near != Some(near_body.is_some()) {
@@ -838,6 +868,8 @@ pub(crate) fn update_hero(
     } else {
         draws.town_timer -= 1;
     }
+    // The heat of the air on him.
+    (f.heat, f.heat_lee, f.heat_dir) = super::fx::glow_record(hero.heat_k, hero.air_dir);
     // In place: the buffer and his materials' bind groups stay.
     if let Some(mut b) = buffers.get_mut(&draws.frame_buffer) {
         if let Some(d) = b.cast_slice_mut::<u8>() {
@@ -962,6 +994,24 @@ mod tests {
 
     fn standing() -> DVec3 {
         at(0.0, tune::STAND_M)
+    }
+
+    /// Measured on Jupiter's day side, the decks' own red over their tops' (scale height 20 km). A step down isn't allowed, nor light at the bottom.
+    #[test]
+    fn deep_in_the_decks_he_gets_what_they_do() {
+        let scale = 20e3;
+        for (h_km, want) in [(-10.0, 0.5), (-20.0, 0.35), (-40.0, 0.1), (-60.0, 0.1), (-80.0, 0.07), (-100.0, 0.03)] {
+            let got = deck_light(h_km * 1e3, scale);
+            assert!(got > want * 0.5 && got < want * 1.6, "{h_km} km: {got}, measured {want}");
+        }
+        assert_eq!(deck_light(100e3, scale), 1.0);
+        assert_eq!(deck_light(-160e3, scale), 0.0);
+        let mut last = 1.0;
+        for i in 0..400 {
+            let k = deck_light(100e3 - 1e3 * i as f64, scale);
+            assert!(k <= last + 1e-12 && last - k < 0.1, "{i}: {k}");
+            last = k;
+        }
     }
 
     #[test]

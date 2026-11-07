@@ -252,10 +252,98 @@ pub const CAPE_HEM_LEVEL: f32 = 0.85;
 /// How far the rest shape's links lean to straight down his body: the rest is the link's rest direction.
 pub const CAPE_HANG: f32 = 0.85;
 
-// ---- Heat (F9; step 7 owns its look) ----
+// ---- Boom (F9) ----
+/// The air counts from this pressure, and stops counting under the second (Pa).
+pub const BOOM_AIR_PA: (f64, f64) = (150.0, 100.0);
+/// Sub to Super at the first Mach number, Super to Sub at the second.
+pub const BOOM_MACH: (f64, f64) = (1.0, 0.92);
+/// The least time between two booms (s).
+pub const BOOM_COOLDOWN_S: f64 = 3.0;
+
+// ---- Heat (F9) ----
 /// The temperature's low-pass, rising and falling (s).
 pub const HEAT_RISE_S: f64 = 0.4;
 pub const HEAT_FALL_S: f64 = 1.5;
+/// The look stops changing here (K): past it only the shell's size and the trail's length grow, up to what `HEAT_PAST_MAX` says.
+pub const HEAT_LOOK_K: f64 = 10_000.0;
+/// How far past the clamp the size and the length go: as (T / `HEAT_LOOK_K`) to this power, at most this much.
+pub const HEAT_PAST_POWER: f64 = 0.4;
+pub const HEAT_PAST_MAX: f64 = 1.5;
+/// F9's stages are named by how they read, and the black body's colours in linear light are redder than that: the colour is raised to a
+/// power, this one up to the first temperature (dull orange), then to this one at the second (yellow), then to 1 from the third on (K).
+pub const HEAT_COLOUR_GAMMA: (f64, f64) = (0.42, 0.6);
+pub const HEAT_COLOUR_K: (f64, f64, f64) = (800.0, 2000.0, 6000.0);
+/// SE's black body has no green at all under about 1,300 K (out of sRGB's gamut, clipped): dull orange needs at least this much.
+pub const HEAT_COLOUR_LEAST_GREEN: f64 = 0.22;
+/// The glow on his body: nothing under the first temperature, the HDR limits' lowest at the second (K), the highest at `HEAT_LOOK_K`,
+/// exponentially between: never T^4.
+pub const GLOW_FROM_K: (f64, f64) = (600.0, 800.0);
+pub const GLOW_HDR: (f64, f64) = (0.3, 12.0);
+/// His lee side, what the chase camera sees: its colour is the windward side's at this share of the temperature, its light this share.
+pub const GLOW_LEE_T: f64 = 0.8;
+pub const GLOW_LEE: f64 = 0.35;
+/// At most this much, or from behind he's a white shape with no suit left.
+pub const GLOW_LEE_MAX: f64 = 1.6;
+/// The readout's bar: empty at the first temperature, full at `HEAT_LOOK_K`, by the logarithm.
+pub const HEAT_BAR_FROM_K: f64 = 400.0;
+
+// ---- Heat's effects (step 7, F9; hero_fx.wesl has the same HDR limits) ----
+/// The shell and the trail are hot gas going past, so they go by the air's own temperature, no higher than his heat, and fall this fast
+/// when it does (s): his skin cools slowly (`HEAT_FALL_S`), a shell standing round him at a stop would make no sense.
+pub const GAS_FALL_S: f64 = 0.2;
+/// The plasma shell fades in between these (K), and from its first brightness at the second to its last at `HEAT_LOOK_K`.
+pub const SHELL_FROM_K: (f64, f64) = (3000.0, 3500.0);
+pub const SHELL_HDR: (f64, f64) = (0.8, 3.0);
+/// Its radius, length and how far its nose is ahead of his middle (m), at `SHELL_FROM_K.1` and at `HEAT_LOOK_K`.
+pub const SHELL_RADIUS_M: (f64, f64) = (1.0, 1.7);
+pub const SHELL_LENGTH_M: (f64, f64) = (2.8, 4.2);
+pub const SHELL_NOSE_M: (f64, f64) = (1.2, 1.5);
+/// However big, its radius and nose are at most this share of the camera's distance: a shell round the camera would be a flash.
+pub const SHELL_CAMERA_SHARE: f64 = 0.7;
+/// How much of the colour is white: it isn't a black body.
+pub const SHELL_WHITE: f64 = 0.3;
+/// The trail fades in between these temperatures (K), a point of it from this share of its light at the second to all of it at `HEAT_LOOK_K`.
+pub const TRAIL_FROM_K: (f64, f64) = (5000.0, 6000.0);
+pub const TRAIL_HDR: (f64, f64) = (1.5, 5.0);
+/// A point's life (s), at `TRAIL_FROM_K.1` and at `HEAT_LOOK_K`, and past that by `HEAT_PAST_*` squared.
+pub const TRAIL_LIFE_S: (f64, f64) = (0.8, 2.0);
+/// Points are at least this far apart (m); fast, a point a frame.
+pub const TRAIL_SPACING_M: f64 = 4.0;
+/// Half its width at his place (m), how it widens: this times the square root of the metres behind him, as a wake does, and this much
+/// a second of a point's age; and the least half-width per metre of distance from the camera (radians): far away it must still be seen.
+pub const TRAIL_WIDTH_M: f64 = 0.15;
+pub const TRAIL_WAKE: f64 = 0.14;
+pub const TRAIL_WIDEN_MS: f64 = 1.5;
+pub const TRAIL_WIDEN_RAD: f64 = 0.0015;
+/// Its light comes in over this far behind him (m).
+pub const TRAIL_BEGINS_M: f64 = 2.0;
+/// Its colour is the black body's at this many times his temperature: ionised gas, blue-white.
+pub const TRAIL_COLOUR_T: f64 = 1.6;
+
+// ---- The sonic cone and the ring (step 7, F9) ----
+/// The cone comes in between the first two Mach numbers and goes between the last two.
+pub const CONE_MACH: (f64, f64, f64, f64) = (0.95, 1.0, 1.3, 1.6);
+/// The length of its side (m) and how far its tip is ahead of his middle (m).
+pub const CONE_SLANT_M: f64 = 3.2;
+pub const CONE_NOSE_M: f64 = 0.45;
+/// How much light it scatters at its strongest: 1 is a white surface facing the star.
+pub const CONE_STRENGTH: f64 = 0.35;
+/// Super to Sub: a pulse of it, this strong, dying with this time constant (s).
+pub const CONE_PULSE: f64 = 0.5;
+pub const CONE_PULSE_TAU_S: f64 = 0.25;
+/// Thin air shows them less: from the first to the second share as `log10 q` goes through `BOOM_LOG_Q`.
+pub const AIR_SHOW: (f64, f64) = (0.35, 1.0);
+/// A ring rides with him this long (the camera would pass it in 15 ms otherwise), then stays where it is on the body.
+pub const RING_RIDE_S: f64 = 0.25;
+/// Its life (s), and its radius: at the start, and growing by this much a second, slowing to nothing over its life.
+pub const RING_LIFE_S: f64 = 1.6;
+pub const RING_START_M: f64 = 1.5;
+pub const RING_GROW_MS: f64 = 32.0;
+/// How far the band reaches either side (m), at the start and per metre of radius.
+pub const RING_BAND_M: (f64, f64) = (0.25, 0.05);
+/// How much light it scatters (1: a white surface facing the star), and its own, faint, for the night.
+pub const RING_STRENGTH: f64 = 1.0;
+pub const RING_OWN: f64 = 0.015;
 
 // ---- His sounds (step 6, F10) ----
 /// A voice's fade, turning off, losing the focus and coming back (s): a loop can cross its whole range in this.
@@ -298,6 +386,13 @@ pub const BOOM_GAIN: (f32, f32) = (0.3, 1.0);
 pub const BOOM_LOG_Q: (f64, f64) = (1.5, 4.8);
 
 // ---- His light (step 3) ----
+/// Deep in a giant's decks: how much of his light gets down to him, as the decks' own brightness goes (measured on Jupiter's day side, 5
+/// to -100 km). Counted from this many of the decks' scale heights over the radius: `DECK_NEAR.0 exp(-d / DECK_NEAR.1) + DECK_FAR.0
+/// exp(-d / DECK_FAR.1)`, d in scale heights. Then none, from the deep deck's bottom on, as `giant_dark` in the clouds' shader.
+pub const DECK_TOP_H: f64 = 0.25;
+pub const DECK_NEAR: (f64, f64) = (0.85, 0.9);
+pub const DECK_FAR: (f64, f64) = (0.15, 3.0);
+pub const DECK_DARK_H: (f64, f64) = (-6.0, -8.0);
 /// Above a body's atmosphere (or this share of its radius, without one) his light is the CPU's: the body's own
 /// shine on him counts there, and the atmosphere's tables stop at their top.
 pub const BODY_LIGHT_AIRLESS_RADII: f64 = 0.02;
@@ -309,6 +404,8 @@ pub const TOWN_TOP_M: f64 = 800.0;
 pub const TOWN_LAMPS: f32 = 1.0;
 /// Frames between working out how far into a town he is.
 pub const TOWN_EVERY_FRAMES: u32 = 30;
+/// The same under a giant's decks, where no light gets down and the view is black: nothing can be seen, so he must be.
+pub const FAINT_FILL_DEEP: f32 = 0.05;
 /// Far from any light a faint light from the camera keeps him in sight: the least a channel of his further lights may
 /// add up to. (Measured: his cape's red reads 51 of 255 between the stars, at 0.03 it was 5, which hides him on black.)
 pub const FAINT_FILL: f32 = 0.2;

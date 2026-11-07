@@ -21,15 +21,25 @@ use crate::terrain::Terrain;
 use crate::universe::SimTime;
 use crate::volumetric_clouds::VolumetricClouds;
 
-use super::air::{self, AirModel, Flow};
+use super::air::{self, AirModel, Boom, BoomEvent, Flow};
 use super::anim::{Layer, Sampler};
 use super::camera;
 use super::cape::CapeIn;
 use super::frames::{Frame, Ground, Motion, Outcome, Scene, height_over, to_local};
+use super::fx::{self, FxState};
 use super::ground::{self, Footing, Landing, WalkEvent, WalkIn};
 use super::readout::Readout;
 use super::tune;
 use super::{Hero, facing};
+
+/// `hero cruise`: a test's flight. Level over the ground at `speed` (m/s) and `height_m`, the way `going` says in the body's frame (both
+/// filled in on the first frame, from where he is and looks), whatever the view does after that.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cruise {
+    pub speed: f64,
+    pub height_m: Option<f64>,
+    pub going: Option<DVec3>,
+}
 
 /// What he's doing (F4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -703,6 +713,10 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.felt = DVec3::ZERO;
     hero.flow = Flow::default();
     hero.heat_k = 0.0;
+    // Enabling is silent (F9).
+    hero.boom = Boom::default();
+    hero.fx = FxState::default();
+    hero.cruise = None;
     // (Turned off at speed it still says Hyper, and the first frame would sound like leaving it.)
     hero.director.tier = Tier::Hover;
     cam.travel = None;
@@ -859,8 +873,15 @@ pub(crate) fn hero_move(
     // A jump of the camera by something else (Places, a dev command): he goes with it. The last frame of a Go To too. (What
     // `keep_camera_above_ground` pushed it by isn't that: a finer node's ground rising past the camera's floor.)
     hero.cam_written = hero.cam_written.offset_m(cam.floor_push);
-    if travelling || at_ground || hero.carried || cam.pos.delta_m(hero.cam_written).length() > tune::TELEPORT_M {
+    let jumped = cam.pos.delta_m(hero.cam_written).length() > tune::TELEPORT_M;
+    if travelling || at_ground || hero.carried || jumped {
         follow_camera(hero, &cam);
+    }
+    // A jump by something else isn't flight: wherever he now is, the air there counts anew, silently (F9). A Go To is flight.
+    if jumped && !travelling && !hero.carried {
+        hero.boom = Boom::default();
+        // (Or the trail would run from where he was.)
+        hero.fx = FxState::default();
     }
     hero.carried = travelling;
     let carried_cam = travelling.then_some(cam.pos);
@@ -1060,6 +1081,19 @@ pub(crate) fn hero_move(
         if hero.state == State::Land && hero.state_t >= tune::LAND_S || hero.state == State::HardLanding && hero.state_t >= tune::HARD_LANDING_S {
             hero.state = State::Grounded;
         }
+    } else if let Some((b, local)) = hero.cruise.and(near).filter(|_| hero.state != State::Falling) {
+        // A test's flight: level over the ground, the way he was going, whatever the view does.
+        hero.state = State::Flight;
+        let up = b.orient * local.normalize_or(DVec3::Y);
+        let cruise = hero.cruise.as_mut().expect("just looked");
+        let going = cruise.going.map_or(fwd, |g| b.orient * g);
+        let level = (going - up * going.dot(up)).normalize_or(up.any_orthonormal_vector());
+        cruise.going = Some(b.orient.inverse() * level);
+        let g = ground(b, local);
+        let want_m = *cruise.height_m.get_or_insert(local.length() - g.radial);
+        let climb = ((want_m - (local.length() - g.radial)) * 2.0).clamp(-500.0, 500.0);
+        let nv = level * cruise.speed + up * climb;
+        hero.frame.set_velocity(&scene, nv);
     } else if hero.state == State::Flight {
         let height = near.map_or(f64::INFINITY, |(b, local)| air_height_on(b, local, ground(b, local)));
         // The nearest surface from where he is against this frame's bodies. (`cam.nearest_surface` compares last frame's
@@ -1174,7 +1208,7 @@ pub(crate) fn hero_move(
         climb_deg,
         sideways: slow && !forwardish,
         lean: if air_moves { lean } else { [0.0; 3] },
-        keys: flight_in.any(),
+        keys: flight_in.any() || hero.cruise.is_some(),
         boost_edge: take_off && flight_in.boost,
         short_fall: hero.short_fall,
         sliding: hero.sliding && hero.state == State::Grounded,
@@ -1245,9 +1279,40 @@ pub(crate) fn hero_move(
         (Some(_), _) => 0.0,
         (None, _) => speed,
     };
+    // The way that is.
+    let going = match (carried, hero.carried_from, near) {
+        (Some((obj, now)), Some((from_obj, from)), Some((b, _))) if obj == from_obj => b.orient * (now - from),
+        _ => v,
+    };
+    if let Some(d) = going.try_normalize().filter(|_| through_air > 1.0) {
+        hero.air_dir = d;
+    }
     hero.carried_from = carried;
-    hero.flow = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map_or(Flow::vacuum(through_air), |((_, a), h)| a.flow(h, through_air));
+    let air_here = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height);
+    hero.flow = air_here.map_or(Flow::vacuum(through_air), |((_, a), h)| a.flow(h, through_air));
+    // D9, real physics: a Go To through the air booms and heats him as much as flying at that speed. But up high its speeds are
+    // hundreds of km/s, ten times what he can fly there (D6): his skin goes by the cap in air at most (at 160 km/s and 8.6 Pa it would be
+    // 26,000 K; at 30 km/s it's about 8,000).
+    if let Some(((_, a), h)) = air_here.filter(|_| carried.is_some() && through_air > tune::CAP_AIR_MS) {
+        hero.flow.skin_k = a.flow(h, tune::CAP_AIR_MS).skin_k;
+    }
     hero.heat_k = air::ease_heat(hero.heat_k, hero.flow.skin_k, dt);
+    hero.fx.ease_gas(hero.flow.skin_k, hero.heat_k, dt);
+    // F9's barrier.
+    let boom_event = hero.boom.step(&hero.flow, hero.clock);
+    match boom_event {
+        Some(BoomEvent::Boom(q)) => {
+            hero.sound.boom(q);
+            if let Some((b, local)) = near {
+                hero.fx.add_ring(b.obj, local, b.orient.inverse() * hero.air_dir, hero.clock, fx::air_show(q) as f32);
+            }
+        }
+        Some(BoomEvent::End) => {
+            hero.sound.supersonic_end();
+            hero.fx.pulse(hero.clock);
+        }
+        None => {}
+    }
     // The readout's height is his soles', where there's anything to stand on: nothing when he stands.
     let soles = near.filter(|(b, local)| (scene.footing)(b, *local) != Footing::Nothing).map_or(0.0, |_| tune::STAND_M);
     hero.readout = Readout {
@@ -1255,8 +1320,38 @@ pub(crate) fn hero_move(
         mach: hero.flow.in_air().then_some(hero.flow.mach),
         height: height.map(|h| (h - soles).max(if soles > 0.0 { 0.0 } else { h })),
         gravity_g: (gravity_at(&bodies, pos) - a_frame).length() / 9.806_65,
-        heat: 0.0,
+        heat: fx::heat_bar(hero.heat_k),
+        // (Only when the bar shows: the colour takes a sum over the spectrum.)
+        heat_colour: if hero.heat_k > tune::HEAT_BAR_FROM_K { fx::heat_colour(hero.heat_k.clamp(600.0, tune::HEAT_LOOK_K)).to_array() } else { [0.0; 3] },
     };
+    // A test's log of the air.
+    if let Some(log) = hero.boom_log.as_mut() {
+        let f = &hero.flow;
+        let event = match boom_event {
+            Some(BoomEvent::Boom(_)) => "Boom",
+            Some(BoomEvent::End) => "End",
+            None => "",
+        };
+        log.write(&format!(
+            "{:.4},{:?},{:.1},{:.2},{:.4},{:.4},{:.4e},{:.3},{:.1},{:.1},{:?},{event},{},{:.3},{:.3},{:.3},{:.3}\n",
+            hero.clock,
+            hero.state,
+            height.unwrap_or(f64::NAN),
+            f.speed,
+            f.mach,
+            f.air.pressure_pa,
+            f.air.density,
+            f.q,
+            f.skin_k,
+            hero.heat_k,
+            hero.boom.state,
+            carried.is_some() as u8,
+            fx::glow_at(hero.heat_k),
+            fx::shell_at(hero.fx.gas_k()),
+            fx::trail_at(hero.fx.gas_k()),
+            fx::cone_at(f.mach, f.q),
+        ));
+    }
 
     // A test's trace.
     if let Some(trace) = hero.trace.as_mut() {

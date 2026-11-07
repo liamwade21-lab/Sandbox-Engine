@@ -1570,12 +1570,12 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     // An atmosphere without cloud layers (its fog and dust only), or beyond the far cross-fade (the
     // flat shells draw the clouds).
     if top_h <= 0.0 || cv.lod.x <= 0.0 {
-        out.light = giant_dark(out.light);
+        out.light = giant_dark(out.light, out.dist.x);
         return out;
     }
     let top = sphere_hits(top_h, a, b);
     if top.y <= 0.0 || top.x > top.y {
-        out.light = giant_dark(out.light);
+        out.light = giant_dark(out.light, out.dist.x);
         return out;
     }
     // The ray's pieces inside the cloud bands (`ray_piece`): the march goes through them alone, its
@@ -1595,7 +1595,7 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
         }
     }
     if total <= 0.0 {
-        out.light = giant_dark(out.light);
+        out.light = giant_dark(out.light, out.dist.x);
         return out;
     }
     // The far trace's steps grow with the distance from the camera (`step_rate`), no shorter than 50 m
@@ -1862,17 +1862,18 @@ fn trace(in: FullscreenVertexOutput) -> Trace {
     } else {
         out.light = vec4<f32>(light + trans * m.light, trans * m.trans);
     }
-    out.light = giant_dark(out.light);
+    out.light = giant_dark(out.light, dist);
     out.dist.x = dist;
     return out;
 }
 
-// Below a gas giant's deep deck the light is gone: the view fades to dark over two scale heights.
-fn giant_dark(l: vec4<f32>) -> vec4<f32> {
+// Below a gas giant's deep deck the light is gone: the view fades to dark over two scale heights. Not what's right by the camera: the
+// dark is the distance the view has, and it would hide the Viltrumite mod's hero 6 m away (his own light goes as the depth, draw.rs).
+fn giant_dark(l: vec4<f32>, dist: f32) -> vec4<f32> {
     if cv.giant.x < 0.5 {
         return l;
     }
-    let dark = smoothstep(cv.cam2.z, cv.cam2.z - 2.0 * cv.giant.z, cv.cam2.y) * cv.giant.y;
+    let dark = smoothstep(cv.cam2.z, cv.cam2.z - 2.0 * cv.giant.z, cv.cam2.y) * cv.giant.y * smoothstep(250.0, 400.0, dist);
     // (A hot giant's into the glow of its depths.)
     return vec4<f32>(mix(l.rgb, deck_glow(1.0e9, 0.0), dark), l.a * (1.0 - dark));
 }

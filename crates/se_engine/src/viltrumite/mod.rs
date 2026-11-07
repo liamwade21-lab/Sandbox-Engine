@@ -1,11 +1,12 @@
 //! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry, the
 //! files' checks and the keys' snapshot (`ModInput`) are `crate::mods`.
 //!
-//! So far (step 6): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
-//! and jumps, and the camera follows him. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is,
-//! `ground.rs` what he stands on and where his feet go, `camera.rs` the chase camera, `air.rs` the one source of air,
-//! `sound.rs` his sounds by that air, `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow
-//! are drawn and lit, `readout.rs` the corner readout, `tune.rs` every number to tune.
+//! So far (step 7): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
+//! and jumps, and the camera follows him; the air booms and heats him. `hero.rs` is his state machine and each frame's move,
+//! `frames.rs` where he is, `ground.rs` what he stands on and where his feet go, `camera.rs` the chase camera, `air.rs` the one
+//! source of air and the boom's states, `sound.rs` his sounds by that air, `fx.rs` what the air does round him, `anim.rs` the
+//! sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are drawn and lit, `readout.rs` the corner readout,
+//! `tune.rs` every number to tune.
 
 pub mod air;
 pub mod anim;
@@ -13,6 +14,7 @@ pub mod camera;
 pub mod cape;
 pub mod draw;
 pub mod frames;
+pub mod fx;
 pub mod ground;
 pub mod hero;
 pub mod readout;
@@ -34,7 +36,7 @@ use crate::mods::{HeroAssets, ModControl, ModInput};
 use crate::system::SystemBody;
 use crate::universe::{SimTime, UniverseSet};
 
-use air::Flow;
+use air::{Boom, Flow};
 use anim::Sampler;
 use draw::HeroDraws;
 use frames::Frame;
@@ -48,6 +50,7 @@ pub struct ViltrumitePlugin;
 impl Plugin for ViltrumitePlugin {
     fn build(&self, app: &mut App) {
         draw::build(app);
+        fx::build(app);
         app.init_resource::<Hero>()
             .init_resource::<DevKeys>()
             .init_resource::<sound::Voices>()
@@ -79,6 +82,8 @@ impl Plugin for ViltrumitePlugin {
                     // (The capture views copy the near plane he sets, in the same frame.)
                     .before(crate::capture::follow_main),
             )
+            // What the air does round him, from the camera as the frame draws it.
+            .add_systems(PostUpdate, fx::update_fx.run_if(hero_shown).after(draw::update_hero).before(UniverseSet::FloatingOrigin))
             // His sounds, after his move. While he's off this is the one check, once the last voice has faded.
             .add_systems(PostUpdate, sound::play_sounds.run_if(sound::sound_running).after(hero::hero_move))
             .add_systems(
@@ -184,8 +189,18 @@ pub struct Hero {
     pub hold_body: bool,
     /// What he's flying through this frame, from `air.rs`: the sounds, the readout and the boom go by it.
     pub flow: Flow,
-    /// F9's temperature, low-passed (K). The heat's look is step 7's.
+    /// F9's temperature, low-passed (K).
     pub heat_k: f64,
+    /// The way he's going through the air (unit), whether his own flight or a Go To: last frame's when he isn't going anywhere.
+    pub air_dir: DVec3,
+    /// F9's barrier.
+    pub boom: Boom,
+    /// The effects' state between frames.
+    pub fx: fx::FxState,
+    /// `hero cruise`: a test holds this speed and height, the way he was going, whatever the view does.
+    pub cruise: Option<hero::Cruise>,
+    /// `hero boom`: a test's log of the air and the barrier.
+    boom_log: Option<Trace>,
     /// The sounds asked for this frame: one function per trigger, `play_sounds` plays them.
     pub sound: Cues,
 }
@@ -234,6 +249,11 @@ impl Default for Hero {
             hold_body: false,
             flow: Flow::default(),
             heat_k: 0.0,
+            air_dir: DVec3::NEG_Z,
+            boom: Boom::default(),
+            fx: fx::FxState::default(),
+            cruise: None,
+            boom_log: None,
             sound: Cues::default(),
         }
     }
@@ -267,6 +287,10 @@ fn hand_back(
     hero.feet = None;
     hero.flow = Flow::default();
     hero.heat_k = 0.0;
+    hero.boom = Boom::default();
+    hero.fx = fx::FxState::default();
+    hero.cruise = None;
+    hero.boom_log = None;
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.follow = None;
@@ -367,11 +391,14 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `sound ...` (`sound::dev_command`):
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `sound ...` (`sound::dev_command`):
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
-/// from here at K x the circular speed round the nearest body, the way he looks.
+/// from here at K x the circular speed round the nearest body, the way he looks. `cruise`: flying at V m/s over the body's ground,
+/// level, the way he looks at first (M metres over the ground, else where he is), whatever the view does after that, so a test's view
+/// can go round him. `boom`: one line a frame to FILE: the air, the heat, the barrier's state and each event. `air`: what the air of the
+/// nearest body is, and F9's table for it.
 pub fn dev_command(world: &mut World, arg: &str) {
     let (verb, rest) = arg.split_once(' ').map_or((arg, ""), |(a, b)| (a, b.trim()));
     match verb.to_ascii_lowercase().as_str() {
@@ -405,6 +432,34 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         "sound" => sound::dev_command(world, rest),
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
+        "cruise" => {
+            let v: Vec<f64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            let mut hero = world.resource_mut::<Hero>();
+            // (Already cruising: the same way, and the same height unless given.)
+            let was = hero.cruise;
+            hero.cruise = v.first().map(|&speed| hero::Cruise { speed, height_m: v.get(1).copied().or(was.and_then(|c| c.height_m)), going: was.and_then(|c| c.going) });
+        }
+        "air" => {
+            let _ = world.run_system_cached(log_air);
+        }
+        "boom" => {
+            let mut hero = world.resource_mut::<Hero>();
+            hero.boom_log = if rest.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                match std::fs::File::create(rest) {
+                    Ok(f) => {
+                        let mut w = std::io::BufWriter::new(f);
+                        let _ = writeln!(w, "clock,state,height,speed,mach,pressure,density,q,skin_k,heat_k,boom,event,carried,glow,shell,trail,cone");
+                        Some(Trace { out: w, body: None })
+                    }
+                    Err(e) => {
+                        warn!("hero boom: {rest}: {e}");
+                        None
+                    }
+                }
+            };
+        }
         "dist" => world.resource_mut::<Hero>().dist = rest.parse().unwrap_or(tune::CAM_DIST_M),
         "soil" => world.resource_mut::<Hero>().soil_off = rest.eq_ignore_ascii_case("off"),
         "hold" => world.resource_mut::<Hero>().hold_body = rest.eq_ignore_ascii_case("on"),
@@ -499,6 +554,32 @@ fn aim(In((yaw, pitch)): In<(f64, f64)>, mut cam: ResMut<FlyCamera>, bodies: Que
     cam.rot = crate::camera::look_rotation(heading * pitch.cos() + up * pitch.sin(), up);
 }
 
+/// `hero air`: the nearest body's air as `air.rs` has it, with F9's stages worked out for it at the ground and 60 km, and where 150 Pa is.
+fn log_air(hero: Res<Hero>, data: Res<SeData>, sim: Res<SimTime>, mut cache: ResMut<crate::ship::air::AirCache>, bodies: Query<(&SystemBody, Option<&crate::terrain::Terrain>)>) {
+    let eph = Ephemeris::new(&data.catalog);
+    let Some((b, t)) = bodies.iter().filter(|(b, _)| b.radius_m > 0.0).min_by(|a, b| (a.0.pos.delta_m(hero.world.0).length() - a.0.radius_m).total_cmp(&(b.0.pos.delta_m(hero.world.0).length() - b.0.radius_m))) else { return };
+    let name = data.catalog.display_name(b.obj).to_string();
+    let top = t.and_then(|t| t.atmosphere.as_ref()).map(|a| a.top_radius_m(b.radius_m) - b.radius_m);
+    let own = cache.get(&data, &eph, sim.jd, b.obj, b.radius_m, top);
+    let Some(air) = air::AirModel::of(&mut cache, &data, &eph, sim.jd, b.obj, b.radius_m, t) else {
+        info!("hero air: {name}: no air, shell top {top:?}");
+        return;
+    };
+    let stages = [800.0, 2000.0, 3500.0, 6000.0, 10000.0];
+    let speed_for = |h: f64, want: f64| (1..=600).map(|i| 100.0 * i as f64).find(|&v| air.flow(h, v).skin_k >= want);
+    let table = |h: f64| stages.map(|t| speed_for(h, t).map_or(-1.0, |v| v / 1e3));
+    let boom_top = (0..2_000_000).map(|i| i as f64 * 100.0).find(|&h| air.at(h).pressure_pa < tune::BOOM_AIR_PA.0).unwrap_or(0.0) / 1e3;
+    info!(
+        "hero air: {name}: {} params {:?}, shell top {top:?}, air top {:.1} km, ground: {:?}, 150 Pa at {boom_top:.1} km; km/s to reach {stages:?} K: ground {:?}, 60 km {:?}",
+        if own.is_some() { "catalog's" } else { "fallback's" },
+        air.params,
+        air.top_m() / 1e3,
+        air.at(0.0),
+        table(0.0),
+        table(60e3),
+    );
+}
+
 fn log_state(
     hero: Res<Hero>,
     control: Res<ModControl>,
@@ -540,7 +621,7 @@ fn log_state(
     let grab = cursor.single().map_or("no window".to_string(), |c| format!("{:?} visible {}", c.grab_mode, c.visible));
     let selected = cam.selected.map_or("nothing".to_string(), |o| data.catalog.display_name(o).to_string());
     info!(
-        "hero: on {} loading {} pipelines {:?}, state {:?}, tier {:?}, pose {:?}, {frame}; {on_foot}; {near}; speed {} ({:.3} m/s), mach {:?}, height {:?}, gravity {:.3} g; {:.2} m from the camera; ramp {:.2} s; clock {:.2} s, sim rate {} paused {}; menus {} unfocused {}; cursor {grab}; input {:?} {:?} {:?} shift {} ctrl {}; aim forward {:?}; follow {} track {} travel {travel:?}; selected {selected}; street lamps {:?}",
+        "hero: on {} loading {} pipelines {:?}, state {:?}, tier {:?}, pose {:?}, {frame}; {on_foot}; {near}; speed {} ({:.3} m/s), mach {:?}, height {:?}, gravity {:.3} g; {:.2} m from the camera; ramp {:.2} s; clock {:.2} s, sim rate {} paused {}; menus {} unfocused {}; cursor {grab}; input {:?} {:?} {:?} shift {} ctrl {}; aim forward {:?}; follow {} track {} travel {travel:?}; selected {selected}; street lamps {:?}; barrier {:?}, air {:.2} Pa, skin {:.0} K, heat {:.0} K",
         control.hero,
         control.loading,
         pipes.hero(),
@@ -568,6 +649,10 @@ fn log_state(
         cam.follow.is_some(),
         cam.track,
         draws.map_or([0.0; 3], |d| d.town()),
+        hero.boom.state,
+        hero.flow.air.pressure_pa,
+        hero.flow.skin_k,
+        hero.heat_k,
     );
 }
 

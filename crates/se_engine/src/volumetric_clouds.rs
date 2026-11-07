@@ -104,7 +104,7 @@ const MEDIA_FULL_RADII: f64 = 40.0;
 const GIANT_SHAPE_PERIOD_M: f32 = 40_000.0;
 const GIANT_DETAIL_PERIOD_M: f32 = 6_000.0;
 
-const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+pub(crate) const HDR_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
 
 /// The light volume (clouds plan step 6, after blackrack's, docs/ksp-clouds-notes.md section 3): a grid
 /// over the cloud layers round the spot under the camera, `LIGHT_XY` x `LIGHT_XY` texels along the
@@ -360,6 +360,10 @@ pub struct CloudView {
     pub atm: AtmosphereParamsUniform,
 }
 
+/// `clouds_pass` (Core3d), for what must draw before or after it (viltrumite/fx.rs).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CloudsPassSet;
+
 pub struct VolumetricCloudsPlugin;
 
 impl Plugin for VolumetricCloudsPlugin {
@@ -405,7 +409,7 @@ impl Plugin for VolumetricCloudsPlugin {
             .add_systems(Render, prepare_textures.in_set(RenderSystems::PrepareResources))
             .add_systems(
                 Core3d,
-                clouds_pass.in_set(Core3dSystems::EarlyPostProcess).before(crate::render_scale::SolidUpscaleSet),
+                clouds_pass.in_set(Core3dSystems::EarlyPostProcess).in_set(CloudsPassSet).before(crate::render_scale::SolidUpscaleSet),
             );
     }
 }
@@ -530,7 +534,7 @@ pub(crate) fn giant_floor_m(terrain: &Terrain) -> Option<f64> {
 }
 
 /// A gas giant's atmosphere's scale height (m).
-fn giant_scale_height(terrain: &Terrain) -> f64 {
+pub(crate) fn giant_scale_height(terrain: &Terrain) -> f64 {
     // (SE's model atmosphere gives Jupiter a few km; its decks span tens of km.)
     terrain.atmosphere.as_ref().map_or(25_000.0, |a| a.uniform().radii.z as f64 * 1000.0).clamp(20_000.0, 200_000.0)
 }
@@ -1214,7 +1218,7 @@ impl LightVolume {
 /// The far trace traces one texel of each 2 x 2 block a frame, taking turns, and the resolve fills in
 /// the rest from the history; `SE_CLOUD_QUARTER=0` traces them all (comparisons). The near pass does the
 /// same (tracing them all, it cost 15-23 ms inside Earth's low cumulus at Ultra 3440x1440).
-fn quarter_on() -> bool {
+pub(crate) fn quarter_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("SE_CLOUD_QUARTER").map_or(true, |v| v.trim() != "0") && !reference_on())
 }
@@ -1456,7 +1460,7 @@ fn init_pipelines(
 /// A view's cloud buffers: the scene distance, the trace (light and distance) and the two
 /// histories (read one, write the other, swapped each frame).
 #[derive(Component)]
-struct CloudTextures {
+pub(crate) struct CloudTextures {
     low_depth: CachedTexture,
     trace: CachedTexture,
     trace_dist: CachedTexture,
@@ -1478,7 +1482,7 @@ struct NearTextures {
 /// The history's state across frames: its size, the frame it was last written and which of the
 /// two holds it.
 #[derive(Resource, Default)]
-struct CloudHistory {
+pub(crate) struct CloudHistory {
     size: UVec2,
     frame: u32,
     parity: usize,
@@ -1486,7 +1490,17 @@ struct CloudHistory {
 
 /// The near pass's history.
 #[derive(Resource, Default)]
-struct NearHistory(CloudHistory);
+pub(crate) struct NearHistory(CloudHistory);
+
+impl CloudTextures {
+    /// What was drawn this frame, for a pass after the clouds: the far pass's resolved texels (rgb light, a transmittance, the texels of
+    /// `CloudView::params` w pixels) and traced distance, then the near pass's. `None` for a pass that didn't draw. After `clouds_pass`.
+    pub(crate) fn drawn(&self, far: &CloudHistory, near: &NearHistory, frame: u32) -> [Option<(&TextureView, &TextureView)>; 2] {
+        let far_now = (far.frame == frame).then(|| (&self.history[far.parity].default_view, &self.trace_dist.default_view));
+        let near_now = self.near.as_ref().filter(|_| near.0.frame == frame).map(|n| (&n.history[near.0.parity].default_view, &n.trace_dist.default_view));
+        [far_now, near_now]
+    }
+}
 
 /// The state of the active body's cover map (`CloudShadowAssets::cover`), built a face a frame, then
 /// its mips.

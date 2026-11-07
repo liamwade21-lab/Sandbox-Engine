@@ -1,0 +1,767 @@
+//! What the air does round him (spec F9): the plasma shell, the sonic cone, the rings, the trail, one additive pass after the clouds
+//! (`fx_pass`, `hero_fx.wesl`). The glow on his body is in his own material (`glow_record`, `hero.wesl` `shade`).
+//!
+//! - **One record buffer**, `FxRecordsGpu`, written in place each frame: no material changes, nothing is spawned, the trail is a fixed
+//!   ring of 256 points in the body's frame, worked out from the camera each frame.
+//! - **The pass** has no depth attachment and no vertex buffers. Every vertex comes from the records (`clip.z = 0.5 w`: nothing is cut by
+//!   the near plane). It reads the scene's depth for a soft edge, and the clouds' resolved transmittance beyond their traced distance, so
+//!   clouds in front dim it and clouds behind don't. It runs on the main camera alone (the `CloudView` filter), with the clouds on or off,
+//!   and does nothing at all while nothing shows: `FxInput::draw`.
+//! - **Off costs nothing:** one run condition. All of it is made on first enable.
+//! - **For step 8:** `FxRecordsGpu::craters` and `dust` wait for their records. The dust is a new draw in `fx_pass` (see the comment there),
+//!   the craters a new pass `fx_decals` before `clouds_pass`; `Hero.fx.add_ring` is the thunderclap's ring.
+
+use bevy::camera::MainPassResolutionOverride;
+use bevy::core_pipeline::{Core3d, Core3dSystems};
+use bevy::math::DVec3;
+use bevy::prelude::*;
+use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
+use bevy::render::render_asset::RenderAssets;
+use bevy::render::render_resource::binding_types::{storage_buffer_read_only_sized, texture_2d, texture_depth_2d, texture_depth_2d_multisampled, uniform_buffer};
+use bevy::render::render_resource::encase;
+use bevy::render::render_resource::*;
+use bevy::render::renderer::{RenderContext, ViewQuery};
+use bevy::render::storage::{GpuShaderBuffer, ShaderBuffer};
+use bevy::render::texture::FallbackImage;
+use bevy::render::view::{Msaa, ViewDepthStencilTexture, ViewTarget, ViewUniform, ViewUniformOffset, ViewUniforms};
+use bevy::render::{Render, RenderApp, RenderSystems};
+use se_core::catalog::ObjectRef;
+use se_core::upos::UPos;
+
+use crate::camera::{FlyCamera, MainCamera};
+use crate::mods::ModControl;
+use crate::system::SystemBody;
+use crate::volumetric_clouds::{CloudHistory, CloudTextures, CloudView, CloudsPassSet, HDR_FORMAT, NearHistory};
+
+use super::draw::HeroDraws;
+use super::{Hero, tune};
+
+/// `hero_fx.wesl`'s rings and trail points.
+pub const RINGS: usize = 4;
+pub const TRAIL_POINTS: usize = 256;
+pub const CRATERS: usize = 32;
+pub const DUST_BURSTS: usize = 64;
+
+/// The draws, as `instance_index` tells them apart: `hero_fx.wesl` `FX_*`. Rings follow from `FX_RING` on.
+const FX_SHELL: u32 = 0;
+const FX_CONE: u32 = 1;
+const FX_TRAIL: u32 = 2;
+const FX_RING: u32 = 3;
+/// `hero_fx.wesl`'s `AROUND`, `SHELL_RINGS`, `CONE_BANDS`.
+const AROUND: u32 = 32;
+const SHELL_RINGS: u32 = 16;
+const CONE_BANDS: u32 = 6;
+
+#[derive(Clone, Copy, Default, ShaderType)]
+struct FxRingGpu {
+    centre: Vec4,
+    normal: Vec4,
+    tint: Vec4,
+}
+
+#[derive(Clone, Copy, Default, ShaderType)]
+struct FxPointGpu {
+    at: Vec4,
+    light: Vec4,
+}
+
+/// `hero_fx.wesl` `FxRecords`.
+#[derive(Clone, Copy, ShaderType)]
+pub struct FxRecordsGpu {
+    him: Vec4,
+    along: Vec4,
+    shell: Vec4,
+    shell_size: Vec4,
+    cone: Vec4,
+    cloud_px: Vec4,
+    sun: Vec4,
+    rings: [FxRingGpu; RINGS],
+    trail: [FxPointGpu; TRAIL_POINTS],
+    craters: [[Vec4; 2]; CRATERS],
+    dust: [[Vec4; 2]; DUST_BURSTS],
+}
+
+impl Default for FxRecordsGpu {
+    fn default() -> Self {
+        FxRecordsGpu {
+            him: Vec4::ZERO,
+            along: Vec4::NEG_Z,
+            shell: Vec4::ZERO,
+            shell_size: Vec4::ZERO,
+            cone: Vec4::ZERO,
+            cloud_px: Vec4::ONE,
+            sun: Vec4::Y,
+            rings: [FxRingGpu::default(); RINGS],
+            trail: [FxPointGpu::default(); TRAIL_POINTS],
+            craters: [[Vec4::ZERO; 2]; CRATERS],
+            dust: [[Vec4::ZERO; 2]; DUST_BURSTS],
+        }
+    }
+}
+
+fn smooth(a: f64, b: f64, x: f64) -> f64 {
+    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// From `from` at `at.0` to `to` at `at.1`, exponentially: the temperature's stages by brightness, never T^4.
+fn by_stage(t: f64, at: (f64, f64), (from, to): (f64, f64)) -> f64 {
+    let k = ((t / at.0).ln() / (at.1 / at.0).ln()).clamp(0.0, 1.0);
+    from * (to / from).powf(k)
+}
+
+/// SE's black body (`planck_rgb`, what `ship.wesl`'s table holds) with its brightest channel 1: the brightness is F9's own.
+pub fn heat_colour(t: f64) -> Vec3 {
+    let [r, g, b] = crate::blackholes::planck_rgb(t);
+    let m = r.max(g).max(b).max(1e-30);
+    let (g0, g1) = tune::HEAT_COLOUR_GAMMA;
+    let (t0, t1, t2) = tune::HEAT_COLOUR_K;
+    let power = g0 + (g1 - g0) * smooth(t0, t1, t) + (1.0 - g1) * smooth(t1, t2, t);
+    Vec3::new((r / m).powf(power) as f32, (g / m).powf(power).max(tune::HEAT_COLOUR_LEAST_GREEN) as f32, (b / m).powf(power) as f32)
+}
+
+/// How far past the look's clamp the shell's size and the trail's length are.
+fn past_clamp(t: f64) -> f64 {
+    (t / tune::HEAT_LOOK_K).max(1.0).powf(tune::HEAT_PAST_POWER).min(tune::HEAT_PAST_MAX)
+}
+
+/// The glow on his body at this temperature: 0, or between the HDR limits.
+pub fn glow_at(t: f64) -> f64 {
+    let t = t.min(tune::HEAT_LOOK_K);
+    smooth(tune::GLOW_FROM_K.0, tune::GLOW_FROM_K.1, t) * by_stage(t.max(tune::GLOW_FROM_K.1), (tune::GLOW_FROM_K.1, tune::HEAT_LOOK_K), tune::GLOW_HDR)
+}
+
+/// The shell's brightness (before its colour).
+pub fn shell_at(t: f64) -> f64 {
+    let t = t.min(tune::HEAT_LOOK_K);
+    smooth(tune::SHELL_FROM_K.0, tune::SHELL_FROM_K.1, t) * by_stage(t.max(tune::SHELL_FROM_K.1), (tune::SHELL_FROM_K.1, tune::HEAT_LOOK_K), tune::SHELL_HDR)
+}
+
+/// The trail's brightness at a new point.
+pub fn trail_at(t: f64) -> f64 {
+    let t = t.min(tune::HEAT_LOOK_K);
+    smooth(tune::TRAIL_FROM_K.0, tune::TRAIL_FROM_K.1, t) * by_stage(t.max(tune::TRAIL_FROM_K.1), (tune::TRAIL_FROM_K.1, tune::HEAT_LOOK_K), tune::TRAIL_HDR)
+}
+
+/// The readout's bar, 0..1.
+pub fn heat_bar(t: f64) -> f32 {
+    ((t.max(1.0) / tune::HEAT_BAR_FROM_K).ln() / (tune::HEAT_LOOK_K / tune::HEAT_BAR_FROM_K).ln()).clamp(0.0, 1.0) as f32
+}
+
+/// The cone's strength by Mach and the air: F9's visible range, thin air showing less. 0 out of the air.
+pub fn cone_at(mach: f64, q: f64) -> f64 {
+    let (a, b, c, d) = tune::CONE_MACH;
+    smooth(a, b, mach) * (1.0 - smooth(c, d, mach)) * air_show(q)
+}
+
+/// F9's half-angle, `asin(1 / M)`, in radians; a flat disc up to Mach 1.
+pub fn cone_angle(mach: f64) -> f64 {
+    (1.0 / mach.max(1.0)).asin()
+}
+
+/// How much of the cone and the ring thin air shows.
+pub fn air_show(q: f64) -> f64 {
+    let log_q = if q > 0.0 { q.log10() } else { f64::NEG_INFINITY };
+    tune::AIR_SHOW.0 + (tune::AIR_SHOW.1 - tune::AIR_SHOW.0) * ((log_q - tune::BOOM_LOG_Q.0) / (tune::BOOM_LOG_Q.1 - tune::BOOM_LOG_Q.0)).clamp(0.0, 1.0)
+}
+
+/// His glow's records (`HeroFrame.heat`, `heat_lee`, `heat_dir`): the windward side's light, the lee side's, the way he's going.
+/// Off: w 0 and nothing done in the pixels.
+pub fn glow_record(heat_k: f64, going: DVec3) -> (Vec4, Vec4, Vec4) {
+    let t = heat_k.min(tune::HEAT_LOOK_K);
+    let glow = glow_at(t);
+    if glow <= 0.0 {
+        return (Vec4::ZERO, Vec4::ZERO, Vec4::ZERO);
+    }
+    let lee = heat_colour(t * tune::GLOW_LEE_T) * (glow * tune::GLOW_LEE).min(tune::GLOW_LEE_MAX) as f32;
+    ((heat_colour(t) * glow as f32).extend(1.0), lee.extend(0.0), going.as_vec3().extend(0.0))
+}
+
+/// A ring of the air: the boom's, the thunderclap's (step 8).
+#[derive(Clone, Copy, Debug, Default)]
+struct RingState {
+    /// `None`: not in use.
+    obj: Option<ObjectRef>,
+    /// Where it is and which way it faces in that body's frame.
+    local: DVec3,
+    normal: DVec3,
+    /// `Hero.clock` when it started.
+    born: f64,
+    /// How much of its light the air shows.
+    show: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TrailPoint {
+    /// In the frame of `FxState::trail_body`.
+    local: DVec3,
+    born: f64,
+    life: f32,
+    light: Vec3,
+    /// No segment from this point to the next older one.
+    cut: bool,
+}
+
+/// The effects' state between frames: fixed arrays, nothing grows.
+pub struct FxState {
+    rings: [RingState; RINGS],
+    trail: Box<[TrailPoint; TRAIL_POINTS - 1]>,
+    /// The newest point's slot, and how many there are.
+    head: usize,
+    count: usize,
+    trail_body: Option<ObjectRef>,
+    /// The last point was laid down last frame (else the next one starts anew).
+    laying: bool,
+    /// `Hero.clock` of the last pulse of the cone.
+    pulse: f64,
+    /// The temperature the gas round him goes by (K).
+    gas_k: f64,
+}
+
+impl Default for FxState {
+    fn default() -> Self {
+        FxState { rings: [RingState::default(); RINGS], trail: Box::new([TrailPoint::default(); TRAIL_POINTS - 1]), head: 0, count: 0, trail_body: None, laying: false, pulse: f64::NEG_INFINITY, gas_k: 0.0 }
+    }
+}
+
+impl FxState {
+    /// A new ring at `local`, facing `normal`, both in `obj`'s frame: the oldest gives way.
+    pub fn add_ring(&mut self, obj: ObjectRef, local: DVec3, normal: DVec3, clock: f64, show: f32) {
+        let slot = (0..RINGS).min_by(|&a, &b| {
+            let age = |i: usize| if self.rings[i].obj.is_some() { self.rings[i].born } else { f64::NEG_INFINITY };
+            age(a).total_cmp(&age(b))
+        });
+        if let Some(i) = slot {
+            self.rings[i] = RingState { obj: Some(obj), local, normal, born: clock, show };
+        }
+    }
+
+    /// One frame of the gas's temperature, from what the air does to him now and his low-passed heat.
+    pub fn ease_gas(&mut self, skin_k: f64, heat_k: f64, dt: f64) {
+        let flowing = skin_k.min(heat_k);
+        self.gas_k = if flowing >= self.gas_k { flowing } else { self.gas_k + (flowing - self.gas_k) * (1.0 - (-dt / tune::GAS_FALL_S).exp()) };
+    }
+
+    pub fn gas_k(&self) -> f64 {
+        self.gas_k
+    }
+
+    /// A pulse of the cone (Super to Sub).
+    pub fn pulse(&mut self, clock: f64) {
+        self.pulse = clock;
+    }
+
+    /// Lay down a point of the trail if he's far enough on from the last one.
+    fn lay_point(&mut self, obj: ObjectRef, local: DVec3, clock: f64, heat_k: f64) {
+        if self.trail_body != Some(obj) {
+            self.count = 0;
+            self.trail_body = Some(obj);
+            self.laying = false;
+        }
+        let k = (heat_k.min(tune::HEAT_LOOK_K) - tune::TRAIL_FROM_K.1) / (tune::HEAT_LOOK_K - tune::TRAIL_FROM_K.1);
+        let life = (tune::TRAIL_LIFE_S.0 + (tune::TRAIL_LIFE_S.1 - tune::TRAIL_LIFE_S.0) * k.clamp(0.0, 1.0)) * past_clamp(heat_k).powi(2);
+        let brightness = trail_at(heat_k);
+        if brightness <= 0.0 {
+            self.laying = false;
+            return;
+        }
+        if self.laying && self.count > 0 && (self.trail[self.head].local - local).length() < tune::TRAIL_SPACING_M {
+            return;
+        }
+        let colour = heat_colour(heat_k.min(tune::HEAT_LOOK_K) * tune::TRAIL_COLOUR_T);
+        // (A new stretch: the gap back to the old trail's last point has no segment.)
+        let cut = self.count > 0 && !self.laying;
+        self.head = (self.head + 1) % self.trail.len();
+        self.count = (self.count + 1).min(self.trail.len());
+        self.trail[self.head] = TrailPoint { local, born: clock, life: life as f32, light: colour * brightness as f32, cut };
+        self.laying = true;
+    }
+
+    /// Is anything of the trail still alive?
+    fn trail_alive(&self, clock: f64) -> bool {
+        self.count > 0 && clock - self.trail[self.head].born < self.trail[self.head].life as f64
+    }
+}
+
+/// The one record buffer, written in place, kept here so nothing is allocated a frame.
+#[derive(Resource)]
+pub struct FxDraws {
+    buffer: Handle<ShaderBuffer>,
+    records: Box<FxRecordsGpu>,
+}
+
+/// What the pass needs from the main world, made on first enable.
+#[derive(Resource, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct FxInput {
+    pub on: bool,
+    /// Anything to draw this frame.
+    pub draw: bool,
+    /// Which draws: the shell, the cone, how many segments of trail, which rings.
+    shell: bool,
+    cone: bool,
+    segments: u32,
+    rings: u32,
+    records: Handle<ShaderBuffer>,
+    light: Handle<ShaderBuffer>,
+}
+
+/// The pass's pipelines, queued on first enable: [no MSAA, MSAA].
+#[derive(Resource, Default)]
+struct FxPass {
+    layouts: Option<[BindGroupLayoutDescriptor; 2]>,
+    pipelines: [Option<CachedRenderPipelineId>; 2],
+}
+
+pub fn build(app: &mut App) {
+    app.add_plugins(ExtractResourcePlugin::<FxInput>::default()).add_systems(Update, sync_on.run_if(resource_exists::<FxInput>));
+    let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
+    render_app
+        .init_resource::<FxPass>()
+        .add_systems(Render, queue_pipelines.in_set(RenderSystems::PrepareBindGroups).run_if(fx_made))
+        // After `clouds_pass`, before the solids' upscale. (Step 8: `fx_decals` goes `.before(CloudsPassSet)`.)
+        .add_systems(Core3d, fx_pass.in_set(Core3dSystems::EarlyPostProcess).after(CloudsPassSet).before(crate::render_scale::SolidUpscaleSet).run_if(fx_wanted));
+}
+
+fn fx_made(input: Option<Res<FxInput>>) -> bool {
+    input.is_some()
+}
+
+fn fx_wanted(input: Option<Res<FxInput>>) -> bool {
+    input.is_some_and(|i| i.on && i.draw)
+}
+
+/// First enable: the buffer. `light` is his own light's buffer, written before the main pass.
+pub(super) fn spawn(commands: &mut Commands, buffers: &mut Assets<ShaderBuffer>, light: Handle<ShaderBuffer>) {
+    let records = Box::<FxRecordsGpu>::default();
+    let buffer = buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&*records), bevy::asset::RenderAssetUsages::default()));
+    commands.insert_resource(FxInput { on: true, draw: false, shell: false, cone: false, segments: 0, rings: 0, records: buffer.clone(), light });
+    commands.insert_resource(FxDraws { buffer, records });
+}
+
+/// Off: nothing to draw.
+fn sync_on(control: Res<ModControl>, mut input: ResMut<FxInput>) {
+    if input.on != control.hero {
+        input.on = control.hero;
+    }
+}
+
+/// The body a point of the effects is kept in: the nearest, of any kind but a star's.
+fn nearest<'a>(bodies: &'a Query<&SystemBody>, pos: UPos) -> Option<&'a SystemBody> {
+    bodies
+        .iter()
+        .filter(|b| !b.star && b.radius_m > 0.0)
+        .min_by(|a, b| {
+            let h = |x: &SystemBody| x.from_shape(x.orient.inverse() * pos.delta_m(x.pos)).length() - x.radius_m;
+            h(a).total_cmp(&h(b))
+        })
+}
+
+/// This frame's records, from the camera as the frame draws it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn update_fx(
+    cam: Res<FlyCamera>,
+    mut hero: ResMut<Hero>,
+    draws: Res<HeroDraws>,
+    mut fx: ResMut<FxDraws>,
+    mut input: ResMut<FxInput>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    bodies: Query<&SystemBody>,
+    views: Query<&CloudView, With<MainCamera>>,
+) {
+    let hero = &mut *hero;
+    let fx = &mut *fx;
+    let r = &mut *fx.records;
+    let clock = hero.clock;
+    let pos = hero.world.0;
+    let rel = pos.delta_m(cam.pos).as_vec3();
+    let going = hero.air_dir.as_vec3();
+    let flow = hero.flow;
+    let heat = hero.fx.gas_k;
+    let camera_m = (hero.dist + hero.zoom).max(0.1);
+
+    r.him = rel.extend((clock % 1000.0) as f32);
+    r.along = going.extend(flow.speed as f32);
+    r.sun = draws.sun_dir().extend(0.0);
+
+    // The shell.
+    let look_t = heat.min(tune::HEAT_LOOK_K);
+    let shell = shell_at(heat);
+    let stage = ((look_t - tune::SHELL_FROM_K.1) / (tune::HEAT_LOOK_K - tune::SHELL_FROM_K.1)).clamp(0.0, 1.0);
+    let lerp = |(a, b): (f64, f64)| a + (b - a) * stage;
+    let past = past_clamp(heat);
+    let reach = tune::SHELL_CAMERA_SHARE * camera_m;
+    r.shell = if shell > 0.0 { (heat_colour(look_t).lerp(Vec3::ONE, tune::SHELL_WHITE as f32) * shell as f32).extend(shell as f32) } else { Vec4::ZERO };
+    r.shell_size = Vec4::new(
+        (lerp(tune::SHELL_RADIUS_M) * past).min(reach) as f32,
+        (lerp(tune::SHELL_LENGTH_M) * past) as f32,
+        (lerp(tune::SHELL_NOSE_M) * past).min(reach) as f32,
+        0.0,
+    );
+
+    // The cone.
+    let pulse = tune::CONE_PULSE * (-(clock - hero.fx.pulse) / tune::CONE_PULSE_TAU_S).exp();
+    let cone = if flow.in_air() { tune::CONE_STRENGTH * cone_at(flow.mach, flow.q) + pulse * air_show(flow.q) } else { 0.0 };
+    r.cone = Vec4::new(cone_angle(flow.mach) as f32, tune::CONE_SLANT_M as f32, cone as f32, tune::CONE_NOSE_M as f32);
+
+    // The clouds' buffers. (`quarter_on`'s trace is half the resolved texels' size.)
+    if let Ok(v) = views.single() {
+        let quarter = if crate::volumetric_clouds::quarter_on() { 2.0 } else { 1.0 };
+        let (far, near) = (v.params.w.max(1.0), v.lod.w.max(1.0));
+        r.cloud_px = Vec4::new(far, far * quarter, near, near * quarter);
+    }
+
+    let body = nearest(&bodies, pos);
+
+    // The rings: riding with him at first, then where they are on the body. The body gone: gone.
+    let mut ring_bits = 0u32;
+    for i in 0..RINGS {
+        let state = &mut hero.fx.rings[i];
+        let Some(obj) = state.obj else { continue };
+        let Some(b) = bodies.iter().find(|b| b.obj == obj) else {
+            state.obj = None;
+            continue;
+        };
+        let age = clock - state.born;
+        if age >= tune::RING_LIFE_S {
+            state.obj = None;
+            continue;
+        }
+        if age < tune::RING_RIDE_S {
+            state.local = b.orient.inverse() * pos.delta_m(b.pos);
+        }
+        let k = age / tune::RING_LIFE_S;
+        let radius = tune::RING_START_M + tune::RING_GROW_MS * tune::RING_LIFE_S * (1.0 - (1.0 - k).powi(2)) * 0.5;
+        let fade = (1.0 - k).powi(2) * smooth(0.0, 0.03, age);
+        r.rings[i] = FxRingGpu {
+            centre: b.pos.offset_m(b.orient * state.local).delta_m(cam.pos).as_vec3().extend(radius as f32),
+            normal: (b.orient * state.normal).as_vec3().extend((tune::RING_BAND_M.0 + tune::RING_BAND_M.1 * radius) as f32),
+            tint: Vec4::new(tune::RING_OWN as f32, tune::RING_OWN as f32, tune::RING_OWN as f32, tune::RING_STRENGTH as f32 * state.show * fade as f32),
+        };
+        ring_bits |= 1 << i;
+    }
+
+    // The trail: he lays it down; a point from the camera each frame, in its body's frame, with its head at him.
+    if let Some(b) = body {
+        hero.fx.lay_point(b.obj, b.orient.inverse() * pos.delta_m(b.pos), clock, heat);
+    }
+    let mut segments = 0u32;
+    if hero.fx.trail_alive(clock) {
+        if let Some(b) = hero.fx.trail_body.and_then(|o| bodies.iter().find(|b| b.obj == o)) {
+            let st = &hero.fx;
+            // A wake's width: by how far behind him, how old, how far from the camera.
+            let width = |behind: f64, age: f64, at: Vec3| {
+                (tune::TRAIL_WIDTH_M + tune::TRAIL_WAKE * behind.sqrt() + tune::TRAIL_WIDEN_MS * age) as f32 + tune::TRAIL_WIDEN_RAD as f32 * at.length()
+            };
+            // The head: his place, while he's laying it down. It starts faint: the shell is what's bright at him.
+            let mut n = 0usize;
+            let mut behind = 0.0f64;
+            let mut last = rel;
+            if st.laying {
+                r.trail[0] = FxPointGpu { at: rel.extend(width(0.0, 0.0, rel)), light: Vec4::ZERO };
+                n = 1;
+            }
+            let len = st.trail.len();
+            for k in 0..st.count {
+                let p = st.trail[(st.head + len - k) % len];
+                let age = clock - p.born;
+                let share = (age / p.life as f64).min(1.0) as f32;
+                if share >= 1.0 {
+                    break;
+                }
+                let at = b.pos.offset_m(b.orient * p.local).delta_m(cam.pos).as_vec3();
+                behind += (at - last).length() as f64;
+                last = at;
+                let w = width(behind, age, at);
+                let begins = smooth(0.0, tune::TRAIL_BEGINS_M, behind) as f32;
+                r.trail[n] = FxPointGpu { at: at.extend(if p.cut { -w } else { w }), light: (p.light * (1.0 - share) * (1.0 - share) * begins).extend(share) };
+                n += 1;
+            }
+            if n >= 2 {
+                // (A last point at nothing: the tail ends at no light.)
+                segments = (n - 1) as u32;
+            }
+        }
+    }
+
+    let (want_shell, want_cone) = (shell > 0.0, cone > 1e-3);
+    let draw = draws.ready() && (want_shell || want_cone || segments > 0 || ring_bits != 0);
+    if input.draw != draw || input.shell != want_shell || input.cone != want_cone || input.segments != segments || input.rings != ring_bits {
+        input.draw = draw;
+        input.shell = want_shell;
+        input.cone = want_cone;
+        input.segments = segments;
+        input.rings = ring_bits;
+    }
+    if draw {
+        // In place: the buffer stays.
+        if let Some(mut b) = buffers.get_mut(&fx.buffer) {
+            if let Some(d) = b.cast_slice_mut::<u8>() {
+                let _ = encase::StorageBuffer::new(d).write(r);
+            }
+        }
+    }
+}
+
+fn queue_pipelines(mut pass: ResMut<FxPass>, cache: Res<PipelineCache>, assets: Res<AssetServer>) {
+    if pass.layouts.is_some() {
+        return;
+    }
+    let shader: Handle<Shader> = assets.load("shaders/hero_fx.wesl");
+    let layouts = [false, true].map(|msaa| {
+        let f = TextureSampleType::Float { filterable: false };
+        BindGroupLayoutDescriptor::new(
+            "hero_fx",
+            &BindGroupLayoutEntries::with_indices(
+                ShaderStages::VERTEX_FRAGMENT,
+                (
+                    (0, uniform_buffer::<ViewUniform>(true)),
+                    (1, storage_buffer_read_only_sized(false, None)),
+                    (2, storage_buffer_read_only_sized(false, None)),
+                    (3, if msaa { texture_depth_2d_multisampled() } else { texture_depth_2d() }),
+                    (4, texture_2d(f)),
+                    (5, texture_2d(f)),
+                    (6, texture_2d(f)),
+                    (7, texture_2d(f)),
+                ),
+            ),
+        )
+    });
+    let add = BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
+    let keep = BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add };
+    for (i, def) in ["NO_MSAA", "MSAA"].into_iter().enumerate() {
+        pass.pipelines[i] = Some(cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some("hero_fx".into()),
+            layout: vec![layouts[i].clone()],
+            vertex: VertexState { shader: shader.clone(), shader_defs: vec![def.into()], entry_point: Some("vertex".into()), ..default() },
+            fragment: Some(FragmentState {
+                shader: shader.clone(),
+                shader_defs: vec![def.into()],
+                entry_point: Some("fragment".into()),
+                targets: vec![Some(ColorTargetState { format: HDR_FORMAT, blend: Some(BlendState { color: add, alpha: keep }), write_mask: ColorWrites::ALL })],
+                ..default()
+            }),
+            primitive: PrimitiveState { topology: PrimitiveTopology::TriangleList, cull_mode: None, ..default() },
+            ..default()
+        }));
+    }
+    pass.layouts = Some(layouts);
+}
+
+/// The effects, into the solids' corner of the main texture. With the clouds off, or before they've drawn, the fallback images dim nothing.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn fx_pass(
+    view: ViewQuery<(&ViewTarget, &ViewDepthStencilTexture, &bevy::render::camera::ExtractedCamera, &ViewUniformOffset, &Msaa, Option<&MainPassResolutionOverride>, Option<&CloudTextures>), With<CloudView>>,
+    pass: Res<FxPass>,
+    input: Res<FxInput>,
+    cache: Res<PipelineCache>,
+    uniforms: Res<ViewUniforms>,
+    buffers: Res<RenderAssets<GpuShaderBuffer>>,
+    fallback: Res<FallbackImage>,
+    (history, near_history, frame): (Res<CloudHistory>, Res<NearHistory>, Res<bevy::diagnostic::FrameCount>),
+    mut ctx: RenderContext,
+) {
+    let (target, depth, camera, offset, msaa, low, clouds) = view.into_inner();
+    let m = (msaa.samples() > 1) as usize;
+    let (Some(layouts), Some(pipeline), Some(view_binding)) = (pass.layouts.as_ref(), pass.pipelines[m].and_then(|id| cache.get_render_pipeline(id)), uniforms.uniforms.binding()) else { return };
+    let (Some(records), Some(light)) = (buffers.get(&input.records), buffers.get(&input.light)) else { return };
+    let Some(solid) = low.map(|l| l.0).or(camera.physical_viewport_size).filter(|s| s.x > 0 && s.y > 0) else { return };
+    if target.main_texture_format() != HDR_FORMAT {
+        return;
+    }
+    let device = ctx.render_device().clone();
+    let diagnostics = ctx.diagnostic_recorder();
+    let diagnostics = diagnostics.as_deref();
+    use bevy::render::diagnostic::RecordDiagnostics;
+    let span = diagnostics.time_span(ctx.command_encoder(), "hero_fx");
+    let depth_view = depth.texture().create_view(&TextureViewDescriptor { aspect: TextureAspect::DepthOnly, ..default() });
+    let none = &fallback.d2.texture_view;
+    let [far, near] = clouds.map_or([None, None], |t| t.drawn(&history, &near_history, frame.0));
+    let (far_res, far_dist) = far.unwrap_or((none, none));
+    let (near_res, near_dist) = near.unwrap_or((none, none));
+    let group = device.create_bind_group(
+        "hero_fx",
+        &cache.get_bind_group_layout(&layouts[m]),
+        &BindGroupEntries::with_indices((
+            (0, view_binding),
+            (1, records.buffer.as_entire_binding()),
+            (2, light.buffer.as_entire_binding()),
+            (3, &depth_view),
+            (4, far_res),
+            (5, far_dist),
+            (6, near_res),
+            (7, near_dist),
+        )),
+    );
+    let scene = RenderPassColorAttachment { view: target.main_texture_view(), depth_slice: None, resolve_target: None, ops: Operations { load: LoadOp::Load, store: StoreOp::Store } };
+    let encoder = ctx.command_encoder();
+    let mut p = encoder.begin_render_pass(&RenderPassDescriptor { label: Some("hero_fx"), color_attachments: &[Some(scene)], depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None });
+    p.set_viewport(0.0, 0.0, solid.x as f32, solid.y as f32, 0.0, 1.0);
+    p.set_pipeline(pipeline);
+    p.set_bind_group(0, &group, &[offset.offset]);
+    if input.segments > 0 {
+        p.draw(0..6 * input.segments, FX_TRAIL..FX_TRAIL + 1);
+    }
+    if input.cone {
+        p.draw(0..6 * AROUND * CONE_BANDS, FX_CONE..FX_CONE + 1);
+    }
+    if input.shell {
+        p.draw(0..6 * AROUND * SHELL_RINGS, FX_SHELL..FX_SHELL + 1);
+    }
+    for i in 0..RINGS as u32 {
+        if input.rings & (1 << i) != 0 {
+            p.draw(0..6, FX_RING + i..FX_RING + i + 1);
+        }
+    }
+    // Step 8: the dust's draw goes here, out of `FxRecordsGpu::dust` (64 bursts of up to 64 quads, a kind of its own in `hero_fx.wesl`).
+    drop(p);
+    span.end(ctx.command_encoder());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_glow_stays_within_its_limits_and_is_never_t4() {
+        assert_eq!(glow_at(500.0), 0.0);
+        assert!((glow_at(800.0) - tune::GLOW_HDR.0).abs() < 1e-6);
+        assert!((glow_at(10_000.0) - tune::GLOW_HDR.1).abs() < 1e-6);
+        // The clamp: 23,300 K (30 km/s at sea level) looks like 10,000 K.
+        assert_eq!(glow_at(23_300.0), glow_at(10_000.0));
+        // T^4 would be 400 times over 800 to 3,600 K.
+        assert!(glow_at(3600.0) / glow_at(800.0) < 12.0);
+        let mut last = 0.0;
+        for t in (600..12000).step_by(100) {
+            let g = glow_at(t as f64);
+            assert!(g >= last && g <= tune::GLOW_HDR.1 + 1e-9, "{t}: {g}");
+            last = g;
+        }
+    }
+
+    /// F9's stages, in order: no shell under 3,000 K, all of it at 3,500; the trail at 6,000.
+    #[test]
+    fn the_stages_come_in_where_the_spec_says() {
+        assert!(glow_at(800.0) > 0.0);
+        assert_eq!(shell_at(2999.0), 0.0);
+        assert!(shell_at(3500.0) > 0.0);
+        assert_eq!(trail_at(4999.0), 0.0);
+        assert!((trail_at(6000.0) - tune::TRAIL_HDR.0).abs() < 1e-6);
+        assert!(shell_at(23_000.0) <= tune::SHELL_HDR.1 + 1e-9 && trail_at(23_000.0) <= tune::TRAIL_HDR.1 + 1e-9);
+        // Past the clamp the size grows, with a limit.
+        assert_eq!(past_clamp(9000.0), 1.0);
+        assert!(past_clamp(20_000.0) > 1.2);
+        assert_eq!(past_clamp(1e6), tune::HEAT_PAST_MAX);
+    }
+
+    /// `cargo test -p se_engine --release print_heat_colours -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn print_heat_colours() {
+        for t in [600.0, 800.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 3500.0, 4500.0, 6000.0, 8000.0, 10_000.0] {
+            let [r, g, b] = crate::blackholes::planck_rgb(t);
+            let m = r.max(g).max(b);
+            println!("{t}: black body {:.3} {:.3} {:.3}, the look {:.3}", r / m, g / m, b / m, heat_colour(t));
+        }
+    }
+
+    #[test]
+    fn the_colours_go_from_orange_through_white_to_blue() {
+        let red_over_blue = |t: f64| {
+            let c = heat_colour(t);
+            c.x / c.z.max(1e-3)
+        };
+        let dull = heat_colour(800.0);
+        assert!(dull.x == 1.0 && dull.y >= 0.2 && dull.y < 0.4 && dull.z < 0.05, "{dull}");
+        let yellow = heat_colour(2000.0);
+        assert!(yellow.y > dull.y && yellow.z < 0.2, "{yellow}");
+        assert!(red_over_blue(800.0) > red_over_blue(2000.0) && red_over_blue(2000.0) > red_over_blue(3500.0) && red_over_blue(3500.0) > red_over_blue(6000.0));
+        let hot = heat_colour(10_000.0);
+        assert!(hot.z == 1.0 && hot.x < 1.0, "{hot}");
+    }
+
+    #[test]
+    fn the_bar_fills_with_the_heat() {
+        assert_eq!(heat_bar(300.0), 0.0);
+        assert_eq!(heat_bar(10_000.0), 1.0);
+        assert_eq!(heat_bar(30_000.0), 1.0);
+        assert!(heat_bar(800.0) > 0.1 && heat_bar(800.0) < heat_bar(2000.0) && heat_bar(3500.0) < heat_bar(6000.0));
+    }
+
+    #[test]
+    fn the_cone_is_seen_where_the_spec_says() {
+        let q = 6e4;
+        assert_eq!(cone_at(0.9, q), 0.0);
+        assert!(cone_at(0.97, q) > 0.0);
+        assert!(cone_at(1.2, q) == air_show(q));
+        assert_eq!(cone_at(1.6, q), 0.0);
+        // Half-angle asin(1/M).
+        assert!((cone_angle(2.0) - 30f64.to_radians()).abs() < 1e-9);
+        assert!((cone_angle(0.97) - 90f64.to_radians()).abs() < 1e-9);
+        // Thin air shows less, but shows it.
+        assert!(cone_at(1.2, 500.0) < cone_at(1.2, q) && cone_at(1.2, 500.0) > 0.3);
+    }
+
+    #[test]
+    fn a_new_ring_takes_the_oldest_ones_place() {
+        let mut s = FxState::default();
+        for i in 0..RINGS {
+            s.add_ring(ObjectRef::Body(0), DVec3::X, DVec3::Y, i as f64, 1.0);
+        }
+        assert!(s.rings.iter().all(|r| r.obj.is_some()));
+        s.add_ring(ObjectRef::Body(1), DVec3::X, DVec3::Y, 9.0, 1.0);
+        assert_eq!(s.rings.iter().map(|r| r.born).fold(f64::INFINITY, f64::min), 1.0);
+    }
+
+    #[test]
+    fn the_trail_holds_its_spacing_and_never_grows() {
+        let mut s = FxState::default();
+        let obj = ObjectRef::Body(0);
+        // At 3 m a frame: a point every other frame, at least 4 m apart.
+        for i in 0..100 {
+            s.lay_point(obj, DVec3::X * 3.0 * i as f64, i as f64 / 60.0, 8000.0);
+        }
+        assert_eq!(s.count, 50);
+        assert!((s.trail[s.head].local - s.trail[(s.head + s.trail.len() - 1) % s.trail.len()].local).length() >= tune::TRAIL_SPACING_M);
+        // At 500 m a frame: every frame, and the ring stays full.
+        for i in 0..1000 {
+            s.lay_point(obj, DVec3::X * 500.0 * i as f64, i as f64 / 60.0, 8000.0);
+        }
+        assert_eq!(s.count, s.trail.len());
+        // Too cool: nothing laid, and what's there dies. Then a new stretch, cut from the old.
+        let last = s.trail[s.head].local;
+        s.lay_point(obj, DVec3::Y * 1e6, 20.0, 3000.0);
+        assert_eq!(s.trail[s.head].local, last);
+        assert!(!s.trail_alive(40.0));
+        s.lay_point(obj, DVec3::Y * 2e6, 40.0, 8000.0);
+        assert!(s.trail[s.head].cut);
+        s.lay_point(obj, DVec3::Y * 3e6, 40.1, 8000.0);
+        assert!(!s.trail[s.head].cut);
+        // Another body: it starts anew.
+        s.lay_point(ObjectRef::Body(1), DVec3::Y, 41.0, 8000.0);
+        assert_eq!(s.count, 1);
+    }
+
+    /// At a stop his skin stays hot for seconds, the gas round him doesn't.
+    #[test]
+    fn the_gas_goes_as_the_air_does() {
+        let mut s = FxState::default();
+        s.ease_gas(9000.0, 3000.0, 1.0 / 60.0);
+        assert_eq!(s.gas_k, 3000.0, "it comes no faster than his heat");
+        s.ease_gas(9000.0, 8000.0, 1.0 / 60.0);
+        assert_eq!(s.gas_k, 8000.0);
+        for _ in 0..60 {
+            s.ease_gas(0.0, 7000.0, 1.0 / 60.0);
+        }
+        assert!(s.gas_k < 8000.0 * 0.01, "{}", s.gas_k);
+    }
+
+    #[test]
+    fn a_go_to_through_the_air_stays_within_the_look() {
+        let (glow, lee, _) = glow_record(26_000.0, DVec3::X);
+        let (same, ..) = glow_record(tune::HEAT_LOOK_K, DVec3::X);
+        assert_eq!(glow, same);
+        assert!(glow.truncate().max_element() <= tune::GLOW_HDR.1 as f32 + 1e-3);
+        assert!(lee.truncate().max_element() < glow.truncate().max_element());
+    }
+}
