@@ -1340,7 +1340,8 @@ pub(crate) fn hero_move(
         // The nearest surface from where he is against this frame's bodies. (`cam.nearest_surface` compares last frame's
         // camera with them: at x1000 hundreds of km out, whichever side of a moon he's on.)
         let surface = near.map_or(f64::INFINITY, |(b, local)| height_over(b, local).max(0.0)).min(cam.nearest_galaxy);
-        let cap = cap_at(air_model.as_ref().map(|(_, a)| (a, height)), surface);
+        // Each boost stack lifts the cap by what it gave (the user, 2026-11-07: near a planet the cap braked the stacks' speed away).
+        let cap = (cap_at(air_model.as_ref().map(|(_, a)| (a, height)), surface) * controls::stack_lift(hero.stacks)).min(tune::GUARD_MS);
         let v = hero.frame.velocity(&scene);
         let up = near.map_or(aim_up, |(b, local)| b.orient * local.normalize_or(DVec3::Y));
         if hero.dive {
@@ -1627,6 +1628,9 @@ pub(crate) fn hero_move(
     hero.flow = air_here.map_or(Flow::vacuum(through_air), |((_, a), h)| a.flow(h, through_air));
     hero.heat_k = air::ease_heat(hero.heat_k, hero.flow.skin_k, dt);
     hero.fx.ease_gas(hero.flow.skin_k, hero.heat_k, dt);
+    // Past the barrier in air: a steady buffet on the view and speed lines (the user, 2026-11-07).
+    let buffet = if hero.state.on_foot() { 0.0 } else { controls::buffet(&hero.flow, hero.stacks) };
+    hero.buffet += (buffet - hero.buffet) * (1.0 - (-tune::BUFFET_EASE * dt).exp());
     // F9's barrier.
     let boom_event = hero.boom.step(&hero.flow, hero.clock);
     match boom_event {

@@ -280,6 +280,8 @@ pub struct Hero {
     pub shake: f64,
     pub kick: f64,
     pub fov_add: f64,
+    /// Past the barrier in air: the steady buffet's strength (0..~1.4, eased; `controls::buffet`), which the speed lines follow too.
+    pub buffet: f64,
     /// The left button: when it went down (his clock), the combo's step and its last punch, the full charge's cue given.
     pub punch_down: Option<f64>,
     pub combo: u32,
@@ -357,6 +359,7 @@ impl Default for Hero {
             shake: 0.0,
             kick: 0.0,
             fov_add: 0.0,
+            buffet: 0.0,
             punch_down: None,
             combo: 0,
             last_punch: f64::NEG_INFINITY,

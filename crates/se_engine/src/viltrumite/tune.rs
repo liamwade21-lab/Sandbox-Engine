@@ -462,8 +462,9 @@ pub const RING_OWN: f64 = 0.015;
 pub const SOUND_FADE_S: f32 = 0.2;
 /// A volume this small is silence: the sink pauses, and a smaller change isn't sent.
 pub const SOUND_SILENT: f32 = 1e-4;
-/// `fastFlight_loop` is the air going past at every speed: its volume goes 0 to 1 as `log10 q` (q in Pa) goes from the first to the second.
-pub const FAST_LOG_Q: (f64, f64) = (1.0, 6.0);
+/// `fastFlight_loop` is the air going past at every speed: its volume goes 0 to 1 as `log10 q` (q in Pa) goes from the first to the second
+/// (full from 230 m/s at sea level: the user heard no wind through the air, 2026-11-07).
+pub const FAST_LOG_Q: (f64, f64) = (1.0, 4.5);
 /// Its pitch: from the first to the second as Mach goes (logarithmically) between these. Low at low speed, so it reads as wind.
 pub const FAST_PITCH: (f32, f32) = (0.6, 1.3);
 pub const FAST_PITCH_MACH: (f64, f64) = (0.05, 20.0);
@@ -604,3 +605,16 @@ pub const SOUND_GAIN: f32 = 2.0;
 pub const ROAR_LEVEL: (f32, f32) = (0.6, 1.0);
 pub const ROAR_STACK: f32 = 0.08;
 pub const FAST_LOOP_LEVEL: (f32, f32) = (0.35, 0.85);
+/// Each loop's gain on top of `SOUND_GAIN`, and the most it's ever sent (linear), in `LOOPS`' order (wind, roar, hum, charge): the
+/// files differ four times in loudness (`print_sound_levels`: the roar's rms 0.018, the wind's 0.071), and the user heard no wind
+/// through the air (2026-11-07). The most keeps each file's peak under clipping at full volume.
+pub const LOOP_GAIN: [f32; 4] = [2.0, 5.0, 1.0, 1.0];
+pub const LOOP_MOST: [f32; 4] = [3.0, 8.0, 1.6, 1.5];
+/// The steady buffet and the speed lines past the barrier in air (the user, 2026-11-07): from nothing at the first Mach to full at
+/// the second (smoothly), by the air (`log10` of the pressure from the first to the second Pa), more by `BUFFET_STACK` a stack;
+/// eased at `BUFFET_EASE` (1/s); the view turns by up to `BUFFET_DEG` at full.
+pub const BUFFET_MACH: (f64, f64) = (0.9, 3.0);
+pub const BUFFET_AIR_PA: (f64, f64) = (10.0, 1000.0);
+pub const BUFFET_STACK: f64 = 0.08;
+pub const BUFFET_EASE: f64 = 3.0;
+pub const BUFFET_DEG: f64 = 0.3;

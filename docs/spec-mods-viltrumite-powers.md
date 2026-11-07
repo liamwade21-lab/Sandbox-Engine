@@ -864,3 +864,18 @@ and gritty, then only low rubble is left (`.optimize/scratch/run/s10/sheet.png`)
 unslowed, 30 m/s stops at the wall; 900 m/s onto a roof breaks it, 30 m/s lands. **Not checked:** a collapse seen from far (the far
 cells hide a broken tall one the same way, untested), every building kind (only Midtown's boxes; huts, towers, the arcology, landmarks
 and domes rest on the same code path), the mod-off cost of the extra branch (step 11).
+
+**The user's second round on the controls (2026-11-07).** "i want the stacks to actually give speed on planets because i notice there
+is a speed limit when close to planets, and there is still no wind sound when traveling thru the atmophere like how it is in [their mod]
+and there need to be a bit of a shake/camera effect to visualize the speed when he is going super sonic." (1) F7's cap (30 km/s in air
+and near ground) is multiplied by `STACK_FACTOR` per stack (`controls::stack_lift`): a stack at the cap used to be braked back within
+`CAP_BRAKE_TAU_S`; now 5 stacks reach 228 km/s in air, and W's ramp goes on to the lifted cap. (2) A test over Kansas showed the wind
+and roar loops playing (sink 0.5-0.6 at the user's 30 % volume), so the fault was loudness: `print_sound_levels` gives the roar
+(`fasterFlight_loop`) rms 0.018 against the wind's 0.071 and the hum's 0.120. Each loop now has its own gain (`LOOP_GAIN`: wind x2,
+roar x5) under a ceiling that keeps its peak from clipping (`LOOP_MOST`); the wind is full from log q 4.5 (230 m/s at sea level, it
+was 6), so it follows his speed in any flight, falls too; a dive counts as fast flight for the loops (the user's mod roars in a dive).
+(3) Past the barrier in air `Hero::buffet` (smoothly from Mach 0.9 to 3, by the pressure from 10 to 1,000 Pa, +8 % a stack) drives a
+steady rumble on the view (`apply_shake`: four sines at odd ratios, 0.3 degrees at full, under the existing 1.5 degree ceiling) and
+speed lines drawn on the screen (the user's mod draws them in its world, `Fx.SpeedLines`; here faint streaks running out from the
+middle, clear of him, more, longer and thicker per stack, on egui's Background layer so the panels stay over them). **Not checked:**
+how it sounds and feels (U3); only the tests and the build.

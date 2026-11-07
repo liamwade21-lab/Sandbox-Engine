@@ -173,7 +173,7 @@ The **Mods** button (tools toolbar, bottom left) lists the mods built into the g
 `crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
 that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
 build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The
-first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies, falls, lands, walks, runs and jumps, with a shadow, a cape that moves and his sounds (the air going past by real air pressure and speed, per planet; quiet in space; at the Sound effects setting), booms and heats in the air, punches, punches the ground and claps, and hard landings leave craters; breakable buildings are still to come. The row reads Loading for the moment before he appears, and a damaged file greys it. 
+first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies, falls, lands, walks, runs and jumps, with a shadow, a cape that moves and his sounds (the air going past by real air pressure and speed, per planet; quiet in space; at the Sound effects setting), booms and heats in the air, punches, punches the ground and claps, and hard landings leave craters; buildings he hits hard sink into the ground and leave rubble, back once he and the camera are 20 km away. The row reads Loading for the moment before he appears, and a damaged file greys it. 
 
 While he is on the panels are hidden and a small readout (speed, Mach in air, height, gravity, heat) stands in the corner:
 
@@ -203,8 +203,10 @@ the screen shows the keys for what he's doing, a cross marks the middle and a ba
 | Right button | Hold to charge the thunderclap (0.4 to 2.5 s), let go to clap: a ring of air 30 to 150 m in radius by the charge, and dust kicked up when he's over the ground |
 
 Breaking the sound barrier (by real physics, or a boost stack, or a super run's start) shakes the camera and widens the view for a
-moment; fast flight widens it a little with speed and each stack. Past the barrier in air the roar of fast flight plays; under it the
-air rushing past. All his sounds are twice as loud as before (your note: too quiet).
+moment; fast flight widens it a little with speed and each stack. Past the barrier in air the view buffets steadily (more with Mach
+and each stack) and faint speed lines run out from the middle of the screen. The air rushes past by his speed in any flight, and past
+the barrier (or in a dive) the roar plays too. All his sounds are twice as loud as before (your note: too quiet). Each boost stack
+also lifts the speed limit near planets (30 km/s in the air, 1.5 times a stack).
 
 The air does what its physics says, on every world by its own air. Past the speed of sound (Earth about 335 m/s at sea level, Mars 233, Venus 449) a sonic boom goes off with a ring of cloud, and a cone of vapour hangs round him up to Mach 1.6; slowing back down it ends with a softer sound and a puff of the cone, no boom. Above the air, 55 km on Earth, 16 on Mars, 188 on Venus, there is no boom and no cone, so coming in from orbit doesn't boom, and a world with under 150 Pa of air never does. Faster still his skin heats: dull orange at 800 K (about 1 km/s at sea level on Earth, 7 times less speed on Venus), yellow at 2,000, white with a shell of plasma round him at 3,500, a blue-white trail from 6,000, and at 10,000 K (9.7 km/s at sea level) the look goes no further; only the shell and the trail get bigger. The heat bar in the readout shows it, in its colour. He cools over seconds when he slows. Neither hurts him or slows him. The trail lies behind the camera in a straight line: you see it when you turn, or with the view off to the side. A Go To through the air booms and heats him too, by its real speed through the air: a landing from orbit or a Go To leaving from near the ground makes him white-hot for a moment.
 

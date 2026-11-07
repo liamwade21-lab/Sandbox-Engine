@@ -467,7 +467,8 @@ pub(super) fn play_sounds(
         flying: matches!(hero.state, State::Hover | State::Flight),
         charging,
         charge,
-        fast: hero.fast,
+        // (A dive roars too, as in the user's mod.)
+        fast: hero.fast || hero.dive,
         supersonic: super::controls::supersonic(&hero.flow, speed),
         stacks: hero.stacks,
         share: super::controls::speed_share(speed, super::controls::sound_speed(&hero.flow)) as f32,
@@ -481,7 +482,7 @@ pub(super) fn play_sounds(
             voice.level += (level - voice.level).clamp(-step, step);
             voice.pitch += (pitch - voice.pitch) * pitch_k;
         }
-        let volume = voice.level * voices.master * settings.volume * tune::SOUND_GAIN;
+        let volume = (voice.level * voices.master * settings.volume * tune::SOUND_GAIN * tune::LOOP_GAIN[i]).min(tune::LOOP_MOST[i]);
         let Ok(mut sink) = sinks.get_mut(voice.entity) else { continue };
         if volume <= tune::SOUND_SILENT {
             if !sink.is_paused() {
@@ -727,10 +728,10 @@ mod tests {
         assert_eq!(l[1].0, 0.0);
         assert_eq!(l[2], (0.12, 0.6));
         assert_eq!(l[3].0, 0.0);
-        // The fast loop from log q 1 to 6: it's the air going past at every speed.
+        // The fast loop from log q 1 to 4.5: it's the air going past at every speed.
         assert_eq!(at(10.0, 0.0, 0.0, true, false)[0].0, 0.0);
-        assert!((at(10f64.powf(3.5), 0.0, 0.0, true, false)[0].0 - 0.5).abs() < 1e-5);
-        assert_eq!(at(1e6, 0.0, 0.0, true, false)[0].0, 1.0);
+        assert!((at(10f64.powf(2.75), 0.0, 0.0, true, false)[0].0 - 0.5).abs() < 1e-5);
+        assert_eq!(at(10f64.powf(4.5), 0.0, 0.0, true, false)[0].0, 1.0);
         // The faster loop by the temperature.
         assert_eq!(at(0.0, 0.0, 2500.0, true, false)[1].0, 0.0);
         assert!((at(0.0, 0.0, 4250.0, true, false)[1].0 - 0.5).abs() < 1e-5);

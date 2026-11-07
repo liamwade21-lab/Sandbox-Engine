@@ -71,7 +71,13 @@
     and a charged punch, Ctrl+Space the super jump. The camera shakes and widens on every boom and launch; his sounds are twice as loud;
     the air rushes past in fast flight and the roar plays past the barrier; a line of keys, a cross and a charge bar are on screen.
     Checked over Kansas: a full ground charge broke the barrier with a boom, a full charge past it gave a boost stack and another boom.
-  - **Next:** step 10 (buildings collapse when hit hard, rubble, back after 20 km) and step 11 (costs, the mod-off picture check, notes).
+  - **Step 10 (done):** buildings hit hard (35 m/s or more, or a punch) sink into the ground and leave rubble; they come back once he
+    and the camera are 20 km away.
+  - **Your second round (2026-11-07):** each boost stack now lifts the speed limit near planets with it (30 km/s in air, x1.5 a stack:
+    228 km/s at 5); the wind is louder and follows his speed through the air in any flight (the roar file was four times quieter than
+    the others: each loop now has its own gain), and a dive roars too; past the sound barrier the view buffets steadily (more with
+    Mach and stacks) and faint speed lines run out from the middle of the screen.
+  - **Next:** step 11 (the rest of the spec's checks, the mod-off picture check, costs, notes).
   - **For you to judge (U3):** how it all feels and sounds; every number is in `crates/se_engine/src/viltrumite/tune.rs`. Walks, runs,
     turns and the first two punches are still stand-ins until you put the 8 Mixamo clips in `re/viltrumite/mixamo` and re-run the
     converter (U1); the mod author's note on reusing assets is still to read (U2).

@@ -129,7 +129,11 @@ or publishing the port.
   back to F8's keys. Fast flight skims the ground (only a dive or slow flight lands); stack and super-run booms are effects outside
   F9's barrier (C15's silence holds). The camera's shake and kick live in `Hero::shake`, `kick`, `fov_add`, applied in
   `impact::apply_shake` after `sync_camera_transform` (it resets the field of view every frame). `hero keys space 1.9` holds Space
-  1.9 s in a test (a full ground charge); the line of keys at the bottom is `controls::prompt`.
+  1.9 s in a test (a full ground charge); the line of keys at the bottom is `controls::prompt`. The stacks lift F7's cap with the
+  speed they give (`controls::stack_lift`; near a planet the cap braked a stack's speed back within 0.08 s). Past the barrier in air
+  `Hero::buffet` (`controls::buffet`) drives a steady rumble in `apply_shake` and the speed lines (`readout::speed_lines`, egui's
+  Background layer, drawn with the panels hidden too). The loops' files differ four times in loudness: each has its own
+  `tune::LOOP_GAIN` and a ceiling `LOOP_MOST` that keeps its peak from clipping; change those, not `SOUND_GAIN`, to balance them.
 - Megaton Rainfall's assets (vegetation and cities plan): `se_core/src/mr.rs` reads its archives,
   models and materials, `se_core/src/dds.rs` `parse_dds` its textures (every mip and layer),
   `se_engine/src/mr_assets.rs` makes Bevy images and meshes (`MrAssets` resource). The port reads its

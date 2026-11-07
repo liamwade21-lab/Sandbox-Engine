@@ -1198,15 +1198,21 @@ pub(super) fn apply_shake(
 ) {
     let mut s = impacts.shake_now;
     let on = control.hero;
+    let t = hero.clock;
     if on && hero.shake > 1e-3 {
         let w = std::f64::consts::TAU * tune::SHAKE_HZ;
         let a = (tune::HERO_SHAKE_DEG * hero.shake.min(1.25)).to_radians();
-        let t = hero.clock;
         s += Vec2::new(((t * w).sin() * a) as f32, ((t * w * 1.37 + 1.9).sin() * a * 0.8) as f32);
-        let most = tune::HERO_SHAKE_DEG.to_radians() as f32;
-        if s.length() > most {
-            s *= most / s.length();
-        }
+    }
+    if on && hero.buffet > 1e-3 {
+        // Past the barrier: a steady rough rumble (frequencies at odd ratios), not the boom's sway.
+        let a = (tune::BUFFET_DEG * hero.buffet).to_radians();
+        let n = |hz: f64, phase: f64| (t * std::f64::consts::TAU * hz + phase).sin();
+        s += Vec2::new(((0.6 * n(17.0, 0.3) + 0.4 * n(29.3, 1.7)) * a) as f32, ((0.55 * n(21.7, 2.9) + 0.45 * n(37.1, 0.8)) * a) as f32);
+    }
+    let most = tune::HERO_SHAKE_DEG.to_radians() as f32;
+    if on && (hero.shake > 1e-3 || hero.buffet > 1e-3) && s.length() > most {
+        s *= most / s.length();
     }
     let fov = if on { hero.fov_add } else { 0.0 };
     if s == Vec2::ZERO && fov.abs() < 1e-3 {

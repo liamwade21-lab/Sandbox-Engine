@@ -56,10 +56,12 @@ pub fn format_height(h: f64) -> String {
 }
 
 pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudState>, i18n: Res<I18n>, control: Res<ModControl>) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    // A camera effect, not a panel: with the panels hidden too.
+    speed_lines(ctx, &hero);
     if hud.hidden {
         return Ok(());
     }
-    let ctx = contexts.ctx_mut()?;
     let r = &hero.readout;
     let frame = egui::Frame::window(&ctx.global_style()).inner_margin(6.0);
     // In the corner; in the menus under the Ships button, which comes back with the panels.
@@ -92,6 +94,35 @@ pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudStat
         guide(ctx, &hero);
     }
     Ok(())
+}
+
+/// Speed lines past the barrier in air (the user, 2026-11-07; their mod's `Fx.SpeedLines`, drawn on the screen here): faint streaks
+/// running out from the middle, clear of him, as strong as `Hero::buffet`, more, longer and thicker with each stack. Under the panels.
+fn speed_lines(ctx: &egui::Context, hero: &Hero) {
+    let k = hero.buffet.min(1.0) as f32;
+    if k < 0.02 {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let c = screen.center();
+    let reach = 0.5 * screen.size().length();
+    let s = (screen.height() / 540.0).max(1.0);
+    let stacks = hero.stacks.min(super::tune::STACKS_MAX) as f32;
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("hero_speed_lines")));
+    let t = hero.clock as f32;
+    let n = 16 + 6 * stacks as usize;
+    for i in 0..n {
+        let fi = i as f32;
+        // Each streak runs out over 1/RATE s, then comes back somewhere else.
+        let run = t * 2.2 + fi * 0.618;
+        let (lap, p) = (run.floor(), run.fract());
+        let a = fi * 2.399 + lap * 1.31;
+        let dir = egui::vec2(a.cos(), a.sin());
+        let r = reach * (0.34 + 0.62 * p);
+        let len = reach * (0.05 + 0.15 * k) * (1.0 + 0.3 * stacks);
+        let alpha = (k * 0.4 * (std::f32::consts::PI * p).sin()).clamp(0.0, 1.0);
+        painter.line_segment([c + dir * r, c + dir * (r + len)], egui::Stroke::new((1.0 + 0.25 * stacks) * s, egui::Color32::from_white_alpha((alpha * 255.0) as u8)));
+    }
 }
 
 /// The user's own Viltrumite mod's aids (its `Hud.cs`): a cross in the middle, the charge bar under it (gold when full; a punch's shows a

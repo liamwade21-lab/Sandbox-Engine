@@ -91,6 +91,26 @@ pub fn speed_share(speed: f64, sound: f64) -> f64 {
     ((speed.max(1.0) / tune::FAST_MIN_MS).ln() / (top / tune::FAST_MIN_MS).ln()).clamp(0.0, 1.0)
 }
 
+/// How much the boost stacks lift the speed cap: `STACK_FACTOR` a stack, as each multiplies his speed (near a planet the cap is
+/// 30 km/s, and without this it braked a stack's speed straight back).
+pub fn stack_lift(stacks: u32) -> f64 {
+    tune::STACK_FACTOR.powi(stacks.min(tune::STACKS_MAX) as i32)
+}
+
+/// The steady buffet and the speed lines past the barrier in air (the user, 2026-11-07: "a bit of a shake/camera effect to visualize
+/// the speed when he is going super sonic"): 0 under `BUFFET_MACH.0`, 1 from `.1`, by how much air there is, more by the stacks.
+pub fn buffet(flow: &Flow, stacks: u32) -> f64 {
+    if !flow.in_air() || flow.air.pressure_pa <= 0.0 {
+        return 0.0;
+    }
+    let smooth = |x: f64| x * x * (3.0 - 2.0 * x);
+    let (m0, m1) = tune::BUFFET_MACH;
+    let mach = smooth(((flow.mach - m0) / (m1 - m0)).clamp(0.0, 1.0));
+    let (p0, p1) = (tune::BUFFET_AIR_PA.0.log10(), tune::BUFFET_AIR_PA.1.log10());
+    let air = smooth(((flow.air.pressure_pa.log10() - p0) / (p1 - p0)).clamp(0.0, 1.0));
+    mach * air * (1.0 + tune::BUFFET_STACK * stacks.min(tune::STACKS_MAX) as f64)
+}
+
 /// Fast flight one step on (frame-relative velocity, universe axes): the heading turns towards the look at `steer` (1/s); W climbs the
 /// speed ramp (300 m/s in a second, 30 km/s in six, then doubling: `RAMP`), S halves it every `S_BRAKE_HALF_S`, neither holds it;
 /// never past `cap`. `w_edge`: W pressed this frame (the ramp goes on from the speed he has).
@@ -236,6 +256,34 @@ mod tests {
         assert!((d.dot(up).asin().to_degrees() - tune::LAUNCH_MIN_UP_DEG).abs() < 1e-9);
         let steep = DVec3::new(1.0, 2.0, 0.0).normalize();
         assert_eq!(launch_dir(steep, up), steep);
+    }
+
+    #[test]
+    fn stacks_lift_the_cap_as_they_lift_the_speed() {
+        assert_eq!(stack_lift(0), 1.0);
+        assert!((stack_lift(2) - tune::STACK_FACTOR * tune::STACK_FACTOR).abs() < 1e-12);
+        assert_eq!(stack_lift(99), stack_lift(tune::STACKS_MAX));
+        // At the air's cap a stack's speed stays: fast flight with no key held keeps it.
+        let cap = tune::CAP_AIR_MS * stack_lift(1);
+        let mut t = 0.0;
+        let v = fast_step(DVec3::X * tune::CAP_AIR_MS * tune::STACK_FACTOR, &mut t, DVec3::X, false, false, false, 3.2, cap, 1.0 / 60.0);
+        assert!((v.length() - cap).abs() < 1e-6, "{}", v.length());
+    }
+
+    #[test]
+    fn the_buffet_starts_at_the_barrier_in_air() {
+        use super::super::air::AirSample;
+        let at = |mach: f64, p: f64, stacks| {
+            let flow = Flow { mach, air: AirSample { pressure_pa: p, density: 1.0, sound_speed: 340.0, ..Default::default() }, ..Default::default() };
+            buffet(&flow, stacks)
+        };
+        assert_eq!(at(0.5, 1e5, 0), 0.0);
+        assert!(at(1.5, 1e5, 0) > 0.0 && at(1.5, 1e5, 0) < 1.0);
+        assert_eq!(at(5.0, 1e5, 0), 1.0);
+        assert!(at(5.0, 1e5, 3) > 1.0);
+        // Thin air, less; vacuum, none.
+        assert!(at(5.0, 100.0, 0) < 1.0);
+        assert_eq!(buffet(&Flow::vacuum(3000.0), 0), 0.0);
     }
 
     #[test]
