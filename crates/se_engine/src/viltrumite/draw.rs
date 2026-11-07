@@ -62,6 +62,7 @@ use crate::volumetric_clouds::CloudShadowAssets;
 
 use super::frames::{Frame, Ground};
 use super::ground::{self, Footing, Soles};
+use super::solid::Solids;
 use super::tune;
 use super::{Hero, LightPath};
 
@@ -687,11 +688,12 @@ struct ShadowFall {
 }
 
 /// `None`: no shadow, and nothing for the ground to hold still for: nothing to stand on, nothing loaded, or he's too high.
-fn shadow_fall(b: &BodyInfo, local: DVec3, sun: DVec3) -> Option<ShadowFall> {
+/// (On a building's roof the roof is the ground: `solids`, standing on `b`.)
+fn shadow_fall(b: &BodyInfo, local: DVec3, sun: DVec3, solids: Option<&Solids>) -> Option<ShadowFall> {
     if ground::footing(b, local) == Footing::Nothing {
         return None;
     }
-    fall_over(|p: DVec3| ground::support_height(b, p, None, 0.0), local, (b.orient.inverse() * sun).normalize_or(local.normalize_or(DVec3::Y)))
+    fall_over(|p: DVec3| ground::with_roof(ground::support_height(b, p, None, 0.0), solids, p, 0.0), local, (b.orient.inverse() * sun).normalize_or(local.normalize_or(DVec3::Y)))
 }
 
 /// The same over any ground, `l` towards the star, both in the body's frame.
@@ -833,6 +835,7 @@ pub(crate) fn update_hero(
     mut proj: Query<&mut Projection, With<MainCamera>>,
     mut vis: Query<&mut Visibility>,
     mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
+    solids: Res<Solids>,
     p: LightParams,
 ) {
     let dt = time.delta_secs().min(0.1);
@@ -867,12 +870,14 @@ pub(crate) fn update_hero(
     let draws = &mut *draws;
     let f = &mut *draws.frame;
     let body = attached_body(&hero, &p);
+    // The buildings' roofs, where they stand on his body (step 9): his feet and his shadow take them as the ground.
+    let solids = body.as_ref().and_then(|(b, _)| Some(&*solids).filter(|s| s.on(b.obj)));
     let up_there = body.as_ref().map(|(b, local)| b.orient * local.normalize_or(DVec3::Y));
     if draws.ready {
         let hero = &mut *hero;
         hero.sampler.advance(&assets.clips, dt);
         hero.sampler.sample(&assets.model, &assets.clips);
-        let lift = ground::post_pose(hero, &assets.clips, body.as_ref(), dt as f64);
+        let lift = ground::post_pose(hero, &assets.clips, body.as_ref(), solids, dt as f64);
         let lifted = rel + up_there.unwrap_or(DVec3::Y) * lift;
         let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: lifted.as_vec3().into() };
         hero.sampler.write_palette(place, &mut f.joints);
@@ -884,7 +889,7 @@ pub(crate) fn update_hero(
         draws.was_near = Some(near_body.is_some());
         info!("viltrumite: his light is now {} ({:.0} m above the nearest radius)", if near_body.is_some() { "the near body's" } else { "the CPU's" }, nearest.map_or(0.0, |n| n.2));
     }
-    let fall = body.as_ref().and_then(|(b, local)| Some((b, shadow_fall(b, *local, f.light.sun_dir.truncate().as_dvec3())?)));
+    let fall = body.as_ref().and_then(|(b, local)| Some((b, shadow_fall(b, *local, f.light.sun_dir.truncate().as_dvec3(), solids)?)));
     // The ground holds still where his feet and his shadow lie (`planet.wesl`), a line in the camera's frame, until the shadow has nearly
     // faded, and as that goes, so nothing changes at one height.
     let soil_now = match &fall {

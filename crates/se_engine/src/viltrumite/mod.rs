@@ -22,6 +22,7 @@ pub mod ground;
 pub mod hero;
 pub mod impact;
 pub mod readout;
+pub mod solid;
 pub mod sound;
 pub mod tune;
 
@@ -59,6 +60,7 @@ impl Plugin for ViltrumitePlugin {
         app.init_resource::<Hero>()
             .init_resource::<DevKeys>()
             .init_resource::<breakable::ProbeDev>()
+            .init_resource::<solid::Solids>()
             .init_resource::<sound::Voices>()
             // Test runs press real keys into the frame's input, before the mod's snapshot and every other reader.
             .add_systems(PreUpdate, dev_keys.run_if(dev_keys_held).after(bevy::input::InputSystems).before(crate::mods::snapshot_input))
@@ -252,6 +254,12 @@ pub struct Hero {
     pub punches: u8,
     /// This frame's impacts, for the pools (`impact::update_impacts` drains them).
     pub blasts: impact::Blasts,
+    /// F7: how far out the camera may be with the buildings across the line of sight (m): pulled in at once, let out eased.
+    pub cam_pull: f64,
+    /// What the buildings did to him (`hero solid stats`, `log`).
+    pub solid: solid::SolidWatch,
+    /// The building the last punch hit (step 10 breaks it), taken by whoever acts on it.
+    pub punched: Option<solid::Key>,
 }
 
 impl Default for Hero {
@@ -309,6 +317,9 @@ impl Default for Hero {
             act_clips: None,
             punches: 0,
             blasts: impact::Blasts::default(),
+            cam_pull: f64::MAX,
+            solid: solid::SolidWatch::default(),
+            punched: None,
         }
     }
 }
@@ -452,7 +463,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `probe ...` (`breakable::dev_command`) | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `crater [R]` | `dust [SIZE]` | `splash [SIZE]` | `impacts` | `sound ...` (`sound::dev_command`):
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `probe ...` (`breakable::dev_command`) | `solid ...` (`solid::dev_command`) | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `crater [R]` | `dust [SIZE]` | `splash [SIZE]` | `impacts` | `sound ...` (`sound::dev_command`):
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
@@ -493,6 +504,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         "sound" => sound::dev_command(world, rest),
         "probe" => breakable::dev_command(world, rest),
+        "solid" => solid::dev_command(world, rest),
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
         "cruise" => {
             let v: Vec<f64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();

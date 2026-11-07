@@ -406,6 +406,42 @@ fn longhouse() -> Mesh4 {
     (p, n, uv, idx)
 }
 
+/// The hero models' files (`assets/models/hero`), as `city.wesl` M_TEMPLE, M_WATCH, M_LANDMARK.
+pub(crate) const HERO_MODELS: [&str; 3] = ["temple", "watchtower", "landmark"];
+
+/// The buildings' models in the box's order (`city.wesl` `M_*`, `BUILDING_MODELS`), in unit size: 0 the box, 1 the hut, 2 the
+/// longhouse, 3-9 level 3's (the future box, the tapering, stepped, twisted and round towers, the arcology, the skybridge), 10 the
+/// flying lanes, 11-13 the hero models (`None` when a file is missing: the library draws a box), 14 the dome. The library draws
+/// these, and the Viltrumite mod's solid buildings are cut from the same meshes (`viltrumite/solid.rs`).
+pub(crate) fn building_mesh(mk: usize) -> Option<Mesh4> {
+    let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
+    let quarter = std::f32::consts::FRAC_PI_2;
+    Some(match mk {
+        0 => building_box(),
+        1 => round_hut(),
+        2 => longhouse(),
+        3 => tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, false),
+        4 => tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false),
+        5 => tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false),
+        6 => tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, quarter], 16)], 4, 0.04, false),
+        7 => tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false),
+        8 => {
+            let arco: Vec<Section> = (0..5)
+                .map(|i| {
+                    let (y0, s0) = (i as f32 * 0.184, 1.0 - 0.18 * i as f32);
+                    sec([y0, y0 + 0.184], [s0, s0 - 0.04], [0.0; 2], 1)
+                })
+                .collect();
+            tower(&arco, 4, 0.03, false)
+        }
+        9 => tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true),
+        10 => lane_mesh(),
+        11..=13 => return hero_model(HERO_MODELS[mk - 11]),
+        14 => dome_mesh(),
+        _ => return None,
+    })
+}
+
 /// A section of a level 3 tower: from height `y[0]` to `y[1]` (unit), its half-widths scaled from
 /// `s[0]` to `s[1]` and turned from `a[0]` to `a[1]` (rad), in `rings` steps.
 #[derive(Clone, Copy)]
@@ -1124,31 +1160,19 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         let future = materials.len() as u32;
         materials.push(LibMaterial { color: images.add(future_array()), tint: [1.0; 4], leaves: false, building: true });
         decoded_all.push(impostor::Texture { width: 1, height: 1, rgba: Arc::new(vec![40, 50, 60, 255]) });
-        let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
-        let quarter = std::f32::consts::FRAC_PI_2;
-        let arco: Vec<Section> = (0..5).map(|i| {
-            let (y0, s0) = (i as f32 * 0.184, 1.0 - 0.18 * i as f32);
-            sec([y0, y0 + 0.184], [s0, s0 - 0.04], [0.0; 2], 1)
-        }).collect();
-        let shapes: [(Mesh4, u32); 8] = [
-            (tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, false), BUILDING_CAP),
-            (tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false), TOWER_CAP),
-            (tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false), TOWER_CAP),
-            (tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, quarter], 16)], 4, 0.04, false), TOWER_CAP),
-            (tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false), TOWER_CAP),
-            (tower(&arco, 4, 0.03, false), 400),
-            (tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true), TOWER_CAP),
-            (lane_mesh(), LANE_CAP),
-        ];
-        for ((positions, normals, uvs, idx), cap) in shapes {
+        // (`building_mesh` 3-10.)
+        let caps = [BUILDING_CAP, TOWER_CAP, TOWER_CAP, TOWER_CAP, TOWER_CAP, 400, TOWER_CAP, LANE_CAP];
+        for (mk, cap) in (3..=10).zip(caps) {
+            let (positions, normals, uvs, idx) = building_mesh(mk).expect("made in code");
             let n = idx.len() as u32;
             models.push(ModelSrc { positions, normals, uvs, indices: idx, subs: vec![(0, n, future)], caps: (cap, 0), deciduous: false, street: (0, [0.0; 4]), crown: Some((0.5, 0.0)) });
         }
         // The hero models (city.wesl M_TEMPLE, M_WATCH, M_LANDMARK), made in Blender by script
         // (`assets/models/hero`): level 1's temple and watchtower with the villages' textures, level
         // 3's landmark tower with its facades. A missing one draws as a box.
-        for (name, material, cap) in [("temple", village, 2000), ("watchtower", village, 2000), ("landmark", future, 200)] {
-            let (positions, normals, uvs, idx) = hero_model(name).unwrap_or_else(|| {
+        for (k, (material, cap)) in [(village, 2000), (village, 2000), (future, 200)].into_iter().enumerate() {
+            let name = HERO_MODELS[k];
+            let (positions, normals, uvs, idx) = building_mesh(11 + k).unwrap_or_else(|| {
                 warn!("scatter: hero model {name} missing: a box instead");
                 building_box()
             });
@@ -1444,30 +1468,8 @@ mod tests {
     #[test]
     #[ignore]
     fn print_building_slices() {
-        let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
-        let quarter = std::f32::consts::FRAC_PI_2;
-        let arco: Vec<Section> = (0..5)
-            .map(|i| {
-                let (y0, s0) = (i as f32 * 0.184, 1.0 - 0.18 * i as f32);
-                sec([y0, y0 + 0.184], [s0, s0 - 0.04], [0.0; 2], 1)
-            })
-            .collect();
-        let mut models: Vec<(&str, Mesh4)> = vec![
-            ("0 box", building_box()),
-            ("1 hut", round_hut()),
-            ("2 longhouse", longhouse()),
-            ("3 future box", tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, false)),
-            ("4 tapering", tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false)),
-            ("5 stepped", tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false)),
-            ("6 twisted", tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, quarter], 16)], 4, 0.04, false)),
-            ("7 round", tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false)),
-            ("8 arcology", tower(&arco, 4, 0.03, false)),
-            ("9 skybridge", tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true)),
-        ];
-        for (n, name) in [("11 temple", "temple"), ("12 watchtower", "watchtower"), ("13 landmark", "landmark")] {
-            models.push((n, hero_model(name).unwrap_or_else(|| panic!("{name} missing"))));
-        }
-        models.push(("14 dome", dome_mesh()));
+        let names = ["0 box", "1 hut", "2 longhouse", "3 future box", "4 tapering", "5 stepped", "6 twisted", "7 round", "8 arcology", "9 skybridge", "", "11 temple", "12 watchtower", "13 landmark", "14 dome"];
+        let models: Vec<(&str, Mesh4)> = names.iter().enumerate().filter(|(_, n)| !n.is_empty()).map(|(mk, n)| (*n, building_mesh(mk).unwrap_or_else(|| panic!("{n} missing")))).collect();
         const SLICES: usize = 8;
         for (name, m) in &models {
             let tris: Vec<[Vec3; 3]> = m.3.chunks(3).map(|t| [0, 1, 2].map(|k| Vec3::from(m.0[t[k] as usize]))).collect();

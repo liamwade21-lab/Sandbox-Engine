@@ -133,6 +133,30 @@ pub const PROBE_AHEAD_FRAMES: f64 = 2.0;
 pub const PROBE_LAG_FRAMES: u32 = 4;
 pub const PROBE_LAG_MAX: u32 = 8;
 
+// ---- Solid buildings (step 9's second part, F12.8, F6, F7, F2) ----
+/// His sphere against the buildings' walls, round his middle (m).
+pub const HIT_RADIUS_M: f64 = 0.45;
+/// A slice's top is his ground (a roof, F6) once his feet are no lower than this under it (m); lower, it's a wall.
+pub const ROOF_STEP_M: f64 = 0.7;
+/// Height slices per model, at most (F12.8).
+pub const SLICES: usize = 8;
+/// Slightly inside a wall (a list's box moved onto him by a finer node, or he slid off a roof's edge): pushed out at this speed
+/// (m/s), at least `PUSH_MIN_M` a frame, so it never pops.
+pub const PUSH_MS: f64 = 3.0;
+pub const PUSH_MIN_M: f64 = 0.02;
+/// Further than this inside a building's box (m) is F2's case (a Go To or a jump of the camera put him there): it's let alone
+/// until he's out of it, as one that held him when first seen.
+pub const DEEP_INSIDE_M: f64 = 1.5;
+/// A list older than this many frames isn't solid any more (the probe's lag is 3-5).
+pub const SOLID_AGE_MAX: u32 = 30;
+/// F7: the camera is pulled in when a building crosses the line of sight, under this distance out (m).
+pub const CAM_PULL_UNDER_M: f64 = 40.0;
+/// The line of sight kept this far off a wall (m), the camera at least `CAM_PULL_MIN_M` from him, and let back out with this
+/// time constant (s) (pulled in at once).
+pub const CAM_PULL_CLEAR_M: f64 = 0.3;
+pub const CAM_PULL_MIN_M: f64 = 1.0;
+pub const CAM_PULL_OUT_TAU_S: f64 = 0.35;
+
 // ---- Falling ----
 /// `CdA/m` (m2/kg): Earth's terminal speed 45 m/s. Implicit, `v / (1 + c |v| dt)`: explicit blows up at speed.
 pub const DRAG_CDA_M: f64 = 0.0078;

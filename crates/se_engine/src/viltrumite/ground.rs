@@ -15,6 +15,7 @@ use crate::volumetric_clouds::giant_floor_m;
 
 use super::Hero;
 use super::frames::{Frame, Ground, Scene, find};
+use super::solid::{Contact, SlideOpts, Solids};
 use super::tune;
 
 /// What he'd come down on at a point of the body's frame.
@@ -31,8 +32,8 @@ pub enum Footing {
 /// The height he and the camera stop at (F6's one `support_height`), at a point of the body's frame: `ground_on`, which
 /// clamps to the sea, but a star's or a sphere's surface is known without loading, and a giant has its own floor, the
 /// camera's, only where its decks are drawn (`decks`: Edge cases). A star's stop is also the camera's distance further
-/// out (`camera_m`), as the camera's kept outside it. From step 9, a building slice's top when his feet are within 0.7 m
-/// of it goes here too.
+/// out (`camera_m`), as the camera's kept outside it. A building slice's top when his feet are within 0.7 m of it is added by
+/// [`with_roof`] (step 9).
 pub fn support_height(b: &BodyInfo, local: DVec3, decks: Option<ObjectRef>, camera_m: f64) -> Ground {
     let Some(t) = b.terrain else {
         // (Never inside the plain sphere `keep_camera_above_ground` keeps the camera out of: pushed out, the camera would
@@ -49,6 +50,16 @@ pub fn support_height(b: &BodyInfo, local: DVec3, decks: Option<ObjectRef>, came
     }
     let (radial, level) = ground_on(b.radius, b.shape, Some(t), local);
     Ground { radial, level }
+}
+
+/// F6's support with the buildings' roofs (step 9's second part): a slice's top, if it's higher than the ground, when his feet
+/// (`feet_below` under `local`: `STAND_M` for his middle, 0 for a point of his soles or of a ray) are no more than `ROOF_STEP_M` under
+/// it. `solids` must stand on the body `local` is in (`Scene::solids_on`).
+pub fn with_roof(g: Ground, solids: Option<&Solids>, local: DVec3, feet_below: f64) -> Ground {
+    match solids.and_then(|so| so.roof(local, feet_below)) {
+        Some(r) if r.radial > g.radial => Ground { radial: r.radial, level: g.level.or(Some(0)) },
+        _ => g,
+    }
 }
 
 /// What's there to stand on.
@@ -91,6 +102,12 @@ pub fn ground_triangle(ground: impl Fn(DVec3) -> Ground, local: DVec3, span: f64
 /// The ground's normal at `local`, from three samples `NORMAL_SPAN_M` apart (body frame); straight up where one isn't loaded.
 pub fn normal_at(s: &Scene, b: &BodyInfo, local: DVec3) -> DVec3 {
     let up = local.normalize_or(DVec3::Y);
+    // On a roof: its own up (samples round him would fall off its edge and read a cliff).
+    if let Some(r) = s.solids_on(b.obj).and_then(|so| so.roof(local, s.stand_m)) {
+        if r.radial >= (s.ground)(b, local).radial - 1e-6 {
+            return r.up;
+        }
+    }
     let Some([p0, p1, p2]) = ground_triangle(|p| (s.ground)(b, p), local, tune::NORMAL_SPAN_M) else { return up };
     let n = (p1 - p0).cross(p2 - p0).normalize_or(up);
     if n.dot(up) < 0.0 { -n } else { n }
@@ -132,6 +149,9 @@ pub struct WalkOut {
     pub blocked: bool,
     /// How fast he was going when he stepped off the shore (m/s).
     pub speed: f64,
+    /// The hardest building's wall he walked into (he slid along it), and how many contacts the step had.
+    pub wall: Option<Contact>,
+    pub contacts: u32,
 }
 
 /// The slope at a point (degrees), and which way is downhill along the ground.
@@ -194,8 +214,16 @@ pub fn walk_step(frame: &mut Frame, s: &Scene, i: &WalkIn, dt: f64) -> WalkOut {
         v += (target - v).clamp_length_max(reach);
     }
 
-    // Uphill onto what's too steep to walk: that part of the step goes (walk to 50 degrees; above, it's a slide or a wall).
     let mut p1 = p0 + v * dt;
+    // The buildings' walls (step 9's second part): he slides along them. (Their roofs are in `s.ground` already: his ground.)
+    if let Some(so) = s.solids_on(b.obj) {
+        let sl = so.slide(p0, p1, v, SlideOpts { r: tune::HIT_RADIUS_M, stand: s.stand_m, floors: false, push: tune::PUSH_MS * dt + tune::PUSH_MIN_M });
+        p1 = sl.end;
+        v = sl.v;
+        out.wall = sl.wall;
+        out.contacts = sl.contacts;
+    }
+    // Uphill onto what's too steep to walk: that part of the step goes (walk to 50 degrees; above, it's a slide or a wall).
     let mut g1 = (s.ground)(b, p1);
     if g1.radial > here.radial {
         let up1 = p1.normalize_or(up);
@@ -348,7 +376,7 @@ pub fn feet_on(s: &Soles, world: impl Fn(usize) -> Affine3A, to_local: Mat3A, mi
 /// After the pose is sampled, before the palette: how far along his up his drawn root goes from the capsule's middle (m).
 /// The clip's soles on the ground under him, a finer node's change eased out, and (F6) the root down to the lower foot's
 /// ground, at most `ROOT_DROP_MAX_M`, smoothed. Two-bone IK would go here: it has the pose and the ground.
-pub fn post_pose(hero: &mut Hero, clips: &ClipSet, body: Option<&(BodyInfo, DVec3)>, dt: f64) -> f64 {
+pub fn post_pose(hero: &mut Hero, clips: &ClipSet, body: Option<&(BodyInfo, DVec3)>, solids: Option<&Solids>, dt: f64) -> f64 {
     let on_foot = hero.state.on_foot();
     // (A full-body action over the base, the ground punch or the clap, puts its own soles on the ground: `impact.rs`.)
     let action = hero.sampler.layers[super::impact::ACTION_LAYER];
@@ -365,7 +393,7 @@ pub fn post_pose(hero: &mut Hero, clips: &ClipSet, body: Option<&(BodyInfo, DVec
     let feet = match (body, &hero.soles) {
         (Some((b, local)), Some(soles)) if on_foot || hero.feet.is_some() => {
             let to_local = Mat3A::from_quat((b.orient.inverse() * hero.rot).as_quat()) * Mat3A::from_cols(Vec3A::X, Vec3A::new(0.0, 0.0, -1.0), Vec3A::Y);
-            Some(feet_on(soles, |i| sampler.world(i), to_local, *local, lift, |p| support_height(b, p, None, 0.0)))
+            Some(feet_on(soles, |i| sampler.world(i), to_local, *local, lift, |p| with_roof(support_height(b, p, None, 0.0), solids, p, 0.0)))
         }
         _ => None,
     };
@@ -375,7 +403,7 @@ pub fn post_pose(hero: &mut Hero, clips: &ClipSet, body: Option<&(BodyInfo, DVec
     let lift = hero.clip_lift + hero.ease - hero.root_drop;
     if let (Some(f), Some(trace)) = (feet, hero.feet.as_mut()) {
         let (level, height) = match (hero.frame, body) {
-            (Frame::Attached { level, local_pos, .. }, Some((b, _))) => (level.map_or(-1, |l| l as i32), local_pos.length() - support_height(b, local_pos, None, 0.0).radial),
+            (Frame::Attached { level, local_pos, .. }, Some((b, _))) => (level.map_or(-1, |l| l as i32), local_pos.length() - with_roof(support_height(b, local_pos, None, 0.0), solids, local_pos, tune::STAND_M).radial),
             _ => (-1, 0.0),
         };
         let moved = hero.root_drop - was;
@@ -425,7 +453,7 @@ mod tests {
         let g = |_: &BodyInfo, p: DVec3| ground(p);
         let fo = |_: &BodyInfo, p: DVec3| foot(p);
         let d = |_: &BodyInfo, _: DVec3| 0.0;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &g, footing: &fo, drag: &d, stand_m: 1.0 };
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &g, footing: &fo, drag: &d, stand_m: 1.0, solids: None };
         f(&s, &bodies[0])
     }
 

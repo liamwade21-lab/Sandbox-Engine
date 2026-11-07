@@ -14,6 +14,7 @@ use se_core::upos::UPos;
 use crate::camera::{FlyCamera, Follow, TravelKind};
 use crate::data::SeData;
 use crate::mods::{HeroAssets, ModInput};
+use crate::scatter::probe::BuildingProbe;
 use crate::ship::air::AirCache;
 use crate::ship::{BodyInfo, body_mass, gravity_at, velocity_at};
 use crate::system::SystemBody;
@@ -30,6 +31,7 @@ use super::fx::{self, FxState};
 use super::ground::{self, Footing, Landing, WalkEvent, WalkIn};
 use super::impact::{self, Blast, BlastKind, Style};
 use super::readout::Readout;
+use super::solid::Solids;
 use super::tune;
 use super::{Hero, facing};
 
@@ -838,10 +840,21 @@ pub(crate) fn hero_move(
     clouds: Res<VolumetricClouds>,
     assets: Res<HeroAssets>,
     q: Query<(&SystemBody, Option<&Terrain>)>,
+    (probe, mut solids): (Res<BuildingProbe>, ResMut<Solids>),
 ) {
     let hero = &mut *hero;
     let dt = time.delta_secs_f64().min(0.1);
     hero.clock += dt;
+    // The buildings round him (step 9's second part): the probe's newest list, in its body's frame. (Too old a list isn't
+    // trusted: nothing is solid that may no longer be drawn.)
+    let list_obj = probe.body.and_then(|e| q.get(e).ok()).map(|(b, _)| b.obj);
+    let fresh = probe.arrived && probe.age_frames().is_some_and(|a| a <= tune::SOLID_AGE_MAX);
+    let him = match hero.frame {
+        Frame::Attached { obj, local_pos, .. } => Some((obj, local_pos)),
+        Frame::Free { .. } => None,
+    };
+    hero.solid.ignored += solids.refresh(list_obj.filter(|_| fresh).map(|o| (probe.list.as_slice(), probe.list_seq, o)), him) as u64;
+    let solids: &Solids = &solids;
     let eph = Ephemeris::new(&data.catalog);
     let bodies: Vec<BodyInfo> = q
         .iter()
@@ -849,8 +862,13 @@ pub(crate) fn hero_move(
         .collect();
     let decks = clouds.active.and_then(|e| q.get(e).ok()).map(|(b, _)| b.obj);
     let camera_m = hero.dist + hero.zoom;
-    let ground = |b: &BodyInfo, local: DVec3| ground::support_height(b, local, decks, camera_m);
-    let footing = |b: &BodyInfo, local: DVec3| ground::footing(b, local);
+    // F6's one support: the ground, or a roof within his step (his middle's feet, `STAND_M` under it). On a roof he's on land.
+    let solids_on = Some(solids);
+    let ground = |b: &BodyInfo, local: DVec3| ground::with_roof(ground::support_height(b, local, decks, camera_m), Some(solids).filter(|s| s.on(b.obj)), local, tune::STAND_M);
+    let footing = |b: &BodyInfo, local: DVec3| {
+        let terrain = ground::support_height(b, local, decks, camera_m);
+        if ground(b, local).radial > terrain.radial { Footing::Land } else { ground::footing(b, local) }
+    };
     let spin = |obj: ObjectRef| smooth_spin(&eph, obj, sim.jd);
     let vel = |obj: ObjectRef| smooth_velocity(&eph, obj, sim.jd);
 
@@ -918,7 +936,7 @@ pub(crate) fn hero_move(
         Some((obj, a)) if *obj == b.obj && !no_drag.get() => a.drag(air_height_on(b, local, ground(b, local))),
         _ => 0.0,
     };
-    let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: tune::STAND_M };
+    let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: tune::STAND_M, solids: solids_on };
 
     // The buttons (step 8): a punch, the ground punch, the clap's charge and the clap. Before the carry: a ground punch from a
     // jump or a fall holds him (Hover), and the carry and the step must take the same motion (`Frame::carry`), or the frame it
@@ -1090,6 +1108,11 @@ pub(crate) fn hero_move(
             hero.ease += out.ease;
             hero.slope_deg = out.slope_deg;
             hero.sliding = out.sliding;
+            let depth = match hero.frame {
+                Frame::Attached { local_pos, .. } => scene.solids_on(b.obj).map_or(0.0, |so| so.deepest(local_pos)),
+                Frame::Free { .. } => 0.0,
+            };
+            hero.solid.note(solids.list.len(), out.contacts, false, out.wall.map_or(0.0, |c| c.into), hero.frame.velocity(&scene).length(), depth);
             match out.event {
                 WalkEvent::Ledge => {
                     hero.state = State::Falling;
@@ -1145,6 +1168,11 @@ pub(crate) fn hero_move(
         no_drag.set(hero.state == State::Jump);
         let out = hero.frame.advance(&scene, dt, motion);
         no_drag.set(false);
+        let depth = match hero.frame {
+            Frame::Attached { obj, local_pos, .. } => scene.solids_on(obj).map_or(0.0, |so| so.deepest(local_pos)),
+            Frame::Free { .. } => 0.0,
+        };
+        hero.solid.note(solids.list.len(), out.contacts, out.on_roof, out.wall.map_or(0.0, |c| c.into), hero.frame.velocity(&scene).length(), depth);
         // F4: falling he lands. Flying, with Ctrl or by hitting it hard enough.
         let flown = out.flown_into.filter(|&into| {
             let footing = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(Footing::Nothing, |b| (scene.footing)(b, out.at));
@@ -1279,7 +1307,16 @@ pub(crate) fn hero_move(
     hero.zoom = camera::ease_zoom(hero.zoom, speed, dt);
     let back = camera::offset(cam.rot, hero.dist + hero.zoom);
     let eased = near.map_or(DVec3::ZERO, |(b, local)| b.orient * local.normalize_or(DVec3::Y) * hero.ease);
-    let mut cam_pos = pos.offset_m(back + eased);
+    // F7: under `CAM_PULL_UNDER_M` out, the camera is pulled in along the line of sight when a building crosses it (at once), and
+    // let back out eased. (The line runs from his middle; the buildings are in the probe's body's frame.)
+    let off = back + eased;
+    let full = off.length();
+    let allowed = near.filter(|(b, _)| full < tune::CAM_PULL_UNDER_M && solids.on(b.obj)).map_or(full, |(b, local)| {
+        let cam_local = to_local(b, pos.offset_m(off));
+        (solids.clear_share(local, cam_local, tune::CAM_PULL_CLEAR_M) * full).clamp(tune::CAM_PULL_MIN_M.min(full), full)
+    });
+    hero.cam_pull = if allowed < hero.cam_pull { allowed } else { hero.cam_pull + (allowed - hero.cam_pull) * (1.0 - (-dt / tune::CAM_PULL_OUT_TAU_S).exp()) };
+    let mut cam_pos = pos.offset_m(off * (hero.cam_pull.min(full) / full.max(1e-9)));
     for b in &bodies {
         let rel = cam_pos.delta_m(b.pos);
         // (As far out as `keep_camera_above_ground` looks, whose push he'd take for something else moving the camera.)

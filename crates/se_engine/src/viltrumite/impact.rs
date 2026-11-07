@@ -418,7 +418,20 @@ fn punch_lands(hero: &mut Hero, s: &Scene, fwd: DVec3) {
     let Frame::Attached { obj, local_pos, .. } = hero.frame else { return };
     let Some(b) = s.bodies.iter().find(|b| b.obj == obj) else { return };
     let from = local_pos + local_pos.normalize_or(DVec3::Y) * tune::PUNCH_FROM_UP_M;
-    let Some(at) = ray_hits(s, b, from, b.orient.inverse() * fwd, tune::PUNCH_REACH_M) else {
+    let dir = b.orient.inverse() * fwd;
+    let ground_hit = ray_hits(s, b, from, dir, tune::PUNCH_REACH_M);
+    // A building nearer than the ground takes the blow (step 9's second part; step 10 breaks it).
+    if let Some((d, i)) = s.solids_on(obj).and_then(|so| so.ray(from, dir, tune::PUNCH_REACH_M)) {
+        if ground_hit.is_none_or(|g| (g - from).length() > d) {
+            let at = from + dir * d;
+            info!("viltrumite: the punch hits a building {d:.1} m from his shoulders");
+            hero.sound.punch_hits_building();
+            hero.punched = s.solids.map(|so| so.list[i].key);
+            hero.blasts.push(Blast { obj, local: at, kind: BlastKind::Dust(tune::PUNCH_DUST_M, Style::Plume), shake_m: tune::PUNCH_DUST_M });
+            return;
+        }
+    }
+    let Some(at) = ground_hit else {
         debug!("viltrumite: the punch hits nothing");
         return;
     };

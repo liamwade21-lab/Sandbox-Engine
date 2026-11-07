@@ -25,6 +25,7 @@ use se_core::upos::UPos;
 use crate::ship::{BodyInfo, frame_terms, gravity_at};
 
 use super::ground::{Footing, normal_at, slope_there};
+use super::solid::{Contact, SlideOpts, Solids};
 use super::tune;
 
 /// The body a `Free` hero goes with this frame.
@@ -94,6 +95,15 @@ pub struct Scene<'a> {
     pub drag: &'a dyn Fn(&BodyInfo<'_>, DVec3) -> f64,
     /// His middle stays this far over the ground.
     pub stand_m: f64,
+    /// The buildings round him (step 9's second part), in their body's frame: `ground` already holds their roofs.
+    pub solids: Option<&'a Solids>,
+}
+
+impl Scene<'_> {
+    /// The buildings, if they stand on this body.
+    pub fn solids_on(&self, obj: ObjectRef) -> Option<&Solids> {
+        self.solids.filter(|s| s.on(obj))
+    }
 }
 
 /// What a step ran into.
@@ -109,6 +119,11 @@ pub struct Outcome {
     pub speed: f64,
     pub along: DVec3,
     pub at: DVec3,
+    /// The landing is on a building's roof.
+    pub on_roof: bool,
+    /// The hardest building's wall he met (he slid along it), and how many contacts with buildings the step had.
+    pub wall: Option<Contact>,
+    pub contacts: u32,
 }
 
 pub(super) fn find<'b, 'a>(s: &'b Scene<'a>, obj: ObjectRef) -> Option<&'b BodyInfo<'a>> {
@@ -512,6 +527,41 @@ impl Frame {
                 }
             }
         }
+        // The buildings (step 9's second part): walls slid along, roofs landed on. Their box doesn't move, so the whole path from where the
+        // step started is swept, after the ground's own slide; then never under the ground.
+        if let (Some(so), false) = (s.solids_on(b.obj), motion == Motion::Held) {
+            let v_in = v1;
+            let sl = so.slide(from, p, v1, SlideOpts { r: tune::HIT_RADIUS_M, stand: s.stand_m, floors: true, push: tune::PUSH_MS * dt + tune::PUSH_MIN_M });
+            p = sl.end;
+            v1 = sl.v;
+            out.wall = sl.wall;
+            out.contacts = sl.contacts;
+            if let Some(c) = sl.roof {
+                let up = so.list[c.solid].up;
+                match motion {
+                    Motion::Ballistic => {
+                        out.contact = Some(c.into.max(0.0));
+                        out.speed = v_in.length();
+                        out.along = v_in - up * v_in.dot(up);
+                        out.at = c.at;
+                        out.flown_into = None;
+                        out.on_roof = true;
+                        p = c.at;
+                        v1 = DVec3::ZERO;
+                    }
+                    Motion::Flown => {
+                        out.flown_into = Some(c.into.max(0.0));
+                        out.speed = v_in.length();
+                        out.along = v1;
+                        out.at = c.at;
+                        out.on_roof = true;
+                    }
+                    Motion::Held => {}
+                }
+            }
+            let held = p0.length();
+            p = p.normalize_or(DVec3::Y) * p.length().max(floor_at(s, b, p, held).0);
+        }
         *level = (s.ground)(b, p).level;
         *local_pos = p;
         *local_vel = v1;
@@ -612,7 +662,7 @@ mod tests {
         let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: Some(3) };
         let dragf = move |_: &BodyInfo, _: DVec3| drag;
         let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
-        f(&Scene { bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &dragf, stand_m: 1.0 })
+        f(&Scene { bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &dragf, stand_m: 1.0, solids: None })
     }
 
     /// The jump: 28 m/s up, gravity alone. Six times higher on the Moon, as gravity is a sixth. (Drag is the caller's: none rising.)
@@ -945,7 +995,7 @@ mod tests {
         let ground = |b: &BodyInfo, l: DVec3| Ground { radial: b.radius + l.normalize().x * b.radius * 0.1, level: Some(3) };
         let drag = |_: &BodyInfo, _: DVec3| 0.0;
         let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0, solids: None };
         let top = (s.ground)(&bodies[0], DVec3::Y).radial + 1.0;
         let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::X * 3000.0, level: None, last_orient: DQuat::IDENTITY };
         for _ in 0..60 {
@@ -970,7 +1020,7 @@ mod tests {
         for (deg, level, down) in [(30.0_f64, 300.0, 150.0), (60.0, 519.6, 300.0)] {
             let tan = deg.to_radians().tan();
             let ground = move |b: &BodyInfo, l: DVec3| Ground { radial: b.radius + l.normalize().x * b.radius * tan, level: Some(3) };
-            let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+            let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0, solids: None };
             let top = (s.ground)(&bodies[0], DVec3::Y).radial + 1.0;
             // Level, up the slope, at 600 m/s: nothing goes towards the centre.
             let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::X * 600.0, level: None, last_orient: DQuat::IDENTITY };
@@ -999,7 +1049,7 @@ mod tests {
         let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: None };
         let drag = |_: &BodyInfo, _: DVec3| 0.0;
         let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0, solids: None };
         let start = EARTH_R + 50.0;
         for motion in [Motion::Flown, Motion::Ballistic] {
             for speed in [5.0, 3000.0] {
@@ -1033,7 +1083,7 @@ mod tests {
         let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: None };
         let drag = |_: &BodyInfo, _: DVec3| 0.0;
         let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
-        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0, solids: None };
         let start = DVec3::X * (EARTH_R + 50.0);
         let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::ZERO, level: None, last_orient: DQuat::IDENTITY };
         for _ in 0..60 {
