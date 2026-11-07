@@ -17,7 +17,9 @@ def share(p):
 def table(r):
     q, t, flying, charging, p = float(r['q']), float(r['heat_k']), r['flying'] == '1', r['charging'] == '1', float(r['pressure'])
     lq = math.log10(q) if q > 0 else -1e9
-    return [ramp(lq, 1, 6), ramp(t, 2500, 6000), 0.12 * (1 - ramp(lq, 0, 2)) if flying else 0.0, share(p) if charging else 0.0]
+    # The hum: flying, and out of the air whatever he's doing (D12).
+    hums = 1.0 if flying else 1.0 - (ramp(math.log10(p), 0.0, 2.0) if p > 0 else 0.0)
+    return [ramp(lq, 1, 6), ramp(t, 2500, 6000), 0.12 * hums * (1 - ramp(lq, 0, 2)), share(p) if charging else 0.0]
 
 
 LOOPS = ['fastFlight_loop', 'fasterFlight_loop', 'sentry_flightfx_loop', 'flightCharge_loop']

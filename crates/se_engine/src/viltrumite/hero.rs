@@ -696,6 +696,8 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.short_fall = false;
     hero.sliding = false;
     hero.keys_up_first = false;
+    hero.ctrl_up_first = false;
+    hero.carried_from = None;
     hero.impact = None;
     hero.last_vel = DVec3::ZERO;
     hero.felt = DVec3::ZERO;
@@ -769,8 +771,22 @@ fn touch_down(hero: &mut Hero, s: &Scene, into: f64, out: &Outcome) {
         Footing::Nothing => {
             hero.state = State::Hover;
             hero.frame.set_local_velocity(DVec3::ZERO);
+            // With Ctrl still held every frame would be a take-off and this stop, and each take-off a sound.
+            hero.ctrl_up_first = true;
         }
     }
+}
+
+/// F4's Hyper: a tier of flight. (`Director::tier` also follows a fall's speed, and a fall isn't Hyper: no flight ends when
+/// the air slows it.)
+fn flying_hyper(state: State, tier: Tier) -> bool {
+    state == State::Flight && tier == Tier::Hyper
+}
+
+/// F10's "leaving Hyper", from last frame's `flying_hyper`: slowing, X, Z, a Go To, the sea's stop. On his feet he's crashed, and that
+/// has its own sound.
+fn leaves_hyper(was_hyper: bool, state: State, tier: Tier) -> bool {
+    was_hyper && !flying_hyper(state, tier) && !state.on_foot()
 }
 
 /// Model space (Z up, +Y forward) to the port's (Y up, -Z forward): `draw.rs` `model_to_port` as a turn.
@@ -810,6 +826,8 @@ pub(crate) fn hero_move(
     if !hero.placed {
         turn_on(hero, &mut cam);
     }
+    // (After that: turned off in Hyper it still says so. Before all below that changes the state: X, Z, a Go To.)
+    let was_hyper = flying_hyper(hero.state, hero.director.tier);
     // F8: every frame, not once: the Track and bind buttons and a Go To set them. `hold_agl`, a dev command's, would
     // fight his height.
     cam.follow = None;
@@ -845,6 +863,7 @@ pub(crate) fn hero_move(
         follow_camera(hero, &cam);
     }
     hero.carried = travelling;
+    let carried_cam = travelling.then_some(cam.pos);
 
     // The nearest body by its surface: his up, his air, the readout. (Air is worked out once a frame, for it alone.)
     let pos0 = hero.frame.world_or(hero.world.0);
@@ -899,7 +918,8 @@ pub(crate) fn hero_move(
                     let w = b.orient.inverse() * spin(b.obj);
                     Frame::Attached { obj, local_pos, local_vel: b.orient.inverse() * v - w.cross(local_pos), level, last_orient }
                 }
-                _ => Frame::Free { pos, vel: v, carrier: None },
+                // (`carry` picks its carrier next and takes that body's motion off a fall's velocity: here it never had it.)
+                _ => Frame::Free { pos, vel: v + vel(b.obj), carrier: None },
             };
         }
     }
@@ -967,6 +987,13 @@ pub(crate) fn hero_move(
             flight_in = FlightIn::default();
         } else {
             hero.keys_up_first = false;
+        }
+    }
+    if hero.ctrl_up_first {
+        if input.ctrl && !travelling {
+            flight_in = FlightIn::default();
+        } else {
+            hero.ctrl_up_first = false;
         }
     }
     let boost_released = hero.was_boost && !input.shift;
@@ -1155,9 +1182,8 @@ pub(crate) fn hero_move(
         off_aim_deg: if hero.hold_body { 0.0 } else { off_aim_deg },
     };
     let hero_ref = &mut *hero;
-    let was_tier = hero_ref.director.tier;
     hero_ref.director.update(&cue, &mut hero_ref.sampler, &assets.clips, dt as f32);
-    if was_tier == Tier::Hyper && hero_ref.director.tier != Tier::Hyper && !hero_ref.state.on_foot() {
+    if leaves_hyper(was_hyper, hero_ref.state, hero_ref.director.tier) {
         hero_ref.sound.leave_hyper();
     }
     if let Some(yaw) = hero.director.take_turned() {
@@ -1211,12 +1237,21 @@ pub(crate) fn hero_move(
 
     // The readout.
     let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
-    hero.flow = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map_or(Flow::vacuum(speed), |((_, a), h)| a.flow(h, speed));
+    // A Go To or a landing carries him at rest in his own frame (`follow_camera`): through the air he goes as fast as the camera
+    // goes over the ground. (The camera, not him: he swings round it as the view turns.)
+    let carried = carried_cam.zip(near).map(|(p, (b, _))| (b.obj, to_local(b, p)));
+    let through_air = match (carried, hero.carried_from) {
+        (Some((obj, now)), Some((from_obj, from))) if obj == from_obj => (now - from).length() / time.delta_secs_f64().max(1e-6),
+        (Some(_), _) => 0.0,
+        (None, _) => speed,
+    };
+    hero.carried_from = carried;
+    hero.flow = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map_or(Flow::vacuum(through_air), |((_, a), h)| a.flow(h, through_air));
     hero.heat_k = air::ease_heat(hero.heat_k, hero.flow.skin_k, dt);
     // The readout's height is his soles', where there's anything to stand on: nothing when he stands.
     let soles = near.filter(|(b, local)| (scene.footing)(b, *local) != Footing::Nothing).map_or(0.0, |_| tune::STAND_M);
     hero.readout = Readout {
-        speed,
+        speed: through_air,
         mach: hero.flow.in_air().then_some(hero.flow.mach),
         height: height.map(|h| (h - soles).max(if soles > 0.0 { 0.0 } else { h })),
         gravity_g: (gravity_at(&bodies, pos) - a_frame).length() / 9.806_65,
@@ -1458,6 +1493,22 @@ mod tests {
         assert!((150.0..240.0).contains(&terminal), "{terminal}");
         // Land: over the ground, whatever the radius says.
         assert_eq!(air_height(false, 5000.0, local, Ground { radial: r - 1000.0, level: Some(3) }), 1000.0);
+    }
+
+    /// F10's "leaving Hyper" goes by F4's tier of flight, never by a fall's speed.
+    #[test]
+    fn only_a_flight_leaves_hyper() {
+        // Slowing in flight; X; Z, a Go To and the sea's stop.
+        assert!(leaves_hyper(true, State::Flight, Tier::Fast));
+        assert!(leaves_hyper(true, State::Falling, Tier::Hyper));
+        assert!(leaves_hyper(true, State::Hover, Tier::Hover));
+        // Still in it; a crash, which has its own sound.
+        assert!(!leaves_hyper(true, State::Flight, Tier::Hyper));
+        assert!(!leaves_hyper(true, State::HardLanding, Tier::Hover));
+        // A fall: at an orbit's speed it's no flight, the air slowing it ends none, and Space stopping it neither.
+        assert!(!flying_hyper(State::Falling, Tier::Hyper));
+        assert!(!leaves_hyper(false, State::Falling, Tier::Fast));
+        assert!(!leaves_hyper(false, State::Hover, Tier::Hover));
     }
 
     #[test]

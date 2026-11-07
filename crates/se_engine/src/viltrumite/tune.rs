@@ -271,7 +271,8 @@ pub const FAST_PITCH_MACH: (f64, f64) = (0.05, 20.0);
 pub const PITCH_TAU_S: f32 = 0.15;
 /// `fasterFlight_loop`'s volume by the temperature (K).
 pub const FASTER_HEAT_K: (f64, f64) = (2500.0, 6000.0);
-/// The hum (`sentry_flightfx_loop`): this loud while he hovers or flies, fading as `log10 q` goes between these, at this pitch.
+/// The hum (`sentry_flightfx_loop`): this loud while he hovers or flies, and out of the air whatever he's doing (D12: there it goes
+/// over `SHOT_AIR_PA`), fading as `log10 q` goes between these, at this pitch.
 pub const HUM_VOLUME: f32 = 0.12;
 pub const HUM_LOG_Q: (f64, f64) = (0.0, 2.0);
 pub const HUM_PITCH: f32 = 0.6;
@@ -279,7 +280,8 @@ pub const HUM_PITCH: f32 = 0.6;
 pub const TAKE_OFF_GAIN: f32 = 0.35;
 /// At most this many one-shots at a time: a new one takes the place of the one that's played longest.
 pub const SHOTS_MAX: usize = 8;
-/// A one-shot's share of its volume in vacuum (D12), up to all of it between these pressures (Pa, logarithmically).
+/// A one-shot's share of its volume in vacuum (D12), up to all of it between these pressures (Pa, logarithmically): what the sounds
+/// call vacuum and air.
 pub const SHOT_VACUUM: f32 = 0.25;
 pub const SHOT_AIR_PA: (f64, f64) = (1.0, 100.0);
 /// The least time between two of the same one-shot (s): the long whooshes more, or a tapped key piles them up.

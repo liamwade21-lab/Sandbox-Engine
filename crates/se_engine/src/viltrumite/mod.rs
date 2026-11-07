@@ -175,6 +175,11 @@ pub struct Hero {
     pub shadow_off: bool,
     /// He came down on the sea with keys held: they count again once let go.
     pub keys_up_first: bool,
+    /// Ctrl took him to a stop with nothing to stand on (a giant's floor, a star): he stays there until it's let go. (One key,
+    /// not `keys_up_first`: dived there with Ctrl and W, letting go of Ctrl alone flies on along W.)
+    pub ctrl_up_first: bool,
+    /// While a Go To or a landing carries him (he has no velocity of his own then): the camera last frame, in that body's frame.
+    pub carried_from: Option<(ObjectRef, DVec3)>,
     /// `hero hold on`: his body keeps facing where it does, so a test's camera can go round him.
     pub hold_body: bool,
     /// What he's flying through this frame, from `air.rs`: the sounds, the readout and the boom go by it.
@@ -224,6 +229,8 @@ impl Default for Hero {
             soil_off: false,
             shadow_off: false,
             keys_up_first: false,
+            ctrl_up_first: false,
+            carried_from: None,
             hold_body: false,
             flow: Flow::default(),
             heat_k: 0.0,

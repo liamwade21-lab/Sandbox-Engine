@@ -88,11 +88,15 @@ fn ramp(x: f64, (from, to): (f64, f64)) -> f32 {
     (((x - from) / (to - from)).clamp(0.0, 1.0)) as f32
 }
 
+/// How much air the sounds count here: 0 in vacuum, 1 in air.
+fn air_k(pressure_pa: f64) -> f32 {
+    let log_p = if pressure_pa > 0.0 { pressure_pa.log10() } else { f64::NEG_INFINITY };
+    ramp(log_p, (tune::SHOT_AIR_PA.0.log10(), tune::SHOT_AIR_PA.1.log10()))
+}
+
 /// A one-shot's share of its volume by the air: `SHOT_VACUUM` in vacuum (D12), all of it in air.
 pub fn air_share(pressure_pa: f64) -> f32 {
-    let log_p = if pressure_pa > 0.0 { pressure_pa.log10() } else { f64::NEG_INFINITY };
-    let k = ramp(log_p, (tune::SHOT_AIR_PA.0.log10(), tune::SHOT_AIR_PA.1.log10()));
-    tune::SHOT_VACUUM + (1.0 - tune::SHOT_VACUUM) * k
+    tune::SHOT_VACUUM + (1.0 - tune::SHOT_VACUUM) * air_k(pressure_pa)
 }
 
 /// `fastFlight_loop`'s pitch by Mach: low at low speed, where it stands in for the air going past.
@@ -108,19 +112,21 @@ pub struct Reading {
     pub flow: Flow,
     /// The low-passed temperature (K).
     pub heat_k: f64,
-    /// Hovering or flying: not falling, not on his feet.
+    /// Hovering or flying: not falling, not on his feet. (Only the hum minds, and only in air: `loop_levels`.)
     pub flying: bool,
     /// The right button is held.
     pub charging: bool,
 }
 
-/// F10's table: each loop's volume (0..1, before `SoundSettings`) and pitch.
+/// F10's table: each loop's volume (0..1, before `SoundSettings`) and pitch. The hum is for flying, and out of the air for whatever
+/// he's doing: D12 is "quiet in space, not silent", and nothing else has a level there (an orbit is a long fall).
 pub fn loop_levels(r: &Reading) -> [(f32, f32); 4] {
     let log_q = r.flow.log_q();
+    let hums = if r.flying { 1.0 } else { 1.0 - air_k(r.flow.air.pressure_pa) };
     [
         (ramp(log_q, tune::FAST_LOG_Q), fast_pitch(r.flow.mach)),
         (ramp(r.heat_k, tune::FASTER_HEAT_K), 1.0),
-        (if r.flying { tune::HUM_VOLUME * (1.0 - ramp(log_q, tune::HUM_LOG_Q)) } else { 0.0 }, tune::HUM_PITCH),
+        (tune::HUM_VOLUME * hums * (1.0 - ramp(log_q, tune::HUM_LOG_Q)), tune::HUM_PITCH),
         // (The table gives it no curve; D12 keeps it with `flightCharge_start`, which it follows.)
         (if r.charging { air_share(r.flow.air.pressure_pa) } else { 0.0 }, 1.0),
     ]
@@ -673,9 +679,56 @@ mod tests {
         assert_eq!(at(1.0, 0.0, 0.0, true, false)[2].0, 0.12);
         assert!((at(10.0, 0.0, 0.0, true, false)[2].0 - 0.06).abs() < 1e-5);
         assert_eq!(at(100.0, 0.0, 0.0, true, false)[2].0, 0.0);
+        // In air it's only for flying: falling or standing in it, no hum at any q.
         assert_eq!(at(0.0, 0.0, 0.0, false, false)[2].0, 0.0);
         // The charge while the button's held.
         assert_eq!(at(0.0, 0.0, 0.0, false, true)[3].0, 1.0);
+    }
+
+    /// D12, "quiet in space, not silent", and the edge case "body with no atmosphere: hum only": whatever he's doing.
+    #[test]
+    fn out_of_the_air_the_hum_never_stops() {
+        let hum = |flow: Flow, flying| loop_levels(&Reading { flow, flying, ..default() })[2].0;
+        for speed in [0.0, 25.0, 7_700.0, 3e11] {
+            assert_eq!(hum(Flow::vacuum(speed), true), 0.12);
+            assert_eq!(hum(Flow::vacuum(speed), false), 0.12, "falling or on his feet at {speed} m/s");
+        }
+        // Under what the sounds call air, all of it.
+        assert_eq!(hum(flow(0.0, 0.0, 0.5), false), 0.12);
+        // Not flying it goes as the air comes in, by the pressure alone: no step anywhere on the way down.
+        let some = hum(flow(0.0, 0.0, 10.0), false);
+        assert!((some - 0.06).abs() < 1e-5, "{some}");
+        // Mars's ground and Earth's: as much as before, none.
+        assert_eq!(hum(flow(0.0, 0.0, 650.0), false), 0.0);
+        assert_eq!(hum(flow(0.0, 0.0, 101_325.0), false), 0.0);
+        // And the air going past takes it off as it does flying.
+        assert_eq!(hum(flow(100.0, 3.0, 0.5), false), 0.0);
+        assert!((hum(flow(10.0, 3.0, 0.5), false) - 0.06).abs() < 1e-5);
+        // The other three have nothing to say there.
+        let all = loop_levels(&Reading { flow: Flow::vacuum(7_700.0), ..default() });
+        assert_eq!((all[0].0, all[1].0, all[3].0), (0.0, 0.0, 0.0));
+    }
+
+    /// The same through `play_sounds`: the state comes from `Hero`, and the voice goes where it's told.
+    #[test]
+    fn the_hum_goes_by_the_air_in_every_state() {
+        let mut a = app();
+        turn(&mut a, true);
+        let level = |a: &App| a.world().resource::<Voices>().loops.iter().find(|l| l.sfx == Sfx::HumLoop).unwrap().level;
+        for state in [State::Hover, State::Flight, State::Falling, State::Jump, State::Grounded, State::Land, State::HardLanding] {
+            a.world_mut().resource_mut::<Hero>().state = state;
+            a.world_mut().resource_mut::<Hero>().flow = Flow::vacuum(1.0);
+            for _ in 0..30 {
+                frame(&mut a, 16);
+            }
+            assert_eq!(level(&a), 0.12, "{state:?} in vacuum");
+            a.world_mut().resource_mut::<Hero>().flow.air.pressure_pa = 101_325.0;
+            for _ in 0..30 {
+                frame(&mut a, 16);
+            }
+            let want = if matches!(state, State::Hover | State::Flight) { 0.12 } else { 0.0 };
+            assert_eq!(level(&a), want, "{state:?} in air");
+        }
     }
 
     #[test]
