@@ -1,5 +1,5 @@
 //! The air he flies through (spec F9): the one source for drag, the cap in air, the readout and, from steps 6 and 7,
-//! the boom, the heat and the sounds.
+//! the boom, the heat and the sounds (`Flow`, one frame's reading: q, Mach, the temperature of F9).
 //!
 //! It takes `ship/air.rs`'s parameters and differs in three ways. The air reaches 25 scale heights, because
 //! `AtmoParams::state` gives zeros above `height_m` and the drawn shell's top is only a drawing height (Earth 60 km,
@@ -24,6 +24,12 @@ const GIANT_T0_K: f64 = 165.0;
 const GIANT_MOLAR_MASS: f64 = 2.3;
 /// The share of the surface temperature the air never falls under.
 const COLDEST_SHARE: f64 = 0.25;
+/// F9's heating: Sutton-Graves `k sqrt(rho / NOSE_RADIUS_M) v^3`, radiated at `EMISSIVITY`.
+const NOSE_RADIUS_M: f64 = 0.15;
+const EMISSIVITY: f64 = 0.8;
+const STEFAN_BOLTZMANN: f64 = 5.670e-8;
+/// F9's density fade of the heating, log10 rho: nothing under the first, all of it over the second.
+const HEAT_LOG_RHO: (f64, f64) = (-7.0, -5.0);
 
 /// The air at a point.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -32,6 +38,42 @@ pub struct AirSample {
     pub density: f64,
     pub temperature_k: f64,
     pub sound_speed: f64,
+}
+
+/// What he flies through, one frame: the one reading the sounds, the readout and (step 7) the boom and the heat's look go by.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flow {
+    pub air: AirSample,
+    /// His speed through the air (m/s): over the ground, the body's spin and motion taken out.
+    pub speed: f64,
+    /// Dynamic pressure, `rho v^2 / 2` (Pa).
+    pub q: f64,
+    /// 0 out of the air.
+    pub mach: f64,
+    /// What his skin reaches here at this speed, before the low-pass `ease_heat` (K). 0 out of the air.
+    pub skin_k: f64,
+}
+
+impl Flow {
+    /// Out of any air.
+    pub fn vacuum(speed: f64) -> Flow {
+        Flow { speed, ..Flow::default() }
+    }
+
+    pub fn in_air(&self) -> bool {
+        self.air.density > 0.0 && self.air.sound_speed > 0.0
+    }
+
+    /// `log10 q`, minus infinity at none: every curve by it starts from its low end.
+    pub fn log_q(&self) -> f64 {
+        if self.q > 0.0 { self.q.log10() } else { f64::NEG_INFINITY }
+    }
+}
+
+/// F9's low-pass of the temperature: it rises faster than it falls.
+pub fn ease_heat(heat_k: f64, skin_k: f64, dt: f64) -> f64 {
+    let tau = if skin_k > heat_k { tune::HEAT_RISE_S } else { tune::HEAT_FALL_S };
+    heat_k + (skin_k - heat_k) * (1.0 - (-dt / tau).exp())
 }
 
 /// A body's air: where it ends, and how it changes with height.
@@ -77,6 +119,37 @@ impl AirModel {
         AirSample { pressure_pa, density: pressure_pa * mu / (R_GAS * t), temperature_k: t, sound_speed: (gamma * R_GAS * t / mu).sqrt() }
     }
 
+    /// `gamma` of the gas, from the polytrope as `AtmoParams::state`.
+    fn gamma(&self) -> f64 {
+        1.0 / (1.0 - self.params.adiabat.clamp(0.01, 0.9))
+    }
+
+    /// F9's `k`, by molar mass.
+    fn heat_k(&self) -> f64 {
+        if self.params.molar_mass >= 40.0 {
+            1.90e-4
+        } else if self.params.molar_mass >= 10.0 {
+            1.74e-4
+        } else {
+            6.6e-5
+        }
+    }
+
+    /// The reading at `height_m` over the ground, going `speed` through the air. The temperature is F9's: Sutton-Graves against
+    /// radiation, never over the air's stagnation temperature (Sutton-Graves alone gives 800 K at sea-level Mach 1).
+    pub fn flow(&self, height_m: f64, speed: f64) -> Flow {
+        let air = self.at(height_m);
+        if air.density <= 0.0 || air.sound_speed <= 0.0 {
+            return Flow::vacuum(speed);
+        }
+        let mach = speed / air.sound_speed;
+        let k = ((air.density.log10() - HEAT_LOG_RHO.0) / (HEAT_LOG_RHO.1 - HEAT_LOG_RHO.0)).clamp(0.0, 1.0);
+        let flux = self.heat_k() * (air.density / NOSE_RADIUS_M).sqrt() * speed.powi(3) * (k * k * (3.0 - 2.0 * k));
+        let radiating = (flux / (EMISSIVITY * STEFAN_BOLTZMANN)).powf(0.25);
+        let stagnation = air.temperature_k * (1.0 + (self.gamma() - 1.0) / 2.0 * mach * mach);
+        Flow { air, speed, q: 0.5 * air.density * speed * speed, mach, skin_k: radiating.min(stagnation) }
+    }
+
     /// Drag per metre, `0.5 rho CdA/m`: `dv/dt = -k |v| v`.
     pub fn drag(&self, height_m: f64) -> f64 {
         0.5 * self.at(height_m).density * tune::DRAG_CDA_M
@@ -117,6 +190,52 @@ mod tests {
         let s = v.at(100e3);
         assert!(s.temperature_k >= 737.0 * 0.25 - 1e-6, "{s:?}");
         assert!(s.density > 0.0);
+    }
+
+    #[test]
+    fn q_and_mach_are_what_they_should_be() {
+        let air = earth();
+        let f = air.flow(0.0, 20.0);
+        assert!((f.q - 0.5 * f.air.density * 400.0).abs() < 1e-6);
+        assert!((f.q - 240.0).abs() < 20.0, "{f:?}");
+        assert!((f.mach - 20.0 / f.air.sound_speed).abs() < 1e-9);
+        // The same reading, past the air's end: nothing.
+        let top = air.flow(26.0 * air.params.scale_height(), 3000.0);
+        assert_eq!(top, Flow::vacuum(3000.0));
+        assert!(!top.in_air() && top.log_q() == f64::NEG_INFINITY);
+        // Standing still: no heat.
+        assert_eq!(air.flow(0.0, 0.0).skin_k, 0.0);
+    }
+
+    /// F9's table, within 10 % of the temperature (C16), with the worlds the table was worked out for.
+    #[test]
+    fn the_heat_matches_the_table() {
+        let table = |p0_atm, t0_k, molar_mass, gravity, adiabat, h: f64, speeds: [f64; 5]| {
+            let air = AirModel::from_params(AtmoParams { p0_atm, t0_k, molar_mass, gravity, adiabat, height_m: 0.0 });
+            for (v, want) in speeds.iter().zip([800.0, 2000.0, 3500.0, 6000.0, 10000.0]) {
+                let got = air.flow(h, v * 1e3).skin_k;
+                assert!((got / want - 1.0).abs() < 0.1, "{p0_atm} atm, {h} m, {v} km/s: {got} K, table {want} K");
+            }
+        };
+        table(1.0, 287.0, 28.97, 9.81, 0.28, 0.0, [1.0, 1.9, 2.6, 4.9, 9.7]);
+        table(1.0, 287.0, 28.97, 9.81, 0.28, 60e3, [1.1, 3.4, 7.1, 14.6, 28.9]);
+        table(0.00638, 214.0, 43.4, 3.71, 0.25, 0.0, [0.9, 2.3, 4.8, 9.8, 19.5]);
+        table(92.0, 760.0, 43.5, 8.87, 0.25, 0.0, [0.2, 1.4, 2.0, 2.8, 4.9]);
+        table(0.001, 250.0, 28.0, 5.0, 0.25, 0.0, [1.1, 3.5, 7.4, 15.2, 30.1]);
+    }
+
+    #[test]
+    fn the_heat_rises_faster_than_it_falls() {
+        let mut t = 0.0;
+        for _ in 0..24 {
+            t = ease_heat(t, 1000.0, 1.0 / 60.0);
+        }
+        assert!((t - 1000.0 * (1.0 - (-1.0f64).exp())).abs() < 1.0, "one rise time: {t}");
+        let mut t = 1000.0;
+        for _ in 0..90 {
+            t = ease_heat(t, 0.0, 1.0 / 60.0);
+        }
+        assert!((t - 1000.0 * (-1.0f64).exp()).abs() < 1.0, "one fall time: {t}");
     }
 
     #[test]

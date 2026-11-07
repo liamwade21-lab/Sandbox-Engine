@@ -21,7 +21,7 @@ use crate::terrain::Terrain;
 use crate::universe::SimTime;
 use crate::volumetric_clouds::VolumetricClouds;
 
-use super::air::AirModel;
+use super::air::{self, AirModel, Flow};
 use super::anim::{Layer, Sampler};
 use super::camera;
 use super::cape::CapeIn;
@@ -699,6 +699,10 @@ fn turn_on(hero: &mut Hero, cam: &mut FlyCamera) {
     hero.impact = None;
     hero.last_vel = DVec3::ZERO;
     hero.felt = DVec3::ZERO;
+    hero.flow = Flow::default();
+    hero.heat_k = 0.0;
+    // (Turned off at speed it still says Hyper, and the first frame would sound like leaving it.)
+    hero.director.tier = Tier::Hover;
     cam.travel = None;
     cam.velocity = DVec3::ZERO;
     cam.thrust = DVec3::ZERO;
@@ -754,10 +758,12 @@ fn touch_down(hero: &mut Hero, s: &Scene, into: f64, out: &Outcome) {
                 hero.state = State::HardLanding;
                 hero.frame.set_local_velocity(DVec3::ZERO);
                 hero.impact = Some(Impact::Hard { obj, local: local_pos, speed: out.speed });
+                hero.sound.hard_landing();
             }
         },
         Footing::Sea => {
             hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
+            hero.sound.splash(out.speed);
             hover_over_sea(hero, s);
         }
         Footing::Nothing => {
@@ -865,12 +871,14 @@ pub(crate) fn hero_move(
         hero.frame.to_ballistic(&scene);
         hero.state = State::Falling;
         hero.short_fall = false;
+        hero.sound.stop_flying();
     } else if input.space_pressed && matches!(hero.state, State::Falling | State::Jump) {
         // F4: he holds still where he is, at once. (Space still held, he flies up from there.) That's the double tap too:
         // the first press jumped, this is the second.
         hero.frame.set_velocity(&scene, DVec3::ZERO);
         hero.state = State::Hover;
     } else if input.space_pressed && hero.state == State::Grounded && !travelling {
+        hero.sound.jump(hero.frame.velocity(&scene).length() >= tune::GAIT_SPRINT_MS.1);
         hero.frame.kick_up(tune::JUMP_MS);
         hero.state = State::Jump;
         hero.short_fall = true;
@@ -961,11 +969,24 @@ pub(crate) fn hero_move(
             hero.keys_up_first = false;
         }
     }
+    let boost_released = hero.was_boost && !input.shift;
     hero.was_boost = input.shift;
     let take_off = hero.state == State::Hover && flight_in.any();
     if take_off {
         hero.state = State::Flight;
         hero.ramp_t = 0.0;
+        hero.sound.take_off();
+        if flight_in.boost {
+            hero.sound.launch();
+        }
+    }
+    if hero.state == State::Flight && !travelling {
+        if flight_in.boost_edge || (take_off && flight_in.boost) {
+            hero.sound.boost_start();
+        }
+        if boost_released {
+            hero.sound.boost_end();
+        }
     }
     if hero.state.on_foot() {
         hero.state_t += dt;
@@ -1003,6 +1024,7 @@ pub(crate) fn hero_move(
                     if let Frame::Attached { obj, local_pos, .. } = hero.frame {
                         hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
                     }
+                    hero.sound.splash(out.speed);
                     hover_over_sea(hero, &scene);
                 }
                 WalkEvent::Walked | WalkEvent::Held => {}
@@ -1133,7 +1155,11 @@ pub(crate) fn hero_move(
         off_aim_deg: if hero.hold_body { 0.0 } else { off_aim_deg },
     };
     let hero_ref = &mut *hero;
+    let was_tier = hero_ref.director.tier;
     hero_ref.director.update(&cue, &mut hero_ref.sampler, &assets.clips, dt as f32);
+    if was_tier == Tier::Hyper && hero_ref.director.tier != Tier::Hyper && !hero_ref.state.on_foot() {
+        hero_ref.sound.leave_hyper();
+    }
     if let Some(yaw) = hero.director.take_turned() {
         hero.rot = (hero.rot * DQuat::from_rotation_y(yaw)).normalize();
     }
@@ -1185,12 +1211,13 @@ pub(crate) fn hero_move(
 
     // The readout.
     let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
-    let air_now = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map(|((_, a), h)| a.at(h));
+    hero.flow = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height).map_or(Flow::vacuum(speed), |((_, a), h)| a.flow(h, speed));
+    hero.heat_k = air::ease_heat(hero.heat_k, hero.flow.skin_k, dt);
     // The readout's height is his soles', where there's anything to stand on: nothing when he stands.
     let soles = near.filter(|(b, local)| (scene.footing)(b, *local) != Footing::Nothing).map_or(0.0, |_| tune::STAND_M);
     hero.readout = Readout {
         speed,
-        mach: air_now.filter(|a| a.density > 0.0 && a.sound_speed > 0.0).map(|a| speed / a.sound_speed),
+        mach: hero.flow.in_air().then_some(hero.flow.mach),
         height: height.map(|h| (h - soles).max(if soles > 0.0 { 0.0 } else { h })),
         gravity_g: (gravity_at(&bodies, pos) - a_frame).length() / 9.806_65,
         heat: 0.0,

@@ -1405,7 +1405,14 @@ fn run_commands(
         "resume" => sim.paused = false,
         // SE's TimingMode: `timing frame` steps the clock a fixed 1/60 s a frame (test runs then
         // reach the same date whatever their frame rate), `timing real` goes back.
-        "timing" => timing.real_time = arg != "frame",
+        // timing frame [FPS] | real: FPS is what a frame steps by (SE's `RealTimeFPS`, 60).
+        "timing" => {
+            let mut parts = arg.split_whitespace();
+            timing.real_time = parts.next() != Some("frame");
+            if let Some(fps) = parts.next().and_then(|f| f.parse::<f64>().ok()) {
+                timing.fps = fps;
+            }
+        }
         // A render filter by its settings key, e.g. `switch ShowRain off` (dev: comparisons).
         "switch" => {
             if let Some((key, on)) = arg.split_once(' ') {

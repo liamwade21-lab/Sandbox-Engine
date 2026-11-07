@@ -252,6 +252,49 @@ pub const CAPE_HEM_LEVEL: f32 = 0.85;
 /// How far the rest shape's links lean to straight down his body: the rest is the link's rest direction.
 pub const CAPE_HANG: f32 = 0.85;
 
+// ---- Heat (F9; step 7 owns its look) ----
+/// The temperature's low-pass, rising and falling (s).
+pub const HEAT_RISE_S: f64 = 0.4;
+pub const HEAT_FALL_S: f64 = 1.5;
+
+// ---- His sounds (step 6, F10) ----
+/// A voice's fade, turning off, losing the focus and coming back (s): a loop can cross its whole range in this.
+pub const SOUND_FADE_S: f32 = 0.2;
+/// A volume this small is silence: the sink pauses, and a smaller change isn't sent.
+pub const SOUND_SILENT: f32 = 1e-4;
+/// `fastFlight_loop` is the air going past at every speed: its volume goes 0 to 1 as `log10 q` (q in Pa) goes from the first to the second.
+pub const FAST_LOG_Q: (f64, f64) = (1.0, 6.0);
+/// Its pitch: from the first to the second as Mach goes (logarithmically) between these. Low at low speed, so it reads as wind.
+pub const FAST_PITCH: (f32, f32) = (0.6, 1.3);
+pub const FAST_PITCH_MACH: (f64, f64) = (0.05, 20.0);
+/// How fast a pitch follows (s).
+pub const PITCH_TAU_S: f32 = 0.15;
+/// `fasterFlight_loop`'s volume by the temperature (K).
+pub const FASTER_HEAT_K: (f64, f64) = (2500.0, 6000.0);
+/// The hum (`sentry_flightfx_loop`): this loud while he hovers or flies, fading as `log10 q` goes between these, at this pitch.
+pub const HUM_VOLUME: f32 = 0.12;
+pub const HUM_LOG_Q: (f64, f64) = (0.0, 2.0);
+pub const HUM_PITCH: f32 = 0.6;
+/// `fastFlight_start`'s volume for a plain take-off (Hover to Flight): Shift plays it in full.
+pub const TAKE_OFF_GAIN: f32 = 0.35;
+/// At most this many one-shots at a time: a new one takes the place of the one that's played longest.
+pub const SHOTS_MAX: usize = 8;
+/// A one-shot's share of its volume in vacuum (D12), up to all of it between these pressures (Pa, logarithmically).
+pub const SHOT_VACUUM: f32 = 0.25;
+pub const SHOT_AIR_PA: (f64, f64) = (1.0, 100.0);
+/// The least time between two of the same one-shot (s): the long whooshes more, or a tapped key piles them up.
+pub const SHOT_GAP_S: f64 = 0.1;
+pub const WHOOSH_GAP_S: f64 = 0.75;
+/// A one-shot's longest life (s) where nothing can say it's over (no audio device): over the longest file at the lowest pitch.
+pub const SHOT_MAX_S: f32 = 9.0;
+/// `explode_ground1` on the sea: this pitch (the mod has no splash; judge by ear), this loud from the first to the second speed (m/s).
+pub const SPLASH_PITCH: f32 = 0.6;
+pub const SPLASH_GAIN: (f32, f32) = (0.15, 1.0);
+pub const SPLASH_SPEED_MS: (f64, f64) = (2.0, 35.0);
+/// The boom's loudness (step 7), from the first to the second as `log10 q` goes between these: 1.5 is the top of Earth's boom, 4.8 sea level.
+pub const BOOM_GAIN: (f32, f32) = (0.3, 1.0);
+pub const BOOM_LOG_Q: (f64, f64) = (1.5, 4.8);
+
 // ---- His light (step 3) ----
 /// Above a body's atmosphere (or this share of its radius, without one) his light is the CPU's: the body's own
 /// shine on him counts there, and the atmosphere's tables stop at their top.

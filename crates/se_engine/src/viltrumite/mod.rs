@@ -1,11 +1,11 @@
 //! The Viltrumite powers mod (docs/spec-mods-viltrumite-powers.md): a playable Omni-Man. The menu, the registry, the
 //! files' checks and the keys' snapshot (`ModInput`) are `crate::mods`.
 //!
-//! So far (step 5): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
+//! So far (step 6): he flies from hovering to far past light speed, falls and orbits under real gravity, lands, walks, runs
 //! and jumps, and the camera follows him. `hero.rs` is his state machine and each frame's move, `frames.rs` where he is,
 //! `ground.rs` what he stands on and where his feet go, `camera.rs` the chase camera, `air.rs` the one source of air,
-//! `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are drawn and lit, `readout.rs` the
-//! corner readout, `tune.rs` every number to tune.
+//! `sound.rs` his sounds by that air, `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow
+//! are drawn and lit, `readout.rs` the corner readout, `tune.rs` every number to tune.
 
 pub mod air;
 pub mod anim;
@@ -16,6 +16,7 @@ pub mod frames;
 pub mod ground;
 pub mod hero;
 pub mod readout;
+pub mod sound;
 pub mod tune;
 
 use std::io::Write as _;
@@ -33,12 +34,14 @@ use crate::mods::{HeroAssets, ModControl, ModInput};
 use crate::system::SystemBody;
 use crate::universe::{SimTime, UniverseSet};
 
+use air::Flow;
 use anim::Sampler;
 use draw::HeroDraws;
 use frames::Frame;
 use ground::Soles;
 use hero::{Director, Impact, State};
 use readout::Readout;
+use sound::Cues;
 
 pub struct ViltrumitePlugin;
 
@@ -47,6 +50,7 @@ impl Plugin for ViltrumitePlugin {
         draw::build(app);
         app.init_resource::<Hero>()
             .init_resource::<DevKeys>()
+            .init_resource::<sound::Voices>()
             // Test runs press real keys into the frame's input, before the mod's snapshot and every other reader.
             .add_systems(PreUpdate, dev_keys.run_if(dev_keys_held).after(bevy::input::InputSystems).before(crate::mods::snapshot_input))
             // First enable: `HeroAssets` arrives from the Mods menu's first enable, and these make the rest.
@@ -75,6 +79,8 @@ impl Plugin for ViltrumitePlugin {
                     // (The capture views copy the near plane he sets, in the same frame.)
                     .before(crate::capture::follow_main),
             )
+            // His sounds, after his move. While he's off this is the one check, once the last voice has faded.
+            .add_systems(PostUpdate, sound::play_sounds.run_if(sound::sound_running).after(hero::hero_move))
             .add_systems(
                 bevy_egui::EguiPrimaryContextPass,
                 readout::draw.run_if(hero_shown).after(crate::skin::UiSet::Draw).before(crate::skin::UiSet::Backdrop),
@@ -171,6 +177,12 @@ pub struct Hero {
     pub keys_up_first: bool,
     /// `hero hold on`: his body keeps facing where it does, so a test's camera can go round him.
     pub hold_body: bool,
+    /// What he's flying through this frame, from `air.rs`: the sounds, the readout and the boom go by it.
+    pub flow: Flow,
+    /// F9's temperature, low-passed (K). The heat's look is step 7's.
+    pub heat_k: f64,
+    /// The sounds asked for this frame: one function per trigger, `play_sounds` plays them.
+    pub sound: Cues,
 }
 
 impl Default for Hero {
@@ -213,6 +225,9 @@ impl Default for Hero {
             shadow_off: false,
             keys_up_first: false,
             hold_body: false,
+            flow: Flow::default(),
+            heat_k: 0.0,
+            sound: Cues::default(),
         }
     }
 }
@@ -243,6 +258,8 @@ fn hand_back(
     hero.director.pinned = false;
     hero.trace = None;
     hero.feet = None;
+    hero.flow = Flow::default();
+    hero.heat_k = 0.0;
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.follow = None;
@@ -343,7 +360,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free`:
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `sound ...` (`sound::dev_command`):
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
@@ -379,6 +396,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
         "state" => {
             let _ = world.run_system_cached(log_state);
         }
+        "sound" => sound::dev_command(world, rest),
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
         "dist" => world.resource_mut::<Hero>().dist = rest.parse().unwrap_or(tune::CAM_DIST_M),
         "soil" => world.resource_mut::<Hero>().soil_off = rest.eq_ignore_ascii_case("off"),

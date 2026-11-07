@@ -173,7 +173,7 @@ The **Mods** button (tools toolbar, bottom left) lists the mods built into the g
 `crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
 that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
 build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The
-first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies, falls, lands, walks, runs and jumps, with a shadow and a cape that moves; sound, the sonic boom and heat, impacts and breakable buildings are still to come. The row reads Loading for the moment before he appears, and a damaged file greys it. 
+first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`): you play Omni-Man from behind, flying. He appears where the camera looks; turn the mod off and the camera stays where it is. So far he flies, falls, lands, walks, runs and jumps, with a shadow, a cape that moves and his sounds (the air going past by real air pressure and speed, per planet; quiet in space; at the Sound effects setting); the sonic boom and heat, impacts and breakable buildings are still to come. The row reads Loading for the moment before he appears, and a damaged file greys it. 
 
 While he is on the panels are hidden and a small readout (speed, Mach in air, height, gravity, heat) stands in the corner:
 

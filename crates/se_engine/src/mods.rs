@@ -982,7 +982,7 @@ mod tests {
         for must in ["omniman.sevm", "clips.sevc", "sfx/sonic_boom_v2.ogg", "props/nibsuper_rock1.sehm", "sprites/ptfx_smoke_wispy_anim.dds"] {
             assert!(needs.contains(&must), "{must} isn't a Need");
         }
-        assert_eq!(needs.iter().filter(|n| n.starts_with("sfx/")).count(), 29, "the plan's sound tables");
+        assert_eq!(needs.iter().filter(|n| n.starts_with("sfx/")).count(), 27, "the plan's sound tables");
     }
 
     #[test]
@@ -1050,7 +1050,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
 
         let m = read_mod(&[tree()], "viltrumite");
-        assert_eq!(m.needs.len(), 55);
+        assert_eq!(m.needs.len(), 53);
         let started = std::time::Instant::now();
         check_files(&[tree()], "viltrumite", &m.needs).unwrap();
         println!("the whole mod checked in {} ms", started.elapsed().as_millis());
@@ -1068,7 +1068,8 @@ mod tests {
             let (source, facts) = check_sound(bytes).unwrap_or_else(|why| panic!("{name}: {why}"));
             assert!(facts.seconds > 0.1 && facts.peak > 0.01, "{name}: {facts:?}");
             count += 1;
-            if name.contains("_loop") {
+            // (`sentry_flightfx_loop_end` is a one-shot: it ends in silence.)
+            if name.ends_with("_loop.ogg") {
                 assert!(facts.seconds <= 10.2, "{name}: {facts:?}");
                 let samples: Vec<f32> = source.decoder().collect();
                 let ch = facts.channels as usize;
@@ -1081,7 +1082,7 @@ mod tests {
                 assert!(jump < 6.0 * rms(tail).max(0.01) * 0.5 + 0.08, "{name}: a click at the seam, {jump}");
             }
         }
-        assert_eq!(count, 29);
+        assert_eq!(count, 27);
     }
 
     #[test]

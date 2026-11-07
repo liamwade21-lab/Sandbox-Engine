@@ -446,6 +446,16 @@ or publishing the port.
   `SE_WEATHER_DEBUG=1` draws a weather map at the top of the screen (red rain, green convection, blue
   fog, orange dust, cyan flashes, white dot the camera): use it to find test spots before taking
   pictures. Flashes last about 0.3 s, so a single screenshot rarely catches one.
+- The Viltrumite mod's sounds (`viltrumite/sound.rs`, spec F10): only `play_sounds` spawns audio. Whatever happens calls one function on
+  `Hero.sound` (`Cues`), once, the frame it happens (`boom`, `punch`, `thunderclap`, `building_breaks` and so on are ready). Levels read
+  `Hero.flow` and `Hero.heat_k` from `air.rs`, nothing else. Stop a voice by despawning it (removing `AudioSink` restarts it). **`wind_loop`,
+  `superWind_start`, `wind_end`, `wind_attack_*` are the source mod's super breath: never use them for flight (the user, 2026-11-07).**
+  `convert.py` refuses them and `no_breath_sounds` fails if one comes back. A new sound: `sounds!`, `convert.py`'s lists, then
+  `python -I re/viltrumite/tools/convert.py --only-sounds NAME`, which also updates `mod.cfg` (every sound must be a `Need`: that's what
+  checks it on first enable, and bevy_audio panics on a bad file). No test can listen: `hero sound` logs each loop's volume, pitch, paused
+  state and position, `hero sound trace FILE` logs every frame (`.optimize/bench/hero_sound.sh`, `hero_shots.sh`), `hero sound cue WHAT`
+  fires a trigger's function. `timing frame FPS` steps by 1/FPS, for frame-rate tests. `print_sound_levels` (ignored test) gives each file's
+  real loudness: they differ by ten times.
 - SE's gas giant cloud generator lives in `gas_giant.wesl` (noise primitives, `gg_height`,
   `gas_giant_cloud`), shared by `planet.wesl`, `brown_dwarf.wesl` and the volumetric giant decks.
   Change it there and check flat Jupiter stays identical (it was pixel-checked when split out).
