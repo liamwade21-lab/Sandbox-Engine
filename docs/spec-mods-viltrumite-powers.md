@@ -841,3 +841,26 @@ camera pulled in when a building crosses the line of sight under 40 m, the punch
 slices' 1/64 grid) and were corrected. Checked: dropped from 250 m over Midtown he lands and stands on a roof
 (`.optimize/scratch/run/s9b/roof1.png`). The wall-sliding flights were cut short when the user asked to move on; the walls rest on the
 unit tests.
+
+**Step 10, buildings that break (2026-11-07, built by the main session).** `viltrumite/breakable.rs` (`BrokenSet`, `update_broken`,
+`dev_break`), `solid.rs` (`breaks`: a hit at `BREAK_SPEED_MS` or more along the wall's normal, or onto a roof, breaks the building and he
+goes on through it, not slowed; `Slid::broke`), `hero.rs` `break_buildings` (from the slides and from a punch's `Hero.punched`: the smash's
+sound, a burst of dust at its foot, a kick of the camera), the scatter's table (`ScatterFrame::broken`, `probe.rs` `BrokenHeadGpu`,
+`BrokenEntryGpu`, `BrokenFrame`; `gpu.rs` writes the header every frame and the entries when their version changes, the count 0 once
+when it empties), `scatter.wesl` `broken_age`, `cull_rubble` and the collapse in `cull_building`, `scatter_draw.wesl` (the absolute size,
+the broken look). As F12: identity by the probe's id (face metres x 4 within 16 units, the same model); the collapse `T = clamp(2.5 +
+h/200, 2.5, 7)` s, the building sinking by `scale x p^2` with its scale kept, lights out (a negative width in its record); restore when he
+and the camera are both `CRATER_FREE_M` (FAR_RANGE_M + 500 m) away, or the scatter's body is another, looked at twice a second; broken
+buildings keep the aftermath going (`update_impacts`). **Differs from the spec, and why:** (1) at most `BROKEN_MAX` 512 broken (not
+4,096), and the cull walks the entries instead of a table of 64 m squares: there are few, and the walk is one branch with none; full, the
+farthest from the camera goes. (2) The rubble is the box model, wider (x1.25, at least 5 m), low (`min(0.18 h + 1, 30)` m, growing over
+the first 70 % of the collapse), drawn dark and broken, from the near cells alone (drawn once): not a model of its own (`M_RUBBLE`), which
+would need a mesh, an atlas and a draw gate. (3) No flying chunks (`DebrisPool`): a burst of the dust pool at the foot instead. (4) A
+skybridge breaks alone (not with its towers) and leaves no rubble; a dome breaks alone and leaves none; flying lanes are never solid.
+(5) The broken flag rides in `BuildingOut::kind` + 0x100: every inter-stage location (0-15) was taken (a new one failed validation and
+the building pipeline wouldn't build). **Checked:** `hero break 70` on a Midtown street broke 10 buildings: mid-collapse they sink dark
+and gritty, then only low rubble is left (`.optimize/scratch/run/s10/sheet.png`); flying the camera 12 km off kept them, 22 km off gave
+"10 broken buildings back", and back on the street they stand as before (`restore.png`). Tests: a 30 km/s hit breaks and goes through
+unslowed, 30 m/s stops at the wall; 900 m/s onto a roof breaks it, 30 m/s lands. **Not checked:** a collapse seen from far (the far
+cells hide a broken tall one the same way, untested), every building kind (only Midtown's boxes; huts, towers, the arcology, landmarks
+and domes rest on the same code path), the mod-off cost of the extra branch (step 11).

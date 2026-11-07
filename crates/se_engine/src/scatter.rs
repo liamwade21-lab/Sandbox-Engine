@@ -459,6 +459,8 @@ pub struct ScatterFrame {
     pub streets: bool,
     /// The mod's probe this frame (`probe.rs`; `None` with the mod off).
     pub probe: Option<probe::ProbeFrame>,
+    /// The mod's broken buildings (step 10; `None` with none: the render world then writes the count 0 once).
+    pub broken: Option<probe::BrokenFrame>,
 }
 
 /// A cell's largest real edge (m): cells are the nodes of the cube-sphere quadtree split until
@@ -631,7 +633,7 @@ fn cell_area(key: TileKey, r: f64) -> f64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_scatter(
+pub(crate) fn update_scatter(
     gfx: Res<crate::graphics::GraphicsSettings>,
     mut sc: ResMut<Scatter>,
     mut out: ResMut<ScatterFrame>,

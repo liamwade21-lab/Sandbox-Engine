@@ -798,6 +798,23 @@ fn stack_boom(hero: &mut Hero, near: Option<(&BodyInfo, DVec3)>, q: f64) {
     hero.kick_camera(tune::KICK_STACK);
 }
 
+/// Step 10: buildings of this frame's list broken (a hit at `BREAK_SPEED_MS`, a punch): into `Hero::breaks` for `update_broken`, with the
+/// smash's sound, a burst of dust at the foot and a kick of the camera.
+fn break_buildings(hero: &mut Hero, solids: &Solids, which: impl Iterator<Item = usize>, broken: &super::breakable::BrokenSet) {
+    let Some(obj) = solids.obj else { return };
+    for i in which {
+        let Some(s) = solids.list.get(i) else { continue };
+        if broken.has(&s.key) || hero.breaks.iter().any(|b| b.key.same(&s.key)) {
+            continue;
+        }
+        let across = s.size.x.max(s.size.z);
+        hero.breaks.push(super::breakable::Broken { key: s.key, obj, centre: s.centre, height: s.size.y, across, t0: 0.0 });
+        hero.sound.building_breaks();
+        hero.blasts.push(Blast { obj, local: s.foot, kind: BlastKind::Dust((across * 0.8).clamp(6.0, 60.0), Style::Plume), shake_m: across.min(40.0) });
+        hero.kick_camera(0.5);
+    }
+}
+
 fn hover_over_sea(hero: &mut Hero, s: &Scene) {
     if let Frame::Attached { obj, local_pos, local_vel, .. } = &mut hero.frame {
         if let Some(b) = s.bodies.iter().find(|b| b.obj == *obj) {
@@ -889,7 +906,7 @@ pub(crate) fn hero_move(
     clouds: Res<VolumetricClouds>,
     assets: Res<HeroAssets>,
     q: Query<(&SystemBody, Option<&Terrain>)>,
-    (probe, mut solids): (Res<BuildingProbe>, ResMut<Solids>),
+    (probe, mut solids, broken): (Res<BuildingProbe>, ResMut<Solids>, Res<super::breakable::BrokenSet>),
 ) {
     let hero = &mut *hero;
     let dt = time.delta_secs_f64().min(0.1);
@@ -902,7 +919,7 @@ pub(crate) fn hero_move(
         Frame::Attached { obj, local_pos, .. } => Some((obj, local_pos)),
         Frame::Free { .. } => None,
     };
-    hero.solid.ignored += solids.refresh(list_obj.filter(|_| fresh).map(|o| (probe.list.as_slice(), probe.list_seq, o)), him) as u64;
+    hero.solid.ignored += solids.refresh(list_obj.filter(|_| fresh).map(|o| (probe.list.as_slice(), probe.list_seq, o)), him, &broken.keys) as u64;
     let solids: &Solids = &solids;
     let eph = Ephemeris::new(&data.catalog);
     let bodies: Vec<BodyInfo> = q
@@ -1284,6 +1301,7 @@ pub(crate) fn hero_move(
                 Frame::Free { .. } => 0.0,
             };
             hero.solid.note(solids.list.len(), out.contacts, false, out.wall.map_or(0.0, |c| c.into), hero.frame.velocity(&scene).length(), depth);
+            break_buildings(hero, solids, out.broke.iter().flatten().copied(), &broken);
             match out.event {
                 WalkEvent::Ledge => {
                     hero.state = State::Falling;
@@ -1383,6 +1401,7 @@ pub(crate) fn hero_move(
             Frame::Free { .. } => 0.0,
         };
         hero.solid.note(solids.list.len(), out.contacts, out.on_roof, out.wall.map_or(0.0, |c| c.into), hero.frame.velocity(&scene).length(), depth);
+        break_buildings(hero, solids, out.broke.iter().flatten().copied(), &broken);
         // F4: falling he lands. Flying, with Ctrl or by hitting it hard enough.
         let flown = out.flown_into.filter(|&into| {
             let footing = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(Footing::Nothing, |b| (scene.footing)(b, out.at));
@@ -1409,6 +1428,12 @@ pub(crate) fn hero_move(
     hero.ease = (hero.ease * (-dt / tune::GROUND_EASE_TAU_S).exp()).clamp(-tune::GROUND_EASE_MAX_M, tune::GROUND_EASE_MAX_M);
     // The action's clock: the ground punch takes him down to the ground and lands, the punch lands, the clap claps.
     impact::act(hero, &scene, fwd, dt);
+    // A punch that hit a building breaks it (step 10, F12.8).
+    if let Some(k) = hero.punched.take() {
+        if let Some(i) = solids.list.iter().position(|s| s.key.same(&k)) {
+            break_buildings(hero, solids, std::iter::once(i), &broken);
+        }
+    }
 
     // Where that left him.
     let pos = hero.frame.world(&scene, hero.world.0);

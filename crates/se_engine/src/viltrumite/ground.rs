@@ -152,6 +152,8 @@ pub struct WalkOut {
     /// The hardest building's wall he walked into (he slid along it), and how many contacts the step had.
     pub wall: Option<Contact>,
     pub contacts: u32,
+    /// Step 10: the buildings he broke this step (indices in this frame's `Solids`).
+    pub broke: [Option<usize>; super::solid::SLIDE_CONTACTS],
 }
 
 /// The slope at a point (degrees), and which way is downhill along the ground.
@@ -221,6 +223,7 @@ pub fn walk_step(frame: &mut Frame, s: &Scene, i: &WalkIn, dt: f64) -> WalkOut {
         p1 = sl.end;
         v = sl.v;
         out.wall = sl.wall;
+        out.broke = sl.broke;
         out.contacts = sl.contacts;
     }
     // Uphill onto what's too steep to walk: that part of the step goes (walk to 50 degrees; above, it's a slide or a wall).

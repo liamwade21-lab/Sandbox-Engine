@@ -1379,7 +1379,27 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
         plinth -= 0.2;
         scale = h;
     }
-    let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
+    let pos0 = m * p.xyz + info.t - up * (body.lod2.y + plinth);
+    var pos = pos0;
+    // The mod's broken buildings (step 10, F12.3-5; one uniform branch with none): sunk into the ground over its collapse with
+    // its lights out (a negative width), its rubble left as a low broken box. Placement is untouched (the "same decision" rule).
+    var wsign = 1.0;
+    if broken.head.count > 0u {
+        let fc0 = (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0;
+        let bid = cell.tile * 16384 + vec2<i32>(round((cell.local + fc0 * cell.edge) * 4.0));
+        let age = broken_age(bid, u32(cell.face) | (mk << 8u));
+        if age >= 0.0 {
+            let pr = clamp(age / clamp(2.5 + h / 200.0, 2.5, 7.0), 0.0, 1.0);
+            if kind == 1u && mk != M_BRIDGE && mk != M_DOME {
+                cull_rubble(rec, lf, pos0, up, w, dpt, h, plinth, ang, pr);
+            }
+            if pr >= 1.0 {
+                return;
+            }
+            pos = pos0 - up * (scale * pr * pr);
+            wsign = -1.0;
+        }
+    }
     let dist = length(pos);
     // The mod's probe (0 with the mod off: one uniform branch): measuring, the near and far lists in full,
     // whatever the camera's distance.
@@ -1418,8 +1438,53 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     var xa = cos(ang) * fu + sin(ang) * fv;
     xa = normalize(xa - up * dot(xa, up));
     let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
-    let o = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
+    let o = Inst(pos, pack2x16float(vec2<f32>(w * wsign, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
     append(models[model].mesh_bucket, o);
+}
+
+// The mod's broken table (step 10): seconds since the building with this id (face metres x 4), face and model broke, or -1.
+// A plain walk over the entries: there are few (`breakable.rs` keeps at most `BROKEN_MAX`).
+fn broken_age(id: vec2<i32>, face_model: u32) -> f32 {
+    let n = min(broken.head.count, 1024u);
+    for (var i = 0u; i < n; i++) {
+        let e = broken.entries[i];
+        if e.face_model == face_model && abs(e.x - id.x) <= 16 && abs(e.y - id.y) <= 16 {
+            return broken.head.clock - e.t0;
+        }
+    }
+    return -1.0;
+}
+
+// A broken building's rubble (the near cells alone, so it's drawn once): the box, wider than the building and low, growing as
+// it falls (to `min(0.18 h + 1, 30)` m over the ground), drawn dark and broken (a negative width), within the near range.
+fn cull_rubble(rec: vec2<u32>, lf: Lift, foot: vec3<f32>, up: vec3<f32>, w: f32, dpt: f32, h: f32, plinth: f32, ang: f32, pr: f32) {
+    let dist = length(foot);
+    let range = body.city2.x;
+    let fade = clamp((range - dist) / (range * 0.15), 0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    let tall = min(0.18 * h + 1.0, 30.0) * smoothstep(0.0, 0.7, pr) + max(plinth, 0.0);
+    if tall < 0.05 {
+        return;
+    }
+    let r = 0.5 * sqrt(1.6 * (w * w + dpt * dpt) + tall * tall);
+    let bc = foot + up * (0.5 * tall);
+    for (var k = 0u; k < 5u; k++) {
+        let pl = cam.planes[k];
+        if dot(pl.xyz, bc) + pl.w < -r {
+            return;
+        }
+    }
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    let fu = normalize(m * lf.du);
+    let fv = normalize(m * lf.dv);
+    var xa = cos(ang + 0.3) * fu + sin(ang + 0.3) * fv;
+    xa = normalize(xa - up * dot(xa, up));
+    let box = body.species.w;
+    let hash = mix32(rec.y ^ (rec.x * 0x85ebca6bu)) & 0xffffu;
+    let o = Inst(foot, pack2x16float(vec2<f32>(-1.25 * max(w, 4.0), 1.25 * max(dpt, 4.0))), oct_encode(xa), oct_encode(up), tall, box | (u32(fade * 255.0) << 8u) | (hash << 16u));
+    append(models[box].mesh_bucket, o);
 }
 
 // The probe (the mod's F12.1): a building whose bounding sphere reaches within `probe.head.a.w` of the capsule's axis is

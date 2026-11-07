@@ -452,6 +452,8 @@ pub struct Slid {
     pub roof: Option<Contact>,
     pub wall: Option<Contact>,
     pub contacts: u32,
+    /// Step 10: the buildings he broke this step (`breaks`): he went on through them, not slowed.
+    pub broke: [Option<usize>; SLIDE_CONTACTS],
 }
 
 /// How a slide treats what it meets.
@@ -468,12 +470,12 @@ pub struct SlideOpts {
 }
 
 /// Contacts a slide follows in one step, at most.
-const SLIDE_CONTACTS: usize = 4;
+pub const SLIDE_CONTACTS: usize = 4;
 
 /// Step 10 decides here whether a hit breaks the building (`into >= BREAK_SPEED_MS` along the wall's normal: it breaks and he isn't
 /// slowed, T5). Until then nothing breaks: every hit stops him along the wall's normal and he slides.
-pub fn breaks(_c: &Contact) -> bool {
-    false
+pub fn breaks(c: &Contact) -> bool {
+    c.into >= tune::BREAK_SPEED_MS
 }
 
 /// The buildings round him this frame (`Solids::refresh` from the probe's newest list), what F2 lets alone, and the measures.
@@ -521,7 +523,7 @@ impl Solids {
     /// it hasn't seen is turned into this frame's buildings; one first seen holding him is let alone (F2), and so is one he's
     /// deep inside; those he's out of again count once more.
     /// Returns how many it let alone this time.
-    pub fn refresh(&mut self, list: Option<(&[ProbeBuilding], u32, ObjectRef)>, him: Option<(ObjectRef, DVec3)>) -> u32 {
+    pub fn refresh(&mut self, list: Option<(&[ProbeBuilding], u32, ObjectRef)>, him: Option<(ObjectRef, DVec3)>, broken: &[Key]) -> u32 {
         let mut newly = 0;
         let Some((recs, seq, obj)) = list else {
             self.clear();
@@ -571,7 +573,8 @@ impl Solids {
         }
         let ignored = &self.ignored;
         for s in self.list.iter_mut() {
-            s.ignored = ignored.iter().any(|k| k.same(&s.key));
+            // (A broken building is nothing to him: it's falling or rubble, step 10.)
+            s.ignored = ignored.iter().any(|k| k.same(&s.key)) || broken.iter().any(|k| k.same(&s.key));
         }
         newly
     }
@@ -658,10 +661,15 @@ impl Solids {
             v -= n * v.dot(n).min(0.0);
             note(&mut out, Contact { n, into, at: pos, solid: i, roof: lift.is_some() });
         }
+        let mut broke = 0;
         for _ in 0..SLIDE_CONTACTS {
             let d = target - pos;
             let mut first: Option<(f64, DVec3, usize, Option<f64>)> = None;
+            let gone = out.broke;
             self.visit(pos, d, o, |c, n, i, lift| {
+                if gone.contains(&Some(i)) {
+                    return;
+                }
                 if let Cut::Hit { t, .. } = c {
                     if first.is_none_or(|(ft, ..)| t < ft) {
                         first = Some((t, n, i, lift));
@@ -682,7 +690,13 @@ impl Solids {
             let contact = Contact { n, into, at, solid: i, roof: lift.is_some() };
             note(&mut out, contact);
             if breaks(&contact) {
-                // (Step 10: the building is marked broken and he goes on through it, not slowed.)
+                // Step 10: the building breaks and he goes on through it, not slowed (T5).
+                if broke < SLIDE_CONTACTS {
+                    out.broke[broke] = Some(i);
+                    broke += 1;
+                }
+                pos = at;
+                continue;
             }
             let rest = target - at;
             target = at + rest - n * rest.dot(n).min(0.0);
@@ -942,7 +956,7 @@ mod tests {
 
     fn solids(recs: &[ProbeBuilding], him: Option<DVec3>) -> Solids {
         let mut s = Solids::default();
-        s.refresh(Some((recs, 1, ObjectRef::Body(0))), him.map(|p| (ObjectRef::Body(0), p)));
+        s.refresh(Some((recs, 1, ObjectRef::Body(0))), him.map(|p| (ObjectRef::Body(0), p)), &[]);
         s
     }
 
@@ -1009,9 +1023,17 @@ mod tests {
         let a = DVec3::new(-400.0, R + 10.0, 3.0);
         let v = DVec3::new(30_000.0, 0.0, 0.0);
         let got = s.slide(a, a + v / 60.0, v, opts(true));
+        // Step 10 (T5): over `BREAK_SPEED_MS` the building breaks and he goes on through it, not slowed.
+        assert_eq!(got.broke[0], Some(0));
+        assert!((got.wall.unwrap().into - 30_000.0).abs() < 1e-6);
+        assert!((got.end - (a + v / 60.0)).length() < 1e-6, "{:?}", got.end);
+        assert!((got.v - v).length() < 1e-9);
+        // Under it he's stopped at the wall and nothing breaks.
+        let slow = DVec3::new(30.0, 0.0, 0.0);
+        let got = s.slide(DVec3::new(-1.0, R + 10.0, 3.0), DVec3::new(1.0, R + 10.0, 3.0), slow, opts(true));
+        assert_eq!(got.broke, [None; SLIDE_CONTACTS]);
         assert!(got.end.x <= -tune::HIT_RADIUS_M + 1e-3, "{:?}", got.end);
         assert!(s.deepest(got.end) == 0.0);
-        assert!((got.wall.unwrap().into - 30_000.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1033,11 +1055,15 @@ mod tests {
     fn falling_onto_a_roof_stops_his_middle_over_it() {
         let s = solids(&[building(0, 0.0, 0.0, 20.0, 20.0, 60.0, 1)], None);
         let a = DVec3::new(1.0, R + 70.0, 1.0);
-        let v = DVec3::new(0.0, -900.0, 0.0);
-        let got = s.slide(a, a + v / 60.0, v, opts(true));
+        // (Under `BREAK_SPEED_MS`: faster, the building breaks, step 10.)
+        let v = DVec3::new(0.0, -30.0, 0.0);
+        let got = s.slide(a, a + DVec3::new(0.0, -15.0, 0.0), v, opts(true));
         let roof = got.roof.expect("a roof");
         assert!((got.end.y - (R + 60.0 + tune::STAND_M)).abs() < 1e-6, "{:?}", got.end);
-        assert!((roof.into - 900.0).abs() < 1e-6 && got.v.y.abs() < 1e-9);
+        assert!((roof.into - 30.0).abs() < 1e-6 && got.v.y.abs() < 1e-9);
+        // At 900 m/s it breaks and he falls on through (T5: a fall on a roof that makes a crater breaks the building).
+        let fast = s.slide(a, a + DVec3::new(0.0, -15.0, 0.0), DVec3::new(0.0, -900.0, 0.0), opts(true));
+        assert_eq!(fast.broke[0], Some(0));
     }
 
     #[test]
@@ -1053,13 +1079,13 @@ mod tests {
         let out = DVec3::new(-15.0, R + 5.0, 0.0);
         let mut b2 = b;
         b2.id.x += 1;
-        s.refresh(Some((&[b2], 2, ObjectRef::Body(0))), Some((ObjectRef::Body(0), out)));
+        s.refresh(Some((&[b2], 2, ObjectRef::Body(0))), Some((ObjectRef::Body(0), out)), &[]);
         assert!(!s.list[0].ignored && s.ignored.is_empty());
         let got = s.slide(out, out + DVec3::X * 10.0, DVec3::X, opts(false));
         assert!(got.wall.is_some() && got.end.x < -10.0 + 1e-3 - tune::HIT_RADIUS_M + 0.01);
         // Seen before, it holds him only by his going in: never let alone for that.
         let mut c = solids(&[b], Some(out));
-        c.refresh(Some((&[b2], 2, ObjectRef::Body(0))), Some((ObjectRef::Body(0), DVec3::new(-10.2, R + 5.0, 0.0))));
+        c.refresh(Some((&[b2], 2, ObjectRef::Body(0))), Some((ObjectRef::Body(0), DVec3::new(-10.2, R + 5.0, 0.0))), &[]);
         assert!(!c.list[0].ignored);
     }
 
@@ -1069,7 +1095,7 @@ mod tests {
         let s = solids(&[d], None);
         // From inside, flying up: stopped under the shell.
         let a = DVec3::new(0.0, R + 50.0, 0.0);
-        let got = s.slide(a, a + DVec3::Y * 200.0, DVec3::Y * 200.0, opts(true));
+        let got = s.slide(a, a + DVec3::Y * 200.0, DVec3::Y * 30.0, opts(true));
         assert!(got.wall.is_some() && got.end.y < R + 120.0 - tune::HIT_RADIUS_M + 0.01, "{:?}", got.end);
         // From outside, falling on its top: a roof.
         let a = DVec3::new(0.0, R + 140.0, 0.0);

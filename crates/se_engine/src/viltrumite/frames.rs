@@ -124,6 +124,8 @@ pub struct Outcome {
     /// The hardest building's wall he met (he slid along it), and how many contacts with buildings the step had.
     pub wall: Option<Contact>,
     pub contacts: u32,
+    /// Step 10: the buildings he broke this step (indices in this frame's `Solids`).
+    pub broke: [Option<usize>; super::solid::SLIDE_CONTACTS],
 }
 
 pub(super) fn find<'b, 'a>(s: &'b Scene<'a>, obj: ObjectRef) -> Option<&'b BodyInfo<'a>> {
@@ -535,6 +537,7 @@ impl Frame {
             p = sl.end;
             v1 = sl.v;
             out.wall = sl.wall;
+            out.broke = sl.broke;
             out.contacts = sl.contacts;
             if let Some(c) = sl.roof {
                 let up = so.list[c.solid].up;

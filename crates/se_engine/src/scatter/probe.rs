@@ -56,6 +56,37 @@ pub const UNSERVED_FRAMES: u32 = 3;
 /// Face metres x 4 within which a near and a far building are the same one (spec F12.2: lots are 12+ m apart).
 pub const MATCH_UNITS: i32 = 16;
 
+/// The broken table's header as `scatter.wesl` `BrokenHead` (step 10): how many entries, the clock their times are on (real
+/// seconds), and a capsule left for later.
+#[derive(Clone, Copy, Default, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct BrokenHeadGpu {
+    pub count: u32,
+    pub clock: f32,
+    pub pad: [u32; 2],
+    pub a: [f32; 4],
+    pub b: [f32; 4],
+}
+
+/// A broken building as `scatter.wesl` `BrokenEntry`: its id (the probe's: face metres x 4), its face and model, when it broke.
+#[derive(Clone, Copy, Default, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C)]
+pub struct BrokenEntryGpu {
+    pub x: i32,
+    pub y: i32,
+    pub face_model: u32,
+    pub t0: f32,
+}
+
+/// The broken table for the render world this frame (`viltrumite::breakable::update_broken`): the header every frame, the entries
+/// whenever `version` changes.
+#[derive(Clone, Default, Debug)]
+pub struct BrokenFrame {
+    pub head: BrokenHeadGpu,
+    pub entries: Arc<Vec<BrokenEntryGpu>>,
+    pub version: u32,
+}
+
 /// The list's header as `scatter.wesl` `ProbeHead` (the CPU writes it each frame the probe is on, count 0).
 #[derive(Clone, Copy, Default, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]

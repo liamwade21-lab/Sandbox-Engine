@@ -930,7 +930,7 @@ fn warm_speck() -> Transform {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn update_impacts(
     time: Res<Time<Real>>,
-    (mut control, cam): (ResMut<ModControl>, Res<FlyCamera>),
+    (mut control, cam, broken): (ResMut<ModControl>, Res<FlyCamera>, Res<super::breakable::BrokenSet>),
     mut hero: ResMut<Hero>,
     mut impacts: ResMut<Impacts>,
     (mut fx, mut input): (ResMut<FxDraws>, ResMut<FxInput>),
@@ -1040,7 +1040,8 @@ pub(super) fn update_impacts(
             *slot = None;
         }
     }
-    let live = im.live();
+    // (Step 10: broken buildings keep the aftermath going too, until they're back.)
+    let live = im.live() || !broken.list.is_empty();
     if control.aftermath != live {
         control.aftermath = live;
     }

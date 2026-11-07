@@ -669,6 +669,8 @@ struct BuildingOut {
     // 2 a longhouse (villages), 3-10 level 3's (the future box, four towers, the arcology, the
     // skybridge, the flying lanes: city.wesl M_FUTURE..M_LANE)
     @location(11) local: vec3<f32>,
+    // (+ 0x100: the Viltrumite mod's step 10, a broken building, falling or its rubble: a negative width in its record. Every
+    // location is taken, so it rides here; `fragment_building` takes it off first.)
     @location(12) @interpolate(flat) kind: u32,
     // Level 3: what the face is (library.rs `tower`: 0, 1 a wall, 2 the spire, 3 a roof), and across
     // the wall from -1 at one edge to 1 at the other (round towers: 0)
@@ -694,7 +696,9 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
     let up = oct_decode(inst.up);
     let xa = oct_decode(inst.xa);
     let za = cross(xa, up);
-    let wd = unpack2x16float(inst.fades);
+    // (A negative width marks a building the mod broke, falling or its rubble: the size is its absolute value.)
+    let wd_raw = unpack2x16float(inst.fades);
+    let wd = abs(wd_raw);
     let kind = (inst.model & 0xffu) - body.species.w;
     var world = inst.pos + xa * (v.pos.x * wd.x) + up * (v.pos.y * inst.scale) + za * (v.pos.z * wd.y);
     var o: BuildingOut;
@@ -751,7 +755,7 @@ fn vertex_building(v: VertexIn) -> BuildingOut {
         o.size.y = lane_towards;
     }
     o.local = vec3<f32>(v.pos.x * wd.x, v.pos.y * inst.scale, v.pos.z * wd.y);
-    o.kind = kind;
+    o.kind = kind | select(0u, 0x100u, wd_raw.x < 0.0);
     return o;
 }
 
@@ -1019,7 +1023,11 @@ const WIN_TOWER = array<u32, 8>(6u, 5u, 8u, 13u, 14u, 15u, 16u, 3u);
 
 @if(BUILDING)
 @fragment
-fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
+fn fragment_building(in_raw: BuildingOut) -> @location(0) vec4<f32> {
+    // (The mod's broken flag off the kind: see `BuildingOut::kind`.)
+    var in = in_raw;
+    in.kind = in_raw.kind & 0xffu;
+    let broken = (in_raw.kind & 0x100u) != 0u;
     let s0 = in.style.x;
     let s1 = in.style.y;
     let h = in.style.w;
@@ -1111,6 +1119,12 @@ fn fragment_building(in: BuildingOut) -> @location(0) vec4<f32> {
         let far = smoothstep(0.35, 1.0, max(fpx, fpy));
         let lit_w = mix(on, 0.45 * 0.68, far) * win;
         emit = vec3<f32>(1.0, 0.74, 0.46) * (0.55 * lit_w * night);
+    }
+    // Broken by the mod (step 10): its lights out, dust and smoke over its walls, the rubble a broken grey.
+    if broken {
+        let grit = bd_hash(u32(floor(in.local.x * 1.7) + 4096.0) * 7919u + u32(floor(in.local.y * 1.3) + 4096.0) * 104729u + u32(floor(in.local.z * 1.7) + 4096.0) * 31u);
+        albedo = mix(albedo, vec3<f32>(0.33, 0.31, 0.28), 0.65) * (0.55 + 0.35 * grit);
+        emit = vec3<f32>(0.0);
     }
     let pl = PointLight(in.l_sun, in.l_sky, in.l_flat, in.haze_t, in.haze_a);
     // The far fade (the range's last 15 %), after the texture's samples (their derivatives).

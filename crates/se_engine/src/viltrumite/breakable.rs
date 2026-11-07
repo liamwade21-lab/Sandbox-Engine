@@ -152,3 +152,138 @@ pub fn dev_command(world: &mut World, arg: &str) {
         _ => warn!("hero probe: unknown command '{arg}'"),
     }
 }
+
+// ---- Step 10: the broken buildings (F12.3-7) ----------------------------------------------------------------------------------------
+
+/// At most this many broken at once (the spec's 4,096 cut to keep the cull's walk short); full, the farthest is let go.
+pub const BROKEN_MAX: usize = 512;
+
+/// A building he broke: its key (the probe's id), the body it stands on, its middle and height there (body frame, m), its footprint's
+/// larger side, and when it broke (the real clock, s since start: `Time<Real>`).
+#[derive(Clone, Copy, Debug)]
+pub struct Broken {
+    pub key: crate::viltrumite::solid::Key,
+    pub obj: ObjectRef,
+    pub centre: DVec3,
+    pub height: f64,
+    pub across: f64,
+    pub t0: f64,
+}
+
+/// The buildings he broke, until he and the camera are both `CRATER_FREE_M` (`FAR_RANGE_M` + 500 m) away (D3), or another body is the
+/// scatter's. The scatter's cull sinks each over its collapse and leaves its rubble (`scatter.wesl` `broken_age`, `cull_rubble`).
+#[derive(Resource, Default)]
+pub struct BrokenSet {
+    pub list: Vec<Broken>,
+    /// Bumped whenever the list changes: the render world writes the entries again.
+    pub version: u32,
+    /// The keys, for the solids (nothing to him once broken).
+    pub keys: Vec<crate::viltrumite::solid::Key>,
+    /// When the restore last looked (real s).
+    looked: f64,
+    /// The table was sent with buildings in it: once empty, an empty one goes too.
+    sent: bool,
+}
+
+impl BrokenSet {
+    /// Whether this building is broken already.
+    pub fn has(&self, key: &crate::viltrumite::solid::Key) -> bool {
+        self.keys.iter().any(|k| k.same(key))
+    }
+}
+
+/// The breaks of the frame (`Hero::breaks`) into the set, the restore twice a second, the table into `ScatterFrame` (after
+/// `hero_move`; while he's on or anything is broken).
+pub fn update_broken(
+    mut hero: ResMut<Hero>,
+    mut set: ResMut<BrokenSet>,
+    mut out: ResMut<crate::scatter::ScatterFrame>,
+    sc: Res<crate::scatter::Scatter>,
+    cam: Res<crate::camera::FlyCamera>,
+    time: Res<Time<Real>>,
+    bodies: Query<&SystemBody>,
+) {
+    let now = time.elapsed_secs_f64();
+    let set = &mut *set;
+    let mut changed = false;
+    for b in std::mem::take(&mut hero.breaks) {
+        if set.has(&b.key) {
+            continue;
+        }
+        info!("viltrumite: a building breaks (model {} id {} {}), {:.0} m tall, {:.0} m across", b.key.model, b.key.id.x, b.key.id.y, b.height, b.across);
+        set.list.push(Broken { t0: now, ..b });
+        changed = true;
+    }
+    // The restore (D3): he and the camera both far away, or the scatter's body is another.
+    if now - set.looked >= 0.5 || set.list.len() > BROKEN_MAX {
+        set.looked = now;
+        let active = sc.body().and_then(|e| bodies.get(e).ok());
+        let him = hero.world.0;
+        let before = set.list.len();
+        set.list.retain(|x| {
+            let Some(b) = active.filter(|b| b.obj == x.obj) else { return false };
+            let at = b.pos.offset_m(b.orient * x.centre);
+            at.delta_m(cam.pos).length() < tune::CRATER_FREE_M || at.delta_m(him).length() < tune::CRATER_FREE_M
+        });
+        if set.list.len() > BROKEN_MAX {
+            if let Some(b) = active {
+                let far = |x: &Broken| b.pos.offset_m(b.orient * x.centre).delta_m(cam.pos).length();
+                set.list.sort_by(|p, q| far(p).total_cmp(&far(q)));
+            }
+            set.list.truncate(BROKEN_MAX);
+        }
+        if set.list.len() != before {
+            info!("viltrumite: {} broken buildings back (he and the camera are {:.1} km off, or it's another body), {} left", before - set.list.len(), tune::CRATER_FREE_M / 1e3, set.list.len());
+            changed = true;
+        }
+    }
+    if changed {
+        set.version = set.version.wrapping_add(1);
+        set.keys = set.list.iter().map(|x| x.key).collect();
+    }
+    if set.list.is_empty() {
+        out.broken = None;
+        set.sent = false;
+        return;
+    }
+    let entries: Vec<crate::scatter::probe::BrokenEntryGpu> = set
+        .list
+        .iter()
+        .map(|x| crate::scatter::probe::BrokenEntryGpu { x: x.key.id.x, y: x.key.id.y, face_model: x.key.face as u32 | (x.key.model as u32) << 8, t0: x.t0 as f32 })
+        .collect();
+    let head = crate::scatter::probe::BrokenHeadGpu { count: set.list.len() as u32, clock: now as f32, ..default() };
+    let reuse = out.broken.as_ref().filter(|f| f.version == set.version).map(|f| f.entries.clone());
+    out.broken = Some(crate::scatter::probe::BrokenFrame { head, entries: reuse.unwrap_or_else(|| std::sync::Arc::new(entries)), version: set.version });
+    set.sent = true;
+}
+
+/// While he's on, or anything is broken (or an empty table is still to go).
+pub fn broken_running(control: Res<crate::mods::ModControl>, set: Res<BrokenSet>, out: Res<crate::scatter::ScatterFrame>) -> bool {
+    control.hero || !set.list.is_empty() || out.broken.is_some()
+}
+
+/// `hero break [M]`: breaks every building round him within M m (default 30) in the probe's newest list, as a hit would.
+pub fn dev_break(world: &mut World, arg: &str) {
+    let radius: f64 = arg.trim().parse().unwrap_or(30.0);
+    let solids = world.resource::<crate::viltrumite::solid::Solids>();
+    let Some(obj) = solids.obj else {
+        warn!("hero break: no buildings round him");
+        return;
+    };
+    let hero = world.resource::<Hero>();
+    let Some(pos) = (match hero.frame {
+        crate::viltrumite::frames::Frame::Attached { obj: o, local_pos, .. } if o == obj => Some(local_pos),
+        _ => None,
+    }) else {
+        warn!("hero break: he isn't on the buildings' body");
+        return;
+    };
+    let picked: Vec<Broken> = solids
+        .list
+        .iter()
+        .filter(|s| (s.centre - pos).length() - s.size.x.max(s.size.z) * 0.5 <= radius)
+        .map(|s| Broken { key: s.key, obj, centre: s.centre, height: s.size.y, across: s.size.x.max(s.size.z), t0: 0.0 })
+        .collect();
+    info!("hero break: {} buildings within {radius} m", picked.len());
+    world.resource_mut::<Hero>().breaks.extend(picked);
+}

@@ -62,6 +62,7 @@ impl Plugin for ViltrumitePlugin {
             .init_resource::<DevKeys>()
             .init_resource::<breakable::ProbeDev>()
             .init_resource::<solid::Solids>()
+            .init_resource::<breakable::BrokenSet>()
             .init_resource::<sound::Voices>()
             // Test runs press real keys into the frame's input, before the mod's snapshot and every other reader.
             .add_systems(PreUpdate, dev_keys.run_if(dev_keys_held).after(bevy::input::InputSystems).before(crate::mods::snapshot_input))
@@ -93,6 +94,8 @@ impl Plugin for ViltrumitePlugin {
             )
             // The buildings' probe: the capsule from where he is now, before the scatter turns it into this frame's.
             .add_systems(PostUpdate, breakable::probe_ask.run_if(hero_shown).after(hero::hero_move).before(crate::scatter::probe::ask_probe))
+            // Step 10: the broken buildings into the scatter's frame, after his move and the scatter's own update.
+            .add_systems(PostUpdate, breakable::update_broken.run_if(breakable::broken_running).after(hero::hero_move).after(crate::scatter::update_scatter))
             // What the air does round him, from the camera as the frame draws it.
             .add_systems(PostUpdate, fx::update_fx.run_if(hero_shown).after(draw::update_hero).before(UniverseSet::FloatingOrigin))
             // The impacts' pools (made once he is), then the records written once. They run on after the mod is turned off while
@@ -261,6 +264,8 @@ pub struct Hero {
     pub solid: solid::SolidWatch,
     /// The building the last punch hit (step 10 breaks it), taken by whoever acts on it.
     pub punched: Option<solid::Key>,
+    /// This frame's broken buildings (step 10), taken by `breakable::update_broken`.
+    pub breaks: Vec<breakable::Broken>,
     /// The controls as in the user's Viltrumite mod (`controls.rs`): fast flight, the dive, Space's tap or charge, the boost stacks,
     /// the double taps' last presses (his clock), the super run, what's left of the take-off's rise (s).
     pub fast: bool,
@@ -340,6 +345,7 @@ impl Default for Hero {
             cam_pull: f64::MAX,
             solid: solid::SolidWatch::default(),
             punched: None,
+            breaks: Vec::new(),
             fast: false,
             dive: false,
             space: controls::SpaceHold::default(),
@@ -548,6 +554,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
         "sound" => sound::dev_command(world, rest),
         "probe" => breakable::dev_command(world, rest),
         "solid" => solid::dev_command(world, rest),
+        "break" => breakable::dev_break(world, rest),
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
         "cruise" => {
             let v: Vec<f64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();

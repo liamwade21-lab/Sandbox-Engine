@@ -32,7 +32,7 @@ use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
 use super::library::{DrawKind, ScatterLibrary};
-use super::probe::{BROKEN_BYTES, PROBE_BYTES, PROBE_CAP, ProbeFrame, ProbeHeadGpu, ProbeMail, ProbeRecGpu, RawList, STAGING};
+use super::probe::{BROKEN_BYTES, BrokenHeadGpu, PROBE_BYTES, PROBE_CAP, ProbeFrame, ProbeHeadGpu, ProbeMail, ProbeRecGpu, RawList, STAGING};
 use super::{MAX_JOBS, PAGE_VERTS, PAGES, SLOT_CAP, SLOTS, ScatterFrame, TREE_MAX};
 use crate::color_correction::ColorCorrection;
 
@@ -203,6 +203,9 @@ struct ScatterGpu {
     probe: Buffer,
     staging: Vec<ProbeStaging>,
     probe_frame: Option<ProbeFrame>,
+    /// The broken table as last written: its entries' version and its count (step 10).
+    broken_version: u32,
+    broken_count: u32,
 }
 
 /// A staging buffer of the probe's lists: state 0 idle, 1 copied this frame, 2 mapping, 3 mapped; the list's frame.
@@ -465,6 +468,8 @@ fn init_gpu(
             })
             .collect(),
         probe_frame: None,
+        broken_version: 0,
+        broken_count: 0,
         debug: std::env::var("SE_SCATTER_DEBUG").is_ok_and(|v| v != "0").then(|| DebugReadback {
             staging: buffer(&device, "scatter_debug", 4096, BufferUsages::MAP_READ | BufferUsages::COPY_DST),
             state: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -644,6 +649,23 @@ fn prepare(
         let head = ProbeHeadGpu { count: 0, seq: p.seq, cap: PROBE_CAP, mode: p.mode, a: p.a.to_array(), b: p.b.to_array() };
         queue.write_buffer(&gpu.probe, 0, bytemuck::bytes_of(&head));
         gpu.probe_frame = Some(p);
+    }
+    // The mod's broken buildings (step 10): the header every frame there's a table, the entries when they change; gone, the count
+    // 0 once (the cull then takes its one `count > 0` branch).
+    match frame.broken.as_ref() {
+        Some(t) => {
+            if t.version != gpu.broken_version && !t.entries.is_empty() {
+                queue.write_buffer(&gpu.broken, size_of::<BrokenHeadGpu>() as u64, bytemuck::cast_slice(&t.entries));
+                gpu.broken_version = t.version;
+            }
+            queue.write_buffer(&gpu.broken, 0, bytemuck::bytes_of(&t.head));
+            gpu.broken_count = t.head.count;
+        }
+        None if gpu.broken_count != 0 => {
+            queue.write_buffer(&gpu.broken, 0, bytemuck::bytes_of(&BrokenHeadGpu::default()));
+            gpu.broken_count = 0;
+        }
+        None => {}
     }
     // The view: the camera sits at the origin.
     let clip_from_world = view.clip_from_world.unwrap_or_else(|| view.clip_from_view * view.world_from_view.to_matrix().inverse());
