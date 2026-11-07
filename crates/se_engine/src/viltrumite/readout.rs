@@ -88,7 +88,68 @@ pub(super) fn draw(mut contexts: EguiContexts, hero: Res<Hero>, hud: Res<HudStat
             ui.small(i18n.tr("Tab: menus"));
         });
     });
+    if control.panels_hidden() {
+        guide(ctx, &hero);
+    }
     Ok(())
+}
+
+/// The user's own Viltrumite mod's aids (its `Hud.cs`): a cross in the middle, the charge bar under it (gold when full; a punch's shows a
+/// tick where it becomes a charged one), and the keys for what he's doing in a line near the bottom.
+fn guide(ctx: &egui::Context, hero: &Hero) {
+    use super::controls;
+    use super::impact::Action;
+    let screen = ctx.content_rect();
+    let s = (screen.height() / 540.0).max(1.0);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hero_guide")));
+    let c = screen.center();
+    let cross = |half: f32, thick: f32, colour: egui::Color32| {
+        painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(half * 2.0, thick)), 0.0, colour);
+        painter.rect_filled(egui::Rect::from_center_size(c, egui::vec2(thick, half * 2.0)), 0.0, colour);
+    };
+    cross(7.0 * s, 3.0 * s, egui::Color32::from_black_alpha(115));
+    cross(6.0 * s, 1.4 * s, egui::Color32::from_white_alpha(230));
+    let (charge, tick) = if hero.space.charging {
+        (Some(hero.space.charge as f32), None)
+    } else if let Action::WindUp { held, .. } = hero.action {
+        let full = super::tune::PUNCH_FULL_S as f32;
+        (Some((held / full).min(1.0)), Some(super::tune::PUNCH_CHARGE_S as f32 / full))
+    } else {
+        (None, None)
+    };
+    if let Some(k) = charge {
+        let (w, h) = (60.0 * s, 3.0 * s);
+        let at = egui::pos2(c.x - w * 0.5, c.y + 14.0 * s);
+        painter.rect_filled(egui::Rect::from_min_size(at - egui::vec2(s, s), egui::vec2(w + 2.0 * s, h + 2.0 * s)), 0.0, egui::Color32::from_black_alpha(128));
+        let fill = if k >= 1.0 { egui::Color32::from_rgba_unmultiplied(255, 217, 89, 242) } else { egui::Color32::from_white_alpha(230) };
+        painter.rect_filled(egui::Rect::from_min_size(at, egui::vec2(w * k.clamp(0.0, 1.0), h)), 0.0, fill);
+        if let Some(t) = tick {
+            painter.rect_filled(egui::Rect::from_min_size(egui::pos2(at.x + w * t - 0.5 * s, at.y - 2.0 * s), egui::vec2(s, h + 4.0 * s)), 0.0, egui::Color32::from_rgba_unmultiplied(255, 217, 89, 230));
+        }
+    }
+    let speed = hero.flow.speed;
+    let super_on = hero.fast && controls::supersonic(&hero.flow, speed);
+    let line = controls::prompt(hero.state, hero.fast, hero.dive, super_on, hero.stacks, hero.space.charging, hero.super_run);
+    let size = (screen.height() / 72.0).clamp(11.0, 28.0);
+    egui::Area::new(egui::Id::new("hero_guide_line"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -screen.height() * 0.12])
+        .interactable(false)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new().fill(egui::Color32::from_black_alpha(107)).inner_margin(egui::Margin::symmetric((size * 0.9) as i8, (size * 0.35) as i8)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = size * 0.3;
+                    for (i, item) in line.split('|').enumerate() {
+                        if i > 0 {
+                            ui.add_space(size * 1.2);
+                        }
+                        let (key, what) = item.split_once(':').unwrap_or((item, ""));
+                        ui.label(egui::RichText::new(key).size(size).color(egui::Color32::from_rgb(255, 211, 107)));
+                        ui.label(egui::RichText::new(what).size(size).color(egui::Color32::from_rgb(237, 237, 230)));
+                    }
+                });
+            });
+        });
 }
 
 #[cfg(test)]

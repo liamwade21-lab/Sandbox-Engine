@@ -55,8 +55,10 @@ pub const ACTION_LAYER: usize = 4;
 pub enum Action {
     #[default]
     None,
-    /// A punch: its clip, seconds into it, when it lands and when it ends; `done` once it has landed.
-    Punch { clip: u16, t: f32, hit: f32, end: f32, done: bool },
+    /// A punch: its clip, seconds into it, when it lands and when it ends; `done` once it has landed; `charge` over 0 a charged one.
+    Punch { clip: u16, t: f32, hit: f32, end: f32, done: bool, charge: f32 },
+    /// The left button held past `PUNCH_WIND_S` (the user's mod): `charge_attack` drawn back; `held` the seconds since it went down.
+    WindUp { clip: u16, held: f32 },
     /// The ground punch: down to the ground by `contact` from his soles' height `from_m` (m), the crater there, the clip played out.
     Smash { clip: u16, t: f32, contact: f32, end: f32, from_m: f64, done: bool },
     /// The right button held: the clip to its `hold` and held there; `t` the seconds held.
@@ -86,6 +88,11 @@ pub struct ActLayer {
 pub struct ActClips {
     punch: [Option<u16>; 2],
     fly_punch: [Option<u16>; 2],
+    /// The user's mod's combo on foot or hovering (the 4th the finisher, its superman punch), the charged punch, the wind-up.
+    ground_combo: [Option<u16>; 4],
+    superman: Option<u16>,
+    wind: Option<u16>,
+    wind_end: f32,
     smash: Option<u16>,
     clap: Option<u16>,
     clap_flying: Option<u16>,
@@ -106,6 +113,10 @@ impl ActClips {
         ActClips {
             punch: [one("punch_cross"), one("punch_hook")],
             fly_punch: [one("flying_grab_punching"), one("flying_grab_punching3")],
+            ground_combo: [one("punch_cross"), one("punch_hook"), one("punch_cross"), one("flying_grab_punching")],
+            superman: one("flying_grab_punching"),
+            wind: one("charge_attack"),
+            wind_end: set.find("charge_attack").map_or(1.0, |i| duration(set, i as u16)),
             smash: one("ground_punch"),
             clap: one("thunderclap"),
             clap_flying: one("thunderclap_flying"),
@@ -350,14 +361,24 @@ pub(super) fn start(hero: &mut Hero, input: &ModInput, s: &Scene, fwd: DVec3, tr
             hero.action = Action::Charge { clip, t: 0.0, hold: event(set, clip, "hold", 0.6), clap: event(set, clip, "clap", 1.23), end };
         }
     }
+    // The left button, as the user's mod has it: a click punches (quick clicks chain the combo); held past `PUNCH_WIND_S` it winds up,
+    // and let go past `PUNCH_CHARGE_S` it's a charged punch that blows up where it lands. A click aimed down at the ground within reach
+    // is the ground punch (step 8).
+    if input.mouse_lost {
+        hero.punch_down = None;
+        if matches!(hero.action, Action::WindUp { .. }) {
+            hero.action = Action::None;
+        }
+    }
     let free = match hero.action {
-        Action::None => true,
+        Action::None | Action::WindUp { .. } => true,
         Action::Punch { t, hit, done, .. } => done && t >= hit + tune::PUNCH_CHAIN_S,
         _ => false,
     };
     if input.left_pressed && free {
         if let (Some(from_m), Some(clip)) = (smash_from(hero, s, fwd), clips.smash) {
             hero.action = Action::Smash { clip, t: 0.0, contact: event(set, clip, "contact", 0.27), end: duration(set, clip), from_m, done: false };
+            hero.punch_down = None;
             if !hero.state.on_foot() {
                 // He goes down to it: held, the action moves him. (Called before the frame's carry, so the carry holds him too.)
                 hero.state = State::Hover;
@@ -365,18 +386,52 @@ pub(super) fn start(hero: &mut Hero, input: &ModInput, s: &Scene, fwd: DVec3, tr
             }
             hero.frame.set_velocity(s, DVec3::ZERO);
         } else {
+            hero.punch_down = Some(hero.clock);
+            hero.punch_ready = false;
+        }
+    }
+    if let Some(down) = hero.punch_down {
+        let held = hero.clock - down;
+        if input.left {
+            if held > tune::PUNCH_WIND_S && free {
+                if let Some(clip) = clips.wind {
+                    if !matches!(hero.action, Action::WindUp { .. }) {
+                        hero.sound.windup();
+                    }
+                    hero.action = Action::WindUp { clip, held: held as f32 };
+                }
+            }
+            if held >= tune::PUNCH_FULL_S && !hero.punch_ready {
+                hero.punch_ready = true;
+                hero.sound.punch_ready();
+            }
+        } else {
+            hero.punch_down = None;
+            let charged = held >= tune::PUNCH_CHARGE_S;
+            // Fast flight and the dive keep the flying punches; a hover punches like the ground (the user's mod).
+            let flying = hero.fast || hero.dive;
+            let clip = if charged {
+                hero.combo = 0;
+                if flying { clips.fly_punch[1] } else { clips.superman }
+            } else {
+                hero.combo = if hero.clock - hero.last_punch <= tune::COMBO_S { hero.combo + 1 } else { 0 };
+                if flying { clips.fly_punch[hero.combo as usize % 2] } else { clips.ground_combo[hero.combo as usize % 4] }
+            };
+            hero.last_punch = hero.clock;
             hero.punches = hero.punches.wrapping_add(1);
-            let pair = if hero.state.on_foot() { clips.punch } else { clips.fly_punch };
-            if let Some(clip) = pair[hero.punches as usize % 2].or(pair[0]) {
+            if let Some(clip) = clip.or(clips.punch[0]) {
                 let end = duration(set, clip);
-                hero.action = Action::Punch { clip, t: 0.0, hit: event(set, clip, "hit", end * tune::PUNCH_HIT_SHARE), end, done: false };
+                let charge = if charged { (super::controls::punch_charge(held) as f32).max(0.01) } else { 0.0 };
+                hero.action = Action::Punch { clip, t: 0.0, hit: event(set, clip, "hit", end * tune::PUNCH_HIT_SHARE), end, done: false, charge };
                 hero.sound.punch_swing();
+            } else if matches!(hero.action, Action::WindUp { .. }) {
+                hero.action = Action::None;
             }
         }
     }
     // A new action over one still showing (a chained punch, a charge over a punch, both buttons at once): from the pose as it
     // stands, never a pop.
-    if hero.action != was && !matches!(hero.action, Action::None | Action::Clap { .. }) && hero.act_layer.weight > 0.05 {
+    if hero.action != was && !matches!(hero.action, Action::None | Action::Clap { .. } | Action::WindUp { .. }) && !matches!(was, Action::WindUp { .. }) && hero.act_layer.weight > 0.05 {
         hero.sampler.crossfade(tune::ACTION_FADE_IN_S);
     }
 }
@@ -414,22 +469,48 @@ fn ray_hits(s: &Scene, b: &BodyInfo, from: DVec3, dir: DVec3, reach: f64) -> Opt
 
 /// The punch lands: the 5 m ray from his shoulders along the aim. On the ground (or the sea) the punch's sound and a puff; else nothing
 /// but the swing. (Buildings from step 9.)
-fn punch_lands(hero: &mut Hero, s: &Scene, fwd: DVec3) {
+fn punch_lands(hero: &mut Hero, s: &Scene, fwd: DVec3, charge: f64) {
     let Frame::Attached { obj, local_pos, .. } = hero.frame else { return };
     let Some(b) = s.bodies.iter().find(|b| b.obj == obj) else { return };
     let from = local_pos + local_pos.normalize_or(DVec3::Y) * tune::PUNCH_FROM_UP_M;
     let dir = b.orient.inverse() * fwd;
     let ground_hit = ray_hits(s, b, from, dir, tune::PUNCH_REACH_M);
-    // A building nearer than the ground takes the blow (step 9's second part; step 10 breaks it).
-    if let Some((d, i)) = s.solids_on(obj).and_then(|so| so.ray(from, dir, tune::PUNCH_REACH_M)) {
-        if ground_hit.is_none_or(|g| (g - from).length() > d) {
-            let at = from + dir * d;
-            info!("viltrumite: the punch hits a building {d:.1} m from his shoulders");
-            hero.sound.punch_hits_building();
-            hero.punched = s.solids.map(|so| so.list[i].key);
-            hero.blasts.push(Blast { obj, local: at, kind: BlastKind::Dust(tune::PUNCH_DUST_M, Style::Plume), shake_m: tune::PUNCH_DUST_M });
-            return;
+    let building = s.solids_on(obj).and_then(|so| so.ray(from, dir, tune::PUNCH_REACH_M)).filter(|(d, _)| ground_hit.is_none_or(|g| (g - from).length() > *d));
+    if charge > 0.0 {
+        // The charged punch (the user's mod): it blows up where it lands, a building, the ground, or the air ahead; a crater wherever the
+        // blast reaches the ground, the camera kicked by its size.
+        let radius = tune::CHARGED_CRATER_M.0 + (tune::CHARGED_CRATER_M.1 - tune::CHARGED_CRATER_M.0) * charge;
+        let at = match (building, ground_hit) {
+            (Some((d, i)), _) => {
+                hero.sound.punch_hits_building();
+                hero.punched = s.solids.map(|so| so.list[i].key);
+                from + dir * d
+            }
+            (None, Some(g)) => g,
+            (None, None) => from + dir * tune::PUNCH_REACH_M,
+        };
+        let g = (s.ground)(b, at);
+        let over = at.length() - g.radial;
+        let ground_at = at.normalize_or(DVec3::Y) * g.radial;
+        if g.level.is_some() && over <= radius && (s.footing)(b, ground_at) == Footing::Land {
+            hero.blasts.push(Blast { obj, local: ground_at, kind: BlastKind::Crater(radius), shake_m: radius });
+        } else {
+            let style = if g.level.is_some() && over <= radius { Style::Spray } else { Style::Plume };
+            hero.blasts.push(Blast { obj, local: at, kind: BlastKind::Dust(radius, style), shake_m: radius });
         }
+        info!("viltrumite: a charged punch ({charge:.2}) blows up {:.1} m from his shoulders, {radius:.1} m", (at - from).length());
+        hero.sound.punch_charged();
+        hero.kick_camera(tune::KICK_PUNCH * (0.4 + 0.6 * charge));
+        return;
+    }
+    // A building nearer than the ground takes the blow (step 9's second part; step 10 breaks it).
+    if let Some((d, i)) = building {
+        let at = from + dir * d;
+        info!("viltrumite: the punch hits a building {d:.1} m from his shoulders");
+        hero.sound.punch_hits_building();
+        hero.punched = s.solids.map(|so| so.list[i].key);
+        hero.blasts.push(Blast { obj, local: at, kind: BlastKind::Dust(tune::PUNCH_DUST_M, Style::Plume), shake_m: tune::PUNCH_DUST_M });
+        return;
     }
     let Some(at) = ground_hit else {
         debug!("viltrumite: the punch hits nothing");
@@ -502,14 +583,15 @@ pub(super) fn act(hero: &mut Hero, s: &Scene, fwd: DVec3, dt: f64) {
     let clips = hero.act_clips.unwrap_or_default();
     match hero.action {
         Action::None => {}
-        Action::Punch { clip, t, hit, end, done } => {
+        Action::Punch { clip, t, hit, end, done, charge } => {
             let t = t + step;
             let landed = !done && t >= hit;
-            hero.action = if t >= end { Action::None } else { Action::Punch { clip, t, hit, end, done: done || landed } };
+            hero.action = if t >= end { Action::None } else { Action::Punch { clip, t, hit, end, done: done || landed, charge } };
             if landed {
-                punch_lands(hero, s, fwd);
+                punch_lands(hero, s, fwd, charge as f64);
             }
         }
+        Action::WindUp { clip, held } => hero.action = Action::WindUp { clip, held: held + step },
         Action::Smash { clip, t, contact, end, from_m, done } => {
             let t = t + step;
             if !done && !hero.state.on_foot() {
@@ -543,6 +625,12 @@ pub(super) fn act(hero: &mut Hero, s: &Scene, fwd: DVec3, dt: f64) {
     let l = &mut hero.act_layer;
     match hero.action {
         Action::Punch { clip, t, end, .. } => *l = ActLayer { clip: Some(clip), time: t, weight: ramp(t, end, tune::PUNCH_FADE_IN_S, tune::PUNCH_FADE_OUT_S), mask: clips.upper },
+        Action::WindUp { clip, held } => {
+            // Drawn back as long as it's held (its last frame then); standing or hovering it takes the whole body, moving the upper body.
+            let wind = (held - tune::PUNCH_WIND_S as f32).max(0.0);
+            let still = hero.state.on_foot() && hero.frame.velocity(s).length() < 0.5 || hero.state == State::Hover;
+            *l = ActLayer { clip: Some(clip), time: wind.min(clips.wind_end), weight: (wind / tune::ACTION_FADE_IN_S).min(1.0), mask: if still { clips.full } else { clips.upper } }
+        }
         Action::Smash { clip, t, end, .. } => {
             *l = ActLayer { clip: Some(clip), time: t, weight: ramp(t, end, tune::ACTION_FADE_IN_S, tune::ACTION_FADE_OUT_S), mask: clips.full }
         }
@@ -1097,15 +1185,43 @@ pub(super) fn update_impacts(
 
 /// F7's shake: a rotation of the view alone, after its transform is set from the camera, never written back to the camera. The
 /// clouds' view takes the same turn (`ViewShake`, read only in a frame it's written), or they'd hold still while the scene shook.
-pub(super) fn apply_shake(impacts: Res<Impacts>, mut q: Query<&mut Transform, With<MainCamera>>, mut view: ResMut<crate::volumetric_clouds::ViewShake>) {
-    let s = impacts.shake_now;
-    if s == Vec2::ZERO {
+///
+/// His own shake (the user's mod's `ChaseCamera`: a boom, a launch, a stack, the charge's tremble) adds to it, up to `HERO_SHAKE_DEG` in
+/// all, and his kick and speed widen the view (`Hero::fov_add`), over the field of view `sync_camera_transform` set this frame.
+pub(super) fn apply_shake(
+    impacts: Res<Impacts>,
+    hero: Res<super::Hero>,
+    control: Res<crate::mods::ModControl>,
+    mut q: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+    mut view: ResMut<crate::volumetric_clouds::ViewShake>,
+) {
+    let mut s = impacts.shake_now;
+    let on = control.hero;
+    if on && hero.shake > 1e-3 {
+        let w = std::f64::consts::TAU * tune::SHAKE_HZ;
+        let a = (tune::HERO_SHAKE_DEG * hero.shake.min(1.25)).to_radians();
+        let t = hero.clock;
+        s += Vec2::new(((t * w).sin() * a) as f32, ((t * w * 1.37 + 1.9).sin() * a * 0.8) as f32);
+        let most = tune::HERO_SHAKE_DEG.to_radians() as f32;
+        if s.length() > most {
+            s *= most / s.length();
+        }
+    }
+    let fov = if on { hero.fov_add } else { 0.0 };
+    if s == Vec2::ZERO && fov.abs() < 1e-3 {
         return;
     }
     let turn = Quat::from_euler(EulerRot::YXZ, s.x, s.y, 0.0);
-    view.0 = turn.as_dquat();
-    for mut tf in &mut q {
-        tf.rotation = (tf.rotation * turn).normalize();
+    if s != Vec2::ZERO {
+        view.0 = turn.as_dquat();
+    }
+    for (mut tf, mut proj) in &mut q {
+        if s != Vec2::ZERO {
+            tf.rotation = (tf.rotation * turn).normalize();
+        }
+        if let Projection::Perspective(p) = proj.as_mut() {
+            p.fov = (p.fov + (fov as f32).to_radians()).min(170f32.to_radians());
+        }
     }
 }
 

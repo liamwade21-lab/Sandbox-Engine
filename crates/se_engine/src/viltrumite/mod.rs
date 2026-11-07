@@ -14,6 +14,7 @@ pub mod air;
 pub mod anim;
 pub mod breakable;
 pub mod camera;
+pub mod controls;
 pub mod cape;
 pub mod draw;
 pub mod frames;
@@ -260,6 +261,25 @@ pub struct Hero {
     pub solid: solid::SolidWatch,
     /// The building the last punch hit (step 10 breaks it), taken by whoever acts on it.
     pub punched: Option<solid::Key>,
+    /// The controls as in the user's Viltrumite mod (`controls.rs`): fast flight, the dive, Space's tap or charge, the boost stacks,
+    /// the double taps' last presses (his clock), the super run, what's left of the take-off's rise (s).
+    pub fast: bool,
+    pub dive: bool,
+    pub space: controls::SpaceHold,
+    pub stacks: u32,
+    pub tap_w: f64,
+    pub tap_s: f64,
+    pub super_run: bool,
+    pub rise_t: f64,
+    /// The camera's shake and kick (0..~1, dying out), and how much wider the view is (degrees, eased): `impact::apply_shake`.
+    pub shake: f64,
+    pub kick: f64,
+    pub fov_add: f64,
+    /// The left button: when it went down (his clock), the combo's step and its last punch, the full charge's cue given.
+    pub punch_down: Option<f64>,
+    pub combo: u32,
+    pub last_punch: f64,
+    pub punch_ready: bool,
 }
 
 impl Default for Hero {
@@ -320,11 +340,34 @@ impl Default for Hero {
             cam_pull: f64::MAX,
             solid: solid::SolidWatch::default(),
             punched: None,
+            fast: false,
+            dive: false,
+            space: controls::SpaceHold::default(),
+            stacks: 0,
+            tap_w: f64::NEG_INFINITY,
+            tap_s: f64::NEG_INFINITY,
+            super_run: false,
+            rise_t: 0.0,
+            shake: 0.0,
+            kick: 0.0,
+            fov_add: 0.0,
+            punch_down: None,
+            combo: 0,
+            last_punch: f64::NEG_INFINITY,
+            punch_ready: false,
         }
     }
 }
 
 /// A rotation with -Z towards `look` and +Y as near `up` as can be.
+impl Hero {
+    /// A kick to the camera (the user's mod's `ChaseCamera.Kick`): it shakes by 0.8 of it and the view widens for a moment.
+    pub fn kick_camera(&mut self, amount: f64) {
+        self.kick = self.kick.max(amount);
+        self.shake = self.shake.max(0.8 * amount);
+    }
+}
+
 fn facing(look: DVec3, up: DVec3) -> DQuat {
     let z = -look.normalize_or(DVec3::NEG_Z);
     let x = up.cross(z).try_normalize().unwrap_or_else(|| z.any_orthonormal_vector());

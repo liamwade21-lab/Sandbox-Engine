@@ -25,6 +25,7 @@ use crate::volumetric_clouds::VolumetricClouds;
 use super::air::{self, AirModel, Boom, BoomEvent, Flow};
 use super::anim::{Layer, Sampler};
 use super::camera;
+use super::controls::{self, SpaceEvent};
 use super::cape::CapeIn;
 use super::frames::{Frame, Ground, Motion, Outcome, Scene, height_over, to_local};
 use super::fx::{self, FxState};
@@ -276,6 +277,8 @@ pub enum Pose {
     HyperUp,
     /// The take-off's crouch, then `ToFast`.
     Crouch,
+    /// (The user's mod goes into fast flight with no transition clip: kept for the clips' table and `hero clip`.)
+    #[allow(dead_code)]
     ToFast,
     /// Coming out of speed.
     Break,
@@ -295,12 +298,14 @@ pub enum Pose {
     JumpDown,
     Land,
     LandHard,
+    /// Space held hovering (the user's mod: `thor@chargeflight_no_hammer_air`).
+    HoverCharge,
 }
 
 /// The clips he plays, found once.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Clips {
-    pose: [Option<u16>; 23],
+    pose: [Option<u16>; 24],
     /// Forward, back, left, right, up, down.
     idle_lean: [Option<u16>; 6],
     /// Left, right, up, down.
@@ -342,6 +347,7 @@ impl Clips {
                 one("male@jump_fall_down_loop"),
                 one("male@jump_fall_land_hard"),
                 one("land_punch"),
+                one("thor@chargeflight_no_hammer_air"),
             ],
             idle_lean: [one("bf_idle_fwd_add"), one("bf_idle_bwd_add"), one("bf_idle_left_add"), one("bf_idle_right_add"), one("bf_idle_up_add"), one("bf_idle_down_add")],
             fast_lean: [one("bf_fast_botharmsback_left"), one("bf_fast_botharmsback_right"), one("bf_fast_botharmsback_up"), one("bf_fast_botharmsback_down")],
@@ -394,6 +400,12 @@ pub struct Cue {
     pub walking: bool,
     /// On his feet: how far the aim is off where he faces (degrees, + to his left).
     pub off_aim_deg: f64,
+    /// The user's mod's controls: fast flight (its flying pose from the start), S braking it, Space charging on the ground (the
+    /// crouch) or hovering (`thor@chargeflight_no_hammer_air`).
+    pub fast: bool,
+    pub braking: bool,
+    pub charging_ground: bool,
+    pub charging_air: bool,
 }
 
 impl Director {
@@ -402,6 +414,7 @@ impl Director {
         match c.state {
             State::Falling | State::Jump => Pose::Fall,
             State::Grounded | State::Land | State::HardLanding => Pose::GroundIdle,
+            State::Hover | State::Flight if c.charging_air => Pose::HoverCharge,
             State::Hover => {
                 if self.still > tune::ARMS_CROSSED_AFTER_S {
                     Pose::ArmsCrossed
@@ -410,6 +423,8 @@ impl Director {
                 }
             }
             State::Flight => match self.tier {
+                // Fast flight is the flying pose from its start (the user's mod: no take-off clip).
+                Tier::Hover | Tier::Cruise if c.fast => Pose::Fast,
                 Tier::Hover => Pose::Idle,
                 Tier::Cruise if c.sideways => Pose::Idle,
                 Tier::Cruise => Pose::Cruise,
@@ -468,6 +483,16 @@ impl Director {
         let event = |p: Pose, name: &str| clip_of(p).and_then(|k| set.events_of(k).iter().find(|e| e.name == name)).map(|e| e.time);
         let time = s.layers[0].time;
         let end = s.layers[0].clip.and_then(|i| set.clips.get(i as usize)).map_or(0.0, |k| k.duration);
+        // Space charging on the ground: the take-off's crouch, held before its launch.
+        if c.charging_ground {
+            if self.pose != Pose::Crouch {
+                self.go(s, Pose::Crouch, tune::FADE_S);
+            } else if time >= tune::GROUND_CHARGE_HOLD_S {
+                s.layers[0].time = tune::GROUND_CHARGE_HOLD_S;
+                s.layers[0].rate = 0.0;
+            }
+            return;
+        }
         match c.state {
             State::Land => {
                 if self.pose != Pose::Land {
@@ -584,13 +609,8 @@ impl Director {
                 }
             }
             Pose::FallLoop if c.state == State::Falling => {}
-            Pose::Crouch => {
-                if c.state == State::Hover || !c.keys {
-                    self.go(s, want, tune::FADE_S);
-                } else if time >= tune::TAKE_OFF_CROUCH_S {
-                    self.go(s, Pose::ToFast, tune::FADE_BREAK_S);
-                }
-            }
+            // Off the ground from the charge's crouch: straight into the pose wanted (the user's mod has no transition clip).
+            Pose::Crouch => self.go(s, want, tune::FADE_S),
             Pose::ToFast => {
                 if time >= end || c.state == State::Hover {
                     self.go(s, want, tune::FADE_S);
@@ -602,12 +622,12 @@ impl Director {
                 }
             }
             Pose::Break => {
-                if c.state == State::Hover || c.keys || c.speed < tune::HOVER_UNDER_MS {
+                if c.state == State::Hover || !c.braking || c.speed < tune::HOVER_UNDER_MS {
                     self.go(s, want, tune::FADE_S);
                 }
             }
             _ if upright && c.boost_edge && c.state == State::Flight => self.go(s, Pose::Crouch, tune::FADE_BREAK_S),
-            _ if speedy && !c.keys && c.state == State::Flight && c.speed >= tune::FAST_FALL_MS => self.go(s, Pose::Break, tune::FADE_BREAK_S),
+            _ if speedy && c.braking && c.state == State::Flight && c.speed >= tune::FAST_FALL_MS => self.go(s, Pose::Break, tune::FADE_BREAK_S),
             _ if speedy && matches!(want, Pose::Cruise | Pose::Idle | Pose::ArmsCrossed) => self.go(s, Pose::ToIdle, tune::FADE_S),
             pose if pose != want => {
                 let fade = if matches!(want, Pose::Hyper | Pose::HyperUp) && speedy { tune::FADE_HYPER_S } else { tune::FADE_S };
@@ -749,6 +769,35 @@ fn follow_camera(hero: &mut Hero, cam: &FlyCamera) {
 }
 
 /// He's over the sea: 1.5 m up, and hovering. To walk on, fly to land.
+/// Out of the air's hold: X, or a tap of Space hovering (the user's mod's drop). Real gravity from here (F4's Falling).
+fn drop_out(hero: &mut Hero, s: &Scene) {
+    hero.frame.to_ballistic(s);
+    hero.state = State::Falling;
+    hero.short_fall = false;
+    (hero.fast, hero.dive, hero.stacks) = (false, false, 0);
+    hero.space.cancel();
+    hero.sound.stop_flying();
+}
+
+/// A puff of dust at his feet (a take-off, a launch), `size` m.
+fn feet_dust(hero: &mut Hero, size: f64, style: Style) {
+    if let Frame::Attached { obj, local_pos, .. } = hero.frame {
+        let feet = local_pos - local_pos.normalize_or(DVec3::Y) * tune::STAND_M;
+        hero.blasts.push(Blast { obj, local: feet, kind: BlastKind::Dust(size, style), shake_m: 0.0 });
+    }
+}
+
+/// A boom of the controls' own (a boost stack, the super run's start), outside F9's barrier: its sound loud by `q` (Pa), a ring where
+/// he is, the camera's kick.
+fn stack_boom(hero: &mut Hero, near: Option<(&BodyInfo, DVec3)>, q: f64) {
+    hero.sound.boom(q.max(1.0e4));
+    if let Some((b, local)) = near {
+        let dir = b.orient.inverse() * hero.air_dir;
+        hero.fx.add_ring(b.obj, local, dir, hero.clock, fx::air_show(q, hero.flow.air.pressure_pa.max(1.0e4)) as f32);
+    }
+    hero.kick_camera(tune::KICK_STACK);
+}
+
 fn hover_over_sea(hero: &mut Hero, s: &Scene) {
     if let Frame::Attached { obj, local_pos, local_vel, .. } = &mut hero.frame {
         if let Some(b) = s.bodies.iter().find(|b| b.obj == *obj) {
@@ -944,6 +993,24 @@ pub(crate) fn hero_move(
     impact::start(hero, &input, &scene, cam.rot * DVec3::NEG_Z, travelling, &assets);
     // A ground punch or the clap holds his moves (`impact.rs`): X and Space do nothing meanwhile.
     let busy = hero.action.locks();
+    // The controls as in the user's Viltrumite mod (`controls.rs`). Space: a tap takes off (on the ground) or drops (hovering); held
+    // it charges, and let go it launches into fast flight (a full charge past the barrier), or past the barrier adds a boost stack.
+    let now = hero.clock;
+    let speed_now = hero.frame.velocity(&scene).length();
+    let super_on = hero.fast && controls::supersonic(&hero.flow, speed_now);
+    let aim_now = cam.rot * DVec3::NEG_Z;
+    let near_now = near_of(pos0).map(|(b, _)| (b, to_local(b, pos0)));
+    let up_now = near_now.map(|(b, local)| b.orient * local.normalize_or(DVec3::Y));
+    // Ctrl+Space on the ground: the super jump (D1; Space alone takes off now).
+    let jump = input.space_pressed && input.ctrl && hero.state == State::Grounded && !travelling && !busy;
+    let space_ok = !travelling && !busy && !jump && !hero.dive && matches!(hero.state, State::Grounded | State::Hover | State::Flight);
+    let space_ev = if space_ok {
+        let full = if super_on { tune::STACK_CHARGE_S } else { tune::LAUNCH_CHARGE_S };
+        hero.space.step(input.space_pressed, input.space, now, dt, full)
+    } else {
+        hero.space.cancel();
+        SpaceEvent::Idle
+    };
     // The keys that change how he moves, before the frame's carry: falling, it and the step belong together (`Frame::carry`).
     if input.z && !travelling && !input.shift && !input.ctrl && !input.alt {
         // Z stops him, whatever he's doing (Go To's stop is input_controls'). On his feet he stays on them.
@@ -951,21 +1018,128 @@ pub(crate) fn hero_move(
             hero.state = State::Hover;
         }
         hero.frame.set_velocity(&scene, DVec3::ZERO);
+        (hero.fast, hero.dive, hero.stacks) = (false, false, 0);
+        hero.space.cancel();
     } else if input.x_pressed && !travelling && !busy && matches!(hero.state, State::Hover | State::Flight) && !input.alt {
-        hero.frame.to_ballistic(&scene);
-        hero.state = State::Falling;
-        hero.short_fall = false;
-        hero.sound.stop_flying();
+        // X drops him too (as a tap of Space hovering does).
+        drop_out(hero, &scene);
     } else if input.space_pressed && !busy && matches!(hero.state, State::Falling | State::Jump) {
-        // F4: he holds still where he is, at once. (Space still held, he flies up from there.) That's the double tap too:
-        // the first press jumped, this is the second.
+        // F4: he holds still where he is, at once.
         hero.frame.set_velocity(&scene, DVec3::ZERO);
         hero.state = State::Hover;
-    } else if input.space_pressed && hero.state == State::Grounded && !travelling && !busy {
+    } else if jump {
         hero.sound.jump(hero.frame.velocity(&scene).length() >= tune::GAIT_SPRINT_MS.1);
         hero.frame.kick_up(tune::JUMP_MS);
         hero.state = State::Jump;
         hero.short_fall = true;
+        hero.super_run = false;
+    }
+    let sound_ms = controls::sound_speed(&hero.flow);
+    let lerp = |(a, b): (f64, f64), k: f64| a + (b - a) * k;
+    match space_ev {
+        SpaceEvent::Started => hero.sound.charge_start(),
+        SpaceEvent::Tap => match hero.state {
+            State::Grounded if hero.super_run && speed_now >= tune::FAST_MIN_MS => {
+                // Off a super run: straight into fast flight at its speed, a little up.
+                let v = hero.frame.velocity(&scene);
+                let up = up_now.unwrap_or(DVec3::Y);
+                let dir = (v.normalize_or(aim_now) + up * 0.2).normalize();
+                hero.state = State::Flight;
+                hero.fast = true;
+                hero.super_run = false;
+                hero.frame.set_velocity(&scene, dir * speed_now);
+                hero.sound.boost_start();
+            }
+            State::Grounded => {
+                // Up into a hover, rising to `TAKE_OFF_HEIGHT_M`.
+                hero.state = State::Flight;
+                hero.rise_t = tune::TAKE_OFF_RISE_S;
+                hero.super_run = false;
+                hero.sound.take_off_ground();
+                feet_dust(hero, 1.2, Style::Plume);
+            }
+            State::Hover | State::Flight if !hero.fast => drop_out(hero, &scene),
+            _ => {}
+        },
+        SpaceEvent::Release(c) if c >= tune::CHARGE_LEAST => {
+            if hero.state == State::Grounded {
+                // The ground launch: where he looks, at least 15 degrees up, faster the longer it charged.
+                let dir = controls::launch_dir(aim_now, up_now.unwrap_or(aim_now));
+                hero.state = State::Flight;
+                hero.fast = true;
+                hero.super_run = false;
+                hero.frame.set_velocity(&scene, dir * controls::launch_speed(0.0, c, sound_ms));
+                hero.sound.launch();
+                hero.kick_camera(lerp(tune::KICK_LAUNCH, c));
+                feet_dust(hero, 1.5 + 2.0 * c, Style::Plume);
+                feet_dust(hero, 1.5 + 3.0 * c, Style::Ring);
+            } else if super_on {
+                // Past the barrier only a full charge does anything: a boost stack, with its own boom.
+                if c >= 0.999 && hero.stacks < tune::STACKS_MAX {
+                    hero.stacks += 1;
+                    let v = hero.frame.velocity(&scene);
+                    hero.frame.set_velocity(&scene, v * tune::STACK_FACTOR);
+                    stack_boom(hero, near_now, hero.flow.q.max(1.0));
+                    info!("viltrumite: boost stack {}: {:.0} m/s", hero.stacks, speed_now * tune::STACK_FACTOR);
+                }
+            } else if matches!(hero.state, State::Hover | State::Flight) {
+                // A launch from a hover (where he looks) or from fast flight (the way he's going).
+                let v = hero.frame.velocity(&scene);
+                let dir = if hero.fast { v.normalize_or(aim_now) } else { aim_now };
+                hero.state = State::Flight;
+                hero.fast = true;
+                hero.frame.set_velocity(&scene, dir * controls::launch_speed(speed_now, c, sound_ms));
+                hero.sound.launch();
+                hero.kick_camera(lerp(tune::KICK_LAUNCH, c));
+            }
+        }
+        _ => {}
+    }
+    // W twice: from a hover into fast flight; on the ground with Shift held, the super run. S twice: out of fast flight to a hover.
+    let tap_w = !travelling && !busy && controls::double_tap(&mut hero.tap_w, input.w_pressed, now);
+    let tap_s = !travelling && !busy && controls::double_tap(&mut hero.tap_s, input.s_pressed, now);
+    match hero.state {
+        State::Grounded if tap_w && input.shift && !hero.space.charging => {
+            hero.super_run = true;
+            stack_boom(hero, near_now, hero.flow.q.max(1.0));
+        }
+        State::Hover | State::Flight if tap_w && !hero.fast && !hero.space.charging => {
+            let v = hero.frame.velocity(&scene);
+            hero.state = State::Flight;
+            hero.fast = true;
+            hero.frame.set_velocity(&scene, aim_now * (tune::FAST_MIN_MS * tune::FAST_ENTRY_SHARE).max(v.length()));
+            hero.sound.boost_start();
+        }
+        State::Flight if tap_s && hero.fast && !hero.dive => {
+            let v = hero.frame.velocity(&scene);
+            hero.fast = false;
+            hero.stacks = 0;
+            hero.frame.set_velocity(&scene, v.clamp_length_max(tune::LAUNCH_TOP_MACH * sound_ms) * tune::FAST_TO_HOVER_SHARE);
+            hero.sound.boost_end();
+        }
+        _ => {}
+    }
+    if hero.state == State::Flight && hero.fast && input.s && hero.stacks > 0 {
+        info!("viltrumite: boost stacks cleared (S): {} lost", hero.stacks);
+        hero.stacks = 0;
+    }
+    // Ctrl in fast flight: the dive, straight down into a landing; let go before the ground, he pulls up into a hover.
+    if hero.state == State::Flight && hero.fast && !travelling {
+        if input.ctrl && !hero.dive {
+            hero.dive = true;
+            hero.stacks = 0;
+        } else if !input.ctrl && hero.dive {
+            hero.dive = false;
+            hero.fast = false;
+            let v = hero.frame.velocity(&scene);
+            hero.frame.set_velocity(&scene, v * tune::DIVE_PULL_UP_SHARE);
+            hero.sound.boost_end();
+        }
+    }
+    // The charge's tremble: building to a rumble on the ground, half that in the air.
+    if hero.space.charging {
+        let k = if hero.state == State::Grounded { 1.0 } else { 0.5 };
+        hero.shake = hero.shake.max(k * lerp(tune::CHARGE_TREMBLE, hero.space.charge));
     }
 
     // A test's orbit: at K x the circular speed round the nearest body, the way he looks.
@@ -1045,9 +1219,12 @@ pub(crate) fn hero_move(
     // (A ground punch or the clap, started above, holds his moves.)
     let locked = hero.action.locks();
     let lift = up_here.unwrap_or(aim_up);
-    let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * input.up as f64).normalize_or_zero();
+    // Hovering: WASD where he looks (look up and W to rise), Ctrl straight down; Space is a tap or a charge, never up. Fast flight
+    // has its own step (`controls::fast_step`), and a charge holds a hover still.
+    let down = if input.ctrl { -1.0 } else { 0.0 };
+    let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * down).normalize_or_zero();
     // (A Go To carries him: Shift and Ctrl held from Shift+G and Ctrl+G, or Space, fly nothing meanwhile.)
-    let mut flight_in = if travelling || locked { FlightIn::default() } else { FlightIn { wish, boost: input.shift, boost_edge: input.shift && !hero.was_boost, hold: input.forward > 0.0 } };
+    let mut flight_in = if travelling || locked || hero.fast || hero.space.charging { FlightIn::default() } else { FlightIn { wish, boost: false, boost_edge: false, hold: false } };
     // Off the shore with the keys down: he hovers there until they're let go, or running into the sea launches him.
     if hero.keys_up_first {
         if flight_in.any() {
@@ -1063,29 +1240,17 @@ pub(crate) fn hero_move(
             hero.ctrl_up_first = false;
         }
     }
-    let boost_released = hero.was_boost && !input.shift;
-    hero.was_boost = input.shift;
-    let take_off = hero.state == State::Hover && flight_in.any();
-    if take_off {
+    hero.was_boost = false;
+    // Hovering about is silent (the user's mod: its whoosh sounded like the boom).
+    if hero.state == State::Hover && flight_in.any() {
         hero.state = State::Flight;
         hero.ramp_t = 0.0;
-        hero.sound.take_off();
-        if flight_in.boost {
-            hero.sound.launch();
-        }
-    }
-    if hero.state == State::Flight && !travelling {
-        if flight_in.boost_edge || (take_off && flight_in.boost) {
-            hero.sound.boost_start();
-        }
-        if boost_released {
-            hero.sound.boost_end();
-        }
     }
     if hero.state.on_foot() {
         hero.state_t += dt;
         // The keys, along the ground. (Looking straight down, the view's up says which way forward is.)
-        let keys = hero.state == State::Grounded && !travelling && !locked;
+        // (A Space charge roots him to the spot.)
+        let keys = hero.state == State::Grounded && !travelling && !locked && !hero.space.charging;
         let up = near.map_or(lift, |(b, local)| b.orient * local.normalize_or(DVec3::Y));
         let flat = fwd - up * fwd.dot(up);
         let view_up = aim_up * -fwd.dot(up).signum();
@@ -1094,7 +1259,13 @@ pub(crate) fn hero_move(
         let wish = if keys { (ahead * input.forward as f64 + side * input.right as f64).normalize_or_zero() } else { DVec3::ZERO };
         walking = wish != DVec3::ZERO;
         hero.shift_t = if input.shift { hero.shift_t + dt } else { 0.0 };
-        let speed = if !input.shift {
+        // The super run lasts while Shift and W are held.
+        if hero.super_run && !(input.shift && input.w) {
+            hero.super_run = false;
+        }
+        let speed = if hero.super_run {
+            tune::SUPER_RUN_MS
+        } else if !input.shift {
             tune::WALK_MS
         } else if hero.shift_t >= tune::SPRINT_AFTER_S {
             tune::SPRINT_MS
@@ -1153,13 +1324,52 @@ pub(crate) fn hero_move(
         let surface = near.map_or(f64::INFINITY, |(b, local)| height_over(b, local).max(0.0)).min(cam.nearest_galaxy);
         let cap = cap_at(air_model.as_ref().map(|(_, a)| (a, height)), surface);
         let v = hero.frame.velocity(&scene);
-        let nv = flight_step(v, &mut hero.ramp_t, &flight_in, fwd, cap, dt);
-        if !flight_in.any() && nv.length() < tune::HOVER_UNDER_MS {
-            hero.frame.set_velocity(&scene, DVec3::ZERO);
-            hero.state = State::Hover;
-        } else {
+        let up = near.map_or(aim_up, |(b, local)| b.orient * local.normalize_or(DVec3::Y));
+        if hero.dive {
+            hero.frame.set_velocity(&scene, controls::dive_step(v, -up, cap, dt));
+        } else if hero.fast {
+            let steer = if super_on { tune::STEER_SUPER * (1.0 + tune::STEER_STACK * hero.stacks as f64) } else { tune::STEER_FAST };
+            let (w, s) = (input.w && !travelling && !locked, input.s && !travelling && !locked);
+            let nv = controls::fast_step(v, &mut hero.ramp_t, fwd, w, input.w_pressed, s, steer, cap, dt);
+            if s && nv.length() < tune::FAST_MIN_MS * 0.9 {
+                // Braked out of fast flight: a hover.
+                hero.fast = false;
+                hero.stacks = 0;
+                hero.sound.boost_end();
+            }
             hero.frame.set_velocity(&scene, nv);
+        } else {
+            let mut nv = flight_step(v, &mut hero.ramp_t, &flight_in, fwd, cap, dt);
+            if hero.space.charging {
+                nv = v * (-tune::CHARGE_HOLD_RATE * dt).exp();
+            }
+            // Just off the ground: up to a comfortable height.
+            if hero.rise_t > 0.0 {
+                hero.rise_t -= dt;
+                if let Some((b, local)) = near {
+                    let h = local.length() - ground(b, local).radial - tune::STAND_M;
+                    if h < tune::TAKE_OFF_HEIGHT_M && input.forward <= 0.0 {
+                        let want = (tune::TAKE_OFF_HEIGHT_M - h) * 3.0;
+                        nv += up * (want - nv.dot(up)).max(0.0);
+                    }
+                }
+            }
+            if !flight_in.any() && nv.length() < tune::HOVER_UNDER_MS && hero.rise_t <= 0.0 && !hero.space.charging {
+                hero.frame.set_velocity(&scene, DVec3::ZERO);
+                hero.state = State::Hover;
+            } else {
+                hero.frame.set_velocity(&scene, nv);
+            }
         }
+    }
+    // Fast flight, the dive and the stacks are flight's alone; the stacks last only past the barrier.
+    if hero.state != State::Flight {
+        (hero.fast, hero.dive, hero.stacks) = (false, false, 0);
+        hero.rise_t = 0.0;
+    }
+    if hero.stacks > 0 && (!hero.fast || !controls::supersonic(&hero.flow, hero.frame.velocity(&scene).length())) {
+        info!("viltrumite: boost stacks cleared (below the barrier): {} lost", hero.stacks);
+        hero.stacks = 0;
     }
     // (The frame he walks off something, the fall waits for the next one: this frame's `carry` was on foot, and a ballistic step
     // after it would throw him by the ground's turn, 7.75 m at Earth's equator.)
@@ -1176,8 +1386,22 @@ pub(crate) fn hero_move(
         // F4: falling he lands. Flying, with Ctrl or by hitting it hard enough.
         let flown = out.flown_into.filter(|&into| {
             let footing = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(Footing::Nothing, |b| (scene.footing)(b, out.at));
-            hero.state == State::Flight && ground::flight_lands(into, input.ctrl, footing)
+            // Fast flight skims along the ground, never down into it (the user's mod); only the dive (Ctrl) comes down, hard.
+            hero.state == State::Flight && (!hero.fast || hero.dive) && ground::flight_lands(into, input.ctrl, footing)
         });
+        if hero.fast && !hero.dive && out.flown_into.is_some() {
+            if let Some((b, _)) = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).zip(Some(())) {
+                if let Frame::Attached { local_pos, .. } = hero.frame {
+                    let up = b.orient * local_pos.normalize_or(DVec3::Y);
+                    let v = hero.frame.velocity(&scene);
+                    let into = v.dot(up).min(0.0);
+                    if into < 0.0 {
+                        let along = v - up * into;
+                        hero.frame.set_velocity(&scene, along.normalize_or(v) * v.length());
+                    }
+                }
+            }
+        }
         if let Some(into) = out.contact.or(flown) {
             touch_down(hero, &scene, into, &out);
         }
@@ -1244,7 +1468,8 @@ pub(crate) fn hero_move(
     // The clips.
     let body_inv = hero.rot.inverse();
     let in_body = body_inv * v;
-    let steer = body_inv * flight_in.wish.try_normalize().unwrap_or(if flight_in.boost { fwd } else { dir });
+    // (Fast flight steers towards the look: its lean says how far.)
+    let steer = body_inv * flight_in.wish.try_normalize().unwrap_or(if hero.fast { fwd } else { dir });
     let slow = speed <= tune::BODY_ALONG_VELOCITY_MS;
     let lean = if slow {
         [(in_body.x / tune::FLY_MS) as f32, (in_body.y / tune::FLY_MS) as f32, (-in_body.z / tune::FLY_MS) as f32]
@@ -1267,8 +1492,12 @@ pub(crate) fn hero_move(
         climb_deg,
         sideways: slow && !forwardish,
         lean: if air_moves { lean } else { [0.0; 3] },
-        keys: flight_in.any() || hero.cruise.is_some(),
-        boost_edge: take_off && flight_in.boost,
+        keys: flight_in.any() || hero.cruise.is_some() || hero.fast && (input.w || input.s),
+        boost_edge: false,
+        fast: hero.fast,
+        braking: hero.fast && input.s,
+        charging_ground: hero.space.charging && hero.state == State::Grounded,
+        charging_air: hero.space.charging && matches!(hero.state, State::Hover | State::Flight) && !hero.fast,
         short_fall: hero.short_fall,
         sliding: hero.sliding && hero.state == State::Grounded,
         walking,
@@ -1337,6 +1566,13 @@ pub(crate) fn hero_move(
         Follow { target: b.obj, last_pos: b.pos, last_rot: if locked { b.orient } else { DQuat::IDENTITY }, locked, sync: locked }
     });
 
+    // The camera's shake and kick die out; the view widens by the kick, fast flight's speed and the stacks (the user's mod).
+    hero.shake = (hero.shake - tune::SHAKE_DECAY * dt).max(0.0);
+    hero.kick = (hero.kick - tune::KICK_DECAY * dt).max(0.0);
+    let share = if hero.fast { controls::speed_share(speed, controls::sound_speed(&hero.flow)) } else { 0.0 };
+    let fov_want = tune::FOV_KICK_DEG * hero.kick + tune::FOV_SPEED_DEG * share + tune::FOV_STACK_DEG * hero.stacks as f64;
+    hero.fov_add += (fov_want - hero.fov_add) * (1.0 - (-tune::FOV_EASE * dt).exp());
+
     // The readout.
     let a_frame = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(DVec3::ZERO, |b| gravity_at(&bodies, b.pos));
     // A Go To or a landing carries him at rest in his own frame (`follow_camera`): through the air he goes as fast as the camera
@@ -1371,6 +1607,8 @@ pub(crate) fn hero_move(
     match boom_event {
         Some(BoomEvent::Boom(q)) => {
             hero.sound.boom(q);
+            // The user: the camera shakes when he breaks the barrier (their mod's `SonicBoom.Fire`: `Kick(1)`).
+            hero.kick_camera(tune::KICK_BOOM);
             if let Some((b, local)) = near {
                 hero.fx.add_ring(b.obj, local, b.orient.inverse() * hero.air_dir, hero.clock, fx::air_show(q, hero.flow.air.pressure_pa) as f32);
             }
@@ -1737,11 +1975,10 @@ mod tests {
         assert_eq!(d.pose, Pose::Idle);
         step(hover, 4.0, &mut d, &mut s);
         assert_eq!(d.pose, Pose::ArmsCrossed);
-        let boost = Cue { state: State::Flight, speed: 100.0, keys: true, boost_edge: true, ..default() };
+        // Fast flight (the user's mod): its flying pose from the start, no take-off clip.
+        let boost = Cue { state: State::Flight, speed: 100.0, keys: true, fast: true, ..default() };
         step(boost, 0.2, &mut d, &mut s);
-        assert_eq!(d.pose, Pose::Crouch);
-        step(Cue { speed: 200.0, ..boost }, 0.5, &mut d, &mut s);
-        assert_eq!(d.pose, Pose::ToFast);
+        assert_eq!(d.pose, Pose::Fast);
         step(Cue { speed: 400.0, ..boost }, 1.5, &mut d, &mut s);
         assert_eq!(d.pose, Pose::Fast);
         step(Cue { speed: 5000.0, ..boost }, 0.5, &mut d, &mut s);
@@ -1752,8 +1989,8 @@ mod tests {
         assert_eq!(d.pose, Pose::HyperUp, "hysteresis");
         step(Cue { speed: 5000.0, climb_deg: 30.0, ..boost }, 0.5, &mut d, &mut s);
         assert_eq!(d.pose, Pose::Hyper);
-        // Let go: the break, then still.
-        step(Cue { speed: 2000.0, keys: false, ..boost }, 0.2, &mut d, &mut s);
+        // S held: the break, then still.
+        step(Cue { speed: 2000.0, braking: true, ..boost }, 0.2, &mut d, &mut s);
         assert_eq!(d.pose, Pose::Break);
         step(hover, 0.5, &mut d, &mut s);
         assert_eq!(d.pose, Pose::Idle);

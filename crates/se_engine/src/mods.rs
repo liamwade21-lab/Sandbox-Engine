@@ -265,6 +265,13 @@ pub struct ModInput {
     pub alt: bool,
     /// Pressed this frame.
     pub space_pressed: bool,
+    /// Space held (the user's Viltrumite mod: a tap or a charge).
+    pub space: bool,
+    /// W and S held, and pressed this frame (double taps).
+    pub w: bool,
+    pub s: bool,
+    pub w_pressed: bool,
+    pub s_pressed: bool,
     pub x_pressed: bool,
     pub z: bool,
     /// The mouse, unless the menus have it. (From step 8: punches, the charge.)
@@ -294,6 +301,11 @@ impl ModInput {
             ctrl,
             alt: keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
             space_pressed: keys.just_pressed(KeyCode::Space),
+            space: keys.pressed(KeyCode::Space),
+            w: keys.pressed(KeyCode::KeyW),
+            s: keys.pressed(KeyCode::KeyS),
+            w_pressed: keys.just_pressed(KeyCode::KeyW),
+            s_pressed: keys.just_pressed(KeyCode::KeyS),
             x_pressed: keys.just_pressed(KeyCode::KeyX),
             z: keys.just_pressed(KeyCode::KeyZ),
             mouse_lost: menus,
@@ -987,7 +999,7 @@ mod tests {
         for must in ["omniman.sevm", "clips.sevc", "sfx/sonic_boom_v2.ogg", "props/nibsuper_rock1.sehm", "sprites/ptfx_smoke_wispy_anim.dds"] {
             assert!(needs.contains(&must), "{must} isn't a Need");
         }
-        assert_eq!(needs.iter().filter(|n| n.starts_with("sfx/")).count(), 27, "the plan's sound tables");
+        assert_eq!(needs.iter().filter(|n| n.starts_with("sfx/")).count(), 32, "the plan's sound tables, and the user's mod's punch sounds (2026-11-07)");
     }
 
     #[test]
@@ -1055,7 +1067,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
 
         let m = read_mod(&[tree()], "viltrumite");
-        assert_eq!(m.needs.len(), 53);
+        assert_eq!(m.needs.len(), 58);
         let started = std::time::Instant::now();
         check_files(&[tree()], "viltrumite", &m.needs).unwrap();
         println!("the whole mod checked in {} ms", started.elapsed().as_millis());
@@ -1087,7 +1099,7 @@ mod tests {
                 assert!(jump < 6.0 * rms(tail).max(0.01) * 0.5 + 0.08, "{name}: a click at the seam, {jump}");
             }
         }
-        assert_eq!(count, 27);
+        assert_eq!(count, 32);
     }
 
     #[test]

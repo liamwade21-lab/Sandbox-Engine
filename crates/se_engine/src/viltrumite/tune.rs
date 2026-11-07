@@ -476,8 +476,6 @@ pub const FASTER_HEAT_K: (f64, f64) = (2500.0, 6000.0);
 pub const HUM_VOLUME: f32 = 0.12;
 pub const HUM_LOG_Q: (f64, f64) = (0.0, 2.0);
 pub const HUM_PITCH: f32 = 0.6;
-/// `fastFlight_start`'s volume for a plain take-off (Hover to Flight): Shift plays it in full.
-pub const TAKE_OFF_GAIN: f32 = 0.35;
 /// At most this many one-shots at a time: a new one takes the place of the one that's played longest.
 pub const SHOTS_MAX: usize = 8;
 /// A one-shot's share of its volume in vacuum (D12), up to all of it between these pressures (Pa, logarithmically): what the sounds
@@ -494,7 +492,7 @@ pub const SPLASH_PITCH: f32 = 0.6;
 pub const SPLASH_GAIN: (f32, f32) = (0.15, 1.0);
 pub const SPLASH_SPEED_MS: (f64, f64) = (2.0, 35.0);
 /// The boom's loudness (step 7), from the first to the second as `log10 q` goes between these: 1.5 is the top of Earth's boom, 4.8 sea level.
-pub const BOOM_GAIN: (f32, f32) = (0.3, 1.0);
+pub const BOOM_GAIN: (f32, f32) = (0.6, 1.0);
 pub const BOOM_LOG_Q: (f64, f64) = (1.5, 4.8);
 
 // ---- His light (step 3) ----
@@ -529,3 +527,80 @@ pub const FILL_FAR_RADII: f64 = 50.0;
 /// Near a body it comes in as the star goes down: the sine of how far under his horizon it is, from and to.
 pub const FILL_NIGHT_FROM: f64 = 0.0;
 pub const FILL_NIGHT_TO: f64 = 0.2;
+
+// ---- The controls as in the user's own Viltrumite mod (the user, 2026-11-07; `controls.rs`) ----
+/// Space let go sooner than this is a tap: take off on the ground, drop in a hover (s).
+pub const TAP_S: f64 = 0.22;
+/// A launch's charge fills in this long (s); a boost stack's, past the barrier, in `STACK_CHARGE_S`.
+pub const LAUNCH_CHARGE_S: f64 = 1.4;
+pub const STACK_CHARGE_S: f64 = 0.7;
+/// A charge let go under this share does nothing (a tap that ran on).
+pub const CHARGE_LEAST: f64 = 0.08;
+/// Two presses of W (or S) within this long are a double tap (s).
+pub const DOUBLE_TAP_S: f64 = 0.3;
+/// Fast flight's least speed (m/s): under 0.9 of it (S braking), he's back in a hover.
+pub const FAST_MIN_MS: f64 = 60.0;
+/// A full launch reaches this many times the local speed of sound (out of the air `SOUND_REF_MS`'s): past the barrier, a boom.
+pub const LAUNCH_TOP_MACH: f64 = 1.3;
+pub const SOUND_REF_MS: f64 = 343.0;
+/// Double W into fast flight at least this share over `FAST_MIN_MS`.
+pub const FAST_ENTRY_SHARE: f64 = 1.35;
+/// Fast flight turns towards the look at this rate (1/s); past the barrier `STEER_SUPER` x (1 + `STEER_STACK` x stacks).
+pub const STEER_FAST: f64 = 3.2;
+pub const STEER_SUPER: f64 = 3.8;
+pub const STEER_STACK: f64 = 0.6;
+/// S in fast flight halves the speed every this long (s).
+pub const S_BRAKE_HALF_S: f64 = 0.35;
+/// Boost stacks (a full charge past the barrier): x this each, at most this many, each with a boom.
+pub const STACK_FACTOR: f64 = 1.5;
+pub const STACKS_MAX: u32 = 5;
+/// The dive (Ctrl in fast flight): straight down, turning at this rate (1/s) and gaining this (m/s2).
+pub const DIVE_TURN: f64 = 6.0;
+pub const DIVE_ACCEL: f64 = 30.0;
+/// Ctrl let go in a dive: a hover with this share of his speed; double S out of fast flight: this one.
+pub const DIVE_PULL_UP_SHARE: f64 = 0.25;
+pub const FAST_TO_HOVER_SHARE: f64 = 0.35;
+/// A tap of Space on the ground takes him up to this height (m) over the first `TAKE_OFF_RISE_S` of the hover.
+pub const TAKE_OFF_HEIGHT_M: f64 = 3.0;
+pub const TAKE_OFF_RISE_S: f64 = 0.8;
+/// A ground launch goes at least this far over the level (degrees).
+pub const LAUNCH_MIN_UP_DEG: f64 = 15.0;
+/// The hover holds still while Space charges: its speed goes as exp(-this x t).
+pub const CHARGE_HOLD_RATE: f64 = 5.0;
+/// The ground charge's crouch: `charge_flight_stopped` held at this time into it (s; its launch is at 0.5).
+pub const GROUND_CHARGE_HOLD_S: f32 = 0.42;
+/// Super run (Shift held, W twice, on the ground): this speed (m/s), with a boom at its start.
+pub const SUPER_RUN_MS: f64 = 80.0;
+/// The camera's kick: a boom 1, a launch from the first to the second by its charge, a stack's boom `KICK_STACK`, a charged punch
+/// up to `KICK_PUNCH`. It shakes by 0.8 of it and widens the view by `FOV_KICK_DEG` at 1.
+pub const KICK_BOOM: f64 = 1.0;
+pub const KICK_LAUNCH: (f64, f64) = (0.35, 0.95);
+pub const KICK_STACK: f64 = 1.0;
+pub const KICK_PUNCH: f64 = 0.7;
+/// The charge's tremble, from the first to the second as it fills (the ground's; the hover's is half).
+pub const CHARGE_TREMBLE: (f64, f64) = (0.15, 0.9);
+/// The shake dies at this much a second, the kick at this (units of 1).
+pub const SHAKE_DECAY: f64 = 1.8;
+pub const KICK_DECAY: f64 = 0.9;
+/// His shake turns the view up to this at 1 (degrees; the user wanted a shake when he breaks the barrier: more than F7's 1 degree).
+pub const HERO_SHAKE_DEG: f64 = 1.5;
+/// The view widens by `FOV_KICK_DEG` at a kick of 1, by `FOV_SPEED_DEG` at fast flight's top, by `FOV_STACK_DEG` a stack; eased.
+pub const FOV_KICK_DEG: f64 = 14.0;
+pub const FOV_SPEED_DEG: f64 = 12.0;
+pub const FOV_STACK_DEG: f64 = 3.0;
+pub const FOV_EASE: f64 = 4.0;
+/// The left button: held past `PUNCH_WIND_S` it winds up (`charge_attack`); let go past `PUNCH_CHARGE_S` a charged punch, full at
+/// `PUNCH_FULL_S`; clicks within `COMBO_S` chain the combo.
+pub const PUNCH_WIND_S: f64 = 0.15;
+pub const PUNCH_CHARGE_S: f64 = 0.55;
+pub const PUNCH_FULL_S: f64 = 2.2;
+pub const COMBO_S: f64 = 0.6;
+/// A charged punch's blast: a crater from the first to the second radius by the charge (m) where it meets the ground, dust in the air.
+pub const CHARGED_CRATER_M: (f64, f64) = (2.5, 10.0);
+/// Every sound of his this much louder (the user, 2026-11-07: "the sound effect is to quiet").
+pub const SOUND_GAIN: f32 = 2.0;
+/// The roar past the barrier (`fasterFlight_loop`), as the user's mod plays it: from the first to the second by the speed, more by
+/// `ROAR_STACK` a stack, pitched up by the same; fast flight under the barrier `fastFlight_loop` from the first to the second.
+pub const ROAR_LEVEL: (f32, f32) = (0.6, 1.0);
+pub const ROAR_STACK: f32 = 0.08;
+pub const FAST_LOOP_LEVEL: (f32, f32) = (0.35, 0.85);

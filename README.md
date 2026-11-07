@@ -177,23 +177,34 @@ first mod is **Viltrumite powers** (plan: `docs/spec-mods-viltrumite-powers.md`)
 
 While he is on the panels are hidden and a small readout (speed, Mach in air, height, gravity, heat) stands in the corner:
 
+Since 2026-11-07 the controls are the ones of your own Viltrumite mod (`C:\Users\liamw\Desktop\Viltrumite`); a line at the bottom of
+the screen shows the keys for what he's doing, a cross marks the middle and a bar under it shows a charge.
+
 | Input | What he does |
 |---|---|
-| Mouse | Looks. Below the atmosphere's height the view keeps the horizon level, above it it's free |
-| W, A, S, D | Fly at 20 m/s. W alone keeps the speed he has; with no keys the speed halves every 0.15 s and he hovers. On the ground: walk, 1.8 m/s |
-| Shift | Boost: 300 m/s after 1 s, 3 km/s after 3 s, 30 km/s after 6 s. In air that's the limit (below 25 scale heights); in space it doubles every second, the speed of light about 13 s later, 1000 c about 23 s later, easing near anything (at most 3 times the distance to the nearest surface per second) |
-| Shift on the ground | Run, 5 m/s; held 1.5 s, sprint, 11 m/s |
-| Space, Ctrl | Fly up, down. Flying into the ground at 12 m/s or more is a landing, whatever the keys; slower, Ctrl sets him down and without it he skims along |
-| Space on the ground | Jump, 28 m/s up: 40 m on Earth, 242 m on the Moon. Press it again in the air (the double tap) and he hovers there |
-| X | Stop flying: real gravity and drag, 45 m/s at the bottom of Earth's air, an orbit if he's fast enough |
+| Mouse | Looks; in fast flight it steers. Below the atmosphere's height the view keeps the horizon level, above it it's free |
+| Space on the ground | Tap: take off into a hover. Hold: charge (a crouch, a rumble, the charge sound, the bar), let go: launch into fast flight where you look, at least 15 degrees up, faster the longer it charged. A full charge (1.4 s) breaks the sound barrier: a boom |
+| Ctrl+Space on the ground | Super jump, 28 m/s up: 40 m on Earth, 242 m on the Moon |
+| W, A, S, D hovering | Move at 20 m/s where you look (look up and W to rise); Ctrl goes straight down and sets him down on the ground |
+| W twice | From a hover into fast flight |
+| Space hovering | Tap: drop (real gravity and drag; an orbit if he's fast enough). Hold, let go: a launch into fast flight where you look |
+| W, S in fast flight | Faster (300 m/s after 1 s, 3 km/s after 3 s, 30 km/s after 6 s; in air that's the limit; in space it doubles every second: light speed about 13 s later, 1000 c about 23 s later, easing near anything), slower. No keys: he keeps his speed. Over the ground he skims along it, never down into it |
+| S twice | Out of fast flight into a hover |
+| Ctrl in fast flight | Dive straight down into a cratering landing; let go before the ground to pull up into a hover |
+| Space held past the barrier | When the bar is full (0.7 s) let go: a boost stack, 1.5 times the speed and a boom each, up to 5. S, a dive, a hover or dropping under the barrier ends them |
+| Shift + W on the ground | Run, 5 m/s; held 1.5 s, sprint, 11 m/s. Shift held and W twice: a super run at 80 m/s with a boom at its start; tap Space while running and he takes off into fast flight at that speed |
+| X | Drop, as a tap of Space hovering |
 | Space while falling | Stops the fall at once: he hovers where he is |
 | Z | Stop dead, in the air; on the ground he just stops walking |
 | Wheel | Camera nearer or further (2.5 to 200 m) |
 | Tab | The menus: the panels come back and the mouse goes to them, the keys stay his. Tab again to go back. The same happens by itself when the window loses the focus |
-| G, Shift+G, Ctrl+G | Go to the selection, land on it, go to its centre, as usual: it carries him (into a solid body's centre, as far as its ground); WASD or Z stop it |
-| T | Nothing: the camera follows him, so it can't track |
-| Left button | Punch (a 5 m reach: into the ground it throws up a puff). Aimed 45 degrees or more down within 15 m of the ground: a ground punch, down to the ground and a 6 m crater |
-| Right button | Hold to charge the thunderclap (0.4 to 2.5 s), let go to clap: a ring of air 30 to 150 m in radius by the charge, and dust kicked up when he's over the ground. Let go sooner, or open the menus (Tab) or leave the window while charging, and nothing happens. It breaks nothing |
+| G, Shift+G, Ctrl+G | Go to the selection, land on it, go to its centre, as usual: it carries him; WASD or Z stop it |
+| Left button | Click: a punch (a 5 m reach); quick clicks chain a combo, the fourth the superman punch. Hold, then let go: a charged punch (from 0.55 s, full at 2.2 s, the bar shows it) that blows up where it lands, a crater where that's near the ground. Aimed 45 degrees or more down within 15 m of the ground, a click is a ground punch: down to the ground and a 6 m crater |
+| Right button | Hold to charge the thunderclap (0.4 to 2.5 s), let go to clap: a ring of air 30 to 150 m in radius by the charge, and dust kicked up when he's over the ground |
+
+Breaking the sound barrier (by real physics, or a boost stack, or a super run's start) shakes the camera and widens the view for a
+moment; fast flight widens it a little with speed and each stack. Past the barrier in air the roar of fast flight plays; under it the
+air rushing past. All his sounds are twice as loud as before (your note: too quiet).
 
 The air does what its physics says, on every world by its own air. Past the speed of sound (Earth about 335 m/s at sea level, Mars 233, Venus 449) a sonic boom goes off with a ring of cloud, and a cone of vapour hangs round him up to Mach 1.6; slowing back down it ends with a softer sound and a puff of the cone, no boom. Above the air, 55 km on Earth, 16 on Mars, 188 on Venus, there is no boom and no cone, so coming in from orbit doesn't boom, and a world with under 150 Pa of air never does. Faster still his skin heats: dull orange at 800 K (about 1 km/s at sea level on Earth, 7 times less speed on Venus), yellow at 2,000, white with a shell of plasma round him at 3,500, a blue-white trail from 6,000, and at 10,000 K (9.7 km/s at sea level) the look goes no further; only the shell and the trail get bigger. The heat bar in the readout shows it, in its colour. He cools over seconds when he slows. Neither hurts him or slows him. The trail lies behind the camera in a straight line: you see it when you turn, or with the view off to the side. A Go To through the air booms and heats him too, by its real speed through the air: a landing from orbit or a Go To leaving from near the ground makes him white-hot for a moment.
 

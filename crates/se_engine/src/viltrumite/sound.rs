@@ -64,6 +64,11 @@ sounds! {
     Clap2 "thunderclap2",
     Clap3 "thunderclap3",
     Shockwave "sentry_tk_shockwave1",
+    PunchCharged1 "bPunch_1",
+    PunchCharged2 "bPunch_2",
+    HitBuilding2 "hPunch_2",
+    MeleeStart2 "melee_start_2",
+    MeleeStart4 "melee_start_4",
 }
 
 impl Sfx {
@@ -114,21 +119,36 @@ pub struct Reading {
     pub heat_k: f64,
     /// Hovering or flying: not falling, not on his feet. (Only the hum minds, and only in air: `loop_levels`.)
     pub flying: bool,
-    /// The right button is held.
+    /// A charge runs: the right button's clap, Space's launch or stack, the left button's punch.
     pub charging: bool,
+    /// How full it is (0..1).
+    pub charge: f32,
+    /// The user's mod's loops: fast flight (`fastFlight_loop` by its speed under the barrier, `fasterFlight_loop` past it, more
+    /// and higher by the stacks). `share`: fast flight's speed in its range (`controls::speed_share`).
+    pub fast: bool,
+    pub supersonic: bool,
+    pub stacks: u32,
+    pub share: f32,
 }
 
 /// F10's table: each loop's volume (0..1, before `SoundSettings`) and pitch. The hum is for flying, and out of the air for whatever
 /// he's doing: D12 is "quiet in space, not silent", and nothing else has a level there (an orbit is a long fall).
 pub fn loop_levels(r: &Reading) -> [(f32, f32); 4] {
     let log_q = r.flow.log_q();
-    let hums = if r.flying { 1.0 } else { 1.0 - air_k(r.flow.air.pressure_pa) };
+    let air = air_k(r.flow.air.pressure_pa);
+    let hums = if r.flying { 1.0 } else { 1.0 - air };
+    let lerp = |(a, b): (f32, f32), k: f32| a + (b - a) * k.clamp(0.0, 1.0);
+    // The user's mod: the fast loop through fast flight, the roar past the barrier, in air (the user, 2026-11-07: "there is no wind
+    // sound effect as he is going very fast thru the atmosphere").
+    let stacks = r.stacks.min(tune::STACKS_MAX) as f32;
+    let fast_mode = if r.fast && !r.supersonic { lerp(tune::FAST_LOOP_LEVEL, r.share) } else { 0.0 };
+    let roar = if r.fast && r.supersonic { (lerp(tune::ROAR_LEVEL, r.share) + tune::ROAR_STACK * stacks).min(1.0) } else { 0.0 };
     [
-        (ramp(log_q, tune::FAST_LOG_Q), fast_pitch(r.flow.mach)),
-        (ramp(r.heat_k, tune::FASTER_HEAT_K), 1.0),
+        (ramp(log_q, tune::FAST_LOG_Q).max(fast_mode * air), fast_pitch(r.flow.mach)),
+        (ramp(r.heat_k, tune::FASTER_HEAT_K).max(roar * air), 1.0 + tune::ROAR_STACK * stacks),
         (tune::HUM_VOLUME * hums * (1.0 - ramp(log_q, tune::HUM_LOG_Q)), tune::HUM_PITCH),
-        // (The table gives it no curve; D12 keeps it with `flightCharge_start`, which it follows.)
-        (if r.charging { air_share(r.flow.air.pressure_pa) } else { 0.0 }, 1.0),
+        // (As the user's mod: 0.45 swelling to 0.95 as it fills; quiet out of the air with `flightCharge_start`, which it follows.)
+        (if r.charging { air_share(r.flow.air.pressure_pa) * (0.45 + 0.5 * r.charge.clamp(0.0, 1.0)) } else { 0.0 }, 1.0),
     ]
 }
 
@@ -167,12 +187,30 @@ impl Cues {
         }
     }
 
-    /// `fastFlight_start`, quietly: Hover to Flight. (Shift then asks for the same file in full, and that one counts.)
-    pub fn take_off(&mut self) {
-        self.ask(Sfx::FastStart, tune::TAKE_OFF_GAIN, 1.0);
+    /// `jump_exp`, a little quieter: a tap of Space takes him off the ground (the user's mod's take-off).
+    pub fn take_off_ground(&mut self) {
+        self.ask(Sfx::JumpExp, 0.8, 1.0);
     }
 
-    /// `superSonic_launch_1`: Shift pressed in Hover.
+    /// The charged punch lands: `bPunch_1`, `bPunch_2` in turn, and the smash.
+    pub fn punch_charged(&mut self) {
+        self.blows = self.blows.wrapping_add(1);
+        self.ask(if self.blows % 2 == 0 { Sfx::PunchCharged1 } else { Sfx::PunchCharged2 }, 1.0, 1.0);
+        self.ask(Sfx::Smash, 0.8, 1.0);
+    }
+
+    /// The punch's wind-up begins: one of `melee_start_1` to `4`.
+    pub fn windup(&mut self) {
+        self.swings = self.swings.wrapping_add(1);
+        self.ask([Sfx::MeleeStart1, Sfx::MeleeStart2, Sfx::MeleeStart3, Sfx::MeleeStart4][self.swings as usize % 4], 0.8, 1.0);
+    }
+
+    /// The punch's charge is full: `flightCharge_start`, pitched up (the user's mod).
+    pub fn punch_ready(&mut self) {
+        self.ask(Sfx::ChargeStart, 1.0, 1.5);
+    }
+
+    /// `superSonic_launch_1`: a charged launch.
     pub fn launch(&mut self) {
         self.ask(Sfx::Launch, 1.0, 1.0);
     }
@@ -234,7 +272,7 @@ impl Cues {
     /// Step 8: `melee_start_1`, `melee_start_3` in turn: a punch's swing.
     pub fn punch_swing(&mut self) {
         self.swings = self.swings.wrapping_add(1);
-        self.ask(if self.swings % 2 == 0 { Sfx::MeleeStart1 } else { Sfx::MeleeStart3 }, 1.0, 1.0);
+        self.ask([Sfx::MeleeStart1, Sfx::MeleeStart2, Sfx::MeleeStart3, Sfx::MeleeStart4][self.swings as usize % 4], 1.0, 1.0);
     }
 
     /// Step 8: `punch_1`, `punch_2`, `punch_3` in turn: a punch lands.
@@ -245,7 +283,8 @@ impl Cues {
 
     /// Steps 8, 10: `hPunch_1`, a punch hits a building.
     pub fn punch_hits_building(&mut self) {
-        self.ask(Sfx::HitBuilding, 1.0, 1.0);
+        self.blows = self.blows.wrapping_add(1);
+        self.ask(if self.blows % 2 == 0 { Sfx::HitBuilding } else { Sfx::HitBuilding2 }, 1.0, 1.0);
     }
 
     /// Step 8: `sentry_tk_Smash_hit1`, a ground punch.
@@ -405,14 +444,34 @@ pub(super) fn play_sounds(
     voices.master += ((audible as u8 as f32) - voices.master).clamp(-step, step);
 
     // The charge itself, not the button: held over a ground punch, a clap or a Go To, no charge runs and none is heard.
-    let charging = audible && matches!(hero.action, super::impact::Action::Charge { .. });
+    let clap = matches!(hero.action, super::impact::Action::Charge { .. });
+    let punch = matches!(hero.action, super::impact::Action::WindUp { .. });
+    let charging = audible && (clap || hero.space.charging || punch);
     let was_charging = std::mem::replace(&mut voices.charging, charging);
     if charging && !was_charging {
         hero.sound.charge_start();
     }
 
     // The loops. Turned off they keep the level they had while the master takes them down.
-    let reading = Reading { flow: hero.flow, heat_k: hero.heat_k, flying: matches!(hero.state, State::Hover | State::Flight), charging };
+    let charge = if hero.space.charging {
+        hero.space.charge as f32
+    } else if let super::impact::Action::WindUp { held, .. } = hero.action {
+        super::controls::punch_charge(held as f64) as f32
+    } else {
+        1.0
+    };
+    let speed = hero.flow.speed;
+    let reading = Reading {
+        flow: hero.flow,
+        heat_k: hero.heat_k,
+        flying: matches!(hero.state, State::Hover | State::Flight),
+        charging,
+        charge,
+        fast: hero.fast,
+        supersonic: super::controls::supersonic(&hero.flow, speed),
+        stacks: hero.stacks,
+        share: super::controls::speed_share(speed, super::controls::sound_speed(&hero.flow)) as f32,
+    };
     let levels = loop_levels(&reading);
     let pitch_k = 1.0 - (-dt / tune::PITCH_TAU_S).exp();
     for voice in &mut voices.loops {
@@ -422,7 +481,7 @@ pub(super) fn play_sounds(
             voice.level += (level - voice.level).clamp(-step, step);
             voice.pitch += (pitch - voice.pitch) * pitch_k;
         }
-        let volume = voice.level * voices.master * settings.volume;
+        let volume = voice.level * voices.master * settings.volume * tune::SOUND_GAIN;
         let Ok(mut sink) = sinks.get_mut(voice.entity) else { continue };
         if volume <= tune::SOUND_SILENT {
             if !sink.is_paused() {
@@ -447,13 +506,13 @@ pub(super) fn play_sounds(
     if audible && settings.volume > 0.0 {
         let share = air_share(hero.flow.air.pressure_pa);
         for cue in hero.sound.asked.into_iter().flatten() {
-            start_shot(&mut commands, voices, cue, share, settings.volume, control.dev);
+            start_shot(&mut commands, voices, cue, share, settings.volume * tune::SOUND_GAIN, control.dev);
         }
     }
     hero.sound.clear();
 
     // The one-shots playing.
-    let (master, volume) = (voices.master, settings.volume);
+    let (master, volume) = (voices.master, settings.volume * tune::SOUND_GAIN);
     for slot in &mut voices.shots {
         let Some(shot) = slot else { continue };
         if master > 0.0 {
@@ -661,7 +720,7 @@ mod tests {
 
     #[test]
     fn the_loops_follow_f10s_table() {
-        let at = |q, mach, heat_k, flying, charging| loop_levels(&Reading { flow: flow(q, mach, 1e5), heat_k, flying, charging });
+        let at = |q, mach, heat_k, flying, charging| loop_levels(&Reading { flow: flow(q, mach, 1e5), heat_k, flying, charging, charge: 1.0, ..default() });
         // Hovering in still air: the hum alone.
         let l = at(0.0, 0.0, 0.0, true, false);
         assert_eq!(l[0].0, 0.0);
@@ -683,7 +742,7 @@ mod tests {
         // In air it's only for flying: falling or standing in it, no hum at any q.
         assert_eq!(at(0.0, 0.0, 0.0, false, false)[2].0, 0.0);
         // The charge while the button's held.
-        assert_eq!(at(0.0, 0.0, 0.0, false, true)[3].0, 1.0);
+        assert!((at(0.0, 0.0, 0.0, false, true)[3].0 - 0.95).abs() < 1e-6);
     }
 
     /// D12, "quiet in space, not silent", and the edge case "body with no atmosphere: hum only": whatever he's doing.
@@ -758,12 +817,12 @@ mod tests {
     #[test]
     fn a_cue_asked_twice_in_a_frame_is_one() {
         let mut c = Cues::default();
-        c.take_off();
-        c.take_off();
+        c.take_off_ground();
+        c.take_off_ground();
         c.launch();
         assert_eq!(c.asked.iter().flatten().count(), 2);
-        // Shift in Hover: the quiet take-off and the boost's own are one file: one voice, in full.
-        c.boost_start();
+        // The same file asked again louder: one voice, the louder.
+        c.jump(true);
         assert_eq!(c.asked.iter().flatten().count(), 2);
         assert_eq!(c.asked[0].unwrap().gain, 1.0);
         // Full: no panic.
@@ -802,8 +861,8 @@ mod tests {
             f(&mut c);
             c.asked[0].unwrap()
         };
-        let off = one(|c| c.take_off());
-        assert_eq!((off.sfx, off.gain), (Sfx::FastStart, tune::TAKE_OFF_GAIN));
+        let off = one(|c| c.take_off_ground());
+        assert_eq!((off.sfx, off.gain), (Sfx::JumpExp, 0.8));
         assert_eq!(one(|c| c.stop_flying()).sfx, Sfx::FlightEnd);
         assert_eq!(one(|c| c.jump(false)).sfx, Sfx::JumpSmall);
         assert_eq!(one(|c| c.jump(true)).sfx, Sfx::JumpExp);
@@ -825,7 +884,7 @@ mod tests {
         };
         assert_eq!(boom(1e5), 1.0);
         assert!(boom(60_000.0) > 0.99);
-        assert!(boom(600.0) < 0.7 && boom(600.0) > 0.3);
+        assert!(boom(600.0) < 0.9 && boom(600.0) > 0.6);
     }
 
     /// The frame's world, with no `AudioPlugin`: as with no audio device, a voice gets no `AudioSink`.
@@ -865,7 +924,7 @@ mod tests {
             frame(&mut a, 16);
             frame(&mut a, 16);
             assert_eq!(entities(&mut a), 4, "round {round}: only the four loops, once");
-            a.world_mut().resource_mut::<Hero>().sound.take_off();
+            a.world_mut().resource_mut::<Hero>().sound.take_off_ground();
             frame(&mut a, 16);
             assert_eq!(entities(&mut a), 5);
             turn(&mut a, false);
@@ -926,16 +985,16 @@ mod tests {
         assert_eq!(a.world().resource::<Voices>().fired[Sfx::JumpSmall as usize], 1);
         // Asked every frame by a bug or a stuck key: the gap holds it down, whatever the frame rate.
         for _ in 0..10 {
-            a.world_mut().resource_mut::<Hero>().sound.take_off();
+            a.world_mut().resource_mut::<Hero>().sound.take_off_ground();
             frame(&mut a, 1);
         }
-        assert_eq!(a.world().resource::<Voices>().fired[Sfx::FastStart as usize], 1);
-        // Shift right after W: the quiet take-off doesn't swallow the boost's own, in full, once.
+        assert_eq!(a.world().resource::<Voices>().fired[Sfx::JumpExp as usize], 1);
+        // Another sound right after: fired once too.
         for _ in 0..3 {
             a.world_mut().resource_mut::<Hero>().sound.boost_start();
             frame(&mut a, 16);
         }
-        assert_eq!(a.world().resource::<Voices>().fired[Sfx::FastStart as usize], 2);
+        assert_eq!(a.world().resource::<Voices>().fired[Sfx::FastStart as usize], 1);
         // Many at once: at most 8, the newest in.
         for sfx in ALL {
             a.world_mut().resource_mut::<Hero>().sound.ask(*sfx, 1.0, 1.0);
@@ -967,13 +1026,13 @@ mod tests {
         let v = a.world().resource::<Voices>();
         assert_eq!(v.fired[Sfx::ChargeStart as usize], 1, "held: once");
         // (In vacuum here: D12's quarter.)
-        assert_eq!(v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level, 0.25);
+        assert!((v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level - 0.25 * 0.95).abs() < 1e-6);
         assert_eq!(v.shots_alive(), 1);
         a.world_mut().resource_mut::<Hero>().flow.air.pressure_pa = 101_325.0;
         for _ in 0..30 {
             frame(&mut a, 16);
         }
-        assert_eq!(a.world().resource::<Voices>().loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level, 1.0);
+        assert!((a.world().resource::<Voices>().loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level - 0.95).abs() < 1e-6);
         a.world_mut().resource_mut::<Hero>().action = Action::None;
         for _ in 0..30 {
             frame(&mut a, 16);
@@ -996,7 +1055,7 @@ mod tests {
         }
         assert_eq!(a.world().resource::<Voices>().master, 0.0);
         assert_eq!(entities(&mut a), 4, "paused, not gone");
-        a.world_mut().resource_mut::<Hero>().sound.take_off();
+        a.world_mut().resource_mut::<Hero>().sound.take_off_ground();
         frame(&mut a, 16);
         assert_eq!(a.world().resource::<Voices>().fired[Sfx::FastStart as usize], 0);
         a.world_mut().resource_mut::<ModControl>().unfocused = false;
