@@ -148,10 +148,10 @@ pub fn heat_bar(t: f64) -> f32 {
     ((t.max(1.0) / tune::HEAT_BAR_FROM_K).ln() / (tune::HEAT_LOOK_K / tune::HEAT_BAR_FROM_K).ln()).clamp(0.0, 1.0) as f32
 }
 
-/// The cone's strength by Mach and the air: F9's visible range, thin air showing less. 0 out of the air.
-pub fn cone_at(mach: f64, q: f64) -> f64 {
+/// The cone's strength by Mach and the air: F9's visible range, thin air showing less. 0 out of the air the barrier counts.
+pub fn cone_at(mach: f64, q: f64, pressure_pa: f64) -> f64 {
     let (a, b, c, d) = tune::CONE_MACH;
-    smooth(a, b, mach) * (1.0 - smooth(c, d, mach)) * air_show(q)
+    smooth(a, b, mach) * (1.0 - smooth(c, d, mach)) * air_show(q, pressure_pa)
 }
 
 /// F9's half-angle, `asin(1 / M)`, in radians; a flat disc up to Mach 1.
@@ -159,10 +159,13 @@ pub fn cone_angle(mach: f64) -> f64 {
     (1.0 / mach.max(1.0)).asin()
 }
 
-/// How much of the cone and the ring thin air shows.
-pub fn air_show(q: f64) -> f64 {
+/// How much of the cone and the ring the air shows: from `AIR_SHOW`'s least in thin air to all of it as `log10 q` goes through
+/// `BOOM_LOG_Q`, and none where the barrier doesn't count the air (F9: under 100 Pa no boom, so no cone either), fading in to 150 Pa.
+pub fn air_show(q: f64, pressure_pa: f64) -> f64 {
     let log_q = if q > 0.0 { q.log10() } else { f64::NEG_INFINITY };
-    tune::AIR_SHOW.0 + (tune::AIR_SHOW.1 - tune::AIR_SHOW.0) * ((log_q - tune::BOOM_LOG_Q.0) / (tune::BOOM_LOG_Q.1 - tune::BOOM_LOG_Q.0)).clamp(0.0, 1.0)
+    let thin = tune::AIR_SHOW.0 + (tune::AIR_SHOW.1 - tune::AIR_SHOW.0) * ((log_q - tune::BOOM_LOG_Q.0) / (tune::BOOM_LOG_Q.1 - tune::BOOM_LOG_Q.0)).clamp(0.0, 1.0);
+    let (air_on, air_off) = tune::BOOM_AIR_PA;
+    thin * smooth(air_off, air_on, pressure_pa)
 }
 
 /// His glow's records (`HeroFrame.heat`, `heat_lee`, `heat_dir`): the windward side's light, the lee side's, the way he's going.
@@ -216,11 +219,23 @@ pub struct FxState {
     pulse: f64,
     /// The temperature the gas round him goes by (K).
     gas_k: f64,
+    /// `Hero.clock` when the last of the trail's points dies: points laid as he cools live less, so the newest isn't always the last.
+    alive_until: f64,
 }
 
 impl Default for FxState {
     fn default() -> Self {
-        FxState { rings: [RingState::default(); RINGS], trail: Box::new([TrailPoint::default(); TRAIL_POINTS - 1]), head: 0, count: 0, trail_body: None, laying: false, pulse: f64::NEG_INFINITY, gas_k: 0.0 }
+        FxState {
+            rings: [RingState::default(); RINGS],
+            trail: Box::new([TrailPoint::default(); TRAIL_POINTS - 1]),
+            head: 0,
+            count: 0,
+            trail_body: None,
+            laying: false,
+            pulse: f64::NEG_INFINITY,
+            gas_k: 0.0,
+            alive_until: f64::NEG_INFINITY,
+        }
     }
 }
 
@@ -251,12 +266,15 @@ impl FxState {
         self.pulse = clock;
     }
 
-    /// Lay down a point of the trail if he's far enough on from the last one.
+    /// Lay down a point of the trail if he's far enough on from the last one: at least `TRAIL_SPACING_M`, and at least a 254th of the
+    /// longest life still to run, so the ring holds a point's life at any frame rate (F9's `v dt` alone filled it in 255 frames: 1.5 s at
+    /// 165 Hz, against lives of up to 4.5 s, and the tail was cut off while still bright).
     fn lay_point(&mut self, obj: ObjectRef, local: DVec3, clock: f64, heat_k: f64) {
         if self.trail_body != Some(obj) {
             self.count = 0;
             self.trail_body = Some(obj);
             self.laying = false;
+            self.alive_until = f64::NEG_INFINITY;
         }
         let k = (heat_k.min(tune::HEAT_LOOK_K) - tune::TRAIL_FROM_K.1) / (tune::HEAT_LOOK_K - tune::TRAIL_FROM_K.1);
         let life = (tune::TRAIL_LIFE_S.0 + (tune::TRAIL_LIFE_S.1 - tune::TRAIL_LIFE_S.0) * k.clamp(0.0, 1.0)) * past_clamp(heat_k).powi(2);
@@ -265,8 +283,12 @@ impl FxState {
             self.laying = false;
             return;
         }
-        if self.laying && self.count > 0 && (self.trail[self.head].local - local).length() < tune::TRAIL_SPACING_M {
-            return;
+        if self.laying && self.count > 0 {
+            let last = &self.trail[self.head];
+            let every = life.max(self.alive_until - clock) / (self.trail.len() - 1) as f64;
+            if (last.local - local).length() < tune::TRAIL_SPACING_M || clock - last.born < every {
+                return;
+            }
         }
         let colour = heat_colour(heat_k.min(tune::HEAT_LOOK_K) * tune::TRAIL_COLOUR_T);
         // (A new stretch: the gap back to the old trail's last point has no segment.)
@@ -274,12 +296,57 @@ impl FxState {
         self.head = (self.head + 1) % self.trail.len();
         self.count = (self.count + 1).min(self.trail.len());
         self.trail[self.head] = TrailPoint { local, born: clock, life: life as f32, light: colour * brightness as f32, cut };
+        self.alive_until = self.alive_until.max(clock + life as f32 as f64);
         self.laying = true;
     }
 
-    /// Is anything of the trail still alive?
+    /// Is anything of the trail still alive? (Any point, not the newest: see `alive_until`.)
     fn trail_alive(&self, clock: f64) -> bool {
-        self.count > 0 && clock - self.trail[self.head].born < self.trail[self.head].life as f64
+        self.count > 0 && clock < self.alive_until
+    }
+
+    /// The trail's records, newest first, from each point's place as the camera sees it (`at`), with his place `him` first at no light
+    /// while he's laying it: how many segments to draw. A dead point stays in the ribbon at no light, so a newer one laid as he cooled
+    /// and dying first doesn't take the older ones with it; the ribbon ends one point past the oldest living one, or, the ring run out
+    /// with that one alive, at that one, at no light: never a bright cut end.
+    fn trail_records(&self, clock: f64, at: impl Fn(DVec3) -> Vec3, him: Vec3, out: &mut [FxPointGpu; TRAIL_POINTS]) -> u32 {
+        // A wake's width: by how far behind him, how old, how far from the camera.
+        let width = |behind: f64, age: f64, at: Vec3| {
+            (tune::TRAIL_WIDTH_M + tune::TRAIL_WAKE * behind.sqrt() + tune::TRAIL_WIDEN_MS * age) as f32 + tune::TRAIL_WIDEN_RAD as f32 * at.length()
+        };
+        let mut n = 0usize;
+        let mut behind = 0.0f64;
+        let mut last = him;
+        if self.laying {
+            // It starts faint: the shell is what's bright at him.
+            out[0] = FxPointGpu { at: him.extend(width(0.0, 0.0, him)), light: Vec4::ZERO };
+            n = 1;
+        }
+        let len = self.trail.len();
+        let mut oldest_alive = None;
+        for k in 0..self.count {
+            let p = self.trail[(self.head + len - k) % len];
+            let age = clock - p.born;
+            let share = (age / p.life as f64).min(1.0) as f32;
+            let place = at(p.local);
+            behind += (place - last).length() as f64;
+            last = place;
+            let w = width(behind, age, place);
+            let light = if share < 1.0 {
+                oldest_alive = Some(n);
+                p.light * (1.0 - share) * (1.0 - share) * smooth(0.0, tune::TRAIL_BEGINS_M, behind) as f32
+            } else {
+                Vec3::ZERO
+            };
+            out[n] = FxPointGpu { at: place.extend(if p.cut { -w } else { w }), light: light.extend(share) };
+            n += 1;
+        }
+        let Some(oldest) = oldest_alive else { return 0 };
+        let n = (oldest + 2).min(n);
+        if n == oldest + 1 {
+            out[oldest].light = Vec4::new(0.0, 0.0, 0.0, out[oldest].light.w);
+        }
+        n.saturating_sub(1) as u32
     }
 }
 
@@ -401,7 +468,8 @@ pub(super) fn update_fx(
 
     // The cone.
     let pulse = tune::CONE_PULSE * (-(clock - hero.fx.pulse) / tune::CONE_PULSE_TAU_S).exp();
-    let cone = if flow.in_air() { tune::CONE_STRENGTH * cone_at(flow.mach, flow.q) + pulse * air_show(flow.q) } else { 0.0 };
+    let pa = flow.air.pressure_pa;
+    let cone = if flow.in_air() { tune::CONE_STRENGTH * cone_at(flow.mach, flow.q, pa) + pulse * air_show(flow.q, pa) } else { 0.0 };
     r.cone = Vec4::new(cone_angle(flow.mach) as f32, tune::CONE_SLANT_M as f32, cone as f32, tune::CONE_NOSE_M as f32);
 
     // The clouds' buffers. (`quarter_on`'s trace is half the resolved texels' size.)
@@ -448,39 +516,7 @@ pub(super) fn update_fx(
     let mut segments = 0u32;
     if hero.fx.trail_alive(clock) {
         if let Some(b) = hero.fx.trail_body.and_then(|o| bodies.iter().find(|b| b.obj == o)) {
-            let st = &hero.fx;
-            // A wake's width: by how far behind him, how old, how far from the camera.
-            let width = |behind: f64, age: f64, at: Vec3| {
-                (tune::TRAIL_WIDTH_M + tune::TRAIL_WAKE * behind.sqrt() + tune::TRAIL_WIDEN_MS * age) as f32 + tune::TRAIL_WIDEN_RAD as f32 * at.length()
-            };
-            // The head: his place, while he's laying it down. It starts faint: the shell is what's bright at him.
-            let mut n = 0usize;
-            let mut behind = 0.0f64;
-            let mut last = rel;
-            if st.laying {
-                r.trail[0] = FxPointGpu { at: rel.extend(width(0.0, 0.0, rel)), light: Vec4::ZERO };
-                n = 1;
-            }
-            let len = st.trail.len();
-            for k in 0..st.count {
-                let p = st.trail[(st.head + len - k) % len];
-                let age = clock - p.born;
-                let share = (age / p.life as f64).min(1.0) as f32;
-                if share >= 1.0 {
-                    break;
-                }
-                let at = b.pos.offset_m(b.orient * p.local).delta_m(cam.pos).as_vec3();
-                behind += (at - last).length() as f64;
-                last = at;
-                let w = width(behind, age, at);
-                let begins = smooth(0.0, tune::TRAIL_BEGINS_M, behind) as f32;
-                r.trail[n] = FxPointGpu { at: at.extend(if p.cut { -w } else { w }), light: (p.light * (1.0 - share) * (1.0 - share) * begins).extend(share) };
-                n += 1;
-            }
-            if n >= 2 {
-                // (A last point at nothing: the tail ends at no light.)
-                segments = (n - 1) as u32;
-            }
+            segments = hero.fx.trail_records(clock, |local| b.pos.offset_m(b.orient * local).delta_m(cam.pos).as_vec3(), rel, &mut r.trail);
         }
     }
 
@@ -690,16 +726,38 @@ mod tests {
 
     #[test]
     fn the_cone_is_seen_where_the_spec_says() {
-        let q = 6e4;
-        assert_eq!(cone_at(0.9, q), 0.0);
-        assert!(cone_at(0.97, q) > 0.0);
-        assert!(cone_at(1.2, q) == air_show(q));
-        assert_eq!(cone_at(1.6, q), 0.0);
+        let (q, p) = (6e4, 1e5);
+        assert_eq!(cone_at(0.9, q, p), 0.0);
+        assert!(cone_at(0.97, q, p) > 0.0);
+        assert!(cone_at(1.2, q, p) == air_show(q, p));
+        assert_eq!(cone_at(1.6, q, p), 0.0);
         // Half-angle asin(1/M).
         assert!((cone_angle(2.0) - 30f64.to_radians()).abs() < 1e-9);
         assert!((cone_angle(0.97) - 90f64.to_radians()).abs() < 1e-9);
-        // Thin air shows less, but shows it.
-        assert!(cone_at(1.2, 500.0) < cone_at(1.2, q) && cone_at(1.2, 500.0) > 0.3);
+        // Thin air shows less, but shows it: Earth at 20 km, about 5,500 Pa.
+        assert!(cone_at(1.2, 500.0, 5500.0) < cone_at(1.2, q, p) && cone_at(1.2, 500.0, 5500.0) > 0.3);
+        // Where the barrier counts no air, none: Earth at 150 km (0.0013 Pa), Pluto (1 Pa), a 1 mbar world; between 100 and 150 Pa
+        // it fades in.
+        for (q, p) in [(1.2e-3, 1.3e-3), (0.7, 1.0), (70.0, 100.0)] {
+            assert_eq!(cone_at(1.2, q, p), 0.0, "{p} Pa");
+            assert_eq!(air_show(q, p), 0.0, "{p} Pa");
+        }
+        assert!(cone_at(1.2, 30.0, 125.0) > 0.0 && cone_at(1.2, 30.0, 125.0) < cone_at(1.2, 30.0, 150.0));
+        assert_eq!(cone_at(1.2, 30.0, 150.0), tune::AIR_SHOW.0);
+    }
+
+    /// The same at near vacuum in the game's own air: Earth from 100 km up, at Mach 1.2 by its own sound speed.
+    #[test]
+    fn no_cone_above_the_boom() {
+        let air = super::super::air::AirModel::from_params(se_core::ship::aero::AtmoParams { p0_atm: 1.0, t0_k: 281.57, molar_mass: 28.92, gravity: 9.798, adiabat: 0.28, height_m: 0.0 });
+        for km in [100.0, 150.0, 200.0] {
+            let a = air.at(km * 1e3);
+            let f = air.flow(km * 1e3, 1.2 * a.sound_speed);
+            assert!(f.in_air(), "{km} km");
+            assert_eq!(cone_at(f.mach, f.q, f.air.pressure_pa), 0.0, "{km} km: {f:?}");
+        }
+        let low = air.flow(0.0, 1.2 * air.at(0.0).sound_speed);
+        assert!((cone_at(low.mach, low.q, low.air.pressure_pa) - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -740,6 +798,60 @@ mod tests {
         // Another body: it starts anew.
         s.lay_point(ObjectRef::Body(1), DVec3::Y, 41.0, 8000.0);
         assert_eq!(s.count, 1);
+    }
+
+    /// Flying a straight line on from `x` (m) at `metres` a frame, `hz` frames a second, at `heat_k`, from `start` (s), `secs` long: the
+    /// last frame's time and place.
+    fn fly_line(s: &mut FxState, (start, x): (f64, f64), secs: f64, hz: f64, metres: f64, heat_k: f64) -> (f64, f64) {
+        let mut end = (start, x);
+        for i in 0..(secs * hz) as usize {
+            end = (start + i as f64 / hz, x + metres * i as f64);
+            s.lay_point(ObjectRef::Body(0), DVec3::X * end.1, end.0, heat_k);
+        }
+        end
+    }
+
+    fn records(s: &FxState, clock: f64) -> (u32, Box<[FxPointGpu; TRAIL_POINTS]>) {
+        let mut out = Box::new([FxPointGpu::default(); TRAIL_POINTS]);
+        let n = if s.trail_alive(clock) { s.trail_records(clock, |l| l.as_vec3(), Vec3::ZERO, &mut out) } else { 0 };
+        (n, out)
+    }
+
+    /// He lets go at 10,000 K: the points laid as he cools live 0.8 s, the hot ones before them 2 s. When the cool ones die, the hot ones
+    /// stay, at their own light, until each dies in turn.
+    #[test]
+    fn the_trail_dies_point_by_point() {
+        let mut s = FxState::default();
+        let (t, x) = fly_line(&mut s, (0.0, 0.0), 1.0, 60.0, 160.0, 10_000.0);
+        let (end, _) = fly_line(&mut s, (t + 1.0 / 60.0, x + 160.0), 0.3, 60.0, 100.0, 5_500.0);
+        // The cool ones dead, the hot ones not.
+        let at = end + 0.9;
+        let (n, out) = records(&s, at);
+        assert!(n > 10, "{n} segments");
+        let lit: Vec<f32> = out[..=n as usize].iter().map(|p| p.light.truncate().max_element()).collect();
+        assert!(lit.iter().any(|&l| l > 0.3), "{lit:?}");
+        assert_eq!(lit[1], 0.0, "the newest point is dead");
+        // The end: no light.
+        assert_eq!(*lit.last().unwrap(), 0.0);
+        // Each in turn, and then none.
+        let (later, _) = records(&s, at + 0.6);
+        assert!(later > 0 && later < n, "{later} of {n}");
+        assert_eq!(records(&s, end + 2.1).0, 0);
+    }
+
+    /// The ring holds a point's whole life at any frame rate: at 240 Hz at 10,000 K the oldest point kept is 2 s old, and past the clamp
+    /// (life 3.9 s) at 165 Hz too. Its end is at no light.
+    #[test]
+    fn the_trail_is_as_long_at_any_frame_rate() {
+        for (hz, heat) in [(60.0, 10_000.0), (240.0, 10_000.0), (165.0, 23_300.0)] {
+            let mut s = FxState::default();
+            let (end, _) = fly_line(&mut s, (0.0, 0.0), 8.0, hz, 30e3 / hz, heat);
+            let life = s.trail[s.head].life as f64;
+            let oldest = (0..s.count).map(|k| s.trail[(s.head + s.trail.len() - k) % s.trail.len()].born).fold(f64::INFINITY, f64::min);
+            assert!(end - oldest >= life * 0.99, "{hz} Hz: holds {} s of a {life} s life", end - oldest);
+            let (n, out) = records(&s, end);
+            assert_eq!(out[n as usize].light.truncate(), Vec3::ZERO, "{hz} Hz");
+        }
     }
 
     /// At a stop his skin stays hot for seconds, the gas round him doesn't.

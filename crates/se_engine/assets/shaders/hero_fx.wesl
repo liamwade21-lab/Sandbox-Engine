@@ -20,6 +20,9 @@ const PI: f32 = 3.14159265358979;
 const SHELL_RINGS: u32 = 16;
 const AROUND: u32 = 32;
 const CONE_BANDS: u32 = 6;
+// A trail segment seen within about 9 degrees of end-on is dimmed (the sine of that angle): from a chase camera 20 degrees off his line
+// none of it is, looking back along the trail its many ribbons don't pile up at the point it runs to.
+const END_ON: f32 = 0.15;
 
 // Which draw an instance is: viltrumite/fx.rs `FX_*`.
 const FX_SHELL: u32 = 0;
@@ -176,12 +179,15 @@ fn trail_vertex(vi: u32) -> VertexOut {
     let after = fx.trail[seg + 1u].at.xyz;
     let side = normalize(cross(after - before + vec3<f32>(1e-3, 0.0, 0.0), p.at.xyz));
     let rel = p.at.xyz + side * abs(p.at.w) * (k.x * 2.0 - 1.0);
+    // Seen end-on, the ribbons of a straight trail all cover the point it runs to, and their light adds up there, far past F9's 6: each
+    // fades as it turns end-on (full from END_ON's sine of the angle between it and the eye's ray on).
+    let end_on = length(cross(normalize(after - before + vec3<f32>(1e-3, 0.0, 0.0)), normalize(p.at.xyz)));
     var o: VertexOut;
     // (No segment here: a zero-area triangle.)
     o.clip = select(to_clip(rel), vec4<f32>(0.0, 0.0, 0.0, 1.0), fx.trail[seg].at.w < 0.0);
     o.rel = rel;
     o.uv = vec2<f32>(k.x * 2.0 - 1.0, p.light.a);
-    o.light = vec4<f32>(p.light.rgb, 1.0);
+    o.light = vec4<f32>(p.light.rgb * smoothstep(0.0, END_ON, end_on), 1.0);
     o.kind = FX_TRAIL;
     return o;
 }
@@ -266,7 +272,9 @@ fn shell_light(in: VertexOut) -> vec3<f32> {
     let around = in.uv.x * 30.0 / (2.0 * PI);
     let flames = noise2(vec2<f32>(around, s * s * 2.0 - fx.him.w * 5.0), 30.0) * noise2(vec2<f32>(around * 2.0 + 3.0, s * s * 3.5 - fx.him.w * 7.0), 60.0);
     let tongues = mix(1.0, 0.45 + 2.2 * flames, smoothstep(0.05, 0.5, s));
-    let lit = in.light.rgb * pow(1.0 - s, 2.0) * seen * tongues * 2.0;
+    // (Clamped: interpolated, s can pass 1 by a rounding, and pow of a negative is NaN, which the additive blend would keep.)
+    let thin = max(1.0 - s, 0.0);
+    let lit = in.light.rgb * thin * thin * seen * tongues * 2.0;
     return limited(lit, 15.0) * smoothstep(0.3, 1.2, 1.0 / in.clip.w);
 }
 
@@ -274,7 +282,7 @@ fn cone_light(in: VertexOut) -> vec3<f32> {
     let s = in.uv.y;
     // A cloud with a sharp front, thinning out behind.
     let wisps = noise2(vec2<f32>(in.uv.x * 24.0 / (2.0 * PI), s * 3.0 - fx.him.w * 2.0), 24.0);
-    let k = pow(1.0 - s, 1.5) * smoothstep(0.03, 0.16, s) * (0.35 + 1.3 * wisps);
+    let k = pow(max(1.0 - s, 0.0), 1.5) * smoothstep(0.03, 0.16, s) * (0.35 + 1.3 * wisps);
     let through = 1.0 / (abs(dot(normalize(in.normal), normalize(in.rel))) + 0.6);
     return limited(droplets_light(in.rel) * in.light.x * k * through, 3.0) * smoothstep(0.5, 2.0, 1.0 / in.clip.w);
 }

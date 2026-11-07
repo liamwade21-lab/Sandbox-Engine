@@ -279,7 +279,15 @@ or publishing the port.
   `hero_stages.sh`, `hero_dive.sh`, `hero_heat_table.sh`, `hero_fx_cost.sh`. A `shot` costs about 30 frames of a run, so plan pictures of a fast event
   with no `wait` between them. `perf.rs` drops passes under 0.05 ms: `hero_fx` is under that. `giant_dark` (volumetric_clouds.wesl) must keep leaving
   out what's within a few hundred metres of the camera, or the view's dark deep in a giant hides him 6 m away; his own light there goes by
-  `draw.rs` `deck_light`, measured against the decks' brightness: re-measure if those change.
+  `draw.rs` `deck_light`, measured against the decks' brightness: re-measure if those change. The trail's points die out of order (one laid
+  as he cools lives less): `FxState::alive_until` says whether any lives, and `trail_records` keeps a dead point in the ribbon at no light;
+  never stop its walk at the first dead point (the whole trail vanished at once). Points are laid at least a 254th of the longest life apart,
+  so the ring holds a life at any frame rate. The cone, its pulse and the ring go by the barrier's air (`fx::air_show` takes the pressure:
+  nothing under 100 Pa; without it a lit cone hung round him in near vacuum). A plain Go To's path holds still in the universe's axes, so
+  `hero.rs` `carried_velocity` takes the body's turn past x1 out of a carried speed (at x1000 it read 465 km/s over Earth's equator); Land
+  on turns with the body. A run's command queue waits while a Go To lasts, so no picture catches one in mid-flight: use `hero boom`'s log.
+  Under a giant's radius his air goes on denser and hotter (`air.rs` `AirModel::deep`, SE's polytrope; `AtmoParams::state`, the ship's,
+  holds the radius's 1 atm all the way down): Jupiter 17 atm at -100 km, where he falls at 63 m/s.
 - Keep test runs short (the user, 2026-11-04): the ground loads in about 30 s after a jump, so wait
   about that (`wait 1500`-`2400` with `timing frame`, which runs as fast as it can), take the picture
   and end the run; never a fixed wait of several minutes "to be safe". The star browser's search

@@ -1,11 +1,12 @@
 //! The air he flies through (spec F9): the one source for drag, the cap in air, the readout and, from steps 6 and 7,
 //! the boom, the heat and the sounds (`Flow`, one frame's reading: q, Mach, the temperature of F9).
 //!
-//! It takes `ship/air.rs`'s parameters and differs in three ways. The air reaches 25 scale heights, because
+//! It takes `ship/air.rs`'s parameters and differs in four ways. The air reaches 25 scale heights, because
 //! `AtmoParams::state` gives zeros above `height_m` and the drawn shell's top is only a drawing height (Earth 60 km,
 //! Mars 132, Venus 200: at Earth's 60 km, 30 km/s would jump from nothing to 10,300 K). The temperature never falls
 //! under a quarter of the surface's (Venus lacks `Adiabat` and floors at 20 K above 60 km). Giants without `Pressure`
-//! get 1 atm at their radius. Stars and bodies with no shell have no air. One mean temperature per body, no day and night.
+//! get 1 atm at their radius. Under a giant's radius the air goes on getting denser and hotter (`AirModel::deep`), where
+//! `state` holds the radius's. Stars and bodies with no shell have no air. One mean temperature per body, no day and night.
 
 use se_core::catalog::ObjectRef;
 use se_core::ephemeris::Ephemeris;
@@ -174,15 +175,31 @@ impl AirModel {
 
     /// `height_m` over the ground (the surface's pressure is at the ground, as SE's).
     pub fn at(&self, height_m: f64) -> AirSample {
-        let st = self.params.state(height_m);
-        if st.density <= 0.0 {
+        let (temperature_k, pressure_atm) = if height_m < 0.0 { self.deep(height_m) } else {
+            let st = self.params.state(height_m);
+            if st.density <= 0.0 {
+                return AirSample::default();
+            }
+            (st.temperature_k, st.pressure_atm)
+        };
+        if pressure_atm <= 0.0 || !pressure_atm.is_finite() {
             return AirSample::default();
         }
-        let t = st.temperature_k.max(self.params.t0_k * COLDEST_SHARE);
+        let t = temperature_k.max(self.params.t0_k * COLDEST_SHARE);
         let mu = self.params.molar_mass * 1e-3;
         let gamma = 1.0 / (1.0 - self.params.adiabat.clamp(0.01, 0.9));
-        let pressure_pa = st.pressure_atm * PA_PER_ATM;
+        let pressure_pa = pressure_atm * PA_PER_ATM;
         AirSample { pressure_pa, density: pressure_pa * mu / (R_GAS * t), temperature_k: t, sound_speed: (gamma * R_GAS * t / mu).sqrt() }
+    }
+
+    /// Under its zero height (only a giant's air is there: a body with a ground has its pressure at the ground; `AtmoParams::state`
+    /// holds the radius's air all the way down): SE's polytrope goes on, `T0 (1 - a h / H)`, with the pressure that holds that air up,
+    /// `p0 (T / T0)^(1 / a)`, which meets `p0 exp(-h / H)` at the radius with the same slope. Jupiter (165 K, a 0.25): 423 K and 43 atm
+    /// 150 km down (the Galileo probe found about 425 K and 22 bar there), 491 K and 78 atm at the decks' floor, 190 km down.
+    fn deep(&self, height_m: f64) -> (f64, f64) {
+        let a = self.params.adiabat.clamp(0.01, 0.9);
+        let warmer = 1.0 - a * height_m.min(0.0) / self.params.scale_height();
+        (self.params.t0_k * warmer, self.params.p0_atm * warmer.powf(1.0 / a))
     }
 
     /// `gamma` of the gas, from the polytrope as `AtmoParams::state`.
@@ -293,6 +310,64 @@ mod tests {
         table(1.0, 281.57, 28.92, 9.798, 0.28, 60e3, [1.1, 3.4, 7.1, 14.6, 28.9]);
         table(0.00638, 214.13, 43.6, 3.714, 0.25, 0.0, [0.9, 2.3, 4.8, 9.8, 19.5]);
         table(92.0, 788.79, 43.45, 8.869, 0.25, 0.0, [0.2, 1.4, 2.0, 2.8, 4.9]);
+    }
+
+    /// F9's `k` by molar mass: the table's 10 % can't tell 1.90e-4 from 1.74e-4 (T goes as `k^0.25`), so each class directly.
+    #[test]
+    fn the_heat_goes_by_the_gas() {
+        let with = |molar_mass: f64| AirModel::from_params(AtmoParams { p0_atm: 1.0, t0_k: 250.0, molar_mass, gravity: 9.81, adiabat: 0.25, height_m: 0.0 });
+        for (m, k) in [(44.0, 1.90e-4), (40.0, 1.90e-4), (29.0, 1.74e-4), (28.0, 1.74e-4), (2.3, 6.6e-5)] {
+            let air = with(m);
+            assert_eq!(air.heat_k(), k, "molar mass {m}");
+            // And the reading radiates by it, at 30 km/s, where the stagnation temperature is far over what radiates.
+            let f = air.flow(0.0, 30e3);
+            let want = (k * (f.air.density / 0.15).sqrt() * 30e3f64.powi(3) / (0.8 * 5.670e-8)).powf(0.25);
+            assert!((f.skin_k / want - 1.0).abs() < 1e-3, "molar mass {m}: {} K, want {want} K", f.skin_k);
+            assert!(f.air.temperature_k * (1.0 + (air.gamma() - 1.0) / 2.0 * f.mach * f.mach) > 2.0 * want);
+        }
+    }
+
+    /// F9's `smoothstep(-7, -5, log10 rho)`: none of the heat in the thinnest air, half of the flux at 1e-6, all of it from 1e-5. At 20
+    /// km/s, where the air's stagnation temperature is far over what radiates.
+    #[test]
+    fn the_heat_fades_in_with_the_density() {
+        let air = earth();
+        let height_of = |log_rho: f64| (0..2_000_000).map(|i| i as f64 * 0.1).find(|&h| air.at(h).density.log10() <= log_rho).expect("thin enough");
+        let radiating = |h: f64, share: f64| {
+            let rho = air.at(h).density;
+            (1.74e-4 * (rho / 0.15).sqrt() * 20e3f64.powi(3) * share / (0.8 * 5.670e-8)).powf(0.25)
+        };
+        let thin = height_of(-7.5);
+        assert!(air.at(thin).density > 0.0);
+        assert_eq!(air.flow(thin, 20e3).skin_k, 0.0);
+        for (log_rho, share) in [(-6.0, 0.5), (-4.5, 1.0)] {
+            let h = height_of(log_rho);
+            let f = air.flow(h, 20e3);
+            let want = radiating(h, share);
+            assert!((f.skin_k / want - 1.0).abs() < 0.002, "log rho {log_rho}: {} K, want {want} K", f.skin_k);
+            assert!(f.air.temperature_k * (1.0 + (air.gamma() - 1.0) / 2.0 * f.mach * f.mach) > 3.0 * want);
+        }
+    }
+
+    /// Under a giant's radius its air goes on, denser and hotter with depth, meeting the air above without a step.
+    #[test]
+    fn a_giants_air_goes_on_under_its_radius() {
+        let jupiter = AirModel::from_params(AtmoParams { p0_atm: 1.0, t0_k: 165.0, molar_mass: 2.3, gravity: 24.8, adiabat: 0.25, height_m: 0.0 });
+        let (above, at, below) = (jupiter.at(1.0), jupiter.at(0.0), jupiter.at(-1.0));
+        for s in [above, below] {
+            assert!((s.pressure_pa / at.pressure_pa - 1.0).abs() < 1e-4 && (s.density / at.density - 1.0).abs() < 1e-4, "{s:?} {at:?}");
+        }
+        let mut last = at;
+        for km in [10.0, 50.0, 100.0, 150.0, 190.0] {
+            let s = jupiter.at(-km * 1e3);
+            assert!(s.pressure_pa > last.pressure_pa && s.temperature_k > last.temperature_k && s.density > last.density, "{km} km: {s:?}");
+            last = s;
+        }
+        let galileo = jupiter.at(-150e3);
+        assert!((410.0..440.0).contains(&galileo.temperature_k) && (20.0..60.0).contains(&(galileo.pressure_pa / PA_PER_ATM)), "{galileo:?}");
+        // A fall slows as the air thickens: about 190 m/s at the radius, under 70 at 100 km down.
+        let terminal = |h: f64| (24.8 / jupiter.drag(h)).sqrt();
+        assert!(terminal(0.0) > 150.0 && terminal(-100e3) < 70.0, "{} {}", terminal(0.0), terminal(-100e3));
     }
 
     /// What a test flies through: the air `air` at this height and speed.

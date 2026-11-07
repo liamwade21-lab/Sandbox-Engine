@@ -679,6 +679,17 @@ fn air_height(giant: bool, over_radius: f64, local: DVec3, ground: Ground) -> f6
     if giant { over_radius } else { local.length() - ground.radial }
 }
 
+/// How fast a Go To or Land on carries him through the air, in the body's frame (m/s): how far the camera went in that frame over the
+/// real `dt` (`now`, `from`). A plain Go To's path holds still in the universe's axes (`inertial`, `travel_and_move`), so the body's turn
+/// (`spin_body`, rad per game second, body axes) moves it in the body's frame too, `rate` times as fast as at x1: only x1's share counts,
+/// so he reads the same at any rate (F5): `from` is turned on by the body's turn past x1's first. (A difference of turning vectors
+/// would be a chord: at x1000 over a frame it reads 280 m/s too much on Earth's equator.) Land on turns with the body.
+fn carried_velocity(now: DVec3, from: DVec3, dt: f64, inertial: bool, spin_body: DVec3, rate: f64) -> DVec3 {
+    let dt = dt.max(1e-6);
+    let from = if inertial { DQuat::from_scaled_axis(-spin_body * ((rate - 1.0) * dt)) * from } else { from };
+    (now - from) / dt
+}
+
 /// The height the air counts from, at a point of the body's frame.
 fn air_height_on(b: &BodyInfo, local: DVec3, ground: Ground) -> f64 {
     air_height(b.terrain.is_some_and(|t| t.proc.kind.is_giant()), height_over(b, local), local, ground)
@@ -885,6 +896,8 @@ pub(crate) fn hero_move(
     }
     hero.carried = travelling;
     let carried_cam = travelling.then_some(cam.pos);
+    // (A plain Go To's path holds still in the universe's axes; Land on turns with the body.)
+    let carried_inertial = cam.travel.as_ref().is_some_and(|t| t.kind == TravelKind::Goto);
 
     // The nearest body by its surface: his up, his air, the readout. (Air is worked out once a frame, for it alone.)
     let pos0 = hero.frame.world_or(hero.world.0);
@@ -1274,28 +1287,28 @@ pub(crate) fn hero_move(
     // A Go To or a landing carries him at rest in his own frame (`follow_camera`): through the air he goes as fast as the camera
     // goes over the ground. (The camera, not him: he swings round it as the view turns.)
     let carried = carried_cam.zip(near).map(|(p, (b, _))| (b.obj, to_local(b, p)));
-    let through_air = match (carried, hero.carried_from) {
-        (Some((obj, now)), Some((from_obj, from))) if obj == from_obj => (now - from).length() / time.delta_secs_f64().max(1e-6),
-        (Some(_), _) => 0.0,
+    let rate = if sim.paused { 0.0 } else { sim.rate };
+    let carried_vel = match (carried, hero.carried_from, near) {
+        (Some((obj, now)), Some((from_obj, from)), Some((b, _))) if obj == from_obj => {
+            Some(b.orient * carried_velocity(now, from, time.delta_secs_f64(), carried_inertial, b.orient.inverse() * spin(b.obj), rate))
+        }
+        _ => None,
+    };
+    let through_air = match (carried, carried_vel) {
+        (Some(_), Some(cv)) => cv.length(),
+        (Some(_), None) => 0.0,
         (None, _) => speed,
     };
     // The way that is.
-    let going = match (carried, hero.carried_from, near) {
-        (Some((obj, now)), Some((from_obj, from)), Some((b, _))) if obj == from_obj => b.orient * (now - from),
-        _ => v,
-    };
+    let going = carried_vel.unwrap_or(v);
     if let Some(d) = going.try_normalize().filter(|_| through_air > 1.0) {
         hero.air_dir = d;
     }
     hero.carried_from = carried;
     let air_here = air_model.as_ref().filter(|(o, _)| near.is_some_and(|(b, _)| b.obj == *o)).zip(height);
+    // D9, real physics: a Go To through the air booms and heats him as much as flying at that speed would, however fast (Shift+G
+    // from 400 km: 160 km/s at 8.6 Pa, about 26,000 K). F9's look is clamped at 10,000 K; past it only the shell and the trail grow.
     hero.flow = air_here.map_or(Flow::vacuum(through_air), |((_, a), h)| a.flow(h, through_air));
-    // D9, real physics: a Go To through the air booms and heats him as much as flying at that speed. But up high its speeds are
-    // hundreds of km/s, ten times what he can fly there (D6): his skin goes by the cap in air at most (at 160 km/s and 8.6 Pa it would be
-    // 26,000 K; at 30 km/s it's about 8,000).
-    if let Some(((_, a), h)) = air_here.filter(|_| carried.is_some() && through_air > tune::CAP_AIR_MS) {
-        hero.flow.skin_k = a.flow(h, tune::CAP_AIR_MS).skin_k;
-    }
     hero.heat_k = air::ease_heat(hero.heat_k, hero.flow.skin_k, dt);
     hero.fx.ease_gas(hero.flow.skin_k, hero.heat_k, dt);
     // F9's barrier.
@@ -1304,7 +1317,7 @@ pub(crate) fn hero_move(
         Some(BoomEvent::Boom(q)) => {
             hero.sound.boom(q);
             if let Some((b, local)) = near {
-                hero.fx.add_ring(b.obj, local, b.orient.inverse() * hero.air_dir, hero.clock, fx::air_show(q) as f32);
+                hero.fx.add_ring(b.obj, local, b.orient.inverse() * hero.air_dir, hero.clock, fx::air_show(q, hero.flow.air.pressure_pa) as f32);
             }
         }
         Some(BoomEvent::End) => {
@@ -1349,7 +1362,7 @@ pub(crate) fn hero_move(
             fx::glow_at(hero.heat_k),
             fx::shell_at(hero.fx.gas_k()),
             fx::trail_at(hero.fx.gas_k()),
-            fx::cone_at(f.mach, f.q),
+            fx::cone_at(f.mach, f.q, f.air.pressure_pa),
         ));
     }
 
@@ -1588,6 +1601,23 @@ mod tests {
         assert!((150.0..240.0).contains(&terminal), "{terminal}");
         // Land: over the ground, whatever the radius says.
         assert_eq!(air_height(false, 5000.0, local, Ground { radial: r - 1000.0, level: Some(3) }), 1000.0);
+    }
+
+    /// A Go To that holds still over Earth's equator in the universe's axes reads the air going by at 465 m/s, at x1, x1000 and paused
+    /// alike; Land on, turning with the body, reads only its own motion.
+    #[test]
+    fn a_go_to_reads_the_air_as_at_x1() {
+        let omega = DVec3::Y * 7.292e-5;
+        let r = DVec3::X * 6.378e6;
+        let dt = 1.0 / 60.0;
+        for rate in [1.0, 1000.0, 0.0] {
+            // Its place in the body's frame a frame on, the body having turned by `rate` game seconds' worth.
+            let now = DQuat::from_scaled_axis(-omega * rate * dt) * r;
+            let v = carried_velocity(now, r, dt, true, omega, rate);
+            assert!((v.length() - 465.1).abs() < 0.5, "x{rate}: {}", v.length());
+        }
+        let v = carried_velocity(r + DVec3::X * 2.0, r, dt, false, omega, 1000.0);
+        assert!((v - DVec3::X * 120.0).length() < 1e-6, "{v}");
     }
 
     /// F10's "leaving Hyper" goes by F4's tier of flight, never by a fall's speed.

@@ -107,7 +107,9 @@ fn shade(in: VertexOut, albedo: vec3<f32>, flip: f32) -> vec4<f32> {
     let strength = textureSample(spec_tex, spec_smp, in.uv).r;
     let v = normalize(-in.world);
     let h = normalize(l + v);
-    let fres = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    // (Clamped both ways: two unit vectors' dot can pass 1 by a rounding, and pow of a negative is NaN.)
+    let facing = clamp(dot(n, v), 0.0, 1.0);
+    let fres = pow(1.0 - facing, 5.0);
     let gloss = 16.0 + 48.0 * strength;
     let spec = 0.04 + 0.3 * strength;
     let sheen = 0.02 + 0.04 * strength;
@@ -119,7 +121,7 @@ fn shade(in: VertexOut, albedo: vec3<f32>, flip: f32) -> vec4<f32> {
     var glow = vec3<f32>(0.0);
     if frame.heat.w > 0.0 {
         // Hot gas flows round him, so his outline shows it from any side; the suit's own colours keep him readable.
-        let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.5;
+        let rim = pow(1.0 - facing, 3.0) * 0.5;
         let suit = 0.45 + 0.75 * dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
         glow = (mix(frame.heat_lee.rgb, frame.heat.rgb, smoothstep(-0.2, 0.9, dot(n, frame.heat_dir.xyz))) + frame.heat.rgb * rim) * suit;
         // F9's limit (tune.rs GLOW_HDR), keeping the colour.
