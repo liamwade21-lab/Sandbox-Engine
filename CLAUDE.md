@@ -312,6 +312,19 @@ or publishing the port.
   (`hand_back` hides it). The shake turns the clouds' view too (`volumetric_clouds::ViewShake`, read only in a frame it's written). Dev verbs: `hero crater [R]`,
   `hero dust [S]`, `hero splash [S]`, `hero impacts` (logs the pools, works in the aftermath). Scenes: `.optimize/bench/hero_crater.sh`,
   `hero_actions.sh`, `hero_splash.sh`, `hero_keep.sh` (kept, freed at 20.5 km, the mod off), `hero_impact_cost.sh`.
+- The mod's buildings' probe (`scatter/probe.rs`, `viltrumite/breakable.rs`; spec F12, step 9): the scatter's cull lists the buildings in a
+  capsule round him (`scatter.wesl` `probe_building`, from `cull_building` after the range fade, before the view's planes) into binding 20,
+  copied to one of four staging buffers made at start and read back 3-5 frames later (`BuildingProbe::list`, body frame). Bindings 19 (the
+  broken table, step 10) and 20 exist with the mod off and are in the compute layout every scatter pipeline is built with at start: a
+  runtime-sized array's binding must be at least its header plus one element (64, 96), or validation quits the port for everyone.
+  `body.street.z` is the probe's flag (0 with the mod off: one uniform branch; 1 as drawn; 2 measuring, both lists in full): never reuse it.
+  A building's id is its face (`Cell::face`, the spare float) and its middle's face metres x 4 from the face's corner (`cell.tile` whole,
+  so no f32 rounding): near and far cells agree within 0.25 face m (measured), so match within +-4 m and the same model; the record's hash
+  differs between them. Heights and existence can differ between near and far (each reads `core`/`urban` at its own grid point). Change
+  the building cull's positions, the cells' `tile`/`local`/`edge` or the records' layout (`ProbeRecGpu`, 48 bytes) with the probe. Each
+  list is turned back by its frame's camera, body and turn (an 8-entry ring by `seq`): never by this frame's. `timing frame` steps
+  `Time<Real>` too, so measure real milliseconds without it. Verbs: `hero probe log|list|trace|stats|anchor|both`; scenes
+  `.optimize/bench/probe_flight.sh` (near-far-near, the capsule anchored), `probe_counts.sh`.
 - Keep test runs short (the user, 2026-11-04): the ground loads in about 30 s after a jump, so wait
   about that (`wait 1500`-`2400` with `timing frame`, which runs as fast as it can), take the picture
   and end the run; never a fixed wait of several minutes "to be safe". The star browser's search

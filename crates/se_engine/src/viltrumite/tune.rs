@@ -124,6 +124,15 @@ pub const HARD_LANDING_S: f64 = 0.8;
 /// Along a wall's normal: the same as `HARD_LANDING_MS` on purpose (T5).
 pub const BREAK_SPEED_MS: f64 = 35.0;
 
+// ---- The buildings' probe (step 9, F12.1) ----
+/// Round the capsule's axis, beyond each building's half diagonal (m).
+pub const PROBE_MARGIN_M: f32 = 40.0;
+/// The capsule reaches `v dt (lag + PROBE_AHEAD_FRAMES)` ahead of him; until a list has come back the lag is taken as
+/// `PROBE_LAG_FRAMES` (measured, then the measured one, at most `PROBE_LAG_MAX`).
+pub const PROBE_AHEAD_FRAMES: f64 = 2.0;
+pub const PROBE_LAG_FRAMES: u32 = 4;
+pub const PROBE_LAG_MAX: u32 = 8;
+
 // ---- Falling ----
 /// `CdA/m` (m2/kg): Earth's terminal speed 45 m/s. Implicit, `v / (1 + c |v| dt)`: explicit blows up at speed.
 pub const DRAG_CDA_M: f64 = 0.0078;

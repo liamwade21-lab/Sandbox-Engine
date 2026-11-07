@@ -1435,4 +1435,101 @@ mod tests {
             }
         }
     }
+
+    /// The Viltrumite mod's question Q6 (step 9): can each building model be solid as 8 boxes stacked by height (F12.8)?
+    /// Per slice: its box from the mesh's points inside it (the triangles clipped to the slice), and how much of that box
+    /// the mesh's cross-section fills, at four heights in it (the cut's segments, by their winding: closed walls give the
+    /// enclosed area). In the unit box, so the shares hold at any size. Run
+    /// `cargo test -p se_engine --release print_building_slices -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_building_slices() {
+        let sec = |y: [f32; 2], s: [f32; 2], a: [f32; 2], rings: u32| Section { y, s, a, rings };
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let arco: Vec<Section> = (0..5)
+            .map(|i| {
+                let (y0, s0) = (i as f32 * 0.184, 1.0 - 0.18 * i as f32);
+                sec([y0, y0 + 0.184], [s0, s0 - 0.04], [0.0; 2], 1)
+            })
+            .collect();
+        let mut models: Vec<(&str, Mesh4)> = vec![
+            ("0 box", building_box()),
+            ("1 hut", round_hut()),
+            ("2 longhouse", longhouse()),
+            ("3 future box", tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, false)),
+            ("4 tapering", tower(&[sec([0.0, 0.9], [1.0, 0.55], [0.0; 2], 3)], 4, 0.06, false)),
+            ("5 stepped", tower(&[sec([0.0, 0.42], [1.0; 2], [0.0; 2], 1), sec([0.42, 0.7], [0.78; 2], [0.0; 2], 1), sec([0.7, 0.88], [0.56; 2], [0.0; 2], 1)], 4, 0.05, false)),
+            ("6 twisted", tower(&[sec([0.0, 0.95], [1.0, 0.8], [0.0, quarter], 16)], 4, 0.04, false)),
+            ("7 round", tower(&[sec([0.0, 0.84], [1.0, 0.82], [0.0; 2], 3), sec([0.84, 0.95], [0.82, 0.45], [0.0; 2], 2)], 20, 0.03, false)),
+            ("8 arcology", tower(&arco, 4, 0.03, false)),
+            ("9 skybridge", tower(&[sec([0.0, 1.0], [1.0; 2], [0.0; 2], 1)], 4, 0.0, true)),
+        ];
+        for (n, name) in [("11 temple", "temple"), ("12 watchtower", "watchtower"), ("13 landmark", "landmark")] {
+            models.push((n, hero_model(name).unwrap_or_else(|| panic!("{name} missing"))));
+        }
+        models.push(("14 dome", dome_mesh()));
+        const SLICES: usize = 8;
+        for (name, m) in &models {
+            let tris: Vec<[Vec3; 3]> = m.3.chunks(3).map(|t| [0, 1, 2].map(|k| Vec3::from(m.0[t[k] as usize]))).collect();
+            let (ylo, yhi) = m.0.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
+            let mut cells = Vec::new();
+            let mut worst: f32 = 1.0;
+            for s in 0..SLICES {
+                let (y0, y1) = (ylo + (yhi - ylo) * s as f32 / SLICES as f32, ylo + (yhi - ylo) * (s + 1) as f32 / SLICES as f32);
+                // The box: points of the triangles inside the band, and where their edges cross its two planes.
+                let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+                for t in &tris {
+                    for k in 0..3 {
+                        let (a, b) = (t[k], t[(k + 1) % 3]);
+                        if (y0..=y1).contains(&a.y) {
+                            lo = lo.min(a.xz());
+                            hi = hi.max(a.xz());
+                        }
+                        for y in [y0, y1] {
+                            if (a.y - y) * (b.y - y) < 0.0 {
+                                let p = a.lerp(b, (y - a.y) / (b.y - a.y));
+                                lo = lo.min(p.xz());
+                                hi = hi.max(p.xz());
+                            }
+                        }
+                    }
+                }
+                if lo.x > hi.x {
+                    cells.push("      -      ".to_string());
+                    continue;
+                }
+                let area = (hi - lo).x * (hi - lo).y;
+                // The cross-section's area at four heights: each triangle's cut segment, oriented by its normal.
+                let mut fill = 0.0;
+                for q in 0..4 {
+                    let y = y0 + (y1 - y0) * (q as f32 + 0.5) / 4.0;
+                    let mut a2 = 0.0;
+                    for t in &tris {
+                        let mut pts = Vec::new();
+                        for k in 0..3 {
+                            let (a, b) = (t[k], t[(k + 1) % 3]);
+                            if (a.y - y) * (b.y - y) < 0.0 {
+                                pts.push(a.lerp(b, (y - a.y) / (b.y - a.y)).xz());
+                            }
+                        }
+                        if pts.len() == 2 {
+                            let n = (t[1] - t[0]).cross(t[2] - t[0]).xz();
+                            let (mut p, mut r) = (pts[0], pts[1]);
+                            // Outward normal on the right of p -> r (counter-clockwise loops seen from +y in x, z... as
+                            // the cross product below takes it).
+                            let d = r - p;
+                            if Vec2::new(d.y, -d.x).dot(n) < 0.0 {
+                                std::mem::swap(&mut p, &mut r);
+                            }
+                            a2 += p.x * r.y - r.x * p.y;
+                        }
+                    }
+                    fill += (0.5 * a2).abs() / area.max(1e-9) / 4.0;
+                }
+                worst = worst.min(fill);
+                cells.push(format!("{:>4.2}x{:<4.2} {:>3.0}%", (hi - lo).x, (hi - lo).y, fill * 100.0));
+            }
+            println!("{name:14} slices (width x depth of the unit box, fill): {}  worst {:.0}%", cells.join(" | "), worst * 100.0);
+        }
+    }
 }

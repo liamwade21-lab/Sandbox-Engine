@@ -32,6 +32,7 @@ use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 
 use super::library::{DrawKind, ScatterLibrary};
+use super::probe::{BROKEN_BYTES, PROBE_BYTES, PROBE_CAP, ProbeFrame, ProbeHeadGpu, ProbeMail, ProbeRecGpu, RawList, STAGING};
 use super::{MAX_JOBS, PAGE_VERTS, PAGES, SLOT_CAP, SLOTS, ScatterFrame, TREE_MAX};
 use crate::color_correction::ColorCorrection;
 
@@ -55,6 +56,7 @@ pub fn build(app: &mut App) {
         .add_systems(Render, prepare_bind_groups.in_set(RenderSystems::PrepareBindGroups))
         .add_systems(Render, queue.in_set(RenderSystems::Queue))
         .add_systems(Render, debug_readback.in_set(RenderSystems::Cleanup))
+        .add_systems(Render, probe_readback.in_set(RenderSystems::Cleanup))
         .add_systems(Core3d, scatter_compute.in_set(Core3dSystems::Prepass).before(main_opaque_pass_3d));
 }
 
@@ -195,6 +197,19 @@ struct ScatterGpu {
     placed: Vec<Option<[u32; 7]>>,
     /// This frame's draw pipelines: bark, leaves, impostor, building.
     pipelines: [Option<CachedRenderPipelineId>; 4],
+    /// The Viltrumite mod's solid buildings (`probe.rs`): the broken table (binding 19, empty until step 10) and the
+    /// probe's list (binding 20), its staging buffers, all made at start; this frame's ask (`None`: the mod is off).
+    broken: Buffer,
+    probe: Buffer,
+    staging: Vec<ProbeStaging>,
+    probe_frame: Option<ProbeFrame>,
+}
+
+/// A staging buffer of the probe's lists: state 0 idle, 1 copied this frame, 2 mapping, 3 mapped; the list's frame.
+struct ProbeStaging {
+    buffer: Buffer,
+    state: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    seq: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 /// The draw pipelines' layouts and shader.
@@ -316,6 +331,9 @@ fn init_gpu(
                 texture_2d(TextureSampleType::Float { filterable: true }), // the plants' map patch
                 sampler(SamplerBindingType::Filtering),
                 texture_2d(TextureSampleType::Float { filterable: true }), // its lights (Earth's towns)
+                // (A runtime-sized array's binding is at least its header and one entry.)
+                ro(64),  // the mod's broken table: its header and an entry
+                rw(96),  // the mod's probe: its header and a record
             ),
         ),
     );
@@ -437,6 +455,16 @@ fn init_gpu(
         slots_used: 0,
         placed: vec![None; SLOTS as usize],
         pipelines: [None; 4],
+        broken: buffer(&device, "scatter_broken", BROKEN_BYTES, storage),
+        probe: buffer(&device, "scatter_probe", PROBE_BYTES, storage | BufferUsages::COPY_SRC),
+        staging: (0..STAGING)
+            .map(|_| ProbeStaging {
+                buffer: buffer(&device, "scatter_probe_staging", PROBE_BYTES, BufferUsages::MAP_READ | BufferUsages::COPY_DST),
+                state: default(),
+                seq: default(),
+            })
+            .collect(),
+        probe_frame: None,
         debug: std::env::var("SE_SCATTER_DEBUG").is_ok_and(|v| v != "0").then(|| DebugReadback {
             staging: buffer(&device, "scatter_debug", 4096, BufferUsages::MAP_READ | BufferUsages::COPY_DST),
             state: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -512,6 +540,7 @@ fn prepare(
     views: Query<&ExtractedView, MainView>,
 ) {
     gpu.active = false;
+    gpu.probe_frame = None;
     let (Some(frame), Some(lib)) = (frame, lib) else { return };
     // The height pages first: the main world sends each once, whatever this frame draws.
     for (page, verts) in &frame.page_uploads {
@@ -603,12 +632,19 @@ fn prepare(
         flora_k: Vec4::new(b.relief_m, b.far_range, b.civ_light as f32, if b.domes { 1.0 } else { 0.0 }),
         city: b.city,
         city2: b.city2,
-        street: Vec4::new(b.street_range, frame.traffic, 0.0, 0.0),
+        // (z: the mod's probe, 0 off, 1 as drawn, 2 measuring.)
+        street: Vec4::new(b.street_range, frame.traffic, frame.probe.map_or(0.0, |p| p.mode as f32), 0.0),
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,
     });
     gpu.body.write_buffer(&device, &queue);
+    // The mod's probe: its header (count 0) before the cull appends to it.
+    if let Some(p) = frame.probe {
+        let head = ProbeHeadGpu { count: 0, seq: p.seq, cap: PROBE_CAP, mode: p.mode, a: p.a.to_array(), b: p.b.to_array() };
+        queue.write_buffer(&gpu.probe, 0, bytemuck::bytes_of(&head));
+        gpu.probe_frame = Some(p);
+    }
     // The view: the camera sits at the origin.
     let clip_from_world = view.clip_from_world.unwrap_or_else(|| view.clip_from_view * view.world_from_view.to_matrix().inverse());
     let r = clip_from_world.transpose();
@@ -676,6 +712,8 @@ fn prepare_bind_groups(
             &patch.texture_view,
             &patch.sampler,
             &patch_lights.texture_view,
+            gpu.broken.as_entire_binding(),
+            gpu.probe.as_entire_binding(),
         )),
     ));
     let view_layout = cache.get_bind_group_layout(&draw.view_layout);
@@ -827,6 +865,15 @@ fn scatter_compute(_view: ViewQuery<&ExtractedView, MainView>, gpu: Res<ScatterG
         }
     }
     span.end(ctx.command_encoder());
+    // The mod's probe: the list into an idle staging buffer (none idle: this frame's list is skipped).
+    if let Some(p) = gpu.probe_frame {
+        use std::sync::atomic::Ordering;
+        if let Some(s) = gpu.staging.iter().find(|s| s.state.load(Ordering::Acquire) == 0) {
+            ctx.command_encoder().copy_buffer_to_buffer(&gpu.probe, 0, &s.buffer, 0, Some(PROBE_BYTES));
+            s.seq.store(p.seq, Ordering::Release);
+            s.state.store(1, Ordering::Release);
+        }
+    }
     if let Some(d) = &gpu.debug {
         use std::sync::atomic::Ordering;
         if d.frame % 120 == 0 && d.state.load(Ordering::Acquire) == 0 {
@@ -886,6 +933,57 @@ fn debug_readback(mut gpu: ResMut<ScatterGpu>, frame: Option<Res<ScatterFrame>>,
             );
         }
         _ => {}
+    }
+}
+
+/// The probe's lists: maps the ones copied this frame (after its submission), polls while any is mapping, and sends
+/// each mapped one to the main world (`probe::receive_probe`).
+fn probe_readback(gpu: Res<ScatterGpu>, device: Res<RenderDevice>, mail: Res<ProbeMail>) {
+    use std::sync::atomic::Ordering;
+    // (First the ones mapping: a list mapped now is sent this frame, not the next.)
+    if gpu.staging.iter().any(|s| s.state.load(Ordering::Acquire) == 2)
+        && let Err(e) = device.poll(bevy::render::render_resource::PollType::Poll)
+    {
+        warn!("probe: poll: {e}");
+    }
+    for s in &gpu.staging {
+        match s.state.load(Ordering::Acquire) {
+            1 => {
+                s.state.store(2, Ordering::Release);
+                let state = s.state.clone();
+                s.buffer.slice(..).map_async(MapMode::Read, move |r| {
+                    if let Err(e) = &r {
+                        warn!("probe: read-back failed: {e}");
+                    }
+                    state.store(if r.is_ok() { 3 } else { 0 }, Ordering::Release)
+                });
+            }
+            3 => {
+                let list = match s.buffer.slice(..).get_mapped_range() {
+                    Ok(view) => {
+                        let head: ProbeHeadGpu = bytemuck::pod_read_unaligned(&view[..std::mem::size_of::<ProbeHeadGpu>()]);
+                        let n = head.count.min(PROBE_CAP) as usize;
+                        let start = std::mem::size_of::<ProbeHeadGpu>();
+                        let recs: Vec<ProbeRecGpu> = view[start..start + n * std::mem::size_of::<ProbeRecGpu>()]
+                            .chunks_exact(std::mem::size_of::<ProbeRecGpu>())
+                            .map(bytemuck::pod_read_unaligned)
+                            .collect();
+                        Some(RawList { seq: s.seq.load(Ordering::Acquire), count: head.count, recs })
+                    }
+                    Err(_) => None,
+                };
+                s.buffer.unmap();
+                s.state.store(0, Ordering::Release);
+                if let (Some(l), Ok(mut m)) = (list, mail.0.lock()) {
+                    // (Nobody reading: the main world keeps the newest few.)
+                    if m.len() >= 2 * STAGING {
+                        m.remove(0);
+                    }
+                    m.push(l);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

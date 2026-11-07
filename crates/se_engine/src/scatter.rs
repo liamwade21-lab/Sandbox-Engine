@@ -28,6 +28,7 @@ pub mod earth;
 mod gpu;
 mod impostor;
 pub(crate) mod library;
+pub mod probe;
 pub mod trees;
 
 use std::collections::{HashMap, HashSet};
@@ -178,6 +179,7 @@ impl Plugin for ScatterPlugin {
             .add_plugins(ExtractResourcePlugin::<ScatterFrame>::default())
             .add_plugins(library::LibraryPlugin)
             .add_systems(PostUpdate, update_scatter.after(UniverseSet::FloatingOrigin));
+        probe::build(app);
         gpu::build(app);
     }
 }
@@ -264,6 +266,11 @@ impl Scatter {
         self.levels.unwrap_or_else(|| Levels::new(3, 3))
     }
 
+    /// The body the objects stand on (the nearest with land, in linear space), once its cells are made.
+    pub fn body(&self) -> Option<Entity> {
+        self.body
+    }
+
     /// Starts over with the body (after a switch of the test or of the vegetation).
     pub fn reset_body(&mut self) {
         self.reset();
@@ -319,12 +326,14 @@ pub struct CellGpu {
     /// The cell's placement seed (the cull pass re-derives each instance from it and its number).
     pub seed: u32,
     /// Its corner in the city layout's frame and edge (`PlaceJob`), its metric at its middle: the cars
-    /// are worked out from them every frame (`scatter.wesl` `cull_cars`).
+    /// are worked out from them every frame (`scatter.wesl` `cull_cars`), the probe's building ids too
+    /// (`probe.rs`), with its cube face.
     pub tile: [i32; 2],
     pub local: [f32; 2],
     pub edge: f32,
     pub k: f32,
-    pub pad: [f32; 2],
+    pub face: f32,
+    pub pad: f32,
 }
 
 impl CellGpu {
@@ -448,6 +457,8 @@ pub struct ScatterFrame {
     pub traffic: f32,
     /// Whether any cell of street objects is resident (else their draws are left out).
     pub streets: bool,
+    /// The mod's probe this frame (`probe.rs`; `None` with the mod off).
+    pub probe: Option<probe::ProbeFrame>,
 }
 
 /// A cell's largest real edge (m): cells are the nodes of the cube-sphere quadtree split until
@@ -882,8 +893,9 @@ fn update_scatter(
         let live = if fits && tree.len() <= TREE_MAX as usize { CellGpu::LIVE } else { 0 };
         let c = key.center_dir();
         let up = (body.orient * (c / body.shape).normalize()).as_vec3();
-        let k = if job.kind == 3 { crate::road_level::node_metric(key) } else { 1.0 };
-        cells[slot as usize] = CellGpu { up: up.to_array(), root, off, shift_live: shift | live, seed: job.seed, tile: job.tile, local: job.local, edge: job.edge, k, pad: [0.0; 2] };
+        let k = crate::road_level::node_metric(key);
+        cells[slot as usize] =
+            CellGpu { up: up.to_array(), root, off, shift_live: shift | live, seed: job.seed, tile: job.tile, local: job.local, edge: job.edge, k, face: key.face as u32 as f32, pad: 0.0 };
         max_slot = max_slot.max(slot + 1);
     }
     sc.split = split;

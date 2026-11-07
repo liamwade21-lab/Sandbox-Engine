@@ -113,12 +113,13 @@ struct Cell {
     // bits 0-7 the level difference to a coarser drawn node, bit 8 placed
     shift_live: u32,
     seed: u32,
-    // Its corner in the city layout's frame and edge (`Job`), its metric at its middle (the cars).
+    // Its corner in the city layout's frame and edge (`Job`), its metric at its middle (the cars, the
+    // probe), its cube face (the probe's building ids).
     tile: vec2<i32>,
     local: vec2<f32>,
     edge: f32,
     k: f32,
-    pad0: f32,
+    face: f32,
     pad1: f32,
 }
 
@@ -197,6 +198,57 @@ struct Inst {
 @group(0) @binding(17) var veg_smp: sampler;
 // Its lights map (Earth's towns for the cities): the brightest channel.
 @group(0) @binding(18) var veg_lights: texture_2d<f32>;
+
+// The Viltrumite mod's solid buildings (docs/spec-mods-viltrumite-powers.md F12, scatter/probe.rs). Both exist with
+// the mod off (the pipelines are built at start), unused then: `body.street.z` is 0.
+// The broken table (step 10 uses it; made empty, count 0): its header, then entries in 64 m squares.
+struct BrokenHead {
+    count: u32,
+    clock: f32,
+    pad0: u32,
+    pad1: u32,
+    // the capsule (render frame) its hiding is tested in, a.w its margin
+    a: vec4<f32>,
+    b: vec4<f32>,
+}
+struct BrokenEntry {
+    // face metres x 4 (the probe's id), the face and the model, the time it broke
+    x: i32,
+    y: i32,
+    face_model: u32,
+    t0: f32,
+}
+struct BrokenTable {
+    head: BrokenHead,
+    entries: array<BrokenEntry>,
+}
+// The probe: the buildings inside a capsule round him, appended by `cull_building` (dropped past `cap`; `count` goes
+// on counting), copied to the CPU every frame it's on. `seq` names the frame (the CPU's ring of cameras and bodies).
+struct ProbeHead {
+    count: atomic<u32>,
+    seq: u32,
+    cap: u32,
+    // 1 the capsule after the range fade (as drawn), 2 the near and far lists in full (measuring)
+    mode: u32,
+    // its ends (render frame), a.w the margin round its axis (m) beyond each building's half diagonal
+    a: vec4<f32>,
+    b: vec4<f32>,
+}
+struct ProbeRec {
+    inst: Inst,
+    // the face and its face metres x 4 (the same building from a near and a far cell: its record's hash differs)
+    id: vec2<i32>,
+    // the face, the model (from the box) << 8, the cell's kind (1 near, 2 far) << 16 (`meta` is a reserved word)
+    tag: u32,
+    // the cell's metric (true m per face m)
+    k: f32,
+}
+struct ProbeList {
+    head: ProbeHead,
+    recs: array<ProbeRec>,
+}
+@group(0) @binding(19) var<storage, read> broken: BrokenTable;
+@group(0) @binding(20) var<storage, read_write> probe: ProbeList;
 
 // The towns' density at body-frame direction `dir`: from the lights map's patch on a map body (as
 // the ground's from its lights tiles: planet.wesl), else the settlement field; 1 under SE_CITY_TEST.
@@ -1329,6 +1381,12 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     }
     let pos = m * p.xyz + info.t - up * (body.lod2.y + plinth);
     let dist = length(pos);
+    // The mod's probe (0 with the mod off: one uniform branch): measuring, the near and far lists in full,
+    // whatever the camera's distance.
+    let probing = body.street.z;
+    if probing > 1.5 {
+        probe_building(cell, rec, lf, pos, w, dpt, scale, ang, model, kind, 0.0);
+    }
     // The near class to its range; the far class (the tall ones) from 85 % of it to its own (the two
     // draw the same box between: no seam, no flicker).
     var range = body.city2.x;
@@ -1341,6 +1399,10 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     let fade = clamp((range - dist) / (range * 0.15), 0.0, 1.0);
     if fade <= 0.0 {
         return;
+    }
+    // As drawn: after the range fade, before the view's planes (buildings behind the camera count).
+    if probing > 0.5 && probing < 1.5 {
+        probe_building(cell, rec, lf, pos, w, dpt, scale, ang, model, kind, fade);
     }
     let r = 0.5 * sqrt(w * w + dpt * dpt + scale * scale);
     let bc = pos + up * (0.5 * scale);
@@ -1358,6 +1420,38 @@ fn cull_building(slot: u32, i: u32, cell: Cell, kind: u32, model: u32) {
     let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
     let o = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
     append(models[model].mesh_bucket, o);
+}
+
+// The probe (the mod's F12.1): a building whose bounding sphere reaches within `probe.head.a.w` of the capsule's axis is
+// appended with its id: its face and its middle's face metres x 4 from the face's corner (the layout's own frame, the
+// same from a near and a far cell; the record's hash isn't), the Inst as the draw would take it, its cell's kind and metric.
+fn probe_building(cell: Cell, rec: vec2<u32>, lf: Lift, pos: vec3<f32>, w: f32, dpt: f32, scale: f32, ang: f32, model: u32, kind: u32, fade: f32) {
+    let up = cell.up;
+    let r = 0.5 * sqrt(w * w + dpt * dpt + scale * scale);
+    let bc = pos + up * (0.5 * scale);
+    let a = probe.head.a.xyz;
+    let ab = probe.head.b.xyz - a;
+    let t = clamp(dot(bc - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    let d = bc - (a + ab * t);
+    let reach = probe.head.a.w + r;
+    if dot(d, d) > reach * reach {
+        return;
+    }
+    let m = mat3x3<f32>(body.m0.xyz, body.m1.xyz, body.m2.xyz);
+    let fu = normalize(m * lf.du);
+    let fv = normalize(m * lf.dv);
+    var xa = cos(ang) * fu + sin(ang) * fv;
+    xa = normalize(xa - up * dot(xa, up));
+    let hash = mix32(rec.x ^ (rec.y * 0x9e3779b9u)) & 0xffffu;
+    let inst = Inst(pos, pack2x16float(vec2<f32>(w, dpt)), oct_encode(xa), oct_encode(up), scale, model | (u32(fade * 255.0) << 8u) | (hash << 16u));
+    // Its middle in face metres: the cell's tile (whole, so no rounding) and the metres from it.
+    let fc = (vec2<f32>(f32(rec.x & 0xffffu), f32(rec.x >> 16u)) + 0.5) / 65536.0;
+    let id = cell.tile * 16384 + vec2<i32>(round((cell.local + fc * cell.edge) * 4.0));
+    let mk = model - body.species.w;
+    let k = atomicAdd(&probe.head.count, 1u);
+    if k < probe.head.cap {
+        probe.recs[k] = ProbeRec(inst, id, u32(cell.face) | (mk << 8u) | (kind << 16u), cell.k);
+    }
 }
 
 // A flying lane's segment: its middle lifted onto the drawn ground and raised to its height (by the

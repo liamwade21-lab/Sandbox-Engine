@@ -7,10 +7,12 @@
 //! on and where his feet go, `camera.rs` the chase camera, `air.rs` the one source of air and the boom's states, `sound.rs` his sounds
 //! by that air, `fx.rs` what the air does round him and the passes that draw it and the impacts, `impact.rs` the punches, the clap,
 //! the crater and dust pools and the shake, `anim.rs` the sampler, `cape.rs` the cape's springs, `draw.rs` how he and his shadow are
-//! drawn and lit, `readout.rs` the corner readout, `tune.rs` every number to tune.
+//! drawn and lit, `readout.rs` the corner readout, `breakable.rs` the buildings (so far the probe that lists those round him:
+//! step 9's first part), `tune.rs` every number to tune.
 
 pub mod air;
 pub mod anim;
+pub mod breakable;
 pub mod camera;
 pub mod cape;
 pub mod draw;
@@ -56,6 +58,7 @@ impl Plugin for ViltrumitePlugin {
         app.add_plugins(MaterialPlugin::<impact::RimMaterial>::default());
         app.init_resource::<Hero>()
             .init_resource::<DevKeys>()
+            .init_resource::<breakable::ProbeDev>()
             .init_resource::<sound::Voices>()
             // Test runs press real keys into the frame's input, before the mod's snapshot and every other reader.
             .add_systems(PreUpdate, dev_keys.run_if(dev_keys_held).after(bevy::input::InputSystems).before(crate::mods::snapshot_input))
@@ -85,6 +88,8 @@ impl Plugin for ViltrumitePlugin {
                     // (The capture views copy the near plane he sets, in the same frame.)
                     .before(crate::capture::follow_main),
             )
+            // The buildings' probe: the capsule from where he is now, before the scatter turns it into this frame's.
+            .add_systems(PostUpdate, breakable::probe_ask.run_if(hero_shown).after(hero::hero_move).before(crate::scatter::probe::ask_probe))
             // What the air does round him, from the camera as the frame draws it.
             .add_systems(PostUpdate, fx::update_fx.run_if(hero_shown).after(draw::update_hero).before(UniverseSet::FloatingOrigin))
             // The impacts' pools (made once he is), then the records written once. They run on after the mod is turned off while
@@ -326,8 +331,10 @@ fn hand_back(
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
     (impacts, mut rims): (Option<Res<impact::Impacts>>, Query<&mut Visibility, With<impact::RimPart>>),
+    (mut probe, mut probe_dev): (ResMut<crate::scatter::probe::BuildingProbe>, ResMut<breakable::ProbeDev>),
 ) {
     hero.placed = false;
+    breakable::probe_off(&mut probe, &mut probe_dev);
     *soil = default();
     if let Some(im) = impacts {
         im.hide_warm_rim(&mut rims);
@@ -445,7 +452,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
     })
 }
 
-/// `hero keys KEYS SECS` | `aim Y P` | `state` | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `crater [R]` | `dust [SIZE]` | `splash [SIZE]` | `impacts` | `sound ...` (`sound::dev_command`):
+/// `hero keys KEYS SECS` | `aim Y P` | `state` | `probe ...` (`breakable::dev_command`) | `trace FILE [BODY] | off` | `feet FILE | off` | `boom FILE | off` | `cruise V [M] | off` | `air` | `dist M` | `soil on|off` | `hold on|off` | `shadow on|off` | `orbit K` | `clip NAME|auto` | `light auto|free` | `crater [R]` | `dust [SIZE]` | `splash [SIZE]` | `impacts` | `sound ...` (`sound::dev_command`):
 /// test runs have no keyboard or mouse. `keys`: KEYS joined with + (`w+shift`; also `lmb`, `rmb`), held SECS real seconds (0:
 /// for a frame); `off` lets go. `aim`: turn Y degrees about his up, and pitch P degrees over his level (his horizon near a body,
 /// the view's own in space). `trace`: one line a frame to FILE, his place in BODY's frame (else the nearest's). `orbit`: falling
@@ -485,6 +492,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             let _ = world.run_system_cached(log_state);
         }
         "sound" => sound::dev_command(world, rest),
+        "probe" => breakable::dev_command(world, rest),
         "orbit" => world.resource_mut::<Hero>().dev_orbit = Some(rest.parse().unwrap_or(1.0)),
         "cruise" => {
             let v: Vec<f64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
