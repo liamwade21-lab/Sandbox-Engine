@@ -236,7 +236,7 @@ fn hand_back(
     mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
 ) {
     hero.placed = false;
-    soil.0 = Vec4::ZERO;
+    *soil = default();
     hero.state = State::Hover;
     hero.ease = 0.0;
     hero.impact = None;

@@ -24,7 +24,7 @@ use se_core::upos::UPos;
 
 use crate::ship::{BodyInfo, frame_terms, gravity_at};
 
-use super::ground::Footing;
+use super::ground::{Footing, normal_at, slope_there};
 use super::tune;
 
 /// The body a `Free` hero goes with this frame.
@@ -99,13 +99,16 @@ pub struct Scene<'a> {
 /// What a step ran into.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Outcome {
-    /// He fell onto the ground: his speed towards it (m/s).
+    /// He fell onto the ground: his speed into it, along its normal (m/s).
     pub contact: Option<f64>,
-    /// He flew into the ground, and slid: his speed towards it (m/s). What Ctrl turns into a landing.
+    /// He flew into ground that's loaded, and slid: his speed into it, along its normal (m/s). What can turn into a landing
+    /// (`ground::flight_lands`).
     pub flown_into: Option<f64>,
-    /// With either: his speed over the ground, and his velocity along it (body frame), as they were.
+    /// With either: his speed over the ground, his velocity along it (body frame), as they were, and where he hit it (body
+    /// frame). A flight's slide has already gone on from there.
     pub speed: f64,
     pub along: DVec3,
+    pub at: DVec3,
 }
 
 pub(super) fn find<'b, 'a>(s: &'b Scene<'a>, obj: ObjectRef) -> Option<&'b BodyInfo<'a>> {
@@ -467,13 +470,21 @@ impl Frame {
             match motion {
                 // Along the ground, the whole step, less what goes into it. (Stopped at the hit he crawled: on any rising
                 // ground the trace's first metre is under the floor, every frame.)
+                // Flown into only where there's ground to come down on (F2); his height is held either way. How hard goes by the
+                // normal: level into a hillside is no speed towards the body's centre.
                 Motion::Flown => {
-                    if into > 0.0 {
-                        out.flown_into = Some(into);
-                        out.speed = v1.length();
-                        v1 += up * into;
-                        out.along = v1;
+                    if loaded.is_some() {
+                        let hard = -v1.dot(normal_at(s, b, hit));
+                        if into > 0.0 || hard > 0.0 {
+                            out.flown_into = Some(hard.max(0.0));
+                            out.speed = v1.length();
+                            out.at = p;
+                        }
                     }
+                    if into > 0.0 {
+                        v1 += up * into;
+                    }
+                    out.along = v1;
                     let rest = p1 - hit;
                     let along = hit + rest - up * rest.dot(up).min(0.0);
                     p = along.normalize_or(up) * along.length().max(floor_at(s, b, along, held).0);
@@ -482,10 +493,22 @@ impl Frame {
                 // Nothing loaded: held in the air, no landing, and the fall goes on when there's ground (F2).
                 Motion::Ballistic if loaded.is_none() => v1 = DVec3::ZERO,
                 Motion::Ballistic => {
-                    out.contact = Some(into.max(0.0));
-                    out.speed = v1.length();
-                    out.along = v1 + up * into;
-                    v1 = DVec3::ZERO;
+                    let n = normal_at(s, b, hit);
+                    let hard = (-v1.dot(n)).max(0.0);
+                    if slope_there(n, up).0 > tune::SLOPE_SLIDE_DEG && hard < tune::HARD_LANDING_MS {
+                        // A wall: nothing to stand or slide on (slide to 70 degrees, wall above). He goes on down it at what's left
+                        // of his speed, the whole step, and lands where it eases. (He'd never get off it by a landing and a fall:
+                        // on a height field, straight down from a point of the ground is under the ground.) Hit hard, it's a crash:
+                        // `walk_step` then sees the wall and lets him go.
+                        v1 += n * hard;
+                        p = p1.normalize_or(up) * p1.length().max(floor_at(s, b, p1, held).0);
+                    } else {
+                        out.contact = Some(hard);
+                        out.speed = v1.length();
+                        out.along = v1 + up * into;
+                        out.at = p;
+                        v1 = DVec3::ZERO;
+                    }
                 }
             }
         }
@@ -933,6 +956,60 @@ mod tests {
         assert!((local_pos.x - 3000.0).abs() < 30.0, "moved {}", local_pos.x);
         assert!((local_vel.length() - 3000.0).abs() < 1.0, "{local_vel}");
         assert!(local_pos.length() >= (s.ground)(&bodies[0], local_pos).radial + 1.0 - 1e-6);
+    }
+
+    /// How hard he hits goes by the ground's normal, not by the radius: level into a hillside is a hit; straight down on a steep one
+    /// is less of one. And where he hit is kept: a flight's slide has gone on from there.
+    #[test]
+    fn a_hit_goes_by_the_grounds_normal() {
+        let dt = 1.0 / 60.0;
+        let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, EARTH_R, 0.0)];
+        let (spin, vel) = (|_| DVec3::ZERO, |_| DVec3::ZERO);
+        let drag = |_: &BodyInfo, _: DVec3| 0.0;
+        let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
+        for (deg, level, down) in [(30.0_f64, 300.0, 150.0), (60.0, 519.6, 300.0)] {
+            let tan = deg.to_radians().tan();
+            let ground = move |b: &BodyInfo, l: DVec3| Ground { radial: b.radius + l.normalize().x * b.radius * tan, level: Some(3) };
+            let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+            let top = (s.ground)(&bodies[0], DVec3::Y).radial + 1.0;
+            // Level, up the slope, at 600 m/s: nothing goes towards the centre.
+            let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::X * 600.0, level: None, last_orient: DQuat::IDENTITY };
+            let o = f.advance(&s, dt, Motion::Flown);
+            let into = o.flown_into.expect("a hit");
+            assert!((into - level).abs() < level * 0.02, "{deg}: {into} against {level}");
+            // The whole step along the ground, 10 m, but it stopped at the first metre.
+            let Frame::Attached { local_pos, .. } = f else { panic!() };
+            assert!(local_pos.x > 9.0 && o.at.x < 1.1, "{deg}: went to {}, hit at {}", local_pos.x, o.at.x);
+            assert!(o.at.length() >= (s.ground)(&bodies[0], o.at).radial + 1.0 - 1e-6);
+            // Falling straight down at 300 m/s.
+            let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * top, local_vel: DVec3::NEG_Y * 300.0, level: None, last_orient: DQuat::IDENTITY };
+            let o = f.advance(&s, dt, Motion::Ballistic);
+            let into = o.contact.expect("a contact");
+            let want = 300.0 * deg.to_radians().cos();
+            assert!((into - want).abs() < want * 0.02, "{deg}: {into} against {want} ({down})");
+        }
+    }
+
+    /// F2: nothing's loaded, no landing, flying or falling: he holds his height, and no hit is reported.
+    #[test]
+    fn no_hit_where_nothing_is_loaded() {
+        let dt = 1.0 / 60.0;
+        let bodies = [body(0, UPos::ZERO, DQuat::IDENTITY, EARTH_R, 0.0)];
+        let (spin, vel) = (|_| DVec3::ZERO, |_| DVec3::ZERO);
+        let ground = |b: &BodyInfo, _: DVec3| Ground { radial: b.radius, level: None };
+        let drag = |_: &BodyInfo, _: DVec3| 0.0;
+        let footing = |_: &BodyInfo, _: DVec3| Footing::Land;
+        let s = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: 1.0 };
+        let start = EARTH_R + 50.0;
+        for motion in [Motion::Flown, Motion::Ballistic] {
+            for speed in [5.0, 3000.0] {
+                let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: DVec3::Y * start, local_vel: DVec3::NEG_Y * speed, level: None, last_orient: DQuat::IDENTITY };
+                let o = f.advance(&s, dt, motion);
+                assert_eq!((o.contact, o.flown_into), (None, None), "{motion:?} at {speed}");
+                let Frame::Attached { local_pos, .. } = f else { panic!() };
+                assert!(local_pos.length() >= start - 1e-6, "{motion:?} at {speed}: {}", local_pos.length() - EARTH_R);
+            }
+        }
     }
 
     /// X on the floor of a turning body: where he stood. (The path used to start from where `carry` turned him back to.)

@@ -400,7 +400,9 @@ pub(crate) fn snapshot_input(
         MouseScrollUnit::Line => scroll.delta.y,
         MouseScrollUnit::Pixel => scroll.delta.y / 100.0,
     };
-    let mut read = ModInput::read(&keys, &buttons, motion.delta, notches, menus);
+    // (Raw device motion comes whoever has the focus: in a test run, someone using the computer would turn its view.)
+    let (moved, notches) = if real { (motion.delta, notches) } else { (Vec2::ZERO, 0.0) };
+    let mut read = ModInput::read(&keys, &buttons, moved, notches, menus);
     if state.regain > 0 {
         state.held_left = buttons.pressed(MouseButton::Left);
         state.held_right = buttons.pressed(MouseButton::Right);

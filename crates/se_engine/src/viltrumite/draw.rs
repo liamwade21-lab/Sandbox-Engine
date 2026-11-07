@@ -60,7 +60,7 @@ use crate::system::{AmbientLighting, BatchedSprite, LightingFade, SystemBody, il
 use crate::terrain::{ATM_SUN_SCALE, PatchLight, Terrain, TileCaches};
 use crate::volumetric_clouds::CloudShadowAssets;
 
-use super::frames::Frame;
+use super::frames::{Frame, Ground};
 use super::ground::{self, Footing, Soles};
 use super::tune;
 use super::{Hero, LightPath};
@@ -179,10 +179,10 @@ impl Material for HeroMaterial {
             AlphaMode::Opaque
         }
     }
-    /// The sort key of the transparent phase: the shadow goes after everything there, the sea above all (which writes no
-    /// depth, and would paint over it).
+    /// The sort key of the transparent phase: the shadow goes after the sea (1e10), which writes depth: drawn first, the plane just
+    /// above the water would keep the sea out of his whole silhouette, its waves and glint with it.
     fn depth_bias(&self) -> f32 {
-        if self.shadow { 1.0e9 } else { 0.0 }
+        if self.shadow { 2.0e10 } else { 0.0 }
     }
     fn specialize(
         _pipeline: &MaterialPipeline,
@@ -227,6 +227,8 @@ pub struct HeroDraws {
     /// His shadow's draws, and whether they're showing.
     shadows: Vec<Entity>,
     shadow_on: bool,
+    /// The normal of its plane last frame, in the frame of that body.
+    shadow_normal: Option<(ObjectRef, DVec3)>,
     frame_buffer: Handle<ShaderBuffer>,
     /// The record, kept here so nothing is allocated a frame.
     frame: Box<HeroFrameGpu>,
@@ -391,7 +393,7 @@ pub(super) fn spawn_hero(
     assets.model.indices = Vec::new();
     info!("viltrumite: meshes and {} textures made in {} ms", cache.len(), started.elapsed().as_millis());
     commands.insert_resource(HeroLightInput { on: true, frame: frame_buffer.clone(), light, tables: None });
-    commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
+    commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, shadow_normal: None, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
 }
 
 /// He shows while the mod is on. Runs only after the first enable.
@@ -591,17 +593,67 @@ fn attached_body<'a>(hero: &Hero, p: &'a LightParams) -> Option<(BodyInfo<'a>, D
     Some((BodyInfo { obj, pos: b.pos, orient: b.orient, radius: b.radius_m, shape: b.shape, gm: 0.0, terrain: t }, local_pos))
 }
 
-/// The plane his shadow falls on, in the render frame (xyz its normal, w so `dot(n, x) + w` is the height over it), and how strong it
-/// is: from a triangle of the ground where the star's ray through him lands, lifted a little. Fades out as he climbs; none where he has
-/// nothing under him. `None`: no shadow.
-fn shadow_plane(body: &(BodyInfo, DVec3), sun: DVec3, cam: UPos) -> Option<(Vec4, f32)> {
-    let (b, local) = body;
-    if ground::footing(b, *local) == Footing::Nothing {
+/// Where the star's ray through `p` meets the ground (body frame; `l` towards the star), and `None` where nothing is loaded or a star
+/// that low never gets there. By steps of a share of what the height says is left, exact on flat ground, then bisection: over
+/// uneven ground, or with the star low, one long step overshoots by many times the height.
+fn ray_landing(ground: impl Fn(DVec3) -> Ground, p: DVec3, l: DVec3) -> Option<DVec3> {
+    let over = |q: DVec3| {
+        let g = ground(q);
+        g.level.map(|_| q.length() - g.radial)
+    };
+    let sine = l.dot(p.normalize_or(DVec3::Y));
+    let cos = sine.max(tune::SHADOW_RAY_MIN_COS);
+    let (mut last, mut h) = (0.0, over(p)?);
+    if h <= 0.0 {
+        return Some(p);
+    }
+    if sine <= 0.0 {
         return None;
     }
-    let ground = |p: DVec3| ground::support_height(b, p, None, 0.0);
+    for _ in 0..tune::SHADOW_RAY_STEPS {
+        let t = last + (h / cos * tune::SHADOW_RAY_SHARE).max(tune::SHADOW_RAY_MIN_STEP_M);
+        let hq = over(p - l * t)?;
+        if hq <= 0.0 {
+            let (mut above, mut under) = (last, t);
+            for _ in 0..tune::SHADOW_RAY_BISECT {
+                let mid = 0.5 * (above + under);
+                if over(p - l * mid)? <= 0.0 {
+                    under = mid;
+                } else {
+                    above = mid;
+                }
+            }
+            return Some(p - l * under);
+        }
+        (last, h) = (t, hq);
+    }
+    None
+}
+
+/// Where his shadow falls, in the body's frame: the ground the star's ray through his soles lands on and the one through his
+/// head does, and the ground's normal along that. Their line is what the shadow's plane contains, so the shadow starts at his
+/// boots and ends where the ground really is there, whatever it does between.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShadowFall {
+    start: DVec3,
+    end: DVec3,
+    normal: DVec3,
+    /// How strong (1 up to `SHADOW_FADE_M.0` over the ground, to 0).
+    strength: f64,
+}
+
+/// `None`: no shadow, and nothing for the ground to hold still for: nothing to stand on, nothing loaded, or he's too high.
+fn shadow_fall(b: &BodyInfo, local: DVec3, sun: DVec3) -> Option<ShadowFall> {
+    if ground::footing(b, local) == Footing::Nothing {
+        return None;
+    }
+    fall_over(|p: DVec3| ground::support_height(b, p, None, 0.0), local, (b.orient.inverse() * sun).normalize_or(local.normalize_or(DVec3::Y)))
+}
+
+/// The same over any ground, `l` towards the star, both in the body's frame.
+fn fall_over(ground: impl Fn(DVec3) -> Ground, local: DVec3, l: DVec3) -> Option<ShadowFall> {
     let up = local.normalize_or(DVec3::Y);
-    let g = ground(*local);
+    let g = ground(local);
     g.level?;
     let height = local.length() - g.radial - tune::STAND_M;
     let (from, to) = tune::SHADOW_FADE_M;
@@ -609,20 +661,31 @@ fn shadow_plane(body: &(BodyInfo, DVec3), sun: DVec3, cam: UPos) -> Option<(Vec4
     if strength <= 0.0 {
         return None;
     }
-    // Down the star's ray to the ground, twice: the second for what the first found. (A star under the horizon is the shader's.)
-    let l = (b.orient.inverse() * sun).normalize_or(up);
-    let cos = l.dot(up).max(0.05);
-    let mut at = *local;
-    for _ in 0..2 {
-        at -= l * ((at.length() - ground(at).radial) / cos);
-    }
-    let [p0, p1, p2] = ground::ground_triangle(ground, at, tune::SHADOW_SPAN_M)?;
+    let soles = local - up * tune::STAND_M;
+    let head = soles + up * tune::SHADOW_TALL_M;
+    // On the ground under the place, if the star's too low for its ray to get there.
+    let on_ground = |p: DVec3| p.normalize_or(up) * ground(p).radial;
+    let start = ray_landing(&ground, soles, l).unwrap_or_else(|| on_ground(soles));
+    // (Far out at a low sun the star's light on the plane is next to nothing, and its reach is what the ground is held for.)
+    let reach = smooth(tune::SHADOW_LOW_SUN.0, tune::SHADOW_LOW_SUN.1, l.dot(up)) * tune::SHADOW_REACH_M;
+    let end = ray_landing(&ground, head, l).map_or(start, |e| start + (e - start).clamp_length_max(reach));
+    let end = on_ground(end);
+    let [p0, p1, p2] = ground::ground_triangle(&ground, (start + end) * 0.5, tune::SHADOW_SPAN_M)?;
     let n = (p1 - p0).cross(p2 - p0).normalize_or(up);
     let n = if n.dot(up) < 0.0 { -n } else { n };
-    let n_world = b.orient * n;
-    let base = b.pos.offset_m(b.orient * p0).delta_m(cam);
-    let plane = n_world.as_vec3().extend((-n_world.dot(base) - tune::SHADOW_LIFT_M) as f32);
-    Some((plane, strength as f32))
+    // That plane, turned to contain the line, by how long the line is.
+    let along = end - start;
+    let len = along.length();
+    let flat = if len > 1e-3 { (n - along / len * n.dot(along) / len).normalize_or(n) } else { n };
+    let normal = n.lerp(flat, smooth(tune::SHADOW_LINE_M.0, tune::SHADOW_LINE_M.1, len)).normalize_or(n);
+    Some(ShadowFall { start, end, normal, strength })
+}
+
+/// The plane his shadow falls on, in the render frame (xyz its normal, w so `dot(n, x) + w` is the height over it), lifted a little.
+fn shadow_plane(b: &BodyInfo, fall: &ShadowFall, normal: DVec3, cam: UPos) -> Vec4 {
+    let n_world = b.orient * normal;
+    let base = b.pos.offset_m(b.orient * fall.start).delta_m(cam);
+    n_world.as_vec3().extend((-n_world.dot(base) - tune::SHADOW_LIFT_M) as f32)
 }
 
 /// Model space (Z up, +Y forward) to the port's (Y up, -Z forward); +X stays his right hand.
@@ -690,16 +753,6 @@ pub(crate) fn update_hero(
         let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: lifted.as_vec3().into() };
         hero.sampler.write_palette(place, &mut f.joints);
     }
-    // The ground under him holds still round his feet (`planet.wesl`): where his soles are, in the camera's frame.
-    let soil_now = match (&body, up_there) {
-        (Some((b, local)), Some(up)) if !hero.soil_off && ground::footing(b, *local) == Footing::Land && local.length() - ground::support_height(b, *local, None, 0.0).radial < tune::SOIL_HOLD_UNDER_M => {
-            (rel - up * tune::STAND_M).as_vec3().extend(1.0)
-        }
-        _ => Vec4::ZERO,
-    };
-    if soil.0 != soil_now {
-        soil.0 = soil_now;
-    }
     // His chest.
     let nearest = p
         .bodies
@@ -735,8 +788,27 @@ pub(crate) fn update_hero(
         draws.was_near = Some(near_body.is_some());
         info!("viltrumite: his light is now {} ({:.0} m above the nearest radius)", if near_body.is_some() { "the near body's" } else { "the CPU's" }, nearest.map_or(0.0, |n| n.2));
     }
-    // His shadow: only while there's a plane to fall on; hidden, its 100,000 triangles aren't drawn.
-    let shadow = body.as_ref().filter(|_| !hero.shadow_off).and_then(|bd| shadow_plane(bd, f.light.sun_dir.truncate().as_dvec3(), cam.pos));
+    let fall = body.as_ref().and_then(|(b, local)| Some((b, shadow_fall(b, *local, f.light.sun_dir.truncate().as_dvec3())?)));
+    // The ground holds still where his feet and his shadow lie (`planet.wesl`), a line in the camera's frame, until the shadow has nearly
+    // faded, and as that goes, so nothing changes at one height.
+    let soil_now = match &fall {
+        Some((b, fall)) if !hero.soil_off && ground::footing(b, fall.start) == Footing::Land => {
+            let at = |p: DVec3| b.pos.offset_m(b.orient * p).delta_m(cam.pos).as_vec3();
+            let hold = (fall.strength / tune::SOIL_HOLD_SHARE).min(1.0) as f32;
+            crate::volumetric_clouds::HeroSoil { start: at(fall.start).extend(hold), end: at(fall.end).extend(0.0) }
+        }
+        _ => default(),
+    };
+    if *soil != soil_now {
+        *soil = soil_now;
+    }
+    // His shadow: only while there's a plane to fall on; hidden, its 100,000 triangles aren't drawn. The plane's turn is eased, or at a
+    // low sun its far end, grazing over bumps, flicks it as he walks; it still goes through where his soles' ray lands.
+    let shadow = fall.filter(|_| !hero.shadow_off).map(|(b, fall)| {
+        let eased = draws.shadow_normal.filter(|(obj, _)| *obj == b.obj).map_or(fall.normal, |(_, was)| was.lerp(fall.normal, 1.0 - (-(dt as f64) / tune::SHADOW_EASE_S).exp()).normalize_or(fall.normal));
+        draws.shadow_normal = Some((b.obj, eased));
+        (shadow_plane(b, &fall, eased, cam.pos), fall.strength as f32)
+    });
     (f.shadow_plane, f.shadow) = shadow.map_or((Vec4::ZERO, Vec4::ZERO), |(plane, k)| (plane, Vec4::new(k, 0.0, 0.0, 0.0)));
     if draws.ready && draws.shadow_on != shadow.is_some() {
         draws.shadow_on = shadow.is_some();
@@ -861,4 +933,86 @@ fn light_pass(_view: ViewQuery<&ExtractedView, MainView>, pass: Res<HeroLightPas
     compute.set_pipeline(pipeline);
     compute.set_bind_group(0, group, &[]);
     compute.dispatch_workgroups(1, 1, 1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const R: f64 = 1.0e6;
+
+    /// x metres along the ground from the place under him, h over the radius.
+    fn at(x: f64, h: f64) -> DVec3 {
+        DVec3::new(x, R, 0.0).normalize() * (R + h)
+    }
+
+    fn over(height: impl Fn(f64) -> f64) -> impl Fn(DVec3) -> Ground {
+        move |p: DVec3| Ground { radial: R + height((p / p.y).x * R), level: Some(9) }
+    }
+
+    /// The star at this height, on the -x side: the shadow falls towards +x.
+    fn sun(deg: f64) -> DVec3 {
+        let (s, c) = deg.to_radians().sin_cos();
+        DVec3::new(-c, s, 0.0)
+    }
+
+    fn along(p: DVec3) -> f64 {
+        (p / p.y).x * R
+    }
+
+    fn standing() -> DVec3 {
+        at(0.0, tune::STAND_M)
+    }
+
+    #[test]
+    fn on_flat_ground_it_starts_at_his_soles() {
+        let f = fall_over(over(|_| 0.0), standing(), sun(30.0)).unwrap();
+        assert!(along(f.start).abs() < 0.01, "{}", along(f.start));
+        assert!((along(f.end) - tune::SHADOW_TALL_M / 30f64.to_radians().tan()).abs() < 0.1, "{}", along(f.end));
+        assert!(f.normal.dot(DVec3::Y) > 0.9999, "{}", f.normal);
+        assert_eq!(f.strength, 1.0);
+    }
+
+    /// The ground rising from 2 m out on the side away from the sun: the plane is through his soles and where the shadow's end really
+    /// is. (From a triangle at the ray's landing alone it passed 0.25 m under his feet, and the shadow began 1.5 m from his boots.)
+    #[test]
+    fn on_uneven_ground_it_runs_from_his_boots_to_where_it_ends() {
+        let tan = 10f64.to_radians().tan();
+        let f = fall_over(over(move |x| (x - 2.0).max(0.0) * tan), standing(), sun(15.0)).unwrap();
+        assert!(along(f.start).abs() < 0.01 && (f.start.length() - R).abs() < 0.01, "{}", f.start);
+        // 1.9 - 0.268 x = 0.176 (x - 2)
+        assert!((along(f.end) - 5.07).abs() < 0.1, "{}", along(f.end));
+        assert!(f.normal.dot(f.end - f.start).abs() < 0.03, "the line is in the plane: {}", f.normal.dot(f.end - f.start));
+        assert!(f.normal.dot(DVec3::Y) > 0.9, "{}", f.normal);
+    }
+
+    /// A slope steeper than the sun is high: one long step would land many times too far off.
+    #[test]
+    fn a_low_sun_on_a_slope_does_not_overshoot() {
+        let tan = 10f64.to_radians().tan();
+        let f = fall_over(over(move |x| x.max(0.0) * tan), standing(), sun(3.0)).unwrap();
+        // 1.9 - 0.0524 x = 0.1763 x
+        assert!((along(f.end) - 8.31).abs() < 0.2, "{}", along(f.end));
+        assert!(along(f.start).abs() < 0.3, "{}", along(f.start));
+    }
+
+    #[test]
+    fn a_star_under_the_horizon_leaves_his_feet_alone() {
+        let f = fall_over(over(|_| 0.0), standing(), sun(-10.0)).unwrap();
+        assert!(along(f.start).abs() < 0.01 && (f.end - f.start).length() < 0.01, "{f:?}");
+        assert!(f.normal.dot(DVec3::Y) > 0.9999);
+        // Just on the horizon, the same: nothing to jump when it crosses.
+        let f = fall_over(over(|_| 0.0), standing(), sun(1.0)).unwrap();
+        assert!((f.end - f.start).length() < 0.01, "{f:?}");
+    }
+
+    #[test]
+    fn it_fades_as_he_climbs_and_needs_the_ground() {
+        let f = fall_over(over(|_| 0.0), at(0.0, 100.0), sun(45.0)).unwrap();
+        assert!(f.strength > 0.0 && f.strength < 1.0, "{f:?}");
+        // Under him, down the ray: as far along as he's high.
+        assert!((along(f.start) - (100.0 - tune::STAND_M)).abs() < 0.3, "{f:?}");
+        assert!(fall_over(over(|_| 0.0), at(0.0, 300.0), sun(45.0)).is_none());
+        assert!(fall_over(|p: DVec3| Ground { radial: p.length() - 1.0, level: None }, standing(), sun(45.0)).is_none());
+    }
 }

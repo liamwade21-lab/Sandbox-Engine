@@ -44,9 +44,10 @@ struct CloudShadow {
     map_c: vec4<f32>,
     map_e1: vec4<f32>,
     map_e2: vec4<f32>,
-    // The Viltrumite mod's hero: xyz his soles from the camera (m), w 1 while the ground holds still under him (planet.wesl), 0 with
-    // the mod off.
+    // The Viltrumite mod's hero: where the ground holds still (planet.wesl), a line from the camera (m). `hero` its start, his soles'
+    // place on the ground, w how much it holds (0 with the mod off); `hero_end` its end, where his shadow ends.
     hero: vec4<f32>,
+    hero_end: vec4<f32>,
 };
 
 // The light left by the volumetric clouds over the body-frame direction `bdir` at `height` m on a

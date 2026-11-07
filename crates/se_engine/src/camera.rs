@@ -61,6 +61,9 @@ pub struct FlyCamera {
     pub depth_m: f64,
     /// Dev script `agl M`: keep the camera this far above the ground under it (m).
     pub hold_agl: Option<f64>,
+    /// How far `keep_camera_above_ground` pushed it out of the ground this frame (m, universe axes): the Viltrumite mod's hero
+    /// mustn't take that for a jump of the camera by something else.
+    pub floor_push: DVec3,
     /// Dev script `shore [M]`: move to the nearest coast, M metres inland, facing the sea.
     pub find_shore: Option<f64>,
     /// SE's `AutoHorizon` (key 5): see [`horizon_up`].
@@ -207,6 +210,7 @@ impl Default for FlyCamera {
             nearest_name: String::new(),
             depth_m: 0.0,
             hold_agl: None,
+            floor_push: DVec3::ZERO,
             find_shore: None,
             auto_horizon: true,
             horizon_active: false,

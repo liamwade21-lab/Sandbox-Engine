@@ -3526,6 +3526,7 @@ fn push_out(cam: &mut FlyCamera, center: UPos, rel: DVec3, dist: f64, min_r: f64
     }
     let up = rel / dist;
     cam.pos = center.offset_m(up * min_r);
+    cam.floor_push += up * (min_r - dist);
     let v = cam.velocity;
     let into = v.dot(up);
     if into < 0.0 {
@@ -3547,6 +3548,9 @@ fn keep_camera_above_ground(
 ) {
     let mut clearance = f64::INFINITY;
     let mut depth: f64 = 0.0;
+    if cam.floor_push != DVec3::ZERO {
+        cam.floor_push = DVec3::ZERO;
+    }
     for body in &spheres {
         let rel = cam.pos.delta_m(body.pos);
         let dist = rel.length();

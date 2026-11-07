@@ -76,6 +76,7 @@ struct CloudShadow {
     map_e1: vec4<f32>,
     map_e2: vec4<f32>,
     hero: vec4<f32>,
+    hero_end: vec4<f32>,
 };
 @group(constants::MATERIAL_BIND_GROUP) @binding(8) var cloud_weather: texture_cube<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(9) var cloud_weather_smp: sampler;

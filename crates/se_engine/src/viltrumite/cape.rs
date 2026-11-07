@@ -53,6 +53,8 @@ pub struct Cape {
     ready: bool,
     pos: [Vec3; POINTS],
     prev: [Vec3; POINTS],
+    /// Time not yet stepped (s), under a step.
+    left: f32,
     /// Each point's length to the one above it in its chain.
     len: [f32; POINTS],
     /// Each point's distance to the same link of the next chain, on his body as made.
@@ -66,7 +68,7 @@ pub struct Cape {
 
 impl Default for Cape {
     fn default() -> Self {
-        Cape { ready: false, pos: [Vec3::ZERO; POINTS], prev: [Vec3::ZERO; POINTS], len: [0.0; POINTS], across: [0.0; POINTS], capsules: [(0, 0, 0.0); BODY_CAPSULES.len()], backs: [None; BACK_BOXES.len()], chest: (Quat::IDENTITY, Vec3::ZERO) }
+        Cape { ready: false, pos: [Vec3::ZERO; POINTS], prev: [Vec3::ZERO; POINTS], left: 0.0, len: [0.0; POINTS], across: [0.0; POINTS], capsules: [(0, 0, 0.0); BODY_CAPSULES.len()], backs: [None; BACK_BOXES.len()], chest: (Quat::IDENTITY, Vec3::ZERO) }
     }
 }
 
@@ -120,12 +122,18 @@ impl Cape {
         }
         let mid = first + chains / 2 * links;
         self.chest = (Quat::from_mat3a(&world[mid].matrix3).normalize(), Vec3::from(world[mid].translation));
+        self.left = 0.0;
         self.ready = true;
     }
 
     fn simulate(&mut self, model: &HeroModel, world: &[Affine3A; MAX_BONES], first: usize, chains: usize, links: usize, i: CapeIn) {
-        let steps = ((i.dt / tune::CAPE_STEP_S).ceil() as usize).clamp(1, tune::CAPE_MAX_STEPS);
-        let h = (i.dt / steps as f32).min(tune::CAPE_STEP_S);
+        // Really fixed: a position solve loses speed by the step, and a step that changes with the frame moves the cloth by different
+        // amounts for the same time. What's left over is drawn between the last two steps (`step`), so frames of 2 steps and of 3, or
+        // of none at a high frame rate, don't show.
+        let h = tune::CAPE_STEP_S;
+        let due = ((self.left + i.dt) / h).floor() as usize;
+        let steps = due.min(tune::CAPE_MAX_STEPS);
+        self.left = if due > steps { 0.0 } else { (self.left + i.dt - due as f32 * h).max(0.0) };
         let accel = i.accel.clamp_length_max(tune::CAPE_ACCEL_MAX);
         let wind = i.wind.clamp_length_max(tune::CAPE_WIND_MAX_MS);
         let drag = tune::CAPE_WIND_K * i.air.clamp(0.0, 1.0);
@@ -259,6 +267,9 @@ impl Cape {
         if !self.pos.iter().chain(&self.prev).all(|p| p.is_finite()) {
             self.begin(model, world, first, chains, links);
         }
+        // Where it is now: between the last two steps, by the time since the last one.
+        let share = (self.left / tune::CAPE_STEP_S).clamp(0.0, 1.0);
+        let now = |k: usize| self.prev[k].lerp(self.pos[k], share);
         for c in 0..chains {
             let root = first + c * links;
             let top = world[root].matrix3;
@@ -271,11 +282,11 @@ impl Cape {
                     continue;
                 }
                 let rest = Vec3::from(top * Vec3A::from(bind)) / length;
-                let want = (self.pos[k] - self.pos[k - 1]).normalize_or(rest);
+                let want = (now(k) - now(k - 1)).normalize_or(rest);
                 // The chest's turn first, then from the chain's rest direction to where it lies: he faces the other way from
                 // his bind pose, and without the chest's turn the normals stay in the bind's direction, on the side of the
                 // cloth away from what shows.
-                world[joint] = Affine3A { matrix3: Mat3A::from_quat(Quat::from_rotation_arc(rest, want)) * top, translation: self.pos[k].into() };
+                world[joint] = Affine3A { matrix3: Mat3A::from_quat(Quat::from_rotation_arc(rest, want)) * top, translation: now(k).into() };
             }
         }
     }
@@ -365,6 +376,49 @@ mod tests {
         // A hitch of 0.1 s after each other, then 1000 c in vacuum.
         run(&m, &c, &mut s, 3.0, 10.0, |_| CapeIn { accel: Vec3::Z * 500.0, air: 0.0, turn: Quat::IDENTITY, ..default_in() });
         run(&m, &c, &mut s, 1.0, 60.0, |_| CapeIn { accel: Vec3::ZERO, turn: Quat::IDENTITY, ..default_in() });
+    }
+
+    /// A swing is the same swing whatever the frame rate, and whatever the frames do round it: 60 Hz under VSync straddles
+    /// two steps and three a frame, and with the step's length changing the cloth's speed mustn't.
+    #[test]
+    fn it_swings_the_same_at_any_frame_rate() {
+        let Some((m, c)) = real() else { return };
+        let swing = |frames: &[f32]| {
+            let mut s = Box::<Sampler>::default();
+            s.play(c.find("idle").unwrap() as u16, 0.0);
+            let (mut t, mut k, mut next, mut out) = (0.0_f64, 0, 2.5_f64, Vec::new());
+            let mut was = Vec3::ZERO;
+            while t < 4.0 {
+                let dt = frames[k % frames.len()];
+                k += 1;
+                // Hanging, then shoved sideways and let go: smoothly, so it's the same shove whichever frames it falls in.
+                let w = ((t + dt as f64 * 0.5 - 2.0) / 0.4).clamp(0.0, 1.0);
+                let shove = (w * std::f64::consts::PI).sin().powi(2) as f32 * 30.0;
+                s.cape_in = CapeIn { dt, accel: Vec3::NEG_Z * 9.8 + Vec3::X * shove, ..default_in() };
+                s.advance(&c, dt);
+                s.sample(&m, &c);
+                let now = s.cape.point(17);
+                // (Between frames, at the same moments.)
+                if t + dt as f64 >= next {
+                    out.push(was.lerp(now, ((next - t) / dt as f64) as f32));
+                    next += 0.1;
+                }
+                was = now;
+                t += dt as f64;
+            }
+            out
+        };
+        let steady = swing(&[1.0 / 120.0]);
+        // It really does swing.
+        let rest = steady[steady.len() - 1];
+        let most = steady.iter().map(|p| (*p - rest).length()).fold(0.0, f32::max);
+        assert!(most > 0.1, "{most}");
+        for frames in [&[1.0 / 60.0][..], &[0.0155, 0.0178], &[1.0 / 144.0], &[1.0 / 240.0], &[0.025, 0.008]] {
+            let got = swing(frames);
+            // (The first swing: from then on a point passing one side of his body or the other, by a hair, sends it another way.)
+            let off = steady.iter().zip(&got).take(4).map(|(a, b)| (*a - *b).length()).fold(0.0, f32::max);
+            assert!(off < most * 0.05, "{frames:?}: off by {off}, it swings {most}");
+        }
     }
 
     /// `cargo test -p se_engine print_body_numbers -- --ignored --nocapture`: where his back is, for `BACK_BOXES`.

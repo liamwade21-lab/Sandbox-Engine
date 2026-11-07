@@ -130,10 +130,12 @@ pub struct WalkOut {
     pub sliding: bool,
     /// Couldn't go on uphill.
     pub blocked: bool,
+    /// How fast he was going when he stepped off the shore (m/s).
+    pub speed: f64,
 }
 
 /// The slope at a point (degrees), and which way is downhill along the ground.
-fn slope_there(n: DVec3, up: DVec3) -> (f64, DVec3) {
+pub fn slope_there(n: DVec3, up: DVec3) -> (f64, DVec3) {
     let cos = n.dot(up).clamp(-1.0, 1.0);
     (cos.acos().to_degrees(), (-up + n * cos).normalize_or_zero())
 }
@@ -166,6 +168,14 @@ pub fn walk_step(frame: &mut Frame, s: &Scene, i: &WalkIn, dt: f64) -> WalkOut {
     let (slope_deg, downhill) = slope_there(n, up);
     out.slope_deg = slope_deg;
     out.sliding = slope_deg > tune::SLOPE_WALK_DEG;
+    // A wall (slide to 70 degrees, wall above): he falls past it, from where he is, at the speed he has along it.
+    if slope_deg > tune::SLOPE_SLIDE_DEG {
+        *local_pos = up * stand0;
+        *local_vel -= n * local_vel.dot(n);
+        *level = here.level;
+        out.event = WalkEvent::Ledge;
+        return out;
+    }
 
     let wish = (i.wish - n * i.wish.dot(n)).normalize_or_zero();
     let target = wish * i.speed;
@@ -212,6 +222,7 @@ pub fn walk_step(frame: &mut Frame, s: &Scene, i: &WalkIn, dt: f64) -> WalkOut {
         return out;
     }
     if (s.footing)(b, p1) == Footing::Sea {
+        out.speed = v.length();
         *local_pos = p1.normalize_or(up) * (g1.radial + s.stand_m);
         *local_vel = DVec3::ZERO;
         *level = g1.level;
@@ -255,6 +266,12 @@ pub fn landing_of(into: f64, speed: f64) -> Landing {
     } else {
         Landing::Hard
     }
+}
+
+/// Flying into the ground, is it a landing (F4)? With Ctrl, any contact, on anything. Without, a hit of `SOFT_LANDING_MS` or more on
+/// what he can come down on: under that he skims along it, and a giant or a star only stops him when he's asked to stop.
+pub fn flight_lands(into: f64, ctrl: bool, footing: Footing) -> bool {
+    ctrl || (into >= tune::SOFT_LANDING_MS && footing != Footing::Nothing)
 }
 
 // ---- His feet ------------------------------------------------------------------------------------------------------
@@ -388,14 +405,20 @@ fn sampler_time(s: &super::anim::Sampler) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viltrumite::frames::Motion;
     use se_core::upos::UPos;
 
     use bevy::math::DQuat;
 
     /// A body's ground as a function of the point.
     fn world<R>(radius: f64, ground: impl Fn(DVec3) -> Ground, foot: impl Fn(DVec3) -> Footing, f: impl FnOnce(&Scene, &BodyInfo) -> R) -> R {
-        let bodies = [BodyInfo { obj: ObjectRef::Body(0), pos: UPos::ZERO, orient: DQuat::IDENTITY, radius, shape: DVec3::ONE, gm: 0.0, terrain: None }];
-        let (spin, vel) = (|_| DVec3::ZERO, |_| DVec3::ZERO);
+        world_of(radius, 0.0, DVec3::ZERO, ground, foot, f)
+    }
+
+    /// The same with gravity (`gm`) and a turn about its own axes (`w`).
+    fn world_of<R>(radius: f64, gm: f64, w: DVec3, ground: impl Fn(DVec3) -> Ground, foot: impl Fn(DVec3) -> Footing, f: impl FnOnce(&Scene, &BodyInfo) -> R) -> R {
+        let bodies = [BodyInfo { obj: ObjectRef::Body(0), pos: UPos::ZERO, orient: DQuat::IDENTITY, radius, shape: DVec3::ONE, gm, terrain: None }];
+        let (spin, vel) = (move |_| w, |_| DVec3::ZERO);
         let g = |_: &BodyInfo, p: DVec3| ground(p);
         let fo = |_: &BodyInfo, p: DVec3| foot(p);
         let d = |_: &BodyInfo, _: DVec3| 0.0;
@@ -493,6 +516,104 @@ mod tests {
         });
     }
 
+    /// The table's three: walk to 50 degrees, slide to 70, wall above. On a wall he doesn't ride it down at the slide's speed, whatever
+    /// its height: he falls past it, it can't land him, and the bottom of a long drop is a crash.
+    #[test]
+    fn above_70_degrees_he_falls_past_a_wall() {
+        let g = 9.8;
+        // Flat under x 0, the slope above it, from a place far enough up that gravity is about the same.
+        let high = 40.0;
+        for (deg, wall) in [(60.0, false), (68.0, false), (75.0, true), (85.0, true)] {
+            world_of(R, g * R * R, DVec3::ZERO, ramp(deg), land, |s, _| {
+                let tan = f64::to_radians(deg).tan();
+                let mut f = standing(at(high / tan, 0.0, high + 1.0));
+                let o = walk_step(&mut f, s, &WalkIn { speed: 5.0, gravity: g, ..WalkIn::default() }, DT);
+                assert_eq!(o.event == WalkEvent::Ledge, wall, "{deg}: {o:?}");
+                if !wall {
+                    return;
+                }
+                let start = place(&f).0.length();
+                let (mut landed, mut most) = (None, 0.0_f64);
+                for _ in 0..1000 {
+                    f.carry(s, DT, Motion::Ballistic, UPos::ZERO);
+                    let out = f.advance(s, DT, Motion::Ballistic);
+                    let (p, v) = place(&f);
+                    most = most.max(v.length());
+                    assert!(p.length() >= (s.ground)(&s.bodies[0], p).radial + s.stand_m - 1e-6, "under the ground at {p}");
+                    if out.contact.is_some() {
+                        landed = Some((p.length() - R, out.speed, out.contact.unwrap()));
+                        break;
+                    }
+                }
+                let (h, speed, into) = landed.expect("he got to the bottom");
+                assert!(h < 3.0, "{deg}: landed {h} m up, from {start}");
+                // No slide's cap: from 40 m, close to the free fall's 28 m/s, a hard landing or nearly.
+                assert!(speed > tune::SLIDE_MAX_MS * 0.9 && most > tune::SLIDE_MAX_MS * 0.9, "{deg}: {speed}, {most}");
+                assert!(into >= 0.0);
+            });
+        }
+    }
+
+    /// Falling into a wall hard is a crash where he hit, and from there he falls on past it.
+    #[test]
+    fn hit_hard_a_wall_is_a_crash_and_then_he_falls_past_it() {
+        let g = 9.8;
+        world_of(R, g * R * R, DVec3::ZERO, ramp(80.0), land, |s, _| {
+            let tan = 80f64.to_radians().tan();
+            let start = at(40.0 / tan - 1.0, 0.0, 40.0 + 1.0);
+            let mut f = Frame::Attached { obj: ObjectRef::Body(0), local_pos: start, local_vel: DVec3::X * 100.0, level: Some(9), last_orient: DQuat::IDENTITY };
+            f.carry(s, DT, Motion::Ballistic, UPos::ZERO);
+            let out = f.advance(s, DT, Motion::Ballistic);
+            let into = out.contact.expect("a crash");
+            assert!(into >= tune::HARD_LANDING_MS, "{into}");
+            assert_eq!(landing_of(into, out.speed), Landing::Hard);
+            // On his feet there, a wall: the next step on foot lets him go.
+            let mut f = standing(out.at);
+            let o = walk_step(&mut f, s, &WalkIn { speed: 1.8, gravity: g, ..WalkIn::default() }, DT);
+            assert_eq!(o.event, WalkEvent::Ledge, "{o:?}");
+        });
+    }
+
+    /// Walking off a ledge on a turning body: the frame after, he has moved by his own speed, not by the ground's turn. (The Ballistic
+    /// step belongs with a Ballistic carry, which the frame he walks off has already missed: `hero_move` starts the fall a frame on.)
+    #[test]
+    fn a_fall_off_a_ledge_on_a_turning_body_is_no_hop() {
+        // 465 m/s of ground at this radius, as Earth's equator.
+        let w = DVec3::Z * (465.0 / R);
+        let cliff = |p: DVec3| {
+            let x = (p / p.y).x * R;
+            Ground { radial: if x > 5.0 { R - 30.0 } else { R }, level: Some(9) }
+        };
+        world_of(R, 9.8 * R * R, w, cliff, land, |s, _| {
+            let mut f = standing(at(4.99, 0.0, 1.0));
+            if let Frame::Attached { local_vel, .. } = &mut f {
+                *local_vel = DVec3::X * 3.0;
+            }
+            f.carry(s, DT, Motion::Held, UPos::ZERO);
+            let o = walk_step(&mut f, s, &WalkIn { wish: DVec3::X, speed: 3.0, gravity: 9.8 }, DT);
+            assert_eq!(o.event, WalkEvent::Ledge);
+            let (p0, _) = place(&f);
+            // The fall's first frame, as `hero_move` runs it.
+            f.carry(s, DT, Motion::Ballistic, UPos::ZERO);
+            let out = f.advance(s, DT, Motion::Ballistic);
+            let moved = (place(&f).0 - p0).length();
+            assert!(out.contact.is_none() && moved < 0.2, "moved {moved}, {out:?}");
+        });
+    }
+
+    #[test]
+    fn flight_lands_by_the_table() {
+        // With Ctrl, on anything.
+        assert!(flight_lands(0.1, true, Footing::Land));
+        assert!(flight_lands(0.1, true, Footing::Nothing));
+        // Without, skimming isn't one, and a hit is.
+        assert!(!flight_lands(11.9, false, Footing::Land));
+        assert!(flight_lands(12.0, false, Footing::Land));
+        assert!(flight_lands(3000.0, false, Footing::Sea));
+        // A giant or a star only stops him when he's asked to stop.
+        assert!(!flight_lands(3000.0, false, Footing::Nothing));
+    }
+
     /// F6's rule: a real drop on one level is a fall; the same drop from a finer node arriving is only eased.
     #[test]
     fn a_ledge_is_a_fall_and_a_finer_node_is_not() {
@@ -544,6 +665,8 @@ mod tests {
             let o = walk_step(&mut f, s, &WalkIn { wish: DVec3::X, speed: 5.0, gravity: 9.8 }, DT);
             assert_eq!(o.event, WalkEvent::Sea);
             assert_eq!(place(&f).1, DVec3::ZERO);
+            // The splash goes by what he was doing, not what the keys asked for.
+            assert!((o.speed - 5.0).abs() < 1e-6, "{}", o.speed);
         });
     }
 

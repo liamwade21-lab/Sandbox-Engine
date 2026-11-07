@@ -56,8 +56,9 @@ pub const ROOT_DROP_MAX_M: f64 = 0.25;
 pub const ROOT_DROP_TAU_S: f64 = 0.1;
 /// His drawn height over the capsule follows the clip's `ground_z` with this time constant (s).
 pub const CLIP_GROUND_TAU_S: f64 = 0.1;
-/// Under this height over the ground (m) the ground's stones hold still round him (`planet.wesl`).
-pub const SOIL_HOLD_UNDER_M: f64 = 12.0;
+/// The ground's stones hold still round his feet and his shadow (`planet.wesl`) until the shadow's strength is down to this, and let go
+/// with what's left of it: nothing changes at any one height.
+pub const SOIL_HOLD_SHARE: f64 = 0.3;
 /// Hovering over the sea, his soles are this far up (m).
 pub const SEA_HOVER_M: f64 = 1.5;
 
@@ -206,6 +207,23 @@ pub const SHADOW_SPAN_M: f64 = 2.0;
 pub const SHADOW_LIFT_M: f64 = 0.03;
 /// It fades out as he climbs from and to this height (m over the ground).
 pub const SHADOW_FADE_M: (f64, f64) = (10.0, 200.0);
+/// His height, for the ray that says where the shadow ends (m).
+pub const SHADOW_TALL_M: f64 = 1.9;
+/// The ray's steps down to the ground: this share of what the height says is left, at least this long (m), at most this many, then
+/// this many halvings. A star lower than this (the sine of its height) counts as this low.
+pub const SHADOW_RAY_SHARE: f64 = 0.7;
+pub const SHADOW_RAY_MIN_STEP_M: f64 = 0.25;
+pub const SHADOW_RAY_STEPS: usize = 16;
+pub const SHADOW_RAY_BISECT: usize = 6;
+pub const SHADOW_RAY_MIN_COS: f64 = 0.05;
+/// How far along the ground the shadow's line goes at most (m): a shadow this long has next to no star left to take away.
+pub const SHADOW_REACH_M: f64 = 40.0;
+/// The sine of the star's height where that reach goes to nothing and comes in full. (The shader draws no shadow under the first.)
+pub const SHADOW_LOW_SUN: (f64, f64) = (0.02, 0.05);
+/// A line shorter than the first of these (m) says nothing about the slope, longer than the second all of it along the line.
+pub const SHADOW_LINE_M: (f64, f64) = (0.3, 1.0);
+/// How fast the plane's turn follows the ground (s).
+pub const SHADOW_EASE_S: f64 = 0.08;
 
 // ---- His cape (step 5) ----
 /// The fixed time step (s), and at most this many steps a frame: a hitch runs less time, it never runs a long step.

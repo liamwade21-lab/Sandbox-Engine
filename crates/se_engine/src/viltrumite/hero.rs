@@ -728,12 +728,16 @@ fn hover_over_sea(hero: &mut Hero, s: &Scene) {
     hero.keys_up_first = true;
 }
 
-/// He's come down: F4's three landings where there's land, the sea's hover, a stop on anything else.
+/// He's come down: F4's three landings where there's land, the sea's hover, a stop on anything else. He stops where he hit it, not
+/// where a flight's slide went on to.
 fn touch_down(hero: &mut Hero, s: &Scene, into: f64, out: &Outcome) {
-    let Frame::Attached { obj, local_pos, .. } = hero.frame else {
+    let Frame::Attached { obj, local_pos, .. } = &mut hero.frame else {
         hero.state = State::Hover;
         return;
     };
+    let obj = *obj;
+    *local_pos = out.at;
+    let local_pos = out.at;
     let Some(b) = s.bodies.iter().find(|b| b.obj == obj) else { return };
     hero.state_t = 0.0;
     match (s.footing)(b, local_pos) {
@@ -828,7 +832,9 @@ pub(crate) fn hero_move(
         }
     }
     let travelling = cam.travel.as_ref().is_some_and(|t| matches!(t.kind, TravelKind::Goto | TravelKind::Land));
-    // A jump of the camera by something else (Places, a dev command): he goes with it. The last frame of a Go To too.
+    // A jump of the camera by something else (Places, a dev command): he goes with it. The last frame of a Go To too. (What
+    // `keep_camera_above_ground` pushed it by isn't that: a finer node's ground rising past the camera's floor.)
+    hero.cam_written = hero.cam_written.offset_m(cam.floor_push);
     if travelling || at_ground || hero.carried || cam.pos.delta_m(hero.cam_written).length() > tune::TELEPORT_M {
         follow_camera(hero, &cam);
     }
@@ -892,10 +898,14 @@ pub(crate) fn hero_move(
 
     // What the bodies did since last frame. The view and his body turn with the frame.
     let motion = hero.state.motion();
-    let was_rot = hero.rot;
     let turn = hero.frame.carry(&scene, dt, motion, hero.world.0);
     cam.rot = (turn * cam.rot).normalize();
     hero.rot = (turn * hero.rot).normalize();
+    // The cape (below) feels what he did against this, not what the game clock turned: it runs on real seconds, whatever the
+    // clock does (F5).
+    let was_rot = hero.rot;
+    hero.last_vel = turn * hero.last_vel;
+    hero.felt = turn * hero.felt;
     // What he stood on is gone (its system unloaded).
     if hero.state.on_foot() && !hero.frame.attached() {
         hero.state = State::Hover;
@@ -935,6 +945,8 @@ pub(crate) fn hero_move(
 
     // The keys.
     let mut walking = false;
+    // He walked off something this frame.
+    let mut fall_starts = false;
     let aim = cam.rot;
     let (fwd, right, aim_up) = (aim * DVec3::NEG_Z, aim * DVec3::X, aim * DVec3::Y);
     let lift = up_here.unwrap_or(aim_up);
@@ -985,10 +997,11 @@ pub(crate) fn hero_move(
                 WalkEvent::Ledge => {
                     hero.state = State::Falling;
                     hero.short_fall = true;
+                    fall_starts = true;
                 }
                 WalkEvent::Sea => {
                     if let Frame::Attached { obj, local_pos, .. } = hero.frame {
-                        hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: i.speed });
+                        hero.impact = Some(Impact::Splash { obj, local: local_pos, speed: out.speed });
                     }
                     hover_over_sea(hero, &scene);
                 }
@@ -1013,13 +1026,19 @@ pub(crate) fn hero_move(
             hero.frame.set_velocity(&scene, nv);
         }
     }
-    if !hero.state.on_foot() {
+    // (The frame he walks off something, the fall waits for the next one: this frame's `carry` was on foot, and a ballistic step
+    // after it would throw him by the ground's turn, 7.75 m at Earth's equator.)
+    if !hero.state.on_foot() && !fall_starts {
         let motion = hero.state.motion();
         no_drag.set(hero.state == State::Jump);
         let out = hero.frame.advance(&scene, dt, motion);
         no_drag.set(false);
-        // F4: falling he lands; flying only with Ctrl, or he slides along the ground.
-        if let Some(into) = out.contact.or(out.flown_into.filter(|_| input.ctrl && hero.state == State::Flight)) {
+        // F4: falling he lands. Flying, with Ctrl or by hitting it hard enough.
+        let flown = out.flown_into.filter(|&into| {
+            let footing = hero.frame.body().and_then(|o| bodies.iter().find(|b| b.obj == o)).map_or(Footing::Nothing, |b| (scene.footing)(b, out.at));
+            hero.state == State::Flight && ground::flight_lands(into, input.ctrl, footing)
+        });
+        if let Some(into) = out.contact.or(flown) {
             touch_down(hero, &scene, into, &out);
         }
     }

@@ -145,9 +145,10 @@ fn vertex_shadow(v: Vertex) -> @builtin(position) vec4<f32> {
     if denom < 0.02 || frame.shadow.x <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    // (Parts dipping under the plane stay on it.)
-    let over = max(dot(n, world) + frame.shadow_plane.w, 0.0);
-    return position_world_to_clip(world - l * over / denom);
+    // Every vertex ends on the plane: along the star's ray, and what dips under the plane straight up to it. (Left where it is, its
+    // triangles would lie on his legs, and the pixels' depth on the plane would darken them from in front.)
+    let over = dot(n, world) + frame.shadow_plane.w;
+    return position_world_to_clip(select(world - n * over, world - l * over / denom, over > 0.0));
 }
 
 struct ShadowFragment {
@@ -158,7 +159,7 @@ struct ShadowFragment {
 
 // Each pixel's factor once, however many triangles cover it: the depth is this pixel's ray on the plane, the same bits from any
 // triangle, and the test is Greater, so the first wins. Through `main_pass_viewport`: under the render scale the pixels fill only a
-// corner of the target (`frag_coord_to_ndc` goes by `view.viewport`, the whole of it).
+// corner of the target (Bevy's own NDC helper goes by `view.viewport`, the whole of it).
 @fragment
 fn fragment_shadow(@builtin(position) coord: vec4<f32>) -> ShadowFragment {
     let vp = view.main_pass_viewport;

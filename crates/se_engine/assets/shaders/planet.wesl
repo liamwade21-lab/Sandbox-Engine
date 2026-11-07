@@ -256,10 +256,14 @@ fn vertex(v: Vertex) -> VertexOut {
         let scale = length(world_from_local[0].xyz);
         let w0 = (world_from_local * vec4<f32>(local, 1.0)).xyz;
         var fade = clamp(2.0 - length(w0) / max(scale, 1e-30) / 1000.0, 0.0, 1.0);
-        // The Viltrumite mod's hero: his feet go by the ground's heights, which don't hold the stones, so they hold still round him
-        // (the normal maps keep them). With the mod off, nothing.
-        if cloud_sh.hero.w > 0.5 {
-            fade *= smoothstep(1.5, 8.0, length(w0 / max(scale, 1e-30) - cloud_sh.hero.xyz));
+        // The Viltrumite mod's hero: his feet and his shadow's plane go by the ground's heights, which don't hold the stones, so they
+        // hold still round his soles' place on the ground and along his shadow from there (the normal maps keep them), as much as
+        // `hero.w` says. With the mod off, nothing.
+        if cloud_sh.hero.w > 0.0 {
+            let along = cloud_sh.hero_end.xyz - cloud_sh.hero.xyz;
+            let p = w0 / max(scale, 1e-30) - cloud_sh.hero.xyz;
+            let d = length(p - along * clamp(dot(p, along) / max(dot(along, along), 1e-6), 0.0, 1.0));
+            fade *= mix(1.0, smoothstep(1.5, 8.0, d), cloud_sh.hero.w);
         }
         if fade > 0.0 {
             let up_l = normalize(local - planet.planet.xyz);
