@@ -244,9 +244,16 @@ pub struct HeroDraws {
     town_timer: u32,
     /// How far into a town he is, being worked out, and the lamps' colour and strength it scales.
     town_task: Option<(Vec3, Task<f32>)>,
+    /// His body as capsules round his bones, as drawn this frame, which the craters leave alone.
+    parts: super::impact::BodyParts,
 }
 
 impl HeroDraws {
+    /// His body as capsules, as drawn this frame (`fx.rs` copies them into the craters' records).
+    pub(super) fn parts(&self) -> &super::impact::BodyParts {
+        &self.parts
+    }
+
     /// His pipelines are built: he shows.
     pub(super) fn ready(&self) -> bool {
         self.ready
@@ -255,11 +262,6 @@ impl HeroDraws {
     /// His frame's records (`HeroFrame`), written in place each frame: the rims read his light's direction and up from it.
     pub(super) fn frame_buffer(&self) -> Handle<ShaderBuffer> {
         self.frame_buffer.clone()
-    }
-
-    /// His up as last drawn: away from the body he is near, else the camera's up.
-    pub(super) fn up(&self) -> Vec3 {
-        self.frame.up.truncate()
     }
 
     /// Towards the star his light comes from.
@@ -282,6 +284,16 @@ pub struct HeroLightInput {
     light: Handle<ShaderBuffer>,
     /// The near body's inscatter, transmittance and irradiance tables.
     tables: Option<(Handle<Image>, Handle<Image>, Handle<Image>)>,
+}
+
+impl HeroLightInput {
+    /// The near body's atmosphere tables for the light pass, when they change.
+    fn take_tables(&mut self, near_body: Option<&Terrain>) {
+        let tables = near_body.and_then(|t| t.atmosphere.as_ref()).map(|a| (a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone()));
+        if self.tables != tables {
+            self.tables = tables;
+        }
+    }
 }
 
 /// The compute pass's pipeline, queued on first enable.
@@ -416,7 +428,7 @@ pub(super) fn spawn_hero(
     info!("viltrumite: meshes and {} textures made in {} ms", cache.len(), started.elapsed().as_millis());
     super::fx::spawn(&mut commands, &mut buffers, light.clone());
     commands.insert_resource(HeroLightInput { on: true, frame: frame_buffer.clone(), light, tables: None });
-    commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, shadow_normal: None, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None });
+    commands.insert_resource(HeroDraws { entities, shadows, shadow_on: true, shadow_normal: None, frame_buffer, frame, ready: false, settle: 4, started, was_near: None, town_timer: 0, town_task: None, parts: default() });
 }
 
 /// He shows while the mod is on. Runs only after the first enable.
@@ -725,6 +737,87 @@ fn model_to_port() -> Mat3A {
     Mat3A::from_cols(Vec3A::X, Vec3A::new(0.0, 0.0, -1.0), Vec3A::Y)
 }
 
+/// The light record at `pos` (`HeroFrame`'s `point` 0.3 m over it, `up`, the near body's record or the CPU's, the faint fill), from
+/// the camera at `cam`; `cam_up` the up with no body near. Returns the nearest body (with the height over its radius) and the body
+/// whose record and tables were taken. His own (`update_hero`); in the aftermath the nearest crater's (`aftermath_light`).
+fn light_record<'a>(f: &mut HeroFrameGpu, p: &'a LightParams, pos: UPos, cam: UPos, cam_up: DVec3, path: LightPath) -> (Option<(&'a SystemBody, Option<&'a Terrain>, f64)>, Option<&'a Terrain>) {
+    let rel_f = pos.delta_m(cam).as_vec3();
+    let nearest = p
+        .bodies
+        .iter()
+        .filter(|(_, b, _)| !b.star && b.radius_m > 0.0)
+        // (Above the radius in the sphere frame, the atmosphere's and the clouds' heights: on a flattened body the
+        // radial distance reads up to flattening x radius too low.)
+        .map(|(_, b, t)| (b, t, b.from_shape(b.orient.inverse() * pos.delta_m(b.pos)).length() - b.radius_m))
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    let up = nearest.map_or(cam_up, |(b, _, _)| pos.delta_m(b.pos).normalize_or(DVec3::Y)).as_vec3();
+    // Deep in the decks of a giant whose clouds are on: only they can take him under its radius, and only what they let through reaches him.
+    let down = nearest.and_then(|(b, t, h)| {
+        let t = t?;
+        let decks = t.proc.kind.is_giant() && p.bodies.iter().any(|(e, o, _)| o.obj == b.obj && p.clouds.active == Some(e));
+        decks.then(|| deck_light(h, crate::volumetric_clouds::giant_scale_height(t)))
+    });
+    f.point = (rel_f + up * 0.3).extend(down.unwrap_or(1.0) as f32);
+    f.up = up.extend(0.0);
+    // The body whose light he takes: the nearest, under its atmosphere's top.
+    let near_body = nearest.filter(|_| path == LightPath::Auto).and_then(|(b, t, h)| {
+        let t = t?;
+        let limit = t.atmosphere.as_ref().map_or(b.radius_m * tune::BODY_LIGHT_AIRLESS_RADII, |a| a.top_radius_m(b.radius_m) - b.radius_m);
+        (h < limit && body_light(f, b, t, cam)).then_some(t)
+    });
+    if near_body.is_none() {
+        // Near a body the night's level, in its shadow in orbit too; the top of its air mustn't be a step in his brightness.
+        let far = nearest.map_or(1.0, |(b, _, h)| smooth(tune::FILL_NEAR_RADII * b.radius_m, tune::FILL_FAR_RADII * b.radius_m, h)) as f32;
+        let fill = tune::FAINT_FILL_NIGHT + (tune::FAINT_FILL - tune::FAINT_FILL_NIGHT) * far;
+        free_light(f, p, pos, rel_f, fill);
+    } else {
+        // The same faint light once the star has set: over a dark sea at night he'd be nowhere otherwise.
+        let night = smooth(tune::FILL_NIGHT_FROM, tune::FILL_NIGHT_TO, -(f.light.sun_dir.truncate().normalize_or(Vec3::Y).dot(up) as f64)) as f32;
+        // (Below a giant's decks, where no light gets down.)
+        let fill = (tune::FAINT_FILL_NIGHT * night).max(tune::FAINT_FILL_DEEP * (1.0 - smooth(0.0, 0.03, down.unwrap_or(1.0)) as f32));
+        if fill > 0.0 {
+            f.free_dir[0] = (-rel_f).normalize_or(Vec3::Y).extend(1.0);
+            f.free_color[0] = Vec3::splat(fill).extend(0.0);
+        }
+    }
+    (nearest, near_body)
+}
+
+/// The aftermath (F3: the mod off, craters kept): the rims and the crater bowls take his light record (`hero_rim.wesl`, `hero_fx.wesl`
+/// `light_on`), so it's worked out at the crater (or dust) nearest the camera instead of him, and the light pass runs for it while
+/// there's one. Frozen at the hand-back, a crater's rocks stayed in the afternoon's sun into the night. While he's on, `update_hero`
+/// writes it; with the pools empty this turns the light pass off again (the last frame these systems run).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn aftermath_light(
+    control: Res<ModControl>,
+    cam: Res<FlyCamera>,
+    impacts: Res<super::impact::Impacts>,
+    mut draws: ResMut<HeroDraws>,
+    mut input: ResMut<HeroLightInput>,
+    mut fx: ResMut<super::fx::FxDraws>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    p: LightParams,
+) {
+    if control.hero {
+        return;
+    }
+    let spot = impacts.light_spot();
+    if input.on != spot.is_some() {
+        input.on = spot.is_some();
+    }
+    let Some(pos) = spot else { return };
+    let draws = &mut *draws;
+    let f = &mut *draws.frame;
+    let (_, near_body) = light_record(f, &p, pos, cam.pos, cam.rot * DVec3::Y, LightPath::Auto);
+    input.take_tables(near_body);
+    fx.records.sun = f.light.sun_dir.truncate().normalize_or(Vec3::Y).extend(0.0);
+    if let Some(mut b) = buffers.get_mut(&draws.frame_buffer) {
+        if let Some(d) = b.cast_slice_mut::<u8>() {
+            let _ = encase::StorageBuffer::new(d).write(&*f);
+        }
+    }
+}
+
 /// His frame for this GPU frame, after the camera has moved. Everything he shows is worked out here.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn update_hero(
@@ -773,7 +866,6 @@ pub(crate) fn update_hero(
     }
     let draws = &mut *draws;
     let f = &mut *draws.frame;
-    let rel_f = rel.as_vec3();
     let body = attached_body(&hero, &p);
     let up_there = body.as_ref().map(|(b, local)| b.orient * local.normalize_or(DVec3::Y));
     if draws.ready {
@@ -784,46 +876,10 @@ pub(crate) fn update_hero(
         let lifted = rel + up_there.unwrap_or(DVec3::Y) * lift;
         let place = Affine3A { matrix3: Mat3A::from_quat(rot.as_quat()) * model_to_port(), translation: lifted.as_vec3().into() };
         hero.sampler.write_palette(place, &mut f.joints);
+        draws.parts.place(&hero.sampler, &assets.model, place);
     }
     // His chest.
-    let nearest = p
-        .bodies
-        .iter()
-        .filter(|(_, b, _)| !b.star && b.radius_m > 0.0)
-        // (Above the radius in the sphere frame, the atmosphere's and the clouds' heights: on a flattened body the
-        // radial distance reads up to flattening x radius too low.)
-        .map(|(_, b, t)| (b, t, b.from_shape(b.orient.inverse() * pos.delta_m(b.pos)).length() - b.radius_m))
-        .min_by(|a, b| a.2.total_cmp(&b.2));
-    let up = nearest.map_or(cam.rot * DVec3::Y, |(b, _, _)| pos.delta_m(b.pos).normalize_or(DVec3::Y)).as_vec3();
-    // Deep in the decks of a giant whose clouds are on: only they can take him under its radius, and only what they let through reaches him.
-    let down = nearest.and_then(|(b, t, h)| {
-        let t = t?;
-        let decks = t.proc.kind.is_giant() && p.bodies.iter().any(|(e, o, _)| o.obj == b.obj && p.clouds.active == Some(e));
-        decks.then(|| deck_light(h, crate::volumetric_clouds::giant_scale_height(t)))
-    });
-    f.point = (rel_f + up * 0.3).extend(down.unwrap_or(1.0) as f32);
-    f.up = up.extend(0.0);
-    // The body whose light he takes: the nearest, under its atmosphere's top.
-    let near_body = nearest.filter(|_| hero.light_path == LightPath::Auto).and_then(|(b, t, h)| {
-        let t = t?;
-        let limit = t.atmosphere.as_ref().map_or(b.radius_m * tune::BODY_LIGHT_AIRLESS_RADII, |a| a.top_radius_m(b.radius_m) - b.radius_m);
-        (h < limit && body_light(f, b, t, cam.pos)).then_some(t)
-    });
-    if near_body.is_none() {
-        // Near a body the night's level, in its shadow in orbit too; the top of its air mustn't be a step in his brightness.
-        let far = nearest.map_or(1.0, |(b, _, h)| smooth(tune::FILL_NEAR_RADII * b.radius_m, tune::FILL_FAR_RADII * b.radius_m, h)) as f32;
-        let fill = tune::FAINT_FILL_NIGHT + (tune::FAINT_FILL - tune::FAINT_FILL_NIGHT) * far;
-        free_light(f, &p, pos, rel_f, fill);
-    } else {
-        // The same faint light once the star has set: over a dark sea at night he'd be nowhere otherwise.
-        let night = smooth(tune::FILL_NIGHT_FROM, tune::FILL_NIGHT_TO, -(f.light.sun_dir.truncate().normalize_or(Vec3::Y).dot(up) as f64)) as f32;
-        // (Below a giant's decks, where no light gets down.)
-        let fill = (tune::FAINT_FILL_NIGHT * night).max(tune::FAINT_FILL_DEEP * (1.0 - smooth(0.0, 0.03, down.unwrap_or(1.0)) as f32));
-        if fill > 0.0 {
-            f.free_dir[0] = (-rel_f).normalize_or(Vec3::Y).extend(1.0);
-            f.free_color[0] = Vec3::splat(fill).extend(0.0);
-        }
-    }
+    let (nearest, near_body) = light_record(f, &p, pos, cam.pos, cam.rot * DVec3::Y, hero.light_path);
     if draws.was_near != Some(near_body.is_some()) {
         draws.was_near = Some(near_body.is_some());
         info!("viltrumite: his light is now {} ({:.0} m above the nearest radius)", if near_body.is_some() { "the near body's" } else { "the CPU's" }, nearest.map_or(0.0, |n| n.2));
@@ -859,10 +915,7 @@ pub(crate) fn update_hero(
             }
         }
     }
-    let tables = near_body.and_then(|t| t.atmosphere.as_ref()).map(|a| (a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone()));
-    if input.tables != tables {
-        input.tables = tables;
-    }
+    input.take_tables(near_body);
     // How far into a town: not every frame, and off the main thread.
     if let Some((tint, task)) = draws.town_task.as_mut() {
         if let Some(share) = check_ready(task) {

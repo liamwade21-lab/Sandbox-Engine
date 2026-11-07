@@ -920,6 +920,10 @@ pub(crate) fn hero_move(
     };
     let scene = Scene { bodies: &bodies, spin: &spin, vel: &vel, ground: &ground, footing: &footing, drag: &drag, stand_m: tune::STAND_M };
 
+    // The buttons (step 8): a punch, the ground punch, the clap's charge and the clap. Before the carry: a ground punch from a
+    // jump or a fall holds him (Hover), and the carry and the step must take the same motion (`Frame::carry`), or the frame it
+    // starts throws him by the ground's turn, 7.75 m at Earth's equator. (By last frame's aim: this frame's look comes later.)
+    impact::start(hero, &input, &scene, cam.rot * DVec3::NEG_Z, travelling, &assets);
     // A ground punch or the clap holds his moves (`impact.rs`): X and Space do nothing meanwhile.
     let busy = hero.action.locks();
     // The keys that change how he moves, before the frame's carry: falling, it and the step belong together (`Frame::carry`).
@@ -1020,8 +1024,7 @@ pub(crate) fn hero_move(
     let mut fall_starts = false;
     let aim = cam.rot;
     let (fwd, right, aim_up) = (aim * DVec3::NEG_Z, aim * DVec3::X, aim * DVec3::Y);
-    // The buttons (step 8): a punch, the ground punch, the clap's charge and the clap. A ground punch or the clap holds his moves.
-    impact::start(hero, &input, &scene, fwd, travelling, &assets);
+    // (A ground punch or the clap, started above, holds his moves.)
     let locked = hero.action.locks();
     let lift = up_here.unwrap_or(aim_up);
     let wish = (fwd * input.forward as f64 + right * input.right as f64 + lift * input.up as f64).normalize_or_zero();

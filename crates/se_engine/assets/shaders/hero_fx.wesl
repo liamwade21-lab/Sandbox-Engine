@@ -55,6 +55,8 @@ struct FxCrater {
     up: vec4<f32>,
     // x how far in (0..1), y the bowl's depth, z the lip's height, w how far out it reaches (all in radii).
     look: vec4<f32>,
+    // xyz the sea's up there, w how high its middle stands over the sea (m; 1e9 on a body with none).
+    sea: vec4<f32>,
 }
 
 // A burst of dust (viltrumite/fx.rs `FxDustGpu`).
@@ -85,10 +87,12 @@ struct FxRecords {
     cloud_px: vec4<f32>,
     // xyz towards the star (his own light's).
     sun: vec4<f32>,
-    // His capsule, which the craters leave alone: xyz his up (his middle is `him`), w half its length (0: not drawn).
-    capsule: vec4<f32>,
-    // The craters' burnt ground: x at the middle, y at the edge; z his capsule's radius (m).
+    // His body as capsules round his bones, which the craters leave alone: x how many of `parts` (0: he isn't drawn).
+    body: vec4<f32>,
+    // The craters' burnt ground: x at the middle, y at the edge; z how high over the sea a point must stand to be ground (m).
     decal: vec4<f32>,
+    // The capsules (viltrumite/impact.rs `BodyParts`): two points from the camera each (m), the first's w its radius.
+    parts: array<vec4<f32>, 48>,
     rings: array<FxRing, 4>,
     trail: array<FxPoint, 256>,
     craters: array<FxCrater, 32>,
@@ -401,16 +405,22 @@ fn decal_vertex(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32
     return o;
 }
 
-// Is this point inside his capsule? (He's drawn over the ground: the craters leave him alone.)
-fn in_capsule(p: vec3<f32>) -> bool {
-    let half = fx.capsule.w;
-    if half <= 0.0 {
+// Is this point on him? (He's drawn over the ground: the craters leave him alone.) Capsules round his bones, as he's posed this frame:
+// the ground punch's fist, an arm on the ground, his back flying low over a crater.
+fn in_him(p: vec3<f32>) -> bool {
+    let n = min(u32(fx.body.x), 24u);
+    if n == 0u || length(p - fx.him.xyz) > 3.0 {
         return false;
     }
-    let axis = fx.capsule.xyz;
-    let d = p - fx.him.xyz;
-    let t = clamp(dot(d, axis), -half, half);
-    return length(d - axis * t) < fx.decal.z;
+    for (var i = 0u; i < n; i++) {
+        let a = fx.parts[2u * i];
+        let ab = fx.parts[2u * i + 1u].xyz - a.xyz;
+        let t = clamp(dot(p - a.xyz, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+        if length(p - a.xyz - ab * t) < a.w {
+            return true;
+        }
+    }
+    return false;
 }
 
 // The light on a surface facing `n` on ground facing `up`, in his light: `lit_surface`'s terms without the albedo.
@@ -432,13 +442,17 @@ fn decal_fragment(in: DecalOut) -> @location(0) vec4<f32> {
     let p = wp.xyz / wp.w;
     // Which way what it sees faces, from its neighbours (before any return: derivatives need every pixel of the quad).
     let face = cross(dpdx(p), dpdy(p));
-    if d <= 0.0 || in_capsule(p) {
+    if d <= 0.0 || in_him(p) {
         return none;
     }
     let n = normalize(c.up.xyz);
     // Only what lies like the ground: a wall, a car's side or a rock's face standing up is left alone.
     let lying = smoothstep(0.55, 0.8, abs(dot(face, n)) / max(length(face), 1e-12));
     let rel = p - c.at.xyz;
+    // Not the sea: its flat surface would pass for ground, and the crater's burn and rays would lie on the water.
+    if c.sea.w + dot(rel, c.sea.xyz) < fx.decal.z {
+        return none;
+    }
     let h = dot(rel, n);
     let flat = rel - n * h;
     let radius = c.at.w;
@@ -462,7 +476,9 @@ fn decal_fragment(in: DecalOut) -> @location(0) vec4<f32> {
     let out_k = 1.0 - smoothstep(1.0, ends, r);
     let outer = mix(1.0, mix(0.8, 0.6, rays) * (0.9 + 0.2 * clumps), pow(out_k, 1.2));
     let lip_w = 0.12;
-    let lip_band = exp(-pow((r - 1.02) / lip_w, 2.0));
+    // (A square, not `pow`: inside the lip its base is negative, and `pow` of a negative is undefined, NaN on some drivers.)
+    let lip_x = (r - 1.02) / lip_w;
+    let lip_band = exp(-lip_x * lip_x);
     let albedo = mix(mix(inner, outer, smoothstep(0.92, 1.1, r)), 0.9, lip_band * 0.3);
     // The walls: the ground's normal turned by the slope, the bowl's rising outward (its depth in radii), then the lip's.
     let slope = select(0.0, 2.0 * c.look.y * r, r < 1.0) - c.look.z * 2.0 * (r - 1.02) / (lip_w * lip_w) * lip_band;

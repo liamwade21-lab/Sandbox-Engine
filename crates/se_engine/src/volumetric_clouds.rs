@@ -189,6 +189,12 @@ pub(crate) struct HeroSoil {
     pub end: Vec4,
 }
 
+/// The Viltrumite mod's camera shake this frame (`viltrumite/impact.rs` `apply_shake`): a turn after the camera's own, which the
+/// clouds' view takes too, so they shake with the scene (and the resolve reads the shaken depth along the same rays). Taken only in a
+/// frame it was written: the mod writes it while a shake lasts, and nothing else does.
+#[derive(Resource, Default, Clone, Copy, PartialEq)]
+pub(crate) struct ViewShake(pub DQuat);
+
 fn shadow_buffer(s: &CloudShadow) -> ShaderBuffer {
     let mut bytes = encase::StorageBuffer::new(Vec::<u8>::new());
     bytes.write(s).expect("cloud shadow");
@@ -372,6 +378,7 @@ impl Plugin for VolumetricCloudsPlugin {
         app.insert_resource(ready.clone())
             .init_resource::<VolumetricClouds>()
             .init_resource::<HeroSoil>()
+            .init_resource::<ViewShake>()
             .init_resource::<detail::DetailCover>()
             .init_resource::<NoiseJob>()
             .init_resource::<CloudBody>()
@@ -812,7 +819,7 @@ fn update_cloud_view(
         Res<AmbientLighting>,
         Res<crate::terrain::SelfEmission>,
     ),
-    (cam, hero_soil): (Res<FlyCamera>, Res<HeroSoil>),
+    (cam, hero_soil, shake): (Res<FlyCamera>, Res<HeroSoil>, Res<ViewShake>),
     ready: Res<CloudsReady>,
     noise: Option<Res<CloudNoise>>,
     (mut state, mut cloud_body, mut images): (ResMut<VolumetricClouds>, ResMut<CloudBody>, ResMut<Assets<Image>>),
@@ -915,7 +922,8 @@ fn update_cloud_view(
             let cam_s = s * rel;
             let r = cam_s.length();
             let clip_from_view = proj.get_clip_from_view().as_dmat4();
-            let view_rot = cam.rot;
+            // (The mod's shake, in a frame it shakes: the scene's view is turned by it after the camera's transform is set.)
+            let view_rot = if shake.is_changed() && shake.0 != DQuat::IDENTITY { (cam.rot * shake.0).normalize() } else { cam.rot };
             let world_from_clip = DMat4::from_quat(view_rot) * clip_from_view.inverse();
             let (prev_clip_from_world, reset) = match prev.as_ref().filter(|p| p.body == e) {
                 Some(p) => (reprojection(p, s, cam_s), false),

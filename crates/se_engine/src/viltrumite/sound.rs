@@ -19,7 +19,7 @@ use std::sync::Arc;
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
-use crate::mods::{ModControl, ModInput};
+use crate::mods::ModControl;
 use crate::sound::SoundSettings;
 
 use super::air::Flow;
@@ -371,7 +371,6 @@ pub(super) fn play_sounds(
     time: Res<Time<Real>>,
     settings: Res<SoundSettings>,
     control: Res<ModControl>,
-    input: Res<ModInput>,
     mut hero: ResMut<Hero>,
     mut voices: ResMut<Voices>,
     mut assets: ResMut<Assets<AudioSource>>,
@@ -405,7 +404,8 @@ pub(super) fn play_sounds(
     let step = dt / tune::SOUND_FADE_S;
     voices.master += ((audible as u8 as f32) - voices.master).clamp(-step, step);
 
-    let charging = audible && input.right_button;
+    // The charge itself, not the button: held over a ground punch, a clap or a Go To, no charge runs and none is heard.
+    let charging = audible && matches!(hero.action, super::impact::Action::Charge { .. });
     let was_charging = std::mem::replace(&mut voices.charging, charging);
     if charging && !was_charging {
         hero.sound.charge_start();
@@ -652,6 +652,7 @@ mod tests {
     use std::time::Duration;
 
     use super::super::air::AirSample;
+    use super::super::impact::Action;
     use super::*;
 
     fn flow(q: f64, mach: f64, pressure_pa: f64) -> Flow {
@@ -833,7 +834,6 @@ mod tests {
         app.insert_resource(Assets::<AudioSource>::default())
             .insert_resource(SoundSettings { volume: 0.3 })
             .init_resource::<ModControl>()
-            .init_resource::<ModInput>()
             .init_resource::<Hero>()
             .init_resource::<Voices>()
             .init_resource::<Time<Real>>()
@@ -953,13 +953,14 @@ mod tests {
     }
 
     #[test]
-    fn the_right_button_starts_the_charge_and_letting_go_cuts_it() {
+    fn the_charge_starts_its_sound_and_letting_go_cuts_it() {
         let mut a = app();
         turn(&mut a, true);
         for _ in 0..20 {
             frame(&mut a, 16);
         }
-        a.world_mut().resource_mut::<ModInput>().right_button = true;
+        let charge = Action::Charge { clip: 0, t: 0.0, hold: 0.6, clap: 1.23, end: 2.0 };
+        a.world_mut().resource_mut::<Hero>().action = charge;
         for _ in 0..30 {
             frame(&mut a, 16);
         }
@@ -973,13 +974,13 @@ mod tests {
             frame(&mut a, 16);
         }
         assert_eq!(a.world().resource::<Voices>().loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level, 1.0);
-        a.world_mut().resource_mut::<ModInput>().right_button = false;
+        a.world_mut().resource_mut::<Hero>().action = Action::None;
         for _ in 0..30 {
             frame(&mut a, 16);
         }
         let v = a.world().resource::<Voices>();
         assert_eq!(v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level, 0.0);
-        assert_eq!(v.shots_alive(), 0, "flightCharge_start goes with the button");
+        assert_eq!(v.shots_alive(), 0, "flightCharge_start goes with the charge");
     }
 
     #[test]

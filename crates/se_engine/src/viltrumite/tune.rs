@@ -240,11 +240,13 @@ pub const RIM_TINT: [f32; 3] = [0.62, 0.56, 0.5];
 pub const RIM_WARM_FRAMES: u32 = 600;
 /// The rim's model across (its own 4.8 m) is the crater's diameter times this: the bowl's wall and lip show round it.
 pub const RIM_ACROSS_SHARE: f64 = 0.8;
-/// His capsule, which a crater leaves alone (he's drawn over it): half its length along his up and its radius (m), round his middle
-/// (`STAND_M` over his soles), so it stops just over the ground he stands on: a larger one left a light disc round his feet. (His legs
-/// stand up, and the craters leave whatever stands up alone anyway.)
-pub const CAPSULE_HALF_M: f64 = 0.55;
-pub const CAPSULE_RADIUS_M: f32 = 0.5;
+/// The crater's decal leaves the sea alone: what stands less than this over it (m) is water. Small: the decal works the height out
+/// to a millimetre or so (the water is drawn on the ellipsoid itself), and Earth's flat coasts lie a few centimetres over the sea (a
+/// Florida beach 3.6 cm: at 0.1 m its craters went). (His body is left alone by capsules round his bones: `impact.rs` `BODY_PARTS`.)
+pub const CRATER_SEA_M: f32 = 0.01;
+/// A new crater whose middle lands within this share of the larger radius of one already there (ground punches where he stands)
+/// deepens that one instead: each crater multiplies the scene, so two in one place would darken it twice.
+pub const CRATER_MERGE: f64 = 0.75;
 /// A crater comes in over this (s): the blast.
 pub const CRATER_IN_S: f64 = 0.08;
 /// The crater's look (`hero_fx.wesl` `decal_fragment`): the bowl's depth in radii (the slope of its walls), how dark the burnt

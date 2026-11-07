@@ -22,7 +22,7 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::NoFrustumCulling;
-use bevy::math::{DQuat, DVec3};
+use bevy::math::{Affine3A, DQuat, DVec3};
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::render::render_resource::{AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError};
@@ -37,11 +37,12 @@ use crate::mods::{HeroAssets, ModControl, ModInput};
 use crate::ship::BodyInfo;
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
-use crate::universe::{MeterScale, ScaleAnchor, UOrientation, UPosition};
+use crate::universe::ScaledSpace;
+use se_core::upos::UPos;
 
-use super::anim::Layer;
+use super::anim::{Layer, Sampler};
 use super::frames::{Frame, Scene};
-use super::fx::{CRATERS, DUST_BURSTS, FxCraterGpu, FxDraws, FxDustGpu, FxInput, RingShape};
+use super::fx::{CRATERS, DUST_BURSTS, FxCraterGpu, FxDraws, FxDustGpu, FxInput, PARTS, RingShape};
 use super::ground::{self, Footing};
 use super::hero::State;
 use super::{Hero, tune};
@@ -135,6 +136,91 @@ fn full_mask(model: &HeroModel) -> u128 {
     let n = model.bones.len().min(128);
     let cape = model.cape_first.map_or(n, |c| (c as usize).min(n));
     if cape >= 128 { u128::MAX } else { (1u128 << cape) - 1 }
+}
+
+/// His body for the craters' decal, which leaves him alone (`hero_fx.wesl` `in_him`; he's drawn over the ground it multiplies): a
+/// capsule from bone to bone, on past the second by some metres (the hand, the head, the toes), this far round (m). A little wider
+/// than the cape's (`cape.rs` `BODY_CAPSULES`): what's left out is darkened like the ground, what's taken in leaves a light rim on
+/// the ground round his boots. (One upright cylinder round his middle missed the ground punch's fist, 0.7 m ahead of his feet.)
+const BODY_PARTS: [(&str, &str, f32, f32); 14] = [
+    ("SKEL_Pelvis", "SKEL_Spine3", 0.0, 0.2),
+    ("SKEL_Spine3", "SKEL_Neck_1", 0.0, 0.2),
+    ("SKEL_L_UpperArm", "SKEL_R_UpperArm", 0.0, 0.12),
+    ("SKEL_Neck_1", "SKEL_Head", 0.16, 0.13),
+    ("SKEL_L_UpperArm", "SKEL_L_Forearm", 0.0, 0.085),
+    ("SKEL_R_UpperArm", "SKEL_R_Forearm", 0.0, 0.085),
+    ("SKEL_L_Forearm", "SKEL_L_Hand", 0.14, 0.075),
+    ("SKEL_R_Forearm", "SKEL_R_Hand", 0.14, 0.075),
+    ("SKEL_L_Thigh", "SKEL_L_Calf", 0.0, 0.11),
+    ("SKEL_R_Thigh", "SKEL_R_Calf", 0.0, 0.11),
+    ("SKEL_L_Calf", "SKEL_L_Foot", 0.0, 0.08),
+    ("SKEL_R_Calf", "SKEL_R_Foot", 0.0, 0.08),
+    ("SKEL_L_Foot", "SKEL_L_Toe0", 0.07, 0.07),
+    ("SKEL_R_Foot", "SKEL_R_Toe0", 0.07, 0.07),
+];
+/// The cape: its two side chains and its middle one, each in two pieces (top to middle, middle to hem), this far round (m).
+const CAPE_PART_M: f32 = 0.14;
+
+/// His body as capsules round his bones, found once from the model and placed each frame from the pose he's drawn in (`update_hero`),
+/// for the craters' decal (`fx.rs` `FxRecordsGpu::parts`).
+pub struct BodyParts {
+    /// Bone, bone, on past it (m), radius (m).
+    bones: Vec<(u16, u16, f32, f32)>,
+    found: bool,
+    /// This frame's: two points from the camera each (m), the first's w the radius.
+    pub points: [Vec4; PARTS * 2],
+    pub count: u32,
+}
+
+impl Default for BodyParts {
+    fn default() -> Self {
+        BodyParts { bones: Vec::new(), found: false, points: [Vec4::ZERO; PARTS * 2], count: 0 }
+    }
+}
+
+impl BodyParts {
+    fn find(model: &HeroModel) -> Vec<(u16, u16, f32, f32)> {
+        let bone = |name: &str| model.bones.iter().position(|b| b.name == name).map(|i| i as u16);
+        let mut out: Vec<(u16, u16, f32, f32)> = BODY_PARTS.iter().filter_map(|&(a, b, on, r)| Some((bone(a)?, bone(b)?, on, r))).collect();
+        if let Some(first) = model.cape_first {
+            let (chains, links) = (model.cape_chains as u16, model.cape_links as u16);
+            if chains > 0 && links > 1 {
+                let mut picked = [0, chains / 2, chains - 1];
+                picked.sort_unstable();
+                let mut last = None;
+                for ch in picked {
+                    if last == Some(ch) {
+                        continue;
+                    }
+                    last = Some(ch);
+                    let top = first as u16 + ch * links;
+                    let mid = top + links / 2;
+                    out.push((top, mid, 0.0, CAPE_PART_M));
+                    out.push((mid, top + links - 1, 0.0, CAPE_PART_M));
+                }
+            }
+        }
+        out.retain(|&(a, b, ..)| (a as usize) < model.bones.len() && (b as usize) < model.bones.len());
+        out.truncate(PARTS);
+        out
+    }
+
+    /// From the pose just sampled, placed where he's drawn (`place`: model space to the camera's frame).
+    pub fn place(&mut self, sampler: &Sampler, model: &HeroModel, place: Affine3A) {
+        if !self.found {
+            self.bones = Self::find(model);
+            self.found = true;
+            info!("viltrumite: the craters leave {} capsules of him alone", self.bones.len());
+        }
+        let at = |i: u16| place.transform_point3(Vec3::from(sampler.world(i as usize).translation));
+        for (k, &(a, b, on, r)) in self.bones.iter().enumerate() {
+            let (pa, pb) = (at(a), at(b));
+            let pb = pb + (pb - pa).normalize_or_zero() * on;
+            self.points[2 * k] = pa.extend(r);
+            self.points[2 * k + 1] = pb.extend(0.0);
+        }
+        self.count = self.bones.len() as u32;
+    }
 }
 
 /// A clip's event time by name, or `or`.
@@ -242,12 +328,16 @@ pub(super) fn start(hero: &mut Hero, input: &ModInput, s: &Scene, fwd: DVec3, tr
     let clips = *hero.act_clips.get_or_insert_with(|| ActClips::find(&assets.clips, &assets.model));
     let set = &assets.clips;
     let was = hero.action;
-    // Let go of the right button: the clap, if it was held long enough; else nothing.
+    // Let go of the right button: the clap, if it was held long enough; else nothing. The mouse taken away (Tab's menus, the
+    // window's focus lost, a text field) isn't letting go: the charge ends with no clap.
     if let Action::Charge { clip, t, hold, clap, end } = hero.action {
-        if !input.right_button {
+        if input.mouse_lost {
+            hero.action = Action::None;
+        } else if !input.right_button {
             let (least, most) = tune::THUNDERCLAP_HOLD_S;
             hero.action = if t as f64 >= least {
-                Action::Clap { clip, t: hold, clap, end, charge: ((t as f64 - least) / (most - least)).clamp(0.0, 1.0) as f32, done: false }
+                // From the pose the charge shows: let go before the clip's hold, it runs on from there, never jumping ahead.
+                Action::Clap { clip, t: t.min(hold), clap, end, charge: ((t as f64 - least) / (most - least)).clamp(0.0, 1.0) as f32, done: false }
             } else {
                 Action::None
             };
@@ -260,37 +350,32 @@ pub(super) fn start(hero: &mut Hero, input: &ModInput, s: &Scene, fwd: DVec3, tr
             hero.action = Action::Charge { clip, t: 0.0, hold: event(set, clip, "hold", 0.6), clap: event(set, clip, "clap", 1.23), end };
         }
     }
-    if input.left_pressed {
-        let free = match hero.action {
-            Action::None => true,
-            Action::Punch { t, hit, done, .. } => done && t >= hit + tune::PUNCH_CHAIN_S,
-            _ => false,
-        };
-        if !free {
-            return;
-        }
+    let free = match hero.action {
+        Action::None => true,
+        Action::Punch { t, hit, done, .. } => done && t >= hit + tune::PUNCH_CHAIN_S,
+        _ => false,
+    };
+    if input.left_pressed && free {
         if let (Some(from_m), Some(clip)) = (smash_from(hero, s, fwd), clips.smash) {
             hero.action = Action::Smash { clip, t: 0.0, contact: event(set, clip, "contact", 0.27), end: duration(set, clip), from_m, done: false };
             if !hero.state.on_foot() {
-                // He goes down to it: held, the action moves him.
+                // He goes down to it: held, the action moves him. (Called before the frame's carry, so the carry holds him too.)
                 hero.state = State::Hover;
                 hero.short_fall = false;
             }
             hero.frame.set_velocity(s, DVec3::ZERO);
-            if hero.act_layer.weight > 0.05 {
-                hero.sampler.crossfade(tune::ACTION_FADE_IN_S);
+        } else {
+            hero.punches = hero.punches.wrapping_add(1);
+            let pair = if hero.state.on_foot() { clips.punch } else { clips.fly_punch };
+            if let Some(clip) = pair[hero.punches as usize % 2].or(pair[0]) {
+                let end = duration(set, clip);
+                hero.action = Action::Punch { clip, t: 0.0, hit: event(set, clip, "hit", end * tune::PUNCH_HIT_SHARE), end, done: false };
+                hero.sound.punch_swing();
             }
-            return;
-        }
-        hero.punches = hero.punches.wrapping_add(1);
-        let pair = if hero.state.on_foot() { clips.punch } else { clips.fly_punch };
-        if let Some(clip) = pair[hero.punches as usize % 2].or(pair[0]) {
-            let end = duration(set, clip);
-            hero.action = Action::Punch { clip, t: 0.0, hit: event(set, clip, "hit", end * tune::PUNCH_HIT_SHARE), end, done: false };
-            hero.sound.punch_swing();
         }
     }
-    // A new action over one still showing (a chained punch, a charge over a punch): from the pose as it stands, never a pop.
+    // A new action over one still showing (a chained punch, a charge over a punch, both buttons at once): from the pose as it
+    // stands, never a pop.
     if hero.action != was && !matches!(hero.action, Action::None | Action::Clap { .. }) && hero.act_layer.weight > 0.05 {
         hero.sampler.crossfade(tune::ACTION_FADE_IN_S);
     }
@@ -365,7 +450,10 @@ fn clap(hero: &mut Hero, s: &Scene, fwd: DVec3, charge: f64) {
     hero.sound.thunderclap(charge as f32);
     // (Where he is now, against this frame's bodies: `Hero.world` is last frame's, and the body has moved since, 500 m a frame for Earth.)
     let pos = hero.frame.world(s, hero.world.0);
-    let Some(b) = hero.frame.body().and_then(|o| s.bodies.iter().find(|b| b.obj == o)) else { return };
+    // (Far out no body carries him: the ring is kept in the nearest's frame for the moment it lasts, so a clap in space shows too.)
+    let carrier = hero.frame.body().and_then(|o| s.bodies.iter().find(|b| b.obj == o));
+    let surface = |b: &&BodyInfo| pos.delta_m(b.pos).length() - b.radius;
+    let Some(b) = carrier.or_else(|| s.bodies.iter().filter(|b| b.radius > 0.0).min_by(|x, y| surface(x).total_cmp(&surface(y)))) else { return };
     let local = b.orient.inverse() * pos.delta_m(b.pos);
     let up = local.normalize_or(DVec3::Y);
     let ahead = b.orient.inverse() * fwd;
@@ -508,11 +596,13 @@ struct Shake {
     phase: f64,
 }
 
-/// The rims: one mesh, one material, a fixed entity a crater.
+/// The rims: one mesh, one material, a fixed entity a crater. Each is placed from the camera by `update_impacts` (its `Transform`,
+/// as the floating origin would), not through `UPosition`: that would rewrite all 32 every frame, hidden or not, the mod off too.
 struct Rims {
     entities: [Entity; CRATERS],
     shown: [bool; CRATERS],
-    /// Frames the last one stays out as a speck at the camera, so its pipeline is built before a crater needs it.
+    /// Frames the last one stays out as a speck at the camera, so its pipeline is built before a crater needs it. Counted while
+    /// he's on: turned off before it's done, the speck hides and waits for the next time.
     warm: u32,
     /// The model across (m): 4.8.
     across: f64,
@@ -535,9 +625,28 @@ pub struct Impacts {
     pub shake_now: Vec2,
     /// `hero impacts`: log the pools next frame.
     pub log: bool,
+    /// In the aftermath, where the light the rims and the bowls take is worked out (draw.rs `aftermath_light`): the crater (or the
+    /// dust) nearest the camera. `None` while he's on (his own light) or with the pools empty.
+    light_spot: Option<UPos>,
 }
 
 impl Impacts {
+    pub fn light_spot(&self) -> Option<UPos> {
+        self.light_spot
+    }
+
+    /// The mod turned off: the warm-up's speck hides unless a crater uses its rim. (With the pools empty these systems stop at
+    /// once, and a speck left showing would be drawn every frame with the mod off.)
+    pub fn hide_warm_rim(&self, vis: &mut Query<&mut Visibility, With<RimPart>>) {
+        let Some(rim) = self.rims.as_ref().filter(|r| !r.shown[CRATERS - 1]) else { return };
+        if let Ok(mut v) = vis.get_mut(rim.entities[CRATERS - 1]) {
+            if *v != Visibility::Hidden {
+                *v = Visibility::Hidden;
+                info!("viltrumite: the rims' warm-up hidden with the mod, {} frames of it left", rim.warm);
+            }
+        }
+    }
+
     fn new_seed(&mut self) -> f32 {
         self.seeds = self.seeds.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (self.seeds >> 8) as f32 / (1u32 << 24) as f32
@@ -559,6 +668,22 @@ fn slot_for<T>(pool: &[Option<T>], far: impl Fn(&T) -> f64) -> usize {
         return i;
     }
     (0..pool.len()).max_by(|&a, &b| far(pool[a].as_ref().unwrap()).total_cmp(&far(pool[b].as_ref().unwrap()))).unwrap_or(0)
+}
+
+/// The live crater a new one of `radius` m at `on` (`obj`'s frame) lands in: middles within `CRATER_MERGE` of the larger radius.
+fn crater_under(craters: &[Option<Crater>], obj: ObjectRef, on: DVec3, radius: f64) -> Option<usize> {
+    craters.iter().position(|x| x.is_some_and(|x| x.obj == obj && (x.dir * x.radial - on).length() < tune::CRATER_MERGE * x.radius.max(radius)))
+}
+
+/// A shake of an impact `size` m across, `from_cam` m from the camera (none for size 0).
+fn push_shake(im: &mut Impacts, size: f64, from_cam: f64, clock: f64) {
+    if size <= 0.0 {
+        return;
+    }
+    let deg = tune::SHAKE_MAX_DEG * (tune::SHAKE_K * size / (from_cam + size)).min(1.0);
+    let phase = im.new_seed() as f64 * 100.0;
+    let i = slot_for(&im.shakes, |s: &Shake| -s.born);
+    im.shakes[i] = Some(Shake { born: clock, deg, phase });
 }
 
 /// A texture of the mod's (`props/`, `sprites/`), or a neutral colour.
@@ -636,7 +761,7 @@ impl Material for RimMaterial {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_impacts(
     mut commands: Commands,
-    cam: Res<FlyCamera>,
+    control: Res<ModControl>,
     draws: Res<super::draw::HeroDraws>,
     mut input: ResMut<FxInput>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -658,19 +783,15 @@ pub(super) fn spawn_impacts(
             tint: Vec3::from_array(tune::RIM_TINT).extend(1.0),
         });
         let entities = std::array::from_fn(|i| {
-            // (The last one starts out as a speck at the camera, so its pipeline is built before the first crater.)
-            let warm = i == CRATERS - 1;
+            // (The last one starts out as a speck at the camera while he's on, so its pipeline is built before the first crater.)
+            let warm = i == CRATERS - 1 && control.hero;
             commands
                 .spawn((
                     Name::new("Viltrumite crater rim"),
                     RimPart,
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(material.clone()),
-                    UPosition(cam.pos),
-                    UOrientation(DQuat::IDENTITY),
-                    ScaleAnchor(cam.pos),
-                    MeterScale(DVec3::splat(if warm { 1e-5 } else { 1.0 })),
-                    Transform::IDENTITY,
+                    warm_speck(),
                     if warm { Visibility::Visible } else { Visibility::Hidden },
                     NoFrustumCulling,
                 ))
@@ -681,8 +802,26 @@ pub(super) fn spawn_impacts(
     if rims.is_none() {
         warn!("viltrumite: the crater rim's model can't be read: craters without rims");
     }
-    commands.insert_resource(Impacts { craters: [None; CRATERS], bursts: [None; DUST_BURSTS], shakes: [None; 4], rims, clock: 0.0, seeds: 0x9e37_79b9, shake_now: Vec2::ZERO, log: false });
+    commands.insert_resource(Impacts { craters: [None; CRATERS], bursts: [None; DUST_BURSTS], shakes: [None; 4], rims, clock: 0.0, seeds: 0x9e37_79b9, shake_now: Vec2::ZERO, log: false, light_spot: None });
     info!("viltrumite: impacts made in {} ms", started.elapsed().as_millis());
+}
+
+/// A crater's record of the sea (`FxCraterGpu::sea`): the sea's up there (world axes) and how high the crater's middle stands over
+/// it (m), so the decal leaves the water alone; on a body with no sea, a height nothing reaches.
+fn sea_record(b: &BodyInfo, dir: DVec3, radial: f64) -> Vec4 {
+    if !b.terrain.is_some_and(|t| t.has_ocean) {
+        return Vec4::new(0.0, 1.0, 0.0, 1e9);
+    }
+    // (As `ground_on`: the sea's surface is the body's radius along the ellipsoid, the ground's `radial` the same line's.)
+    let k = ((dir / b.shape).normalize_or(DVec3::Y) * b.shape).length();
+    // The ellipsoid's normal, not the line to the middle: on a flattened Earth they part by up to 0.2 degrees, 0.3 m over 100 m.
+    let n = b.orient * (dir / (b.shape * b.shape)).normalize_or(dir);
+    n.as_vec3().extend((radial - b.radius * k) as f32)
+}
+
+/// The warm-up's rim: a speck at the camera (inside the near plane, but queued, so its pipeline gets built).
+fn warm_speck() -> Transform {
+    Transform::from_scale(Vec3::splat(1e-5))
 }
 
 /// One frame of the pools: this frame's blasts in, the freed out, the records written, the rims placed, the shake worked out. While he's
@@ -695,7 +834,8 @@ pub(super) fn update_impacts(
     mut impacts: ResMut<Impacts>,
     (mut fx, mut input): (ResMut<FxDraws>, ResMut<FxInput>),
     bodies: Query<(&SystemBody, Option<&Terrain>)>,
-    mut rims: Query<(&mut UPosition, &mut UOrientation, &mut ScaleAnchor, &mut MeterScale, &mut Visibility), With<RimPart>>,
+    space: Res<ScaledSpace>,
+    mut rims: Query<(&mut Transform, &mut Visibility), With<RimPart>>,
 ) {
     let im = &mut *impacts;
     let dt = time.delta_secs_f64().min(0.1);
@@ -711,6 +851,11 @@ pub(super) fn update_impacts(
     let blasts = if control.hero { hero.blasts.take() } else { Default::default() };
     for blast in blasts.into_iter().flatten() {
         let Some((b, _)) = info(blast.obj) else { continue };
+        if blast.kind == BlastKind::Shake {
+            // Where it is, not on the ground below: a clap in the air shakes the camera beside him.
+            push_shake(im, blast.shake_m, world(&b, blast.local).delta_m(cam.pos).length(), clock);
+            continue;
+        }
         let dir = blast.local.normalize_or(DVec3::Y);
         let radial = ground(&b, blast.local).radial;
         let at = dir * radial;
@@ -750,21 +895,26 @@ pub(super) fn update_impacts(
         };
         match blast.kind {
             BlastKind::Crater(radius) => {
-                let seed = im.new_seed();
-                let i = slot_for(&im.craters, |x: &Crater| info(x.obj).map_or(f64::INFINITY, |(xb, _)| world(&xb, x.dir * x.radial).delta_m(cam.pos).length()));
-                im.craters[i] = Some(Crater { obj: b.obj, dir, radial, normal, radius, born: clock, seed, yaw: seed as f64 * std::f64::consts::TAU });
+                // Over a crater already there (ground punches where he stands): that one, grown if this is bigger. Each crater
+                // multiplies the scene, so two in one place would darken it twice, and their rims would pile up.
+                if let Some(i) = crater_under(&im.craters, b.obj, dir * radial, radius) {
+                    let c = im.craters[i].as_mut().expect("just found");
+                    if radius > c.radius {
+                        (c.dir, c.radial, c.normal, c.radius) = (dir, radial, normal, radius);
+                    }
+                    info!("viltrumite: crater {i} hit again, now {:.1} m, {:.0} m from the camera", c.radius, from_cam);
+                } else {
+                    let seed = im.new_seed();
+                    let i = slot_for(&im.craters, |x: &Crater| info(x.obj).map_or(f64::INFINITY, |(xb, _)| world(&xb, x.dir * x.radial).delta_m(cam.pos).length()));
+                    im.craters[i] = Some(Crater { obj: b.obj, dir, radial, normal, radius, born: clock, seed, yaw: seed as f64 * std::f64::consts::TAU });
+                    info!("viltrumite: crater {i}, {radius:.1} m, {:.0} m from the camera", from_cam);
+                }
                 dust(im, radius * tune::DUST_OF_CRATER, Style::Plume);
-                info!("viltrumite: crater {i}, {radius:.1} m, {:.0} m from the camera", from_cam);
             }
             BlastKind::Dust(size, style) => dust(im, size, style),
             BlastKind::Shake => {}
         }
-        if blast.shake_m > 0.0 {
-            let deg = tune::SHAKE_MAX_DEG * (tune::SHAKE_K * blast.shake_m / (from_cam + blast.shake_m)).min(1.0);
-            let phase = im.new_seed() as f64 * 100.0;
-            let i = slot_for(&im.shakes, |s: &Shake| -s.born);
-            im.shakes[i] = Some(Shake { born: clock, deg, phase });
-        }
+        push_shake(im, blast.shake_m, from_cam, clock);
     }
 
     // The freed: a body gone, both he and the camera far enough away (in the aftermath the camera alone: he isn't there), a burst's life over.
@@ -794,9 +944,16 @@ pub(super) fn update_impacts(
         control.aftermath = live;
     }
 
-    // The records, from the camera, the ground as it's drawn now.
+    // The records, from the camera, the ground as it's drawn now. (And the nearest of them, for the aftermath's light.)
     let r = &mut *fx.records;
     let mut crater_bits = 0u32;
+    let mut spot: Option<(f64, UPos)> = None;
+    let mut nearer = |at: UPos| {
+        let d = at.delta_m(cam.pos).length();
+        if spot.is_none_or(|(e, _)| d < e) {
+            spot = Some((d, at));
+        }
+    };
     for (i, slot) in im.craters.iter_mut().enumerate() {
         r.craters[i] = FxCraterGpu::default();
         let Some(c) = slot else { continue };
@@ -806,11 +963,13 @@ pub(super) fn update_impacts(
             c.radial = g.radial;
         }
         let at = world(&b, c.dir * c.radial);
+        nearer(at);
         let age = clock - c.born;
         r.craters[i] = FxCraterGpu {
             at: at.delta_m(cam.pos).as_vec3().extend(c.radius as f32),
             up: (b.orient * c.normal).as_vec3().extend(c.seed),
             look: Vec4::new(smooth(0.0, tune::CRATER_IN_S, age) as f32, tune::CRATER_DEPTH, tune::CRATER_LIP, tune::CRATER_REACH),
+            sea: sea_record(&b, c.dir, c.radial),
         };
         crater_bits |= 1 << i;
     }
@@ -819,6 +978,7 @@ pub(super) fn update_impacts(
         r.dust[i] = FxDustGpu::default();
         let Some(x) = slot else { continue };
         let Some((b, _)) = info(x.obj) else { continue };
+        nearer(world(&b, x.local));
         r.dust[i] = FxDustGpu {
             at: world(&b, x.local).delta_m(cam.pos).as_vec3().extend((clock - x.born) as f32),
             up: (b.orient * x.normal).as_vec3().extend(x.size as f32),
@@ -831,49 +991,47 @@ pub(super) fn update_impacts(
         input.craters = crater_bits;
         input.dust = quads;
     }
+    im.light_spot = if control.hero { None } else { spot.map(|(_, at)| at) };
 
-    // The rims: within reach of the camera, scaled to their crater, on the ground as it's drawn now, half-sunk (the mesh is).
+    // The rims: within reach of the camera, scaled to their crater, on the ground as it's drawn now, half-sunk (the mesh is). Placed
+    // from the camera as the floating origin places what it moves (the body's scale for the compressed space).
     if let Some(rim) = im.rims.as_mut() {
         let across = rim.across;
-        if rim.warm > 0 {
+        if control.hero && rim.warm > 0 {
             rim.warm -= 1;
-            if rim.warm == 0 && !rim.shown[CRATERS - 1] {
-                if let Ok((.., mut v)) = rims.get_mut(rim.entities[CRATERS - 1]) {
-                    *v = Visibility::Hidden;
-                }
-            }
         }
         for (i, slot) in im.craters.iter().enumerate() {
             let want = slot.and_then(|c| {
                 let (b, _) = info(c.obj)?;
                 let at = world(&b, c.dir * c.radial);
-                (at.delta_m(cam.pos).length() < tune::RIM_DRAW_M + c.radius).then_some((b, c))
+                (at.delta_m(cam.pos).length() < tune::RIM_DRAW_M + c.radius).then_some((b, c, at))
             });
-            let shown = want.is_some();
-            let Ok((mut up, mut uo, mut anchor, mut scale, mut vis)) = rims.get_mut(rim.entities[i]) else { continue };
-            match want {
-                Some((b, c)) => {
-                    up.0 = world(&b, c.dir * c.radial);
-                    uo.0 = b.orient * DQuat::from_rotation_arc(DVec3::Y, c.normal) * DQuat::from_rotation_y(c.yaw);
-                    anchor.0 = b.pos;
+            let Ok((mut tf, mut vis)) = rims.get_mut(rim.entities[i]) else { continue };
+            rim.shown[i] = want.is_some();
+            let show = match want {
+                Some((b, c, at)) => {
+                    let k = space.factor(b.pos.delta_m(cam.pos).length());
                     // Across with the crater, up by the square root of that: uniformly, a big crater's slabs would bury him.
-                    let k = 2.0 * c.radius * tune::RIM_ACROSS_SHARE / across;
-                    scale.0 = DVec3::new(k, k.sqrt(), k);
-                    if *vis != Visibility::Visible {
-                        *vis = Visibility::Visible;
-                    }
+                    let s = 2.0 * c.radius * tune::RIM_ACROSS_SHARE / across;
+                    *tf = Transform {
+                        translation: (at.delta_m(cam.pos) * k).as_vec3(),
+                        rotation: (b.orient * DQuat::from_rotation_arc(DVec3::Y, c.normal) * DQuat::from_rotation_y(c.yaw)).as_quat(),
+                        scale: (DVec3::new(s, s.sqrt(), s) * k).as_vec3(),
+                    };
+                    true
                 }
-                None => {
-                    let warming = i == CRATERS - 1 && rim.warm > 0;
-                    if warming {
-                        up.0 = cam.pos;
-                        anchor.0 = cam.pos;
-                    } else if *vis != Visibility::Hidden {
-                        *vis = Visibility::Hidden;
+                None if i == CRATERS - 1 && control.hero && rim.warm > 0 => {
+                    if *tf != warm_speck() {
+                        *tf = warm_speck();
                     }
+                    true
                 }
+                None => false,
+            };
+            let v = if show { Visibility::Visible } else { Visibility::Hidden };
+            if *vis != v {
+                *vis = v;
             }
-            rim.shown[i] = shown;
         }
     }
 
@@ -924,14 +1082,17 @@ pub(super) fn update_impacts(
     }
 }
 
-/// F7's shake: a rotation of the view alone, after its transform is set from the camera, never written back to the camera.
-pub(super) fn apply_shake(impacts: Res<Impacts>, mut q: Query<&mut Transform, With<MainCamera>>) {
+/// F7's shake: a rotation of the view alone, after its transform is set from the camera, never written back to the camera. The
+/// clouds' view takes the same turn (`ViewShake`, read only in a frame it's written), or they'd hold still while the scene shook.
+pub(super) fn apply_shake(impacts: Res<Impacts>, mut q: Query<&mut Transform, With<MainCamera>>, mut view: ResMut<crate::volumetric_clouds::ViewShake>) {
     let s = impacts.shake_now;
     if s == Vec2::ZERO {
         return;
     }
+    let turn = Quat::from_euler(EulerRot::YXZ, s.x, s.y, 0.0);
+    view.0 = turn.as_dquat();
     for mut tf in &mut q {
-        tf.rotation = (tf.rotation * Quat::from_euler(EulerRot::YXZ, s.x, s.y, 0.0)).normalize();
+        tf.rotation = (tf.rotation * turn).normalize();
     }
 }
 
@@ -965,6 +1126,35 @@ mod tests {
         let taken = b.take();
         assert_eq!(taken.iter().flatten().count(), 8);
         assert_eq!(b.take().iter().flatten().count(), 0);
+    }
+
+    /// Ground punches where he stands land in the crater already there; one beside it doesn't.
+    #[test]
+    fn a_crater_on_a_crater_is_the_same_crater() {
+        let c = |x: f64, radius: f64| Crater { obj: ObjectRef::Body(3), dir: DVec3::new(x, 0.0, 6.4e6).normalize(), radial: 6.4e6, normal: DVec3::Z, radius, born: 0.0, seed: 0.5, yaw: 0.0 };
+        let pool = [None, Some(c(0.0, 6.0)), Some(c(100.0, 6.0))];
+        let at = |x: f64| DVec3::new(x, 0.0, 6.4e6).normalize() * 6.4e6;
+        assert_eq!(crater_under(&pool, ObjectRef::Body(3), at(0.7), 6.0), Some(1));
+        assert_eq!(crater_under(&pool, ObjectRef::Body(3), at(97.0), 2.6), Some(2));
+        // Beside it, on another body, or a small one off the edge of a small one: a crater of its own.
+        assert_eq!(crater_under(&pool, ObjectRef::Body(3), at(30.0), 6.0), None);
+        assert_eq!(crater_under(&pool, ObjectRef::Body(4), at(0.0), 6.0), None);
+        assert_eq!(crater_under(&pool, ObjectRef::Body(3), at(105.0), 2.0), None);
+        // A big one over a small one takes it in.
+        assert_eq!(crater_under(&pool, ObjectRef::Body(3), at(8.0), 17.0), Some(1));
+    }
+
+    /// The capsules the craters leave alone cover his limbs, his head, his hands past the wrist and the cape, from the real model.
+    #[test]
+    fn the_craters_leave_all_of_him_alone() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/viltrumite");
+        let Ok(b) = std::fs::read(dir.join("omniman.sevm")) else { return };
+        let m = se_core::hero_asset::parse_model(&b).unwrap();
+        let parts = BodyParts::find(&m);
+        assert_eq!(parts.len(), BODY_PARTS.len() + 6, "every bone found, and the cape's three chains in two pieces");
+        assert!(parts.len() <= PARTS);
+        let cape = m.cape_first.unwrap() as u16;
+        assert!(parts.iter().filter(|p| p.0 >= cape).all(|p| p.1 > p.0 && p.3 == CAPE_PART_M));
     }
 
     #[test]

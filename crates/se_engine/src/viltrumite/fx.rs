@@ -45,6 +45,8 @@ pub const RINGS: usize = 4;
 pub const TRAIL_POINTS: usize = 256;
 pub const CRATERS: usize = 32;
 pub const DUST_BURSTS: usize = 64;
+/// The capsules of him the craters leave alone (`impact::BodyParts`; `hero_fx.wesl` `parts` holds two points each).
+pub const PARTS: usize = 24;
 
 /// The draws, as `instance_index` tells them apart: `hero_fx.wesl` `FX_*`. Rings follow from `FX_RING` on.
 const FX_SHELL: u32 = 0;
@@ -72,12 +74,14 @@ struct FxPointGpu {
 }
 
 /// `hero_fx.wesl` `FxCrater`: `at` xyz its middle on the ground as drawn now, from the camera, w its radius (m); `up` xyz the ground's
-/// normal there, w its seed (0..1); `look` x how far in (0..1), y the bowl's depth, z the lip's height, w how far out it reaches (radii).
+/// normal there, w its seed (0..1); `look` x how far in (0..1), y the bowl's depth, z the lip's height, w how far out it reaches (radii);
+/// `sea` xyz the sea's up there, w how high its middle stands over the sea (m; 1e9 on a body with none).
 #[derive(Clone, Copy, Default, Debug, PartialEq, ShaderType)]
 pub struct FxCraterGpu {
     pub at: Vec4,
     pub up: Vec4,
     pub look: Vec4,
+    pub sea: Vec4,
 }
 
 /// `hero_fx.wesl` `FxDust`: `at` xyz where it rose from, from the camera, w its age (s); `up` xyz up there, w its size (m); `look` rgb its
@@ -100,11 +104,14 @@ pub struct FxRecordsGpu {
     shell_size: Vec4,
     cone: Vec4,
     cloud_px: Vec4,
-    sun: Vec4,
-    /// His capsule, which the craters leave alone: xyz his up, w half its length (0 when he isn't drawn).
-    pub capsule: Vec4,
-    /// The craters' burnt ground: x at the middle, y at the edge; z his capsule's radius (m).
+    /// Towards the star the light comes from (his; in the aftermath the nearest crater's, `draw::aftermath_light`).
+    pub sun: Vec4,
+    /// His body as capsules, which the craters leave alone: x how many of `parts` (0 when he isn't drawn).
+    pub body: Vec4,
+    /// The craters' burnt ground: x at the middle, y at the edge; z how high over the sea a point must stand to be ground (m).
     pub decal: Vec4,
+    /// The capsules (`impact::BodyParts`): two points from the camera each (m), the first's w its radius.
+    pub parts: [Vec4; PARTS * 2],
     rings: [FxRingGpu; RINGS],
     trail: [FxPointGpu; TRAIL_POINTS],
     pub craters: [FxCraterGpu; CRATERS],
@@ -121,8 +128,9 @@ impl Default for FxRecordsGpu {
             cone: Vec4::ZERO,
             cloud_px: Vec4::ONE,
             sun: Vec4::Y,
-            capsule: Vec4::ZERO,
-            decal: Vec4::new(tune::CRATER_DARK.0, tune::CRATER_DARK.1, tune::CAPSULE_RADIUS_M, 0.0),
+            body: Vec4::ZERO,
+            decal: Vec4::new(tune::CRATER_DARK.0, tune::CRATER_DARK.1, tune::CRATER_SEA_M, 0.0),
+            parts: [Vec4::ZERO; PARTS * 2],
             rings: [FxRingGpu::default(); RINGS],
             trail: [FxPointGpu::default(); TRAIL_POINTS],
             craters: [FxCraterGpu::default(); CRATERS],
@@ -506,7 +514,7 @@ pub(super) fn upload(control: Res<ModControl>, draws: Res<HeroDraws>, mut fx: Re
         input.rings = 0;
     }
     if !control.hero {
-        fx.records.capsule = Vec4::ZERO;
+        fx.records.body = Vec4::ZERO;
     }
     let draw = draws.ready() && (input.shell || input.cone || input.segments > 0 || input.rings != 0 || input.dust.iter().any(|&q| q > 0));
     if input.draw != draw {
@@ -558,7 +566,9 @@ pub(super) fn update_fx(
     r.him = rel.extend((clock % 1000.0) as f32);
     r.along = going.extend(flow.speed as f32);
     r.sun = draws.sun_dir().extend(0.0);
-    r.capsule = if draws.ready() { draws.up().extend(tune::CAPSULE_HALF_M as f32) } else { Vec4::ZERO };
+    let parts = draws.parts();
+    r.body = Vec4::new(if draws.ready() { parts.count as f32 } else { 0.0 }, 0.0, 0.0, 0.0);
+    r.parts = parts.points;
 
     // The shell.
     let look_t = heat.min(tune::HEAT_LOOK_K);

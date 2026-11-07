@@ -277,6 +277,8 @@ pub struct ModInput {
     pub mouse: Vec2,
     /// Notches, +1 away from the player.
     pub wheel: f32,
+    /// The mouse isn't his this frame (the menus, the focus coming back, a text field): a button reading up hasn't been let go.
+    pub mouse_lost: bool,
 }
 
 impl ModInput {
@@ -294,6 +296,7 @@ impl ModInput {
             space_pressed: keys.just_pressed(KeyCode::Space),
             x_pressed: keys.just_pressed(KeyCode::KeyX),
             z: keys.just_pressed(KeyCode::KeyZ),
+            mouse_lost: menus,
             ..default()
         };
         if !menus {
@@ -311,7 +314,7 @@ impl ModInput {
 
     /// The same frame with no mouse: just focused, or the cursor about to lock.
     fn without_mouse(self) -> ModInput {
-        ModInput { left: false, left_pressed: false, left_released: false, right_button: false, right_pressed: false, right_released: false, mouse: Vec2::ZERO, wheel: 0.0, ..self }
+        ModInput { left: false, left_pressed: false, left_released: false, right_button: false, right_pressed: false, right_released: false, mouse: Vec2::ZERO, wheel: 0.0, mouse_lost: true, ..self }
     }
 }
 
@@ -417,7 +420,7 @@ pub(crate) fn snapshot_input(
         state.held_right = buttons.pressed(MouseButton::Right);
         (read.right_button, read.right_released) = (false, false);
     }
-    *input = if typing { ModInput::default() } else { read };
+    *input = if typing { ModInput { mouse_lost: true, ..default() } } else { read };
     take_presses(&mut keys, &mut buttons, menus);
     if real {
         // winit's lock is a 1x1 rect that a regained focus doesn't reapply: through `None`, then `Locked`. And it locks the
@@ -905,6 +908,8 @@ mod tests {
         // Just focused: no mouse, keys kept.
         let quiet = his.without_mouse();
         assert!(!quiet.left && !quiet.left_pressed && quiet.mouse == Vec2::ZERO && quiet.wheel == 0.0 && quiet.forward == 1.0);
+        // A button that reads up there wasn't let go (a charge held into the menus doesn't clap).
+        assert!(!his.mouse_lost && menus.mouse_lost && quiet.mouse_lost);
     }
 
     /// `clear_just_pressed`, never `reset`: a key held stays held, nothing else sees the press.

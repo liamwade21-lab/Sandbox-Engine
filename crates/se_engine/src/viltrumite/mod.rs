@@ -88,11 +88,11 @@ impl Plugin for ViltrumitePlugin {
             // What the air does round him, from the camera as the frame draws it.
             .add_systems(PostUpdate, fx::update_fx.run_if(hero_shown).after(draw::update_hero).before(UniverseSet::FloatingOrigin))
             // The impacts' pools (made once he is), then the records written once. They run on after the mod is turned off while
-            // anything is in the pools (the aftermath, F3).
+            // anything is in the pools (the aftermath, F3), with the light the rims and the bowls take worked out at the nearest crater.
             .add_systems(Update, impact::spawn_impacts.run_if(impacts_to_make))
             .add_systems(
                 PostUpdate,
-                (impact::update_impacts, fx::upload)
+                (impact::update_impacts, draw::aftermath_light, fx::upload)
                     .chain()
                     .run_if(impacts_running)
                     .after(fx::update_fx)
@@ -325,9 +325,13 @@ fn hand_back(
     bodies: Query<&SystemBody>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     mut soil: ResMut<crate::volumetric_clouds::HeroSoil>,
+    (impacts, mut rims): (Option<Res<impact::Impacts>>, Query<&mut Visibility, With<impact::RimPart>>),
 ) {
     hero.placed = false;
     *soil = default();
+    if let Some(im) = impacts {
+        im.hide_warm_rim(&mut rims);
+    }
     hero.state = State::Hover;
     hero.ease = 0.0;
     hero.impact = None;
@@ -687,7 +691,9 @@ fn log_state(
         });
     let body = hero.frame.body().map_or("none".to_string(), |o| data.catalog.display_name(o).to_string());
     let frame = match hero.frame {
-        Frame::Attached { local_pos, local_vel, level, .. } => format!("attached to {body}, level {level:?}, {:.3} m from its centre, {:.3} m/s", local_pos.length(), local_vel.length()),
+        Frame::Attached { local_pos, local_vel, level, .. } => {
+            format!("attached to {body}, level {level:?}, {:.3} m from its centre (at {:.3?}), {:.3} m/s", local_pos.length(), local_pos.to_array(), local_vel.length())
+        }
         Frame::Free { vel, .. } => format!("free, carried by {body}, {:.3} m/s in the frame", vel.length()),
     };
     let on_foot = format!("slope {:.1} sliding {} ease {:.3} root drop {:.3} last impact {:?}", hero.slope_deg, hero.sliding, hero.ease, hero.root_drop, hero.impact);
