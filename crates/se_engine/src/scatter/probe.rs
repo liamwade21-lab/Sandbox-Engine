@@ -12,12 +12,21 @@
 //! - **The id** is the building's place in the city layout's own frame: its cube face and its middle's face metres x 4
 //!   from the face's corner (i32). A building from a near cell and the same one from a far cell match within a few units
 //!   and have the same model; the record's hash differs (it hashes cell-local positions). `urban` and `core` are read
-//!   at each cell's own grid point, so the two can differ a little: the step 9 measurements are in the spec's Build log.
+//!   at each cell's own grid point, so the two can differ: a box's front and back setbacks follow them (`city.wesl`
+//!   `ct_building`, `down`), which moves its middle along its lot's depth by up to 2.5 x the change of `down` / k face m
+//!   (measured: at most one unit; worked out: about 2.3 face m at a cube corner, inside `MATCH_UNITS`). The step 9
+//!   measurements and the bound are in the spec's Build log.
 //! - **Back on the CPU** (`receive_probe`, in `First`): the newest list, each building in its body's frame (metres, the
 //!   frame `Frame::Attached` uses), with its axes and size. `hero probe ...` (viltrumite) logs and measures it.
+//!   `BuildingProbe::age_frames` says how old the list is now. When the scatter stops taking the asks the list goes:
+//!   at once when it's off or has no body (its buildings are gone), after `UNSERVED_FRAMES` frames otherwise (a frame
+//!   or two without drawing keeps it: the boxes stand where they stood).
+//! - **Off costs nothing:** `ask_probe` and `receive_probe` run only while the mod asks (or a frame after, to take the
+//!   ask out of `ScatterFrame`); the render world's `probe_readback` checks its staging buffers' states and nothing more.
 
 use std::collections::HashMap;
 use std::io::Write as _;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bevy::math::{DQuat, DVec3};
@@ -37,10 +46,13 @@ pub const PROBE_BYTES: u64 = PROBE_HEAD_BYTES + PROBE_CAP as u64 * PROBE_REC_BYT
 /// The broken table (binding 19, step 10): a 48-byte header and 16-byte entries, made empty.
 pub const BROKEN_ENTRIES: u64 = 16_384;
 pub const BROKEN_BYTES: u64 = 48 + BROKEN_ENTRIES * 16;
-/// Staging buffers for the copies, made once.
-pub const STAGING: usize = 4;
+/// Staging buffers for the copies, made once. A buffer is busy from its copy until its list is read, about the lag less
+/// one frame (3-5 frames measured, to 5 at 51 fps): six leave a frame idle up to a lag of 7, the ring's last.
+pub const STAGING: usize = 6;
 /// Frames whose camera, body and turn are kept.
 const RING: usize = 8;
+/// Frames the scatter may skip the asks (active but not drawing) before the list goes.
+pub const UNSERVED_FRAMES: u32 = 3;
 /// Face metres x 4 within which a near and a far building are the same one (spec F12.2: lots are 12+ m apart).
 pub const MATCH_UNITS: i32 = 16;
 
@@ -111,9 +123,13 @@ pub struct RawList {
     pub recs: Vec<ProbeRecGpu>,
 }
 
-/// Lists read back, from the render world to the main world.
+/// Lists read back, from the render world to the main world; `skipped` counts the frames whose list wasn't copied (no
+/// staging buffer idle).
 #[derive(Resource, Clone, Default)]
-pub struct ProbeMail(pub Arc<Mutex<Vec<RawList>>>);
+pub struct ProbeMail {
+    pub lists: Arc<Mutex<Vec<RawList>>>,
+    pub skipped: Arc<AtomicU32>,
+}
 
 /// A building of the list, in its body's frame.
 #[derive(Clone, Copy, Debug)]
@@ -169,20 +185,30 @@ struct RingEntry {
 /// The probe's main-world state: the ring and the newest list.
 #[derive(Resource, Default)]
 pub struct BuildingProbe {
-    /// This frame's number (counted in `First`) and the last ask's sequence number.
+    /// This frame's number (counted in `First` while the probe is on) and the last ask's sequence number.
     frame: u64,
     seq: u32,
     ring: [Option<RingEntry>; RING],
+    /// The mod asks (from its first ask to `clear`): `receive_probe` runs.
+    on: bool,
+    /// Frames in a row the mod asked and the scatter couldn't take it.
+    unserved: u32,
+    /// The frame the newest list was asked in.
+    list_frame: u64,
     /// The newest list (body frame), its body, sequence number, and how many frames and real seconds it took from the
-    /// ask to here; the count as the GPU counted it (over `PROBE_CAP`: some were dropped).
+    /// ask to here (its age now: `age_frames`); the count as the GPU counted it (over `PROBE_CAP`: some were dropped).
     pub list: Vec<ProbeBuilding>,
     pub body: Option<Entity>,
     pub list_seq: u32,
     pub lag_frames: u32,
     pub lag_s: f64,
     pub count: u32,
-    /// A list has arrived since the mod turned the probe on.
+    /// A list has arrived since the mod turned the probe on (or since the scatter last stopped taking the asks).
     pub arrived: bool,
+    /// Lists the render world couldn't copy (no staging buffer idle), and lists that came back after their frame left
+    /// the ring, since the start.
+    pub skipped: u32,
+    pub lost: u32,
     /// `hero probe log N`: lists left to log.
     pub log: u32,
     /// `hero probe trace FILE`: a line per list.
@@ -197,12 +223,34 @@ pub struct BuildingProbe {
 impl BuildingProbe {
     /// The mod stopped asking: the list goes, and those still on their way are dropped when they come.
     pub fn clear(&mut self) {
+        self.drop_list();
+        self.on = false;
+    }
+
+    /// The list goes, and those still on their way are dropped when they come.
+    fn drop_list(&mut self) {
         self.cleared_seq = self.seq;
         self.list.clear();
         self.body = None;
         self.arrived = false;
         self.count = 0;
     }
+
+    /// How old the newest list is now, in frames: from its ask to this frame (its lag when it came, plus the frames
+    /// since). `None` without a list.
+    pub fn age_frames(&self) -> Option<u32> {
+        self.arrived.then(|| (self.frame - self.list_frame) as u32)
+    }
+}
+
+/// `ask_probe` runs while the mod asks, and the frame after, to take the ask out of `ScatterFrame`.
+fn probe_asked(ask: Res<ProbeAsk>, out: Res<ScatterFrame>) -> bool {
+    ask.capsule.is_some() || out.probe.is_some()
+}
+
+/// `receive_probe` runs while the probe is on.
+fn probe_on(probe: Res<BuildingProbe>) -> bool {
+    probe.on
 }
 
 pub fn build(app: &mut App) {
@@ -210,15 +258,17 @@ pub fn build(app: &mut App) {
     app.insert_resource(mail.clone())
         .init_resource::<ProbeAsk>()
         .init_resource::<BuildingProbe>()
-        .add_systems(First, receive_probe)
-        .add_systems(PostUpdate, ask_probe.after(update_scatter));
+        // (After Bevy's clock, so the lag in seconds counts this frame's time.)
+        .add_systems(First, receive_probe.run_if(probe_on).after(bevy::time::TimeSystems))
+        .add_systems(PostUpdate, ask_probe.run_if(probe_asked).after(update_scatter));
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.insert_resource(mail);
     }
 }
 
 /// Turns this frame's ask into the cull's frame and keeps the frame's camera and body (after `update_scatter`, which
-/// made the frame's cells and pages from the same camera).
+/// made the frame's cells and pages from the same camera). An ask the scatter can't take (off, no body, not drawing)
+/// drops the list: at once when the scatter is off or has no body, after `UNSERVED_FRAMES` frames otherwise.
 pub fn ask_probe(
     mut ask: ResMut<ProbeAsk>,
     mut probe: ResMut<BuildingProbe>,
@@ -230,12 +280,20 @@ pub fn ask_probe(
 ) {
     out.probe = None;
     let Some(c) = ask.capsule.take() else { return };
-    if !out.active {
-        return;
-    }
-    let Some(entity) = sc.body() else { return };
-    let Ok(b) = bodies.get(entity) else { return };
     let probe = &mut *probe;
+    probe.on = true;
+    let body = sc.body().and_then(|e| bodies.get(e).ok().map(|b| (e, b)));
+    let Some((entity, b)) = body.filter(|_| out.active) else {
+        probe.unserved = probe.unserved.saturating_add(1);
+        if !sc.enabled || body.is_none() || probe.unserved >= UNSERVED_FRAMES {
+            probe.drop_list();
+        }
+        return;
+    };
+    probe.unserved = 0;
+    if let Some(s) = probe.stats.as_mut() {
+        s.asked += 1;
+    }
     probe.seq = probe.seq.wrapping_add(1).max(1);
     let seq = probe.seq;
     let (a, e) = (c.from.delta_m(cam.pos), c.to.delta_m(cam.pos));
@@ -297,7 +355,14 @@ fn to_building(r: &ProbeRecGpu, base: DVec3, inv: DQuat) -> ProbeBuilding {
 pub fn receive_probe(mail: Res<ProbeMail>, mut probe: ResMut<BuildingProbe>, time: Res<Time<Real>>) {
     let probe = &mut *probe;
     probe.frame += 1;
-    let lists: Vec<RawList> = match mail.0.lock() {
+    let skipped = mail.skipped.load(Ordering::Relaxed);
+    if skipped != probe.skipped {
+        if let Some(s) = probe.stats.as_mut() {
+            s.skipped += skipped.wrapping_sub(probe.skipped);
+        }
+        probe.skipped = skipped;
+    }
+    let lists: Vec<RawList> = match mail.lists.lock() {
         Ok(mut m) => std::mem::take(&mut *m),
         Err(_) => return,
     };
@@ -308,6 +373,10 @@ pub fn receive_probe(mail: Res<ProbeMail>, mut probe: ResMut<BuildingProbe>, tim
     let newest = lists.iter().map(|l| l.seq).max().unwrap_or(0);
     for l in lists.into_iter().filter(|l| l.seq > probe.cleared_seq) {
         let Some(r) = probe.ring[l.seq as usize % RING].filter(|r| r.seq == l.seq) else {
+            probe.lost += 1;
+            if let Some(s) = probe.stats.as_mut() {
+                s.lost += 1;
+            }
             if !probe.warned_ring {
                 warn!("probe: list {} came back after its frame left the ring ({RING} frames)", l.seq);
                 probe.warned_ring = true;
@@ -347,6 +416,7 @@ pub fn receive_probe(mail: Res<ProbeMail>, mut probe: ResMut<BuildingProbe>, tim
             probe.list = list;
             probe.body = Some(r.body);
             probe.list_seq = l.seq;
+            probe.list_frame = r.frame;
             probe.lag_frames = lag_frames;
             probe.lag_s = lag_s;
             probe.count = l.count;
@@ -395,8 +465,13 @@ struct Seen {
 /// (by its exact id and model), matched at the report.
 #[derive(Default)]
 pub struct ProbeStats {
+    /// Asks the scatter took, lists that came back, those superseded in their frame, not copied (no staging buffer
+    /// idle), and lost (back after their frame left the ring).
+    asked: u32,
     lists: u32,
     superseded: u32,
+    skipped: u32,
+    lost: u32,
     lag_frames: [u32; 16],
     lag_s_sum: f64,
     lag_s_max: f64,
@@ -460,9 +535,12 @@ impl ProbeStats {
         let lists = self.lists.max(1);
         let lag: Vec<String> = self.lag_frames.iter().enumerate().filter(|(_, n)| **n > 0).map(|(f, n)| format!("{f}: {n}")).collect();
         info!(
-            "probe stats: {} lists ({} superseded in their frame), lag in frames [{}], mean {:.1} ms, max {:.1} ms; buildings a list mean {:.1}, max {}, {} overflows, {} lists not empty",
+            "probe stats: {} asks, {} lists back ({} superseded in their frame, {} not copied: no staging buffer idle, {} lost from the ring), lag in frames [{}], mean {:.1} ms, max {:.1} ms; buildings a list mean {:.1}, max {}, {} overflows, {} lists not empty",
+            self.asked,
             self.lists,
             self.superseded,
+            self.skipped,
+            self.lost,
             lag.join(", "),
             self.lag_s_sum / lists as f64 * 1000.0,
             self.lag_s_max * 1000.0,

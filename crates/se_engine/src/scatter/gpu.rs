@@ -826,7 +826,7 @@ fn queue(
 
 /// Places the new cells' candidates, culls every resident instance into the buckets and writes the
 /// indirect draws.
-fn scatter_compute(_view: ViewQuery<&ExtractedView, MainView>, gpu: Res<ScatterGpu>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
+fn scatter_compute(_view: ViewQuery<&ExtractedView, MainView>, gpu: Res<ScatterGpu>, cache: Res<PipelineCache>, mail: Res<ProbeMail>, mut ctx: RenderContext) {
     if !gpu.active {
         return;
     }
@@ -865,13 +865,15 @@ fn scatter_compute(_view: ViewQuery<&ExtractedView, MainView>, gpu: Res<ScatterG
         }
     }
     span.end(ctx.command_encoder());
-    // The mod's probe: the list into an idle staging buffer (none idle: this frame's list is skipped).
+    // The mod's probe: the list into an idle staging buffer (none idle: this frame's list is skipped, and counted).
     if let Some(p) = gpu.probe_frame {
         use std::sync::atomic::Ordering;
         if let Some(s) = gpu.staging.iter().find(|s| s.state.load(Ordering::Acquire) == 0) {
             ctx.command_encoder().copy_buffer_to_buffer(&gpu.probe, 0, &s.buffer, 0, Some(PROBE_BYTES));
             s.seq.store(p.seq, Ordering::Release);
             s.state.store(1, Ordering::Release);
+        } else {
+            mail.skipped.fetch_add(1, Ordering::Relaxed);
         }
     }
     if let Some(d) = &gpu.debug {
@@ -974,7 +976,7 @@ fn probe_readback(gpu: Res<ScatterGpu>, device: Res<RenderDevice>, mail: Res<Pro
                 };
                 s.buffer.unmap();
                 s.state.store(0, Ordering::Release);
-                if let (Some(l), Ok(mut m)) = (list, mail.0.lock()) {
+                if let (Some(l), Ok(mut m)) = (list, mail.lists.lock()) {
                     // (Nobody reading: the main world keeps the newest few.)
                     if m.len() >= 2 * STAGING {
                         m.remove(0);

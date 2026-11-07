@@ -57,14 +57,17 @@ pub fn dev_command(world: &mut World, arg: &str) {
             let p = world.resource::<BuildingProbe>();
             let near = p.list.iter().filter(|b| b.kind == 1).count();
             info!(
-                "hero probe: list {} of {} buildings ({} near, {} far, {} counted), {} frames ({:.1} ms) old when it came",
+                "hero probe: list {} of {} buildings ({} near, {} far, {} counted), {} frames ({:.1} ms) old when it came, {} now; {} lists not copied (no staging buffer idle), {} lost from the ring",
                 p.list_seq,
                 p.list.len(),
                 near,
                 p.list.len() - near,
                 p.count,
                 p.lag_frames,
-                p.lag_s * 1000.0
+                p.lag_s * 1000.0,
+                p.age_frames().map_or("no list".to_string(), |a| format!("{a} frames")),
+                p.skipped,
+                p.lost
             );
             // The nearest boxes to him now (his middle in the list's body's frame as it is now).
             let (Some(e), pos) = (p.body, world.resource::<Hero>().world.0) else { return };

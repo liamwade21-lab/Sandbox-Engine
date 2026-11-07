@@ -13,4 +13,4 @@ C="$C; hero keys space 0.05; wait 10; hero cruise 300 30; wait 120; $(seg 480); 
 C="$C; hero cruise 30000 ${HIGH_M:-150}; wait 20; $(seg 60); shot $W/${N}_30k.png; hero cruise off; hero keys z 0.05; wait 30; shot $W/${N}_end.png; wait 3"
 PORT_BIN="${PORT_BIN:-target/agent/spaceengine-rs.exe}" bash .audit/tools/runport.sh "$S/$N.png" 5 "$C" "$@" > /dev/null 2>&1
 grep -E "panicked|ERROR|Validation" "$S/$N.png.log" | cut -c1-300 | head -5
-grep -E "probe stats: [0-9]+ lists|hero: state|hero state" "$S/$N.png.log" | sed -E 's/^.*Z  INFO [a-z_:]+: //' | cut -c1-330
+grep -E "probe stats: [0-9]+ asks|hero: state|hero state" "$S/$N.png.log" | sed -E 's/^.*Z  INFO [a-z_:]+: //' | cut -c1-420

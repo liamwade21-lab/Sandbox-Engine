@@ -314,13 +314,18 @@ or publishing the port.
   `hero_actions.sh`, `hero_splash.sh`, `hero_keep.sh` (kept, freed at 20.5 km, the mod off), `hero_impact_cost.sh`.
 - The mod's buildings' probe (`scatter/probe.rs`, `viltrumite/breakable.rs`; spec F12, step 9): the scatter's cull lists the buildings in a
   capsule round him (`scatter.wesl` `probe_building`, from `cull_building` after the range fade, before the view's planes) into binding 20,
-  copied to one of four staging buffers made at start and read back 3-5 frames later (`BuildingProbe::list`, body frame). Bindings 19 (the
+  copied to one of six staging buffers made at start and read back 3-5 frames later (`BuildingProbe::list`, body frame; `age_frames()` is its
+  age now; the list goes when the scatter stops taking the asks: at once when it's off or has no body, after `UNSERVED_FRAMES` otherwise;
+  a frame with no idle staging buffer is counted, `skipped`). `ask_probe` and `receive_probe` run only while the mod asks (`run_if`: off
+  costs nothing). Bindings 19 (the
   broken table, step 10) and 20 exist with the mod off and are in the compute layout every scatter pipeline is built with at start: a
   runtime-sized array's binding must be at least its header plus one element (64, 96), or validation quits the port for everyone.
   `body.street.z` is the probe's flag (0 with the mod off: one uniform branch; 1 as drawn; 2 measuring, both lists in full): never reuse it.
   A building's id is its face (`Cell::face`, the spare float) and its middle's face metres x 4 from the face's corner (`cell.tile` whole,
-  so no f32 rounding): near and far cells agree within 0.25 face m (measured), so match within +-4 m and the same model; the record's hash
-  differs between them. Heights and existence can differ between near and far (each reads `core`/`urban` at its own grid point). Change
+  so no f32 rounding). Near and far cells agreed within 0.25 face m (measured), but a box's middle is not exact: its front and back setbacks
+  follow `down` (`city.wesl` `ct_building`: `core`/`urban` read at each cell's own grid point), which moves it along its lot's depth by up
+  to 2.5 x the change of `down` / k face m, about 2.3 face m at a cube corner. So match within +-4 face m (`MATCH_UNITS`) and the same
+  model (or by footprint); the record's hash differs between them. Heights and existence differ more. Change
   the building cull's positions, the cells' `tile`/`local`/`edge` or the records' layout (`ProbeRecGpu`, 48 bytes) with the probe. Each
   list is turned back by its frame's camera, body and turn (an 8-entry ring by `seq`): never by this frame's. `timing frame` steps
   `Time<Real>` too, so measure real milliseconds without it. Verbs: `hero probe log|list|trace|stats|anchor|both`; scenes
