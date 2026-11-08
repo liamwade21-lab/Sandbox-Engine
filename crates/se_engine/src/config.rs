@@ -9,6 +9,8 @@ const DEFAULT_SE_PATH: &str = "D:/SteamLibrary/steamapps/common/SpaceEngine";
 pub struct EngineConfig {
     /// Root of the SpaceEngine installation (contains `data/`).
     pub se_path: PathBuf,
+    /// `SE_PATH` or `--se-path` named the install (it must still pass `ownership::check`).
+    pub se_path_given: bool,
     /// Root of the user's Megaton Rainfall install (contains `Assets/`), whose trees, buildings
     /// and cars the vegetation and cities read (`mr_assets.rs`). `--mr-path` or `MR_PATH`.
     pub mr_path: PathBuf,
@@ -35,6 +37,7 @@ impl EngineConfig {
             se_path: std::env::var_os("SE_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(DEFAULT_SE_PATH)),
+            se_path_given: std::env::var_os("SE_PATH").is_some(),
             mr_path: std::env::var_os("MR_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(se_core::mr::DEFAULT_MR_PATH)),
@@ -51,7 +54,12 @@ impl EngineConfig {
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
-                "--se-path" => cfg.se_path = args.next().map(PathBuf::from).unwrap_or(cfg.se_path),
+                "--se-path" => {
+                    if let Some(p) = args.next() {
+                        cfg.se_path = PathBuf::from(p);
+                        cfg.se_path_given = true;
+                    }
+                }
                 "--mr-path" => cfg.mr_path = args.next().map(PathBuf::from).unwrap_or(cfg.mr_path),
                 "--size" => {
                     if let Some((w, h)) = args.next().as_deref().and_then(|s| s.split_once('x')) {

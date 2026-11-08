@@ -1148,6 +1148,8 @@ mod tests {
         "bf_fast_botharmsback_up", "bf_fast_botharmsback_down", "bf_fast_rightarmpointingahead", "bf_fast_left_add", "bf_fast_right_add",
         "bf_fast_up_add", "bf_fast_down_add", "bf_hyper_up_rightarmahead", "charge_flight_stopped", "bf_idle_to_fast", "bf_break",
         "bf_fast_to_idle", "flying_grab_punching", "flying_grab_punching3", "ground_punch", "thunderclap", "thunderclap_flying",
+        // The controls round (spec D16): the charged punch and the hover's charge pose.
+        "charge_attack", "thor@chargeflight_no_hammer_air",
     ];
 
     /// The real files, corrupted and cut short: errors, never a panic.

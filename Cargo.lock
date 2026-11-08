@@ -4355,6 +4355,7 @@ dependencies = [
  "bytemuck",
  "image",
  "se_core",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

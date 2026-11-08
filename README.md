@@ -13,8 +13,26 @@ copied into this repository.
 
 - Rust 1.97 or newer (stable).
 - A Vulkan-capable GPU and driver. The renderer is forced to the Vulkan backend.
-- A SpaceEngine 0.991 installation. The default path is
+- A SpaceEngine 0.991 installation from Steam. The default path is
   `D:/SteamLibrary/steamapps/common/SpaceEngine`.
+
+### The ownership check
+
+The port reads SpaceEngine's own files, so it is only for people who own SpaceEngine on Steam. The first
+time it starts, a window asks for SpaceEngine.exe (in `steamapps\common\SpaceEngine\system`; the file
+dialog opens where Steam says it is). It is accepted only when all of this holds:
+
+- the file is SpaceEngine's program (its details say SpaceEngine, by Cosmographic Software);
+- it sits in a Steam library, with SpaceEngine's `data` folder beside it;
+- Steam's own record of installing SpaceEngine (app 314650) is in that library and says it is fully installed;
+- this computer's Steam lists that library with SpaceEngine in it;
+- the Steam account that owns the install has signed in to Steam on this computer.
+
+The choice is kept in `%APPDATA%\SpaceEngine-rs-v2\ownership.cfg` and checked again at every start (it
+takes milliseconds), so the window comes back only if SpaceEngine moves or is uninstalled. `--se-path` and
+`SE_PATH` must name an install that passes the same check. Test runs (`--run`, `--screenshot`) open no window:
+they check the copy Steam lists. Nothing is sent anywhere. It stops casual sharing, not a determined cheat:
+anyone who edits files can get past it. A copy lent through Steam Family Sharing fails the last check.
 
 ## Build and run
 
@@ -28,7 +46,7 @@ cargo run --release -p se_engine -- --se-path "D:/SteamLibrary/steamapps/common/
 
 | Option | Meaning |
 |---|---|
-| `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory |
+| `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory (it must pass the ownership check; without it, the one checked on the first run) |
 | `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`) is missing (default `C:/Users/liamw/Downloads/Megaton Rainfall`; optional) |
 | `--start NAME` | object to start next to (default Earth) |
 | `--size WxH` | window size |
@@ -346,7 +364,7 @@ Key rendering decisions:
 - **Lens flares.** SpaceEngine's flare, ghost and pseudo-flare presets from `Flares.pak` on the suns of the current system, faded by the sun's magnitude and scaled by the frame's brightness at the sun as SE does, so whatever covers or reddens the sun (a planet, a mountain, the horizon at sunset) dims and tints its flare; the pseudo flare has SE's lens dirt and starburst (`docs/formats/lens_flares.md`).
 - **Graphics presets.** Potato to Ultra, read from the install's `config/preset-*.cfg` and kept whole: MSAA, FXAA, anisotropic filtering, landscape LOD, terrain tiles per frame, volumetric quality, star points style and black-hole warp precision, in Settings > Graphics with the lens flare options. The first run picks the preset from the video memory, as SE does.
 - **Exposure.** Faint background light (galaxies, nebulae, stars) recedes while a sunlit body or a star fills the view, as the eye adapts. SE's photo modes (V): HDR, Manual and Auto, whose auto exposure meters SE's luminance histogram; Manual and Auto keep the HDR brightness calibrations (SE's `real*` values are not used). Tone mapping: SE's 11 tone shaders (Settings > Graphics), default AgX.
-- **Interface and audio.** Navigation and interface as listed under Controls, SE's fonts (Noto Sans with its Medium bold, CJK and DejaVu fallbacks), object types named as SE names them ("Yellow dwarf (G2V)", "Planet (Temperate marine terra with life)"), the startup splash, the solar system browser, interface click sounds, and the soundtrack with SE's cross-fades. The window opens maximized and remembers its size, fullscreen mode and VSync. Settings persist in `%APPDATA%/SpaceEngine-rs/settings.cfg` in SE's key names (with post-effects, export and the whole graphics preset), the camera, binding, selection and time are saved on exit to `save.cfg` and restored at start, and places you save from the Places window go to `places.cfg` next to it, in SpaceEngine's own format; scripted runs (`--run`, `--script`, `--screenshot`) leave both untouched. Every start rewrites the log `se.log` there, in SE's format (`[MT]` thread stamps, optional time stamps, catalog messages by SE's `CatalogLogLevel` / `CsvLogLevel`).
+- **Interface and audio.** Navigation and interface as listed under Controls, SE's fonts (Noto Sans with its Medium bold, CJK and DejaVu fallbacks), object types named as SE names them ("Yellow dwarf (G2V)", "Planet (Temperate marine terra with life)"), the loading screen ("Sandbox Engine Loading..." on black until the first view is loaded), the solar system browser, interface click sounds, and the soundtrack with SE's cross-fades. The window opens maximized and remembers its size, fullscreen mode and VSync. Settings persist in `%APPDATA%/SpaceEngine-rs/settings.cfg` in SE's key names (with post-effects, export and the whole graphics preset), the camera, binding, selection and time are saved on exit to `save.cfg` and restored at start, and places you save from the Places window go to `places.cfg` next to it, in SpaceEngine's own format; scripted runs (`--run`, `--script`, `--screenshot`) leave both untouched. Every start rewrites the log `se.log` there, in SE's format (`[MT]` thread stamps, optional time stamps, catalog messages by SE's `CatalogLogLevel` / `CsvLogLevel`).
 
 ### Not yet implemented
 

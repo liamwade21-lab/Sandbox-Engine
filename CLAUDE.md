@@ -43,6 +43,15 @@ or publishing the port.
 - Tests: `cargo test -p se_core` and `cargo test -p se_engine --release`.
 - SpaceEngine install (read only): `D:\SteamLibrary\steamapps\common\SpaceEngine`.
 - No .bat launchers yet.
+- The ownership check (`ownership.rs`, the user's 2026-11-07: friends may play it only with their own SpaceEngine): before
+  anything reads SE's files, `main` calls `ownership::check`, which sets `cfg.se_path` to the verified install. First run:
+  a Windows dialog asks for SpaceEngine.exe; it passes only if it is SE's program (version resource), in a Steam library
+  beside `data`, with `appmanifest_314650.acf` naming its folder (StateFlags 4), the library in Steam's
+  `libraryfolders.vdf` with 314650 in it, and the manifest's `LastOwner` in Steam's `config/loginusers.vdf`. The choice is
+  kept in `ownership.cfg` in the user folder and checked again every start. Test runs open no dialog (they check the copy
+  Steam lists, writing nothing); `--se-path` / `SE_PATH` must pass the same check. It reads Steam's files only, never runs
+  or changes anything. The loading screen is only "Sandbox Engine Loading..." on black (`splash.rs`, the user's choice):
+  don't bring SE's splash art back.
 
 ## Rules from the user
 

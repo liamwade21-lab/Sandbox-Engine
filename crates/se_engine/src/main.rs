@@ -34,6 +34,7 @@ mod color_correction;
 mod nebula_raymarch;
 mod nebulae;
 mod orbital;
+mod ownership;
 mod hud;
 mod i18n;
 mod models;
@@ -86,7 +87,9 @@ use bevy_egui::EguiPlugin;
 fn main() {
     // Before anything reads or creates the user folder (version 2's first run copies version 1's).
     let user_dir = settings::prepare_user_dir();
-    let cfg = config::EngineConfig::from_args();
+    let mut cfg = config::EngineConfig::from_args();
+    // Friends may play it only with their own SpaceEngine from Steam: asked once, checked every start.
+    let owned = ownership::check(&mut cfg);
     // Mount the install and load the catalogs while Bevy builds its plugins (data.rs).
     let data_load = data::DataLoad::start(&cfg);
     let asset_dir = config::asset_dir();
@@ -185,6 +188,7 @@ fn main() {
     .add_plugins((perf::PerfPlugin, pipeline_watch::PipelineWatchPlugin))
     .add_systems(Startup, no_light_clustering);
     // Now that the log file is open.
+    info!("{owned}");
     match user_dir {
         Some(Ok(line)) => info!("{line}"),
         Some(Err(line)) => warn!("{line}"),

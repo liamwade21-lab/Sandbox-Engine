@@ -5,6 +5,12 @@
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, with its git history, for better visuals, add-ons and the like. It has its own
   settings folder (`%APPDATA%\SpaceEngine-rs-v2`). Still to decide: its own window title / exe name.
+- **Sharing with friends (2026-11-07):** the first time it starts, a window asks for SpaceEngine.exe and accepts it
+  only if Steam installed it for an account that has signed in on that computer (`ownership.rs`; README, "The ownership
+  check"). Every later start checks it again silently. The loading screen is now only "Sandbox Engine Loading..." on
+  black. Not done yet: a folder to give friends (the exe with its `assets` beside it). It must leave out
+  `assets/mr` (Megaton Rainfall's files) and `assets/mods/viltrumite` (the Omni-Man model and the GTA mod's parts):
+  those are for the user's private use, and the SpaceEngine check doesn't cover them. Check the port runs without them.
 - **Volumetric clouds and weather: mostly done (the user, 2026-11-04).** On High and Ultra the planet
   you are at has 3D clouds at every height (SE's flat clouds only beyond 40-60 radii, cross-faded):
   cumulus heaps and veils in SE's own cloud patterns, ground shadows, weather that changes with the date
@@ -197,6 +203,9 @@
 
 ## Notes
 
+- **Folder cleaned up again (2026-11-07):** from 24.8 GB to 4.1 GB. Old builds (`target/agent`, `target/debug`, unused
+  files in `target/release`) and test pictures (`.optimize/scratch`, all but `baseline` and `baseline_noassets`,
+  which the mod's step 11 compares against) went to the Recycle Bin. Emptying it is the user's step.
 - **Folder cleaned up (2026-11-06):** from 16.7 GB to 2.8 GB. Old builds and test pictures went to the
   Recycle Bin; the source, the game's exe, the assets, the notes and the reverse-engineering folders stayed.
   `target/debug` and `target/agent` come back when next used. How to do it again: CLAUDE.md, "Disk space".

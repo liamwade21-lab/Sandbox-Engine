@@ -52,3 +52,7 @@ bevy = { version = "0.20", default-features = false, features = [
 bevy_egui = { version = "0.43", default-features = false, features = ["render", "default_fonts", "manage_clipboard", "open_url"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 bytemuck = { version = "1", features = ["derive"] }
+
+# The first-run ownership check's dialogs and registry reads (ownership.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
