@@ -16,7 +16,8 @@
     197 MB; the download is a zip with just the exe in a `Sandbox Engine` folder, made by
     `bash .audit/tools/package_release.sh 1.0.1 OUT_FOLDER`. Tested 2026-11-09 from a fresh folder with blank AppData:
     unpacks, finds SpaceEngine through Steam, Earth draws, the mod loads.
-  - `Sandbox-Engine-1.0.1-windows.zip` (76 MB) was made 2026-11-09 in a scratch folder. It's built but **not uploaded**: pushing to GitHub and making the v1.0.1 Release wait for the user's OK.
+  - Released 2026-11-09 as GitHub Release v1.0.1 (`Sandbox-Engine-1.0.1-windows.zip`, 76 MB; the latest release),
+    with the user's OK. The website's Download button is the other session's job.
 - **Volumetric clouds and weather: mostly done (the user, 2026-11-04).** On High and Ultra the planet
   you are at has 3D clouds at every height (SE's flat clouds only beyond 40-60 radii, cross-faded):
   cumulus heaps and veils in SE's own cloud patterns, ground shadows, weather that changes with the date
