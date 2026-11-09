@@ -13,14 +13,23 @@ copied into this repository.
 
 - Rust 1.97 or newer (stable).
 - A Vulkan-capable GPU and driver. The renderer is forced to the Vulkan backend.
-- A SpaceEngine 0.991 installation from Steam. The default path is
-  `D:/SteamLibrary/steamapps/common/SpaceEngine`.
+- A SpaceEngine 0.991 installation from Steam (found through Steam on any drive or library).
+
+### Playing the download
+
+The download (`Sandbox-Engine-VERSION-windows.zip`) is a `Sandbox Engine` folder with one program,
+`spaceengine-rs.exe`. Everything it needs except SpaceEngine is built into it: on the first start it unpacks
+its shaders, textures and models (about 115 MB) to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`, then finds
+SpaceEngine through Steam (Steam's folder from the registry, then every Steam library in
+`steamapps\libraryfolders.vdf`, looking for SpaceEngine's app id 314650). If Steam doesn't list it, a window asks
+for SpaceEngine.exe once. If something can't be found, a message says what, instead of a black screen.
+A release zip is made with `bash .audit/tools/package_release.sh VERSION OUT_FOLDER`.
 
 ### The ownership check
 
 The port reads SpaceEngine's own files, so it is only for people who own SpaceEngine on Steam. The first
-time it starts, a window asks for SpaceEngine.exe (in `steamapps\common\SpaceEngine\system`; the file
-dialog opens where Steam says it is). It is accepted only when all of this holds:
+time it starts, it looks for the copy Steam lists and uses it if it passes; only if there is none, a window asks
+for SpaceEngine.exe (the file dialog opens where Steam says it is). It is accepted only when all of this holds:
 
 - the file is SpaceEngine's program (its details say SpaceEngine, by Cosmographic Software);
 - it sits in a Steam library, with SpaceEngine's `data` folder beside it;
@@ -47,7 +56,7 @@ cargo run --release -p se_engine -- --se-path "D:/SteamLibrary/steamapps/common/
 | Option | Meaning |
 |---|---|
 | `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory (it must pass the ownership check; without it, the one checked on the first run) |
-| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`) is missing (default `C:/Users/liamw/Downloads/Megaton Rainfall`; optional) |
+| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`, also built into the exe) is missing (optional) |
 | `--start NAME` | object to start next to (default Earth) |
 | `--size WxH` | window size |
 | `--run "cmd; cmd; ..."` | scripted commands (see below), useful for demos and tests |

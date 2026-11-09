@@ -234,10 +234,7 @@ fn texture_array(dir: &str, names: &[&str], s: u32, alpha: ArrayAlpha) -> Image 
     let mut layers = Vec::new();
     for name in names {
         let rel = std::path::Path::new("textures").join(dir).join(format!("{name}.png"));
-        let mut path = crate::config::asset_dir().join(&rel);
-        if !path.is_file() {
-            path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
-        }
+        let path = crate::config::asset_file(&rel).unwrap_or_default();
         match std::fs::read(&path).ok().and_then(|b| image::load_from_memory(&b).ok()) {
             Some(img) => {
                 let mut l = image::imageops::resize(&img.to_rgba8(), s, s, image::imageops::FilterType::Triangle);
@@ -575,10 +572,7 @@ fn hero_model(name: &str) -> Option<Mesh4> {
 /// A hero model's file (`hero_model`) and its real width, height and depth (m).
 pub(crate) fn hero_file(name: &str) -> Option<(Mesh4, [f32; 3])> {
     let rel = std::path::Path::new("models").join("hero").join(format!("{name}.bin"));
-    let mut path = crate::config::asset_dir().join(&rel);
-    if !path.is_file() {
-        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
-    }
+    let path = crate::config::asset_file(&rel).unwrap_or_default();
     sehm_from_bytes(&std::fs::read(&path).ok()?)
 }
 
@@ -1329,10 +1323,7 @@ fn own_card(name: &str) -> (Image, impostor::Texture) {
     // (Beside the exe's own assets first; a copy of the exe with only its shaders beside it finds
     // the cards in the source tree.)
     let rel = std::path::Path::new("textures").join("vegetation").join(format!("{name}.png"));
-    let mut path = crate::config::asset_dir().join(&rel);
-    if !path.is_file() {
-        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
-    }
+    let path = crate::config::asset_file(&rel).unwrap_or_default();
     let rgba = std::fs::read(&path).ok().and_then(|b| image::load_from_memory(&b).ok()).map(|i| i.to_rgba8());
     let (w, h, px) = match rgba {
         Some(i) if i.width() == i.height() && i.width().is_power_of_two() => (i.width(), i.height(), i.into_raw()),

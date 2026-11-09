@@ -33,8 +33,8 @@ are unpacked in `re/megaton_rainfall/extract` and the scripts that read its form
 `re/megaton_rainfall/tools` (both out of git). Its methods are learned, not its code; its assets (trees,
 grass, facade kit, window textures, roads, props, cars) the user chose to reuse. Since 2026-11-05 the
 ones the port uses are copied into the project (`crates/se_engine/assets/mr`, the user's decision: the
-port must work without the game installed); the copy is for the user's private use, never for sharing
-or publishing the port.
+port must work without the game installed). Since 2026-11-09 the user ships that copy with the port
+(built into the exe), saying the files are free to use.
 
 ## Build and play
 
@@ -43,9 +43,22 @@ or publishing the port.
 - Tests: `cargo test -p se_core` and `cargo test -p se_engine --release`.
 - SpaceEngine install (read only): `D:\SteamLibrary\steamapps\common\SpaceEngine`.
 - No .bat launchers yet.
+- What players get (since 1.0.1, 2026-11-09): the exe alone. `crates/se_engine/build.rs` builds every file under
+  `assets/shaders`, `textures`, `models`, `mr` and `mods` into it (`embedded_assets.rs`); on a player's first start
+  (and when an update changes them) they're unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets` (about 115 MB) and
+  read from there. Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then
+  the source tree but ONLY for an exe inside the project folder (`config::source_assets`: `target\release`, tests, bench
+  copies in `.optimize/scratch`, so shader edits need no rebuild there), then the unpacked copy. Never read
+  `CARGO_MANIFEST_DIR` at run time outside tests: go through `config::asset_file` / `asset_roots` (v1.0.0 did, and
+  everyone else's universe was black). If nothing is found the port stops with a message (`ownership::check_assets`).
+  The Megaton Rainfall install default (`DEFAULT_MR_PATH`) is used only by an exe inside the project. A shader edit
+  makes `cargo build` recompile se_engine (the build script embeds it). Test a release the way a player gets it: the
+  exe alone in a folder outside the project, with `LOCALAPPDATA` and `APPDATA` set to empty scratch folders (a
+  new PC: it must unpack, find SE through Steam and log its files' folder there). `bash .audit/tools/package_release.sh
+  VERSION OUT_FOLDER` makes the zip (Python's zipfile: PowerShell's Compress-Archive writes backslashes in the paths).
 - The ownership check (`ownership.rs`, the user's 2026-11-07: friends may play it only with their own SpaceEngine): before
   anything reads SE's files, `main` calls `ownership::check`, which sets `cfg.se_path` to the verified install. First run:
-  a Windows dialog asks for SpaceEngine.exe; it passes only if it is SE's program (version resource), in a Steam library
+  the copy Steam lists is kept without asking if it passes (since 2026-11-09), else a Windows dialog asks for SpaceEngine.exe; it passes only if it is SE's program (version resource), in a Steam library
   beside `data`, with `appmanifest_314650.acf` naming its folder (StateFlags 4), the library in Steam's
   `libraryfolders.vdf` with 314650 in it, and the manifest's `LastOwner` in Steam's `config/loginusers.vdf`. The choice is
   kept in `ownership.cfg` in the user folder and checked again every start. Test runs open no dialog (they check the copy
@@ -58,11 +71,11 @@ or publishing the port.
 - Vulkan only. VR and SE's editors are out of scope.
 - SpaceEngine's assets are read from its install, never copied into the project. Megaton Rainfall's
   are the exception (the user, 2026-11-05: the port must not rely on that game): the files the port
-  uses are copied into `crates/se_engine/assets/mr` and read from there. They are a commercial game's
-  files (several from store packs): for the user's private use, never shared or published. The Viltrumite
+  uses are copied into `crates/se_engine/assets/mr` and read from there. Since 2026-11-09 the user ships
+  them with the port, built into the exe (the user: they are free to use). The Viltrumite
   powers mod is the second exception (the user, 2026-11-06): the Omni-Man model and the parts of a GTA 5
   Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
-  under the same terms; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
+  shipped the same way since 2026-11-09; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
   archives are never opened. Any other game's assets stay in their installs.
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
   SE and takes the screenshots.

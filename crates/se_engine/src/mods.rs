@@ -546,14 +546,9 @@ fn window_open(hud: Res<HudState>, control: Res<ModControl>) -> bool {
 }
 
 /// Where mods are looked for, in order: `asset_dir()` (the assets folder next to the exe when there is
-/// one), then the crate's source tree, as orbital.rs's textures.
+/// one), then the crate's source tree for an exe inside the project (`config::asset_roots`).
 fn mod_roots() -> Vec<PathBuf> {
-    let mut roots = vec![crate::config::asset_dir().join("mods")];
-    let tree = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mods");
-    if !roots.contains(&tree) {
-        roots.push(tree);
-    }
-    roots
+    crate::config::asset_roots().into_iter().map(|r| r.join("mods")).collect()
 }
 
 /// A mod's file, by the path its `mod.cfg` gives, from the first root that has it.

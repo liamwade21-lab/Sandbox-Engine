@@ -5,12 +5,18 @@
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, with its git history, for better visuals, add-ons and the like. It has its own
   settings folder (`%APPDATA%\SpaceEngine-rs-v2`). Still to decide: its own window title / exe name.
-- **Sharing with friends (2026-11-07):** the first time it starts, a window asks for SpaceEngine.exe and accepts it
-  only if Steam installed it for an account that has signed in on that computer (`ownership.rs`; README, "The ownership
-  check"). Every later start checks it again silently. The loading screen is now only "Sandbox Engine Loading..." on
-  black. Not done yet: a folder to give friends (the exe with its `assets` beside it). It must leave out
-  `assets/mr` (Megaton Rainfall's files) and `assets/mods/viltrumite` (the Omni-Man model and the GTA mod's parts):
-  those are for the user's private use, and the SpaceEngine check doesn't cover them. Check the port runs without them.
+- **Sharing with friends (2026-11-07, fixed for other PCs 2026-11-09):** the first time it starts, it finds SpaceEngine
+  through Steam (or asks for SpaceEngine.exe) and accepts it only if Steam installed it for an account that has signed in
+  on that computer (`ownership.rs`; README, "The ownership check"). Every later start checks it again silently. The
+  loading screen is only "Sandbox Engine Loading..." on black.
+  - **Release 1.0.0 was black on other people's PCs:** the exe read its shaders, textures and models from this project
+    folder, which only exists on this PC. **Since 1.0.1 everything the game needs except SpaceEngine is built into the
+    exe** (shaders, textures, models, Megaton Rainfall's files, the Omni-Man mod: the user's decision of 2026-11-09). On
+    a player's first start it unpacks them (about 115 MB) to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`. The exe is
+    197 MB; the download is a zip with just the exe in a `Sandbox Engine` folder, made by
+    `bash .audit/tools/package_release.sh 1.0.1 OUT_FOLDER`. Tested 2026-11-09 from a fresh folder with blank AppData:
+    unpacks, finds SpaceEngine through Steam, Earth draws, the mod loads.
+  - `Sandbox-Engine-1.0.1-windows.zip` (76 MB) was made 2026-11-09 in a scratch folder. It's built but **not uploaded**: pushing to GitHub and making the v1.0.1 Release wait for the user's OK.
 - **Volumetric clouds and weather: mostly done (the user, 2026-11-04).** On High and Ultra the planet
   you are at has 3D clouds at every height (SE's flat clouds only beyond 40-60 radii, cross-faded):
   cumulus heaps and veils in SE's own cloud patterns, ground shadows, weather that changes with the date

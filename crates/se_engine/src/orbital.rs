@@ -227,10 +227,7 @@ fn station_meshes(name: &str) -> Option<Vec<(u8, Mesh)>> {
 /// `assets/textures/station/NAME.png` (made with the image generator) with its mips, repeating.
 fn station_texture(name: &str) -> Option<Image> {
     let rel = std::path::Path::new("textures").join("station").join(format!("{name}.png"));
-    let mut path = crate::config::asset_dir().join(&rel);
-    if !path.is_file() {
-        path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join(&rel);
-    }
+    let path = crate::config::asset_file(&rel).unwrap_or_default();
     let img = image::load_from_memory(&std::fs::read(&path).ok()?).ok()?.to_rgba8();
     let img = image::imageops::resize(&img, 512, 512, image::imageops::FilterType::Triangle);
     Some(image_with_mips(img.into_raw(), 512, 512, TextureFormat::Rgba8UnormSrgb))

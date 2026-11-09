@@ -56,16 +56,36 @@ pub fn check(cfg: &mut EngineConfig) -> String {
             format!("SpaceEngine {} owned on Steam ({how}): {}", v.version, v.exe.display())
         }
         Err(Stop::Quit) => std::process::exit(0),
-        Err(Stop::Failed(why)) => {
-            let text = format!("Sandbox Engine needs SpaceEngine, installed through Steam.\n\n{why}");
-            eprintln!("{text}");
-            #[cfg(windows)]
-            if !crate::settings::scripted(cfg) {
-                win::message(&text, win::ERROR);
-            }
-            std::process::exit(1)
-        }
+        Err(Stop::Failed(why)) => fail(cfg, &format!("Sandbox Engine needs SpaceEngine, installed through Steam.\n\n{why}")),
     }
+}
+
+/// Stops before the window opens with `text` in a message box (on stderr only in test runs).
+pub fn fail(cfg: &EngineConfig, text: &str) -> ! {
+    eprintln!("{text}");
+    #[cfg(windows)]
+    if !crate::settings::scripted(cfg) {
+        win::message(text, win::ERROR);
+    }
+    let _ = cfg;
+    std::process::exit(1)
+}
+
+/// Stops with a message when the port's own `assets` folder (shaders, textures, models) isn't
+/// beside the exe: without it the menus draw over a black universe.
+pub fn check_assets(cfg: &EngineConfig) {
+    if crate::config::assets_found() {
+        return;
+    }
+    let dir = crate::embedded_assets::target_dir().unwrap_or_else(crate::config::asset_dir);
+    fail(
+        cfg,
+        &format!(
+            "Sandbox Engine couldn't unpack its built-in files (shaders, textures, models) to:\n{}\n\n\
+             Check that the disk has free space (about 150 MB) and that the folder can be written, then start it again.",
+            dir.display()
+        ),
+    )
 }
 
 fn gate(cfg: &EngineConfig) -> Result<(Verified, &'static str), Stop> {
@@ -83,6 +103,13 @@ fn gate(cfg: &EngineConfig) -> Result<(Verified, &'static str), Stop> {
     if crate::settings::scripted(cfg) || !cfg!(windows) {
         let exe = found.ok_or_else(|| Stop::Failed(format!("Steam doesn't list SpaceEngine (app {APP_ID}) in any of its libraries on this computer.")))?;
         return verify(&exe, &dirs).map(|v| (v, "found through Steam")).map_err(Stop::Failed);
+    }
+    // The copy Steam lists, when it passes, is kept without asking; the dialog only when there is none.
+    if let Some(exe) = found.as_deref()
+        && let Ok(v) = verify(exe, &dirs)
+    {
+        write_record(&v.exe);
+        return Ok((v, "found through Steam"));
     }
     ask(&dirs, found.as_deref())
 }

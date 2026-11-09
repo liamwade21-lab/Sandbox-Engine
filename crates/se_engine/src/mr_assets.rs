@@ -24,8 +24,9 @@ impl Plugin for MrAssetsPlugin {
         // The copy of the files the port uses, in its own assets (the user's choice of 2026-11-05:
         // the port must not need the game; made by `scatter::library`'s ignored test
         // `copy_megaton_rainfall`); the user's install only when the copy is missing.
-        let copy = [crate::config::asset_dir().join("mr"), std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mr")]
+        let copy = crate::config::asset_roots()
             .into_iter()
+            .map(|r| r.join("mr"))
             .find(|d| d.join("Data").join("global.txt").is_file());
         let path = copy.clone().unwrap_or_else(|| app.world().resource::<EngineConfig>().mr_path.clone());
         let t0 = std::time::Instant::now();
