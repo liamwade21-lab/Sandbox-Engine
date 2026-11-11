@@ -468,7 +468,7 @@ fn dev_keys_held(dev: Res<DevKeys>) -> bool {
     !dev.keys.is_empty() || !dev.buttons.is_empty() || !dev.release.is_empty() || !dev.release_buttons.is_empty()
 }
 
-fn dev_keys(mut dev: ResMut<DevKeys>, mut keys: ResMut<ButtonInput<KeyCode>>, mut buttons: ResMut<ButtonInput<MouseButton>>, time: Res<Time<Real>>) {
+pub(crate) fn dev_keys(mut dev: ResMut<DevKeys>, mut keys: ResMut<ButtonInput<KeyCode>>, mut buttons: ResMut<ButtonInput<MouseButton>>, time: Res<Time<Real>>) {
     let dev = &mut *dev;
     for k in dev.release.drain(..) {
         keys.release(k);
@@ -517,7 +517,14 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "down" => KeyCode::ArrowDown,
         "left" => KeyCode::ArrowLeft,
         "right" => KeyCode::ArrowRight,
+        "1" => KeyCode::Digit1,
+        "2" => KeyCode::Digit2,
+        "3" => KeyCode::Digit3,
         "4" => KeyCode::Digit4,
+        "5" => KeyCode::Digit5,
+        "6" => KeyCode::Digit6,
+        "v" => KeyCode::KeyV,
+        "b" => KeyCode::KeyB,
         "tab" => KeyCode::Tab,
         "f3" => KeyCode::F3,
         "alt" => KeyCode::AltLeft,

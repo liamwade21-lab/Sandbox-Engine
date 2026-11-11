@@ -64,6 +64,9 @@ pub struct FlyCamera {
     /// How far `keep_camera_above_ground` pushed it out of the ground this frame (m, universe axes): the Viltrumite mod's hero
     /// mustn't take that for a jump of the camera by something else.
     pub floor_push: DVec3,
+    /// The lowest the camera may be over the ground this frame instead of SE's 1.5 m (m): a first-person player's eyes.
+    /// The sandbox sets it every frame it walks; `keep_camera_above_ground` takes it.
+    pub eye_floor_m: Option<f64>,
     /// Dev script `shore [M]`: move to the nearest coast, M metres inland, facing the sea.
     pub find_shore: Option<f64>,
     /// SE's `AutoHorizon` (key 5): see [`horizon_up`].
@@ -211,6 +214,7 @@ impl Default for FlyCamera {
             depth_m: 0.0,
             hold_agl: None,
             floor_push: DVec3::ZERO,
+            eye_floor_m: None,
             find_shore: None,
             auto_horizon: true,
             horizon_active: false,
@@ -558,7 +562,8 @@ pub(crate) fn input_controls(
 ) {
     // The Viltrumite mod is on: he owns the mouse, the wheel and the keys that steer or bind the free camera (the
     // spec's F8 table, row by row, gates each below). The rest stays as it is: C, End, T, G, Z, the FOV, the speed.
-    let hero = control.hero;
+    // (The sandbox's first-person player, the same: `ModControl::walker`.)
+    let hero = control.hero || control.walker;
     let (egui_pointer, egui_keys) = egui
         .ctx_mut()
         .map(|c| (c.egui_wants_pointer_input() || crate::hud::pointer_over_ui(c), c.egui_wants_keyboard_input()))
@@ -1112,7 +1117,8 @@ pub fn travel_and_move(
     // A ship's camera, or the Viltrumite mod's, unless a Go To or the like is running: that carries him. (Until he's placed
     // it goes on as it's bound, so he appears at its spot against this frame's bodies, not one frame of their motion off.)
     let his = control.hero && hero.placed;
-    if hold.0 || (his && cam.travel.is_none()) {
+    // (The sandbox's walking player writes the camera each frame, and nothing may carry it meanwhile.)
+    if hold.0 || control.walker || (his && cam.travel.is_none()) {
         return;
     }
     let dt = time.delta_secs_f64();
@@ -1764,6 +1770,9 @@ fn run_commands(
         // hero keys KEYS SECS | aim Y P | state | trace FILE [BODY] | clip NAME|auto | light auto|free: the Viltrumite
         // mod's hero (viltrumite::dev_command).
         "hero" => commands.queue(move |w: &mut World| crate::viltrumite::dev_command(w, &arg)),
+        // sbx walk [LAT LON] | fly | look YAW PITCH | state | spawn NAME | ...: the sandbox's first-person player
+        // (sandbox::dev_command).
+        "sbx" => commands.queue(move |w: &mut World| crate::sandbox::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
         "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),
         // script PATH: start a script, as the Scripts window does.

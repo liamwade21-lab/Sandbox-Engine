@@ -128,8 +128,9 @@ impl Session {
     }
 }
 
-fn restore_session(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
-    if crate::settings::scripted(&cfg) || cfg.start_given {
+pub(crate) fn restore_session(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeData>, mut cam: ResMut<FlyCamera>, mut sim: ResMut<SimTime>) {
+    // (The sandbox starts every launch on Earth's ground, `sandbox::start_on_earth`: the saved view isn't restored.)
+    if crate::settings::scripted(&cfg) || cfg.start_given || crate::sandbox::starts_on_earth(&cfg) {
         return;
     }
     let Some(s) = std::fs::read_to_string(save_path()).ok().as_deref().and_then(Session::parse) else { return };

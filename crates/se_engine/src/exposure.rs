@@ -6,7 +6,7 @@
 //! (IncExposure, DecExposure, ResetExposure in SE's key table FUN_1405ba8f0); FUN_1404c6000 adds
 //! the step and shows the splash message.
 //!
-//! Photo modes (`PhotoMode`, V / `SwitchPhotoMode`): 0 HDR, 1 Manual, 2 Auto. FUN_1404c51a0 sets the
+//! Photo modes (`PhotoMode`, B here, V in SE / `SwitchPhotoMode`): 0 HDR, 1 Manual, 2 Auto. FUN_1404c51a0 sets the
 //! frame exposure to exp2(ExposureComp) * `ExposureCalibration`, times the auto exposure factor in mode
 //! 2. Auto exposure (FUN_1404c09a0, hdr_histogram.glsl): a 256-bin histogram of log2 luminance over
 //! `MinExposureComp`..`MaxExposureComp`, metered on a mip of the frame with a centre mask (luminance
@@ -172,8 +172,8 @@ fn exposure_keys(
         // Shift: ambient lighting, Ctrl: the glow magnitude limit (SE's table).
         return;
     }
-    // V: SwitchPhotoMode (while a ship is flown V belongs to the ship, `ship.rs`).
-    if keys.just_pressed(KeyCode::KeyV) && !flight.0 {
+    // B: SwitchPhotoMode. (SE's key is V; V is the sandbox's free-flight switch, and nothing else, since 2026-11-11.)
+    if keys.just_pressed(KeyCode::KeyB) && !flight.0 {
         *photo = photo.next();
         msg.show(format!("{}: {}", i18n.tr("Photo mode"), i18n.tr(photo.name())));
     }

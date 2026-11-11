@@ -128,18 +128,35 @@ pub struct ModControl {
     pub hero: bool,
     /// The window has lost the focus: that counts as `menus` (the spec's F8).
     pub unfocused: bool,
+    /// The sandbox's first-person player is walking (`sandbox`, which sets this every frame): the free camera's mouse,
+    /// wheel and steering keys are his, and the panels are hidden, as with the hero.
+    pub walker: bool,
+    /// The sandbox's Q menu is held open: the mouse goes to egui, and only that menu shows.
+    pub spawn_menu: bool,
     request: Option<ModRequest>,
 }
 
 impl ModControl {
     /// The mouse goes to egui and the cursor shows: Tab's menus, or the window has lost the focus.
     pub fn menus_open(&self) -> bool {
-        self.menus || self.unfocused
+        self.menus || self.unfocused || self.spawn_menu
+    }
+
+    /// Ask for a mod to be turned on, as a click on its row does (`apply_request` does it next frame, with every check).
+    pub fn request_on(&mut self, id: &str) {
+        self.request = Some(ModRequest::On { id: id.to_string(), dev: false });
+    }
+
+    /// Ask for the mod that is on to be turned off.
+    pub fn request_off(&mut self) {
+        if self.active.is_some() {
+            self.request = Some(ModRequest::Off);
+        }
     }
 
     /// He's on and playing: the panels are hidden. (While he's loading they stay, and the row says so: F1.)
     pub fn panels_hidden(&self) -> bool {
-        self.hero && !self.loading && !self.menus_open()
+        self.walker || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
     }
 
     /// Turn the mod that is on off. Every way off comes through here.
@@ -358,7 +375,7 @@ pub(crate) struct FocusState {
 
 /// `--run` tests don't grab the cursor (`settings::scripted`) and have no focus to speak of, unless they say they drive
 /// the real window (`SE_HERO_GRAB=1`).
-fn real_window(cfg: &crate::config::EngineConfig) -> bool {
+pub(crate) fn real_window(cfg: &crate::config::EngineConfig) -> bool {
     !crate::settings::scripted(cfg) || std::env::var_os("SE_HERO_GRAB").is_some()
 }
 
@@ -477,7 +494,7 @@ fn take_presses(keys: &mut ButtonInput<KeyCode>, buttons: &mut ButtonInput<Mouse
 /// `egui_wants_keyboard_input` would turn true and every key's guard would go dead (hud.rs `hud_keys`). And with the cursor
 /// locked at its last place, a click there must not press what's under it. A button's release always goes: held through
 /// Tab, egui would otherwise keep it down, and a window dragged then would stick to the cursor on the next Tab.
-fn reaches_egui(e: &egui::Event, menus: bool) -> bool {
+pub(crate) fn reaches_egui(e: &egui::Event, menus: bool) -> bool {
     match e {
         egui::Event::Key { key: egui::Key::Tab, .. } => false,
         egui::Event::PointerButton { pressed: false, .. } => true,

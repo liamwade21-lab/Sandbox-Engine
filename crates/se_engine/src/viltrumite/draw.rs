@@ -82,7 +82,7 @@ pub struct LightBodyGpu {
 
 /// `hero_frame.wesl` `HeroFrame`.
 #[derive(Clone, Copy, ShaderType)]
-pub struct HeroFrameGpu {
+pub(crate) struct HeroFrameGpu {
     joints: [[Vec4; 3]; MAX_BONES],
     point: Vec4,
     up: Vec4,
@@ -284,7 +284,7 @@ pub struct HeroLightInput {
     frame: Handle<ShaderBuffer>,
     light: Handle<ShaderBuffer>,
     /// The near body's inscatter, transmittance and irradiance tables.
-    tables: Option<(Handle<Image>, Handle<Image>, Handle<Image>)>,
+    tables: Option<LightTables>,
 }
 
 impl HeroLightInput {
@@ -297,16 +297,54 @@ impl HeroLightInput {
     }
 }
 
-/// The compute pass's pipeline, queued on first enable.
-#[derive(Resource, Default)]
-struct HeroLightPass {
+/// The light pass (`hero_light.wesl`) for one frame record and one light record: his own, and the sandbox's (its props
+/// and weapon are lit at the player's place as he is at his: `sandbox/light.rs`). The pipeline is queued the first time it's on.
+#[derive(Default)]
+pub(crate) struct LightPass {
     layout: Option<BindGroupLayoutDescriptor>,
     pipeline: Option<CachedComputePipelineId>,
     group: Option<BindGroup>,
 }
 
+/// The compute pass's pipeline, queued on first enable.
+#[derive(Resource, Default)]
+struct HeroLightPass(LightPass);
+
+/// A light record of its own for something else lit as he is: the sandbox's props and weapon (`sandbox/light.rs`). Filled
+/// each frame for a place; the light pass then works the light out there exactly as it does for him.
+pub(crate) struct LightProbe {
+    frame: Box<HeroFrameGpu>,
+}
+
+impl LightProbe {
+    pub(crate) fn new() -> Self {
+        LightProbe { frame: Box::default() }
+    }
+
+    /// The frame record's bytes (`HeroFrame`), and an empty light record's (`HeroLight`), to make the buffers from.
+    pub(crate) fn frame_bytes(&self) -> Vec<u8> {
+        crate::stars::gpu_bytes(&*self.frame)
+    }
+
+    pub(crate) fn light_bytes() -> Vec<u8> {
+        crate::stars::gpu_bytes(&HeroLightGpu::default())
+    }
+
+    /// The record for `pos`, seen from the camera at `cam`; the body whose atmosphere tables the pass must read.
+    pub(crate) fn fill<'a>(&mut self, p: &'a LightParams, pos: UPos, cam: UPos, cam_up: DVec3) -> Option<&'a Terrain> {
+        light_record(&mut self.frame, p, pos, cam, cam_up, LightPath::Auto).1
+    }
+
+    /// Write the record into its buffer, in place.
+    pub(crate) fn write(&self, buffer: &mut ShaderBuffer) {
+        if let Some(d) = buffer.cast_slice_mut::<u8>() {
+            let _ = encase::StorageBuffer::new(d).write(&*self.frame);
+        }
+    }
+}
+
 /// The view he draws in: the main camera (as the scatter's).
-type MainView = (With<ColorCorrection>, Without<crate::capture::CaptureView>);
+pub(crate) type MainView = (With<ColorCorrection>, Without<crate::capture::CaptureView>);
 
 pub fn build(app: &mut App) {
     app.add_plugins(MaterialPlugin::<HeroMaterial>::default()).add_plugins(ExtractResourcePlugin::<HeroLightInput>::default());
@@ -961,8 +999,32 @@ fn prepare_light_pass(
     device: Res<RenderDevice>,
     assets: Res<AssetServer>,
 ) {
+    pass.0.prepare(input.on, &input.frame, &input.light, input.tables.as_ref(), shadow.as_deref(), &buffers, &images, &fallback, &cache, &device, &assets);
+}
+
+/// The body's inscatter, transmittance and irradiance tables.
+pub(crate) type LightTables = (Handle<Image>, Handle<Image>, Handle<Image>);
+
+impl LightPass {
+    /// This frame's bind group (none while it's off or something of it isn't on the GPU yet).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare(
+        &mut self,
+        on: bool,
+        frame: &Handle<ShaderBuffer>,
+        light: &Handle<ShaderBuffer>,
+        tables: Option<&LightTables>,
+        shadow: Option<&CloudShadowAssets>,
+        buffers: &RenderAssets<GpuShaderBuffer>,
+        images: &RenderAssets<GpuImage>,
+        fallback: &FallbackImage,
+        cache: &PipelineCache,
+        device: &RenderDevice,
+        assets: &AssetServer,
+    ) {
+        let pass = self;
     pass.group = None;
-    if !input.on {
+    if !on {
         return;
     }
     if pass.layout.is_none() {
@@ -998,10 +1060,10 @@ fn prepare_light_pass(
         pass.layout = Some(layout);
     }
     let Some(sh) = shadow else { return };
-    let (Some(frame), Some(light), Some(rec)) = (buffers.get(&input.frame), buffers.get(&input.light), buffers.get(&sh.shadow)) else { return };
+    let (Some(frame), Some(light), Some(rec)) = (buffers.get(frame), buffers.get(light), buffers.get(&sh.shadow)) else { return };
     let get = |h: &Handle<Image>| images.get(h);
     let (Some(cover), Some(pattern), Some(map), Some(weather)) = (get(&sh.cover), get(&sh.pattern), get(&sh.map), get(&sh.weather)) else { return };
-    let tables = input.tables.as_ref().and_then(|(s, t, e)| Some((images.get(s)?, images.get(t)?, images.get(e)?)));
+    let tables = tables.and_then(|(s, t, e)| Some((images.get(s)?, images.get(t)?, images.get(e)?)));
     let (s3, t2, e2) = tables.map_or((&fallback.d3, &fallback.d2, &fallback.d2), |a| a);
     let layout = cache.get_bind_group_layout(pass.layout.as_ref().unwrap());
     let group = device.create_bind_group(
@@ -1024,15 +1086,21 @@ fn prepare_light_pass(
         )),
     );
     pass.group = Some(group);
+    }
+
+    /// The pass itself: one invocation.
+    pub(crate) fn run(&self, cache: &PipelineCache, ctx: &mut RenderContext) {
+        let Some(group) = self.group.as_ref() else { return };
+        let Some(pipeline) = self.pipeline.and_then(|id| cache.get_compute_pipeline(id)) else { return };
+        let mut compute = ctx.command_encoder().begin_compute_pass(&ComputePassDescriptor { label: Some("hero_light"), ..default() });
+        compute.set_pipeline(pipeline);
+        compute.set_bind_group(0, group, &[]);
+        compute.dispatch_workgroups(1, 1, 1);
+    }
 }
 
 fn light_pass(_view: ViewQuery<&ExtractedView, MainView>, pass: Res<HeroLightPass>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
-    let Some(group) = pass.group.as_ref() else { return };
-    let Some(pipeline) = pass.pipeline.and_then(|id| cache.get_compute_pipeline(id)) else { return };
-    let mut compute = ctx.command_encoder().begin_compute_pass(&ComputePassDescriptor { label: Some("hero_light"), ..default() });
-    compute.set_pipeline(pipeline);
-    compute.set_bind_group(0, group, &[]);
-    compute.dispatch_workgroups(1, 1, 1);
+    pass.0.run(&cache, &mut ctx);
 }
 
 #[cfg(test)]

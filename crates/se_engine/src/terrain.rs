@@ -3539,7 +3539,7 @@ fn push_out(cam: &mut FlyCamera, center: UPos, rel: DVec3, dist: f64, min_r: f64
 /// drawn as spheres, and keep the near clipping plane in front of the ground:
 /// `nearest_surface` (which sets it) counts from the reference sphere, which lies kilometres
 /// below the camera in high mountains.
-fn keep_camera_above_ground(
+pub(crate) fn keep_camera_above_ground(
     mut cam: ResMut<FlyCamera>,
     clouds: Res<crate::volumetric_clouds::VolumetricClouds>,
     bodies: Query<(Entity, &SystemBody, &Terrain)>,
@@ -3551,6 +3551,8 @@ fn keep_camera_above_ground(
     if cam.floor_push != DVec3::ZERO {
         cam.floor_push = DVec3::ZERO;
     }
+    // A first-person player's eyes are lower than the free camera may go (the sandbox sets this each frame it walks).
+    let min_alt = if cam.eye_floor_m.is_some() { cam.eye_floor_m.take().unwrap_or(MIN_ALTITUDE_M) } else { MIN_ALTITUDE_M };
     for body in &spheres {
         let rel = cam.pos.delta_m(body.pos);
         let dist = rel.length();
@@ -3593,17 +3595,17 @@ fn keep_camera_above_ground(
             clearance = clearance.min((dist - body.radius_m * k).abs());
             continue;
         };
-        let min_r = (body.radius_m + ground) * k + MIN_ALTITUDE_M;
+        let min_r = (body.radius_m + ground) * k + min_alt;
         let (rel, dist) = match cam.hold_agl {
             Some(agl) => {
-                let r = (body.radius_m + ground) * k + agl.max(MIN_ALTITUDE_M);
+                let r = (body.radius_m + ground) * k + agl.max(min_alt);
                 cam.pos = body.pos.offset_m(rel * (r / dist));
                 (rel * (r / dist), r)
             }
             None => (rel, dist),
         };
         push_out(&mut cam, body.pos, rel, dist, min_r);
-        clearance = clearance.min(dist.max(min_r) - (min_r - MIN_ALTITUDE_M));
+        clearance = clearance.min(dist.max(min_r) - (min_r - min_alt));
         // The camera passes through an ocean's surface (down to the seabed, as in SE), but
         // the surface still needs the near plane in front of it.
         if terrain.has_ocean {

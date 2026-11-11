@@ -283,6 +283,33 @@ fn find_on_steam(steam: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
+/// Where Steam has another app installed (its `steamapps/common` folder), if anywhere: the sandbox reads Garry's Mod's
+/// files from there (`sandbox/assets.rs`). Read only, as everything here.
+pub(crate) fn steam_app_dir(app_id: &str) -> Option<PathBuf> {
+    for dir in steam_dirs() {
+        let Some(list) = read_vdf(&dir.join("steamapps").join("libraryfolders.vdf")) else {
+            continue;
+        };
+        for (_, lib) in list.get("libraryfolders").map(Vdf::entries).unwrap_or_default() {
+            let Some(path) = lib.str().or_else(|| lib.get("path").and_then(Vdf::str)) else {
+                continue;
+            };
+            let steamapps = Path::new(path).join("steamapps");
+            let Some(manifest) = read_vdf(&steamapps.join(format!("appmanifest_{app_id}.acf"))) else {
+                continue;
+            };
+            let Some(installdir) = manifest.get("AppState").and_then(|a| a.get("installdir")).and_then(Vdf::str) else {
+                continue;
+            };
+            let root = steamapps.join("common").join(installdir);
+            if root.is_dir() {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
 /// Steam's folders: from the registry, then where Steam installs by default.
 fn steam_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
