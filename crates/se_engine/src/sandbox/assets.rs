@@ -225,8 +225,8 @@ fn placeholder_prop(path: &str) -> Option<PropData> {
         "placeholder/block" => (Cuboid::new(0.4, 0.2, 0.2).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.2, 0.1, 0.1) }, 20.0, Surface::Concrete, [0.55, 0.55, 0.52]),
         "placeholder/can" => (Cylinder::new(0.033, 0.12).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.03, 0.03, 0.06) }, 0.4, Surface::Metal, [0.7, 0.1, 0.1]),
         // (The weapon in his hands without the game: a gun's and a bar's rough shapes, pointing along the model's +y.)
-        "placeholder/gun" => (Cuboid::new(0.045, 0.1, 0.34).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.0225, 0.17, 0.05) }, 2.0, Surface::Metal, [0.16, 0.17, 0.19]),
-        "placeholder/bar" => (Cuboid::new(0.03, 0.03, 0.7).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.015, 0.35, 0.015) }, 2.0, Surface::Metal, [0.55, 0.12, 0.1]),
+        "placeholder/gun" => (Cuboid::new(0.03, 0.07, 0.22).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.015, 0.11, 0.035) }, 2.0, Surface::Metal, [0.16, 0.17, 0.19]),
+        "placeholder/bar" => (Cuboid::new(0.025, 0.025, 0.6).into(), PropShape::Box { centre: Vec3::ZERO, half: Vec3::new(0.015, 0.35, 0.015) }, 2.0, Surface::Metal, [0.55, 0.12, 0.1]),
         _ => return None,
     };
     // Bevy's primitives stand along y: turned to the model's z (the weapons' stand-ins lie along the model's y).

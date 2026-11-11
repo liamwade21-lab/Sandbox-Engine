@@ -1,7 +1,27 @@
 # Progress
 
-## Current state (2026-11-05)
+## Current state (2026-11-11)
 
+- **The sandbox (2026-11-11): the game now starts on Earth's ground in first person, like Garry's Mod.**
+  - **What works (all checked in the game):** it starts on foot in whichever of eight open places has the Sun highest
+    (the Serengeti, the Pampas, Salisbury Plain, Kansas...). You walk, run, jump and duck at Garry's Mod's own speeds
+    (200 / 400 / 100 / 60 units a second). Holding Q opens the spawn menu and letting go closes it: Garry's Mod's own spawn
+    lists with a picture for every prop (4,963 props), a Weapons tab and a Mods tab. A click on a prop spawns it where you
+    look; Z undoes it. Props fall under the planet's own gravity and rest on the ground (9.79 m/s2 on Earth, 1.63 on the
+    Moon, where a jump goes 4 m up), you can push them by walking into them and stand on them. Six weapons with Half-Life
+    2's sounds: crowbar, gravity gun, physics gun (carry, turn with E, freeze with the right button), pistol, SMG,
+    shotgun. Half-Life 2's health and ammunition display. Clicking **Viltrumite powers** in the Mods tab plays as him;
+    clicking **Yourself** comes back. V switches the old free flight on and off (and nothing else: photo mode is now B).
+    A fall from 480 m lands on the ground and costs 10 health.
+  - **Garry's Mod's files** are read from your install while the game runs (nothing copied, nothing changed there).
+    Without Garry's Mod (a friend's PC) there are six plain props and plain sounds instead.
+  - **Stand-ins and things not done:** the weapon you hold is Half-Life 2's world model, moved by code (its real
+    first-person models with hands are animated skeletons the port can't read yet); props have no shadows; buildings
+    and trees are not solid to you on foot (they are for the Viltrumite hero); you walk on the sea; props more than 60 m
+    away freeze until you come back; no enemies, so the weapons only push props; no decals where bullets hit.
+  - **For you to judge:** how the movement, the weapons and the sounds feel (I can't hear or feel them: the log
+    only says which sounds started), the mouse's speed (Garry's Mod's default), and the eye height (Source's 64 units:
+    1.22 m, as in Half-Life 2).
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, with its git history, for better visuals, add-ons and the like. It has its own
   settings folder (`%APPDATA%\SpaceEngine-rs-v2`). Still to decide: its own window title / exe name.

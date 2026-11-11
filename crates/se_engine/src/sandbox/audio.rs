@@ -15,6 +15,9 @@ use super::{Event, Sandbox};
 /// The game's sounds are mixed for a volume slider near full; the port's is 0.3 by default.
 const GAIN: f32 = 2.6;
 
+/// The most sounds started in a frame.
+const MAX_CUES: usize = 8;
+
 /// One sound to play: a file under `sound/`, its volume (the script's) and pitch (1: as recorded).
 #[derive(Clone, Debug)]
 pub struct Cue {
@@ -191,6 +194,11 @@ pub fn play_cues(
     let sb = &mut *sb;
     event_cues(sb);
     let master = settings.volume * GAIN;
+    // (A pile of props coming down is hundreds of hits a second: the loudest few are what is heard.)
+    if sb.cues.len() > MAX_CUES {
+        sb.cues.sort_by(|a, b| b.volume.total_cmp(&a.volume));
+        sb.cues.truncate(MAX_CUES);
+    }
     for cue in sb.cues.drain(..) {
         let Some(h) = assets.sound(&mut sources, &cue.path) else {
             if log_sounds() {
@@ -199,7 +207,7 @@ pub fn play_cues(
             continue;
         };
         let volume = (cue.volume * master).clamp(0.0, 1.5);
-        if volume <= 0.001 {
+        if volume <= 0.01 {
             continue;
         }
         let mut voice = commands.spawn((AudioPlayer(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(cue.pitch.clamp(0.5, 2.0))));

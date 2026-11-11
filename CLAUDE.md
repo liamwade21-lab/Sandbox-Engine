@@ -36,6 +36,14 @@ ones the port uses are copied into the project (`crates/se_engine/assets/mr`, th
 port must work without the game installed). Since 2026-11-09 the user ships that copy with the port
 (built into the exe), saying the files are free to use.
 
+**The sandbox (the user's feature of 2026-11-11):** the game starts on Earth's ground in first person, with Garry's Mod's
+movement, controls, weapons and sounds, a spawn menu on Q held down (props, weapons, the mods to play as), props with real
+physics under the planet's own gravity, and V switching the port's free flight on and off. It is `crates/se_engine/src/sandbox/`
+(`mod.rs` says what each file is) and `crates/se_core/src/gmod.rs` (the reader of Garry's Mod's files). The references it was
+built from: Valve's Source SDK 2013 (`gamemovement.cpp`, the weapons' `.cpp` files) and Garry's Mod's own Lua and scripts in
+the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gamemodes/sandbox`, `cfg/config_default.cfg`,
+`settings/spawnlist_default`), read for their numbers and rules, never copied.
+
 ## Build and play
 
 - Build: `cargo build --release` (always release). The user plays from
@@ -43,6 +51,10 @@ port must work without the game installed). Since 2026-11-09 the user ships that
 - Tests: `cargo test -p se_core` and `cargo test -p se_engine --release`.
 - SpaceEngine install (read only): `D:\SteamLibrary\steamapps\common\SpaceEngine`.
 - No .bat launchers yet.
+- What a launch does (since 2026-11-11): it starts on Earth's ground in first person (the sandbox). `SE_SANDBOX=0` gives the
+  port as it was (free flight at Earth, the saved session restored); test runs (`--run`, `--screenshot`, `--script`) and
+  `--start NAME` keep the old start unless `SE_SANDBOX=1`. The sandbox's props' physics is the `rapier3d` crate (0.36, its own
+  world, no Bevy plugin), and Bevy's `wav` feature is on for Half-Life 2's sounds.
 - What players get (since 1.0.1, 2026-11-09): the exe alone. `crates/se_engine/build.rs` builds every file under
   `assets/shaders`, `textures`, `models`, `mr` and `mods` into it (`embedded_assets.rs`); on a player's first start
   (and when an update changes them) they're unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets` (about 115 MB) and
@@ -77,6 +89,12 @@ port must work without the game installed). Since 2026-11-09 the user ships that
   Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
   shipped the same way since 2026-11-09; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
   archives are never opened. Any other game's assets stay in their installs.
+- Garry's Mod's files (the user, 2026-11-11: "keep the original installation unchanged", "use placeholders where needed") are
+  read from its install while the game runs (found through Steam, app 4000, or `GMOD_PATH`), never copied into the project and
+  never changed there: the third game after SpaceEngine and Megaton Rainfall, and like SpaceEngine's they stay in the install.
+  Without Garry's Mod the sandbox must still work (plain props, plain sounds: `sandbox/assets.rs`).
+- V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
+  spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
   SE and takes the screenshots.
 - Commit each piece of work once it builds, passes the tests and is checked; never push. Commit
@@ -87,6 +105,45 @@ port must work without the game installed). Since 2026-11-09 the user ships that
 
 ## Gotchas
 
+- The sandbox (`sandbox/`; README's "The sandbox" has the keys). Three modes (`sandbox::Mode`): `Walk` (the player owns the
+  camera and the keys: `ModControl::walker`, set every frame, gates the free camera's mouse, wheel and steering keys in
+  `input_controls`, skips `travel_and_move`, hides the panels and the selection pointer), `Fly` (the port's free flight,
+  untouched) and `Hero` (a mod plays; `ModControl::spawn_menu` frees the mouse for the Q menu). `read_input` (PreUpdate, before
+  `mods::snapshot_input`) reads his keys and clears their presses so nothing else sees them (Space pauses the clock, 1-4 change
+  the flight mode...): a new key of his goes in its `HIS` list.
+  - The camera: `sandbox_step` runs in `UniverseSet::Camera` after `travel_and_move` and BEFORE `hero_move`, writes the camera at
+    his eyes and binds it to the body as of this frame (`bind_camera`). The body moves 500 m a frame round the Sun: whenever the
+    sandbox stops writing the camera (V, a mod taking over) it must write it once more in that same frame and leave it bound, or
+    whatever takes over starts 500 m off (it did: the free camera jumped 230 m into the air on V). Leaving first person is
+    therefore done at the END of `sandbox_step`. While he waits to be set down (`Pending`) the camera is held on the body too.
+    `FlyCamera::eye_floor_m` (set every walking frame) lets his eyes below SE's 1.5 m floor in `keep_camera_above_ground`.
+  - Units and frames: `movement.rs` is in Source units (`UNIT_M` 0.01905 m), x east, y north, z up, in `world::LocalFrame` (east,
+    north, up at an anchor on the body, turning with it). The anchor follows the player (`REBASE_M`), because rapier is `f32`.
+    Garry's Mod's models are x forward, y left, z up; its weapon world models point along +y (the gravity gun's along -y).
+  - The ground is a height field sampled from `ship::ground_on` (the terrain's loaded heights) 60 m round the anchor, remade
+    when he walks off, and when the terrain under it changes: a coarse terrain node can stand 150 m off the real ground, and
+    finer ones arrive over the first half minute. `replace_ground` (and the player's share in `step_world`) keeps everything's
+    height over the ground through a change, or it is all dropped or buried (he fell through the planet). `unstick` lifts him out
+    of the surface. Props off the field are frozen until it covers them again.
+  - rapier: rays and sweeps go by a tree that only a step updates: after adding, removing or moving anything by hand call
+    `SandboxWorld::refresh` (`detect_collisions`), or the next query misses it. In `cast_shape`'s answer `normal1` and `witness1`
+    are the collider's, in world space. The player's sweeps go by collision groups: a collider he must meet has `G_PLAYER` in
+    its filter.
+  - Light: props and the weapon are lit by `ground_light.wesl` through the hero's light pass run a second time for the player's
+    place (`viltrumite/draw.rs` `LightPass`, `LightProbe`; `sandbox/light.rs`; `sandbox_prop.wesl`): change `hero_light.wesl`'s
+    bindings and both users follow. `PropMaterial` is never changed after it is made. Effects (muzzle flash, dust, the physics
+    gun's beam) and the HUD are egui shapes (`weapons::draw_hud`).
+  - Garry's Mod's files: `se_core/gmod.rs` (VPK archives, `.mdl`/`.vvd`/`.vtx` models, `.vtf` textures, `.phy` collision pieces,
+    WAV sounds incl. ADPCM, spawn lists). Its tests read the install and skip without it. A tenth of the models keep their
+    collision pieces in another pose's frame: `assets::collision_shape` falls back to the mesh's hull when they don't fit.
+    A new sound: its path must exist in the install (`audio.rs` `every_named_wave_exists`).
+  - Testing: `SE_SANDBOX=1` in a `runport.sh` run; `sbx state|props|look YAW PITCH|spawn NAME|undo|clear|menu on|off|mods|weapons|
+    weapon N|walk [LAT LON [HEADING]]|fly` (`sandbox::dev_command`); keys with `hero keys w+shift 2` (also `lmb`, `rmb`, `v`,
+    `space`, `ctrl`, `1`..`6`: a new `hero keys` lets the old ones go and presses the new in the same frame, so `lmb` then
+    `lmb+rmb` keeps the left button down); `uiclick X Y` clicks the Q menu; `SE_SANDBOX_SOUNDS=1` logs each sound as it starts to
+    play (a test can't listen); `SE_SANDBOX_SPOT=N` the starting place; `GMOD_PATH=C:/nonexistent` the no-Garry's-Mod path.
+    `surface LAT LON ALT_KM`'s height is over the ellipsoid, not the ground (the Serengeti stands 1.7 km over it). A new starting
+    place goes in `SPOTS` and must be checked to be dry land (the "set down" log line says "(the sea)").
 - Mods menu (`mods.rs`; the plan is `docs/spec-mods-viltrumite-powers.md`, its Build log says what each step did): a
   mod is a folder under `assets/mods` with a `mod.cfg` (`Name`, `Description`, `Code`, repeated `Need "relative path"`).
   The scan and `mod_file` look beside the exe first, then in the source tree, per file (as orbital.rs's textures). List

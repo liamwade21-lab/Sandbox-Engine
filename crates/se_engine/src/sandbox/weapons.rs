@@ -93,6 +93,11 @@ mod num {
     pub const SHELL_TIME: f32 = 0.5;
     pub const SHOTGUN_REFIRE: f32 = 0.85;
     pub const DEPLOY: f32 = 0.45;
+    /// `+use` on a prop: picked up in his hands if it weighs no more than this (kg, `PLAYER_MAX_LIFT_MASS`) and is within
+    /// reach (units, `PLAYER_USE_RADIUS`); thrown at `player_throwforce` (kg in/s).
+    pub const HAND_MAX_MASS: f32 = 35.0;
+    pub const HAND_REACH: f32 = 80.0;
+    pub const HAND_THROW: f32 = 1000.0;
     /// The physics gun: metres a wheel notch, and its reach.
     pub const PHYS_WHEEL: f32 = 0.35;
     pub const PHYS_REACH: f32 = 70.0;
@@ -272,14 +277,53 @@ pub fn weapon_frame(time: Res<Time<Real>>, input: Res<WalkInput>, mut sb: ResMut
     // What is held goes on being held, or is let go when he can't hold it.
     let kind = ar.def().kind;
     if let Some(id) = sb.held {
-        let holds = walking && matches!(kind, Kind::GravityGun | Kind::PhysGun) && world.prop(id).is_some();
+        let holds = walking && (sb.by_hand || matches!(kind, Kind::GravityGun | Kind::PhysGun)) && world.prop(id).is_some();
         if !holds {
             world.set_held(id, false);
             sb.held = None;
+            sb.by_hand = false;
         }
     }
     if !on_foot {
         return;
+    }
+    // E: a light prop is picked up in his hands and carried before him (Half-Life 2's `+use`); E again puts it down, the
+    // left button throws it. The weapon waits meanwhile.
+    if !menu_open {
+        if let (Some(id), true) = (sb.held, sb.by_hand) {
+            if let Some((com, _)) = world.motion(id) {
+                let radius = world.prop(id).map_or(0.3, |p| p.radius);
+                let target = eye + forward * (0.55 + radius * 0.9);
+                let to = target - com;
+                world.set_velocity(id, (to * 16.0).clamp_length_max(12.0), None);
+                ar.astray = if to.length() > 1.2 { ar.astray + dt } else { 0.0 };
+                if input.use_pressed || input.attack_pressed || ar.astray > 0.4 {
+                    world.set_held(id, false);
+                    sb.held = None;
+                    sb.by_hand = false;
+                    ar.astray = 0.0;
+                    ar.next_fire = ar.time + 0.4;
+                    if input.attack_pressed {
+                        let mass = world.prop(id).map_or(1.0, |p| p.mass);
+                        world.set_velocity(id, forward * (num::HAND_THROW * 0.0254 / mass).min(12.0), None);
+                    }
+                }
+            }
+            return;
+        } else if input.use_pressed && sb.held.is_none() {
+            let hit = world.ray(eye, forward, num::HAND_REACH * UNIT_M, None).and_then(|h| if let Met::Prop(id) = h.met { Some(id) } else { None });
+            match hit.and_then(|id| world.prop(id).map(|p| (id, p.mass, p.frozen))) {
+                Some((id, mass, frozen)) if mass <= num::HAND_MAX_MASS && !frozen => {
+                    world.set_held(id, true);
+                    sb.held = Some(id);
+                    sb.by_hand = true;
+                    ar.astray = 0.0;
+                    return;
+                }
+                // (`HL2Player.UseDeny`.)
+                _ => sb.cues.push(Cue::new("common/wpn_denyselect.wav", 0.4, 1.0)),
+            }
+        }
     }
     // The selection: a number steps through its slot's weapons, the wheel through them all; the left button takes it.
     let now = ar.time;
@@ -309,6 +353,7 @@ pub fn weapon_frame(time: Res<Time<Real>>, input: Res<WalkInput>, mut sb: ResMut
         if attack_pressed && !menu_open {
             ar.selecting = None;
             ar.take(i);
+            info!("sandbox: took the {}", WEAPONS[i].name);
             sb.cues.push(Cue::new("common/wpn_select.wav", 0.5, 1.0));
             attack_pressed = false;
         } else if now > until || input.attack2_pressed {
@@ -654,7 +699,7 @@ pub fn place_weapon(
     let reloading = ar.reload_until.is_some() || ar.shell_at.is_some();
     // Coming up from below over the deploy; dipping while it's loaded.
     let rise = 1.0 - (ar.deployed / (num::DEPLOY * 0.8)).clamp(0.0, 1.0);
-    let dip = rise * rise * 0.3 + if reloading { 0.07 } else { 0.0 };
+    let dip = rise * rise * 0.3 + if reloading { 0.07 } else { 0.0 } + if sb.by_hand && sb.held.is_some() { 0.45 } else { 0.0 };
     let kick = ar.kick.min(2.0);
     let mut offset = def.hold + Vec3::new(ar.lag.x * 0.5 + bob.x, -dip - bob.y + ar.lag.y * 0.4, -kick * 0.035);
     let mut tilt = Quat::from_rotation_x(kick * 0.05 - dip * 1.2) * Quat::from_rotation_y(-ar.lag.x * 0.8 + 0.035);
@@ -686,7 +731,8 @@ pub fn place_weapon(
     ar.fx_render.clear();
     let Some(world) = sb.world.as_ref() else { return };
     let Some(b) = bodies.iter().find(|b| b.obj == world.frame.obj) else { return };
-    if let Some(prop) = sb.held.and_then(|id| world.prop(id)) {
+    // (A gun's hold shows its beam; his hands' doesn't.)
+    if let Some(prop) = sb.held.filter(|_| !sb.by_hand).and_then(|id| world.prop(id)) {
         ar.beam_to = Some(super::props::render_point(b, &world.frame, &cam, prop.prev.pos.lerp(prop.now.pos, sb.tick_fraction())));
     }
     for f in &ar.fx {

@@ -1329,8 +1329,10 @@ fn draw_selection_pointer(
     sim: Res<SimTime>,
     time: Res<Time>,
     cams: Query<&Camera, With<MainCamera>>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
-    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer) else { return Ok(()) };
+    // (Not while the sandbox's player walks: it would point at the centre of the planet he stands on.)
+    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer && !control.walker) else { return Ok(()) };
     let Ok(camera) = cams.single() else { return Ok(()) };
     let Some(vp) = camera.logical_viewport_size() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;

@@ -128,6 +128,8 @@ struct Build {
     frame: LocalFrame,
     heights: Vec<f32>,
     row: usize,
+    /// The time its sampling has taken so far.
+    spent: std::time::Duration,
 }
 
 /// What a tick did that is heard or seen (`audio.rs`, the view).
@@ -202,8 +204,6 @@ pub struct Sandbox {
     check_in: u32,
     /// The Q menu is held open.
     pub menu: bool,
-    /// The free flight's field of view, put back when he flies.
-    fly_fov: f32,
     /// Units walked since the last footstep, and which foot is next.
     step_dist: f32,
     step_left: bool,
@@ -230,8 +230,9 @@ pub struct Sandbox {
     pub last_ground: Option<world::Surface>,
     /// The sound that goes on while a gun holds a prop: its file and volume.
     pub loop_sound: Option<(&'static str, f32)>,
-    /// The prop a gun holds.
+    /// The prop a gun holds, or his hands (E: `by_hand`).
     pub held: Option<u32>,
+    pub by_hand: bool,
     /// The mouse turns the held prop, not the view (the physics gun's E): this frame's counts are in `spin`.
     pub rotating: bool,
     pub spin: Vec2,
@@ -265,7 +266,6 @@ impl Default for Sandbox {
             build: None,
             check_in: 0,
             menu: false,
-            fly_fov: crate::camera::DEFAULT_FOV_DEG,
             step_dist: 0.0,
             step_left: true,
             events: Vec::new(),
@@ -283,6 +283,7 @@ impl Default for Sandbox {
             last_ground: None,
             loop_sound: None,
             held: None,
+            by_hand: false,
             rotating: false,
             spin: Vec2::ZERO,
         }
@@ -434,20 +435,15 @@ fn place_on(sb: &mut Sandbox, cam: &mut FlyCamera, eph: &Ephemeris, jd: f64, obj
     cam.travel = None;
     cam.follow = Some(Follow::new(obj, true, eph, jd));
     sb.pending = Some(Pending { obj, point, eyes: false, heading: Some(heading), cam_point, cam_rot });
-    enter_walk(sb, cam);
+    enter_walk(sb);
 }
 
-fn enter_walk(sb: &mut Sandbox, cam: &mut FlyCamera) {
-    if sb.mode != Mode::Walk {
-        sb.fly_fov = cam.fov_deg;
-    }
+fn enter_walk(sb: &mut Sandbox) {
     sb.mode = Mode::Walk;
     sb.placed = false;
     sb.build = None;
     sb.accumulator = 0.0;
     sb.punch = Punch::default();
-    cam.fov_deg = WALK_FOV_DEG;
-    cam.fov_target = None;
 }
 
 /// Nothing else moves the camera while he walks, and it is bound to the body as SE's "rotate with object" binds it, as of
@@ -547,8 +543,8 @@ fn read_input(
         const SLOTS: [KeyCode; 9] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
         input.slot = SLOTS.iter().position(|k| keys.just_pressed(*k)).map(|i| i as u8 + 1);
         if !menu && st.regain == 0 {
-            input.attack = buttons.pressed(MouseButton::Left) || held(KeyCode::Enter);
-            input.attack_pressed = buttons.just_pressed(MouseButton::Left) || keys.just_pressed(KeyCode::Enter);
+            input.attack = buttons.pressed(MouseButton::Left);
+            input.attack_pressed = buttons.just_pressed(MouseButton::Left);
             input.attack2 = buttons.pressed(MouseButton::Right);
             input.attack2_pressed = buttons.just_pressed(MouseButton::Right);
             if real {
@@ -563,7 +559,7 @@ fn read_input(
         }
     }
     // Nothing else sees these keys' presses (Space pauses the clock, 1-4 change the flight mode, G goes to the selection...).
-    const HIS: [KeyCode; 24] = [
+    const HIS: [KeyCode; 23] = [
         KeyCode::Space,
         KeyCode::KeyW,
         KeyCode::KeyA,
@@ -578,7 +574,6 @@ fn read_input(
         KeyCode::KeyC,
         KeyCode::KeyG,
         KeyCode::KeyT,
-        KeyCode::Enter,
         KeyCode::Digit1,
         KeyCode::Digit2,
         KeyCode::Digit3,
@@ -743,11 +738,13 @@ fn sandbox_step(
             Mode::Walk if leave.is_none() => {
                 leave = Some(Mode::Fly);
                 msg.show("Free flight: on (V)".to_string());
+                info!("sandbox: V: free flight on");
             }
             Mode::Walk => {}
             Mode::Fly => {
                 if walk_from_camera(sb, &mut cam, &bodies, &mut msg) {
                     msg.show("Free flight: off (V)".to_string());
+                    info!("sandbox: V: free flight off, on foot again");
                 }
             }
             Mode::Hero => {
@@ -774,7 +771,11 @@ fn sandbox_step(
     if let Some(to) = leave.or(lost.then_some(Mode::Fly)).filter(|_| sb.mode == Mode::Walk) {
         sb.mode = to;
         sb.pending = None;
-        cam.fov_deg = sb.fly_fov;
+        if to == Mode::Fly {
+            // The free flight's assigned velocity is whatever it was left at (100 km/s at a fresh start): from standing on
+            // the ground that is a kilometre a frame. A running pace to begin with, as SE sets on landing; the wheel changes it.
+            cam.speed = cam.speed.min(20.0);
+        }
         if let Some(w) = sb.world.as_mut() {
             w.park_player();
         }
@@ -837,7 +838,16 @@ fn world_frame(sb: &mut Sandbox, cam: &mut FlyCamera, data: &SeData, input: &Wal
             }
             sb.pending = None;
             sb.placed = false;
-            info!("sandbox: set down on {} ({:.1} m over the ground)", data.catalog.display_name(b.obj), feet * UNIT_M);
+            let d = (ground / b.shape).normalize();
+            let land = (ground / b.shape).length() - b.radius_m;
+            info!(
+                "sandbox: set down on {} at {:.4} {:.4}, {:.1} m over the ground, which is {land:.0} m over the body's radius{}",
+                data.catalog.display_name(b.obj),
+                d.y.asin().to_degrees(),
+                (-d.z).atan2(d.x).to_degrees(),
+                feet * UNIT_M,
+                if terrain.has_ocean && land <= 0.0 { " (the sea)" } else { "" }
+            );
         }
     }
     // (Out of `sb` while the frame works on both.)
@@ -873,7 +883,7 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
                 Some(world.frame)
             };
             if let Some(frame) = frame {
-                sb.build = Some(Build { frame, heights: Vec::with_capacity(GRID_N * GRID_N), row: 0 });
+                sb.build = Some(Build { frame, heights: Vec::with_capacity(GRID_N * GRID_N), row: 0, spent: std::time::Duration::ZERO });
             }
         }
     }
@@ -882,6 +892,7 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
         let mut failed = false;
         // (The first field of a place is made at once: he's waiting for it.)
         let rows = if world.has_ground() { GRID_ROWS_A_FRAME } else { GRID_N };
+        let started = std::time::Instant::now();
         'rows: for _ in 0..rows {
             if build.row >= GRID_N {
                 break;
@@ -899,10 +910,15 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
             }
             build.row += 1;
         }
+        build.spent += started.elapsed();
         if failed {
             sb.build = None;
         } else if build.row >= GRID_N {
             let build = sb.build.take().unwrap();
+            if build.spent.as_millis() > 60 {
+                // (About 26,000 heights: 15 ms as measured. Much more would be felt as he walks.)
+                info!("sandbox: a ground field took {} ms to sample", build.spent.as_millis());
+            }
             // He keeps his height over the ground through the change, as the props do (`replace_ground`).
             let over = world.terrain().and_then(|old| {
                 let o = sb.player.origin * UNIT_M;
@@ -1047,7 +1063,7 @@ fn walk_from_camera(sb: &mut Sandbox, cam: &mut FlyCamera, bodies: &Query<(&Syst
     };
     let point = b.orient.inverse() * cam.pos.delta_m(b.pos);
     sb.pending = Some(Pending { obj: b.obj, point, eyes: true, heading: None, cam_point: point, cam_rot: b.orient.inverse() * cam.rot });
-    enter_walk(sb, cam);
+    enter_walk(sb);
     true
 }
 
@@ -1091,13 +1107,16 @@ fn footsteps(sb: &mut Sandbox, was_ground: bool) {
     }
 }
 
-/// The weapon in his hands is 20 to 60 cm from his eyes: the near plane comes in for it.
+/// The walking view's projection, after the camera's own is set from `FlyCamera`: Garry's Mod's field of view (the free
+/// flight's `fov_deg` is left as the user has it: it is saved with the settings), and the near plane in for the weapon in
+/// his hands, 20 to 60 cm from his eyes.
 fn near_plane(sb: Res<Sandbox>, mut proj: Query<&mut Projection, With<crate::camera::MainCamera>>) {
     if !sb.walking() {
         return;
     }
     for mut p in &mut proj {
         if let Projection::Perspective(p) = p.as_mut() {
+            p.fov = WALK_FOV_DEG.to_radians();
             p.near = p.near.min(0.02);
         }
     }

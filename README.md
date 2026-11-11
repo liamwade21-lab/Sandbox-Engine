@@ -111,7 +111,49 @@ Tests (engine-independent core, about 190 tests):
 cargo test -p se_core
 ```
 
+## The sandbox (first person)
+
+The game starts on **Earth's ground in first person**, in whichever of eight open places has the Sun highest at that
+moment (Kansas, the Pampas, Salisbury Plain, the Serengeti, the Kazakh and Mongolian steppes, New South Wales, the
+Canterbury Plains). Movement, weapons, sounds and the spawn menu are Garry's Mod's and Half-Life 2's: the movement is
+Source's own rules (`sandbox/movement.rs`, from the Source SDK's `gamemovement.cpp` with Garry's Mod's numbers) at 66
+ticks a second, and the props, textures and sounds are read from your **Garry's Mod install** while the game runs
+(found through Steam, or `GMOD_PATH`; nothing of it is copied or changed). Without Garry's Mod it still works, with
+plain props and plain sounds.
+
+| Input | Action |
+|---|---|
+| W/A/S/D, mouse | walk (200 units/s), look |
+| Shift / Alt / Ctrl / Space | run (400) / walk slowly (100) / duck (60, and in the air a crouch jump) / jump |
+| Hold **Q** | the spawn menu (let go to close it). **Spawnlists**: Garry's Mod's own lists; click a prop to spawn it where you look. **Weapons**: click one to take it. **Mods**: click who to play as (the Viltrumite hero, or yourself again) |
+| 1-4, mouse wheel, then left button | pick a weapon (Half-Life 2's selection: the number steps through its slot, the left button takes it) |
+| Left / right button, R | fire / second fire, reload |
+| E | pick a light prop up in your hands (35 kg or less, within arm's reach) and put it down again; the left button throws it |
+| Z | undo the last prop |
+| **V** | free flight on and off: the port's own SpaceEngine flight with all its keys and panels, exactly as it was. V again puts you back on foot where the camera is (you fall from there). V does nothing else |
+
+Weapons: the crowbar; the gravity gun (right button picks a prop up or drops it, left launches it or punts what is
+in front); the physics gun (hold left to carry a prop at any distance, the wheel moves it nearer or further, E and the
+mouse turn it, the right button freezes it in the air, R lets frozen props go); the pistol, the SMG and the shotgun
+(they push props about). The numbers and sounds are Half-Life 2's.
+
+Gravity is the planet's own, for you and for the props: on the Moon (`V`, fly there, `V` again) a jump goes 4 m up
+and props fall slowly. Props stand on the terrain as it is drawn; the props' physics is the `rapier3d` library.
+
+The port's windows (F4 settings, F3 find, ...) want the mouse: press V for free flight first, where everything is as it
+was. Garry's Mod's flashlight (F), chat, voice and context menu (C) have no counterpart here.
+
+Not there yet: the weapons are Half-Life 2's world models held in view and moved by code (its animated view models
+with hands need a reader the port doesn't have), props have no shadows, buildings and trees are not solid to you
+(the Viltrumite hero's are), you walk on the sea, and props more than 60 m from you wait frozen until you come back.
+
+`SE_SANDBOX=0` starts the port as it was before (free flight at Earth, the saved session restored);
+`SE_SANDBOX_SPOT=N` picks the starting place (0-7). Test runs (`--run`, `--screenshot`) keep the old start unless
+`SE_SANDBOX=1`.
+
 ## Controls
+
+These are the free flight's (V); on foot the keys above apply.
 
 | Input | Action |
 |---|---|
@@ -140,7 +182,7 @@ cargo test -p se_core
 | Shift+F3 / F8 or 0 | star browser (nearest stars, and the search for planets, moons and stars by parameters; also the main toolbar's Search button) / system chart of the current system |
 | F4 / Ctrl+F4 / F7 | settings (SE's tabs: Graphics, Camera, Display, Interface, Sound, and Reset settings) / the same on Graphics / locations |
 | F11 | screenshot: `scrNNNNN.jpg` in Pictures/SpaceEngine-rs (jpg, png, dds, tga or tif, JPEG quality and alpha in Settings > Display) |
-| V (outside flight) | photo mode: HDR, Manual, Auto (SE's histogram auto exposure) |
+| B (outside flight) | photo mode: HDR, Manual, Auto (SE's histogram auto exposure). SE's key for it is V, which here is the sandbox's free-flight switch |
 | O / ' / Ctrl+' / ; | orbits / labels (brief, detail, off) / markers / selection pointer; each kind of object can be switched in Settings > Filter objects |
 | X / Shift+X / Ctrl+X / Alt+X | constellations / their lines / boundaries / names (right click the Constellations button for the switches) |
 | Ctrl+; / Alt+; | celestial grids (equatorial by default; ecliptic and galactic on the Celestial grids button's right click) / a planet's geographic grid |
@@ -372,7 +414,7 @@ Key rendering decisions:
 - **Redshift.** Distant galaxies are tinted as by cosmological redshift: a 5500 K spectrum shifted by z = d / (c/H0), at constant brightness (about 10% redder at 1 Gpc, orange by 3 Gpc).
 - **Lens flares.** SpaceEngine's flare, ghost and pseudo-flare presets from `Flares.pak` on the suns of the current system, faded by the sun's magnitude and scaled by the frame's brightness at the sun as SE does, so whatever covers or reddens the sun (a planet, a mountain, the horizon at sunset) dims and tints its flare; the pseudo flare has SE's lens dirt and starburst (`docs/formats/lens_flares.md`).
 - **Graphics presets.** Potato to Ultra, read from the install's `config/preset-*.cfg` and kept whole: MSAA, FXAA, anisotropic filtering, landscape LOD, terrain tiles per frame, volumetric quality, star points style and black-hole warp precision, in Settings > Graphics with the lens flare options. The first run picks the preset from the video memory, as SE does.
-- **Exposure.** Faint background light (galaxies, nebulae, stars) recedes while a sunlit body or a star fills the view, as the eye adapts. SE's photo modes (V): HDR, Manual and Auto, whose auto exposure meters SE's luminance histogram; Manual and Auto keep the HDR brightness calibrations (SE's `real*` values are not used). Tone mapping: SE's 11 tone shaders (Settings > Graphics), default AgX.
+- **Exposure.** Faint background light (galaxies, nebulae, stars) recedes while a sunlit body or a star fills the view, as the eye adapts. SE's photo modes (B here): HDR, Manual and Auto, whose auto exposure meters SE's luminance histogram; Manual and Auto keep the HDR brightness calibrations (SE's `real*` values are not used). Tone mapping: SE's 11 tone shaders (Settings > Graphics), default AgX.
 - **Interface and audio.** Navigation and interface as listed under Controls, SE's fonts (Noto Sans with its Medium bold, CJK and DejaVu fallbacks), object types named as SE names them ("Yellow dwarf (G2V)", "Planet (Temperate marine terra with life)"), the loading screen ("Sandbox Engine Loading..." on black until the first view is loaded), the solar system browser, interface click sounds, and the soundtrack with SE's cross-fades. The window opens maximized and remembers its size, fullscreen mode and VSync. Settings persist in `%APPDATA%/SpaceEngine-rs/settings.cfg` in SE's key names (with post-effects, export and the whole graphics preset), the camera, binding, selection and time are saved on exit to `save.cfg` and restored at start, and places you save from the Places window go to `places.cfg` next to it, in SpaceEngine's own format; scripted runs (`--run`, `--script`, `--screenshot`) leave both untouched. Every start rewrites the log `se.log` there, in SE's format (`[MT]` thread stamps, optional time stamps, catalog messages by SE's `CatalogLogLevel` / `CsvLogLevel`).
 
 ### Not yet implemented
