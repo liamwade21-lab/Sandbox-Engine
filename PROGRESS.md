@@ -230,6 +230,8 @@
 
 ## Notes
 
+- **Disk (2026-11-11):** building the sandbox left `target/agent` (the quick builds) at 9.5 GB and `target/debug` at
+  1.4 GB. Both can go to the Recycle Bin whenever you like (CLAUDE.md, "Disk space"); they come back when next used.
 - **Folder cleaned up again (2026-11-07):** from 24.8 GB to 4.1 GB. Old builds (`target/agent`, `target/debug`, unused
   files in `target/release`) and test pictures (`.optimize/scratch`, all but `baseline` and `baseline_noassets`,
   which the mod's step 11 compares against) went to the Recycle Bin. Emptying it is the user's step.
