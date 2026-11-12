@@ -17,8 +17,7 @@ struct HeroFrame {
     // rgb the street lamps' light at his place (the town's lights' colour times how far into a town he
     // is); 0 away from towns.
     town: vec4<f32>,
-    // The aerodynamic glow (viltrumite/fx.rs `glow_record`): rgb its light on the windward side, w 1 when there's any; `heat_lee` rgb
-    // its light on the lee side; `heat_dir` xyz the way he's going through the air.
+    // Unused since 2026-11-12 (his body's heat glow is gone, the user's): always 0, kept so the record's layout stays.
     heat: vec4<f32>,
     heat_lee: vec4<f32>,
     heat_dir: vec4<f32>,

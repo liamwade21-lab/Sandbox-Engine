@@ -1708,9 +1708,6 @@ pub(crate) fn hero_move(
         mach: hero.flow.in_air().then_some(hero.flow.mach),
         height: height.map(|h| (h - soles).max(if soles > 0.0 { 0.0 } else { h })),
         gravity_g: (gravity_at(&bodies, pos) - a_frame).length() / 9.806_65,
-        heat: fx::heat_bar(hero.heat_k),
-        // (Only when the bar shows: the colour takes a sum over the spectrum.)
-        heat_colour: if hero.heat_k > tune::HEAT_BAR_FROM_K { fx::heat_colour(hero.heat_k.clamp(600.0, tune::HEAT_LOOK_K)).to_array() } else { [0.0; 3] },
     };
     // A test's log of the air.
     if let Some(log) = hero.boom_log.as_mut() {
@@ -1734,7 +1731,8 @@ pub(crate) fn hero_move(
             hero.heat_k,
             hero.boom.state,
             carried.is_some() as u8,
-            fx::glow_at(hero.heat_k),
+            // (The body's glow column: always 0 since it went, 2026-11-12; kept so the scripts' columns stay.)
+            0.0,
             fx::shell_at(hero.fx.gas_k()),
             fx::trail_at(hero.fx.gas_k()),
             fx::cone_at(f.mach, f.q, f.air.pressure_pa),

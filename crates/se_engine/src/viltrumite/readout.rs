@@ -1,4 +1,4 @@
-//! The small corner readout while he's on (spec F8): speed, Mach in air, height, gravity, heat. Drawn after
+//! The small corner readout while he's on (spec F8): speed, Mach in air, height, gravity (no heat bar since 2026-11-12, the user's). Drawn after
 //! `UiSet::Draw`, so hiding the panels has nothing to do with it.
 
 use bevy::prelude::*;
@@ -24,9 +24,6 @@ pub struct Readout {
     /// Over the nearest ground, `None` far from everything.
     pub height: Option<f64>,
     pub gravity_g: f64,
-    /// The bar, 0..1, and the look's colour at that temperature.
-    pub heat: f32,
-    pub heat_colour: [f32; 3],
 }
 
 /// m/s, km/s, then multiples of c. (`format_speed` turns to ly/s at 1e4 c, which says less here.)
@@ -96,10 +93,6 @@ pub(super) fn draw(
                     row("Height", format_height(h));
                 }
                 row("Gravity", format!("{:.2} g", r.gravity_g));
-                ui.label(i18n.tr("Heat"));
-                let [cr, cg, cb] = r.heat_colour.map(|c| (c.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8);
-                ui.add(egui::ProgressBar::new(r.heat).desired_width(70.0).desired_height(8.0).fill(egui::Color32::from_rgb(cr, cg, cb)));
-                ui.end_row();
             });
             ui.small(i18n.tr("Tab: menus"));
         });

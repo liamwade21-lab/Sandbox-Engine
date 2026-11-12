@@ -6,6 +6,10 @@
   1. **Omni-Man is silent in space** (your new D12): every sound of his fades out as the air thins (from 100 Pa down to 1 Pa) and
      is fully silent in orbit and on airless ground. Checked by the logs (every sound at 0 in orbit and on the Moon, Kansas as
      before) and by recording the speakers: nothing at all in orbit, his sounds as before in Earth's air.
+  2. **No heat bar, no heat glow on Omni-Man:** the readout's Heat row is gone and his body no longer glows orange to white in fast
+     flight; heat is still worked out (the roar, the plasma shell round him and the trail still follow it). Checked with pictures of
+     a fast low flight before and after, the heat table, and the mod-off picture (unchanged). The plasma shell round him (from
+     3,500 K) is a separate effect you didn't name, so it stays: say if it should go too.
 
 - **The sandbox (2026-11-11): the game now starts on Earth's ground in first person, like Garry's Mod.**
   - **What works (all checked in the game):** it starts on foot in whichever of eight open places has the Sun highest

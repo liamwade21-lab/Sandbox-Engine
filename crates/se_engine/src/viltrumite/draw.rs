@@ -87,6 +87,8 @@ pub(crate) struct HeroFrameGpu {
     point: Vec4,
     up: Vec4,
     town: Vec4,
+    // His body's heat glow, gone (the user, 2026-11-12): always 0, kept so the record's layout stays (hero_frame.wesl, read by
+    // sandbox_prop.wesl and sandbox_viewmodel.wesl too).
     heat: Vec4,
     heat_lee: Vec4,
     heat_dir: Vec4,
@@ -984,8 +986,6 @@ pub(crate) fn update_hero(
     }
     input.take_tables(near_body);
     town_light(f, &mut draws.town_timer, &mut draws.town_task, || nearest.filter(|_| near_body.is_some()).and_then(|(b, t, _)| town_job(&p, b, t?, pos)));
-    // The heat of the air on him.
-    (f.heat, f.heat_lee, f.heat_dir) = super::fx::glow_record(hero.heat_k, hero.air_dir);
     // In place: the buffer and his materials' bind groups stay.
     if let Some(mut b) = buffers.get_mut(&draws.frame_buffer) {
         if let Some(d) = b.cast_slice_mut::<u8>() {

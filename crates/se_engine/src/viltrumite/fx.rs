@@ -1,5 +1,5 @@
 //! What the air does round him (spec F9): the plasma shell, the sonic cone, the rings, the trail, one additive pass after the clouds
-//! (`fx_pass`, `hero_fx.wesl`). The glow on his body is in his own material (`glow_record`, `hero.wesl` `shade`).
+//! (`fx_pass`, `hero_fx.wesl`). His body takes no glow (the user, 2026-11-12: `HeroFrame.heat*` stay in the record, unfilled).
 //!
 //! - **One record buffer**, `FxRecordsGpu`, written in place each frame: no material changes, nothing is spawned, the trail is a fixed
 //!   ring of 256 points in the body's frame, worked out from the camera each frame.
@@ -165,12 +165,6 @@ fn past_clamp(t: f64) -> f64 {
     (t / tune::HEAT_LOOK_K).max(1.0).powf(tune::HEAT_PAST_POWER).min(tune::HEAT_PAST_MAX)
 }
 
-/// The glow on his body at this temperature: 0, or between the HDR limits.
-pub fn glow_at(t: f64) -> f64 {
-    let t = t.min(tune::HEAT_LOOK_K);
-    smooth(tune::GLOW_FROM_K.0, tune::GLOW_FROM_K.1, t) * by_stage(t.max(tune::GLOW_FROM_K.1), (tune::GLOW_FROM_K.1, tune::HEAT_LOOK_K), tune::GLOW_HDR)
-}
-
 /// The shell's brightness (before its colour).
 pub fn shell_at(t: f64) -> f64 {
     let t = t.min(tune::HEAT_LOOK_K);
@@ -181,11 +175,6 @@ pub fn shell_at(t: f64) -> f64 {
 pub fn trail_at(t: f64) -> f64 {
     let t = t.min(tune::HEAT_LOOK_K);
     smooth(tune::TRAIL_FROM_K.0, tune::TRAIL_FROM_K.1, t) * by_stage(t.max(tune::TRAIL_FROM_K.1), (tune::TRAIL_FROM_K.1, tune::HEAT_LOOK_K), tune::TRAIL_HDR)
-}
-
-/// The readout's bar, 0..1.
-pub fn heat_bar(t: f64) -> f32 {
-    ((t.max(1.0) / tune::HEAT_BAR_FROM_K).ln() / (tune::HEAT_LOOK_K / tune::HEAT_BAR_FROM_K).ln()).clamp(0.0, 1.0) as f32
 }
 
 /// The cone's strength by Mach and the air: F9's visible range, thin air showing less. 0 out of the air the barrier counts.
@@ -206,18 +195,6 @@ pub fn air_show(q: f64, pressure_pa: f64) -> f64 {
     let thin = tune::AIR_SHOW.0 + (tune::AIR_SHOW.1 - tune::AIR_SHOW.0) * ((log_q - tune::BOOM_LOG_Q.0) / (tune::BOOM_LOG_Q.1 - tune::BOOM_LOG_Q.0)).clamp(0.0, 1.0);
     let (air_on, air_off) = tune::BOOM_AIR_PA;
     thin * smooth(air_off, air_on, pressure_pa)
-}
-
-/// His glow's records (`HeroFrame.heat`, `heat_lee`, `heat_dir`): the windward side's light, the lee side's, the way he's going.
-/// Off: w 0 and nothing done in the pixels.
-pub fn glow_record(heat_k: f64, going: DVec3) -> (Vec4, Vec4, Vec4) {
-    let t = heat_k.min(tune::HEAT_LOOK_K);
-    let glow = glow_at(t);
-    if glow <= 0.0 {
-        return (Vec4::ZERO, Vec4::ZERO, Vec4::ZERO);
-    }
-    let lee = heat_colour(t * tune::GLOW_LEE_T) * (glow * tune::GLOW_LEE).min(tune::GLOW_LEE_MAX) as f32;
-    ((heat_colour(t) * glow as f32).extend(1.0), lee.extend(0.0), going.as_vec3().extend(0.0))
 }
 
 /// A ring of the air: the boom's, the thunderclap's (step 8).
@@ -943,27 +920,9 @@ fn fx_pass(
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_glow_stays_within_its_limits_and_is_never_t4() {
-        assert_eq!(glow_at(500.0), 0.0);
-        assert!((glow_at(800.0) - tune::GLOW_HDR.0).abs() < 1e-6);
-        assert!((glow_at(10_000.0) - tune::GLOW_HDR.1).abs() < 1e-6);
-        // The clamp: 23,300 K (30 km/s at sea level) looks like 10,000 K.
-        assert_eq!(glow_at(23_300.0), glow_at(10_000.0));
-        // T^4 would be 400 times over 800 to 3,600 K.
-        assert!(glow_at(3600.0) / glow_at(800.0) < 12.0);
-        let mut last = 0.0;
-        for t in (600..12000).step_by(100) {
-            let g = glow_at(t as f64);
-            assert!(g >= last && g <= tune::GLOW_HDR.1 + 1e-9, "{t}: {g}");
-            last = g;
-        }
-    }
-
     /// F9's stages, in order: no shell under 3,000 K, all of it at 3,500; the trail at 6,000.
     #[test]
     fn the_stages_come_in_where_the_spec_says() {
-        assert!(glow_at(800.0) > 0.0);
         assert_eq!(shell_at(2999.0), 0.0);
         assert!(shell_at(3500.0) > 0.0);
         assert_eq!(trail_at(4999.0), 0.0);
@@ -999,14 +958,6 @@ mod tests {
         assert!(red_over_blue(800.0) > red_over_blue(2000.0) && red_over_blue(2000.0) > red_over_blue(3500.0) && red_over_blue(3500.0) > red_over_blue(6000.0));
         let hot = heat_colour(10_000.0);
         assert!(hot.z == 1.0 && hot.x < 1.0, "{hot}");
-    }
-
-    #[test]
-    fn the_bar_fills_with_the_heat() {
-        assert_eq!(heat_bar(300.0), 0.0);
-        assert_eq!(heat_bar(10_000.0), 1.0);
-        assert_eq!(heat_bar(30_000.0), 1.0);
-        assert!(heat_bar(800.0) > 0.1 && heat_bar(800.0) < heat_bar(2000.0) && heat_bar(3500.0) < heat_bar(6000.0));
     }
 
     #[test]
@@ -1151,14 +1102,5 @@ mod tests {
             s.ease_gas(0.0, 7000.0, 1.0 / 60.0);
         }
         assert!(s.gas_k < 8000.0 * 0.01, "{}", s.gas_k);
-    }
-
-    #[test]
-    fn a_go_to_through_the_air_stays_within_the_look() {
-        let (glow, lee, _) = glow_record(26_000.0, DVec3::X);
-        let (same, ..) = glow_record(tune::HEAT_LOOK_K, DVec3::X);
-        assert_eq!(glow, same);
-        assert!(glow.truncate().max_element() <= tune::GLOW_HDR.1 as f32 + 1e-3);
-        assert!(lee.truncate().max_element() < glow.truncate().max_element());
     }
 }

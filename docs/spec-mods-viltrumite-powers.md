@@ -283,7 +283,7 @@ frame (ship.rs:1314). `travel_and_move` (camera.rs:1090) tests `ModControl`. **`
   (overlay.rs:425), grids (grids.rs:109), constellations (constellations.rs:288), toasts (messages.rs:42). In `menus` the
   panels come back.
 - Readout after Draw (script_gui.rs:53): speed (m/s, km/s, then multiples of c; own formatter, `format_speed` turns
-  to ly/s at 1e4 c, units.rs:60), Mach in air, height above ground, gravity in g, heat bar.
+  to ly/s at 1e4 c, units.rs:60), Mach in air, height above ground, gravity in g (the heat bar was removed by the user, 2026-11-12).
 
 ### F9. Air, boom and heat
 
@@ -321,7 +321,7 @@ every camera, and must still run when clouds are off (`clouds_pass` returns earl
 
 | Effect | Where | How |
 |---|---|---|
-| Glow on the body | His main-pass material | `HeroFrame.heat` (T in kK, strength), `planck` as ship.wesl:145,269 times a windward term, before bloom |
+| Glow on the body | Removed (the user, 2026-11-12): his body takes no heat glow. `HeroFrame.heat`, `heat_lee`, `heat_dir` stay in the record, always 0 | |
 | Craters | `fx_decals`, before `clouds_pass` | Multiply; reads depth, so it follows the ground, survives node changes, and takes the ground's light and cloud shadow. Bowl from an N.L ratio. A capsule test skips him |
 | Shell, cone, rings, trail, dust | `fx_pass`, after `clouds_pass`, before `SolidUpscaleSet` | Soft depth; far parts dim by the clouds' transmittance beyond `trace_dist` (private textures, volumetric_clouds.rs:1441: make them `pub(crate)`) |
 
@@ -918,3 +918,14 @@ sounds: the sandbox's and the music are untouched. **Checked:** unit tests (`out
 before; `hero_sound_cases.sh orbit moon`: every loop 0, every sink paused at 0, no one-shot voice (the landing's `explode_ground1`,
 the jump, X); the speakers recorded with `loopback` through take-off, punches, a charge and clap and an orbit at 400 km: peak -177
 dBFS (silence), then the same actions over Kansas heard as before. **Not checked:** how it feels to the user.
+
+**No heat bar, no heat glow on him (2026-11-12, the user's).** The readout's Heat row is gone (`readout.rs`, `Readout.heat`,
+`heat_colour`, `fx::heat_bar`, `HEAT_BAR_FROM_K`), and so is the glow his body took from the air's heat: `fx::glow_record`,
+`glow_at`, `tune::GLOW_*` and the heat block in `hero.wesl` `shade`. Heat stays a number (`Hero.heat_k`, `air.rs`): the roar, the
+plasma shell, the trail and `hero boom`'s log still read it (the log's `glow` column is 0, kept so the scripts' columns stay).
+`HeroFrame`'s layout is unchanged (`heat`, `heat_lee`, `heat_dir` left in, never filled: `hero_frame.wesl` is read by
+`sandbox_prop.wesl` and `sandbox_viewmodel.wesl` too). **Checked:** a fast low flight over Kansas at 2.6 and 4.9 km/s before and after
+(`.optimize/scratch/run/s2heat`): the suit keeps its red and white at Mach 14.7, the row is gone, the shell, trail, cone and ring are as
+before; `hero_heat_table.sh`'s Earth and Mars lines give F9's skin temperatures as before (within 4 %); the mod-off forest is the same
+picture (0.008 % of pixels, at most 2 levels, all in the HUD's text). **Left for the user:** the plasma shell (3,500 K and up) is also
+drawn from the heat, round him, not on him, and wasn't named, so it stays.

@@ -387,17 +387,6 @@ pub const HEAT_COLOUR_GAMMA: (f64, f64) = (0.42, 0.6);
 pub const HEAT_COLOUR_K: (f64, f64, f64) = (800.0, 2000.0, 6000.0);
 /// SE's black body has no green at all under about 1,300 K (out of sRGB's gamut, clipped): dull orange needs at least this much.
 pub const HEAT_COLOUR_LEAST_GREEN: f64 = 0.22;
-/// The glow on his body: nothing under the first temperature, the HDR limits' lowest at the second (K), the highest at `HEAT_LOOK_K`,
-/// exponentially between: never T^4.
-pub const GLOW_FROM_K: (f64, f64) = (600.0, 800.0);
-pub const GLOW_HDR: (f64, f64) = (0.3, 12.0);
-/// His lee side, what the chase camera sees: its colour is the windward side's at this share of the temperature, its light this share.
-pub const GLOW_LEE_T: f64 = 0.8;
-pub const GLOW_LEE: f64 = 0.35;
-/// At most this much, or from behind he's a white shape with no suit left.
-pub const GLOW_LEE_MAX: f64 = 1.6;
-/// The readout's bar: empty at the first temperature, full at `HEAT_LOOK_K`, by the logarithm.
-pub const HEAT_BAR_FROM_K: f64 = 400.0;
 
 // ---- Heat's effects (step 7, F9; hero_fx.wesl has the same HDR limits) ----
 /// The shell and the trail are hot gas going past, so they go by the air's own temperature, no higher than his heat, and fall this fast
