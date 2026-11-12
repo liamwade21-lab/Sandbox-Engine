@@ -343,8 +343,10 @@ Non-spatial (he's next to the camera and no listener exists), times `SoundSettin
 engine_sound.rs:85,115-128. Mod sounds guarded by `is_ogg_vorbis` (music.rs:218; bevy_audio audio_source.rs:96-101 panics
 on anything else). Loops buffer their decoded samples (fastFlight_loop is 29 s, about 10 MB), so the converter trims each
 to 10 s with a crossfaded seam. Removing `AudioSink` alone restarts a sound (sinks.rs:135): despawn to stop. `set_speed`
-changes pitch and speed together, which is fine here. On focus loss, fade and pause. One-shots: 8 at most, a quarter of the
-volume in vacuum.
+changes pitch and speed together, which is fine here. On focus loss, fade and pause. One-shots: 8 at most. **Where there's no
+air every sound is silent** (D12 as changed by the user, 2026-11-12): each loop and each one-shot is multiplied by the air's share,
+0 under 1 Pa and 1 from 100 Pa (logarithmic between, `SHOT_AIR_PA`), whatever q or the heat say; a one-shot asked for in vacuum
+is counted but given no voice.
 
 **Changed by the user, 2026-11-07:** this table first used `wind_loop`, `superWind_start` and `wind_end` for air rushing past, take
 off and X. In the source mod those (with `wind_attack_1`-`3`) are its super breath: the wind he blows out of his mouth. Breath is a
@@ -352,10 +354,10 @@ non-goal, so none of them is used, and none is in the copy (a test and the conve
 
 | Loop | Volume | Pitch |
 |---|---|---|
-| `fastFlight_loop` | `log10 q` from 1 to 6: the air going past, at every speed | By Mach, low at low speed so it reads as wind: 0.6 at Mach 0.05 to 1.3 at Mach 20 |
-| `fasterFlight_loop` | T from 2500 to 6000 K | |
-| `sentry_flightfx_loop` (hum) | 0.12 while flying, and out of the air in every state (D12, "hum only" in Edge cases; the review of step 6), fading as `log10 q` goes 0 to 2 | 0.6 |
-| `flightCharge_loop` | Right button held | |
+| `fastFlight_loop` | `log10 q` from 1 to 4.5: the air going past, at every speed (fast flight's own level as the floor), times the air's share | By Mach, low at low speed so it reads as wind: 0.6 at Mach 0.05 to 1.3 at Mach 20 |
+| `fasterFlight_loop` | T from 2500 to 6000 K (the roar past the barrier as the floor), times the air's share | |
+| `sentry_flightfx_loop` (hum) | 0.12 while flying, times the air's share (none in vacuum, D12), fading as `log10 q` goes 0 to 2 | 0.6 |
+| `flightCharge_loop` | A charge runs: 0.45 to 0.95 as it fills, times the air's share | |
 
 | One-shot | Trigger |
 |---|---|
@@ -498,7 +500,7 @@ flowchart LR
 | Gas giant | Never Grounded. Floor as terrain.rs:3565, +50 m. The camera's own floor applies only when clouds are active there, so use the same filter for his floor, or the camera is pushed to `ground_height` with clouds off |
 | Star | Stops at `R (1 + 3e-6)` plus the camera's distance, since the camera's kept at 2e-6 R (terrain.rs:3536) |
 | Black hole, model bodies (67P) | Default sphere stop, as the ship |
-| Body with no atmosphere | No boom, no heat, no drag; hum only |
+| Body with no atmosphere | No boom, no heat, no drag; silent (D12, 2026-11-12) |
 | Atmosphere under 150 Pa | No boom. Heat by density |
 | Speed past the cap | Brakes, tau 0.2 s (Numbers to tune) |
 | Very high speed near a body | Swept test; attach; eased by the cap |
@@ -614,7 +616,7 @@ Prototype risks in this order: the asset route (step 2), the shared-shader move 
 | D9 | Real physics for boom and heat, per planet; neither hurts nor slows him | Fixed speeds | User's pick |
 | D10 | Controls in F8; keyboard and mouse; fixed keys | Controller; hold left button to aim | Third-person standard |
 | D11 | Mixamo clips the user downloads | Public-domain mocap; hand-keyed | Best quality. GTA's own walks are encrypted, off limits |
-| D12 | Quiet in space, not silent | Fully silent; same everywhere | User's pick |
+| D12 | Fully silent where there's no air: loops and one-shots fade out between 100 and 1 Pa (the user, 2026-11-12, for realism) | Quiet in space, not silent (the first pick, 2026-11-06: hum 0.12 and one-shots at a quarter); same everywhere | User's pick |
 | D13 | Panels hidden, small readout, Tab for menus | Keep panels; nothing | User's pick |
 | D14 | Sea, giants, stars, ships, no health, off next launch as in Edge cases | Underwater as a later step | User's pick |
 | D15 | Off costs nothing; fixed pools; no 5-round test; cost numbers are aims | Gated limits; 1 ms; 3 ms | The user: "no need to test for a simple mod" |
@@ -904,3 +906,15 @@ first stood upright with both feet always down. Now 13 and 20 degrees of lean, k
 against each other, the head still. The planted foot is solved so its ball goes back at one speed (no slide), and the clips carry that
 speed as their stride (4.7 and 10.5 m/s: `gait` read the ankle and came out a quarter slow). Only `clips.sevc` changed. **Not
 checked:** how the lock-on and the run feel (U3).
+
+**D12 changed: silent in space (2026-11-12, the user's).** "Quiet in space, not silent" is replaced by "fully silent where there is no
+air", for realism. `sound.rs` `air_share` (the pressure curve the one-shots' quarter used, 1 to 100 Pa logarithmically) now
+multiplies every loop (`loop_levels`: the fast loop, the roar, the hum, the charge) and every one-shot; `tune::SHOT_VACUUM` is gone,
+the hum is for Hover and Flight only again, and a one-shot asked for under 1 Pa is counted in `fired` but spawns no voice. q and the
+skin's heat no longer sound on their own in air too thin to carry sound (a fast skim at 1 Pa: nothing). The sound trace gains `fast`,
+`supersonic`, `stacks`, `share` and `charge` columns, and `hero_sound.py` works the whole table out from them. Only this mod's
+sounds: the sandbox's and the music are untouched. **Checked:** unit tests (`out_of_the_air_every_loop_is_silent`,
+`in_vacuum_a_one_shot_is_silent`, the hum in every state, the charge); `hero_sound.sh` over Kansas: the table to the digit, levels as
+before; `hero_sound_cases.sh orbit moon`: every loop 0, every sink paused at 0, no one-shot voice (the landing's `explode_ground1`,
+the jump, X); the speakers recorded with `loopback` through take-off, punches, a charge and clap and an orbit at 400 km: peak -177
+dBFS (silence), then the same actions over Kansas heard as before. **Not checked:** how it feels to the user.

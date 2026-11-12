@@ -10,16 +10,34 @@ def ramp(x, a, b):
     return min(1.0, max(0.0, (x - a) / (b - a)))
 
 
-def share(p):
-    return 0.25 + 0.75 * (ramp(math.log10(p), 0.0, 2.0) if p > 0 else 0.0)
+def air(p):
+    # D12 (the user's 2026-11-12): silent where there's no air, whole from 100 Pa, logarithmically from 1 Pa.
+    return ramp(math.log10(p), 0.0, 2.0) if p > 0 else 0.0
+
+
+def lerp(a, b, k):
+    return a + (b - a) * min(1.0, max(0.0, k))
+
+
+# tune.rs: FAST_LOG_Q, FASTER_HEAT_K, HUM_VOLUME, HUM_LOG_Q, FAST_LOOP_LEVEL, ROAR_LEVEL, ROAR_STACK, STACKS_MAX.
+FAST_LOG_Q, HEAT_K, HUM, HUM_LOG_Q = (1.0, 4.5), (2500, 6000), 0.12, (0.0, 2.0)
+FAST_LOOP_LEVEL, ROAR_LEVEL, ROAR_STACK, STACKS_MAX = (0.35, 0.85), (0.6, 1.0), 0.08, 5
 
 
 def table(r):
     q, t, flying, charging, p = float(r['q']), float(r['heat_k']), r['flying'] == '1', r['charging'] == '1', float(r['pressure'])
+    fast, sup, stacks, sh = r.get('fast') == '1', r.get('supersonic') == '1', min(int(r.get('stacks') or 0), STACKS_MAX), float(r.get('share') or 0)
+    charge = float(r.get('charge') or 1)
     lq = math.log10(q) if q > 0 else -1e9
-    # The hum: flying, and out of the air whatever he's doing (D12).
-    hums = 1.0 if flying else 1.0 - (ramp(math.log10(p), 0.0, 2.0) if p > 0 else 0.0)
-    return [ramp(lq, 1, 6), ramp(t, 2500, 6000), 0.12 * hums * (1 - ramp(lq, 0, 2)), share(p) if charging else 0.0]
+    a = air(p)
+    fast_mode = lerp(*FAST_LOOP_LEVEL, sh) if fast and not sup else 0.0
+    roar = min(lerp(*ROAR_LEVEL, sh) + ROAR_STACK * stacks, 1.0) if fast and sup else 0.0
+    return [
+        max(ramp(lq, *FAST_LOG_Q), fast_mode) * a,
+        max(ramp(t, *HEAT_K), roar) * a,
+        HUM * (1.0 if flying else 0.0) * a * (1 - ramp(lq, *HUM_LOG_Q)),
+        a * (0.45 + 0.5 * min(1.0, max(0.0, charge))) if charging else 0.0,
+    ]
 
 
 LOOPS = ['fastFlight_loop', 'fasterFlight_loop', 'sentry_flightfx_loop', 'flightCharge_loop']

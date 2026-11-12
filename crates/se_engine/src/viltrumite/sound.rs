@@ -1,5 +1,5 @@
-//! His sounds (spec F10): four loops whose levels go by the air, and one-shots, at most 8 at a time, a quarter as loud
-//! in vacuum (D12). Non-spatial, times `SoundSettings`, voices as `ship/engine_sound.rs`. Everything goes by real seconds
+//! His sounds (spec F10): four loops whose levels go by the air, and one-shots, at most 8 at a time; where there's no air
+//! all of it is silent (D12, the user's 2026-11-12: fading out over `SHOT_AIR_PA`). Non-spatial, times `SoundSettings`, voices as `ship/engine_sound.rs`. Everything goes by real seconds
 //! (F5): paused and at x1000 he sounds the same.
 //!
 //! The loops are spawned when he's turned on, paused and silent, and stay for as long as he's on: never a voice a frame.
@@ -93,15 +93,11 @@ fn ramp(x: f64, (from, to): (f64, f64)) -> f32 {
     (((x - from) / (to - from)).clamp(0.0, 1.0)) as f32
 }
 
-/// How much air the sounds count here: 0 in vacuum, 1 in air.
-fn air_k(pressure_pa: f64) -> f32 {
+/// How much air the sounds count here, every loop's and one-shot's share of its volume: 0 in vacuum (D12: silent), 1 in air,
+/// logarithmically in the pressure between `SHOT_AIR_PA`.
+pub fn air_share(pressure_pa: f64) -> f32 {
     let log_p = if pressure_pa > 0.0 { pressure_pa.log10() } else { f64::NEG_INFINITY };
     ramp(log_p, (tune::SHOT_AIR_PA.0.log10(), tune::SHOT_AIR_PA.1.log10()))
-}
-
-/// A one-shot's share of its volume by the air: `SHOT_VACUUM` in vacuum (D12), all of it in air.
-pub fn air_share(pressure_pa: f64) -> f32 {
-    tune::SHOT_VACUUM + (1.0 - tune::SHOT_VACUUM) * air_k(pressure_pa)
 }
 
 /// `fastFlight_loop`'s pitch by Mach: low at low speed, where it stands in for the air going past.
@@ -131,12 +127,12 @@ pub struct Reading {
     pub share: f32,
 }
 
-/// F10's table: each loop's volume (0..1, before `SoundSettings`) and pitch. The hum is for flying, and out of the air for whatever
-/// he's doing: D12 is "quiet in space, not silent", and nothing else has a level there (an orbit is a long fall).
+/// F10's table: each loop's volume (0..1, before `SoundSettings`) and pitch. The hum is for flying. Every loop takes the air's share:
+/// none where there's no air (D12), whatever q or the heat say (q and a skin's heat can be high in air too thin to carry sound).
 pub fn loop_levels(r: &Reading) -> [(f32, f32); 4] {
     let log_q = r.flow.log_q();
-    let air = air_k(r.flow.air.pressure_pa);
-    let hums = if r.flying { 1.0 } else { 1.0 - air };
+    let air = air_share(r.flow.air.pressure_pa);
+    let hums = if r.flying { 1.0 } else { 0.0 };
     let lerp = |(a, b): (f32, f32), k: f32| a + (b - a) * k.clamp(0.0, 1.0);
     // The user's mod: the fast loop through fast flight, the roar past the barrier, in air (the user, 2026-11-07: "there is no wind
     // sound effect as he is going very fast thru the atmosphere").
@@ -144,11 +140,11 @@ pub fn loop_levels(r: &Reading) -> [(f32, f32); 4] {
     let fast_mode = if r.fast && !r.supersonic { lerp(tune::FAST_LOOP_LEVEL, r.share) } else { 0.0 };
     let roar = if r.fast && r.supersonic { (lerp(tune::ROAR_LEVEL, r.share) + tune::ROAR_STACK * stacks).min(1.0) } else { 0.0 };
     [
-        (ramp(log_q, tune::FAST_LOG_Q).max(fast_mode * air), fast_pitch(r.flow.mach)),
-        (ramp(r.heat_k, tune::FASTER_HEAT_K).max(roar * air), 1.0 + tune::ROAR_STACK * stacks),
-        (tune::HUM_VOLUME * hums * (1.0 - ramp(log_q, tune::HUM_LOG_Q)), tune::HUM_PITCH),
-        // (As the user's mod: 0.45 swelling to 0.95 as it fills; quiet out of the air with `flightCharge_start`, which it follows.)
-        (if r.charging { air_share(r.flow.air.pressure_pa) * (0.45 + 0.5 * r.charge.clamp(0.0, 1.0)) } else { 0.0 }, 1.0),
+        (ramp(log_q, tune::FAST_LOG_Q).max(fast_mode) * air, fast_pitch(r.flow.mach)),
+        (ramp(r.heat_k, tune::FASTER_HEAT_K).max(roar) * air, 1.0 + tune::ROAR_STACK * stacks),
+        (tune::HUM_VOLUME * hums * air * (1.0 - ramp(log_q, tune::HUM_LOG_Q)), tune::HUM_PITCH),
+        // (As the user's mod: 0.45 swelling to 0.95 as it fills.)
+        (if r.charging { air * (0.45 + 0.5 * r.charge.clamp(0.0, 1.0)) } else { 0.0 }, 1.0),
     ]
 }
 
@@ -558,7 +554,17 @@ pub(super) fn play_sounds(
             let (level, pitch) = voice.map_or((0.0, 0.0), |v| (v.level, v.pitch));
             let _ = write!(out, ",{:.4},{:.4},{:.4}", want.0, level, pitch);
         }
-        let _ = writeln!(out, ",{},{shots},{}", voices.loops.len(), started.map_or(0, |t| t.elapsed().as_micros()));
+        let _ = writeln!(
+            out,
+            ",{},{shots},{},{},{},{},{:.4},{:.4}",
+            voices.loops.len(),
+            started.map_or(0, |t| t.elapsed().as_micros()),
+            reading.fast as u8,
+            reading.supersonic as u8,
+            reading.stacks,
+            reading.share,
+            reading.charge
+        );
     }
 
     // Off, and faded: nothing's left, and this doesn't run again.
@@ -589,6 +595,10 @@ fn start_shot(commands: &mut Commands, voices: &mut Voices, cue: Cue, share: f32
     let gain = cue.gain * share;
     if dev {
         info!("hero sound: {} fired, gain {gain:.3}, pitch {:.2}", cue.sfx.file(), cue.pitch);
+    }
+    // No air, no sound (D12): counted as fired, but no voice, so it takes no one's slot.
+    if gain <= tune::SOUND_SILENT {
+        return;
     }
     let slot = voices.shots.iter().position(Option::is_none).unwrap_or_else(|| {
         let oldest = voices.shots.iter().enumerate().max_by(|a, b| {
@@ -629,7 +639,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                             let n = l.file();
                             head += &format!(",{n}_want,{n}_level,{n}_pitch");
                         }
-                        let _ = writeln!(w, "{head},loops,shots,us");
+                        let _ = writeln!(w, "{head},loops,shots,us,fast,supersonic,stacks,share,charge");
                         Some(w)
                     }
                     Err(e) => {
@@ -746,28 +756,31 @@ mod tests {
         assert!((at(0.0, 0.0, 0.0, false, true)[3].0 - 0.95).abs() < 1e-6);
     }
 
-    /// D12, "quiet in space, not silent", and the edge case "body with no atmosphere: hum only": whatever he's doing.
+    /// D12 (the user's 2026-11-12): fully silent where there's no air, whatever he's doing and however fast.
     #[test]
-    fn out_of_the_air_the_hum_never_stops() {
-        let hum = |flow: Flow, flying| loop_levels(&Reading { flow, flying, ..default() })[2].0;
+    fn out_of_the_air_every_loop_is_silent() {
+        let all = |flow: Flow, flying| {
+            let r = Reading { flow, flying, heat_k: 9000.0, charging: true, charge: 1.0, fast: true, supersonic: true, stacks: 5, share: 1.0 };
+            loop_levels(&r).map(|l| l.0)
+        };
         for speed in [0.0, 25.0, 7_700.0, 3e11] {
-            assert_eq!(hum(Flow::vacuum(speed), true), 0.12);
-            assert_eq!(hum(Flow::vacuum(speed), false), 0.12, "falling or on his feet at {speed} m/s");
+            for flying in [true, false] {
+                assert_eq!(all(Flow::vacuum(speed), flying), [0.0; 4], "at {speed} m/s, flying {flying}");
+            }
         }
-        // Under what the sounds call air, all of it.
-        assert_eq!(hum(flow(0.0, 0.0, 0.5), false), 0.12);
-        // Not flying it goes as the air comes in, by the pressure alone: no step anywhere on the way down.
-        let some = hum(flow(0.0, 0.0, 10.0), false);
-        assert!((some - 0.06).abs() < 1e-5, "{some}");
-        // Mars's ground and Earth's: as much as before, none.
-        assert_eq!(hum(flow(0.0, 0.0, 650.0), false), 0.0);
-        assert_eq!(hum(flow(0.0, 0.0, 101_325.0), false), 0.0);
-        // And the air going past takes it off as it does flying.
-        assert_eq!(hum(flow(100.0, 3.0, 0.5), false), 0.0);
-        assert!((hum(flow(10.0, 3.0, 0.5), false) - 0.06).abs() < 1e-5);
-        // The other three have nothing to say there.
-        let all = loop_levels(&Reading { flow: Flow::vacuum(7_700.0), ..default() });
-        assert_eq!((all[0].0, all[1].0, all[3].0), (0.0, 0.0, 0.0));
+        // High q in air too thin to carry sound (a fast skim of the upper air): still nothing.
+        assert_eq!(all(flow(1e5, 30.0, 1.0), true), [0.0; 4]);
+        // In between it fades by the pressure alone, with no step on the way down.
+        let hum = |p| loop_levels(&Reading { flow: flow(0.0, 0.0, p), flying: true, ..default() })[2].0;
+        assert_eq!(hum(0.5), 0.0);
+        assert!((hum(10.0) - 0.06).abs() < 1e-5, "{}", hum(10.0));
+        assert_eq!(hum(100.0), 0.12);
+        // Mars's ground and Earth's: as before.
+        assert_eq!(hum(650.0), 0.12);
+        assert_eq!(hum(101_325.0), 0.12);
+        // Not flying, never a hum, in air or out of it.
+        let still = |p| loop_levels(&Reading { flow: flow(0.0, 0.0, p), ..default() })[2].0;
+        assert_eq!((still(0.0), still(10.0), still(101_325.0)), (0.0, 0.0, 0.0));
     }
 
     /// The same through `play_sounds`: the state comes from `Hero`, and the voice goes where it's told.
@@ -782,7 +795,7 @@ mod tests {
             for _ in 0..30 {
                 frame(&mut a, 16);
             }
-            assert_eq!(level(&a), 0.12, "{state:?} in vacuum");
+            assert_eq!(level(&a), 0.0, "{state:?} in vacuum");
             a.world_mut().resource_mut::<Hero>().flow.air.pressure_pa = 101_325.0;
             for _ in 0..30 {
                 frame(&mut a, 16);
@@ -804,15 +817,15 @@ mod tests {
     }
 
     #[test]
-    fn in_vacuum_a_one_shot_keeps_a_quarter() {
-        assert_eq!(air_share(0.0), 0.25);
-        assert_eq!(air_share(1.0), 0.25);
+    fn in_vacuum_a_one_shot_is_silent() {
+        assert_eq!(air_share(0.0), 0.0);
+        assert_eq!(air_share(1.0), 0.0);
         assert_eq!(air_share(100.0), 1.0);
         assert_eq!(air_share(101_325.0), 1.0);
         // Mars's ground, about 650 Pa.
         assert_eq!(air_share(650.0), 1.0);
         let some = air_share(10.0);
-        assert!(some > 0.25 && some < 1.0);
+        assert!((some - 0.5).abs() < 1e-6, "{some}");
     }
 
     #[test]
@@ -898,6 +911,8 @@ mod tests {
             .init_resource::<Voices>()
             .init_resource::<Time<Real>>()
             .add_systems(Update, play_sounds.run_if(sound_running));
+        // In air, where everything sounds; the tests about vacuum say so (D12: silent there).
+        app.world_mut().resource_mut::<Hero>().flow.air.pressure_pa = 101_325.0;
         app
     }
 
@@ -1020,20 +1035,30 @@ mod tests {
             frame(&mut a, 16);
         }
         let charge = Action::Charge { clip: 0, t: 0.0, hold: 0.6, clap: 1.23, end: 2.0 };
+        a.world_mut().resource_mut::<Hero>().flow = Flow::vacuum(0.0);
         a.world_mut().resource_mut::<Hero>().action = charge;
         for _ in 0..30 {
             frame(&mut a, 16);
         }
         let v = a.world().resource::<Voices>();
         assert_eq!(v.fired[Sfx::ChargeStart as usize], 1, "held: once");
-        // (In vacuum here: D12's quarter.)
-        assert!((v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level - 0.25 * 0.95).abs() < 1e-6);
-        assert_eq!(v.shots_alive(), 1);
+        // (In vacuum here: D12, silent, and the one-shot takes no voice.)
+        assert_eq!(v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level, 0.0);
+        assert_eq!(v.shots_alive(), 0);
+        // Into the air: the loop comes up; a new charge's start plays.
         a.world_mut().resource_mut::<Hero>().flow.air.pressure_pa = 101_325.0;
+        a.world_mut().resource_mut::<Hero>().action = Action::None;
         for _ in 0..30 {
             frame(&mut a, 16);
         }
-        assert!((a.world().resource::<Voices>().loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level - 0.95).abs() < 1e-6);
+        a.world_mut().resource_mut::<Hero>().action = charge;
+        for _ in 0..30 {
+            frame(&mut a, 16);
+        }
+        let v = a.world().resource::<Voices>();
+        assert!((v.loops.iter().find(|l| l.sfx == Sfx::ChargeLoop).unwrap().level - 0.95).abs() < 1e-6);
+        assert_eq!(v.fired[Sfx::ChargeStart as usize], 2);
+        assert_eq!(v.shots_alive(), 1);
         a.world_mut().resource_mut::<Hero>().action = Action::None;
         for _ in 0..30 {
             frame(&mut a, 16);

@@ -657,7 +657,8 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
   state and position, `hero sound trace FILE` logs every frame (`.optimize/bench/hero_sound.sh`, `hero_shots.sh`), `hero sound cue WHAT`
   fires a trigger's function. `timing frame FPS` steps by 1/FPS, for frame-rate tests. `print_sound_levels` (ignored test) gives each file's
   real loudness: they differ by ten times.
-  Out of the air the hum stays in every state, on his feet too (D12: `loop_levels`, `air_k`; an orbit is one long fall). `Director::tier` follows the speed
+  Where there's no air everything of his is silent (D12, the user's 2026-11-12: every loop and one-shot times `air_share`, 0 under 1 Pa;
+  a silent one-shot is counted but gets no voice); the sandbox's sounds and the music don't go by it. `Director::tier` follows the speed
   in every state, a fall's too: what's about Hyper flight goes by `hero::flying_hyper`. A Go To carries him with no velocity of his own: `Hero.flow` and
   `Readout.speed` take the camera's speed over the ground (`Hero.carried_from`), `speed` in `hero_move` stays 0 for his poses. `.optimize/bench/hero_sound_cases.sh` has these cases.
 - SE's gas giant cloud generator lives in `gas_giant.wesl` (noise primitives, `gg_height`,
