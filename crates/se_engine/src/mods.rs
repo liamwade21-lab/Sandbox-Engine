@@ -133,13 +133,16 @@ pub struct ModControl {
     pub walker: bool,
     /// The sandbox's Q menu is held open: the mouse goes to egui, and only that menu shows.
     pub spawn_menu: bool,
+    /// The main menu is up (`sandbox/main_menu.rs`, set every frame): the mouse goes to egui, no key reaches anything else, and
+    /// the panels are hidden (its Options window is the settings window, which doesn't go by them).
+    pub main_menu: bool,
     request: Option<ModRequest>,
 }
 
 impl ModControl {
     /// The mouse goes to egui and the cursor shows: Tab's menus, or the window has lost the focus.
     pub fn menus_open(&self) -> bool {
-        self.menus || self.unfocused || self.spawn_menu
+        self.menus || self.unfocused || self.spawn_menu || self.main_menu
     }
 
     /// Ask for a mod to be turned on, as a click on its row does (`apply_request` does it next frame, with every check).
@@ -156,7 +159,7 @@ impl ModControl {
 
     /// He's on and playing: the panels are hidden. (While he's loading they stay, and the row says so: F1.)
     pub fn panels_hidden(&self) -> bool {
-        self.walker || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
+        self.main_menu || self.walker || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
     }
 
     /// Turn the mod that is on off. Every way off comes through here.
@@ -416,7 +419,8 @@ pub(crate) fn snapshot_input(
     }
     // While he plays no text field keeps the keys, or they'd stay dead with the cursor locked: leaving the menus, turned on
     // with Find open, the end of his loading (the panels are up till then). hud.rs's Find asks for the focus only with them up.
-    if control.panels_hidden() {
+    // (Under the main menu the Options window may have a text field.)
+    if control.panels_hidden() && !control.main_menu {
         if let Ok(ctx) = egui.ctx_mut() {
             ctx.memory_mut(|m| {
                 if let Some(id) = m.focused() {

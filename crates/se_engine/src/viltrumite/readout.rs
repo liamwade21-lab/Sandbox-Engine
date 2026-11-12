@@ -68,6 +68,10 @@ pub(super) fn draw(
     (data, sim): (Res<SeData>, Res<SimTime>),
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    // Under the main menu nothing of his shows.
+    if control.main_menu {
+        return Ok(());
+    }
     // A camera effect, not a panel: with the panels hidden too.
     speed_lines(ctx, &hero);
     if hud.hidden {

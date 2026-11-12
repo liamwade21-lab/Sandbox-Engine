@@ -52,8 +52,9 @@ pub struct Menu {
     pub dev_tab: Option<String>,
 }
 
-/// Garry's Mod's Derma look, near enough: grey frames, a white tree, a dark sheet of icons, blue for what is chosen.
-mod look {
+/// Garry's Mod's Derma look, near enough: grey frames, a white tree, a dark sheet of icons, blue for what is chosen. (The main menu
+/// uses it too.)
+pub(super) mod look {
     use bevy_egui::egui::Color32;
     pub const FRAME: Color32 = Color32::from_rgb(108, 111, 114);
     pub const FRAME_EDGE: Color32 = Color32::from_rgb(40, 42, 46);
@@ -133,6 +134,68 @@ fn pump_icons(menu: &mut Menu, ctx: &egui::Context, assets: &GmodAssets, wanted:
             (path, icon)
         }));
     }
+}
+
+/// Who to play as: "Yourself" and each mod, as rows; a click plays as that one. Shared by the Q menu's Mods tab and the main
+/// menu's Mods page. `toggle`: a click on the one that is playing turns it off (the Q menu); otherwise it only counts as picked.
+/// True when an enabled row was clicked.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn mod_rows(ui: &mut egui::Ui, sb: &mut Sandbox, control: &mut ModControl, reg: &ModRegistry, flying_ship: bool, script_starting: bool, toggle: bool, from: &str) -> bool {
+    ui.colored_label(look::DIM, "Click who to play as.");
+    ui.add_space(8.0);
+    let row = |ui: &mut egui::Ui, title: &str, state: &str, text: &str, warn: Option<String>, on: bool, enabled: bool| -> bool {
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(760.0), 64.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+        ui.painter().rect_filled(r, 4.0, if on { look::BLUE.gamma_multiply(0.55) } else { look::TILE });
+        if enabled && resp.hovered() {
+            ui.painter().rect_stroke(r, 4.0, egui::Stroke::new(2.0, look::BLUE), egui::StrokeKind::Inside);
+        }
+        let ink = if enabled { look::TEXT } else { look::DIM.gamma_multiply(0.7) };
+        ui.painter().text(r.left_top() + egui::vec2(12.0, 8.0), egui::Align2::LEFT_TOP, title, egui::FontId::proportional(18.0), ink);
+        ui.painter().text(r.right_top() + egui::vec2(-12.0, 10.0), egui::Align2::RIGHT_TOP, state, egui::FontId::proportional(14.0), if on { egui::Color32::WHITE } else { look::DIM });
+        match warn {
+            Some(w) => ui.painter().text(r.left_top() + egui::vec2(12.0, 36.0), egui::Align2::LEFT_TOP, w, egui::FontId::proportional(13.0), look::WARN),
+            None => ui.painter().text(r.left_top() + egui::vec2(12.0, 36.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), look::DIM),
+        };
+        ui.add_space(6.0);
+        resp.clicked()
+    };
+    let mut picked = false;
+    let none_on = control.active.is_none();
+    if row(ui, "Yourself", if none_on { "Playing" } else { "" }, "First person, on foot: Garry's Mod's movement and weapons.", None, none_on, true) {
+        picked = true;
+        if !none_on {
+            control.request_off();
+            sb.before_hero = Mode::Walk;
+        }
+        if !none_on || !toggle {
+            sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
+            info!("sandbox: {from}: Yourself");
+        }
+    }
+    if reg.mods.is_empty() {
+        ui.colored_label(look::DIM, "No mods found.");
+    }
+    for m in &reg.mods {
+        let on = control.active.as_deref() == Some(m.id.as_str());
+        let grey = if on { None } else { grey_reason(m, flying_ship, script_starting) };
+        let state = match (on, control.loading) {
+            (true, true) => "Loading",
+            (true, false) => "Playing",
+            _ => "",
+        };
+        if row(ui, &m.name, state, &m.description, grey.as_ref().map(|g| g.to_string()), on, grey.is_none()) {
+            picked = true;
+            if on && toggle {
+                control.request_off();
+                sb.before_hero = Mode::Walk;
+            } else if !on {
+                control.request_on(&m.id);
+            }
+            sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
+            info!("sandbox: {from}: {} {}", m.name, if on && toggle { "off" } else { "on" });
+        }
+    }
+    picked
 }
 
 /// The spawn menu, while Q is held.
@@ -297,52 +360,7 @@ pub fn draw_menu(
             Tab::Mods => {
                 ui.painter().rect_filled(body, 3.0, look::SHEET);
                 ui.scope_builder(egui::UiBuilder::new().max_rect(body.shrink(10.0)), |ui| {
-                    ui.colored_label(look::DIM, "Click who to play as.");
-                    ui.add_space(8.0);
-                    let row = |ui: &mut egui::Ui, title: &str, state: &str, text: &str, warn: Option<String>, on: bool, enabled: bool| -> bool {
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(760.0), 64.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-                        ui.painter().rect_filled(r, 4.0, if on { look::BLUE.gamma_multiply(0.55) } else { look::TILE });
-                        if enabled && resp.hovered() {
-                            ui.painter().rect_stroke(r, 4.0, egui::Stroke::new(2.0, look::BLUE), egui::StrokeKind::Inside);
-                        }
-                        let ink = if enabled { look::TEXT } else { look::DIM.gamma_multiply(0.7) };
-                        ui.painter().text(r.left_top() + egui::vec2(12.0, 8.0), egui::Align2::LEFT_TOP, title, egui::FontId::proportional(18.0), ink);
-                        ui.painter().text(r.right_top() + egui::vec2(-12.0, 10.0), egui::Align2::RIGHT_TOP, state, egui::FontId::proportional(14.0), if on { egui::Color32::WHITE } else { look::DIM });
-                        match warn {
-                            Some(w) => ui.painter().text(r.left_top() + egui::vec2(12.0, 36.0), egui::Align2::LEFT_TOP, w, egui::FontId::proportional(13.0), look::WARN),
-                            None => ui.painter().text(r.left_top() + egui::vec2(12.0, 36.0), egui::Align2::LEFT_TOP, text, egui::FontId::proportional(13.0), look::DIM),
-                        };
-                        ui.add_space(6.0);
-                        resp.clicked()
-                    };
-                    let none_on = control.active.is_none();
-                    if row(ui, "Yourself", if none_on { "Playing" } else { "" }, "First person, on foot: Garry's Mod's movement and weapons.", None, none_on, true) && !none_on {
-                        control.request_off();
-                        sb.before_hero = Mode::Walk;
-                        sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
-                    }
-                    if reg.mods.is_empty() {
-                        ui.colored_label(look::DIM, "No mods found.");
-                    }
-                    for m in &reg.mods {
-                        let on = control.active.as_deref() == Some(m.id.as_str());
-                        let grey = if on { None } else { grey_reason(m, flight.active, runner.starting()) };
-                        let state = match (on, control.loading) {
-                            (true, true) => "Loading",
-                            (true, false) => "Playing",
-                            _ => "",
-                        };
-                        if row(ui, &m.name, state, &m.description, grey.as_ref().map(|g| g.to_string()), on, grey.is_none()) {
-                            if on {
-                                control.request_off();
-                                sb.before_hero = Mode::Walk;
-                            } else {
-                                control.request_on(&m.id);
-                            }
-                            sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
-                            info!("sandbox: the Q menu's Mods tab: {} {}", m.name, if on { "off" } else { "on" });
-                        }
-                    }
+                    mod_rows(ui, &mut sb, &mut control, &reg, flight.active, runner.starting(), true, "the Q menu's Mods tab");
                 });
             }
         }

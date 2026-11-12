@@ -529,6 +529,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "f3" => KeyCode::F3,
         "alt" => KeyCode::AltLeft,
         "space" => KeyCode::Space,
+        "esc" => KeyCode::Escape,
         "shift" => KeyCode::ShiftLeft,
         "ctrl" => KeyCode::ControlLeft,
         _ => return None,

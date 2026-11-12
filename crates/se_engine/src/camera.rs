@@ -1773,6 +1773,8 @@ fn run_commands(
         // sbx walk [LAT LON] | fly | look YAW PITCH | state | spawn NAME | ...: the sandbox's first-person player
         // (sandbox::dev_command).
         "sbx" => commands.queue(move |w: &mut World| crate::sandbox::dev_command(w, &arg)),
+        // menu on|off|state|mods|main: the main menu (sandbox/main_menu.rs).
+        "menu" => commands.queue(move |w: &mut World| crate::sandbox::main_menu::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).
         "uiclick" => commands.queue(move |w: &mut World| crate::mods::dev_ui_click(w, &arg)),
         // script PATH: start a script, as the Scripts window does.

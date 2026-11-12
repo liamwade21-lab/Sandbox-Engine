@@ -31,7 +31,7 @@ impl Plugin for SplashPlugin {
 }
 
 #[derive(Resource, Default)]
-struct Splash {
+pub struct Splash {
     active: bool,
     age: f32,
     /// Seconds since it opened, unclamped (`age` takes at most 0.1 s a frame, for the drawing).
@@ -40,6 +40,13 @@ struct Splash {
     ready_s: f32,
     /// The `age` it began to fade at.
     fade_at: Option<f32>,
+}
+
+impl Splash {
+    /// It still covers the window (fading counts): the main menu under it takes no clicks till then.
+    pub fn covering(&self) -> bool {
+        self.active
+    }
 }
 
 /// Whether the first view is loaded: the saved session's body found (a procedural one waits for its

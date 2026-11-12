@@ -119,11 +119,13 @@ pub(crate) fn draw_grids(
     cams: Query<&Camera, With<MainCamera>>,
     bodies: Query<&SystemBody>,
     mut geo: Local<Option<GridGeometry>>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
     let sq = |v: f32| v * v;
     let master = sq(fade.grids);
     let geographic = sq(fade.grid[3]);
-    if master <= 0.0 && geographic <= 0.0 {
+    // (Nor over the main menu.)
+    if (master <= 0.0 && geographic <= 0.0) || control.main_menu {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

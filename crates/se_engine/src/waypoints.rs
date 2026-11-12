@@ -206,8 +206,10 @@ fn draw_waypoints(
     cam: Res<FlyCamera>,
     sim: Res<SimTime>,
     cams: Query<&Camera, With<MainCamera>>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
-    if wps.list.is_empty() {
+    // (Nor over the main menu.)
+    if wps.list.is_empty() || control.main_menu {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

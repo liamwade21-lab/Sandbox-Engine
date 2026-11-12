@@ -15,6 +15,7 @@ pub mod assets;
 pub mod audio;
 pub mod icon;
 pub mod light;
+pub mod main_menu;
 pub mod menu;
 pub mod movement;
 pub mod props;
@@ -324,11 +325,12 @@ pub struct SandboxPlugin;
 
 impl Plugin for SandboxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Sandbox>().init_resource::<WalkInput>().init_resource::<assets::GmodAssets>().init_resource::<props::Props>().init_resource::<menu::Menu>().init_resource::<weapons::Arsenal>();
+        app.init_resource::<Sandbox>().init_resource::<WalkInput>().init_resource::<assets::GmodAssets>().init_resource::<props::Props>().init_resource::<menu::Menu>().init_resource::<weapons::Arsenal>().init_resource::<main_menu::MainMenu>();
         if !enabled() {
             return;
         }
         light::build(app);
+        main_menu::build(app);
         viewmodel::build(app);
         app.add_systems(Startup, (find_gmod, audio::spawn_ears))
             .add_systems(Update, (gmod_found.run_if(resource_exists::<GmodSearch>), props::handle_requests))
@@ -401,23 +403,31 @@ fn start_on_earth(cfg: Res<EngineConfig>, data: Res<SeData>, time: Res<SimTime>,
     if !starts_on_earth(&cfg) {
         return;
     }
+    if !put_on_earth(&data, time.jd, &mut cam, &mut sb, "starting") {
+        warn!("sandbox: no Earth in the catalog: the port's own start stays");
+    }
+}
+
+/// On Earth's ground, where the Sun is highest among `SPOTS`, on foot (the launch, and the main menu's Play once playing).
+/// False without an Earth.
+fn put_on_earth(data: &SeData, jd: f64, cam: &mut FlyCamera, sb: &mut Sandbox, why: &str) -> bool {
     let cat = &data.catalog;
     let (Some(earth), Some(sun)) = (cat.find("Earth"), cat.find("Sun")) else {
-        warn!("sandbox: no Earth in the catalog: the port's own start stays");
-        return;
+        return false;
     };
     let eph = Ephemeris::new(cat);
-    let q = eph.orientation(earth, time.jd);
-    let to_sun = q.inverse() * eph.position(sun, time.jd).delta_m(eph.position(earth, time.jd)).normalize_or(DVec3::X);
+    let q = eph.orientation(earth, jd);
+    let to_sun = q.inverse() * eph.position(sun, jd).delta_m(eph.position(earth, jd)).normalize_or(DVec3::X);
     let forced = std::env::var("SE_SANDBOX_SPOT").ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|i| *i < SPOTS.len());
     let best = forced.unwrap_or_else(|| {
         let height = |i: usize| sphere_dir(SPOTS[i].1, SPOTS[i].2).dot(to_sun);
         (0..SPOTS.len()).max_by(|a, b| height(*a).total_cmp(&height(*b))).unwrap_or(0)
     });
     let (name, lat, lon, heading) = SPOTS[best];
-    info!("sandbox: starting on Earth in {name} ({lat:.2}, {lon:.2}), the Sun {:.0} degrees up", sphere_dir(lat, lon).dot(to_sun).asin().to_degrees());
+    info!("sandbox: {why} on Earth in {name} ({lat:.2}, {lon:.2}), the Sun {:.0} degrees up", sphere_dir(lat, lon).dot(to_sun).asin().to_degrees());
     cam.selected = Some(earth);
-    place_on(&mut sb, &mut cam, &eph, time.jd, earth, DVec3::from_array(body_shape(cat, earth)), lat, lon, heading);
+    place_on(sb, cam, &eph, jd, earth, DVec3::from_array(body_shape(cat, earth)), lat, lon, heading);
+    true
 }
 
 fn body_shape(cat: &se_core::catalog::Catalog, obj: ObjectRef) -> [f64; 3] {
@@ -515,6 +525,10 @@ fn read_input(
     if control.walker != walking {
         control.walker = walking;
     }
+    // The main menu is up (`main_menu.rs`, which has already taken every key this frame): the cursor is free and egui has the
+    // mouse, as with the Q menu, but nothing of it is drawn here.
+    let main = control.main_menu;
+    let menu = menu || main;
     let st = &mut sb.cursor;
     if st.focused != Some(focused) {
         if focused {
@@ -534,7 +548,7 @@ fn read_input(
         }
         return;
     }
-    // No text field keeps the keys while he walks with the cursor locked.
+    // No text field keeps the keys while he walks with the cursor locked. (Under the main menu the Options window may have one.)
     if !menu {
         if let Ok(ctx) = egui.ctx_mut() {
             ctx.memory_mut(|m| {
@@ -630,13 +644,15 @@ fn read_input(
     st.regain = st.regain.saturating_sub(1);
 }
 
-/// With the cursor locked a click must not press whatever egui has under it; with the Q menu open everything reaches it.
-fn strip_egui_input(sb: Res<Sandbox>, mut q: Query<&mut bevy_egui::EguiInput, With<PrimaryEguiContext>>) {
+/// With the cursor locked a click must not press whatever egui has under it; with the Q menu or the main menu open everything
+/// reaches it.
+fn strip_egui_input(sb: Res<Sandbox>, control: Res<ModControl>, mut q: Query<&mut bevy_egui::EguiInput, With<PrimaryEguiContext>>) {
     if !sb.walking() {
         return;
     }
+    let menus = sb.menu || control.main_menu;
     for mut input in &mut q {
-        input.events.retain(|e| crate::mods::reaches_egui(e, sb.menu));
+        input.events.retain(|e| crate::mods::reaches_egui(e, menus));
     }
 }
 

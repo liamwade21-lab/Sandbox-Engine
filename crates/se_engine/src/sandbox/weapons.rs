@@ -1086,8 +1086,8 @@ mod hud {
 }
 
 /// The HUD while he walks: the cross, health, ammunition, the weapon selection, and this frame's flashes and dust.
-pub fn draw_hud(mut contexts: EguiContexts, sb: Res<Sandbox>, ar: Res<Arsenal>, camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>) -> Result {
-    if !sb.walking() {
+pub fn draw_hud(mut contexts: EguiContexts, sb: Res<Sandbox>, ar: Res<Arsenal>, camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>, control: Res<crate::mods::ModControl>) -> Result {
+    if !sb.walking() || control.main_menu {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;

@@ -113,6 +113,31 @@ cargo test -p se_core
 
 ## The sandbox (first person)
 
+### The main menu
+
+After the loading screen comes the **main menu**, laid out like Garry's Mod's: a full-screen picture that slowly zooms and
+changes, the title top left, the entries down the left (they light up under the mouse, with Garry's Mod's own hover and
+click sounds when it is installed) and a thin bar along the bottom. The world goes on loading behind it, so Play is
+instant.
+
+| Entry | What it does |
+|---|---|
+| Resume | back to the game (only once you are playing; Esc does the same) |
+| Play | the first time: into the game, on foot on Earth. Once playing: back on Earth's ground on foot, as a launch starts (a mod that is on is turned off) |
+| Mods | who to play as: the same list as the Q menu's Mods tab. A click starts playing as that one |
+| Options | the settings window (Esc or its cross closes it) |
+| Quit | ends the game |
+
+**Esc** while playing brings the menu back. Under the menu, Esc closes Options, then the Mods page, then the menu. While a
+spacecraft is flown Esc still leaves flight, as before. While the menu is up the mouse is free and no key reaches you,
+your hero or the free camera (the world itself goes on: a flying hero keeps flying).
+
+The pictures are your own screenshots (`Pictures\SpaceEngine-rs` and its `screenshots-hd`; the `export` folder is left
+out), else Garry's Mod's own backgrounds read from its install, else plain dark. `SE_MENU=0` skips the menu; test runs
+(`--run`, `--screenshot`, `--script`) skip it unless `SE_MENU=1`. Without the sandbox (`SE_SANDBOX=0`) there is no menu.
+
+### On foot
+
 The game starts on **Earth's ground in first person**, in whichever of eight open places has the Sun highest at that
 moment (Kansas, the Pampas, Salisbury Plain, the Serengeti, the Kazakh and Mongolian steppes, New South Wales, the
 Canterbury Plains). Movement, weapons, sounds and the spawn menu are Garry's Mod's and Half-Life 2's: the movement is
@@ -154,7 +179,7 @@ Gravity is the planet's own, for you and for the props: on the Moon (`V`, fly th
 and props fall slowly. Props stand on the terrain as it is drawn; the props' physics is the `rapier3d` library.
 
 The port's windows (F4 settings, F3 find, ...) want the mouse: press V for free flight first, where everything is as it
-was. Garry's Mod's flashlight (F), chat, voice and context menu (C) have no counterpart here.
+was, or use the main menu's Options (Esc). Garry's Mod's flashlight (F), chat, voice and context menu (C) have no counterpart here.
 
 Not there yet: props have no shadows, you walk on the sea, props more than 60 m from you wait frozen until you come
 back, a tree is solid as its trunk only (you walk under its crown), and a building you are set down inside lets you
@@ -300,7 +325,7 @@ there (an arrow when it's off the screen). Let go of W and he coasts, never fast
 and lets go of it. Earth to the Moon takes about 10 s, Alpha Centauri about 35; anything over 5 minutes (about 80 light years) can't
 be selected this way or locked on. The numbers are `LOCK_*` at the end of `tune.rs`.
 
-The air does what its physics says, on every world by its own air. Past the speed of sound (Earth about 335 m/s at sea level, Mars 233, Venus 449) a sonic boom goes off with a ring of cloud, and a cone of vapour hangs round him up to Mach 1.6; slowing back down it ends with a softer sound and a puff of the cone, no boom. Above the air, 55 km on Earth, 16 on Mars, 188 on Venus, there is no boom and no cone, so coming in from orbit doesn't boom, and a world with under 150 Pa of air never does. Faster still the air heats him (800 K at about 1 km/s at sea level on Earth, 7 times less speed on Venus): a shell of plasma round him from 3,500 K, a blue-white trail from 6,000, and at 10,000 K (9.7 km/s at sea level) the look goes no further; only the shell and the trail get bigger. His body itself doesn't glow and the readout has no heat bar (removed 2026-11-12). He cools over seconds when he slows. Neither hurts him or slows him. The trail lies behind the camera in a straight line: you see it when you turn, or with the view off to the side. A Go To through the air booms and heats him too, by its real speed through the air: a landing from orbit or a Go To leaving from near the ground makes him white-hot for a moment.
+The air does what its physics says, on every world by its own air. Past the speed of sound (Earth about 335 m/s at sea level, Mars 233, Venus 449) a sonic boom goes off with a ring of cloud, and a cone of vapour hangs round him up to Mach 1.6; slowing back down it ends with a softer sound and a puff of the cone, no boom. Above the air, 55 km on Earth, 16 on Mars, 188 on Venus, there is no boom and no cone, so coming in from orbit doesn't boom, and a world with under 150 Pa of air never does. Faster still the air heats him (800 K at about 1 km/s at sea level on Earth, 7 times less speed on Venus): a shell of plasma round him from 3,500 K, a blue-white trail from 6,000, and at 10,000 K (9.7 km/s at sea level) the look goes no further; only the shell and the trail get bigger. His body itself doesn't glow and the readout has no heat bar (removed 2026-11-12). He cools over seconds when he slows. Neither hurts him or slows him. The trail lies behind the camera in a straight line: you see it when you turn, or with the view off to the side. A Go To through the air booms and heats him too, by its real speed through the air: a landing from orbit or a Go To leaving from near the ground wraps him in the plasma shell for a moment.
 
 He plays on the real clock: the same at x1000 and when paused, and while hovering he holds his place over the ground whatever the clock does. He lands by how fast he comes down: under 12 m/s he's straight on his feet, up to 35 m/s a short stop, faster a hard landing with a crater (2.4 m in radius at 35 m/s, 12 m at 900 m/s, 60 m at most), broken ground round him and a burst of dust in the ground's own colour; on the sea a white splash instead. A crater stays until both he and the camera are 20.5 km away (it doesn't fade before), also after the mod is turned off; at most 32 at a time, the farthest giving way. Big impacts shake the view a little. On foot he walks up slopes to 50 degrees and slides down steeper ones; steeper than 70 is a wall, which he falls past (a long one ends in a crash at the bottom), and he falls off ledges. Over the sea he stops 1.5 m up and hovers (fly to land to walk on); a gas giant, a star, a black hole or a comet model only stop him: he hovers there too. His shadow falls the way the sun says, fades as he climbs (gone by 200 m), under cloud and at dusk. Starting to pilot a ship or a script turns the mod off first. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 

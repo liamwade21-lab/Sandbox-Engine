@@ -54,7 +54,9 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
 - What a launch does (since 2026-11-11): it starts on Earth's ground in first person (the sandbox). `SE_SANDBOX=0` gives the
   port as it was (free flight at Earth, the saved session restored); test runs (`--run`, `--screenshot`, `--script`) and
   `--start NAME` keep the old start unless `SE_SANDBOX=1`. The sandbox's props' physics is the `rapier3d` crate (0.36, its own
-  world, no Bevy plugin), and Bevy's `wav` feature is on for Half-Life 2's sounds.
+  world, no Bevy plugin), and Bevy's `wav` feature is on for Half-Life 2's sounds. Since 2026-11-12 the main menu comes
+  after the loading screen (the sandbox's `main_menu.rs`); test runs skip it unless `SE_MENU=1`, `SE_MENU=0` skips it in a
+  normal launch, and there is none with `SE_SANDBOX=0`.
 - What players get (since 1.0.1, 2026-11-09): the exe alone. `crates/se_engine/build.rs` builds every file under
   `assets/shaders`, `textures`, `models`, `mr` and `mods` into it (`embedded_assets.rs`); on a player's first start
   (and when an update changes them) they're unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets` (about 115 MB) and
@@ -186,6 +188,25 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
     barrel dropped on his right is 5.7 dB louder on the right.
   - The street lamps light the props and the weapon at night as they do the hero (`LightProbe`'s town share, `draw.rs`
     `town_light`; the term is in `sandbox_prop.wesl` and `sandbox_viewmodel.wesl` as in `hero.wesl`).
+  - The main menu (`sandbox/main_menu.rs`, the user's 2026-11-12; layout from Garry's Mod's `html/`, nothing copied): an egui
+    Area at `Order::Background`, so the Settings window (Options: `hud.show_settings`, Middle) draws over it, and the loading
+    screen (Foreground) covers it until it has faded (`Splash::covering`: no click before). egui paints layers that aren't
+    areas (`ctx.layer_painter`) after the areas of their order, so they land on it: each must be gated on
+    `ModControl::main_menu` (the walker's HUD, his readout, the selection pointer, the centre messages, orbits, labels and
+    markers, constellations, grids and waypoints are; test with `SE_OVERLAY=orbits,labels=2,markers,constellations,grids`:
+    test runs have them off). The panels go by `panels_hidden`, which includes it; the port's other windows (Find, Places,
+    Help, the star browser, Ships, the scripts' toolbars, the ship's HUD) by `hud.hidden`, which the menu turns on while up
+    and gives back after (`saved_hidden`); the Settings window obeys neither, so Options works. While it is up `menu_input` (PreUpdate, after `InputSystems` and
+    `viltrumite::dev_keys`, before `sandbox::read_input` and `mods::snapshot_input`) resets every key and button and zeroes the
+    mouse's motion and wheel; Esc's held state is kept, or the key's auto-repeat presses it again. `ModControl::main_menu`
+    (in `menus_open` and `panels_hidden`) frees the cursor and lets the pointer reach egui in `sandbox::read_input` /
+    `strip_egui_input` and `mods::snapshot_input`, without surrendering a text field's focus (Options). Esc: a flown ship's
+    first (ship.rs), else the menu (Options, then the Mods page, then closed). Mods is the Q menu's own rows (`menu::mod_rows`).
+    Play once playing goes back on Earth through `restart_on_earth` (the mod off first, then `put_on_earth`, the launch's own
+    spot choice). Pictures: `screenshot::folder()` and its `screenshots-hd` (never `export`), else Garry's Mod's
+    `garrysmod/backgrounds`, decoded on worker threads (the `image` crate's jpeg and png), two textures at most. Tests: `SE_MENU=1`,
+    `menu on|off|state|mods|main` (`state` logs each entry's middle for `uiclick`), `hero keys esc 0.2`; `main menu: cursor`
+    lines log the grab for runs with a real mouse.
 - Mods menu (`mods.rs`; the plan is `docs/spec-mods-viltrumite-powers.md`, its Build log says what each step did): a
   mod is a folder under `assets/mods` with a `mod.cfg` (`Name`, `Description`, `Code`, repeated `Need "relative path"`).
   The scan and `mod_file` look beside the exe first, then in the source tree, per file (as orbital.rs's textures). List

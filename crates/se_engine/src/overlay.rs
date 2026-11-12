@@ -674,8 +674,10 @@ pub(crate) fn draw_orbits(
     mut members: Local<(Option<u32>, Vec<ObjectRef>)>,
     ships: Query<(Entity, &crate::ship::Ship, &crate::universe::UPosition)>,
     flight: Res<crate::ship::Flight>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
-    if !settings.orbits {
+    // (Nor over the main menu: these layers draw over its Background area.)
+    if !settings.orbits || control.main_menu {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };
@@ -1276,8 +1278,9 @@ fn draw_labels(
     settings: Res<OverlaySettings>,
     markers: Res<ScreenMarkers>,
     cam: Res<FlyCamera>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
-    if settings.labels_mode == 0 && !settings.markers {
+    if (settings.labels_mode == 0 && !settings.markers) || control.main_menu {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
@@ -1331,8 +1334,8 @@ fn draw_selection_pointer(
     cams: Query<&Camera, With<MainCamera>>,
     control: Res<crate::mods::ModControl>,
 ) -> Result {
-    // (Not while the sandbox's player walks: it would point at the centre of the planet he stands on.)
-    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer && !control.walker) else { return Ok(()) };
+    // (Not while the sandbox's player walks: it would point at the centre of the planet he stands on. Nor over the main menu.)
+    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer && !control.walker && !control.main_menu) else { return Ok(()) };
     let Ok(camera) = cams.single() else { return Ok(()) };
     let Some(vp) = camera.logical_viewport_size() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;

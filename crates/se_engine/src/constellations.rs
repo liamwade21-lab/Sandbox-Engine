@@ -334,9 +334,11 @@ pub(crate) fn draw_constellations(
     cams: Query<&Camera, With<MainCamera>>,
     bodies: Query<&SystemBody>,
     i18n: Res<crate::i18n::I18n>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
     let master = fade.constellations * fade.constellations;
-    if master <= 0.0 || cons.0.is_empty() {
+    // (Nor over the main menu.)
+    if master <= 0.0 || cons.0.is_empty() || control.main_menu {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

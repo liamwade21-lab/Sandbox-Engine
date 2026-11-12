@@ -43,9 +43,10 @@ impl Plugin for MessagesPlugin {
     }
 }
 
-fn draw_message(mut contexts: EguiContexts, time: Res<Time>, mut msg: ResMut<Messages>, hud: Res<crate::hud::HudState>) -> Result {
+fn draw_message(mut contexts: EguiContexts, time: Res<Time>, mut msg: ResMut<Messages>, hud: Res<crate::hud::HudState>, control: Res<crate::mods::ModControl>) -> Result {
     msg.age += time.delta_secs();
-    if !msg.enabled || hud.hidden || msg.age > TIMEOUT + FADE_OUT {
+    // (Not over the main menu: it would float over the picture.)
+    if !msg.enabled || hud.hidden || control.main_menu || msg.age > TIMEOUT + FADE_OUT {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
