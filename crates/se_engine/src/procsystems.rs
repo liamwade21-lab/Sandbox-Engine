@@ -258,8 +258,10 @@ fn settings_window(
     mut settings: ResMut<ProcSettings>,
     mut clusters: ResMut<crate::clusters::ClusterSettings>,
     field: Option<Res<ProcGalaxyField>>,
+    control: Res<crate::mods::ModControl>,
 ) -> Result {
-    if !hud.show_settings || hud.hidden {
+    // (Under the main menu `hidden` is the menu's, and the Settings window it belongs with shows.)
+    if !hud.show_settings || (hud.hidden && !control.main_menu) {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
