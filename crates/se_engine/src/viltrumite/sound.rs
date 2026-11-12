@@ -337,7 +337,11 @@ struct LoopVoice {
 struct Shot {
     entity: Entity,
     sfx: Sfx,
+    /// Its own loudness, before the air.
     gain: f32,
+    /// The air's share now (D12): it follows the air while it plays, as the loops do, so one that began in air goes silent if
+    /// he leaves it.
+    air: f32,
     /// 1, going to 0 once it's cut: `flightCharge_start` when the button's let go.
     fade: f32,
     cut: bool,
@@ -510,8 +514,10 @@ pub(super) fn play_sounds(
 
     // The one-shots playing.
     let (master, volume) = (voices.master, settings.volume * tune::SOUND_GAIN);
+    let air_now = air_share(hero.flow.air.pressure_pa);
     for slot in &mut voices.shots {
         let Some(shot) = slot else { continue };
+        shot.air += (air_now - shot.air).clamp(-step, step);
         if master > 0.0 {
             shot.played += dt;
         }
@@ -523,7 +529,7 @@ pub(super) fn play_sounds(
         }
         let done = match sinks.get_mut(shot.entity) {
             Ok(mut sink) => {
-                let want = shot.gain * shot.fade * master * volume;
+                let want = shot.gain * shot.air * shot.fade * master * volume;
                 if (want - shot.sent_volume).abs() > tune::SOUND_SILENT {
                     sink.set_volume(Volume::Linear(want));
                     shot.sent_volume = want;
@@ -592,12 +598,11 @@ fn start_shot(commands: &mut Commands, voices: &mut Voices, cue: Cue, share: f32
     let Some(handle) = voices.handles[i].clone() else { return };
     voices.last_fired[i] = (voices.clock, cue.gain);
     voices.fired[i] += 1;
-    let gain = cue.gain * share;
     if dev {
-        info!("hero sound: {} fired, gain {gain:.3}, pitch {:.2}", cue.sfx.file(), cue.pitch);
+        info!("hero sound: {} fired, gain {:.3}, pitch {:.2}", cue.sfx.file(), cue.gain * share, cue.pitch);
     }
     // No air, no sound (D12): counted as fired, but no voice, so it takes no one's slot.
-    if gain <= tune::SOUND_SILENT {
+    if cue.gain * share <= tune::SOUND_SILENT {
         return;
     }
     let slot = voices.shots.iter().position(Option::is_none).unwrap_or_else(|| {
@@ -610,9 +615,9 @@ fn start_shot(commands: &mut Commands, voices: &mut Voices, cue: Cue, share: f32
     if let Some(old) = voices.shots[slot].take() {
         commands.entity(old.entity).despawn();
     }
-    let sent = gain * voices.master * volume;
+    let sent = cue.gain * share * voices.master * volume;
     let entity = commands.spawn((AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(sent)).with_speed(cue.pitch), HeroVoice)).id();
-    voices.shots[slot] = Some(Shot { entity, sfx: cue.sfx, gain, fade: 1.0, cut: false, played: 0.0, sent_volume: sent });
+    voices.shots[slot] = Some(Shot { entity, sfx: cue.sfx, gain: cue.gain, air: share, fade: 1.0, cut: false, played: 0.0, sent_volume: sent });
 }
 
 // ---- Dev commands ---------------------------------------------------------------------------------------------------
@@ -826,6 +831,23 @@ mod tests {
         assert_eq!(air_share(650.0), 1.0);
         let some = air_share(10.0);
         assert!((some - 0.5).abs() < 1e-6, "{some}");
+    }
+
+    /// D12: a one-shot that began in air goes silent while it plays if he leaves the air (a boom, then up into space).
+    #[test]
+    fn a_shot_begun_in_air_goes_silent_in_vacuum() {
+        let mut a = app();
+        turn(&mut a, true);
+        frame(&mut a, 16);
+        a.world_mut().resource_mut::<Hero>().sound.launch();
+        frame(&mut a, 16);
+        let air = |a: &App| a.world().resource::<Voices>().shots.iter().flatten().find(|s| s.sfx == Sfx::Launch).map(|s| s.air);
+        assert_eq!(air(&a), Some(1.0));
+        a.world_mut().resource_mut::<Hero>().flow = Flow::vacuum(3000.0);
+        for _ in 0..20 {
+            frame(&mut a, 16);
+        }
+        assert_eq!(air(&a), Some(0.0), "still playing, and silent");
     }
 
     #[test]

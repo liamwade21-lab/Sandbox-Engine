@@ -929,3 +929,9 @@ plasma shell, the trail and `hero boom`'s log still read it (the log's `glow` co
 before; `hero_heat_table.sh`'s Earth and Mars lines give F9's skin temperatures as before (within 4 %); the mod-off forest is the same
 picture (0.008 % of pixels, at most 2 levels, all in the HUD's text). **Left for the user:** the plasma shell (3,500 K and up) is also
 drawn from the heat, round him, not on him, and wasn't named, so it stays.
+
+**D12, one-shots leaving the air (2026-11-12, found by the advisor's review).** A one-shot took the air's share once, when it
+started, so a boom or launch begun in air played its whole length after he left it (a Go To or fast flight takes him out in
+under a second). Each playing one-shot now keeps its own gain and follows `air_share` every frame, slewed over `SOUND_FADE_S`
+as the loops are (`Shot::air`; test `a_shot_begun_in_air_goes_silent_in_vacuum`). Recorded with `loopback`: a boom over Kansas
+rings for about 3 s; the same boom carried to 400 km 0.16 s after it began is gone 0.4 s later and stays silent.
