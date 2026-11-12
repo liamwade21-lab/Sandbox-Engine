@@ -10,7 +10,7 @@
   2. **No heat bar, no heat glow on Omni-Man:** the readout's Heat row is gone and his body no longer glows orange to white in fast
      flight; heat is still worked out (the roar, the plasma shell round him and the trail still follow it). Checked with pictures of
      a fast low flight before and after, the heat table, and the mod-off picture (unchanged). The plasma shell round him (from
-     3,500 K) is a separate effect you didn't name, so it stays: say if it should go too.
+     3,500 K) stays: your decision, 2026-11-12.
   3. **A main menu like Garry's Mod's** after the loading screen: one of your screenshots fills the screen and slowly zooms
      and changes (Garry's Mod's own backgrounds if you had none, plain dark without either), "Sandbox Engine" top left, Play,
      Mods, Options and Quit down the left (lit under the mouse, with Garry's Mod's hover and click sounds), a thin bar along

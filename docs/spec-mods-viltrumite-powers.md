@@ -927,8 +927,8 @@ plasma shell, the trail and `hero boom`'s log still read it (the log's `glow` co
 `sandbox_prop.wesl` and `sandbox_viewmodel.wesl` too). **Checked:** a fast low flight over Kansas at 2.6 and 4.9 km/s before and after
 (`.optimize/scratch/run/s2heat`): the suit keeps its red and white at Mach 14.7, the row is gone, the shell, trail, cone and ring are as
 before; `hero_heat_table.sh`'s Earth and Mars lines give F9's skin temperatures as before (within 4 %); the mod-off forest is the same
-picture (0.008 % of pixels, at most 2 levels, all in the HUD's text). **Left for the user:** the plasma shell (3,500 K and up) is also
-drawn from the heat, round him, not on him, and wasn't named, so it stays.
+picture (0.008 % of pixels, at most 2 levels, all in the HUD's text). **The plasma shell** (3,500 K and up, drawn round him from the heat)
+stays: the user's decision, 2026-11-12 ("Keep it").
 
 **D12, one-shots leaving the air (2026-11-12, found by the advisor's review).** A one-shot took the air's share once, when it
 started, so a boom or launch begun in air played its whole length after he left it (a Go To or fast flight takes him out in
