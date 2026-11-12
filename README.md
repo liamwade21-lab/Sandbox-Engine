@@ -135,7 +135,20 @@ plain props and plain sounds.
 Weapons: the crowbar; the gravity gun (right button picks a prop up or drops it, left launches it or punts what is
 in front); the physics gun (hold left to carry a prop at any distance, the wheel moves it nearer or further, E and the
 mouse turn it, the right button freezes it in the air, R lets frozen props go); the pistol, the SMG and the shotgun
-(they push props about). The numbers and sounds are Half-Life 2's.
+(they push props about). What you hold is Half-Life 2's own first-person model with its hands, playing its own
+animations (drawing, firing, reloading, the shotgun's pump, the crowbar's swings, the gravity gun's prongs opening on
+what it can lift), with Half-Life 2's view bob, sway and recoil, and its rules: how fast each fires, how the pistol's
+aim spreads when you fire fast, how the SMG climbs.
+
+Sounds are played as Half-Life 2's own sound scripts say (`sandbox/soundscript.rs`): which recordings a named sound
+has, how loud, at what pitch, how far it carries. Each recording of a set plays before any plays again, a new shot
+cuts the last one off (the SMG's rattle), and what you walk on, shoot or drop a prop on sounds as that surface does
+(grass, dirt, concrete in a town, a wooden trunk, a metal barrel). Sounds that happen in the world come from where
+they are, to the left or right.
+
+**Buildings and trees are solid** (`sandbox/solids.rs`): you can't walk through a wall or a trunk, bullets stop at
+them, props rest against them, and you can stand on a roof (V, fly over it, V again). It is the Viltrumite mod's list
+of the buildings round the hero, asked for round you (within 45 m; trees within 35 m).
 
 Gravity is the planet's own, for you and for the props: on the Moon (`V`, fly there, `V` again) a jump goes 4 m up
 and props fall slowly. Props stand on the terrain as it is drawn; the props' physics is the `rapier3d` library.
@@ -143,9 +156,9 @@ and props fall slowly. Props stand on the terrain as it is drawn; the props' phy
 The port's windows (F4 settings, F3 find, ...) want the mouse: press V for free flight first, where everything is as it
 was. Garry's Mod's flashlight (F), chat, voice and context menu (C) have no counterpart here.
 
-Not there yet: the weapons are Half-Life 2's world models held in view and moved by code (its animated view models
-with hands need a reader the port doesn't have), props have no shadows, buildings and trees are not solid to you
-(the Viltrumite hero's are), you walk on the sea, and props more than 60 m from you wait frozen until you come back.
+Not there yet: props have no shadows, you walk on the sea, props more than 60 m from you wait frozen until you come
+back, a tree is solid as its trunk only (you walk under its crown), and a building you are set down inside lets you
+walk out before it turns solid. Without Garry's Mod the weapons are plain shapes.
 
 `SE_SANDBOX=0` starts the port as it was before (free flight at Earth, the saved session restored);
 `SE_SANDBOX_SPOT=N` picks the starting place (0-7). Test runs (`--run`, `--screenshot`) keep the old start unless

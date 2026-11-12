@@ -15,13 +15,27 @@
     A fall from 480 m lands on the ground and costs 10 health.
   - **Garry's Mod's files** are read from your install while the game runs (nothing copied, nothing changed there).
     Without Garry's Mod (a friend's PC) there are six plain props and plain sounds instead.
-  - **Stand-ins and things not done:** the weapon you hold is Half-Life 2's world model, moved by code (its real
-    first-person models with hands are animated skeletons the port can't read yet); props have no shadows; buildings
-    and trees are not solid to you on foot (they are for the Viltrumite hero); you walk on the sea; props more than 60 m
-    away freeze until you come back; no enemies, so the weapons only push props; no decals where bullets hit.
-  - **For you to judge:** how the movement, the weapons and the sounds feel (I can't hear or feel them: the log
-    only says which sounds started), the mouse's speed (Garry's Mod's default), and the eye height (Source's 64 units:
-    1.22 m, as in Half-Life 2).
+  - **Your second round (2026-11-11: "get the feel and sound, fix the weapon models, buildings/trees solid"), all
+    checked in the game:**
+    - **Weapons:** what you hold is now Half-Life 2's own first-person model with its hands, playing its own
+      animations (draw, fire, reload, the shotgun's pump, the crowbar's swings, the gravity gun's prongs opening on
+      what it can lift), with Half-Life 2's bob, sway and recoil and its firing rules. At night in a town the street
+      lamps light it.
+    - **Buildings and trees are solid:** walls and trunks stop you, bullets and props, and roofs hold you (checked in
+      New York and in the Pampas). It uses the Viltrumite mod's list of nearby buildings, asked for round you. Found
+      and fixed on the way: after a jump to another continent a town's near buildings and trees never appeared.
+    - **Sound:** every sound is played as Half-Life 2's own sound scripts say (which recordings, how loud, what pitch),
+      and the surface you walk on or hit decides the sound (grass, concrete in town, wood, metal). I recorded what the
+      speakers play and measured it, which found two real faults, now fixed: sounds in the world came from the wrong
+      ear (left and right were swapped), and the SMG's shots piled up to the loudness limit (in Half-Life 2 each shot
+      cuts the last one off). Nothing clips at your volume setting; a barrel dropped on your right is louder on the
+      right.
+  - **Things not done:** props have no shadows; you walk on the sea; props more than 60 m away freeze until you come
+    back; a tree is solid as its trunk only; no enemies, so the weapons only push props; no decals where bullets hit;
+    without Garry's Mod the weapons are plain shapes.
+  - **For you to judge:** how it feels in your hands. The rules and numbers are Valve's and the sound is measured,
+    but only you can say whether it feels like Garry's Mod: the mouse's speed (its default), the eye height (Source's
+    64 units: 1.22 m), how loud steps are next to guns (Half-Life 2's own ratio: steps are quiet).
 - **Version 2 (this folder):** a copy of version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`)
   made on 2026-11-02, with its git history, for better visuals, add-ons and the like. It has its own
   settings folder (`%APPDATA%\SpaceEngine-rs-v2`). Still to decide: its own window title / exe name.

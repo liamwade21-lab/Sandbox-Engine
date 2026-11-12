@@ -19,6 +19,8 @@ const G_TERRAIN: Group = Group::GROUP_1;
 const G_PROP: Group = Group::GROUP_2;
 const G_PLAYER: Group = Group::GROUP_3;
 const G_HELD: Group = Group::GROUP_4;
+/// What stands on the ground and never moves: a building's pieces, a tree's trunk (`solids.rs`).
+const G_SOLID: Group = Group::GROUP_5;
 
 fn groups(member: Group, filter: Group) -> InteractionGroups {
     InteractionGroups::new(member, filter, InteractionTestMode::And)
@@ -107,6 +109,38 @@ pub enum Surface {
 }
 
 impl Surface {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const ALL: [Surface; 11] = [
+        Surface::Metal,
+        Surface::MetalBarrel,
+        Surface::Wood,
+        Surface::WoodCrate,
+        Surface::Plastic,
+        Surface::PlasticBarrel,
+        Surface::Concrete,
+        Surface::Cardboard,
+        Surface::Rubber,
+        Surface::Flesh,
+        Surface::Glass,
+    ];
+
+    /// The game's surface property of this kind (`surfaceproperties.txt`): what it sounds like.
+    pub fn prop_name(self) -> &'static str {
+        match self {
+            Surface::Metal => "metal",
+            Surface::MetalBarrel => "metal_barrel",
+            Surface::Wood => "wood",
+            Surface::WoodCrate => "wood_crate",
+            Surface::Plastic => "plastic",
+            Surface::PlasticBarrel => "plastic_barrel",
+            Surface::Concrete => "concrete",
+            Surface::Cardboard => "cardboard",
+            Surface::Rubber => "rubber",
+            Surface::Flesh => "flesh",
+            Surface::Glass => "glass",
+        }
+    }
+
     /// From a model's `surfaceprop` string.
     pub fn named(s: &str) -> Self {
         let s = s.to_ascii_lowercase();
@@ -161,6 +195,34 @@ pub enum PropShape {
     Ball { centre: Vec3, radius: f32 },
 }
 
+/// A piece of something that stands on the ground (a building's slice, a tree's trunk), in its own frame.
+#[derive(Clone, Debug)]
+pub enum SolidShape {
+    /// A box by its half sizes.
+    Box(Vec3),
+    /// A convex piece by its corners.
+    Hull(Vec<Vec3>),
+    /// A cylinder along its frame's z.
+    Trunk { radius: f32, half_height: f32 },
+}
+
+impl SolidShape {
+    fn shared(&self) -> Option<SharedShape> {
+        match self {
+            SolidShape::Box(h) => Some(SharedShape::cuboid(h.x, h.y, h.z)),
+            SolidShape::Hull(points) => SharedShape::convex_hull(points),
+            // (Parry's cylinder stands along y.)
+            SolidShape::Trunk { radius, half_height } => Some(SharedShape::compound(vec![(
+                Pose3::from_parts(Vec3::ZERO, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+                SharedShape::cylinder(*half_height, *radius),
+            )])),
+        }
+    }
+}
+
+/// A solid piece in the world (`SandboxWorld::add_solid`).
+pub type SolidHandle = ColliderHandle;
+
 /// A prop's place: where it is in the local frame now and where it was a tick ago (drawn between the two).
 #[derive(Clone, Copy, Debug)]
 pub struct Pose {
@@ -173,6 +235,8 @@ pub struct Prop {
     handle: RigidBodyHandle,
     pub mass: f32,
     pub surface: Surface,
+    /// Its model's own surface property (`metal_barrel`, `watermelon`...), for its sounds; `None`: its kind's.
+    pub material: Option<String>,
     pub prev: Pose,
     pub now: Pose,
     /// Frozen by the player (the physics gun's right button), or because the ground under it isn't known.
@@ -190,7 +254,8 @@ pub struct Prop {
 /// A prop hit something hard enough to hear.
 #[derive(Clone, Copy, Debug)]
 pub struct Impact {
-    pub surface: Surface,
+    /// The prop.
+    pub id: u32,
     pub at: Vec3,
     /// How fast its velocity changed in the tick, m/s.
     pub speed: f32,
@@ -201,10 +266,13 @@ pub struct Impact {
 pub enum Met {
     Ground,
     Prop(u32),
+    /// A building or a tree.
+    Solid(Surface),
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct RayHit {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub dist: f32,
     pub point: Vec3,
     pub normal: Vec3,
@@ -228,6 +296,9 @@ pub struct SandboxWorld {
     player_collider: ColliderHandle,
     props: HashMap<u32, Prop>,
     by_collider: HashMap<ColliderHandle, u32>,
+    solids: HashMap<ColliderHandle, Surface>,
+    /// Counts the times every solid piece was taken out (a new frame): whoever placed them places them again.
+    pub solids_cleared: u32,
     next_id: u32,
     /// Gravity down the frame's z, m/s^2.
     pub gravity: f32,
@@ -243,7 +314,19 @@ impl SandboxWorld {
             RigidBodyBuilder::kinematic_position_based().translation(Vec3::new(0.0, 0.0, 1.0e4)),
             ColliderBuilder::cuboid(0.3, 0.3, 0.68).collision_groups(groups(G_PLAYER, G_PROP)).friction(0.0),
         );
-        SandboxWorld { frame, world, terrain: None, player, player_collider, props: HashMap::new(), by_collider: HashMap::new(), next_id: 1, gravity: 9.81 }
+        SandboxWorld {
+            frame,
+            world,
+            terrain: None,
+            player,
+            player_collider,
+            props: HashMap::new(),
+            by_collider: HashMap::new(),
+            solids: HashMap::new(),
+            solids_cleared: 0,
+            next_id: 1,
+            gravity: 9.81,
+        }
     }
 
     pub fn has_ground(&self) -> bool {
@@ -290,8 +373,51 @@ impl SandboxWorld {
 
     /// Rays and sweeps go by the broad phase's tree, which a step updates: after anything is added, removed or moved by hand
     /// it is brought up to date at once, or the next query would not see the change (a fall through new ground).
-    fn refresh(&mut self) {
+    pub fn refresh(&mut self) {
         self.world.detect_collisions(&(), &());
+    }
+
+    /// A piece of a building or a tree at a place of the frame. The caller refreshes once it has added and removed all it
+    /// means to (`refresh`). `None` if the shape can't be made.
+    pub fn add_solid(&mut self, shape: &SolidShape, pos: Vec3, rot: Quat, surface: Surface) -> Option<SolidHandle> {
+        let (friction, bounce) = surface.contact();
+        let collider = ColliderBuilder::new(shape.shared()?)
+            .position(Pose3::from_parts(pos, rot))
+            .collision_groups(groups(G_SOLID, G_PROP | G_HELD | G_PLAYER))
+            .friction(friction)
+            .restitution(bounce);
+        let h = self.world.insert_collider(collider, None);
+        self.solids.insert(h, surface);
+        Some(h)
+    }
+
+    pub fn remove_solid(&mut self, h: SolidHandle) {
+        if self.solids.remove(&h).is_some() {
+            self.world.remove_collider(h);
+        }
+    }
+
+    /// Every solid piece out (the frame moves: they are placed again in the new one).
+    pub fn clear_solids(&mut self) {
+        for (h, _) in self.solids.drain() {
+            self.world.remove_collider(h);
+        }
+        self.solids_cleared = self.solids_cleared.wrapping_add(1);
+    }
+
+    pub fn solid_count(&self) -> usize {
+        self.solids.len()
+    }
+
+    /// Props sleeping against a piece that has gone must fall.
+    pub fn wake_props(&mut self) {
+        self.world.wake_up_all(true);
+    }
+
+    /// Would a piece at this place hold a box (the player's: its centre and half sizes)?
+    pub fn solid_holds(&self, shape: &SolidShape, pos: Vec3, rot: Quat, centre: Vec3, half: Vec3) -> bool {
+        let Some(s) = shape.shared() else { return false };
+        rapier3d::parry::query::intersection_test(&Pose3::from_parts(pos, rot), &*s, &Pose3::from_translation(centre), &Cuboid::new(half)).is_ok_and(|i| i.intersecting)
     }
 
     /// A new ground field, in a new frame if the anchor moved. Finer terrain arriving changes the ground's heights (by over
@@ -334,8 +460,10 @@ impl SandboxWorld {
         }
     }
 
-    /// Move the frame to `to` (the same body): everything keeps its place on the planet.
+    /// Move the frame to `to` (the same body): everything keeps its place on the planet. (The buildings and trees are taken
+    /// out: `solids.rs` places them again in the new frame.)
     pub fn rebase(&mut self, to: LocalFrame) {
+        self.clear_solids();
         let from = self.frame;
         let turn = (to.axes.transpose() * from.axes).as_mat3();
         let q = Quat::from_mat3(&turn);
@@ -374,15 +502,22 @@ impl SandboxWorld {
         };
         let radius = shared.compute_local_bounding_sphere().radius();
         let body = RigidBodyBuilder::dynamic().pose(Pose3::from_parts(pos, rot)).ccd_enabled(true).linear_damping(0.02).angular_damping(0.08);
-        let collider = ColliderBuilder::new(shared).mass(mass.max(0.1)).friction(friction).restitution(bounce).collision_groups(groups(G_PROP, G_TERRAIN | G_PROP | G_PLAYER | G_HELD));
+        let collider = ColliderBuilder::new(shared).mass(mass.max(0.1)).friction(friction).restitution(bounce).collision_groups(groups(G_PROP, G_TERRAIN | G_SOLID | G_PROP | G_PLAYER | G_HELD));
         let (handle, ch) = self.world.insert(body, collider);
         let id = self.next_id;
         self.next_id += 1;
         let pose = Pose { pos, rot };
-        self.props.insert(id, Prop { id, handle, mass: mass.max(0.1), surface, prev: pose, now: pose, frozen: false, out_of_range: false, held: false, last_vel: Vec3::ZERO, quiet: 0.3, radius });
+        self.props.insert(id, Prop { id, handle, mass: mass.max(0.1), surface, material: None, prev: pose, now: pose, frozen: false, out_of_range: false, held: false, last_vel: Vec3::ZERO, quiet: 0.3, radius });
         self.by_collider.insert(ch, id);
         self.refresh();
         Some(id)
+    }
+
+    /// A prop's own surface property, by its model.
+    pub fn set_material(&mut self, id: u32, name: &str) {
+        if let Some(p) = self.props.get_mut(&id) {
+            p.material = (!name.is_empty()).then(|| name.to_ascii_lowercase());
+        }
     }
 
     pub fn remove(&mut self, id: u32) {
@@ -456,7 +591,7 @@ impl SandboxWorld {
             b.set_gravity_scale(if held { 0.0 } else { 1.0 }, true);
             b.set_angular_damping(if held { 6.0 } else { 0.08 });
         }
-        let g = if held { groups(G_HELD, G_TERRAIN | G_PROP | G_HELD) } else { groups(G_PROP, G_TERRAIN | G_PROP | G_PLAYER | G_HELD) };
+        let g = if held { groups(G_HELD, G_TERRAIN | G_SOLID | G_PROP | G_HELD) } else { groups(G_PROP, G_TERRAIN | G_SOLID | G_PROP | G_PLAYER | G_HELD) };
         let colliders: Vec<ColliderHandle> = self.by_collider.iter().filter(|(_, v)| **v == id).map(|(c, _)| *c).collect();
         for c in colliders {
             if let Some(co) = self.world.colliders.get_mut(c) {
@@ -487,13 +622,17 @@ impl SandboxWorld {
     }
 
     fn met(&self, c: ColliderHandle) -> Met {
-        self.by_collider.get(&c).map_or(Met::Ground, |id| Met::Prop(*id))
+        match self.by_collider.get(&c) {
+            Some(id) => Met::Prop(*id),
+            None => self.solids.get(&c).map_or(Met::Ground, |s| Met::Solid(*s)),
+        }
     }
 
-    /// Sweep a box of half sizes `half` with its centre from `from` to `to`, against the ground and the props that aren't held.
+    /// Sweep a box of half sizes `half` with its centre from `from` to `to`, against the ground, the buildings and trees, and
+    /// the props that aren't held.
     pub fn sweep_box(&self, from: Vec3, to: Vec3, half: Vec3) -> Option<HullHit> {
         let shape = Cuboid::new(half);
-        let filter = QueryFilter::new().exclude_rigid_body(self.player).groups(groups(G_PLAYER, G_TERRAIN | G_PROP));
+        let filter = QueryFilter::new().exclude_rigid_body(self.player).groups(groups(G_PLAYER, G_TERRAIN | G_SOLID | G_PROP));
         let options = ShapeCastOptions { max_time_of_impact: 1.0, target_distance: 0.0, stop_at_penetration: false, compute_impact_geometry_on_penetration: true };
         let (c, hit) = self.world.cast_shape(&Pose3::from_translation(from), to - from, &shape, options, filter)?;
         // (Rapier's query: `normal1` and `witness1` are the collider's, in the world's frame.)
@@ -507,10 +646,10 @@ impl SandboxWorld {
         self.world.intersect_shape(Pose3::from_translation(centre), &shape, filter).next().is_some()
     }
 
-    /// Is a box at `centre` inside the ground or a prop?
+    /// Is a box at `centre` inside the ground, a building, a tree or a prop?
     pub fn box_blocked(&self, centre: Vec3, half: Vec3) -> bool {
         let shape = Cuboid::new(half);
-        let filter = QueryFilter::new().exclude_rigid_body(self.player).groups(groups(G_PLAYER, G_TERRAIN | G_PROP));
+        let filter = QueryFilter::new().exclude_rigid_body(self.player).groups(groups(G_PLAYER, G_TERRAIN | G_SOLID | G_PROP));
         self.world.intersect_shape(Pose3::from_translation(centre), &shape, filter).next().is_some()
     }
 
@@ -520,7 +659,7 @@ impl SandboxWorld {
         let skip_handle = skip.and_then(|id| self.props.get(&id)).map(|p| p.handle);
         if let Some(h) = skip_handle {
             // (One exclusion at a time: the player's box is told apart by its group instead.)
-            filter = QueryFilter::new().exclude_rigid_body(h).groups(groups(G_PROP | G_HELD | G_TERRAIN, G_TERRAIN | G_PROP | G_HELD));
+            filter = QueryFilter::new().exclude_rigid_body(h).groups(groups(G_PROP | G_HELD | G_TERRAIN | G_SOLID, G_TERRAIN | G_SOLID | G_PROP | G_HELD));
         }
         let ray = Ray::new(origin, dir);
         let (c, hit) = self.world.cast_ray_and_get_normal(&ray, max, true, filter)?;
@@ -555,7 +694,7 @@ impl SandboxWorld {
                 // What changed its velocity beyond gravity: a hit (Source: nothing under 70 units/s is heard).
                 let dv = (v - p.last_vel - g).length();
                 if dv > 1.3 && p.quiet == 0.0 {
-                    impacts.push(Impact { surface: p.surface, at: b.center_of_mass(), speed: dv });
+                    impacts.push(Impact { id: p.id, at: b.center_of_mass(), speed: dv });
                     p.quiet = 0.12;
                 }
             }

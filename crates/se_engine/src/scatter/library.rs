@@ -108,6 +108,9 @@ pub struct ScatterLibrary {
     pub indices: Arc<Vec<u32>>,
     pub materials: Vec<LibMaterial>,
     pub models: Vec<ModelGpu>,
+    /// Per model, its trunk for whoever walks into it (the sandbox's solid trees): the bark's radius at chest height and
+    /// the model's height (m, at scale 1).
+    pub trunks: Vec<[f32; 2]>,
     /// Per bucket: its capacity (instances).
     pub bucket_caps: Vec<u32>,
     pub draws: Vec<DrawEntry>,
@@ -746,13 +749,49 @@ struct Assembled {
     vertices: Vec<LibVertex>,
     indices: Vec<u32>,
     models: Vec<ModelGpu>,
+    trunks: Vec<[f32; 2]>,
     caps: Vec<u32>,
     draws: Vec<DrawEntry>,
 }
 
+/// A model's trunk: the radius of its bark (what isn't leaves) between 0.3 and 1.6 m up, round that bark's own middle
+/// (most of it: a low branch's points don't count), and the model's height. A model with no points there (a coarse trunk)
+/// goes by its lowest tenth.
+fn trunk_of(src: &ModelSrc, materials: &[LibMaterial], height: f32) -> [f32; 2] {
+    let bark = |lo: f32, hi: f32| -> Vec<(f32, f32)> {
+        let mut out = Vec::new();
+        for &(first, count, mat) in &src.subs {
+            if materials[mat as usize].leaves {
+                continue;
+            }
+            for &i in &src.indices[first as usize..(first + count) as usize] {
+                let p = src.positions[i as usize];
+                if p[1] >= lo && p[1] <= hi {
+                    out.push((p[0], p[2]));
+                }
+            }
+        }
+        out
+    };
+    let mut ring = bark(0.3, 1.6);
+    if ring.len() < 3 {
+        ring = bark(f32::MIN, height * 0.1);
+    }
+    if ring.len() < 3 {
+        return [0.15, height];
+    }
+    let n = ring.len() as f32;
+    let (cx, cz) = ring.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 / n, a.1 + p.1 / n));
+    let mut d: Vec<f32> = ring.iter().map(|p| ((p.0 - cx).powi(2) + (p.1 - cz).powi(2)).sqrt()).collect();
+    d.sort_by(f32::total_cmp);
+    // (Its offset from the model's axis counts as radius: the instance's turn isn't known to whoever asks.)
+    let r = d[(d.len() * 4 / 5).min(d.len() - 1)] + (cx * cx + cz * cz).sqrt();
+    [r.clamp(0.06, 1.5), height]
+}
+
 /// Packs `models` and lists what the bake needs (per model, in order).
 fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor::Texture]) -> (Assembled, Vec<BakeModel>) {
-    let mut a = Assembled { vertices: Vec::new(), indices: vec![0, 1, 2, 2, 1, 3], models: Vec::new(), caps: Vec::new(), draws: Vec::new() };
+    let mut a = Assembled { vertices: Vec::new(), indices: vec![0, 1, 2, 2, 1, 3], models: Vec::new(), trunks: Vec::new(), caps: Vec::new(), draws: Vec::new() };
     let mut bake = Vec::new();
     for (m, src) in models.iter().enumerate() {
         let (mesh_bucket, impostor_bucket) = (a.caps.len() as u32, a.caps.len() as u32 + 1);
@@ -801,6 +840,7 @@ fn assemble(models: &[ModelSrc], materials: &[LibMaterial], decoded: &[impostor:
         });
         let half = (horiz.max(height * 0.5)) * 1.04;
         let centre_y = height * 0.5;
+        a.trunks.push(trunk_of(src, materials, height));
         a.models.push(ModelGpu {
             half,
             centre_y,
@@ -1193,6 +1233,7 @@ fn start_library(mut commands: Commands, mut mr: ResMut<MrAssets>, mut images: R
         indices: Arc::new(a.indices),
         materials,
         models: a.models,
+        trunks: a.trunks,
         bucket_caps: a.caps,
         draws: a.draws,
         impostor_color: None,
@@ -1270,6 +1311,7 @@ fn finish_bake(
         lib.vertices = Arc::new(a.vertices);
         lib.indices = Arc::new(a.indices);
         lib.models = a.models;
+        lib.trunks = a.trunks;
         lib.bucket_caps = a.caps;
         lib.draws = a.draws;
         lib.flora_key = key;

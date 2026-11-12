@@ -299,8 +299,8 @@ impl GmodInstall {
         if key.split('/').any(|c| c == ".." || c.contains(':')) {
             return None;
         }
-        let p = self.root.join("garrysmod").join(key);
-        p.is_file().then_some(p)
+        // (Garry's Mod's own folder first, then Half-Life 2's it mounts: its sound and weapon scripts are loose files there.)
+        ["garrysmod", "sourceengine"].iter().map(|d| self.root.join(d).join(key)).find(|p| p.is_file())
     }
 
     /// Every archived file whose path starts with `prefix` and ends with `ext` (lowercase), sorted.
@@ -618,14 +618,41 @@ pub struct GmodMesh {
     pub uvs: Vec<[f32; 2]>,
     /// A triangle list, counter-clockwise seen from outside.
     pub indices: Vec<u32>,
+    /// Per vertex (parallel to `positions`): the model's bone indices the vertex follows.
+    pub bones: Vec<[u8; 3]>,
+    /// Per vertex: the weights of those bones (0 past the vertex's own bone count; they sum to 1).
+    pub weights: Vec<[f32; 3]>,
 }
 
-/// One vertex of the VVD: position, normal, uv.
+/// One vertex of the VVD: position, normal, uv, skin weights.
 #[derive(Clone, Copy)]
 struct VvdVertex {
     pos: [f32; 3],
     normal: [f32; 3],
     uv: [f32; 2],
+    bones: [u8; 3],
+    weights: [f32; 3],
+}
+
+/// A VVD vertex's `mstudioboneweight_t` (weight[3], bone[3], numbones): the weights past `numbones`
+/// zeroed; a vertex with no weight at all follows bone 0 alone.
+fn read_bone_weight(b: &[u8], o: usize) -> Result<([u8; 3], [f32; 3]), GmodError> {
+    let mut w = [f32_at(b, o)?, f32_at(b, o + 4)?, f32_at(b, o + 8)?];
+    let bones = bytes_at::<3>(b, o + 12)?;
+    let n = (u8_at(b, o + 15)? as usize).min(3);
+    for (i, x) in w.iter_mut().enumerate() {
+        if i >= n || !x.is_finite() || *x < 0.0 {
+            *x = 0.0;
+        }
+    }
+    let sum: f32 = w.iter().sum();
+    if sum <= 0.0 {
+        return Ok(([bones[0], 0, 0], [1.0, 0.0, 0.0]));
+    }
+    if (sum - 1.0).abs() > 1e-4 {
+        w = [w[0] / sum, w[1] / sum, w[2] / sum];
+    }
+    Ok((bones, w))
 }
 
 /// The VVD's LOD 0 vertices, with the fixup table applied.
@@ -639,7 +666,10 @@ fn read_vvd(b: &[u8]) -> Result<Vec<VvdVertex>, GmodError> {
     let vertex_start = u32_at(b, 56)? as usize;
     let vertex = |i: usize| -> Result<VvdVertex, GmodError> {
         let o = vertex_start + i * 48 + 16;
+        let (bones, weights) = read_bone_weight(b, vertex_start + i * 48)?;
         Ok(VvdVertex {
+            bones,
+            weights,
             pos: vec3_at(b, o)?,
             normal: vec3_at(b, o + 12)?,
             uv: [f32_at(b, o + 24)?, f32_at(b, o + 28)?],
@@ -779,6 +809,8 @@ fn build_model(
                 normals: Vec::new(),
                 uvs: Vec::new(),
                 indices: Vec::new(),
+                bones: Vec::new(),
+                weights: Vec::new(),
             };
             let mut remap: HashMap<usize, u32> = HashMap::new();
             let mut corner = |orig: u16, mesh: &mut GmodMesh| -> Result<u32, GmodError> {
@@ -791,6 +823,8 @@ fn build_model(
                 mesh.positions.push(v.pos);
                 mesh.normals.push(v.normal);
                 mesh.uvs.push(v.uv);
+                mesh.bones.push(v.bones);
+                mesh.weights.push(v.weights);
                 remap.insert(gi, i);
                 Ok(i)
             };
@@ -863,6 +897,466 @@ fn build_model(
         bones,
         meshes,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Skeleton and animation
+// ---------------------------------------------------------------------------------------------
+
+/// One bone of a model's skeleton.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmodBone {
+    pub name: String,
+    /// -1 for a root.
+    pub parent: i32,
+    /// Bind pose, relative to the parent (Source units).
+    pub pos: [f32; 3],
+    /// x, y, z, w; bind pose, relative to the parent.
+    pub quat: [f32; 4],
+    /// The file's matrix3x4 (rows): model space to bone space in the bind pose.
+    pub pose_to_bone: [[f32; 4]; 3],
+}
+
+/// An attachment point (a muzzle, an eject port...).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmodAttachment {
+    pub name: String,
+    /// The bone it follows.
+    pub bone: usize,
+    /// The point in that bone's space (matrix3x4 rows).
+    pub local: [[f32; 4]; 3],
+}
+
+/// An animation event of a sequence (the muzzle flash, the shell, a sound).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmodEvent {
+    /// 0 at the sequence's start, 1 at its end.
+    pub cycle: f32,
+    pub event: i32,
+    pub kind: i32,
+    pub options: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmodSequence {
+    /// The label, lowercase.
+    pub name: String,
+    /// The activity name as the file has it (empty for none).
+    pub activity: String,
+    pub fps: f32,
+    /// STUDIO_LOOPING of the sequence's flags.
+    pub looping: bool,
+    /// STUDIO_DELTA of the animation's flags.
+    pub delta: bool,
+    /// STUDIO_SNAP of the sequence's flags: it starts at once, without blending from the one before.
+    pub snap: bool,
+    pub fade_in: f32,
+    pub fade_out: f32,
+    pub events: Vec<GmodEvent>,
+    /// `frames[f][bone]` = (position, quaternion xyzw), relative to the parent bone. Whole frames only.
+    pub frames: Vec<Vec<([f32; 3], [f32; 4])>>,
+    /// STUDIO_AUTOPLAY of the sequence's flags: it is laid over whatever else plays (the gravity gun's prongs).
+    pub autoplay: bool,
+    /// For a sequence that blends between animations by a pose parameter: the first frame of the last of them (the
+    /// other end from `frames[0]`: the prongs open). Empty for a sequence of one animation.
+    pub blend_to: Vec<([f32; 3], [f32; 4])>,
+    /// How much of the sequence each bone takes (its weight list): 1 for all in most.
+    pub weights: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GmodSkeleton {
+    pub bones: Vec<GmodBone>,
+    pub attachments: Vec<GmodAttachment>,
+    pub sequences: Vec<GmodSequence>,
+}
+
+impl GmodInstall {
+    /// A model's bones, attachments and sequences (the first blend of each), from its .mdl alone.
+    /// A sequence whose animation lives in an external `.ani` block has the bind pose for every frame.
+    pub fn skeleton(&self, mdl_path: &str) -> Result<GmodSkeleton, GmodError> {
+        let norm = norm_path(mdl_path);
+        let base = norm.strip_suffix(".mdl").unwrap_or(&norm).to_string();
+        let mdl = self.read(&format!("{base}.mdl")).ok_or_else(|| GmodError::NotFound(format!("{base}.mdl")))?;
+        read_skeleton(&mdl).map_err(|e| match e {
+            GmodError::Bad(s) => GmodError::Bad(format!("model {mdl_path}: {s}")),
+            other => other,
+        })
+    }
+}
+
+/// The most frames one animation may have (corrupt data otherwise asks for gigabytes).
+const ANIM_FRAMES_MAX: usize = 20_000;
+
+const ANIM_RAWPOS: u8 = 0x01;
+const ANIM_RAWROT: u8 = 0x02;
+const ANIM_ANIMPOS: u8 = 0x04;
+const ANIM_ANIMROT: u8 = 0x08;
+const ANIM_DELTA: u8 = 0x10;
+const ANIM_RAWROT2: u8 = 0x20;
+
+/// A bone's defaults and compression scales: what the animation data is relative to.
+#[derive(Clone, Copy)]
+struct BoneBase {
+    pos: [f32; 3],
+    quat: [f32; 4],
+    rot: [f32; 3],
+    pos_scale: [f32; 3],
+    rot_scale: [f32; 3],
+}
+
+const QUAT_IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+fn normalize_quat(q: [f32; 4]) -> [f32; 4] {
+    let l = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if l.is_finite() && l > 1e-6 {
+        [q[0] / l, q[1] / l, q[2] / l, q[3] / l]
+    } else {
+        QUAT_IDENTITY
+    }
+}
+
+/// Source's `AngleQuaternion(RadianEuler)`: x is roll, y pitch, z yaw.
+fn euler_to_quat(a: [f32; 3]) -> [f32; 4] {
+    let (sr, cr) = (a[0] * 0.5).sin_cos();
+    let (sp, cp) = (a[1] * 0.5).sin_cos();
+    let (sy, cy) = (a[2] * 0.5).sin_cos();
+    let (sr_cp, cr_sp) = (sr * cp, cr * sp);
+    let (cr_cp, sr_sp) = (cr * cp, sr * sp);
+    [sr_cp * cy - cr_sp * sy, cr_sp * cy + sr_cp * sy, cr_cp * sy - sr_sp * cy, cr_cp * cy + sr_sp * sy]
+}
+
+/// An IEEE half float (Source's `float16`); infinities and NaNs read as 0.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exp = ((h >> 10) & 0x1f) as i32;
+    let man = (h & 0x3ff) as f32;
+    match exp {
+        0 => sign * man * 2f32.powi(-24),
+        31 => 0.0,
+        e => sign * (1.0 + man / 1024.0) * 2f32.powi(e - 15),
+    }
+}
+
+/// `Quaternion48`: x and y 16 bits, z 15 bits, then the sign of w.
+fn quat48_at(b: &[u8], o: usize) -> Result<[f32; 4], GmodError> {
+    let (x, y, z) = (u16_at(b, o)? as i32, u16_at(b, o + 2)? as i32, u16_at(b, o + 4)?);
+    let q = [
+        (x - 32768) as f32 * (1.0 / 32768.0),
+        (y - 32768) as f32 * (1.0 / 32768.0),
+        ((z & 0x7fff) as i32 - 16384) as f32 * (1.0 / 16384.0),
+    ];
+    let w = (1.0 - q[0] * q[0] - q[1] * q[1] - q[2] * q[2]).max(0.0).sqrt();
+    Ok(normalize_quat([q[0], q[1], q[2], if z & 0x8000 != 0 { -w } else { w }]))
+}
+
+/// `Quaternion64`: x, y, z 21 bits each, then the sign of w.
+fn quat64_at(b: &[u8], o: usize) -> Result<[f32; 4], GmodError> {
+    let v = u64::from_le_bytes(bytes_at(b, o)?);
+    let comp = |s: u32| (((v >> s) & 0x1f_ffff) as i64 - 1_048_576) as f32 * (1.0 / 1_048_576.5);
+    let q = [comp(0), comp(21), comp(42)];
+    let w = (1.0 - q[0] * q[0] - q[1] * q[1] - q[2] * q[2]).max(0.0).sqrt();
+    Ok(normalize_quat([q[0], q[1], q[2], if v >> 63 != 0 { -w } else { w }]))
+}
+
+/// `ExtractAnimValue`: the run-length stream at `at` (None: no stream) at `frame`, times `scale`.
+fn extract_anim_value(b: &[u8], at: Option<usize>, frame: usize, scale: f32) -> Result<f32, GmodError> {
+    let Some(mut p) = at else { return Ok(0.0) };
+    let mut k = frame;
+    while (u8_at(b, p + 1)? as usize) <= k {
+        k -= u8_at(b, p + 1)? as usize;
+        p += (u8_at(b, p)? as usize + 1) * 2;
+        if u8_at(b, p + 1)? == 0 {
+            return Ok(0.0); // running off the end of the stream
+        }
+    }
+    let valid = u8_at(b, p)? as usize;
+    let i = if valid > k { k + 1 } else { valid };
+    Ok(i16_at(b, p + i * 2)? as f32 * scale)
+}
+
+/// One bone's value in one frame from its `mstudioanim_t` at `e` (`CalcBoneQuaternion`, `CalcBonePosition`
+/// with no blend between frames).
+fn decode_anim_bone(b: &[u8], e: usize, frame: usize, base: &BoneBase) -> Result<([f32; 3], [f32; 4]), GmodError> {
+    let flags = u8_at(b, e + 1)?;
+    let data = e + 4;
+    let delta = flags & ANIM_DELTA != 0;
+    // The three offsets of a value pointer are shorts from the pointer itself; 0 or less is no stream.
+    let streams = |vp: usize, scale: [f32; 3]| -> Result<[f32; 3], GmodError> {
+        let mut v = [0.0; 3];
+        for j in 0..3 {
+            let off = i16_at(b, vp + j * 2)?;
+            let at = (off > 0).then(|| vp + off as usize);
+            v[j] = extract_anim_value(b, at, frame, scale[j])?;
+        }
+        Ok(v)
+    };
+
+    let quat = if flags & ANIM_RAWROT != 0 {
+        quat48_at(b, data)?
+    } else if flags & ANIM_RAWROT2 != 0 {
+        quat64_at(b, data)?
+    } else if flags & ANIM_ANIMROT == 0 {
+        if delta {
+            QUAT_IDENTITY
+        } else {
+            base.quat
+        }
+    } else {
+        let mut ang = streams(data, base.rot_scale)?;
+        if !delta {
+            for (a, r) in ang.iter_mut().zip(base.rot) {
+                *a += r;
+            }
+        }
+        euler_to_quat(ang)
+    };
+
+    let pos = if flags & ANIM_RAWPOS != 0 {
+        let o = data + if flags & ANIM_RAWROT != 0 { 6 } else { 0 } + if flags & ANIM_RAWROT2 != 0 { 8 } else { 0 };
+        [half_to_f32(u16_at(b, o)?), half_to_f32(u16_at(b, o + 2)?), half_to_f32(u16_at(b, o + 4)?)]
+    } else if flags & ANIM_ANIMPOS == 0 {
+        if delta {
+            [0.0; 3]
+        } else {
+            base.pos
+        }
+    } else {
+        let mut v = streams(data + if flags & ANIM_ANIMROT != 0 { 6 } else { 0 }, base.pos_scale)?;
+        if !delta {
+            for (a, r) in v.iter_mut().zip(base.pos) {
+                *a += r;
+            }
+        }
+        v
+    };
+    Ok((pos, normalize_quat(quat)))
+}
+
+/// A bone's name-less defaults for a frame the animation doesn't mention (a delta animation adds nothing).
+fn rest_frame(bases: &[BoneBase], delta: bool) -> Vec<([f32; 3], [f32; 4])> {
+    bases.iter().map(|bb| if delta { ([0.0; 3], QUAT_IDENTITY) } else { (bb.pos, bb.quat) }).collect()
+}
+
+/// One frame of the animation whose `mstudioanim_t` list starts at `start` (`frame` counted from it).
+fn decode_frame(
+    b: &[u8],
+    start: usize,
+    frame: usize,
+    bases: &[BoneBase],
+    delta: bool,
+) -> Result<Vec<([f32; 3], [f32; 4])>, GmodError> {
+    let mut out = rest_frame(bases, delta);
+    let (mut p, mut steps) = (start, 0usize);
+    loop {
+        steps += 1;
+        if steps > bases.len() * 2 + 16 {
+            return bad("animation: the bone list does not end");
+        }
+        let bone = u8_at(b, p)? as usize;
+        if bone < out.len() {
+            out[bone] = decode_anim_bone(b, p, frame, &bases[bone])?;
+        }
+        let next = i16_at(b, p + 2)?;
+        if next == 0 {
+            break;
+        }
+        p = rel(p, next as i32)?;
+    }
+    Ok(out)
+}
+
+/// All frames of one `mstudioanimdesc_t` at `ad`. Sections are followed as `pAnim` does; an animation in an
+/// external block (a .ani file) or with no data gives the bind pose.
+fn decode_animation(
+    mdl: &[u8],
+    ad: usize,
+    bases: &[BoneBase],
+) -> Result<(f32, bool, Vec<Vec<([f32; 3], [f32; 4])>>), GmodError> {
+    let fps = f32_at(mdl, ad + 8)?;
+    let flags = i32_at(mdl, ad + 12)?;
+    let num_frames = (i32_at(mdl, ad + 16)?.max(1) as usize).min(ANIM_FRAMES_MAX + 1);
+    if num_frames > ANIM_FRAMES_MAX {
+        return bad("animation: too many frames");
+    }
+    let delta = flags & 0x4 != 0;
+    let (anim_block, anim_index) = (i32_at(mdl, ad + 52)?, i32_at(mdl, ad + 56)?);
+    let (section_index, section_frames) = (i32_at(mdl, ad + 80)?, i32_at(mdl, ad + 84)?);
+    let all_zeros = flags & 0x20 != 0;
+
+    let mut frames = Vec::with_capacity(num_frames);
+    for f in 0..num_frames {
+        // Where this frame's list starts and which frame of it we want (None: bind pose).
+        let located: Option<(usize, usize)> = if all_zeros {
+            None
+        } else if section_frames > 0 {
+            let sf = section_frames as usize;
+            let (section, local) = if num_frames > sf && f == num_frames - 1 {
+                (num_frames / sf + 1, 0)
+            } else {
+                (f / sf, f % sf)
+            };
+            let so = rel(ad, section_index)? + section * 8;
+            let (block, index) = (i32_at(mdl, so)?, i32_at(mdl, so + 4)?);
+            (block == 0 && index > 0).then(|| (ad + index as usize, local))
+        } else {
+            (anim_block == 0 && anim_index > 0).then(|| (ad + anim_index as usize, f))
+        };
+        frames.push(match located {
+            Some((start, local)) => decode_frame(mdl, start, local, bases, delta)?,
+            None => rest_frame(bases, delta),
+        });
+    }
+    Ok((fps, delta, frames))
+}
+
+fn read_matrix3x4(b: &[u8], o: usize) -> Result<[[f32; 4]; 3], GmodError> {
+    let mut m = [[0.0; 4]; 3];
+    for (r, row) in m.iter_mut().enumerate() {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = f32_at(b, o + (r * 4 + c) * 4)?;
+        }
+    }
+    Ok(m)
+}
+
+fn read_skeleton(mdl: &[u8]) -> Result<GmodSkeleton, GmodError> {
+    if mdl.get(0..4) != Some(b"IDST") {
+        return bad("mdl: bad signature");
+    }
+    let version = i32_at(mdl, 4)?;
+    if !(44..=49).contains(&version) {
+        return bad(format!("mdl version {version}"));
+    }
+
+    // studiohdr_t: numbones 156, boneindex 160, numlocalanim 180, localanimindex 184, numlocalseq 188,
+    // localseqindex 192, numlocalattachments 240, localattachmentindex 244.
+    let num_bones = count_at(mdl, 156)?;
+    let bone_index = u32_at(mdl, 160)? as usize;
+    let mut bones = Vec::with_capacity(num_bones);
+    let mut bases = Vec::with_capacity(num_bones);
+    for i in 0..num_bones {
+        // mstudiobone_t, 216 bytes: name 0, parent 4, pos 32, quat 44, rot 60, posscale 72, rotscale 84,
+        // poseToBone 96.
+        let o = bone_index + i * 216;
+        let parent = i32_at(mdl, o + 4)?;
+        if parent >= num_bones as i32 || parent < -1 || parent >= i as i32 {
+            return bad(format!("bone {i}: parent {parent}"));
+        }
+        let pos = vec3_at(mdl, o + 32)?;
+        let quat = [f32_at(mdl, o + 44)?, f32_at(mdl, o + 48)?, f32_at(mdl, o + 52)?, f32_at(mdl, o + 56)?];
+        bones.push(GmodBone {
+            name: cstr_at(mdl, rel(o, i32_at(mdl, o)?)?),
+            parent,
+            pos,
+            quat,
+            pose_to_bone: read_matrix3x4(mdl, o + 96)?,
+        });
+        bases.push(BoneBase {
+            pos,
+            quat,
+            rot: vec3_at(mdl, o + 60)?,
+            pos_scale: vec3_at(mdl, o + 72)?,
+            rot_scale: vec3_at(mdl, o + 84)?,
+        });
+    }
+
+    let num_att = count_at(mdl, 240)?;
+    let att_index = u32_at(mdl, 244)? as usize;
+    let mut attachments = Vec::with_capacity(num_att);
+    for i in 0..num_att {
+        // mstudioattachment_t, 92 bytes: name 0, flags 4, localbone 8, local 12.
+        let o = att_index + i * 92;
+        let bone = i32_at(mdl, o + 8)?;
+        if bone < 0 || bone as usize >= num_bones {
+            return bad(format!("attachment {i}: bone {bone}"));
+        }
+        attachments.push(GmodAttachment {
+            name: cstr_at(mdl, rel(o, i32_at(mdl, o)?)?),
+            bone: bone as usize,
+            local: read_matrix3x4(mdl, o + 12)?,
+        });
+    }
+
+    let num_anim = count_at(mdl, 180)?;
+    let anim_index = u32_at(mdl, 184)? as usize;
+    let num_seq = count_at(mdl, 188)?;
+    let seq_index = u32_at(mdl, 192)? as usize;
+    // Animations are shared between sequences: decode each once.
+    let mut decoded: HashMap<usize, (f32, bool, Vec<Vec<([f32; 3], [f32; 4])>>)> = HashMap::new();
+    let mut sequences = Vec::with_capacity(num_seq);
+    for i in 0..num_seq {
+        // mstudioseqdesc_t, 212 bytes: label 4, activity name 8, flags 12, numevents 24, eventindex 28,
+        // numblends 56, animindexindex 60, groupsize 68 and 72, fadeintime 104, fadeouttime 108, weightlistindex 156.
+        let o = seq_index + i * 212;
+        let name = cstr_at(mdl, rel(o, i32_at(mdl, o + 4)?)?).to_ascii_lowercase();
+        let activity = cstr_at(mdl, rel(o, i32_at(mdl, o + 8)?)?);
+        let flags = i32_at(mdl, o + 12)?;
+
+        let num_events = count_at(mdl, o + 24)?;
+        let event_index = rel(o, i32_at(mdl, o + 28)?)?;
+        let mut events = Vec::with_capacity(num_events);
+        for e in 0..num_events {
+            // mstudioevent_t, 80 bytes: cycle 0, event 4, type 8, options 12 (64 bytes), name 76.
+            let eo = event_index + e * 80;
+            let opt = bytes_at::<64>(mdl, eo + 12)?;
+            let end = opt.iter().position(|&c| c == 0).unwrap_or(64);
+            let name_off = i32_at(mdl, eo + 76)?;
+            events.push(GmodEvent {
+                cycle: f32_at(mdl, eo)?,
+                event: i32_at(mdl, eo + 4)?,
+                kind: i32_at(mdl, eo + 8)?,
+                options: String::from_utf8_lossy(&opt[..end]).into_owned(),
+                name: if name_off != 0 { cstr_at(mdl, rel(eo, name_off)?) } else { String::new() },
+            });
+        }
+
+        // The first blend's animation, and the last one's first frame when there are several.
+        let num_blends = i32_at(mdl, o + 56)?;
+        let list = rel(o, i32_at(mdl, o + 60)?)?;
+        let first = if num_blends > 0 { i16_at(mdl, list)? as i32 } else { -1 };
+        let count = (i32_at(mdl, o + 68)?.max(1) as usize).saturating_mul(i32_at(mdl, o + 72)?.max(1) as usize).min(64);
+        let last = if num_blends > 1 && count > 1 { i16_at(mdl, list + (count - 1) * 2)? as i32 } else { -1 };
+        let mut animation = |index: i32| -> Result<Option<(f32, bool, Vec<Vec<([f32; 3], [f32; 4])>>)>, GmodError> {
+            if index < 0 || index as usize >= num_anim {
+                return Ok(None);
+            }
+            let ad = anim_index + index as usize * 100;
+            if !decoded.contains_key(&ad) {
+                let d = decode_animation(mdl, ad, &bases)?;
+                decoded.insert(ad, d);
+            }
+            Ok(decoded.get(&ad).cloned())
+        };
+        let anim = animation(first)?;
+        let blend_to = if last != first { animation(last)?.and_then(|a| a.2.into_iter().next()).unwrap_or_default() } else { Vec::new() };
+        let (fps, delta, frames) = anim.unwrap_or_else(|| (30.0, false, vec![rest_frame(&bases, false)]));
+        let weight_list = i32_at(mdl, o + 156)?;
+        let weights = if weight_list != 0 {
+            let w = rel(o, weight_list)?;
+            (0..num_bones).map(|b| f32_at(mdl, w + b * 4)).collect::<Result<Vec<f32>, GmodError>>()?
+        } else {
+            vec![1.0; num_bones]
+        };
+        sequences.push(GmodSequence {
+            name,
+            activity,
+            fps,
+            looping: flags & 1 != 0,
+            delta,
+            snap: flags & 2 != 0,
+            fade_in: f32_at(mdl, o + 104)?,
+            fade_out: f32_at(mdl, o + 108)?,
+            events,
+            frames,
+            autoplay: flags & 8 != 0,
+            blend_to,
+            weights,
+        });
+    }
+
+    Ok(GmodSkeleton { bones, attachments, sequences })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1832,6 +2326,268 @@ mod tests {
         println!("{} models: {ok} load; collision {phy_ok} read, {phy_none} none, {phy_off} outside the mesh bounds (30 % + 4), {hull_off} outside the hull (10 % + 2)", seen.len());
         for (why, list) in &fails {
             println!("  {} x {why} e.g. {}", list.len(), list[0]);
+        }
+    }
+
+    // --- skeletons, skin weights and animation -------------------------------------------------
+
+    /// The six main view models, then two more that may be there.
+    const VIEW_MODELS: [&str; 8] = [
+        "models/weapons/v_pistol.mdl",
+        "models/weapons/v_smg1.mdl",
+        "models/weapons/v_shotgun.mdl",
+        "models/weapons/v_crowbar.mdl",
+        "models/weapons/v_physcannon.mdl",
+        "models/weapons/v_superphyscannon.mdl",
+        "models/weapons/v_357.mdl",
+        "models/weapons/v_irifle.mdl",
+    ];
+
+    type Mat = [[f32; 4]; 3];
+
+    const MAT_IDENTITY: Mat = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+
+    /// Source's `QuaternionMatrix(q, pos)`.
+    fn quat_matrix(q: [f32; 4], p: [f32; 3]) -> Mat {
+        let [x, y, z, w] = q;
+        [
+            [1.0 - 2.0 * y * y - 2.0 * z * z, 2.0 * x * y - 2.0 * w * z, 2.0 * x * z + 2.0 * w * y, p[0]],
+            [2.0 * x * y + 2.0 * w * z, 1.0 - 2.0 * x * x - 2.0 * z * z, 2.0 * y * z - 2.0 * w * x, p[1]],
+            [2.0 * x * z - 2.0 * w * y, 2.0 * y * z + 2.0 * w * x, 1.0 - 2.0 * x * x - 2.0 * y * y, p[2]],
+        ]
+    }
+
+    /// a * b, both with an implicit last row 0 0 0 1.
+    fn mat_mul(a: &Mat, b: &Mat) -> Mat {
+        let mut o = [[0.0; 4]; 3];
+        for r in 0..3 {
+            for c in 0..4 {
+                o[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c] + if c == 3 { a[r][3] } else { 0.0 };
+            }
+        }
+        o
+    }
+
+    fn mat_point(m: &Mat, p: [f32; 3]) -> [f32; 3] {
+        let row = |r: usize| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3];
+        [row(0), row(1), row(2)]
+    }
+
+    /// Bone to model matrices of a pose (local values per bone) composed up the hierarchy.
+    fn bone_to_model(bones: &[GmodBone], pose: &[([f32; 3], [f32; 4])]) -> Vec<Mat> {
+        let mut out: Vec<Mat> = Vec::with_capacity(bones.len());
+        for (i, b) in bones.iter().enumerate() {
+            let local = quat_matrix(pose[i].1, pose[i].0);
+            let m = if b.parent < 0 { local } else { mat_mul(&out[b.parent as usize], &local) };
+            out.push(m);
+        }
+        out
+    }
+
+    fn quat_len(q: [f32; 4]) -> f32 {
+        (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt()
+    }
+
+    /// The view models this install has (the first six must all be there).
+    fn view_models(g: &GmodInstall) -> Vec<(&'static str, GmodSkeleton)> {
+        let mut out = Vec::new();
+        for (i, path) in VIEW_MODELS.iter().enumerate() {
+            match g.skeleton(path) {
+                Ok(s) => out.push((*path, s)),
+                Err(e) => {
+                    assert!(i >= 6, "{path}: {e}");
+                    eprintln!("{path}: not read ({e}), skipped");
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn skeleton_bind_poses() {
+        let Some(g) = install() else { return };
+        for (path, s) in view_models(g) {
+            assert!(!s.bones.is_empty(), "{path}: no bones");
+            for (i, b) in s.bones.iter().enumerate() {
+                let l = quat_len(b.quat);
+                assert!((l - 1.0).abs() < 1e-3, "{path}: bone {} quat length {l}", b.name);
+                assert!(b.parent < i as i32, "{path}: bone {} parent {}", b.name, b.parent);
+            }
+            let bind: Vec<_> = s.bones.iter().map(|b| (b.pos, b.quat)).collect();
+            let world = bone_to_model(&s.bones, &bind);
+            for (i, b) in s.bones.iter().enumerate() {
+                let m = mat_mul(&world[i], &b.pose_to_bone);
+                for r in 0..3 {
+                    for c in 0..4 {
+                        let want = MAT_IDENTITY[r][c];
+                        assert!(
+                            (m[r][c] - want).abs() < 1e-2,
+                            "{path}: bone {} bind * poseToBone is not the identity: {m:?}",
+                            b.name
+                        );
+                    }
+                }
+            }
+            for a in &s.attachments {
+                assert!(a.bone < s.bones.len(), "{path}: attachment {} bone", a.name);
+            }
+        }
+    }
+
+    #[test]
+    fn skin_weights_sum_to_one() {
+        let Some(g) = install() else { return };
+        for path in VIEW_MODELS {
+            let Ok(m) = g.model(path) else { continue };
+            assert!(m.bones > 0 && !m.meshes.is_empty(), "{path}");
+            for mesh in &m.meshes {
+                assert_eq!(mesh.bones.len(), mesh.positions.len());
+                assert_eq!(mesh.weights.len(), mesh.positions.len());
+                for (b, w) in mesh.bones.iter().zip(&mesh.weights) {
+                    let sum: f32 = w.iter().sum();
+                    assert!((sum - 1.0).abs() < 1e-3, "{path}: weights {w:?} sum to {sum}");
+                    assert!(w.iter().all(|x| (0.0..=1.0 + 1e-4).contains(x)), "{path}: weights {w:?}");
+                    for k in 0..3 {
+                        assert!(w[k] == 0.0 || (b[k] as usize) < m.bones, "{path}: bone {} of {}", b[k], m.bones);
+                    }
+                    assert!((b[0] as usize) < m.bones, "{path}: bone {} of {}", b[0], m.bones);
+                }
+            }
+        }
+        // The props' meshes carry weights too.
+        for path in MODELS {
+            let Ok(m) = g.model(path) else { continue };
+            for mesh in &m.meshes {
+                assert_eq!(mesh.weights.len(), mesh.positions.len(), "{path}");
+                assert!(mesh.weights.iter().all(|w| (w.iter().sum::<f32>() - 1.0).abs() < 1e-3), "{path}");
+            }
+        }
+    }
+
+    #[test]
+    fn view_model_sequences() {
+        let Some(g) = install() else { return };
+        let all = view_models(g);
+        assert!(all.len() >= 6);
+        for (path, s) in &all {
+            assert!(!s.sequences.is_empty(), "{path}: no sequences");
+            for seq in &s.sequences {
+                let what = format!("{path} {}", seq.name);
+                assert!(!seq.frames.is_empty(), "{what}: no frames");
+                assert!(seq.fps.is_finite() && seq.fps > 0.0, "{what}: fps {}", seq.fps);
+                for (f, frame) in seq.frames.iter().enumerate() {
+                    assert_eq!(frame.len(), s.bones.len(), "{what}: frame {f}");
+                    for (pos, q) in frame {
+                        assert!((quat_len(*q) - 1.0).abs() < 1e-3, "{what}: frame {f} quat {q:?}");
+                        assert!(pos.iter().all(|x| x.is_finite() && x.abs() < 500.0), "{what}: frame {f} pos {pos:?}");
+                    }
+                }
+                // A few real animations move fast (a swing's first frame, the .357's cylinder spinning at
+                // up to 145 degrees a frame, a bullet flung out): checked by hand, the frames around them
+                // are smooth. Those sequences may have a handful of big turns; no other may have one.
+                let fast = [
+                    ("v_pistol", "holsterempty"),
+                    ("v_crowbar", "hitcenter1"),
+                    ("v_crowbar", "hitcenter2"),
+                    ("v_crowbar", "hitcenter3"),
+                    ("v_357", "reload"),
+                ]
+                .iter()
+                .any(|(m, q)| path.contains(&format!("/{m}.mdl")) && seq.name == *q);
+                let mut big = 0;
+                for (f, pair) in seq.frames.windows(2).enumerate() {
+                    for (bi, (a, b)) in pair[0].iter().zip(&pair[1]).enumerate() {
+                        let d = (a.1[0] * b.1[0] + a.1[1] * b.1[1] + a.1[2] * b.1[2] + a.1[3] * b.1[3]).abs().min(1.0);
+                        let deg = 2.0 * d.acos().to_degrees();
+                        if deg > 75.0 {
+                            big += 1;
+                            assert!(fast, "{what}: bone {} turns {deg} degrees from frame {f} to {}", s.bones[bi].name, f + 1);
+                        }
+                    }
+                }
+                assert!(big <= 8, "{what}: {big} big turns");
+                for e in &seq.events {
+                    // (v_shotgun's one-frame stand-in "fire" has events whose cycle is NaN in the file.)
+                    assert!(e.cycle.is_nan() || (0.0..=1.0).contains(&e.cycle), "{what}: event cycle {}", e.cycle);
+                }
+            }
+        }
+        // The pistol has the usual set.
+        let (_, pistol) = &all[0];
+        assert!(pistol.sequences.len() >= 4, "{} sequences", pistol.sequences.len());
+        for want in ["idle", "fire", "reload", "draw"] {
+            assert!(pistol.sequences.iter().any(|q| q.name.contains(want)), "v_pistol has no {want} sequence");
+        }
+    }
+
+    #[test]
+    fn view_model_skinning_stays_near_the_origin() {
+        let Some(g) = install() else { return };
+        for (path, s) in view_models(g) {
+            let m = g.model(path).unwrap();
+            assert_eq!(m.bones, s.bones.len(), "{path}");
+            let idle = s.sequences.iter().find(|q| q.name.contains("idle")).unwrap_or(&s.sequences[0]);
+            let world = bone_to_model(&s.bones, &idle.frames[0]);
+            let skin: Vec<Mat> = (0..s.bones.len()).map(|i| mat_mul(&world[i], &s.bones[i].pose_to_bone)).collect();
+            let mut far = 0.0f32;
+            let mut n = 0;
+            for mesh in &m.meshes {
+                for ((p, b), w) in mesh.positions.iter().zip(&mesh.bones).zip(&mesh.weights) {
+                    let mut out = [0.0f32; 3];
+                    for k in 0..3 {
+                        if w[k] > 0.0 {
+                            let q = mat_point(&skin[b[k] as usize], *p);
+                            for c in 0..3 {
+                                out[c] += w[k] * q[c];
+                            }
+                        }
+                    }
+                    far = far.max((out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt());
+                    n += 1;
+                }
+            }
+            // 60 units, or for a long model (the gravity gun's prongs reach 95 units in the bind pose) a
+            // quarter more than its bind pose reaches.
+            let bind_reach = m
+                .meshes
+                .iter()
+                .flat_map(|me| &me.positions)
+                .map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())
+                .fold(0.0f32, f32::max);
+            let limit = 60.0f32.max(bind_reach * 1.25);
+            assert!(n > 0 && far < limit, "{path}: a skinned vertex is {far} units from the origin in {} (limit {limit})", idle.name);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn print_view_models() {
+        let Some(g) = install() else { return };
+        for path in &VIEW_MODELS[..6] {
+            let mdl = g.read(path).expect("mdl");
+            let s = g.skeleton(path).unwrap();
+            println!("=== {path}: version {}, {} bones, {} sequences", i32_at(&mdl, 4).unwrap(), s.bones.len(), s.sequences.len());
+            for (i, b) in s.bones.iter().enumerate() {
+                let parent = if b.parent < 0 { "-".to_string() } else { s.bones[b.parent as usize].name.clone() };
+                println!("  bone {i}: {} (parent {parent})", b.name);
+            }
+            for a in &s.attachments {
+                println!("  attachment {} (bone {})", a.name, s.bones[a.bone].name);
+            }
+            for q in &s.sequences {
+                println!(
+                    "  seq {} activity {:?} frames {} fps {} looping {} delta {} fade {}/{}",
+                    q.name, q.activity, q.frames.len(), q.fps, q.looping, q.delta, q.fade_in, q.fade_out
+                );
+                if q.autoplay || !q.blend_to.is_empty() {
+                    let weighted: Vec<String> = q.weights.iter().enumerate().filter(|(_, w)| **w > 0.0).map(|(i, w)| format!("{} {w}", s.bones[i].name)).collect();
+                    let moved = q.blend_to.iter().zip(&q.frames[0]).filter(|(a, b)| a != b).count();
+                    println!("      autoplay {} blend_to {} bones ({moved} differ) weights: {}", q.autoplay, q.blend_to.len(), weighted.join(", "));
+                }
+                for e in &q.events {
+                    println!("      event cycle {:.3} event {} type {} options {:?} name {:?}", e.cycle, e.event, e.kind, e.options, e.name);
+                }
+            }
         }
     }
 }

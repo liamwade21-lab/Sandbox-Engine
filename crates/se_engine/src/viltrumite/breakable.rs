@@ -26,14 +26,14 @@ pub fn probe_ask(hero: Res<Hero>, probe: Res<BuildingProbe>, dev: Res<ProbeDev>,
     if let Some((obj, local, radius)) = dev.anchor {
         let Some(b) = bodies.iter().find(|b| b.obj == obj) else { return };
         let at = b.pos.offset_m(b.orient * local);
-        ask.capsule = Some(ProbeCapsule { from: at, to: at, margin_m: radius, both: dev.both });
+        ask.capsule = Some(ProbeCapsule { from: at, to: at, margin_m: radius, both: dev.both, trees_m: 0.0 });
         return;
     }
     let dt = time.delta_secs_f64().min(0.1);
     let lag = if probe.arrived { probe.lag_frames.min(tune::PROBE_LAG_MAX) } else { tune::PROBE_LAG_FRAMES };
     let from = hero.world.0;
     let to = from.offset_m(hero.last_vel * dt * (lag as f64 + tune::PROBE_AHEAD_FRAMES));
-    ask.capsule = Some(ProbeCapsule { from, to, margin_m: tune::PROBE_MARGIN_M, both: dev.both });
+    ask.capsule = Some(ProbeCapsule { from, to, margin_m: tune::PROBE_MARGIN_M, both: dev.both, trees_m: 0.0 });
 }
 
 /// Off: no ask (the scatter takes none), and the list is dropped.

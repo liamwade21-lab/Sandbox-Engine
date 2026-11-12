@@ -136,14 +136,56 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
   - Garry's Mod's files: `se_core/gmod.rs` (VPK archives, `.mdl`/`.vvd`/`.vtx` models, `.vtf` textures, `.phy` collision pieces,
     WAV sounds incl. ADPCM, spawn lists). Its tests read the install and skip without it. A tenth of the models keep their
     collision pieces in another pose's frame: `assets::collision_shape` falls back to the mesh's hull when they don't fit.
-    A new sound: its path must exist in the install (`audio.rs` `every_named_wave_exists`).
-  - Testing: `SE_SANDBOX=1` in a `runport.sh` run; `sbx state|props|look YAW PITCH|spawn NAME|undo|clear|menu on|off|mods|weapons|
-    weapon N|walk [LAT LON [HEADING]]|fly` (`sandbox::dev_command`); keys with `hero keys w+shift 2` (also `lmb`, `rmb`, `v`,
+    Half-Life 2's scripts are loose files under `sourceengine/`: `GmodInstall::loose` looks there after `garrysmod/`.
+  - Testing: `SE_SANDBOX=1` in a `runport.sh` run; `sbx state|props|solids|arsenal|look YAW PITCH|spawn NAME|undo|clear|menu on|off|mods|weapons|
+    weapon N|walk [LAT LON [HEADING]]|fly` (`sandbox::dev_command`; `look`'s yaw is 0 east, 90 north, its pitch up); keys with `hero keys w+shift 2` (also `lmb`, `rmb`, `v`,
     `space`, `ctrl`, `1`..`6`: a new `hero keys` lets the old ones go and presses the new in the same frame, so `lmb` then
     `lmb+rmb` keeps the left button down); `uiclick X Y` clicks the Q menu; `SE_SANDBOX_SOUNDS=1` logs each sound as it starts to
     play (a test can't listen); `SE_SANDBOX_SPOT=N` the starting place; `GMOD_PATH=C:/nonexistent` the no-Garry's-Mod path.
     `surface LAT LON ALT_KM`'s height is over the ellipsoid, not the ground (the Serengeti stands 1.7 km over it). A new starting
     place goes in `SPOTS` and must be checked to be dry land (the "set down" log line says "(the sea)").
+  - Solid buildings and trees (`sandbox/solids.rs`, the user's 2026-11-11): every walking frame the walker asks the scatter's
+    probe (`ProbeAsk`, the Viltrumite mod's: `scatter/probe.rs`) for what stands within 45 m, and trees within 35 m
+    (`ProbeCapsule::trees_m`, the shader's `body.street.w`; `probe_tree` in the cull lists them as records of kind 4, which
+    the hero's `Solid::of` skips). `Solids::sync` makes rapier colliders of the list (group `G_SOLID`): a building's slices
+    from `viltrumite/solid.rs` (boxes, hulls for turned ones), a tree's trunk as a cylinder from `ScatterLibrary::trunks`
+    (the bark's radius at chest height). The list is 3-5 frames old; what would hold him inside waits until he is out; a
+    rebase clears them (`solids_cleared`) and they are made again. Nothing is solid that isn't drawn. `sbx solids` lists the
+    nearest with the yaw to walk at them; a wall or trunk met at an angle slides him along it (Source's rule), so test by
+    walking straight at one. Checked in New York: a wall stops him, a roof holds him (V, `surface`, `agl 22`, `sbx walk`),
+    a shot at a wall plays concrete's sound.
+  - The scatter places a cell once (`gpu.rs` `placed` keys). After a jump of hundreds of km (`sbx walk LAT LON`, a Go To, a
+    place) the cells in range were placed against the old map patch (`scatter/earth.rs`, 600 km wide) and stayed empty: New
+    York stood without its near buildings and trees. `Scatter::replace` counts the patches that reach the camera again
+    (`EarthVeg::covers`) and is part of the slots' key, so everything is placed anew then. Keep that when touching either.
+  - The weapons' view models (`sandbox/viewmodel.rs`, `sandbox_viewmodel.wesl`, `se_core/gmod.rs` `skeleton`): Half-Life 2's
+    `v_*.mdl` with bones, sequences, events, the muzzle attachment and bone weights, skinned by a palette buffer written in
+    place (as the hero's), drawn with their own field of view (`FOV_RATIO`: 54 against 75 degrees, x and y scaled in view
+    space) in the nearest depth slice. Placement is the SDK's `CalcViewModelView`: the eyes, the view WITHOUT its punch, the
+    bob and the lag (`Sway`). Model space is Source's (x forward, y left, z up). `weapons.rs` is the SDK's weapon code rule by
+    rule (deploy times from the sequences' own lengths, the pistol's accuracy penalty, the SMG's kick, the shotgun's reload
+    states); sequence names differ per model (`WeaponDef::sequences`, checked against the files by a test). The gravity gun's
+    prongs are its autoplay sequence `prong_blend` (two animations and a weight list: `GmodSequence::blend_to`, `weights`)
+    laid over whatever plays by `ViewModel::open`. The crowbar's miss swing really does leave the screen for a third of a
+    second. `sbx arsenal` logs what is in hand and playing. Without Garry's Mod the stand-in world models are used.
+  - Sounds (`sandbox/soundscript.rs`, `audio.rs`): a cue names one of the game's sounds (`Cue::named("Weapon_SMG1.Single")`)
+    and the install's scripts (`scripts/game_sounds_manifest.txt`, `surfaceproperties_manifest.txt`) say its waves, volume,
+    pitch, level and channel. A new name goes in `audio::NAMED`: a test checks every one, and every surface's five sounds,
+    against the install. Rules from the SDK that must stay: a surface starts as `default` (dirt names no soft impact); a
+    step's volume is the code's, by `gamematerial` and speed, not the script's; a sound on a channel other than auto and
+    static cuts the last one there (`ChannelVoice`: without it the SMG's shots piled up to the ceiling); each wave of a set
+    plays before any plays again (`SoundScripts::pick`); step times are Garry's Mod's (350 ms, 250 running). Placed sounds
+    are spatial voices half a metre from the ears in their direction, their loudness by `distance_gain` (Source's
+    `SND_GetGainFromMult`). **rodio's `Spatial` makes the ear FURTHER from a sound the louder one, so `spawn_ears` swaps the
+    ears' offsets on purpose** (measured: don't "fix" it). The ground is concrete among buildings, grass or dirt elsewhere.
+  - Measuring sound (no test can listen, but the speakers can be recorded): `.audit/tools/loopback` (its `Cargo.toml` says
+    how to build it) records the default output device to a WAV and `analyze.py` lists each sound's time, peak and
+    left/right balance. Run the game WITHOUT `timing frame` (sounds would overlap) with `SE_SANDBOX_SOUNDS=1` and line the
+    events up with the log's times (the log is UTC). The user hears the run. Measured 2026-11-11 at the default volume
+    (`SoundVolume 30`): pistol peak 0.43, shotgun 0.67, an SMG burst 0.79, walking steps 0.04-0.07, nothing clipped; a
+    barrel dropped on his right is 5.7 dB louder on the right.
+  - The street lamps light the props and the weapon at night as they do the hero (`LightProbe`'s town share, `draw.rs`
+    `town_light`; the term is in `sandbox_prop.wesl` and `sandbox_viewmodel.wesl` as in `hero.wesl`).
 - Mods menu (`mods.rs`; the plan is `docs/spec-mods-viltrumite-powers.md`, its Build log says what each step did): a
   mod is a folder under `assets/mods` with a `mod.cfg` (`Name`, `Description`, `Code`, repeated `Need "relative path"`).
   The scan and `mod_file` look beside the exe first, then in the source tree, per file (as orbital.rs's textures). List

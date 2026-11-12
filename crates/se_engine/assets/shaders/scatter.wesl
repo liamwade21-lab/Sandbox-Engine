@@ -1096,6 +1096,11 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     if fade <= 0.0 {
         return;
     }
+    // The sandbox's solid trees (0 unless someone walks there: one uniform branch): as drawn, before the
+    // view's planes (a tree behind him is as solid).
+    if body.street.w > 0.5 && !grass {
+        probe_tree(cell, packed, pos, up, scale, model);
+    }
     // The view: the model's bounding sphere against the side and near planes.
     let bc = pos + up * md.centre_y * scale;
     let r = md.radius * scale;
@@ -1516,6 +1521,24 @@ fn probe_building(cell: Cell, rec: vec2<u32>, lf: Lift, pos: vec3<f32>, w: f32, 
     let k = atomicAdd(&probe.head.count, 1u);
     if k < probe.head.cap {
         probe.recs[k] = ProbeRec(inst, id, u32(cell.face) | (mk << 8u) | (kind << 16u), cell.k);
+    }
+}
+
+// The sandbox's solid trees (sandbox/solids.rs): a tree whose foot is within `body.street.w` m of the probe's
+// capsule's axis goes into the same list, kind 4: its foot, up and scale, the library's model, and as its id the
+// cell's seed and the tree's number in it (the same tree every frame, whatever the camera does).
+fn probe_tree(cell: Cell, packed: u32, pos: vec3<f32>, up: vec3<f32>, scale: f32, model: u32) {
+    let a = probe.head.a.xyz;
+    let ab = probe.head.b.xyz - a;
+    let t = clamp(dot(pos - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    let d = pos - (a + ab * t);
+    if dot(d, d) > body.street.w * body.street.w {
+        return;
+    }
+    let inst = Inst(pos, 0u, 0u, oct_encode(up), scale, model);
+    let k = atomicAdd(&probe.head.count, 1u);
+    if k < probe.head.cap {
+        probe.recs[k] = ProbeRec(inst, vec2<i32>(bitcast<i32>(cell.seed), i32(packed & 0xffffu)), u32(cell.face) | ((model & 0xffu) << 8u) | (4u << 16u), cell.k);
     }
 }
 

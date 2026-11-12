@@ -314,11 +314,14 @@ struct HeroLightPass(LightPass);
 /// each frame for a place; the light pass then works the light out there exactly as it does for him.
 pub(crate) struct LightProbe {
     frame: Box<HeroFrameGpu>,
+    /// The street lamps at its place, as at his (`town_light`).
+    town_timer: u32,
+    town_task: Option<(Vec3, Task<f32>)>,
 }
 
 impl LightProbe {
     pub(crate) fn new() -> Self {
-        LightProbe { frame: Box::default() }
+        LightProbe { frame: Box::default(), town_timer: 0, town_task: None }
     }
 
     /// The frame record's bytes (`HeroFrame`), and an empty light record's (`HeroLight`), to make the buffers from.
@@ -332,7 +335,9 @@ impl LightProbe {
 
     /// The record for `pos`, seen from the camera at `cam`; the body whose atmosphere tables the pass must read.
     pub(crate) fn fill<'a>(&mut self, p: &'a LightParams, pos: UPos, cam: UPos, cam_up: DVec3) -> Option<&'a Terrain> {
-        light_record(&mut self.frame, p, pos, cam, cam_up, LightPath::Auto).1
+        let (nearest, near) = light_record(&mut self.frame, p, pos, cam, cam_up, LightPath::Auto);
+        town_light(&mut self.frame, &mut self.town_timer, &mut self.town_task, || nearest.filter(|_| near.is_some()).and_then(|(b, t, _)| town_job(p, b, t?, pos)));
+        near
     }
 
     /// Write the record into its buffer, in place.
@@ -656,6 +661,25 @@ fn town_job(p: &LightParams, b: &SystemBody, t: &Terrain, pos: UPos) -> Option<(
     Some((tint, AsyncComputeTaskPool::get().spawn(async move { ctx.town_at(dir, ground as f32, &vfs) })))
 }
 
+/// The street lamps' light in a frame record (`town`): how far into a town its place is, asked every `TOWN_EVERY_FRAMES`
+/// and off the main thread (`job`: `town_job`), for him and for the sandbox's props and weapon.
+fn town_light(f: &mut HeroFrameGpu, timer: &mut u32, task: &mut Option<(Vec3, Task<f32>)>, job: impl FnOnce() -> Option<(Vec3, Task<f32>)>) {
+    if let Some((tint, t)) = task.as_mut() {
+        if let Some(share) = check_ready(t) {
+            f.town = (*tint * share).extend(0.0);
+            *task = None;
+        }
+    } else if *timer == 0 {
+        *timer = tune::TOWN_EVERY_FRAMES;
+        *task = job();
+        if task.is_none() {
+            f.town = Vec4::ZERO;
+        }
+    } else {
+        *timer -= 1;
+    }
+}
+
 fn smooth(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -959,21 +983,7 @@ pub(crate) fn update_hero(
         }
     }
     input.take_tables(near_body);
-    // How far into a town: not every frame, and off the main thread.
-    if let Some((tint, task)) = draws.town_task.as_mut() {
-        if let Some(share) = check_ready(task) {
-            f.town = (*tint * share).extend(0.0);
-            draws.town_task = None;
-        }
-    } else if draws.town_timer == 0 {
-        draws.town_timer = tune::TOWN_EVERY_FRAMES;
-        draws.town_task = nearest.filter(|_| near_body.is_some()).and_then(|(b, t, _)| town_job(&p, b, t?, pos));
-        if draws.town_task.is_none() {
-            f.town = Vec4::ZERO;
-        }
-    } else {
-        draws.town_timer -= 1;
-    }
+    town_light(f, &mut draws.town_timer, &mut draws.town_task, || nearest.filter(|_| near_body.is_some()).and_then(|(b, t, _)| town_job(&p, b, t?, pos)));
     // The heat of the air on him.
     (f.heat, f.heat_lee, f.heat_dir) = super::fx::glow_record(hero.heat_k, hero.air_dir);
     // In place: the buffer and his materials' bind groups stay.

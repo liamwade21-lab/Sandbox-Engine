@@ -79,6 +79,13 @@ impl Default for EarthVeg {
 }
 
 impl EarthVeg {
+    /// Whether the patch reaches everything the scatter places round `cam_dir` (body frame, unit): the far
+    /// buildings' 23 km and more inside its edge. After a jump of hundreds of km it doesn't, until the next one is made.
+    pub fn covers(&self, radius: f64, cam_dir: DVec3) -> bool {
+        let half = (PATCH_HALF_M / radius).min(0.5);
+        self.color.is_some() && self.centre.dot(cam_dir).clamp(-1.0, 1.0).acos() < half * 0.9
+    }
+
     /// Starts a new patch around `cam_dir` (body frame, unit) when the camera has left the middle of
     /// the current one; takes a finished one.
     pub fn update(&mut self, vfs: &Arc<Vfs>, color: &TileLayer, water: Option<&TileLayer>, lights: Option<&TileLayer>, radius: f64, cam_dir: DVec3, images: &mut Assets<Image>) {

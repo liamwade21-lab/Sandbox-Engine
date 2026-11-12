@@ -234,7 +234,8 @@ pub struct Solid {
 impl Solid {
     pub fn of(b: &ProbeBuilding) -> Option<Solid> {
         let size = b.size.as_dvec3();
-        if b.model as usize >= BUILDING_MODELS || b.model == M_LANE || size.x < 0.1 || size.y < 0.1 || size.z < 0.1 || !b.foot.is_finite() {
+        // (Kind 4 is a tree, listed for the sandbox's walker: `sandbox/solids.rs`.)
+        if b.kind > 2 || b.model as usize >= BUILDING_MODELS || b.model == M_LANE || size.x < 0.1 || size.y < 0.1 || size.z < 0.1 || !b.foot.is_finite() {
             return None;
         }
         let reach_xz = shapes().reach[b.model as usize] as f64 * size.x.max(size.y);
@@ -267,7 +268,7 @@ impl Solid {
         self.xa * l.x + self.up * l.y + self.za * l.z
     }
 
-    fn slices(&self) -> &'static [Slice] {
+    pub(crate) fn slices(&self) -> &'static [Slice] {
         &shapes().models[self.key.model as usize]
     }
 

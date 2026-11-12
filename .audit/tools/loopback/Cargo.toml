@@ -1,0 +1,14 @@
+# Records what the speakers play (WASAPI loopback) so a test can measure the game's sound: CLAUDE.md, the sandbox's sounds.
+# Build: copy the project's Cargo.lock beside this file (so it builds without downloading), then
+#   cargo build --release --offline
+# Use:   target/release/loopback.exe OUT.wav SECONDS ; python -I analyze.py OUT.wav --floor -55
+[package]
+name = "loopback"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.17.3"
+
+# (Its own workspace: not a member of the port's.)
+[workspace]

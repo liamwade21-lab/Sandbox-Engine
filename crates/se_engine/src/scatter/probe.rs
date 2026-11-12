@@ -136,6 +136,8 @@ pub struct ProbeCapsule {
     pub margin_m: f32,
     /// Measuring: the near and far lists in full, whatever the camera's distance (not as drawn).
     pub both: bool,
+    /// The sandbox's solid trees: those within this many metres of the axis are listed too (kind 4), 0 none.
+    pub trees_m: f32,
 }
 
 /// The render world's part of a frame's ask (`ScatterFrame::probe`).
@@ -145,6 +147,7 @@ pub struct ProbeFrame {
     pub mode: u32,
     pub a: Vec4,
     pub b: Vec4,
+    pub trees_m: f32,
 }
 
 /// A list as the GPU wrote it.
@@ -169,7 +172,8 @@ pub struct ProbeBuilding {
     pub face: u8,
     /// The model from the box (`city.wesl` `M_*`, 1-2 the village's).
     pub model: u8,
-    /// 1 near, 2 far.
+    /// 1 near, 2 far; 4 a tree (the sandbox's: `model` is then the library's, `size.z` its scale, `id` its cell's seed and
+    /// its number in the cell, `xa` nothing).
     pub kind: u8,
     /// Its foot (the plinth's bottom), from the body's centre, body frame (m).
     pub foot: DVec3,
@@ -340,7 +344,7 @@ pub fn ask_probe(
         length: (e - a).length(),
     });
     let (a, e) = (a.as_vec3(), e.as_vec3());
-    out.probe = Some(ProbeFrame { seq, mode: if c.both { 2 } else { 1 }, a: a.extend(c.margin_m), b: e.extend(0.0) });
+    out.probe = Some(ProbeFrame { seq, mode: if c.both { 2 } else { 1 }, a: a.extend(c.margin_m), b: e.extend(0.0), trees_m: c.trees_m });
 }
 
 fn oct_decode(p: u32) -> DVec3 {

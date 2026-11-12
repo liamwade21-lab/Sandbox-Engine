@@ -217,6 +217,11 @@ pub struct Scatter {
     veg: VegKind,
     /// The colour map's plants around the camera (`VegKind::Map`).
     earth: earth::EarthVeg,
+    /// The camera stood outside that patch last frame (a jump of hundreds of km: a Go To, a place, the sandbox's
+    /// start): what was placed meanwhile read nothing, or another place's map. `replace` counts the patches that
+    /// reached it again; the render world then places every slot anew (`ScatterFrame::replace`).
+    uncovered: bool,
+    replace: u32,
     /// The wind at the camera (body frame, m/s), worked out every second.
     wind: DVec3,
     wind_frame: u64,
@@ -442,6 +447,8 @@ pub struct ScatterFrame {
     pub active: bool,
     /// Every resident cell's placement, nearest first (the render world places the new ones).
     pub jobs: Vec<PlaceJob>,
+    /// Counts the times every slot must be placed again (`Scatter::replace`: the map's patch didn't reach the camera).
+    pub replace: u32,
     pub page_uploads: Vec<(u32, Arc<Vec<[f32; 4]>>)>,
     /// Indexed by page (up to the highest used).
     pub pages: Arc<Vec<PageGpu>>,
@@ -729,7 +736,16 @@ pub(crate) fn update_scatter(
         if sc.earth.color.is_none() {
             return;
         }
+        // Cells placed while the patch didn't reach the camera hold nothing (no trees, no town: New York stood empty
+        // round a player set down there from another continent, only its far skyline placed late enough to show).
+        // The patch that reaches it again places them all anew.
+        let covered = sc.earth.covers(r, dir);
+        if covered && sc.uncovered {
+            sc.replace += 1;
+        }
+        sc.uncovered = !covered;
     }
+    out.replace = sc.replace;
     // The wind the trees sway in: the derived weather's at the camera, near the ground.
     let sun_body = (body.orient.inverse() * terrain.body_light.sun_dir.truncate().as_dvec3()).normalize_or_zero();
     if sc.frame >= sc.wind_frame + 60 || sc.wind_frame == 0 {

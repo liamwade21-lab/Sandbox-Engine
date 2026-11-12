@@ -18,6 +18,9 @@ pub mod light;
 pub mod menu;
 pub mod movement;
 pub mod props;
+pub mod solids;
+pub mod soundscript;
+pub mod viewmodel;
 pub mod weapons;
 pub mod world;
 
@@ -34,6 +37,8 @@ use crate::camera::{FlyCamera, Follow};
 use crate::config::EngineConfig;
 use crate::data::SeData;
 use crate::mods::ModControl;
+use crate::scatter::library::ScatterLibrary;
+use crate::scatter::probe::{BuildingProbe, ProbeAsk, ProbeBuilding, ProbeCapsule};
 use crate::ship::{body_mass, ground_on};
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
@@ -168,6 +173,8 @@ pub struct WalkInput {
     pub use_pressed: bool,
     pub use_held: bool,
     pub reload_pressed: bool,
+    /// R is down.
+    pub reload: bool,
     pub undo_pressed: bool,
     pub flashlight_pressed: bool,
     /// 1..=9 pressed.
@@ -227,7 +234,11 @@ pub struct Sandbox {
     pub cues: Vec<audio::Cue>,
     pub rng: audio::Rng,
     /// What he stood on a tick ago (a prop's surface; `None` the ground): a jump's sound is its.
-    pub last_ground: Option<world::Surface>,
+    pub last_ground: Option<String>,
+    /// The ground's own surface property, for his steps and what strikes it (`audio::ground_name`).
+    pub ground_material: &'static str,
+    /// The buildings and trees made solid round him (`solids.rs`).
+    pub solids: solids::Solids,
     /// The sound that goes on while a gun holds a prop: its file and volume.
     pub loop_sound: Option<(&'static str, f32)>,
     /// The prop a gun holds, or his hands (E: `by_hand`).
@@ -281,6 +292,8 @@ impl Default for Sandbox {
             cues: Vec::new(),
             rng: audio::Rng(0x5EED_1234),
             last_ground: None,
+            ground_material: "grass",
+            solids: solids::Solids::default(),
             loop_sound: None,
             held: None,
             by_hand: false,
@@ -316,7 +329,8 @@ impl Plugin for SandboxPlugin {
             return;
         }
         light::build(app);
-        app.add_systems(Startup, find_gmod)
+        viewmodel::build(app);
+        app.add_systems(Startup, (find_gmod, audio::spawn_ears))
             .add_systems(Update, (gmod_found.run_if(resource_exists::<GmodSearch>), props::handle_requests))
             .add_systems(bevy_egui::EguiPrimaryContextPass, (weapons::draw_hud, menu::draw_menu).chain().in_set(crate::skin::UiSet::Draw))
             .add_systems(PostUpdate, (weapons::weapon_frame, audio::play_cues).chain().after(sandbox_step))
@@ -363,17 +377,21 @@ impl Plugin for SandboxPlugin {
 
 /// The search for Garry's Mod's files, on a worker thread.
 #[derive(Resource)]
-struct GmodSearch(bevy::tasks::Task<(Option<std::sync::Arc<se_core::gmod::GmodInstall>>, Vec<assets::PropList>, String)>);
+struct GmodSearch(bevy::tasks::Task<assets::Opened>);
 
 fn find_gmod(mut commands: Commands) {
     commands.insert_resource(GmodSearch(bevy::tasks::AsyncComputeTaskPool::get().spawn(async { assets::open_install() })));
 }
 
 fn gmod_found(mut commands: Commands, mut search: ResMut<GmodSearch>, mut found: ResMut<assets::GmodAssets>) {
-    let Some((install, lists, line)) = bevy::tasks::futures::check_ready(&mut search.0) else { return };
-    info!("sandbox: {line}");
-    found.install = install;
-    found.lists = lists;
+    let Some(opened) = bevy::tasks::futures::check_ready(&mut search.0) else { return };
+    for line in &opened.lines {
+        info!("sandbox: {line}");
+    }
+    found.install = opened.install;
+    found.lists = opened.lists;
+    found.scripts = opened.scripts;
+    found.views = opened.views;
     found.looked = true;
     commands.remove_resource::<GmodSearch>();
 }
@@ -538,6 +556,7 @@ fn read_input(
         input.use_pressed = keys.just_pressed(KeyCode::KeyE);
         input.use_held = held(KeyCode::KeyE);
         input.reload_pressed = keys.just_pressed(KeyCode::KeyR);
+        input.reload = held(KeyCode::KeyR);
         input.undo_pressed = keys.just_pressed(KeyCode::KeyZ);
         input.flashlight_pressed = keys.just_pressed(KeyCode::KeyF);
         const SLOTS: [KeyCode; 9] = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5, KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9];
@@ -649,7 +668,7 @@ impl movement::MoveWorld for Tracer<'_> {
         let free = (len * hit.fraction - SKIN / into).max(0.0);
         let fraction = (free / len).min(1.0);
         let what = match hit.met {
-            Met::Ground => movement::Hit::World,
+            Met::Ground | Met::Solid(_) => movement::Hit::World,
             Met::Prop(id) => movement::Hit::Prop(id, self.world.velocity_at(id, hit.point) / UNIT_M),
         };
         movement::Trace { fraction, end: start + way * fraction, normal: hit.normal, start_solid: false, hit: Some(what) }
@@ -700,6 +719,14 @@ fn ground_under(b: &SystemBody, t: &Terrain, point: DVec3) -> Option<DVec3> {
     Some(point.normalize() * r)
 }
 
+/// What stands round him: the probe's newest list of buildings and trees with the body it is on, the trees' trunks, and
+/// the buildings the Viltrumite hero broke (`solids.rs`).
+struct Near<'a> {
+    list: Option<(&'a [ProbeBuilding], u32, ObjectRef)>,
+    lib: &'a ScatterLibrary,
+    broken: Option<&'a crate::viltrumite::breakable::BrokenSet>,
+}
+
 /// One frame of the sandbox: the modes' changes, the ground field, the ticks (his move, then the props'), and the camera.
 #[allow(clippy::too_many_arguments)]
 fn sandbox_step(
@@ -710,6 +737,7 @@ fn sandbox_step(
     mut cam: ResMut<FlyCamera>,
     mut control: ResMut<ModControl>,
     mut msg: ResMut<crate::messages::Messages>,
+    (mut probe, mut ask, lib, broken): (ResMut<BuildingProbe>, ResMut<ProbeAsk>, Res<ScatterLibrary>, Option<Res<crate::viltrumite::breakable::BrokenSet>>),
     bodies: Query<(&SystemBody, Option<&Terrain>)>,
 ) {
     let sb = &mut *sb;
@@ -767,11 +795,22 @@ fn sandbox_step(
             cam.follow.is_some()
         );
     }
-    let lost = world_frame(sb, &mut cam, &data, &input, time.delta_secs().min(0.25), &bodies);
+    let near = Near {
+        list: probe.body.filter(|_| probe.arrived).and_then(|e| bodies.get(e).ok()).map(|(b, _)| (&probe.list[..], probe.list_seq, b.obj)),
+        lib: &lib,
+        broken: broken.as_deref(),
+    };
+    let lost = world_frame(sb, &mut cam, &data, &input, time.delta_secs().min(0.25), &bodies, &near);
+    // The buildings and trees round him, for the frames to come (the list comes back 3-5 frames after it is asked for).
+    if sb.mode == Mode::Walk && sb.placed && sb.pending.is_none() && sb.world.is_some() && leave.is_none() && !lost {
+        ask.capsule = Some(ProbeCapsule { from: cam.pos, to: cam.pos, margin_m: solids::BUILDING_REACH_M, both: false, trees_m: solids::TREE_REACH_M });
+    }
     if let Some(to) = leave.or(lost.then_some(Mode::Fly)).filter(|_| sb.mode == Mode::Walk) {
         sb.mode = to;
         sb.pending = None;
         if to == Mode::Fly {
+            // (Nothing asks the probe now; a mod that takes over asks for itself. What is solid stays as it is.)
+            probe.clear();
             // The free flight's assigned velocity is whatever it was left at (100 km/s at a fresh start): from standing on
             // the ground that is a kilometre a frame. A running pace to begin with, as SE sets on landing; the wheel changes it.
             cam.speed = cam.speed.min(20.0);
@@ -787,7 +826,7 @@ fn sandbox_step(
 
 /// The frame's work on the world: where he's to be set down, the ground field, the ticks, the camera. `true` if he walks
 /// and the body under him has gone (free flight takes over).
-fn world_frame(sb: &mut Sandbox, cam: &mut FlyCamera, data: &SeData, input: &WalkInput, dt: f32, bodies: &Query<(&SystemBody, Option<&Terrain>)>) -> bool {
+fn world_frame(sb: &mut Sandbox, cam: &mut FlyCamera, data: &SeData, input: &WalkInput, dt: f32, bodies: &Query<(&SystemBody, Option<&Terrain>)>, near: &Near) -> bool {
     // The body the world is on (or is to be on).
     let obj = sb.pending.map(|p| p.obj).or(sb.world.as_ref().map(|w| w.frame.obj));
     let found = obj.and_then(|o| bodies.iter().find(|(b, _)| b.obj == o)).and_then(|(b, t)| Some((b, t?)));
@@ -852,14 +891,14 @@ fn world_frame(sb: &mut Sandbox, cam: &mut FlyCamera, data: &SeData, input: &Wal
     }
     // (Out of `sb` while the frame works on both.)
     let Some(mut world) = sb.world.take() else { return false };
-    step_world(sb, &mut world, b, terrain, gm, input, dt, cam, data);
+    step_world(sb, &mut world, b, terrain, gm, input, dt, cam, data, near);
     sb.world = Some(world);
     false
 }
 
 /// The rest of the frame, once there is a world: its ground field, the ticks and the camera.
 #[allow(clippy::too_many_arguments)]
-fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrain: &Terrain, gm: f64, input: &WalkInput, dt: f32, cam: &mut FlyCamera, data: &SeData) {
+fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrain: &Terrain, gm: f64, input: &WalkInput, dt: f32, cam: &mut FlyCamera, data: &SeData, near: &Near) {
     // The ground field: made when there is none, when he has walked off from the anchor, or when the terrain under it changed
     // (finer nodes arrive over the first half minute).
     let walking = sb.mode == Mode::Walk;
@@ -949,6 +988,17 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
             }
         }
     }
+
+    // The buildings and trees round him, as the probe last listed them: solid (while he walks; off foot they stay as they
+    // were, so what leans on them goes on leaning).
+    if walking && sb.pending.is_none() {
+        let list = near.list.filter(|l| l.2 == world.frame.obj).map(|l| (l.0, l.1));
+        let half = Tracer::hull(sb.player.ducked);
+        let centre = sb.player.origin * UNIT_M + Vec3::Z * half.z;
+        sb.solids.sync(world, list, near.lib, &|k| near.broken.is_some_and(|b| b.has(k)), sb.placed.then_some((centre, half)));
+    }
+
+    sb.ground_material = audio::ground_name(terrain.land_plants, sb.solids.buildings > 0);
 
     // Gravity: the planet's own, at where he is.
     let r = world.frame.to_body(at).length().max(b.radius_m * 0.5);
@@ -1128,7 +1178,7 @@ fn log_state(sb: &Sandbox, world: &SandboxWorld, data: &SeData, b: &SystemBody) 
     let (lat, lon) = (d.y.asin().to_degrees(), (-d.z).atan2(d.x).to_degrees());
     let ground = world.terrain().and_then(|t| t.height(p.origin.x * UNIT_M, p.origin.y * UNIT_M));
     info!(
-        "sandbox: mode {:?} placed {} on {} at {lat:.5} {lon:.5}; origin {:.1} {:.1} {:.1} u, {:.3} m over the field's ground; velocity {:.1} {:.1} {:.1} u/s (speed {:.1}); ground {:?}; ducked {}; yaw {:.1} pitch {:.1}; gravity {:.3} m/s2; props {}; tick {}",
+        "sandbox: mode {:?} placed {} on {} at {lat:.5} {lon:.5}; origin {:.1} {:.1} {:.1} u, {:.3} m over the field's ground; velocity {:.1} {:.1} {:.1} u/s (speed {:.1}); ground {:?}; ducked {}; yaw {:.1} pitch {:.1}; gravity {:.3} m/s2; props {}; solid: {} buildings, {} trees ({} pieces, {} waiting for him to step out); tick {}",
         sb.mode,
         sb.placed,
         data.catalog.display_name(b.obj),
@@ -1149,6 +1199,10 @@ fn log_state(sb: &Sandbox, world: &SandboxWorld, data: &SeData, b: &SystemBody) 
         sb.pitch.to_degrees(),
         sb.gravity,
         world.prop_count(),
+        sb.solids.buildings,
+        sb.solids.trees,
+        world.solid_count(),
+        sb.solids.waiting(),
         sb.ticks,
     );
 }
@@ -1240,6 +1294,28 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 );
             }
         }
+        // solids: the nearest buildings and trees made solid, with the way to each (the yaw `sbx look` takes).
+        "solids" => {
+            let sb = world.resource::<Sandbox>();
+            let at = sb.player.origin * UNIT_M;
+            info!("sandbox: solid: {} buildings, {} trees; he is at {:.1} {:.1} {:.1} m", sb.solids.buildings, sb.solids.trees, at.x, at.y, at.z);
+            for (tree, foot, size, waiting) in sb.solids.nearest(at, 8) {
+                let d = foot - at;
+                info!(
+                    "sandbox: a {} {:.1} m off at yaw {:.1}, its foot {:.2} m over his feet, size {:.1} {:.1} {:.1}{}",
+                    if tree { "tree" } else { "building" },
+                    d.truncate().length(),
+                    d.y.atan2(d.x).to_degrees(),
+                    d.z,
+                    size.x,
+                    size.y,
+                    size.z,
+                    if waiting { " (waiting for him to step out)" } else { "" }
+                );
+            }
+        }
+        // arsenal: the weapon in hand and what its view model is playing.
+        "arsenal" => info!("sandbox: in hand: {}", world.resource::<weapons::Arsenal>().describe()),
         _ => warn!("sbx: unknown command '{arg}'"),
     }
 }

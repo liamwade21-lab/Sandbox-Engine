@@ -47,6 +47,8 @@ pub struct PropData {
     pub shape: PropShape,
     pub mass: f32,
     pub surface: Surface,
+    /// The model's own surface property.
+    pub material: String,
     pub min: Vec3,
     pub max: Vec3,
 }
@@ -57,6 +59,7 @@ pub struct PropAsset {
     pub shape: PropShape,
     pub mass: f32,
     pub surface: Surface,
+    pub material: String,
     pub min: Vec3,
     pub max: Vec3,
 }
@@ -80,6 +83,10 @@ pub struct GmodAssets {
     materials: HashMap<String, Handle<PropMaterial>>,
     sounds: HashMap<String, Option<Handle<AudioSource>>>,
     white: Option<Handle<Image>>,
+    /// The game's sound scripts and surfaces (empty without it: `SoundScripts::get` has the sandbox's own then).
+    pub scripts: super::soundscript::SoundScripts,
+    /// The weapons' view models as read on the worker thread, by weapon, until the scene takes them.
+    pub views: Vec<Option<super::viewmodel::ViewData>>,
 }
 
 /// The Garry's Mod folder: `GMOD_PATH`, else where Steam has it installed.
@@ -90,19 +97,46 @@ pub fn find_install() -> Option<PathBuf> {
     crate::ownership::steam_app_dir(GMOD_APP)
 }
 
-/// Open the install and read its spawn lists (a worker thread's job: half a second).
-pub fn open_install() -> (Option<Arc<GmodInstall>>, Vec<PropList>, String) {
+/// What the search for the install found (`open_install`).
+pub struct Opened {
+    pub install: Option<Arc<GmodInstall>>,
+    pub lists: Vec<PropList>,
+    pub scripts: super::soundscript::SoundScripts,
+    /// The weapons' view models, by weapon (`None`: it can't be read).
+    pub views: Vec<Option<super::viewmodel::ViewData>>,
+    /// For the log.
+    pub lines: Vec<String>,
+}
+
+/// Open the install and read its spawn lists, its sound scripts and the weapons' view models (a worker thread's job:
+/// about a second).
+pub fn open_install() -> Opened {
+    let none = |line: String| Opened { install: None, lists: placeholder_lists(), scripts: Default::default(), views: Vec::new(), lines: vec![line] };
     let Some(root) = find_install() else {
-        return (None, placeholder_lists(), "Garry's Mod is not installed: plain props and plain sounds".to_string());
+        return none("Garry's Mod is not installed: plain props and plain sounds".to_string());
     };
     match GmodInstall::open(&root) {
         Ok(install) => {
             let lists = prop_lists(&install, install.spawnlists());
             let n: usize = lists.iter().map(|l| l.models.len()).sum();
-            let line = format!("Garry's Mod's files are read from {} ({} spawn lists, {n} props)", root.display(), lists.len());
-            (Some(Arc::new(install)), if lists.is_empty() { placeholder_lists() } else { lists }, line)
+            let mut lines = vec![format!("Garry's Mod's files are read from {} ({} spawn lists, {n} props)", root.display(), lists.len())];
+            let scripts = super::soundscript::SoundScripts::load(&install);
+            let (sounds, surfaces) = scripts.counts();
+            lines.push(format!("its sound scripts: {sounds} named sounds, {surfaces} surfaces"));
+            let views: Vec<Option<super::viewmodel::ViewData>> = super::weapons::WEAPONS
+                .iter()
+                .map(|w| match super::viewmodel::load(&install, w.view) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        lines.push(format!("{} can't be read ({e}): the {} is its world model", w.view, w.name));
+                        None
+                    }
+                })
+                .collect();
+            lines.push(format!("{} of {} view models read", views.iter().flatten().count(), views.len()));
+            Opened { install: Some(Arc::new(install)), lists: if lists.is_empty() { placeholder_lists() } else { lists }, scripts, views, lines }
         }
-        Err(e) => (None, placeholder_lists(), format!("Garry's Mod's files at {} can't be read ({e}): plain props and plain sounds", root.display())),
+        Err(e) => none(format!("Garry's Mod's files at {} can't be read ({e}): plain props and plain sounds", root.display())),
     }
 }
 
@@ -149,6 +183,24 @@ pub fn prop_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).trim_end_matches(".mdl").to_string()
 }
 
+/// One of the game's materials as the sandbox draws it: its base texture, its colour, whether its alpha cuts it out.
+pub fn material_data(install: &GmodInstall, name: &str) -> MatData {
+    let mat = install.material(name);
+    let texture = mat.as_ref().and_then(|x| x.base_texture.as_ref()).and_then(|t| install.texture(t).ok());
+    let (alpha_test, translucent, no_cull, color) = mat.as_ref().map_or((false, false, false, [1.0; 3]), |x| (x.alpha_test, x.translucent, x.no_cull, x.color));
+    let has_alpha = texture.as_ref().is_some_and(|t| t.has_alpha);
+    let alpha_cut = if alpha_test && has_alpha {
+        0.5
+    } else if translucent && has_alpha {
+        0.3
+    } else {
+        0.0
+    };
+    // (No texture: Source's missing-material purple would only look like a bug here; a plain grey.)
+    let tint = if texture.is_some() { color } else { [0.5, 0.5, 0.5] };
+    MatData { key: name.to_string(), texture, tint, alpha_cut, two_sided: no_cull || alpha_cut > 0.0 }
+}
+
 /// Read a prop: its meshes, its materials' textures, its collision pieces. Any thread.
 pub fn load_prop(install: Option<&GmodInstall>, path: &str) -> Result<PropData, String> {
     if path.starts_with("placeholder/") {
@@ -167,20 +219,8 @@ pub fn load_prop(install: Option<&GmodInstall>, path: &str) -> Result<PropData, 
             min = min.min(Vec3::from_array(*p));
             max = max.max(Vec3::from_array(*p));
         }
-        let mat = install.material(&m.material);
-        let texture = mat.as_ref().and_then(|x| x.base_texture.as_ref()).and_then(|t| install.texture(t).ok());
-        let (alpha_test, translucent, no_cull, color) = mat.as_ref().map_or((false, false, false, [1.0; 3]), |x| (x.alpha_test, x.translucent, x.no_cull, x.color));
-        let has_alpha = texture.as_ref().is_some_and(|t| t.has_alpha);
-        let alpha_cut = if alpha_test && has_alpha {
-            0.5
-        } else if translucent && has_alpha {
-            0.3
-        } else {
-            0.0
-        };
-        // (No texture: Source's missing-material purple would only look like a bug here; a plain grey.)
-        let tint = if texture.is_some() { color } else { [0.5, 0.5, 0.5] };
-        meshes.push(MeshData { positions, normals: m.normals, uvs: m.uvs, indices: m.indices, material: MatData { key: m.material, texture, tint, alpha_cut, two_sided: no_cull || alpha_cut > 0.0 } });
+        let material = material_data(install, &m.material);
+        meshes.push(MeshData { positions, normals: m.normals, uvs: m.uvs, indices: m.indices, material });
     }
     if meshes.is_empty() {
         return Err(format!("{path} has no mesh"));
@@ -189,7 +229,7 @@ pub fn load_prop(install: Option<&GmodInstall>, path: &str) -> Result<PropData, 
     // (Source's masses are kilograms; a model without one gets water's weight for a tenth of its box.)
     let size = max - min;
     let mass = if model.mass > 0.0 { model.mass } else { (size.x * size.y * size.z * 100.0).clamp(1.0, 500.0) };
-    Ok(PropData { meshes, shape, mass, surface: Surface::named(&model.surface_prop), min, max })
+    Ok(PropData { meshes, shape, mass, surface: Surface::named(&model.surface_prop), material: model.surface_prop.to_ascii_lowercase(), min, max })
 }
 
 /// The model's own collision pieces where they fit its mesh, else the mesh's convex hull. (A tenth of the models keep their
@@ -245,7 +285,7 @@ fn placeholder_prop(path: &str) -> Option<PropData> {
     let indices: Vec<u32> = mesh.indices().map(|i| i.iter().map(|i| i as u32).collect()).unwrap_or_default();
     let (min, max) = positions.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |a, p| (a.0.min(Vec3::from_array(*p)), a.1.max(Vec3::from_array(*p))));
     let material = MatData { key: path.to_string(), texture: None, tint, alpha_cut: 0.0, two_sided: false };
-    Some(PropData { meshes: vec![MeshData { positions, normals, uvs, indices, material }], shape, mass, surface, min, max })
+    Some(PropData { meshes: vec![MeshData { positions, normals, uvs, indices, material }], shape, mass, surface, material: surface.prop_name().to_string(), min, max })
 }
 
 /// A Bevy mesh of one of a prop's meshes.
@@ -310,7 +350,7 @@ pub struct Gpu<'a> {
 }
 
 impl GmodAssets {
-    fn white(&mut self, images: &mut Assets<Image>) -> Handle<Image> {
+    pub fn white(&mut self, images: &mut Assets<Image>) -> Handle<Image> {
         self.white
             .get_or_insert_with(|| images.add(Image::new_fill(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2, &[255, 255, 255, 255], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD)))
             .clone()
@@ -340,7 +380,7 @@ impl GmodAssets {
     /// GPU parts of a prop as read.
     pub fn upload(&mut self, gpu: &mut Gpu, data: PropData) -> PropAsset {
         let parts = data.meshes.iter().map(|m| (gpu.meshes.add(bevy_mesh(m)), self.material(gpu, &m.material, 0.0))).collect();
-        PropAsset { parts, shape: data.shape, mass: data.mass, surface: data.surface, min: data.min, max: data.max }
+        PropAsset { parts, shape: data.shape, mass: data.mass, surface: data.surface, material: data.material, min: data.min, max: data.max }
     }
 
     /// A prop by its path, read the first time it's asked for (a few milliseconds; `None` if it can't be read).

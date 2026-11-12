@@ -55,6 +55,10 @@ fn fragment(in: VertexOut, @builtin(front_facing) front: bool) -> @location(0) v
     let albedo = texel.rgb * tint.rgb;
     let pl = PointLight(prop_light.sun.rgb, prop_light.sky.rgb, prop_light.flat_e.rgb, prop_light.haze_t.rgb, prop_light.haze_a.rgb);
     var c = lit_surface(pl, normalize(frame.light.sun_dir.xyz), albedo, n, normalize(frame.up.xyz), 0.0, 0.0);
+    // By night the street lamps light it from above, as they do the road, the cars and the hero (hero.wesl).
+    let up = normalize(frame.up.xyz);
+    let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, normalize(frame.light.sun_dir.xyz)));
+    c += albedo * frame.town.rgb * night * (0.25 + 0.2 * max(dot(n, up), 0.0));
     // (Its own light, in the ground's scale: the Sun's light on a white ground facing it, times the share asked for.)
     if glow.x > 0.0 {
         let day = max(max(prop_light.sun.r, prop_light.sun.g), max(prop_light.sun.b, 1.0e-6));

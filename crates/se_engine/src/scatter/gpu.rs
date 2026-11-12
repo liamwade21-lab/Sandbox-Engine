@@ -565,8 +565,9 @@ fn prepare(
     // are ready (a job is marked done only when it runs). Their slots start empty and are not
     // drawn until placed.
     let ready = [gpu.place, gpu.cull, gpu.finish].iter().all(|&id| cache.get_compute_pipeline(id).is_some());
-    // (With the kind: a node's near buildings and street objects are the same cell.)
-    let key = |j: &super::PlaceJob| [j.face, j.level, j.row, j.col, j.seed, j.keep.to_bits(), j.kind + 1];
+    // (With the kind: a node's near buildings and street objects are the same cell. With the frame's `replace`: a
+    // slot placed against a map patch that didn't reach it is placed again.)
+    let key = |j: &super::PlaceJob| [j.face, j.level, j.row, j.col, j.seed, j.keep.to_bits(), j.kind + 1 + (frame.replace << 8)];
     let mut jobs = Vec::new();
     let mut pending = vec![false; SLOTS as usize];
     for j in &frame.jobs {
@@ -637,8 +638,9 @@ fn prepare(
         flora_k: Vec4::new(b.relief_m, b.far_range, b.civ_light as f32, if b.domes { 1.0 } else { 0.0 }),
         city: b.city,
         city2: b.city2,
-        // (z: the mod's probe, 0 off, 1 as drawn, 2 measuring.)
-        street: Vec4::new(b.street_range, frame.traffic, frame.probe.map_or(0.0, |p| p.mode as f32), 0.0),
+        // (z: the mod's probe, 0 off, 1 as drawn, 2 measuring; w: the sandbox's trees in the same list, within this many
+        // metres of the capsule, 0 none.)
+        street: Vec4::new(b.street_range, frame.traffic, frame.probe.map_or(0.0, |p| p.mode as f32), frame.probe.map_or(0.0, |p| p.trees_m)),
         key: Vec4::new(u.proc_params2.x, u.proc_params2.y, if b.atmosphere.is_some() { 1.0 } else { 0.0 }, 0.0),
         atm: u.atm,
         light: b.light,

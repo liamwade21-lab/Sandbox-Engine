@@ -613,6 +613,19 @@ impl Punch {
         self.velocity += angle * 20.0;
     }
 
+    /// `ViewPunchReset`: the kick goes at once, unless (with a tolerance) it is already more than that.
+    pub fn reset(&mut self, tolerance: f32) {
+        if tolerance != 0.0 && self.velocity.length_squared() + self.angle.length_squared() > tolerance * tolerance {
+            return;
+        }
+        *self = Punch::default();
+    }
+
+    /// `UTIL_ClipPunchAngleOffset`: a kick cut so the view's whole punch stays within `clip` (degrees) each way.
+    pub fn clipped(&self, kick: Vec3, clip: Vec3) -> Vec3 {
+        (kick + self.angle).clamp(-clip, clip) - self.angle
+    }
+
     pub fn decay(&mut self, dt: f32) {
         if self.angle.length_squared() > 0.001 || self.velocity.length_squared() > 0.001 {
             self.angle += self.velocity * dt;

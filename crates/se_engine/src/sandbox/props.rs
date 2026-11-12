@@ -78,6 +78,7 @@ pub fn handle_requests(
                     msg.show(format!("{} has no shape to be solid with", super::assets::prop_name(&path)));
                     continue;
                 };
+                world.set_material(id, &asset.material);
                 let entities = asset
                     .parts
                     .iter()

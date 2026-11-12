@@ -1,15 +1,23 @@
-//! The sandbox's sounds: Half-Life 2's own files from the Garry's Mod install (`assets.rs`), picked and timed as its sound
-//! scripts do (`game_sounds_weapons.txt`, `game_sounds_physics.txt`: the waves, volumes and pitch ranges below are theirs).
-//! Anything that happens pushes a `Cue` on `Sandbox::cues`; only `play_cues` spawns audio.
+//! The sandbox's sounds: Half-Life 2's own, by the names its code plays them under (`Weapon_Pistol.Single`,
+//! `Metal_Barrel.ImpactHard`, `Grass.StepLeft`), looked up in its own sound scripts (`soundscript.rs`), so the wave, the
+//! volume, the pitch and how far each carries are the game's. Anything that happens pushes a `Cue` on `Sandbox::cues`; only
+//! `play_cues` spawns audio.
+//!
+//! A sound that happens somewhere (a prop landing, a bullet striking) is heard from there: fainter with distance by
+//! Source's own rule (`soundscript::distance_gain`) and to the side it is on (Bevy's spatial voices: one listener at the
+//! eyes, turned with the view). What he does himself (his weapon, his steps, the menu) plays in the middle.
 
-use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
+use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, SpatialAudioSink, SpatialListener, Volume};
 use bevy::prelude::*;
 
+use crate::camera::FlyCamera;
 use crate::sound::SoundSettings;
+use crate::system::SystemBody;
 
 use super::assets::GmodAssets;
 use super::movement::{self, UNIT_M};
-use super::world::Surface;
+use super::soundscript::{CHAN_AUTO, CHAN_STATIC, distance_gain};
+use super::world::{Met, SandboxWorld};
 use super::{Event, Sandbox};
 
 /// The game's sounds are mixed for a volume slider near full; the port's is 0.3 by default.
@@ -18,22 +26,91 @@ const GAIN: f32 = 2.6;
 /// The most sounds started in a frame.
 const MAX_CUES: usize = 8;
 
-/// One sound to play: a file under `sound/`, its volume (the script's) and pitch (1: as recorded).
+/// The sound level of a wave played by its path from somewhere in the world (`SNDLVL_NORM`).
+const LEVEL_NORM: f32 = 75.0;
+
+/// The listener's ears are this far apart, and every placed sound is put this far from between them, in its true
+/// direction (the distance's own fading is `distance_gain`'s: the voice's is kept out of it by staying within a unit).
+const EAR_GAP: f32 = 0.2;
+const VOICE_DIST: f32 = 0.5;
+/// What a voice straight ahead loses to the spatial mix (both ears get three quarters), given back.
+const SPATIAL_MAKE_UP: f32 = 1.0 / 0.75;
+
+/// Every script name the sandbox's own code plays (the surfaces' are looked up through `surfaceproperties.txt`): a test
+/// checks each is in the game's scripts with waves that exist.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const NAMED: &[&str] = &[
+    "Weapon_Pistol.Single",
+    "Weapon_Pistol.Reload",
+    "Weapon_Pistol.Empty",
+    "Weapon_SMG1.Single",
+    "Weapon_SMG1.Reload",
+    "Weapon_SMG1.Empty",
+    "Weapon_Shotgun.Single",
+    "Weapon_Shotgun.Double",
+    "Weapon_Shotgun.Reload",
+    "Weapon_Shotgun.Special1",
+    "Weapon_Shotgun.Empty",
+    "Weapon_Crowbar.Single",
+    "Weapon_Crowbar.Melee_HitWorld",
+    "Weapon_PhysCannon.Launch",
+    "Weapon_PhysCannon.DryFire",
+    "Weapon_PhysCannon.Pickup",
+    "Weapon_PhysCannon.Drop",
+    "Weapon_PhysCannon.TooHeavy",
+    "Weapon_PhysCannon.OpenClaws",
+    "Weapon_PhysCannon.CloseClaws",
+    "Weapon_PhysCannon.HoldSound",
+    "Weapon_MegaPhysCannon.HoldSound",
+    "Weapon_Physgun.Off",
+    "Player.FallDamage",
+    "HL2Player.UseDeny",
+    "Player.WeaponSelected",
+    "Player.WeaponSelectionMoveSlot",
+    "Player.WeaponSelectionClose",
+    "Player.DenyWeaponSelection",
+];
+
+/// What a cue plays: a wave by its path under `sound/`, or one of the game's named sounds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sound {
+    Wave(String),
+    Named(String),
+}
+
+/// One sound to play. For a wave `volume` and `pitch` are its own; for a named sound they scale the script's.
 #[derive(Clone, Debug)]
 pub struct Cue {
-    pub path: String,
+    pub sound: Sound,
     pub volume: f32,
     pub pitch: f32,
+    /// Where it happens (the sandbox's frame, metres); `None`: in his own hands or head.
+    pub at: Option<Vec3>,
 }
 
 impl Cue {
     pub fn new(path: impl Into<String>, volume: f32, pitch: f32) -> Self {
-        Cue { path: path.into(), volume, pitch }
+        Cue { sound: Sound::Wave(path.into()), volume, pitch, at: None }
     }
 
     /// An interface sound.
     pub fn ui(path: &str) -> Self {
         Cue::new(path, 0.6, 1.0)
+    }
+
+    /// One of the game's sounds as its script has it.
+    pub fn named(name: impl Into<String>) -> Self {
+        Cue { sound: Sound::Named(name.into()), volume: 1.0, pitch: 1.0, at: None }
+    }
+
+    pub fn at(mut self, point: Vec3) -> Self {
+        self.at = Some(point);
+        self
+    }
+
+    pub fn louder(mut self, k: f32) -> Self {
+        self.volume *= k;
+        self
     }
 }
 
@@ -43,8 +120,11 @@ pub struct Rng(pub u32);
 
 impl Rng {
     pub fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        self.0 >> 8
+        // (PCG's scramble over the state: the state's own low bits repeat every few draws, and which of two steps
+        // plays is one bit: a walk was the same two waves over and over.)
+        self.0 = self.0.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        let x = ((self.0 >> ((self.0 >> 28) + 4)) ^ self.0).wrapping_mul(277_803_737);
+        (x ^ (x >> 22)) >> 8
     }
 
     /// 0..1.
@@ -59,106 +139,97 @@ impl Rng {
     pub fn pick(&mut self, n: usize) -> usize {
         (self.next() as usize) % n.max(1)
     }
+}
 
-    /// `PREFIXn.wav` with n one of `numbers`, pitched in `lo..hi` percent.
-    pub fn wave(&mut self, prefix: &str, numbers: &[u32], volume: f32, lo: f32, hi: f32) -> Cue {
-        let n = numbers[self.pick(numbers.len())];
-        Cue::new(format!("{prefix}{n}.wav"), volume, self.range(lo, hi) / 100.0)
+/// What the ground itself is, as a surface property: grass where the world grows plants, bare dirt elsewhere.
+pub fn ground_name(plants: bool, town: bool) -> &'static str {
+    // (Among buildings the ground is streets, sidewalks and yards.)
+    if town {
+        "concrete"
+    } else if plants {
+        "grass"
+    } else {
+        "dirt"
     }
 }
 
-/// A surface's impact sounds: the file's stem, the numbers that exist, for a hard hit and a soft one.
-fn impact_waves(s: Surface) -> ((&'static str, &'static [u32]), (&'static str, &'static [u32])) {
-    match s {
-        Surface::MetalBarrel => (("physics/metal/metal_barrel_impact_hard", &[1, 2, 3, 5, 6, 7]), ("physics/metal/metal_barrel_impact_soft", &[1, 2, 3, 4])),
-        Surface::Metal => (("physics/metal/metal_solid_impact_hard", &[1, 4, 5]), ("physics/metal/metal_solid_impact_soft", &[1, 2, 3])),
-        Surface::WoodCrate => (("physics/wood/wood_crate_impact_hard", &[1, 2, 3, 4, 5]), ("physics/wood/wood_crate_impact_soft", &[1, 2, 3])),
-        Surface::Wood => (("physics/wood/wood_plank_impact_hard", &[1, 2, 3, 4, 5]), ("physics/wood/wood_plank_impact_soft", &[1, 2, 3])),
-        Surface::PlasticBarrel => (("physics/plastic/plastic_barrel_impact_hard", &[1, 2, 3, 4]), ("physics/plastic/plastic_barrel_impact_soft", &[1, 2, 3, 4, 5, 6])),
-        Surface::Plastic => (("physics/plastic/plastic_box_impact_hard", &[1, 2, 3, 4]), ("physics/plastic/plastic_box_impact_soft", &[1, 2, 3, 4])),
-        Surface::Concrete => (("physics/concrete/concrete_block_impact_hard", &[1, 2, 3]), ("physics/concrete/concrete_impact_soft", &[1, 2, 3])),
-        Surface::Cardboard => (("physics/cardboard/cardboard_box_impact_hard", &[1, 2, 3, 4, 5, 6, 7]), ("physics/cardboard/cardboard_box_impact_soft", &[1, 2, 3, 4, 5, 6, 7])),
-        Surface::Rubber => (("physics/rubber/rubber_tire_impact_hard", &[1, 2, 3]), ("physics/rubber/rubber_tire_impact_soft", &[1, 2, 3])),
-        Surface::Flesh => (("physics/flesh/flesh_impact_hard", &[1, 2, 3, 4, 5, 6]), ("physics/flesh/flesh_squishy_impact_hard", &[1, 2, 3, 4])),
-        Surface::Glass => (("physics/glass/glass_impact_hard", &[1, 2, 3]), ("physics/glass/glass_impact_soft", &[1, 2, 3])),
+/// The surface property of what a trace met: a prop's own (its model's), a wall's or a trunk's, the ground's.
+pub fn met_surface(world: Option<&SandboxWorld>, ground: &str, met: Met) -> String {
+    match met {
+        Met::Prop(id) => world.and_then(|w| w.prop(id)).map_or("default".to_string(), |p| p.material.clone().unwrap_or_else(|| p.surface.prop_name().to_string())),
+        Met::Solid(s) => s.prop_name().to_string(),
+        Met::Ground => ground.to_string(),
     }
 }
 
-/// A bullet's or the crowbar's hit on a surface (`None`: the ground).
-pub fn bullet_impact(rng: &mut Rng, surface: Option<Surface>) -> Cue {
-    let (stem, numbers): (&str, &[u32]) = match surface {
-        None => ("physics/surfaces/sand_impact_bullet", &[1, 2, 3, 4]),
-        Some(Surface::Metal | Surface::MetalBarrel) => ("physics/metal/metal_solid_impact_bullet", &[1, 2, 3, 4]),
-        Some(Surface::Wood | Surface::WoodCrate) => ("physics/wood/wood_solid_impact_bullet", &[1, 2, 3, 4, 5]),
-        Some(Surface::Plastic) => ("physics/plastic/plastic_box_impact_bullet", &[1, 2, 3, 4, 5]),
-        Some(Surface::PlasticBarrel) => ("physics/plastic/plastic_barrel_impact_bullet", &[1, 2, 3]),
-        Some(Surface::Concrete) => ("physics/concrete/concrete_impact_bullet", &[1, 2, 3, 4]),
-        Some(Surface::Cardboard) => ("physics/cardboard/cardboard_box_impact_bullet", &[1, 2, 3, 4, 5]),
-        Some(Surface::Rubber) => ("physics/rubber/rubber_tire_impact_bullet", &[1, 2, 3]),
-        Some(Surface::Flesh) => ("physics/flesh/flesh_impact_bullet", &[1, 2, 3, 4, 5]),
-        Some(Surface::Glass) => ("physics/glass/glass_impact_bullet", &[1, 2, 3, 4]),
-    };
-    rng.wave(stem, numbers, 0.7, 95.0, 105.0)
+pub fn surface_name(sb: &Sandbox, met: Met) -> String {
+    met_surface(sb.world.as_ref(), sb.ground_material, met)
 }
 
-/// A footstep on what he stands on: the ground's dirt, or the prop's own surface (`Dirt.StepLeft` is waves 1 and 3, the right
-/// foot's 2 and 4).
-fn step_cue(rng: &mut Rng, on: Option<Surface>, left: bool, volume: f32) -> Cue {
-    let stem = match on {
-        None => "player/footsteps/dirt",
-        Some(Surface::Metal | Surface::MetalBarrel) => "player/footsteps/metal",
-        Some(Surface::Wood | Surface::WoodCrate | Surface::Cardboard) => "player/footsteps/wood",
-        Some(Surface::Concrete | Surface::Glass) => "player/footsteps/concrete",
-        Some(_) => "player/footsteps/tile",
-    };
-    let numbers: &[u32] = if left { &[1, 3] } else { &[2, 4] };
-    rng.wave(stem, numbers, volume, 96.0, 104.0)
+/// A bullet's or the crowbar's strike on a surface, heard from where it struck.
+pub fn bullet_impact(assets: &GmodAssets, surface: &str, at: Vec3) -> Cue {
+    Cue::named(assets.scripts.surface(surface).bullet_impact).at(at)
 }
 
 /// What a tick's events sound like.
-fn event_cues(sb: &mut Sandbox) {
-    let on = match sb.player.ground {
-        Some(movement::Hit::Prop(id, _)) => sb.world.as_ref().and_then(|w| w.prop(id)).map(|p| p.surface),
-        _ => None,
+fn event_cues(sb: &mut Sandbox, assets: &GmodAssets) {
+    // What is under his feet: a prop, a roof, the ground (looked for only when a step is to sound).
+    let on = if sb.events.is_empty() {
+        None
+    } else {
+        Some(match sb.player.ground {
+            Some(movement::Hit::Prop(id, _)) => surface_name(sb, Met::Prop(id)),
+            Some(movement::Hit::World) => {
+                let feet = sb.player.origin * UNIT_M;
+                let met = sb.world.as_ref().and_then(|w| w.ray(feet + Vec3::Z * 0.2, Vec3::NEG_Z, 0.5, None)).map_or(Met::Ground, |h| h.met);
+                surface_name(sb, met)
+            }
+            None => sb.last_ground.clone().unwrap_or_else(|| sb.ground_material.to_string()),
+        })
     };
     for i in 0..sb.events.len() {
+        let surface = assets.scripts.surface(on.as_deref().unwrap_or("default"));
+        // `PlayStepSound`: the surface's own waves, at the volume the code gives (the script's is not used).
+        let step = |left: bool, volume: f32| Cue { volume, ..Cue::named(if left { surface.step_left.clone() } else { surface.step_right.clone() }) };
         let cue = match sb.events[i] {
             Event::Step { left, speed, ducked } => {
-                // `UpdateStepSound`: dirt 0.25 walking, 0.55 running (220 units/s and up; 80 ducked), 0.65 of it ducked.
+                // `UpdateStepSound`: walking or running by 220 units/s (80 ducked); dirt and grass 0.25 and 0.55, a vent
+                // 0.4 and 0.7, the rest 0.2 and 0.5; 65 % of it ducked.
                 let running = speed >= if ducked { 80.0 } else { 220.0 };
-                let v = if running { 0.55 } else { 0.25 } * if ducked { 0.65 } else { 1.0 };
-                Some(step_cue(&mut sb.rng, on, left, v))
+                let v = match (surface.material, running) {
+                    ('D', false) => 0.25,
+                    ('D', true) => 0.55,
+                    ('V', false) => 0.4,
+                    ('V', true) => 0.7,
+                    (_, false) => 0.2,
+                    (_, true) => 0.5,
+                };
+                Some(step(left, v * if ducked { 0.65 } else { 1.0 }))
             }
-            Event::Jump => Some(step_cue(&mut sb.rng, sb.last_ground, true, 0.6)),
+            // `CheckJumpButton`: a step at full volume.
+            Event::Jump => Some(step(true, 1.0)),
             Event::Land(speed) => {
                 if speed > movement::SAFE_FALL_SPEED {
-                    // (`Player.FallDamage`.)
-                    let n = if sb.rng.pick(2) == 0 { 1 } else { 3 };
-                    sb.cues.push(Cue::new(format!("player/pl_fallpain{n}.wav"), 0.75, 1.0));
+                    sb.cues.push(Cue::named("Player.FallDamage"));
                 }
-                let v = if speed > movement::SAFE_FALL_SPEED {
-                    1.0
-                } else if speed > movement::SAFE_FALL_SPEED / 2.0 {
-                    0.85
-                } else {
-                    0.5
-                };
-                (speed > 120.0).then(|| step_cue(&mut sb.rng, on, false, v))
+                // `CheckFalling`: a landing under `PLAYER_FALL_PUNCH_THRESHOLD` (a jump's on level ground) makes no sound;
+                // from there a step at 0.85, at full volume when it hurts.
+                (speed >= movement::FALL_PUNCH_SPEED).then(|| step(false, if speed > movement::SAFE_FALL_SPEED { 1.0 } else { 0.85 }))
             }
             Event::PropImpact(hit) => {
-                // `PhysCollisionSound`: the volume by the speed squared over 320 units/s squared; hard from about 2.5 m/s.
-                let ((hard, hard_n), (soft, soft_n)) = impact_waves(hit.surface);
+                // `PhysicsImpactSound`: the surface's hard sound from 150 units/s of change, its soft one under; the
+                // volume by the speed squared over 320 units/s squared.
+                let s = assets.scripts.surface(&surface_name(sb, Met::Prop(hit.id)));
                 let units = hit.speed / UNIT_M;
-                let volume = (units * units / (320.0 * 320.0)).clamp(0.08, 1.0) * 0.6;
-                // (Further off, fainter: there is no 3D sound here.)
-                let far = 1.0 / (1.0 + ((hit.at - sb.eye).length() / 6.0).powi(2));
-                let (stem, numbers) = if hit.speed > 2.5 { (hard, hard_n) } else { (soft, soft_n) };
-                Some(Cue { volume: volume * far, ..sb.rng.wave(stem, numbers, 1.0, 95.0, 105.0) })
+                let volume = (units * units / (320.0 * 320.0)).clamp(0.0, 1.0);
+                (volume > 0.02).then(|| Cue { volume, ..Cue::named(if units > 150.0 { s.impact_hard } else { s.impact_soft }).at(hit.at) })
             }
         };
         sb.cues.extend(cue);
     }
-    sb.last_ground = on;
+    if on.is_some() && sb.player.ground.is_some() {
+        sb.last_ground = on;
+    }
 }
 
 /// The sound that goes on while something is held (the gravity gun's hum).
@@ -169,67 +240,156 @@ pub struct LoopVoice(&'static str);
 #[derive(Component)]
 pub struct CueVoice(String, f32);
 
-/// `SE_SANDBOX_SOUNDS=1`: log every sound as it is cued and as it starts to play.
+/// A voice on one of his own channels (`CHAN_*`), which the next sound there cuts off.
+#[derive(Component)]
+pub struct ChannelVoice(u8);
+
+/// The one listener the placed sounds are heard by: at the render frame's origin (his eyes), turned as the view is.
+#[derive(Component)]
+pub struct Ears;
+
+/// `SE_SANDBOX_SOUNDS=1`: log every sound as it starts to play.
 fn log_sounds() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("SE_SANDBOX_SOUNDS").is_some())
 }
 
 /// Says which cues the audio thread took (a file it can't decode never gets a sink).
-pub fn log_voices(started: Query<&CueVoice, Added<AudioSink>>) {
+pub fn log_voices(started: Query<&CueVoice, Or<(Added<AudioSink>, Added<SpatialAudioSink>)>>) {
     for v in &started {
         info!("sandbox: playing {} at volume {:.2}", v.0, v.1);
     }
 }
 
+pub fn spawn_ears(mut commands: Commands) {
+    // The ears the other way round: rodio's `Spatial` makes the channel of the ear FURTHER from a sound the louder one
+    // (measured 2026-11-11 by recording the speakers: a barrel dropped on his right was 5.7 dB louder on the left).
+    let ears = SpatialListener { left_ear_offset: Vec3::X * EAR_GAP / 2.0, right_ear_offset: Vec3::X * -EAR_GAP / 2.0 };
+    commands.spawn((Name::new("Sandbox ears"), Ears, ears, Transform::IDENTITY));
+}
+
 /// Play what was cued this frame, and keep the loop that is wanted going.
+#[allow(clippy::too_many_arguments)]
 pub fn play_cues(
     mut commands: Commands,
     mut sb: ResMut<Sandbox>,
     mut assets: ResMut<GmodAssets>,
     mut sources: ResMut<Assets<AudioSource>>,
     settings: Res<SoundSettings>,
+    cam: Res<FlyCamera>,
+    bodies: Query<&SystemBody>,
+    mut ears: Query<&mut Transform, With<Ears>>,
     mut loops: Query<(Entity, &LoopVoice, Option<&mut AudioSink>)>,
+    channels: Query<(Entity, &ChannelVoice)>,
 ) {
     let sb = &mut *sb;
-    event_cues(sb);
+    event_cues(sb, &assets);
     let master = settings.volume * GAIN;
-    // (A pile of props coming down is hundreds of hits a second: the loudest few are what is heard.)
-    if sb.cues.len() > MAX_CUES {
-        sb.cues.sort_by(|a, b| b.volume.total_cmp(&a.volume));
-        sb.cues.truncate(MAX_CUES);
+    // The frame's turn to the render frame's axes (the camera is its origin), and the ears with the view.
+    let to_render = sb.world.as_ref().and_then(|w| bodies.iter().find(|b| b.obj == w.frame.obj).map(|b| (b.orient * w.frame.rotation()).as_quat()));
+    if let Ok(mut t) = ears.single_mut() {
+        let rot = cam.rot.as_quat();
+        if t.rotation != rot {
+            t.rotation = rot;
+        }
     }
+    // Each cue as a wave, its volume where he hears it, its pitch, and its direction if it has a place.
+    let mut voices: Vec<(String, f32, f32, Option<Vec3>, u8)> = Vec::with_capacity(sb.cues.len());
     for cue in sb.cues.drain(..) {
-        let Some(h) = assets.sound(&mut sources, &cue.path) else {
+        let (path, volume, pitch, level, channel) = match &cue.sound {
+            Sound::Wave(p) => (p.clone(), cue.volume, cue.pitch, LEVEL_NORM, CHAN_AUTO),
+            Sound::Named(name) => {
+                let Some(e) = assets.scripts.get(name) else {
+                    if log_sounds() {
+                        info!("sandbox: no sound named {name}");
+                    }
+                    continue;
+                };
+                let wave = e.waves[assets.scripts.pick(name, e.waves.len(), sb.rng.next() as usize)].clone();
+                (wave, sb.rng.range(e.volume.0, e.volume.1) * cue.volume, sb.rng.range(e.pitch.0, e.pitch.1) * cue.pitch, e.level, e.channel)
+            }
+        };
+        let (gain, dir) = match (cue.at, to_render) {
+            (Some(at), Some(q)) => {
+                let off = at - sb.eye;
+                let dist = off.length();
+                // (Within arm's reach it is in his head as much as anywhere.)
+                (distance_gain(level, dist), (dist > 0.3).then(|| q * (off / dist)))
+            }
+            _ => (1.0, None),
+        };
+        // (Only what he makes himself has a channel to cut off: every prop and wall is its own source.)
+        voices.push((path, volume * gain, pitch, dir, if cue.at.is_none() { channel } else { CHAN_AUTO }));
+    }
+    // (A pile of props coming down is hundreds of hits a second: the loudest few are what is heard.)
+    if voices.len() > MAX_CUES {
+        voices.sort_by(|a, b| b.1.total_cmp(&a.1));
+        voices.truncate(MAX_CUES);
+    }
+    // Per channel, whether the voices on it from earlier frames were cut, and the voice this frame put on it.
+    let mut cut = [false; 8];
+    let mut fresh: [Option<Entity>; 8] = [None; 8];
+    for (path, volume, pitch, dir, channel) in voices {
+        let Some(h) = assets.sound(&mut sources, &path) else {
             if log_sounds() {
-                info!("sandbox: no sound for {}", cue.path);
+                info!("sandbox: no sound for {path}");
             }
             continue;
         };
-        let volume = (cue.volume * master).clamp(0.0, 1.5);
-        if volume <= 0.01 {
+        let volume = (volume * master).clamp(0.0, 1.5);
+        if volume <= 0.004 {
             continue;
         }
-        let mut voice = commands.spawn((AudioPlayer(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(cue.pitch.clamp(0.5, 2.0))));
+        let speed = pitch.clamp(0.5, 2.0);
+        let mut voice = match dir {
+            Some(d) => commands.spawn((
+                AudioPlayer(h),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear((volume * SPATIAL_MAKE_UP).min(1.6))).with_speed(speed).with_spatial(true),
+                // (Both, so the voice starts where it belongs: the transforms were propagated before this frame's commands.)
+                Transform::from_translation(d * VOICE_DIST),
+                GlobalTransform::from_translation(d * VOICE_DIST),
+            )),
+            None => commands.spawn((AudioPlayer(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(speed))),
+        };
         if log_sounds() {
-            voice.insert(CueVoice(cue.path.clone(), volume));
+            voice.insert(CueVoice(format!("{path}{}", if dir.is_some() { " (placed)" } else { "" }), volume));
+        }
+        // A new sound on a channel ends the last one there (`SND_PickDynamicChannel`): the SMG's shots don't pile up.
+        let c = channel as usize;
+        if channel != CHAN_AUTO && channel != CHAN_STATIC && c < cut.len() {
+            let id = voice.insert(ChannelVoice(channel)).id();
+            if !cut[c] {
+                cut[c] = true;
+                for (e, v) in &channels {
+                    if v.0 == channel {
+                        commands.entity(e).try_despawn();
+                    }
+                }
+            }
+            if let Some(old) = fresh[c].replace(id) {
+                commands.entity(old).try_despawn();
+            }
         }
     }
-    let want = sb.loop_sound.filter(|_| sb.walking());
+    // The loop: one of the game's named sounds, at its script's volume times what was asked.
+    let want = sb.loop_sound.filter(|_| sb.walking()).and_then(|(name, k)| {
+        let e = assets.scripts.get(name)?;
+        Some((name, e.waves.first()?.clone(), e.volume.0 * k))
+    });
     let mut playing = false;
     for (e, voice, sink) in &mut loops {
-        if Some(voice.0) == want.map(|w| w.0) {
+        if Some(voice.0) == want.as_ref().map(|w| w.0) {
             playing = true;
-            if let (Some(mut sink), Some(w)) = (sink, want) {
-                sink.set_volume(Volume::Linear((w.1 * master).clamp(0.0, 1.5)));
+            if let (Some(mut sink), Some(w)) = (sink, want.as_ref()) {
+                sink.set_volume(Volume::Linear((w.2 * master).clamp(0.0, 1.5)));
             }
         } else {
             commands.entity(e).despawn();
         }
     }
-    if let (false, Some((path, volume))) = (playing, want) {
-        if let Some(h) = assets.sound(&mut sources, path) {
-            commands.spawn((LoopVoice(path), AudioPlayer(h), PlaybackSettings::LOOP.with_volume(Volume::Linear((volume * master).clamp(0.0, 1.5)))));
+    if let (false, Some((name, path, volume))) = (playing, want) {
+        if let Some(h) = assets.sound(&mut sources, &path) {
+            commands.spawn((LoopVoice(name), AudioPlayer(h), PlaybackSettings::LOOP.with_volume(Volume::Linear((volume * master).clamp(0.0, 1.5)))));
         }
     }
 }
@@ -239,46 +399,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn waves_come_from_their_sets() {
+    fn the_generator_stays_in_its_ranges() {
         let mut rng = Rng(7);
-        for _ in 0..200 {
-            let c = rng.wave("physics/metal/metal_barrel_impact_hard", &[1, 2, 3, 5, 6, 7], 0.6, 98.0, 100.0);
-            let n: u32 = c.path.trim_end_matches(".wav").rsplit("hard").next().unwrap().parse().unwrap();
-            assert!([1, 2, 3, 5, 6, 7].contains(&n));
-            assert!((0.98..=1.0).contains(&c.pitch));
+        for _ in 0..500 {
+            let v = rng.range(0.98, 1.02);
+            assert!((0.98..=1.02).contains(&v));
+            assert!(rng.pick(4) < 4);
         }
-        // Left and right feet take different waves.
-        let l = step_cue(&mut rng, None, true, 0.25);
-        let r = step_cue(&mut rng, None, false, 0.25);
-        assert!(l.path.ends_with("1.wav") || l.path.ends_with("3.wav"));
-        assert!(r.path.ends_with("2.wav") || r.path.ends_with("4.wav"));
     }
 
-    /// With the game installed: every wave the tables name is there.
     #[test]
-    fn every_named_wave_exists() {
-        let Some(root) = super::super::assets::find_install() else {
-            eprintln!("Garry's Mod is not installed: skipped");
-            return;
-        };
-        let install = se_core::gmod::GmodInstall::open(&root).unwrap();
-        let mut missing = Vec::new();
-        let mut check = |stem: &str, numbers: &[u32]| {
-            for n in numbers {
-                let p = format!("sound/{stem}{n}.wav");
-                if !install.exists(&p) {
-                    missing.push(p);
-                }
-            }
-        };
-        for s in [Surface::Metal, Surface::MetalBarrel, Surface::Wood, Surface::WoodCrate, Surface::Plastic, Surface::PlasticBarrel, Surface::Concrete, Surface::Cardboard, Surface::Rubber, Surface::Flesh, Surface::Glass] {
-            let ((h, hn), (so, sn)) = impact_waves(s);
-            check(h, hn);
-            check(so, sn);
-        }
-        for stem in ["player/footsteps/dirt", "player/footsteps/metal", "player/footsteps/wood", "player/footsteps/concrete", "player/footsteps/tile"] {
-            check(stem, &[1, 2, 3, 4]);
-        }
-        assert!(missing.is_empty(), "{missing:?}");
+    fn cues_carry_what_they_are_given() {
+        let c = Cue::named("Weapon_Pistol.Single").at(Vec3::new(1.0, 2.0, 3.0)).louder(0.5);
+        assert_eq!(c.sound, Sound::Named("Weapon_Pistol.Single".to_string()));
+        assert_eq!((c.volume, c.at), (0.5, Some(Vec3::new(1.0, 2.0, 3.0))));
+        let u = Cue::ui("buttons/button15.wav");
+        assert_eq!((u.sound, u.at), (Sound::Wave("buttons/button15.wav".to_string()), None));
     }
 }
