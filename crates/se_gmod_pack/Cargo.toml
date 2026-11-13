@@ -1,6 +1,0 @@
-[package]
-name = "se_gmod_pack"
-description = "The Garry's Mod files the sandbox uses, one pack built into the exe (its own crate so it compiles only when the pack changes)"
-version.workspace = true
-edition.workspace = true
-publish.workspace = true

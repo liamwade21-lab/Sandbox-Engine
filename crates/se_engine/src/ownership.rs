@@ -77,12 +77,12 @@ pub fn check_assets(cfg: &EngineConfig) {
     if crate::config::assets_found() {
         return;
     }
-    let dir = crate::embedded_assets::target_dir().unwrap_or_else(crate::config::asset_dir);
+    let dir = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("assets"))).unwrap_or_else(crate::config::asset_dir);
     fail(
         cfg,
         &format!(
-            "Sandbox Engine couldn't unpack its built-in files (shaders, textures, models) to:\n{}\n\n\
-             Check that the disk has free space (about 150 MB) and that the folder can be written, then start it again.",
+            "Sandbox Engine can't find its files (shaders, textures, models). They belong in this folder, beside the program:\n{}\n\n\
+             Unpack the whole zip, keeping the assets folder next to spaceengine-rs.exe, then start it again.",
             dir.display()
         ),
     )

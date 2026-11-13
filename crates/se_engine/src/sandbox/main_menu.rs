@@ -15,7 +15,7 @@
 //!   in walking (`sandbox::read_input`) and for a mod (`mods::snapshot_input`). The world goes on behind it: a mod's hero flying
 //!   keeps flying, the walker stands.
 //! - **Pictures:** the user's own screenshots (`Pictures\SpaceEngine-rs` and its `screenshots-hd`, never `export`: sky faces),
-//!   else Garry's Mod's backgrounds from the pack built into the exe (`se_gmod_pack`, `backgrounds/`), else plain dark. Listed and decoded on
+//!   else Garry's Mod's backgrounds from the pack of its files (`assets/gmod.pak`, `backgrounds/`), else plain dark. Listed and decoded on
 //!   worker threads, two at a time in memory, each shown `HOLD_S` with a slow zoom and crossfaded over `FADE_S`.
 
 use std::path::{Path, PathBuf};

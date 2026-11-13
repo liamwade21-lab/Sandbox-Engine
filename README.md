@@ -17,9 +17,10 @@ copied into this repository.
 
 ### Playing the download
 
-The download (`Sandbox-Engine-VERSION-windows.zip`) is a `Sandbox Engine` folder with one program,
-`spaceengine-rs.exe`. Everything it needs except SpaceEngine is built into it: on the first start it unpacks
-its shaders, textures and models (about 115 MB) to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`, then finds
+The download (`Sandbox-Engine-VERSION-windows.zip`) is a `Sandbox Engine` folder with the program,
+`spaceengine-rs.exe`, and an `assets` folder beside it holding everything else it needs except SpaceEngine: its
+shaders, textures and models, the trees and city props, the mods, and `gmod.pak` (Garry's Mod's props, textures and
+sounds, 518 MB). Unpack the whole zip and keep the two together. On the first start it finds
 SpaceEngine through Steam (Steam's folder from the registry, then every Steam library in
 `steamapps\libraryfolders.vdf`, looking for SpaceEngine's app id 314650). If Steam doesn't list it, a window asks
 for SpaceEngine.exe once. If something can't be found, a message says what, instead of a black screen.
@@ -56,7 +57,7 @@ cargo run --release -p se_engine -- --se-path "D:/SteamLibrary/steamapps/common/
 | Option | Meaning |
 |---|---|
 | `--se-path DIR` (or env `SE_PATH`) | SpaceEngine install directory (it must pass the ownership check; without it, the one checked on the first run) |
-| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`, also built into the exe) is missing (optional) |
+| `--mr-path DIR` (or env `MR_PATH`) | Megaton Rainfall install directory, read only when the port's own copy of the files it uses (`crates/se_engine/assets/mr`, also in the download's `assets` folder) is missing (optional) |
 | `--start NAME` | object to start next to (default Earth) |
 | `--size WxH` | window size |
 | `--run "cmd; cmd; ..."` | scripted commands (see below), useful for demos and tests |
@@ -133,7 +134,7 @@ spacecraft is flown Esc still leaves flight, as before. While the menu is up the
 your hero or the free camera (the world itself goes on: a flying hero keeps flying).
 
 The pictures are your own screenshots (`Pictures\SpaceEngine-rs` and its `screenshots-hd`; the `export` folder is left
-out), else Garry's Mod's own backgrounds (built into the game), else plain dark. `SE_MENU=0` skips the menu; test runs
+out), else Garry's Mod's own backgrounds (from the game's pack), else plain dark. `SE_MENU=0` skips the menu; test runs
 (`--run`, `--screenshot`, `--script`) skip it unless `SE_MENU=1`. Without the sandbox (`SE_SANDBOX=0`) there is no menu.
 
 ### On foot
@@ -142,9 +143,9 @@ The game starts on **Earth's ground in first person**, in whichever of eight ope
 moment (Kansas, the Pampas, Salisbury Plain, the Serengeti, the Kazakh and Mongolian steppes, New South Wales, the
 Canterbury Plains). Movement, weapons, sounds and the spawn menu are Garry's Mod's and Half-Life 2's: the movement is
 Source's own rules (`sandbox/movement.rs`, from the Source SDK's `gamemovement.cpp` with Garry's Mod's numbers) at 66
-ticks a second, and the props, textures and sounds are Garry's Mod's own, **built into the game** (a pack of about 0.5 GB
-inside the exe: Garry's Mod doesn't need to be installed, and only SpaceEngine is read from outside). An exe built
-without the pack (or `SE_GMOD=0`) still works, with plain props and plain sounds.
+ticks a second, and the props, textures and sounds are Garry's Mod's own, **shipped with the game** (a pack of 518 MB,
+`assets\gmod.pak` beside the exe: Garry's Mod doesn't need to be installed, and only SpaceEngine is read from outside the
+game's folder). Without the pack (or with `SE_GMOD=0`) it still works, with plain props and plain sounds.
 
 | Input | Action |
 |---|---|
@@ -276,7 +277,7 @@ selected one red; labels have SE's brief and detail modes and also name galaxies
 
 ## Mods
 
-The **Mods** button (tools toolbar, bottom left) lists the mods built into the game: one folder each under
+The **Mods** button (tools toolbar, bottom left) lists the mods that come with the game: one folder each under
 `crates/se_engine/assets/mods`, each with a `mod.cfg` (name, description, the files it needs). Click a row to turn
 that mod on or off. A row is grey, with the reason, when one of its files is missing or bad, when it needs a newer
 build, while you pilot a ship or while a script runs; starting to pilot or a script turns the mod off first. The

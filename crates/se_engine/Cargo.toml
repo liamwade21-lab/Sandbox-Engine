@@ -11,7 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 se_core = { path = "../se_core" }
-se_gmod_pack = { path = "../se_gmod_pack" }
 # Bevy's default features without what the port never uses: UI, sprites, text, gizmos, picking,
 # gamepads, glTF/scenes, animation and morph targets, states, input focus, Bevy's clipboard and WebGL.
 # Each of those adds plugins whose systems run every frame.

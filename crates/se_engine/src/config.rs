@@ -113,9 +113,10 @@ pub fn source_assets() -> Option<PathBuf> {
     (exe.starts_with(&project) && tree.join("shaders").is_dir()).then_some(tree)
 }
 
-/// Directory holding the port's own assets (shaders, textures, models), found once: `assets/` next
-/// to the executable, then the source tree for an exe inside the project (`source_assets`), then the
-/// copy built into the exe, unpacked (`embedded_assets`: what a player's copy uses).
+/// Directory holding the port's own assets (shaders, textures, models, Megaton Rainfall's copy, the
+/// mods, Garry's Mod's pack), found once: `assets/` next to the executable (what a player's copy
+/// ships with, the user's 2026-11-12: nothing but code in the exe), then the source tree for an exe
+/// inside the project (`source_assets`).
 pub fn asset_dir() -> PathBuf {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
@@ -124,7 +125,6 @@ pub fn asset_dir() -> PathBuf {
             return p.clone();
         }
         source_assets()
-            .or_else(crate::embedded_assets::unpacked)
             .or(beside)
             .unwrap_or_else(|| PathBuf::from("assets"))
     })

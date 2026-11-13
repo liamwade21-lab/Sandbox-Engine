@@ -34,7 +34,7 @@ are unpacked in `re/megaton_rainfall/extract` and the scripts that read its form
 grass, facade kit, window textures, roads, props, cars) the user chose to reuse. Since 2026-11-05 the
 ones the port uses are copied into the project (`crates/se_engine/assets/mr`, the user's decision: the
 port must work without the game installed). Since 2026-11-09 the user ships that copy with the port
-(built into the exe), saying the files are free to use.
+(in its assets folder), saying the files are free to use.
 
 **The sandbox (the user's feature of 2026-11-11):** the game starts on Earth's ground in first person, with Garry's Mod's
 movement, controls, weapons and sounds, a spawn menu on Q held down (props, weapons, the mods to play as), props with real
@@ -43,7 +43,7 @@ physics under the planet's own gravity, and V switching the port's free flight o
 built from: Valve's Source SDK 2013 (`gamemovement.cpp`, the weapons' `.cpp` files) and Garry's Mod's own Lua and scripts in
 the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gamemodes/sandbox`, `cfg/config_default.cfg`,
 `settings/spawnlist_default`), read for their numbers and rules, never copied. The Garry's Mod files the sandbox uses are
-built into the exe as one pack since 2026-11-12 (see the rules below).
+one pack in the assets folder since 2026-11-12 (see the rules below).
 
 ## Build and play
 
@@ -58,19 +58,20 @@ built into the exe as one pack since 2026-11-12 (see the rules below).
   world, no Bevy plugin), and Bevy's `wav` feature is on for Half-Life 2's sounds. Since 2026-11-12 the main menu comes
   after the loading screen (the sandbox's `main_menu.rs`); test runs skip it unless `SE_MENU=1`, `SE_MENU=0` skips it in a
   normal launch, and there is none with `SE_SANDBOX=0`.
-- What players get (since 1.0.1, 2026-11-09): the exe alone. `crates/se_engine/build.rs` builds every file under
-  `assets/shaders`, `textures`, `models`, `mr` and `mods` into it (`embedded_assets.rs`); on a player's first start
-  (and when an update changes them) they're unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets` (about 115 MB) and
-  read from there; the Garry's Mod pack is in the exe too (`se_gmod_pack`) but read from memory, never unpacked. Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then
-  the source tree but ONLY for an exe inside the project folder (`config::source_assets`: `target\release`, tests, bench
-  copies in `.optimize/scratch`, so shader edits need no rebuild there), then the unpacked copy. Never read
-  `CARGO_MANIFEST_DIR` at run time outside tests: go through `config::asset_file` / `asset_roots` (v1.0.0 did, and
-  everyone else's universe was black). If nothing is found the port stops with a message (`ownership::check_assets`).
-  The Megaton Rainfall install default (`DEFAULT_MR_PATH`) is used only by an exe inside the project. A shader edit
-  makes `cargo build` recompile se_engine (the build script embeds it). Test a release the way a player gets it: the
-  exe alone in a folder outside the project, with `LOCALAPPDATA` and `APPDATA` set to empty scratch folders (a
-  new PC: it must unpack, find SE through Steam and log its files' folder there). `bash .audit/tools/package_release.sh
-  VERSION OUT_FOLDER` makes the zip (Python's zipfile: PowerShell's Compress-Archive writes backslashes in the paths).
+- What players get (since 2026-11-12, the user's: "the exe smaller and the big files in the folder where the exe is", for
+  every file that isn't SpaceEngine's): a `Sandbox Engine` folder with the exe (code only, nothing built in) and an `assets`
+  folder beside it holding `shaders`, `textures`, `models`, `mr`, `mods` and `gmod.pak` (copied from
+  `crates/se_engine/assets`). From 1.0.1 to 2026-11-12 these were built into the exe (`build.rs`, `embedded_assets.rs`,
+  unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`): gone, and a player's old unpacked copy there is no longer read.
+  Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then the source tree but
+  ONLY for an exe inside the project folder (`config::source_assets`: `target\release`, tests, bench copies in
+  `.optimize/scratch`, so shader edits need no rebuild there). Never read `CARGO_MANIFEST_DIR` at run time outside tests: go
+  through `config::asset_file` / `asset_roots` (v1.0.0 did, and everyone else's universe was black). If nothing is found the
+  port stops with a message saying where the assets folder belongs (`ownership::check_assets`). The Megaton Rainfall
+  install default (`DEFAULT_MR_PATH`) is used only by an exe inside the project. Test a release the way a player gets it:
+  `bash .audit/tools/package_release.sh VERSION OUT_FOLDER` makes the zip (Python's zipfile: PowerShell's Compress-Archive
+  writes backslashes in the paths); unzip it in a folder outside the project and run it with `LOCALAPPDATA` and `APPDATA`
+  set to empty scratch folders (a new PC: it must find SE through Steam and log its files' folder there).
 - The ownership check (`ownership.rs`, the user's 2026-11-07: friends may play it only with their own SpaceEngine): before
   anything reads SE's files, `main` calls `ownership::check`, which sets `cfg.se_path` to the verified install. First run:
   the copy Steam lists is kept without asking if it passes (since 2026-11-09), else a Windows dialog asks for SpaceEngine.exe; it passes only if it is SE's program (version resource), in a Steam library
@@ -87,7 +88,7 @@ built into the exe as one pack since 2026-11-12 (see the rules below).
 - SpaceEngine's assets are read from its install, never copied into the project. Megaton Rainfall's
   are the exception (the user, 2026-11-05: the port must not rely on that game): the files the port
   uses are copied into `crates/se_engine/assets/mr` and read from there. Since 2026-11-09 the user ships
-  them with the port, built into the exe (the user: they are free to use). The Viltrumite
+  them with the port (the user: they are free to use), in its assets folder. The Viltrumite
   powers mod is the second exception (the user, 2026-11-06): the Omni-Man model and the parts of a GTA 5
   Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
   shipped the same way since 2026-11-09; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
@@ -95,13 +96,13 @@ built into the exe as one pack since 2026-11-12 (see the rules below).
 - Garry's Mod's files (the user, 2026-11-12, replacing 2026-11-11's "read from the install": "i want the garrys mod files in
   the game itself, not being loaded from the outside, only space engine should be loaded"): the files the sandbox uses (every
   prop of the stock spawn lists with its textures and collision, the weapons' models, the sound scripts and the waves it plays,
-  the spawn lists, the backgrounds re-encoded to 1920x1200) are one pack, `crates/se_gmod_pack/gmod.pak` (about 0.5 GB,
-  deflated per file), built into the exe by the `se_gmod_pack` crate (its own crate, so it compiles only when the pack
-  changes) and read from memory (`GmodInstall::open_pack`; never unpacked). Garry's Mod's install is never read while the
+  the spawn lists, the backgrounds re-encoded to 1920x1200) are one pack, `crates/se_engine/assets/gmod.pak` (518 MB,
+  deflated per file), beside the exe in a player's copy (`assets/gmod.pak`) and read a file at a time from disk
+  (`GmodInstall::open_pack_file`: the table at start, each file's bytes when asked for; never unpacked). Garry's Mod's install is never read while the
   game runs, and still never changed. The pack is made from the install by
   `cargo test -p se_engine --release copy_garrys_mod -- --ignored --nocapture` (`sandbox/assets.rs`), which reads everything
   back from the new pack and fails if it misses anything: run it after any change to what the sandbox reads (a new weapon,
-  sound name or prop list). Without the pack (an exe built without `gmod.pak`, or `SE_GMOD=0`) the sandbox must still work
+  sound name or prop list). Without the pack (no `gmod.pak` in the assets folder, or `SE_GMOD=0`) the sandbox must still work
   (plain props, plain sounds: `sandbox/assets.rs`).
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).

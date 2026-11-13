@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/se_core", "crates/se_engine", "crates/se_gmod_pack"]
+members = ["crates/se_core", "crates/se_engine"]
 
 [workspace.package]
 version = "0.1.0"

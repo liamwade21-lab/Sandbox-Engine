@@ -2,17 +2,23 @@
 
 ## Current state (2026-11-12)
 
-- **Garry's Mod's files are built into the game** (2026-11-12, the user's: only SpaceEngine is read from outside). Every file the
+- **The exe holds only code; everything else is in an `assets` folder beside it** (2026-11-12, the user's: the exe smaller and
+  the big files in the game's folder, for every file that isn't SpaceEngine's). A player's download is now `Sandbox Engine\`
+  with `spaceengine-rs.exe` (92 MB, was 197 MB with the assets built in) and `assets\` (shaders, textures, models,
+  Megaton Rainfall's files, the mods, and `gmod.pak`); the zip is 621 MB. Nothing is unpacked to `%LOCALAPPDATA%` any more
+  (`build.rs` and `embedded_assets.rs` are gone). The exe without its assets folder stops with a message saying where the
+  folder belongs.
+- **Garry's Mod's files ship with the game** (2026-11-12, the user's: only SpaceEngine is read from outside). Every file the
   sandbox uses (all 4,963 props of the stock spawn lists with their textures and collision, the weapons' models, the sound
   scripts and the 420 waves it plays, the spawn lists, the menu's 51 backgrounds shrunk to 1920x1200) is one pack,
-  `crates/se_gmod_pack/gmod.pak` (21,070 files, 1,084 MB deflated to 518 MB), built into the exe by its own crate and read
-  from memory, never unpacked. The exe is now 754 MB. Garry's Mod's install is never read while the game runs (only the pack
-  tool `copy_garrys_mod` and the gmod tests read it); without the pack or with `SE_GMOD=0` the plain props and sounds remain.
-  The pack tool reads everything back from the new pack and matched the install file for file. A full release build took 23
-  minutes once; an ordinary rebuild 11.5 (about 1.5 more than before). Checked: a test run in the project (crate, drum, gravity
-  gun, the Q menu's icons, the log says "the pack built into the exe (34 spawn lists, 4963 props)"), `SE_GMOD=0`, and the exe
-  alone outside the project with empty APPDATA and LOCALAPPDATA (its unpacked assets stay 115 MB). Possible next step: a
-  smaller pack (fewer props or smaller textures) if 754 MB is too big to share.
+  `crates/se_engine/assets/gmod.pak` (21,070 files, 1,084 MB deflated to 518 MB), read a file at a time from disk. Garry's
+  Mod's install is never read while the game runs (only the pack tool `copy_garrys_mod` and the gmod tests read it); without
+  the pack or with `SE_GMOD=0` the plain props and sounds remain. The pack tool reads everything back from the new pack and
+  matched the install file for file.
+- Both checked: a test run in the project (crate, drum, gravity gun, the Q menu's icons), `SE_GMOD=0`, and the release zip
+  unpacked outside the project with empty APPDATA and LOCALAPPDATA (the pack, Megaton Rainfall's files, the mod and the
+  shaders all read from its `assets` folder; nothing written to LOCALAPPDATA). A release build takes about 10 minutes again.
+  Possible next step: a smaller pack (fewer props or smaller textures) if 518 MB is too big to share.
 - **The gravity gun's and physics gun's beam no longer draws over the gun** (2026-11-12): the beam is a flat line on top of
   the picture, so it is now left out wherever it lies over the gun's own outline (the view model's triangles as posed this
   frame, `weapons.rs` `gun_outline`, `beam_start`): it appears where it comes out from behind the gun. Checked with the
@@ -84,7 +90,7 @@
     a player's first start it unpacks them (about 115 MB) to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`. The exe is
     197 MB; the download is a zip with just the exe in a `Sandbox Engine` folder, made by
     `bash .audit/tools/package_release.sh 1.0.1 OUT_FOLDER`. Tested 2026-11-09 from a fresh folder with blank AppData:
-    unpacks, finds SpaceEngine through Steam, Earth draws, the mod loads.
+    unpacks, finds SpaceEngine through Steam, Earth draws, the mod loads. (Since 2026-11-12 the assets are a folder beside the exe instead: see the top.)
   - Released 2026-11-09 as GitHub Release v1.0.1 (`Sandbox-Engine-1.0.1-windows.zip`, 76 MB; the latest release),
     with the user's OK. The website's Download button is the other session's job.
 - **Volumetric clouds and weather: mostly done (the user, 2026-11-04).** On High and Ultra the planet

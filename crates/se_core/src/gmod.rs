@@ -1,5 +1,5 @@
 //! Garry's Mod's files, read only, so a game can load its props, textures and sounds at run time: from the install, or
-//! from a pack of the files a game uses ([`GmodInstall::open_pack`], written by [`write_pack`]). Source engine formats:
+//! from a pack of the files a game uses ([`GmodInstall::open_pack_file`], written by [`write_pack`]). Source engine formats:
 //! - VPK archives (`*_dir.vpk` tables plus numbered data files), see [`GmodInstall::read`];
 //! - models: `.mdl` (header, body parts, meshes), `.vvd` (vertices) and `.dx90.vtx` (triangle strips),
 //!   [`GmodInstall::model`]; collision hulls from `.phy` (IVP compact surfaces), [`GmodInstall::collision`];
@@ -255,53 +255,71 @@ struct PackEntry {
     deflated: bool,
 }
 
+/// Where a pack's bytes are.
+enum PackData {
+    Memory(Vec<u8>),
+    File(File),
+}
+
 /// A pack ([`write_pack`]): `SEGMPAK1`, the count (u32), per file its path (u16 length, UTF-8), offset from the data's
 /// start (u64), packed and raw lengths (u32 each) and method (u8: 0 stored, 1 raw deflate), then the data. Little-endian.
 struct Pack {
-    bytes: std::borrow::Cow<'static, [u8]>,
-    data_start: usize,
+    data: PackData,
+    data_start: u64,
     /// By lowercase path.
     entries: HashMap<String, PackEntry>,
 }
 
 impl Pack {
-    fn open(bytes: std::borrow::Cow<'static, [u8]>) -> Result<Pack, GmodError> {
-        let b: &[u8] = &bytes;
-        if b.get(..8) != Some(&PACK_MAGIC[..]) {
+    /// Reads the table from `r` (the pack from its start, `len` bytes in all).
+    fn open(mut r: impl Read, len: u64, file: Option<File>) -> Result<Pack, GmodError> {
+        let cut = |_| GmodError::Bad("pack table cut short".into());
+        let mut head = [0u8; 12];
+        r.read_exact(&mut head).map_err(|_| GmodError::Bad("not a pack of Garry's Mod's files".into()))?;
+        if &head[..8] != PACK_MAGIC {
             return bad("not a pack of Garry's Mod's files");
         }
-        let count = u32_at(b, 8)? as usize;
-        let mut pos = 12usize;
+        let count = u32_at(&head, 8)? as usize;
+        let mut pos = 12u64;
         let mut entries = HashMap::with_capacity(count);
-        let cut = || GmodError::Bad("pack table cut short".into());
+        let mut fixed = [0u8; 17];
         for _ in 0..count {
-            let len = u16_at(b, pos)? as usize;
-            let name = std::str::from_utf8(b.get(pos + 2..pos + 2 + len).ok_or_else(cut)?)
-                .map_err(|_| GmodError::Bad("pack path not UTF-8".into()))?
-                .to_string();
-            pos += 2 + len;
-            let lo = u32_at(b, pos)? as usize;
-            let hi = u32_at(b, pos + 4)? as usize;
-            let packed = u32_at(b, pos + 8)? as usize;
-            let raw = u32_at(b, pos + 12)? as usize;
-            let deflated = *b.get(pos + 16).ok_or_else(cut)? == 1;
-            pos += 17;
-            entries.insert(norm_path(&name), PackEntry { name, offset: lo | (hi << 32), packed, raw, deflated });
+            let mut l = [0u8; 2];
+            r.read_exact(&mut l).map_err(cut)?;
+            let mut name = vec![0u8; u16::from_le_bytes(l) as usize];
+            r.read_exact(&mut name).map_err(cut)?;
+            r.read_exact(&mut fixed).map_err(cut)?;
+            pos += 2 + name.len() as u64 + 17;
+            let name = String::from_utf8(name).map_err(|_| GmodError::Bad("pack path not UTF-8".into()))?;
+            let offset = u32_at(&fixed, 0)? as usize | ((u32_at(&fixed, 4)? as usize) << 32);
+            let (packed, raw) = (u32_at(&fixed, 8)? as usize, u32_at(&fixed, 12)? as usize);
+            entries.insert(norm_path(&name), PackEntry { name, offset, packed, raw, deflated: fixed[16] == 1 });
         }
-        let data_start = pos;
-        if entries.values().any(|e| data_start + e.offset + e.packed > b.len()) {
+        if entries.values().any(|e| pos + (e.offset + e.packed) as u64 > len) {
             return bad("pack data cut short");
         }
-        Ok(Pack { bytes, data_start, entries })
+        let data = match file {
+            Some(f) => PackData::File(f),
+            None => PackData::Memory(Vec::new()),
+        };
+        Ok(Pack { data, data_start: pos, entries })
     }
 
     fn read(&self, key: &str) -> Option<Vec<u8>> {
         let e = self.entries.get(key)?;
-        let src = &self.bytes[self.data_start + e.offset..self.data_start + e.offset + e.packed];
+        let at = self.data_start + e.offset as u64;
+        let src: std::borrow::Cow<[u8]> = match &self.data {
+            PackData::Memory(b) => b.get(at as usize..at as usize + e.packed)?.into(),
+            PackData::File(f) => {
+                let mut buf = vec![0u8; e.packed];
+                read_at(f, &mut buf, at).ok()?;
+                buf.into()
+            }
+        };
         if !e.deflated {
-            return Some(src.to_vec());
+            return Some(src.into_owned());
         }
-        let out = miniz_oxide::inflate::decompress_to_vec_with_limit(src, e.raw).ok()?;
+        let out = miniz_oxide::inflate::decompress_to_vec_with_limit(&src, e.raw).ok()?;
         (out.len() == e.raw).then_some(out)
     }
 
@@ -313,7 +331,29 @@ impl Pack {
     }
 }
 
-/// A pack of `files` (path inside the game, bytes) for [`GmodInstall::open_pack`]: each deflated, or stored when that
+/// Bytes of a file at `offset`, without moving a shared position (threads read the same file at once).
+fn read_at(f: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !buf.is_empty() {
+            let n = f.seek_read(buf, offset)?;
+            if n == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            buf = &mut buf[n..];
+            offset += n as u64;
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        f.read_exact_at(buf, offset)
+    }
+}
+
+/// A pack of `files` (path inside the game, bytes) for [`GmodInstall::open_pack_file`]: each deflated, or stored when that
 /// doesn't make it smaller.
 pub fn write_pack(files: &[(String, Vec<u8>)]) -> Vec<u8> {
     let packed: Vec<(Vec<u8>, bool)> = files
@@ -350,7 +390,7 @@ pub fn write_pack(files: &[(String, Vec<u8>)]) -> Vec<u8> {
 pub struct GmodInstall {
     root: PathBuf,
     vpks: Vec<Vpk>,
-    /// A pack of the files the port uses ([`GmodInstall::open_pack`]): then nothing on disk is read.
+    /// A pack of the files the port uses ([`GmodInstall::open_pack_file`]): then nothing else is read.
     pack: Option<Pack>,
     /// Every path found, while recording ([`GmodInstall::recording`]): what a copy must hold.
     seen: Option<std::sync::Mutex<BTreeSet<String>>>,
@@ -376,10 +416,21 @@ impl GmodInstall {
         Ok(GmodInstall { root: root.to_path_buf(), vpks, pack: None, seen: None })
     }
 
-    /// A pack of the files a game uses ([`write_pack`]), read from memory: every file at its path inside the game, the
-    /// spawn lists under `settings/spawnlist_default/`, the menu's pictures under `backgrounds/`.
-    pub fn open_pack(bytes: std::borrow::Cow<'static, [u8]>) -> Result<Self, GmodError> {
-        Ok(GmodInstall { root: PathBuf::new(), vpks: Vec::new(), pack: Some(Pack::open(bytes)?), seen: None })
+    /// A pack of the files a game uses ([`write_pack`]) in memory: every file at its path inside the game, the spawn lists
+    /// under `settings/spawnlist_default/`, the menu's pictures under `backgrounds/`.
+    pub fn open_pack(bytes: Vec<u8>) -> Result<Self, GmodError> {
+        let len = bytes.len() as u64;
+        let pack = Pack::open(std::io::Cursor::new(&bytes[..]), len, None)?;
+        Ok(GmodInstall { root: PathBuf::new(), vpks: Vec::new(), pack: Some(Pack { data: PackData::Memory(bytes), ..pack }), seen: None })
+    }
+
+    /// A pack file on disk: its table is read now, each file's bytes when asked for.
+    pub fn open_pack_file(path: &Path) -> Result<Self, GmodError> {
+        let f = File::open(path).map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?;
+        let len = f.metadata().map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?.len();
+        let table = std::io::BufReader::with_capacity(1 << 20, f.try_clone().map_err(|e| GmodError::Bad(e.to_string()))?);
+        let pack = Pack::open(table, len, Some(f))?;
+        Ok(GmodInstall { root: path.to_path_buf(), vpks: Vec::new(), pack: Some(pack), seen: None })
     }
 
     /// Note every path read or found from now on ([`GmodInstall::seen`]).
@@ -2097,6 +2148,35 @@ fn parse_spawnlist(text: &str, file_stem: &str) -> Option<SpawnList> {
 mod tests {
     use super::*;
     use std::sync::OnceLock;
+
+    /// A pack reads back every file, in memory and from a file, case-insensitively, with its lists and spawn lists.
+    #[test]
+    fn a_pack_reads_back_what_was_written() {
+        let big: Vec<u8> = (0..20000u32).map(|i| (i % 7) as u8).collect();
+        let noise: Vec<u8> = (0..300u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let list = b"\"TableToKeyValues\" { \"parentid\" \"0\" \"id\" \"1\" \"name\" \"Junk\" \"contents\" { \"1\" { \"type\" \"model\" \"model\" \"models/a.mdl\" } } }".to_vec();
+        let files = vec![
+            ("models/a.mdl".to_string(), big.clone()),
+            ("sound/b.wav".to_string(), noise.clone()),
+            ("settings/spawnlist_default/001-Junk.txt".to_string(), list),
+            ("backgrounds/x.jpg".to_string(), vec![1, 2, 3]),
+        ];
+        let bytes = write_pack(&files);
+        let path = std::env::temp_dir().join(format!("se_pack_test_{}.pak", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        for pack in [GmodInstall::open_pack(bytes.clone()).unwrap(), GmodInstall::open_pack_file(&path).unwrap()] {
+            assert_eq!(pack.read(r"MODELS\A.mdl").as_deref(), Some(&big[..]));
+            assert_eq!(pack.read("sound/b.wav").as_deref(), Some(&noise[..]));
+            assert!(pack.read("sound/c.wav").is_none() && !pack.exists("sound/c.wav") && pack.exists("sound/b.wav"));
+            assert_eq!(pack.list("models/", ".mdl"), ["models/a.mdl"]);
+            assert_eq!(pack.folder_files("backgrounds"), ["backgrounds/x.jpg"]);
+            let lists = pack.spawnlists();
+            assert_eq!(lists.len(), 1);
+            assert_eq!(lists[0].models, ["models/a.mdl"]);
+        }
+        assert!(GmodInstall::open_pack(bytes[..bytes.len() - 1].to_vec()).is_err(), "a pack cut short");
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn install() -> Option<&'static GmodInstall> {
         static INSTALL: OnceLock<Option<GmodInstall>> = OnceLock::new();

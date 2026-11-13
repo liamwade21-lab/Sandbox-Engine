@@ -17,7 +17,6 @@ mod capture;
 mod clusters;
 mod comets;
 mod config;
-mod embedded_assets;
 mod constellations;
 mod corona;
 mod data;
@@ -90,7 +89,7 @@ fn main() {
     // Before anything reads or creates the user folder (version 2's first run copies version 1's).
     let user_dir = settings::prepare_user_dir();
     let mut cfg = config::EngineConfig::from_args();
-    // The port's own files (unpacked from the exe on a player's first start): a message, not a black universe.
+    // The port's own files (the assets folder beside the exe in a player's copy): a message, not a black universe.
     ownership::check_assets(&cfg);
     // Friends may play it only with their own SpaceEngine from Steam: asked once, checked every start.
     let owned = ownership::check(&mut cfg);
