@@ -2,6 +2,10 @@
 
 ## Current state (2026-11-12)
 
+- **Released 2026-11-12 as GitHub Release v1.1.0** (`Sandbox-Engine-1.1.0-windows.zip`, 621 MB: the exe and its `assets`
+  folder; the latest release), and the Wadeball Mod Collection site lists it. Before the push GitHub's 100 MB limit meant
+  Garry's Mod's pack had to become ten files of at most 90 MB (`assets/gmod/`), and the 17 commits not yet pushed were
+  rewritten so the old 518 MB file was never in them (their hashes changed; nothing published was rewritten).
 - **The project moved to `C:\Users\liamw\Desktop\Sandbox Engine`** (2026-11-12, the user's: the version 2 folder had grown
   bloated). A git clone of version 2 (history included, its GitHub remote kept) plus `re/` and `.audit/work`; the build files
   (`target`, 4.8 GB) and test pictures stayed behind. The test scripts point here. Release zips go in `release/` (out of git):
