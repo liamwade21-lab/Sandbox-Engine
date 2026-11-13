@@ -56,6 +56,7 @@ mod script_gui;
 mod script_vars;
 mod road_level;
 mod sandbox;
+mod skate;
 mod scatter;
 mod scripting;
 mod render_scale;
@@ -183,6 +184,8 @@ fn main() {
     .add_plugins(viltrumite::ViltrumitePlugin)
     // The sandbox: the first-person player, the props and the Q menu.
     .add_plugins(sandbox::SandboxPlugin)
+    // The Skate 3 physics mod: the skater, his board, his clips and sounds (skate/).
+    .add_plugins(skate::SkatePlugin)
     // Sky overlays: coordinate grids and constellations.
     .add_plugins((grids::GridsPlugin, constellations::ConstellationsPlugin, switches::SwitchesPlugin))
     // Settings window, screenshots and the saved session.

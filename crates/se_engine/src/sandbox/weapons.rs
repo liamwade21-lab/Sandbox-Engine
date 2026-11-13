@@ -399,7 +399,7 @@ pub fn weapon_frame(time: Res<Time<Real>>, input: Res<WalkInput>, assets: Res<Gm
             }
         }
     }
-    let on_foot = sb.walking() && sb.placed;
+    let on_foot = sb.walking() && sb.placed && !sb.skating();
     let menu_open = sb.menu;
     let walking = on_foot && !menu_open;
     let (eye, forward) = (sb.eye, sb.forward);
@@ -1023,7 +1023,7 @@ pub fn place_weapon(
         }
     }
     // (His hands are full of a prop: the weapon is away.)
-    let show = sb.walking() && sb.placed && !(sb.by_hand && sb.held.is_some());
+    let show = sb.walking() && sb.placed && !sb.skating() && !(sb.by_hand && sb.held.is_some());
     let w = ar.current;
     let has_view = ar.view[w].is_some();
     ar.muzzle = None;
@@ -1166,7 +1166,7 @@ mod hud {
 
 /// The HUD while he walks: the cross, health, ammunition, the weapon selection, and this frame's flashes and dust.
 pub fn draw_hud(mut contexts: EguiContexts, sb: Res<Sandbox>, ar: Res<Arsenal>, camera: Query<(&Camera, &GlobalTransform), With<MainCamera>>, control: Res<crate::mods::ModControl>) -> Result {
-    if !sb.walking() || control.main_menu {
+    if !sb.walking() || sb.skating() || control.main_menu {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;

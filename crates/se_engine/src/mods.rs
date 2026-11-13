@@ -25,7 +25,7 @@ use crate::scripting::ScriptRunner;
 use crate::ship::Flight;
 
 /// The `Code`s this build knows. A mod with any other came from a newer build: its row says so.
-const KNOWN_CODES: &[&str] = &["viltrumite"];
+const KNOWN_CODES: &[&str] = &["viltrumite", "skate3"];
 
 /// `SE_MODS=0` (comparisons): no Mods button, no scan.
 pub fn mods_enabled() -> bool {
@@ -126,6 +126,8 @@ pub struct ModControl {
     pub loading: bool,
     /// The mod that is on is Viltrumite powers (`Code "viltrumite"`): what the hero's systems run on.
     pub hero: bool,
+    /// The mod that is on is Skate 3 physics (`Code "skate3"`): the sandbox's walker skates (`skate/mod.rs`).
+    pub skate: bool,
     /// The window has lost the focus: that counts as `menus` (the spec's F8).
     pub unfocused: bool,
     /// The sandbox's first-person player is walking (`sandbox`, which sets this every frame): the free camera's mouse,
@@ -172,6 +174,7 @@ impl ModControl {
         self.dev = false;
         self.loading = false;
         self.hero = false;
+        self.skate = false;
     }
 }
 
@@ -187,7 +190,7 @@ pub struct HeroAssets {
 type FileFault = (GreyReason, String);
 
 /// A file a mod needs, read now: `Missing` if it has gone since the scan, `Bad` if it can't be read.
-fn read_need(roots: &[PathBuf], id: &str, rel: &str) -> Result<Vec<u8>, FileFault> {
+pub(crate) fn read_need(roots: &[PathBuf], id: &str, rel: &str) -> Result<Vec<u8>, FileFault> {
     if let Some(why) = check_need(roots, id, rel) {
         return Err((why, "at first enable".to_string()));
     }
@@ -214,6 +217,10 @@ fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
         Some("dds") => se_core::dds::parse_dds(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("sehm") => hero_asset::check_sehm(&bytes).map_err(|e| e.to_string()),
         Some("ogg") => check_sound(bytes).map(|_| ()),
+        Some("s3m") => se_core::skate3::parse_model(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("s3c") => se_core::skate3::parse_clips(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("png") => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map(|_| ()).map_err(|e| e.to_string()),
+        Some("cfg") => std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(|t| se_core::skate3::Tuning::parse(t).map(|_| ()).map_err(|e| e.to_string())),
         _ => Ok(()),
     }
 }
@@ -690,6 +697,7 @@ pub(crate) fn apply_request(
     flight: Res<Flight>,
     runner: Res<ScriptRunner>,
     hero: Option<Res<HeroAssets>>,
+    skate: Option<Res<crate::skate::SkateAssets>>,
 ) {
     match control.request.take() {
         Some(ModRequest::Off) => control.off(&reg, "asked"),
@@ -737,6 +745,35 @@ pub(crate) fn apply_request(
                     }
                 }
             }
+            if m.code == "skate3" && skate.is_none() {
+                let started = std::time::Instant::now();
+                let roots = mod_roots();
+                let checked = check_files(&roots, &id, &m.needs);
+                let loaded = checked.and_then(|()| {
+                    let read = |rel: &str| read_need(&roots, &id, rel).map_err(|(_, why)| why);
+                    crate::skate::load(&read, &m.needs).map_err(|(file, why)| (GreyReason::Bad(file), why))
+                });
+                match loaded {
+                    Ok(assets) => {
+                        info!(
+                            "mods: {id}: {} bones, {} draws, {} vertices; {} clips; {} sounds; {} files checked and read in {} ms",
+                            assets.model.bones.len(),
+                            assets.model.draws.len(),
+                            assets.model.vertices.len(),
+                            assets.clips.clips.clips.len(),
+                            assets.sounds.count(),
+                            m.needs.len(),
+                            started.elapsed().as_millis()
+                        );
+                        commands.insert_resource(assets);
+                    }
+                    Err((grey, why)) => {
+                        warn!("mods: {id}: {grey}: {why}");
+                        reg.mark(&id, grey);
+                        return;
+                    }
+                }
+            }
             let name = reg.name_of(&id).to_string();
             let is_hero = m.code == "viltrumite";
             control.off(&reg, "another mod turned on");
@@ -744,6 +781,7 @@ pub(crate) fn apply_request(
             control.active = Some(id);
             control.dev = dev;
             control.hero = is_hero;
+            control.skate = m.code == "skate3";
             control.loading = is_hero;
         }
         None => {}

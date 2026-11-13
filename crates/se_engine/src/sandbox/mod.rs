@@ -248,6 +248,8 @@ pub struct Sandbox {
     /// The mouse turns the held prop, not the view (the physics gun's E): this frame's counts are in `spin`.
     pub rotating: bool,
     pub spin: Vec2,
+    /// The Skate 3 mod's skater while it's on (`skate/mod.rs`): his tick replaces the walker's move, and the camera chases him.
+    pub skate: Option<crate::skate::Skater>,
 }
 
 #[derive(Default)]
@@ -300,6 +302,7 @@ impl Default for Sandbox {
             by_hand: false,
             rotating: false,
             spin: Vec2::ZERO,
+            skate: None,
         }
     }
 }
@@ -307,6 +310,11 @@ impl Default for Sandbox {
 impl Sandbox {
     pub fn walking(&self) -> bool {
         self.mode == Mode::Walk
+    }
+
+    /// On foot as the Skate 3 mod's skater (still `walking`: the sandbox's ground, solids and light follow him).
+    pub fn skating(&self) -> bool {
+        self.mode == Mode::Walk && self.skate.is_some()
     }
 
     /// How far this frame is between the last two ticks, 0..1: what moves by ticks is drawn there.
@@ -486,7 +494,7 @@ fn bind_camera(cam: &mut FlyCamera, b: &SystemBody) {
 
 /// The frame's keys for the walking player, the cursor, V and the Q menu. Nothing else sees his keys' presses.
 #[allow(clippy::too_many_arguments)]
-fn read_input(
+pub(crate) fn read_input(
     mut input: ResMut<WalkInput>,
     mut sb: ResMut<Sandbox>,
     mut control: ResMut<ModControl>,
@@ -745,7 +753,7 @@ struct Near<'a> {
 
 /// One frame of the sandbox: the modes' changes, the ground field, the ticks (his move, then the props'), and the camera.
 #[allow(clippy::too_many_arguments)]
-fn sandbox_step(
+pub(crate) fn sandbox_step(
     time: Res<Time<Real>>,
     data: Res<SeData>,
     input: Res<WalkInput>,
@@ -776,10 +784,18 @@ fn sandbox_step(
             walk_from_camera(sb, &mut cam, &bodies, &mut msg);
         }
     }
+    // The Skate 3 mod turned on in free flight: on foot at the camera first (he skates from there), or the mod goes off.
+    if control.skate && sb.mode == Mode::Fly && !input.toggle_flight && !walk_from_camera(sb, &mut cam, &bodies, &mut msg) {
+        control.request_off();
+    }
     // V.
     if input.toggle_flight {
         match sb.mode {
             Mode::Walk if leave.is_none() => {
+                if control.skate {
+                    // Free flight takes over from the skater: the mod goes off, and V again is on foot.
+                    control.request_off();
+                }
                 leave = Some(Mode::Fly);
                 msg.show("Free flight: on (V)".to_string());
                 info!("sandbox: V: free flight on");
@@ -1049,7 +1065,16 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
         sb.accumulator -= TICK;
         ran += 1;
         sb.ticks += 1;
-        if walking && sb.placed {
+        if walking && sb.placed && sb.skate.is_some() {
+            let sk = sb.skate.as_mut().unwrap();
+            sk.tick(world, sb.gravity, TICK);
+            // The walker's origin is the skater's (the ground field, the solids round him and the light follow it); his box
+            // stands in the props' world where the skater is, so the props meet him.
+            sb.prev_origin = sb.player.origin;
+            sb.player.origin = sk.board.pos / UNIT_M;
+            sb.player.velocity = sk.board.vel / UNIT_M;
+            world.set_player(sk.board.pos, HULL_HALF * UNIT_M, HULL_HEIGHT * UNIT_M);
+        } else if walking && sb.placed {
             let cmd = Cmd { forward: input.forward, side: input.side, yaw: sb.yaw, jump: input.jump, duck: input.duck, sprint: input.sprint, walk: input.walk };
             unstick(&mut sb.player, world);
             sb.prev_origin = sb.player.origin;
@@ -1080,6 +1105,25 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
     sb.events.extend(impacts.into_iter().map(Event::PropImpact));
 
     if !walking {
+        return;
+    }
+    // The Skate 3 mod: the camera chases the skater.
+    if let Some(sk) = sb.skate.as_mut() {
+        let k = (sb.accumulator / TICK).clamp(0.0, 1.0);
+        let (eye, target) = sk.chase(world, k, dt);
+        let fwd = (target - eye).normalize_or(Vec3::X);
+        sb.eye = eye;
+        sb.forward = fwd;
+        let frame = &world.frame;
+        let to_world = b.orient * frame.rotation();
+        cam.pos = b.pos.offset_m(b.orient * frame.to_body(eye.as_dvec3()));
+        cam.rot = crate::camera::look_rotation(to_world * fwd.as_dvec3(), to_world * DVec3::Z).normalize();
+        bind_camera(cam, b);
+        cam.eye_floor_m = Some(EYE_FLOOR_M);
+        if sb.log_state {
+            sb.log_state = false;
+            info!("sandbox: {}", crate::skate::describe(sk));
+        }
         return;
     }
     // The camera: his eyes, between the last two ticks.

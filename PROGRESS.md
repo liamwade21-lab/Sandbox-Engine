@@ -1,6 +1,23 @@
 # Progress
 
-## Current state (2026-11-12)
+## Current state (2026-11-13)
+
+- **A second mod: Skate 3 physics** (2026-11-13, the user's: "play as a skate 3 skater", with the default skater and board,
+  using the Skate 3 Rust Engine's code and files, then Skate 3's own sounds). Not committed to a release yet. What works,
+  checked in the game (scripted runs on the Canterbury Plains, `mods on skate3`): he appears on his board where the walker
+  stood, a chase camera behind him; pushing (4 m/s after 3 s, Skate 3's 0.6 m/s a stroke up to 8.5 m/s), carving (Skate 3's
+  steering tilt through the trucks' geometry, the carve poses blended in), the foot brake, the powerslide (board across the
+  path), the ollie (crouch then pop, the body up to 1.33-1.71 m by Skate 3's jump tables: a 0.77 m rise seen), kickflip,
+  heelflip, shove-its, 360 and laser flips (Skate 3's clips: the board flips under him), landings, bails (a trick not caught,
+  the board across the path, a hard landing, a wall at speed) and getting back up; 41 of Skate 3's sounds (pops, landings,
+  pushes, bail impacts, the flip whoosh, the rolling grain in four speed bands, the powerslide and foot-brake loops).
+  Controls: a gamepad in Skate 3's layout (right-stick flicks) or keyboard and mouse (README "Skate 3 physics").
+  **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the engine's code: `LICENSE`, `crates/skate-core`,
+  `crates/skate-data` copied unchanged). The mod's files are in `assets/mods/skate3` (6.1 MB, shipped: the user's choice).
+  Not done or not checked: a real gamepad and real mouse flicks (only the test pad was used: the flick recogniser has unit
+  tests), a city street run (New York's ground hadn't loaded in the test's time), the sounds' loudness against the sandbox's
+  (no test can listen: the log shows each one started), grinds, manuals and grabs (Skate 3 has them; this mod doesn't yet).
+  No shadow under him (the sandbox's props have none either).
 
 - **Released 2026-11-12 as GitHub Release v1.1.0** (`Sandbox-Engine-1.1.0-windows.zip`, 621 MB: the exe and its `assets`
   folder; the latest release), and the Wadeball Mod Collection site lists it. Before the push GitHub's 100 MB limit meant

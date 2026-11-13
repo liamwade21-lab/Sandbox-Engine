@@ -38,6 +38,7 @@ pub mod rotation;
 pub mod sc;
 pub mod se_script;
 pub mod ship;
+pub mod skate3;
 pub mod star;
 pub mod star_octree;
 pub mod surface_gen;

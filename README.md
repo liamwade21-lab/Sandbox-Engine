@@ -330,6 +330,36 @@ The air does what its physics says, on every world by its own air. Past the spee
 
 He plays on the real clock: the same at x1000 and when paused, and while hovering he holds his place over the ground whatever the clock does. He lands by how fast he comes down: under 12 m/s he's straight on his feet, up to 35 m/s a short stop, faster a hard landing with a crater (2.4 m in radius at 35 m/s, 12 m at 900 m/s, 60 m at most), broken ground round him and a burst of dust in the ground's own colour; on the sea a white splash instead. A crater stays until both he and the camera are 20.5 km away (it doesn't fade before), also after the mod is turned off; at most 32 at a time, the farthest giving way. Big impacts shake the view a little. On foot he walks up slopes to 50 degrees and slides down steeper ones; steeper than 70 is a wall, which he falls past (a long one ends in a crash at the bottom), and he falls off ledges. Over the sea he stops 1.5 m up and hovers (fly to land to walk on); a gas giant, a star, a black hole or a comet model only stop him: he hovers there too. His shadow falls the way the sun says, fades as he climbs (gone by 200 m), under cloud and at dusk. Starting to pilot a ship or a script turns the mod off first. Mods are always off when the game starts. `SE_MODS=0` hides the button, for comparisons.
 
+### Skate 3 physics
+
+The second mod (since 2026-11-13) plays **Skate 3's default skater on his board**, on whatever ground you stand on: turn it on
+from the Mods button or the Q menu's mods (in free flight it puts you on the ground at the camera first). He appears on his board
+where you stood, seen from behind by a chase camera that follows the way he rolls. It is built on the Skate 3 Rust Engine
+(SK8-ENGINE/skate-3-rust-engine, GPL-3.0, which is why Sandbox Engine is GPL-3.0 since then): its engine-free calculations for the
+push, the brake, the steering and the jump, run with Skate 3's own tuning values, and Skate 3's own clips for him (riding,
+pushing, carving, braking, powersliding, the crouch and the pop, flip tricks and their catches, landings, bails and getting up).
+The board keeps to the ground, the buildings and trees are solid (hit one fast and he bails), props get knocked about, and the
+gravity is the planet's own. Skate 3's sounds play with it (the wheels rolling, the pop, landings, pushes, bails, slides).
+
+A gamepad works the way Skate 3 does; the keyboard and mouse work too (the last one used counts).
+
+| Gamepad | Keyboard and mouse | What he does |
+|---|---|---|
+| Left stick | A, D | Steer (a tighter turn slow, wider fast; on the spot below a walk he kickturns). In the air: spin |
+| A | W | Push (held: keeps pushing, up to Skate 3's pushing speed of 8.5 m/s) |
+| B | S | Foot brake |
+| B with the left stick to a side | Shift with A or D | Powerslide: the board across the path, scrubbing speed |
+| Right stick down, then flick up | Mouse back, then forward (or hold Space and let go) | Crouch, then pop an ollie: the longer the crouch, the higher (up to about 0.8 m) |
+| Down, then up-left / up-right | Mouse back, then forward-left / forward-right, or 1 / 2 | Kickflip / heelflip |
+| Down, then to a side | Mouse back, then left / right, or 3 / 4 | Pop shove-it / frontside shove-it |
+| Down, round through a side, then up | Mouse back, round, then forward, or 5 / 6 | 360 flip (round the left) / laser flip (round the right) |
+| Y | F | Off the board: on foot again (the mod turns off) |
+
+A trick has to be caught before the wheels touch down, or he bails; so does landing with the board across the path, landing
+very hard, or running into a wall or a tree at speed. After a bail he gets up on his board where he stopped. The trick's name
+shows when it's landed. Riding backwards (fakie) works. V (free flight) turns the mod off. The mod's files are in
+`assets/mods/skate3`, made from your own copy of Skate 3 by the ignored test `copy_skate3` (CLAUDE.md says how).
+
 ## Architecture
 
 ```

@@ -47,6 +47,18 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
 `settings/spawnlist_default`), read for their numbers and rules, never copied. The Garry's Mod files the sandbox uses are
 one pack in the assets folder since 2026-11-12 (see the rules below).
 
+**The Skate 3 physics mod (the user's of 2026-11-13):** the second mod in the Mods menu: Skate 3's default skater on his board,
+on the sandbox's ground (`crates/se_engine/src/skate/`, `mod.rs` says what each file is). Built on the Skate 3 Rust Engine
+(SK8-ENGINE/skate-3-rust-engine, GPL-3.0; its source is cloned in `re/skate3/src`, out of git, with the tools made for the mod
+in `re/skate3/tools`): its crates `skate-core` (engine-free calculations: the push, the brake, the steering's tilt, the jump)
+and `skate-data` (its readers of Skate 3's converted data: animation banks, collections) are copied UNCHANGED into
+`crates/skate-core`, `crates/skate-data` (their `UPSTREAM.md` gives the commit and the only things left out). Because the
+user chose to copy its code, **Sandbox Engine is GPL-3.0 since 2026-11-13** (`LICENSE`; the user's decision): keep the
+licence and the credit (README, the site). The user's Skate 3 is set up by that engine's own release
+(`C:\Users\liamw\Downloads\skate3rust-windows-x64`, its converted data in `data\installations\...\assets`) and the
+extracted disc (`C:\Users\liamw\Downloads\Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl)`); the mod's files are made from them
+once and shipped (the user's: "Ship them with the game", credited to EA).
+
 ## Build and play
 
 - Build: `cargo build --release` (always release). The user plays from
@@ -113,6 +125,15 @@ one pack in the assets folder since 2026-11-12 (see the rules below).
   `assets` folder beside the exe and read from there at run time. Nothing of a mod is ever built into the exe (no
   `include_bytes!`, no build script embedding); its code goes in the exe only as the game's support for it (`KNOWN_CODES`).
   A big mod's files may be one pack of their own in its folder, read from disk as `assets/gmod`'s are.
+- Skate 3's files (the user, 2026-11-13: "using the code and files from the skate 3 rust port", "just have the default
+  skater and skateboard", ship them with the game): the mod's folder `crates/se_engine/assets/mods/skate3` holds the default
+  skater and board (`skater.s3m`, `tex/*.png`, from the engine's `skater.glb`), the clips the mod plays (`clips.s3c`, decoded
+  from `OnBoard.abin` by `skate-data` and added onto `RIG_TPOSE`), Skate 3's tuning values (`tuning.cfg`, from its
+  collections) and its sounds (`sfx/`). They are written only by `cargo test -p se_engine --release copy_skate3 -- --ignored
+  --nocapture` (`skate/convert.rs`: `SKATE3_ASSETS` names the engine's assets folder; it also writes `mod.cfg` with a `Need`
+  for every file, the sounds included) and the sounds by `python -I re/skate3/tools/make_sounds.py` (run it first, then
+  copy_skate3). A new clip goes in `skate/clips.rs` `CLIPS`, a new tuning value in `skate/physics.rs` `VALUES`/`CURVES`, then
+  re-run. Never edit the files by hand. The format is `se_core/src/skate3.rs`.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
@@ -124,6 +145,26 @@ one pack in the assets folder since 2026-11-12 (see the rules below).
   screenshots, the game installs); scratch, build and test files may go.
 
 ## Gotchas
+
+- The Skate 3 mod (`skate/`). It plays INSIDE the sandbox's `Mode::Walk`: `Sandbox::skate` (a `skate::Skater`) is set by
+  `skate::sync` once `ModControl::skate` is on, the sandbox stands on ground and `SkateAssets` are read (`mods.rs`
+  `apply_request`, code `skate3`); in `step_world` his `Skater::tick` replaces `player_move` (the walker's origin and box follow
+  the board, so the ground field, solids, light and props follow him) and `Skater::chase` replaces the eye camera (written and
+  bound in the same frame, as the walker's). `Sandbox::skating()` keeps the weapon and the crosshair away; `walking()` stays
+  true. In free flight the mod first puts him on foot at the camera (`walk_from_camera`); V while skating turns it off.
+  Controls: `skate::read_pad` (PreUpdate, BEFORE `sandbox::read_input`, which then takes the key presses from everything
+  else) fills one `Pad` from a gamepad (Bevy's `bevy_gilrs`) or the keyboard and mouse (the mouse is a self-centring right
+  stick, `MouseStick`); `input::Flick` turns the stick's path into tricks (tests in `input.rs`). Physics (`physics.rs`): Skate
+  3's calculations from `skate-core` in OUR frame (metres, z up); its jump is called in Skate 3's frame (y up: our x, z, -y).
+  Skate 3's model space is x the board's left, y up, z the nose, origin on the deck's middle: `Board::rotation` puts it in the
+  local frame. A pose is the clips' local samples composed with bones under `TRAJECTORY` (bone 0) in model space
+  (`draw::model_matrices`, as the engine's `compose_hierarchy_in_place` with a detached parent); a joint's skin is that bone's
+  matrix times its `bind` (the GLB's inverse bind with the engine's `render_basis` folded in). Clips are played by
+  `anim::Animator` (crossfades) under `anim::Controller` (a small state machine in place of Skate 3's state graphs: the full
+  engine's `skate-game` crate, 120k lines of Bevy 0.18 glue, was deliberately not ported). Test commands: `skate state`, `skate
+  log on`, `skate pad push+left 2` (push, brake, slide, crouch, left/right/up/down, rup/rdown/rleft/rright, held for the
+  seconds given), `skate trick kickflip`; turn it on with `mods on skate3`. Test in daylight (`date 2026-11-12 01:00:00` is
+  afternoon at `SE_SANDBOX_SPOT=7`); log times are real time, faster than game time under `timing frame`.
 
 - The sandbox (`sandbox/`; README's "The sandbox" has the keys). Three modes (`sandbox::Mode`): `Walk` (the player owns the
   camera and the keys: `ModControl::walker`, set every frame, gates the free camera's mouse, wheel and steering keys in

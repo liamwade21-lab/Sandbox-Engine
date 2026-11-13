@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/se_core", "crates/se_engine"]
+members = ["crates/se_core", "crates/se_engine", "crates/skate-core", "crates/skate-data"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,11 @@ publish = false
 
 [workspace.dependencies]
 glam = "0.33"
+# The Skate 3 Rust Engine's crates (crates/skate-core, crates/skate-data: GPL-3.0, copied unchanged; their UPSTREAM.md).
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+skate-core = { path = "crates/skate-core" }
+skate-data = { path = "crates/skate-data" }
 
 # Bevy recommends optimizing dependencies even in dev builds.
 [profile.dev]
