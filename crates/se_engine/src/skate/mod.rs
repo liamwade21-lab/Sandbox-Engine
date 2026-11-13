@@ -297,7 +297,9 @@ impl Skater {
         if e.wiped_out {
             self.events.push(SkateEvent::Bail);
         }
-        if e.pushed {
+        // Every push, a held one too: the push plant (upstream's push sounds read it; the stroke and the animation's push
+        // contact rise only once while the button is held).
+        if e.push_plant {
             self.events.push(SkateEvent::Push);
         }
         let hud = self.sim.hud();

@@ -10,7 +10,8 @@
   Checked in the game (Canterbury, `SE_SANDBOX_SPOT=7`): Skate 3's push strokes (8.6 m/s after 3 s), carving, crouch and
   ollie, heelflip, kickflip, pop shove-its, late flips, landings "Clean", the multiplier (x1.5) and line score in the HUD,
   Y walking off the board (BipedGround), Skate 3's own camera, a 35 s ride with turns while its collision was remade 32 times
-  (now at most every 0.3 s, at once when the ground moved; trees are in it since the review), the sounds started from its events. All nine flick keys give their trick in the simulation
+  (now at most every 0.3 s, at once when the ground moved; trees are in it since the review), the sounds started from its events (the push sound on every push plant, a held push too: the user found only one
+  played while holding; `a_held_push_strokes_again_and_again`). All nine flick keys give their trick in the simulation
   (`every_flick_key_gives_its_trick`). Not checked: a real gamepad and real mouse flicks (only test input), a city's streets
   and buildings at speed, the sounds' loudness. Not there: props don't feel the board (the ground, buildings and trees do),
   grinds (no rails on a planet), the 360 flip has no key (no simple stick path found). The user's own exe is upstream 60efdef,

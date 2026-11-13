@@ -127,3 +127,29 @@ fn scenario(swap_mid_push: bool) -> [u64; 3] {
     assert!(pushes > 0 && pushes < 90, "push plants should be edges, not levels: {pushes}");
     digest
 }
+
+/// Holding push: how many strokes, plants and animation push contacts (the sounds' triggers) come in 5 s: the plant is
+/// the one that comes round with every push (the mod's push sound).
+#[test]
+#[ignore = "requires private stock data (SKATE3_ASSET_ROOT)"]
+fn a_held_push_strokes_again_and_again() {
+    let root = root().expect("set SKATE3_ASSET_ROOT");
+    let mut sim = Sim::load(&root, "easy").unwrap();
+    let h = 400.0;
+    sim.set_world(&[[-h, 0.0, -h], [h, 0.0, -h], [h, 0.0, h], [-h, 0.0, h]], &[[0, 3, 2], [0, 2, 1]]).unwrap();
+    sim.spawn([0.0, 0.0, 0.0], 0.0).unwrap();
+    let (mut strokes, mut plants, mut contacts) = (Vec::new(), Vec::new(), Vec::new());
+    for t in 0..300 {
+        sim.step(&RawPad { buttons: buttons::A, ..Default::default() }).unwrap();
+        let e = sim.events();
+        if e.push_stroke { strokes.push(t); }
+        if e.push_plant { plants.push(t); }
+        if e.pushed { contacts.push(t); }
+    }
+    eprintln!("PUSH strokes {strokes:?}
+PUSH plants {plants:?}
+PUSH contacts {contacts:?}
+speed {:.2}", sim.events().ground_speed);
+    // The plant comes round once a push however long it's held (the stroke and the contact rise only at the first).
+    assert!(plants.len() >= 4, "a held push plants again and again: {plants:?}");
+}

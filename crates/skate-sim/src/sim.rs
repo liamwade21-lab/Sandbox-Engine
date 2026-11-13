@@ -255,6 +255,12 @@ pub struct Events {
     pub pushed: bool,
     /// The animation's push contact this tick (level: true on every tick the foot is planted).
     pub push_contact: bool,
+    /// A push stroke began this tick: the rise of the player state's flag 56, which upstream's audio reads for the stroke
+    /// foley (`skate_events::audio_state` `push_stroke`). Once a stroke, held push or not.
+    pub push_stroke: bool,
+    /// A push plant began this tick: the rise of flag 55 (`skate_events::push_plant`, `+335`), which every other push
+    /// sound of upstream's reads (the plant lands about half a second after the stroke). Once a push.
+    pub push_plant: bool,
     /// Brake foot went down / came up (edges: the animation repeats the events every tick while braking).
     pub brake_down: bool,
     pub brake_up: bool,
@@ -300,6 +306,8 @@ pub struct Sim {
     events: Events,
     was_grinding: bool,
     was_push: bool,
+    was_stroke: bool,
+    was_plant: bool,
     last_brake: i32,
 }
 
@@ -351,6 +359,8 @@ impl Sim {
             events: Events::default(),
             was_grinding: false,
             was_push: false,
+            was_stroke: false,
+            was_plant: false,
             last_brake: 0,
         };
         // Production applies the customiser's draft every frame (`customiser::preferences`); with no
@@ -539,6 +549,13 @@ impl Sim {
         events.brake_down = brake == 1 && self.last_brake != 1;
         events.brake_up = brake == -1 && self.last_brake != -1;
         self.was_push = audio.push;
+        // (`skate_events`: `flag(byte)` is `state_flags[byte - 52]`.)
+        let flag = |byte: usize| self.skater.player_state.state_flags.get(byte - 52).copied().unwrap_or(false);
+        let (stroke, plant) = (flag(56), flag(55));
+        events.push_stroke = stroke && !self.was_stroke;
+        events.push_plant = plant && !self.was_plant;
+        self.was_stroke = stroke;
+        self.was_plant = plant;
         self.last_brake = brake;
         events.footstep = audio.footstep;
         events.grind_started = on_rail && !self.was_grinding;
