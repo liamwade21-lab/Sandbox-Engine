@@ -283,8 +283,9 @@ fn find_on_steam(steam: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-/// Where Steam has another app installed (its `steamapps/common` folder), if anywhere: the sandbox reads Garry's Mod's
-/// files from there (`sandbox/assets.rs`). Read only, as everything here.
+/// Where Steam has another app installed (its `steamapps/common` folder), if anywhere: the tool that packs Garry's Mod's
+/// files reads them from there (`sandbox/assets.rs` `copy_garrys_mod`; the game itself never does). Read only, as everything here.
+#[cfg(test)]
 pub(crate) fn steam_app_dir(app_id: &str) -> Option<PathBuf> {
     for dir in steam_dirs() {
         let Some(list) = read_vdf(&dir.join("steamapps").join("libraryfolders.vdf")) else {

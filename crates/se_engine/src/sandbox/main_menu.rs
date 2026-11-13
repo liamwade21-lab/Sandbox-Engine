@@ -15,7 +15,7 @@
 //!   in walking (`sandbox::read_input`) and for a mod (`mods::snapshot_input`). The world goes on behind it: a mod's hero flying
 //!   keeps flying, the walker stands.
 //! - **Pictures:** the user's own screenshots (`Pictures\SpaceEngine-rs` and its `screenshots-hd`, never `export`: sky faces),
-//!   else Garry's Mod's `garrysmod/backgrounds` read from its install while the game runs, else plain dark. Listed and decoded on
+//!   else Garry's Mod's backgrounds from the pack built into the exe (`se_gmod_pack`, `backgrounds/`), else plain dark. Listed and decoded on
 //!   worker threads, two at a time in memory, each shown `HOLD_S` with a slow zoom and crossfaded over `FADE_S`.
 
 use std::path::{Path, PathBuf};
@@ -93,17 +93,33 @@ impl Entry {
 enum Listing {
     #[default]
     NotStarted,
-    Own(Task<Vec<PathBuf>>),
+    Own(Task<Vec<Pic>>),
     /// None of the user's: Garry's Mod's, once the search for its install has ended.
     WaitGmod,
-    Gmod(Task<Vec<PathBuf>>),
+    Gmod(Task<Vec<Pic>>),
     Done,
+}
+
+/// One picture to show: a file of the user's, or one in the pack of Garry's Mod's files.
+#[derive(Clone)]
+enum Pic {
+    File(PathBuf),
+    Gmod(std::sync::Arc<se_core::gmod::GmodInstall>, String),
+}
+
+impl Pic {
+    fn bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            Pic::File(p) => std::fs::read(p).ok(),
+            Pic::Gmod(install, key) => install.read(key),
+        }
+    }
 }
 
 #[derive(Default)]
 struct Pictures {
     listing: Listing,
-    paths: Vec<PathBuf>,
+    paths: Vec<Pic>,
     from: &'static str,
     /// The next path to decode.
     next_path: usize,
@@ -313,15 +329,14 @@ fn is_picture(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png"))
 }
 
-/// Garry's Mod's backgrounds, in its install (read, never copied).
-fn gmod_pictures(root: &Path) -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(root.join("garrysmod").join("backgrounds")) else { return Vec::new() };
-    rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && is_picture(p)).collect()
+/// Garry's Mod's backgrounds, in the pack of its files.
+fn gmod_pictures(install: std::sync::Arc<se_core::gmod::GmodInstall>) -> Vec<Pic> {
+    install.folder_files("backgrounds").into_iter().filter(|k| is_picture(Path::new(k))).map(|k| Pic::Gmod(install.clone(), k)).collect()
 }
 
 /// A picture as a texture's pixels, at most `MAX_W` x `MAX_H`; `None` if it can't be read or isn't wide.
-fn decode(path: &Path) -> Option<egui::ColorImage> {
-    let bytes = std::fs::read(path).ok()?;
+fn decode(pic: &Pic) -> Option<egui::ColorImage> {
+    let bytes = pic.bytes()?;
     let img = image::load_from_memory(&bytes).ok()?;
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 || (w as f32) < MIN_ASPECT * h as f32 {
@@ -333,7 +348,7 @@ fn decode(path: &Path) -> Option<egui::ColorImage> {
 }
 
 /// A different order each launch.
-fn shuffle(paths: &mut [PathBuf]) {
+fn shuffle<T>(paths: &mut [T]) {
     let mut s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0x9E37_79B9, |d| d.as_nanos() as u64) | 1;
     for i in (1..paths.len()).rev() {
         s ^= s << 13;
@@ -349,7 +364,7 @@ fn pump_pictures(p: &mut Pictures, ctx: &egui::Context, assets: &GmodAssets, dt:
     match &mut p.listing {
         Listing::NotStarted => {
             let folder = crate::screenshot::folder();
-            p.listing = Listing::Own(pool.spawn(async move { own_pictures(&folder) }));
+            p.listing = Listing::Own(pool.spawn(async move { own_pictures(&folder).into_iter().map(Pic::File).collect() }));
         }
         Listing::Own(task) => {
             if let Some(found) = check_ready(task) {
@@ -366,8 +381,8 @@ fn pump_pictures(p: &mut Pictures, ctx: &egui::Context, assets: &GmodAssets, dt:
         }
         Listing::WaitGmod => {
             if assets.looked {
-                match assets.install.as_ref().map(|i| i.root().to_path_buf()) {
-                    Some(root) => p.listing = Listing::Gmod(pool.spawn(async move { gmod_pictures(&root) })),
+                match assets.install.clone() {
+                    Some(install) => p.listing = Listing::Gmod(pool.spawn(async move { gmod_pictures(install) })),
                     None => p.listing = Listing::Done,
                 }
             }
@@ -721,16 +736,28 @@ mod tests {
             image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255])).save(&p).unwrap();
             p
         };
-        assert!(decode(&save("square.png", 64, 64)).is_none(), "a sky face");
-        let wide = decode(&save("wide.png", 3440, 1440)).expect("a screenshot");
+        assert!(decode(&Pic::File(save("square.png", 64, 64))).is_none(), "a sky face");
+        let wide = decode(&Pic::File(save("wide.png", 3440, 1440))).expect("a screenshot");
         assert!(wide.size[0] <= MAX_W as usize && wide.size[1] <= MAX_H as usize);
         assert!((wide.size[0] as f32 / wide.size[1] as f32 - 3440.0 / 1440.0).abs() < 0.01, "keeps its shape");
         std::fs::write(dir.join("broken.jpg"), b"not a jpeg").unwrap();
-        assert!(decode(&dir.join("broken.jpg")).is_none());
+        assert!(decode(&Pic::File(dir.join("broken.jpg"))).is_none());
         // A JPEG decodes (the build's `image` has the jpeg feature).
         let j = dir.join("wide.jpg");
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(320, 180, image::Rgba([200, 100, 50, 255]))).to_rgb8().save(&j).unwrap();
-        assert_eq!(decode(&j).map(|i| i.size), Some([320, 180]));
+        assert_eq!(decode(&Pic::File(j.clone())).map(|i| i.size), Some([320, 180]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The pack's backgrounds are listed and decode (what the menu shows when there are no screenshots).
+    #[test]
+    fn the_packs_backgrounds_decode() {
+        let install = std::sync::Arc::new(super::super::assets::open_pack().expect("gmod.pak").unwrap());
+        let pics = gmod_pictures(install);
+        assert!(pics.len() >= 10, "{} pictures", pics.len());
+        for pic in pics.iter().take(3) {
+            let image = decode(pic).expect("a background decodes");
+            assert!(image.size[0] <= MAX_W as usize && image.size[1] <= MAX_H as usize);
+        }
     }
 }

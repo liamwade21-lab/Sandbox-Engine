@@ -1,7 +1,8 @@
 //! Builds the port's assets (shaders, textures, models, Megaton Rainfall's copy, the mods) into the exe, so a player's copy is the
 //! exe alone and needs nothing but SpaceEngine (`embedded_assets.rs` unpacks them on first start).
 //! Megaton Rainfall's copy (`assets/mr`) and the mods (`assets/mods`, the Omni-Man mod) are built in
-//! too (the user's decision of 2026-11-09).
+//! too (the user's decision of 2026-11-09). The Garry's Mod files the sandbox uses are built in by the `se_gmod_pack` crate (one
+//! pack read from memory, never unpacked).
 
 use std::path::{Path, PathBuf};
 

@@ -177,6 +177,12 @@ impl SoundScripts {
     }
 
     /// A sound by its name (any case): the game's, else the sandbox's own for a computer without it.
+    /// Every surface's name (the copy of the game's files takes each one's sounds).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn surface_names(&self) -> Vec<String> {
+        self.surfaces.keys().cloned().collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<SoundEntry> {
         self.entries.get(&name.to_ascii_lowercase()).cloned().or_else(|| fallback(name))
     }
@@ -404,14 +410,10 @@ mod tests {
         }
     }
 
-    /// With the game installed: the scripts read, and every sound the sandbox names is there with waves that exist.
+    /// The copy's scripts read, and every sound the sandbox names is there with waves that exist.
     #[test]
     fn the_games_scripts_have_every_sound_the_sandbox_names() {
-        let Some(root) = super::super::assets::find_install() else {
-            eprintln!("Garry's Mod is not installed: skipped");
-            return;
-        };
-        let install = GmodInstall::open(&root).unwrap();
+        let install = super::super::assets::open_pack().expect("gmod.pak").unwrap();
         let s = SoundScripts::load(&install);
         let (sounds, surfaces) = s.counts();
         eprintln!("{sounds} sounds, {surfaces} surfaces");

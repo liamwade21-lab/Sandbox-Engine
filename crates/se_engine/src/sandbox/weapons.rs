@@ -45,7 +45,7 @@ pub struct WeaponDef {
     /// Half-Life 2's first-person model.
     pub view: &'static str,
     /// The world model held in his hands when the view model can't be had, and a plain stand-in without the game.
-    model: &'static str,
+    pub(super) model: &'static str,
     stand_in: &'static str,
     /// The world model's forward is its -y (the gravity gun's), not its +y.
     backwards: bool,

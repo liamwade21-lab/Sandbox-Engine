@@ -4569,8 +4569,13 @@ dependencies = [
  "image",
  "rapier3d",
  "se_core",
+ "se_gmod_pack",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "se_gmod_pack"
+version = "0.1.0"
 
 [[package]]
 name = "self_cell"

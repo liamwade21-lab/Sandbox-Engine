@@ -133,7 +133,7 @@ spacecraft is flown Esc still leaves flight, as before. While the menu is up the
 your hero or the free camera (the world itself goes on: a flying hero keeps flying).
 
 The pictures are your own screenshots (`Pictures\SpaceEngine-rs` and its `screenshots-hd`; the `export` folder is left
-out), else Garry's Mod's own backgrounds read from its install, else plain dark. `SE_MENU=0` skips the menu; test runs
+out), else Garry's Mod's own backgrounds (built into the game), else plain dark. `SE_MENU=0` skips the menu; test runs
 (`--run`, `--screenshot`, `--script`) skip it unless `SE_MENU=1`. Without the sandbox (`SE_SANDBOX=0`) there is no menu.
 
 ### On foot
@@ -142,9 +142,9 @@ The game starts on **Earth's ground in first person**, in whichever of eight ope
 moment (Kansas, the Pampas, Salisbury Plain, the Serengeti, the Kazakh and Mongolian steppes, New South Wales, the
 Canterbury Plains). Movement, weapons, sounds and the spawn menu are Garry's Mod's and Half-Life 2's: the movement is
 Source's own rules (`sandbox/movement.rs`, from the Source SDK's `gamemovement.cpp` with Garry's Mod's numbers) at 66
-ticks a second, and the props, textures and sounds are read from your **Garry's Mod install** while the game runs
-(found through Steam, or `GMOD_PATH`; nothing of it is copied or changed). Without Garry's Mod it still works, with
-plain props and plain sounds.
+ticks a second, and the props, textures and sounds are Garry's Mod's own, **built into the game** (a pack of about 0.5 GB
+inside the exe: Garry's Mod doesn't need to be installed, and only SpaceEngine is read from outside). An exe built
+without the pack (or `SE_GMOD=0`) still works, with plain props and plain sounds.
 
 | Input | Action |
 |---|---|
@@ -183,7 +183,7 @@ was, or use the main menu's Options (Esc). Garry's Mod's flashlight (F), chat, v
 
 Not there yet: props have no shadows, you walk on the sea, props more than 60 m from you wait frozen until you come
 back, a tree is solid as its trunk only (you walk under its crown), and a building you are set down inside lets you
-walk out before it turns solid. Without Garry's Mod the weapons are plain shapes.
+walk out before it turns solid. Without the pack the weapons are plain shapes.
 
 `SE_SANDBOX=0` starts the port as it was before (free flight at Earth, the saved session restored);
 `SE_SANDBOX_SPOT=N` picks the starting place (0-7). Test runs (`--run`, `--screenshot`) keep the old start unless

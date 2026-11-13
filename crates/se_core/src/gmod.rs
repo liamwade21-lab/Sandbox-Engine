@@ -1,5 +1,5 @@
-//! Garry's Mod's installed files, read only, so a game can load its props, textures and sounds at
-//! run time (nothing from the game is copied into the project). Source engine formats:
+//! Garry's Mod's files, read only, so a game can load its props, textures and sounds at run time: from the install, or
+//! from a pack of the files a game uses ([`GmodInstall::open_pack`], written by [`write_pack`]). Source engine formats:
 //! - VPK archives (`*_dir.vpk` tables plus numbered data files), see [`GmodInstall::read`];
 //! - models: `.mdl` (header, body parts, meshes), `.vvd` (vertices) and `.dx90.vtx` (triangle strips),
 //!   [`GmodInstall::model`]; collision hulls from `.phy` (IVP compact surfaces), [`GmodInstall::collision`];
@@ -240,6 +240,109 @@ impl Vpk {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A pack of the files a game uses
+// ---------------------------------------------------------------------------------------------
+
+const PACK_MAGIC: &[u8; 8] = b"SEGMPAK1";
+
+/// One file in a pack: where its bytes are (after the table), and whether they are deflated.
+struct PackEntry {
+    /// The path as written (spawn lists keep their names' case).
+    name: String,
+    offset: usize,
+    packed: usize,
+    raw: usize,
+    deflated: bool,
+}
+
+/// A pack ([`write_pack`]): `SEGMPAK1`, the count (u32), per file its path (u16 length, UTF-8), offset from the data's
+/// start (u64), packed and raw lengths (u32 each) and method (u8: 0 stored, 1 raw deflate), then the data. Little-endian.
+struct Pack {
+    bytes: std::borrow::Cow<'static, [u8]>,
+    data_start: usize,
+    /// By lowercase path.
+    entries: HashMap<String, PackEntry>,
+}
+
+impl Pack {
+    fn open(bytes: std::borrow::Cow<'static, [u8]>) -> Result<Pack, GmodError> {
+        let b: &[u8] = &bytes;
+        if b.get(..8) != Some(&PACK_MAGIC[..]) {
+            return bad("not a pack of Garry's Mod's files");
+        }
+        let count = u32_at(b, 8)? as usize;
+        let mut pos = 12usize;
+        let mut entries = HashMap::with_capacity(count);
+        let cut = || GmodError::Bad("pack table cut short".into());
+        for _ in 0..count {
+            let len = u16_at(b, pos)? as usize;
+            let name = std::str::from_utf8(b.get(pos + 2..pos + 2 + len).ok_or_else(cut)?)
+                .map_err(|_| GmodError::Bad("pack path not UTF-8".into()))?
+                .to_string();
+            pos += 2 + len;
+            let lo = u32_at(b, pos)? as usize;
+            let hi = u32_at(b, pos + 4)? as usize;
+            let packed = u32_at(b, pos + 8)? as usize;
+            let raw = u32_at(b, pos + 12)? as usize;
+            let deflated = *b.get(pos + 16).ok_or_else(cut)? == 1;
+            pos += 17;
+            entries.insert(norm_path(&name), PackEntry { name, offset: lo | (hi << 32), packed, raw, deflated });
+        }
+        let data_start = pos;
+        if entries.values().any(|e| data_start + e.offset + e.packed > b.len()) {
+            return bad("pack data cut short");
+        }
+        Ok(Pack { bytes, data_start, entries })
+    }
+
+    fn read(&self, key: &str) -> Option<Vec<u8>> {
+        let e = self.entries.get(key)?;
+        let src = &self.bytes[self.data_start + e.offset..self.data_start + e.offset + e.packed];
+        if !e.deflated {
+            return Some(src.to_vec());
+        }
+        let out = miniz_oxide::inflate::decompress_to_vec_with_limit(src, e.raw).ok()?;
+        (out.len() == e.raw).then_some(out)
+    }
+
+    /// The files whose lowercase path starts with `prefix`: (lowercase path, path as written), sorted.
+    fn under(&self, prefix: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self.entries.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(k, e)| (k.clone(), e.name.clone())).collect();
+        out.sort();
+        out
+    }
+}
+
+/// A pack of `files` (path inside the game, bytes) for [`GmodInstall::open_pack`]: each deflated, or stored when that
+/// doesn't make it smaller.
+pub fn write_pack(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let packed: Vec<(Vec<u8>, bool)> = files
+        .iter()
+        .map(|(_, b)| {
+            let d = miniz_oxide::deflate::compress_to_vec(b, 6);
+            if d.len() < b.len() { (d, true) } else { (b.clone(), false) }
+        })
+        .collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(PACK_MAGIC);
+    out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+    let mut offset = 0u64;
+    for ((name, raw), (data, deflated)) in files.iter().zip(&packed) {
+        out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
+        out.push(*deflated as u8);
+        offset += data.len() as u64;
+    }
+    for (data, _) in &packed {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------------------------
 // The install
 // ---------------------------------------------------------------------------------------------
 
@@ -247,6 +350,10 @@ impl Vpk {
 pub struct GmodInstall {
     root: PathBuf,
     vpks: Vec<Vpk>,
+    /// A pack of the files the port uses ([`GmodInstall::open_pack`]): then nothing on disk is read.
+    pack: Option<Pack>,
+    /// Every path found, while recording ([`GmodInstall::recording`]): what a copy must hold.
+    seen: Option<std::sync::Mutex<BTreeSet<String>>>,
 }
 
 impl GmodInstall {
@@ -266,7 +373,50 @@ impl GmodInstall {
         if vpks.is_empty() {
             return Err(GmodError::NotFound(format!("no VPK archives under {}", root.display())));
         }
-        Ok(GmodInstall { root: root.to_path_buf(), vpks })
+        Ok(GmodInstall { root: root.to_path_buf(), vpks, pack: None, seen: None })
+    }
+
+    /// A pack of the files a game uses ([`write_pack`]), read from memory: every file at its path inside the game, the
+    /// spawn lists under `settings/spawnlist_default/`, the menu's pictures under `backgrounds/`.
+    pub fn open_pack(bytes: std::borrow::Cow<'static, [u8]>) -> Result<Self, GmodError> {
+        Ok(GmodInstall { root: PathBuf::new(), vpks: Vec::new(), pack: Some(Pack::open(bytes)?), seen: None })
+    }
+
+    /// Note every path read or found from now on ([`GmodInstall::seen`]).
+    pub fn recording(mut self) -> Self {
+        self.seen = Some(Default::default());
+        self
+    }
+
+    /// The paths noted while recording, sorted.
+    pub fn seen(&self) -> Vec<String> {
+        self.seen.as_ref().map_or_else(Vec::new, |s| s.lock().map(|s| s.iter().cloned().collect()).unwrap_or_default())
+    }
+
+    fn note(&self, key: &str) {
+        if let Some(s) = &self.seen {
+            if let Ok(mut s) = s.lock() {
+                s.insert(key.to_string());
+            }
+        }
+    }
+
+    /// Whether this is a pack rather than the install.
+    pub fn is_pack(&self) -> bool {
+        self.pack.is_some()
+    }
+
+    /// The files of one of Garry's Mod's own loose folders ("backgrounds"), as paths to [`GmodInstall::read`], sorted. In
+    /// the install they are under `garrysmod/`.
+    pub fn folder_files(&self, rel: &str) -> Vec<String> {
+        let rel = norm_path(rel);
+        if let Some(p) = &self.pack {
+            return p.under(&format!("{rel}/")).into_iter().map(|(key, _)| key).collect();
+        }
+        let Ok(rd) = std::fs::read_dir(self.root.join("garrysmod").join(&rel)) else { return Vec::new() };
+        let mut out: Vec<String> = rd.flatten().filter(|e| e.path().is_file()).map(|e| format!("{rel}/{}", e.file_name().to_string_lossy())).collect();
+        out.sort_by_key(|k| k.to_ascii_lowercase());
+        out
     }
 
     pub fn root(&self) -> &Path {
@@ -281,17 +431,27 @@ impl GmodInstall {
         if key.is_empty() {
             return None;
         }
-        if let Some(p) = self.loose(&key) {
-            if let Ok(b) = std::fs::read(p) {
-                return Some(b);
-            }
+        let found = match &self.pack {
+            Some(p) => p.read(&key),
+            None => self.loose(&key).and_then(|p| std::fs::read(p).ok()).or_else(|| self.vpks.iter().find_map(|v| v.read(&key))),
+        };
+        if found.is_some() {
+            self.note(&key);
         }
-        self.vpks.iter().find_map(|v| v.read(&key))
+        found
     }
 
     pub fn exists(&self, path: &str) -> bool {
         let key = norm_path(path);
-        !key.is_empty() && (self.loose(&key).is_some() || self.vpks.iter().any(|v| v.entries.contains_key(&key)))
+        let found = !key.is_empty()
+            && match &self.pack {
+                Some(p) => p.entries.contains_key(&key),
+                None => self.loose(&key).is_some() || self.vpks.iter().any(|v| v.entries.contains_key(&key)),
+            };
+        if found {
+            self.note(&key);
+        }
+        found
     }
 
     /// The path of a loose file, when there is one. Paths that climb out of the folder are refused.
@@ -309,6 +469,9 @@ impl GmodInstall {
         let mut out: BTreeSet<&String> = BTreeSet::new();
         for v in &self.vpks {
             out.extend(v.entries.keys().filter(|k| k.starts_with(&prefix) && k.ends_with(&ext)));
+        }
+        if let Some(p) = &self.pack {
+            out.extend(p.entries.keys().filter(|k| k.starts_with(&prefix) && k.ends_with(&ext)));
         }
         out.into_iter().cloned().collect()
     }
@@ -417,6 +580,18 @@ impl GmodInstall {
 
     /// The stock spawn lists (`garrysmod/settings/spawnlist_default/*.txt`), in file-name order.
     pub fn spawnlists(&self) -> Vec<SpawnList> {
+        if let Some(p) = &self.pack {
+            return p
+                .under("settings/spawnlist_default/")
+                .into_iter()
+                .filter(|(key, _)| key.ends_with(".txt"))
+                .filter_map(|(key, name)| {
+                    let text = p.read(&key)?;
+                    let stem = name.rsplit('/').next()?.rsplit_once('.')?.0.to_string();
+                    parse_spawnlist(&String::from_utf8_lossy(&text), &stem)
+                })
+                .collect();
+        }
         let dir = self.root.join("garrysmod/settings/spawnlist_default");
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
         let mut files: Vec<PathBuf> = rd
@@ -429,6 +604,7 @@ impl GmodInstall {
             .filter_map(|p| {
                 let text = std::fs::read(p).ok()?;
                 let stem = p.file_stem()?.to_string_lossy().into_owned();
+                self.note(&format!("settings/spawnlist_default/{}", p.file_name()?.to_string_lossy()));
                 parse_spawnlist(&String::from_utf8_lossy(&text), &stem)
             })
             .collect()

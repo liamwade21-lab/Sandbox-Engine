@@ -42,7 +42,8 @@ physics under the planet's own gravity, and V switching the port's free flight o
 (`mod.rs` says what each file is) and `crates/se_core/src/gmod.rs` (the reader of Garry's Mod's files). The references it was
 built from: Valve's Source SDK 2013 (`gamemovement.cpp`, the weapons' `.cpp` files) and Garry's Mod's own Lua and scripts in
 the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gamemodes/sandbox`, `cfg/config_default.cfg`,
-`settings/spawnlist_default`), read for their numbers and rules, never copied.
+`settings/spawnlist_default`), read for their numbers and rules, never copied. The Garry's Mod files the sandbox uses are
+built into the exe as one pack since 2026-11-12 (see the rules below).
 
 ## Build and play
 
@@ -60,7 +61,7 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
 - What players get (since 1.0.1, 2026-11-09): the exe alone. `crates/se_engine/build.rs` builds every file under
   `assets/shaders`, `textures`, `models`, `mr` and `mods` into it (`embedded_assets.rs`); on a player's first start
   (and when an update changes them) they're unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets` (about 115 MB) and
-  read from there. Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then
+  read from there; the Garry's Mod pack is in the exe too (`se_gmod_pack`) but read from memory, never unpacked. Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then
   the source tree but ONLY for an exe inside the project folder (`config::source_assets`: `target\release`, tests, bench
   copies in `.optimize/scratch`, so shader edits need no rebuild there), then the unpacked copy. Never read
   `CARGO_MANIFEST_DIR` at run time outside tests: go through `config::asset_file` / `asset_roots` (v1.0.0 did, and
@@ -91,10 +92,17 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
   Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
   shipped the same way since 2026-11-09; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
   archives are never opened. Any other game's assets stay in their installs.
-- Garry's Mod's files (the user, 2026-11-11: "keep the original installation unchanged", "use placeholders where needed") are
-  read from its install while the game runs (found through Steam, app 4000, or `GMOD_PATH`), never copied into the project and
-  never changed there: the third game after SpaceEngine and Megaton Rainfall, and like SpaceEngine's they stay in the install.
-  Without Garry's Mod the sandbox must still work (plain props, plain sounds: `sandbox/assets.rs`).
+- Garry's Mod's files (the user, 2026-11-12, replacing 2026-11-11's "read from the install": "i want the garrys mod files in
+  the game itself, not being loaded from the outside, only space engine should be loaded"): the files the sandbox uses (every
+  prop of the stock spawn lists with its textures and collision, the weapons' models, the sound scripts and the waves it plays,
+  the spawn lists, the backgrounds re-encoded to 1920x1200) are one pack, `crates/se_gmod_pack/gmod.pak` (about 0.5 GB,
+  deflated per file), built into the exe by the `se_gmod_pack` crate (its own crate, so it compiles only when the pack
+  changes) and read from memory (`GmodInstall::open_pack`; never unpacked). Garry's Mod's install is never read while the
+  game runs, and still never changed. The pack is made from the install by
+  `cargo test -p se_engine --release copy_garrys_mod -- --ignored --nocapture` (`sandbox/assets.rs`), which reads everything
+  back from the new pack and fails if it misses anything: run it after any change to what the sandbox reads (a new weapon,
+  sound name or prop list). Without the pack (an exe built without `gmod.pak`, or `SE_GMOD=0`) the sandbox must still work
+  (plain props, plain sounds: `sandbox/assets.rs`).
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
@@ -136,14 +144,15 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
     bindings and both users follow. `PropMaterial` is never changed after it is made. Effects (muzzle flash, dust, the physics
     gun's beam) and the HUD are egui shapes (`weapons::draw_hud`).
   - Garry's Mod's files: `se_core/gmod.rs` (VPK archives, `.mdl`/`.vvd`/`.vtx` models, `.vtf` textures, `.phy` collision pieces,
-    WAV sounds incl. ADPCM, spawn lists). Its tests read the install and skip without it. A tenth of the models keep their
+    WAV sounds incl. ADPCM, spawn lists; the pack, `write_pack`/`open_pack`). Its own tests read the install and skip without
+    it; the sandbox's tests read the pack. A tenth of the models keep their
     collision pieces in another pose's frame: `assets::collision_shape` falls back to the mesh's hull when they don't fit.
     Half-Life 2's scripts are loose files under `sourceengine/`: `GmodInstall::loose` looks there after `garrysmod/`.
   - Testing: `SE_SANDBOX=1` in a `runport.sh` run; `sbx state|props|solids|arsenal|look YAW PITCH|spawn NAME|undo|clear|menu on|off|mods|weapons|
     weapon N|walk [LAT LON [HEADING]]|fly` (`sandbox::dev_command`; `look`'s yaw is 0 east, 90 north, its pitch up); keys with `hero keys w+shift 2` (also `lmb`, `rmb`, `v`,
     `space`, `ctrl`, `1`..`6`: a new `hero keys` lets the old ones go and presses the new in the same frame, so `lmb` then
     `lmb+rmb` keeps the left button down); `uiclick X Y` clicks the Q menu; `SE_SANDBOX_SOUNDS=1` logs each sound as it starts to
-    play (a test can't listen); `SE_SANDBOX_SPOT=N` the starting place; `GMOD_PATH=C:/nonexistent` the no-Garry's-Mod path.
+    play (a test can't listen); `SE_SANDBOX_SPOT=N` the starting place; `SE_GMOD=0` the no-Garry's-Mod path (plain props and sounds).
     `surface LAT LON ALT_KM`'s height is over the ellipsoid, not the ground (the Serengeti stands 1.7 km over it). A new starting
     place goes in `SPOTS` and must be checked to be dry land (the "set down" log line says "(the sea)").
   - Solid buildings and trees (`sandbox/solids.rs`, the user's 2026-11-11): every walking frame the walker asks the scatter's
@@ -169,7 +178,7 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
     states); sequence names differ per model (`WeaponDef::sequences`, checked against the files by a test). The gravity gun's
     prongs are its autoplay sequence `prong_blend` (two animations and a weight list: `GmodSequence::blend_to`, `weights`)
     laid over whatever plays by `ViewModel::open`. The crowbar's miss swing really does leave the screen for a third of a
-    second. `sbx arsenal` logs what is in hand and playing. Without Garry's Mod the stand-in world models are used.
+    second. `sbx arsenal` logs what is in hand and playing. Without the pack the stand-in world models are used.
   - Sounds (`sandbox/soundscript.rs`, `audio.rs`): a cue names one of the game's sounds (`Cue::named("Weapon_SMG1.Single")`)
     and the install's scripts (`scripts/game_sounds_manifest.txt`, `surfaceproperties_manifest.txt`) say its waves, volume,
     pitch, level and channel. A new name goes in `audio::NAMED`: a test checks every one, and every surface's five sounds,
@@ -204,7 +213,7 @@ the user's install (`D:\SteamLibrary\steamapps\common\GarrysMod`: `garrysmod/gam
     first (ship.rs), else the menu (Options, then the Mods page, then closed). Mods is the Q menu's own rows (`menu::mod_rows`).
     Play once playing goes back on Earth through `restart_on_earth` (the mod off first, then `put_on_earth`, the launch's own
     spot choice). Pictures: `screenshot::folder()` and its `screenshots-hd` (never `export`), else Garry's Mod's
-    `garrysmod/backgrounds`, decoded on worker threads (the `image` crate's jpeg and png), two textures at most. Tests: `SE_MENU=1`,
+    backgrounds from the pack (`backgrounds/`, `main_menu::Pic`), decoded on worker threads (the `image` crate's jpeg and png), two textures at most. Tests: `SE_MENU=1`,
     `menu on|off|state|mods|main` (`state` logs each entry's middle for `uiclick`), `hero keys esc 0.2`; `main menu: cursor`
     lines log the grab for runs with a real mouse.
 - Mods menu (`mods.rs`; the plan is `docs/spec-mods-viltrumite-powers.md`, its Build log says what each step did): a

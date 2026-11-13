@@ -2,6 +2,17 @@
 
 ## Current state (2026-11-12)
 
+- **Garry's Mod's files are built into the game** (2026-11-12, the user's: only SpaceEngine is read from outside). Every file the
+  sandbox uses (all 4,963 props of the stock spawn lists with their textures and collision, the weapons' models, the sound
+  scripts and the 420 waves it plays, the spawn lists, the menu's 51 backgrounds shrunk to 1920x1200) is one pack,
+  `crates/se_gmod_pack/gmod.pak` (21,070 files, 1,084 MB deflated to 518 MB), built into the exe by its own crate and read
+  from memory, never unpacked. The exe is now 754 MB. Garry's Mod's install is never read while the game runs (only the pack
+  tool `copy_garrys_mod` and the gmod tests read it); without the pack or with `SE_GMOD=0` the plain props and sounds remain.
+  The pack tool reads everything back from the new pack and matched the install file for file. A full release build took 23
+  minutes once; an ordinary rebuild 11.5 (about 1.5 more than before). Checked: a test run in the project (crate, drum, gravity
+  gun, the Q menu's icons, the log says "the pack built into the exe (34 spawn lists, 4963 props)"), `SE_GMOD=0`, and the exe
+  alone outside the project with empty APPDATA and LOCALAPPDATA (its unpacked assets stay 115 MB). Possible next step: a
+  smaller pack (fewer props or smaller textures) if 754 MB is too big to share.
 - **The gravity gun's and physics gun's beam no longer draws over the gun** (2026-11-12): the beam is a flat line on top of
   the picture, so it is now left out wherever it lies over the gun's own outline (the view model's triangles as posed this
   frame, `weapons.rs` `gun_outline`, `beam_start`): it appears where it comes out from behind the gun. Checked with the

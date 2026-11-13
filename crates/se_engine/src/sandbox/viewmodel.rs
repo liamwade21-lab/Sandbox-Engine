@@ -603,14 +603,10 @@ mod tests {
         }
     }
 
-    /// With the game installed: every view model reads, plays its sequences and keeps its hands near its origin.
+    /// The copy's view models read, play their sequences and keep their hands near their origin.
     #[test]
     fn the_games_view_models_pose() {
-        let Some(root) = assets::find_install() else {
-            eprintln!("Garry's Mod is not installed: skipped");
-            return;
-        };
-        let install = GmodInstall::open(&root).unwrap();
+        let install = assets::open_pack().expect("gmod.pak").unwrap();
         for w in &super::super::weapons::WEAPONS {
             let data = load(&install, w.view).unwrap_or_else(|e| panic!("{}: {e}", w.view));
             let n = data.skeleton.bones.len();
