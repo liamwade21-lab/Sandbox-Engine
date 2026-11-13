@@ -22,6 +22,11 @@
   own sounds). **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the Rust port's code: `LICENSE`). Its files
   are in `assets/mods/skate3` (36 MB, shipped: the user's choice), its controls in README "Skate 3 physics".
 
+- **Released 2026-11-13 as GitHub Release v1.2.0** (the user's go: "push to github and release on the wadeball collection
+  website"): `Sandbox-Engine-1.2.0-windows.zip`, 640 MB (610.2 MiB), the latest release, made by `package_release.sh` (it holds
+  LICENSE.txt and SOURCE.txt since the GPL change). Tested as a player gets it (unzipped outside the project, empty
+  APPDATA/LOCALAPPDATA): the Skate 3 mod found its files beside the exe and a kickflip scored. The Wadeball Mod Collection's
+  entry points at it (feature card, skate screenshot, changelog, EA and the Skate 3 Rust Engine credited; live and checked).
 - **Released 2026-11-12 as GitHub Release v1.1.0** (`Sandbox-Engine-1.1.0-windows.zip`, 621 MB: the exe and its `assets`
   folder; the latest release), and the Wadeball Mod Collection site lists it. Before the push GitHub's 100 MB limit meant
   Garry's Mod's pack had to become ten files of at most 90 MB (`assets/gmod/`), and the 17 commits not yet pushed were
