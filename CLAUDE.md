@@ -106,6 +106,11 @@ one pack in the assets folder since 2026-11-12 (see the rules below).
   back from the new pack and fails if it misses anything: run it after any change to what the sandbox reads (a new weapon,
   sound name or prop list). Without the pack (no `gmod.pak` in the assets folder, or `SE_GMOD=0`) the sandbox must still work
   (plain props, plain sounds: `sandbox/assets.rs`).
+- Mods' files sit outside the exe (the user, 2026-11-12: "that is how mods will be created now, files will sit outside
+  exe"): every mod is a folder of its own files under `assets/mods/NAME` (its `mod.cfg` and what it `Need`s), shipped in the
+  `assets` folder beside the exe and read from there at run time. Nothing of a mod is ever built into the exe (no
+  `include_bytes!`, no build script embedding); its code goes in the exe only as the game's support for it (`KNOWN_CODES`).
+  A big mod's files may be one pack of their own in its folder, read from disk as `gmod.pak` is.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
