@@ -4,7 +4,7 @@
 # 60 km over Earth, slowed through 1,200 m/s by the air alone. hyperx: X out of Hyper flight. hyperslow: Shift let go in Hyper.
 # reon: turned off in Hyper and on again (no leaving-Hyper sound). jupiter, star: Ctrl held against a stop with nothing to stand on, then flying away from it. goto: Shift+G from orbit into Earth's air.
 # Prints what fired, and the levels at each settled speed.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 OUT="$1"; shift
 S=".optimize/scratch/run/$OUT"; mkdir -p "$S"
 start() { echo "timing frame; date 2026-06-21 10:00:00; $1; wait ${2:-1200}; mods on viltrumite; wait 120"; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reference screenshots of fixed scenes, time paused, for the "identical output" check:
 # bash .optimize/bench/refs.sh OUTDIR [SCENE...]; compare two folders with compare.py.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"
 OUT="${1:?outdir}"; shift; mkdir -p "$OUT"
 D="date 2026-06-21 12:00:00; pause"
 R="goto Earth 20000; wait 200; rs RS 8514-1828-5-27938-309; wait 300; select RS 8514-1828-5-27938-309 2"

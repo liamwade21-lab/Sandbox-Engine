@@ -2,7 +2,7 @@
 # Craters kept and freed (spec step 8, D3): a crater, then away 3 km and back (the ground's nodes change), 10 km and back (kept), 21 km
 # away (freed at 20.5 km, logged), back (gone); then one more, the mod off (kept, drawn), and the camera 25 km away (freed).
 #   bash .optimize/bench/hero_keep.sh NAME "date ...; select Earth; surface LAT LON 0.3 -6" [extra run args]
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 N="$1"; P="$2"; shift 2
 go() { echo "hero keys space 0.05; wait 10; hero cruise $1 60; wait $2; hero cruise off; hero keys z 0.05; wait 30; hero impacts"; }
 back() { echo "hero aim 180 0; wait 3; $(go $1 $2); hero aim 0 -89; wait 3"; }

@@ -1,7 +1,7 @@
 """Decompile functions with the ghidra CLI into scratchpad/re/<name>.c. Usage: python -I dec.py FUN_x [FUN_y ...]"""
 import json, subprocess, sys, os
 
-REPO = r"C:\Users\liamw\Desktop\SpaceEngine Rust Port Version 2"
+REPO = r"C:\Users\liamw\Desktop\Sandbox Engine"
 OUT = os.path.join(REPO, ".audit", "work", "dec")
 os.makedirs(OUT, exist_ok=True)
 for f in sys.argv[1:]:

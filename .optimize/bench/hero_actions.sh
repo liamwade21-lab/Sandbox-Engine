@@ -4,7 +4,7 @@
 # A fall from 300 m (a hard landing at the air's terminal speed), a punch into the ground, a ground punch, three thunderclaps on the
 # ground (charges 0.1, 0.5, 1), then up 120 m: a punch in the air and the three claps again. Pictures NAME_*.png in
 # .optimize/scratch/run/s8 and two sheets, NAME_ground.png and NAME_air.png.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 N="$1"; P="$2"; shift 2
 pair() { echo "shot @/${N}_$1_b.png; wait 1; hero aim 90 -12; wait 2; shot @/${N}_$1_s.png; wait 1; hero aim -90 $2; wait 2"; }
 # A clap held SECS: the clap comes 0.63 s after letting go; the pictures 0.35 s after it.

@@ -2,8 +2,8 @@
 # F9's table against the game's real air: he flies level at each speed of a line of the table, and the log says what his skin reached.
 #   bash .optimize/bench/hero_heat_table.sh [top]
 # Then, for each world, straight up through the top of the boom and back: the log says at what height the barrier's state changes.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
-S=.optimize/scratch/run/s7; mkdir -p "$S"; W="C:/Users/liamw/Desktop/SpaceEngine Rust Port Version 2/$S"
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
+S=.optimize/scratch/run/s7; mkdir -p "$S"; W="C:/Users/liamw/Desktop/Sandbox Engine/$S"
 line() { # NAME "select BODY; surface ..." HEIGHT V1 V2 V3 V4 V5
   N="$1"; P="$2"; H="$3"; shift 3
   C="timing frame; date 2026-06-21 12:00:00; $P; wait 300; mods on viltrumite; wait 200; hero air; hero boom $W/$N.csv"

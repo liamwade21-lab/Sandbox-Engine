@@ -4,7 +4,7 @@
 # comparable (a capped or unfocused window clocks the card down): compare the rounds next to each other, and only
 # rounds whose frame median is not stuck at 16.6 ms. NAME*.perf / .log in .optimize/scratch/run.
 N="$1"; shift
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 D=.optimize/scratch/run; U="RS 8514-495-4-971-146"
 C="preset Ultra; wait 300; rs $U; wait 400; select $U 2; date 2026-11-03 22:10:00; pause; surface 10 20 30 -20 0; wait 1500; perf q; wait 600; perf end; wait 30"
 for r in a1 b1 a2 b2; do

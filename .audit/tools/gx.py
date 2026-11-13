@@ -1,7 +1,7 @@
 """String -> referencing functions. Usage: python -I gx.py Substring [Substring ...] (exact value match preferred)"""
 import json, subprocess, sys
 
-REPO = r"C:\Users\liamw\Desktop\SpaceEngine Rust Port Version 2"
+REPO = r"C:\Users\liamw\Desktop\Sandbox Engine"
 P = ["--projects-dir", "re/ghidra_projects", "--project", "se"]
 
 

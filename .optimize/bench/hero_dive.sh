@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A dive from orbit, 30 degrees down at full boost: pictures at the heat's stages, a sheet of them, and the log's measure of how much the
 # picture's brightness jumps. bash .optimize/bench/hero_dive.sh NAME "date ...; select Earth; surface LAT LON 400 -30 90" PHOTO [extra run args]
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 N="$1"; P="$2"; PH="$3"; shift 3
 S=.optimize/scratch/run/s7
 C="timing frame; $P; wait 400; mods on viltrumite; photo $PH; wait 200; hero boom @/$N.csv; hero aim 0 -30; hero keys w+shift 30; wait 836"

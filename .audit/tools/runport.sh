@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the port once with a script and a final screenshot, one instance at a time across agents.
 # Usage: bash .audit/tools/runport.sh OUT.png FRAMES "dev; commands" [extra args...]
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"
 LOCK="$REPO/.audit/port.lock"
 OUT="$1"; FRAMES="$2"; CMDS="$3"; shift 3
 # a lock older than 10 minutes is left over from a killed run

@@ -3,7 +3,7 @@
 # two procedural planets near the ground), with Earth's view and the user's planet RS 8514-912-7-1071286-73 2 from
 # 2000 km measured each round (paused, fixed dates) and the video memory sampled every 15 s (NAME.vram).
 N="$1"; R="$2"; shift 2
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 D=.optimize/scratch/run; rm -f $D/$N.perf $D/$N.vram
 C="preset Ultra; wait 300"
 for i in $(seq 1 $R); do

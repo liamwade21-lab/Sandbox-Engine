@@ -4,7 +4,7 @@
 # the Black Forest, paused, fixed date). Prints per round the opaque GPU time, the scatter's compute and the counts
 # (GPU objects must stay flat). NAME.perf in .optimize/scratch/run. Set PORT_BIN to test another exe.
 N="$1"; R="$2"; shift 2
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 D=.optimize/scratch/run; mkdir -p $D; rm -f $D/$N.perf
 C="preset Ultra; vclouds 2; select Earth; wait 300"
 for i in $(seq 1 $R); do

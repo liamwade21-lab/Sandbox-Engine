@@ -1,11 +1,13 @@
-# SpaceEngine Rust/Bevy port, version 2
+# Sandbox Engine (the SpaceEngine Rust/Bevy port, version 2)
 
-**This folder is version 2** (`C:\Users\liamw\Desktop\SpaceEngine Rust Port Version 2`), copied on
-2026-11-02 from version 1 (`C:\Users\liamw\Desktop\Space Engine Recomp`), which stays as it is.
-Version 2 is where better visuals, add-ons and the like go. Work here, not in the version 1
-folder. The test scripts (`.audit/tools`, `.optimize/bench`) point at this folder; the older
-briefs and reports in `.audit`, `.bugfinder` and `.optimize` still name the version 1 folder, as
-history. Version 2 keeps the user's settings, log, saved session, places and ships in its own
+**This folder is the project** (`C:\Users\liamw\Desktop\Sandbox Engine`, since 2026-11-12: the user's "in new sessions you
+will be working in there from now on"). It is a clean copy of version 2 (`C:\Users\liamw\Desktop\SpaceEngine Rust Port
+Version 2`: its git history, plus `re/` and `.audit/work`, which git doesn't hold), made because that folder had grown
+bloated with build files and test pictures; it stays as it is, as does version 1 (`C:\Users\liamw\Desktop\Space Engine
+Recomp`), from which version 2 was copied on 2026-11-02. Work here, never in the older
+folders. The test scripts (`.audit/tools`, `.optimize/bench`) point at this folder; the older
+briefs and reports in `.audit`, `.bugfinder`, `.optimize` and `docs` still name the version 1 or 2 folders, as
+history. Release zips go in `release/` (out of git). Version 2 keeps the user's settings, log, saved session, places and ships in its own
 `%APPDATA%\SpaceEngine-rs-v2` folder (`settings.rs` `USER_DIR`; the atmosphere cache too). On its
 first run it copied version 1's `%APPDATA%\SpaceEngine-rs` there (done 2026-11-02, by a test run);
 it never writes version 1's folder. Screenshots still go to the shared `Pictures\SpaceEngine-rs`.

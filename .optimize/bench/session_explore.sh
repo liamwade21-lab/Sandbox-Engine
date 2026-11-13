@@ -9,7 +9,7 @@
 # outside), the GPU time and the counts (GPU objects must stay flat); video memory every 15 s in NAME.vram.
 # NAME.perf / .log in .optimize/scratch/run. Set PORT_BIN to test another exe.
 N="$1"; R="$2"; shift 2
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 D=.optimize/scratch/run; mkdir -p $D; rm -f $D/$N.perf $D/$N.vram
 U="RS 8514-495-4-971-146"; L="RS 8514-928-8-5906585-158"; W="WISEPA J090649.36+473538.6"; S="SDSS J212413.88+010000.2"
 P="agl off; rs $U; wait 400; select $U 2; date 2026-11-03 22:10:00; pause; surface 10 20 30 -20 0; wait 1500"

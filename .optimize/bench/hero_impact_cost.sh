@@ -3,7 +3,7 @@
 # On Kansas farmland, standing: none; five craters in view (`fx_decals`); a 40 m crater's dust at its thickest (the dust, in `hero_fx`, and
 # `hero_fx_dust_tint`); a full thunderclap (rings and its ring of dust); the mod off with the craters still there (the aftermath); then
 # none. For passes under 0.05 ms perf.rs's limit must be lowered for the run (it drops them from the log).
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 S=.optimize/scratch/run/s8; mkdir -p "$S"; N="$1"; rm -f "$S/$N.perf"
 C="pause; timing frame; vclouds 2; levels 3; date 2026-06-21 18:00:00; select Earth; surface 38.5 -98.5 0.3 -6; agl 300; wait 1500; agl off; mods on viltrumite; wait 300; hero keys x 0.1; wait 800; hero dist 40; hero aim 0 -30; wait 300; perf none; wait 300; perf x"
 C="$C; hero crater 8; wait 2; hero aim 72 -30; hero crater 14; wait 2; hero aim 72 -30; hero crater 20; wait 2; hero aim 72 -30; hero crater 5; wait 2; hero aim 72 -30; hero crater 30; wait 900; hero aim 0 -30; wait 3; perf craters5; wait 300; perf x"

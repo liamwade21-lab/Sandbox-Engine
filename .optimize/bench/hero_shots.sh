@@ -3,7 +3,7 @@
 # On the Sahara: X and a fall, a jump, a sprint's jump, Space held, a dive, Shift in Hover held to Hyper, the right button, then
 # keys mashed; then the sea. FPS is what `timing frame` steps by (each `wait` scales with it, `hero keys` goes by real seconds), so
 # 20, 60 and 240 must fire the same list. Prints what fired, and the most one-shots playing at once.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 S=.optimize/scratch/run/s6; mkdir -p "$S"; N="$1"; FPS="${2:-60}"
 F="$(cygpath -m "$REPO/$S/$N.csv")"
 w() { echo "wait $(( $1 * FPS / 60 ))"; }

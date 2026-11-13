@@ -2,6 +2,10 @@
 
 ## Current state (2026-11-12)
 
+- **The project moved to `C:\Users\liamw\Desktop\Sandbox Engine`** (2026-11-12, the user's: the version 2 folder had grown
+  bloated). A git clone of version 2 (history included, its GitHub remote kept) plus `re/` and `.audit/work`; the build files
+  (`target`, 4.8 GB) and test pictures stayed behind. The test scripts point here. Release zips go in `release/` (out of git):
+  `release\Sandbox-Engine-1.1.0-windows.zip` is this state, made here.
 - **The exe holds only code; everything else is in an `assets` folder beside it** (2026-11-12, the user's: the exe smaller and
   the big files in the game's folder, for every file that isn't SpaceEngine's). A player's download is now `Sandbox Engine\`
   with `spaceengine-rs.exe` (92 MB, was 197 MB with the assets built in) and `assets\` (shaders, textures, models,

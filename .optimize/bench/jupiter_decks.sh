@@ -2,10 +2,10 @@
 # Jupiter's volumetric decks at Ultra 3440x1440, time paused, from 100 km over the cloud tops down to the
 # deep deck (100 km under them), the day side: bash .optimize/bench/jupiter_decks.sh NAME [env VAR=val ...]
 N="$1"; shift 1
-D="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2/.optimize/scratch/run"; mkdir -p "$D"
+D="/c/Users/liamw/Desktop/Sandbox Engine/.optimize/scratch/run"; mkdir -p "$D"
 A="surface 10 170"
 C="preset Ultra; date 2026-11-04 12:00:00; select Jupiter; wait 300; date 2026-11-04 12:00:00; pause; spin 0; $A 100 -20 0; wait 1500; perf km100; wait 300; $A 30 -5 0; wait 600; perf km30; wait 300; $A -20 0 0; wait 600; perf in_main; wait 300; $A -50 0 0; wait 600; perf gap; wait 300; $A -100 0 0; wait 600; perf deep; wait 300; perf end; wait 30"
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 env SE_PERF="$D/$N.perf" SE_NO_VSYNC=1 "$@" bash .audit/tools/runport.sh "$D/$N.png" 5 "$C" --size 3440x1440 > /dev/null 2>&1
 grep -E "not found|panic" "$D/$N.png.log" | cut -c12-160 | head -3
 python -c "

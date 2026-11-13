@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The heat's stages by the table's speeds, each from behind (the real camera), 20 degrees off his line, and from the side, on a sheet:
 #   bash .optimize/bench/hero_stages.sh NAME "date ...; select BODY; surface LAT LON KM -3 90" HEIGHT_M "V1 V2 V3 ..." [extra run args]
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 N="$1"; P="$2"; H="$3"; SPEEDS="$4"; shift 4
 S=.optimize/scratch/run/s7
 C="timing frame; $P; wait 900; mods on viltrumite; wait 200"

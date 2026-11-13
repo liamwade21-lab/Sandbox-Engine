@@ -5,7 +5,7 @@
 # run it, and compare with pixel_cmp.py A B. `pause` comes first, then `timing frame`, then the date: with those
 # the forest and a street come out bit-identical between two runs of one exe, apart from a few HUD digits. Measure the
 # noise first: run one side twice. Earth from afar, Saturn and the space view keep small differences of their own.
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"
 OUT="${1:?outdir}"; shift; mkdir -p "$OUT"
 T="pause; timing frame"
 D="$T; date 2026-06-21 12:00:00"

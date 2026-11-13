@@ -2,7 +2,7 @@
 # bash .optimize/bench/session_rs.sh NAME ROUNDS [env...]: on the user's planet RS 8514-912-7-1071286-73 2 only: each round two new spots at
 # 3 km, then the same view from 2000 km measured (paused, fixed date). NAME.perf.
 N="$1"; R="$2"; shift 2
-cd "/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2" || exit 1
+cd "/c/Users/liamw/Desktop/Sandbox Engine" || exit 1
 D=.optimize/scratch/run; rm -f $D/$N.perf
 C="preset Ultra; wait 600; rs RS 8514-912-7-1071286-73; wait 600; select RS 8514-912-7-1071286-73 2; go 10000; wait 300"
 for i in $(seq 1 $R); do

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Final A/B: the baseline exe (with its own shaders, .optimize/scratch/baseexe) against the merged
 # release build, scene sets interleaved twice, then reference shots base / new / base again.
-R="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; B="$R/.optimize/bench"; S="$R/.optimize/scratch/final"
+R="/c/Users/liamw/Desktop/Sandbox Engine"; B="$R/.optimize/bench"; S="$R/.optimize/scratch/final"
 BASE="$R/.optimize/scratch/baseexe/spaceengine-rs.exe"; NEW="$R/target/release/spaceengine-rs.exe"
 for r in 1 2; do
   PORT_BIN="$BASE" bash "$B/all.sh" "$S/base$r" > "$S/base$r.txt" 2>&1

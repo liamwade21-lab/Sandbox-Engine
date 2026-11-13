@@ -3,9 +3,9 @@
 # 3 km/s (30 m up) and 30 km/s (HIGH_M, default 150 m: at 30 m he hits the coarse ground ahead and crashes), the way the camera looks at first. A `hero probe stats` per segment (reset before each).
 #   bash .optimize/bench/probe_counts.sh NAME "commands putting the camera ~25 m over a dense town" [run args, e.g. --size 3440x1440]
 # Env: PRE (commands before the place, e.g. "preset Ultra"), and the run's env through `env` as usual (SE_NO_VSYNC=1 ...).
-REPO="/c/Users/liamw/Desktop/SpaceEngine Rust Port Version 2"; cd "$REPO" || exit 1
+REPO="/c/Users/liamw/Desktop/Sandbox Engine"; cd "$REPO" || exit 1
 S=.optimize/scratch/run/s9; mkdir -p "$S"; N="$1"; P="$2"; shift 2
-W="C:/Users/liamw/Desktop/SpaceEngine Rust Port Version 2/$S"
+W="C:/Users/liamw/Desktop/Sandbox Engine/$S"
 seg() { echo "hero probe stats reset; wait $1; hero probe stats; hero state"; }
 C="timing frame; levels 3; ${PRE:-wait 1}; $P; wait 1500; agl off; mods on viltrumite; wait 200; hero probe trace $W/$N.csv; hero probe stats on; wait 60"
 C="$C; $(seg 300); hero keys x 0.1; wait 400; hero keys w 12; wait 60; $(seg 480); hero keys shift+w 8; wait 150; $(seg 240)"
