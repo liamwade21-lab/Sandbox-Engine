@@ -19,7 +19,7 @@ copied into this repository.
 
 The download (`Sandbox-Engine-VERSION-windows.zip`) is a `Sandbox Engine` folder with the program,
 `spaceengine-rs.exe`, and an `assets` folder beside it holding everything else it needs except SpaceEngine: its
-shaders, textures and models, the trees and city props, the mods, and `gmod.pak` (Garry's Mod's props, textures and
+shaders, textures and models, the trees and city props, the mods, and `gmod` (Garry's Mod's props, textures and
 sounds, 518 MB). Unpack the whole zip and keep the two together. On the first start it finds
 SpaceEngine through Steam (Steam's folder from the registry, then every Steam library in
 `steamapps\libraryfolders.vdf`, looking for SpaceEngine's app id 314650). If Steam doesn't list it, a window asks
@@ -144,7 +144,7 @@ moment (Kansas, the Pampas, Salisbury Plain, the Serengeti, the Kazakh and Mongo
 Canterbury Plains). Movement, weapons, sounds and the spawn menu are Garry's Mod's and Half-Life 2's: the movement is
 Source's own rules (`sandbox/movement.rs`, from the Source SDK's `gamemovement.cpp` with Garry's Mod's numbers) at 66
 ticks a second, and the props, textures and sounds are Garry's Mod's own, **shipped with the game** (a pack of 518 MB,
-`assets\gmod.pak` beside the exe: Garry's Mod doesn't need to be installed, and only SpaceEngine is read from outside the
+`assets\gmod` beside the exe: Garry's Mod doesn't need to be installed, and only SpaceEngine is read from outside the
 game's folder). Without the pack (or with `SE_GMOD=0`) it still works, with plain props and plain sounds.
 
 | Input | Action |

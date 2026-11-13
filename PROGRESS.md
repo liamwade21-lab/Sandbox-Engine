@@ -9,13 +9,14 @@
 - **The exe holds only code; everything else is in an `assets` folder beside it** (2026-11-12, the user's: the exe smaller and
   the big files in the game's folder, for every file that isn't SpaceEngine's). A player's download is now `Sandbox Engine\`
   with `spaceengine-rs.exe` (92 MB, was 197 MB with the assets built in) and `assets\` (shaders, textures, models,
-  Megaton Rainfall's files, the mods, and `gmod.pak`); the zip is 621 MB. Nothing is unpacked to `%LOCALAPPDATA%` any more
+  Megaton Rainfall's files, the mods, and Garry's Mod's packs in `gmod`); the zip is 621 MB. Nothing is unpacked to `%LOCALAPPDATA%` any more
   (`build.rs` and `embedded_assets.rs` are gone). The exe without its assets folder stops with a message saying where the
   folder belongs.
 - **Garry's Mod's files ship with the game** (2026-11-12, the user's: only SpaceEngine is read from outside). Every file the
   sandbox uses (all 4,963 props of the stock spawn lists with their textures and collision, the weapons' models, the sound
   scripts and the 420 waves it plays, the spawn lists, the menu's 51 backgrounds shrunk to 1920x1200) is one pack,
-  `crates/se_engine/assets/gmod.pak` (21,070 files, 1,084 MB deflated to 518 MB), read a file at a time from disk. Garry's
+  `crates/se_engine/assets/gmod/` (21,070 files, 1,084 MB deflated to 518 MB, in pieces of at most 90 MB by kind so GitHub
+  takes them), read a file at a time from disk. Garry's
   Mod's install is never read while the game runs (only the pack tool `copy_garrys_mod` and the gmod tests read it); without
   the pack or with `SE_GMOD=0` the plain props and sounds remain. The pack tool reads everything back from the new pack and
   matched the install file for file.

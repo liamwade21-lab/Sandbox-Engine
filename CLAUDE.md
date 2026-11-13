@@ -62,7 +62,7 @@ one pack in the assets folder since 2026-11-12 (see the rules below).
   normal launch, and there is none with `SE_SANDBOX=0`.
 - What players get (since 2026-11-12, the user's: "the exe smaller and the big files in the folder where the exe is", for
   every file that isn't SpaceEngine's): a `Sandbox Engine` folder with the exe (code only, nothing built in) and an `assets`
-  folder beside it holding `shaders`, `textures`, `models`, `mr`, `mods` and `gmod.pak` (copied from
+  folder beside it holding `shaders`, `textures`, `models`, `mr`, `mods` and `gmod` (copied from
   `crates/se_engine/assets`). From 1.0.1 to 2026-11-12 these were built into the exe (`build.rs`, `embedded_assets.rs`,
   unpacked to `%LOCALAPPDATA%\SpaceEngine-rs-v2\assets`): gone, and a player's old unpacked copy there is no longer read.
   Order (`config::asset_dir`, found once): an `assets` folder beside the exe with `shaders` in it, then the source tree but
@@ -98,19 +98,21 @@ one pack in the assets folder since 2026-11-12 (see the rules below).
 - Garry's Mod's files (the user, 2026-11-12, replacing 2026-11-11's "read from the install": "i want the garrys mod files in
   the game itself, not being loaded from the outside, only space engine should be loaded"): the files the sandbox uses (every
   prop of the stock spawn lists with its textures and collision, the weapons' models, the sound scripts and the waves it plays,
-  the spawn lists, the backgrounds re-encoded to 1920x1200) are one pack, `crates/se_engine/assets/gmod.pak` (518 MB,
-  deflated per file), beside the exe in a player's copy (`assets/gmod.pak`) and read a file at a time from disk
-  (`GmodInstall::open_pack_file`: the table at start, each file's bytes when asked for; never unpacked). Garry's Mod's install is never read while the
+  the spawn lists, the backgrounds re-encoded to 1920x1200) are packs in `crates/se_engine/assets/gmod/` (518 MB in all,
+  deflated per file, split by kind into files of at most 90 MB, the user's 2026-11-12: GitHub refuses files over 100 MB:
+  `scripts.pak`, `models-N.pak`, `materials-N.pak`, `sound.pak`, `backgrounds.pak`), beside the exe in a player's copy
+  (`assets/gmod/`), read as one pack a file at a time from disk (`GmodInstall::open_pack_files`: the tables at start, each
+  file's bytes when asked for; never unpacked). Never commit a file over 100 MB: a push with one in its history fails. Garry's Mod's install is never read while the
   game runs, and still never changed. The pack is made from the install by
   `cargo test -p se_engine --release copy_garrys_mod -- --ignored --nocapture` (`sandbox/assets.rs`), which reads everything
   back from the new pack and fails if it misses anything: run it after any change to what the sandbox reads (a new weapon,
-  sound name or prop list). Without the pack (no `gmod.pak` in the assets folder, or `SE_GMOD=0`) the sandbox must still work
+  sound name or prop list). Without the pack (no packs in the assets folder's `gmod`, or `SE_GMOD=0`) the sandbox must still work
   (plain props, plain sounds: `sandbox/assets.rs`).
 - Mods' files sit outside the exe (the user, 2026-11-12: "that is how mods will be created now, files will sit outside
   exe"): every mod is a folder of its own files under `assets/mods/NAME` (its `mod.cfg` and what it `Need`s), shipped in the
   `assets` folder beside the exe and read from there at run time. Nothing of a mod is ever built into the exe (no
   `include_bytes!`, no build script embedding); its code goes in the exe only as the game's support for it (`KNOWN_CODES`).
-  A big mod's files may be one pack of their own in its folder, read from disk as `gmod.pak` is.
+  A big mod's files may be one pack of their own in its folder, read from disk as `assets/gmod`'s are.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives

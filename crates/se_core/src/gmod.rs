@@ -249,6 +249,8 @@ const PACK_MAGIC: &[u8; 8] = b"SEGMPAK1";
 struct PackEntry {
     /// The path as written (spawn lists keep their names' case).
     name: String,
+    /// Which of the pack's files holds it.
+    part: usize,
     offset: usize,
     packed: usize,
     raw: usize,
@@ -261,12 +263,18 @@ enum PackData {
     File(File),
 }
 
-/// A pack ([`write_pack`]): `SEGMPAK1`, the count (u32), per file its path (u16 length, UTF-8), offset from the data's
-/// start (u64), packed and raw lengths (u32 each) and method (u8: 0 stored, 1 raw deflate), then the data. Little-endian.
-struct Pack {
+/// One pack file ([`write_pack`]): `SEGMPAK1`, the count (u32), per file its path (u16 length, UTF-8), offset from the
+/// data's start (u64), packed and raw lengths (u32 each) and method (u8: 0 stored, 1 raw deflate), then the data.
+/// Little-endian.
+struct PackPart {
     data: PackData,
     data_start: u64,
-    /// By lowercase path.
+}
+
+/// One or more pack files read as one (GitHub takes no file over 100 MB, so the port's is in pieces).
+struct Pack {
+    parts: Vec<PackPart>,
+    /// By lowercase path; the first part holding a path wins.
     entries: HashMap<String, PackEntry>,
 }
 
@@ -293,7 +301,7 @@ impl Pack {
             let name = String::from_utf8(name).map_err(|_| GmodError::Bad("pack path not UTF-8".into()))?;
             let offset = u32_at(&fixed, 0)? as usize | ((u32_at(&fixed, 4)? as usize) << 32);
             let (packed, raw) = (u32_at(&fixed, 8)? as usize, u32_at(&fixed, 12)? as usize);
-            entries.insert(norm_path(&name), PackEntry { name, offset, packed, raw, deflated: fixed[16] == 1 });
+            entries.insert(norm_path(&name), PackEntry { name, part: 0, offset, packed, raw, deflated: fixed[16] == 1 });
         }
         if entries.values().any(|e| pos + (e.offset + e.packed) as u64 > len) {
             return bad("pack data cut short");
@@ -302,13 +310,24 @@ impl Pack {
             Some(f) => PackData::File(f),
             None => PackData::Memory(Vec::new()),
         };
-        Ok(Pack { data, data_start: pos, entries })
+        Ok(Pack { parts: vec![PackPart { data, data_start: pos }], entries })
+    }
+
+    /// Adds another pack's files after this one's (a path both hold stays this one's).
+    fn merge(&mut self, other: Pack) {
+        let base = self.parts.len();
+        self.parts.extend(other.parts);
+        for (k, mut e) in other.entries {
+            e.part += base;
+            self.entries.entry(k).or_insert(e);
+        }
     }
 
     fn read(&self, key: &str) -> Option<Vec<u8>> {
         let e = self.entries.get(key)?;
-        let at = self.data_start + e.offset as u64;
-        let src: std::borrow::Cow<[u8]> = match &self.data {
+        let part = self.parts.get(e.part)?;
+        let at = part.data_start + e.offset as u64;
+        let src: std::borrow::Cow<[u8]> = match &part.data {
             PackData::Memory(b) => b.get(at as usize..at as usize + e.packed)?.into(),
             PackData::File(f) => {
                 let mut buf = vec![0u8; e.packed];
@@ -356,18 +375,51 @@ fn read_at(f: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()>
 /// A pack of `files` (path inside the game, bytes) for [`GmodInstall::open_pack_file`]: each deflated, or stored when that
 /// doesn't make it smaller.
 pub fn write_pack(files: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let packed: Vec<(Vec<u8>, bool)> = files
+    let packed = squeeze(files);
+    assemble(files.iter().zip(packed.iter()))
+}
+
+/// `files` as packs of at most `limit` bytes each, in their order (a file bigger than `limit` gets a pack of its own): what
+/// [`GmodInstall::open_pack_files`] reads as one.
+pub fn write_packs(files: &[(String, Vec<u8>)], limit: usize) -> Vec<Vec<u8>> {
+    let packed = squeeze(files);
+    let mut out = Vec::new();
+    let mut part: Vec<(&(String, Vec<u8>), &(Vec<u8>, bool))> = Vec::new();
+    let mut size = 12usize;
+    for item in files.iter().zip(packed.iter()) {
+        let cost = 2 + item.0.0.len() + 17 + item.1.0.len();
+        if !part.is_empty() && size + cost > limit {
+            out.push(assemble(part.drain(..)));
+            size = 12;
+        }
+        size += cost;
+        part.push(item);
+    }
+    if !part.is_empty() || out.is_empty() {
+        out.push(assemble(part.into_iter()));
+    }
+    out
+}
+
+/// Each file deflated, or kept as it is when that isn't smaller (true: deflated).
+fn squeeze(files: &[(String, Vec<u8>)]) -> Vec<(Vec<u8>, bool)> {
+    files
         .iter()
         .map(|(_, b)| {
             let d = miniz_oxide::deflate::compress_to_vec(b, 6);
             if d.len() < b.len() { (d, true) } else { (b.clone(), false) }
         })
-        .collect();
+        .collect()
+}
+
+/// One pack of files already squeezed.
+fn assemble<'a>(items: impl Iterator<Item = (&'a (String, Vec<u8>), &'a (Vec<u8>, bool))>) -> Vec<u8> {
+    let items: Vec<_> = items.collect();
     let mut out = Vec::new();
     out.extend_from_slice(PACK_MAGIC);
-    out.extend_from_slice(&(files.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(items.len() as u32).to_le_bytes());
     let mut offset = 0u64;
-    for ((name, raw), (data, deflated)) in files.iter().zip(&packed) {
+    for ((name, raw), (data, deflated)) in &items {
         out.extend_from_slice(&(name.len() as u16).to_le_bytes());
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(&offset.to_le_bytes());
@@ -376,7 +428,7 @@ pub fn write_pack(files: &[(String, Vec<u8>)]) -> Vec<u8> {
         out.push(*deflated as u8);
         offset += data.len() as u64;
     }
-    for (data, _) in &packed {
+    for (_, (data, _)) in &items {
         out.extend_from_slice(data);
     }
     out
@@ -420,17 +472,35 @@ impl GmodInstall {
     /// under `settings/spawnlist_default/`, the menu's pictures under `backgrounds/`.
     pub fn open_pack(bytes: Vec<u8>) -> Result<Self, GmodError> {
         let len = bytes.len() as u64;
-        let pack = Pack::open(std::io::Cursor::new(&bytes[..]), len, None)?;
-        Ok(GmodInstall { root: PathBuf::new(), vpks: Vec::new(), pack: Some(Pack { data: PackData::Memory(bytes), ..pack }), seen: None })
+        let mut pack = Pack::open(std::io::Cursor::new(&bytes[..]), len, None)?;
+        pack.parts[0].data = PackData::Memory(bytes);
+        Ok(GmodInstall { root: PathBuf::new(), vpks: Vec::new(), pack: Some(pack), seen: None })
     }
 
     /// A pack file on disk: its table is read now, each file's bytes when asked for.
     pub fn open_pack_file(path: &Path) -> Result<Self, GmodError> {
-        let f = File::open(path).map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?;
-        let len = f.metadata().map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?.len();
-        let table = std::io::BufReader::with_capacity(1 << 20, f.try_clone().map_err(|e| GmodError::Bad(e.to_string()))?);
-        let pack = Pack::open(table, len, Some(f))?;
-        Ok(GmodInstall { root: path.to_path_buf(), vpks: Vec::new(), pack: Some(pack), seen: None })
+        Self::open_pack_files(&[path.to_path_buf()])
+    }
+
+    /// Several pack files on disk read as one (the first holding a path wins); `root` is the first one's folder.
+    pub fn open_pack_files(paths: &[PathBuf]) -> Result<Self, GmodError> {
+        let mut all: Option<Pack> = None;
+        for path in paths {
+            let f = File::open(path).map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?;
+            let len = f.metadata().map_err(|e| GmodError::NotFound(format!("{}: {e}", path.display())))?.len();
+            let table = std::io::BufReader::with_capacity(1 << 20, f.try_clone().map_err(|e| GmodError::Bad(e.to_string()))?);
+            let pack = Pack::open(table, len, Some(f)).map_err(|e| match e {
+                GmodError::Bad(s) => GmodError::Bad(format!("{}: {s}", path.display())),
+                other => other,
+            })?;
+            match &mut all {
+                Some(a) => a.merge(pack),
+                None => all = Some(pack),
+            }
+        }
+        let pack = all.ok_or_else(|| GmodError::NotFound("no pack files".into()))?;
+        let root = paths[0].parent().map(Path::to_path_buf).unwrap_or_default();
+        Ok(GmodInstall { root, vpks: Vec::new(), pack: Some(pack), seen: None })
     }
 
     /// Note every path read or found from now on ([`GmodInstall::seen`]).
@@ -2175,7 +2245,30 @@ mod tests {
             assert_eq!(lists[0].models, ["models/a.mdl"]);
         }
         assert!(GmodInstall::open_pack(bytes[..bytes.len() - 1].to_vec()).is_err(), "a pack cut short");
+        // Several parts read as one: each part's files, and the first part wins a path both hold.
+        let second = std::env::temp_dir().join(format!("se_pack_test_{}_b.pak", std::process::id()));
+        std::fs::write(&second, write_pack(&[("models/a.mdl".to_string(), vec![9]), ("models/z.mdl".to_string(), vec![7, 7])])).unwrap();
+        let both = GmodInstall::open_pack_files(&[path.clone(), second.clone()]).unwrap();
+        assert_eq!(both.read("models/a.mdl").as_deref(), Some(&big[..]));
+        assert_eq!(both.read("models/z.mdl").as_deref(), Some(&[7u8, 7][..]));
+        assert_eq!(both.list("models/", ".mdl"), ["models/a.mdl", "models/z.mdl"]);
+        assert_eq!(both.spawnlists().len(), 1);
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&second);
+        // Split by size: every part within the limit (but a file bigger than it, alone), all files kept in order.
+        let parts = write_packs(&files, 200);
+        assert!(parts.len() >= 3, "{} parts", parts.len());
+        let mut names = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            let one = GmodInstall::open_pack(part.clone()).unwrap();
+            let mut here = one.list("", "");
+            assert!(part.len() <= 200 || here.len() == 1, "part {i}: {} bytes, {} files", part.len(), here.len());
+            names.append(&mut here);
+        }
+        names.sort();
+        let mut want: Vec<String> = files.iter().map(|f| f.0.to_ascii_lowercase()).collect();
+        want.sort();
+        assert_eq!(names, want);
     }
 
     fn install() -> Option<&'static GmodInstall> {

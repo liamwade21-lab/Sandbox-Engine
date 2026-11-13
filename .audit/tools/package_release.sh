@@ -17,7 +17,7 @@ rm -f "$ZIP"
 python -I - "$ZIP" "$EXE" "$ROOT/crates/se_engine/assets" <<'PY'
 import os, sys, zipfile
 zip_path, exe, assets = sys.argv[1:4]
-parts = ["shaders", "textures", "models", "mr", "mods", "gmod.pak"]
+parts = ["shaders", "textures", "models", "mr", "mods", "gmod"]
 stored = {".pak", ".ogg", ".jpg", ".png"}
 def add(z, full):
     rel = os.path.relpath(full, assets).replace(os.sep, "/")

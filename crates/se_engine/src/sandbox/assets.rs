@@ -1,6 +1,7 @@
 //! What the sandbox reads of Garry's Mod's files (`se_core::gmod`): prop models with their textures and collision pieces, the
 //! stock spawn lists, and sounds. Since 2026-11-12 (the user's: only SpaceEngine is read from outside the game's own folder)
-//! they come from one pack, `assets/gmod.pak` (beside the exe in a player's copy), made from the install by the ignored test
+//! they come from the pack files in `assets/gmod/` (beside the exe in a player's copy; in pieces of at most 90 MB, as GitHub
+//! takes no file over 100 MB), read as one pack, made from the install by the ignored test
 //! `copy_garrys_mod`; Garry's Mod's install is never read while the game runs. Without the pack (or with `SE_GMOD=0`) the
 //! sandbox still works: a handful of plain props made here, and plain synthesised sounds (`placeholder_*`).
 
@@ -92,13 +93,27 @@ pub struct GmodAssets {
     pub views: Vec<Option<super::viewmodel::ViewData>>,
 }
 
-/// The pack of the Garry's Mod files the port uses (`assets/gmod.pak`); `None` when there is none.
+/// The pack of the Garry's Mod files the port uses (every `.pak` in `assets/gmod/`, read as one); `None` when there is none.
 pub fn open_pack() -> Option<Result<GmodInstall, se_core::gmod::GmodError>> {
-    crate::config::asset_file(std::path::Path::new(PACK_FILE)).map(|p| GmodInstall::open_pack_file(&p))
+    let paths = crate::config::asset_roots().into_iter().map(|r| pack_files(&r.join(PACK_DIR))).find(|p| !p.is_empty())?;
+    Some(GmodInstall::open_pack_files(&paths))
 }
 
-/// The pack's name in the assets folder.
-const PACK_FILE: &str = "gmod.pak";
+/// The pack's folder in the assets folder.
+const PACK_DIR: &str = "gmod";
+
+/// The largest pack file the copy tool writes (GitHub refuses files over 100 MB).
+#[cfg(test)]
+const PACK_PART_MAX: usize = 90_000_000;
+
+/// The `.pak` files in `dir`, sorted by name.
+fn pack_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<std::path::PathBuf> =
+        rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x.eq_ignore_ascii_case("pak"))).collect();
+    out.sort();
+    out
+}
 
 /// The Garry's Mod install, which only the copy tool reads: `GMOD_PATH`, else where Steam has it installed.
 #[cfg(test)]
@@ -128,13 +143,13 @@ pub fn open_install() -> Opened {
         return none("SE_GMOD=0: plain props and plain sounds".to_string());
     }
     let Some(opened) = open_pack() else {
-        return none(format!("no {PACK_FILE} in the assets folder: plain props and plain sounds"));
+        return none(format!("no pack files in the assets folder's {PACK_DIR} folder: plain props and plain sounds"));
     };
     match opened {
         Ok(install) => {
             let lists = prop_lists(&install, install.spawnlists());
             let n: usize = lists.iter().map(|l| l.models.len()).sum();
-            let mut lines = vec![format!("Garry's Mod's files: {} ({} spawn lists, {n} props)", install.root().display(), lists.len())];
+            let mut lines = vec![format!("Garry's Mod's files: the packs in {} ({} spawn lists, {n} props)", install.root().display(), lists.len())];
             let scripts = super::soundscript::SoundScripts::load(&install);
             let (sounds, surfaces) = scripts.counts();
             lines.push(format!("its sound scripts: {sounds} named sounds, {surfaces} surfaces"));
@@ -553,8 +568,9 @@ mod tests {
         Replay { lists: lists.len(), props: models.len(), unreadable, scripts: scripts.counts(), waves: waves.len(), missing_waves }
     }
 
-    /// Packs the Garry's Mod files the sandbox uses, read from the install, into `assets/gmod.pak`, which goes beside the exe
-    /// in a player's copy (the user's 2026-11-12: nothing is read from Garry's Mod's install while the game runs).
+    /// Packs the Garry's Mod files the sandbox uses, read from the install, into `assets/gmod/` (beside the exe in a player's
+    /// copy; the user's 2026-11-12: nothing is read from Garry's Mod's install while the game runs), by kind (`scripts`,
+    /// `models-N`, `materials-N`, `sound`, `backgrounds`), each file at most `PACK_PART_MAX`.
     /// Then reads everything back from the new pack and fails if it misses anything the install had. Run it after a change to
     /// what the sandbox reads (a new prop list, weapon or sound):
     /// `cargo test -p se_engine --release copy_garrys_mod -- --ignored --nocapture`.
@@ -578,10 +594,35 @@ mod tests {
             files.push((format!("backgrounds/{stem}.jpg"), bytes));
         }
         let raw: usize = files.iter().map(|f| f.1.len()).sum();
-        let pack = se_core::gmod::write_pack(&files);
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(PACK_FILE);
-        std::fs::write(&out, &pack).unwrap();
-        println!("{} files, {:.1} MB, packed to {:.1} MB in {}", files.len(), raw as f64 / 1e6, pack.len() as f64 / 1e6, out.display());
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(PACK_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        for old in pack_files(&dir) {
+            std::fs::remove_file(old).unwrap();
+        }
+        fn kind(path: &str) -> &'static str {
+            match path.split('/').next().unwrap_or("") {
+                "models" => "models",
+                "materials" => "materials",
+                "sound" => "sound",
+                "backgrounds" => "backgrounds",
+                _ => "scripts",
+            }
+        }
+        let mut written = Vec::new();
+        for k in ["scripts", "models", "materials", "sound", "backgrounds"] {
+            let group: Vec<(String, Vec<u8>)> = files.iter().filter(|f| kind(&f.0) == k).cloned().collect();
+            let parts = se_core::gmod::write_packs(&group, PACK_PART_MAX);
+            for (i, part) in parts.iter().enumerate() {
+                let name = if parts.len() == 1 { format!("{k}.pak") } else { format!("{k}-{}.pak", i + 1) };
+                assert!(part.len() < 100_000_000, "{name} is {} bytes", part.len());
+                std::fs::write(dir.join(&name), part).unwrap();
+                println!("  {name}: {:.1} MB", part.len() as f64 / 1e6);
+                written.push(dir.join(name));
+            }
+        }
+        let packed: u64 = written.iter().map(|p| std::fs::metadata(p).unwrap().len()).sum();
+        println!("{} files, {:.1} MB, packed to {:.1} MB in {} pack files in {}", files.len(), raw as f64 / 1e6, packed as f64 / 1e6, written.len(), dir.display());
         println!(
             "the install: {} lists, {} props ({} unreadable), {:?} sounds and surfaces, {} waves, missing: {:?}",
             from_install.lists,
@@ -591,8 +632,8 @@ mod tests {
             from_install.waves,
             from_install.missing_waves
         );
-        // Everything again from the pack alone: the same, file for file.
-        let packed = GmodInstall::open_pack(pack).unwrap();
+        // Everything again from the packs alone: the same, file for file.
+        let packed = GmodInstall::open_pack_files(&pack_files(&dir)).unwrap();
         let from_pack = replay(&packed);
         assert_eq!((from_pack.lists, from_pack.props, from_pack.scripts, from_pack.waves), (from_install.lists, from_install.props, from_install.scripts, from_install.waves));
         assert_eq!(from_pack.unreadable, from_install.unreadable, "the pack misses files the install has");
