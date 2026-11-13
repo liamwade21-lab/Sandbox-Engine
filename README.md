@@ -333,32 +333,38 @@ He plays on the real clock: the same at x1000 and when paused, and while hoverin
 ### Skate 3 physics
 
 The second mod (since 2026-11-13) plays **Skate 3's default skater on his board**, on whatever ground you stand on: turn it on
-from the Mods button or the Q menu's mods (in free flight it puts you on the ground at the camera first). He appears on his board
-where you stood, seen from behind by a chase camera that follows the way he rolls. It is built on the Skate 3 Rust Engine
-(SK8-ENGINE/skate-3-rust-engine, GPL-3.0, which is why Sandbox Engine is GPL-3.0 since then): its engine-free calculations for the
-push, the brake, the steering and the jump, run with Skate 3's own tuning values, and Skate 3's own clips for him (riding,
-pushing, carving, braking, powersliding, the crouch and the pop, flip tricks and their catches, landings, bails and getting up).
-The board keeps to the ground, the buildings and trees are solid (hit one fast and he bails), props get knocked about, and the
-gravity is the planet's own. Skate 3's sounds play with it (the wheels rolling, the pop, landings, pushes, bails, slides).
+from the Mods button or the Q menu's mods (in free flight it puts you on the ground at the camera first). It runs the Skate 3
+Rust Engine's own simulation (SK8-ENGINE/skate-3-rust-engine, GPL-3.0, which is why Sandbox Engine is GPL-3.0 since then),
+copied into the game unchanged: Skate 3's controller code, its gesture recognisers (the right stick's flicks), its action and
+motion graphs, the board's and the skeleton's physics, the tricks, manuals, bails, walking off the board, Skate 3's own camera
+and its scoring, all from Skate 3's own data, ticking at its own 60 Hz. A test proves it ticks bit for bit as the Rust port
+does. The ground and the buildings and trees round him are its world; it plays on Easy, the Rust port's default. Skate 3's
+sounds play with it (the wheels rolling, the pop, landings, pushes, bails, slides, the foot brake).
 
-A gamepad works the way Skate 3 does; the keyboard and mouse work too (the last one used counts).
+The score shows as the Rust port gives it: the trick being done with its points and multiplier near the bottom, the line's
+score and its timer at the top right, a landed trick's name ("Clean" or "Sketchy") or a bail in the middle.
 
-| Gamepad | Keyboard and mouse | What he does |
+A gamepad works the way Skate 3 does (it is read as an Xbox 360 controller, as the Rust port reads one); the keyboard and
+mouse make a controller's state.
+
+| Gamepad | Keyboard and mouse | What it does in Skate 3 |
 |---|---|---|
-| Left stick | A, D | Steer (a tighter turn slow, wider fast; on the spot below a walk he kickturns). In the air: spin |
-| A | W | Push (held: keeps pushing, up to Skate 3's pushing speed of 8.5 m/s) |
-| B | S | Foot brake |
-| B with the left stick to a side | Shift with A or D | Powerslide: the board across the path, scrubbing speed |
-| Right stick down, then flick up | Mouse back, then forward (or hold Space and let go) | Crouch, then pop an ollie: the longer the crouch, the higher (up to about 0.8 m) |
-| Down, then up-left / up-right | Mouse back, then forward-left / forward-right, or 1 / 2 | Kickflip / heelflip |
-| Down, then to a side | Mouse back, then left / right, or 3 / 4 | Pop shove-it / frontside shove-it |
-| Down, round through a side, then up | Mouse back, round, then forward, or 5 / 6 | 360 flip (round the left) / laser flip (round the right) |
-| Y | F | Off the board: on foot again (the mod turns off) |
+| Left stick | A, D (steer); the arrows (left, right, and up/down to lean for manuals) | Steer, lean, spin in the air |
+| A | W | Push |
+| B | S or Shift | Brake (with the left stick to a side: powerslide) |
+| X | R | X |
+| Y | F | Off the board and back on (he walks, as in Skate 3) |
+| LB, RB | Z, C | The bumpers |
+| LT, RT | Left and right mouse buttons | The triggers (grabs) |
+| Back | Tab | Back |
+| Right stick: down, then a flick | The mouse (pull back, then flick), or hold Space and let go for an ollie | The tricks: Skate 3's recognisers read the flick |
 
-A trick has to be caught before the wheels touch down, or he bails; so does landing with the board across the path, landing
-very hard, or running into a wall or a tree at speed. After a bail he gets up on his board where he stopped. The trick's name
-shows when it's landed. Riding backwards (fakie) works. V (free flight) turns the mod off. The mod's files are in
-`assets/mods/skate3`, made from your own copy of Skate 3 by the ignored test `copy_skate3` (CLAUDE.md says how).
+Keys for whole flicks (each plays the stick's path that Skate 3 reads as the trick, in his stance): 1 kickflip, 2 heelflip,
+3 frontside pop shove-it, 4 pop shove-it, 5 varial kickflip, 6 varial heelflip, 7 hardflip, 8 inward heelflip.
+
+V (free flight) turns the mod off. The mod's files are in `assets/mods/skate3` (36 MB: the skater, Skate 3's retail files the
+simulation reads, the sounds), made from your own copy of Skate 3 by the ignored test `copy_skate3` (CLAUDE.md says how).
+Not there: grinds (the planet has no rails), the props don't feel the board (the ground, buildings and trees do).
 
 ## Architecture
 

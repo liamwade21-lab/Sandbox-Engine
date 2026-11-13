@@ -2,23 +2,42 @@
 //! engine): `cargo test -p se_engine --release copy_skate3 -- --ignored --nocapture`.
 //!
 //! Reads `SKATE3_ASSETS` (default: the engine's install in Downloads) and writes `assets/mods/skate3`: the default skater and
-//! his board (`skater.glb`'s mesh, skin and base textures), the clips the mod plays (decoded from `OnBoard.abin` by the
-//! engine's own decoder, each frame added onto the rig's T-pose as its `AddBindPose` does), Skate 3's tuning values from its
-//! collections, and `mod.cfg` with a `Need` line for every file. Run it again after changing `clips::CLIPS` or the tuning list.
+//! his board as the sandbox draws them (`skater.glb`'s mesh, skin and base textures), the retail files the simulation reads
+//! (`RETAIL`, copied as they are under `private/`), and `mod.cfg` with a `Need` line for every file (the sounds in `sfx/`,
+//! written by `re/skate3/tools/make_sounds.py`, too).
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bevy::math::{Mat4, Vec4};
-use se_core::skate3::{self, Bone, Clip, Clips, Draw, Joint, Model, Tuning, Vertex};
+use se_core::skate3::{self, Bone, Draw, Joint, Model, Vertex};
 use serde_json::Value;
-use skate_core::animation::{
-    output::{self, Sqt},
-    pose_add,
-};
-use skate_data::{animation_banks::AnimationBanks, animation_frames::AnimationFrames, collections::Collections};
+use skate_core::animation::output::{self, Sqt};
+use skate_data::{animation_banks::AnimationBanks, animation_frames::AnimationFrames};
 
-use super::clips::CLIPS;
+/// The retail files the simulation reads (`crates/skate-sim/UPSTREAM.md` says how they were found), under the folder that
+/// holds `private/`. `skater.glb` is also what the sandbox's model is made from (the simulation only checks it is there).
+const RETAIL: &[&str] = &[
+    "private/game.json",
+    "private/skater.glb",
+    "private/stock/skater-collections.json",
+    "private/stock/physics-skeletons.json",
+    "private/stock/data/anim/OnBoard.abin",
+    "private/stock/data/anim/OffBoard.abin",
+    "private/stock/data/state/ActionGraph_OnBoard.stategraph",
+    "private/stock/data/state/MotionGraph_OnBoard.stategraph",
+    "private/stock/data/script/camera/Default_cameragraph.stategraph",
+    "private/stock/data/camera/1.shk",
+    "private/stock/data/camera/2.shk",
+    "private/stock/data/joystick/skater.pat",
+    "private/stock/data/joystick/skater90.pat",
+    "private/stock/data/joystick/skaterN90.pat",
+    "private/stock/data/joystick/skater_air.pat",
+    "private/stock/data/joystick/skater_fingerflip.pat",
+    "private/stock/data/joystick/skaterls.pat",
+    "private/stock/data/joystick/skaterstep.pat",
+    // Only its language table: the tricks' names on screen.
+    "private/hud/runtime/trickdisplay.json",
+];
 
 const DEFAULT_ROOT: &str = r"C:\Users\liamw\Downloads\skate3rust-windows-x64\data\installations\f9d8d56e25a04741aadcd4e2e7e93ef1\assets";
 
@@ -41,10 +60,6 @@ fn sqt(s: [f32; 10]) -> Sqt {
 
 fn words(w: [u32; 10]) -> [f32; 10] {
     w.map(f32::from_bits)
-}
-
-fn flat(s: Sqt) -> [f32; 10] {
-    [s.scale[0], s.scale[1], s.scale[2], s.rotation[0], s.rotation[1], s.rotation[2], s.rotation[3], s.translation[0], s.translation[1], s.translation[2]]
 }
 
 /// A pose's model matrices (column-major), composed as the engine's `PoseEvaluator::hierarchy` does (`TRAJECTORY` detached).
@@ -210,54 +225,6 @@ fn convert_model(root: &Path, frames: &AnimationFrames, out: &Path) -> (Model, V
     (model, files)
 }
 
-/// The clips the mod plays, each frame added onto the T-pose, the trajectory left out.
-fn convert_clips(frames: &AnimationFrames) -> Clips {
-    let tpose: Vec<[f32; 10]> = frames.named_pose("RIG_TPOSE").expect("RIG_TPOSE").samples.iter().map(|w| words(*w)).collect();
-    let bones = frames.bone_names.len();
-    let identity = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-    let clips = CLIPS
-        .iter()
-        .map(|&(name, looping)| {
-            let c = frames.clip(name).unwrap_or_else(|e| panic!("{name}: {e}"));
-            let fps = f32::from_bits(c.fps_bits);
-            let mut samples = Vec::with_capacity(c.frames.len() * bones);
-            for f in &c.frames {
-                assert_eq!(f.len(), bones);
-                for (b, w) in f.iter().enumerate() {
-                    samples.push(if b == 0 { identity } else { flat(pose_add::add(sqt(words(*w)), sqt(tpose[b]), true)) });
-                }
-            }
-            Clip { name: name.to_string(), fps, looping, frames: c.frames.len() as u32, samples }
-        })
-        .collect();
-    Clips { bones: bones as u16, clips }
-}
-
-/// Skate 3's tuning values the mod uses, by collection, key and field (`skate/physics.rs` reads them by the same names).
-fn convert_tuning(root: &Path) -> Tuning {
-    let data = Collections::load(root).expect("skater collections");
-    let mut t = Tuning::default();
-    for (class, key, field) in super::physics::VALUES {
-        let v = data.float(class, key, field).unwrap_or_else(|e| panic!("{e}"));
-        t.values.insert(format!("{class}/{key}/{field}"), v);
-    }
-    let gravity = data.words::<4>("physics", "default", "WorldGravity").expect("gravity").map(f32::from_bits);
-    t.values.insert("physics/default/WorldGravityY".into(), gravity[1]);
-    // Curves: eight points (as 16 or 20 words: `curve8`) or sixteen (32 words).
-    for (class, key, field) in super::physics::CURVES {
-        let len = data.field(class, key, field).unwrap_or_else(|e| panic!("{e}")).data.chars().filter(|c| !c.is_whitespace()).count() / 8;
-        let w: Vec<f32> = match len {
-            16 => data.words::<16>(class, key, field).unwrap().map(f32::from_bits).to_vec(),
-            20 => data.words::<20>(class, key, field).unwrap().map(f32::from_bits)[4..].to_vec(),
-            32 => data.words::<32>(class, key, field).unwrap().map(f32::from_bits).to_vec(),
-            n => panic!("{class}/{key}/{field}: {n} words"),
-        };
-        let n = w.len() / 2;
-        t.curves.insert(format!("{class}/{key}/{field}"), (w[..n].to_vec(), w[n..].to_vec()));
-    }
-    t
-}
-
 #[test]
 #[ignore]
 fn copy_skate3() {
@@ -266,8 +233,6 @@ fn copy_skate3() {
     let banks = AnimationBanks::load(&root).expect("Skate 3's animation banks");
     let frames = AnimationFrames::from_banks(&banks).unwrap();
     let (model, mut files) = convert_model(&root, &frames, &out);
-    let clips = convert_clips(&frames);
-    skate3::check_pair(&model, &clips).unwrap();
 
     // The skin is right if the rig's T-pose puts every vertex back where the GLB has it.
     let tpose: Vec<[f32; 10]> = frames.named_pose("RIG_TPOSE").unwrap().samples.iter().map(|w| words(*w)).collect();
@@ -284,11 +249,21 @@ fn copy_skate3() {
     println!("the T-pose puts the vertices within {:.4} m of the bind pose", worst);
     assert!(worst < 0.02, "the skin doesn't fit the skeleton: {worst} m");
 
-    let tuning = convert_tuning(&root);
     std::fs::write(out.join("skater.s3m"), skate3::write_model(&model)).unwrap();
-    std::fs::write(out.join("clips.s3c"), skate3::write_clips(&clips)).unwrap();
-    std::fs::write(out.join("tuning.cfg"), tuning.write()).unwrap();
-    files.extend(["skater.s3m".to_string(), "clips.s3c".to_string(), "tuning.cfg".to_string()]);
+    files.push("skater.s3m".to_string());
+    // The simulation's files, as they are.
+    for rel in RETAIL {
+        let to = out.join(rel);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::copy(root.join(rel), &to).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        files.push(rel.to_string());
+    }
+    // The simulation must start from the copy alone.
+    let sim = skate_sim::Sim::load(&out, "easy").expect("the simulation from the mod's files");
+    // Its pose is drawn with this model's joints: the same bones in the same order.
+    let names: Vec<&str> = model.bones.iter().map(|b| b.name.as_str()).collect();
+    let theirs: Vec<&str> = sim.skeleton().bone_names.iter().map(String::as_str).collect();
+    assert_eq!(names, theirs, "the model's bones and the simulation's");
     // The sounds (`sfx/`) are written by `copy_skate3_sounds` and listed here when present.
     if let Ok(dir) = std::fs::read_dir(out.join("sfx")) {
         let mut s: Vec<String> = dir.filter_map(|e| e.ok()).map(|e| format!("sfx/{}", e.file_name().to_string_lossy())).filter(|n| n.ends_with(".ogg")).collect();
@@ -299,7 +274,7 @@ fn copy_skate3() {
     let mut cfg = String::from(
         "// The Mods menu reads this at start (mods.rs). Written by copy_skate3 (skate/convert.rs): every file the mod needs.\n\
          Name \"Skate 3 physics\"\n\
-         Description \"Play as Skate 3's skater: push, carve, ollie and flip tricks on any ground, with Skate 3's own clips and tuning.\"\n\
+         Description \"Play as Skate 3's skater: on any ground, with the Skate 3 Rust Engine's own physics, tricks, camera and scoring, and Skate 3's sounds.\"\n\
          Code \"skate3\"\n",
     );
     for f in &files {
@@ -307,18 +282,13 @@ fn copy_skate3() {
     }
     std::fs::write(out.join("mod.cfg"), cfg).unwrap();
     let size: u64 = files.iter().map(|f| std::fs::metadata(out.join(f)).map(|m| m.len()).unwrap_or(0)).sum();
-    let per: HashMap<&str, usize> = HashMap::new();
-    drop(per);
     println!(
-        "skate3: {} bones, {} joints, {} draws, {} vertices, {} triangles; {} clips; {} tuning values and {} curves; {} files, {:.1} MB",
+        "skate3: {} bones, {} joints, {} draws, {} vertices, {} triangles; {} files, {:.1} MB",
         model.bones.len(),
         model.joints.len(),
         model.draws.len(),
         model.vertices.len(),
         model.indices.len() / 3,
-        clips.clips.len(),
-        tuning.values.len(),
-        tuning.curves.len(),
         files.len(),
         size as f64 / 1e6
     );

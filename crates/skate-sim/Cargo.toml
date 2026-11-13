@@ -1,0 +1,16 @@
+[package]
+name = "skate-sim"
+description = "The Skate 3 Rust Engine's per-tick skater simulation, copied verbatim (UPSTREAM.md), with a small facade"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy = { workspace = true }
+skate-core.workspace = true
+skate-data.workspace = true
+skate-dynamics.workspace = true
+skate-net.workspace = true
+skate-mods.workspace = true
+serde_json.workspace = true
+serde.workspace = true

@@ -7,7 +7,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
-use bevy::math::{DQuat, Mat4, Quat, Vec3, Vec4};
+use bevy::math::{Mat3, Mat4, Vec4};
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology, VertexAttributeValues};
 use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
@@ -15,7 +15,7 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::*;
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
-use se_core::skate3::{MAX_BONES, Model, Sample};
+use se_core::skate3::{MAX_BONES, Model};
 
 use crate::camera::FlyCamera;
 use crate::sandbox::light::PropLight;
@@ -92,7 +92,6 @@ pub struct SkaterDraw {
     parts: Vec<Entity>,
     palette: Handle<ShaderBuffer>,
     bytes: Vec<u8>,
-    model_m: Vec<Mat4>,
     pub shown: bool,
 }
 
@@ -189,28 +188,14 @@ fn spawn(
         );
     }
     info!("skate: the skater's {} meshes are made ({} vertices, {} joints)", parts.len(), m.vertices.len(), m.joints.len());
-    commands.insert_resource(SkaterDraw { parts, palette, bytes: vec![0u8; MAX_BONES * 64], model_m: vec![Mat4::IDENTITY; m.bones.len()], shown: false });
+    commands.insert_resource(SkaterDraw { parts, palette, bytes: vec![0u8; MAX_BONES * 64], shown: false });
 }
 
-/// A pose's model matrices: the Skate 3 engine's hierarchy (bones under `TRAJECTORY`, bone 0, are in model space).
-pub fn model_matrices(pose: &[Sample], model: &Model, out: &mut [Mat4]) {
-    for (i, b) in model.bones.iter().enumerate() {
-        let s = pose[i];
-        let local = Mat4::from_scale_rotation_translation(Vec3::new(s[0], s[1], s[2]), Quat::from_xyzw(s[3], s[4], s[5], s[6]).normalize(), Vec3::new(s[7], s[8], s[9]));
-        out[i] = if i == 0 {
-            Mat4::IDENTITY
-        } else if b.parent <= 0 {
-            local
-        } else {
-            out[b.parent as usize] * local
-        };
-    }
-}
-
-/// This frame's pose into the palette, where the board is drawn; shown while he skates.
+/// This frame's pose into the palette: the simulation's bones (its animation space) under its root, turned from its native
+/// axes into the sandbox's and drawn camera-relative. Shown while he skates.
 #[allow(clippy::too_many_arguments)]
 fn place(
-    mut sb: ResMut<Sandbox>,
+    sb: Res<Sandbox>,
     assets: Option<Res<SkateAssets>>,
     draw: Option<ResMut<SkaterDraw>>,
     cam: Res<FlyCamera>,
@@ -219,35 +204,29 @@ fn place(
     mut parts: Query<&mut Visibility, With<SkaterPart>>,
 ) {
     let (Some(assets), Some(mut draw)) = (assets, draw) else { return };
-    let k = sb.tick_fraction();
-    let sb = &mut *sb;
-    let frame = sb.world.as_ref().map(|w| w.frame);
-    let show = match (sb.skate.as_mut(), frame) {
-        (Some(sk), Some(frame)) => match bodies.iter().find(|b| b.obj == frame.obj) {
-            Some(b) => {
-                let (pos, rot) = sk.drawn(k);
-                let origin = crate::sandbox::props::render_point(b, &frame, &cam, pos);
-                let to_world: DQuat = b.orient * frame.rotation();
-                let place = Mat4::from_rotation_translation(to_world.as_quat() * rot, origin);
-                let carve = Some((sk.board.tilt.signum() * (sk.board.tilt.abs() / 0.35).min(1.0), sk.ctl.carve_share()));
-                let pose = sk.ctl.anim.pose(carve);
+    let show = match (sb.skate.as_ref(), sb.world.as_ref()) {
+        (Some(sk), Some(world)) => match (bodies.iter().find(|b| b.obj == world.frame.obj), sk.pose()) {
+            (Some(b), Some(pose)) => {
+                let root = Mat4::from_cols_array_2d(&pose.root);
+                let pos = sk.to_frame(world, root.w_axis.truncate().to_array());
+                let origin = crate::sandbox::props::render_point(b, &world.frame, &cam, pos);
+                let to_world = Mat3::from_quat((b.orient * world.frame.rotation()).as_quat());
+                let place = Mat4::from_translation(origin) * Mat4::from_mat3(to_world * sk.native_to_frame(world) * Mat3::from_mat4(root));
                 let m = &assets.model;
-                let mut mm = std::mem::take(&mut draw.model_m);
-                model_matrices(pose, m, &mut mm);
                 for (j, joint) in m.joints.iter().enumerate().take(MAX_BONES) {
-                    let skin = place * mm[joint.bone as usize] * Mat4::from_cols_array(&joint.bind);
+                    let Some(bone) = pose.bones.get(joint.bone as usize) else { continue };
+                    let skin = place * Mat4::from_cols_array_2d(bone) * Mat4::from_cols_array(&joint.bind);
                     draw.bytes[j * 64..(j + 1) * 64].copy_from_slice(bytemuck::cast_slice(&skin.to_cols_array()));
                 }
-                draw.model_m = mm;
-                if let Some(mut b) = buffers.get_mut(&draw.palette) {
-                    if let Some(d) = b.cast_slice_mut::<u8>() {
+                if let Some(mut buf) = buffers.get_mut(&draw.palette) {
+                    if let Some(d) = buf.cast_slice_mut::<u8>() {
                         let n = d.len().min(draw.bytes.len());
                         d[..n].copy_from_slice(&draw.bytes[..n]);
                     }
                 }
                 true
             }
-            None => false,
+            _ => false,
         },
         _ => false,
     };

@@ -4089,6 +4089,34 @@ dependencies = [
 
 [[package]]
 name = "parry3d"
+version = "0.30.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01b00bf3ea4e0961a3f44aeb666b7dc3b0e87027b629561bd8283a7f6b2e2ed1"
+dependencies = [
+ "approx",
+ "arrayvec",
+ "bitflags 2.13.2",
+ "downcast-rs 2.0.2",
+ "either",
+ "ena",
+ "foldhash 0.2.0",
+ "glamx",
+ "hashbrown 0.17.1",
+ "log",
+ "num-derive 0.4.2",
+ "num-traits",
+ "ordered-float",
+ "rstar",
+ "simba",
+ "slab",
+ "smallvec",
+ "spade",
+ "static_assertions",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "parry3d"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b626edc0b497dba4bdf6e1e0797895294ed9f61dac2bd28cb5d34d37ad2ca7e"
@@ -4373,6 +4401,28 @@ checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
 
 [[package]]
 name = "rapier3d"
+version = "0.35.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b14829af0960a134e2c39605bd6617a5c70e9837ce1b7c3c738efedc6fd8610"
+dependencies = [
+ "approx",
+ "arrayvec",
+ "bitflags 2.13.2",
+ "glamx",
+ "log",
+ "nalgebra",
+ "num-traits",
+ "parry3d 0.30.2",
+ "profiling",
+ "serde",
+ "simba",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "wide",
+]
+
+[[package]]
+name = "rapier3d"
 version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "033e2edc815d61ab97bd74ed5d1cbea5ebe575218774a7cfedbd3551f0033317"
@@ -4384,7 +4434,7 @@ dependencies = [
  "log",
  "nalgebra",
  "num-traits",
- "parry3d",
+ "parry3d 0.31.1",
  "profiling",
  "serde",
  "simba",
@@ -4655,11 +4705,12 @@ dependencies = [
  "bevy_egui",
  "bytemuck",
  "image",
- "rapier3d",
+ "rapier3d 0.36.1",
  "se_core",
  "serde_json",
  "skate-core",
  "skate-data",
+ "skate-sim",
  "windows-sys 0.61.2",
 ]
 
@@ -4798,6 +4849,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "skate-dynamics"
+version = "0.1.0"
+dependencies = [
+ "rapier3d 0.35.3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "skate-mods"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "skate-net"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "half",
+ "serde",
+ "serde_json",
+ "skate-core",
+ "socket2",
+]
+
+[[package]]
+name = "skate-sim"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "serde",
+ "serde_json",
+ "skate-core",
+ "skate-data",
+ "skate-dynamics",
+ "skate-mods",
+ "skate-net",
+]
+
+[[package]]
 name = "skrifa"
 version = "0.44.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4898,6 +4992,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

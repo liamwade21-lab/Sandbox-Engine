@@ -2,32 +2,24 @@
 
 ## Current state (2026-11-13)
 
-- **A second mod: Skate 3 physics** (2026-11-13, the user's: "play as a skate 3 skater", with the default skater and board,
-  using the Skate 3 Rust Engine's code and files, then Skate 3's own sounds). Not committed to a release yet. What works,
-  checked in the game (scripted runs on the Canterbury Plains, `mods on skate3`): he appears on his board where the walker
-  stood, a chase camera behind him; pushing (4 m/s after 3 s, Skate 3's 0.6 m/s a stroke up to 8.5 m/s), carving (Skate 3's
-  steering tilt through the trucks' geometry, the carve poses blended in), the foot brake, the powerslide (board across the
-  path), the ollie (crouch then pop, the body up to 1.33-1.71 m by Skate 3's jump tables: a 0.77 m rise seen), kickflip,
-  360 flip and shove-it seen in the game (Skate 3's clips: the board flips under him; heelflip, frontside shove-it and laser
-  flip only by a test: every trick is caught from the weakest pop on flat ground), landings, a bail by landing with the board
-  across the path, getting back up and riding on, a ride of 70 m through several of the sandbox's frame moves (position,
-  height and speed continuous), `mods off` (the walker stands where the board was), turning it on from free flight (set down
-  and skating) and V (the mod goes off, free flight on); 41 of Skate 3's sounds (pops, landings, pushes, bail impacts, the
-  flip whoosh, the rolling grain in four speed bands, the powerslide and foot-brake loops; the log shows each one start).
-  The checker agent (2026-11-13) also saw: bails into a tree and a dumpster, getting up, a 30 kg barrel knocked aside, the
-  mod off mid-air, on from 200 m up in free flight, swapping with Viltrumite, real keys W, Space, 1, F, V, damaged files
-  greying the row. Fixed after its review: a prop dropped on him (he's lifted out; before, he stuck there gathering speed or
-  passed through), pushing off while creeping backwards, the trick's name on landing, the failed trick's record, the row
-  turning on with the sandbox off (`SE_SANDBOX=0` now refuses it). A bail from a trick not caught is covered by a unit test
-  (none happened on Earth's flat ground in a run).
-  The release script now puts LICENSE.txt and SOURCE.txt (where the source is) in the zip.
-  Controls: a gamepad in Skate 3's layout (right-stick flicks) or keyboard and mouse (README "Skate 3 physics").
-  **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the engine's code: `LICENSE`, `crates/skate-core`,
-  `crates/skate-data` copied unchanged). The mod's files are in `assets/mods/skate3` (6.1 MB, shipped: the user's choice).
-  Not done or not checked: a real gamepad and real mouse flicks (only the test pad was used: the flick recogniser has unit
-  tests), a city street run (New York's ground hadn't loaded in the test's time), the sounds' loudness against the sandbox's
-  (no test can listen: the log shows each one started), grinds, manuals and grabs (Skate 3 has them; this mod doesn't yet).
-  No shadow under him (the sandbox's props have none either).
+- **The Skate 3 mod now runs the Rust port's own simulation** (the user, 2026-11-13, after playing the first version: "the
+  physics need to be byte for byte ported"; the push looked like tapping, tricks were missing, no score). `crates/skate-sim`
+  is upstream `skate-game`'s per-tick simulation copied verbatim (2e16697; `UPSTREAM.md` lists every edit, all imports and
+  stand-ins). Proven: `oracle_trace`, one scripted 1000-tick run on flat ground, gives the same per-tick hash of every body's
+  rates as upstream itself built from `re/skate3/oracle` (identical files). The hand-made physics, clips and tuning are gone.
+  Checked in the game (Canterbury, `SE_SANDBOX_SPOT=7`): Skate 3's push strokes (8.6 m/s after 3 s), carving, crouch and
+  ollie, heelflip, kickflip, pop shove-its, late flips, landings "Clean", the multiplier (x1.5) and line score in the HUD,
+  Y walking off the board (BipedGround), Skate 3's own camera, a 35 s ride with turns while its collision was remade 32 times
+  (now at most every 0.3 s, at once when the ground moved; trees are in it since the review), the sounds started from its events. All nine flick keys give their trick in the simulation
+  (`every_flick_key_gives_its_trick`). Not checked: a real gamepad and real mouse flicks (only test input), a city's streets
+  and buildings at speed, the sounds' loudness. Not there: props don't feel the board (the ground, buildings and trees do),
+  grinds (no rails on a planet), the 360 flip has no key (no simple stick path found). The user's own exe is upstream 60efdef,
+  an older build (73 of the simulation's files differ from 2e16697, what was copied); they play Easy, which the mod uses.
+  Getting on the board costs a 0.3-0.4 s hitch (the simulation loads its files on the main thread).
+
+- **A second mod: Skate 3 physics** (2026-11-13, the user's: "play as a skate 3 skater", the default skater and board, Skate 3's
+  own sounds). **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the Rust port's code: `LICENSE`). Its files
+  are in `assets/mods/skate3` (36 MB, shipped: the user's choice), its controls in README "Skate 3 physics".
 
 - **Released 2026-11-12 as GitHub Release v1.1.0** (`Sandbox-Engine-1.1.0-windows.zip`, 621 MB: the exe and its `assets`
   folder; the latest release), and the Wadeball Mod Collection site lists it. Before the push GitHub's 100 MB limit meant

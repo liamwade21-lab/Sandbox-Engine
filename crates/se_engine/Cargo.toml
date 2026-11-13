@@ -58,8 +58,11 @@ bytemuck = { version = "1", features = ["derive"] }
 # Rigid bodies for the sandbox mode's props (sandbox/physics.rs): its own world in a local frame on the
 # planet, stepped by the port, no Bevy plugin.
 rapier3d = "0.36"
-# The Skate 3 physics mod (skate/): the Skate 3 Rust Engine's engine-free calculations (GPL-3.0, crates/skate-core).
+# The Skate 3 physics mod (skate/): the Skate 3 Rust Engine's skater simulation, copied unchanged (GPL-3.0,
+# crates/skate-sim, on crates/skate-core and skate-data), and serde_json for checking its retail JSON files.
 skate-core = { workspace = true }
+skate-sim = { path = "../skate-sim" }
+serde_json = { workspace = true }
 
 # The first-run ownership check's dialogs and registry reads (ownership.rs).
 [target.'cfg(windows)'.dependencies]
@@ -68,4 +71,3 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # The Skate 3 mod's converter (skate/convert.rs, an ignored test): the Skate 3 Rust Engine's readers of its converted data.
 [dev-dependencies]
 skate-data = { workspace = true }
-serde_json = { workspace = true }

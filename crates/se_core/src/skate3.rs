@@ -1,5 +1,5 @@
-//! The Skate 3 physics mod's files (`assets/mods/skate3`): the default skater with his board, Skate 3's clips for him, and
-//! the game's own tuning values. Written once from the Skate 3 Rust Engine's converted data by the ignored test
+//! The Skate 3 physics mod's model file (`assets/mods/skate3/skater.s3m`): the default skater with his board as the sandbox
+//! draws him (the simulation reads Skate 3's own files, `private/`). Written once from the Skate 3 Rust Engine's converted data by the ignored test
 //! `copy_skate3` (`se_engine/src/skate/convert.rs`), read when the mod is first turned on.
 //!
 //! Space is Skate 3's own: metres, Y up, the board's nose along +Z, the skater's origin on the deck's middle (`SKATEBOARD_ROOT`).
@@ -8,16 +8,8 @@
 //!   the skin's joints (each a bone and the matrix that takes a bind-pose vertex into that bone's frame, so a vertex's skin
 //!   matrix is the bone's model matrix times it), the draws (one per material, a texture file beside it and a tint) and the
 //!   vertices.
-//! - **Clips** (`clips.s3c`): per clip its frame rate, whether it loops, and every frame's local transform of every bone
-//!   (scale, rotation, translation: the bank's sample added onto the rig's T-pose, `pose_add`, as the Skate 3 engine's
-//!   `AddBindPose` does). A bone whose parent is `TRAJECTORY` (bone 0) is in model space: the trajectory's own motion is the
-//!   physics', never the pose's.
-//! - **Tuning** (`tuning.cfg`): a value or an eight-point curve a line, by Skate 3's collection, key and field name.
-
-use std::collections::HashMap;
 
 const MODEL_MAGIC: &[u8; 8] = b"S3SKATER";
-const CLIPS_MAGIC: &[u8; 8] = b"S3SCLIPS";
 const VERSION: u32 = 1;
 /// The most bones and joints the files may hold (the palette's size).
 pub const MAX_BONES: usize = 64;
@@ -81,42 +73,6 @@ pub struct Model {
     pub indices: Vec<u32>,
 }
 
-/// One bone's local transform: scale xyz, rotation xyzw, translation xyz.
-pub type Sample = [f32; 10];
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Clip {
-    pub name: String,
-    pub fps: f32,
-    pub looping: bool,
-    pub frames: u32,
-    /// `frames * bones` samples, frame by frame.
-    pub samples: Vec<Sample>,
-}
-
-impl Clip {
-    pub fn seconds(&self) -> f32 {
-        (self.frames.max(1) - 1) as f32 / self.fps.max(1.0)
-    }
-
-    pub fn frame(&self, i: usize, bones: usize) -> &[Sample] {
-        let i = i.min(self.frames.max(1) as usize - 1);
-        &self.samples[i * bones..(i + 1) * bones]
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Clips {
-    pub bones: u16,
-    pub clips: Vec<Clip>,
-}
-
-impl Clips {
-    pub fn get(&self, name: &str) -> Option<&Clip> {
-        self.clips.iter().find(|c| c.name.eq_ignore_ascii_case(name))
-    }
-}
-
 // --- Writing -------------------------------------------------------------------------------------------------------
 
 struct W(Vec<u8>);
@@ -173,21 +129,6 @@ pub fn write_model(m: &Model) -> Vec<u8> {
     }
     w.u32(m.indices.len() as u32);
     m.indices.iter().for_each(|i| w.u32(*i));
-    w.0
-}
-
-pub fn write_clips(c: &Clips) -> Vec<u8> {
-    let mut w = W(CLIPS_MAGIC.to_vec());
-    w.u32(VERSION);
-    w.u16(c.bones);
-    w.u32(c.clips.len() as u32);
-    for clip in &c.clips {
-        w.str(&clip.name);
-        w.f32(clip.fps);
-        w.u8(clip.looping as u8);
-        w.u32(clip.frames);
-        clip.samples.iter().flatten().for_each(|v| w.f32(*v));
-    }
     w.0
 }
 
@@ -329,113 +270,6 @@ pub fn parse_model(bytes: &[u8]) -> R<Model> {
     Ok(m)
 }
 
-pub fn parse_clips(bytes: &[u8]) -> R<Clips> {
-    let mut r = Rd { b: bytes, at: 0 };
-    r.head(CLIPS_MAGIC)?;
-    let bones = r.u16()?;
-    if bones == 0 || bones as usize > MAX_BONES {
-        return Err(Skate3Error::Bad(format!("{bones} bones")));
-    }
-    let n = r.u32()? as usize;
-    let n = r.count(n, 11)?;
-    let mut clips = Vec::with_capacity(n);
-    for _ in 0..n {
-        let name = r.str()?;
-        let fps = r.f32()?;
-        let looping = r.u8()? != 0;
-        let frames = r.u32()?;
-        if frames == 0 || !(1.0..=1000.0).contains(&fps) {
-            return Err(Skate3Error::Bad(format!("clip {name}: {frames} frames at {fps} a second")));
-        }
-        let count = r.count(frames as usize * bones as usize, 40)?;
-        let mut samples = Vec::with_capacity(count);
-        for _ in 0..count {
-            let mut s = [0.0; 10];
-            for v in &mut s {
-                *v = r.f32()?;
-            }
-            samples.push(s);
-        }
-        clips.push(Clip { name, fps, looping, frames, samples });
-    }
-    if r.at != bytes.len() {
-        return Err(Skate3Error::Bad("bytes after the end".into()));
-    }
-    Ok(Clips { bones, clips })
-}
-
-/// The model and the clips belong together: the same skeleton.
-pub fn check_pair(m: &Model, c: &Clips) -> R<()> {
-    if c.bones as usize != m.bones.len() {
-        return Err(Skate3Error::Bad(format!("the clips have {} bones, the skater {}", c.bones, m.bones.len())));
-    }
-    Ok(())
-}
-
-// --- Tuning --------------------------------------------------------------------------------------------------------
-
-/// Skate 3's own values: `class/key/field` to a value, or to a curve (its points' x, then their y).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Tuning {
-    pub values: HashMap<String, f32>,
-    pub curves: HashMap<String, (Vec<f32>, Vec<f32>)>,
-}
-
-impl Tuning {
-    pub fn write(&self) -> String {
-        let mut lines: Vec<String> = self.values.iter().map(|(k, v)| format!("{k} {v:?}")).collect();
-        lines.extend(self.curves.iter().map(|(k, (x, y))| {
-            let x: Vec<String> = x.iter().map(|v| format!("{v:?}")).collect();
-            let y: Vec<String> = y.iter().map(|v| format!("{v:?}")).collect();
-            format!("{k} {} | {}", x.join(" "), y.join(" "))
-        }));
-        lines.sort();
-        let mut s = String::from("# Skate 3's own tuning values (its collections), written by copy_skate3. A value or a curve (x values | y values) a line.\n");
-        for l in lines {
-            s.push_str(&l);
-            s.push('\n');
-        }
-        s
-    }
-
-    pub fn parse(text: &str) -> R<Tuning> {
-        let mut t = Tuning::default();
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let bad = || Skate3Error::Bad(format!("tuning line {}: {line}", n + 1));
-            let (key, rest) = line.split_once(' ').ok_or_else(bad)?;
-            let num = |s: &str| s.parse::<f32>().ok().filter(|v| v.is_finite()).ok_or_else(bad);
-            if let Some((xs, ys)) = rest.split_once('|') {
-                let x: Vec<f32> = xs.split_whitespace().map(num).collect::<R<_>>()?;
-                let y: Vec<f32> = ys.split_whitespace().map(num).collect::<R<_>>()?;
-                if x.is_empty() || x.len() != y.len() {
-                    return Err(bad());
-                }
-                t.curves.insert(key.to_string(), (x, y));
-            } else {
-                t.values.insert(key.to_string(), num(rest.trim())?);
-            }
-        }
-        Ok(t)
-    }
-
-    pub fn value(&self, key: &str) -> R<f32> {
-        self.values.get(key).copied().ok_or_else(|| Skate3Error::Bad(format!("tuning value {key} is missing")))
-    }
-
-    /// A curve of exactly `N` points.
-    pub fn curve<const N: usize>(&self, key: &str) -> R<([f32; N], [f32; N])> {
-        let (x, y) = self.curves.get(key).ok_or_else(|| Skate3Error::Bad(format!("tuning curve {key} is missing")))?;
-        match (<[f32; N]>::try_from(x.as_slice()), <[f32; N]>::try_from(y.as_slice())) {
-            (Ok(x), Ok(y)) => Ok((x, y)),
-            _ => Err(Skate3Error::Bad(format!("tuning curve {key} has {} points, not {N}", x.len()))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,19 +293,6 @@ mod tests {
         let mut bad = bytes.clone();
         bad[0] = b'X';
         assert_eq!(parse_model(&bad), Err(Skate3Error::Magic));
-        let c = Clips { bones: 2, clips: vec![Clip { name: "R_IDLE".into(), fps: 60.0, looping: true, frames: 2, samples: vec![[0.5; 10]; 4] }] };
-        let bytes = write_clips(&c);
-        assert_eq!(parse_clips(&bytes).unwrap(), c);
-        assert!(parse_clips(&bytes[..bytes.len() - 3]).is_err());
-        check_pair(&m, &c).unwrap();
-        assert!((c.clips[0].seconds() - 1.0 / 60.0).abs() < 1e-6);
-        let mut t = Tuning::default();
-        t.values.insert("physics_push/default/MaxPushableSpeed".into(), 7.5);
-        t.curves.insert("physics_steering/default/SteeringVsSpeed".into(), (vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], vec![1.0; 8]));
-        assert_eq!(Tuning::parse(&t.write()).unwrap(), t);
-        assert!(Tuning::parse("a 1 2 | 3").is_err());
-        assert!(t.curve::<8>("physics_steering/default/SteeringVsSpeed").is_ok());
-        assert!(t.curve::<16>("physics_steering/default/SteeringVsSpeed").is_err());
     }
 
     #[test]

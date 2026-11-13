@@ -299,6 +299,8 @@ pub struct SandboxWorld {
     solids: HashMap<ColliderHandle, Surface>,
     /// Counts the times every solid piece was taken out (a new frame): whoever placed them places them again.
     pub solids_cleared: u32,
+    /// Counts every change of the ground field or a solid piece (the Skate 3 mod remakes its collision from them).
+    pub statics_rev: u32,
     next_id: u32,
     /// Gravity down the frame's z, m/s^2.
     pub gravity: f32,
@@ -324,6 +326,7 @@ impl SandboxWorld {
             by_collider: HashMap::new(),
             solids: HashMap::new(),
             solids_cleared: 0,
+            statics_rev: 0,
             next_id: 1,
             gravity: 9.81,
         }
@@ -367,6 +370,7 @@ impl SandboxWorld {
             .restitution(0.0);
         let h = self.world.insert_collider(collider, None);
         self.terrain = Some((h, grid));
+        self.statics_rev = self.statics_rev.wrapping_add(1);
         self.world.wake_up_all(true);
         self.refresh();
     }
@@ -388,12 +392,14 @@ impl SandboxWorld {
             .restitution(bounce);
         let h = self.world.insert_collider(collider, None);
         self.solids.insert(h, surface);
+        self.statics_rev = self.statics_rev.wrapping_add(1);
         Some(h)
     }
 
     pub fn remove_solid(&mut self, h: SolidHandle) {
         if self.solids.remove(&h).is_some() {
             self.world.remove_collider(h);
+            self.statics_rev = self.statics_rev.wrapping_add(1);
         }
     }
 
@@ -403,6 +409,60 @@ impl SandboxWorld {
             self.world.remove_collider(h);
         }
         self.solids_cleared = self.solids_cleared.wrapping_add(1);
+        self.statics_rev = self.statics_rev.wrapping_add(1);
+    }
+
+    /// The ground field's and the solid pieces' triangles (frame, metres), each wound counter-clockwise seen from outside
+    /// (the ground's from above): what the Skate 3 mod's simulation rides on (`skate/mod.rs`).
+    pub fn static_triangles(&self) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+        let mut v = Vec::new();
+        let mut t = Vec::new();
+        if let Some((_, g)) = self.terrain.as_ref() {
+            let (n, half) = (g.n, g.half());
+            for iy in 0..n {
+                for ix in 0..n {
+                    v.push(Vec3::new(ix as f32 * g.cell - half, iy as f32 * g.cell - half, g.heights[iy * n + ix]));
+                }
+            }
+            for iy in 0..n - 1 {
+                for ix in 0..n - 1 {
+                    let a = (iy * n + ix) as u32;
+                    let (b, c, d) = (a + 1, a + 1 + n as u32, a + n as u32);
+                    t.push([a, b, c]);
+                    t.push([a, c, d]);
+                }
+            }
+        }
+        for h in self.solids.keys() {
+            let Some(c) = self.world.colliders.get(*h) else { continue };
+            // (A trunk is a cylinder stood up inside a compound: each part at its own pose within the collider's.)
+            let parts: Vec<(Pose3, &dyn Shape)> = match c.shape().as_compound() {
+                Some(compound) => compound.shapes().iter().map(|(at, s)| (*c.position() * *at, &**s as &dyn Shape)).collect(),
+                None => vec![(*c.position(), c.shape())],
+            };
+            for (pose, shape) in parts {
+            let (points, tris) = if let Some(s) = shape.as_cuboid() {
+                s.to_trimesh()
+            } else if let Some(s) = shape.as_convex_polyhedron() {
+                s.to_trimesh()
+            } else if let Some(s) = shape.as_cylinder() {
+                s.to_trimesh(12)
+            } else {
+                continue;
+            };
+            let first = v.len() as u32;
+            let pts: Vec<Vec3> = points.iter().map(|p| pose * Vec3::new(p.x, p.y, p.z)).collect();
+            let mid = pts.iter().copied().sum::<Vec3>() / pts.len().max(1) as f32;
+            v.extend_from_slice(&pts);
+            for [a, b, c] in tris {
+                let (pa, pb, pc) = (pts[a as usize], pts[b as usize], pts[c as usize]);
+                // Outward: the pieces are convex.
+                let out = (pb - pa).cross(pc - pa).dot((pa + pb + pc) / 3.0 - mid) >= 0.0;
+                t.push(if out { [first + a, first + b, first + c] } else { [first + a, first + c, first + b] });
+            }
+            }
+        }
+        (v, t)
     }
 
     pub fn solid_count(&self) -> usize {
@@ -748,6 +808,43 @@ mod tests {
         let f = LocalFrame::at(ObjectRef::Body(0), shape, at);
         let radial = at.normalize();
         assert!(f.axes.z_axis.dot(radial) < 0.9999 && f.axes.z_axis.y > radial.y);
+    }
+
+    /// What the Skate 3 mod rides on: the ground and every kind of solid piece (a trunk is a compound), each triangle
+    /// facing out (the simulation's triangles are one-sided).
+    #[test]
+    fn the_static_triangles_hold_the_ground_and_every_solid_facing_out() {
+        let mut w = SandboxWorld::new(frame(), TICK);
+        w.set_terrain(flat(0.0));
+        let (_, ground) = w.static_triangles();
+        assert_eq!(ground.len(), 64 * 64 * 2);
+        let rev = w.statics_rev;
+        let corners: Vec<Vec3> = [-1.0f32, 1.0].iter().flat_map(|&x| [-1.0f32, 1.0].map(move |y| (x, y))).flat_map(|(x, y)| [Vec3::new(x, y, 0.0), Vec3::new(x, y, 2.0)]).collect();
+        let pieces = [
+            (SolidShape::Box(Vec3::new(1.0, 2.0, 3.0)), Vec3::new(10.0, 0.0, 3.0)),
+            (SolidShape::Hull(corners), Vec3::new(-10.0, 0.0, 0.0)),
+            (SolidShape::Trunk { radius: 0.4, half_height: 3.0 }, Vec3::new(0.0, 10.0, 3.0)),
+        ];
+        for (shape, at) in &pieces {
+            w.add_solid(shape, *at, Quat::from_rotation_z(0.3), Surface::Concrete).unwrap();
+        }
+        assert_ne!(w.statics_rev, rev);
+        let (v, t) = w.static_triangles();
+        let solid = &t[ground.len()..];
+        // Every piece is there: a triangle near each.
+        for (_, at) in &pieces {
+            assert!(solid.iter().any(|tri| (v[tri[0] as usize] - *at).length() < 5.0), "no triangles near {at}");
+        }
+        // Facing out: away from the piece's middle.
+        for tri in solid {
+            let (a, b, c) = (v[tri[0] as usize], v[tri[1] as usize], v[tri[2] as usize]);
+            let mid = pieces.iter().map(|p| p.1).min_by(|p, q| (*p - a).length().total_cmp(&(*q - a).length())).unwrap();
+            let centre = if mid.x < -5.0 { mid + Vec3::Z } else { mid };
+            assert!((b - a).cross(c - a).dot((a + b + c) / 3.0 - centre) > 0.0, "a triangle faces in");
+        }
+        // The ground faces up.
+        let g = ground[0];
+        assert!((v[g[1] as usize] - v[g[0] as usize]).cross(v[g[2] as usize] - v[g[0] as usize]).z > 0.0);
     }
 
     #[test]

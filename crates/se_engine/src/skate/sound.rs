@@ -97,14 +97,12 @@ pub fn play(
     let bank = &assets.sounds;
     for ev in events {
         let (role, volume) = match ev {
-            SkateEvent::Pop(strength) => ("pop", 0.75 + 0.25 * strength),
+            SkateEvent::Pop => ("pop", 0.9),
             SkateEvent::Flip => ("flip", 0.9),
             SkateEvent::Land(down) if down > 4.5 => ("land_hard", (0.7 + down * 0.04).min(1.0)),
             SkateEvent::Land(down) => ("land", (0.55 + down * 0.1).min(1.0)),
             SkateEvent::Push => ("push", 0.8),
             SkateEvent::Bail => ("bail", 1.0),
-            SkateEvent::HitWall(v) if v > 1.5 => ("land_hard", (v * 0.15).min(1.0)),
-            _ => continue,
         };
         if sk.log {
             info!("skate: sound {role} at {:.2}", volume);

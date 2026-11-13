@@ -1003,22 +1003,20 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
                 sb.player.origin = shift(sb.player.origin);
                 sb.prev_origin = shift(sb.prev_origin);
                 sb.player.velocity = turn * sb.player.velocity;
-                // The skater too (his board, his path, his camera), in metres.
-                if let Some(sk) = sb.skate.as_mut() {
-                    sk.rebase(&|p: Vec3| build.frame.from_body(from.to_body(p.as_dvec3())).as_vec3(), turn);
-                }
+                // (The Skate 3 mod's simulation keeps its own ground: nothing of it moves.)
             }
             world.replace_ground(build.frame, TerrainGrid { n: GRID_N, cell: GRID_CELL, heights: build.heights });
             world.lift_onto_ground();
             let o = sb.player.origin * UNIT_M;
             if let (Some(agl), Some(h)) = (over, world.terrain().and_then(|t| t.height(o.x, o.y))) {
+                // The Skate 3 mod's simulation keeps its own ground: it follows the change under him (`ground_moved`).
+                if let Some(sk) = sb.skate.as_mut() {
+                    sk.ground_moved((h + agl - o.z) as f64);
+                }
                 let dz = (h + agl - o.z) / UNIT_M;
                 if dz.abs() > 0.1 {
                     sb.player.origin.z += dz;
                     sb.prev_origin.z += dz;
-                    if let Some(sk) = sb.skate.as_mut() {
-                        sk.lift(dz * UNIT_M);
-                    }
                 }
             }
             if walking && !sb.placed {
@@ -1059,9 +1057,23 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
             sb.pitch = (sb.pitch - (input.mouse.y * MOUSE_DEG).to_radians()).clamp(-89f32.to_radians(), 89f32.to_radians());
             sb.yaw = sb.yaw.rem_euclid(std::f32::consts::TAU);
         }
-        if input.undo_pressed {
+        // (While skating Z is the controller's LB: `skate::read_pad`.)
+        if input.undo_pressed && sb.skate.is_none() {
             sb.requests.push(Request::Undo);
         }
+    }
+
+    // The Skate 3 mod: its simulation ticks at its own rate in place of the walker's move; the walker's origin is the board's
+    // (the ground field, the solids round him and the light follow it) and his box stands in the props' world there, so the
+    // props meet him.
+    if walking && sb.placed && sb.skate.is_some() {
+        let sk = sb.skate.as_mut().unwrap();
+        sk.frame(world, dt);
+        let (pos, vel) = sk.rider(world);
+        sb.prev_origin = sb.player.origin;
+        sb.player.origin = pos / UNIT_M;
+        sb.player.velocity = vel / UNIT_M;
+        world.set_player(pos, HULL_HALF * UNIT_M, HULL_HEIGHT * UNIT_M);
     }
 
     // The ticks.
@@ -1072,16 +1084,7 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
         sb.accumulator -= TICK;
         ran += 1;
         sb.ticks += 1;
-        if walking && sb.placed && sb.skate.is_some() {
-            let sk = sb.skate.as_mut().unwrap();
-            sk.tick(world, sb.gravity, TICK);
-            // The walker's origin is the skater's (the ground field, the solids round him and the light follow it); his box
-            // stands in the props' world where the skater is, so the props meet him.
-            sb.prev_origin = sb.player.origin;
-            sb.player.origin = sk.board.pos / UNIT_M;
-            sb.player.velocity = sk.board.vel / UNIT_M;
-            world.set_player(sk.board.pos, HULL_HALF * UNIT_M, HULL_HEIGHT * UNIT_M);
-        } else if walking && sb.placed {
+        if walking && sb.placed && sb.skate.is_none() {
             let cmd = Cmd { forward: input.forward, side: input.side, yaw: sb.yaw, jump: input.jump, duck: input.duck, sprint: input.sprint, walk: input.walk };
             unstick(&mut sb.player, world);
             sb.prev_origin = sb.player.origin;
@@ -1114,17 +1117,15 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
     if !walking {
         return;
     }
-    // The Skate 3 mod: the camera chases the skater.
+    // The Skate 3 mod: Skate 3's own camera (its camera graph, in the simulation).
     if let Some(sk) = sb.skate.as_mut() {
-        let k = (sb.accumulator / TICK).clamp(0.0, 1.0);
-        let (eye, target) = sk.chase(world, k, dt);
-        let fwd = (target - eye).normalize_or(Vec3::X);
+        let (eye, fwd, up) = sk.camera(world).unwrap_or((sb.eye, sb.forward, Vec3::Z));
         sb.eye = eye;
         sb.forward = fwd;
         let frame = &world.frame;
         let to_world = b.orient * frame.rotation();
         cam.pos = b.pos.offset_m(b.orient * frame.to_body(eye.as_dvec3()));
-        cam.rot = crate::camera::look_rotation(to_world * fwd.as_dvec3(), to_world * DVec3::Z).normalize();
+        cam.rot = crate::camera::look_rotation(to_world * fwd.as_dvec3(), to_world * up.as_dvec3()).normalize();
         bind_camera(cam, b);
         cam.eye_floor_m = Some(EYE_FLOOR_M);
         if sb.log_state {

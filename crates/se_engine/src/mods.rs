@@ -218,9 +218,8 @@ fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
         Some("sehm") => hero_asset::check_sehm(&bytes).map_err(|e| e.to_string()),
         Some("ogg") => check_sound(bytes).map(|_| ()),
         Some("s3m") => se_core::skate3::parse_model(&bytes).map(|_| ()).map_err(|e| e.to_string()),
-        Some("s3c") => se_core::skate3::parse_clips(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("png") => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map(|_| ()).map_err(|e| e.to_string()),
-        Some("cfg") => std::str::from_utf8(&bytes).map_err(|e| e.to_string()).and_then(|t| se_core::skate3::Tuning::parse(t).map(|_| ()).map_err(|e| e.to_string())),
+        Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         _ => Ok(()),
     }
 }
@@ -755,17 +754,20 @@ pub(crate) fn apply_request(
                 let checked = check_files(&roots, &id, &m.needs);
                 let loaded = checked.and_then(|()| {
                     let read = |rel: &str| read_need(&roots, &id, rel).map_err(|(_, why)| why);
-                    crate::skate::load(&read, &m.needs).map_err(|(file, why)| (GreyReason::Bad(file), why))
+                    // (The simulation reads its retail files itself, from the folder that holds them.)
+                    let root = mod_file(&id, "private/game.json").and_then(|p| Some(p.parent()?.parent()?.to_path_buf()));
+                    let root = root.ok_or_else(|| (GreyReason::Missing("private/game.json".to_string()), "at first enable".to_string()))?;
+                    crate::skate::load(&read, &m.needs, root).map_err(|(file, why)| (GreyReason::Bad(file), why))
                 });
                 match loaded {
                     Ok(assets) => {
                         info!(
-                            "mods: {id}: {} bones, {} draws, {} vertices; {} clips; {} sounds; {} files checked and read in {} ms",
+                            "mods: {id}: {} bones, {} draws, {} vertices; {} sounds; the simulation's files in {}; {} files checked and read in {} ms",
                             assets.model.bones.len(),
                             assets.model.draws.len(),
                             assets.model.vertices.len(),
-                            assets.clips.clips.clips.len(),
                             assets.sounds.count(),
+                            assets.root.display(),
                             m.needs.len(),
                             started.elapsed().as_millis()
                         );
