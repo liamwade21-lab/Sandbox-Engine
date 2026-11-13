@@ -1003,6 +1003,10 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
                 sb.player.origin = shift(sb.player.origin);
                 sb.prev_origin = shift(sb.prev_origin);
                 sb.player.velocity = turn * sb.player.velocity;
+                // The skater too (his board, his path, his camera), in metres.
+                if let Some(sk) = sb.skate.as_mut() {
+                    sk.rebase(&|p: Vec3| build.frame.from_body(from.to_body(p.as_dvec3())).as_vec3(), turn);
+                }
             }
             world.replace_ground(build.frame, TerrainGrid { n: GRID_N, cell: GRID_CELL, heights: build.heights });
             world.lift_onto_ground();
@@ -1012,6 +1016,9 @@ fn step_world(sb: &mut Sandbox, world: &mut SandboxWorld, b: &SystemBody, terrai
                 if dz.abs() > 0.1 {
                     sb.player.origin.z += dz;
                     sb.prev_origin.z += dz;
+                    if let Some(sk) = sb.skate.as_mut() {
+                        sk.lift(dz * UNIT_M);
+                    }
                 }
             }
             if walking && !sb.placed {

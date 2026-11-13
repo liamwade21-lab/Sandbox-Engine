@@ -8,9 +8,14 @@
   stood, a chase camera behind him; pushing (4 m/s after 3 s, Skate 3's 0.6 m/s a stroke up to 8.5 m/s), carving (Skate 3's
   steering tilt through the trucks' geometry, the carve poses blended in), the foot brake, the powerslide (board across the
   path), the ollie (crouch then pop, the body up to 1.33-1.71 m by Skate 3's jump tables: a 0.77 m rise seen), kickflip,
-  heelflip, shove-its, 360 and laser flips (Skate 3's clips: the board flips under him), landings, bails (a trick not caught,
-  the board across the path, a hard landing, a wall at speed) and getting back up; 41 of Skate 3's sounds (pops, landings,
-  pushes, bail impacts, the flip whoosh, the rolling grain in four speed bands, the powerslide and foot-brake loops).
+  360 flip and shove-it seen in the game (Skate 3's clips: the board flips under him; heelflip, frontside shove-it and laser
+  flip only by a test: every trick is caught from the weakest pop on flat ground), landings, a bail by landing with the board
+  across the path, getting back up and riding on, a ride of 70 m through several of the sandbox's frame moves (position,
+  height and speed continuous), `mods off` (the walker stands where the board was), turning it on from free flight (set down
+  and skating) and V (the mod goes off, free flight on); 41 of Skate 3's sounds (pops, landings, pushes, bail impacts, the
+  flip whoosh, the rolling grain in four speed bands, the powerslide and foot-brake loops; the log shows each one start).
+  Not seen in the game: a bail from a trick not caught or a wall at speed (the code is there), F (does what `mods off` does).
+  The release script now puts LICENSE.txt and SOURCE.txt (where the source is) in the zip.
   Controls: a gamepad in Skate 3's layout (right-stick flicks) or keyboard and mouse (README "Skate 3 physics").
   **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the engine's code: `LICENSE`, `crates/skate-core`,
   `crates/skate-data` copied unchanged). The mod's files are in `assets/mods/skate3` (6.1 MB, shipped: the user's choice).

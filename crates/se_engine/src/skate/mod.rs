@@ -210,6 +210,31 @@ impl Skater {
         }
     }
 
+    /// The sandbox's frame moved to a new anchor (it follows him every `REBASE_M`): everything of his into the new frame.
+    pub fn rebase(&mut self, shift: &dyn Fn(Vec3) -> Vec3, turn: bevy::math::Mat3) {
+        let yaw_of = |h: f32| {
+            let f = turn * Vec3::new(h.cos(), h.sin(), 0.0);
+            f.y.atan2(f.x)
+        };
+        self.board.pos = shift(self.board.pos);
+        self.prev_pos = shift(self.prev_pos);
+        self.board.vel = turn * self.board.vel;
+        self.board.up = (turn * self.board.up).normalize_or(Vec3::Z);
+        self.board.heading = yaw_of(self.board.heading);
+        self.prev_rot = Quat::from_mat3(&turn) * self.prev_rot;
+        self.cam_yaw = yaw_of(self.cam_yaw);
+        self.cam_eye = self.cam_eye.map(|e| shift(e));
+    }
+
+    /// The ground under him was replaced and he keeps his height over it (as the sandbox's walker does).
+    pub fn lift(&mut self, dz: f32) {
+        self.board.pos.z += dz;
+        self.prev_pos.z += dz;
+        if let Some(e) = self.cam_eye.as_mut() {
+            e.z += dz;
+        }
+    }
+
     /// The board between the last two ticks: its deck's middle and its turn (local frame).
     pub fn drawn(&self, k: f32) -> (Vec3, Quat) {
         let now = Quat::from_mat3(&self.board.rotation(self.board.slide));
@@ -335,6 +360,11 @@ pub struct DevPad {
 pub fn sync(mut sb: ResMut<Sandbox>, mut control: ResMut<ModControl>, assets: Option<Res<SkateAssets>>) {
     let sb = &mut *sb;
     let want = control.skate && assets.is_some();
+    // Put somewhere else (a place, `sbx walk`): his board comes back once the walker stands there.
+    if sb.skate.is_some() && (!sb.placed || !sb.walking()) && want {
+        sb.skate = None;
+        return;
+    }
     if want && sb.skate.is_none() {
         if let (Some(assets), true, true) = (assets.as_ref(), sb.walking(), sb.placed) {
             let Some(world) = sb.world.as_ref() else { return };

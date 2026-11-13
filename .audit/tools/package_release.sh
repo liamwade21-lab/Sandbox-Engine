@@ -25,6 +25,11 @@ def add(z, full):
     z.write(full, f"Sandbox Engine/assets/{rel}", compress_type=kind)
 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
     z.write(exe, "Sandbox Engine/spaceengine-rs.exe")
+    # GPL-3.0 since 2026-11-13 (the Skate 3 mod's code): the licence goes with the program, with where its source is.
+    z.write(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(assets))), "LICENSE"), "Sandbox Engine/LICENSE.txt")
+    z.writestr("Sandbox Engine/SOURCE.txt", "Sandbox Engine is free software under the GNU General Public License v3.0 (LICENSE.txt).\n"
+               "Its source code: https://github.com/liamwade21-lab/Sandbox-Engine\n"
+               "It includes the Skate 3 Rust Engine's skate-core and skate-data (GPL-3.0): https://github.com/SK8-ENGINE/skate-3-rust-engine\n")
     for part in parts:
         top = os.path.join(assets, part)
         if os.path.isfile(top):

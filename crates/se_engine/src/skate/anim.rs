@@ -129,6 +129,15 @@ impl Animator {
         if len <= 0.0 { 1.0 } else { self.now.t / len }
     }
 
+    /// Seconds into the clip (at its own speed) and its length.
+    pub fn seconds(&self) -> f32 {
+        self.now.t
+    }
+
+    pub fn length(&self) -> f32 {
+        self.index.clips.clips[self.now.clip].seconds()
+    }
+
     /// A clip that doesn't loop has reached its end.
     pub fn done(&self) -> bool {
         !self.index.clips.clips[self.now.clip].looping && self.progress() >= 1.0
@@ -187,17 +196,25 @@ pub fn trick_clips(t: Trick) -> Option<TrickClips> {
         Trick::Ollie => None,
         Trick::Kickflip => c("T_LOW_KICK_CYC1", "T_KICKFLIP_LOW_DCATCH_0_OUT1", 0.22),
         Trick::Heelflip => c("T_LOW_HEEL_CYC1", "T_HEELFLIP_LOW_DCATCH_OUT1", 0.22),
-        Trick::Shuvit => c("T_POPSHUVIT_L_CYC", "T_POPSHUVIT_LOW_UFLIP_OUT1", 0.3),
-        Trick::FsShuvit => c("T_FSPOPSHUVIT_L_CYC", "T_FSPOPSHUVIT_LOW_UFLIP_OUT1", 0.3),
-        Trick::Flip360 => c("T_360FLIP_L_CYC", "T_360FLIP_LOW_DCATCH_OUT1", 0.36),
-        Trick::Laser => c("T_LASERFLIP_L_CYC", "T_LASERFLIP_LOW_DCATCH_OUT1", 0.36),
+        Trick::Shuvit => c("T_POPSHUVIT_L_CYC", "T_POPSHUVIT_LOW_UFLIP_OUT1", 0.22),
+        Trick::FsShuvit => c("T_FSPOPSHUVIT_L_CYC", "T_FSPOPSHUVIT_LOW_UFLIP_OUT1", 0.22),
+        Trick::Flip360 => c("T_360FLIP_L_CYC", "T_360FLIP_LOW_DCATCH_OUT1", 0.28),
+        Trick::Laser => c("T_LASERFLIP_L_CYC", "T_LASERFLIP_LOW_DCATCH_OUT1", 0.28),
     }
 }
 
 /// Where in a push's clip the foot comes down and gives the board its speed.
 const PUSH_AT: f32 = 0.55;
-/// A trick counts as caught this far into its catch.
-const CAUGHT_AT: f32 = 0.45;
+/// A trick counts as caught this far into its catch, or `CAUGHT_S` seconds in, whichever comes first.
+pub const CAUGHT_AT: f32 = 0.45;
+pub const CAUGHT_S: f32 = 0.12;
+
+/// When a catch clip of this length counts as caught, seconds into it.
+pub fn caught_after(catch_len: f32) -> f32 {
+    (CAUGHT_AT * catch_len).min(CAUGHT_S)
+}
+/// The weakest pop.
+pub const POP_FLOOR: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum State {
@@ -286,7 +303,9 @@ impl Controller {
         // not mid-powerslide or in a bail.
         if on_ground && matches!(self.state, State::Ride | State::Crouch | State::PushInto | State::PushStroke | State::PushOut | State::BrakeInto | State::Brake | State::BrakeOut | State::Land | State::SlideOut) {
             if let Some((trick, crouched)) = s.pop {
-                let strength = (crouched / 0.45).clamp(0.0, 1.0);
+                // The crouch's length makes it higher; a quick flick (the mouse's stick springs back at once) still pops
+                // well enough for every trick to be caught on flat ground (`POP_FLOOR`, a test checks it).
+                let strength = (crouched / 0.45).clamp(POP_FLOOR, 1.0);
                 let clip = if strength > 0.5 { "OLLIE_HIGH_G" } else { "OLLIE_LOW_G" };
                 self.go(State::Pop(trick), clip, 0.06, 1.0);
                 self.caught = trick == Trick::Ollie;
@@ -389,7 +408,7 @@ impl Controller {
                 }
             }
             State::TrickCatch(_) => {
-                if self.anim.progress() >= CAUGHT_AT {
+                if self.anim.seconds() >= caught_after(self.anim.length()) {
                     self.caught = true;
                 }
                 if self.anim.done() {

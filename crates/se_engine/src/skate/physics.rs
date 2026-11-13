@@ -355,7 +355,8 @@ impl Board {
         let speed = self.vel.length();
         let fwd = self.forward();
         let signed = self.vel.dot(fwd);
-        self.fakie = signed < -0.05 || (self.fakie && signed.abs() <= 0.05);
+        // Riding backwards only once he really rolls that way (a creep back down a slope while standing isn't fakie).
+        self.fakie = signed < -0.4 || (self.fakie && signed < 0.0);
         let along = if self.fakie { -fwd } else { fwd };
 
         // Steering: Skate 3's deck tilt, then the trucks' turn.
@@ -469,7 +470,7 @@ impl Board {
     }
 
     /// Skate 3's launch, in its frame (y up): our frame's x, z, -y.
-    fn jump_velocity(&self, t: &Tune, strength: f32, hips_m: f32, g: f32) -> Vec3 {
+    pub(crate) fn jump_velocity(&self, t: &Tune, strength: f32, hips_m: f32, g: f32) -> Vec3 {
         let to = |v: Vec3| [v.x, v.z, -v.y, 0.0];
         let from = |s: [f32; 4]| Vec3::new(s[0], -s[2], s[1]);
         let n = self.up.normalize_or(Vec3::Z);
@@ -648,5 +649,31 @@ mod tests {
         let radius = |speed: f32| 2.0 * WHEEL_HALF_BASE / (2.0 * tilt(speed).tan() * t.truck_axis.sin());
         assert!(radius(2.0) < radius(12.0), "{} {}", radius(2.0), radius(12.0));
         assert!((0.5..6.0).contains(&radius(2.0)), "{}", radius(2.0));
+    }
+
+    /// The weakest pop (a quick flick) on flat ground stays up long enough for every trick to be caught.
+    #[test]
+    fn every_trick_is_caught_from_the_weakest_pop() {
+        use super::super::anim::{self, POP_FLOOR};
+        use super::super::input::Trick;
+        let t = tune();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/skate3");
+        let clips = se_core::skate3::parse_clips(&std::fs::read(dir.join("clips.s3c")).unwrap()).unwrap();
+        let index = anim::ClipIndex::new(clips);
+        let len = |n: &str| index.clips.get(n).unwrap().seconds();
+        // The hips over the deck while rolling, from the riding clip.
+        let mut pose = vec![[0.0; 10]; index.bones()];
+        index.sample(index.find("R_IDLE_RIDE_N_0_CYC").unwrap(), 0.0, &mut pose);
+        let hips = anim::hips_height(&pose, &[]);
+        for speed in [2.0, 5.0, 8.5] {
+            let b = Board { vel: Vec3::new(speed, 0.0, 0.0), ..Board::at(Vec3::ZERO, 0.0) };
+            let v = b.jump_velocity(&t, POP_FLOOR, hips, 9.81);
+            let air = 2.0 * v.z / 9.81;
+            for trick in Trick::ALL {
+                let caught = len("OLLIE_LOW_G") + anim::trick_clips(trick).map_or(0.0, |c| c.cyc_seconds + anim::caught_after(len(c.out)));
+                println!("{trick:?} at {speed} m/s: caught at {caught:.2} s of {air:.2} s in the air");
+                assert!(caught + 0.03 < air, "{trick:?} at {speed} m/s: caught at {caught:.2} s, in the air {air:.2} s");
+            }
+        }
     }
 }
