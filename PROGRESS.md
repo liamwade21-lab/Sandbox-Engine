@@ -2,6 +2,10 @@
 
 ## Current state (2026-11-12)
 
+- **The gravity gun's and physics gun's beam no longer draws over the gun** (2026-11-12): the beam is a flat line on top of
+  the picture, so it is now left out wherever it lies over the gun's own outline (the view model's triangles as posed this
+  frame, `weapons.rs` `gun_outline`, `beam_start`): it appears where it comes out from behind the gun. Checked with the
+  gravity gun; test pictures don't show the physics gun's beam even uncut (a capture quirk), so that one is yours to try.
 - **Your three changes of 2026-11-12** (one commit each):
   1. **Omni-Man is silent in space** (your new D12): every sound of his fades out as the air thins (from 100 Pa down to 1 Pa) and
      is fully silent in orbit and on airless ground. Checked by the logs (every sound at 0 in orbit and on the Moon, Kansas as

@@ -196,6 +196,13 @@ pub struct ViewModel {
     pose_to_bone: Vec<Mat4>,
     /// The muzzle: its bone and its place in that bone's space.
     muzzle: Option<(usize, Mat4)>,
+    /// Its vertices as the palette skins them (bind-pose model space, bones, weights) and its triangles over all meshes: kept so
+    /// the HUD can leave its beam out where the gun is in front of it (`outline`).
+    skin_src: Vec<(Vec3, [u8; 4], [u8; 4])>,
+    tris: Vec<[u32; 3]>,
+    /// This frame's palette (bind pose to the render frame), and the vertices skinned by it.
+    skin: Vec<Mat4>,
+    skinned: Vec<Vec3>,
     now: Playing,
     /// The sequence it came from, still running, and how much of its fade is left and was given.
     before: Option<(Playing, f32, f32)>,
@@ -307,6 +314,13 @@ impl ViewModel {
         let idle = ["idle01", "idle"].iter().find_map(|n| by_name.get(*n).copied()).unwrap_or(0);
         let overlay = data.skeleton.sequences.iter().position(|s| s.autoplay && s.blend_to.len() == n && s.weights.len() == n);
         let muzzle = data.skeleton.attachments.iter().find(|a| a.name.eq_ignore_ascii_case("muzzle")).or(data.skeleton.attachments.first()).map(|a| (a.bone, rows(&a.local)));
+        let (mut skin_src, mut tris) = (Vec::new(), Vec::new());
+        for m in &data.meshes {
+            let base = skin_src.len() as u32;
+            let count = m.positions.len().min(m.joints.len()).min(m.weights.len());
+            skin_src.extend((0..count).map(|i| (Vec3::from_array(m.positions[i]), m.joints[i], m.weights[i])));
+            tris.extend(m.indices.chunks_exact(3).filter(|t| t.iter().all(|i| (*i as usize) < count)).map(|t| [base + t[0], base + t[1], base + t[2]]));
+        }
         ViewModel {
             pose_to_bone: data.skeleton.bones.iter().map(|b| rows(&b.pose_to_bone)).collect(),
             skeleton: data.skeleton,
@@ -314,6 +328,10 @@ impl ViewModel {
             parts,
             palette,
             muzzle,
+            skinned: Vec::with_capacity(skin_src.len()),
+            skin_src,
+            tris,
+            skin: vec![Mat4::IDENTITY; n],
             now: Playing { seq: idle, time: 0.0 },
             before: None,
             idle,
@@ -418,6 +436,7 @@ impl ViewModel {
         }
         for i in 0..self.world.len() {
             let m = place * self.world[i] * self.pose_to_bone[i];
+            self.skin[i] = m;
             self.bytes[i * 64..(i + 1) * 64].copy_from_slice(bytemuck::cast_slice(&m.to_cols_array()));
         }
         if let Some(mut b) = buffers.get_mut(&self.palette) {
@@ -427,6 +446,23 @@ impl ViewModel {
             }
         }
         self.muzzle.map(|(bone, local)| (place * self.world[bone] * local).transform_point3(Vec3::ZERO))
+    }
+
+    /// Its triangles as of the last `pose`, each corner skinned as the shader does and passed through `to` (the narrower field
+    /// of view's stretch), into `out`.
+    pub fn outline(&mut self, to: impl Fn(Vec3) -> Vec3, out: &mut Vec<[Vec3; 3]>) {
+        self.skinned.clear();
+        for (p, j, w) in &self.skin_src {
+            let mut m = Mat4::ZERO;
+            for k in 0..4 {
+                if w[k] > 0 {
+                    m += self.skin.get(j[k] as usize).copied().unwrap_or(Mat4::IDENTITY) * (w[k] as f32 / 255.0);
+                }
+            }
+            self.skinned.push(to(m.transform_point3(*p)));
+        }
+        let v = &self.skinned;
+        out.extend(self.tris.iter().map(|t| [v[t[0] as usize], v[t[1] as usize], v[t[2] as usize]]));
     }
 }
 

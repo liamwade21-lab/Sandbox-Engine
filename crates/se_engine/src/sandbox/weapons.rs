@@ -217,6 +217,9 @@ pub struct Arsenal {
     made: [bool; 6],
     /// This frame's picture of things, for the HUD: where the muzzle, the held prop and the effects are in the render frame.
     muzzle: Option<Vec3>,
+    /// The view model's triangles as the screen has it, while a gun holds something: the HUD draws its beam over the picture,
+    /// so it leaves out what lies over the gun (the gun is in front of its own beam).
+    gun_tris: Vec<[Vec3; 3]>,
     beam_to: Option<Vec3>,
     fx_render: Vec<(Fx, Vec3)>,
     hint_until: f32,
@@ -264,6 +267,7 @@ impl Default for Arsenal {
             parts: Default::default(),
             made: [false; 6],
             muzzle: None,
+            gun_tris: Vec::new(),
             beam_to: None,
             fx_render: Vec::new(),
             hint_until: 25.0,
@@ -909,6 +913,76 @@ pub fn weapon_frame(time: Res<Time<Real>>, input: Res<WalkInput>, assets: Res<Gm
     }
 }
 
+/// The view model's triangles on the screen, with their bounds, to tell where the gun covers its beam.
+struct Outline {
+    tris: Vec<([egui::Pos2; 3], egui::Rect)>,
+    bounds: egui::Rect,
+}
+
+impl Outline {
+    fn covers(&self, q: egui::Pos2) -> bool {
+        if !self.bounds.contains(q) {
+            return false;
+        }
+        let side = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x);
+        self.tris.iter().any(|([a, b, c], r)| {
+            if !r.contains(q) {
+                return false;
+            }
+            let (d0, d1, d2) = (side(*a, *b), side(*b, *c), side(*c, *a));
+            (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+        })
+    }
+}
+
+/// Projects the gun's triangles (render frame, camera-relative) to egui's points. Its own projection rather than
+/// `world_to_viewport`, which drops what is nearer than the camera's near plane, as the hands can be.
+fn gun_outline(tris: &[[Vec3; 3]], camera: Option<(&Camera, &GlobalTransform)>) -> Outline {
+    let mut out = Outline { tris: Vec::new(), bounds: egui::Rect::NOTHING };
+    let Some((cam, gt)) = camera else { return out };
+    let Some(rect) = cam.logical_viewport_rect() else { return out };
+    let view_from_world = Mat4::from(gt.affine().inverse());
+    let clip_from_view = cam.clip_from_view();
+    let project = |p: Vec3| -> Option<egui::Pos2> {
+        let v = view_from_world.transform_point3(p);
+        if v.z > -1e-4 {
+            return None;
+        }
+        let ndc = clip_from_view.project_point3(v);
+        let at = (Vec2::new(ndc.x, -ndc.y) + Vec2::ONE) * 0.5 * rect.size() + rect.min;
+        Some(egui::pos2(at.x, at.y))
+    };
+    for t in tris {
+        let (Some(a), Some(b), Some(c)) = (project(t[0]), project(t[1]), project(t[2])) else { continue };
+        let r = egui::Rect::from_points(&[a, b, c]);
+        out.bounds = out.bounds.union(r);
+        out.tris.push(([a, b, c], r));
+    }
+    out
+}
+
+/// Where along `curve` (0 the gun, 1 what it holds) the beam comes out from behind the gun: just past the last point that
+/// `covered` says the gun hides, walking back from the far end, found to a fine step. 1 if all of it is hidden.
+fn beam_start(curve: &impl Fn(f32) -> egui::Pos2, covered: impl Fn(egui::Pos2) -> bool) -> f32 {
+    const STEPS: usize = 64;
+    for i in (0..=STEPS).rev() {
+        let t = i as f32 / STEPS as f32;
+        if covered(curve(t)) {
+            let (mut lo, mut hi) = (t, (t + 1.0 / STEPS as f32).min(1.0));
+            for _ in 0..8 {
+                let m = 0.5 * (lo + hi);
+                if covered(curve(m)) {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            return hi;
+        }
+    }
+    0.0
+}
+
 /// One mesh of the stand-in weapon in his hands.
 #[derive(Component)]
 pub struct ViewPart;
@@ -953,6 +1027,7 @@ pub fn place_weapon(
     let w = ar.current;
     let has_view = ar.view[w].is_some();
     ar.muzzle = None;
+    ar.gun_tris.clear();
     let world = sb.world.as_ref();
     let body = world.and_then(|w| bodies.iter().find(|b| b.obj == w.frame.obj));
     for (i, v) in ar.view.iter().enumerate() {
@@ -985,10 +1060,14 @@ pub fn place_weapon(
             if show {
                 // The muzzle as the screen has it: the view model is drawn with its own narrower field of view.
                 let cam_rot = cam.rot.as_quat();
-                ar.muzzle = v.pose(place, &mut buffers).map(|m| {
+                let on_screen = |m: Vec3| {
                     let c = cam_rot.inverse() * m;
                     cam_rot * Vec3::new(c.x * viewmodel::FOV_RATIO, c.y * viewmodel::FOV_RATIO, c.z)
-                });
+                };
+                ar.muzzle = v.pose(place, &mut buffers).map(on_screen);
+                if sb.held.is_some() && !sb.by_hand {
+                    v.outline(on_screen, &mut ar.gun_tris);
+                }
             }
         }
     }
@@ -1139,9 +1218,15 @@ pub fn draw_hud(mut contexts: EguiContexts, sb: Res<Sandbox>, ar: Res<Arsenal>, 
         let (wide, core) = if WEAPONS[ar.current].kind == Kind::PhysGun { (egui::Color32::from_rgba_unmultiplied(60, 160, 255, 70), egui::Color32::from_rgba_unmultiplied(190, 235, 255, 230)) } else { (egui::Color32::from_rgba_unmultiplied(255, 150, 40, 40), egui::Color32::from_rgba_unmultiplied(255, 215, 150, 120)) };
         // A sagging curve, as the physics gun's beam bends.
         let mid = from.lerp(to, 0.5) + egui::vec2(0.0, 18.0 * scale);
-        let points: Vec<egui::Pos2> = (0..=16).map(|i| i as f32 / 16.0).map(|t| from.lerp(mid, t).lerp(mid.lerp(to, t), t)).collect();
-        p.add(egui::Shape::line(points.clone(), egui::Stroke::new(7.0 * scale, wide)));
-        p.add(egui::Shape::line(points, egui::Stroke::new(2.0 * scale, core)));
+        let curve = |t: f32| from.lerp(mid, t).lerp(mid.lerp(to, t), t);
+        // The gun is in front of its beam: it starts where the curve last leaves the gun's outline.
+        let outline = gun_outline(&ar.gun_tris, camera.single().ok());
+        let start = beam_start(&curve, |q| outline.covers(q));
+        if start < 1.0 {
+            let points: Vec<egui::Pos2> = (0..=24).map(|i| curve(start + (1.0 - start) * i as f32 / 24.0)).collect();
+            p.add(egui::Shape::line(points.clone(), egui::Stroke::new(7.0 * scale, wide)));
+            p.add(egui::Shape::line(points, egui::Stroke::new(2.0 * scale, core)));
+        }
     }
     if sb.menu {
         return Ok(());
@@ -1219,6 +1304,23 @@ mod tests {
         // inner half of the cone; evenly over the disc it would be a quarter.
         let share = inner as f32 / n as f32;
         assert!((0.46..0.53).contains(&share), "{inner}");
+    }
+
+    #[test]
+    fn the_beam_starts_where_it_leaves_the_gun() {
+        // A gun covering x 0..100 (two triangles); the beam from x 50 to x 300 along y 50.
+        let tri = |a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+            let p = [egui::pos2(a.0, a.1), egui::pos2(b.0, b.1), egui::pos2(c.0, c.1)];
+            (p, egui::Rect::from_points(&p))
+        };
+        let tris = vec![tri((0.0, 0.0), (100.0, 0.0), (100.0, 100.0)), tri((0.0, 0.0), (100.0, 100.0), (0.0, 100.0))];
+        let outline = Outline { bounds: tris.iter().fold(egui::Rect::NOTHING, |r, t| r.union(t.1)), tris };
+        let curve = |t: f32| egui::pos2(50.0 + 250.0 * t, 50.0);
+        let start = beam_start(&curve, |q| outline.covers(q));
+        assert!((curve(start).x - 100.0).abs() < 0.5, "starts at x {}", curve(start).x);
+        // Nothing in the way: all of it; all of it hidden: none.
+        assert_eq!(beam_start(&curve, |_| false), 0.0);
+        assert_eq!(beam_start(&curve, |_| true), 1.0);
     }
 
     #[test]
