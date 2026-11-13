@@ -745,6 +745,10 @@ pub(crate) fn apply_request(
                     }
                 }
             }
+            if m.code == "skate3" && !crate::sandbox::enabled() {
+                warn!("mods: {} stays off: it plays in the sandbox, which is off (SE_SANDBOX=0)", m.name);
+                return;
+            }
             if m.code == "skate3" && skate.is_none() {
                 let started = std::time::Instant::now();
                 let roots = mod_roots();

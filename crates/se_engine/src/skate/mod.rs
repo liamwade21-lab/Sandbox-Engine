@@ -174,6 +174,8 @@ impl Skater {
         if let Some(v) = happened.hit_wall {
             self.events.push(SkateEvent::HitWall(v));
         }
+        // (What `after` reports of a trick is this tick's.)
+        self.ctl.last_trick = None;
         let after = self.ctl.after(self.board.phase, happened.landed, happened.bailed, self.board.bail_time, self.board.speed());
         if after.bail_board {
             let mut ignore = physics::Happened::default();

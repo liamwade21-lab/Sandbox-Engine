@@ -339,9 +339,34 @@ impl Board {
         }
     }
 
+    /// Out of whatever he ended up inside (a prop dropped on him, a gap closed round him): lifted clear, as the walker's
+    /// `unstick` does. Inside something no sweep answers sensibly: he'd hang there gathering speed or pass through.
+    fn unstick(&mut self, world: &SandboxWorld) {
+        let half = Vec3::new(BODY_HALF.x, BODY_HALF.y, BODY_HALF.z - 0.15);
+        let centre = self.pos + Vec3::Z * (BODY_UP + 0.15);
+        if !world.box_blocked(centre, half) {
+            return;
+        }
+        for i in 1..=60 {
+            let up = i as f32 * 0.05;
+            if !world.box_blocked(centre + Vec3::Z * up, half) {
+                self.pos.z += up;
+                self.vel.z = self.vel.z.max(0.0);
+                if self.phase == Phase::Ground {
+                    self.phase = Phase::Air;
+                    self.air_time = 0.0;
+                }
+                return;
+            }
+        }
+    }
+
     /// One tick.
     pub fn step(&mut self, t: &Tune, world: &mut SandboxWorld, d: &Drive, gravity: f32, dt: f32) -> Happened {
         let mut out = Happened::default();
+        self.unstick(world);
+        // No faster than a fall's terminal speed.
+        self.vel.z = self.vel.z.max(-60.0);
         self.idle = if d.any { 0.0 } else { self.idle + dt };
         match self.phase {
             Phase::Ground => self.ground_step(t, world, d, gravity, dt, &mut out),
@@ -357,7 +382,12 @@ impl Board {
         let signed = self.vel.dot(fwd);
         // Riding backwards only once he really rolls that way (a creep back down a slope while standing isn't fakie).
         self.fakie = signed < -0.4 || (self.fakie && signed < 0.0);
-        let along = if self.fakie { -fwd } else { fwd };
+        let mut along = if self.fakie { -fwd } else { fwd };
+        // Pushing off while creeping backwards (a slope): he pushes the nose's way, no longer fakie.
+        if d.push && self.fakie && speed < 1.5 {
+            self.fakie = false;
+            along = fwd;
+        }
 
         // Steering: Skate 3's deck tilt, then the trucks' turn.
         self.tilt = steering::calculate_tilt(
@@ -391,7 +421,7 @@ impl Board {
 
         // Along the path: slope, push, brake, friction.
         let mut gain = (-Vec3::Z * g).dot(along).clamp(-t.max_gravity_accel, t.max_gravity_accel) * dt;
-        if d.push && !self.fakie {
+        if d.push {
             let a = push::calculate_acceleration(
                 push::PushInput {
                     flags_2468: 0x0200_0000,
@@ -573,7 +603,10 @@ impl Board {
     /// The move of a tick against walls, trees and props: stopped by what stands in the way (a bail if hit hard), props
     /// shoved.
     fn move_body(&mut self, world: &mut SandboxWorld, dt: f32, out: &mut Happened) {
-        let step = self.vel * dt;
+        // Up and down is the ground rays' business (landing, keeping to the ground); the sweep is for what stands in the way.
+        let full = self.vel * dt;
+        self.pos.z += full.z;
+        let step = Vec3::new(full.x, full.y, 0.0);
         if step.length_squared() < 1e-10 {
             return;
         }

@@ -14,7 +14,12 @@
   height and speed continuous), `mods off` (the walker stands where the board was), turning it on from free flight (set down
   and skating) and V (the mod goes off, free flight on); 41 of Skate 3's sounds (pops, landings, pushes, bail impacts, the
   flip whoosh, the rolling grain in four speed bands, the powerslide and foot-brake loops; the log shows each one start).
-  Not seen in the game: a bail from a trick not caught or a wall at speed (the code is there), F (does what `mods off` does).
+  The checker agent (2026-11-13) also saw: bails into a tree and a dumpster, getting up, a 30 kg barrel knocked aside, the
+  mod off mid-air, on from 200 m up in free flight, swapping with Viltrumite, real keys W, Space, 1, F, V, damaged files
+  greying the row. Fixed after its review: a prop dropped on him (he's lifted out; before, he stuck there gathering speed or
+  passed through), pushing off while creeping backwards, the trick's name on landing, the failed trick's record, the row
+  turning on with the sandbox off (`SE_SANDBOX=0` now refuses it). A bail from a trick not caught is covered by a unit test
+  (none happened on Earth's flat ground in a run).
   The release script now puts LICENSE.txt and SOURCE.txt (where the source is) in the zip.
   Controls: a gamepad in Skate 3's layout (right-stick flicks) or keyboard and mouse (README "Skate 3 physics").
   **Sandbox Engine is GPL-3.0 from now on** (the user chose to copy the engine's code: `LICENSE`, `crates/skate-core`,

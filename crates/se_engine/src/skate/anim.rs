@@ -249,6 +249,8 @@ pub struct Controller {
     pub caught: bool,
     /// The trick last landed, for the log and the HUD.
     pub last_trick: Option<(Trick, bool)>,
+    /// The trick of this jump, from its pop to its landing.
+    air_trick: Option<Trick>,
 }
 
 /// What the controller saw this tick.
@@ -276,7 +278,7 @@ pub struct Asked {
 
 impl Controller {
     pub fn new(index: Arc<ClipIndex>) -> Self {
-        Controller { state: State::Ride, anim: Animator::new(index, "R_STAND_IDLE2_N_0_CYC"), pushed: false, caught: true, last_trick: None }
+        Controller { state: State::Ride, anim: Animator::new(index, "R_STAND_IDLE2_N_0_CYC"), pushed: false, caught: true, last_trick: None, air_trick: None }
     }
 
     fn ride_clip(speed: f32) -> &'static str {
@@ -309,6 +311,7 @@ impl Controller {
                 let clip = if strength > 0.5 { "OLLIE_HIGH_G" } else { "OLLIE_LOW_G" };
                 self.go(State::Pop(trick), clip, 0.06, 1.0);
                 self.caught = trick == Trick::Ollie;
+                self.air_trick = Some(trick);
                 a.pop = Some(strength);
                 a.popped_trick = Some(trick);
                 self.anim.advance(dt);
@@ -321,7 +324,7 @@ impl Controller {
                 self.anim.keep(clip, 0.25);
                 if s.crouch {
                     self.go(State::Crouch, "R_ANTIC_CROUCH_OLLIE_N_0_INTO", 0.12, 1.0);
-                } else if s.push && !s.fakie && on_ground {
+                } else if s.push && (!s.fakie || s.speed < 1.5) && on_ground {
                     let clip = if s.speed > 4.0 { "R_PUSHHSP_HSTR_N_0_INTO" } else { "R_PUSHLSP_HSTR_N_0_INTO" };
                     self.go(State::PushInto, clip, 0.15, 1.0);
                 } else if s.slide_side != 0.0 && s.speed > 2.0 {
@@ -435,6 +438,9 @@ impl Controller {
     pub fn after(&mut self, phase: Phase, landed: Option<f32>, bailed: bool, bail_time: f32, speed: f32) -> AfterTick {
         let mut out = AfterTick::default();
         if bailed && !matches!(self.state, State::Bail | State::GetUp) {
+            if let Some(t) = self.air_trick.take() {
+                self.last_trick = Some((t, false));
+            }
             self.go(State::Bail, "W_FLAIL_LEAN000TWIST000_N_0_N", 0.1, 1.0);
             out.bailed = true;
             return out;
@@ -448,13 +454,13 @@ impl Controller {
                 self.go(State::Bail, "W_FLAIL_LEAN000TWIST000_N_0_N", 0.1, 1.0);
                 out.bailed = true;
                 out.bail_board = true;
-                if let State::TrickTurn(t) | State::TrickCatch(t) | State::Pop(t) = self.state {
+                if let Some(t) = self.air_trick.take() {
                     self.last_trick = Some((t, false));
                 }
                 return out;
             }
             let clip = if down > 5.0 { "L_HCOM_HIMP" } else if down > 3.0 { "L_HCOM_LIMP" } else { "L_LCOM" };
-            if let State::TrickCatch(t) | State::TrickTurn(t) | State::Pop(t) = self.state {
+            if let Some(t) = self.air_trick.take() {
                 self.last_trick = Some((t, true));
                 out.landed_trick = Some(t);
             }
@@ -499,4 +505,43 @@ pub fn hips_height(pose: &[Sample], parents: &[i32]) -> f32 {
     // HIPS is bone 1, under the detached trajectory: its translation is in model space.
     let _ = parents;
     pose.get(1).map(|s| Vec3::new(s[7], s[8], s[9]).y).unwrap_or(0.9)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn controller() -> Controller {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/skate3");
+        let clips = se_core::skate3::parse_clips(&std::fs::read(dir.join("clips.s3c")).unwrap()).unwrap();
+        Controller::new(Arc::new(ClipIndex::new(clips)))
+    }
+
+    fn seen(phase: Phase, pop: Option<(Trick, f32)>) -> Seen {
+        Seen { phase, speed: 4.0, fakie: false, push: false, brake: false, slide_side: 0.0, crouch: false, pop }
+    }
+
+    #[test]
+    fn a_trick_landed_before_its_catch_is_a_bail_and_a_caught_one_is_named() {
+        // Landing 0.2 s after a kickflip's pop: not caught.
+        let mut c = controller();
+        let a = c.before(&seen(Phase::Ground, Some((Trick::Kickflip, 0.4))), 0.015);
+        assert!(a.pop.is_some());
+        for _ in 0..13 {
+            c.before(&seen(Phase::Air, None), 0.015);
+        }
+        let out = c.after(Phase::Ground, Some(3.0), false, 0.0, 4.0);
+        assert!(out.bailed && out.bail_board, "{out:?}");
+        assert_eq!(c.last_trick, Some((Trick::Kickflip, false)));
+        // Landing after the catch has ended (the controller back in the air's idle): landed, and named.
+        let mut c = controller();
+        c.before(&seen(Phase::Ground, Some((Trick::Heelflip, 0.4))), 0.015);
+        for _ in 0..80 {
+            c.before(&seen(Phase::Air, None), 0.015);
+        }
+        assert_eq!(c.state, State::Air);
+        let out = c.after(Phase::Ground, Some(3.0), false, 0.0, 4.0);
+        assert!(!out.bailed && out.landed, "{out:?}");
+        assert_eq!(out.landed_trick, Some(Trick::Heelflip));
+    }
 }
