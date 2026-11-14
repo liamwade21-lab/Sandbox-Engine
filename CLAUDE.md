@@ -201,9 +201,11 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   mod off any other way in flight LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
   throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state|pip eng|sys|wep|reset|boost|
-  hardpoints|fire SECS|jump|target NAME|none|face|hyper NAME`, with `SE_SANDBOX=1` (SpaceEngine's Alpha Centauri is "ALF Cen",
+  hardpoints|fire SECS|jump|target NAME|none|face|hyper NAME|put NAME ALT_KM`, with `SE_SANDBOX=1` (SpaceEngine's Alpha Centauri is "ALF Cen",
   its A "Rigil Kentaurus"; a barycentre's name stands for its brightest star). Stars heat the ship by `elite_sim::stars` every
-  tick, and a star's emergency zone in supercruise is its exclusion zone (1.05 radii). Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
+  tick, and a star's emergency zone in supercruise is its exclusion zone (1.05 radii). Step 6.3 is ours (F): drag in thruster flight
+  only (`elite_sim::air`, the hull's outline from `AirState::areas`, density from `AirModel`); a gas giant has no exclusion zone,
+  glides by its radius and stops the ship at `giant_floor_m` (`floor_m`: its ground in `fly`'s collision only). Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
   writes it into the nearest body's frame (`Parked`) every frame: keep `Parked` the truth everything else reads. A laser's beam shows 0.08 s of each 0.25 s: take several pictures.
   The glide (`Pilot::glide`, `elite_sim::glide`) starts from supercruise heading down within 25 km of a solid body's LOADED ground
   (`height_over`, never the radius: generated worlds' ground stands 10-20 km over it); the ground check still runs in a glide.

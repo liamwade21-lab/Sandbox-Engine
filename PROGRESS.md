@@ -69,6 +69,9 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     system, and the ship arrives in supercruise facing the star. Flown Sol to Alpha Centauri (SpaceEngine calls it "ALF
     Cen"; T or `sw target Rigil Kentaurus`) and back. Stars (5.4): their heat grows inside two radii, an emergency drop
     at 1.05 radii, overheating damages the hull and can destroy the ship.
+  - Also in (ours, not Elite, step 6.3): real air's drag in thruster flight (Venus's thick air holds the ship to 27 m/s),
+    and gas giants flown down to the port's floor 200 km under Jupiter's clouds. Hot air's heat is left out (Elite's rule
+    for it was not found).
   - Next without Elite: the Navigation and right panels (4.2), Phase 7 (costs, the release zip, the final check).
 
 

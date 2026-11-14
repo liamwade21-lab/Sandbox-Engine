@@ -53,6 +53,15 @@ pub struct Cruise {
     pub carrier: Option<(ObjectRef, UPos)>,
 }
 
+/// The air the ship flies through (step 6.3, ours): the body it was read for, its model, and the hull's triangles' area
+/// vectors (model space) the drag's outline is measured from.
+#[derive(Default)]
+pub struct AirState {
+    obj: Option<ObjectRef>,
+    model: Option<crate::viltrumite::air::AirModel>,
+    areas: Vec<glam::DVec3>,
+}
+
 /// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
 const CRUISE_START: f64 = supercruise::stand_in::FLOOR_PLANET;
 /// Too close to a body's surface in supercruise: an emergency drop (E: A50 found the drop's effects but not its triggers),
@@ -152,6 +161,9 @@ pub struct Pilot {
     pub target: Option<ObjectRef>,
     pub jump: Option<super::hyper::Jump>,
     pub dev_hyper: Option<ObjectRef>,
+    /// A test's placing of the ship over a body (`sw put NAME ALT_KM`), and the air's density where it is (kg/m^3).
+    pub dev_put: Option<(ObjectRef, f64)>,
+    pub air_density: f64,
     /// The HUD's line for the target (its name, distance and the jump's fuel, or why not).
     pub target_note: String,
     /// The stars' heat this frame (a share of the capacity a second), for the HUD.
@@ -201,6 +213,8 @@ impl Default for Pilot {
             target: None,
             jump: None,
             dev_hyper: None,
+            dev_put: None,
+            air_density: 0.0,
             target_note: String::new(),
             star_heat: 0.0,
             dev_face: false,
@@ -387,6 +401,8 @@ pub fn fly(
     bodies: Query<(&SystemBody, Option<&Terrain>)>,
     mut msg: ResMut<crate::messages::Messages>,
     sim: Res<SimTime>,
+    mut air_cache: ResMut<crate::ship::air::AirCache>,
+    mut air: Local<AirState>,
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
@@ -394,7 +410,52 @@ pub fn fly(
         return;
     }
     let Some(p) = ship.parked.as_mut() else { return };
+    // A test's placing (`sw put NAME ALT_KM`): over the body's day side, level, in thruster flight, the gear up.
+    let put_now = pilot.dev_put.is_some();
+    if let Some((obj, alt)) = pilot.dev_put.take() {
+        if let Some((tb, tt)) = bodies.iter().find(|(sb, _)| sb.obj == obj) {
+            let sun = bodies.iter().find(|(sb, _)| sb.star).map(|(sb, _)| sb.pos);
+            let up = sun.map_or(DVec3::Y, |s| (tb.orient.inverse() * s.delta_m(tb.pos)).normalize_or(DVec3::Y));
+            let solid_t = tt.filter(|t| !t.proc.kind.is_giant());
+            let ground = crate::ship::ground_on(tb.radius_m, tb.shape, solid_t, up * tb.radius_m).0;
+            p.obj = obj;
+            p.pos = up * (ground + alt);
+            let flat = up.any_orthonormal_vector();
+            p.rot = DQuat::from_mat3(&bevy::math::DMat3::from_cols(flat.cross(up), up, -flat)).normalize();
+            pilot.cruise = None;
+            pilot.glide = None;
+            pilot.landed = false;
+            pilot.gear_down = false;
+            pilot.gear_t = 1.0;
+            pilot.motion = Motion { rot: to_sim_q(p.rot), ..Motion::default() };
+            info!("sidewinder: put over {obj:?} at {:.1} km", alt / 1000.0);
+        }
+    }
     let Some((b, terrain)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
+    // Gas giants (step 6.3, ours: F4): no ground but the port's own floor, 10 scale heights under the radius, which stops the
+    // ship (it can't land there); the glide, the beams and the air's heights go by the radius.
+    let giant = terrain.is_some_and(|t| t.proc.kind.is_giant());
+    let solid = if giant { None } else { terrain };
+    let floor_m = if giant { terrain.and_then(crate::volumetric_clouds::giant_floor_m).unwrap_or(0.0) } else { 0.0 };
+    if put_now && giant {
+        info!("sidewinder: a gas giant: its floor {:.1} km under the radius", -floor_m / 1000.0);
+    }
+    // The air (ours): the body's model, read when the ship comes to a new body; the hull's area vectors once.
+    if air.obj != Some(b.obj) {
+        let eph = se_core::ephemeris::Ephemeris::new(&data.catalog);
+        air.model = crate::viltrumite::air::AirModel::of(&mut air_cache, &data, &eph, sim.jd, b.obj, b.radius_m, terrain);
+        air.obj = Some(b.obj);
+    }
+    if air.areas.is_empty() {
+        let parts = super::rest_transforms(&assets.ship);
+        for d in &assets.ship.draws {
+            let t = parts[d.part as usize];
+            let at = |i: u16| glam::DVec3::from_array(t.transform_point3(Vec3::from_array(assets.ship.position_m(&d.vertices[i as usize]))).as_dvec3().to_array());
+            for tri in d.indices.chunks_exact(3) {
+                air.areas.push(elite_sim::air::area_vector(at(tri[0]), at(tri[1]), at(tri[2])));
+            }
+        }
+    }
     let pilot = &mut *pilot;
     let dt = (time.delta_secs() as f64).min(0.25);
     // The controls of this frame.
@@ -561,13 +622,14 @@ pub fn fly(
     let mut glide_into: Option<ObjectRef> = None;
     // The bodies a glide can go into (solid ground: a terrain, not a star or a gas giant) and a point's height over their loaded
     // ground (the point in the body's frame).
-    let glidable: Vec<(ObjectRef, f64, DVec3, &Terrain)> = if pilot.cruise.is_some() {
-        bodies.iter().filter_map(|(sb, t)| t.filter(|t| !sb.star && !t.proc.kind.is_giant()).map(|t| (sb.obj, sb.radius_m, sb.shape, t))).collect()
+    // (A gas giant's glide goes by its radius: F4, ours. It has no exclusion zone either.)
+    let glidable: Vec<(ObjectRef, f64, DVec3, Option<&Terrain>)> = if pilot.cruise.is_some() {
+        bodies.iter().filter_map(|(sb, t)| t.filter(|_| !sb.star).map(|t| (sb.obj, sb.radius_m, sb.shape, (!t.proc.kind.is_giant()).then_some(t)))).collect()
     } else {
         Vec::new()
     };
     let height_over = |obj: ObjectRef, local: DVec3| {
-        glidable.iter().find(|g| g.0 == obj).map(|g| local.length() - crate::ship::ground_on(g.1, g.2, Some(g.3), local).0)
+        glidable.iter().find(|g| g.0 == obj).map(|g| local.length() - crate::ship::ground_on(g.1, g.2, g.3, local).0)
     };
     // The glide's end tests, once a frame (A60: terrain within 10 km along the nose, the surface within 6,500 m below; a ray
     // stepped against the loaded heights, as the beams').
@@ -577,13 +639,13 @@ pub fn fly(
         let mut s = 0.0;
         while s < glide::END_AHEAD_M {
             let at = p.pos + dir * s;
-            if at.length() < crate::ship::ground_on(b.radius_m, b.shape, terrain, at).0 {
+            if at.length() < crate::ship::ground_on(b.radius_m, b.shape, solid, at).0 {
                 ahead = s;
                 break;
             }
             s += 50.0;
         }
-        (ahead, p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, terrain, p.pos).0)
+        (ahead, p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos).0)
     } else {
         (f64::MAX, f64::MAX)
     };
@@ -755,7 +817,20 @@ pub fn fly(
             }
             let r = p.pos.length().max(1.0);
             let up = p.pos / r;
-            let outside = -up * gm / (r * r);
+            // The air's drag (ours, F4): against the motion through the air (it turns with the body, as this frame does), the
+            // outline along it, the density at this height over the ground (a giant's: over its radius, denser below it).
+            let h = r - crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos).0;
+            let density = air.model.map_or(0.0, |m| m.at(h).density);
+            let vel = from_sim_v(pilot.motion.vel);
+            let drag = if density > 0.0 && vel.length() > 1e-6 {
+                let along = p.rot.inverse() * vel.normalize();
+                let area = elite_sim::air::outline_area(&air.areas, glam::DVec3::from_array(along.to_array()));
+                from_sim_v(elite_sim::air::drag_acceleration(to_sim_v(vel), density, area, pilot.mass_t() * 1000.0))
+            } else {
+                DVec3::ZERO
+            };
+            pilot.air_density = density;
+            let outside = -up * gm / (r * r) + drag;
             pilot.motion.rot = to_sim_q(p.rot);
             let tick_input = if powered { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
             flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
@@ -767,7 +842,7 @@ pub fn fly(
         let gear_out = pilot.gear_t < 0.05;
         let height = |p: &super::Parked, pt: Vec3| -> f64 {
             let w = p.pos + p.rot * pt.as_dvec3();
-            w.length() - crate::ship::ground_on(b.radius_m, b.shape, terrain, w).0
+            w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
         };
         let feet: Vec<f64> = if gear_out { assets.shape.feet.iter().map(|f| height(p, *f)).collect() } else { Vec::new() };
         let lowest = assets.shape.belly.iter().map(|q| height(p, *q)).chain(feet.iter().copied()).fold(f64::MAX, f64::min);
@@ -775,6 +850,20 @@ pub fn fly(
             if pilot.glide.take().is_some() {
                 msg.show("Glide ended: the ground".to_string());
                 info!("sidewinder: the glide met the ground");
+            }
+            if giant {
+                // A gas giant's floor (F4): it stops the ship, which can't land there.
+                let up = p.pos.normalize();
+                let vel = from_sim_v(pilot.motion.vel);
+                let down_speed = -vel.dot(up);
+                p.pos -= up * lowest;
+                if down_speed > 0.0 {
+                    pilot.motion.vel = to_sim_v(vel + up * down_speed);
+                    if pilot.log {
+                        info!("sidewinder: stopped by the giant's floor at {down_speed:.1} m/s");
+                    }
+                }
+                continue;
             }
             let up = p.pos.normalize();
             let vel = from_sim_v(pilot.motion.vel);
@@ -898,7 +987,7 @@ pub fn fly(
         let mut s = 0.0;
         while s < range {
             let at = from + dir * s;
-            let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, terrain, at);
+            let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, solid, at);
             if at.length() < ground {
                 len = s;
                 break;
@@ -909,7 +998,7 @@ pub fn fly(
     }
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);
-        let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, terrain, p.pos);
+        let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos);
         info!("sidewinder: {:.1} m/s, {:.1} m over the ground (its origin), throttle {:.2}, FA {}, gear {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down);
     }
 }

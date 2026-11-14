@@ -1170,3 +1170,24 @@ flight at the zone's edge the heat rose 0.15 a second from 61 % past 100 %, the 
 the hull, 296 % heat, the ship was destroyed and he was set down on Earth. Not done: the proof's heat traces against distance
 (session 5 measures them in Elite), fuel scooping (not in the stock ship), a star's own sounds.
 Tests: `star_heat_grows_inwards_and_the_zone`.
+
+### Step 6.3, first cut: ours, real air and the gas giants (2026-11-14). **Built and flown at Earth, Venus and Jupiter. This is not Elite (F)**
+
+Everything in this step is the port's own (F4), not Elite's: Elite has no drag, no hot air and no flight inside a gas giant.
+`elite_sim::air`: drag `0.5 x density x speed^2 x area x 1.0` against the motion through the air, only in thruster flight
+(never in supercruise or the glide); the area is the converted hull's own outline along the motion (half the sum of `|a . d|`
+over its triangles' area vectors: exact for a convex hull, somewhat more for a concave one); the density is the port's
+`AirModel` at the ship's height over the ground (a giant's over its radius, and denser below it). It goes into the flight as
+gravity does, so flight assist fights it with the thrusters it has and the top speed in thick air comes out lower by itself.
+Nothing is tuned. Gas giants: no exclusion zone; the glide goes by the radius; below it the ship flies on thrusters down to the
+port's own floor (`volumetric_clouds::giant_floor_m`, 10 scale heights under the radius: 200 km at Jupiter), which stops it
+(it can't land there). **Hot air's heat is left out**, as the spec says to do when Elite's rule can't be recovered: the
+star-heat rule it was to go through has its form in the exe but not its numbers (step 5.4), so it would be invented.
+
+Flown (`sw put NAME ALT_KM`, a test's placing over a body's day side): over Earth at 1 km (1.15 kg/m^3) full throttle still
+reaches the ship's 160.7 m/s (the drag, about 9 m/s^2, is within the thrusters' reach); at 40 km the air is 0.018 kg/m^3; over
+Venus at 1 km (61.3 kg/m^3) full throttle tops out at 26.8 m/s (the outline about 92 m^2 head on); into Jupiter, at 20 km over
+the radius 0.09 kg/m^3, 150 km under it 2.85 kg/m^3 with full down thrust settling at 78 m/s, at 195 km 4.73 kg/m^3; at its
+floor the ship was stopped at 60 m/s and held there; and a glide into Jupiter from supercruise at -60 degrees entered 18.4
+km over the radius and ended (TerrainDanger) at 8.6 km, then normal flight sank through the air. Tests:
+`a_cubes_outline_and_the_drag`. `sw put NAME ALT_KM`.

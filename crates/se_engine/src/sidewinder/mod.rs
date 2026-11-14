@@ -484,6 +484,20 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_jump = true;
             None
         }
+        // `sw put NAME ALT_KM`: the ship over a body of this system, level, in thruster flight (a test's placing).
+        "put" => {
+            let words: Vec<&str> = arg.split_whitespace().skip(1).collect();
+            let (name, alt) = match words.split_last() {
+                Some((a, rest)) if a.parse::<f64>().is_ok() => (rest.join(" "), a.parse::<f64>().unwrap_or(1.0) * 1000.0),
+                _ => (words.join(" "), 1000.0),
+            };
+            let found = world.resource::<crate::data::SeData>().catalog.find(&name);
+            if found.is_none() {
+                info!("sidewinder: no body named {name:?}");
+            }
+            world.resource_mut::<pilot::Pilot>().dev_put = found.map(|f| (f, alt));
+            None
+        }
         // `sw face`: turns the ship to face its target (a test's aim; the real one is the stick).
         "face" => {
             world.resource_mut::<pilot::Pilot>().dev_face = true;
@@ -577,7 +591,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 if let Some(p) = ship.parked.as_ref() {
                     let nose = p.rot * bevy::math::DVec3::NEG_Z;
                     let down = -p.pos.normalize_or(bevy::math::DVec3::Y);
-                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, hull {:.0} %", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.hull.percent());
+                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, hull {:.0} %, air {:.4} kg/m3", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.hull.percent(), pl.air_density);
                 }
             }
             None

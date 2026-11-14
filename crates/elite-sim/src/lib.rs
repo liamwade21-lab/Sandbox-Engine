@@ -4,6 +4,7 @@
 //! No Bevy, no files, f64, a fixed tick: it runs and is tested without the game (`cargo test --release -p elite-sim`), and
 //! its trace tests (measured traces of the real game replayed inside the gate, `trace.rs`) are the proof.
 
+pub mod air;
 pub mod boost;
 pub mod data;
 pub mod drive;
