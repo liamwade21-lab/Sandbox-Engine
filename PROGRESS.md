@@ -2,6 +2,9 @@
 
 ## Current state (2026-11-13)
 
+- **The Skate 3 mod is complete** (the user, 2026-11-13, after trying 1.2.0: "the mod is now complete"). The workspace was
+  cleaned the same day: unused build files, the debug build, the upstream reference build (`re/skate3/src/target`, made again
+  by building `re/skate3/oracle`) and the 1.1.0 zip (still on GitHub) went to the Recycle Bin.
 - **The Skate 3 mod now runs the Rust port's own simulation** (the user, 2026-11-13, after playing the first version: "the
   physics need to be byte for byte ported"; the push looked like tapping, tricks were missing, no score). `crates/skate-sim`
   is upstream `skate-game`'s per-tick simulation copied verbatim (2e16697; `UPSTREAM.md` lists every edit, all imports and

@@ -6,3 +6,5 @@ Only the data types `crates/skate-sim` names (`skate_mods::presentation::{Camera
 `src/lua_list.rs`, `src/schema.rs` are byte-identical to upstream; `src/lib.rs` and `Cargo.toml` are new (upstream's pull in
 mlua with a vendored Lua, gltf, zip and blake3). The Lua mod host itself is NOT here.
 Re-check: `for f in presentation extensions lua_list schema; do diff -q re/skate3/src/crates/skate-mods/src/$f.rs crates/skate-mods/src/$f.rs; done`
+
+Its tests aren't built (`test = false` in `Cargo.toml`): `lua_list.rs`'s own tests need `mlua`, which is left out.

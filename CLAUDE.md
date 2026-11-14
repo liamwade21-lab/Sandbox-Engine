@@ -70,7 +70,9 @@ once and shipped (the user's: "Ship them with the game", credited to EA).
 
 - Build: `cargo build --release` (always release). The user plays from
   `target\release\spaceengine-rs.exe`, so rebuild release after every change.
-- Tests: `cargo test -p se_core` and `cargo test -p se_engine --release`.
+- Tests: `cargo test -p se_core` and `cargo test -p se_engine --release`. The Skate 3 mod's simulation: `cargo test --release -p skate-sim`. Everything at once:
+  `cargo test --workspace --release --no-fail-fast`, where one `skate-core` test fails in the untouched upstream copy too
+  (its `UPSTREAM.md`).
 - SpaceEngine install (read only): `D:\SteamLibrary\steamapps\common\SpaceEngine`.
 - No .bat launchers yet.
 - What a launch does (since 2026-11-11): it starts on Earth's ground in first person (the sandbox). `SE_SANDBOX=0` gives the
