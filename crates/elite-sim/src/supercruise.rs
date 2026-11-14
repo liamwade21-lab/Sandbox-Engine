@@ -117,6 +117,15 @@ pub fn sweep(from: glam::DVec3, step: glam::DVec3, radius: f64) -> Option<f64> {
     (0.0..=1.0).contains(&t).then_some(t)
 }
 
+/// A body's supercruise exclusion zone (C14, the spec's F4): a star's is 1.05 of its radius (A50's registration, `stars.rs`);
+/// planets and gas giants have none (they glide: A60's approach, and F4 for the giants).
+pub fn exclusion_radius(w: Well) -> Option<f64> {
+    match w {
+        Well::Star { radius } => Some(crate::stars::EXCLUSION_FACTOR * radius),
+        Well::Planet { .. } => None,
+    }
+}
+
 /// A60's safe stop on a hit: the closing speed (m/s) at or over the threshold is an emergency stop (TooFastNearPlanet),
 /// under it the drop to the glide (OrbitalCruiseSafeStop). The threshold is data (`+0x1F4`, not found): a stand-in.
 pub fn too_fast(closing: f64) -> bool {
@@ -133,6 +142,14 @@ pub fn can_drop(distance: f64, speed: f64, angle_deg: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C14: only stars have an exclusion zone.
+    #[test]
+    fn only_stars_have_an_exclusion_zone() {
+        assert_eq!(exclusion_radius(Well::Star { radius: 7.0e8 }), Some(1.05 * 7.0e8));
+        assert_eq!(exclusion_radius(Well::Planet { radius: 6.4e6, mass: 6e24 }), None);
+        assert_eq!(exclusion_radius(Well::Planet { radius: 7.0e7, mass: 1.9e27 }), None);
+    }
 
     /// The swept test finds the shell this tick's path crosses, not one it starts inside or moves away from.
     #[test]

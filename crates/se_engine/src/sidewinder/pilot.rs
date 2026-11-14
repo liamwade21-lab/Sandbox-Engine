@@ -889,8 +889,7 @@ pub fn fly(
                 let glides = flat.is_some();
                 let shell = match w {
                     _ if glides => r * flat.unwrap_or(1.0) + glide::stand_in::ENTRY_M,
-                    Well::Star { .. } => elite_sim::stars::EXCLUSION_FACTOR * r,
-                    _ => r + (r * EMERGENCY_SHARE).max(EMERGENCY_M),
+                    _ => supercruise::exclusion_radius(*w).unwrap_or(r + (r * EMERGENCY_SHARE).max(EMERGENCY_M)),
                 };
                 if let Some(t) = supercruise::sweep(to_sim_v(c.pos.delta_m(*at)), to_sim_v(step), shell) {
                     if hit.is_none_or(|h| t < h.0) {
@@ -928,9 +927,9 @@ pub fn fly(
             // (A star's zone is its exclusion zone, 1.05 of its radius: step 5.4.)
             if wells.iter().any(|(w, at, r, obj, _)| {
                 let to = at.delta_m(c.pos);
-                let inside = match w {
-                    Well::Star { .. } => elite_sim::stars::excluded(to.length(), *r),
-                    _ => !glidable.iter().any(|g| g.0 == *obj) && to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M),
+                let inside = match supercruise::exclusion_radius(*w) {
+                    Some(zone) => to.length() < zone,
+                    None => !glidable.iter().any(|g| g.0 == *obj) && to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M),
                 };
                 inside && heading.dot(to) > 0.0
             }) {
