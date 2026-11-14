@@ -1309,9 +1309,12 @@ The checker's report (FAIL: one high bug the spec rules out; the rest disclosed 
    axis test): pushed out the shortest way, the speed into the wall taken away, a hard hit damaging it by the ground's rule
    (ours, F). The checker's flight backwards through New York at 92 m/s now hits the first building (153 MJ: destroyed). Not
    yet: standing on a roof. Test: `boxes_overlap_and_part`.
-2. **The spec's 60 s tunnel fallback** is built: a tunnel whose system hasn't loaded in 60 s ends back where it left, at the
-   old star, in supercruise, the fuel given back (`hyper.rs`, `TUNNEL_LIMIT_S`; `sw hyper NAME fail` forces it: it went back
-   to the Sun after the tunnel's 13.5 s).
+2. **The spec's 60 s tunnel fallback** is built: a tunnel whose system hasn't loaded in 60 s ends back where it left, the fuel
+   given back (`hyper.rs`, `TUNNEL_LIMIT_S`; `sw hyper NAME fail` forces it after the tunnel's 13.5 s). The checker's re-check
+   found its first version came back to the universe point it left, which the planet had moved on from (174 km under the
+   Pampas): the departure is now kept in its body's turning frame and placed again where that body is, and a ship that left
+   in normal flight comes back in normal flight there (ours, F), else in supercruise. The checker's case again: left 6,371.612
+   km from Earth's centre, back at 6,371.611 km, hovering, the drive cooling down.
 3. **`sw trace FILE`** is built: a row a tick in the measured traces' columns (the keys from the frame's controls; a test's
    `sw throttle` sets the throttle without a key, so such runs show none). Its first version cut the path at its first space
    and wrote a file named `Sandbox` on the Desktop (moved into `.optimize/scratch/run`); the rest of the line is the path now.

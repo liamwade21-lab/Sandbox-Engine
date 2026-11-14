@@ -34,10 +34,12 @@ pub struct Jump {
     pub rot: DQuat,
     pub seconds: f64,
     pub frames: u32,
-    /// Where it left from (universe place and turn, and the body it was by), the fuel it took, and whether this is the way
-    /// back after a system that wouldn't load (the spec's edge case: after 60 s the tunnel ends back at the old star, the
-    /// fuel not taken). `fail` is a test's forced failure (`sw hyper NAME fail`).
-    pub from: (UPos, DQuat, ObjectRef),
+    /// Where it left from, in the frame of the body it was by (that body, the place and turn in its turning frame, and whether
+    /// it was in supercruise: the body moves on while the tunnel lasts, 30 km/s for Earth, so a universe place would come back
+    /// inside it: checker 4), the fuel it took, and whether this is the way back after a system that wouldn't load (the spec's
+    /// edge case: after 60 s the tunnel ends back at the old star, the fuel not taken). `fail` is a test's forced failure
+    /// (`sw hyper NAME fail`).
+    pub from: (ObjectRef, DVec3, DQuat, bool),
     pub fuel: f64,
     pub returning: bool,
     pub fail: bool,
@@ -160,9 +162,12 @@ pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, from_rot: DQ
         _ => data.catalog.system_root(target).unwrap_or(0),
     };
     let (arrive, rot) = arrival(data, jd, from, target, elite_sim::hyperspace::stand_in::ARRIVAL_RADII);
+    let eph = Ephemeris::new(&data.catalog);
+    let turn = eph.orientation(from_obj, jd);
+    let home = (from_obj, turn.inverse() * from.delta_m(eph.position(from_obj, jd)), (turn.inverse() * from_rot).normalize(), pilot.cruise.is_some());
     pilot.cruise = None;
     pilot.glide = None;
-    pilot.jump = Some(Jump { target, root, arrive, rot, seconds: 0.0, frames: 0, from: (from, from_rot, from_obj), fuel, returning: false, fail: false });
+    pilot.jump = Some(Jump { target, root, arrive, rot, seconds: 0.0, frames: 0, from: home, fuel, returning: false, fail: false });
     info!("sidewinder: hyperspace to {target:?} (root {root}), {:.3} ly", from.delta_m(arrive).length() / se_core::units::METERS_PER_LY);
 }
 
@@ -220,14 +225,18 @@ pub fn tunnel(
     // The system didn't load within the limit (or a test forced it): back the way it came, to the old star, the fuel given back
     // (the spec's edge case). The way back has no limit of its own.
     if !j.returning && (j.seconds > TUNNEL_LIMIT_S || (j.fail && j.seconds >= elite_sim::hyperspace::TUNNEL_S)) {
-        let home = j.from.2;
+        let home = j.from.0;
         let star = match home {
             ObjectRef::Star(_) => Some(home),
             _ => data.catalog.system_root(home).and_then(|r| as_star(&data, ObjectRef::Star(r))),
         };
         if let Some(star) = star {
             let fuel = j.fuel;
-            *j = Jump { target: star, root: data.catalog.system_root(star).unwrap_or(0), arrive: j.from.0, rot: j.from.1, seconds: elite_sim::hyperspace::TUNNEL_S, frames: j.frames, from: j.from, fuel: 0.0, returning: true, fail: false };
+            // (The place it left, where its body is now.)
+            let eph = Ephemeris::new(&data.catalog);
+            let turn = eph.orientation(home, sim.jd);
+            let back = eph.position(home, sim.jd).offset_m(turn * j.from.1);
+            *j = Jump { target: star, root: data.catalog.system_root(star).unwrap_or(0), arrive: back, rot: (turn * j.from.2).normalize(), seconds: elite_sim::hyperspace::TUNNEL_S, frames: j.frames, from: j.from, fuel: 0.0, returning: true, fail: false };
             pilot.fuel.main += fuel;
             msg.show("Hyperspace failed: the destination didn't load; back to where you left".to_string());
             info!("sidewinder: the tunnel gave up after {:.1} s: back to {}, {fuel:.6} t of fuel given back", j.seconds, data.catalog.display_name(star));
@@ -237,6 +246,21 @@ pub fn tunnel(
     // (At least the tunnel's measured length, D, and until the target's system is entered.)
     let (true, true, Some(star)) = (j.seconds >= elite_sim::hyperspace::TUNNEL_S, active.root == Some(j.root), star) else { return };
     let j = *j;
+    // Back from a failed jump that left in normal flight: in normal flight where it was by its body, once that body is there
+    // (ours, F: Elite has no such case).
+    if j.returning && !j.from.3 {
+        let Some(home) = bodies.iter().find(|b| b.obj == j.from.0) else { return };
+        p.obj = home.obj;
+        p.pos = j.from.1;
+        p.rot = j.from.2;
+        pilot.cruise = None;
+        pilot.motion = elite_sim::flight::Motion { rot: glam::DQuat::from_array(p.rot.to_array()), ..Default::default() };
+        pilot.drive = elite_sim::drive::Drive::Cooldown(elite_sim::drive::stand_in::JUMP_COOLDOWN_S);
+        pilot.jump = None;
+        msg.show("Back where you left".to_string());
+        info!("sidewinder: back by {:?} in normal flight after {} frames", home.obj, j.frames);
+        return;
+    }
     p.obj = star.obj;
     p.pos = star.orient.inverse() * j.arrive.delta_m(star.pos);
     p.rot = (star.orient.inverse() * j.rot).normalize();
