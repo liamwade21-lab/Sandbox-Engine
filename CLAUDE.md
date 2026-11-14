@@ -66,6 +66,12 @@ licence and the credit (README, the site). The user's Skate 3 is set up by that 
 extracted disc (`C:\Users\liamw\Downloads\Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl)`); the mod's files are made from them
 once and shipped (the user's: "Ship them with the game", credited to EA).
 
+**Planned, not built: the Faulcon DeLacy Sidewinder mod (the user's of 2026-11-13):** Elite Dangerous's Sidewinder, spawned
+from the Q menu and boarded with E, flying by Elite's rules. The plan is `docs/spec-mods-sidewinder.md` (the user's interview
+is in its Decisions log; its "What byte for byte honestly means here" grades every part). Its research (the survey of Elite's
+files, the community's numbers) is in `re/elite/`, out of git. Elite's install (read only):
+`D:\SteamLibrary\steamapps\common\Elite Dangerous\Products\elite-dangerous-odyssey-64`.
+
 ## Build and play
 
 - Build: `cargo build --release` (always release). The user plays from
@@ -145,6 +151,15 @@ once and shipped (the user's: "Ship them with the game", credited to EA).
   file, the sounds included, and loads the simulation from the copy) and the sounds by `python -I
   re/skate3/tools/make_sounds.py` (run it first, then copy_skate3). If the simulation is made to read another file, add it to
   `RETAIL` and re-run. Never edit the files by hand. The model's format is `se_core/src/skate3.rs`.
+- Elite Dangerous (the user, 2026-11-13, for the Sidewinder mod): about half of its data files are encrypted (they start
+  with `FREA`; 54,320 of 102,957 in `Win64`). **Never open them, and never go round them** (no key from the exe, no reading
+  the running game's memory, no capture from the graphics card): that is defeating DRM. Its open files (zlib-packed mesh and
+  texture data, Wwise Vorbis sound packs, the `.binds` and settings XML) may be read; what the mod uses is converted once into
+  `crates/se_engine/assets/mods/sidewinder` and shipped (the user's decision, with the takedown risk stated). The exe's code
+  may be studied offline with Ghidra (`/rea`); decompiled code stays in `re/elite`, out of git. Measuring the real game: a
+  Sonnet agent presses the flight keys in the user's Elite, in Solo only, after the user has logged in; it never types
+  credentials, spends credits or touches other players. Nothing of the mod's rules is ever tuned by feel: a rule comes from
+  the exe's code or from a measurement, inside the measuring error.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
 - When SpaceEngine itself needs running (to compare with it), a Sonnet agent (high effort) drives
