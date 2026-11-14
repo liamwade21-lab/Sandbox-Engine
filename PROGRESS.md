@@ -6,8 +6,8 @@
   Q menu, E to get in, everything as close to Elite as can be proven). The plan is `docs/spec-mods-sidewinder.md`; your
   answers are in its Decisions log. Found on the way: about half of Elite's data files are encrypted and stay closed (your
   rule); the 3D shapes, textures and sound recordings are open but have no names, so they must be found by looking and
-  listening. Nothing is built yet. Next: the plan's step 0.1 (readers for Elite's open files, run with `/rea`). Yours to do
-  before step 0.7: buy a stock Sidewinder in Elite (32,000 cr) and leave it stock. The survey's tools and data are in
+  listening. Nothing is built yet. Next: the plan's step 0.1 (readers for Elite's open files, run with `/rea`). You bought the
+  stock Sidewinder on 2026-11-14 (its journal `Loadout` is in the plan: gimballed lasers, 42.9 t, 8.15 ly); leave it stock. The survey's tools and data are in
   `re/elite/` (out of git).
 - **The Skate 3 mod is complete** (the user, 2026-11-13, after trying 1.2.0: "the mod is now complete"). The workspace was
   cleaned the same day: unused build files, the debug build, the upstream reference build (`re/skate3/src/target`, made again
