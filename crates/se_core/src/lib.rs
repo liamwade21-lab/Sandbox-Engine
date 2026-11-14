@@ -14,6 +14,7 @@ pub mod cluster_stars;
 pub mod coords;
 pub mod custom_model;
 pub mod dds;
+pub mod elite;
 pub mod ephemeris;
 pub mod galaxy_model;
 pub mod gmod;

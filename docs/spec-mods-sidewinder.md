@@ -626,3 +626,33 @@ flight code in the exe (0.11); G4 the system swap (5.3). Each has its fallback w
 ## Build log
 
 (Each step's report goes here: what was built, the claims with their grades, the numbers.)
+
+### Step 0.1: the mesh reader (2026-11-14). **G1 passed**
+
+Built: `crates/se_core/src/elite.rs`: `unpack` (refuses `FREA` by its tag before anything else), `file_kind`, `data_file`,
+`parse_mesh` with `MeshFile` / `MeshChunk` / `MeshPart` / `Vertex` (the 40 bytes kept as they are, read by its methods).
+Tests: `refuses_frea` (C3, in memory), `reads_a_built_mesh`, `refuses_a_bad_mesh`, `reads_meshes_of_the_install` (every
+200th file of the install; skips without it) and the ignored `every_mesh_of_the_install`. A Python twin written first and
+the tools are in `re/elite/tools/` (`elite_mesh.py`, `mesh_catalog.py`, `mesh_sheet.py`); the catalog of every mesh (name,
+unpacked size, each chunk's kind, its parts' triangles and vertices, raw bounds) is `re/elite/catalog/meshes.json`; five
+contact sheets of 60 meshes each, drawn from front, side and top, are `re/elite/sheets/meshes_sample_{a,2,3,4,5}.png`.
+
+The layout (worked out from the data alone; the module's notes have it field by field):
+
+| Claim | Grade | How it was shown |
+|---|---|---|
+| A mesh's geometry is read as Elite's own bytes, unchanged | A | The reader keeps each vertex's 40 bytes and each index as stored |
+| Container: header words, `n` chunk descriptors, the chunks' data back to back at the file's end; a chunk is 24-byte rows (triangles, vertices per part), each part's u16 indices padded to 4 bytes, then 40-byte vertices | A (layout seen in the data) | Every file of the install that reads ends exactly at its last vertex; every index is inside its part |
+| Position: three 21-bit fields in bytes 0-7, each minus 2^20; Y is up | A for the bits; Y up seen | A box mesh gives exactly two values per axis; the sheets draw recognisable things; a wine glass, a helmet and trousers stand on Y |
+| Normal bytes 8-10, tangent bytes 12-14 (unorm8) | A | Unit length (median 1.000, 5th percentile 0.998); normal against tangent: median abs dot 0.004 |
+| UV bytes 16-19, `(v - 32767) / 2047` | A | A quad's corners read exactly 0 and 1 |
+| Bone weights bytes 36-39 | A | They sum to 255 in every vertex of 400 sampled meshes |
+| Colour (20-23), second and third UV (24-31), bone indices (32-35), byte 11's top bit as handedness, byte 15, the chunk kind (2 or 3) | assumed | Patterns only (constants, per-part constants, 0x80 flags); not needed to draw |
+| The position's unit (metres per step) | not found | Not in the open files: two thirds of the models fill 2^19 to 2^20 and a quarter 2^18 to 2^19, so the scale is believed to be in the model's assembly, in the encrypted half (an inference). The Sidewinder's size has to come from Elite's own pictures or numbers (step 0.3) |
+
+Numbers (install 2026.10.23.334925): 102,957 files; 54,320 encrypted, never read past their tag; 22,008 meshes, **21,896
+read (99.5 %)**, 215,351,280 triangles, 267,544,373 vertices. The Rust reader and the Python twin agree on every count. Not
+read yet: 91 files whose rows are not 24 bytes (another kind), 21 whose bodies don't fit the layout. 21,562 files hold one
+chunk; the rest 2 to 23 (levels of detail or pieces). G1: a few hundred meshes (the sheets) draw as ships, a wine glass, a
+helmet, suit parts, trousers, rocks, asteroids, plants and station pieces. `grep -i "aes\|decrypt\|cipher"` finds nothing in
+`elite.rs` (C3).

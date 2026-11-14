@@ -1,12 +1,34 @@
 # Progress
 
-## Current state (2026-11-13)
+## Waiting for you (the Sidewinder mod)
 
-- **Planned, not built: the Faulcon DeLacy Sidewinder mod** (2026-11-13, your request: Elite Dangerous's Sidewinder in the
-  Q menu, E to get in, everything as close to Elite as can be proven). The plan is `docs/spec-mods-sidewinder.md`; your
+1. **Elite screenshots (F10) of your Sidewinder**, saved in `Pictures\Frontier Developments\Elite Dangerous` (the folder is
+   empty now). Outside: front, side, top, a three-quarter view, gear down (the outside camera); inside: from the seat
+   looking ahead, and with head look left and right; the HUD in normal flight. Steps 0.3 and 0.4 (finding the hull and
+   cockpit among Elite's 22,000 unnamed meshes) and every side-by-side picture need them. Until then I pick by shape alone.
+2. **A measuring session (U2)**: start Elite, log in, enter Solo, sit in the Sidewinder in open space, then tell me. It
+   unblocks steps 0.7 (matching sounds), 0.8 (the measuring rig) and 0.9 (the first flight measurements); without them the
+   flight rules can be built from the exe but not proven inside the gate.
+3. **Restart Claude Code once** (whenever convenient): REA was installed on 2026-11-14 and its tools only appear after a
+   restart. Nothing waits on it: the Ghidra command line does the exe study meanwhile.
+
+## Current state (2026-11-14)
+
+- **Building the Faulcon DeLacy Sidewinder mod** (`docs/spec-mods-sidewinder.md`; each step's report is in its Build log).
+  - **Step 0.1 done (go/no-go G1 passed):** the game can now read Elite's open 3D mesh files
+    (`crates/se_core/src/elite.rs`): 21,896 of 22,008 read, 215 million triangles; 300 of them drawn as contact sheets look
+    like real things (ships, a helmet, a wine glass, rocks, station parts). The encrypted files are refused by their first
+    four bytes. Not known from the open files: the meshes' size in metres and their names.
+  - **Installs:** REA 6.7.0 (`npx rea-agents setup --client claude_code`: an MCP entry in `~/.claude.json`, backup
+    `~/.claude.json.rea.backup`, and the skill `~/.claude/skills/reverse-engineer-anything`). Ghidra 12.1.4 and JDK 21 were
+    already in `C:\Users\liamw\tools`.
+  - **Next:** step 0.2 (textures and sounds, running), 0.3 (find the Sidewinder's hull), the exe study (Ghidra is analysing
+    Elite's exe in `re/ghidra_projects/elite`).
+- **The Sidewinder plan** (2026-11-13, your request: Elite Dangerous's Sidewinder in the
+  Q menu, E to get in, everything as close to Elite as can be proven). Your
   answers are in its Decisions log. Found on the way: about half of Elite's data files are encrypted and stay closed (your
   rule); the 3D shapes, textures and sound recordings are open but have no names, so they must be found by looking and
-  listening. Nothing is built yet. Next: the plan's step 0.1 (readers for Elite's open files, run with `/rea`). You bought the
+  listening. You bought the
   stock Sidewinder on 2026-11-14 (its journal `Loadout` is in the plan: gimballed lasers, 42.9 t, 8.15 ly); leave it stock. The survey's tools and data are in
   `re/elite/` (out of git).
 - **The Skate 3 mod is complete** (the user, 2026-11-13, after trying 1.2.0: "the mod is now complete"). The workspace was
