@@ -92,6 +92,10 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
         p.add(egui::Shape::line_segment([a, a + (b - a) * share as f32], egui::Stroke::new(0.005 * h, ORANGE)));
         p.text(at(r, 0.0, 0.258), egui::Align2::CENTER_TOP, "FRAME SHIFT DRIVE CHARGING", font(0.012), ORANGE);
     }
+    // A complete charge held by its condition (A50's codes at the charge's end).
+    if let Some((why, _)) = pilot.drive.held() {
+        p.text(at(r, 0.0, 0.29), egui::Align2::CENTER_CENTER, if why == elite_sim::drive::Refusal::Align { "ALIGN WITH THE DESTINATION" } else { "POINT AWAY FROM THE BODY" }, font(0.013), ORANGE);
+    }
     // The jump's countdown (A50's Departing: 5 s) in the middle of the view.
     if let Some(left) = pilot.drive.countdown() {
         p.text(at(r, 0.0, -0.1), egui::Align2::CENTER_CENTER, format!("{}", left.ceil().max(1.0) as u32), font(0.06), ORANGE);
@@ -106,7 +110,7 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     // The planet HUD (step 4.3, ours in its look: Elite's is a hologram): the altimeter and vertical speed to the right, the
     // heading over the view, the pitch and roll beside it; landed, the way out.
     if let Some(ph) = pilot.planet {
-        let alt = if ph.alt_m >= 10_000.0 { format!("{:.1} KM", ph.alt_m / 1000.0) } else { format!("{:.0} M", ph.alt_m.max(0.0)) };
+        let alt = if ph.alt_m.abs() >= 10_000.0 { format!("{:.1} KM", ph.alt_m / 1000.0) } else { format!("{:.0} M", ph.alt_m) };
         p.text(at(r, 0.30, 0.02), egui::Align2::LEFT_CENTER, format!("ALT {alt}"), font(0.016), ORANGE);
         p.text(at(r, 0.30, 0.045), egui::Align2::LEFT_CENTER, format!("V {:+.0} M/S", ph.vspeed), font(0.013), if ph.vspeed < -5.0 && ph.alt_m < 200.0 { egui::Color32::RED } else { ORANGE });
         p.text(at(r, 0.0, -0.40), egui::Align2::CENTER_CENTER, format!("{:03.0}", ph.heading_deg), font(0.016), ORANGE);

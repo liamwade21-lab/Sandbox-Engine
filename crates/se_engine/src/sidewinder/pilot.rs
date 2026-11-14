@@ -181,6 +181,9 @@ pub struct Pilot {
     pub dev_hyper: Option<ObjectRef>,
     /// A test's placing of the ship over a body (`sw put NAME ALT_KM`), and the air's density where it is (kg/m^3).
     pub dev_put: Option<(ObjectRef, f64)>,
+    /// The jump's target and fuel as worked out when its charge started (A50: taken at departure, the least of it and the fuel
+    /// aboard).
+    pub jump_fuel: Option<(ObjectRef, f64)>,
     pub air_density: f64,
     /// The modules' switches (the right panel's Modules tab, `panels::MODULES`), and the destination picked on the Navigation
     /// tab (a body of this system) with its HUD line.
@@ -238,6 +241,7 @@ impl Default for Pilot {
             jump: None,
             dev_hyper: None,
             dev_put: None,
+            jump_fuel: None,
             air_density: 0.0,
             modules: [true; 10],
             nav_body: None,
@@ -270,7 +274,7 @@ impl Pilot {
     /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
     /// capacitors) are kept.
     pub fn boarding(&self) -> Pilot {
-        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), ..Pilot::default() }
+        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, ..Pilot::default() }
     }
 
     /// A new ship: everything full.
@@ -426,7 +430,7 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
     };
     // A focused panel takes its keys from the flight, as in Elite (W S A D Q E and the arrows); the mouse still flies.
     if panel_open {
-        PilotKeys { throttle_up: false, throttle_down: false, yaw: 0.0, lateral: 0.0, pip_eng: false, pip_sys: false, pip_wep: false, pip_reset: false, ..k }
+        PilotKeys { throttle_up: false, throttle_down: false, yaw: 0.0, lateral: 0.0, pip_eng: false, pip_sys: false, pip_wep: false, pip_reset: false, boost: k.boost && !k.panel.back, ..k }
     } else {
         k
     }
@@ -684,6 +688,10 @@ pub fn fly(
     // The stars' heat (step 5.4: A50's form, its numbers stand-ins), a share of the heat capacity a second.
     let star_heat: f64 = bodies.iter().filter(|(sb, _)| sb.star).map(|(sb, _)| elite_sim::stars::heat_rate(sb.pos.delta_m(ship_u).length(), sb.radius_m)).sum();
     pilot.star_heat = star_heat;
+    if matches!(pilot.drive, Drive::JumpCharging(_) | Drive::Departing(_)) && pilot.jump_fuel.map(|j| j.0) != pilot.target {
+        pilot.drive = if pilot.cruise.is_some() { Drive::Supercruise } else { Drive::Ready };
+        msg.show("Frame shift drive charge cancelled: the target changed".to_string());
+    }
     let target_state = pilot.target.map(|t| super::hyper::check(&data, sim.jd, t, ship_u, ship_rot_u * DVec3::NEG_Z, pilot.mass_t(), pilot.fuel.main, here, &others));
     pilot.target_note = match (pilot.target, target_state) {
         (Some(t), Some(s)) => {
@@ -715,11 +723,16 @@ pub fn fly(
     } else if jump {
         match pilot.drive.press(&fsd) {
             Ok(true) => drop_now = true,
-            Ok(false) => msg.show(match pilot.drive {
-                Drive::Charging(_) => "Frame shift drive charging".to_string(),
-                Drive::JumpCharging(_) => format!("Frame shift drive charging: {}", pilot.target.map_or("", |t| data.catalog.display_name(t))),
-                _ => "Frame shift drive charge cancelled".to_string(),
-            }),
+            Ok(false) => {
+                if matches!(pilot.drive, Drive::JumpCharging(_)) {
+                    pilot.jump_fuel = pilot.target.zip(target_state.and_then(|s| s.ok()).map(|(_, f)| f));
+                }
+                msg.show(match pilot.drive {
+                    Drive::Charging(_) => "Frame shift drive charging".to_string(),
+                    Drive::JumpCharging(_) => format!("Frame shift drive charging: {}", pilot.target.map_or("", |t| data.catalog.display_name(t))),
+                    _ => "Frame shift drive charge cancelled".to_string(),
+                });
+            }
             Err(r) => msg.show(r.message().to_string()),
         }
     }
@@ -737,6 +750,7 @@ pub fn fly(
     };
     let mut emergency = false;
     let mut jump_now = false;
+    let mut too_fast_stop = false;
     let mut glide_into: Option<ObjectRef> = None;
     // The bodies a glide can go into (solid ground: a terrain, not a star or a gas giant) and a point's height over their loaded
     // ground (the point in the body's frame).
@@ -808,9 +822,9 @@ pub fn fly(
         }
         let ev = pilot.heat.tick(&hs, TICK, powered, false);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
-        let guns_on = super::panels::M_LASERS.iter().any(|&m| pilot.modules[m]);
-        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && guns_on && pilot.cruise.is_none() && pilot.glide.is_none();
-        pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
+        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none() && pilot.glide.is_none();
+        let guns = super::panels::M_LASERS.map(|m| trigger && pilot.modules[m]);
+        pilot.weapons.tick_guns(TICK, guns, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
         }
@@ -823,9 +837,15 @@ pub fn fly(
         if star_heat > 0.0 {
             pilot.heat.add(&hs, star_heat * hs.capacity * TICK, None);
         }
-        // The countdown's heat (A50: data, a stand-in).
-        if matches!(pilot.drive, Drive::Departing(_)) {
-            pilot.heat.add(&hs, elite_sim::hyperspace::stand_in::DEPARTING_HEAT_RATE * hs.capacity * TICK, None);
+        // The jump's charge's and countdown's heat (A50's form: D[0x0C] a second, more past the charge's time while held; the
+        // numbers stand-ins).
+        let charge_heat = match pilot.drive {
+            Drive::JumpCharging(t) => elite_sim::hyperspace::stand_in::DEPARTING_HEAT_RATE + elite_sim::hyperspace::stand_in::OVERCHARGE_HEAT_RATE * (t - elite_sim::drive::stand_in::JUMP_CHARGE_S).max(0.0),
+            Drive::Departing(_) => elite_sim::hyperspace::stand_in::DEPARTING_HEAT_RATE,
+            _ => 0.0,
+        };
+        if charge_heat > 0.0 {
+            pilot.heat.add(&hs, charge_heat * hs.capacity * TICK, None);
         }
         match pilot.drive.tick(TICK, &fsd) {
             Ok(Engage::Jump) => {
@@ -856,15 +876,53 @@ pub fn fly(
             let cap = supercruise::cap(&near);
             c.cap = cap;
             c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
-            c.pos = c.pos.offset_m(c.rot * DVec3::NEG_Z * c.speed * TICK);
-            // (Only heading into it: leaving a body from its surface is how supercruise starts.) A body with solid ground:
-            // heading down within the glide's entry height over its loaded ground (the spec's hint), the glide (step 6.2); a
-            // star or a gas giant: within its zone, an emergency drop.
             let heading = c.rot * DVec3::NEG_Z;
-            if let Some((_, _, _, obj, _)) = wells.iter().find(|(_, at, _, obj, orient)| {
+            let step = heading * c.speed * TICK;
+            // A60's swept test (checker 3: tested at one point a tick, a fast ship went from above the entry height to under
+            // the ground in one tick): this tick's path against each solid body's entry shell (its radius and the entry height),
+            // each star's exclusion zone and each other body's emergency zone. The first crossing stops the ship on it: the
+            // glide, or an emergency stop if it closes too fast (TooFastNearPlanet) or the body isn't one to glide into.
+            let mut hit: Option<(f64, ObjectRef, bool)> = None;
+            for (w, at, r, obj, _) in &wells {
+                // (A flattened body's shell from its smallest radius, so the per-tick test over the ground keeps the 25 km.)
+                let flat = glidable.iter().find(|g| g.0 == *obj).map(|g| g.2.min_element());
+                let glides = flat.is_some();
+                let shell = match w {
+                    _ if glides => r * flat.unwrap_or(1.0) + glide::stand_in::ENTRY_M,
+                    Well::Star { .. } => elite_sim::stars::EXCLUSION_FACTOR * r,
+                    _ => r + (r * EMERGENCY_SHARE).max(EMERGENCY_M),
+                };
+                if let Some(t) = supercruise::sweep(to_sim_v(c.pos.delta_m(*at)), to_sim_v(step), shell) {
+                    if hit.is_none_or(|h| t < h.0) {
+                        hit = Some((t, *obj, glides));
+                    }
+                }
+            }
+            let closing = |c: &Cruise, at: UPos| c.speed * heading.dot(at.delta_m(c.pos).normalize_or_zero());
+            if let Some((t, obj, glides)) = hit {
+                c.pos = c.pos.offset_m(step * t);
+                let fast = wells.iter().find(|w| w.3 == obj).is_some_and(|w| supercruise::too_fast(closing(c, w.1)));
+                if glides && !fast {
+                    glide_into = Some(obj);
+                } else {
+                    emergency = true;
+                    too_fast_stop = glides;
+                }
+                break;
+            }
+            c.pos = c.pos.offset_m(step);
+            // (Only heading into it: leaving a body from its surface is how supercruise starts.) A body with solid ground:
+            // heading down within the glide's entry height over its loaded ground (the spec's hint: a slow approach over ground
+            // higher than the shell), the glide (step 6.2), unless closing too fast.
+            if let Some((_, at, _, obj, _)) = wells.iter().find(|(_, at, _, obj, orient)| {
                 heading.dot(at.delta_m(c.pos)) > 0.0 && height_over(*obj, orient.inverse() * c.pos.delta_m(*at)).is_some_and(|h| h < glide::stand_in::ENTRY_M)
             }) {
-                glide_into = Some(*obj);
+                if supercruise::too_fast(closing(c, *at)) {
+                    emergency = true;
+                    too_fast_stop = true;
+                } else {
+                    glide_into = Some(*obj);
+                }
                 break;
             }
             // (A star's zone is its exclusion zone, 1.05 of its radius: step 5.4.)
@@ -1034,8 +1092,9 @@ pub fn fly(
             Some(c) => c.pos,
             None => b.pos.offset_m(b.orient * p.pos),
         };
-        match (pilot.target, target_state) {
-            (Some(t), Some(Ok((_, fuel)))) => {
+        match (pilot.jump_fuel.take(), pilot.target) {
+            (Some((t, worked_out)), Some(target)) if t == target => {
+                let fuel = worked_out.min(pilot.fuel.main);
                 pilot.fuel.main = (pilot.fuel.main - fuel).max(0.0);
                 msg.show(format!("Hyperspace: {}", data.catalog.display_name(t)));
                 info!("sidewinder: jump to {} for {fuel:.6} t of fuel", data.catalog.display_name(t));
@@ -1090,8 +1149,8 @@ pub fn fly(
                 if pilot.hull.damage(rest) {
                     pilot.destroyed = true;
                 }
-                msg.show("Emergency drop".to_string());
-                info!("sidewinder: emergency drop");
+                msg.show(if too_fast_stop { "Emergency drop: too fast near the planet" } else { "Emergency drop" }.to_string());
+                info!("sidewinder: emergency drop{}", if too_fast_stop { " (too fast near the planet)" } else { "" });
             } else {
                 msg.show("Supercruise exit".to_string());
                 info!("sidewinder: dropped from supercruise at {:.0} km/s", c.speed / 1000.0);
@@ -1130,7 +1189,7 @@ pub fn fly(
             vspeed: from_sim_v(pilot.motion.vel).dot(up),
             heading_deg: flat.dot(east).atan2(flat.dot(north)).to_degrees().rem_euclid(360.0),
             pitch_deg: nose.dot(up).clamp(-1.0, 1.0).asin().to_degrees(),
-            roll_deg: (-right.dot(up)).clamp(-1.0, 1.0).asin().to_degrees(),
+            roll_deg: (-right.dot(up)).atan2((p.rot * DVec3::Y).dot(up)).to_degrees(),
         });
     }
     if pilot.log && n > 0 {

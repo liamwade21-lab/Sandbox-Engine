@@ -4,8 +4,8 @@
 //! Grades: the arrival's distance is not found in the exe (A50: "Hyperspace arrival position ... not found"): a stand-in
 //! (E), 5 radii of the star out on the line from where the ship jumped from, facing it (the star about 23 degrees across).
 //! The target hidden behind a body refuses the jump in Elite (its HUD's "target obscured"); the exe's test was not traced:
-//! ours (F) is the straight line to the target passing within a body's radius. The countdown's heat is data (`D[0x0C]` per
-//! second, A50): a stand-in (E). The tunnel's length is measured from the user's journals (D).
+//! ours (F) is the straight line to the target passing within a body's radius. The charge's and the countdown's heat have the
+//! exe's form with data numbers (`D[0x0C]`, `D[0x10]`: stand-ins, E). The tunnel's length is measured from the user's journals (D).
 
 use glam::DVec3;
 
@@ -18,8 +18,11 @@ pub const TUNNEL_S: f64 = 13.5;
 pub mod stand_in {
     /// The arrival's distance from the star, in its radii.
     pub const ARRIVAL_RADII: f64 = 5.0;
-    /// The countdown's heat each second, as a share of the heat capacity.
+    /// The heat while charging and counting down (`D[0x0C]` a second) and its growth a second past the charge's time while a
+    /// complete charge is held (`D[0x10]`), as shares of the heat capacity (`5.1-fsd.md`: heat += (D[0x0C] + D[0x10] x max(0,
+    /// t - D[0x04])) x dt while charging, D[0x0C] x dt departing: C, the form).
     pub const DEPARTING_HEAT_RATE: f64 = 0.04;
+    pub const OVERCHARGE_HEAT_RATE: f64 = 0.01;
 }
 
 /// Whether a body hides the target: `to_target` and each body's centre relative to the ship (m), with its radius.

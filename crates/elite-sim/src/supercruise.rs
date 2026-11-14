@@ -47,6 +47,9 @@ pub mod stand_in {
     /// The supercruise block's forward acceleration and braking, as a share of the cap a second (stand-ins).
     pub const ACCEL_SHARE: f64 = 0.1;
     pub const BRAKE_SHARE: f64 = 0.2;
+    /// The safe stop's speed threshold (A60's `f`, data): twice the floor, so a ship the wells held near the floor glides and
+    /// one coming in much faster is stopped (E).
+    pub const SAFE_STOP_SPEED: f64 = 2.0 * FLOOR_PLANET;
 }
 
 /// A body's pull on supercruise.
@@ -96,6 +99,30 @@ pub fn step_speed(speed: f64, throttle: f64, cap: f64, dt: f64) -> f64 {
     }
 }
 
+/// A60's swept test: the first point of this tick's path (`from`, the ship relative to a body's centre, then `step`) on the
+/// sphere of `radius` round that centre, as the share of the step travelled (0 to 1), or `None`: no crossing this tick, moving
+/// away, or already inside (leaving a body from its surface is how supercruise starts).
+pub fn sweep(from: glam::DVec3, step: glam::DVec3, radius: f64) -> Option<f64> {
+    let a = step.length_squared();
+    let b = from.dot(step);
+    let c = from.length_squared() - radius * radius;
+    if a <= 0.0 || c <= 0.0 || b >= 0.0 {
+        return None;
+    }
+    let disc = b * b - a * c;
+    if disc < 0.0 {
+        return None;
+    }
+    let t = (-b - disc.sqrt()) / a;
+    (0.0..=1.0).contains(&t).then_some(t)
+}
+
+/// A60's safe stop on a hit: the closing speed (m/s) at or over the threshold is an emergency stop (TooFastNearPlanet),
+/// under it the drop to the glide (OrbitalCruiseSafeStop). The threshold is data (`+0x1F4`, not found): a stand-in.
+pub fn too_fast(closing: f64) -> bool {
+    closing >= stand_in::SAFE_STOP_SPEED
+}
+
 /// Whether a safe drop at the target is allowed: its distance (m), the relative speed (m/s) and the angle between the nose
 /// and the target (degrees).
 pub fn can_drop(distance: f64, speed: f64, angle_deg: f64) -> bool {
@@ -106,6 +133,20 @@ pub fn can_drop(distance: f64, speed: f64, angle_deg: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The swept test finds the shell this tick's path crosses, not one it starts inside or moves away from.
+    #[test]
+    fn the_sweep_finds_the_crossing() {
+        use glam::DVec3;
+        let from = DVec3::new(0.0, 2000.0, 0.0);
+        assert!((sweep(from, DVec3::new(0.0, -1500.0, 0.0), 1000.0).unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(sweep(from, DVec3::new(0.0, -500.0, 0.0), 1000.0), None);
+        assert_eq!(sweep(from, DVec3::new(0.0, 500.0, 0.0), 1000.0), None);
+        assert_eq!(sweep(DVec3::new(0.0, 900.0, 0.0), DVec3::new(0.0, -500.0, 0.0), 1000.0), None);
+        // A fast pass straight through in one tick is found at its entry.
+        assert!((sweep(from, DVec3::new(0.0, -5000.0, 0.0), 1000.0).unwrap() - 0.2).abs() < 1e-12);
+        assert!(too_fast(stand_in::SAFE_STOP_SPEED) && !too_fast(stand_in::FLOOR_PLANET));
+    }
 
     /// Far from everything the cap is supercruise's top speed; near a star it is slowed, never below the floor.
     #[test]

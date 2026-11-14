@@ -570,7 +570,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}, planet HUD {:?}, held {:?}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
@@ -590,7 +590,9 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.fuel.main,
                     pl.fuel.reservoir,
                     pl.modules,
-                    pl.nav_body
+                    pl.nav_body,
+                    pl.planet,
+                    pl.drive.held()
                 );
                 if let Some(p) = ship.parked.as_ref() {
                     let nose = p.rot * bevy::math::DVec3::NEG_Z;

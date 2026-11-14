@@ -7,10 +7,12 @@
    it stops and this item comes back. Sessions 1 (the shakedown) and 2 (the first flight measurements) worked; Elite was
    closed through its own menu afterwards (you asked, 2026-11-14), the Sidewinder left at rest in open space in Synuefe
    XM-K b28-1. The next session reopens it.
-2. **Fly the mod yourself (after the Phase 0-1 check):** in the sandbox, Q, Mods, Sidewinder to spawn it; walk up and E to
-   board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust, Tab boost, the
-   arrows for pips, Z flight assist, L gear; come down slowly with the gear down; B to get out once landed. The tests can't
-   press a real mouse, keyboard or pad: say how it feels against Elite and anything wrong.
+2. **Fly the mod yourself, with the keyboard and mouse and with a pad:** in the sandbox, Q, Mods, Sidewinder to spawn it;
+   walk up and E to board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust,
+   Tab boost, the arrows for pips, Z flight assist, L gear; J supercruise (dive at a planet for the glide), T to target a
+   star ahead and J to jump; 1 and 4 the panels; come down slowly with the gear down; B to get out once landed (README's
+   table has every key). The tests can't press a real mouse, keyboard or pad (step 7.1's pad flight needs you): say how it
+   feels against Elite and anything wrong.
 3. **Refuel the Sidewinder in Elite (this blocks measuring session 3):** the main tank is down to 0.8 t of 2 (the reservoir
    0.27 t). Session 3 started Elite, saw 0.8 t and stopped before flying, by its rule (under 1.0 t). Most of the drop was
    Elite left running idle after session 2 (it burns about 0.4 t an hour just sitting). Fly to a station and refuel (the
@@ -76,7 +78,10 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     can switch off, the ship's functions and its status; Q/E tabs, W/S rows, Space select, Backspace close) and the planet
     HUD (4.3: altitude, vertical speed, heading, pitch and roll near a body; DISEMBARK (B) when landed). Flat, not Elite's
     holograms.
-  - Next without Elite: the check of Phases 4 to 6, then Phase 7 (costs, the release zip, the final check).
+  - The check of steps 4.2 to 6.3 (checker 3) failed on one serious bug, now fixed: a fast supercruise dive could jump past
+    the glide's entry into the ground (now Elite's swept test stops it, with an emergency drop when too fast); also fixed,
+    the HUD's roll past 90 degrees, hyperspace's alignment now at the charge's end as Elite has it, and smaller things.
+  - Next without Elite: Phase 7 (the never-spawned picture check, costs, the release zip, the final check).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

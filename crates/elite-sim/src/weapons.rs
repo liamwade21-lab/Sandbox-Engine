@@ -47,13 +47,18 @@ impl Weapons {
     /// A tick: the hardpoints move, and with the trigger held each gun fires when its interval has passed and the WEP
     /// capacitor has the shot's energy; each shot adds its heat. Returns the guns that fired.
     pub fn tick(&mut self, dt: f64, trigger: bool, dist: &mut Distributor, heat: &mut Heat, hs: &HeatSpec) -> [bool; 2] {
+        self.tick_guns(dt, [trigger; 2], dist, heat, hs)
+    }
+
+    /// `tick` with each gun's own trigger (a gun switched off on the Modules panel never fires).
+    pub fn tick_guns(&mut self, dt: f64, triggers: [bool; 2], dist: &mut Distributor, heat: &mut Heat, hs: &HeatSpec) -> [bool; 2] {
         let towards = if self.deployed { 1.0 } else { 0.0 };
         self.deploy_t += (towards - self.deploy_t).clamp(-dt / stand_in::DEPLOY_S, dt / stand_in::DEPLOY_S);
         let mut fired = [false; 2];
         for i in 0..2 {
             self.cooldown[i] = (self.cooldown[i] - dt).max(0.0);
             self.since_shot[i] = if self.since_shot[i] == f64::MAX { f64::MAX } else { self.since_shot[i] + dt };
-            if trigger && self.ready() && self.cooldown[i] <= 0.0 && dist.draw(WEP, self.laser.dist_draw) {
+            if triggers[i] && self.ready() && self.cooldown[i] <= 0.0 && dist.draw(WEP, self.laser.dist_draw) {
                 heat.add(hs, self.laser.thermal_load, None);
                 self.cooldown[i] = self.laser.fire_interval;
                 self.since_shot[i] = 0.0;

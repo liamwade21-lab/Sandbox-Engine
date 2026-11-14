@@ -1112,8 +1112,8 @@ meeting the ground ends there: F). The HUD shows GLIDE; `sw state` the glide and
 Flown at Earth (`timing frame`, from the sandbox's start: lift off, nose up, J, then the stick down in supercruise): a dive
 at -61 degrees entered 18.3 km over the ground and ended at once, too steep on entry (-61 is past the stand-in's -60), then
 decelerated into normal flight hovering 16 km up; a dive at -35 degrees entered 20.6 km over the ground, held 2,500 m/s
-along the nose (1.44 km/s down), ended at 6,498 m (AltitudeTooLow), decelerated in 1.5 s and hovered 4.4 km up in normal
-flight. Not built: orbital cruise (the speed near a surface: A60's safe-stop thresholds and the cruise object's floats are
+along the nose (1.44 km/s down), ended at 6,498 m (AltitudeTooLow), decelerated (in 0.92 s and 916 m, the checker
+measured: the end speed's floor comes before T) and hovered 4.4 km up in normal flight. Not built: orbital cruise (the speed near a surface: A60's safe-stop thresholds and the cruise object's floats are
 data, not found; our supercruise keeps its 30 km/s floor down to the glide), the glide's sounds and voice lines, a landing
 flown on the Moon (the spec's proof asks for orbit to landing on the Moon and Earth: the approach to the Moon was not flown).
 Tests: `glide_band_ends_and_deceleration`.
@@ -1130,8 +1130,9 @@ Sol to Rigil Kentaurus (4.367 ly) and back to the Sun: each system entered and t
 The rules (`elite_sim::drive`, `elite_sim::hyperspace`): with a target the drive's key charges a jump instead of
 supercruise, from normal space or supercruise (the charge's time is data, `D[0x04]`: 15 s, E); then the countdown, A50's
 Departing ticker at dt / 5 (C: 5 s), with heat each second (data, `D[0x0C]`: 4 % of the capacity a second, E); the key
-again, a refusal or a lost target cancels it back to where it started; at the countdown's end the nose must be within 10
-degrees of the target (E: Elite's alignment rule not found); then the tunnel, at least 13.5 s (D: the user's journals,
+again, a refusal or a lost target cancels it back to where it started; at the CHARGE's end the nose must be within `Fp[0x30]` degrees of the target (C, the
+rule and its place, `5.1-fsd.md`; the number data: 60, E), and a complete charge holds there until it is (checker 3's fix:
+first built at the countdown's end and graded not found); then the tunnel, at least 13.5 s (D: the user's journals,
 `StartJump` at the countdown's start to `FSDJump`, 18 to 19 s over 6 jumps of the user's other ship, less the 5 s
 countdown; +-1 s) and until the system is entered; arrival in supercruise 5 of the star's radii out on the line from the
 departure, facing it (E: the arrival rule not found), then Arriving 1 s (C) and the jump's cooldown (data, `Fp[0x18]`: 10 s,
@@ -1185,7 +1186,7 @@ port's own floor (`volumetric_clouds::giant_floor_m`, 10 scale heights under the
 star-heat rule it was to go through has its form in the exe but not its numbers (step 5.4), so it would be invented.
 
 Flown (`sw put NAME ALT_KM`, a test's placing over a body's day side): over Earth at 1 km (1.15 kg/m^3) full throttle still
-reaches the ship's 160.7 m/s (the drag, about 9 m/s^2, is within the thrusters' reach); at 40 km the air is 0.018 kg/m^3; over
+reaches the ship's 160.7 m/s (the drag, about 30 m/s^2 with the 92 m^2 outline, is within the thrusters' 44 m/s^2); at 40 km the air is 0.018 kg/m^3; over
 Venus at 1 km (61.3 kg/m^3) full throttle tops out at 26.8 m/s (the outline about 92 m^2 head on); into Jupiter, at 20 km over
 the radius 0.09 kg/m^3, 150 km under it 2.85 kg/m^3 with full down thrust settling at 78 m/s, at 195 km 4.73 kg/m^3; at its
 floor the ship was stopped at 60 m/s and held there; and a glide into Jupiter from supercruise at -60 degrees entered 18.4
@@ -1230,3 +1231,36 @@ the mod shows goes through them); a list of past messages (Elite's comms panel) 
 Checked in runs: landed, LANDED, DISEMBARK (B), ALT 0 M and a heading; lifted off, ALT 154 M, the pitch and roll the stick
 gave; a descent at a 45 degree tilt was refused touchdown by Elite's rule (the gear's feet more than 0.5 m apart over the
 ground) and took a hard hit; a level one at 0.3 m/s touched down, and B set him beside the ship, walking.
+
+### Step 7.1: the gamepad (2026-11-14). **The table test passes; a flight with a pad waits for the user**
+
+The pad has been read since step 1.3 from the shipped copy of Elite's `ControlPad.binds` (its buttons through `bevy_gilrs`,
+its axes through the file's dead zones; the larger of the pad's stick and the mouse's wins, as the exe does: step 0.11).
+`pad_table_is_the_specs` checks the shipped file gives the spec's layout (the left stick rolls and pitches, the right one
+thrusts laterally and vertically, the bumpers the throttle, B boost, the triggers fire, Back the hardpoints, the d-pad the
+pips, X the UI focus, Y the target, the right stick's click head look) and that every pad name in it maps to a Bevy button or
+axis. No test can hold a real pad: flying with one is on the Waiting list.
+
+### Checker 3's fixes (steps 4.2 to 6.3, 2026-11-14)
+
+The checker's report (FAIL: one high finding, two medium, seven low) is `.rea/tickets/verify/03-phases4-6-report.md`. Fixed:
+
+1. **High: supercruise jumped past the glide's band into the ground** (the entry tested at one point a tick: at the Moon at
+   13,313 km/s a tick was 222 km). Now A60's swept test (`supercruise::sweep`): each tick's path against each solid body's
+   entry shell (its radius and the 25 km entry height), each star's exclusion zone and each other body's emergency zone; the
+   first crossing stops the ship on it, and there A60's safe stop decides: closing at or over the threshold an emergency
+   stop (TooFastNearPlanet: "Emergency drop: too fast near the planet"), under it the glide (the threshold is data, `f`:
+   twice the 30 km/s floor, E). The per-tick test over the loaded ground stays for slow approaches over high ground, with the
+   same speed rule.
+2. **Medium: the planet HUD's roll** is now `atan2` against the ship's own up (inverted reads 180).
+3. **Medium: hyperspace as the notes have it.** The alignment is checked at the charge's end (`requires_alignment`, C), not
+   the countdown's, and a complete charge holds there until it is met (the HUD: ALIGN WITH THE DESTINATION), as supercruise's
+   escape rule now holds too (POINT AWAY FROM THE BODY): both use `Fp[0x30]`, one stand-in of 60 degrees (E; the
+   destination's was 10). The charge heats as the notes give (`D[0x0C]` a second, more past the charge's time while held:
+   the form C, the numbers stand-ins), and was missing. The jump's fuel is worked out when the charge starts and taken at
+   departure as the least of it and the fuel aboard (A50); a changed target cancels the charge.
+4. **Low:** a laser switched off neither fires nor draws (`Weapons::tick_guns`); boarding keeps the modules' switches; a
+   focused panel's Back (the pad's B) no longer boosts too; under a giant's radius the altimeter reads below zero; the Build
+   log's glide deceleration (0.92 s, not 1.5 s) and drag over Earth (30 m/s^2, not 9) corrected. Left as it is: an emergency
+   drop at a star is deadly with the stand-in numbers (the zone's edge is the stand-in's full heat rate, and the drive takes
+   25 s to charge again): both numbers wait for session 5.
