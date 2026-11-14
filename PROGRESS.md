@@ -81,7 +81,9 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - The check of steps 4.2 to 6.3 (checker 3) failed on one serious bug, now fixed: a fast supercruise dive could jump past
     the glide's entry into the ground (now Elite's swept test stops it, with an emergency drop when too fast); also fixed,
     the HUD's roll past 90 degrees, hyperspace's alignment now at the charge's end as Elite has it, and smaller things.
-  - Next without Elite: Phase 7 (the never-spawned picture check, costs, the release zip, the final check).
+  - Phase 7: 7.1 (the pad's table test; the pad flight is yours), 7.2 done (the mod costs 0.35 ms a frame seated at your
+    size; never spawned it changes no picture; the test release `release/Sandbox-Engine-sidewinder-test-windows.zip` works
+    from a fresh folder). Next: 7.3, the independent check of the whole mod.
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

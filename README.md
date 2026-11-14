@@ -366,7 +366,7 @@ V (free flight) turns the mod off. The mod's files are in `assets/mods/skate3` (
 simulation reads, the sounds), made from your own copy of Skate 3 by the ignored test `copy_skate3` (CLAUDE.md says how).
 Not there: grinds (the planet has no rails), the props don't feel the board (the ground, buildings and trees do).
 
-### Faulcon DeLacy Sidewinder (being built)
+### Faulcon DeLacy Sidewinder
 
 The third mod is **Elite Dangerous's starter ship**. Its row in the Q menu's Mods tab says **Spawn**: a click puts a Sidewinder
 on its landing gear where you look, 18 to 60 m ahead, nose towards you (a second click replaces it; while one is parked a
@@ -380,19 +380,32 @@ Elite's key files:
 | A, D | Yaw |
 | W, S; X | Throttle up and down; throttle to zero |
 | Q, E; R, F | Thrust left and right; up and down (R lifts it off the ground) |
+| Tab | Boost |
+| Arrow keys | The power distributor's pips (up engines, left systems, right weapons, down resets) |
+| U; left mouse button | Hardpoints out and in; fire the two pulse lasers |
+| J | Frame shift drive: supercruise (again to drop out); with a target, a hyperspace jump |
+| T | Target the star nearest the nose within jump range (again on nothing clears it) |
+| 1; 4 | The left panel (Navigation: this system's bodies and the stars in range) and the right panel (modules, ship, status); Q/E tabs, W/S rows, Space selects, A/D changes, Backspace closes |
 | Z | Flight assist on and off |
 | L | Landing gear |
-| Middle mouse button | Head look (then the mouse turns your head) |
+| Middle mouse button | Head look (then the mouse turns your head; far left or right focuses a panel) |
 | B | Get out (only when landed) |
 
-It flies by Elite's own rules, read out of Elite's program (flight assist on and off, the speed cap, the thrusters' limits,
-the turn rates): `docs/elite-flight-model.md`. Some of the ship's own numbers are not in Elite's program and wait for a
-measuring session in the real game; until then they are the community's numbers or stand-ins, listed in
-`crates/elite-sim/src/data.rs`. Elite's real hull and cockpit are in its encrypted files, which are never opened: the hull is
-Elite's own simplified Sidewinder model (matched to the real ship's outline from above), the gear and the cockpit are
-stand-ins. The files are made once from your own Elite install by the ignored test `copy_sidewinder` (CLAUDE.md says how).
-Elite Dangerous and its files are Frontier Developments'. The plan, with what is done and what each part's accuracy is:
-`docs/spec-mods-sidewinder.md`.
+It flies by Elite's own rules, read out of Elite's program: flight assist, the speed cap, the thrusters' limits, the turn rates,
+the power distributor, heat, shields, fuel, supercruise's gravity wells, the glide into a planet, hyperspace's countdown and
+cooldowns, stars' heat (`docs/elite-flight-model.md`). The ship's numbers that are not in the program come from measuring
+sessions in the real game (its accelerations, flight assist's timing, the turn rates at rest, the idle fuel burn, the hyperspace
+tunnel's length) or, until a session measures them, are the community's numbers or stand-ins, each one labelled in
+`crates/elite-sim/src` (the spec's grades A to F say where every part comes from). Hyperspace goes between SpaceEngine's own
+stars (Alpha Centauri is "ALF Cen" in SpaceEngine's catalog), with Elite's fuel formula. Some of it is the port's own, not
+Elite's, and is labelled so: real air's drag in thruster flight (Venus's thick air holds the ship to about 27 m/s), flying down
+into a gas giant to the port's floor 200 km under Jupiter's clouds, every solid world landable. The HUD and panels are flat,
+laid out from Elite's, not its holograms; the ship has no sounds yet.
+
+Elite's real hull and cockpit are in its encrypted files, which are never opened: the hull is Elite's own simplified Sidewinder
+model (matched to the real ship's outline from above), the gear and the cockpit are stand-ins. The files are made once from your
+own Elite install by the ignored test `copy_sidewinder` (CLAUDE.md says how). Elite Dangerous and its files are Frontier
+Developments'. The plan, with what is done and what each part's accuracy is: `docs/spec-mods-sidewinder.md`.
 
 ## Architecture
 

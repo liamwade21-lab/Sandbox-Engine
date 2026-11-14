@@ -1264,3 +1264,22 @@ The checker's report (FAIL: one high finding, two medium, seven low) is `.rea/ti
    log's glide deceleration (0.92 s, not 1.5 s) and drag over Earth (30 m/s^2, not 9) corrected. Left as it is: an emergency
    drop at a star is deadly with the stand-in numbers (the zone's edge is the stand-in's full heat rate, and the drive takes
    25 s to charge again): both numbers wait for session 5.
+
+### Step 7.2: costs, C20, sizes, the README, the release (2026-11-14). **Done**
+
+- **Costs** (`.optimize/bench/sidewinder_cost.sh`, 3440x1440, Ultra clouds, levels 3, VSync off, the sandbox's start; two runs
+  agreed): on foot before any spawn 8.56 ms a frame, the ship parked in view 8.63 (+0.07), seated on the ground 8.91 (+0.35:
+  the cockpit's draw, 0.5 ms of the opaque pass, and 0.4 ms of the main thread's CPU), flying 8.29 (a view of sky), supercruise
+  6.85 (space).
+- **C20, the mod never spawned changes nothing:** `pixel_scenes.sh` (forest, Earth, space; frozen clocks) with the exe of
+  `5f8f796` (the last commit before the mod) against today's, each side beside its own frozen shaders and its own source tree's
+  assets: old against today differs exactly as much as old against old (Earth 1.88 % of pixels against 1.94 %, mean 0.007
+  both; the forest 0.01 % against 0.03 %, only the HUD's digits; space 23 % against 20 %, its own known noise). (A first try
+  put the old exe outside its worktree, where the port doesn't fall back to a source tree: it ran without its trees and packs
+  and differed; not the mod.)
+- **Sizes:** the mod's folder is 627 KB (six files); nothing in the shipped assets is over 90 MB (the exe, 93 MB, isn't in git).
+- **README:** the Sidewinder's section rewritten (every key, what is Elite's and what is ours). CLAUDE.md and PROGRESS.md kept.
+- **Release:** `package_release.sh sidewinder-test release` (`release/Sandbox-Engine-sidewinder-test-windows.zip`, 640 MB, a
+  test build: naming a real release is the user's). Unzipped outside the project and run with empty `LOCALAPPDATA` and
+  `APPDATA` folders, as a new PC: the assets beside the exe, SpaceEngine found through Steam, the three mods found, the
+  Sidewinder spawned, flown and in supercruise.
