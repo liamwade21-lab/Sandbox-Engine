@@ -18,7 +18,11 @@ use elite_sim::flight::{self, Input, Motion};
 use elite_sim::fuel::{Fuel, FuelWarning};
 use elite_sim::heat::{Heat, HeatSpec};
 use elite_sim::shields::{Hull, Shields};
+use elite_sim::drive::{Drive, ShipState};
+use elite_sim::supercruise::{self, Well};
 use elite_sim::weapons::Weapons;
+use se_core::catalog::ObjectRef;
+use se_core::upos::UPos;
 use elite_sim::power::{Distributor, ENG, SYS, WEP};
 
 use crate::data::SeData;
@@ -33,6 +37,22 @@ use super::{Sidewinder, SidewinderAssets};
 /// The simulation's tick (the spec's Q8 fallback) and the most ticks a frame.
 pub const TICK: f64 = 1.0 / 60.0;
 const MOST_TICKS: u32 = 6;
+/// Supercruise's pose: where the ship is in the universe, its turn (model space to universe axes) and its speed along the nose.
+#[derive(Clone, Copy, Debug)]
+pub struct Cruise {
+    pub pos: UPos,
+    pub rot: DQuat,
+    pub speed: f64,
+}
+
+/// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
+const CRUISE_START: f64 = supercruise::stand_in::FLOOR_PLANET;
+/// Too close to a body's surface in supercruise: an emergency drop (E: A50 found the drop's effects but not its triggers),
+/// within this share of its radius or this many metres, whichever is more; and the shields' hit it costs (E).
+const EMERGENCY_SHARE: f64 = 0.02;
+const EMERGENCY_M: f64 = 2000.0;
+const EMERGENCY_HIT: f64 = 40.0;
+
 /// The guns' places in model space (m): under the nose either side of the middle (E: Elite's hardpoints are on its in-game
 /// hull, which is not among the open files; placed on the stand-in hull until the hull is recreated).
 pub const GUNS: [[f32; 3]; 2] = [[-1.5, 2.0, -6.0], [1.5, 2.0, -6.0]];
@@ -80,6 +100,8 @@ pub struct PilotKeys {
     /// The lasers: the trigger held (`PrimaryFire`) and the hardpoints' key pressed (`DeployHardpointToggle`).
     pub fire: bool,
     pub hardpoints: bool,
+    /// The frame shift drive's key (`HyperSuperCombination`, J).
+    pub jump: bool,
 }
 
 /// The flight's state while seated.
@@ -111,6 +133,10 @@ pub struct Pilot {
     /// The lasers (step 2.6), and each beam's length this frame (m: to the ground or the lasers' range).
     pub weapons: Weapons,
     pub beam_len: [f32; 2],
+    /// The frame shift drive (step 5.2) and, in supercruise, the ship's own pose in the universe (the parked pose follows it
+    /// in the nearest body's frame every frame).
+    pub drive: Drive,
+    pub cruise: Option<Cruise>,
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -122,8 +148,9 @@ pub struct Pilot {
     /// A test's controls held for some seconds (`sw stick`, `sw thrust`), and a test's boost press (`sw boost`).
     pub dev: Option<(Input, f32)>,
     pub dev_boost: bool,
-    /// A test's trigger held for some seconds (`sw fire SECS`).
+    /// A test's trigger held for some seconds (`sw fire SECS`), and a test's press of the drive's key (`sw jump`).
     pub dev_fire: f32,
+    pub dev_jump: bool,
     pub log: bool,
 }
 
@@ -147,6 +174,8 @@ impl Default for Pilot {
             destroyed: false,
             weapons: Weapons::default(),
             beam_len: [0.0; 2],
+            drive: Drive::Ready,
+            cruise: None,
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -156,6 +185,7 @@ impl Default for Pilot {
             dev: None,
             dev_boost: false,
             dev_fire: 0.0,
+            dev_jump: false,
             log: false,
         }
     }
@@ -308,6 +338,7 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         boost: press("UseBoostJuice"),
         fire: real && (mouse_held("PrimaryFire") || pad.is_some_and(|_| pad_btn("PrimaryFire", false))),
         hardpoints: press("DeployHardpointToggle"),
+        jump: press("HyperSuperCombination"),
     }
 }
 
@@ -408,6 +439,36 @@ pub fn fly(
             Err(Denied::Busy) => {}
         }
     }
+    // The frame shift drive (step 5.2): J charges (or cancels), and in supercruise asks for a drop.
+    let nose_body = p.rot * DVec3::NEG_Z;
+    let fsd = ShipState {
+        hardpoints: pilot.weapons.deployed,
+        gear_down: pilot.gear_down || pilot.gear_t < 0.999,
+        landed: pilot.landed,
+        escape_angle: nose_body.dot(p.pos.normalize_or(DVec3::Y)).clamp(-1.0, 1.0).acos().to_degrees(),
+        radii: p.pos.length() / b.radius_m.max(1.0),
+    };
+    let mut drop_now = false;
+    if keys.jump || std::mem::take(&mut pilot.dev_jump) {
+        match pilot.drive.press(&fsd) {
+            Ok(true) => drop_now = true,
+            Ok(false) => msg.show(if matches!(pilot.drive, Drive::Charging(_)) { "Frame shift drive charging" } else { "Frame shift drive charge cancelled" }.to_string()),
+            Err(r) => msg.show(r.message().to_string()),
+        }
+    }
+    // The bodies' wells this frame (their places move slowly against a tick).
+    let wells: Vec<(Well, UPos, f64, ObjectRef, DQuat)> = if pilot.cruise.is_some() || matches!(pilot.drive, Drive::Charging(_)) {
+        bodies
+            .iter()
+            .map(|(sb, _)| {
+                let w = if sb.star { Well::Star { radius: sb.radius_m } } else { Well::Planet { radius: sb.radius_m, mass: crate::ship::body_mass(&data, sb.obj, sb.radius_m) } };
+                (w, sb.pos, sb.radius_m, sb.obj, sb.orient)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut emergency = false;
     pilot.accum += dt;
     let mut n = 0;
     while pilot.accum >= TICK && n < MOST_TICKS {
@@ -441,6 +502,42 @@ pub fn fly(
         pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
+        }
+        match pilot.drive.tick(TICK, &fsd) {
+            Ok(true) => {
+                pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: CRUISE_START });
+                msg.show("Supercruise".to_string());
+                info!("sidewinder: supercruise");
+            }
+            Err(r) => msg.show(r.message().to_string()),
+            Ok(false) => {}
+        }
+        if let Some(c) = pilot.cruise.as_mut() {
+            // Supercruise: the turn by the normal block with the speed curve read at the throttle (the supercruise block's
+            // turn rates are data, not measured: E; "best turning at half throttle" is the spec's hint), the speed towards the
+            // throttle's share of the wells' cap (A50), along the nose; no gravity, no ground.
+            let throttle = pilot.throttle.max(0.0);
+            let mut m = Motion { rot: to_sim_q(c.rot), omega: pilot.motion.omega, last_alpha: pilot.motion.last_alpha, ..Motion::default() };
+            m.vel = m.rot * glam::DVec3::new(0.0, 0.0, -throttle * block.top_speed);
+            let rin = Input { pitch: input.pitch, yaw: input.yaw, roll: input.roll, flight_assist: true, ..Input::default() };
+            flight::step(&block, full_top, false, &rin, glam::DVec3::ZERO, &mut m, TICK);
+            c.rot = from_sim_q(m.rot).normalize();
+            pilot.motion.omega = m.omega;
+            pilot.motion.last_alpha = m.last_alpha;
+            let near: Vec<(Well, f64)> = wells.iter().map(|(w, at, _, _, _)| (*w, c.pos.delta_m(*at).length())).collect();
+            let cap = supercruise::cap(&near);
+            c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
+            c.pos = c.pos.offset_m(c.rot * DVec3::NEG_Z * c.speed * TICK);
+            // (Only heading into it: leaving a body from its surface is how supercruise starts.)
+            let heading = c.rot * DVec3::NEG_Z;
+            if wells.iter().any(|(_, at, r, _, _)| {
+                let to = at.delta_m(c.pos);
+                to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M) && heading.dot(to) > 0.0
+            }) {
+                emergency = true;
+                break;
+            }
+            continue;
         }
         if pilot.landed {
             // Lift off: up thrust (Elite lifts a landed ship on its vertical thrusters).
@@ -521,6 +618,34 @@ pub fn fly(
         pilot.accum = 0.0;
     }
     pilot.dev_fire = (pilot.dev_fire - dt as f32).max(0.0);
+    // Supercruise's pose into the nearest body's frame (the parked pose is what the camera, the cockpit and the rest read);
+    // a drop or an emergency drop back to normal flight there.
+    if let Some(c) = pilot.cruise {
+        let nearest = wells.iter().min_by(|a, b2| (c.pos.delta_m(a.1).length() - a.2).total_cmp(&(c.pos.delta_m(b2.1).length() - b2.2)));
+        if let Some((_, at, _, obj, orient)) = nearest {
+            p.obj = *obj;
+            p.pos = orient.inverse() * c.pos.delta_m(*at);
+            p.rot = (orient.inverse() * c.rot).normalize();
+        }
+        if drop_now || emergency {
+            pilot.cruise = None;
+            let v = p.rot * DVec3::NEG_Z * c.speed.min(block.top_speed);
+            pilot.motion = Motion { rot: to_sim_q(p.rot), vel: to_sim_v(v), ..Motion::default() };
+            pilot.drive.drop_out();
+            if emergency {
+                let rest = pilot.shields.hit(EMERGENCY_HIT);
+                if pilot.hull.damage(rest) {
+                    pilot.destroyed = true;
+                }
+                msg.show("Emergency drop".to_string());
+                info!("sidewinder: emergency drop");
+            } else {
+                msg.show("Supercruise exit".to_string());
+                info!("sidewinder: dropped from supercruise at {:.0} km/s", c.speed / 1000.0);
+            }
+        }
+        return;
+    }
     // Each beam runs along the nose from its gun to the ground or the lasers' range (a ray stepped against the loaded heights).
     for (i, gun) in GUNS.iter().enumerate() {
         let from = p.pos + p.rot * Vec3::from_array(*gun).as_dvec3();

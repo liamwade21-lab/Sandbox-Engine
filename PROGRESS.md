@@ -16,7 +16,12 @@
    Elite left running idle after session 2 (it burns about 0.4 t an hour just sitting). Fly to a station and refuel (the
    agent never does: station services are yours), then tell me "refuelled"; you can leave the ship docked or in open
    space (if docked, the agent uses Launch only).
-4. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
+4. **Turn Elite's music volume to 0 (Options, Audio), or tell me the agent may do it:** step 0.7 looked for the
+   Sidewinder's sounds among Elite's 245,156 open sound streams by matching the session recordings, and found none: the
+   music plays under every recording (the agent identified the track), and the ship's sounds look made by the game or kept
+   in the encrypted files (never opened). With the music off the next session records each sound on its own from the
+   speakers (the spec's fallback, grade E). It's your setting, so I won't touch it without your word.
+5. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
 Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-14_user/`); the Claude Code restart.
@@ -47,9 +52,14 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     and sets you down), fuel (the burn at Elite's own idle rate, 0.42 t an hour; the restock fills it), and a flat HUD laid
     out from your screenshot (radar, heat, speed and throttle, shields and hull, pips, fuel, the indicators). The turn
     rule is now the exe's own (read off its code), and the turn rates at rest pass the gate.
-  - Waiting on you for fuel: session 3 (boost, flight assist off, capacitor recharge, the turn rates at several throttles,
-    heat). Meanwhile: an agent is finding the Sidewinder's sounds in Elite's packs from the recordings (step 0.7).
-  - Next without Elite: weapons (2.6), sound (Phase 3) once the sounds are found, supercruise's code (Phase 5).
+  - Also in: the lasers (U hardpoints, left button fires; beams to the horizon), and supercruise (J charges 15 s, then the
+    speed builds by the exe's gravity-well rule: from Earth's surface 78 c after 25 s, 215 c after 35 s; J drops out). Its
+    numbers are stand-ins until a supercruise measuring session.
+  - Sounds: none of the Sidewinder's sounds is among Elite's open sound files (an agent searched all 245,156); they will be
+    recorded from the speakers, which needs Elite's music off (waiting list).
+  - Waiting on you: fuel (session 3), the music volume (the sounds).
+  - Next without Elite: hyperspace (5.3: the jump, the system swap), stars' heat and exclusion zones (5.4), the Navigation
+    and right panels (4.2), orbital cruise and glide (Phase 6, needs its exe study A60).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

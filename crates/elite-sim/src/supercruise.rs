@@ -34,6 +34,10 @@ pub mod stand_in {
     pub const STAR_P04: f64 = 1.0;
     /// The planet rule's M: the body's mass in Earth masses (an assumption: the unit is open).
     pub const PLANET_MASS_UNIT_KG: f64 = 5.972e24;
+    /// The planet rule's width unit: A50 read its constant as 20 AU, but the unit is not shown in the code; in AU an Earth's
+    /// well would be 40 AU wide, against every supercruise approach (planets slow a ship within tens of light seconds), so
+    /// light seconds stand in until session 5 measures an approach (E).
+    pub const PLANET_WIDTH_UNIT_M: f64 = 299_792_458.0;
     /// The drop: under 1,000 km and under 1,000 km/s (the community's figures), the nose within 30 degrees (a stand-in).
     pub const DROP_DMIN_M: f64 = 0.0;
     pub const DROP_DMAX_M: f64 = 1.0e6;
@@ -66,7 +70,7 @@ pub fn slowdown(w: Well, d: f64) -> f64 {
         Well::Planet { radius, mass } => {
             let dd = (d - 1.1 * radius).max(0.0);
             let m = mass / PLANET_MASS_UNIT_KG;
-            let width = (m.max(0.0).powf(0.1) + 1.0) * 20.0 * AU;
+            let width = (m.max(0.0).powf(0.1) + 1.0) * 20.0 * PLANET_WIDTH_UNIT_M;
             let x = (dd / width).clamp(0.0, 1.0);
             ((1.0 - x).powi(2)).min(1.0 - FLOOR_PLANET / VSC).max(0.0)
         }
@@ -79,10 +83,11 @@ pub fn cap(bodies: &[(Well, f64)]) -> f64 {
     stand_in::VSC * (1.0 - s)
 }
 
-/// Supercruise's speed after a tick: towards `throttle x cap`, accelerating at a share of the cap and braking harder while
-/// over it (the stand-in shares until the supercruise block is measured).
+/// Supercruise's speed after a tick: towards `throttle x cap` (never under the floor: at zero throttle a ship in supercruise
+/// slows to 30 km/s, not to a stop), accelerating at a share of the cap and braking harder while over it (the stand-in shares
+/// until the supercruise block is measured).
 pub fn step_speed(speed: f64, throttle: f64, cap: f64, dt: f64) -> f64 {
-    let want = throttle.clamp(0.0, 1.0) * cap;
+    let want = (throttle.clamp(0.0, 1.0) * cap).max(stand_in::FLOOR_PLANET.min(cap));
     if speed < want {
         (speed + stand_in::ACCEL_SHARE * cap.max(speed) * dt).min(want)
     } else {

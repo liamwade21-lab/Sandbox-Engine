@@ -1023,3 +1023,34 @@ stand-in hull (E: Elite's hardpoints are on its in-game hull, not among the open
 sandbox's props and the Viltrumite mod's targets are a later step). Test: `lasers_fire_on_their_interval_and_drain_wep`; in a
 run, firing straight ahead for 20 s drained WEP 10 to 3.6 MJ and the beams show to the horizon (pictures).
 `sw hardpoints`, `sw fire SECS`.
+
+### Step 0.7: matching sounds (2026-11-14). **Not found: the fallback (E) needs the music off**
+
+An agent decoded all 245,156 open streams (no failures) into a feature cache and searched them for session 2's recordings
+of the engine and thrusters, the boost, flight assist's toggle and voice, the pip click, the lateral, vertical and yaw
+thrusters and the cockpit's idle (band spectrograms, spectral-peak votes, envelope and waveform matched filters, a
+playback-rate grid). **None was found** (`re/elite/sounds/matches.md`). One match that is not a target: the recordings hold
+Elite's music (`d77d49e8` stream 2, a 109.6 s loop, at the same offset across five probes, mixed in at about 0.4), under
+every run. The ship's sounds behave as if the game makes them (a chirp that follows the engine, pure tones at 12.000 and
+8.0 kHz, lines at 7.72 and 5.03 kHz) or as if they are among the encrypted files. By the step's rule they fall back to
+recordings from the speakers (E), which needs Elite's music volume at 0: the user's setting (the waiting list).
+
+### Step 5.2, first cut: supercruise (2026-11-14). **Built; every number but A50's rules a stand-in until session 5**
+
+`elite_sim::drive` (the drive's states: charging, refusals in the exe's order (cooldown, hardpoints, landing gear, landed),
+the escape-vector rule at the charge's end (`requires_alignment_escape`), Arriving 5 s after a drop then the cooldown: C;
+the charge 15 s and the cooldown's 5 s more from the spec's hints, the escape angle and distance: E) and
+`elite_sim::supercruise` (the wells' slowdown from A50: C; Vsc 2001 c, the 30 km/s floor, the star rule's constants, the
+accelerations, the drop's window: stand-ins; the planet rule's width unit is light seconds, not the AU A50 read it as, because
+40 AU wide wells contradict every supercruise approach: E until measured). In the seat: J (`HyperSuperCombination`) charges
+the drive (the HUD's bar), refused with the gear or hardpoints out or landed, and near a body unless the nose points away;
+engaged, the ship keeps its own pose in the universe (`Cruise`): the speed towards the throttle's share of the wells' cap
+(never under the floor), the turn by the normal block with the speed curve read at the throttle (the supercruise block's turn
+is data: E), no gravity or ground; every frame the pose is written into the nearest body's frame, so the camera, the cockpit
+and the rest follow unchanged. J drops out (normal flight at the block's top speed or less along the nose, then Arriving and
+the cooldown); heading into a body within 2 % of its radius or 2 km of its surface is an emergency drop and a 40 MJ hit (E:
+A50 found the drop's effects, not its triggers). The HUD shows km/s, Mm/s or c. Not yet: targets and the safe drop at one
+(the Navigation panel, 4.2), hyperspace (5.3), stars' heat and exclusion zones (5.4), orbital cruise and glide (6.2), its
+sounds. Checked in runs from Earth's surface: charged and engaged, held at the floor until 1.1 radii (A50's rule), then 78 c
+after 25 s and 215 c after 35 s; throttle zero back to the floor; J dropped out at 160.6 m/s and Arriving counted down.
+`sw jump`. Tests: `charge_engage_drop_and_cooldown`, `wells_slow_the_cap`.

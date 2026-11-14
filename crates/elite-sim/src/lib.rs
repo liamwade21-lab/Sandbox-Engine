@@ -6,6 +6,7 @@
 
 pub mod boost;
 pub mod data;
+pub mod drive;
 pub mod flight;
 pub mod fsd;
 pub mod fuel;

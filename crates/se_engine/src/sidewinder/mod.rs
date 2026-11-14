@@ -479,6 +479,10 @@ pub fn dev_command(world: &mut World, arg: &str) {
             None
         }
         // `sw hardpoints`, `sw fire SECS`: the hardpoints' toggle and the trigger held.
+        "jump" => {
+            world.resource_mut::<pilot::Pilot>().dev_jump = true;
+            None
+        }
         "hardpoints" => {
             let mut pl = world.resource_mut::<pilot::Pilot>();
             pl.weapons.deployed = !pl.weapons.deployed;
@@ -520,7 +524,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
@@ -532,7 +536,9 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.dist.charge[0],
                     pl.dist.charge[1],
                     pl.dist.charge[2],
-                    pl.boost.state
+                    pl.boost.state,
+                    pl.drive,
+                    pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s", c.speed / 1000.0))
                 );
             }
             None

@@ -57,7 +57,20 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     // marker the throttle, the blue band the blue zone (the throttle shares where the turn curve is at its best: the
     // block's curve peak `p`).
     let speed = pilot.motion.vel.length();
-    p.text(at(r, 0.174, 0.308), egui::Align2::CENTER_CENTER, format!("{:.0}", speed), font(0.024), ORANGE);
+    let shown = match pilot.cruise {
+        Some(c) if c.speed >= 0.1 * elite_sim::supercruise::C => format!("{:.2} c", c.speed / elite_sim::supercruise::C),
+        Some(c) if c.speed >= 1.0e6 => format!("{:.1} Mm/s", c.speed / 1.0e6),
+        Some(c) => format!("{:.1} km/s", c.speed / 1000.0),
+        None => format!("{:.0}", speed),
+    };
+    p.text(at(r, 0.174, 0.308), egui::Align2::CENTER_CENTER, shown, font(0.024), ORANGE);
+    // The drive's charge, as a bar over the radar.
+    if let Some(share) = pilot.drive.charge_share() {
+        let (a, b) = (at(r, -0.12, 0.25), at(r, 0.12, 0.25));
+        p.add(egui::Shape::line_segment([a, b], egui::Stroke::new(0.005 * h, DIM)));
+        p.add(egui::Shape::line_segment([a, a + (b - a) * share as f32], egui::Stroke::new(0.005 * h, ORANGE)));
+        p.text(at(r, 0.0, 0.235), egui::Align2::CENTER_BOTTOM, "FRAME SHIFT DRIVE CHARGING", font(0.012), ORANGE);
+    }
     let (x0, y0, x1, y1) = (0.194f32, 0.458f32, 0.236f32, 0.333f32);
     let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
     p.add(egui::Shape::line_segment([along(0.0), along(1.0)], stroke(DIM)));
@@ -125,10 +138,13 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if pilot.landed {
         notes.push("LANDED");
     }
+    if pilot.cruise.is_some() {
+        notes.push("SUPERCRUISE");
+    }
     for (k, n) in notes.iter().enumerate() {
         p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);
     }
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  Z assist  L gear  Middle button head look  B out (landed)";
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
     p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
     Ok(())
 }
