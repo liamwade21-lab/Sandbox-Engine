@@ -25,7 +25,7 @@ use crate::scripting::ScriptRunner;
 use crate::ship::Flight;
 
 /// The `Code`s this build knows. A mod with any other came from a newer build: its row says so.
-const KNOWN_CODES: &[&str] = &["viltrumite", "skate3"];
+const KNOWN_CODES: &[&str] = &["viltrumite", "skate3", "sidewinder"];
 
 /// `SE_MODS=0` (comparisons): no Mods button, no scan.
 pub fn mods_enabled() -> bool {
@@ -138,6 +138,12 @@ pub struct ModControl {
     /// The main menu is up (`sandbox/main_menu.rs`, set every frame): the mouse goes to egui, no key reaches anything else, and
     /// the panels are hidden (its Options window is the settings window, which doesn't go by them).
     pub main_menu: bool,
+    /// The mod that is on is the Faulcon DeLacy Sidewinder (`Code "sidewinder"`) and the player sits in its seat.
+    pub pilot: bool,
+    /// What the Mods row or a test asks of the Sidewinder (spawn, restock): not "a mod on" (`sidewinder/mod.rs`).
+    pub ship_request: Option<crate::sidewinder::ShipRequest>,
+    /// A Sidewinder is parked somewhere (set by `sidewinder/mod.rs`): the row offers the restock.
+    pub ship_parked: bool,
     request: Option<ModRequest>,
 }
 
@@ -161,7 +167,16 @@ impl ModControl {
 
     /// He's on and playing: the panels are hidden. (While he's loading they stay, and the row says so: F1.)
     pub fn panels_hidden(&self) -> bool {
-        self.main_menu || self.walker || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
+        self.main_menu || self.walker || self.pilot || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
+    }
+
+    /// Into the Sidewinder's seat: it becomes the mod that is on (any other goes off). The one way on that isn't a row's
+    /// click: its row spawns a ship, E at the ship boards it (`sidewinder/seat.rs`).
+    pub(crate) fn board(&mut self, reg: &ModRegistry, id: &str) {
+        self.off(reg, "boarding the Sidewinder");
+        info!("mods: {} on (seated)", reg.name_of(id));
+        self.active = Some(id.to_string());
+        self.pilot = true;
     }
 
     /// Turn the mod that is on off. Every way off comes through here.
@@ -175,6 +190,7 @@ impl ModControl {
         self.loading = false;
         self.hero = false;
         self.skate = false;
+        self.pilot = false;
     }
 }
 
@@ -187,7 +203,15 @@ pub struct HeroAssets {
 }
 
 /// What greys a row at first enable, and what to log about it.
-type FileFault = (GreyReason, String);
+pub(crate) type FileFault = (GreyReason, String);
+
+/// The Sidewinder mod's files, checked and read (on a worker thread: `sidewinder/mod.rs`).
+pub(crate) fn load_sidewinder(id: &str, needs: &[String]) -> Result<crate::sidewinder::SidewinderAssets, FileFault> {
+    let roots = mod_roots();
+    check_files(&roots, id, needs)?;
+    let read = |rel: &str| read_need(&roots, id, rel).map_err(|(_, why)| why);
+    crate::sidewinder::load(&read).map_err(|(file, why)| (GreyReason::Bad(file), why))
+}
 
 /// A file a mod needs, read now: `Missing` if it has gone since the scan, `Bad` if it can't be read.
 pub(crate) fn read_need(roots: &[PathBuf], id: &str, rel: &str) -> Result<Vec<u8>, FileFault> {
@@ -220,6 +244,8 @@ fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
         Some("s3m") => se_core::skate3::parse_model(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("png") => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map(|_| ()).map_err(|e| e.to_string()),
         Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("edm") => se_core::elite_asset::parse_edm(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("binds") => se_core::elite_asset::Binds::parse(&String::from_utf8_lossy(&bytes)).map(|_| ()).map_err(|e| e.to_string()),
         _ => Ok(()),
     }
 }
@@ -743,6 +769,11 @@ pub(crate) fn apply_request(
                         return;
                     }
                 }
+            }
+            // The Sidewinder isn't "on" by its row: a test's `mods on sidewinder` spawns one (boarding turns it on: step 1.3).
+            if m.code == crate::sidewinder::CODE {
+                control.ship_request = Some(crate::sidewinder::ShipRequest::Spawn);
+                return;
             }
             if m.code == "skate3" && !crate::sandbox::enabled() {
                 warn!("mods: {} stays off: it plays in the sandbox, which is off (SE_SANDBOX=0)", m.name);

@@ -563,7 +563,7 @@ pub(crate) fn input_controls(
     // The Viltrumite mod is on: he owns the mouse, the wheel and the keys that steer or bind the free camera (the
     // spec's F8 table, row by row, gates each below). The rest stays as it is: C, End, T, G, Z, the FOV, the speed.
     // (The sandbox's first-person player, the same: `ModControl::walker`.)
-    let hero = control.hero || control.walker;
+    let hero = control.hero || control.walker || control.pilot;
     let (egui_pointer, egui_keys) = egui
         .ctx_mut()
         .map(|c| (c.egui_wants_pointer_input() || crate::hud::pointer_over_ui(c), c.egui_wants_keyboard_input()))
@@ -1117,8 +1117,8 @@ pub fn travel_and_move(
     // A ship's camera, or the Viltrumite mod's, unless a Go To or the like is running: that carries him. (Until he's placed
     // it goes on as it's bound, so he appears at its spot against this frame's bodies, not one frame of their motion off.)
     let his = control.hero && hero.placed;
-    // (The sandbox's walking player writes the camera each frame, and nothing may carry it meanwhile.)
-    if hold.0 || control.walker || (his && cam.travel.is_none()) {
+    // (The sandbox's walking player writes the camera each frame, and nothing may carry it meanwhile; the Sidewinder's seat too.)
+    if hold.0 || control.walker || control.pilot || (his && cam.travel.is_none()) {
         return;
     }
     let dt = time.delta_secs_f64();
@@ -1774,6 +1774,7 @@ fn run_commands(
         // (sandbox::dev_command).
         "sbx" => commands.queue(move |w: &mut World| crate::sandbox::dev_command(w, &arg)),
         "skate" => commands.queue(move |w: &mut World| crate::skate::dev_command(w, &arg)),
+        "sw" => commands.queue(move |w: &mut World| crate::sidewinder::dev_command(w, &arg)),
         // menu on|off|state|mods|main: the main menu (sandbox/main_menu.rs).
         "menu" => commands.queue(move |w: &mut World| crate::sandbox::main_menu::dev_command(w, &arg)),
         // uiclick X Y: a left click for egui at that point of the window (test runs have no mouse).

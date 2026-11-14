@@ -6,3 +6,5 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+# Vectors and quaternions only (not Bevy: the spec's C8).
+glam = { workspace = true }

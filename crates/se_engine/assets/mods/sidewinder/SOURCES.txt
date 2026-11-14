@@ -1,0 +1,8 @@
+The Faulcon DeLacy Sidewinder mod's files: where each came from. Written by copy_sidewinder (sidewinder/convert.rs).
+Elite Dangerous is Frontier Developments'; every file below taken from its install is theirs (version {"Version":"2026.10.23.334925","executable":"EliteDangerous64.exe", "name" : "Elite: Dangerous", "useWatchDog64" : "true"}).
+Grades are the plan's (docs/spec-mods-sidewinder.md): A = Elite's own bytes, E = recreated.
+
+ship.edm: the hull is Elite file 4387928be519b4cfc8aa67be4113e19e2fbb09f5 (chunk 0, its most detailed part: 2332 triangles), vertex bytes and indices unchanged (A). It is Elite's simplified Sidewinder, believed to be the HUD's hologram model; the in-game hull is not among the open files. Its place, scale (14.4 x 22.2 x 4.2 m) and the landing gear are recreated (E) from the user's screenshots and Frontier's published size. A stand-in until step 0.5's recreation.
+cockpit.edm: recreated (E), a stand-in seat, dashboard and canopy frame.
+binds/KeyboardMouseOnly.binds: a copy of Elite's ControlSchemes/KeyboardMouseOnly.binds (A).
+binds/ControlPad.binds: a copy of Elite's ControlSchemes/ControlPad.binds (A).

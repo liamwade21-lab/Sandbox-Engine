@@ -366,6 +366,34 @@ V (free flight) turns the mod off. The mod's files are in `assets/mods/skate3` (
 simulation reads, the sounds), made from your own copy of Skate 3 by the ignored test `copy_skate3` (CLAUDE.md says how).
 Not there: grinds (the planet has no rails), the props don't feel the board (the ground, buildings and trees do).
 
+### Faulcon DeLacy Sidewinder (being built)
+
+The third mod is **Elite Dangerous's starter ship**. Its row in the Q menu's Mods tab says **Spawn**: a click puts a Sidewinder
+on its landing gear where you look, 18 to 60 m ahead, nose towards you (a second click replaces it; while one is parked a
+second row, "Refuel, repair, restock", fills it up for free). It is solid: walk round it, crouch under it, stand on it.
+Walk up to it and look at it from within 6 m: **E boards it**. Seated, Elite's own default keys apply, read from copies of
+Elite's key files:
+
+| Key | What it does |
+|---|---|
+| Mouse | Pitch (up and down) and roll (left and right): the mouse moves a virtual stick that stays where you leave it |
+| A, D | Yaw |
+| W, S; X | Throttle up and down; throttle to zero |
+| Q, E; R, F | Thrust left and right; up and down (R lifts it off the ground) |
+| Z | Flight assist on and off |
+| L | Landing gear |
+| Middle mouse button | Head look (then the mouse turns your head) |
+| B | Get out (only when landed) |
+
+It flies by Elite's own rules, read out of Elite's program (flight assist on and off, the speed cap, the thrusters' limits,
+the turn rates): `docs/elite-flight-model.md`. Some of the ship's own numbers are not in Elite's program and wait for a
+measuring session in the real game; until then they are the community's numbers or stand-ins, listed in
+`crates/elite-sim/src/data.rs`. Elite's real hull and cockpit are in its encrypted files, which are never opened: the hull is
+Elite's own simplified Sidewinder model (matched to the real ship's outline from above), the gear and the cockpit are
+stand-ins. The files are made once from your own Elite install by the ignored test `copy_sidewinder` (CLAUDE.md says how).
+Elite Dangerous and its files are Frontier Developments'. The plan, with what is done and what each part's accuracy is:
+`docs/spec-mods-sidewinder.md`.
+
 ## Architecture
 
 ```

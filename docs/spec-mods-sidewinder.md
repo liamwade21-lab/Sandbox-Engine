@@ -701,3 +701,103 @@ matched to Elite's own cockpit screenshots (waiting for the user's F10 pictures)
 - Frontier's own published sizes (elitedangerous.com: 14.9 m long, 21.4 m wide, 5.4 m high) give width/length 1.44, against
   1.537 in both the user's picture and the model. The stand-in is scaled so its plan's area matches the published length
   times width (each side then within 3.5 % of its published number); a hint until a measurement settles it.
+
+### Step 0.2: textures and sound packs (2026-11-14). **Both read**
+
+An agent's two sessions (notes `re/elite/notes/textures.md`, `sounds.md`; tools `re/elite/tools/elite_tex.py`, `tex_guess.py`,
+`tex_catalog.py`, `elite_snd.py`; catalog `re/elite/catalog/textures.json`; sheets `re/elite/sheets/textures_*.png`; decoded
+sounds `re/elite/sound_test/`).
+
+| Claim | Grade | How it was shown |
+|---|---|---|
+| Texture files: a header of `52 + 64 n` bytes (n entries), then each entry's mip levels back to back, largest first, unpadded | A (layout) | Holds in all 26,248 files, 42,243 entries |
+| **The files hold no format, width, height or mip count** (believed to be in the encrypted material files). They are worked out from the bytes: the level sizes must sum to the entry's size, then the smoothest reading wins | method | A reading is **proven** when level 1 decodes to level 0 halved (error at most 0.3): 29,545 entries. 968 more very likely, 8,729 single-level (unchecked), 1,969 one-colour (size unknowable) |
+| Formats: BC7 13,650, BC5 10,275, BC4 7,046, BC1 5,131, RGBA8 3,486 (all confirmed by thousands of mip-proven entries and recognisable sheets: logos, posters, portraits, normal maps); R8 likely; BC2, BC3, BC6H, the float formats suspected misreadings | A for the texels of proven entries | Sheets; slot hashes agree with the guesses 9,103 to 17 (the guesser never reads them) |
+| Sound packs: the 381 RIFF files hold 245,156 Wwise Vorbis streams back to back on 4,096-byte boundaries, no table of contents | A (layout) | All packs split |
+| A stream decodes (vgmstream) to a game sound | A | WAVs in `re/elite/sound_test/` |
+| A stream is rewrapped into a standard Ogg Vorbis file **without re-encoding** by ww2ogg with its `packed_codebooks_aoTuV_603.bin` | A for the decoded samples (C7) | The audio bits are the game's; the packets' bytes shift as they are re-framed, so the byte check belongs on the raw stream and C7's check on decoded samples |
+
+Installs (logged in PROGRESS.md): vgmstream r2168 (`C:\Users\liamw\tools\vgmstream`), ww2ogg 0.24 (`C:\Users\liamw\tools\ww2ogg`).
+Open: where the textures' format and sRGB flags really live, the missing smallest and largest mip levels, which stream is
+which sound (the packs hold no names: step 0.7 matches them by recording).
+
+### Step 0.10: the exe's first study session (2026-11-14). Flight rules found (C); the tick rate not found
+
+An agent's session (resumed once after a restart; one session in all): notes `re/elite/ghidra/notes/0.10-flight.md`
+(decompiled code in `re/elite/ghidra/dec/`, out of git). Every rule is now a row of **`docs/elite-flight-model.md`** (C17)
+with its address. Found, grade C: the speed cap and target velocity, flight assist on and off (thrust and rotation), the
+flight assist's time constants (with the code's floors 0.5 s and the 4/3, 1/3, 10/9, 1/9 terms), the acceleration limits
+(and the 0.25 reverse rule), the jerk limits, the speed guards (the 500 m/s rule with flight assist off), the over-speed
+drag, the counter-drift force (partly), turn rates and angular acceleration limits, the blue-zone curve
+(`0x142E50650`), turning during and after boost, the thrusters' mass curve and which nine values it scales
+(`0x142CAC400`), the distributor's blend of a base and a full-power block (`0x142E86E20`; `t` believed to be the ENG
+share), boost's states and costs (`0x142E4A820`), the frame order (physics steps before the flight step, which uses the
+frame's dt), and the physics sub-step rule (n equal sub-steps of the frame, at most N, of size about 1/f).
+
+**Not found (become D or wait for 0.11):** the simulation's rate f and N (Q8: 60 Hz is the plan's fallback), mass lock,
+glide, the mouse-to-stick mapping, what writes the speed multipliers. **The ship's own numbers are not in the exe**: the
+rules read a 51-value performance block loaded at run time. `docs/elite-flight-model.md` lists where each value comes from:
+speeds and turn rates B (coriolis; EDSY disagrees on pitch and yaw by 1 deg/s), the accelerations **provisional** from
+EDSY (E8, a hint) until measured, the time constants and blue-zone curves unknown until measured (step 0.9, waiting for
+the user's session). The gate cannot be run on any of it until 0.9's traces exist.
+
+**Step 0.4 (meshes), the search's power checked (A04, 2026-11-14).** A second search, for models seen from inside, found a real
+cockpit (`82afa63a...`: a radar in the dashboard's middle with a hologram pad each side, screens overhead) stored as its own
+file in the same coordinate space as the structure round it (`36a32c59...` wraps exactly round it): so the method can find a
+cockpit, and Elite keeps a cockpit as a file of its own. It is not the Sidewinder's (no struts meeting overhead, as in the
+user's cockpit shots); 161 inside views of 5,133 scored models were looked at. The one full in-game ship in the open files
+(`7655c69e...`) keeps its seat and gear leg inside its hull file. No gimballed small laser matched the user's underside shot
+among 134 small symmetric models. Verdict, firmer than before: the Sidewinder's hull, cockpit, gear and hardpoints are believed
+to be in the encrypted files (still an inference). Notes: `re/elite/notes/sidewinder_meshes.md` ("A04").
+
+### Step 1.1: the converter and the parked ship (2026-11-14). **Built; pictures at night and under cloud not yet taken**
+
+Built: `se_engine/src/sidewinder/` (`mod.rs` the plugin, files, `Parked`, spawn, solid pieces, `sw` commands; `draw.rs`;
+`convert.rs` the converter `copy_sidewinder` and the ignored checks), `sidewinder` in `KNOWN_CODES`, `.edm` and `.binds`
+checks in `check_inside`, `ModControl::{pilot, ship_request, ship_parked, board}`, the Mods row's Spawn and Restock rows,
+`assets/mods/sidewinder/` (`ship.edm` 161 KB, `cockpit.edm`, `binds/`, `SOURCES.txt`, `mod.cfg`).
+
+| Claim | Grade | Shown by |
+|---|---|---|
+| The hull's vertices and indices are Elite's bytes (its simplified Sidewinder) | A | `geometry_is_elites` passes |
+| The key files are Elite's, byte for byte (C12) | A | `bindings_match_elite` passes |
+| The hull's scale (14.4 x 22.2 x 4.2 m), the gear's place and height (1.29 m from the user's back shot), the cockpit, the materials (plain greys, no textures yet) | E (stand-ins) | Pictures; `SOURCES.txt` says so |
+| Spawn: 18 to 60 m along the view, level enough, clear of ground, buildings and props, nose towards the player; no room: a message | F (the spec's F1) | Test run: spawned 18.0 m ahead on the Serengeti, 4 solid pieces in the world |
+| Solid: one convex piece per draw, in the world while within 1.5 km, added again after a rebase; out while it flies | F | Test run: 4 pieces parked, 0 flying, 4 again after landing elsewhere |
+| Lit as the props are | F | Day picture (`.optimize/scratch/sw/a_parked.png`); night and cloud not yet |
+| Files read on a worker thread at the first spawn; a bad file greys the row | F | Test run: an old `cockpit.edm` without its eye point was refused and greyed the row |
+
+### Steps 1.2 and 1.3, first cut (2026-11-14). **Flies; the gate not run (no traces yet)**
+
+`crates/elite-sim/src/flight.rs`: the flight step of `docs/elite-flight-model.md` (grade C rules), with the ship's block in
+`data.rs` (`sidewinder_block`: speeds and turn rates B, accelerations EDSY hints, the rest stand-ins listed in
+`data::stand_in`, the pips' blend t = ENG/4 inferred). Tests: the mass curve's three points, the blue-zone curve, flight
+assist on reaching the cap without passing it and within the forward acceleration, holding against gravity, assist off
+drifting, the lateral cap, the turn rates. `se_engine/src/sidewinder/seat.rs` (E boards from within 6 m looking at the ship,
+`Mode::Pilot`, the seat's camera with head look on the middle button, Elite's bound keys taken from everyone else, B out only
+when landed, a bare readout) and `pilot.rs` (60 Hz ticks, at most 6 a frame, in the body's turning frame, the body's gravity,
+the ground from the terrain's loaded heights, liftoff on up thrust, touchdown with the gear down under 10 m/s: a stand-in
+until step 2.4).
+
+A test run (`sw board`, `sw thrust`, `sw throttle`, `sw gear`, `sw leave`) flew it: liftoff, 96.4 m/s at 60 % throttle (60 %
+of the 160.6 m/s cap at 2 ENG pips and 45.2 t: the rules as written), stopped by flight assist to 0.13 m/s, touchdown at 9.6
+m/s down, B out beside it, the ship solid again where it landed. **Not yet:** the gate (no measured traces: step 0.9 waits
+for the user), boost and the pips (2.1), building contact and damage (2.3), Elite's touchdown and liftoff rules (2.4), the
+fade on boarding and Elite's eye place and field of view (Q6), a real mouse and keyboard (only test commands so far), a flight
+to 5 km and back. Step 1.3's "the user flies it" is on the waiting list.
+
+### Step 0.11: the exe's second study session (2026-11-14). **G2 passed**
+
+An agent's session (notes `re/elite/ghidra/notes/0.11-flight.md`; the rows in `docs/elite-flight-model.md`, "step 0.11").
+Found, grade C: **the mouse's virtual stick** (`0x1408F2210`: each frame v += counts x sensitivity / R; in the ship's mode v
+is clamped to plus or minus 1 and holds; decay halves it every 1/rate s when on; stick = sign(v) x ((|v| - dead zone) /
+(1 - dead zone)) ^ linearity; mouse right gives negative roll), **the pips' share** t = ENG pips / most pips
+(`0x1437FEF60`, settling step 0.10's inference), **the capacitors' recharge** rate = lo + (hi - lo) x (pips / most)^p per
+channel (`0x1437FD920`), the speed multipliers' start values (1.0, writer not found), **the torque** f x M x alpha(assist) +
+(1 - f) x M x alpha(raw) (settling A10's scalar), and **flight assist off's damping** of a centred axis while another is
+steered (block 0xC0..0xC8). Not found, grade D (to be fitted from step 0.9's traces): R (the mouse's counts for full
+deflection), the pips' counts (most, starting, step), the simulation's rate and sub-step cap, mass lock (not studied).
+
+**G2: passed.** Every flight rule is C or D, as the gate asks; Phase 1 starts. The mod's code now follows the mouse rule
+(dead zone, linearity and sensitivity from the shipped `.binds` copy) and has the damping rule (its K a stand-in, 0, until
+measured).

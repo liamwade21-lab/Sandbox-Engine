@@ -66,7 +66,7 @@ licence and the credit (README, the site). The user's Skate 3 is set up by that 
 extracted disc (`C:\Users\liamw\Downloads\Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl)`); the mod's files are made from them
 once and shipped (the user's: "Ship them with the game", credited to EA).
 
-**Planned, not built: the Faulcon DeLacy Sidewinder mod (the user's of 2026-11-13):** Elite Dangerous's Sidewinder, spawned
+**Being built: the Faulcon DeLacy Sidewinder mod (the user's of 2026-11-13):** Elite Dangerous's Sidewinder, spawned
 from the Q menu and boarded with E, flying by Elite's rules. The plan is `docs/spec-mods-sidewinder.md` (the user's interview
 is in its Decisions log; its "What byte for byte honestly means here" grades every part). Its research (the survey of Elite's
 files, the community's numbers) is in `re/elite/`, out of git. Elite's install (read only):
@@ -172,6 +172,27 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
 
 ## Gotchas
 
+- The Sidewinder mod (`sidewinder/`, `crates/elite-sim`, `se_core/src/elite.rs` the reader of Elite's open files,
+  `elite_asset.rs` the mod's `.edm` model format and the `.binds` reader; the spec's Build log says what each step did).
+  Elite's mesh files keep no names and no metre scale; the in-game Sidewinder hull and cockpit are NOT among the open files
+  (Build log, step 0.3): the hull is Elite's simplified Sidewinder (`4387928b...`, believed the HUD hologram, matched to the
+  user's top screenshot), its bytes unchanged, scaled to Frontier's published plan area; the gear and the cockpit are
+  recreated stand-ins (`sidewinder/convert.rs`). The mod's files are written only by
+  `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture` (`ELITE_PATH`, default the user's Steam copy);
+  `geometry_is_elites` and `bindings_match_elite` (ignored) re-read the install. Elite's install path appears only in tests
+  (C4). Model space: metres, X right, Y up, -Z the nose, the gear's feet on Y 0. Spawning is `ShipRequest` (`ModControl::
+  ship_request`, the Mods row's own button, `sw spawn`, a test's `mods on sidewinder`), NOT the mod on: a parked ship stays when
+  another mod turns on. The parked ship's truth is `Parked` (its pose in the body's frame); its solid pieces (one convex hull
+  per draw) are added to the sandbox's world while it is within 1.5 km and again after a rebase (`solids_cleared`). Never
+  open a file starting `FREA` (`elite::unpack` refuses it); never write `aes`, `decrypt` or `cipher` in the code (C3 greps).
+  The user's Elite screenshots for side-by-side pictures: `re/elite/screenshots/2026-11-14_user/` (out of git).
+  The seat (`seat.rs`, `pilot.rs`): E boards (`ModControl::board`, the mod on with `pilot`); the sandbox leaves first
+  person at the end of that frame (`Mode::Pilot`) and `seat_camera` writes the camera at the eye (the cockpit's part
+  `eye`) bound to the body every frame. `control.pilot` is in the free camera's gates (`camera.rs` `input_controls`,
+  `travel_and_move`) and `panels_hidden`, as `walker` is. Getting out by any way sets him down beside the ship
+  (`Sandbox::set_down`) unless he was already put somewhere. Flight: `elite_sim::flight` at 60 Hz in the body's turning
+  frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
+  throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state`, with `SE_SANDBOX=1`.
 - The Skate 3 mod (`skate/`). It plays INSIDE the sandbox's `Mode::Walk`: `Sandbox::skate` (a `skate::Skater`, which owns a
   `skate_sim::Sim`) is set by `skate::sync` once `ModControl::skate` is on, the sandbox stands on ground and `SkateAssets` are
   read (`mods.rs` `apply_request`, code `skate3`; the simulation's files are read from the folder holding `private/game.json`).

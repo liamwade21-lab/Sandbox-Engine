@@ -188,11 +188,110 @@ pub fn unladen_mass() -> f64 {
         + 2.0 * PULSE_LASER_GIMBAL_SMALL.mass
 }
 
+/// EDSY's numbers for the Sidewinder (`re/elite/community/edsy/eddb.js`, saved 2026-11-14; the spec's E8: **hints**, used only
+/// where nothing better exists yet, each to be replaced by step 0.9's measurement): accelerations m/s^2, angular
+/// accelerations deg/s^2, and the pitch rate at the base block (EDSY's `minpitch`).
+pub mod edsy {
+    pub const FWD_ACC: f64 = 44.39;
+    pub const REV_ACC: f64 = 29.96;
+    pub const LAT_ACC: f64 = 29.96;
+    pub const PITCH_ACC: f64 = 220.0;
+    pub const YAW_ACC: f64 = 110.0;
+    pub const ROLL_ACC: f64 = 240.0;
+    pub const PITCH: f64 = 43.0;
+    pub const MIN_PITCH: f64 = 34.0;
+}
+
+/// Values the rules need that have no source yet: **stand-ins** (as the stand-in hull is), each the least-assuming choice the
+/// code allows, listed here so a measurement (step 0.9) replaces every one. None is tuned by feel.
+pub mod stand_in {
+    /// Block 0x04, 0x08: no extra clamp on reverse or lateral speed beyond the cap.
+    pub const BACK_SHARE: f64 = 1.0;
+    pub const SIDE_SHARE: f64 = 1.0;
+    /// Block 0x2C, 0x5C..0x64: 0, so the code's own floors hold (T = 0.5 s; tau_r = dt).
+    pub const FA_D: f64 = 0.0;
+    pub const FA_R: [f64; 3] = [0.0; 3];
+    /// Block 0x28, 0x50..0x58: no jerk limits.
+    pub const JERK_LIN: f64 = 0.0;
+    pub const ANG_JERK: [f64; 3] = [0.0; 3];
+    /// Block 0x10: the boost's ramp to full demand, s.
+    pub const BOOST_RAMP: f64 = 0.0;
+    /// Block 0xC0..0xC8: no damping of a centred axis with flight assist off.
+    pub const FA_OFF_DAMP: [f64; 3] = [0.0; 3];
+    /// The blue-zone curves: flat (no speed effect) until measured.
+    pub const CURVE: crate::flight::Curve = crate::flight::Curve::FLAT;
+    /// How fast the throttle moves while W or S is held (share a second), and the mouse's counts for full stick (the exe's
+    /// R over the sensitivity: step 0.11 found the rule, v += counts x sensitivity / R, but not R).
+    pub const THROTTLE_RATE: f64 = 1.0;
+    pub const MOUSE_FULL_COUNTS: f64 = 400.0;
+}
+
+/// The stock Sidewinder's performance block at `eng_pips` (0..4) and mass `mass_t`: the current block (after the pips'
+/// blend and the thrusters' mass curve, both grade C rules) and the full-power block's top speed.
+///
+/// - Full-power block (t = 1, what the outfitting screen shows): speeds and turn rates B (coriolis), accelerations and
+///   angular accelerations EDSY hints, the rest stand-ins.
+/// - Base block (t = 0): the speeds at coriolis' `minthrust` share (the community's reading of that number: a hint), the
+///   turn rates at EDSY's `minpitch / pitch` (a hint), everything else as the full block (stand-in: no pip effect).
+/// - t = ENG pips / most pips (C, step 0.11: 0x1437FEF60); the most pips a channel takes, 4, is Elite's well-known rule but
+///   comes from data the exe loads (D until measured).
+/// - The mass curve: thrusters 2E (B, coriolis), the same curve for speeds, accelerations and turn rates until their
+///   separate curves are known (the exe applies one curve each; the module data has only these numbers).
+pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (crate::flight::Block, f64) {
+    use crate::flight::{mass_curve, Block};
+    let s = &SIDEWINDER;
+    let full = Block {
+        top_speed: s.speed,
+        boost_speed: s.boost,
+        back_share: stand_in::BACK_SHARE,
+        side_share: stand_in::SIDE_SHARE,
+        boost_ramp: stand_in::BOOST_RAMP,
+        accel_fwd: edsy::FWD_ACC,
+        accel_rev: edsy::REV_ACC,
+        accel_side: edsy::LAT_ACC,
+        jerk_lin: stand_in::JERK_LIN,
+        fa_d: stand_in::FA_D,
+        turn: [s.pitch, s.yaw, s.roll],
+        ang_accel: [edsy::PITCH_ACC, edsy::YAW_ACC, edsy::ROLL_ACC],
+        ang_jerk: stand_in::ANG_JERK,
+        fa_r: stand_in::FA_R,
+        curve_accel: stand_in::CURVE,
+        curve_turn: stand_in::CURVE,
+        curve_roll: stand_in::CURVE,
+        fa_off_damp: stand_in::FA_OFF_DAMP,
+    };
+    let share = s.min_thrust_pct / 100.0;
+    let turn_share = edsy::MIN_PITCH / edsy::PITCH;
+    let mut base = full.clone();
+    base.top_speed *= share;
+    base.boost_speed *= share;
+    for k in 0..3 {
+        base.turn[k] *= turn_share;
+    }
+    let t = (eng_pips / 4.0).clamp(0.0, 1.0);
+    let th = &THRUSTERS_2E;
+    let k = mass_curve(mass_t, [th.min_mass, th.opt_mass, th.max_mass], [th.min_mul, th.opt_mul, th.max_mul]);
+    let current = Block::blend(&base, &full, t).scaled(k, k, k);
+    (current, full.top_speed * k)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The parts add up to the journal's unladen mass (B against B).
+    #[test]
+    fn pips_and_mass_scale_the_block() {
+        let m = JOURNAL_UNLADEN_MASS + FUEL_TANK_T + SIDEWINDER.reserve_fuel;
+        let (four, full_top) = sidewinder_block(4.0, m);
+        let (zero, _) = sidewinder_block(0.0, m);
+        assert!((four.top_speed - full_top).abs() < 1e-9);
+        assert!((zero.top_speed / four.top_speed - SIDEWINDER.min_thrust_pct / 100.0).abs() < 1e-9);
+        // At the thrusters' optimal mass the speeds are the outfitting screen's.
+        let (opt, _) = sidewinder_block(4.0, THRUSTERS_2E.opt_mass);
+        assert!((opt.top_speed - SIDEWINDER.speed).abs() < 1e-6 && (opt.boost_speed - SIDEWINDER.boost).abs() < 1e-6);
+    }
+
     #[test]
     fn parts_weigh_what_the_journal_says() {
         assert!((unladen_mass() - JOURNAL_UNLADEN_MASS).abs() < 1e-9, "{}", unladen_mass());

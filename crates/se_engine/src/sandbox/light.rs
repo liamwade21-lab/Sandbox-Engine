@@ -125,9 +125,11 @@ fn make_records(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>
     commands.insert_resource(PropLightRecord(probe));
 }
 
-/// The light at the camera's place while the sandbox has anything to show: his weapon, or props.
-fn update_light(sb: Res<Sandbox>, cam: Res<FlyCamera>, mut light: ResMut<PropLight>, mut record: ResMut<PropLightRecord>, mut buffers: ResMut<Assets<ShaderBuffer>>, p: LightParams) {
-    let on = sb.world.as_ref().is_some_and(|w| sb.walking() || w.prop_count() > 0);
+/// The light at the camera's place while the sandbox has anything to show: his weapon, props, or the Sidewinder.
+#[allow(clippy::too_many_arguments)]
+fn update_light(sb: Res<Sandbox>, ship: Res<crate::sidewinder::Sidewinder>, cam: Res<FlyCamera>, mut light: ResMut<PropLight>, mut record: ResMut<PropLightRecord>, mut buffers: ResMut<Assets<ShaderBuffer>>, p: LightParams) {
+    // (And the Sidewinder, parked or flown: it is lit as the props are.)
+    let on = sb.world.as_ref().is_some_and(|w| sb.walking() || w.prop_count() > 0) || ship.parked.is_some() || sb.mode == super::Mode::Pilot;
     if light.on != on {
         light.on = on;
     }

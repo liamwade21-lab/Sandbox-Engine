@@ -178,6 +178,26 @@ pub(super) fn mod_rows(ui: &mut egui::Ui, sb: &mut Sandbox, control: &mut ModCon
     for m in &reg.mods {
         let on = control.active.as_deref() == Some(m.id.as_str());
         let grey = if on { None } else { grey_reason(m, flying_ship, script_starting) };
+        // The Sidewinder is spawned, not played as: its row puts a ship where he looks (another mod goes off first), and while
+        // one is parked a second row restocks it (the spec's F1).
+        if m.code == crate::sidewinder::CODE {
+            if row(ui, &m.name, if on { "Flying" } else { "Spawn" }, &m.description, grey.as_ref().map(|g| g.to_string()), on, grey.is_none() && !on) {
+                picked = true;
+                if control.active.is_some() {
+                    control.request_off();
+                    sb.before_hero = Mode::Walk;
+                }
+                control.ship_request = Some(crate::sidewinder::ShipRequest::Spawn);
+                sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
+                info!("sandbox: {from}: spawn the Sidewinder");
+            }
+            if control.ship_parked && !on && row(ui, "    Refuel, repair, restock", "", "Free: fuel, hull, modules, canopy and shields back to full while landed.", None, false, true) {
+                picked = true;
+                control.ship_request = Some(crate::sidewinder::ShipRequest::Restock);
+                sb.cues.push(Cue::ui("ui/buttonclickrelease.wav"));
+            }
+            continue;
+        }
         let state = match (on, control.loading) {
             (true, true) => "Loading",
             (true, false) => "Playing",

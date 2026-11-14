@@ -1,37 +1,30 @@
 # Progress
 
-## Resume here (paused 2026-11-14 for your Claude Code restart)
-
-Continue `/rea`'s run of the Sidewinder plan (`docs/spec-mods-sidewinder.md`, Phase 0 to 7; the Build log has every step
-done). Three helpers were stopped mid-step; their tickets are in `.rea/tickets/analysis/` and what they wrote is kept:
-
-- **Step 0.2 (textures and sounds)**, ticket `02-textures-sounds.md`: notes so far `re/elite/notes/textures.md`,
-  `sounds.md`, tools `re/elite/tools/elite_tex.py`, `tex_guess.py`, `elite_snd.py`. Found: texture files hold no format or
-  size, so they are worked out from the bytes (level sizes, then smoothness); it was fixing `read_texture` for flat/unknown
-  entries. Restart it with the same ticket, saying to carry on from the notes.
-- **Step 0.10 (exe flight study)**, ticket `10-exe-flight.md`: notes so far `re/elite/ghidra/notes/0.10-flight.md` and the
-  draft rows `re/elite/notes/flight_model_rows.md`. Restart it to finish (one session in all, per the spec).
-- **The search check (A04)**, ticket `04-search-control.md` (does the "hull not found" verdict hold?): nothing written yet.
-  **Do this first with your screenshots**: the candidate `4387928b...` (`re/elite/sheets/sidewinder/look_4387928b.png`) has a
-  trapezoid top view like your top shot (`7.webp`). The proportion test that ruled it out used Frontier's 5.4 m height,
-  which may include the landing gear; your rear shot (`5.webp`) can say how tall the hull is without it.
-- **Next after that:** step 1.1 (the converter and the parked ship on stand-ins, design agreed with the advisor:
-  the ship's pose kept in the body's frame, its solids re-added after a rebase; Spawn is its own request, not "mod on";
-  drawn with `PropMaterial`; several convex solid pieces so you can walk under it), then the seat (`Mode::Pilot`) once
-  0.10 and 0.11 have reported.
-
 ## Waiting for you (the Sidewinder mod)
 
-1. ~~Elite screenshots~~ **Received 2026-11-14** (9 pictures: the cockpit three ways, a three-quarter view, back, side, top,
-   front with the gear down, underneath), saved in `re/elite/screenshots/2026-11-14_user/` (out of git).
-2. **A measuring session (U2)**: start Elite, log in, enter Solo, sit in the Sidewinder in open space, then tell me. It
-   unblocks steps 0.7 (matching sounds), 0.8 (the measuring rig) and 0.9 (the first flight measurements); without them the
-   flight rules can be built from the exe but not proven inside the gate.
-3. ~~Restart Claude Code once~~ (being done now: REA's tools appear after it).
+1. **A measuring session (U2)**: start Elite, log in, enter Solo, sit in the Sidewinder in open space, then tell me. It
+   unblocks steps 0.7 (matching sounds to Elite's recordings), 0.8 (the measuring rig: tools ready in `re/elite/measure/`)
+   and 0.9 (the first flight measurements). Until then the ship flies by Elite's own rules (read from its exe) but with some
+   of its numbers as stand-ins or the community's hints, and nothing can be proven inside the gate.
+2. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
+   outfitting screen's Sidewinder page (or the measuring session) settles it.
+
+Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-14_user/`); the Claude Code restart.
 
 ## Current state (2026-11-14)
 
-- **Building the Faulcon DeLacy Sidewinder mod** (`docs/spec-mods-sidewinder.md`; each step's report is in its Build log).
+- **The Sidewinder mod, where it stands** (`docs/spec-mods-sidewinder.md`, its Build log has each step's report):
+  - Done: 0.1 (meshes read, G1 passed), 0.2 (textures and sounds read), 0.3 and 0.4's meshes (the in-game hull and cockpit
+    are not in the open files; the ship is drawn with Elite's own simplified Sidewinder, matched to your top screenshot, and
+    stand-in gear and cockpit), 0.10 (the flight rules found in the exe: `docs/elite-flight-model.md`).
+  - Being built now: 1.1 (spawn from the Mods tab, the parked ship solid to walk round) and 1.2/1.3 (E to board, the seat,
+    flight by Elite's rules, landing, B to get out).
+  - Running in the background: step 0.11 (the second exe study: the mouse, the pips, the speed multipliers, the
+    simulation's rate) and a cockpit search using your cockpit shots.
+  - Waiting for you: 0.7, 0.8, 0.9 (the measuring session).
+
+
+- **The Sidewinder mod's earlier notes** (installs, step 0.1).
   - **Step 0.1 done (go/no-go G1 passed):** the game can now read Elite's open 3D mesh files
     (`crates/se_core/src/elite.rs`): 21,896 of 22,008 read, 215 million triangles; 300 of them drawn as contact sheets look
     like real things (ships, a helmet, a wine glass, rocks, station parts). The encrypted files are refused by their first
@@ -43,8 +36,8 @@ done). Three helpers were stopped mid-step; their tickets are in `.rea/tickets/a
   - **Also built:** `crates/elite-sim` (the ship's numbers with their sources, jump fuel and range: your journal's 8.149506 ly
     matched; the trace format and the gate), the `.binds` reader (Elite's default keys read from its own file) and the
     mod's model format `.edm` (`se_core/src/elite_asset.rs`). Ghidra has analysed Elite's exe (143,913 functions).
-  - **Next:** step 0.2 (textures and sounds, running), 0.3 (find the Sidewinder's hull), the exe study (Ghidra is analysing
-    Elite's exe in `re/ghidra_projects/elite`).
+  - **More installs (by the step 0.2 agent):** vgmstream r2168 (`C:\Users\liamw\tools\vgmstream`) and ww2ogg 0.24
+    (`C:\Users\liamw\tools\ww2ogg`), both from their official GitHub releases, for Elite's Wwise sound streams.
 - **The Sidewinder plan** (2026-11-13, your request: Elite Dangerous's Sidewinder in the
   Q menu, E to get in, everything as close to Elite as can be proven). Your
   answers are in its Decisions log. Found on the way: about half of Elite's data files are encrypted and stay closed (your

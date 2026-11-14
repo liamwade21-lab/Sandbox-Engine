@@ -62,6 +62,10 @@ rapier3d = "0.36"
 # crates/skate-sim, on crates/skate-core and skate-data), and serde_json for checking its retail JSON files.
 skate-core = { workspace = true }
 skate-sim = { path = "../skate-sim" }
+# The Faulcon DeLacy Sidewinder mod (sidewinder/): its ship rules, and glam for handing them vectors (elite-sim may use
+# another glam than Bevy).
+elite-sim = { path = "../elite-sim" }
+glam = { workspace = true }
 serde_json = { workspace = true }
 
 # The first-run ownership check's dialogs and registry reads (ownership.rs).

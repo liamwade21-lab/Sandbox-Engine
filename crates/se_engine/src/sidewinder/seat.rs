@@ -1,0 +1,328 @@
+//! Getting in and out of the Sidewinder and sitting in it (the spec's F2, step 1.3): E at the parked ship boards it (the screen
+//! fades in Elite; here the cut is immediate until step 3's sounds and step 4's panels), the camera sits at the pilot's eyes
+//! with Elite's head look on the middle button, and B (landed only, the spec's D8) sets him down beside it.
+//!
+//! - Boarding turns the mod on (`ModControl::board`): the sandbox leaves first person at the end of that frame and the seat
+//!   writes the camera from then on (`seat_camera`, bound to the body every frame: the 500 m-a-frame rule).
+//! - Seated, every key Elite's `.binds` copy binds is taken from the frame's input (`take_keys`), so the port's own readers
+//!   never see them; B is the one key added.
+//! - Getting out by any way (B, the mod turned off) sets him down beside the ship's left side, unless something else already
+//!   put him somewhere (the main menu's Play puts him on Earth).
+
+use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::math::{DQuat, Vec3};
+use bevy::prelude::*;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
+use bevy_egui::egui;
+use se_core::elite_asset::Binds;
+
+use crate::camera::FlyCamera;
+use crate::mods::{ModControl, ModRegistry};
+use crate::sandbox::{Mode, Sandbox};
+use crate::system::SystemBody;
+
+use super::pilot::{Pilot, PilotKeys};
+use super::{Sidewinder, SidewinderAssets, CODE};
+
+/// On foot, the ship is boarded from within this far of its hull while looking at it (the spec's F2).
+pub const BOARD_REACH_M: f32 = 6.0;
+/// Head look: radians a mouse count, the most to each side and up or down (Elite's head look stops near the canopy's edges:
+/// E, to be matched to the user's pictures).
+const LOOK_RATE: f32 = 0.0022;
+const LOOK_YAW_MOST: f32 = 2.0;
+const LOOK_PITCH_MOST: f32 = 1.1;
+/// Out of the seat: this far out from the hull's left side, on the ground.
+const EXIT_OUT_M: f32 = 2.5;
+
+/// The seat's state while he sits.
+#[derive(Resource, Default)]
+pub struct Seat {
+    pub seated: bool,
+    /// Head look: on, and the view's turn from straight ahead (radians: yaw to the left, pitch up).
+    pub head_look: bool,
+    pub look: Vec2,
+    /// B was pressed this frame (`seat_camera` acts on it).
+    leave: bool,
+    regain: u8,
+}
+
+impl Seat {
+    /// Just sat down.
+    pub fn boarded() -> Seat {
+        Seat { seated: true, regain: 3, ..default() }
+    }
+
+    /// Get out (as B does: only when landed).
+    pub fn request_leave(&mut self) {
+        self.leave = true;
+    }
+}
+
+/// Elite's name for a key as Bevy's key code (the keys its default files use).
+pub fn key_code(name: &str) -> Option<KeyCode> {
+    use KeyCode as K;
+    let k = name.strip_prefix("Key_")?;
+    Some(match k {
+        "A" => K::KeyA, "B" => K::KeyB, "C" => K::KeyC, "D" => K::KeyD, "E" => K::KeyE, "F" => K::KeyF, "G" => K::KeyG, "H" => K::KeyH,
+        "I" => K::KeyI, "J" => K::KeyJ, "K" => K::KeyK, "L" => K::KeyL, "M" => K::KeyM, "N" => K::KeyN, "O" => K::KeyO, "P" => K::KeyP,
+        "Q" => K::KeyQ, "R" => K::KeyR, "S" => K::KeyS, "T" => K::KeyT, "U" => K::KeyU, "V" => K::KeyV, "W" => K::KeyW, "X" => K::KeyX,
+        "Y" => K::KeyY, "Z" => K::KeyZ,
+        "0" => K::Digit0, "1" => K::Digit1, "2" => K::Digit2, "3" => K::Digit3, "4" => K::Digit4, "5" => K::Digit5, "6" => K::Digit6,
+        "7" => K::Digit7, "8" => K::Digit8, "9" => K::Digit9,
+        "Tab" => K::Tab, "Space" => K::Space, "Enter" => K::Enter, "Backspace" => K::Backspace, "Delete" => K::Delete, "Insert" => K::Insert,
+        "Home" => K::Home, "End" => K::End, "PageUp" => K::PageUp, "PageDown" => K::PageDown,
+        "UpArrow" => K::ArrowUp, "DownArrow" => K::ArrowDown, "LeftArrow" => K::ArrowLeft, "RightArrow" => K::ArrowRight,
+        "LeftShift" => K::ShiftLeft, "RightShift" => K::ShiftRight, "LeftControl" => K::ControlLeft, "RightControl" => K::ControlRight,
+        "LeftAlt" => K::AltLeft, "RightAlt" => K::AltRight, "Equals" => K::Equal, "Minus" => K::Minus, "Comma" => K::Comma, "Period" => K::Period,
+        "Slash" => K::Slash, "backslash" | "BackSlash" => K::Backslash, "SemiColon" => K::Semicolon, "Apostrophe" => K::Quote,
+        "LeftBracket" => K::BracketLeft, "RightBracket" => K::BracketRight, "Grave" => K::Backquote,
+        "F1" => K::F1, "F2" => K::F2, "F3" => K::F3, "F4" => K::F4, "F5" => K::F5, "F6" => K::F6, "F7" => K::F7, "F8" => K::F8,
+        "F9" => K::F9, "F10" => K::F10, "F11" => K::F11, "F12" => K::F12,
+        "Numpad_0" => K::Numpad0, "Numpad_1" => K::Numpad1, "Numpad_2" => K::Numpad2, "Numpad_3" => K::Numpad3, "Numpad_4" => K::Numpad4,
+        "Numpad_5" => K::Numpad5, "Numpad_6" => K::Numpad6, "Numpad_7" => K::Numpad7, "Numpad_8" => K::Numpad8, "Numpad_9" => K::Numpad9,
+        _ => return None,
+    })
+}
+
+/// Every keyboard key the file binds to anything (the ship's actions and the rest: the seat takes them all).
+pub fn bound_keys(b: &Binds) -> Vec<KeyCode> {
+    let mut out: Vec<KeyCode> = Vec::new();
+    for c in b.actions.values().flat_map(|a| a.keys()).filter(|k| k.device == "Keyboard").filter_map(|k| key_code(&k.key)) {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Is a key down that the action is bound to (its primary or secondary keyboard key)?
+pub fn action_pressed(b: &Binds, keys: &ButtonInput<KeyCode>, action: &str, just: bool) -> bool {
+    b.get(action).is_some_and(|a| {
+        a.keys().filter(|k| k.device == "Keyboard" && k.modifiers.is_empty()).filter_map(|k| key_code(&k.key)).any(|c| if just { keys.just_pressed(c) } else { keys.pressed(c) })
+    })
+}
+
+/// The ray from his eyes (the sandbox's local frame) against the parked ship's box: the distance to it if it is hit.
+fn look_at_ship(ship: &Sidewinder, sb: &Sandbox, assets: &SidewinderAssets) -> Option<f32> {
+    let p = ship.parked.as_ref()?;
+    let world = sb.world.as_ref().filter(|w| w.frame.obj == p.obj)?;
+    let at = world.frame.from_body(p.pos).as_vec3();
+    let rot = (world.frame.rotation().inverse() * p.rot).normalize().as_quat();
+    let inv = rot.inverse();
+    let (o, d) = (inv * (sb.eye - at), inv * sb.forward);
+    let (lo, hi) = (assets.shape.lo, assets.shape.hi);
+    let (mut t0, mut t1) = (0.0f32, f32::MAX);
+    for k in 0..3 {
+        if d[k].abs() < 1e-6 {
+            if o[k] < lo[k] || o[k] > hi[k] {
+                return None;
+            }
+            continue;
+        }
+        let (a, b) = ((lo[k] - o[k]) / d[k], (hi[k] - o[k]) / d[k]);
+        t0 = t0.max(a.min(b));
+        t1 = t1.min(a.max(b));
+    }
+    (t0 <= t1).then_some(t0)
+}
+
+/// On foot: E while looking at the ship within reach boards it (the press is taken, so "use" doesn't see it).
+#[allow(clippy::too_many_arguments)]
+pub fn board(
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    sb: Res<Sandbox>,
+    ship: Res<Sidewinder>,
+    assets: Option<Res<SidewinderAssets>>,
+    mut control: ResMut<ModControl>,
+    reg: Res<ModRegistry>,
+    mut seat: ResMut<Seat>,
+    mut prompt: ResMut<BoardPrompt>,
+    mut pilot: ResMut<Pilot>,
+) {
+    prompt.0 = false;
+    let Some(assets) = assets else { return };
+    if !sb.walking() || !sb.placed || sb.menu || control.main_menu || control.skate || sb.skate.is_some() {
+        return;
+    }
+    let Some(d) = look_at_ship(&ship, &sb, &assets) else { return };
+    if d > BOARD_REACH_M {
+        return;
+    }
+    prompt.0 = true;
+    if keys.just_pressed(KeyCode::KeyE) {
+        keys.clear_just_pressed(KeyCode::KeyE);
+        if let Some(id) = reg.mods.iter().find(|m| m.code == CODE).map(|m| m.id.clone()) {
+            control.board(&reg, &id);
+            *seat = Seat::boarded();
+            *pilot = Pilot::default();
+            info!("sidewinder: boarded ({d:.1} m from the hull)");
+        }
+    }
+}
+
+/// "Press E to board" while it would (drawn as Odyssey's prompt, near the middle: the look is E until the user's pictures).
+#[derive(Resource, Default)]
+pub struct BoardPrompt(pub bool);
+
+pub fn draw_prompt(mut contexts: bevy_egui::EguiContexts, prompt: Res<BoardPrompt>, control: Res<ModControl>) -> Result {
+    if !prompt.0 || control.main_menu {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let r = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder board prompt")));
+    let at = egui::pos2(r.center().x, r.center().y + r.height() * 0.12);
+    let text = "[E]  Board the Sidewinder";
+    let font = egui::FontId::proportional(20.0);
+    painter.text(at + egui::vec2(1.5, 1.5), egui::Align2::CENTER_CENTER, text, font.clone(), egui::Color32::from_black_alpha(180));
+    painter.text(at, egui::Align2::CENTER_CENTER, text, font, egui::Color32::from_rgb(255, 140, 20));
+    Ok(())
+}
+
+/// Step 1.3's bare readout while seated (Elite's HUD is step 4.1): speed, throttle with its share of the cap, flight assist,
+/// gear, landed; and the keys at the bottom. Drawn in Elite's orange.
+pub fn draw_readout(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>) -> Result {
+    if !seat.seated || !control.pilot || control.main_menu {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let r = ctx.content_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder readout")));
+    let orange = egui::Color32::from_rgb(255, 140, 20);
+    let speed = pilot.motion.vel.length();
+    let lines = [
+        format!("{:>4.0} m/s", speed),
+        format!("Throttle {:+.0} %", pilot.throttle * 100.0),
+        format!("Flight assist {}", if pilot.flight_assist { "on" } else { "OFF" }),
+        format!("Landing gear {}", if pilot.gear_down { "down" } else { "up" }),
+        if pilot.landed { "Landed".to_string() } else { String::new() },
+    ];
+    let at = egui::pos2(r.center().x - r.width() * 0.18, r.bottom() - r.height() * 0.2);
+    for (i, l) in lines.iter().enumerate() {
+        painter.text(at + egui::vec2(0.0, i as f32 * 20.0), egui::Align2::RIGHT_TOP, l, egui::FontId::monospace(16.0), orange);
+    }
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Z assist  L gear  Middle button head look  B out (landed)";
+    painter.text(egui::pos2(r.center().x, r.bottom() - 14.0), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(13.0), orange.gamma_multiply(0.8));
+    Ok(())
+}
+
+/// Seated: Elite's bound keys are taken from the frame's input (nothing else sees their presses), B to leave, the middle button
+/// toggles head look, and the mouse turns the head while it's on. The cursor is locked as the walker's is.
+#[allow(clippy::too_many_arguments)]
+pub fn take_keys(
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut buttons: ResMut<ButtonInput<MouseButton>>,
+    motion: Res<AccumulatedMouseMotion>,
+    assets: Option<Res<SidewinderAssets>>,
+    control: Res<ModControl>,
+    mut seat: ResMut<Seat>,
+    window: Single<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+    cfg: Res<crate::config::EngineConfig>,
+    mut pilot_keys: ResMut<PilotKeys>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
+) {
+    let (Some(assets), true) = (assets, control.pilot && seat.seated) else {
+        *pilot_keys = PilotKeys::default();
+        return;
+    };
+    let (mut window, mut cursor) = window.into_inner();
+    let real = crate::mods::real_window(&cfg);
+    let free = control.main_menu || (real && !window.focused);
+    let pad = pads.iter().next();
+    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &motion, real && seat.regain == 0 && !seat.head_look) };
+    if !free {
+        if keys.just_pressed(KeyCode::KeyB) {
+            seat.leave = true;
+        }
+        // Head look (`HeadLookToggle`, the middle button in Elite's file).
+        let toggle = assets.keys.get("HeadLookToggle").is_some_and(|a| a.keys().any(|k| k.device == "Mouse" && k.key == "Mouse_3"));
+        if toggle && buttons.just_pressed(MouseButton::Middle) {
+            seat.head_look = !seat.head_look;
+            if !seat.head_look {
+                seat.look = Vec2::ZERO;
+            }
+        }
+        if seat.head_look && real && seat.regain == 0 {
+            let d = motion.delta;
+            seat.look.x = (seat.look.x - d.x * LOOK_RATE).clamp(-LOOK_YAW_MOST, LOOK_YAW_MOST);
+            seat.look.y = (seat.look.y - d.y * LOOK_RATE).clamp(-LOOK_PITCH_MOST, LOOK_PITCH_MOST);
+        }
+    }
+    for k in bound_keys(&assets.keys).into_iter().chain([KeyCode::KeyB]) {
+        keys.clear_just_pressed(k);
+    }
+    for b in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+        buttons.clear_just_pressed(b);
+        buttons.clear_just_released(b);
+    }
+    if real {
+        let want = if free || seat.regain == 3 { CursorGrabMode::None } else { CursorGrabMode::Locked };
+        if !free && seat.regain == 3 {
+            let middle = Vec2::new(window.width(), window.height()) * 0.5;
+            window.set_cursor_position(Some(middle));
+        }
+        if cursor.grab_mode != want {
+            cursor.grab_mode = want;
+        }
+        cursor.visible = free;
+    }
+    seat.regain = seat.regain.saturating_sub(1);
+}
+
+/// The seat's camera at the pilot's eyes (bound to the body this frame), and getting out: B (landed: always, until flight
+/// arrives in step 1.3's second half) or the mod off by any way.
+#[allow(clippy::too_many_arguments)]
+pub fn seat_camera(
+    mut sb: ResMut<Sandbox>,
+    mut seat: ResMut<Seat>,
+    mut control: ResMut<ModControl>,
+    ship: Res<Sidewinder>,
+    assets: Option<Res<SidewinderAssets>>,
+    mut cam: ResMut<FlyCamera>,
+    bodies: Query<&SystemBody>,
+    mut msg: ResMut<crate::messages::Messages>,
+    pilot: Res<Pilot>,
+) {
+    if !seat.seated {
+        return;
+    }
+    let (Some(assets), Some(p)) = (assets, ship.parked.as_ref()) else {
+        seat.seated = false;
+        return;
+    };
+    let Some(b) = bodies.iter().find(|b| b.obj == p.obj) else { return };
+    let eye = Vec3::from_array(assets.eye).as_dvec3();
+    let look = DQuat::from_rotation_y(seat.look.x as f64) * DQuat::from_rotation_x(seat.look.y as f64);
+    let eye_body = p.pos + p.rot * eye;
+    let rot_body = (p.rot * look).normalize();
+    if seat.leave {
+        seat.leave = false;
+        if pilot.landed {
+            control.request_off();
+            info!("sidewinder: B: getting out");
+        } else {
+            msg.show("Disembark is only possible when landed".to_string());
+        }
+    }
+    if control.pilot && sb.mode == Mode::Pilot {
+        cam.pos = b.pos.offset_m(b.orient * eye_body);
+        cam.rot = (b.orient * rot_body).normalize();
+        crate::sandbox::bind_camera(&mut cam, b);
+        return;
+    }
+    if control.pilot {
+        // (Boarded this frame: the sandbox leaves first person at the end of its step; the seat takes the camera next frame.)
+        return;
+    }
+    // Out. Beside the ship's left side, on the ground, facing the way the ship faces; unless he's already been put somewhere.
+    seat.seated = false;
+    seat.head_look = false;
+    seat.look = Vec2::ZERO;
+    if sb.mode == Mode::Pilot {
+        let side = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5);
+        let point = p.pos + p.rot * side.as_dvec3();
+        sb.set_down(p.obj, point, None, eye_body, p.rot);
+        msg.show("Disembarked".to_string());
+        info!("sidewinder: out, beside the ship");
+    }
+}

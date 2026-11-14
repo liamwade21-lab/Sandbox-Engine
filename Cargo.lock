@@ -2203,6 +2203,9 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 [[package]]
 name = "elite-sim"
 version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+]
 
 [[package]]
 name = "emath"
@@ -4708,6 +4711,8 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "bytemuck",
+ "elite-sim",
+ "glam 0.33.12",
  "image",
  "rapier3d 0.36.1",
  "se_core",

@@ -5,5 +5,6 @@
 //! its trace tests (measured traces of the real game replayed inside the gate, `trace.rs`) are the proof.
 
 pub mod data;
+pub mod flight;
 pub mod fsd;
 pub mod trace;

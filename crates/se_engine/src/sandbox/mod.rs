@@ -113,6 +113,8 @@ pub enum Mode {
     Walk,
     /// A mod plays (the Viltrumite hero).
     Hero,
+    /// In the Sidewinder's seat (`sidewinder/`): it writes the camera; its keys are Elite's.
+    Pilot,
 }
 
 /// Where he's to be put down once the ground there is known.
@@ -474,6 +476,16 @@ fn place_on(sb: &mut Sandbox, cam: &mut FlyCamera, eph: &Ephemeris, jd: f64, obj
     enter_walk(sb);
 }
 
+impl Sandbox {
+    /// On foot again at a point of a body (its frame, metres from the centre: a point over the spot, dropped to the ground once
+    /// the ground there is known), facing `heading` degrees from north, or the camera's way if `None`. The camera waits at
+    /// `cam_point`/`cam_rot` (the body's frame) meanwhile. (The Sidewinder sets him down beside it so.)
+    pub(crate) fn set_down(&mut self, obj: ObjectRef, point: DVec3, heading: Option<f32>, cam_point: DVec3, cam_rot: DQuat) {
+        self.pending = Some(Pending { obj, point, eyes: false, heading, cam_point, cam_rot });
+        enter_walk(self);
+    }
+}
+
 fn enter_walk(sb: &mut Sandbox) {
     sb.mode = Mode::Walk;
     sb.placed = false;
@@ -484,7 +496,7 @@ fn enter_walk(sb: &mut Sandbox) {
 
 /// Nothing else moves the camera while he walks, and it is bound to the body as SE's "rotate with object" binds it, as of
 /// this frame's place of the body: free flight or a mod taking it over carries it on from exactly here.
-fn bind_camera(cam: &mut FlyCamera, b: &SystemBody) {
+pub(crate) fn bind_camera(cam: &mut FlyCamera, b: &SystemBody) {
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
     cam.track = false;
@@ -521,8 +533,8 @@ pub(crate) fn read_input(
         input.toggle_flight = true;
         keys.clear_just_pressed(KeyCode::KeyV);
     }
-    // Q held: the menu, walking or playing a mod. (In free flight Q stays the roll key.)
-    let menu = (!typing && focused && sb.mode != Mode::Fly && keys.pressed(KeyCode::KeyQ)) || (sb.dev_menu && sb.mode != Mode::Fly);
+    // Q held: the menu, walking or playing a mod. (In free flight Q stays the roll key; in the Sidewinder's seat it is a thruster.)
+    let menu = (!typing && focused && !matches!(sb.mode, Mode::Fly | Mode::Pilot) && keys.pressed(KeyCode::KeyQ)) || (sb.dev_menu && !matches!(sb.mode, Mode::Fly | Mode::Pilot));
     if sb.menu != menu {
         sb.menu = menu;
     }
@@ -784,6 +796,11 @@ pub(crate) fn sandbox_step(
             walk_from_camera(sb, &mut cam, &bodies, &mut msg);
         }
     }
+    // Into the Sidewinder's seat (`sidewinder/`): first person is left at the end of this frame, as for the hero. (Getting out
+    // is the Sidewinder's: it sets him down beside the ship, `set_down`.)
+    if control.pilot && sb.mode == Mode::Walk && leave.is_none() {
+        leave = Some(Mode::Pilot);
+    }
     // The Skate 3 mod turned on in free flight: on foot at the camera first (he skates from there), or the mod goes off.
     if control.skate && sb.mode == Mode::Fly && !input.toggle_flight && !walk_from_camera(sb, &mut cam, &bodies, &mut msg) {
         control.request_off();
@@ -813,6 +830,8 @@ pub(crate) fn sandbox_step(
                 sb.before_hero = Mode::Fly;
                 msg.show("Free flight: on (V)".to_string());
             }
+            // (Seated, V is Elite's: the free flight is off until he gets out.)
+            Mode::Pilot => {}
         }
     }
     if sb.log_state && (sb.mode != Mode::Walk || sb.world.is_none()) {
@@ -1229,7 +1248,7 @@ fn footsteps(sb: &mut Sandbox, was_ground: bool) {
 /// flight's `fov_deg` is left as the user has it: it is saved with the settings), and the near plane in for the weapon in
 /// his hands, 20 to 60 cm from his eyes.
 fn near_plane(sb: Res<Sandbox>, mut proj: Query<&mut Projection, With<crate::camera::MainCamera>>) {
-    if !sb.walking() {
+    if !sb.walking() && sb.mode != Mode::Pilot {
         return;
     }
     for mut p in &mut proj {
