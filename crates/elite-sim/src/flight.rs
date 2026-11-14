@@ -245,13 +245,16 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     let x = s / cap.max(1e-9);
     let turn_factor = [block.curve_turn.at(x), block.curve_turn.at(x), block.curve_roll.at(x)];
     let accel_factor = block.curve_accel.at(x);
-    let w = DVec3::from_array([0, 1, 2].map(|k| block.turn[k].to_radians() * turn_factor[k]));
+    // (0x142E6E960, `rotation-clamp.md`) The stick scales the raw turn rate; only the clamp's bound carries the speed curve:
+    // target = clamp(stick x W_raw, +-F x W_raw), F the turn curve for pitch and yaw and the roll curve for roll.
+    let w_raw = DVec3::from_array([0, 1, 2].map(|k| block.turn[k].to_radians()));
+    let w = DVec3::from_array([0, 1, 2].map(|k| w_raw[k] * turn_factor[k]));
     let amax = DVec3::from_array([0, 1, 2].map(|k| block.ang_accel[k].to_radians() * accel_factor));
     let stick = DVec3::new(input.pitch, input.yaw, input.roll).clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
     let mut alpha = DVec3::ZERO;
     for k in 0..3 {
         if input.flight_assist {
-            let target = (stick[k] * w[k]).clamp(-w[k], w[k]);
+            let target = (stick[k] * w_raw[k]).clamp(-w[k], w[k]);
             let tr = (block.fa_r[k] * (10.0 / 9.0 * s / block.top_speed.max(1e-9) - 1.0 / 9.0).max(0.0)).max(dt);
             let mut al = ((target - m.omega[k]) / tr).clamp(-amax[k], amax[k]);
             if block.ang_jerk[k] > 0.0 {
