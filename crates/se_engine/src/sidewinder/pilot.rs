@@ -19,6 +19,7 @@ use elite_sim::fuel::{Fuel, FuelWarning};
 use elite_sim::heat::{Heat, HeatSpec};
 use elite_sim::shields::{Hull, Shields};
 use elite_sim::drive::{Drive, ShipState};
+use elite_sim::glide::{self, Glide};
 use elite_sim::supercruise::{self, Well};
 use elite_sim::weapons::Weapons;
 use se_core::catalog::ObjectRef;
@@ -143,6 +144,8 @@ pub struct Pilot {
     /// in the nearest body's frame every frame).
     pub drive: Drive,
     pub cruise: Option<Cruise>,
+    /// The glide into a planet's lower air (step 6.2), from supercruise.
+    pub glide: Option<Glide>,
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -182,6 +185,7 @@ impl Default for Pilot {
             beam_len: [0.0; 2],
             drive: Drive::Ready,
             cruise: None,
+            glide: None,
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -390,8 +394,8 @@ pub fn fly(
     if keys.pip_reset {
         pilot.dist.reset();
     }
-    if keys.hardpoints && pilot.cruise.is_some() {
-        msg.show("Hardpoints can't be deployed in supercruise".to_string());
+    if keys.hardpoints && (pilot.cruise.is_some() || pilot.glide.is_some()) {
+        msg.show(if pilot.glide.is_some() { "Hardpoints can't be deployed in a glide" } else { "Hardpoints can't be deployed in supercruise" }.to_string());
     } else if keys.hardpoints {
         pilot.weapons.deployed = !pilot.weapons.deployed;
         msg.show(if pilot.weapons.deployed { "Hardpoints deployed" } else { "Hardpoints retracted" }.to_string());
@@ -439,7 +443,7 @@ pub fn fly(
     // Boost: the press draws its cost from the ENG capacitor or is refused (the exe's messages, our words until step 3.3).
     // (Landed it does nothing: the flight doesn't run on the ground. Not from the exe: E.)
     let boost_pressed = keys.boost || std::mem::take(&mut pilot.dev_boost);
-    if boost_pressed && !pilot.landed && pilot.cruise.is_none() {
+    if boost_pressed && !pilot.landed && pilot.cruise.is_none() && pilot.glide.is_none() {
         match pilot.boost.press(&spec, &mut pilot.dist, true) {
             Ok(()) => info!("sidewinder: boost"),
             Err(Denied::NotEnoughEnergy) => msg.show("Boost: not enough engine power".to_string()),
@@ -457,7 +461,10 @@ pub fn fly(
         radii: p.pos.length() / b.radius_m.max(1.0),
     };
     let mut drop_now = false;
-    if keys.jump || std::mem::take(&mut pilot.dev_jump) {
+    let jump = keys.jump || std::mem::take(&mut pilot.dev_jump);
+    if jump && pilot.glide.is_some() {
+        msg.show("Frame shift drive: not during a glide".to_string());
+    } else if jump {
         match pilot.drive.press(&fsd) {
             Ok(true) => drop_now = true,
             Ok(false) => msg.show(if matches!(pilot.drive, Drive::Charging(_)) { "Frame shift drive charging" } else { "Frame shift drive charge cancelled" }.to_string()),
@@ -477,6 +484,35 @@ pub fn fly(
         Vec::new()
     };
     let mut emergency = false;
+    let mut glide_into: Option<ObjectRef> = None;
+    // The bodies a glide can go into (solid ground: a terrain, not a star or a gas giant) and a point's height over their loaded
+    // ground (the point in the body's frame).
+    let glidable: Vec<(ObjectRef, f64, DVec3, &Terrain)> = if pilot.cruise.is_some() {
+        bodies.iter().filter_map(|(sb, t)| t.filter(|t| !sb.star && !t.proc.kind.is_giant()).map(|t| (sb.obj, sb.radius_m, sb.shape, t))).collect()
+    } else {
+        Vec::new()
+    };
+    let height_over = |obj: ObjectRef, local: DVec3| {
+        glidable.iter().find(|g| g.0 == obj).map(|g| local.length() - crate::ship::ground_on(g.1, g.2, Some(g.3), local).0)
+    };
+    // The glide's end tests, once a frame (A60: terrain within 10 km along the nose, the surface within 6,500 m below; a ray
+    // stepped against the loaded heights, as the beams').
+    let (glide_ahead, glide_below) = if pilot.glide.is_some() {
+        let dir = p.rot * DVec3::NEG_Z;
+        let mut ahead = f64::MAX;
+        let mut s = 0.0;
+        while s < glide::END_AHEAD_M {
+            let at = p.pos + dir * s;
+            if at.length() < crate::ship::ground_on(b.radius_m, b.shape, terrain, at).0 {
+                ahead = s;
+                break;
+            }
+            s += 50.0;
+        }
+        (ahead, p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, terrain, p.pos).0)
+    } else {
+        (f64::MAX, f64::MAX)
+    };
     // Supercruise is carried by its body's real motion this frame (and takes the nearest body as its carrier from now on).
     if let Some(c) = pilot.cruise.as_mut() {
         if let Some((obj, last)) = c.carrier {
@@ -518,7 +554,7 @@ pub fn fly(
         }
         let ev = pilot.heat.tick(&hs, TICK, powered, false);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
-        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none();
+        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none() && pilot.glide.is_none();
         pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
@@ -555,41 +591,87 @@ pub fn fly(
             c.cap = cap;
             c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
             c.pos = c.pos.offset_m(c.rot * DVec3::NEG_Z * c.speed * TICK);
-            // (Only heading into it: leaving a body from its surface is how supercruise starts.)
+            // (Only heading into it: leaving a body from its surface is how supercruise starts.) A body with solid ground:
+            // heading down within the glide's entry height over its loaded ground (the spec's hint), the glide (step 6.2); a
+            // star or a gas giant: within its zone, an emergency drop.
             let heading = c.rot * DVec3::NEG_Z;
-            if wells.iter().any(|(_, at, r, _, _)| {
+            if let Some((_, _, _, obj, _)) = wells.iter().find(|(_, at, _, obj, orient)| {
+                heading.dot(at.delta_m(c.pos)) > 0.0 && height_over(*obj, orient.inverse() * c.pos.delta_m(*at)).is_some_and(|h| h < glide::stand_in::ENTRY_M)
+            }) {
+                glide_into = Some(*obj);
+                break;
+            }
+            if wells.iter().any(|(_, at, r, obj, _)| {
                 let to = at.delta_m(c.pos);
-                to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M) && heading.dot(to) > 0.0
+                !glidable.iter().any(|g| g.0 == *obj) && to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M) && heading.dot(to) > 0.0
             }) {
                 emergency = true;
                 break;
             }
             continue;
         }
-        if pilot.landed {
-            // Lift off: up thrust (Elite lifts a landed ship on its vertical thrusters).
-            if input.vertical <= 0.0 {
-                continue;
+        // The glide (A60): the velocity is its speed along the nose; the turn by the normal block with the speed curve read at
+        // the throttle, as in supercruise (the glide's turn rates are not known: E); no thrusters, no gravity. The ground check
+        // below still runs.
+        let mut gliding = false;
+        if let Some(g) = pilot.glide.as_mut() {
+            let nose = p.rot * DVec3::NEG_Z;
+            let down = -p.pos.normalize_or(DVec3::Y);
+            let pitch = glide::pitch_deg(nose.to_array(), down.to_array());
+            let k = g.tick(TICK, pitch, glide_ahead, glide_below);
+            if let Some(e) = k.end {
+                msg.show(e.message().to_string());
+                info!("sidewinder: glide ended ({e:?}) at pitch {pitch:.0}, {glide_below:.0} m up");
             }
-            pilot.landed = false;
-            // (The thrusters start from the thrust that holds the ship against gravity, so the jerk limit (block 0x28) ramps
-            // from hovering: from zero the ship sank back for the 0.4 s the limit takes to reach 1 g. Elite doesn't fly a
-            // landed ship, so how its liftoff starts is not known: E.)
-            let r0 = p.pos.length().max(1.0);
-            let g_ship = p.rot.inverse() * (-(p.pos / r0) * gm / (r0 * r0));
-            let hover = -DVec3::new(g_ship.x, g_ship.y, -g_ship.z);
-            pilot.motion = Motion { rot: to_sim_q(p.rot), last_acc: to_sim_v(hover), ..Motion::default() };
-            msg.show("Liftoff".to_string());
-            info!("sidewinder: liftoff");
+            if k.heat_share > 0.0 {
+                pilot.heat.add(&hs, k.heat_share * hs.capacity, None);
+            }
+            match k.speed {
+                Some(v) => {
+                    let throttle = pilot.throttle.max(0.0);
+                    pilot.motion.rot = to_sim_q(p.rot);
+                    pilot.motion.vel = pilot.motion.rot * glam::DVec3::new(0.0, 0.0, -throttle * block.top_speed);
+                    let rin = Input { pitch: input.pitch, yaw: input.yaw, roll: input.roll, flight_assist: true, ..Input::default() };
+                    flight::step(&block, full_top, false, &rin, glam::DVec3::ZERO, &mut pilot.motion, TICK);
+                    p.rot = from_sim_q(pilot.motion.rot).normalize();
+                    let nose = p.rot * DVec3::NEG_Z;
+                    pilot.motion.vel = to_sim_v(nose * v);
+                    p.pos += nose * v * TICK;
+                    gliding = true;
+                }
+                None => {
+                    pilot.glide = None;
+                    msg.show("Normal flight".to_string());
+                    info!("sidewinder: glide over, normal flight");
+                }
+            }
         }
-        let r = p.pos.length().max(1.0);
-        let up = p.pos / r;
-        let outside = -up * gm / (r * r);
-        pilot.motion.rot = to_sim_q(p.rot);
-        let tick_input = if powered { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
-        flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
-        p.rot = from_sim_q(pilot.motion.rot);
-        p.pos += from_sim_v(pilot.motion.vel) * TICK;
+        if !gliding {
+            if pilot.landed {
+                // Lift off: up thrust (Elite lifts a landed ship on its vertical thrusters).
+                if input.vertical <= 0.0 {
+                    continue;
+                }
+                pilot.landed = false;
+                // (The thrusters start from the thrust that holds the ship against gravity, so the jerk limit (block 0x28) ramps
+                // from hovering: from zero the ship sank back for the 0.4 s the limit takes to reach 1 g. Elite doesn't fly a
+                // landed ship, so how its liftoff starts is not known: E.)
+                let r0 = p.pos.length().max(1.0);
+                let g_ship = p.rot.inverse() * (-(p.pos / r0) * gm / (r0 * r0));
+                let hover = -DVec3::new(g_ship.x, g_ship.y, -g_ship.z);
+                pilot.motion = Motion { rot: to_sim_q(p.rot), last_acc: to_sim_v(hover), ..Motion::default() };
+                msg.show("Liftoff".to_string());
+                info!("sidewinder: liftoff");
+            }
+            let r = p.pos.length().max(1.0);
+            let up = p.pos / r;
+            let outside = -up * gm / (r * r);
+            pilot.motion.rot = to_sim_q(p.rot);
+            let tick_input = if powered { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
+            flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
+            p.rot = from_sim_q(pilot.motion.rot);
+            p.pos += from_sim_v(pilot.motion.vel) * TICK;
+        }
         // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,
         // the belly's always), each straight down the radial.
         let gear_out = pilot.gear_t < 0.05;
@@ -600,6 +682,10 @@ pub fn fly(
         let feet: Vec<f64> = if gear_out { assets.shape.feet.iter().map(|f| height(p, *f)).collect() } else { Vec::new() };
         let lowest = assets.shape.belly.iter().map(|q| height(p, *q)).chain(feet.iter().copied()).fold(f64::MAX, f64::min);
         if lowest < 0.0 {
+            if pilot.glide.take().is_some() {
+                msg.show("Glide ended: the ground".to_string());
+                info!("sidewinder: the glide met the ground");
+            }
             let up = p.pos.normalize();
             let vel = from_sim_v(pilot.motion.vel);
             let down_speed = -vel.dot(up);
@@ -653,6 +739,30 @@ pub fn fly(
             p.obj = *obj;
             p.pos = orient.inverse() * c.pos.delta_m(*at);
             p.rot = (orient.inverse() * c.rot).normalize();
+        }
+        if let (Some(obj), false) = (glide_into, drop_now || emergency) {
+            // Into the glide (A60, C): at 2,500 m/s along the nose, moved 7,500 m ahead, in the planet's frame.
+            if let Some((_, at, _, _, orient)) = wells.iter().find(|w| w.3 == obj) {
+                p.obj = obj;
+                p.pos = orient.inverse() * c.pos.delta_m(*at);
+                p.rot = (orient.inverse() * c.rot).normalize();
+            }
+            let nose = p.rot * DVec3::NEG_Z;
+            let ahead = p.pos + nose * glide::HANDOVER_AHEAD_M;
+            if height_over(obj, ahead).is_some_and(|h| h >= glide::END_BELOW_M) {
+                p.pos = ahead;
+                pilot.cruise = None;
+                pilot.motion = Motion { rot: to_sim_q(p.rot), vel: to_sim_v(nose * glide::HANDOVER_SPEED), ..Motion::default() };
+                pilot.glide = Some(Glide::default());
+                pilot.drive.drop_out();
+                msg.show("Glide".to_string());
+                info!("sidewinder: glide into {obj:?} at pitch {:.0}, {:.0} m over the ground", glide::pitch_deg(nose.to_array(), (-p.pos.normalize_or(DVec3::Y)).to_array()), height_over(obj, p.pos).unwrap_or(0.0));
+                return;
+            }
+            // The jump ahead would end under the glide's end height (high ground ahead): a plain drop here instead (F).
+            msg.show("Glide refused: the ground ahead".to_string());
+            info!("sidewinder: glide refused, the ground 7.5 km ahead");
+            drop_now = true;
         }
         if drop_now || emergency {
             pilot.cruise = None;

@@ -58,8 +58,11 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - Sounds: none of the Sidewinder's sounds is among Elite's open sound files (an agent searched all 245,156); they will be
     recorded from the speakers, which needs Elite's music off (waiting list).
   - Waiting on you: fuel (session 3), the music volume (the sounds).
+  - Also in: the glide (6.2, first cut): diving at a planet in supercruise hands over into Elite's glide (the exe's rules,
+    study A60; its numbers are stand-ins until a planetary approach is measured), ending in normal flight a few km up.
+    Flown at Earth: a -35 degree dive glided from 20.6 km to 6.5 km; a -61 degree one ended at once, too steep.
   - Next without Elite: hyperspace (5.3: the jump, the system swap), stars' heat and exclusion zones (5.4), the Navigation
-    and right panels (4.2), orbital cruise and glide (Phase 6, needs its exe study A60).
+    and right panels (4.2), orbital cruise (Phase 6: its numbers were not found in the exe).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

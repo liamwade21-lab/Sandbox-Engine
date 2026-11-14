@@ -145,6 +145,9 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if pilot.cruise.is_some() {
         notes.push("SUPERCRUISE");
     }
+    if pilot.glide.is_some() {
+        notes.push("GLIDE");
+    }
     for (k, n) in notes.iter().enumerate() {
         p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);
     }

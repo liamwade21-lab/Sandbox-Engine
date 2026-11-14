@@ -1091,3 +1091,29 @@ floor), the hand-over into the glide (2,500 m/s along the nose, the ship moved 7
 are fixed). Not found (D): those parameters' numbers (they arrive in a message whose sender wasn't found; the user's journals
 hold no glide), where orbital cruise starts and how the speed is held near the surface (A50's wells only), the warnings'
 triggers, `ShipMetresToTouchdown`. They need a planetary approach measured (session 6).
+
+### Step 6.2, first cut: the glide (2026-11-14). **Built and flown at Earth; its numbers stand-ins until session 6; orbital cruise not built**
+
+`elite_sim::glide`, A60's rules (C): the pitch against the way down, the band (too steep at or under the steepest pitch, too
+shallow at or over the shallowest), out of the band on the first frame ends it at once (too steep on entry adds the "Planet
+Arrival" heat), later a grace timer (reset in the band; too steep heats each second, and adds the heat again if it ends it),
+the end tests (terrain within 10,000 m along the nose: TerrainDanger; the surface within 6,500 m below: AltitudeTooLow, the
+normal end), every end running the same deceleration (`e(t) = (1 - t/T)^p`, a tick's step `min(speedLimit dt, D (e_old -
+e_new))`, over once it falls under `endSpeed dt`), the velocity `speedLimit` along the nose, the hand-over at 2,500 m/s
+moved 3 x 2,500 m ahead. Stand-ins (E): the band -5 to -60 degrees (the spec's hint), the grace 3 s, `speedLimit` 2,500 m/s,
+T 1.5 s and p 4 (the struct's own defaults, which the sender overwrites with numbers not found), D so the deceleration
+starts at the speed limit (F), `endSpeed` 150 m/s, the two heats (a fifth of the capacity at the end, a twentieth a second).
+In the game: in supercruise, heading down within 25 km (the spec's hint, E) of a solid body's LOADED ground (stars and gas
+giants keep the emergency drop) hands over into the glide; if the jump ahead would end under 6,500 m it is a plain drop
+instead (F). In the glide the turn is the normal block's with the speed curve read at the throttle, as in supercruise (E);
+boost, hardpoints, the lasers and the drive are refused (F: the exe's rule not found); the ground check still runs (a glide
+meeting the ground ends there: F). The HUD shows GLIDE; `sw state` the glide and the nose's angle over the horizon.
+
+Flown at Earth (`timing frame`, from the sandbox's start: lift off, nose up, J, then the stick down in supercruise): a dive
+at -61 degrees entered 18.3 km over the ground and ended at once, too steep on entry (-61 is past the stand-in's -60), then
+decelerated into normal flight hovering 16 km up; a dive at -35 degrees entered 20.6 km over the ground, held 2,500 m/s
+along the nose (1.44 km/s down), ended at 6,498 m (AltitudeTooLow), decelerated in 1.5 s and hovered 4.4 km up in normal
+flight. Not built: orbital cruise (the speed near a surface: A60's safe-stop thresholds and the cruise object's floats are
+data, not found; our supercruise keeps its 30 km/s floor down to the glide), the glide's sounds and voice lines, a landing
+flown on the Moon (the spec's proof asks for orbit to landing on the Moon and Earth: the approach to the Moon was not flown).
+Tests: `glide_band_ends_and_deceleration`.

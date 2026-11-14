@@ -524,7 +524,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
@@ -538,8 +538,14 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.dist.charge[2],
                     pl.boost.state,
                     pl.drive,
-                    pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s", c.speed / 1000.0))
+                    pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s", c.speed / 1000.0)),
+                    pl.glide
                 );
+                if let Some(p) = ship.parked.as_ref() {
+                    let nose = p.rot * bevy::math::DVec3::NEG_Z;
+                    let down = -p.pos.normalize_or(bevy::math::DVec3::Y);
+                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()));
+                }
             }
             None
         }

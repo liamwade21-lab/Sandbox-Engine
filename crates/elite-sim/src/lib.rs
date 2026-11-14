@@ -10,6 +10,7 @@ pub mod drive;
 pub mod flight;
 pub mod fsd;
 pub mod fuel;
+pub mod glide;
 pub mod heat;
 pub mod power;
 pub mod replay;

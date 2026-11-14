@@ -332,6 +332,7 @@ pub fn seat_camera(
     // main menu's Play does.
     let far = pilot.cruise.is_some() || bodies.iter().find(|bb| bb.obj == obj).is_none_or(|bb| bb.star);
     pilot.cruise = None;
+    pilot.glide = None;
     if lost {
         if let Some(mut gone) = ship.parked.take() {
             super::remove_solids(&mut sb, &mut gone);
