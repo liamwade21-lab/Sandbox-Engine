@@ -20,8 +20,12 @@
     like real things (ships, a helmet, a wine glass, rocks, station parts). The encrypted files are refused by their first
     four bytes. Not known from the open files: the meshes' size in metres and their names.
   - **Installs:** REA 6.7.0 (`npx rea-agents setup --client claude_code`: an MCP entry in `~/.claude.json`, backup
-    `~/.claude.json.rea.backup`, and the skill `~/.claude/skills/reverse-engineer-anything`). Ghidra 12.1.4 and JDK 21 were
-    already in `C:\Users\liamw\tools`.
+    `~/.claude.json.rea.backup`, and the skill `~/.claude/skills/reverse-engineer-anything`). ffmpeg 8.1.3 (the BtbN build
+    ffmpeg.org links to, `ffmpeg-n8.1-latest-win64-gpl-8.1.zip`) in `C:\Users\liamw\tools\ffmpeg` (for step 0.8). Ghidra
+    12.1.4 and JDK 21 were already in `C:\Users\liamw\tools`.
+  - **Also built:** `crates/elite-sim` (the ship's numbers with their sources, jump fuel and range: your journal's 8.149506 ly
+    matched; the trace format and the gate), the `.binds` reader (Elite's default keys read from its own file) and the
+    mod's model format `.edm` (`se_core/src/elite_asset.rs`). Ghidra has analysed Elite's exe (143,913 functions).
   - **Next:** step 0.2 (textures and sounds, running), 0.3 (find the Sidewinder's hull), the exe study (Ghidra is analysing
     Elite's exe in `re/ghidra_projects/elite`).
 - **The Sidewinder plan** (2026-11-13, your request: Elite Dangerous's Sidewinder in the

@@ -656,3 +656,30 @@ read yet: 91 files whose rows are not 24 bytes (another kind), 21 whose bodies d
 chunk; the rest 2 to 23 (levels of detail or pieces). G1: a few hundred meshes (the sheets) draw as ships, a wine glass, a
 helmet, suit parts, trousers, rocks, asteroids, plants and station pieces. `grep -i "aes\|decrypt\|cipher"` finds nothing in
 `elite.rs` (C3).
+
+### Step 0.3: the Sidewinder's exterior (2026-11-14). **Not found; the stand-in route of step 0.5 is taken**
+
+Searched by shape over the open meshes (an agent's session: wide, flat, mirror-symmetric candidates drawn from six sides;
+notes `re/elite/notes/sidewinder_meshes.md`, pictures `re/elite/sheets/sidewinder/`, tools `re/elite/tools/sw_*.py`).
+
+| Piece | Status | Grade of the claim |
+|---|---|---|
+| Hull | **Not found.** One low-confidence candidate: `4387928be519b4cfc8aa67be4113e19e2fbb09f5` (and a near twin `e56d2bc0...`), a wide flat wedge (width/length 1.54, height/length 0.29; the hint was 1.4 and 0.35), one material, the same hull at two levels of detail (about 2.3k and 1.1k triangles), no canopy glass or gear. It belongs to a set of about seven simplified single-material ship models (each with a twin) whose use is unknown (holograms or map models?). It could as well be a Cobra Mk III | Picked by shape, unconfirmed: needs Elite's own top and side screenshots of the Sidewinder |
+| Landing gear, hardpoints, cargo scoop, thruster nozzles | Not found | |
+| A full in-game-style ship model (many materials, landing struts) | One found, `7655c69e...`, not the Sidewinder (too tall and narrow). From it: ships here have Y up, the mirror plane at x = 0, +Z probably forward | Seen in the data |
+
+Almost every open mesh is from the Odyssey era (suits, weapons, settlements, rocks, plants), so the older ships' models are
+believed to be in the encrypted half (an inference from a search with limits: 252 of 312 single-part candidates were not
+drawn one by one). Decision (the spec's fallback, D1): **the stand-in is used** until step 0.5's recreation is done: the
+candidate above, drawn plain grey and scaled to the hint's size, labelled "stand-in" in `SOURCES.txt`. If Elite's
+screenshots show the candidate is the Sidewinder, its geometry becomes grade A.
+
+### Step 0.4 (meshes): the cockpit and the pilot (2026-11-14). **Not found; stand-in**
+
+| Piece | Status |
+|---|---|
+| Cockpit interior, seat, dashboard, stick, throttle, canopy frame and glass | Not found among the open meshes |
+| The pilot's body (Q7) | Odyssey's on-foot suit pieces are open and skinned (one model space, an A-pose), but no skeleton is in the open files, so he can't be posed in the seat: **the empty seat is the fallback** (Q7), reported here |
+
+The cockpit's stand-in (a bare seat and canopy frame, step 0.5) is used until a recreation is done; the recreation is
+matched to Elite's own cockpit screenshots (waiting for the user's F10 pictures). The textures half of 0.4 follows step 0.2.
