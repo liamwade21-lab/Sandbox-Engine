@@ -220,7 +220,7 @@ pub fn take_keys(
     let real = crate::mods::real_window(&cfg);
     let free = control.main_menu || (real && !window.focused);
     let pad = pads.iter().next();
-    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &motion, real && seat.regain == 0 && !seat.head_look) };
+    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look) };
     if !free {
         if keys.just_pressed(KeyCode::KeyB) {
             seat.leave = true;

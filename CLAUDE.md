@@ -200,7 +200,8 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   `leave_rule`: landed, beside the ship (`Sandbox::set_down`, unless he was already put somewhere); B in flight refused; the
   mod off any other way in flight LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
-  throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state`, with `SE_SANDBOX=1`.
+  throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state|pip eng|sys|wep|reset|boost|
+  hardpoints|fire SECS`, with `SE_SANDBOX=1`. A laser's beam shows 0.08 s of each 0.25 s: take several pictures.
   The mod's systems have run conditions (nothing runs before a spawn's files are read: the spec's C20); keep it so.
   The ship's systems (fuel, shields, hull, heat, pips) live in `Pilot` and belong to the ship: boarding keeps them
   (`Pilot::boarding`), a spawn makes them full (`fresh_ship`), the restock refills them; `pilot.destroyed` (hull 0) loses the

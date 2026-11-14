@@ -1011,3 +1011,15 @@ Boost (s05, s06) and flight assist off (s08) are out of the gate until measured 
   down again at once; liftoff now starts from the thrust that holds the ship (E: Elite doesn't fly a landed ship).
 - Checked in test runs: liftoff and climb over a town at 221 m/s with the HUD (speed, heat 36 %, pips, shields), a boost;
   a dive into the ground at 120.8 m/s: 277 MJ, shields and hull to 0, the ship destroyed, he set down where it was.
+
+### Step 2.6, first cut: the lasers (2026-11-14). **Built**
+
+`elite_sim::weapons`: the stock pair of small gimballed pulse lasers on coriolis's numbers (B: 0.25 s between shots, 0.31 MJ
+from the WEP capacitor a shot, all or nothing as the distributor's rule, C; 0.31 MJ of heat a shot; 3 km range), both guns
+of the fire group together, nothing with the hardpoints in (their deploy time a stand-in, 1 s). In the seat: the left mouse
+button fires (`PrimaryFire` in the shipped binds), U deploys the hardpoints (`DeployHardpointToggle`); each beam is a glowing
+box from its gun along the nose to the ground or the range, shown for 0.08 s a shot (E). The guns sit under the nose of the
+stand-in hull (E: Elite's hardpoints are on its in-game hull, not among the open files). No targets to damage yet (the
+sandbox's props and the Viltrumite mod's targets are a later step). Test: `lasers_fire_on_their_interval_and_drain_wep`; in a
+run, firing straight ahead for 20 s drained WEP 10 to 3.6 MJ and the beams show to the horizon (pictures).
+`sw hardpoints`, `sw fire SECS`.

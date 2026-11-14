@@ -478,6 +478,17 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_boost = true;
             None
         }
+        // `sw hardpoints`, `sw fire SECS`: the hardpoints' toggle and the trigger held.
+        "hardpoints" => {
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            pl.weapons.deployed = !pl.weapons.deployed;
+            None
+        }
+        "fire" => {
+            let secs = arg.split_whitespace().nth(1).and_then(|w| w.parse::<f32>().ok()).unwrap_or(1.0);
+            world.resource_mut::<pilot::Pilot>().dev_fire = secs;
+            None
+        }
         "throttle" | "thrust" | "stick" | "fa" | "gear" | "log" => {
             let nums: Vec<f64> = arg.split_whitespace().skip(1).filter_map(|w| w.parse().ok()).collect();
             let word = arg.split_whitespace().nth(1).unwrap_or("").to_ascii_lowercase();

@@ -15,3 +15,4 @@ pub mod replay;
 pub mod shields;
 pub mod supercruise;
 pub mod trace;
+pub mod weapons;

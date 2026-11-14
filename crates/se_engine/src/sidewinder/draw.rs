@@ -28,6 +28,10 @@ pub struct ShipPiece {
     cockpit: bool,
 }
 
+/// A laser's beam (gun 0 or 1): a thin glowing box, stretched to the beam's length each frame while it shows.
+#[derive(Component)]
+pub struct Beam(usize);
+
 /// The ship's meshes, once made.
 #[derive(Resource)]
 pub struct ShipDraw {
@@ -112,6 +116,19 @@ fn make(
         }
     }
     info!("sidewinder: the ship's {} meshes are made", pieces.len());
+    // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
+    // shows by day and night.
+    let beam_mat = materials.add(PropMaterial {
+        frame: light.frame.clone(),
+        light: light.light.clone(),
+        diffuse: tex.clone(),
+        tint: Vec4::new(1.0, 0.45, 0.15, 0.0),
+        glow: Vec4::new(6.0, 1.0, 1.0, 0.0),
+    });
+    let beam_mesh = meshes.add(Cuboid::from_corners(Vec3::new(-0.04, -0.04, 0.0), Vec3::new(0.04, 0.04, -1.0)));
+    for i in 0..2 {
+        commands.spawn((Name::new("Sidewinder laser beam"), Beam(i), Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling));
+    }
     commands.insert_resource(ShipDraw { pieces, shown: (false, false) });
 }
 
@@ -126,7 +143,8 @@ fn place(
     cam: Res<FlyCamera>,
     space: Res<ScaledSpace>,
     bodies: Query<&SystemBody>,
-    mut pieces: Query<(&ShipPiece, &mut Transform, &mut Visibility)>,
+    mut pieces: Query<(&ShipPiece, &mut Transform, &mut Visibility), Without<Beam>>,
+    mut beams: Query<(&Beam, &mut Transform, &mut Visibility), Without<ShipPiece>>,
 ) {
     let (Some(assets), Some(mut draw)) = (assets, draw) else { return };
     let placed = ship.parked.as_ref().and_then(|p| Some((p, bodies.iter().find(|b| b.obj == p.obj)?)));
@@ -142,6 +160,17 @@ fn place(
                 let (hull, cockpit) = (super::posed_transforms(&assets.ship, "gear_up", gear), rest_transforms(&assets.cockpit));
                 for (piece, mut tf, _) in pieces.iter_mut() {
                     *tf = ship_tf * Transform::from_matrix(if piece.cockpit { cockpit[piece.part] } else { hull[piece.part] });
+                }
+                for (beam, mut tf, mut v) in beams.iter_mut() {
+                    let on = seat.seated && pilot.weapons.beam(beam.0) && pilot.beam_len[beam.0] > 0.5;
+                    let want = if on { Visibility::Visible } else { Visibility::Hidden };
+                    if *v != want {
+                        *v = want;
+                    }
+                    if on {
+                        let gun = Vec3::from_array(super::pilot::GUNS[beam.0]);
+                        *tf = ship_tf * Transform::from_translation(gun).with_scale(Vec3::new(1.0, 1.0, pilot.beam_len[beam.0]));
+                    }
                 }
                 true
             } else {

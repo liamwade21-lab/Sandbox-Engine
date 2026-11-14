@@ -18,6 +18,7 @@ use elite_sim::flight::{self, Input, Motion};
 use elite_sim::fuel::{Fuel, FuelWarning};
 use elite_sim::heat::{Heat, HeatSpec};
 use elite_sim::shields::{Hull, Shields};
+use elite_sim::weapons::Weapons;
 use elite_sim::power::{Distributor, ENG, SYS, WEP};
 
 use crate::data::SeData;
@@ -32,6 +33,10 @@ use super::{Sidewinder, SidewinderAssets};
 /// The simulation's tick (the spec's Q8 fallback) and the most ticks a frame.
 pub const TICK: f64 = 1.0 / 60.0;
 const MOST_TICKS: u32 = 6;
+/// The guns' places in model space (m): under the nose either side of the middle (E: Elite's hardpoints are on its in-game
+/// hull, which is not among the open files; placed on the stand-in hull until the hull is recreated).
+pub const GUNS: [[f32; 3]; 2] = [[-1.5, 2.0, -6.0], [1.5, 2.0, -6.0]];
+
 /// A crash's damage (MJ, through the shield then the hull) from the speed into the ground: Elite's collision rule was not
 /// studied (A21's list), so this is a stand-in (E): nothing under `CRASH_FREE_MPS`, then half the mass (t) times the excess
 /// speed squared over 1,000 (a 50 m/s belly landing breaks the stock shield; at about 100 m/s the ship is lost).
@@ -72,6 +77,9 @@ pub struct PilotKeys {
     pub pip_wep: bool,
     pub pip_reset: bool,
     pub boost: bool,
+    /// The lasers: the trigger held (`PrimaryFire`) and the hardpoints' key pressed (`DeployHardpointToggle`).
+    pub fire: bool,
+    pub hardpoints: bool,
 }
 
 /// The flight's state while seated.
@@ -100,6 +108,9 @@ pub struct Pilot {
     pub powered: bool,
     /// The hull reached zero: `seat_camera` loses the ship and sets him down.
     pub destroyed: bool,
+    /// The lasers (step 2.6), and each beam's length this frame (m: to the ground or the lasers' range).
+    pub weapons: Weapons,
+    pub beam_len: [f32; 2],
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -111,6 +122,8 @@ pub struct Pilot {
     /// A test's controls held for some seconds (`sw stick`, `sw thrust`), and a test's boost press (`sw boost`).
     pub dev: Option<(Input, f32)>,
     pub dev_boost: bool,
+    /// A test's trigger held for some seconds (`sw fire SECS`).
+    pub dev_fire: f32,
     pub log: bool,
 }
 
@@ -132,6 +145,8 @@ impl Default for Pilot {
             hull: Hull::sidewinder(),
             powered: true,
             destroyed: false,
+            weapons: Weapons::default(),
+            beam_len: [0.0; 2],
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -140,6 +155,7 @@ impl Default for Pilot {
             ticks: 0,
             dev: None,
             dev_boost: false,
+            dev_fire: 0.0,
             log: false,
         }
     }
@@ -250,7 +266,19 @@ fn pad_value(b: &se_core::elite_asset::Binds, g: &Gamepad, action: &str) -> f64 
 
 /// Reads the seat's keys by Elite's own bindings: the keyboard's (`KeyboardMouseOnly.binds`) and, if a pad is there, the pad's
 /// (`ControlPad.binds`) (`seat::take_keys` calls this before it takes the presses).
-pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, motion: &AccumulatedMouseMotion, real: bool) -> PilotKeys {
+/// Elite's name for a mouse button as Bevy's.
+fn mouse_button(name: &str) -> Option<MouseButton> {
+    Some(match name {
+        "Mouse_1" => MouseButton::Left,
+        "Mouse_2" => MouseButton::Right,
+        "Mouse_3" => MouseButton::Middle,
+        _ => return None,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, motion: &AccumulatedMouseMotion, real: bool) -> PilotKeys {
+    let mouse_held = |action: &str| b.get(action).is_some_and(|a| a.keys().filter(|k| k.device == "Mouse").filter_map(|k| mouse_button(&k.key)).any(|m| buttons.pressed(m)));
     let pad_btn = |action: &str, just: bool| -> bool {
         let (Some(g), Some(a)) = (pad, pad_binds.get(action)) else { return false };
         a.keys().filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)).any(|bt| if just { g.just_pressed(bt) } else { g.pressed(bt) })
@@ -278,6 +306,8 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         pip_wep: press("IncreaseWeaponsPower"),
         pip_reset: press("ResetPowerDistribution"),
         boost: press("UseBoostJuice"),
+        fire: real && (mouse_held("PrimaryFire") || pad.is_some_and(|_| pad_btn("PrimaryFire", false))),
+        hardpoints: press("DeployHardpointToggle"),
     }
 }
 
@@ -322,6 +352,10 @@ pub fn fly(
     }
     if keys.pip_reset {
         pilot.dist.reset();
+    }
+    if keys.hardpoints {
+        pilot.weapons.deployed = !pilot.weapons.deployed;
+        msg.show(if pilot.weapons.deployed { "Hardpoints deployed" } else { "Hardpoints retracted" }.to_string());
     }
     let rate = elite_sim::data::measured::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
@@ -402,6 +436,9 @@ pub fn fly(
         let hs = pilot.heat_spec;
         pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
         let ev = pilot.heat.tick(&hs, TICK, powered, false);
+        // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
+        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered;
+        pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
         }
@@ -482,6 +519,25 @@ pub fn fly(
     }
     if pilot.accum > TICK {
         pilot.accum = 0.0;
+    }
+    pilot.dev_fire = (pilot.dev_fire - dt as f32).max(0.0);
+    // Each beam runs along the nose from its gun to the ground or the lasers' range (a ray stepped against the loaded heights).
+    for (i, gun) in GUNS.iter().enumerate() {
+        let from = p.pos + p.rot * Vec3::from_array(*gun).as_dvec3();
+        let dir = p.rot * DVec3::NEG_Z;
+        let range = pilot.weapons.laser.range_m;
+        let mut len = range;
+        let mut s = 0.0;
+        while s < range {
+            let at = from + dir * s;
+            let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, terrain, at);
+            if at.length() < ground {
+                len = s;
+                break;
+            }
+            s += 5.0_f64.max(s * 0.02);
+        }
+        pilot.beam_len[i] = len as f32;
     }
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);
