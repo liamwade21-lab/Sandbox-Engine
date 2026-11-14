@@ -34,7 +34,17 @@ pub struct Jump {
     pub rot: DQuat,
     pub seconds: f64,
     pub frames: u32,
+    /// Where it left from (universe place and turn, and the body it was by), the fuel it took, and whether this is the way
+    /// back after a system that wouldn't load (the spec's edge case: after 60 s the tunnel ends back at the old star, the
+    /// fuel not taken). `fail` is a test's forced failure (`sw hyper NAME fail`).
+    pub from: (UPos, DQuat, ObjectRef),
+    pub fuel: f64,
+    pub returning: bool,
+    pub fail: bool,
 }
+
+/// The longest a tunnel waits for its system before it ends back where it left (the spec's edge case).
+pub const TUNNEL_LIMIT_S: f64 = 60.0;
 
 /// A target's state: `Ok((the angle between the nose and it in degrees, the jump's fuel in tonnes))`, or why it can't be
 /// jumped to (the fuel needed past the drive's most, or more than the main tank holds; a body of this system in the way; the
@@ -143,7 +153,8 @@ pub fn arrival(data: &SeData, jd: f64, from: UPos, target: ObjectRef, radii: f64
 }
 
 /// The jump begins: the tunnel to `target` from the ship's universe place `from`.
-pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, target: ObjectRef) {
+#[allow(clippy::too_many_arguments)]
+pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, from_rot: DQuat, from_obj: ObjectRef, fuel: f64, target: ObjectRef) {
     let root = match target {
         ObjectRef::Star(i) => data.catalog.system_root(target).unwrap_or(i),
         _ => data.catalog.system_root(target).unwrap_or(0),
@@ -151,7 +162,7 @@ pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, target: Obje
     let (arrive, rot) = arrival(data, jd, from, target, elite_sim::hyperspace::stand_in::ARRIVAL_RADII);
     pilot.cruise = None;
     pilot.glide = None;
-    pilot.jump = Some(Jump { target, root, arrive, rot, seconds: 0.0, frames: 0 });
+    pilot.jump = Some(Jump { target, root, arrive, rot, seconds: 0.0, frames: 0, from: (from, from_rot, from_obj), fuel, returning: false, fail: false });
     info!("sidewinder: hyperspace to {target:?} (root {root}), {:.3} ly", from.delta_m(arrive).length() / se_core::units::METERS_PER_LY);
 }
 
@@ -175,15 +186,20 @@ pub fn tunnel(
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     let Some(p) = ship.parked.as_mut() else { return };
-    // A test's jump (`sw hyper NAME`): from where the ship is now.
+    let pilot = &mut *pilot;
+    // A test's jump (`sw hyper NAME [fail]`): from where the ship is now, no fuel taken.
     if let Some(target) = pilot.dev_hyper.take() {
         let from = match (pilot.cruise, bodies.iter().find(|b| b.obj == p.obj)) {
-            (Some(c), _) => Some(c.pos),
-            (None, Some(b)) => Some(b.pos.offset_m(b.orient * p.pos)),
+            (Some(c), _) => Some((c.pos, c.rot)),
+            (None, Some(b)) => Some((b.pos.offset_m(b.orient * p.pos), (b.orient * p.rot).normalize())),
             _ => None,
         };
-        if let Some(from) = from {
-            begin(&data, sim.jd, &mut pilot, from, target);
+        if let Some((from, rot)) = from {
+            let obj = p.obj;
+            begin(&data, sim.jd, pilot, from, rot, obj, 0.0, target);
+            if let Some(j) = pilot.jump.as_mut() {
+                j.fail = std::mem::take(&mut pilot.dev_hyper_fail);
+            }
         }
     }
     let Some(j) = pilot.jump.as_mut() else { return };
@@ -200,6 +216,23 @@ pub fn tunnel(
     let star = bodies.iter().find(|b| b.obj == j.target);
     if j.frames % 60 == 0 {
         info!("sidewinder: tunnel {:.1} s, {} frames: the active system's root {:?} ({}), the target's body {}", j.seconds, j.frames, active.root, active.name, if star.is_some() { "spawned" } else { "not yet" });
+    }
+    // The system didn't load within the limit (or a test forced it): back the way it came, to the old star, the fuel given back
+    // (the spec's edge case). The way back has no limit of its own.
+    if !j.returning && (j.seconds > TUNNEL_LIMIT_S || (j.fail && j.seconds >= elite_sim::hyperspace::TUNNEL_S)) {
+        let home = j.from.2;
+        let star = match home {
+            ObjectRef::Star(_) => Some(home),
+            _ => data.catalog.system_root(home).and_then(|r| as_star(&data, ObjectRef::Star(r))),
+        };
+        if let Some(star) = star {
+            let fuel = j.fuel;
+            *j = Jump { target: star, root: data.catalog.system_root(star).unwrap_or(0), arrive: j.from.0, rot: j.from.1, seconds: elite_sim::hyperspace::TUNNEL_S, frames: j.frames, from: j.from, fuel: 0.0, returning: true, fail: false };
+            pilot.fuel.main += fuel;
+            msg.show("Hyperspace failed: the destination didn't load; back to where you left".to_string());
+            info!("sidewinder: the tunnel gave up after {:.1} s: back to {}, {fuel:.6} t of fuel given back", j.seconds, data.catalog.display_name(star));
+        }
+        return;
     }
     // (At least the tunnel's measured length, D, and until the target's system is entered.)
     let (true, true, Some(star)) = (j.seconds >= elite_sim::hyperspace::TUNNEL_S, active.root == Some(j.root), star) else { return };

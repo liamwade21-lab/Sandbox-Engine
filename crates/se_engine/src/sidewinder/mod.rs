@@ -17,6 +17,7 @@ pub mod panels;
 pub mod hud;
 pub mod pilot;
 pub mod seat;
+pub mod solids;
 
 #[cfg(test)]
 mod convert;
@@ -500,6 +501,31 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_put = found.map(|f| (f, alt));
             None
         }
+        // `sw trace FILE|off`: a row a tick of the flight in the measured traces' columns.
+        "trace" => {
+            // (The rest of the line is the path: it may hold spaces, as the project's folder does.)
+            let path = arg.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            let path = if path.is_empty() { "off".to_string() } else { path };
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            pl.trace = if path == "off" {
+                None
+            } else {
+                match std::fs::File::create(&path) {
+                    Ok(f) => {
+                        use std::io::Write;
+                        let mut w = std::io::BufWriter::new(f);
+                        let _ = writeln!(w, "t,speed,heat,key_w,key_s,key_x,key_tab,key_q,key_e,key_r,key_f,key_a,key_d,key_z,key_l,key_up,key_down,key_left,key_right,mouse_x,mouse_y,pip_sys,pip_eng,pip_wep,fa_off,fuel");
+                        info!("sidewinder: tracing to {path}");
+                        Some((w, pl.ticks))
+                    }
+                    Err(e) => {
+                        info!("sidewinder: can't write {path}: {e}");
+                        None
+                    }
+                }
+            };
+            None
+        }
         // `sw face`: turns the ship to face its target (a test's aim; the real one is the stick).
         "face" => {
             world.resource_mut::<pilot::Pilot>().dev_face = true;
@@ -507,7 +533,12 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         // `sw target NAME|none` sets hyperspace's target; `sw hyper NAME` jumps there at once (the tunnel without the charge).
         "target" | "hyper" => {
-            let name = arg.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            let mut words: Vec<&str> = arg.split_whitespace().skip(1).collect();
+            let fail = verb == "hyper" && words.last() == Some(&"fail");
+            if fail {
+                words.pop();
+            }
+            let name = words.join(" ");
             let found = {
                 let data = world.resource::<crate::data::SeData>();
                 let f = data.catalog.find(&name);
@@ -526,6 +557,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 pl.target = found;
             } else {
                 pl.dev_hyper = found;
+                pl.dev_hyper_fail = fail;
             }
             None
         }

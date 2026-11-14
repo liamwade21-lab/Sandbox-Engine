@@ -12,10 +12,10 @@ time (believed to come from the encrypted data files). Where those numbers come 
 |---|---|---|---|
 | 0x00, 0x0C | top speed, boost speed (m/s) | 220, 320 | B (coriolis `speed`, `boost`; EDSY agrees) |
 | 0x38..0x40 | turn rates (deg/s) | pitch 42, yaw 16, roll 110 | B (coriolis). EDSY says pitch 43, yaw 17: **conflict**, to settle with the outfitting screen or a measurement |
-| 0x1C, 0x20, 0x24 | forward, reverse, lateral/vertical acceleration (m/s^2) | 44.39, 29.96, 29.96 | **provisional**: EDSY's `fwdacc`, `revacc`, `latacc` (E8, a hint), until measured (D, step 0.9) |
+| 0x1C, 0x20, 0x24 | forward, reverse, lateral/vertical acceleration (m/s^2) | forward 44.85 at 4 ENG pips, 43.42 at 0; reverse 30.26; lateral 30.23 | D: session 2's speed runs fitted (`data::measured`, the traces in `crates/elite-sim/tests/traces/`); EDSY's 44.39, 29.96 were the hints |
 | 0x44..0x4C | angular accelerations (deg/s^2) | pitch 220, yaw 110, roll 240 | **provisional**: EDSY's `pitchacc`, `yawacc`, `rollacc` (E8), until measured |
-| 0x2C, 0x5C..0x64 | the flight assist's linear and angular time constants (D, R) | not known | measured (D) in step 0.9; until then the code's own floor (T 0.5 s) stands |
-| curves 0x68.., 0x78.., 0x88.. | the blue zone's (a, b, p) per curve | not known | measured (D); EDSY's `minpitch` 34 (a hint: the turn rate at the curve's ends) |
+| 0x2C, 0x5C..0x64 | the flight assist's linear and angular time constants (D, R) | D 0.990; R not known | D measured (session 2's fit, `data::measured::FA_D`); R a stand-in (0: the code's own floor) until measured |
+| curves 0x68.., 0x78.., 0x88.. | the blue zone's (a, b, p) per curve | pitch/yaw a 0.4456; the rest not known | a measured (D: session 2, pitch at rest, `data::measured::TURN_CURVE_A`); b, p and roll's curve stand-ins until session 3 |
 | boost fields 0..7 | warm-up, firing, cool-down times, energy, drain | cost 7 MJ, interval 4 s (B, coriolis); the rest not known | B / D |
 
 Nothing here is tuned by feel: a value is the game's (B, C), a measurement (D), or a hint marked provisional until measured.

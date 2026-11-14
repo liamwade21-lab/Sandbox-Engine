@@ -6,8 +6,9 @@
 //!
 //! - The tick is 60 Hz (the spec's Q8: Elite's own rate was not found in its exe), at most 6 a frame, the rest dropped (the
 //!   spec's edge cases), on real seconds (the game clock runs at real time while seated).
-//! - Not yet: building contact and damage (step 2.3), liftoff rules and slopes (2.4), heat (2.2). The ship's own numbers
-//!   are partly stand-ins (`elite_sim::data`, `power::stand_in`, `boost::stand_in`), until measured.
+//! - The ship meets the ground's loaded heights and, near it, the buildings and trees the scatter's probe lists (`solids.rs`,
+//!   ours: F). Its systems (heat, shields, fuel, the lasers), the frame shift drive, the glide, the air and the panels are
+//!   below; what is a stand-in and what is measured is in `elite_sim` (each number labelled) and the spec's Build log.
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -77,6 +78,10 @@ pub struct PlanetHud {
 /// The planet HUD shows within this height of a solid body's ground (ours: Elite shows it in orbital cruise and below, whose
 /// start wasn't found: A60).
 pub const PLANET_HUD_M: f64 = 100_000.0;
+
+/// Under this height over the ground the ship asks the probe for the buildings and trees ahead (m: the tallest buildings
+/// stand about 1.6 km).
+const TOWN_ASK_M: f64 = 2500.0;
 
 /// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
 const CRUISE_START: f64 = supercruise::stand_in::FLOOR_PLANET;
@@ -179,8 +184,11 @@ pub struct Pilot {
     pub target: Option<ObjectRef>,
     pub jump: Option<super::hyper::Jump>,
     pub dev_hyper: Option<ObjectRef>,
+    pub dev_hyper_fail: bool,
     /// A test's placing of the ship over a body (`sw put NAME ALT_KM`), and the air's density where it is (kg/m^3).
     pub dev_put: Option<(ObjectRef, f64)>,
+    /// `sw trace FILE`: a row a tick in the measured traces' columns (`elite_sim::trace`), and when it started (ticks).
+    pub trace: Option<(std::io::BufWriter<std::fs::File>, u64)>,
     /// The jump's target and fuel as worked out when its charge started (A50: taken at departure, the least of it and the fuel
     /// aboard).
     pub jump_fuel: Option<(ObjectRef, f64)>,
@@ -240,7 +248,9 @@ impl Default for Pilot {
             target: None,
             jump: None,
             dev_hyper: None,
+            dev_hyper_fail: false,
             dev_put: None,
+            trace: None,
             jump_fuel: None,
             air_density: 0.0,
             modules: [true; 10],
@@ -455,6 +465,7 @@ pub fn fly(
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
     mut panels: ResMut<super::panels::Panels>,
+    (mut ask, probe, lib, mut town): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>),
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
@@ -489,6 +500,26 @@ pub fn fly(
     let giant = terrain.is_some_and(|t| t.proc.kind.is_giant());
     let solid = if giant { None } else { terrain };
     let floor_m = if giant { terrain.and_then(crate::volumetric_clouds::giant_floor_m).unwrap_or(0.0) } else { 0.0 };
+    // The buildings and trees near the ground (checker 4; ours, F: `solids.rs`): out of supercruise and the glide, under
+    // `TOWN_ASK_M`, the probe is asked along the ship's next 1.5 s; its list (3-5 frames old, the body's frame) becomes boxes
+    // once each time it changes.
+    if pilot.cruise.is_none() && pilot.glide.is_none() && !giant && p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos).0 < TOWN_ASK_M {
+        let at = b.pos.offset_m(b.orient * p.pos);
+        let ahead = b.orient * from_sim_v(pilot.motion.vel) * 1.5;
+        ask.capsule = Some(crate::scatter::probe::ProbeCapsule { from: at, to: at.offset_m(ahead), margin_m: 30.0, both: false, trees_m: 20.0 });
+    }
+    let listed = probe.body.filter(|_| probe.arrived).and_then(|e| bodies.get(e).ok()).map(|(sb, _)| sb.obj) == Some(b.obj);
+    match (&lib, listed) {
+        (Some(lib), true) if town.0 != Some(probe.list_seq) => {
+            town.0 = Some(probe.list_seq);
+            town.1 = probe.list.iter().flat_map(|pb| super::solids::boxes_of(pb, lib)).collect();
+        }
+        (_, false) => {
+            town.0 = None;
+            town.1.clear();
+        }
+        _ => {}
+    }
     if put_now && giant {
         info!("sidewinder: a gas giant: its floor {:.1} km under the radius", -floor_m / 1000.0);
     }
@@ -754,9 +785,9 @@ pub fn fly(
     let mut glide_into: Option<ObjectRef> = None;
     // The bodies a glide can go into (solid ground: a terrain, not a star or a gas giant) and a point's height over their loaded
     // ground (the point in the body's frame).
-    // (A gas giant's glide goes by its radius: F4, ours. It has no exclusion zone either.)
+    // (A gas giant's glide goes by its radius: F4, ours; so does a body without a terrain. None has an exclusion zone: C14.)
     let glidable: Vec<(ObjectRef, f64, DVec3, Option<&Terrain>)> = if pilot.cruise.is_some() {
-        bodies.iter().filter_map(|(sb, t)| t.filter(|_| !sb.star).map(|t| (sb.obj, sb.radius_m, sb.shape, (!t.proc.kind.is_giant()).then_some(t)))).collect()
+        bodies.iter().filter(|(sb, _)| !sb.star).map(|(sb, t)| (sb.obj, sb.radius_m, sb.shape, t.filter(|t| !t.proc.kind.is_giant()))).collect()
     } else {
         Vec::new()
     };
@@ -1013,6 +1044,68 @@ pub fn fly(
             p.rot = from_sim_q(pilot.motion.rot);
             p.pos += from_sim_v(pilot.motion.vel) * TICK;
         }
+        // `sw trace FILE`: this tick as a measured trace's row (the keys from this frame's controls and the effective input).
+        if let Some((w, t0)) = pilot.trace.as_mut() {
+            use std::io::Write;
+            let f = |b: bool| b as u8;
+            let half = pilot.dist.half;
+            let _ = writeln!(
+                w,
+                "{:.4},{:.3},{:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.1},{:.1},{},{},{},{},{:.4}",
+                (pilot.ticks - *t0) as f64 * TICK,
+                from_sim_v(pilot.motion.vel).length(),
+                pilot.heat.hud_percent(&hs),
+                f(keys.throttle_up),
+                f(keys.throttle_down),
+                f(keys.throttle_zero),
+                f(keys.boost),
+                f(input.lateral < 0.0),
+                f(input.lateral > 0.0),
+                f(input.vertical > 0.0),
+                f(input.vertical < 0.0),
+                f(input.yaw > 0.0),
+                f(input.yaw < 0.0),
+                f(keys.flight_assist),
+                f(keys.gear),
+                f(keys.pip_eng),
+                f(keys.pip_reset),
+                f(keys.pip_sys),
+                f(keys.pip_wep),
+                keys.mouse.x,
+                keys.mouse.y,
+                half[SYS] as f32 / 2.0,
+                half[ENG] as f32 / 2.0,
+                half[WEP] as f32 / 2.0,
+                f(!pilot.flight_assist),
+                pilot.fuel.total()
+            );
+        }
+        // The buildings and trees (ours, F): the ship's model box against their boxes, pushed out the shortest way, its speed
+        // into them taken away; a hard enough hit damages it by the ground's rule.
+        if !gliding && !town.1.is_empty() {
+            let mid = ((assets.shape.lo + assets.shape.hi) * 0.5).as_dvec3();
+            let half = ((assets.shape.hi - assets.shape.lo) * 0.5).as_dvec3();
+            for bx in &town.1 {
+                let ship_box = super::solids::Obb { c: p.pos + p.rot * mid, axes: [p.rot * DVec3::X, p.rot * DVec3::Y, p.rot * DVec3::Z], half };
+                let Some((depth, n)) = super::solids::hit(&ship_box, bx) else { continue };
+                p.pos += n * depth;
+                let vel = from_sim_v(pilot.motion.vel);
+                let into = -vel.dot(n);
+                if into > 0.0 {
+                    pilot.motion.vel = to_sim_v(vel + n * into);
+                    let dmg = crash_damage(pilot.mass_t(), into);
+                    if dmg > 0.0 {
+                        let rest = pilot.shields.hit(dmg);
+                        if pilot.hull.damage(rest) {
+                            pilot.destroyed = true;
+                        }
+                    }
+                    if into > 2.0 {
+                        info!("sidewinder: hit a building or a tree at {into:.1} m/s: {dmg:.1} MJ, shields {:.0} %, hull {:.0} %", pilot.shields.percent(), pilot.hull.percent());
+                    }
+                }
+            }
+        }
         // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,
         // the belly's always), each straight down the radial.
         let gear_out = pilot.gear_t < 0.05;
@@ -1045,7 +1138,8 @@ pub fn fly(
             let vel = from_sim_v(pilot.motion.vel);
             let down_speed = -vel.dot(up);
             // Elite's touchdown (0x1430ECE00, A21): the ship's down within 60 degrees of gravity's, its landing points' rays
-            // agreeing within 0.5 m; the speed's limit is the landing component's data (a stand-in here).
+            // agreeing within 0.5 m (C); the speed's limit is the landing component's data (a stand-in here); that the gear must
+            // be down is our reading (E: the exe's +0x200 state gate wasn't identified).
             let tilt = (p.rot * DVec3::Y).dot(up).clamp(-1.0, 1.0).acos().to_degrees();
             let spread = feet.iter().copied().fold(f64::MIN, f64::max) - feet.iter().copied().fold(f64::MAX, f64::min);
             if let Some(why) = touchdown(gear_out && !feet.is_empty(), tilt, spread, vel.length()) {
@@ -1097,7 +1191,8 @@ pub fn fly(
                 pilot.fuel.main = (pilot.fuel.main - fuel).max(0.0);
                 msg.show(format!("Hyperspace: {}", data.catalog.display_name(t)));
                 info!("sidewinder: jump to {} for {fuel:.6} t of fuel", data.catalog.display_name(t));
-                super::hyper::begin(&data, sim.jd, pilot, from, t);
+                let rot_u = pilot.cruise.map_or((b.orient * p.rot).normalize(), |c| c.rot);
+                super::hyper::begin(&data, sim.jd, pilot, from, rot_u, b.obj, fuel, t);
             }
             _ => pilot.drive = if pilot.cruise.is_some() { Drive::Supercruise } else { Drive::Ready },
         }

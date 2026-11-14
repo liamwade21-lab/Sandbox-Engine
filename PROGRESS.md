@@ -47,8 +47,8 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     touchdown rule with the gear's feet; a crash on a damaged file); the cockpit recreated in Blender from your three cockpit
     shots and now drawn in the game (its shape lines up with your pictures; its colours are a guess and look pale in Earth's
     daylight: step 4's materials). Checked in a test run: lost in flight, touchdown at 0.7 m/s, out beside the ship.
-  - Measuring session 2 done (12 runs, nothing went wrong) and its speed runs fitted: the ship's acceleration (44.4 m/s^2),
-    braking (30.0), lateral (30.05), reverse and side speed shares (0.6, 0.8), flight assist's time constant and the jerk
+  - Measuring session 2 done (12 runs, nothing went wrong) and its speed runs fitted: the ship's acceleration (44.85 m/s^2 at
+    4 pips, 43.42 at 0), braking (30.26), lateral (30.23), reverse and side speed shares (0.6, 0.8), flight assist's time constant and the jerk
     limit are now measured numbers (grade D), close to the community's; the throttle rate comes from the HUD's throttle
     marker. Every run replays at about 0.5 m/s rms, but the fast changes just after a key are up to 3.5 frames out, so the
     strict gate is not passed yet (the open item). Rotation at rest measured too (yaw 7.7 deg/s; pitch caps at 17.6); the
@@ -83,7 +83,10 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     the HUD's roll past 90 degrees, hyperspace's alignment now at the charge's end as Elite has it, and smaller things.
   - Phase 7: 7.1 (the pad's table test; the pad flight is yours), 7.2 done (the mod costs 0.35 ms a frame seated at your
     size; never spawned it changes no picture; the test release `release/Sandbox-Engine-sidewinder-test-windows.zip` works
-    from a fresh folder). Next: 7.3, the independent check of the whole mod.
+    from a fresh folder). 7.3: the final check of the whole mod failed on one bug, now fixed: the flying ship went through
+    buildings (now it hits them, and trees); also built, the spec's 60 s fallback for a tunnel that never loads, and
+    `sw trace`. What isn't built is said in the Build log (sounds, the canopy and life support, the cargo scoop and lights,
+    orbital cruise, Elite's holograms and tunnel).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

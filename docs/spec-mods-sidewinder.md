@@ -375,7 +375,9 @@ degrees from about 25 km; cooldown about 10 s after a drop; best turning at half
 Collisions with the ground and buildings take shields, then hull, by Elite's rule. Heat over the limits damages
 modules and hull. A broken canopy starts the life support timer (300 s on the stock ship). Hull 0 or the timer's end
 destroys the ship with Elite's sequence; the player is then on foot on Earth (the main menu's own way back) and
-spawns a new ship from the Q menu.
+spawns a new ship from the Q menu. (Changed in building, step 1.3 and checker 2: destroyed where there is ground, he is
+set down beside where the ship was, as getting out does; far from any ground (supercruise, a star, the tunnel) he goes
+back on Earth on foot. Elite's destruction sequence, the canopy and the life support timer are not built yet.)
 
 ## Edge cases & failure handling
 
@@ -1283,3 +1285,45 @@ The checker's report (FAIL: one high finding, two medium, seven low) is `.rea/ti
   test build: naming a real release is the user's). Unzipped outside the project and run with empty `LOCALAPPDATA` and
   `APPDATA` folders, as a new PC: the assets beside the exe, SpaceEngine found through Steam, the three mods found, the
   Sidewinder spawned, flown and in supercruise.
+
+### Step 2.4, first cut: landing (2026-11-14). **Touchdown, liftoff and slopes in; the gear's limits, the scoop, the lights and the Moon's traces not**
+
+(Written after checker 4 found no entry for it.) In since steps 1.3 and A21: the gear (L, its 3 s animation; the drive and the
+touchdown refuse it half way), Elite's touchdown rule (the ship's down within 60 degrees of gravity's and its landing points'
+heights over the ground within 0.5 m: C; the speed's limit is the landing component's data: a stand-in of 10 m/s, E; that the
+gear must be down is our reading, E: the exe's +0x200 state gate wasn't identified), slopes by those same two tests, liftoff on
+up thrust from the thrust that holds the ship against gravity (E: Elite doesn't fly a landed ship), gravity against the
+thrusters through flight assist (C), a landed ship staying put. Not built: the gear's own speed limits (data, not found), the
+cargo scoop and the ship's lights (no actions yet: the HUD's CARGO SCOOP indicator is always off), standing on a building's
+roof (the touchdown is the ground's), and the proof's traces on an airless moon (a measuring session in Elite: they wait on
+the Waiting list's fuel).
+
+### Checker 4's fixes (step 7.3, the whole mod, 2026-11-14)
+
+The checker's report (FAIL: one high bug the spec rules out; the rest disclosed or low) is
+`.rea/tickets/verify/04-final-report.md`. Fixed or said:
+
+1. **High: the ship flew through buildings.** Now near the ground (under 2.5 km, out of supercruise and the glide) it asks the
+   scatter's probe along its next 1.5 s, turns the listed buildings' slices and trees' trunks into boxes in the body's frame
+   (`sidewinder/solids.rs`, as the walker's solids are made) and tests its model's box against them each tick (the separating
+   axis test): pushed out the shortest way, the speed into the wall taken away, a hard hit damaging it by the ground's rule
+   (ours, F). The checker's flight backwards through New York at 92 m/s now hits the first building (153 MJ: destroyed). Not
+   yet: standing on a roof. Test: `boxes_overlap_and_part`.
+2. **The spec's 60 s tunnel fallback** is built: a tunnel whose system hasn't loaded in 60 s ends back where it left, at the
+   old star, in supercruise, the fuel given back (`hyper.rs`, `TUNNEL_LIMIT_S`; `sw hyper NAME fail` forces it: it went back
+   to the Sun after the tunnel's 13.5 s).
+3. **`sw trace FILE`** is built: a row a tick in the measured traces' columns (the keys from the frame's controls; a test's
+   `sw throttle` sets the throttle without a key, so such runs show none). Its first version cut the path at its first space
+   and wrote a file named `Sandbox` on the Desktop (moved into `.optimize/scratch/run`); the rest of the line is the path now.
+4. **C14 in the game:** every body but a star glides (one without a terrain against its ellipsoid, as a gas giant does); none
+   but a star has an exclusion zone.
+5. **Said, not built:** step 2.4's entry above; F6's canopy breach and life support timer (data and the sequence not found:
+   not built); the 50 ms spawn and boarding hitch wasn't measured (7.2's costs are steady frames); S7 (rotational correction)
+   wasn't checked in session 2 (there are no stations; it waits for session 3); C6's `texels_are_elites` doesn't exist because
+   no textures ship (the hull and cockpit draw with flat colours); C15 holds by the code's structure (drag is computed in the
+   thruster branch only) and the flights of step 6.3, not by the named test (it would need the game's world).
+6. **Stale:** `docs/elite-flight-model.md`'s block table (the accelerations, flight assist's D and the curve's a are measured,
+   D), PROGRESS.md's numbers, F6 (where he is set down when the ship is destroyed, as built), the touchdown's grade (the gear's
+   part is E), `pilot.rs`'s header.
+7. **Not the mod's:** the main menu's Play pressed while playing leaves him "Waiting for the ground" (with no spawn too, and
+   with the exe from before the mod): reported to the user as a separate bug.
