@@ -1,16 +1,33 @@
 # Progress
 
+## Resume here (paused 2026-11-14 for your Claude Code restart)
+
+Continue `/rea`'s run of the Sidewinder plan (`docs/spec-mods-sidewinder.md`, Phase 0 to 7; the Build log has every step
+done). Three helpers were stopped mid-step; their tickets are in `.rea/tickets/analysis/` and what they wrote is kept:
+
+- **Step 0.2 (textures and sounds)**, ticket `02-textures-sounds.md`: notes so far `re/elite/notes/textures.md`,
+  `sounds.md`, tools `re/elite/tools/elite_tex.py`, `tex_guess.py`, `elite_snd.py`. Found: texture files hold no format or
+  size, so they are worked out from the bytes (level sizes, then smoothness); it was fixing `read_texture` for flat/unknown
+  entries. Restart it with the same ticket, saying to carry on from the notes.
+- **Step 0.10 (exe flight study)**, ticket `10-exe-flight.md`: notes so far `re/elite/ghidra/notes/0.10-flight.md` and the
+  draft rows `re/elite/notes/flight_model_rows.md`. Restart it to finish (one session in all, per the spec).
+- **The search check (A04)**, ticket `04-search-control.md` (does the "hull not found" verdict hold?): nothing written yet.
+  **Do this first with your screenshots**: the candidate `4387928b...` (`re/elite/sheets/sidewinder/look_4387928b.png`) has a
+  trapezoid top view like your top shot (`7.webp`). The proportion test that ruled it out used Frontier's 5.4 m height,
+  which may include the landing gear; your rear shot (`5.webp`) can say how tall the hull is without it.
+- **Next after that:** step 1.1 (the converter and the parked ship on stand-ins, design agreed with the advisor:
+  the ship's pose kept in the body's frame, its solids re-added after a rebase; Spawn is its own request, not "mod on";
+  drawn with `PropMaterial`; several convex solid pieces so you can walk under it), then the seat (`Mode::Pilot`) once
+  0.10 and 0.11 have reported.
+
 ## Waiting for you (the Sidewinder mod)
 
-1. **Elite screenshots (F10) of your Sidewinder**, saved in `Pictures\Frontier Developments\Elite Dangerous` (the folder is
-   empty now). Outside: front, side, top, a three-quarter view, gear down (the outside camera); inside: from the seat
-   looking ahead, and with head look left and right; the HUD in normal flight. Steps 0.3 and 0.4 (finding the hull and
-   cockpit among Elite's 22,000 unnamed meshes) and every side-by-side picture need them. Until then I pick by shape alone.
+1. ~~Elite screenshots~~ **Received 2026-11-14** (9 pictures: the cockpit three ways, a three-quarter view, back, side, top,
+   front with the gear down, underneath), saved in `re/elite/screenshots/2026-11-14_user/` (out of git).
 2. **A measuring session (U2)**: start Elite, log in, enter Solo, sit in the Sidewinder in open space, then tell me. It
    unblocks steps 0.7 (matching sounds), 0.8 (the measuring rig) and 0.9 (the first flight measurements); without them the
    flight rules can be built from the exe but not proven inside the gate.
-3. **Restart Claude Code once** (whenever convenient): REA was installed on 2026-11-14 and its tools only appear after a
-   restart. Nothing waits on it: the Ghidra command line does the exe study meanwhile.
+3. ~~Restart Claude Code once~~ (being done now: REA's tools appear after it).
 
 ## Current state (2026-11-14)
 
