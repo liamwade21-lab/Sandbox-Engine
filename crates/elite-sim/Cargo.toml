@@ -1,0 +1,8 @@
+[package]
+name = "elite-sim"
+description = "The Faulcon DeLacy Sidewinder mod's ship rules (Elite Dangerous's, graded A to F): no Bevy, no files, f64, a fixed tick"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
