@@ -37,9 +37,9 @@ pub struct ShipDraw {
 }
 
 pub fn build(app: &mut App) {
-    app.add_systems(Update, make).add_systems(
+    app.add_systems(Update, make.run_if(resource_exists::<SidewinderAssets>)).add_systems(
         PostUpdate,
-        place.after(crate::universe::UniverseSet::Camera)
+        place.run_if(resource_exists::<SidewinderAssets>).after(crate::universe::UniverseSet::Camera)
             .after(super::keep_solid)
             .after(crate::terrain::update_node_transforms)
             .before(crate::universe::UniverseSet::FloatingOrigin)
@@ -87,6 +87,10 @@ fn make(
             })
             .collect();
         for d in &m.draws {
+            // (Glass waits for a see-through material, step 4: drawn with this opaque one it would hide the view.)
+            if m.materials[d.material as usize].flags & material_flags::GLASS != 0 {
+                continue;
+            }
             let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, d.vertices.iter().map(|v| m.position_m(v)).collect::<Vec<_>>());
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, d.vertices.iter().map(|v| v.normal()).collect::<Vec<_>>());

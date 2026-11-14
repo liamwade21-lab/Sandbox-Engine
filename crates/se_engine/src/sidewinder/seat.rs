@@ -4,10 +4,12 @@
 //!
 //! - Boarding turns the mod on (`ModControl::board`): the sandbox leaves first person at the end of that frame and the seat
 //!   writes the camera from then on (`seat_camera`, bound to the body every frame: the 500 m-a-frame rule).
-//! - Seated, every key Elite's `.binds` copy binds is taken from the frame's input (`take_keys`), so the port's own readers
-//!   never see them; B is the one key added.
-//! - Getting out by any way (B, the mod turned off) sets him down beside the ship's left side, unless something else already
-//!   put him somewhere (the main menu's Play puts him on Earth).
+//! - Seated, every key's press is taken from the frame's input (`take_keys`) once Elite's bindings have been read, so the
+//!   port's own readers never see them (K would slow the clock, I open the wiki); Esc (the menu) and F11 (a screenshot) are
+//!   left. The game clock runs at real time while he sits and is given back when he gets out (the spec's edge cases).
+//! - Getting out (`leave_rule`): B only when landed (the spec's D8); the mod turned off by any other way while flying loses
+//!   the ship (the spec's edge cases: "if that was in flight it is lost"). Landed, he is set down beside the ship's left side,
+//!   unless something else already put him somewhere (the main menu's Play puts him on Earth).
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::math::{DQuat, Vec3};
@@ -20,6 +22,7 @@ use crate::camera::FlyCamera;
 use crate::mods::{ModControl, ModRegistry};
 use crate::sandbox::{Mode, Sandbox};
 use crate::system::SystemBody;
+use crate::universe::SimTime;
 
 use super::pilot::{Pilot, PilotKeys};
 use super::{Sidewinder, SidewinderAssets, CODE};
@@ -44,17 +47,42 @@ pub struct Seat {
     /// B was pressed this frame (`seat_camera` acts on it).
     leave: bool,
     regain: u8,
+    /// The game clock's rate and pause as they were when he sat down (given back when he gets out).
+    clock: Option<(f64, bool)>,
 }
 
 impl Seat {
-    /// Just sat down.
-    pub fn boarded() -> Seat {
-        Seat { seated: true, regain: 3, ..default() }
+    /// Just sat down: the game clock to real time and running, its old state kept.
+    pub fn boarded(sim: &mut SimTime) -> Seat {
+        let clock = Some((sim.rate, sim.paused));
+        sim.rate = 1.0;
+        sim.paused = false;
+        Seat { seated: true, regain: 3, clock, ..default() }
     }
 
     /// Get out (as B does: only when landed).
     pub fn request_leave(&mut self) {
         self.leave = true;
+    }
+}
+
+/// What getting out does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leave {
+    /// Refused, with Elite's message (B while flying).
+    Refused,
+    /// Out beside the ship, which stays parked.
+    Out,
+    /// Out, and the ship is lost (the mod turned off while flying).
+    Lost,
+}
+
+/// The rule for getting out (the spec's D8 and its edge cases): `by_b` for B or Disembark, else the mod turned off by any way.
+pub fn leave_rule(landed: bool, by_b: bool) -> Leave {
+    match (landed, by_b) {
+        (true, _) => Leave::Out,
+        (false, true) => Leave::Refused,
+        (false, false) => Leave::Lost,
     }
 }
 
@@ -82,17 +110,6 @@ pub fn key_code(name: &str) -> Option<KeyCode> {
         "Numpad_5" => K::Numpad5, "Numpad_6" => K::Numpad6, "Numpad_7" => K::Numpad7, "Numpad_8" => K::Numpad8, "Numpad_9" => K::Numpad9,
         _ => return None,
     })
-}
-
-/// Every keyboard key the file binds to anything (the ship's actions and the rest: the seat takes them all).
-pub fn bound_keys(b: &Binds) -> Vec<KeyCode> {
-    let mut out: Vec<KeyCode> = Vec::new();
-    for c in b.actions.values().flat_map(|a| a.keys()).filter(|k| k.device == "Keyboard").filter_map(|k| key_code(&k.key)) {
-        if !out.contains(&c) {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Is a key down that the action is bound to (its primary or secondary keyboard key)?
@@ -138,6 +155,7 @@ pub fn board(
     mut seat: ResMut<Seat>,
     mut prompt: ResMut<BoardPrompt>,
     mut pilot: ResMut<Pilot>,
+    mut sim: ResMut<SimTime>,
 ) {
     prompt.0 = false;
     let Some(assets) = assets else { return };
@@ -153,7 +171,7 @@ pub fn board(
         keys.clear_just_pressed(KeyCode::KeyE);
         if let Some(id) = reg.mods.iter().find(|m| m.code == CODE).map(|m| m.id.clone()) {
             control.board(&reg, &id);
-            *seat = Seat::boarded();
+            *seat = Seat::boarded(&mut sim);
             *pilot = Pilot::default();
             info!("sidewinder: boarded ({d:.1} m from the hull)");
         }
@@ -248,7 +266,9 @@ pub fn take_keys(
             seat.look.y = (seat.look.y - d.y * LOOK_RATE).clamp(-LOOK_PITCH_MOST, LOOK_PITCH_MOST);
         }
     }
-    for k in bound_keys(&assets.keys).into_iter().chain([KeyCode::KeyB]) {
+    // Every key's press but Esc's (the menu) and F11's (a screenshot): Elite's own are read above, the port's mustn't act.
+    let taken: Vec<KeyCode> = keys.get_just_pressed().copied().filter(|k| !matches!(k, KeyCode::Escape | KeyCode::F11)).collect();
+    for k in taken {
         keys.clear_just_pressed(k);
     }
     for b in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
@@ -276,12 +296,13 @@ pub fn seat_camera(
     mut sb: ResMut<Sandbox>,
     mut seat: ResMut<Seat>,
     mut control: ResMut<ModControl>,
-    ship: Res<Sidewinder>,
+    mut ship: ResMut<Sidewinder>,
     assets: Option<Res<SidewinderAssets>>,
     mut cam: ResMut<FlyCamera>,
     bodies: Query<&SystemBody>,
     mut msg: ResMut<crate::messages::Messages>,
     pilot: Res<Pilot>,
+    mut sim: ResMut<SimTime>,
 ) {
     if !seat.seated {
         return;
@@ -297,11 +318,12 @@ pub fn seat_camera(
     let rot_body = (p.rot * look).normalize();
     if seat.leave {
         seat.leave = false;
-        if pilot.landed {
-            control.request_off();
-            info!("sidewinder: B: getting out");
-        } else {
-            msg.show("Disembark is only possible when landed".to_string());
+        match leave_rule(pilot.landed, true) {
+            Leave::Out => {
+                control.request_off();
+                info!("sidewinder: B: getting out");
+            }
+            _ => msg.show("Disembark is only possible when landed".to_string()),
         }
     }
     if control.pilot && sb.mode == Mode::Pilot {
@@ -315,14 +337,44 @@ pub fn seat_camera(
         return;
     }
     // Out. Beside the ship's left side, on the ground, facing the way the ship faces; unless he's already been put somewhere.
+    // Flying, the ship is lost (left alone it would hang in the air as a solid thing: the checker's first finding).
     seat.seated = false;
     seat.head_look = false;
     seat.look = Vec2::ZERO;
+    if let Some((rate, paused)) = seat.clock.take() {
+        sim.rate = rate;
+        sim.paused = paused;
+    }
+    let lost = leave_rule(pilot.landed, false) == Leave::Lost;
+    let (obj, pos, rot) = (p.obj, p.pos, p.rot);
+    if lost {
+        if let Some(mut gone) = ship.parked.take() {
+            super::remove_solids(&mut sb, &mut gone);
+        }
+        control.ship_parked = false;
+    }
     if sb.mode == Mode::Pilot {
         let side = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5);
-        let point = p.pos + p.rot * side.as_dvec3();
-        sb.set_down(p.obj, point, None, eye_body, p.rot);
-        msg.show("Disembarked".to_string());
-        info!("sidewinder: out, beside the ship");
+        let point = pos + rot * side.as_dvec3();
+        sb.set_down(obj, point, None, eye_body, rot);
+        msg.show(if lost { "The Sidewinder was lost" } else { "Disembarked" }.to_string());
+        info!("sidewinder: out, beside the ship{}", if lost { "; it was flying and is lost" } else { "" });
+    } else if lost {
+        msg.show("The Sidewinder was lost".to_string());
+        info!("sidewinder: the mod went off while flying; the ship is lost");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The spec's C13: getting out works only when landed; B in flight is refused, the mod going off in flight loses the ship.
+    #[test]
+    fn leaving_works_only_when_landed() {
+        assert_eq!(leave_rule(true, true), Leave::Out);
+        assert_eq!(leave_rule(true, false), Leave::Out);
+        assert_eq!(leave_rule(false, true), Leave::Refused);
+        assert_eq!(leave_rule(false, false), Leave::Lost);
     }
 }

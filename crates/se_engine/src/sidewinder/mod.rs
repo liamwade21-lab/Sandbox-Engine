@@ -76,6 +76,9 @@ pub struct ShipShape {
     pub hi: Vec3,
     /// The lowest point of each landing gear leg (where it stands).
     pub feet: Vec<Vec3>,
+    /// The hull's lowest point in each cell of a 3 x 3 grid over its plan (what touches the ground with the gear up or the
+    /// ship tilted).
+    pub belly: Vec<Vec3>,
 }
 
 /// Each part's transform in model space at rest (its parents' composed), as a matrix.
@@ -94,7 +97,7 @@ pub fn posed_transforms(m: &Edm, name: &str, t01: f32) -> Vec<Mat4> {
     let mut out: Vec<Mat4> = Vec::with_capacity(m.parts.len());
     for (i, p) in m.parts.iter().enumerate() {
         let (mut tr, mut rot) = (Vec3::from_array(p.translation), Quat::from_array(p.rotation).normalize());
-        if let Some((t, secs)) = anim.and_then(|a| a.tracks.iter().find(|t| t.part as usize == i).map(|t| (t, a.seconds))) {
+        if let Some((t, secs)) = anim.and_then(|a| a.tracks.iter().find(|t| t.part as usize == i && !t.keys.is_empty()).map(|t| (t, a.seconds))) {
             let time = t01.clamp(0.0, 1.0) * secs;
             let k = t.keys.iter().rposition(|k| k.time <= time).unwrap_or(0);
             let (a, b) = (&t.keys[k], &t.keys[(k + 1).min(t.keys.len() - 1)]);
@@ -113,6 +116,7 @@ fn ship_shape(m: &Edm) -> ShipShape {
     let mut hulls = Vec::new();
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     let mut feet = Vec::new();
+    let mut gear = Vec::new();
     for d in &m.draws {
         let t = parts[d.part as usize];
         let pts: Vec<Vec3> = d.vertices.iter().map(|v| t.transform_point3(Vec3::from_array(m.position_m(v)))).collect();
@@ -120,14 +124,28 @@ fn ship_shape(m: &Edm) -> ShipShape {
             lo = lo.min(*p);
             hi = hi.max(*p);
         }
-        if m.parts[d.part as usize].name.starts_with("gear") {
+        let is_gear = m.parts[d.part as usize].name.starts_with("gear");
+        if is_gear {
             if let Some(f) = pts.iter().copied().min_by(|a, b| a.y.total_cmp(&b.y)) {
                 feet.push(Vec3::new(t.w_axis.x, f.y, t.w_axis.z));
             }
         }
+        gear.push(is_gear);
         hulls.push(pts);
     }
-    ShipShape { hulls, lo, hi, feet }
+    // The belly: the lowest hull point (not the gear's) in each cell of a 3 x 3 grid over the plan.
+    let mut cells: [Option<Vec3>; 9] = [None; 9];
+    let size = (hi - lo).max(Vec3::splat(1e-3));
+    for (pts, _) in hulls.iter().zip(&gear).filter(|(_, g)| !**g) {
+        for p in pts {
+            let i = (((p.x - lo.x) / size.x * 3.0) as usize).min(2) + 3 * (((p.z - lo.z) / size.z * 3.0) as usize).min(2);
+            if cells[i].is_none_or(|c| p.y < c.y) {
+                cells[i] = Some(*p);
+            }
+        }
+    }
+    let belly = cells.into_iter().flatten().collect();
+    ShipShape { hulls, lo, hi, feet, belly }
 }
 
 /// Reads the mod's files through `read` (the mods menu's checked reader: a refusal names the file and why).
@@ -363,6 +381,11 @@ fn keep_solid(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: Opt
     }
 }
 
+/// Something for `handle_requests` to do: a request, the files being read or a spawn waiting.
+fn asked(control: Res<ModControl>, ship: Res<Sidewinder>) -> bool {
+    control.ship_request.is_some() || ship.loading.is_some() || ship.want_spawn.is_some()
+}
+
 pub struct SidewinderPlugin;
 
 impl Plugin for SidewinderPlugin {
@@ -375,7 +398,10 @@ impl Plugin for SidewinderPlugin {
         app.init_resource::<seat::Seat>()
             .init_resource::<seat::BoardPrompt>()
             // E at the ship and the seat's keys: after the frame's input, before the sandbox's reader takes E as "use".
-            .add_systems(PreUpdate, (seat::board, seat::take_keys).chain().after(bevy::input::InputSystems).after(crate::viltrumite::dev_keys).before(crate::sandbox::read_input))
+            .add_systems(
+                PreUpdate,
+                (seat::board, seat::take_keys).chain().run_if(resource_exists::<SidewinderAssets>).after(bevy::input::InputSystems).after(crate::viltrumite::dev_keys).before(crate::sandbox::read_input),
+            )
             // The seat writes the camera with the camera's own motion, after the sandbox's frame (which leaves first person the
             // frame he boards), before the hero's and before the camera's transform is set.
             .init_resource::<pilot::Pilot>()
@@ -384,20 +410,26 @@ impl Plugin for SidewinderPlugin {
                 PostUpdate,
                 (pilot::fly, seat::seat_camera)
                     .chain()
+                    .run_if(resource_exists::<SidewinderAssets>)
                     .in_set(crate::universe::UniverseSet::Camera)
                     .after(crate::sandbox::sandbox_step)
                     .before(crate::viltrumite::hero::hero_move)
                     .before(crate::camera::sync_camera_transform),
             )
-            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, seat::draw_readout).in_set(crate::skin::UiSet::Draw));
-        app.add_systems(Update, handle_requests)
+            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, seat::draw_readout).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
+        // (The spec's C20: never spawned, nothing of the mod runs. Its systems wait for a request, then for its files.)
+        app.add_systems(Update, handle_requests.run_if(asked))
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
-            .add_systems(PostUpdate, keep_solid.after(crate::sandbox::sandbox_step));
+            .add_systems(PostUpdate, keep_solid.run_if(resource_exists::<SidewinderAssets>).after(crate::sandbox::sandbox_step));
     }
 }
 
 /// `sw spawn|remove|restock|state`: test commands (`--run "sw ..."`).
 pub fn dev_command(world: &mut World, arg: &str) {
+    if !world.contains_resource::<seat::Seat>() {
+        warn!("sw: the sandbox is off (SE_SANDBOX=0): the Sidewinder mod plays in it");
+        return;
+    }
     let verb = arg.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
     let req = match verb.as_str() {
         "spawn" => Some(ShipRequest::Spawn),
@@ -409,7 +441,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 let reg = world.remove_resource::<ModRegistry>().unwrap();
                 world.resource_mut::<ModControl>().board(&reg, &id);
                 world.insert_resource(reg);
-                *world.resource_mut::<seat::Seat>() = seat::Seat::boarded();
+                let seat = seat::Seat::boarded(&mut world.resource_mut::<crate::universe::SimTime>());
+                *world.resource_mut::<seat::Seat>() = seat;
                 *world.resource_mut::<pilot::Pilot>() = pilot::Pilot::default();
                 info!("sidewinder: boarded (a test)");
             } else {

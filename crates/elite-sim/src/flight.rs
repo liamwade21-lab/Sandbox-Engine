@@ -1,5 +1,9 @@
 //! Normal-space flight: thrusters, flight assist on and off, the speed cap, boost's speed, rotation and the blue zone.
-//! Every rule is Elite's own, read out of its exe (grade C; `docs/elite-flight-model.md` gives each with its address).
+//! The rules (time constants, acceleration limits, speed guards, the blue zone, the mass curve, the pips' blend) are Elite's
+//! own, read out of its exe (grade C; `docs/elite-flight-model.md` gives each with its address). Two parts are ours (F) until
+//! measured: the integration (each tick adds acceleration x dt to the velocity, then the velocity moves the ship: the exe's
+//! physics step was not followed that far), and the turn, applied as an angular acceleration directly (the exe's torque rule,
+//! f x M x alpha(assist) + (1 - f) x M x alpha(raw), needs the body's inertia M, which is not known).
 //! The ship's numbers (`Block`) are mostly not in the exe: their grades are in `data.rs` (`sidewinder_block`).
 //!
 //! Axes: ship axes are the mod's model axes, x right, y up, z back (the nose is -z). The exe's "linear demands" are

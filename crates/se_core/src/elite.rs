@@ -424,12 +424,22 @@ mod tests {
         w.join("00").is_dir().then_some(w)
     }
 
-    /// Reads the first 64 KB of a file: enough for its kind. An encrypted file's tag is all that's looked at.
+    /// Reads the first 64 KB of a file: enough for its kind. Its first four bytes are read alone first, and an encrypted
+    /// file is read no further than its tag.
     fn head(p: &Path) -> Vec<u8> {
         use std::io::Read;
+        let Ok(mut f) = std::fs::File::open(p) else { return Vec::new() };
+        let mut tag = [0u8; 4];
+        if f.read_exact(&mut tag).is_err() {
+            return Vec::new();
+        }
+        if &tag == ENCRYPTED_TAG {
+            return tag.to_vec();
+        }
         let mut b = vec![0u8; 65536];
-        let n = std::fs::File::open(p).and_then(|mut f| f.read(&mut b)).unwrap_or(0);
-        b.truncate(n);
+        b[..4].copy_from_slice(&tag);
+        let n = f.read(&mut b[4..]).unwrap_or(0);
+        b.truncate(4 + n);
         b
     }
 

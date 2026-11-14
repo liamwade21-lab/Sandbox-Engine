@@ -157,8 +157,10 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   texture data, Wwise Vorbis sound packs, the `.binds` and settings XML) may be read; what the mod uses is converted once into
   `crates/se_engine/assets/mods/sidewinder` and shipped (the user's decision, with the takedown risk stated). The exe's code
   may be studied offline with Ghidra (`/rea`); decompiled code stays in `re/elite`, out of git. Measuring the real game: a
-  Sonnet agent presses the flight keys in the user's Elite, in Solo only, after the user has logged in; it never types
-  credentials, spends credits or touches other players. Nothing of the mod's rules is ever tuned by feel: a rule comes from
+  Sonnet agent presses the flight keys in the user's Elite, in Solo only; since 2026-11-14 it may start Elite itself
+  (`steam://rungameid/359320`) and click the Frontier launcher's "LOG IN WITH STEAM" button (the user: "it is ok to log in
+  for me so i dont have to do it over and over"), and stops if a password, code, Steam Guard or terms screen appears; it
+  never types credentials, spends credits or touches other players. Nothing of the mod's rules is ever tuned by feel: a rule comes from
   the exe's code or from a measurement, inside the measuring error.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).
@@ -176,8 +178,10 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   `elite_asset.rs` the mod's `.edm` model format and the `.binds` reader; the spec's Build log says what each step did).
   Elite's mesh files keep no names and no metre scale; the in-game Sidewinder hull and cockpit are NOT among the open files
   (Build log, step 0.3): the hull is Elite's simplified Sidewinder (`4387928b...`, believed the HUD hologram, matched to the
-  user's top screenshot), its bytes unchanged, scaled to Frontier's published plan area; the gear and the cockpit are
-  recreated stand-ins (`sidewinder/convert.rs`). The mod's files are written only by
+  user's top screenshot), its bytes unchanged, scaled to Frontier's published plan area; the gear is a recreated stand-in
+  (`sidewinder/convert.rs`); the cockpit is recreated in Blender from the user's cockpit shots (`sidewinder/cockpit/`:
+  `make_cockpit.py`, run in background mode only, writes `cockpit.obj`, which the converter reads; its glass isn't drawn until
+  step 4). The mod's files are written only by
   `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture` (`ELITE_PATH`, default the user's Steam copy);
   `geometry_is_elites` and `bindings_match_elite` (ignored) re-read the install. Elite's install path appears only in tests
   (C4). Model space: metres, X right, Y up, -Z the nose, the gear's feet on Y 0. Spawning is `ShipRequest` (`ModControl::
@@ -189,10 +193,17 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   The seat (`seat.rs`, `pilot.rs`): E boards (`ModControl::board`, the mod on with `pilot`); the sandbox leaves first
   person at the end of that frame (`Mode::Pilot`) and `seat_camera` writes the camera at the eye (the cockpit's part
   `eye`) bound to the body every frame. `control.pilot` is in the free camera's gates (`camera.rs` `input_controls`,
-  `travel_and_move`) and `panels_hidden`, as `walker` is. Getting out by any way sets him down beside the ship
-  (`Sandbox::set_down`) unless he was already put somewhere. Flight: `elite_sim::flight` at 60 Hz in the body's turning
+  `travel_and_move`) and `panels_hidden`, as `walker` is. Seated, every key's press but Esc and F11 is taken (`take_keys`)
+  and the game clock runs at real time (`Seat::boarded` keeps the old rate, given back on getting out). Getting out is
+  `leave_rule`: landed, beside the ship (`Sandbox::set_down`, unless he was already put somewhere); B in flight refused; the
+  mod off any other way in flight LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
   throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state`, with `SE_SANDBOX=1`.
+  The mod's systems have run conditions (nothing runs before a spawn's files are read: the spec's C20); keep it so.
+  Measuring Elite (`re/elite/measure/`, out of git: `BRIEF.md`, `tools/` capture.py, keys.py, journal_watch.py,
+  hud_read.py, screen.py; manoeuvres in `scripts/`; each session's ticket in `.rea/tickets/measure/`, its raw files and log
+  in `raw/sessionN/`). The user plays with their own bindings (`Custom.4.2.binds` in Elite's Options: Elite's default keys,
+  but mouse sensitivity 0.2725, the default file's 1.0) and `<FOV>56.249001</FOV>` in Options/Graphics/Settings.xml.
 - The Skate 3 mod (`skate/`). It plays INSIDE the sandbox's `Mode::Walk`: `Sandbox::skate` (a `skate::Skater`, which owns a
   `skate_sim::Sim`) is set by `skate::sync` once `ModControl::skate` is on, the sandbox stands on ground and `SkateAssets` are
   read (`mods.rs` `apply_request`, code `skate3`; the simulation's files are read from the folder holding `private/game.json`).

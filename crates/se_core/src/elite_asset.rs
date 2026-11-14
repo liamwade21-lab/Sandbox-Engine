@@ -471,6 +471,9 @@ pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
     for _ in 0..r.u16()? {
         let name = r.str()?;
         let seconds = r.f32()?;
+        if !(seconds.is_finite() && seconds > 0.0) {
+            return Err(EdmError::Bad(format!("animation {name} lasts {seconds} s")));
+        }
         let mut tracks = Vec::new();
         for _ in 0..r.u16()? {
             let part = r.u16()?;
@@ -480,6 +483,9 @@ pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
             let mut keys = Vec::new();
             for _ in 0..r.u16()? {
                 keys.push(EdmKey { time: r.f32()?, translation: r.f3()?, rotation: r.f4()? });
+            }
+            if keys.is_empty() {
+                return Err(EdmError::Bad(format!("animation {name} has a track with no keys")));
             }
             tracks.push(EdmTrack { part, keys });
         }

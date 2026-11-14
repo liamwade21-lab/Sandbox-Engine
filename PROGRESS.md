@@ -2,10 +2,10 @@
 
 ## Waiting for you (the Sidewinder mod)
 
-1. **A measuring session (U2)**: start Elite, log in, enter Solo, sit in the Sidewinder in open space, then tell me. It
-   unblocks steps 0.7 (matching sounds to Elite's recordings), 0.8 (the measuring rig: tools ready in `re/elite/measure/`)
-   and 0.9 (the first flight measurements). Until then the ship flies by Elite's own rules (read from its exe) but with some
-   of its numbers as stand-ins or the community's hints, and nothing can be proven inside the gate.
+1. **Nothing for the measuring sessions unless one stops**: you allowed the agent to open Elite and log in through the
+   launcher's "LOG IN WITH STEAM" (2026-11-14). It types nothing; if a password, code, Steam Guard or terms screen appears
+   it stops and this item comes back. Session 1 (the shakedown) worked: Elite is open in Solo, the Sidewinder idle in open
+   space in Synuefe XM-K b28-1. Leave it running if you can; closing it is fine too (the next session reopens it).
 2. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
@@ -17,11 +17,20 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - Done: 0.1 (meshes read, G1 passed), 0.2 (textures and sounds read), 0.3 and 0.4's meshes (the in-game hull and cockpit
     are not in the open files; the ship is drawn with Elite's own simplified Sidewinder, matched to your top screenshot, and
     stand-in gear and cockpit), 0.10 (the flight rules found in the exe: `docs/elite-flight-model.md`).
-  - Being built now: 1.1 (spawn from the Mods tab, the parked ship solid to walk round) and 1.2/1.3 (E to board, the seat,
-    flight by Elite's rules, landing, B to get out).
-  - Running in the background: step 0.11 (the second exe study: the mouse, the pips, the speed multipliers, the
-    simulation's rate) and a cockpit search using your cockpit shots.
-  - Waiting for you: 0.7, 0.8, 0.9 (the measuring session).
+  - Also done (first cut, committed bfd4fed): 1.1 (spawn from the Q menu's Mods row, the parked ship solid to walk round),
+    1.2/1.3 (E to board, the seat, flight by Elite's rules, landing, B to get out), 0.11 (the second exe study: G2 passed).
+  - Done since: the exe studies A20 (distributor, heat, fuel), A21 (shields, landing), A50 (frame shift drive), their rows in
+    `docs/elite-flight-model.md`; measuring session 1 (step 0.8's shakedown: keys, pips, gear, flight assist and the mouse
+    reach the game; the HUD's speed is readable: 161 m/s at full throttle, the mod gives 160.6).
+  - Done since: the Phase 0-1 checker's findings fixed (a ship flying when the mod went off hung solid in the air: now it is
+    lost, as the spec says; the port's keys no longer act while seated; the clock runs at real time while seated; Elite's
+    touchdown rule with the gear's feet; a crash on a damaged file); the cockpit recreated in Blender from your three cockpit
+    shots and now drawn in the game (its shape lines up with your pictures; its colours are a guess and look pale in Earth's
+    daylight: step 4's materials). Checked in a test run: lost in flight, touchdown at 0.7 m/s, out beside the ship.
+  - Being done now: the HUD digit reader (an agent); session 2's ticket and manoeuvres are written
+    (`.rea/tickets/measure/02-first-flight-measurements.md`, `re/elite/measure/scripts/`).
+  - Next: session 2 (step 0.9: the first flight measurements), then Phase 2 (the ship's systems: the distributor's model
+    is drafted in `crates/elite-sim/src/power.rs`, not yet wired).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

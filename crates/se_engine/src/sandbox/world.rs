@@ -306,6 +306,9 @@ pub struct SandboxWorld {
     pub gravity: f32,
 }
 
+/// Where each new world's `solids_cleared` starts (a million counts apart).
+static WORLD_COUNTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 impl SandboxWorld {
     pub fn new(frame: LocalFrame, dt: f32) -> Self {
         let mut world = PhysicsWorld::new();
@@ -325,7 +328,8 @@ impl SandboxWorld {
             props: HashMap::new(),
             by_collider: HashMap::new(),
             solids: HashMap::new(),
-            solids_cleared: 0,
+            // Each world starts its count somewhere else, so a count kept from an earlier world never matches this one's.
+            solids_cleared: WORLD_COUNTS.fetch_add(1 << 20, std::sync::atomic::Ordering::Relaxed),
             statics_rev: 0,
             next_id: 1,
             gravity: 9.81,

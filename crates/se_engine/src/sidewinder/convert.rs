@@ -7,12 +7,15 @@
 //! - `ship.edm`: the hull is Elite's own simplified Sidewinder (`HULL_FILE`, believed to be the HUD's hologram model: the
 //!   in-game hull is not among the open files, Build log step 0.3), its vertex bytes and indices unchanged (grade A); its place,
 //!   scale and the landing gear are recreated (grade E) from the user's screenshots and Frontier's published sizes.
-//! - `cockpit.edm`: a stand-in cockpit (seat, dashboard, canopy frame), recreated (grade E), until step 0.5's recreation.
+//! - `cockpit.edm`: the cockpit recreated in Blender (grade E: step 0.5, `cockpit/` beside this file: `make_cockpit.py` builds
+//!   `cockpit.obj` from the user's three cockpit screenshots, `notes.md` says how well each view lines up); Elite's own
+//!   cockpit is in its encrypted files and was never opened.
 //! - `binds/KeyboardMouseOnly.binds`, `binds/ControlPad.binds`: copies of Elite's files (grade A).
 //! - `SOURCES.txt` and `mod.cfg` (a `Need` for every file).
 //!
 //! Model space (the mod's, both files): metres, X right, Y up, -Z forward (the nose), the gear's feet on Y = 0.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use se_core::elite::{self, Vertex};
@@ -186,40 +189,115 @@ pub(super) fn eye_point(s: &Summary) -> [f32; 3] {
     [0.0, GEAR_M + 0.72 * s.ht, -s.len / 2.0 + 0.42 * s.len]
 }
 
-/// The stand-in cockpit (E): a seat under the eyes, a dashboard ahead, a canopy frame of struts.
+/// One material's triangles from an OBJ file: (position, normal, uv) per vertex, three indices a triangle.
+struct ObjGroup {
+    material: String,
+    verts: Vec<([f32; 3], [f32; 3], [f32; 2])>,
+    tris: Vec<u16>,
+}
+
+/// Reads an OBJ file's `v`, `vt`, `vn`, `usemtl` and `f` lines (polygons as fans), grouped by material.
+fn read_obj(text: &str) -> Vec<ObjGroup> {
+    let nums = |w: &mut std::str::SplitWhitespace| -> Vec<f32> { w.filter_map(|s| s.parse().ok()).collect() };
+    let (mut v, mut vt, mut vn): (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 3]>) = (Vec::new(), Vec::new(), Vec::new());
+    let mut groups: Vec<ObjGroup> = Vec::new();
+    let mut seen: HashMap<(usize, usize, usize), u16> = HashMap::new();
+    for line in text.lines() {
+        let mut w = line.split_whitespace();
+        match w.next() {
+            Some("v") => {
+                let n = nums(&mut w);
+                v.push([n[0], n[1], n[2]]);
+            }
+            Some("vt") => {
+                let n = nums(&mut w);
+                vt.push([n[0], n[1]]);
+            }
+            Some("vn") => {
+                let n = nums(&mut w);
+                vn.push([n[0], n[1], n[2]]);
+            }
+            Some("usemtl") => {
+                groups.push(ObjGroup { material: w.next().unwrap_or("").to_string(), verts: Vec::new(), tris: Vec::new() });
+                seen.clear();
+            }
+            Some("f") => {
+                let g = groups.last_mut().expect("a face before any usemtl");
+                let corners: Vec<u16> = w
+                    .map(|c| {
+                        let mut s = c.split('/').map(|x| x.parse::<usize>().ok());
+                        let key = (s.next().flatten().unwrap() - 1, s.next().flatten().map_or(usize::MAX, |i| i - 1), s.next().flatten().map_or(usize::MAX, |i| i - 1));
+                        *seen.entry(key).or_insert_with(|| {
+                            g.verts.push((v[key.0], vn.get(key.2).copied().unwrap_or([0.0, 1.0, 0.0]), vt.get(key.1).copied().unwrap_or([0.0, 0.0])));
+                            u16::try_from(g.verts.len() - 1).expect("under 65,536 vertices a material")
+                        })
+                    })
+                    .collect();
+                for k in 1..corners.len().saturating_sub(1) {
+                    g.tris.extend([corners[0], corners[k], corners[k + 1]]);
+                }
+            }
+            _ => {}
+        }
+    }
+    groups
+}
+
+/// Each material's diffuse colour (`Kd`) from an MTL file.
+fn read_mtl(text: &str) -> HashMap<String, [f32; 3]> {
+    let mut out = HashMap::new();
+    let mut name = String::new();
+    for line in text.lines() {
+        let mut w = line.split_whitespace();
+        match w.next() {
+            Some("newmtl") => name = w.next().unwrap_or("").to_string(),
+            Some("Kd") => {
+                let n: Vec<f32> = w.filter_map(|s| s.parse().ok()).collect();
+                if n.len() == 3 {
+                    out.insert(name.clone(), [n[0], n[1], n[2]]);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The cockpit (step 0.5, recreated: E): `cockpit/cockpit.obj` beside this file, in the pilot's eye's space (metres, X right,
+/// Y up, -Z forward), placed at the eye point. The glass is its own draw (one-sided, facing in, flagged GLASS: drawn when
+/// step 4 gives it a see-through material); the rest is drawn two-sided as the stand-in was.
 pub(super) fn cockpit_model(s: &Summary) -> Edm {
     let unit = s.unit;
-    let [ex, ey, ez] = eye_point(s);
-    let seat = boxes(
-        &[
-            ([ex - 0.32, ey - 1.15, ez - 0.25], [ex + 0.32, ey - 0.95, ez + 0.35]), // the cushion
-            ([ex - 0.32, ey - 0.95, ez + 0.28], [ex + 0.32, ey + 0.15, ez + 0.42]), // the back
-            ([ex - 0.45, ey - 0.85, ez - 0.2], [ex - 0.33, ey - 0.75, ez + 0.3]),   // the arm rests
-            ([ex + 0.33, ey - 0.85, ez - 0.2], [ex + 0.45, ey - 0.75, ez + 0.3]),
-        ],
-        unit,
-    );
-    let dash = boxes(&[([ex - 1.4, ey - 1.05, ez - 1.25], [ex + 1.4, ey - 0.55, ez - 0.75]), ([ex - 1.9, ey - 1.1, ez - 0.75], [ex - 1.1, ey - 0.65, ez + 0.4]), ([ex + 1.1, ey - 1.1, ez - 0.75], [ex + 1.9, ey - 0.65, ez + 0.4])], unit);
-    let t = 0.06;
-    let frame = boxes(
-        &[
-            // An arch over the head, two struts from the dashboard's corners up to it, a sill along each side.
-            ([ex - 1.6, ey + 0.55, ez - 0.1], [ex + 1.6, ey + 0.55 + t, ez + 0.1]),
-            ([ex - 1.45 - t, ey - 0.55, ez - 1.2], [ex - 1.45 + t, ey + 0.58, ez - 1.08]),
-            ([ex + 1.45 - t, ey - 0.55, ez - 1.2], [ex + 1.45 + t, ey + 0.58, ez - 1.08]),
-            ([ex - 0.04, ey + 0.55, ez - 1.2], [ex + 0.04, ey + 0.6, ez + 0.1]),
-            ([ex - 1.95, ey - 0.65, ez - 1.2], [ex - 1.85, ey - 0.55, ez + 0.6]),
-            ([ex + 1.85, ey - 0.65, ez - 1.2], [ex + 1.95, ey - 0.55, ez + 0.6]),
-        ],
-        unit,
-    );
-    let draw = |material: u16, (vertices, indices): (Vec<Vertex>, Vec<u16>), what: &str| EdmDraw { part: 0, material, source: format!("recreated: {what} (E), a stand-in"), vertices, indices };
+    let eye = eye_point(s);
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("sidewinder").join("cockpit");
+    let groups = read_obj(&std::fs::read_to_string(dir.join("cockpit.obj")).expect("cockpit/cockpit.obj"));
+    let colours = read_mtl(&std::fs::read_to_string(dir.join("cockpit.mtl")).expect("cockpit/cockpit.mtl"));
+    let mut materials = Vec::new();
+    let mut draws = Vec::new();
+    for g in groups.iter().filter(|g| !g.tris.is_empty()) {
+        let glass = g.material == "glass";
+        let kd = colours.get(&g.material).copied().unwrap_or([0.2; 3]);
+        materials.push(EdmMaterial {
+            name: g.material.clone(),
+            textures: Vec::new(),
+            tint: [kd[0], kd[1], kd[2], 0.0],
+            flags: if glass { material_flags::GLASS } else { material_flags::TWO_SIDED },
+        });
+        let vertices = g.verts.iter().map(|(p, n, uv)| vertex([eye[0] + p[0], eye[1] + p[1], eye[2] + p[2]], *n, *uv, unit)).collect();
+        draws.push(EdmDraw {
+            part: 0,
+            material: (materials.len() - 1) as u16,
+            source: format!("recreated in Blender (E): cockpit/cockpit.obj's {}, matched to the user's cockpit screenshots", g.material),
+            vertices,
+            indices: g.tris.clone(),
+        });
+    }
     Edm {
         metres_per_unit: unit as f32,
         // The eyes: where the seat's camera sits (`SidewinderAssets::eye`).
-        parts: vec![identity_part("cockpit", -1, [0.0; 3]), identity_part("eye", 0, [ex, ey, ez])],
-        materials: vec![material("seat", 0.18, material_flags::TWO_SIDED), material("dash", 0.12, material_flags::TWO_SIDED), material("frame", 0.08, material_flags::TWO_SIDED)],
-        draws: vec![draw(0, seat, "the seat"), draw(1, dash, "the dashboard and side consoles"), draw(2, frame, "the canopy frame")],
+        parts: vec![identity_part("cockpit", -1, [0.0; 3]), identity_part("eye", 0, eye)],
+        materials,
+        draws,
         animations: Vec::new(),
     }
 }
@@ -228,7 +306,9 @@ pub(super) fn cockpit_model(s: &Summary) -> Edm {
 #[ignore]
 fn copy_sidewinder() {
     let out = out_dir();
-    let version = std::fs::read_to_string(install().join("VersionInfo.txt")).unwrap_or_default().lines().next().unwrap_or("").trim().to_string();
+    // (VersionInfo.txt is a line of JSON: only its "Version" is wanted.)
+    let info = std::fs::read_to_string(install().join("VersionInfo.txt")).unwrap_or_default();
+    let version = info.split("\"Version\"").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("").trim().to_string();
     let (ship, s) = ship_model();
     let cockpit = cockpit_model(&s);
     std::fs::write(out.join("ship.edm"), write_edm(&ship)).unwrap();
@@ -242,7 +322,8 @@ fn copy_sidewinder() {
          (A). It is Elite's simplified Sidewinder, believed to be the HUD's hologram model; the in-game hull is not among the open files. \
          Its place, scale ({:.1} x {:.1} x {:.1} m) and the landing gear are recreated (E) from the user's screenshots and Frontier's \
          published size. A stand-in until step 0.5's recreation.\n\
-         cockpit.edm: recreated (E), a stand-in seat, dashboard and canopy frame.\n",
+         cockpit.edm: recreated in Blender (E) from the user's three cockpit screenshots (src/sidewinder/cockpit: make_cockpit.py, \
+         cockpit.obj, notes.md); Elite's own cockpit is in its encrypted files and was never opened.\n",
         if version.is_empty() { "version unknown".to_string() } else { format!("version {version}") },
         s.triangles,
         s.len,

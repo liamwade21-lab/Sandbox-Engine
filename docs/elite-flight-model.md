@@ -49,7 +49,7 @@ Nothing here is tuned by feel: a value is the game's (B, C), a measurement (D), 
 | Mass curve use | 9 curves in the thruster data: speeds (0x00, 0x0C), accelerations (0x1C..0x24), turn rates (0x38..0x40), the three boost curve values, boost accel multipliers, and one added to the boost ramp time | - | C | 0x142EBDF60, 0x141DFC6E0 |
 | Pip blend (ENG) | current block = base + (full-power - base) x t field by field (negative full-power values skipped); t = ENG share (inferred); full-power block uses t = 1 | - | C (t's meaning inferred) | 0x142E86E20, 0x141B2E310 |
 | Speed multipliers | top and boost speed x k, k = min(A, B) x C x module factor x FSD-object factor; boost speed also x module factor and x boost field 7 | - | C (A, B, C unnamed) | 0x142E86E20 |
-| Boost | states idle / warm-up (field 0 s) / firing (field 1 s) / cool-down (field 2 s); energy cost field 3; capacitor drain field 6 per s; stick pushed to full forward over block 0x10 s | - | C | 0x142E4A820 |
+| Boost | states idle / warm-up (field 0 s) / firing (field 1 s) / cool-down (field 2 s); energy cost field 3 (taken once at the press); field 6 is heat per second while firing (corrected by A20; it was read as a capacitor drain); stick pushed to full forward over block 0x10 s | - | C | 0x142E4A820 |
 | Torque | torque = s x M x alpha; alpha = the angular acceleration at +0x640 (ship axes, rad/s^2); M = a padded 3x3 matrix from the body (inertia tensor: inferred only); s = a scalar from +0x610, identity unresolved | - | C (form only; s, M and the assist-off path open) | 0x142E6E960 |
 | Frame order | each frame: the app fires its update phases in order with the frame's dt; the physics world steps (phase 0x145F05B20) before the flight step (phase 0x145F05B2C), so a frame's thrust is integrated by the next frame's sub-steps (inferred from the order) | - | C (order); integration link inferred | 0x1401EB050, 0x1422709F0, 0x142E6E960 |
 | Flight step dt | the flight step uses the frame's dt (variable), not the physics sub-step | - | C | 0x1401EB050, 0x142E22500 |
@@ -80,3 +80,85 @@ Nothing here is tuned by feel: a value is the game's (B, C), a measurement (D), 
 **G2 (step 0.11):** every flight rule is now C (found, with its address) or D (to be fitted from step 0.9's measured traces):
 the simulation's rate and sub-step cap, the mouse's counts for full deflection, the pips' counts, the capacitors' recharge
 numbers, and mass lock (not studied) are D. Glide and supercruise are steps 5.1 and 6.1's own sessions.
+
+## Rules (A20, the ship's systems a: distributor, boost energy, heat, fuel; for steps 2.1, 2.2, 2.5)
+
+Notes: `re/elite/ghidra/notes/2.x-systems-a.md` (out of git). Two earlier rows corrected: the boost's field 6 is heat per
+second while it fires, not a capacitor drain (the boost's only energy cost is field 3, taken at the press); the pip
+parameter byte +0x14 is the unassigned pool at a reset, not the total pips.
+
+| Rule | Formula (our words) | Constants | Grade | Source |
+|---|---|---|---|---|
+| Distributor channels | channel 0 = WEP, 1 = ENG, 2 = SYS; per channel record: +0x00 capacity (outfitting "Capacity"), +0x08 = hi (outfitting "Recharge": the rate with all pips there), +0x04 lo and +0x0C p shown nowhere | - | C (mapping, from the engineering modifiers' field ids); lo, p not found (D) | 0x142135360, 0x142135530, 0x141B3A480, 0x141B386D0 |
+| Draw energy (all or nothing) | if charge < E: refused (with flag F the channel is emptied, else untouched); else charge -= E | - | C | 0x143801BC0 |
+| Draw energy (what there is) | charge -= min(charge, E) | - | C | 0x1438021C0 |
+| Pip reset | pips per channel = starting bytes (parameter +0x10..+0x12), unassigned pool = parameter byte +0x14 | numbers: data | C (rule; that it is the reset key inferred); 2/2/2 not confirmed (D) | 0x143801FA0 |
+| Boost energy check | at the press: engine off -> `$INFO_boost_denied_engine_off;`; else draw boost field 3 from ENG all or nothing (flag 0); refused -> `$INFO_boost_denied_not_enough_energy;`, capacitor untouched | cost: data (Coriolis 7 MJ) | C | 0x142E4A820 |
+| Boost heat (corrects A10's "field 6 capacitor drain") | while firing: heat += boost field 6 x dt (label "Engines"); no energy drain while firing | field 6: data | C | 0x142E4A820, 0x143813740 |
+| Planetary-flight ENG drain | when planetary flight is on: E = max over axes of weighted thrust share (<= 1) x L x G; draws E x record +0x2A8 x dt from ENG; refusal raises a 0..1 cut (rate 1/s) that lowers the acceleration limits | records: data; L, G not identified | C (form); "planetary" inferred from its heat label | 0x142E6E960 |
+| Planetary-flight heat | heat += record +0x2F4 x sum over axes of max(two share-weighted terms with lerp(0.5, 1, share)) x dt | 0.5 | C (form) | 0x142E6E960 |
+| Heat capacity, start | capacity = ship record +0xF0; heat starts at 0.4 x capacity | 0.4 | C | 0x143813D20 |
+| Add heat | Q = clamp(c x capacity - heat, 0, Q) when a cap c is given; heat = max(0, heat + Q) | - | C | 0x143813740 |
+| Heat tick | docked: heat += parameter +0x14 x dt while heat < parameter +0x18; then heat = f_n(..f_1(heat, k, dt)) through the registered heat objects (list B); k starts at 1 | - | C (structure); one f_i is the heat radiator's dissipation (row below), any others not found | 0x14380E370, 0x1438144A0 |
+| Heat proportion | `HeatProp` = heat / capacity (`HeatPropClamped` clamped to 0..1) | - | C | 0x14380E370, 0x1438139E0 |
+| Heat warning | voice `$HeatWarning100;` + journal `HeatWarning` when heat/capacity rises through 1.5, at most every 5 s | 1.5, 5.0 | C (rule); what the HUD % is: open | 0x142DC1940 |
+| Heat damage | above t0 = record +0xF4 (heat/capacity): rate = lerp(+0xFC, max(+0xFC, +0x100), clamp((f - t0)/(+0xF8 - t0), 0, 1)), accumulated and dealt every record +0x104 s; voice `$HeatWarningDamage;` + journal `HeatDamage` when f rises through t0, at most every 5 s | 5.0; the rest ship data | C (rule); numbers D | 0x142DC1940 |
+| Heat dissipation | each tick heat = max(0, heat - rate x dt); rate = k x (R+0x04 + (R+0x08 - R+0x04) x s^2), s = clamp((f - R+0x18)/(R+0x1C - R+0x18), 0, 1), f = heat/capacity, s = 0 when unpowered; rate 0 under two switches (silent running likely, inferred) | 2.0 | C (rule); being the heat manager's processor inferred (registration not seen); R = the heat radiator's data (R+0x04, +0x08 = EDSY heatdismin 1.18, heatdismax 18.15 by name, inferred; +0x18, +0x1C D) | 0x144398F40, 0x144399D90 |
+| FSD charging heat | while charging: heat += (rec+0x0C + rec+0x10 x max(0, t - rec+0x04)) x dt, t = charge time; later state: rec+0x0C x dt | rec: drive data | C (form) | 0x142C71440 |
+| Star heat | per star: x = distance / radius - 1; heat += P+0x18 x clamp((x - P+0x20)/(P+0x1C - P+0x20), 0, 1) (x P+0x24 unless a test holds) x dt | P: data | C (form) | 0x142C83F60 |
+| Power plant heat, thruster heat (normal flight), heat sinks, silent running's switch | - | - | not found (D) | - |
+| Fuel burn | consumers each frame return their burn; all of it comes from the reservoir: tonnes = burn / (+0x2D0 x 45000) | 45000.0 | C (form); +0x2D0 not found | 0x14380AE40 |
+| Reservoir refill | when the reservoir is empty: one reservoir capacity moves from main (or all of main if less); journal `ReservoirReplenished` | - | C | 0x14380C6E0 |
+| Fuel available, unlimited fuel | available = (main + reservoir levels) x +0x2D0 x 45000; an obfuscated flag (+0x228) makes it unlimited (no burn) | 45000.0 | C | 0x14380B790, 0x14380AE40 |
+| Low-fuel warnings | fuel / (main + reservoir capacity) crossing down through 0.25, 0.10, 0.05 in a frame: `$WARNING_Fuel_25;` / `_10;` / `_05;` | 0.25, 0.10, 0.05 | C | 0x14380D3C0 |
+| Power plant fuel | need = dt x a x b (a, b two values of the plant's output state: rate and load share inferred); short of fuel: output x (fuel left / need), voice `$GeneratorNoFuel;`; plant off: no burn | - | C (form); a, b's meaning inferred, numbers data | 0x1438011E0 |
+| Power plant load | load = clamp(sum of consumers' draw / plant capacity, 0, 1) | 1.19e-7 | C | 0x1437FCEE0 |
+
+## Rules (A21, the ship's systems b: shields, hull, landing, lasers; for steps 2.3, 2.4, 2.6)
+
+Notes: `re/elite/ghidra/notes/2.x-systems-b.md` (out of git). "Gen record" = the shield generator's module data.
+
+| Rule | Formula (our words) | Constants | Grade | Source |
+|---|---|---|---|---|
+| Shield mass curve | k = k_lo + (k_hi - k_lo)(1 - x)^e, x = clamp((m - mmin)/(mmax - mmin), 0, 1), e as the thrusters' curve; m <= mmin gives k_hi, m >= mmax gives k_lo; gen record +0x5C..+0x64 masses, +0x68 k at max mass, +0x6C k at optimal, +0x70 k at min mass | 1.0 if opt mass <= 0 | C | 0x142CAC400, 0x143879360, 0x14387EB40 |
+| Shield strength | live module: k(m) x ship base shield (ship record +0x0C), m from a referenced component (not identified); ship totals: k(ship record +0x00, hull mass inferred) x base shield x A + B with one generator fitted, else 0; A, B the shield multiplier/addition (names inferred) | - | C (form); m and A, B sums not traced | 0x14387EB40, 0x141DFC630, 0x141DFC570 |
+| Hull strength | hull = ship record +0x08 (base armour, inferred) x C + D; C, D the health multiplier/addition (names inferred) | - | C (form) | 0x141DFC630, 0x141DFC570 |
+| Shield regen | only when flag +0x687 is set (writer not found) or the shield is up; then when powered, below max and time since last hit >= delay: S += X x dt x rate x F, capped at max; rate = lerp(gen +0x30, +0x34, s) (up) or lerp(+0x38, +0x3C, s) (broken); s = distributor channel 2 share (SYS, inferred from the field types' WEP, ENG, SYS order), 0.5 without a distributor; F = 20 / 20 / 2 in three states not identified, else 1; X a multiplier not identified | 20, 2, 0.5 | C | 0x14387A960 |
+| Shield regen delay | up: gen +0x4C s; broken: lerp(gen +0x50, +0x54, s), 16 s without a record; any hit with damage > 0 restarts the timer | 16 | C | 0x14387A960, 0x14387E850, 0x143877C10 |
+| Shield regen energy and heat | energy drawn = (gain / F) x lerp(gen +0x44, +0x48, s), the gain applied only if the draw succeeds; heat = (gain / F) x gen +0x40 | - | C (heat role inferred) | 0x14387A960 |
+| Shield collapse and return | collapsed when S <= FLT_EPSILON or unpowered (unpowered: S = 0); back up when S > max x gen +0x58; on power-on with S <= 0, set to max x 0.5 (inferred) | 1.19e-7, 0.5 (.data) | C | 0x14387A960 |
+| Shield hit | mitigated damage T (7 damage types, resistances applied elsewhere); if T >= S: S = 0 and the hit scaled by (T - S)/T goes on (to the hull, inferred); else S -= T (that store not followed) | - | C (partial) | 0x143877C10 |
+| Hit penetration scale | unless hit flag 0x200: r = min(hit +0x2C / Y, 1), Y from the ship-side object; hit scaled by r when r < 1 (penetration / hardness: inferred) | 1 | C (names inferred) | 0x143877C10 (0x14387817B) |
+| Shield resistances | - | - | not found (data) | - |
+| Collision damage, canopy, life support, hull 0 | - | - | not studied (leads in the notes) | - |
+| Touchdown allowed | 0 <= h <= P14, speed <= P10 (velocity inferred), angle between ship down and gravity <= theta (landing record +0x38 deg, 60 deg without one); P10, P14 the landing component's parameters (data) | 60 deg | C (the +0x200 state gate not identified) | 0x1430ECE00, 0x1430F2FA0 |
+| Landing approach and footing | approach flag at h <= P1C; 4 rays along gravity (h + 100 m) from the landing points; all 4 must agree within 0.5 m to go on | 100, 0.5 (.data) | C (counting loop's reading inferred) | 0x1430ECE00 |
+| "Weapon Heat Dump" call | once a frame while a list is non-empty: a heat-type object gets minus record +0x148 (x dt if record +0x130 set); role not identified (heat removal or thermal load) | - | C (code); role open | 0x142F38830 |
+| Fire interval, WEP draw, damage falloff, deploy, gimbals, landing gear, liftoff | - | - | not found / not studied | - |
+
+## Rules (A50, the frame shift drive; for steps 5.1-5.4)
+
+Notes: `re/elite/ghidra/notes/5.1-fsd.md` (out of git). P = the ship record's supercruise floats at +0x1BC (P[k] = byte offset k), Vsc = the supercruise block's top speed (ship record +0xF0), D = the FSD module's data, Fp = the FSD component's parameters, K = the cruise component's parameters: all data (D).
+
+| Rule | Formula (our words) | Constants | Grade | Source |
+|---|---|---|---|---|
+| Well slowdown, stars (body kind 1) | d' = d - 1.1 R; x = clamp(d'/(12 AU), 0, 1); s = min(max((1 - x)^2, 1 - log(d/AU x P[0x04] + P[0x00]) / log(10000 P[0x04] + P[0x00])), 1 - P[0x0C]/Vsc) | 1.1, 12 AU, 10000, AU = 1.49598e11 m | C (R = radius inferred) | 0x142E96C30 |
+| Well slowdown, kinds 2 and 7 | M = a value stored on the body (mass inferred, unit not resolved); W = (M^0.1 + 1) x 20 AU; x = clamp(d'/W, 0, 1); s = min((1 - x)^2, 1 - P[0x08]/Vsc) | 0.1, 20 (.data), 1.1 | C (form); M's unit open | 0x142E96C30 |
+| Well slowdown, combined | s = max over the system's bodies (and the nav target if a virtual object or FSD cloud, a variant with closing speed) | - | C | 0x142EA13E0, 0x142E96A30 |
+| Supercruise speed multiplier (settles A11's +0x670, +0x688 in supercruise) | m0 = 1 - (s + (1 - max(P[0x40], F)/Vsc - s) w), F = P[0x3C]; with a target in mode 1, m = m0 (1 + (P[0x4C] - 1)(1 - clamp((theta - P[0x44])/(P[0x48] - P[0x44]), 0, 1))), theta = |arcsin(a . u)| in degrees, u = direction to the target, a = a ship axis (which: open); controller +0x670 = m, accel mode +0x68C = 2, min forward speed +0x688 = P[0x10] + (F - P[0x10]) w | - | C (w's source, cruise +0x3B0, unidentified) | 0x142EA9810, 0x142E79C60, 0x142E780C0 |
+| Supercruise top speed | V = Vsc x m x min(A, B) x thruster and FSD factors = Vsc (1 - s) plainly; floors P[0x08] (planets), P[0x0C] (stars); throttle and accelerations by the assist-on rule with the supercruise block | - | C | 0x142E86E20, 0x142EA9810 |
+| Accel mode 2 (supercruise) | top speed, forward and lateral accel x k; reverse accel = max(r k, r (v/V0) max(1, sqrt(v/(V0 k)))), v = ship speed (+0x6A0, inferred), V0 = block top speed | 1 | C | 0x141B2D8F0 |
+| Safe drop thresholds | x = clamp((Vt/c - 1)/(Vsc/c - 1), 0, 1)^0.25, Vt = (1 - s at the target) Vsc; Dmin = P[0x18] + (10 P[0x28] - P[0x18]) x; Dmax = P[0x1C] + (10 P[0x2C] - P[0x1C]) x; Vdrop = P[0x20] + (10 P[0x30] - P[0x20]) x; moving target: Dmax += 2 v_t, Dmin scaled alike, Vdrop += 0.1 v_t | 0.25, 10, 2.0, 0.1 | C (partial reading of scrambled values) | 0x142E9A080 |
+| Safe drop conditions | drop at the target (exit kind 1) when Dmin < distance < Dmax (a window; checked on the disassembly), relative speed < Vdrop, angle between the ship's +z (nose, inferred) and the target < P[0x24] deg | pi/180 | C (centre vs surface distance open; that it waits for the FSD key is a lead: a status byte +0xC0 gates it) | 0x142E9A080, 0x142EA1F20 |
+| Emergency drop effects | kinds 2, 3: u = clamp((v/c)/K[0x18], 0, 1), k = K[0x1C] + (1 - K[0x1C]) u; kick K[0x10] k, spin K[0x14] k; 100 with label "EmergencyDrop" to an unidentified receiver in the heat-add call shape (heat += 100 inferred); random module damage; f x K[0x38] (f 0.1 kind 2, 1 kind 3) to an object at +0x3C8 (role open) | 100, 0.1 | C (effects; the heat inferred); triggers not found (D; lead: 0x142EA3DA0 sets the exit kind at +0x530) | 0x142EA1F20 |
+| Drop and arrival cooldowns | after leaving supercruise: Arriving 5 s, then cooldown Fp[0x14] (or Fp[0x18] when a +0x1B0 query says so); after a hyperspace jump: Arriving 1 s, then Fp[0x18]; requests during the cooldown get `denied_cooldown` | 5.0, 1.0 | C | 0x142CB6D80, 0x142CB6FD0, 0x142C71440 |
+| FSD refusals (order) | disabled, malfunction, cooldown, disrupted, mass lock, hardpoints, landing gear, cargo scoop, deployables, clear path, fuel too great (> max fuel), insufficient fuel, permits, overcharge | - | C | 0x142C71440 |
+| Charge time and rate | hyperspace: time D[0x04], rate 1/s; supercruise: time Fp[0x1C], rate 1/L (L = mass-lock factor from +0x5D8, re-read every 0.5 s charging, 3 s otherwise; locked -> rate 0 -> `denied_mass`); x5 under an unidentified override; HUD factor round(L) when > 1 | 0.5 s, 3.0 s, 5.0 | C (L's own rule not found) | 0x142C71440, 0x142CAA540 |
+| Jump conditions at charge end | first failing gives the HUD code: 1 `requires_alignment` (nose to destination <= Fp[0x30] deg), 2 `requires_alignment_escape` (supercruise entry: nose against a direction from the nearby body <= Fp[0x30], Fp[0x34] in one planet case), 3 `requires_alignment_velocity` (nose to velocity <= Fp[0x30]), 4 `requires_speed` (rule not read: FSD interface virtual +0x180) | - | C (codes 1-3); code 4's rule D | 0x142CC61F0, 0x142CC6420, 0x142CC66E0, 0x142C71440, 0x142D6DEE0 |
+| Countdown | Departing: a ticker 0 -> 1 at dt/5 (about 5 s), heat D[0x0C] per s; a failed condition during charge returns to ready | 5.0 | C (what ends it at 1: inferred) | 0x142C71440 |
+| Jump fuel use | jump fuel computed at charge start (FSD interface virtual +0x140), taken at departure as min(aboard, it); max per jump = D[0x24] x b_f (booster factor, or 1) | - | C | 0x142C71440, 0x142C9B000 |
+| Jump fuel formula (settles fsd.rs's form) | f' = min(fuel aboard, D[0x24]); q = m/D[0x14]; R0 = (f'/D[0x18])^(1/D[0x1C]) / q; R1 = (R0 + b_a) k_r; if R0, R1 > 0 and differ, d = d R0/R1; fuel = D[0x18] (q d)^D[0x1C] b_f (b_a booster added range, b_f booster factor, k_r a range multiplier, 1 normally: inferred) | - | C (D[0x14] opt mass, D[0x18] multiplier, D[0x1C] power by their places) | 0x141B39210, 0x142C9A960 |
+| Jump range formula | R = ((min(f, D[0x24])/D[0x18])^(1/D[0x1C]) / (m/D[0x14]) + b_a) k_r; m = total mass with the asked cargo and fuel | - | C (fsd.rs's jump_range when b_a = 0, k_r = 1) | 0x141B392E0, 0x142C9ABD0 |
+| Star heat | per star: f = d/R - 1; rate = clamp((f - Q[0x20])/(Q[0x1C] - Q[0x20]), 0, 1) x Q[0x18] (x Q[0x24] unless a query says not); heat += rate x dt ("Star Proximity"); a flag when f < Q[0x20] (meaning depends on the data's ordering) | - | C (form); Q data (D) | 0x142C83F60 |
+| Exclusion zone registration | a CruiseExclusionZone registers its owner with a parameter float (a radius, inferred) x 1.05; its use not traced | 1.05 | C (registration only) | 0x142E06850 |
+| Hyperspace arrival position, mass-lock factor's rule, emergency-drop triggers, the requires_speed rule, overcharge | - | - | not found (D) | - |

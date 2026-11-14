@@ -801,3 +801,114 @@ deflection), the pips' counts (most, starting, step), the simulation's rate and 
 **G2: passed.** Every flight rule is C or D, as the gate asks; Phase 1 starts. The mod's code now follows the mouse rule
 (dead zone, linearity and sensitivity from the shipped `.binds` copy) and has the damping rule (its K a stand-in, 0, until
 measured).
+
+### Studies A20 and A21: the ship's systems in the exe (2026-11-14). **Rules found (C); the ships' numbers are data (D)**
+
+Two agents' sessions, for Phase 2 (notes `re/elite/ghidra/notes/2.x-systems-a.md` and `2.x-systems-b.md`; the rows in
+`docs/elite-flight-model.md`, "A20" and "A21"). Found, grade C: the distributor's channels (0 WEP, 1 ENG, 2 SYS; the
+outfitting "Recharge" is the rate with every pip in that channel), all-or-nothing energy draws, **the boost's cost taken once
+at the press** (refused with `boost_denied_not_enough_energy` when ENG holds less, the capacitor untouched) and **its heat
+while it fires** (field 6: step 0.10's row read it as a capacitor drain, corrected), planetary flight's ENG drain and heat,
+**heat** (capacity from the ship's record, starting at 0.4 of it; the radiator's dissipation k x (min + (max - min) s^2) by
+the heat fraction; the drive's charging heat, a star's heat by distance in radii; `HeatWarning` when heat / capacity rises
+through 1.5, heat damage over a threshold), **fuel** (every burn from the reservoir, refilled a reservoir's worth from the
+main tank with `ReservoirReplenished`; warnings at 25, 10 and 5 %; a plant out of fuel gives what the last fuel pays for),
+**shields** (strength = the generator's mass curve x the ship's base shield; regeneration blended by the SYS share, a delay
+restarted by any hit, 16 s to rebuild a broken shield when the record has none; collapse and return at a share of the
+maximum; a hit beyond the shield goes on scaled), **touchdown** (allowed within a height and speed of the landing component's
+data and a tilt of at most 60 degrees; four rays from the landing points must agree within 0.5 m). Not found (D): the
+distributor's lo and p and the starting pips, what SYS and WEP power, the plant's and the thrusters' heat, heat sinks, silent
+running's switch, the fuel multiplier, the shields' resistances, collisions, canopy and life support, the lasers' interval
+and drain, the gear's limits. Open: whether the HUD's heat % is heat / capacity (if so `HeatWarning100` fires at 150 %);
+the measuring sessions settle it.
+
+### Study A50: the frame shift drive in the exe (2026-11-14). **Rules found (C); the drive's numbers are data (D)**
+
+An agent's session for Phase 5 (notes `re/elite/ghidra/notes/5.1-fsd.md`; the rows in `docs/elite-flight-model.md`, "A50").
+Found, grade C: **the gravity well's slowdown** (each body gives one, the largest wins; stars by distance over 12 AU with a
+logarithmic term to 10,000 AU, planets within (M^0.1 + 1) x 20 AU, M a value of the body's: mass inferred, its unit open; a
+floor speed for each kind), **supercruise's speed** (V = Vsc (1 - s) plainly, the throttle and accelerations by assist on's
+rule with the supercruise block, a braking mode while over the cap: it settles A11's two open writers, +0x670 and +0x688),
+**the safe drop** (a window Dmin < distance < Dmax, too close fails too; a speed limit; the nose within an angle of the
+target; a moving target widens both; three of its constants are kept scrambled in the code and were read from the code that
+computes them: no file and no key involved), emergency drops' kick, spin and module damage, **the drive's states and its
+refusals in order** (mass lock, hardpoints, gear, scoop, ...; mass lock only slows supercruise's charge), the charge times
+(hyperspace from the module's data, supercruise from the component's), **the countdown** (about 5 s) and the cooldowns
+(Arriving 5 s after a drop, 1 s after a jump, then the data's cooldown), the jump's fuel and range in the exe's own form
+(fsd.rs's formulas with no booster: now C as well as B), the star's heat and the exclusion zone's registration (x 1.05). Not
+found (D): mass lock's own rule, what triggers an emergency drop, the speed condition for a jump, where a jump arrives, the
+overcharge. Open: which ship axis the slowdown's angle uses, whether the drop is measured to the centre or the surface, M's
+unit.
+
+### Step 0.8, session 1: the measuring rig's shakedown (2026-11-14). **The rig works; the first numbers read**
+
+The user allowed an agent to open Elite and drive it (2026-11-14: "You are allowed to use computer use with a sonnet 5.5 at
+high agent to open and drive elite yourself"; and the launcher's "LOG IN WITH STEAM", which the main session clicked:
+"it is ok to log in for me"). A Sonnet agent at high effort (ticket `.rea/tickets/measure/01-shakedown.md`, log
+`re/elite/measure/raw/session1/log.md`, out of git) started Elite through Steam, chose Solo, found the stock Sidewinder
+already in open space (the system Synuefe XM-K b28-1, near its star), and checked the rig:
+
+- Scan-code keys reach the game: the pips (Up arrow twice: 4/4/4 to 3/6/3 to 2/8/2 half-pips, SYS/ENG/WEP, in
+  `Status.json`; Down back to 4/4/4), the gear (L: Flags bit 2), flight assist (Z: bit 5). **The starting pips are 2/2/2 and
+  one press moves a whole pip into the channel, half a pip from each other one** (grade B: Elite's own `Status.json`; it
+  settles step 0.11's "pips' counts" for the starting pips and the step).
+- **Q11 answered (D):** a made-up relative mouse movement reaches the game, and it is a held stick deflection (a steady
+  turn until moved back), as the exe's virtual-stick rule says. Its counts for full deflection (R) are still to measure.
+- **The HUD's speed readout is readable** in a recording (on the radar's top-right arc, 1 to 3 orange digits about 25 px
+  tall at 3440x1440): **161 m/s at full throttle with 2 ENG pips (D)**, where the mod's simulation gives 160.6 m/s (the
+  coriolis top speed and minimum-thrust share with the pip blend: within the gate's 1 m/s). Heat read 34 to 36 % idling near
+  the star.
+- The rig's fix: `capture.py`'s window grab gave a frozen picture, so it records the desktop (about 38 frames a second at
+  3440x1440); it now takes a region (`X,Y,W,H`) so a crop round the HUD can keep 60. The digit reader (`hud_read.py`) is
+  being built from this recording.
+- Left safe: Solo, in open space, throttle zero, flight assist on, gear up.
+
+### Checker 1's fixes (Phases 0 and 1, 2026-11-14)
+
+The checker's report (`.rea/tickets/verify/01-phase0-1-report.md`): FAIL, one high finding. Fixed:
+
+1. **High: a ship flying when the mod went off hung in the air as a solid thing.** Getting out now follows one rule
+   (`seat.rs` `leave_rule`): landed, out beside the ship; B while flying, refused with Elite's message; the mod off by any
+   other way while flying (`mods off`, a script, the main menu's Play), **the ship is lost** (the spec's edge cases: "if that
+   was in flight it is lost"), its solid pieces taken out, the message "The Sidewinder was lost"; a new one comes from the Q
+   menu's Spawn. C13's test: `leaving_works_only_when_landed`.
+2. **Medium: the port's own keys acted while seated** (K slowed the clock, I opened the wiki, F2-F8 windows, the exposure
+   keys). Seated, every key's press is now taken from the frame's input once Elite's bindings are read, but Esc (the menu)
+   and F11 (a screenshot); and **the game clock is set to real time and running on boarding and given back on getting out**
+   (the spec's edge cases; it wasn't built).
+3. Low: a new sandbox world started its solid pieces' count at 0, so a count kept from an earlier world could match: each
+   world now starts a million counts from the last (`world.rs` `WORLD_COUNTS`; it also covers the buildings' solids).
+4. Low: the ground contact was one point under the ship's middle. Now the gear's feet (while it's down) and the belly's
+   lowest points (a 3 x 3 grid over the hull's plan, `ShipShape::belly`) each meet the ground, and touchdown is **Elite's
+   rule** (`0x1430ECE00`, A21, grade C): the gear down, the ship's down within 60 degrees of gravity's, the feet's heights
+   within 0.5 m of each other, and a speed limit (the landing component's data: still the stand-in 10 m/s). The log gives
+   the whole speed and the downward speed.
+5. Low: a damaged `.edm` could crash the game: `parse_edm` now refuses an animation with no length or a track with no keys
+   (the row greys), and the gear's time is kept above 0.1 s.
+6. Low: the `sw` commands crashed with `SE_SANDBOX=0`: they now say the mod plays in the sandbox.
+7. Low (claims): the install test's reader looks at an encrypted file's first four bytes alone and reads no further;
+   `flight.rs` now says which parts are ours (the integration, the turn applied without the torque rule's inertia); the pad
+   and the mouse now give whichever is larger, as the exe's rule; `SOURCES.txt` gives the version alone. The 160.6 m/s at
+   2 pips leans on the coriolis top speed and minimum-thrust share with the exe's blend: session 1 measured 161 (step 0.8).
+8. C20: the mod's systems now have run conditions (nothing runs until a spawn is asked for and its files are read)
+   instead of early returns. `pixel_scenes.sh` was not run (it needs a build from before the mod to compare with): Phase 7.
+
+### Step 0.5 (cockpit): recreated in Blender (2026-11-14). **Done (E)**
+
+An agent built the cockpit by script in Blender (background mode only; ticket `.rea/tickets/build/05-recreate-cockpit.md`):
+3,212 flat triangles in the pilot's eye's space (the canopy frame's crossbar, the beams down to the side rails and up to the
+arch over the head, the dashboard with the radar's well and the two hologram pedestals, side consoles with arm rests,
+throttle and stick, the seat, the floor, and the glass as its own one-sided draw), matched to the user's three cockpit
+screenshots: straight ahead within about 5 px, left within 3 to 15 px, right within about 20 px but one beam's top 44 px
+(at 2000 x 821). Its files are in the source tree (`crates/se_engine/src/sidewinder/cockpit/`: `make_cockpit.py`,
+`cockpit.obj`, `cockpit.mtl`, `notes.md`) and the converter reads the OBJ into `cockpit.edm`. The glass is in the file
+but not drawn until step 4 gives it a see-through material.
+
+**Q6 (the field of view):** the user's own Elite has `<FOV>56.249001</FOV>` in its graphics settings (grade B: its
+`Options/Graphics/Settings.xml`); the cockpit's fit off the pictures found about 61 degrees vertical (E, with head look's
+few centimetres in it). Which axis Elite's setting is, and so which number is right, a measured full turn settles (step
+0.9's r01: a known 360 degrees against the stars' motion in pixels).
+
+**The user's controls:** the user plays with their own bindings (`Custom.4.2.binds`, read only): the flight keys are
+Elite's defaults (W, S, X, Tab, A, D, Q, E, R, F, the arrows, Z, L) but the mouse's sensitivity is 0.2725 (the default
+file's is 1.0). The mod ships Elite's default file (A); measurements made with the user's sensitivity are converted.

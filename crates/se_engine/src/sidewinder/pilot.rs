@@ -26,9 +26,14 @@ use super::{Sidewinder, SidewinderAssets};
 /// The simulation's tick (the spec's Q8 fallback) and the most ticks a frame.
 pub const TICK: f64 = 1.0 / 60.0;
 const MOST_TICKS: u32 = 6;
-/// Touching the ground with the gear down slower than this lands it; faster it is stopped there (stand-in until step 2.4
-/// measures Elite's touchdown rule).
+/// Touching the ground with the gear down slower than this lands it; faster it is stopped there (the landing component's
+/// speed limit, P10 in A21's notes, is data: a stand-in until step 2.4 measures it).
 const TOUCHDOWN_MPS: f64 = 10.0;
+/// Elite's touchdown rule (0x1430ECE00, A21, grade C): the ship's down within this many degrees of gravity's (the landing
+/// record's +0x38; 60 without a record: the record is data, so 60 until measured) and its landing points' rays agreeing
+/// within this many metres.
+const TOUCHDOWN_TILT_DEG: f64 = 60.0;
+const TOUCHDOWN_SPREAD_M: f64 = 0.5;
 
 /// What the seat's keys asked for this frame (read by `seat::take_keys` before it takes the presses from everyone else).
 #[derive(Resource, Default, Clone, Copy, Debug)]
@@ -226,13 +231,15 @@ pub fn fly(
     let full = elite_sim::data::stand_in::MOUSE_FULL_COUNTS as f32 / setting("MouseSensitivity", 1.0).max(0.01);
     pilot.stick = (pilot.stick + Vec2::new(keys.mouse.x, -keys.mouse.y) / full).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
     // The exe's rule (0x1408F2210, step 0.11): stick = sign(v) x ((|v| - dead zone) / (1 - dead zone)) ^ linearity.
-    let (dead, lin) = (setting("MouseDeadzone", 0.0), setting("MouseLinearity", 1.0));
+    // (Without the setting in the file, the exe's defaults: dead zone 0.05, linearity 1: its table 0x145E77BD0.)
+    let (dead, lin) = (setting("MouseDeadzone", 0.05), setting("MouseLinearity", 1.0));
     let dz = |v: f32| if v.abs() <= dead { 0.0 } else { ((v.abs() - dead) / (1.0 - dead)).powf(lin).copysign(v) as f64 };
     let mut input = Input {
-        // (Mouse right rolls right: the right wing down, a negative roll about the back axis.) The pad's stick, while
-        // deflected, instead.
-        roll: if keys.pad_roll != 0.0 { keys.pad_roll } else { -dz(pilot.stick.x) },
-        pitch: if keys.pad_pitch != 0.0 { keys.pad_pitch } else { dz(pilot.stick.y) },
+        // (Mouse right rolls right: the right wing down, a negative roll about the back axis.) The pad's stick or the mouse's,
+        // whichever is larger (the exe writes the mouse's value only when it is larger than the axis's other sources:
+        // 0x1408F2210, step 0.11).
+        roll: larger(keys.pad_roll, -dz(pilot.stick.x)),
+        pitch: larger(keys.pad_pitch, dz(pilot.stick.y)),
         yaw: keys.yaw,
         lateral: keys.lateral,
         vertical: keys.vertical,
@@ -247,14 +254,12 @@ pub fn fly(
         }
     }
     // The gear's animation (3 s, the converter's `gear_up`).
-    let gear_s = assets.ship.animations.iter().find(|a| a.name == "gear_up").map_or(3.0, |a| a.seconds);
+    let gear_s = assets.ship.animations.iter().find(|a| a.name == "gear_up").map_or(3.0, |a| a.seconds).max(0.1);
     let towards = if pilot.gear_down { 0.0 } else { 1.0 };
     pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / gear_s, dt as f32 / gear_s);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
     let (block, full_top) = elite_sim::data::sidewinder_block(pilot.eng_pips, ship_mass_t());
-    // The lowest point over the model's origin: the gear's feet (0) or the hull's underside.
-    let hull_bottom = assets.shape.hulls.first().map_or(0.0, |h| h.iter().map(|p| p.y).fold(f32::MAX, f32::min)) as f64;
     pilot.accum += dt;
     let mut n = 0;
     while pilot.accum >= TICK && n < MOST_TICKS {
@@ -278,30 +283,44 @@ pub fn fly(
         flight::step(&block, full_top, false, &input, to_sim_v(outside), &mut pilot.motion, TICK);
         p.rot = from_sim_q(pilot.motion.rot);
         p.pos += from_sim_v(pilot.motion.vel) * TICK;
-        // The ground under the ship (its loaded heights).
-        let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, terrain, p.pos);
-        let lowest = if pilot.gear_t < 0.5 { 0.0 } else { hull_bottom };
-        let h = p.pos.length() - ground + lowest;
-        if h < 0.0 {
+        // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,
+        // the belly's always), each straight down the radial.
+        let gear_out = pilot.gear_t < 0.05;
+        let height = |p: &super::Parked, pt: Vec3| -> f64 {
+            let w = p.pos + p.rot * pt.as_dvec3();
+            w.length() - crate::ship::ground_on(b.radius_m, b.shape, terrain, w).0
+        };
+        let feet: Vec<f64> = if gear_out { assets.shape.feet.iter().map(|f| height(p, *f)).collect() } else { Vec::new() };
+        let lowest = assets.shape.belly.iter().map(|q| height(p, *q)).chain(feet.iter().copied()).fold(f64::MAX, f64::min);
+        if lowest < 0.0 {
             let up = p.pos.normalize();
             let vel = from_sim_v(pilot.motion.vel);
             let down_speed = -vel.dot(up);
-            if pilot.gear_down && pilot.gear_t < 0.05 && vel.length() < TOUCHDOWN_MPS {
-                // Touchdown: on the ground, level with it, the heading kept.
-                p.pos = up * ground;
+            // Elite's touchdown (0x1430ECE00, A21): the ship's down within 60 degrees of gravity's, its landing points' rays
+            // agreeing within 0.5 m; the speed's limit is the landing component's data (a stand-in here).
+            let tilt = (p.rot * DVec3::Y).dot(up).clamp(-1.0, 1.0).acos().to_degrees();
+            let spread = feet.iter().copied().fold(f64::MIN, f64::max) - feet.iter().copied().fold(f64::MAX, f64::min);
+            if let Some(why) = touchdown(gear_out && !feet.is_empty(), tilt, spread, vel.length()) {
+                if pilot.log {
+                    info!("sidewinder: on the ground, no touchdown: {why}");
+                }
+            } else {
+                // Touchdown: level with the radial, the heading kept, standing on the highest ground under its feet.
                 let fwd = p.rot * DVec3::NEG_Z;
                 let flat = (fwd - up * fwd.dot(up)).normalize_or(up.any_orthonormal_vector());
                 let right = flat.cross(up);
                 p.rot = DQuat::from_mat3(&bevy::math::DMat3::from_cols(right, up, -flat)).normalize();
+                let low = assets.shape.feet.iter().map(|f| height(p, *f)).fold(f64::MAX, f64::min);
+                p.pos -= up * low;
                 pilot.motion = Motion { rot: to_sim_q(p.rot), ..Motion::default() };
                 pilot.landed = true;
                 pilot.throttle = 0.0;
                 msg.show("Touchdown".to_string());
-                info!("sidewinder: touchdown at {:.1} m/s down", down_speed);
+                info!("sidewinder: touchdown at {:.1} m/s ({:.1} m/s down), {:.0} degrees of tilt, feet within {:.2} m", vel.length(), down_speed, tilt, spread);
                 break;
             }
-            // Stopped by the ground (no damage until step 2.3).
-            p.pos = up * (ground - lowest);
+            // Stopped by the ground (no damage until step 2.3): out of it, and no speed into it.
+            p.pos -= up * lowest;
             if down_speed > 0.0 {
                 pilot.motion.vel = to_sim_v(vel + up * down_speed);
             }
@@ -313,13 +332,47 @@ pub fn fly(
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);
         let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, terrain, p.pos);
-        info!("sidewinder: {:.1} m/s, {:.1} m over the ground, throttle {:.2}, FA {}, gear {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down);
+        info!("sidewinder: {:.1} m/s, {:.1} m over the ground (its origin), throttle {:.2}, FA {}, gear {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down);
+    }
+}
+
+/// The larger in size of two stick values (the pad's and the mouse's).
+fn larger(a: f64, b: f64) -> f64 {
+    if a.abs() >= b.abs() { a } else { b }
+}
+
+/// Elite's touchdown rule (0x1430ECE00, A21): None when the ship may touch down, else why not. `spread` is how far apart the
+/// landing points' heights over the ground are.
+fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option<&'static str> {
+    if !gear_out {
+        Some("the landing gear isn't down")
+    } else if tilt_deg > TOUCHDOWN_TILT_DEG {
+        Some("tilted too far")
+    } else if spread_m > TOUCHDOWN_SPREAD_M {
+        Some("the ground under the feet is too uneven")
+    } else if speed > TOUCHDOWN_MPS {
+        Some("too fast")
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Elite's touchdown rule: gear down, tilt at most 60 degrees, the feet within 0.5 m of each other, slow enough.
+    #[test]
+    fn touchdown_is_elites_rule() {
+        assert_eq!(touchdown(true, 0.0, 0.0, 1.0), None);
+        assert_eq!(touchdown(true, 60.0, 0.5, 1.0), None);
+        assert!(touchdown(false, 0.0, 0.0, 1.0).is_some());
+        assert!(touchdown(true, 60.5, 0.0, 1.0).is_some());
+        assert!(touchdown(true, 0.0, 0.51, 1.0).is_some());
+        assert!(touchdown(true, 0.0, 0.0, TOUCHDOWN_MPS + 0.1).is_some());
+        assert_eq!(larger(0.2, -0.5), -0.5);
+        assert_eq!(larger(-0.7, 0.5), -0.7);
+    }
 
     fn shipped(name: &str) -> se_core::elite_asset::Binds {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/binds").join(name);
