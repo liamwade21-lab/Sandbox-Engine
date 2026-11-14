@@ -683,3 +683,21 @@ screenshots show the candidate is the Sidewinder, its geometry becomes grade A.
 
 The cockpit's stand-in (a bare seat and canopy frame, step 0.5) is used until a recreation is done; the recreation is
 matched to Elite's own cockpit screenshots (waiting for the user's F10 pictures). The textures half of 0.4 follows step 0.2.
+
+**Step 0.3, checked against the user's screenshots (2026-11-14, after the restart).** The user's nine F10 pictures (kept in
+`re/elite/screenshots/2026-11-14_user/`, out of git) settle two things:
+
+- **The candidate `4387928b...` is Elite's simplified Sidewinder, not the in-game hull.** Its outline from above matches the
+  user's top shot: width/length 1.537 against 1.536, overlap 0.80 (`re/elite/tools/sw_silhouette.py`; the Cobra Mk III would
+  be 1.62). Seen from behind it is flatter than the real hull: width/height 5.2 against 4.23 for the hull without its gear in
+  the user's back shot. The cockpit shots show a red hologram of the ship on the dashboard, and the candidate belongs to a set
+  of single-material ship models, each with a twin: they are believed to be the HUD's holograms (an inference). Grade: A for
+  its bytes, identified by measurement against the user's pictures (E-level evidence); it is used as the **stand-in hull** and
+  for the ship's own hologram later (step 4.1).
+- **The in-game hull is not among the open meshes.** With the real proportions measured (width/length 1.537, width/height
+  about 4.2), every chunk of all 21,896 files was filtered (within 4 % and 3.0-4.8): 47 hits, none the Sidewinder
+  (`re/elite/sheets/sidewinder/proportion_hits.png`). The one full in-game ship found keeps its hull in one file, so a whole
+  Sidewinder would have passed the filter. Still an inference (a hull split across files would not), but a much firmer one.
+- Frontier's own published sizes (elitedangerous.com: 14.9 m long, 21.4 m wide, 5.4 m high) give width/length 1.44, against
+  1.537 in both the user's picture and the model. The stand-in is scaled so its plan's area matches the published length
+  times width (each side then within 3.5 % of its published number); a hint until a measurement settles it.
