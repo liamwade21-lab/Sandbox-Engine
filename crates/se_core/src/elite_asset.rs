@@ -1,4 +1,5 @@
-//! The Faulcon DeLacy Sidewinder mod's own files: the reader for Elite Dangerous's `.binds` control files (the mod ships
+//! The Faulcon DeLacy Sidewinder mod's own files: its model format (`.edm`, below `Binds`) and the reader for Elite
+//! Dangerous's `.binds` control files (the mod ships
 //! copies of `KeyboardMouseOnly.binds` and `ControlPad.binds` and reads its key table from them: grade A, the spec's T4).
 //!
 //! A `.binds` file is XML: one element per action or setting under `<Root PresetName=..>`. A button action holds
@@ -208,9 +209,336 @@ impl Binds {
     }
 }
 
+// --- The mod's model format (`ship.edm`, `cockpit.edm`) ----------------------------------------------------------------
+//
+// Written only by the converter (`se_engine/src/sidewinder/convert.rs`, an ignored test), read on the mod's first enable.
+// It keeps Elite's own vertex bytes and triangle indices unchanged (40-byte vertices, `crate::elite::Vertex`; u16 indices
+// counted from the draw's first vertex), so a test can compare them with the install's (grade A), and adds what the open
+// files don't hold, recreated (grade E): the parts (a tree with rest transforms: the hull, each gear leg, the hardpoints,
+// the scoop), which part and material each draw has, the materials' textures, the metres per raw position step, and keyed
+// part animations (the gear coming down). Model space: metres after `metres_per_unit`, Elite's axes (Y up).
+//
+// Layout: magic `SWEDM001`, u32 version; f32 metres_per_unit; then counted lists (u16 count unless said): parts (name,
+// i16 parent, translation f32x3, rotation f32x4 x y z w), materials (name, u8 texture count, each (slot, file), tint f32x4,
+// u32 flags), draws (u16 part, u16 material, source text, u32 vertex count then the vertices' bytes, u32 index count then
+// the indices), animations (name, f32 seconds, u16 tracks: each u16 part, u16 keys, each (f32 time, translation f32x3,
+// rotation f32x4)).
+
+const EDM_MAGIC: &[u8; 8] = b"SWEDM001";
+const EDM_VERSION: u32 = 1;
+
+/// A material's flags.
+pub mod material_flags {
+    /// Drawn see-through after the solids (the canopy's glass).
+    pub const GLASS: u32 = 1;
+    /// Lit by itself (lights, displays).
+    pub const EMISSIVE: u32 = 2;
+    /// Seen from both sides.
+    pub const TWO_SIDED: u32 = 4;
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum EdmError {
+    #[error("not a Sidewinder model file (bad magic)")]
+    Magic,
+    #[error("unsupported version {0}")]
+    Version(u32),
+    #[error("the file ends early at byte {0}")]
+    Short(usize),
+    #[error("{0}")]
+    Bad(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmPart {
+    pub name: String,
+    /// -1 for the root.
+    pub parent: i16,
+    pub translation: [f32; 3],
+    /// x, y, z, w.
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmMaterial {
+    pub name: String,
+    /// (slot, file beside the model): slots `diffuse`, `normal`, `mask`, `glow` as the converter names them.
+    pub textures: Vec<(String, String)>,
+    pub tint: [f32; 4],
+    pub flags: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmDraw {
+    pub part: u16,
+    pub material: u16,
+    /// Where it came from: an Elite file, chunk and part (`NAME#chunk/part`), or `recreated: ...`.
+    pub source: String,
+    pub vertices: Vec<crate::elite::Vertex>,
+    pub indices: Vec<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmKey {
+    pub time: f32,
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmTrack {
+    pub part: u16,
+    pub keys: Vec<EdmKey>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdmAnimation {
+    pub name: String,
+    pub seconds: f32,
+    pub tracks: Vec<EdmTrack>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edm {
+    pub metres_per_unit: f32,
+    pub parts: Vec<EdmPart>,
+    pub materials: Vec<EdmMaterial>,
+    pub draws: Vec<EdmDraw>,
+    pub animations: Vec<EdmAnimation>,
+}
+
+impl Edm {
+    /// A vertex's position in metres in its part's frame.
+    pub fn position_m(&self, v: &crate::elite::Vertex) -> [f32; 3] {
+        let p = v.position_raw();
+        [p[0] as f32 * self.metres_per_unit, p[1] as f32 * self.metres_per_unit, p[2] as f32 * self.metres_per_unit]
+    }
+}
+
+struct Wr(Vec<u8>);
+
+impl Wr {
+    fn u16(&mut self, v: u16) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+    fn f32s(&mut self, v: &[f32]) {
+        v.iter().for_each(|x| self.0.extend_from_slice(&x.to_le_bytes()));
+    }
+    fn str(&mut self, s: &str) {
+        self.u16(s.len() as u16);
+        self.0.extend_from_slice(s.as_bytes());
+    }
+}
+
+pub fn write_edm(m: &Edm) -> Vec<u8> {
+    let mut w = Wr(EDM_MAGIC.to_vec());
+    w.u32(EDM_VERSION);
+    w.f32s(&[m.metres_per_unit]);
+    w.u16(m.parts.len() as u16);
+    for p in &m.parts {
+        w.str(&p.name);
+        w.0.extend_from_slice(&p.parent.to_le_bytes());
+        w.f32s(&p.translation);
+        w.f32s(&p.rotation);
+    }
+    w.u16(m.materials.len() as u16);
+    for mat in &m.materials {
+        w.str(&mat.name);
+        w.0.push(mat.textures.len() as u8);
+        for (slot, file) in &mat.textures {
+            w.str(slot);
+            w.str(file);
+        }
+        w.f32s(&mat.tint);
+        w.u32(mat.flags);
+    }
+    w.u16(m.draws.len() as u16);
+    for d in &m.draws {
+        w.u16(d.part);
+        w.u16(d.material);
+        w.str(&d.source);
+        w.u32(d.vertices.len() as u32);
+        d.vertices.iter().for_each(|v| w.0.extend_from_slice(&v.0));
+        w.u32(d.indices.len() as u32);
+        d.indices.iter().for_each(|i| w.u16(*i));
+    }
+    w.u16(m.animations.len() as u16);
+    for a in &m.animations {
+        w.str(&a.name);
+        w.f32s(&[a.seconds]);
+        w.u16(a.tracks.len() as u16);
+        for t in &a.tracks {
+            w.u16(t.part);
+            w.u16(t.keys.len() as u16);
+            for k in &t.keys {
+                w.f32s(&[k.time]);
+                w.f32s(&k.translation);
+                w.f32s(&k.rotation);
+            }
+        }
+    }
+    w.0
+}
+
+struct Rdr<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Rdr<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], EdmError> {
+        let s = self.b.get(self.at..self.at + n).ok_or(EdmError::Short(self.at))?;
+        self.at += n;
+        Ok(s)
+    }
+    fn u16(&mut self) -> Result<u16, EdmError> {
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    fn u32(&mut self) -> Result<u32, EdmError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn f32(&mut self) -> Result<f32, EdmError> {
+        let v = f32::from_le_bytes(self.take(4)?.try_into().unwrap());
+        if !v.is_finite() {
+            return Err(EdmError::Bad(format!("a value that isn't a number at byte {}", self.at - 4)));
+        }
+        Ok(v)
+    }
+    fn f3(&mut self) -> Result<[f32; 3], EdmError> {
+        Ok([self.f32()?, self.f32()?, self.f32()?])
+    }
+    fn f4(&mut self) -> Result<[f32; 4], EdmError> {
+        Ok([self.f32()?, self.f32()?, self.f32()?, self.f32()?])
+    }
+    fn str(&mut self) -> Result<String, EdmError> {
+        let n = self.u16()? as usize;
+        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| EdmError::Bad("a name that isn't text".into()))
+    }
+}
+
+pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
+    let mut r = Rdr { b, at: 0 };
+    if r.take(8).map_err(|_| EdmError::Magic)? != EDM_MAGIC {
+        return Err(EdmError::Magic);
+    }
+    match r.u32()? {
+        EDM_VERSION => {}
+        v => return Err(EdmError::Version(v)),
+    }
+    let metres_per_unit = r.f32()?;
+    let mut parts = Vec::new();
+    for _ in 0..r.u16()? {
+        let name = r.str()?;
+        let parent = i16::from_le_bytes(r.take(2)?.try_into().unwrap());
+        parts.push(EdmPart { name, parent, translation: r.f3()?, rotation: r.f4()? });
+    }
+    for (i, p) in parts.iter().enumerate() {
+        if p.parent >= i as i16 || p.parent < -1 {
+            return Err(EdmError::Bad(format!("part {i}'s parent {} does not come before it", p.parent)));
+        }
+    }
+    let mut materials = Vec::new();
+    for _ in 0..r.u16()? {
+        let name = r.str()?;
+        let n = r.take(1)?[0];
+        let mut textures = Vec::new();
+        for _ in 0..n {
+            textures.push((r.str()?, r.str()?));
+        }
+        materials.push(EdmMaterial { name, textures, tint: r.f4()?, flags: r.u32()? });
+    }
+    let mut draws = Vec::new();
+    for _ in 0..r.u16()? {
+        let part = r.u16()?;
+        let material = r.u16()?;
+        let source = r.str()?;
+        let nv = r.u32()? as usize;
+        let vb = r.take(nv.checked_mul(crate::elite::VERTEX_BYTES).ok_or(EdmError::Short(r.at))?)?;
+        let vertices: Vec<crate::elite::Vertex> =
+            vb.chunks_exact(crate::elite::VERTEX_BYTES).map(|c| crate::elite::Vertex(c.try_into().unwrap())).collect();
+        let ni = r.u32()? as usize;
+        let ib = r.take(ni.checked_mul(2).ok_or(EdmError::Short(r.at))?)?;
+        let indices: Vec<u16> = ib.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        if part as usize >= parts.len() || material as usize >= materials.len() || indices.len() % 3 != 0 || indices.iter().any(|&i| i as usize >= nv) {
+            return Err(EdmError::Bad(format!("draw {} is broken", draws.len())));
+        }
+        draws.push(EdmDraw { part, material, source, vertices, indices });
+    }
+    let mut animations = Vec::new();
+    for _ in 0..r.u16()? {
+        let name = r.str()?;
+        let seconds = r.f32()?;
+        let mut tracks = Vec::new();
+        for _ in 0..r.u16()? {
+            let part = r.u16()?;
+            if part as usize >= parts.len() {
+                return Err(EdmError::Bad(format!("animation {name} moves a part that isn't there")));
+            }
+            let mut keys = Vec::new();
+            for _ in 0..r.u16()? {
+                keys.push(EdmKey { time: r.f32()?, translation: r.f3()?, rotation: r.f4()? });
+            }
+            tracks.push(EdmTrack { part, keys });
+        }
+        animations.push(EdmAnimation { name, seconds, tracks });
+    }
+    if r.at != b.len() {
+        return Err(EdmError::Bad(format!("{} bytes after the end", b.len() - r.at)));
+    }
+    Ok(Edm { metres_per_unit, parts, materials, draws, animations })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_edm() -> Edm {
+        let mut v = [0u8; 40];
+        v[8..11].copy_from_slice(&[127, 254, 127]);
+        v[36] = 255;
+        Edm {
+            metres_per_unit: 1.0 / 32768.0,
+            parts: vec![
+                EdmPart { name: "hull".into(), parent: -1, translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0] },
+                EdmPart { name: "gear_front".into(), parent: 0, translation: [0.0, -1.0, 4.0], rotation: [0.0, 0.0, 0.0, 1.0] },
+            ],
+            materials: vec![EdmMaterial {
+                name: "hull".into(),
+                textures: vec![("diffuse".into(), "tex/hull.dds".into())],
+                tint: [1.0; 4],
+                flags: material_flags::TWO_SIDED,
+            }],
+            draws: vec![EdmDraw { part: 1, material: 0, source: "abc#0/1".into(), vertices: vec![crate::elite::Vertex(v); 3], indices: vec![0, 1, 2] }],
+            animations: vec![EdmAnimation {
+                name: "gear".into(),
+                seconds: 2.5,
+                tracks: vec![EdmTrack {
+                    part: 1,
+                    keys: vec![
+                        EdmKey { time: 0.0, translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0] },
+                        EdmKey { time: 2.5, translation: [0.0, -1.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0] },
+                    ],
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn edm_round_trips() {
+        let m = sample_edm();
+        let b = write_edm(&m);
+        assert_eq!(parse_edm(&b).unwrap(), m);
+        assert!(matches!(parse_edm(&b[..b.len() - 1]), Err(EdmError::Short(_))));
+        let mut bad = b.clone();
+        bad[0] = b'X';
+        assert_eq!(parse_edm(&bad), Err(EdmError::Magic));
+        let mut broken = m.clone();
+        broken.draws[0].indices = vec![0, 1, 3];
+        assert!(matches!(parse_edm(&write_edm(&broken)), Err(EdmError::Bad(_))));
+    }
 
     const SAMPLE: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Root PresetName=\"KeyboardMouseOnly\" SortOrder=\"0\">\n\
         <!-- a comment -->\n\t<YawAxisRaw>\n\t\t<Binding Device=\"{NoDevice}\" Key=\"\" />\n\t\t<Inverted Value=\"0\" />\n\
