@@ -285,6 +285,31 @@ pub fn seat_camera(
         seat.seated = false;
         return;
     };
+    // In hyperspace's tunnel `hyper::tunnel` holds the camera; the mod off there loses the ship, and he goes back on Earth.
+    if pilot.jump.is_some() {
+        if control.pilot && sb.mode == Mode::Pilot && !pilot.destroyed {
+            return;
+        }
+        seat.seated = false;
+        seat.head_look = false;
+        seat.look = Vec2::ZERO;
+        if let Some((rate, paused)) = seat.clock.take() {
+            sim.rate = rate;
+            sim.paused = paused;
+        }
+        pilot.jump = None;
+        pilot.cruise = None;
+        if let Some(mut gone) = ship.parked.take() {
+            super::remove_solids(&mut sb, &mut gone);
+        }
+        control.ship_parked = false;
+        if sb.mode == Mode::Pilot {
+            crate::sandbox::put_on_earth(&data, sim.jd, &mut cam, &mut sb, "the Sidewinder was lost in hyperspace: back");
+        }
+        msg.show("The Sidewinder was lost in hyperspace".to_string());
+        info!("sidewinder: the mod went off in hyperspace; the ship is lost");
+        return;
+    }
     let Some(b) = bodies.iter().find(|b| b.obj == p.obj) else { return };
     let eye = Vec3::from_array(assets.eye).as_dvec3();
     let look = DQuat::from_rotation_y(seat.look.x as f64) * DQuat::from_rotation_x(seat.look.y as f64);

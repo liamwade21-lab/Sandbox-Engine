@@ -18,7 +18,7 @@ use elite_sim::flight::{self, Input, Motion};
 use elite_sim::fuel::{Fuel, FuelWarning};
 use elite_sim::heat::{Heat, HeatSpec};
 use elite_sim::shields::{Hull, Shields};
-use elite_sim::drive::{Drive, ShipState};
+use elite_sim::drive::{Drive, Engage, ShipState};
 use elite_sim::glide::{self, Glide};
 use elite_sim::supercruise::{self, Well};
 use elite_sim::weapons::Weapons;
@@ -31,6 +31,7 @@ use crate::mods::ModControl;
 use crate::sandbox::{Mode, Sandbox};
 use crate::system::SystemBody;
 use crate::terrain::Terrain;
+use crate::universe::SimTime;
 
 use super::seat::{action_pressed, Seat};
 use super::{Sidewinder, SidewinderAssets};
@@ -107,8 +108,9 @@ pub struct PilotKeys {
     /// The lasers: the trigger held (`PrimaryFire`) and the hardpoints' key pressed (`DeployHardpointToggle`).
     pub fire: bool,
     pub hardpoints: bool,
-    /// The frame shift drive's key (`HyperSuperCombination`, J).
+    /// The frame shift drive's key (`HyperSuperCombination`, J), and the target ahead (`SelectTarget`, T).
     pub jump: bool,
+    pub select_target: bool,
 }
 
 /// The flight's state while seated.
@@ -146,6 +148,16 @@ pub struct Pilot {
     pub cruise: Option<Cruise>,
     /// The glide into a planet's lower air (step 6.2), from supercruise.
     pub glide: Option<Glide>,
+    /// Hyperspace (step 5.3): the target star, the jump in progress (its tunnel), a test's jump (`sw hyper NAME`).
+    pub target: Option<ObjectRef>,
+    pub jump: Option<super::hyper::Jump>,
+    pub dev_hyper: Option<ObjectRef>,
+    /// The HUD's line for the target (its name, distance and the jump's fuel, or why not).
+    pub target_note: String,
+    /// The stars' heat this frame (a share of the capacity a second), for the HUD.
+    pub star_heat: f64,
+    /// A test's turn to face the target (`sw face`).
+    pub dev_face: bool,
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -186,6 +198,12 @@ impl Default for Pilot {
             drive: Drive::Ready,
             cruise: None,
             glide: None,
+            target: None,
+            jump: None,
+            dev_hyper: None,
+            target_note: String::new(),
+            star_heat: 0.0,
+            dev_face: false,
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -349,6 +367,7 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         fire: real && (mouse_held("PrimaryFire") || pad.is_some_and(|_| pad_btn("PrimaryFire", false))),
         hardpoints: press("DeployHardpointToggle"),
         jump: press("HyperSuperCombination"),
+        select_target: press("SelectTarget"),
     }
 }
 
@@ -367,8 +386,13 @@ pub fn fly(
     mut pilot: ResMut<Pilot>,
     bodies: Query<(&SystemBody, Option<&Terrain>)>,
     mut msg: ResMut<crate::messages::Messages>,
+    sim: Res<SimTime>,
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
+    // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
+    if pilot.jump.is_some() {
+        return;
+    }
     let Some(p) = ship.parked.as_mut() else { return };
     let Some((b, terrain)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
     let pilot = &mut *pilot;
@@ -451,7 +475,50 @@ pub fn fly(
             Err(Denied::Busy) => {}
         }
     }
-    // The frame shift drive (step 5.2): J charges (or cancels), and in supercruise asks for a drop.
+    // Hyperspace's target (step 5.3): T takes the star nearest the nose within the jump's range (ours: Elite targets
+    // systems from its Navigation panel and galaxy map, step 4.2), or clears it; then its angle from the nose, or why it can't
+    // be jumped to.
+    if std::mem::take(&mut pilot.dev_face) {
+        if let Some(t) = pilot.target {
+            let from = pilot.cruise.map_or(b.pos.offset_m(b.orient * p.pos), |c| c.pos);
+            let dir = se_core::ephemeris::Ephemeris::new(&data.catalog).position(t, sim.jd).delta_m(from).normalize_or(DVec3::NEG_Z);
+            let rot_u = DQuat::from_rotation_arc(DVec3::NEG_Z, dir);
+            match pilot.cruise.as_mut() {
+                Some(c) => c.rot = rot_u,
+                None => p.rot = (b.orient.inverse() * rot_u).normalize(),
+            }
+            pilot.motion.omega = Default::default();
+        }
+    }
+    let (ship_u, ship_rot_u) = match pilot.cruise {
+        Some(c) => (c.pos, c.rot),
+        None => (b.pos.offset_m(b.orient * p.pos), (b.orient * p.rot).normalize()),
+    };
+    let here = data.catalog.system_root(b.obj);
+    if keys.select_target {
+        let range = elite_sim::fsd::jump_range(&elite_sim::data::FSD_2E, pilot.mass_t(), pilot.fuel.main);
+        pilot.target = super::hyper::star_ahead(&data, sim.jd, ship_u, ship_rot_u * DVec3::NEG_Z, range, here);
+        msg.show(match pilot.target {
+            Some(t) => format!("Target: {}", data.catalog.display_name(t)),
+            None => "No target".to_string(),
+        });
+    }
+    let others: Vec<(DVec3, f64)> = bodies.iter().map(|(sb, _)| (sb.pos.delta_m(ship_u), sb.radius_m)).collect();
+    // The stars' heat (step 5.4: A50's form, its numbers stand-ins), a share of the heat capacity a second.
+    let star_heat: f64 = bodies.iter().filter(|(sb, _)| sb.star).map(|(sb, _)| elite_sim::stars::heat_rate(sb.pos.delta_m(ship_u).length(), sb.radius_m)).sum();
+    pilot.star_heat = star_heat;
+    let target_state = pilot.target.map(|t| super::hyper::check(&data, sim.jd, t, ship_u, ship_rot_u * DVec3::NEG_Z, pilot.mass_t(), pilot.fuel.main, here, &others));
+    pilot.target_note = match (pilot.target, target_state) {
+        (Some(t), Some(s)) => {
+            let ly = se_core::ephemeris::Ephemeris::new(&data.catalog).position(t, sim.jd).delta_m(ship_u).length() / se_core::units::METERS_PER_LY;
+            match s {
+                Ok((_, fuel)) => format!("{}  {:.2} ly  {:.2} t", data.catalog.display_name(t), ly, fuel),
+                Err(r) => format!("{}  {:.2} ly  ({})", data.catalog.display_name(t), ly, r.message().trim_start_matches("Frame shift drive: ")),
+            }
+        }
+        _ => String::new(),
+    };
+    // The frame shift drive (step 5.2): J charges (or cancels), and in supercruise asks for a drop; with a target, a jump's.
     let nose_body = p.rot * DVec3::NEG_Z;
     let fsd = ShipState {
         hardpoints: pilot.weapons.deployed,
@@ -459,6 +526,8 @@ pub fn fly(
         landed: pilot.landed,
         escape_angle: nose_body.dot(p.pos.normalize_or(DVec3::Y)).clamp(-1.0, 1.0).acos().to_degrees(),
         radii: p.pos.length() / b.radius_m.max(1.0),
+        cruise: pilot.cruise.is_some(),
+        target: target_state.map(|s| s.map(|(angle, _)| angle)),
     };
     let mut drop_now = false;
     let jump = keys.jump || std::mem::take(&mut pilot.dev_jump);
@@ -467,7 +536,11 @@ pub fn fly(
     } else if jump {
         match pilot.drive.press(&fsd) {
             Ok(true) => drop_now = true,
-            Ok(false) => msg.show(if matches!(pilot.drive, Drive::Charging(_)) { "Frame shift drive charging" } else { "Frame shift drive charge cancelled" }.to_string()),
+            Ok(false) => msg.show(match pilot.drive {
+                Drive::Charging(_) => "Frame shift drive charging".to_string(),
+                Drive::JumpCharging(_) => format!("Frame shift drive charging: {}", pilot.target.map_or("", |t| data.catalog.display_name(t))),
+                _ => "Frame shift drive charge cancelled".to_string(),
+            }),
             Err(r) => msg.show(r.message().to_string()),
         }
     }
@@ -484,6 +557,7 @@ pub fn fly(
         Vec::new()
     };
     let mut emergency = false;
+    let mut jump_now = false;
     let mut glide_into: Option<ObjectRef> = None;
     // The bodies a glide can go into (solid ground: a terrain, not a star or a gas giant) and a point's height over their loaded
     // ground (the point in the body's frame).
@@ -565,14 +639,25 @@ pub fn fly(
         if ev.damage > 0.0 && pilot.hull.damage(ev.damage * pilot.hull.max) {
             pilot.destroyed = true;
         }
+        if star_heat > 0.0 {
+            pilot.heat.add(&hs, star_heat * hs.capacity * TICK, None);
+        }
+        // The countdown's heat (A50: data, a stand-in).
+        if matches!(pilot.drive, Drive::Departing(_)) {
+            pilot.heat.add(&hs, elite_sim::hyperspace::stand_in::DEPARTING_HEAT_RATE * hs.capacity * TICK, None);
+        }
         match pilot.drive.tick(TICK, &fsd) {
-            Ok(true) => {
+            Ok(Engage::Jump) => {
+                jump_now = true;
+                break;
+            }
+            Ok(Engage::Supercruise) => {
                 pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: CRUISE_START, cap: CRUISE_START, carrier: Some((b.obj, b.pos)) });
                 msg.show("Supercruise".to_string());
                 info!("sidewinder: supercruise");
             }
             Err(r) => msg.show(r.message().to_string()),
-            Ok(false) => {}
+            Ok(Engage::Nothing) => {}
         }
         if let Some(c) = pilot.cruise.as_mut() {
             // Supercruise: the turn by the normal block with the speed curve read at the throttle (the supercruise block's
@@ -601,9 +686,14 @@ pub fn fly(
                 glide_into = Some(*obj);
                 break;
             }
-            if wells.iter().any(|(_, at, r, obj, _)| {
+            // (A star's zone is its exclusion zone, 1.05 of its radius: step 5.4.)
+            if wells.iter().any(|(w, at, r, obj, _)| {
                 let to = at.delta_m(c.pos);
-                !glidable.iter().any(|g| g.0 == *obj) && to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M) && heading.dot(to) > 0.0
+                let inside = match w {
+                    Well::Star { .. } => elite_sim::stars::excluded(to.length(), *r),
+                    _ => !glidable.iter().any(|g| g.0 == *obj) && to.length() - r < (r * EMERGENCY_SHARE).max(EMERGENCY_M),
+                };
+                inside && heading.dot(to) > 0.0
             }) {
                 emergency = true;
                 break;
@@ -731,6 +821,22 @@ pub fn fly(
         pilot.accum = 0.0;
     }
     pilot.dev_fire = (pilot.dev_fire - dt as f32).max(0.0);
+    if jump_now {
+        let from = match pilot.cruise {
+            Some(c) => c.pos,
+            None => b.pos.offset_m(b.orient * p.pos),
+        };
+        match (pilot.target, target_state) {
+            (Some(t), Some(Ok((_, fuel)))) => {
+                pilot.fuel.main = (pilot.fuel.main - fuel).max(0.0);
+                msg.show(format!("Hyperspace: {}", data.catalog.display_name(t)));
+                info!("sidewinder: jump to {} for {fuel:.6} t of fuel", data.catalog.display_name(t));
+                super::hyper::begin(&data, sim.jd, pilot, from, t);
+            }
+            _ => pilot.drive = if pilot.cruise.is_some() { Drive::Supercruise } else { Drive::Ready },
+        }
+        return;
+    }
     // Supercruise's pose into the nearest body's frame (the parked pose is what the camera, the cockpit and the rest read);
     // a drop or an emergency drop back to normal flight there.
     if let Some(c) = pilot.cruise {

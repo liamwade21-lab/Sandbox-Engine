@@ -35,6 +35,26 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let ctx = contexts.ctx_mut()?;
     let r = ctx.content_rect();
     let h = r.height();
+    // Hyperspace's tunnel: over everything while the destination loads (ours: Elite's tunnel isn't built).
+    if let Some(j) = pilot.jump {
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sidewinder tunnel")));
+        p.rect_filled(r, 0.0, egui::Color32::from_rgb(4, 6, 16));
+        let c = r.center();
+        let most = 0.5 * r.width().hypot(h);
+        for i in 0..160u32 {
+            let k = (i.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
+            let a = k * std::f32::consts::TAU;
+            let phase = ((i.wrapping_mul(40_503) >> 4) % 1000) as f32 / 1000.0;
+            let f = ((j.seconds as f32 * 0.6 + phase) % 1.0).powi(2);
+            let dir = egui::vec2(a.cos(), a.sin());
+            let (r0, r1) = (f * most, (f * 1.25 + 0.02) * most);
+            let col = egui::Color32::from_rgba_unmultiplied(150, 190, 255, (40.0 + 215.0 * f) as u8);
+            p.add(egui::Shape::line_segment([c + dir * r0, c + dir * r1], egui::Stroke::new((0.001 + 0.004 * f) * h, col)));
+        }
+        p.circle_filled(c, 0.04 * h, egui::Color32::from_rgba_unmultiplied(200, 220, 255, 90));
+        p.text(egui::pos2(c.x, r.bottom() - 0.12 * h), egui::Align2::CENTER_CENTER, "HYPERSPACE", egui::FontId::monospace(0.026 * h), ORANGE);
+        return Ok(());
+    }
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder hud")));
     let font = |s: f32| egui::FontId::monospace(s * h);
     let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
@@ -69,7 +89,15 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
         let (a, b) = (at(r, -0.12, 0.25), at(r, 0.12, 0.25));
         p.add(egui::Shape::line_segment([a, b], egui::Stroke::new(0.005 * h, DIM)));
         p.add(egui::Shape::line_segment([a, a + (b - a) * share as f32], egui::Stroke::new(0.005 * h, ORANGE)));
-        p.text(at(r, 0.0, 0.235), egui::Align2::CENTER_BOTTOM, "FRAME SHIFT DRIVE CHARGING", font(0.012), ORANGE);
+        p.text(at(r, 0.0, 0.258), egui::Align2::CENTER_TOP, "FRAME SHIFT DRIVE CHARGING", font(0.012), ORANGE);
+    }
+    // The jump's countdown (A50's Departing: 5 s) in the middle of the view.
+    if let Some(left) = pilot.drive.countdown() {
+        p.text(at(r, 0.0, -0.1), egui::Align2::CENTER_CENTER, format!("{}", left.ceil().max(1.0) as u32), font(0.06), ORANGE);
+    }
+    // The target, under the radar.
+    if pilot.target.is_some() {
+        p.text(at(r, 0.0, 0.46), egui::Align2::CENTER_CENTER, format!("TARGET  {}", pilot.target_note), font(0.013), ORANGE);
     }
     let (x0, y0, x1, y1) = (0.194f32, 0.458f32, 0.236f32, 0.333f32);
     let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
@@ -148,10 +176,13 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if pilot.glide.is_some() {
         notes.push("GLIDE");
     }
+    if pilot.star_heat > 0.0 {
+        notes.push("STAR PROXIMITY");
+    }
     for (k, n) in notes.iter().enumerate() {
         p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);
     }
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
     p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
     Ok(())
 }

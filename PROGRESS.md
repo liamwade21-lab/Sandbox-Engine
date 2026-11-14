@@ -21,7 +21,10 @@
    music plays under every recording (the agent identified the track), and the ship's sounds look made by the game or kept
    in the encrypted files (never opened). With the music off the next session records each sound on its own from the
    speakers (the spec's fallback, grade E). It's your setting, so I won't touch it without your word.
-5. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
+5. **A hyperspace jump in the Sidewinder, for the jump's fuel check (step 5.3's proof):** your journals hold jumps of
+   your other ship only. The next jump you make in the Sidewinder (any system) gives the `FSDJump` line the mod's fuel is
+   checked against to six digits. No need to do it specially: say when there is one.
+6. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
 Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-14_user/`); the Claude Code restart.
@@ -61,8 +64,12 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - Also in: the glide (6.2, first cut): diving at a planet in supercruise hands over into Elite's glide (the exe's rules,
     study A60; its numbers are stand-ins until a planetary approach is measured), ending in normal flight a few km up.
     Flown at Earth: a -35 degree dive glided from 20.6 km to 6.5 km; a -61 degree one ended at once, too steep.
-  - Next without Elite: hyperspace (5.3: the jump, the system swap), stars' heat and exclusion zones (5.4), the Navigation
-    and right panels (4.2), orbital cruise (Phase 6: its numbers were not found in the exe).
+  - Also in: hyperspace (5.3, first cut): T targets the star ahead within jump range, J charges (15 s) and counts down
+    (5 s), the jump takes Elite's fuel, a tunnel of 13.5 s (measured from your journals) while the port loads the new
+    system, and the ship arrives in supercruise facing the star. Flown Sol to Alpha Centauri (SpaceEngine calls it "ALF
+    Cen"; T or `sw target Rigil Kentaurus`) and back. Stars (5.4): their heat grows inside two radii, an emergency drop
+    at 1.05 radii, overheating damages the hull and can destroy the ship.
+  - Next without Elite: the Navigation and right panels (4.2), Phase 7 (costs, the release zip, the final check).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

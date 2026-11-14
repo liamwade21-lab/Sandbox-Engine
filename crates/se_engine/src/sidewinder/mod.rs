@@ -12,6 +12,7 @@
 //! - `convert.rs` (tests only) makes the mod's files from the user's Elite install.
 
 pub mod draw;
+pub mod hyper;
 pub mod hud;
 pub mod pilot;
 pub mod seat;
@@ -416,7 +417,7 @@ impl Plugin for SidewinderPlugin {
             .init_resource::<pilot::PilotKeys>()
             .add_systems(
                 PostUpdate,
-                (pilot::fly, seat::seat_camera)
+                (hyper::tunnel, pilot::fly, seat::seat_camera)
                     .chain()
                     .run_if(resource_exists::<SidewinderAssets>)
                     .in_set(crate::universe::UniverseSet::Camera)
@@ -483,6 +484,35 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_jump = true;
             None
         }
+        // `sw face`: turns the ship to face its target (a test's aim; the real one is the stick).
+        "face" => {
+            world.resource_mut::<pilot::Pilot>().dev_face = true;
+            None
+        }
+        // `sw target NAME|none` sets hyperspace's target; `sw hyper NAME` jumps there at once (the tunnel without the charge).
+        "target" | "hyper" => {
+            let name = arg.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            let found = {
+                let data = world.resource::<crate::data::SeData>();
+                let f = data.catalog.find(&name);
+                let star = f.and_then(|f| hyper::as_star(data, f));
+                info!("sidewinder: {name:?} is {f:?}{}, its star {:?}", match f {
+                    Some(se_core::catalog::ObjectRef::Star(i)) if data.catalog.stars[i as usize].barycenter => " (a barycentre)",
+                    _ => "",
+                }, star.map(|s| data.catalog.display_name(s)));
+                star
+            };
+            if found.is_none() && name != "none" {
+                info!("sidewinder: no star named {name:?}");
+            }
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            if verb == "target" {
+                pl.target = found;
+            } else {
+                pl.dev_hyper = found;
+            }
+            None
+        }
         "hardpoints" => {
             let mut pl = world.resource_mut::<pilot::Pilot>();
             pl.weapons.deployed = !pl.weapons.deployed;
@@ -524,7 +554,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
@@ -539,12 +569,15 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.boost.state,
                     pl.drive,
                     pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s", c.speed / 1000.0)),
-                    pl.glide
+                    pl.glide,
+                    pl.target,
+                    pl.fuel.main,
+                    pl.fuel.reservoir
                 );
                 if let Some(p) = ship.parked.as_ref() {
                     let nose = p.rot * bevy::math::DVec3::NEG_Z;
                     let down = -p.pos.normalize_or(bevy::math::DVec3::Y);
-                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()));
+                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, hull {:.0} %", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.hull.percent());
                 }
             }
             None

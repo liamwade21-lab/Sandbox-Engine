@@ -1117,3 +1117,56 @@ flight. Not built: orbital cruise (the speed near a surface: A60's safe-stop thr
 data, not found; our supercruise keeps its 30 km/s floor down to the glide), the glide's sounds and voice lines, a landing
 flown on the Moon (the spec's proof asks for orbit to landing on the Moon and Earth: the approach to the Moon was not flown).
 Tests: `glide_band_ends_and_deceleration`.
+
+### Step 5.3, first cut: hyperspace (2026-11-14). **G4 passed; flown Sol to Alpha Centauri and back; the fuel gate waits for a Sidewinder jump in the journal**
+
+G4 (the system swap) passed: the port's own loader (`select_active_system`, which follows the camera's nearest star and
+builds its system in the background) does the swap. The jump holds the ship's universe pose at the arrival point and writes
+the camera there itself, unbound (the body it was bound to goes with the old system); `fly` and `seat_camera` stand aside
+while it lasts; it ends when `ActiveSystem::root` is the target's and the target star's body is spawned, re-parenting the
+parked pose to that star and going on in supercruise (`sidewinder/hyper.rs`). A spike (`sw hyper NAME`, no charge) went
+Sol to Rigil Kentaurus (4.367 ly) and back to the Sun: each system entered and the ship arrived in 2 frames.
+
+The rules (`elite_sim::drive`, `elite_sim::hyperspace`): with a target the drive's key charges a jump instead of
+supercruise, from normal space or supercruise (the charge's time is data, `D[0x04]`: 15 s, E); then the countdown, A50's
+Departing ticker at dt / 5 (C: 5 s), with heat each second (data, `D[0x0C]`: 4 % of the capacity a second, E); the key
+again, a refusal or a lost target cancels it back to where it started; at the countdown's end the nose must be within 10
+degrees of the target (E: Elite's alignment rule not found); then the tunnel, at least 13.5 s (D: the user's journals,
+`StartJump` at the countdown's start to `FSDJump`, 18 to 19 s over 6 jumps of the user's other ship, less the 5 s
+countdown; +-1 s) and until the system is entered; arrival in supercruise 5 of the star's radii out on the line from the
+departure, facing it (E: the arrival rule not found), then Arriving 1 s (C) and the jump's cooldown (data, `Fp[0x18]`: 10 s,
+E), during which the key is refused. Refusals: out of range (more than the drive's 0.6 t), not enough fuel in the main tank,
+the target hidden behind a body of this system (ours, F: the straight line to it passes within a body's radius), already in
+that system. The fuel is Elite's formula with SpaceEngine's distance, from the main tank (B; checked: 0.185992 t for the
+4.367 ly at the ship's 45.19 t). A barycentre's name stands for its brightest star.
+
+Targeting: T (`SelectTarget`) takes the catalog star nearest the nose within 15 degrees and within the jump's range for the
+fuel aboard, or clears the target (ours, F: Elite targets systems from its Navigation panel and galaxy map, step 4.2); the
+HUD shows the target's name, distance and fuel (or why not), the countdown's seconds in the middle of the view, and a
+tunnel over everything while it lasts (streaks on dark blue: ours, Elite's tunnel isn't built). `sw target NAME|none`,
+`sw face` (a test's aim at the target), `sw hyper NAME`.
+
+Flown (`timing frame`, from Earth in supercruise): target Rigil Kentaurus, faced, J: 15 s of charge, the countdown (the HUD's
+"2", heat 36 to 47 %), the jump for 0.185992 t, a 13.5 s tunnel (810 frames: the system was entered within a frame, so the
+measured length set it), arrival 4.27 million km out facing the star, the cooldown over 11 s later. In SpaceEngine's catalog
+Alpha Centauri is "ALF Cen" (A is "Rigil Kentaurus" / "ALF Cen A"). Not done: the proof's "fuel against the journal's
+`FSDJump` to six digits" needs a jump of the Sidewinder in the user's journal (its jumps there are another ship's: the
+Waiting list); mass lock; the jump's sounds and Elite's own tunnel; a route (the galaxy map).
+Tests: `jump_charge_countdown_and_arrival`, `a_body_on_the_line_hides_the_target`.
+
+### Step 5.4, first cut: stars (2026-11-14). **Built; the form is the exe's, the numbers stand-ins until session 5**
+
+`elite_sim::stars`: each star's heat a second, A50's form (C: `x = d / R - 1`, `P18 x clamp((x - P20) / (P1C - P20), 0, 1) x
+P24`), with stand-ins for its data (E: none from two radii out, the full rate at the zone's edge, 15 % of the heat capacity a
+second at full, `P24` 1), added each tick in every flight mode; the exclusion zone, 1.05 of the star's radius (the exe's
+registration's factor, C; the radius being the star's own is inferred, and what the zone does wasn't traced: heading into it
+in supercruise is the emergency drop, E). Gas giants keep the emergency drop's earlier rule. Heat past 100 % damages the
+hull (step 2.2's rule) and can destroy the ship; destroyed by a star he goes back on Earth. The HUD shows STAR PROXIMITY
+while a star heats the ship; `sw state` the heat, the stars' rate and the hull.
+
+Flown (`timing frame`, after the jump to Rigil Kentaurus, full throttle at the star): at 1.63 radii the heat came in at 0.056
+of the capacity a second (the formula gives 0.058); the emergency drop at 1.047 radii (shields and 2 % of the hull); in normal
+flight at the zone's edge the heat rose 0.15 a second from 61 % past 100 %, the hull lost about 1 % a second, and at 61 % of
+the hull, 296 % heat, the ship was destroyed and he was set down on Earth. Not done: the proof's heat traces against distance
+(session 5 measures them in Elite), fuel scooping (not in the stock ship), a star's own sounds.
+Tests: `star_heat_grows_inwards_and_the_zone`.

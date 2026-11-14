@@ -9,6 +9,12 @@
 //! Numbers: the charge time and the cooldown after a drop are data (the FSD's), not in the exe: stand-ins from the spec's
 //! starting hints (E: charge about 15 s, cooldown about 10 s after a drop: 5 s Arriving and 5 s more), until session 5
 //! measures them; the escape angle and the distance it applies within are stand-ins too (E).
+//!
+//! Hyperspace (step 5.3; A50): with a target, the drive's key charges a jump instead (from normal space or supercruise); the
+//! charge's time is data (`D[0x04]`: a stand-in, E); then the countdown, `Departing`, a ticker from 0 to 1 at dt / 5 (C: about
+//! 5 s); a refusal that appears meanwhile, or pressing the key again, cancels it; at its end the jump (`Engage::Jump`: the
+//! game runs the tunnel); after the jump Arriving 1 s (C), then the jump's cooldown (`Fp[0x18]`, data: a stand-in, E). At the
+//! countdown's end the nose must point at the target within an angle (E: Elite's alignment rule was not found).
 
 /// Stand-ins (E) until measured.
 pub mod stand_in {
@@ -18,10 +24,18 @@ pub mod stand_in {
     /// Near a body (within this many of its radii from its centre) the nose must be within this many degrees of straight away.
     pub const ESCAPE_RADII: f64 = 3.0;
     pub const ESCAPE_DEG: f64 = 60.0;
+    /// Hyperspace: the charge (s), the cooldown after a jump's Arriving (s), the alignment needed at the countdown's end
+    /// (degrees from the target).
+    pub const JUMP_CHARGE_S: f64 = 15.0;
+    pub const JUMP_COOLDOWN_S: f64 = 10.0;
+    pub const ALIGN_DEG: f64 = 10.0;
 }
 
 /// The exe's Arriving time after leaving supercruise (C).
 pub const ARRIVING_S: f64 = 5.0;
+/// The exe's countdown (the Departing ticker's dt / 5) and Arriving after a jump (C).
+pub const DEPARTING_S: f64 = 5.0;
+pub const ARRIVING_AFTER_JUMP_S: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Drive {
@@ -32,6 +46,20 @@ pub enum Drive {
     /// Seconds left of Arriving, then of the cooldown.
     Arriving(f64),
     Cooldown(f64),
+    /// Hyperspace: seconds charged, then the countdown's ticker (0 to 1), then the tunnel (the game ends it).
+    JumpCharging(f64),
+    Departing(f64),
+    Tunnel,
+    /// In supercruise after a jump: seconds left of Arriving and the jump's cooldown.
+    Arrived(f64),
+}
+
+/// What a tick started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Engage {
+    Nothing,
+    Supercruise,
+    Jump,
 }
 
 /// Why the drive won't charge (in the exe's order), or why a finished charge didn't engage.
@@ -43,6 +71,13 @@ pub enum Refusal {
     Landed,
     /// The nose isn't pointed away from the nearby body (`requires_alignment_escape`).
     Escape,
+    /// Hyperspace: the target needs more fuel than the drive's most for a jump, more than is aboard, is hidden behind a body,
+    /// is the system the ship is in, or the nose wasn't on it at the countdown's end.
+    OutOfRange,
+    NoFuel,
+    Obscured,
+    SameSystem,
+    Align,
 }
 
 impl Refusal {
@@ -54,6 +89,11 @@ impl Refusal {
             Refusal::LandingGear => "Frame shift drive: landing gear deployed",
             Refusal::Landed => "Frame shift drive: landed",
             Refusal::Escape => "Frame shift drive: point away from the body",
+            Refusal::OutOfRange => "Frame shift drive: target out of range",
+            Refusal::NoFuel => "Frame shift drive: not enough fuel",
+            Refusal::Obscured => "Frame shift drive: target obscured",
+            Refusal::SameSystem => "Frame shift drive: already in that system",
+            Refusal::Align => "Frame shift drive: align with the destination",
         }
     }
 }
@@ -68,6 +108,10 @@ pub struct ShipState {
     /// radii.
     pub escape_angle: f64,
     pub radii: f64,
+    /// In supercruise.
+    pub cruise: bool,
+    /// A hyperspace target: `None` without one, else the angle (degrees) between the nose and it, or why it can't be jumped to.
+    pub target: Option<Result<f64, Refusal>>,
 }
 
 impl Drive {
@@ -87,28 +131,62 @@ impl Drive {
         None
     }
 
-    /// The drive's key (J): starts a charge when ready, cancels a charge, asks for a drop in supercruise (`Ok(true)`).
+    /// The drive's key (J): starts a charge when ready (a jump's with a target), cancels a charge, asks for a drop in
+    /// supercruise without a target (`Ok(true)`) or charges a jump with one.
     pub fn press(&mut self, s: &ShipState) -> Result<bool, Refusal> {
         match *self {
             Drive::Ready => {
                 if let Some(r) = self.blocked(s) {
                     return Err(r);
                 }
-                *self = Drive::Charging(0.0);
+                if let Some(t) = s.target {
+                    t?;
+                    *self = Drive::JumpCharging(0.0);
+                } else {
+                    *self = Drive::Charging(0.0);
+                }
                 Ok(false)
             }
             Drive::Charging(_) => {
                 *self = Drive::Ready;
                 Ok(false)
             }
-            Drive::Supercruise => Ok(true),
-            Drive::Arriving(_) | Drive::Cooldown(_) => Err(Refusal::Cooldown),
+            Drive::Supercruise => match s.target {
+                Some(t) => {
+                    t?;
+                    *self = Drive::JumpCharging(0.0);
+                    Ok(false)
+                }
+                None => Ok(true),
+            },
+            Drive::JumpCharging(_) | Drive::Departing(_) => {
+                *self = if s.cruise { Drive::Supercruise } else { Drive::Ready };
+                Ok(false)
+            }
+            Drive::Tunnel => Ok(false),
+            Drive::Arriving(_) | Drive::Cooldown(_) | Drive::Arrived(_) => Err(Refusal::Cooldown),
         }
     }
 
-    /// A tick: charging (a refusal that appears cancels it; at its end the escape rule), Arriving and the cooldown. Returns
-    /// `Ok(true)` the tick supercruise begins.
-    pub fn tick(&mut self, dt: f64, s: &ShipState) -> Result<bool, Refusal> {
+    /// A jump's charge or countdown goes on only while nothing refuses it: back to where it started from otherwise.
+    fn jump_held(&mut self, s: &ShipState) -> Result<f64, Option<Refusal>> {
+        let back = if s.cruise { Drive::Supercruise } else { Drive::Ready };
+        let why = if s.cruise { None } else { self.blocked(s) };
+        let r = match (why, s.target) {
+            (Some(r), _) => Err(Some(r)),
+            (None, None) => Err(None),
+            (None, Some(Err(r))) => Err(Some(r)),
+            (None, Some(Ok(angle))) => Ok(angle),
+        };
+        if r.is_err() {
+            *self = back;
+        }
+        r
+    }
+
+    /// A tick: charging (a refusal that appears cancels it; at its end the escape rule), a jump's charge and countdown (at
+    /// its end the alignment), Arriving and the cooldowns. Returns what began this tick.
+    pub fn tick(&mut self, dt: f64, s: &ShipState) -> Result<Engage, Refusal> {
         match *self {
             Drive::Charging(t) => {
                 if let Some(r) = self.blocked(s) {
@@ -117,24 +195,64 @@ impl Drive {
                 }
                 if t + dt < stand_in::CHARGE_S {
                     *self = Drive::Charging(t + dt);
-                    return Ok(false);
+                    return Ok(Engage::Nothing);
                 }
                 if s.radii < stand_in::ESCAPE_RADII && s.escape_angle > stand_in::ESCAPE_DEG {
                     *self = Drive::Ready;
                     return Err(Refusal::Escape);
                 }
                 *self = Drive::Supercruise;
-                Ok(true)
+                Ok(Engage::Supercruise)
             }
+            Drive::JumpCharging(t) => match self.jump_held(s) {
+                Err(why) => why.map_or(Ok(Engage::Nothing), Err),
+                Ok(_) => {
+                    *self = if t + dt < stand_in::JUMP_CHARGE_S { Drive::JumpCharging(t + dt) } else { Drive::Departing(0.0) };
+                    Ok(Engage::Nothing)
+                }
+            },
+            Drive::Departing(x) => match self.jump_held(s) {
+                Err(why) => why.map_or(Ok(Engage::Nothing), Err),
+                Ok(angle) => {
+                    let x = x + dt / DEPARTING_S;
+                    if x < 1.0 {
+                        *self = Drive::Departing(x);
+                        Ok(Engage::Nothing)
+                    } else if angle > stand_in::ALIGN_DEG {
+                        *self = if s.cruise { Drive::Supercruise } else { Drive::Ready };
+                        Err(Refusal::Align)
+                    } else {
+                        *self = Drive::Tunnel;
+                        Ok(Engage::Jump)
+                    }
+                }
+            },
             Drive::Arriving(t) => {
                 *self = if t > dt { Drive::Arriving(t - dt) } else { Drive::Cooldown(stand_in::COOLDOWN_S) };
-                Ok(false)
+                Ok(Engage::Nothing)
             }
             Drive::Cooldown(t) => {
                 *self = if t > dt { Drive::Cooldown(t - dt) } else { Drive::Ready };
-                Ok(false)
+                Ok(Engage::Nothing)
             }
-            _ => Ok(false),
+            Drive::Arrived(t) => {
+                *self = if t > dt { Drive::Arrived(t - dt) } else { Drive::Supercruise };
+                Ok(Engage::Nothing)
+            }
+            _ => Ok(Engage::Nothing),
+        }
+    }
+
+    /// The jump is over (the tunnel's end): in supercruise, Arriving and then the jump's cooldown.
+    pub fn arrived() -> Drive {
+        Drive::Arrived(ARRIVING_AFTER_JUMP_S + stand_in::JUMP_COOLDOWN_S)
+    }
+
+    /// The countdown's seconds left.
+    pub fn countdown(&self) -> Option<f64> {
+        match *self {
+            Drive::Departing(x) => Some((1.0 - x) * DEPARTING_S),
+            _ => None,
         }
     }
 
@@ -147,6 +265,8 @@ impl Drive {
     pub fn charge_share(&self) -> Option<f64> {
         match *self {
             Drive::Charging(t) => Some((t / stand_in::CHARGE_S).clamp(0.0, 1.0)),
+            Drive::JumpCharging(t) => Some((t / stand_in::JUMP_CHARGE_S).clamp(0.0, 1.0)),
+            Drive::Departing(_) => Some(1.0),
             _ => None,
         }
     }
@@ -170,7 +290,7 @@ mod tests {
         assert_eq!(d.press(&free()), Ok(false));
         let mut engaged = false;
         for _ in 0..(16 * 60) {
-            if d.tick(1.0 / 60.0, &free()) == Ok(true) {
+            if d.tick(1.0 / 60.0, &free()) == Ok(Engage::Supercruise) {
                 engaged = true;
             }
         }
@@ -185,7 +305,7 @@ mod tests {
         // Pointed at a body from close by: the charge ends refused.
         assert_eq!(d.press(&free()), Ok(false));
         let near = ShipState { radii: 1.01, escape_angle: 170.0, ..ShipState::default() };
-        let mut last = Ok(false);
+        let mut last = Ok(Engage::Nothing);
         for _ in 0..(16 * 60) {
             last = d.tick(1.0 / 60.0, &near);
             if last.is_err() {
@@ -197,5 +317,52 @@ mod tests {
         assert_eq!(d.press(&free()), Ok(false));
         assert_eq!(d.tick(0.1, &ShipState { gear_down: true, ..free() }), Err(Refusal::LandingGear));
         assert_eq!(d, Drive::Ready);
+    }
+
+    /// With a target the key charges a jump (refused if the target is), then the 5 s countdown, the jump if aligned; in
+    /// supercruise a cancel goes back to supercruise; after the jump Arriving and the cooldown refuse the key, then supercruise.
+    #[test]
+    fn jump_charge_countdown_and_arrival() {
+        let dt = 1.0 / 60.0;
+        let aimed = ShipState { target: Some(Ok(2.0)), ..free() };
+        let mut d = Drive::Ready;
+        assert_eq!(d.press(&ShipState { target: Some(Err(Refusal::OutOfRange)), ..free() }), Err(Refusal::OutOfRange));
+        assert_eq!(d.press(&aimed), Ok(false));
+        assert!(matches!(d, Drive::JumpCharging(_)));
+        let (mut t, mut jumped, mut counted) = (0.0, false, false);
+        while t < 30.0 && !jumped {
+            jumped = d.tick(dt, &aimed) == Ok(Engage::Jump);
+            counted |= d.countdown().is_some_and(|c| c > 4.9);
+            t += dt;
+        }
+        assert!(jumped && counted && d == Drive::Tunnel);
+        assert!((t - stand_in::JUMP_CHARGE_S - DEPARTING_S).abs() < 3.0 * dt, "{t}");
+        // Not aligned at the end: refused, back where it started (supercruise here).
+        let off = ShipState { target: Some(Ok(30.0)), cruise: true, ..free() };
+        let mut d = Drive::Supercruise;
+        assert_eq!(d.press(&off), Ok(false));
+        let mut last = Ok(Engage::Nothing);
+        for _ in 0..(25 * 60) {
+            last = d.tick(dt, &off);
+            if last.is_err() {
+                break;
+            }
+        }
+        assert_eq!((last, d), (Err(Refusal::Align), Drive::Supercruise));
+        // The key again cancels; the target hidden cancels.
+        assert_eq!(d.press(&off), Ok(false));
+        assert_eq!(d.press(&off), Ok(false));
+        assert_eq!(d, Drive::Supercruise);
+        assert_eq!(d.press(&off), Ok(false));
+        assert_eq!(d.tick(dt, &ShipState { target: Some(Err(Refusal::Obscured)), cruise: true, ..free() }), Err(Refusal::Obscured));
+        assert_eq!(d, Drive::Supercruise);
+        // Without a target in supercruise the key is a drop.
+        assert_eq!(d.press(&ShipState { cruise: true, ..free() }), Ok(true));
+        let mut d = Drive::arrived();
+        assert_eq!(d.press(&aimed), Err(Refusal::Cooldown));
+        for _ in 0..((ARRIVING_AFTER_JUMP_S + stand_in::JUMP_COOLDOWN_S + 0.1) as usize * 60 + 60) {
+            let _ = d.tick(dt, &aimed);
+        }
+        assert_eq!(d, Drive::Supercruise);
     }
 }

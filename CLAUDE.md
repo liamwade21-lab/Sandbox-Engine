@@ -201,8 +201,15 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   mod off any other way in flight LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
   throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state|pip eng|sys|wep|reset|boost|
-  hardpoints|fire SECS|jump`, with `SE_SANDBOX=1`. Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
+  hardpoints|fire SECS|jump|target NAME|none|face|hyper NAME`, with `SE_SANDBOX=1` (SpaceEngine's Alpha Centauri is "ALF Cen",
+  its A "Rigil Kentaurus"; a barycentre's name stands for its brightest star). Stars heat the ship by `elite_sim::stars` every
+  tick, and a star's emergency zone in supercruise is its exclusion zone (1.05 radii). Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
   writes it into the nearest body's frame (`Parked`) every frame: keep `Parked` the truth everything else reads. A laser's beam shows 0.08 s of each 0.25 s: take several pictures.
+  The glide (`Pilot::glide`, `elite_sim::glide`) starts from supercruise heading down within 25 km of a solid body's LOADED ground
+  (`height_over`, never the radius: generated worlds' ground stands 10-20 km over it); the ground check still runs in a glide.
+  Hyperspace (`hyper.rs`, `Pilot::jump`): the tunnel holds the ship's universe pose and writes the camera itself (unbound) while
+  `select_active_system` swaps systems by the camera; `fly` and `seat_camera` return early meanwhile (the old bodies go), and the
+  tunnel ends when `ActiveSystem::root` is the target's and its star's `SystemBody` exists, re-parenting `Parked` to it.
   The mod's systems have run conditions (nothing runs before a spawn's files are read: the spec's C20); keep it so.
   The ship's systems (fuel, shields, hull, heat, pips) live in `Pilot` and belong to the ship: boarding keeps them
   (`Pilot::boarding`), a spawn makes them full (`fresh_ship`), the restock refills them; `pilot.destroyed` (hull 0) loses the
