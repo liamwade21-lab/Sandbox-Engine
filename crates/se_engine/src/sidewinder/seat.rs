@@ -211,6 +211,7 @@ pub fn take_keys(
     cfg: Res<crate::config::EngineConfig>,
     mut pilot_keys: ResMut<PilotKeys>,
     pads: Query<&bevy::input::gamepad::Gamepad>,
+    panels: Res<super::panels::Panels>,
 ) {
     let (Some(assets), true) = (assets, control.pilot && seat.seated) else {
         *pilot_keys = PilotKeys::default();
@@ -220,7 +221,7 @@ pub fn take_keys(
     let real = crate::mods::real_window(&cfg);
     let free = control.main_menu || (real && !window.focused);
     let pad = pads.iter().next();
-    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look) };
+    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look, panels.open.is_some()) };
     if !free {
         if keys.just_pressed(KeyCode::KeyB) {
             seat.leave = true;

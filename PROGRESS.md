@@ -72,7 +72,11 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - Also in (ours, not Elite, step 6.3): real air's drag in thruster flight (Venus's thick air holds the ship to 27 m/s),
     and gas giants flown down to the port's floor 200 km under Jupiter's clouds. Hot air's heat is left out (Elite's rule
     for it was not found).
-  - Next without Elite: the Navigation and right panels (4.2), Phase 7 (costs, the release zip, the final check).
+  - Also in: the side panels (4.2: 1 the Navigation list of bodies and stars in range, 4 the right panel with modules you
+    can switch off, the ship's functions and its status; Q/E tabs, W/S rows, Space select, Backspace close) and the planet
+    HUD (4.3: altitude, vertical speed, heading, pitch and roll near a body; DISEMBARK (B) when landed). Flat, not Elite's
+    holograms.
+  - Next without Elite: the check of Phases 4 to 6, then Phase 7 (costs, the release zip, the final check).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

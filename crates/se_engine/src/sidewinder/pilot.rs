@@ -62,6 +62,22 @@ pub struct AirState {
     areas: Vec<glam::DVec3>,
 }
 
+/// The planet HUD's readings (step 4.3): near a body's ground in normal flight or the glide.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlanetHud {
+    /// Over the ground under the ship (m), its vertical speed (m/s, up positive), the heading (degrees from the body's north,
+    /// clockwise), the nose's pitch over the horizon and the roll (degrees, right wing down positive).
+    pub alt_m: f64,
+    pub vspeed: f64,
+    pub heading_deg: f64,
+    pub pitch_deg: f64,
+    pub roll_deg: f64,
+}
+
+/// The planet HUD shows within this height of a solid body's ground (ours: Elite shows it in orbital cruise and below, whose
+/// start wasn't found: A60).
+pub const PLANET_HUD_M: f64 = 100_000.0;
+
 /// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
 const CRUISE_START: f64 = supercruise::stand_in::FLOOR_PLANET;
 /// Too close to a body's surface in supercruise: an emergency drop (E: A50 found the drop's effects but not its triggers),
@@ -120,6 +136,8 @@ pub struct PilotKeys {
     /// The frame shift drive's key (`HyperSuperCombination`, J), and the target ahead (`SelectTarget`, T).
     pub jump: bool,
     pub select_target: bool,
+    /// The side panels' keys (step 4.2).
+    pub panel: super::panels::PanelKeys,
 }
 
 /// The flight's state while seated.
@@ -164,6 +182,12 @@ pub struct Pilot {
     /// A test's placing of the ship over a body (`sw put NAME ALT_KM`), and the air's density where it is (kg/m^3).
     pub dev_put: Option<(ObjectRef, f64)>,
     pub air_density: f64,
+    /// The modules' switches (the right panel's Modules tab, `panels::MODULES`), and the destination picked on the Navigation
+    /// tab (a body of this system) with its HUD line.
+    pub modules: [bool; 10],
+    pub nav_body: Option<ObjectRef>,
+    pub nav_note: String,
+    pub planet: Option<PlanetHud>,
     /// The HUD's line for the target (its name, distance and the jump's fuel, or why not).
     pub target_note: String,
     /// The stars' heat this frame (a share of the capacity a second), for the HUD.
@@ -215,6 +239,10 @@ impl Default for Pilot {
             dev_hyper: None,
             dev_put: None,
             air_density: 0.0,
+            modules: [true; 10],
+            nav_body: None,
+            nav_note: String::new(),
+            planet: None,
             target_note: String::new(),
             star_heat: 0.0,
             dev_face: false,
@@ -349,7 +377,7 @@ fn mouse_button(name: &str) -> Option<MouseButton> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, motion: &AccumulatedMouseMotion, real: bool) -> PilotKeys {
+pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, motion: &AccumulatedMouseMotion, real: bool, panel_open: bool) -> PilotKeys {
     let mouse_held = |action: &str| b.get(action).is_some_and(|a| a.keys().filter(|k| k.device == "Mouse").filter_map(|k| mouse_button(&k.key)).any(|m| buttons.pressed(m)));
     let pad_btn = |action: &str, just: bool| -> bool {
         let (Some(g), Some(a)) = (pad, pad_binds.get(action)) else { return false };
@@ -359,7 +387,19 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
     let press = |a: &str| action_pressed(b, keys, a, true) || pad_btn(a, true);
     let axis = |plus: &str, minus: &str| held(plus) as i8 as f64 - held(minus) as i8 as f64;
     let pv = |action: &str| pad.map_or(0.0, |g| pad_value(pad_binds, g, action));
-    PilotKeys {
+    let panel = super::panels::PanelKeys {
+        left: press("FocusLeftPanel"),
+        right: press("FocusRightPanel"),
+        up: press("UI_Up"),
+        down: press("UI_Down"),
+        change_left: press("UI_Left"),
+        change_right: press("UI_Right"),
+        select: press("UI_Select"),
+        back: press("UI_Back"),
+        next_tab: press("CycleNextPanel"),
+        prev_tab: press("CyclePreviousPanel"),
+    };
+    let k = PilotKeys {
         gear: press("LandingGearToggle"),
         flight_assist: press("ToggleFlightAssist"),
         throttle_zero: press("SetSpeedZero"),
@@ -382,6 +422,13 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         hardpoints: press("DeployHardpointToggle"),
         jump: press("HyperSuperCombination"),
         select_target: press("SelectTarget"),
+        panel,
+    };
+    // A focused panel takes its keys from the flight, as in Elite (W S A D Q E and the arrows); the mouse still flies.
+    if panel_open {
+        PilotKeys { throttle_up: false, throttle_down: false, yaw: 0.0, lateral: 0.0, pip_eng: false, pip_sys: false, pip_wep: false, pip_reset: false, ..k }
+    } else {
+        k
     }
 }
 
@@ -403,6 +450,7 @@ pub fn fly(
     sim: Res<SimTime>,
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
+    mut panels: ResMut<super::panels::Panels>,
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
@@ -458,6 +506,35 @@ pub fn fly(
     }
     let pilot = &mut *pilot;
     let dt = (time.delta_secs() as f64).min(0.25);
+    // The side panels (step 4.2): their keys and head look; what they ask for goes in as the keys would.
+    panels.update(&keys.panel, seat.head_look.then_some(seat.look.x));
+    let mut keys = *keys;
+    for a in std::mem::take(&mut panels.actions) {
+        use super::panels::{PanelAction, MODULES, M_FSD};
+        match a {
+            PanelAction::Target(t) => {
+                pilot.target = Some(t);
+                msg.show(format!("Target: {}", data.catalog.display_name(t)));
+            }
+            PanelAction::NavBody(o) => {
+                pilot.nav_body = if pilot.nav_body == Some(o) { None } else { Some(o) };
+                msg.show(match pilot.nav_body {
+                    Some(o) => format!("Destination: {}", data.catalog.display_name(o)),
+                    None => "Destination cleared".to_string(),
+                });
+            }
+            PanelAction::FlightAssist => keys.flight_assist = true,
+            PanelAction::Gear => keys.gear = true,
+            PanelAction::Hardpoints => keys.hardpoints = true,
+            PanelAction::Module(i) if i == M_FSD && pilot.modules[i] && (pilot.cruise.is_some() || !matches!(pilot.drive, Drive::Ready | Drive::Arriving(_) | Drive::Cooldown(_))) => {
+                msg.show("The frame shift drive is in use".to_string());
+            }
+            PanelAction::Module(i) => {
+                pilot.modules[i] = !pilot.modules[i];
+                msg.show(format!("{}: {}", MODULES[i].0, if pilot.modules[i] { "on" } else { "off" }));
+            }
+        }
+    }
     // The controls of this frame.
     if keys.gear {
         pilot.gear_down = !pilot.gear_down;
@@ -565,6 +642,45 @@ pub fn fly(
         });
     }
     let others: Vec<(DVec3, f64)> = bodies.iter().map(|(sb, _)| (sb.pos.delta_m(ship_u), sb.radius_m)).collect();
+    if panels.open == Some(super::panels::Side::Left) && (panels.nav.is_empty() || pilot.ticks % 60 == 0) {
+        use se_core::catalog::{BodyTag, ObjectRef as O};
+        let mut rows: Vec<super::panels::NavRow> = bodies
+            .iter()
+            .filter_map(|(sb, t)| {
+                let kind = if sb.star {
+                    "STAR"
+                } else if t.is_some_and(|t| t.proc.kind.is_giant()) {
+                    "GAS GIANT"
+                } else {
+                    match sb.obj {
+                        O::Body(i) => match data.catalog.bodies[i as usize].tag {
+                            BodyTag::Planet => "PLANET",
+                            BodyTag::Moon | BodyTag::DwarfMoon => "MOON",
+                            BodyTag::DwarfPlanet => "DWARF PLANET",
+                            _ => return None,
+                        },
+                        _ => return None,
+                    }
+                };
+                (sb.star || sb.radius_m >= 100_000.0).then(|| super::panels::NavRow { obj: sb.obj, name: data.catalog.display_name(sb.obj).to_string(), kind, dist_m: (sb.pos.delta_m(ship_u).length() - sb.radius_m).max(0.0), other_system: false })
+            })
+            .collect();
+        rows.sort_by(|a, b2| a.dist_m.total_cmp(&b2.dist_m));
+        rows.truncate(30);
+        let range = elite_sim::fsd::jump_range(&elite_sim::data::FSD_2E, pilot.mass_t(), pilot.fuel.main);
+        let eph = se_core::ephemeris::Ephemeris::new(&data.catalog);
+        let mut stars: Vec<super::panels::NavRow> = super::hyper::stars_within(&data, sim.jd, ship_u, range, here)
+            .into_iter()
+            .map(|t| super::panels::NavRow { obj: t, name: data.catalog.display_name(t).to_string(), kind: "SYSTEM", dist_m: eph.position(t, sim.jd).delta_m(ship_u).length(), other_system: true })
+            .collect();
+        stars.sort_by(|a, b2| a.dist_m.total_cmp(&b2.dist_m));
+        rows.extend(stars);
+        panels.nav = rows;
+    }
+    pilot.nav_note = match pilot.nav_body.and_then(|o| bodies.iter().find(|(sb, _)| sb.obj == o)) {
+        Some((sb, _)) => format!("{}  {}", data.catalog.display_name(sb.obj), super::panels::distance_text((sb.pos.delta_m(ship_u).length() - sb.radius_m).max(0.0))),
+        None => String::new(),
+    };
     // The stars' heat (step 5.4: A50's form, its numbers stand-ins), a share of the heat capacity a second.
     let star_heat: f64 = bodies.iter().filter(|(sb, _)| sb.star).map(|(sb, _)| elite_sim::stars::heat_rate(sb.pos.delta_m(ship_u).length(), sb.radius_m)).sum();
     pilot.star_heat = star_heat;
@@ -592,7 +708,9 @@ pub fn fly(
     };
     let mut drop_now = false;
     let jump = keys.jump || std::mem::take(&mut pilot.dev_jump);
-    if jump && pilot.glide.is_some() {
+    if jump && !pilot.modules[super::panels::M_FSD] {
+        msg.show("Frame shift drive: switched off".to_string());
+    } else if jump && pilot.glide.is_some() {
         msg.show("Frame shift drive: not during a glide".to_string());
     } else if jump {
         match pilot.drive.press(&fsd) {
@@ -682,7 +800,7 @@ pub fn fly(
         pilot.dist.recharge(TICK, powered);
         pilot.boost.tick(&spec, TICK);
         let sys_share = pilot.dist.share(SYS);
-        pilot.shields.tick(TICK, powered, sys_share);
+        pilot.shields.tick(TICK, powered && pilot.modules[super::panels::M_SHIELDS], sys_share);
         // Heat: the idle load (a stand-in fitted to session 2's idle), then the radiator (step 2.2).
         let hs = pilot.heat_spec;
         if powered {
@@ -690,7 +808,8 @@ pub fn fly(
         }
         let ev = pilot.heat.tick(&hs, TICK, powered, false);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
-        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none() && pilot.glide.is_none();
+        let guns_on = super::panels::M_LASERS.iter().any(|&m| pilot.modules[m]);
+        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && guns_on && pilot.cruise.is_none() && pilot.glide.is_none();
         pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
@@ -832,7 +951,7 @@ pub fn fly(
             pilot.air_density = density;
             let outside = -up * gm / (r * r) + drag;
             pilot.motion.rot = to_sim_q(p.rot);
-            let tick_input = if powered { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
+            let tick_input = if powered && pilot.modules[super::panels::M_THRUSTERS] { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
             flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
             p.rot = from_sim_q(pilot.motion.rot);
             p.pos += from_sim_v(pilot.motion.vel) * TICK;
@@ -926,6 +1045,8 @@ pub fn fly(
         }
         return;
     }
+    // The planet HUD's readings (step 4.3): near a solid body's ground (a giant's radius), out of supercruise.
+    pilot.planet = None;
     // Supercruise's pose into the nearest body's frame (the parked pose is what the camera, the cockpit and the rest read);
     // a drop or an emergency drop back to normal flight there.
     if let Some(c) = pilot.cruise {
@@ -994,7 +1115,23 @@ pub fn fly(
             }
             s += 5.0_f64.max(s * 0.02);
         }
-        pilot.beam_len[i] = len as f32;
+        pilot.beam_len[i] = if pilot.modules[super::panels::M_LASERS[i]] { len as f32 } else { 0.0 };
+    }
+    let alt = p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos).0;
+    if !b.star && alt < PLANET_HUD_M {
+        let up = p.pos.normalize_or(DVec3::Y);
+        let north = (DVec3::Y - up * up.y).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
+        let east = north.cross(up);
+        let nose = p.rot * DVec3::NEG_Z;
+        let flat = nose - up * nose.dot(up);
+        let right = p.rot * DVec3::X;
+        pilot.planet = Some(PlanetHud {
+            alt_m: alt,
+            vspeed: from_sim_v(pilot.motion.vel).dot(up),
+            heading_deg: flat.dot(east).atan2(flat.dot(north)).to_degrees().rem_euclid(360.0),
+            pitch_deg: nose.dot(up).clamp(-1.0, 1.0).asin().to_degrees(),
+            roll_deg: (-right.dot(up)).clamp(-1.0, 1.0).asin().to_degrees(),
+        });
     }
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);

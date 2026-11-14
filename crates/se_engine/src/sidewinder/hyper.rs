@@ -57,6 +57,22 @@ pub fn check(data: &SeData, jd: f64, target: ObjectRef, from: UPos, nose: DVec3,
     Ok((nose.angle_between(to).to_degrees(), fuel))
 }
 
+/// The catalog stars within `range_ly`, not of the system `here` (the Navigation tab's systems).
+pub fn stars_within(data: &SeData, jd: f64, from: UPos, range_ly: f64, here: Option<u32>) -> Vec<ObjectRef> {
+    let cat = &data.catalog;
+    let eph = Ephemeris::new(cat);
+    let from_pc = from.to_parsecs();
+    let reach_pc = range_ly * se_core::units::METERS_PER_LY / se_core::units::METERS_PER_PC + 0.01;
+    (0..cat.stars.len())
+        .filter(|&i| {
+            let s = &cat.stars[i];
+            s.has_position && !s.barycenter && !s.hidden() && s.pos_pc.distance_squared(from_pc) < reach_pc * reach_pc
+        })
+        .map(|i| ObjectRef::Star(i as u32))
+        .filter(|&t| cat.system_root(t) != here && eph.position(t, jd).delta_m(from).length() / se_core::units::METERS_PER_LY <= range_ly)
+        .collect()
+}
+
 /// The catalog star nearest the nose (within `AHEAD_DEG`) within `range_ly`, not of the system `here`.
 pub fn star_ahead(data: &SeData, jd: f64, from: UPos, nose: DVec3, range_ly: f64, here: Option<u32>) -> Option<ObjectRef> {
     const AHEAD_DEG: f64 = 15.0;

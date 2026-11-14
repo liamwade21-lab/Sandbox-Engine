@@ -1191,3 +1191,42 @@ the radius 0.09 kg/m^3, 150 km under it 2.85 kg/m^3 with full down thrust settli
 floor the ship was stopped at 60 m/s and held there; and a glide into Jupiter from supercruise at -60 degrees entered 18.4
 km over the radius and ended (TerrainDanger) at 8.6 km, then normal flight sank through the air. Tests:
 `a_cubes_outline_and_the_drag`. `sw put NAME ALT_KM`.
+
+### Step 4.2, first cut: the side panels (2026-11-14). **Built as a flat overlay (4.1's fallback); every function works**
+
+`sidewinder/panels.rs`: the left panel's Navigation tab and the right panel's tabs (Home, Modules, Fire groups, Ship, Status),
+flat on their sides of the view (Elite's holograms aren't built: 4.1's fallback). Elite's own keys from its `.binds`: 1 and 4
+(`FocusLeftPanel`, `FocusRightPanel`) open and close them, Q and E (`CyclePreviousPanel`, `CycleNextPanel`) the tabs, W and S
+or the arrows (`UI_Up`, `UI_Down`) the rows, Space (`UI_Select`) selects, A and D (`UI_Left`, `UI_Right`) change a setting,
+Backspace (`UI_Back`) closes; head look turned past 0.6 rad to a side focuses that panel and it closes when the look comes back
+(ours, F: Elite's focus angle not found). While a panel is focused those keys work it, not the ship (throttle, yaw, lateral
+thrust and the pips go quiet: as in Elite); the mouse still flies. What each tab holds is ours where Elite's hold more (F):
+Navigation lists this system's stars, planets, moons and dwarf planets of 100 km or more (30 nearest, distances to their
+surface) and then the catalog stars within the jump's range for the fuel aboard (the spec's F5); Space on a star of another
+system makes it hyperspace's target, on a body the destination (the HUD's DESTINATION line, its distance to the surface; no
+safe drop at it yet). Modules lists the stock loadout with a switch on each that Elite allows (the power plant, distributor
+and fuel tank are always on: E); off, the thrusters give no thrust, the frame shift drive refuses J (and can't be switched off
+while in use), the shields drop, a laser stops firing, the sensors take the radar away (life support does nothing yet). Fire
+groups shows the one group; Ship switches flight assist, the gear and the hardpoints through the keys' own rules; Home and
+Status show the ship's state (fuel, mass, jump range now and at most, heat, hull, shields, pips, the drive).
+
+Checked in a run (`hero keys`): 1 opened Navigation (Earth, the Moon, Venus, Mercury, the Sun, Mars... nearest first), S, S,
+Space made Venus the destination; 4, E opened Modules, S, D switched the thrusters off (`sw state`'s modules); E three times
+reached Status (fuel 2.00 and 0.30 t, 45.2 t, 7.84 LY now and 8.15 at most); Backspace closed it. Pictures:
+`.optimize/scratch/run/panels-*.png` (not kept). Not done: Elite's other left-panel tabs (Transactions, Contacts, Sub-targets,
+Inventory), power priorities, the comms (2) and role (3) panels, head look tested with a real mouse (a test can't drag the
+middle button). Tests: `panel_keys`.
+
+### Step 4.3, first cut: the planet HUD and Disembark (2026-11-14). **Built as a flat overlay; Disembark works**
+
+Within 100 km of a solid body's ground (a giant's radius) out of supercruise (ours, F: Elite shows its planet HUD from orbital
+cruise down, whose start wasn't found), the HUD shows the altimeter (metres, km above 10 km), the vertical speed (red when
+coming down faster than 5 m/s under 200 m), the heading from the body's north over the view, and the pitch and roll beside
+it (`Pilot::planet`, worked out at the end of each frame of normal flight or the glide). Landed it shows LANDED and
+DISEMBARK (B): B gets out by the seat's own rule (step 1.3). Elite's look (a hologram with a ladder, the landing display's
+pad schematic) isn't built: 4.1's fallback, flat text. The message panel is the port's own centre messages (every message
+the mod shows goes through them); a list of past messages (Elite's comms panel) isn't built.
+
+Checked in runs: landed, LANDED, DISEMBARK (B), ALT 0 M and a heading; lifted off, ALT 154 M, the pitch and roll the stick
+gave; a descent at a 45 degree tilt was refused touchdown by Elite's rule (the gear's feet more than 0.5 m apart over the
+ground) and took a hard hit; a level one at 0.3 m/s touched down, and B set him beside the ship, walking.

@@ -205,7 +205,9 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   its A "Rigil Kentaurus"; a barycentre's name stands for its brightest star). Stars heat the ship by `elite_sim::stars` every
   tick, and a star's emergency zone in supercruise is its exclusion zone (1.05 radii). Step 6.3 is ours (F): drag in thruster flight
   only (`elite_sim::air`, the hull's outline from `AirState::areas`, density from `AirModel`); a gas giant has no exclusion zone,
-  glides by its radius and stops the ship at `giant_floor_m` (`floor_m`: its ground in `fly`'s collision only). Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
+  glides by its radius and stops the ship at `giant_floor_m` (`floor_m`: its ground in `fly`'s collision only).
+  The side panels are `panels.rs` (`Panels`, a resource; `fly` makes the Navigation rows and does the actions): while one is
+  open `read_keys` quiets the flight keys Elite gives the UI (W S A D Q E, the arrows). The planet HUD reads `Pilot::planet`. Supercruise (`Pilot::cruise`) keeps the ship's pose in the universe and
   writes it into the nearest body's frame (`Parked`) every frame: keep `Parked` the truth everything else reads. A laser's beam shows 0.08 s of each 0.25 s: take several pictures.
   The glide (`Pilot::glide`, `elite_sim::glide`) starts from supercruise heading down within 25 km of a solid body's LOADED ground
   (`height_over`, never the radius: generated worlds' ground stands 10-20 km over it); the ground check still runs in a glide.

@@ -530,6 +530,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "alt" => KeyCode::AltLeft,
         "space" => KeyCode::Space,
         "esc" => KeyCode::Escape,
+        "backspace" => KeyCode::Backspace,
         "shift" => KeyCode::ShiftLeft,
         "ctrl" => KeyCode::ControlLeft,
         _ => return None,

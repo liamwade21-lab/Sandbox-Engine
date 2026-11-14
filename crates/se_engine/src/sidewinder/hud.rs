@@ -28,7 +28,7 @@ fn at(r: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
     egui::pos2(r.center().x + x * h, r.center().y + y * h)
 }
 
-pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>) -> Result {
+pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>, panels: Res<super::panels::Panels>) -> Result {
     if !seat.seated || !control.pilot || control.main_menu {
         return Ok(());
     }
@@ -59,9 +59,10 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let font = |s: f32| egui::FontId::monospace(s * h);
     let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
 
-    // The radar's ring (an ellipse under the view).
+    // The radar's ring (an ellipse under the view; the sensors switched off take it away).
     let radar = at(r, 0.0, 0.354);
-    for (k, a) in [(1.0f32, 0.2014f32), (0.66, 0.13), (0.33, 0.065)] {
+    let rings: &[(f32, f32)] = if pilot.modules[super::panels::M_SENSORS] { &[(1.0, 0.2014), (0.66, 0.13), (0.33, 0.065)] } else { &[] };
+    for &(k, a) in rings {
         let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
             let t = i as f32 / 64.0 * std::f32::consts::TAU;
             egui::pos2(radar.x + a * h * t.cos(), radar.y + 0.083 * h * k * t.sin())
@@ -95,9 +96,55 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if let Some(left) = pilot.drive.countdown() {
         p.text(at(r, 0.0, -0.1), egui::Align2::CENTER_CENTER, format!("{}", left.ceil().max(1.0) as u32), font(0.06), ORANGE);
     }
-    // The target, under the radar.
+    // The target and the destination, under the radar.
     if pilot.target.is_some() {
         p.text(at(r, 0.0, 0.46), egui::Align2::CENTER_CENTER, format!("TARGET  {}", pilot.target_note), font(0.013), ORANGE);
+    }
+    if pilot.nav_body.is_some() {
+        p.text(at(r, 0.0, 0.478), egui::Align2::CENTER_CENTER, format!("DESTINATION  {}", pilot.nav_note), font(0.013), ORANGE);
+    }
+    // The planet HUD (step 4.3, ours in its look: Elite's is a hologram): the altimeter and vertical speed to the right, the
+    // heading over the view, the pitch and roll beside it; landed, the way out.
+    if let Some(ph) = pilot.planet {
+        let alt = if ph.alt_m >= 10_000.0 { format!("{:.1} KM", ph.alt_m / 1000.0) } else { format!("{:.0} M", ph.alt_m.max(0.0)) };
+        p.text(at(r, 0.30, 0.02), egui::Align2::LEFT_CENTER, format!("ALT {alt}"), font(0.016), ORANGE);
+        p.text(at(r, 0.30, 0.045), egui::Align2::LEFT_CENTER, format!("V {:+.0} M/S", ph.vspeed), font(0.013), if ph.vspeed < -5.0 && ph.alt_m < 200.0 { egui::Color32::RED } else { ORANGE });
+        p.text(at(r, 0.0, -0.40), egui::Align2::CENTER_CENTER, format!("{:03.0}", ph.heading_deg), font(0.016), ORANGE);
+        p.text(at(r, -0.30, 0.02), egui::Align2::RIGHT_CENTER, format!("PITCH {:+.0}", ph.pitch_deg), font(0.013), ORANGE);
+        p.text(at(r, -0.30, 0.045), egui::Align2::RIGHT_CENTER, format!("ROLL {:+.0}", ph.roll_deg), font(0.013), ORANGE);
+    }
+    if pilot.landed {
+        p.text(at(r, 0.0, 0.40), egui::Align2::CENTER_CENTER, "DISEMBARK  (B)", font(0.014), ORANGE);
+    }
+    // The side panels (step 4.2).
+    if panels.open.is_some() {
+        let mass = pilot.mass_t();
+        let fsd = &elite_sim::data::FSD_2E;
+        let lines = super::panels::StatusLines {
+            home: vec![
+                "FAULCON DELACY SIDEWINDER MK I".to_string(),
+                format!("Hull {:.0} %   Shields {:.0} %", pilot.hull.percent(), pilot.shields.percent()),
+                format!("Fuel {:.2} t   Heat {:.0} %", pilot.fuel.total(), pilot.heat_percent()),
+                format!("Target: {}", if pilot.target.is_some() { pilot.target_note.as_str() } else { "none" }),
+                format!("Destination: {}", if pilot.nav_body.is_some() { pilot.nav_note.as_str() } else { "none" }),
+            ],
+            fire: vec![
+                "FIRE GROUP A".to_string(),
+                "  Primary: Pulse laser 1F x2".to_string(),
+                "  Secondary: none".to_string(),
+            ],
+            status: vec![
+                format!("Fuel  main {:.2} t, reservoir {:.2} t", pilot.fuel.main, pilot.fuel.reservoir),
+                format!("Mass  {:.1} t", mass),
+                format!("Jump range  {:.2} LY now, {:.2} LY at most", elite_sim::fsd::jump_range(fsd, mass, pilot.fuel.main), elite_sim::fsd::max_jump_range(fsd, elite_sim::data::JOURNAL_UNLADEN_MASS)),
+                format!("Heat  {:.0} %", pilot.heat_percent()),
+                format!("Hull  {:.0} %   Shields {:.0} %", pilot.hull.percent(), pilot.shields.percent()),
+                format!("Pips  SYS {} ENG {} WEP {}", pilot.dist.half[elite_sim::power::SYS] as f32 / 2.0, pilot.dist.half[elite_sim::power::ENG] as f32 / 2.0, pilot.dist.half[elite_sim::power::WEP] as f32 / 2.0),
+                format!("Drive  {:?}", pilot.drive),
+            ],
+        };
+        let ship = [pilot.flight_assist, pilot.gear_down, pilot.weapons.deployed];
+        super::panels::draw(&p, r, &panels, &pilot.modules, ship, &lines, ORANGE, DIM);
     }
     let (x0, y0, x1, y1) = (0.194f32, 0.458f32, 0.236f32, 0.333f32);
     let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
@@ -182,7 +229,7 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     for (k, n) in notes.iter().enumerate() {
         p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);
     }
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  1 4 panels  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
     p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
     Ok(())
 }
