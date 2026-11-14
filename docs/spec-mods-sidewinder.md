@@ -982,3 +982,32 @@ events) miss it, by up to 3 m/s (about 3.5 frames at 44 m/s^2), all in the fast 
 the start and of braking: after W the simulation runs ahead of Elite, after X behind, which no single latency removes). So **the gate is not passed yet**:
 `measured_traces_pass_the_gate` is kept, ignored, as the open item; `traces_replay_no_worse` guards today's accuracy.
 Boost (s05, s06) and flight assist off (s08) are out of the gate until measured again (session 3).
+
+### Steps 2.2, 2.3, 2.5 first cuts, the HUD's fallback (4.1), the turn rates at rest (2026-11-14). **Built; the turn rates at rest inside the gate**
+
+- **The turn rule corrected (C):** a look at the disassembly of `0x142E6E960` (`re/elite/ghidra/notes/rotation-clamp.md`)
+  showed the stick scales the raw turn rate and only the clamp's bound carries the speed curve:
+  `target = clamp(stick x W_raw, +-F x W_raw)`, the roll on its own curve (step 0.10's row had one W). With it, session 2's
+  rotation at rest gives, grade D: the raw rates (pitch 39.28, yaw 17.18, roll 110.1 deg/s at the optimal mass: the stick's
+  scales, yaw's from its cap) and the turn curve's standstill factor 0.4456 (pitch caps at 17.6 deg/s against 39.5); the
+  roll curve's is at least 0.66. `tests/rotation.rs`: all nine pitch steps, nine roll steps and yaw on A are within the
+  gate's 1 deg/s. Not yet: how the pips change the turn rates (a four-pip run), the curves' b and p (rates at speed).
+- **Heat (2.2, first cut):** `elite_sim::heat` in the seat: the exe's store, radiator, warning and damage rules (C) with the
+  ship's numbers as stand-ins, and one idle load fitted to session 2's idle (36 %, near the star): it holds there.
+- **Shields and hull (2.3, first cut):** `elite_sim::shields`: the generator's mass curve times the base shield, hits through
+  the shield to the hull, the broken shield's 16 s delay and return at half (C; coriolis's numbers, B; the delay while up and
+  the return share stand-ins). A crash against the ground does damage by a stand-in rule (E: Elite's collision rule was not
+  studied): nothing under 10 m/s, then half the mass times the excess speed squared over 1,000. A hull at zero destroys the
+  ship: he is set down where it was, the ship lost.
+- **Fuel (2.5, first cut):** `elite_sim::fuel`: every burn from the reservoir, refilled a reservoir's worth from the main tank,
+  the warnings at 25, 10 and 5 %, a dry ship's plant giving nothing (C); the burn at the HUD's own idle rate, 0.42 t an hour
+  (D, read off the user's Elite), whatever the load (a stand-in for the load's effect). The fuel aboard sets the flight's
+  mass. The restock fills fuel, shields and hull; the systems stay with the ship between boardings.
+- **The HUD (4.1's fallback):** a flat egui overlay laid out from the user's own Elite screenshot (`sidewinder/hud.rs`):
+  the radar's rings, heat, the speed and the throttle gauge (the fill the speed, the marker the throttle, the blue band
+  the blue zone), the shield ring with the shields' and hull's percentages, the pip bars (the capacitor's fill, the pips as
+  notches), fuel, the three indicators. Elite's holograms in the cockpit are 4.1's first part, not built.
+- **Liftoff:** with the measured jerk limit the thrusters started from nothing and the ship sank back for 0.4 s, touching
+  down again at once; liftoff now starts from the thrust that holds the ship (E: Elite doesn't fly a landed ship).
+- Checked in test runs: liftoff and climb over a town at 221 m/s with the HUD (speed, heat 36 %, pips, shields), a boost;
+  a dive into the ground at 120.8 m/s: 277 MJ, shields and hull to 0, the ship destroyed, he set down where it was.

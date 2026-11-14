@@ -12,6 +12,7 @@
 //! - `convert.rs` (tests only) makes the mod's files from the user's Elite install.
 
 pub mod draw;
+pub mod hud;
 pub mod pilot;
 pub mod seat;
 
@@ -261,6 +262,7 @@ fn handle_requests(
     mut reg: ResMut<ModRegistry>,
     assets: Option<Res<SidewinderAssets>>,
     mut msg: ResMut<crate::messages::Messages>,
+    mut pilot: Option<ResMut<pilot::Pilot>>,
 ) {
     let ship = &mut *ship;
     // The files, once read.
@@ -307,6 +309,9 @@ fn handle_requests(
         }
         Some(ShipRequest::Restock) => {
             if ship.parked.is_some() {
+                if let Some(pl) = pilot.as_mut() {
+                    pl.restock();
+                }
                 msg.show("Refuelled, repaired and restocked".to_string());
                 info!("sidewinder: restocked");
             }
@@ -333,6 +338,9 @@ fn handle_requests(
                 let rot = (world.frame.rotation() * DQuat::from_mat3(&axes.as_dmat3())).normalize();
                 info!("sidewinder: spawned at {:.1} {:.1} {:.1} m in the sandbox's frame, {:.0} m away", at.x, at.y, at.z, (at - sb.eye).truncate().length());
                 ship.parked = Some(Parked { obj: world.frame.obj, pos, rot, solids: Vec::new(), solids_epoch: None });
+                if let Some(pl) = pilot.as_mut() {
+                    pl.fresh_ship();
+                }
                 sb.cues.push(crate::sandbox::audio::Cue::ui("ui/buttonclickrelease.wav"));
             }
             Err(why) => {
@@ -416,7 +424,7 @@ impl Plugin for SidewinderPlugin {
                     .before(crate::viltrumite::hero::hero_move)
                     .before(crate::camera::sync_camera_transform),
             )
-            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, seat::draw_readout).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
+            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, hud::draw_hud).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
         // (The spec's C20: never spawned, nothing of the mod runs. Its systems wait for a request, then for its files.)
         app.add_systems(Update, handle_requests.run_if(asked))
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
@@ -443,7 +451,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 world.insert_resource(reg);
                 let seat = seat::Seat::boarded(&mut world.resource_mut::<crate::universe::SimTime>());
                 *world.resource_mut::<seat::Seat>() = seat;
-                *world.resource_mut::<pilot::Pilot>() = pilot::Pilot::default();
+                let fresh = world.resource::<pilot::Pilot>().boarding();
+                *world.resource_mut::<pilot::Pilot>() = fresh;
                 info!("sidewinder: boarded (a test)");
             } else {
                 warn!("sw board: no ship parked");

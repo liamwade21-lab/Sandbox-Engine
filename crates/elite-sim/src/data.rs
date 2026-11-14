@@ -224,6 +224,16 @@ pub mod measured {
     /// of 0.05 and sensitivity of 0.2725 that is full stick at 1,180 counts, so R = 1,180 x 0.2725 (about +-5 %: the dead
     /// zone's end read to a few counts).
     pub const MOUSE_FULL_COUNTS: f64 = 321.6;
+    /// The raw turn rates (deg/s at the thrusters' optimal mass: pitch, yaw, roll), the rates the stick scales (the exe's
+    /// rule: target = clamp(stick x W_raw, +-F x W_raw), `rotation-clamp.md`). Session 2 at rest, 2 ENG pips, mass 44.6 t
+    /// (the mass curve's 1.0055 taken out): the mouse's pitch rises 3.52 deg/s and roll 9.88 deg/s per 100 counts (r02, r03),
+    /// which is 39.5 and 110.7 deg/s per unit of stick; yaw's raw rate comes from its cap at rest (7.70 deg/s on A, r01)
+    /// over the turn curve's factor there (`TURN_CURVE_A`, shared by pitch and yaw in the exe). How the pips change them is
+    /// not measured yet: the same at every pip setting until session 3's four-pip run (a stand-in for that part).
+    pub const TURN_RAW: [f64; 3] = [39.28, 17.18, 110.1];
+    /// The turn curve's factor at a standstill (`a` of block 0x78.., pitch and yaw): pitch caps at 17.6 deg/s at rest against
+    /// its stick scale of 39.5 (session 2, r02).
+    pub const TURN_CURVE_A: f64 = 0.4456;
     pub const FWD_ACC: f64 = 44.38;
     pub const FWD_ACC_BASE: f64 = 44.20;
     pub const REV_ACC: f64 = 30.00;
@@ -250,11 +260,12 @@ pub mod stand_in {
 /// The stock Sidewinder's performance block at `eng_pips` (0..4) and mass `mass_t`: the current block (after the pips'
 /// blend and the thrusters' mass curve, both grade C rules) and the full-power block's top speed.
 ///
-/// - Full-power block (t = 1, what the outfitting screen shows): speeds and turn rates B (coriolis), the accelerations,
-///   flight assist's D and the jerk limit measured (D, `measured`), the angular accelerations EDSY hints, the rest stand-ins.
-/// - Base block (t = 0): the speeds at coriolis' `minthrust` share (the community's reading of that number: a hint), the
-///   turn rates at EDSY's `minpitch / pitch` (a hint), the forward acceleration measured (D), everything else as the full
-///   block (stand-in: no pip effect).
+/// - Full-power block (t = 1, what the outfitting screen shows): speeds B (coriolis); the raw turn rates, the turn curve's
+///   standstill factor, the accelerations, flight assist's D and the jerk limit measured (D, `measured`); the angular
+///   accelerations EDSY hints; the rest stand-ins.
+/// - Base block (t = 0): the speeds at coriolis' `minthrust` share (the community's reading of that number: a hint, which
+///   session 2's top speeds at 0, 2 and 4 pips bear out), the forward acceleration measured (D), everything else as the full
+///   block (stand-in: no pip effect; for the turn rates until a four-pip rotation run measures it).
 /// - t = ENG pips / most pips (C, step 0.11: 0x1437FEF60); the most pips a channel takes, 4, is Elite's well-known rule but
 ///   comes from data the exe loads (D until measured).
 /// - The mass curve: thrusters 2E (B, coriolis), the same curve for speeds, accelerations and turn rates until their
@@ -273,24 +284,22 @@ pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (crate::flight::Block, f6
         accel_side: measured::LAT_ACC,
         jerk_lin: measured::JERK_LIN,
         fa_d: measured::FA_D,
-        turn: [s.pitch, s.yaw, s.roll],
+        turn: measured::TURN_RAW,
         ang_accel: [edsy::PITCH_ACC, edsy::YAW_ACC, edsy::ROLL_ACC],
         ang_jerk: stand_in::ANG_JERK,
         fa_r: stand_in::FA_R,
         curve_accel: stand_in::CURVE,
-        curve_turn: stand_in::CURVE,
+        // (The turn curve's a measured; its b and p stand-ins until session 3's turn rates at five throttles. The roll curve
+        // is flat: at rest roll did not cap up to 0.66 of full stick, so its a is at least 0.66.)
+        curve_turn: crate::flight::Curve { a: measured::TURN_CURVE_A, ..stand_in::CURVE },
         curve_roll: stand_in::CURVE,
         fa_off_damp: stand_in::FA_OFF_DAMP,
     };
     let share = s.min_thrust_pct / 100.0;
-    let turn_share = edsy::MIN_PITCH / edsy::PITCH;
     let mut base = full.clone();
     base.accel_fwd = measured::FWD_ACC_BASE;
     base.top_speed *= share;
     base.boost_speed *= share;
-    for k in 0..3 {
-        base.turn[k] *= turn_share;
-    }
     let t = (eng_pips / 4.0).clamp(0.0, 1.0);
     let th = &THRUSTERS_2E;
     let k = mass_curve(mass_t, [th.min_mass, th.opt_mass, th.max_mass], [th.min_mul, th.opt_mul, th.max_mul]);

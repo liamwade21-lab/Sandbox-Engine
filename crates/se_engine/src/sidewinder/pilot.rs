@@ -15,6 +15,9 @@ use bevy::math::{DQuat, DVec3, Vec2};
 use bevy::prelude::*;
 use elite_sim::boost::{Boost, BoostSpec, Denied};
 use elite_sim::flight::{self, Input, Motion};
+use elite_sim::fuel::{Fuel, FuelWarning};
+use elite_sim::heat::{Heat, HeatSpec};
+use elite_sim::shields::{Hull, Shields};
 use elite_sim::power::{Distributor, ENG, SYS, WEP};
 
 use crate::data::SeData;
@@ -29,6 +32,14 @@ use super::{Sidewinder, SidewinderAssets};
 /// The simulation's tick (the spec's Q8 fallback) and the most ticks a frame.
 pub const TICK: f64 = 1.0 / 60.0;
 const MOST_TICKS: u32 = 6;
+/// A crash's damage (MJ, through the shield then the hull) from the speed into the ground: Elite's collision rule was not
+/// studied (A21's list), so this is a stand-in (E): nothing under `CRASH_FREE_MPS`, then half the mass (t) times the excess
+/// speed squared over 1,000 (a 50 m/s belly landing breaks the stock shield; at about 100 m/s the ship is lost).
+const CRASH_FREE_MPS: f64 = 10.0;
+fn crash_damage(mass_t: f64, speed: f64) -> f64 {
+    0.5 * mass_t * (speed - CRASH_FREE_MPS).max(0.0).powi(2) / 1000.0
+}
+
 /// Touching the ground with the gear down slower than this lands it; faster it is stopped there (the landing component's
 /// speed limit, P10 in A21's notes, is data: a stand-in until step 2.4 measures it).
 const TOUCHDOWN_MPS: f64 = 10.0;
@@ -72,6 +83,23 @@ pub struct Pilot {
     /// The power distributor: pips and capacitors (step 2.1).
     pub dist: Distributor,
     pub boost: Boost,
+    /// Heat (step 2.2).
+    pub heat: Heat,
+    pub heat_spec: HeatSpec,
+    /// For the HUD: the full block's top speed, this block's top as a share of it, the blue zone's band (speed shares where
+    /// the turn curve is within 2 % of its best).
+    pub full_top: f64,
+    pub top_share: f64,
+    pub blue_zone: (f32, f32),
+    /// The ship's systems (steps 2.3, 2.5): they belong to the ship, so boarding keeps them (`Pilot::boarding`) and a new
+    /// spawn or the restock makes them full (`Pilot::fresh_ship`, `restock`).
+    pub fuel: Fuel,
+    pub shields: Shields,
+    pub hull: Hull,
+    /// The power plant runs (fuel aboard).
+    pub powered: bool,
+    /// The hull reached zero: `seat_camera` loses the ship and sets him down.
+    pub destroyed: bool,
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -94,6 +122,16 @@ impl Default for Pilot {
             flight_assist: true,
             dist: Distributor::new(&elite_sim::data::DISTRIBUTOR_1E),
             boost: Boost::default(),
+            heat: Heat::new(&HeatSpec::sidewinder()),
+            heat_spec: HeatSpec::sidewinder(),
+            full_top: 1.0,
+            top_share: 1.0,
+            blue_zone: (0.0, 1.0),
+            fuel: Fuel::sidewinder(),
+            shields: Shields::sidewinder(elite_sim::data::JOURNAL_UNLADEN_MASS + elite_sim::data::FUEL_TANK_T + elite_sim::data::SIDEWINDER.reserve_fuel),
+            hull: Hull::sidewinder(),
+            powered: true,
+            destroyed: false,
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -107,10 +145,43 @@ impl Default for Pilot {
     }
 }
 
-/// The ship's mass for its block: unladen (the journal's), a full tank and the reservoir (no cargo).
-pub fn ship_mass_t() -> f64 {
-    use elite_sim::data::*;
-    JOURNAL_UNLADEN_MASS + FUEL_TANK_T + SIDEWINDER.reserve_fuel
+impl Pilot {
+    /// The HUD's heat percentage.
+    pub fn heat_percent(&self) -> f64 {
+        self.heat.hud_percent(&self.heat_spec)
+    }
+
+    /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
+    /// capacitors) are kept.
+    pub fn boarding(&self) -> Pilot {
+        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), ..Pilot::default() }
+    }
+
+    /// A new ship: everything full.
+    pub fn fresh_ship(&mut self) {
+        *self = Pilot::default();
+    }
+
+    /// The restock (the spec's D5): fuel, shields and hull full, heat back to its start.
+    pub fn restock(&mut self) {
+        self.fuel.refill();
+        self.shields.refill();
+        self.hull = Hull::sidewinder();
+        self.heat = Heat::new(&self.heat_spec);
+        self.powered = true;
+    }
+
+    /// The ship's mass now: unladen (the journal's) and the fuel aboard.
+    pub fn mass_t(&self) -> f64 {
+        elite_sim::data::JOURNAL_UNLADEN_MASS + self.fuel.total()
+    }
+}
+
+/// The speed shares where a blue-zone curve is within 2 % of its best (the HUD's blue band).
+fn blue_band(c: &elite_sim::flight::Curve) -> (f32, f32) {
+    let best = (0..=100).map(|i| c.at(i as f64 / 100.0)).fold(f64::MIN, f64::max);
+    let inside: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).filter(|x| c.at(*x) >= 0.98 * best).collect();
+    (inside.first().copied().unwrap_or(0.0) as f32, inside.last().copied().unwrap_or(1.0) as f32)
 }
 
 // elite-sim's glam and Bevy's may be different versions: through arrays.
@@ -287,8 +358,11 @@ pub fn fly(
     pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / gear_s, dt as f32 / gear_s);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
-    let (block, full_top) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), ship_mass_t());
+    let (block, full_top) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), pilot.mass_t());
     let spec = BoostSpec::sidewinder(block.boost_ramp);
+    pilot.full_top = full_top;
+    pilot.top_share = block.top_speed / full_top.max(1e-9);
+    pilot.blue_zone = blue_band(&block.curve_turn);
     // Boost: the press draws its cost from the ENG capacitor or is refused (the exe's messages, our words until step 3.3).
     // (Landed it does nothing: the flight doesn't run on the ground. Not from the exe: E.)
     let boost_pressed = keys.boost || std::mem::take(&mut pilot.dev_boost);
@@ -306,15 +380,44 @@ pub fn fly(
         pilot.accum -= TICK;
         n += 1;
         pilot.ticks += 1;
-        pilot.dist.recharge(TICK, true);
+        // Fuel (step 2.5): the burn from the reservoir; dry, the plant gives nothing (no thrust, no recharge, no shields).
+        let (share, warning) = pilot.fuel.tick(TICK);
+        if let Some(w) = warning {
+            msg.show(match w {
+                FuelWarning::Quarter => "Fuel at 25 %",
+                FuelWarning::Tenth => "Fuel at 10 %",
+                FuelWarning::Twentieth => "Fuel at 5 %",
+            }.to_string());
+        }
+        if pilot.powered && share < 1.0 {
+            pilot.powered = false;
+            msg.show("Out of fuel: the power plant has stopped".to_string());
+        }
+        let powered = pilot.powered;
+        pilot.dist.recharge(TICK, powered);
         pilot.boost.tick(&spec, TICK);
+        let sys_share = pilot.dist.share(SYS);
+        pilot.shields.tick(TICK, powered, sys_share);
+        // Heat: the idle load (a stand-in fitted to session 2's idle), then the radiator (step 2.2).
+        let hs = pilot.heat_spec;
+        pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
+        let ev = pilot.heat.tick(&hs, TICK, powered, false);
+        if ev.warning {
+            msg.show("Heat warning".to_string());
+        }
         if pilot.landed {
             // Lift off: up thrust (Elite lifts a landed ship on its vertical thrusters).
             if input.vertical <= 0.0 {
                 continue;
             }
             pilot.landed = false;
-            pilot.motion = Motion { rot: to_sim_q(p.rot), ..Motion::default() };
+            // (The thrusters start from the thrust that holds the ship against gravity, so the jerk limit (block 0x28) ramps
+            // from hovering: from zero the ship sank back for the 0.4 s the limit takes to reach 1 g. Elite doesn't fly a
+            // landed ship, so how its liftoff starts is not known: E.)
+            let r0 = p.pos.length().max(1.0);
+            let g_ship = p.rot.inverse() * (-(p.pos / r0) * gm / (r0 * r0));
+            let hover = -DVec3::new(g_ship.x, g_ship.y, -g_ship.z);
+            pilot.motion = Motion { rot: to_sim_q(p.rot), last_acc: to_sim_v(hover), ..Motion::default() };
             msg.show("Liftoff".to_string());
             info!("sidewinder: liftoff");
         }
@@ -322,7 +425,7 @@ pub fn fly(
         let up = p.pos / r;
         let outside = -up * gm / (r * r);
         pilot.motion.rot = to_sim_q(p.rot);
-        let tick_input = Input { forward: pilot.boost.forward(&spec, input.forward), ..input };
+        let tick_input = if powered { Input { forward: pilot.boost.forward(&spec, input.forward), ..input } } else { Input { flight_assist: false, ..Input::default() } };
         flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
         p.rot = from_sim_q(pilot.motion.rot);
         p.pos += from_sim_v(pilot.motion.vel) * TICK;
@@ -362,7 +465,15 @@ pub fn fly(
                 info!("sidewinder: touchdown at {:.1} m/s ({:.1} m/s down), {:.0} degrees of tilt, feet within {:.2} m", vel.length(), down_speed, tilt, spread);
                 break;
             }
-            // Stopped by the ground (no damage until step 2.3): out of it, and no speed into it.
+            // Stopped by the ground: out of it, and no speed into it; a hard enough impact damages it (step 2.3).
+            let dmg = crash_damage(pilot.mass_t(), down_speed);
+            if dmg > 0.0 {
+                let rest = pilot.shields.hit(dmg);
+                if pilot.hull.damage(rest) {
+                    pilot.destroyed = true;
+                }
+                info!("sidewinder: hit the ground at {:.1} m/s: {:.1} MJ, shields {:.0} %, hull {:.0} %", down_speed, dmg, pilot.shields.percent(), pilot.hull.percent());
+            }
             p.pos -= up * lowest;
             if down_speed > 0.0 {
                 pilot.motion.vel = to_sim_v(vel + up * down_speed);

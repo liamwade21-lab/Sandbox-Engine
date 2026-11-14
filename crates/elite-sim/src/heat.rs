@@ -30,6 +30,11 @@ pub mod stand_in {
     pub const DAMAGE_RATE_LO: f64 = 0.0;
     pub const DAMAGE_RATE_HI: f64 = 0.01;
     pub const DAMAGE_EVERY_S: f64 = 1.0;
+    /// The heat the ship makes idling (MJ a second: the power plant and whatever else runs), the one number that holds session
+    /// 2's idle at its measured 36 % (s09, 60 s at rest, 2/2/2 pips; near the system's star, so the star's heat is in it) with
+    /// the radiator's numbers above and the HUD's percentage taken as heat / capacity: a stand-in fitted to one measurement
+    /// (E) until t01's heat runs separate the loads.
+    pub const IDLE_LOAD: f64 = 3.379;
 }
 
 /// The exe's constants (C).

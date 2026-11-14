@@ -202,6 +202,13 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
   throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state`, with `SE_SANDBOX=1`.
   The mod's systems have run conditions (nothing runs before a spawn's files are read: the spec's C20); keep it so.
+  The ship's systems (fuel, shields, hull, heat, pips) live in `Pilot` and belong to the ship: boarding keeps them
+  (`Pilot::boarding`), a spawn makes them full (`fresh_ship`), the restock refills them; `pilot.destroyed` (hull 0) loses the
+  ship through `seat_camera`. The HUD is `sidewinder/hud.rs` (a flat overlay; Elite's holograms are not built). Liftoff
+  starts the thrusters from hover thrust (`Motion::last_acc`), or the measured jerk limit lets the ship sink back.
+  The measured numbers are `elite_sim::data::measured` (each names its session and trace); `cargo test --release -p
+  elite-sim` replays the traces (`tests/traces.rs`: a guard, and the strict gate as an ignored test, the open item) and the
+  turn rates at rest (`tests/rotation.rs`).
   Measuring Elite (`re/elite/measure/`, out of git: `BRIEF.md`, `tools/` capture.py, keys.py, journal_watch.py,
   hud_read.py, screen.py; manoeuvres in `scripts/`; each session's ticket in `.rea/tickets/measure/`, its raw files and log
   in `raw/sessionN/`). The user plays with their own bindings (`Custom.4.2.binds` in Elite's Options: Elite's default keys,

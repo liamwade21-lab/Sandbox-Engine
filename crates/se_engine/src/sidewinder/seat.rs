@@ -172,7 +172,7 @@ pub fn board(
         if let Some(id) = reg.mods.iter().find(|m| m.code == CODE).map(|m| m.id.clone()) {
             control.board(&reg, &id);
             *seat = Seat::boarded(&mut sim);
-            *pilot = Pilot::default();
+            *pilot = pilot.boarding();
             info!("sidewinder: boarded ({d:.1} m from the hull)");
         }
     }
@@ -194,40 +194,6 @@ pub fn draw_prompt(mut contexts: bevy_egui::EguiContexts, prompt: Res<BoardPromp
     let font = egui::FontId::proportional(20.0);
     painter.text(at + egui::vec2(1.5, 1.5), egui::Align2::CENTER_CENTER, text, font.clone(), egui::Color32::from_black_alpha(180));
     painter.text(at, egui::Align2::CENTER_CENTER, text, font, egui::Color32::from_rgb(255, 140, 20));
-    Ok(())
-}
-
-/// Step 1.3's bare readout while seated (Elite's HUD is step 4.1): speed, throttle with its share of the cap, flight assist,
-/// gear, landed; and the keys at the bottom. Drawn in Elite's orange.
-pub fn draw_readout(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>) -> Result {
-    if !seat.seated || !control.pilot || control.main_menu {
-        return Ok(());
-    }
-    let ctx = contexts.ctx_mut()?;
-    let r = ctx.content_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder readout")));
-    let orange = egui::Color32::from_rgb(255, 140, 20);
-    let speed = pilot.motion.vel.length();
-    let d = &pilot.dist;
-    let bar = |c: usize| {
-        let k = (d.charge[c] / d.caps[c].capacity.max(1e-9) * 8.0).round() as usize;
-        format!("{}{}", "|".repeat(k.min(8)), ".".repeat(8 - k.min(8)))
-    };
-    let lines = [
-        format!("{:>4.0} m/s", speed),
-        format!("SYS {:.1} {}  ENG {:.1} {}  WEP {:.1} {}", d.pips(elite_sim::power::SYS), bar(elite_sim::power::SYS), d.pips(elite_sim::power::ENG), bar(elite_sim::power::ENG), d.pips(elite_sim::power::WEP), bar(elite_sim::power::WEP)),
-        if pilot.boost.firing() { "BOOST".to_string() } else { String::new() },
-        format!("Throttle {:+.0} %", pilot.throttle * 100.0),
-        format!("Flight assist {}", if pilot.flight_assist { "on" } else { "OFF" }),
-        format!("Landing gear {}", if pilot.gear_down { "down" } else { "up" }),
-        if pilot.landed { "Landed".to_string() } else { String::new() },
-    ];
-    let at = egui::pos2(r.center().x - r.width() * 0.18, r.bottom() - r.height() * 0.2);
-    for (i, l) in lines.iter().enumerate() {
-        painter.text(at + egui::vec2(0.0, i as f32 * 20.0), egui::Align2::RIGHT_TOP, l, egui::FontId::monospace(16.0), orange);
-    }
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  Z assist  L gear  Middle button head look  B out (landed)";
-    painter.text(egui::pos2(r.center().x, r.bottom() - 14.0), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(13.0), orange.gamma_multiply(0.8));
     Ok(())
 }
 
@@ -323,6 +289,12 @@ pub fn seat_camera(
     let look = DQuat::from_rotation_y(seat.look.x as f64) * DQuat::from_rotation_x(seat.look.y as f64);
     let eye_body = p.pos + p.rot * eye;
     let rot_body = (p.rot * look).normalize();
+    // Destroyed (the hull at zero): the ship is lost and he is set down where it was.
+    if pilot.destroyed && control.pilot {
+        msg.show("The Sidewinder was destroyed".to_string());
+        info!("sidewinder: destroyed");
+        control.request_off();
+    }
     if seat.leave {
         seat.leave = false;
         match leave_rule(pilot.landed, true) {
@@ -352,7 +324,7 @@ pub fn seat_camera(
         sim.rate = rate;
         sim.paused = paused;
     }
-    let lost = leave_rule(pilot.landed, false) == Leave::Lost;
+    let lost = pilot.destroyed || leave_rule(pilot.landed, false) == Leave::Lost;
     let (obj, pos, rot) = (p.obj, p.pos, p.rot);
     if lost {
         if let Some(mut gone) = ship.parked.take() {

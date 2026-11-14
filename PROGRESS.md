@@ -11,8 +11,11 @@
    board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust, Tab boost, the
    arrows for pips, Z flight assist, L gear; come down slowly with the gear down; B to get out once landed. The tests can't
    press a real mouse, keyboard or pad: say how it feels against Elite and anything wrong.
-3. **Refuel the Sidewinder in Elite when it suits you:** the main tank is at 1.4 t of 2 (sessions use about 0.2 t each in
-   open space; a jump or supercruise session will use more). The agent never refuels (that's a station service).
+3. **Refuel the Sidewinder in Elite (this blocks measuring session 3):** the main tank is down to 0.8 t of 2 (the reservoir
+   0.27 t). Session 3 started Elite, saw 0.8 t and stopped before flying, by its rule (under 1.0 t). Most of the drop was
+   Elite left running idle after session 2 (it burns about 0.4 t an hour just sitting). Fly to a station and refuel (the
+   agent never does: station services are yours), then tell me "refuelled"; you can leave the ship docked or in open
+   space (if docked, the agent uses Launch only).
 4. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
@@ -40,8 +43,13 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     marker. Every run replays at about 0.5 m/s rms, but the fast changes just after a key are up to 3.5 frames out, so the
     strict gate is not passed yet (the open item). Rotation at rest measured too (yaw 7.7 deg/s; pitch caps at 17.6); the
     FOV setting 56.249 is vertical. Step 2.1 (pips, capacitors, boost) is in the game (first cut).
-  - Next: session 3 (boost, flight assist off, capacitor recharge, the turn rates at several throttles, heat), then the
-    rest of Phase 2 (heat, shields and hull, landing, fuel, weapons).
+  - Also in the game now (first cuts): heat, shields and hull (a hard crash breaks them; a hull at zero destroys the ship
+    and sets you down), fuel (the burn at Elite's own idle rate, 0.42 t an hour; the restock fills it), and a flat HUD laid
+    out from your screenshot (radar, heat, speed and throttle, shields and hull, pips, fuel, the indicators). The turn
+    rule is now the exe's own (read off its code), and the turn rates at rest pass the gate.
+  - Waiting on you for fuel: session 3 (boost, flight assist off, capacitor recharge, the turn rates at several throttles,
+    heat). Meanwhile: an agent is finding the Sidewinder's sounds in Elite's packs from the recordings (step 0.7).
+  - Next without Elite: weapons (2.6), sound (Phase 3) once the sounds are found, supercruise's code (Phase 5).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

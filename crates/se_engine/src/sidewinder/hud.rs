@@ -1,0 +1,134 @@
+//! The seat's HUD (step 4.1's fallback: a flat overlay; Elite draws its HUD as holograms in the cockpit, which step 4.1's
+//! first part replaces this with). Laid out from the user's own Elite screenshot at 3440 x 1440 (2026-11-14, the exit
+//! picture): every place below is a share of the screen's height from its middle, read off that picture (E: the look
+//! recreated, the numbers the simulation's). Colours sampled from it: the HUD's orange (213, 110, 0) and the shields' cyan
+//! (0, 200, 195).
+//!
+//! What it shows: the radar's ring under the view, heat on its upper left, the speed on its upper right with the throttle
+//! gauge's arc (the fill the speed, the marker the throttle, its blue band the blue zone), the ship's hologram ring with the
+//! shields' and hull's percentages, the three pip bars (the pips as notches, the capacitor as the fill), fuel and the three
+//! indicators (mass locked, landing gear, cargo scoop), and the keys at the bottom.
+
+use bevy::prelude::*;
+use bevy_egui::egui;
+
+use crate::mods::ModControl;
+
+use super::pilot::Pilot;
+use super::seat::Seat;
+
+const ORANGE: egui::Color32 = egui::Color32::from_rgb(230, 118, 0);
+const DIM: egui::Color32 = egui::Color32::from_rgb(110, 55, 0);
+const CYAN: egui::Color32 = egui::Color32::from_rgb(0, 200, 195);
+const BLUE_ZONE: egui::Color32 = egui::Color32::from_rgb(40, 140, 220);
+
+/// A point `x`, `y` screen heights from the middle (y down).
+fn at(r: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
+    let h = r.height();
+    egui::pos2(r.center().x + x * h, r.center().y + y * h)
+}
+
+pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>) -> Result {
+    if !seat.seated || !control.pilot || control.main_menu {
+        return Ok(());
+    }
+    let ctx = contexts.ctx_mut()?;
+    let r = ctx.content_rect();
+    let h = r.height();
+    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder hud")));
+    let font = |s: f32| egui::FontId::monospace(s * h);
+    let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
+
+    // The radar's ring (an ellipse under the view).
+    let radar = at(r, 0.0, 0.354);
+    for (k, a) in [(1.0f32, 0.2014f32), (0.66, 0.13), (0.33, 0.065)] {
+        let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
+            let t = i as f32 / 64.0 * std::f32::consts::TAU;
+            egui::pos2(radar.x + a * h * t.cos(), radar.y + 0.083 * h * k * t.sin())
+        }).collect();
+        p.add(egui::Shape::line(pts, stroke(if k == 1.0 { ORANGE } else { DIM })));
+    }
+
+    // Heat, upper left of the radar.
+    let heat = pilot.heat_percent();
+    p.text(at(r, -0.125, 0.292), egui::Align2::CENTER_CENTER, format!("{:03.0}%", heat), font(0.022), if heat >= 100.0 { egui::Color32::RED } else { ORANGE });
+
+    // The speed, upper right, and the throttle gauge's arc to its right: the fill the speed (of the full block's top), the
+    // marker the throttle, the blue band the blue zone (the throttle shares where the turn curve is at its best: the
+    // block's curve peak `p`).
+    let speed = pilot.motion.vel.length();
+    p.text(at(r, 0.174, 0.308), egui::Align2::CENTER_CENTER, format!("{:.0}", speed), font(0.024), ORANGE);
+    let (x0, y0, x1, y1) = (0.194f32, 0.458f32, 0.236f32, 0.333f32);
+    let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
+    p.add(egui::Shape::line_segment([along(0.0), along(1.0)], stroke(DIM)));
+    let full_top = pilot.full_top.max(1.0);
+    let fill = (speed / full_top).clamp(0.0, 1.0) as f32;
+    p.add(egui::Shape::line_segment([along(0.0), along(fill)], egui::Stroke::new(0.006 * h, ORANGE)));
+    let (bz0, bz1) = pilot.blue_zone;
+    p.add(egui::Shape::line_segment([along(bz0), along(bz1)], egui::Stroke::new(0.003 * h, BLUE_ZONE)));
+    let th = pilot.throttle as f32;
+    let mark = along((th.abs() * pilot.top_share as f32).clamp(0.0, 1.0));
+    p.add(egui::Shape::line_segment([mark - egui::vec2(0.012 * h, 0.0), mark + egui::vec2(0.012 * h, 0.0)], stroke(if th < 0.0 { egui::Color32::RED } else { egui::Color32::WHITE })));
+
+    // The ship's hologram ring: shields (cyan) and hull.
+    let ring = at(r, 0.385, 0.303);
+    let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
+        let t = i as f32 / 64.0 * std::f32::consts::TAU;
+        egui::pos2(ring.x + 0.108 * h * t.cos(), ring.y + 0.055 * h * t.sin())
+    }).collect();
+    p.add(egui::Shape::line(pts, egui::Stroke::new(0.004 * h, if pilot.shields.up { CYAN } else { DIM })));
+    p.text(at(r, 0.401, 0.367), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.shields.percent()), font(0.016), CYAN);
+    p.text(at(r, 0.317, 0.424), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.hull.percent()), font(0.016), ORANGE);
+
+    // The pips: three bars (SYS, ENG, WEP), the capacitor's charge as the fill and the pips as notches beside.
+    let d = &pilot.dist;
+    for (i, &(c, label, lx)) in [(elite_sim::power::SYS, "SYS", 0.553f32), (elite_sim::power::ENG, "ENG", 0.597), (elite_sim::power::WEP, "WEP", 0.642)].iter().enumerate() {
+        let (top, bottom) = (0.3125f32, 0.382f32);
+        let half_w = 0.0083f32;
+        let charge = (d.charge[c] / d.caps[c].capacity.max(1e-9)).clamp(0.0, 1.0) as f32;
+        let frame = egui::Rect::from_min_max(at(r, lx - half_w, top), at(r, lx + half_w, bottom));
+        p.rect_stroke(frame, 0.0, stroke(DIM), egui::StrokeKind::Inside);
+        let fill = egui::Rect::from_min_max(at(r, lx - half_w, bottom - (bottom - top) * charge), at(r, lx + half_w, bottom));
+        p.rect_filled(fill, 0.0, ORANGE);
+        for k in 0..d.half[c] {
+            let y = bottom - (bottom - top) * (k as f32 + 0.5) / elite_sim::power::MOST_HALF as f32;
+            p.circle_filled(at(r, lx + half_w + 0.006, y), 0.0025 * h, ORANGE);
+        }
+        p.text(at(r, lx, 0.398 + 0.004 * i as f32), egui::Align2::CENTER_TOP, label, font(0.011), ORANGE);
+    }
+
+    // Fuel and the indicators.
+    p.text(at(r, 0.708, 0.343), egui::Align2::CENTER_CENTER, "FUEL", font(0.012), ORANGE);
+    p.text(at(r, 0.83, 0.343), egui::Align2::CENTER_CENTER, format!("{:.2} t", pilot.fuel.main), font(0.012), ORANGE);
+    let fuel_share = (pilot.fuel.main / pilot.fuel.main_cap.max(1e-9)).clamp(0.0, 1.0) as f32;
+    p.add(egui::Shape::line_segment([at(r, 0.683, 0.364), at(r, 0.875, 0.364)], egui::Stroke::new(0.004 * h, DIM)));
+    p.add(egui::Shape::line_segment([at(r, 0.683, 0.364), at(r, 0.683 + 0.192 * fuel_share, 0.364)], egui::Stroke::new(0.004 * h, ORANGE)));
+    for (k, (label, on)) in [("MASS LOCKED", false), ("LANDING GEAR", pilot.gear_down), ("CARGO SCOOP", false)].iter().enumerate() {
+        let y = 0.392 + 0.02 * k as f32;
+        let b = egui::Rect::from_center_size(at(r, 0.694, y), egui::vec2(0.009 * h, 0.009 * h));
+        if *on {
+            p.rect_filled(b, 0.0, ORANGE);
+        } else {
+            p.rect_stroke(b, 0.0, stroke(DIM), egui::StrokeKind::Inside);
+        }
+        p.text(at(r, 0.705, y), egui::Align2::LEFT_CENTER, *label, font(0.012), if *on { ORANGE } else { DIM });
+    }
+
+    // Messages of the moment: flight assist off, boosting, landed.
+    let mut notes = Vec::new();
+    if !pilot.flight_assist {
+        notes.push("FLIGHT ASSIST OFF");
+    }
+    if pilot.boost.firing() {
+        notes.push("BOOST");
+    }
+    if pilot.landed {
+        notes.push("LANDED");
+    }
+    for (k, n) in notes.iter().enumerate() {
+        p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);
+    }
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  Z assist  L gear  Middle button head look  B out (landed)";
+    p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
+    Ok(())
+}
