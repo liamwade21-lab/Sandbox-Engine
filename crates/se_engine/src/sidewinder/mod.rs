@@ -454,6 +454,21 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<seat::Seat>().request_leave();
             None
         }
+        "pip" => {
+            let word = arg.split_whitespace().nth(1).unwrap_or("").to_ascii_lowercase();
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            match word.as_str() {
+                "eng" => pl.dist.increase(elite_sim::power::ENG),
+                "sys" => pl.dist.increase(elite_sim::power::SYS),
+                "wep" => pl.dist.increase(elite_sim::power::WEP),
+                _ => pl.dist.reset(),
+            }
+            None
+        }
+        "boost" => {
+            world.resource_mut::<pilot::Pilot>().dev_boost = true;
+            None
+        }
         "throttle" | "thrust" | "stick" | "fa" | "gear" | "log" => {
             let nums: Vec<f64> = arg.split_whitespace().skip(1).filter_map(|w| w.parse().ok()).collect();
             let word = arg.split_whitespace().nth(1).unwrap_or("").to_ascii_lowercase();
@@ -485,20 +500,25 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
                     pl.flight_assist,
                     if pl.gear_down { "down" } else { "up" },
                     pl.gear_t,
-                    pl.ticks
+                    pl.ticks,
+                    pl.dist.half,
+                    pl.dist.charge[0],
+                    pl.dist.charge[1],
+                    pl.dist.charge[2],
+                    pl.boost.state
                 );
             }
             None
         }
         _ => {
-            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off");
+            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost");
             None
         }
     };

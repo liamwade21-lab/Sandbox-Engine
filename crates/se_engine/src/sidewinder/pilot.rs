@@ -1,18 +1,21 @@
 //! Flying the Sidewinder in normal space (step 1.3): `elite_sim::flight` stepped at a fixed tick from Elite's keys, the ship
 //! moving in its body's turning frame (as Elite's ships near a planet hover over a spot), the body's gravity as the outside
 //! pull the flight assist holds against, the ground under it from the terrain's loaded heights, a plain touchdown with the
-//! gear down.
+//! gear down by Elite's touchdown rule; the power distributor (pips, capacitors) and boost (step 2.1, `elite_sim::power`,
+//! `elite_sim::boost`).
 //!
 //! - The tick is 60 Hz (the spec's Q8: Elite's own rate was not found in its exe), at most 6 a frame, the rest dropped (the
-//!   spec's edge cases), on real seconds (the spec's F4: the game clock's keys are off while seated).
-//! - Not yet: building contact and damage (step 2.3), Elite's touchdown and liftoff rules and slopes (2.4), boost and the
-//!   pips (2.1), heat (2.2). The ship's own numbers are partly stand-ins (`elite_sim::data`), until measured.
+//!   spec's edge cases), on real seconds (the game clock runs at real time while seated).
+//! - Not yet: building contact and damage (step 2.3), liftoff rules and slopes (2.4), heat (2.2). The ship's own numbers
+//!   are partly stand-ins (`elite_sim::data`, `power::stand_in`, `boost::stand_in`), until measured.
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::math::{DQuat, DVec3, Vec2};
 use bevy::prelude::*;
+use elite_sim::boost::{Boost, BoostSpec, Denied};
 use elite_sim::flight::{self, Input, Motion};
+use elite_sim::power::{Distributor, ENG, SYS, WEP};
 
 use crate::data::SeData;
 use crate::mods::ModControl;
@@ -52,6 +55,12 @@ pub struct PilotKeys {
     /// mouse's virtual stick while deflected (step 7.1).
     pub pad_roll: f64,
     pub pad_pitch: f64,
+    /// The distributor's keys (`IncreaseEnginesPower` and the rest) and boost (`UseBoostJuice`), pressed this frame.
+    pub pip_eng: bool,
+    pub pip_sys: bool,
+    pub pip_wep: bool,
+    pub pip_reset: bool,
+    pub boost: bool,
 }
 
 /// The flight's state while seated.
@@ -60,7 +69,9 @@ pub struct Pilot {
     pub motion: Motion,
     pub throttle: f64,
     pub flight_assist: bool,
-    pub eng_pips: f64,
+    /// The power distributor: pips and capacitors (step 2.1).
+    pub dist: Distributor,
+    pub boost: Boost,
     pub gear_down: bool,
     /// The gear's animation, 0 down .. 1 up.
     pub gear_t: f32,
@@ -69,8 +80,9 @@ pub struct Pilot {
     pub stick: Vec2,
     accum: f64,
     pub ticks: u64,
-    /// A test's controls held for some seconds (`sw stick`, `sw thrust`).
+    /// A test's controls held for some seconds (`sw stick`, `sw thrust`), and a test's boost press (`sw boost`).
     pub dev: Option<(Input, f32)>,
+    pub dev_boost: bool,
     pub log: bool,
 }
 
@@ -80,7 +92,8 @@ impl Default for Pilot {
             motion: Motion::default(),
             throttle: 0.0,
             flight_assist: true,
-            eng_pips: 2.0,
+            dist: Distributor::new(&elite_sim::data::DISTRIBUTOR_1E),
+            boost: Boost::default(),
             gear_down: true,
             gear_t: 0.0,
             landed: true,
@@ -88,6 +101,7 @@ impl Default for Pilot {
             accum: 0.0,
             ticks: 0,
             dev: None,
+            dev_boost: false,
             log: false,
         }
     }
@@ -188,6 +202,11 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         // (Roll on the pad: stick right rolls right, a negative roll about the back axis.)
         pad_roll: -pv("RollAxisRaw"),
         pad_pitch: pv("PitchAxisRaw"),
+        pip_eng: press("IncreaseEnginesPower"),
+        pip_sys: press("IncreaseSystemsPower"),
+        pip_wep: press("IncreaseWeaponsPower"),
+        pip_reset: press("ResetPowerDistribution"),
+        boost: press("UseBoostJuice"),
     }
 }
 
@@ -224,6 +243,15 @@ pub fn fly(
     if keys.throttle_zero {
         pilot.throttle = 0.0;
     }
+    // The distributor's keys (step 2.1).
+    for (pressed, c) in [(keys.pip_eng, ENG), (keys.pip_sys, SYS), (keys.pip_wep, WEP)] {
+        if pressed {
+            pilot.dist.increase(c);
+        }
+    }
+    if keys.pip_reset {
+        pilot.dist.reset();
+    }
     let rate = elite_sim::data::stand_in::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
     // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
@@ -259,13 +287,27 @@ pub fn fly(
     pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / gear_s, dt as f32 / gear_s);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
-    let (block, full_top) = elite_sim::data::sidewinder_block(pilot.eng_pips, ship_mass_t());
+    let (block, full_top) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), ship_mass_t());
+    let spec = BoostSpec::sidewinder(block.boost_ramp);
+    // Boost: the press draws its cost from the ENG capacitor or is refused (the exe's messages, our words until step 3.3).
+    // (Landed it does nothing: the flight doesn't run on the ground. Not from the exe: E.)
+    let boost_pressed = keys.boost || std::mem::take(&mut pilot.dev_boost);
+    if boost_pressed && !pilot.landed {
+        match pilot.boost.press(&spec, &mut pilot.dist, true) {
+            Ok(()) => info!("sidewinder: boost"),
+            Err(Denied::NotEnoughEnergy) => msg.show("Boost: not enough engine power".to_string()),
+            Err(Denied::EngineOff) => msg.show("Boost: the engines are off".to_string()),
+            Err(Denied::Busy) => {}
+        }
+    }
     pilot.accum += dt;
     let mut n = 0;
     while pilot.accum >= TICK && n < MOST_TICKS {
         pilot.accum -= TICK;
         n += 1;
         pilot.ticks += 1;
+        pilot.dist.recharge(TICK, true);
+        pilot.boost.tick(&spec, TICK);
         if pilot.landed {
             // Lift off: up thrust (Elite lifts a landed ship on its vertical thrusters).
             if input.vertical <= 0.0 {
@@ -280,7 +322,8 @@ pub fn fly(
         let up = p.pos / r;
         let outside = -up * gm / (r * r);
         pilot.motion.rot = to_sim_q(p.rot);
-        flight::step(&block, full_top, false, &input, to_sim_v(outside), &mut pilot.motion, TICK);
+        let tick_input = Input { forward: pilot.boost.forward(&spec, input.forward), ..input };
+        flight::step(&block, full_top, pilot.boost.firing(), &tick_input, to_sim_v(outside), &mut pilot.motion, TICK);
         p.rot = from_sim_q(pilot.motion.rot);
         p.pos += from_sim_v(pilot.motion.vel) * TICK;
         // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,

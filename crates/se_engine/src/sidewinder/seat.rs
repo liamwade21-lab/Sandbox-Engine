@@ -208,8 +208,15 @@ pub fn draw_readout(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilo
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder readout")));
     let orange = egui::Color32::from_rgb(255, 140, 20);
     let speed = pilot.motion.vel.length();
+    let d = &pilot.dist;
+    let bar = |c: usize| {
+        let k = (d.charge[c] / d.caps[c].capacity.max(1e-9) * 8.0).round() as usize;
+        format!("{}{}", "|".repeat(k.min(8)), ".".repeat(8 - k.min(8)))
+    };
     let lines = [
         format!("{:>4.0} m/s", speed),
+        format!("SYS {:.1} {}  ENG {:.1} {}  WEP {:.1} {}", d.pips(elite_sim::power::SYS), bar(elite_sim::power::SYS), d.pips(elite_sim::power::ENG), bar(elite_sim::power::ENG), d.pips(elite_sim::power::WEP), bar(elite_sim::power::WEP)),
+        if pilot.boost.firing() { "BOOST".to_string() } else { String::new() },
         format!("Throttle {:+.0} %", pilot.throttle * 100.0),
         format!("Flight assist {}", if pilot.flight_assist { "on" } else { "OFF" }),
         format!("Landing gear {}", if pilot.gear_down { "down" } else { "up" }),
@@ -219,7 +226,7 @@ pub fn draw_readout(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilo
     for (i, l) in lines.iter().enumerate() {
         painter.text(at + egui::vec2(0.0, i as f32 * 20.0), egui::Align2::RIGHT_TOP, l, egui::FontId::monospace(16.0), orange);
     }
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Z assist  L gear  Middle button head look  B out (landed)";
+    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  Z assist  L gear  Middle button head look  B out (landed)";
     painter.text(egui::pos2(r.center().x, r.bottom() - 14.0), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(13.0), orange.gamma_multiply(0.8));
     Ok(())
 }

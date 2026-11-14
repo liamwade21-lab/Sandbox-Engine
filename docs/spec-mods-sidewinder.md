@@ -912,3 +912,19 @@ few centimetres in it). Which axis Elite's setting is, and so which number is ri
 **The user's controls:** the user plays with their own bindings (`Custom.4.2.binds`, read only): the flight keys are
 Elite's defaults (W, S, X, Tab, A, D, Q, E, R, F, the arrows, Z, L) but the mouse's sensitivity is 0.2725 (the default
 file's is 1.0). The mod ships Elite's default file (A); measurements made with the user's sensitivity are converted.
+
+### Step 2.1, first cut: the distributor and boost (2026-11-14). **Built; boost's times and the recharge curve not yet measured**
+
+`crates/elite-sim/src/power.rs` and `boost.rs`, wired into the seat (`pilot.rs`): the pips in halves (4/4/4 at the start,
+8 a channel at most, a press moving a whole pip: grade B/D from `Status.json`; the share between the two others when one is
+short: E), Elite's keys from the shipped binds (the arrows; Tab), three capacitors (coriolis's sizes, B) recharging by the
+exe's rule `lo + (hi - lo) x (pips / most)^p` (C) with `hi` the outfitting rate (A20's reading) and `lo` 0, `p` 1
+(stand-ins, E, until a recharge measurement), draws all or nothing (C); boost: the press draws coriolis's 7 MJ from ENG or is
+refused (C: `0x142E4A820`), then warm-up, firing (the flight's cap the boost speed, the forward demand pushed to full), cool-
+down; the times are stand-ins (E: coriolis's 4 s interval split evenly between firing and cooling). The pips feed the flight
+block's blend (`t = ENG pips / 4`, C). Tests: `pips_move_as_measured`, `draws_and_recharge`, `boost_cycle_and_refusals`; in
+a test run four ENG pips gave 220.98 m/s (Elite: 221, session 2) and a boost drained 7 MJ and fired; a second, with 2.7 MJ
+left, was refused. `sw pip eng|sys|wep|reset`, `sw boost`. Also drafted for later steps: `heat.rs` (2.2: the exe's rules,
+the ship's numbers stand-ins), `supercruise.rs` (5.2: the wells' slowdown, the cap, the drop, from A50; numbers stand-ins),
+`replay.rs` and `tests/traces.rs` (the gate's replay of measured traces, one fitted latency a trace, and a fit of the
+unmeasured numbers).
