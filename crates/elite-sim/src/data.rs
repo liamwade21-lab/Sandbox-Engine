@@ -88,7 +88,8 @@ pub struct Fsd {
 }
 pub const FSD_2E: Fsd = Fsd { mass: 2.5, power: 0.16, opt_mass: 48.0, max_fuel: 0.6, fuel_mul: 0.011, fuel_power: 2.0 };
 
-/// Power distributor 1E. B (coriolis `Int_PowerDistributor_Size1_Class1`): capacities in MJ, recharge in MW at 2 pips.
+/// Power distributor 1E. B (coriolis `Int_PowerDistributor_Size1_Class1`): capacities in MJ, recharge in MW (the outfitting
+/// screen's figure: A20 reads it as the rate with every pip in the channel, `power.rs`'s `hi`; inferred).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Distributor {
     pub mass: f64,
@@ -212,13 +213,6 @@ pub mod measured {
     /// The keyboard's throttle rate, a share a second: the HUD's throttle marker reached full 1.9 s after W went down in
     /// session 2 (1.75 s in session 1's run, read off a recording that showed the whole gauge).
     pub const THROTTLE_RATE: f64 = 0.526;
-    /// Fitted to every flight-assist-on trace of sessions 1 and 2 without a boost (`tests/traces.rs` `fit`, `FIT_SKIP=boost`,
-    /// 2026-11-14, the throttle rate held at the marker's; starting from values read off the traces by hand): they replay
-    /// those traces at 0.41 to 0.61 m/s rms. The forward acceleration of the full block (4 ENG pips) and of the base block
-    /// (0 pips), m/s^2: nearly equal, and EDSY's 44.39 within 0.5 %; reverse and lateral (EDSY 29.96); block 0x2C, flight
-    /// assist's time constant's scale D (the approach to the cap: 0.87 s at 4 pips, 0.58 at 2, the 0.5 s floor at 0, read off
-    /// the traces); block 0x28, the acceleration's jerk limit, m/s^3. (A HUD display lag was tried as well: the fit took it to
-    /// 0.013 s, so the HUD shows the speed as it is.)
     /// The mouse's counts for full stick at sensitivity 1 (the exe's R: v += counts x sensitivity / R, step 0.11). Session 2's
     /// r02 and r03 (pitch and roll in steps of 100 counts) start turning at 59 counts on both axes; with the user's dead zone
     /// of 0.05 and sensitivity of 0.2725 that is full stick at 1,180 counts, so R = 1,180 x 0.2725 (about +-5 %: the dead
@@ -234,12 +228,19 @@ pub mod measured {
     /// The turn curve's factor at a standstill (`a` of block 0x78.., pitch and yaw): pitch caps at 17.6 deg/s at rest against
     /// its stick scale of 39.5 (session 2, r02).
     pub const TURN_CURVE_A: f64 = 0.4456;
-    pub const FWD_ACC: f64 = 44.38;
-    pub const FWD_ACC_BASE: f64 = 44.20;
-    pub const REV_ACC: f64 = 30.00;
-    pub const LAT_ACC: f64 = 30.05;
-    pub const FA_D: f64 = 0.991;
-    pub const JERK_LIN: f64 = 25.05;
+    /// Fitted to every flight-assist-on trace of sessions 1 and 2 without a boost (`tests/traces.rs` `fit`, `FIT_SKIP=boost`,
+    /// 2026-11-14, the throttle rate held at the marker's; re-fitted after checker 2 found the fit scaling the accelerations
+    /// twice): they replay those traces at 0.42 to 0.61 m/s rms. The forward acceleration of the full block (4 ENG pips) and of
+    /// the base block (0 pips), m/s^2: the pips do change it (EDSY's 44.39 is near the full block's); reverse and lateral (EDSY
+    /// 29.96); block 0x2C, flight assist's time constant's scale D (the approach to the cap: 0.87 s at 4 pips, 0.58 at 2, the
+    /// 0.5 s floor at 0, read off the traces); block 0x28, the acceleration's jerk limit, m/s^3. (A HUD display lag was tried
+    /// as well: the fit took it to nothing, so the HUD shows the speed as it is.)
+    pub const FWD_ACC: f64 = 44.85;
+    pub const FWD_ACC_BASE: f64 = 43.42;
+    pub const REV_ACC: f64 = 30.26;
+    pub const LAT_ACC: f64 = 30.23;
+    pub const FA_D: f64 = 0.990;
+    pub const JERK_LIN: f64 = 24.90;
 }
 
 /// Values the rules need that have no source yet: **stand-ins** (as the stand-in hull is), each the least-assuming choice the

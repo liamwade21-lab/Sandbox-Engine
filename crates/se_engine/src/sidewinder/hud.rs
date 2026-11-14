@@ -75,7 +75,11 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
     p.add(egui::Shape::line_segment([along(0.0), along(1.0)], stroke(DIM)));
     let full_top = pilot.full_top.max(1.0);
-    let fill = (speed / full_top).clamp(0.0, 1.0) as f32;
+    // (In supercruise the gauge's fill is the speed against the wells' cap.)
+    let fill = match pilot.cruise {
+        Some(c) => (c.speed / c.cap.max(1.0)).clamp(0.0, 1.0) as f32,
+        None => (speed / full_top).clamp(0.0, 1.0) as f32,
+    };
     p.add(egui::Shape::line_segment([along(0.0), along(fill)], egui::Stroke::new(0.006 * h, ORANGE)));
     let (bz0, bz1) = pilot.blue_zone;
     p.add(egui::Shape::line_segment([along(bz0), along(bz1)], egui::Stroke::new(0.003 * h, BLUE_ZONE)));

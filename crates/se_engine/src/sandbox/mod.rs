@@ -420,7 +420,7 @@ fn start_on_earth(cfg: Res<EngineConfig>, data: Res<SeData>, time: Res<SimTime>,
 
 /// On Earth's ground, where the Sun is highest among `SPOTS`, on foot (the launch, and the main menu's Play once playing).
 /// False without an Earth.
-fn put_on_earth(data: &SeData, jd: f64, cam: &mut FlyCamera, sb: &mut Sandbox, why: &str) -> bool {
+pub(crate) fn put_on_earth(data: &SeData, jd: f64, cam: &mut FlyCamera, sb: &mut Sandbox, why: &str) -> bool {
     let cat = &data.catalog;
     let (Some(earth), Some(sun)) = (cat.find("Earth"), cat.find("Sun")) else {
         return false;

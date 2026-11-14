@@ -179,6 +179,13 @@ fn place(
         }
         None => false,
     };
+    if !near || !seat.seated || pilot.cruise.is_some() {
+        for (_, _, mut v) in beams.iter_mut() {
+            if *v != Visibility::Hidden {
+                *v = Visibility::Hidden;
+            }
+        }
+    }
     let show = (near && !seat.seated, near && seat.seated);
     if draw.shown != show {
         draw.shown = show;

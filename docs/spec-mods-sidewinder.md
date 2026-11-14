@@ -970,8 +970,9 @@ part at the acceleration's limit, then flight assist's exponential approach to t
 `max(0.5, D (4/3 s / Vfull - 1/3))` (read off the traces: 0.87 s at 4 pips, 0.58 at 2, the 0.5 s floor at 0, all from one
 D). The keyboard's throttle rate comes straight from the HUD's throttle marker (`hud_read.py` now reads it: full 1.9 s after
 W, so 0.526 a second). A fit of the rest to all the traces without a boost (`fit`, `FIT_SKIP=boost`, the throttle held at
-the marker's) gives, grade D: **forward acceleration 44.38 m/s^2 at 4 pips and 44.20 at 0** (EDSY's hint 44.39), **reverse
-30.00, lateral 30.05** (EDSY 29.96), **flight assist's D 0.991** (block 0x2C), **the jerk limit 25.05 m/s^3** (block 0x28),
+the marker's) gives, grade D: **forward acceleration 44.85 m/s^2 at 4 pips and 43.42 at 0** (EDSY's hint 44.39), **reverse
+30.26, lateral 30.23** (EDSY 29.96), **flight assist's D 0.990** (block 0x2C), **the jerk limit 24.90 m/s^3** (block 0x28)
+(corrected after checker 2: the first fit scaled the accelerations twice and had reported 44.38 and 44.20, "nearly equal"),
 the reverse and side shares 0.6 and 0.8; and the measuring chain's latency (0.04 s for session 2's crops, 0 for session 1's
 whole-desktop capture, each trace within 0.05 s of its chain's). A HUD display lag was tried and dropped (the fit took it to
 0.013 s). These are now `elite_sim::data::measured` and the flight uses them.
@@ -1021,7 +1022,8 @@ button fires (`PrimaryFire` in the shipped binds), U deploys the hardpoints (`De
 box from its gun along the nose to the ground or the range, shown for 0.08 s a shot (E). The guns sit under the nose of the
 stand-in hull (E: Elite's hardpoints are on its in-game hull, not among the open files). No targets to damage yet (the
 sandbox's props and the Viltrumite mod's targets are a later step). Test: `lasers_fire_on_their_interval_and_drain_wep`; in a
-run, firing straight ahead for 20 s drained WEP 10 to 3.6 MJ and the beams show to the horizon (pictures).
+run, firing straight ahead drained WEP from 10 MJ to about 0.35 MJ while the trigger was held (it recharges once released)
+and the beams show to the horizon (pictures).
 `sw hardpoints`, `sw fire SECS`.
 
 ### Step 0.7: matching sounds (2026-11-14). **Not found: the fallback (E) needs the music off**
@@ -1054,3 +1056,38 @@ A50 found the drop's effects, not its triggers). The HUD shows km/s, Mm/s or c. 
 sounds. Checked in runs from Earth's surface: charged and engaged, held at the floor until 1.1 radii (A50's rule), then 78 c
 after 25 s and 215 c after 35 s; throttle zero back to the floor; J dropped out at 160.6 m/s and Arriving counted down.
 `sw jump`. Tests: `charge_engage_drop_and_cooldown`, `wells_slow_the_cap`.
+
+### Checker 2's fixes (Phase 2's first cuts and supercruise, 2026-11-14)
+
+The checker's report (FAIL: one honesty finding and four bugs, all confirmed in runs) is
+`.rea/tickets/verify/02-phase2-supercruise-report.md`. Fixed:
+
+1. **The fit scaled the accelerations twice** (it divided by EDSY's numbers after the block held the measured ones). Re-fitted:
+   forward 44.85 m/s^2 at 4 pips and 43.42 at 0 (the pips do change it: the claim "nearly equal" was wrong), reverse 30.26,
+   lateral 30.23, D 0.990, the jerk limit 24.90; five traces replay better, the reverse run worse (32 rows outside the gate to
+   62). `data::measured` and the guard now hold these.
+2. **In supercruise the lasers fired and boost worked:** both are off there, and the hardpoints won't deploy.
+3. **A dry ship heated without limit** (the idle load ran with the plant off) **and heat damage never reached the hull:** the
+   idle load only while the plant runs; heat damage now takes its share of the hull (and can destroy the ship).
+4. **The mod off in supercruise set him down on the nearest body** (an asteroid millions of km out; by a star he would have
+   waited for ever): in supercruise, or by a star, he goes back on Earth on foot as the main menu's Play does.
+5. **Supercruise moved in the universe's frame**, so a ship leaving Earth went with its 30 km/s orbit: it now goes with the
+   nearest body's real motion each frame (its speed is relative to that body: F, the frame Elite uses was not found).
+6. Low: the beams hide whenever the ship isn't near, he isn't seated or it's in supercruise; the HUD's gauge in supercruise is
+   the speed against the wells' cap; the distributor's and the star rule's comments corrected; the 2.6 entry's WEP numbers.
+
+### Study A60: the planetary approach in the exe (2026-11-14). **The glide's rules found (C); its numbers and orbital cruise not**
+
+An agent's session for Phase 6 (notes `re/elite/ghidra/notes/6.1-planets.md`; the rows in `docs/elite-flight-model.md`,
+"A60"). Found, grade C: the glide's pitch (`asin` of the nose against the way down, negative diving), its band (too steep at
+or under `steepestDivePitch`, too shallow at or over `shallowestDivePitch`; out of the band longer than
+`alignmentGracePeriod` ends it; too steep adds "Planet Arrival" heat, too shallow is a plain abort), **no hard failure** (every
+end, good or bad, runs the same deceleration; the journal's text names the reason), the end tests (terrain under 10,000 m
+along the nose, or the surface under 6,500 m towards the centre), the eight end reasons and their voice lines, the motion
+(the velocity set to `speedLimit` along the nose every frame), the deceleration (a `(1 - t/T)^p` curve ending at its speed
+floor), the hand-over into the glide (2,500 m/s along the nose, the ship moved 7,500 m ahead), the parameters' own names
+(`speedLimit`, `steepestDivePitch`, `shallowestDivePitch`, `alignmentGracePeriod`, `maxDecelerationDistance`,
+`maxDecelerationDuration`, `endSpeed`, `power`), and that neither the body's gravity nor its size enters them (the thresholds
+are fixed). Not found (D): those parameters' numbers (they arrive in a message whose sender wasn't found; the user's journals
+hold no glide), where orbital cruise starts and how the speed is held near the surface (A50's wells only), the warnings'
+triggers, `ShipMetresToTouchdown`. They need a planetary approach measured (session 6).

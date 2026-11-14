@@ -274,8 +274,9 @@ pub fn seat_camera(
     mut cam: ResMut<FlyCamera>,
     bodies: Query<&SystemBody>,
     mut msg: ResMut<crate::messages::Messages>,
-    pilot: Res<Pilot>,
+    mut pilot: ResMut<Pilot>,
     mut sim: ResMut<SimTime>,
+    data: Res<crate::data::SeData>,
 ) {
     if !seat.seated {
         return;
@@ -326,13 +327,21 @@ pub fn seat_camera(
     }
     let lost = pilot.destroyed || leave_rule(pilot.landed, false) == Leave::Lost;
     let (obj, pos, rot) = (p.obj, p.pos, p.rot);
+    // In supercruise, or by a star or another body with no ground to stand on, there is nowhere beside the ship to set him
+    // down (checker 2: he landed on an asteroid millions of km out, or would wait for ever by a star): back on Earth, as the
+    // main menu's Play does.
+    let far = pilot.cruise.is_some() || bodies.iter().find(|bb| bb.obj == obj).is_none_or(|bb| bb.star);
+    pilot.cruise = None;
     if lost {
         if let Some(mut gone) = ship.parked.take() {
             super::remove_solids(&mut sb, &mut gone);
         }
         control.ship_parked = false;
     }
-    if sb.mode == Mode::Pilot {
+    if sb.mode == Mode::Pilot && far {
+        crate::sandbox::put_on_earth(&data, sim.jd, &mut cam, &mut sb, "the Sidewinder was lost far from any ground: back");
+        msg.show(if pilot.destroyed { "The Sidewinder was destroyed" } else { "The Sidewinder was lost" }.to_string());
+    } else if sb.mode == Mode::Pilot {
         let side = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5);
         let point = pos + rot * side.as_dvec3();
         sb.set_down(obj, point, None, eye_body, rot);

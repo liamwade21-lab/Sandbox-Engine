@@ -29,7 +29,8 @@ pub mod stand_in {
     pub const VSC: f64 = 2001.0 * C;
     pub const FLOOR_PLANET: f64 = 30_000.0;
     pub const FLOOR_STAR: f64 = 30_000.0;
-    /// The star rule's two log constants (P00, P04): 1 and 1 (the log term then runs from 0 at 1 AU to 1 at 10,000 AU).
+    /// The star rule's two log constants (P00, P04): 1 and 1 (the log term `1 - ln(d/AU + 1) / ln(10001)` is then 1 at the
+    /// star, 0.92 at 1 AU and 0 at 10,000 AU).
     pub const STAR_P00: f64 = 1.0;
     pub const STAR_P04: f64 = 1.0;
     /// The planet rule's M: the body's mass in Earth masses (an assumption: the unit is open).

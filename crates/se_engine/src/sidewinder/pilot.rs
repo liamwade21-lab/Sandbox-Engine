@@ -43,6 +43,12 @@ pub struct Cruise {
     pub pos: UPos,
     pub rot: DQuat,
     pub speed: f64,
+    /// The wells' cap at the last tick (the HUD's gauge).
+    pub cap: f64,
+    /// The body the ship goes with (the nearest by its surface) and where it was last frame: the ship is carried by its real
+    /// motion each frame, so supercruise's speed is relative to it (F: the frame Elite measures supercruise's speed in was not
+    /// found in the exe; going with the nearest body keeps a ship leaving Earth from being swept 30 km/s along its orbit).
+    pub carrier: Option<(ObjectRef, UPos)>,
 }
 
 /// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
@@ -384,7 +390,9 @@ pub fn fly(
     if keys.pip_reset {
         pilot.dist.reset();
     }
-    if keys.hardpoints {
+    if keys.hardpoints && pilot.cruise.is_some() {
+        msg.show("Hardpoints can't be deployed in supercruise".to_string());
+    } else if keys.hardpoints {
         pilot.weapons.deployed = !pilot.weapons.deployed;
         msg.show(if pilot.weapons.deployed { "Hardpoints deployed" } else { "Hardpoints retracted" }.to_string());
     }
@@ -431,7 +439,7 @@ pub fn fly(
     // Boost: the press draws its cost from the ENG capacitor or is refused (the exe's messages, our words until step 3.3).
     // (Landed it does nothing: the flight doesn't run on the ground. Not from the exe: E.)
     let boost_pressed = keys.boost || std::mem::take(&mut pilot.dev_boost);
-    if boost_pressed && !pilot.landed {
+    if boost_pressed && !pilot.landed && pilot.cruise.is_none() {
         match pilot.boost.press(&spec, &mut pilot.dist, true) {
             Ok(()) => info!("sidewinder: boost"),
             Err(Denied::NotEnoughEnergy) => msg.show("Boost: not enough engine power".to_string()),
@@ -469,6 +477,16 @@ pub fn fly(
         Vec::new()
     };
     let mut emergency = false;
+    // Supercruise is carried by its body's real motion this frame (and takes the nearest body as its carrier from now on).
+    if let Some(c) = pilot.cruise.as_mut() {
+        if let Some((obj, last)) = c.carrier {
+            if let Some((_, now, _, _, _)) = wells.iter().find(|w| w.3 == obj) {
+                c.pos = c.pos.offset_m(now.delta_m(last));
+            }
+        }
+        let nearest = wells.iter().min_by(|a, b2| (c.pos.delta_m(a.1).length() - a.2).total_cmp(&(c.pos.delta_m(b2.1).length() - b2.2)));
+        c.carrier = nearest.map(|w| (w.3, w.1));
+    }
     pilot.accum += dt;
     let mut n = 0;
     while pilot.accum >= TICK && n < MOST_TICKS {
@@ -495,17 +513,25 @@ pub fn fly(
         pilot.shields.tick(TICK, powered, sys_share);
         // Heat: the idle load (a stand-in fitted to session 2's idle), then the radiator (step 2.2).
         let hs = pilot.heat_spec;
-        pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
+        if powered {
+            pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
+        }
         let ev = pilot.heat.tick(&hs, TICK, powered, false);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
-        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered;
+        let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none();
         pilot.weapons.tick(TICK, trigger, &mut pilot.dist, &mut pilot.heat, &hs);
         if ev.warning {
             msg.show("Heat warning".to_string());
         }
+        if ev.damage_warning {
+            msg.show("Heat damage".to_string());
+        }
+        if ev.damage > 0.0 && pilot.hull.damage(ev.damage * pilot.hull.max) {
+            pilot.destroyed = true;
+        }
         match pilot.drive.tick(TICK, &fsd) {
             Ok(true) => {
-                pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: CRUISE_START });
+                pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: CRUISE_START, cap: CRUISE_START, carrier: Some((b.obj, b.pos)) });
                 msg.show("Supercruise".to_string());
                 info!("sidewinder: supercruise");
             }
@@ -526,6 +552,7 @@ pub fn fly(
             pilot.motion.last_alpha = m.last_alpha;
             let near: Vec<(Well, f64)> = wells.iter().map(|(w, at, _, _, _)| (*w, c.pos.delta_m(*at).length())).collect();
             let cap = supercruise::cap(&near);
+            c.cap = cap;
             c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
             c.pos = c.pos.offset_m(c.rot * DVec3::NEG_Z * c.speed * TICK);
             // (Only heading into it: leaving a body from its surface is how supercruise starts.)
