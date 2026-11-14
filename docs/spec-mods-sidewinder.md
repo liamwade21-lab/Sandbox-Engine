@@ -54,13 +54,13 @@ in both games), and the exact internal step of Elite's simulation.
 | S4 | Sound recordings | Every recording: thrusters, boost, FSD charge, jump, supercruise, gear, alarms, lasers, the cockpit voice | Ogg files holding the game's own Vorbis packets, rewrapped without re-encoding | A for each recording matched to its stream; E (recorded from the speakers) for any that can't be found | Decoded samples equal; a list of found and not found |
 | S5 | Sound behaviour | Which recordings play when, how they layer, how loudness and pitch follow thrust and speed | Our own mixer driven by the simulation's state | E, with D checks (loudness and pitch against recordings of the real game) | Recorded loudness and pitch curves side by side |
 | S6 | Flight | 6-DOF thrusters, throttle, the blue zone, flight assist on and off, boost, speed and turn against ENG pips and mass | `elite-sim`, a new crate, stepped at a fixed tick | C where the code is found (G2), else D | Trace tests inside the gate |
-| S7 | Rotational correction | Elite's setting that matches a spinning station's turn | Nothing to do: there are no stations. On the later list with stations | Not built | |
+| S7 | Rotational correction | Believed (a hint) to be the setting that matches a spinning station's turn and to do nothing away from stations | Not built: there are no stations. Step 0.9 checks whether it changes anything in open space or over a planet; if it does, it comes back into the plan | Not built | Step 0.9's check |
 | S8 | Power distributor | SYS/ENG/WEP capacitors, pips, recharge, what each capacitor feeds | `elite-sim` | B for capacities and rates, C or D for the pip rule | Trace tests |
 | S9 | Heat | Heat percentage, loads from modules, FSD charging, stars; warnings; damage over 100 % | `elite-sim`; hot air added by the same flux rule (F) | C or D | Trace tests |
 | S10 | Shields and hull | Shield strength, recharge and rebuild, hull, collision damage, canopy breach and the life support timer, destruction | `elite-sim`; collisions against the ground and buildings | B for the numbers, C or D for the rules | Trace tests, pictures |
-| S11 | Supercruise | Charge, speed against throttle and nearby masses, limits, the drop rule, emergency drops, cooldowns | `elite-sim` over SpaceEngine's bodies and their masses | C or D | Trace tests on bodies of like mass and distance |
+| S11 | Supercruise | Charge, speed against throttle and nearby masses, limits, the drop rule, emergency drops, cooldowns | `elite-sim` over SpaceEngine's bodies and their masses | C or D | Trace tests replaying the Elite body's own mass and distance |
 | S12 | Hyperspace | Target, charge, countdown, tunnel, arrival at the star, fuel, cooldown | A jump between SpaceEngine's stars; new code that swaps the loaded system | B for fuel (the journal gives it to six digits), C or D for times; the tunnel's look E | Fuel test against the journal; timings |
-| S13 | Planet approach | Orbital cruise, glide, the drop to normal flight | The same rules on every solid body and on gas giants (D7) | C or D on worlds Elite allows; F where it doesn't | Trace tests on an airless moon |
+| S13 | Planet approach | Orbital cruise, glide, the drop to normal flight | The same rules on every solid body and on gas giants (D7) | C or D on worlds Elite allows; F where it doesn't | Trace tests replaying the Elite moon's own radius and gravity |
 | S14 | Landing | Gear, speed limits, touchdown and liftoff rules, gravity against thrusters | `elite-sim` against the sandbox's ground | C or D | Trace tests, pictures |
 | S15 | Fuel | Tank, reservoir, burn by power draw, fuel per jump. The stock ship has no scoop | `elite-sim`; the restock button is F | B (`Status.json` gives fuel exactly) | Fuel test |
 | S16 | HUD and panels | Canopy HUD, radar, left and right panels, lower panel, messages | Redrawn to match screenshots (D12) | E for the look; the numbers shown are the simulation's | Same-view pictures |
@@ -73,8 +73,8 @@ in both games), and the exact internal step of Elite's simulation.
 
 | # | Step | When | Until it's done |
 |---|---|---|---|
-| U1 | Buy a stock Sidewinder in Elite (32,000 cr) and leave it stock. The only journal found shows one session, in an Asp | Before step 0.5 | Steps 0.1 to 0.4 and 0.6 go ahead without it |
-| U2 | For each measuring session: start Elite, log in, enter **Solo**, sit in the Sidewinder where the step asks (open space; a small airless moon; near a star). Then say so. The agent never types a password | Steps 0.5, 5.1, 6.1 and any re-measure | That step waits; the builder works on another |
+| U1 | Buy a stock Sidewinder in Elite (32,000 cr) and leave it stock. The only journal found shows one session, in an Asp | Before step 0.7 | Steps 0.1 to 0.6 go ahead without it |
+| U2 | For each measuring session: start Elite, log in, enter **Solo**, sit in the Sidewinder where the step asks (open space; a small airless moon; near a star). Then say so. The agent never types a password and never uses a station, so refuelling and repairing the real ship between sessions is yours too | Steps 0.7 to 0.9, 2.4, 5.1, 6.1 and any re-measure | That step waits; the builder works on another |
 | U3 | Say yes or no to each install when asked: ffmpeg (already agreed, D4), a Wwise Vorbis decoder (vgmstream or ww2ogg), the REA tools `/rea` needs | Phase 0 | The step that needs the tool waits |
 | U4 | Read Frontier's EULA on three points: sharing game files, reverse engineering, and automated input. It could not be fetched from here (403). Decisions D2, D3 and D4 stand unless you change them | Any time | Nothing changes |
 | U5 | Fly each phase and say whether it feels like Elite (grades E and F have no other judge) | End of each phase | The builder carries on |
@@ -117,7 +117,7 @@ in both games), and the exact internal step of Elite's simulation.
 | E1 | The install's open data files (`Win64/0?/`) | Mesh data, texture data, sound streams | The game's own bytes | No names, no assembly; formats undocumented; see Assets |
 | E2 | The install's plain files: `ControlSchemes/*.binds`, `GraphicsConfiguration.xml`, `AudioConfiguration.xml`, `DeviceDefaults.xml` | Default controls for every device; graphics limits; that the audio engine is Wwise | The game's own bytes | The field of view and mouse feel are not in them |
 | E3 | `EliteDangerous64.exe`, studied offline with Ghidra through `/rea` | The client's formulas and constants: flight, supercruise, glide, heat | High for what is found. The exe is not packed (code section entropy 6.5, no protector strings) and keeps readable names (`ApproachGlide_FailedTooShallow`, `FlightAssistFinal`, `UpdateSupercruiseState`, `OutfittingFieldType_EngineOptimalMass`) | 98.7 MB of code: slow. Ship and module numbers may be loaded from the encrypted files and so be absent |
-| E4 | The Player Journal and `Status.json` (Frontier's own documented files, in `Saved Games\Frontier Developments\Elite Dangerous`) | `Loadout` (every module's exact name, masses, jump range), `FSDJump` (distance, fuel used, fuel left), `StartJump`, `SupercruiseEntry/Exit`, `ApproachBody`, `Touchdown`, `Liftoff`, `HeatWarning`; flags for gear, shields, supercruise, FSD charging, glide; pips; fuel; latitude, longitude, altitude and heading near a body | The game's own numbers | No speed, no turn rate. Events are stamped to the second; `Status.json` is rewritten only when something changes. Re-check the field list against the docs in step 0.5 |
+| E4 | The Player Journal and `Status.json` (Frontier's own documented files, in `Saved Games\Frontier Developments\Elite Dangerous`) | `Loadout` (every module's exact name, masses, jump range), `FSDJump` (distance, fuel used, fuel left), `StartJump`, `SupercruiseEntry/Exit`, `ApproachBody`, `Touchdown`, `Liftoff`, `HeatWarning`; flags for gear, shields, supercruise, FSD charging, glide; pips; fuel; latitude, longitude, altitude and heading near a body | The game's own numbers | No speed, no turn rate. Events are stamped to the second; `Status.json` is rewritten only when something changes. Re-check the field list against the docs in step 0.8 |
 | E5 | Video of the cockpit at 60 frames a second, with the speakers recorded (`.audit/tools/loopback`) | The speed readout (whole m/s), throttle bar, heat %, capacitors, supercruise speed, distance and time to target; turn rates from the stars' motion; every timing to 1/60 s | Good to the readout's own resolution | Readouts may lag or be smoothed: cross-check against distance flown |
 | E6 | Elite's own screenshots (F10) | The look of the ship, cockpit and HUD for side-by-side pictures | The game's own pictures | |
 | E7 | EDCD `coriolis-data` (GitHub, last commit 2026-04-24; raw files saved in `re/elite/community/coriolis-data/` on 2026-11-13) | Ship and module numbers as the outfitting screen shows them | High for those numbers; confirm the loadout against U1's `Loadout` event | Its formulas (speed against pips and mass, jump range) are the community's own fits: medium, to confirm by measurement |
@@ -193,7 +193,7 @@ and port key.
 | Landing gear; cargo scoop; ship lights | L; Home; Insert | |
 | Hardpoints; fire primary, secondary; next fire group | U; left, right mouse button; N | |
 | Pips to ENG, WEP, SYS; reset | Up, Right, Left; Down arrow | |
-| Silent running; heat sink | Delete; V | No heat sink launcher on the stock ship: V does nothing |
+| Silent running; heat sink | Delete; V | Delete is `ToggleButtonUpInput` in the file, believed to be silent running: confirm in step 2.2. No heat sink launcher on the stock ship: V does nothing |
 | Target ahead; next target; highest threat | T; G; H | Nothing to target but bodies |
 | Left, comms, lower, right panel | 1, 2, 3, 4 | |
 | UI focus; panel moves; select; back | Left Shift; W A S D; Space; Backspace | Tabs with Q and E |
@@ -206,8 +206,9 @@ How it fits beside the game's own keys:
 - **Seated:** `sidewinder::read_input` (PreUpdate, placed as `skate::read_pad` is: after the input systems and
   `viltrumite::dev_keys`, before `sandbox::read_input`) takes every bound key and clears its press, so the port's
   readers (1 to 4 flight modes, G, T, H, P, Tab, the arrows, V) never see them.
-- **Esc** stays the sandbox's main menu. **B** is the one key added: get out, only when landed (D8). Elite leaves B
-  unbound in the ship.
+- **Esc** stays the sandbox's main menu. **B** is the one key added: get out, only when landed (D8). In Elite's
+  defaults B has no ship action (checked in the file: it is bound only to three on-foot actions). M (Elite's HUD mode
+  switch) does nothing here: the analysis mode belongs with the scanners, on the later list.
 - The Q menu is not reachable while seated; get out first. V (free flight) is off while seated.
 - **Gamepad (a later phase):** `ControlPad.binds`: left stick pitch and roll, right stick thrust left/right and
   up/down, bumpers throttle, B boost, triggers fire, D-pad pips, X UI focus, Y target, Back hardpoints, right stick
@@ -465,20 +466,34 @@ report lists every claim with its grade and, for C and D, the game's number besi
 
 | # | Step | Proven by | Done when | Needs |
 |---|---|---|---|---|
-| 0.1 | The open-file readers (`se_core/src/elite.rs`): unpack both zlib kinds, work out the mesh vertex layout and the texture formats from the data, split the sound packs into streams and decode one. A catalog with sizes and bounding boxes | Contact sheets: a few hundred meshes drawn, textures opened as pictures; one sound decoded and played | **G1:** meshes and textures open as recognisable things. If meshes can't be decoded in this step, the model goes to the recreate route (Blender, from Elite's screenshots) and the user is told | |
-| 0.2 | Find the Sidewinder's exterior: filter meshes by size (the ship is about 15 x 21 x 5 m: a hint), draw candidates, pick by eye against Elite's screenshots; then its gear, hardpoints, scoop | The found hull drawn from the same angle beside Elite's own screenshot; the source file names listed in `re/elite/notes/` | The hull and its parts are found, or named as not found | 0.1 |
-| 0.3 | Find the cockpit (interior, seat, sticks, canopy, the pilot's body) and the textures of hull and cockpit, by how each texture's features fit a mesh's UV layout and by eye | Textured pictures beside screenshots | Each piece found or named as not found. What is not found gets its recreate task listed | 0.2 |
-| 0.4 | Sounds: decode every stream to an index; record each wanted sound from the real game with the loopback tool; find its stream by correlation. The voice lines the same way | For each sound: found (its file, offset and match score) or not found | The list covers every sound named in S4 | 0.1, U2, U3 |
-| 0.5 | The measuring rig: ffmpeg recording at 60 frames a second with the speakers, a reader for the cockpit's digits and bars, a journal and `Status.json` logger, the agent's script and stop rules. First data: speed at 0 to 4 ENG pips, acceleration and braking, boost, pitch, roll and yaw rates against throttle, flight assist off, sideways, vertical and reverse speeds | The same manoeuvre measured twice agrees within the gate (the rig's own repeatability) | The traces and a table of results exist in `re/elite/measure/normal-space` and, scrubbed, in `crates/elite-sim/tests/traces` | U1, U2, U3 |
-| 0.6 | Exe study, flight: a Ghidra project for Elite's exe; find the thruster, flight assist, speed limit, blue zone, boost, pip and mass-curve code, starting from the names it keeps | Each rule's formula predicts 0.5's traces inside the gate | **G2:** `docs/elite-flight-model.md` lists every flight rule as C (found) or D (to be fitted). Either way Phase 1 can start | 0.5 |
+| 0.1 | The mesh reader (`se_core/src/elite.rs`): unpack the `02 00 01 00` kind and work out its vertex layout from the data alone. A catalog of every mesh with its size | A contact sheet of a few hundred meshes drawn from three sides | **G1:** meshes draw as recognisable things. If the layout is not worked out in this one session, the model goes to the recreate route (step 0.5) and the user is told | |
+| 0.2 | The texture reader (the `03 00 01 00` kind: formats and sizes from the data) and the sound-pack reader (split a pack into its streams, decode one) | Contact sheets of textures; one sound decoded and played | Textures open as pictures and a stream plays, or each is named as not readable | U3 (the decoder) |
+| 0.3 | Find the Sidewinder's exterior: filter meshes by size (the ship is about 15 x 21 x 5 m: a hint), draw candidates, pick by eye against Elite's screenshots; then its gear, hardpoints, scoop | The found hull drawn from the same angle beside Elite's own screenshot; the source file names listed in `re/elite/notes/` | The hull and its parts are found, or named as not found | 0.1 |
+| 0.4 | Find the cockpit (interior, seat, sticks, canopy, the pilot's body) and the textures of hull and cockpit, by how each texture's features fit a mesh's UV layout and by eye | Textured pictures beside screenshots | Each piece is found or named as not found | 0.2, 0.3 |
+| 0.5 | Only if something was not found: recreate it in Blender to match Elite's screenshots (a session a piece: hull, cockpit). **Until a piece is done a stand-in is used** (a plain grey hull of the ship's size; a bare seat and canopy frame), so Phase 1 never waits on this step | The recreated piece from the same angle beside Elite's screenshot, marked "recreated" in `SOURCES.txt` | The user says it will do | 0.3, 0.4 |
+| 0.6 | The sound index: split every pack, decode every stream, store a short fingerprint of each | Counts: streams found, decoded, failed | The index covers all 381 packs | 0.2 |
+| 0.7 | Match the sounds: record each wanted sound and voice line from the real game with the loopback tool, find its stream in the index by correlation | For each sound: found (its file, offset and match score) or not found | **G3:** the list covers every sound named in S4. One session; what is not matched by its end is re-recorded from the speakers (grade E) | 0.6, U1, U2 |
+| 0.8 | The measuring rig: ffmpeg at 60 frames a second with the speakers, a reader for the cockpit's digits and bars, a journal and `Status.json` logger, the agent's script and its stop rules; settle how pitch and roll are driven (Q11) | One manoeuvre (full throttle from rest, then stop) measured three times agrees with itself inside the gate | The rig repeats itself, or the report says by how much it doesn't | U1, U2, U3 |
+| 0.9 | First measurements, normal space: speed at 0 to 4 ENG pips, acceleration and braking, boost, pitch, roll and yaw rates against throttle, flight assist off, sideways, vertical and reverse speeds; whether rotational correction does anything away from stations (S7) | Each manoeuvre flown twice, agreeing inside the gate | The traces and a table of results exist in `re/elite/measure/normal-space` and, scrubbed, in `crates/elite-sim/tests/traces` | 0.8 |
+| 0.10 | Exe study, first session: a Ghidra project for Elite's exe; from the names it keeps, find where the ship's motion is stepped: thrusters, flight assist, the speed limit | Each rule found predicts 0.9's traces inside the gate | `docs/elite-flight-model.md` has a row for each rule looked for: C with its address, or "not found yet" | 0.9 |
+| 0.11 | Exe study, second session: the blue zone, boost, the pip rule, the mass curve, how the mouse becomes stick movement | As 0.10 | **G2:** every flight rule is C (found) or D (to be fitted from 0.9's traces). **A rule not found by the end of this session is D**: no third session is spent on it. Either way Phase 1 can start | 0.10 |
 
 ### Phase 1: the smallest playable slice
 
 | # | Step | Proven by | Done when | Needs |
 |---|---|---|---|---|
-| 1.1 | The converter and the parked ship: `copy_sidewinder`, the `.edm` format, `mod.cfg`, `KNOWN_CODES`; the Mods row; the ship spawned in front of you, lit like the props, solid | Hash tests (geometry and texels equal the install's); pictures by day, at night and under cloud beside Elite's screenshots | You can spawn it and walk round it | 0.2, 0.3 |
-| 1.2 | `elite-sim`: normal-space flight only (thrusters, throttle, blue zone, flight assist, boost with the ENG capacitor at Elite's default pips, gravity, speed limits), fixed tick | `cargo test --release -p elite-sim`: every trace of 0.5 replayed inside the gate | All traces pass, or each failure is listed with its numbers | 0.5, 0.6 |
-| 1.3 | Boarding and flying: E, the fade, `Mode::Pilot`, the cockpit drawn with head look, Elite's keyboard and mouse from the `.binds` copy, frames, contact with ground and buildings, a plain touchdown, B to leave, a bare speed and throttle readout | The mod's own `sw trace` of 0.5's manoeuvres, flown in the game, inside the gate; pictures from the seat beside Elite's; a flight Earth to 5 km up and back with a landing | **The user flies it** | 1.1, 1.2 |
+| 1.1 | The converter and the parked ship: `copy_sidewinder`, the `.edm` format, `mod.cfg`, `KNOWN_CODES`; the Mods row; the ship spawned in front of you, lit like the props, solid | Hash tests (geometry and texels equal the install's, for every piece that was found); pictures by day, at night and under cloud beside Elite's screenshots | You can spawn it and walk round it | 0.3, 0.4 (0.5's stand-ins if needed) |
+| 1.2 | `elite-sim`: normal-space flight only (thrusters, throttle, blue zone, flight assist, boost with the ENG capacitor at Elite's default pips, gravity, speed limits), fixed tick | `cargo test --release -p elite-sim`: every trace of 0.9 replayed inside the gate | All traces pass, or each failure is listed with its numbers | 0.9, 0.11 |
+| 1.3 | Boarding and flying: E, the fade, `Mode::Pilot`, the cockpit drawn with head look, Elite's keyboard and mouse from the `.binds` copy, frames, contact with ground and buildings, a plain touchdown, B to leave, a bare speed and throttle readout | The mod's own `sw trace` of 0.9's manoeuvres, flown in the game, inside the gate; pictures from the seat beside Elite's; a flight Earth to 5 km up and back with a landing | **The user flies it** | 1.1, 1.2 |
+
+**Done, for every step from here on:** its traces replay inside the gate (grades C and D); its pictures or recordings
+are in the report beside Elite's (grades E and F); the build and all tests pass; and at the end of each phase `checker`
+has passed it and the user has flown it. A step that misses the gate is reported as failed with its numbers, not
+closed.
+
+**Traces near bodies:** every trace taken in supercruise, orbital cruise, glide or landing carries the Elite body's
+mass, radius and surface gravity (from the journal's scan of it and `Status.json`'s `PlanetRadius`), and `elite-sim`
+replays that same body, not a SpaceEngine one that happens to be alike.
 
 ### Phase 2: the ship's systems
 
@@ -495,7 +510,7 @@ report lists every claim with its grade and, for C and D, the game's number besi
 
 | # | Step | Proven by | Needs |
 |---|---|---|---|
-| 3.1 | Engine, thruster, boost and cockpit loops, driven by the simulation | Loudness and pitch against throttle, recorded from both games | 0.4, 1.3 |
+| 3.1 | Engine, thruster, boost and cockpit loops, driven by the simulation | Loudness and pitch against throttle, recorded from both games | 0.7, 1.3 |
 | 3.2 | One-shots and alarms: gear, scoop, hardpoints, flight assist, heat, shields, hull, lasers, panel sounds | Each cue logged when it fires; recordings side by side | 3.1, Phase 2 |
 | 3.3 | The cockpit voice, its lines and when each is said | Each line logged; its timing against the real game's | 3.2 |
 
@@ -511,8 +526,8 @@ report lists every claim with its grade and, for C and D, the game's number besi
 
 | # | Step | Proven by | Needs |
 |---|---|---|---|
-| 5.1 | Measure and study: supercruise speed against throttle and distance to masses, the drop rules, emergency drops, charge and cooldown times, star heat and the exclusion zone; the jump's fuel and times from the journal | Tables in `re/elite/measure/fsd`; the code found or not | 0.5, 0.6, U2 |
-| 5.2 | Supercruise in `elite-sim` and in the game: charge, flight, the HUD's target display, drops, effects and sound | Traces inside the gate on bodies of like mass and distance; a trip Earth to the Moon here | 5.1, 4.1, 3.1 |
+| 5.1 | Measure and study: supercruise speed against throttle and distance to masses, the drop rules, emergency drops, charge and cooldown times, star heat and the exclusion zone; the jump's fuel and times from the journal | Tables in `re/elite/measure/fsd`; the code found or not (one session of exe study; a rule not found by its end is D) | 0.8, 0.11, U2 |
+| 5.2 | Supercruise in `elite-sim` and in the game: charge, flight, the HUD's target display, drops, effects and sound | Traces inside the gate, replaying the Elite bodies' own masses and distances; a trip Earth to the Moon here | 5.1, 4.1, 3.1 |
 | 5.3 | Hyperspace: targets from the Navigation tab, charge, countdown, the tunnel, **the system swap (G4)**, arrival, cooldown, fuel | Fuel against the journal's `FSDJump` to six digits; a jump Sol to Alpha Centauri and back | 5.2 |
 | 5.4 | Stars: heat by distance, the exclusion zone, damage | Traces of heat against distance | 5.2, 2.2 |
 
@@ -520,8 +535,8 @@ report lists every claim with its grade and, for C and D, the game's number besi
 
 | # | Step | Proven by | Needs |
 |---|---|---|---|
-| 6.1 | Measure and study: orbital cruise heights and speeds, the glide's entry, angles, speed, end and failures, on two bodies of different size | Tables; `Status.json` altitude and the glide flag over time | 5.1, U2 |
-| 6.2 | Orbital cruise and glide in `elite-sim` and the game, on every solid body | Traces inside the gate on the Moon-like case; orbit to a landing on the Moon and on Earth here | 6.1, 5.2, 2.4 |
+| 6.1 | Measure and study: orbital cruise heights and speeds, the glide's entry, angles, speed, end and failures, on two bodies of different size | Tables; `Status.json` altitude and the glide flag over time; each body's radius and gravity recorded (one session of exe study; a rule not found by its end is D) | 5.1, U2 |
+| 6.2 | Orbital cruise and glide in `elite-sim` and the game, on every solid body | Traces inside the gate, replaying the measured bodies; orbit to a landing on the Moon and on Earth here | 6.1, 5.2, 2.4 |
 | 6.3 | Ours: drag and hot-air heat in thruster flight; gas giants down to the floor | Tests of the formulas; Earth, Venus and Jupiter flown; the report says plainly this is not Elite | 6.2, 5.4 |
 
 ### Phase 7: finishing
@@ -532,8 +547,8 @@ report lists every claim with its grade and, for C and D, the game's number besi
 | 7.2 | Costs with `SE_PERF`, the never-spawned picture compare, file sizes (nothing over 90 MB), README, notes, a release zip tested as a player gets it | The numbers | all |
 | 7.3 | The independent check (`checker`) of the whole mod against this spec's claims | Its report | all |
 
-**Go/no-go points, in the order they bite:** G1 mesh decoding (0.1); G2 the flight code in the exe (0.6); G3 how many
-sounds can be matched (0.4); G4 the system swap (5.3). Each has its fallback written in its step.
+**Go/no-go points, in the order they bite:** G1 mesh decoding (0.1); G3 how many sounds can be matched (0.7); G2 the
+flight code in the exe (0.11); G4 the system swap (5.3). Each has its fallback written in its step.
 
 ## Team
 
@@ -572,14 +587,15 @@ sounds can be matched (0.4); G4 the system swap (5.3). Each has its fallback wri
 |---|---|---|---|
 | Q1 | What do Frontier's terms say about D2, D3 and D4? | User (U4) | Nothing unless the user changes a decision |
 | Q2 | Can the mesh vertex layout be worked out from the data alone? | Builder, step 0.1 (G1) | The grade of S1 and S2, not the mod |
-| Q3 | Are ship and module numbers in the exe, or only in the encrypted files? | Builder, step 0.6 | Nothing: E7 and E4 give them at grade B |
+| Q3 | Are ship and module numbers in the exe, or only in the encrypted files? | Builder, step 0.10 | Nothing: E7 and E4 give them at grade B |
 | Q4 | Do new Sidewinders carry fixed or gimballed pulse lasers? | U1's `Loadout` event | Step 2.6 only |
-| Q5 | Does `Status.json` carry anything usable for speed? Believed not | Builder, step 0.5 | Nothing: video is the plan |
+| Q5 | Does `Status.json` carry anything usable for speed? Believed not | Builder, step 0.8 | Nothing: video is the plan |
 | Q6 | Elite's field of view and eye position in the seat | Builder, step 1.3, from screenshots | Nothing |
-| Q7 | Is the pilot's body among the open meshes, and can it be posed without its skeleton? | Builder, step 0.3 | Nothing: an empty seat is the fallback, reported |
-| Q8 | Elite's own simulation rate | Builder, step 0.6 | Nothing: 60 Hz if not found |
+| Q7 | Is the pilot's body among the open meshes, and can it be posed without its skeleton? | Builder, step 0.4 | Nothing: an empty seat is the fallback, reported |
+| Q8 | Elite's own simulation rate | Builder, step 0.10 | Nothing: 60 Hz if not found |
 | Q9 | How large the mod's files come out (textures above all) | Builder, step 1.1 | The pack layout only |
 | Q10 | Can `select_active_system` be made to report "entered" for a chosen star? | Builder, step 5.3 (G4) | Hyperspace only |
+| Q11 | Pitch and roll are on the mouse in Elite's defaults. Do the agent's made-up mouse movements reach Elite, and with a known stick deflection? | Builder, step 0.8. Fallback: for measuring only, the user picks Elite's own keyboard preset (`ClassicKeyboardOnly`), where pitch and roll are keys at full deflection; the mouse's mapping then comes from the exe (0.11) or stays D | Turn-rate traces only |
 
 ## Verification claims
 
