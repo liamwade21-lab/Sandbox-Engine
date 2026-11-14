@@ -977,7 +977,8 @@ whole-desktop capture, each trace within 0.05 s of its chain's). A HUD display l
 0.013 s). These are now `elite_sim::data::measured` and the flight uses them.
 
 **The gate (C10):** replayed from the data alone, every run is within 0.46 to 0.57 m/s rms, and all its steady speeds within
-the gate; but 3 to 23 rows a run (0.1 to 1 %) miss it, by up to 3 m/s (about 3.5 frames at 44 m/s^2), all in the fast
-changes just after a control (the corners of the start and of braking). So **the gate is not passed yet**:
+the gate; but 15 to 45 rows a run (0.5 to 3 %, with the gate's time window a flat 2 frames a sample: the 2 % is for timed
+events) miss it, by up to 3 m/s (about 3.5 frames at 44 m/s^2), all in the fast changes just after a control (the corners of
+the start and of braking: after W the simulation runs ahead of Elite, after X behind, which no single latency removes). So **the gate is not passed yet**:
 `measured_traces_pass_the_gate` is kept, ignored, as the open item; `traces_replay_no_worse` guards today's accuracy.
 Boost (s05, s06) and flight assist off (s08) are out of the gate until measured again (session 3).

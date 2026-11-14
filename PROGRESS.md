@@ -7,7 +7,13 @@
    it stops and this item comes back. Sessions 1 (the shakedown) and 2 (the first flight measurements) worked; Elite was
    closed through its own menu afterwards (you asked, 2026-11-14), the Sidewinder left at rest in open space in Synuefe
    XM-K b28-1. The next session reopens it.
-2. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
+2. **Fly the mod yourself (after the Phase 0-1 check):** in the sandbox, Q, Mods, Sidewinder to spawn it; walk up and E to
+   board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust, Tab boost, the
+   arrows for pips, Z flight assist, L gear; come down slowly with the gear down; B to get out once landed. The tests can't
+   press a real mouse, keyboard or pad: say how it feels against Elite and anything wrong.
+3. **Refuel the Sidewinder in Elite when it suits you:** the main tank is at 1.4 t of 2 (sessions use about 0.2 t each in
+   open space; a jump or supercruise session will use more). The agent never refuels (that's a station service).
+4. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
 Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-14_user/`); the Claude Code restart.

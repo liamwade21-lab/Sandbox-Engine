@@ -134,23 +134,18 @@ pub fn simulate(tr: &Trace, block_at: &dyn Fn(f64) -> (Block, f64), rp: &Replay)
 }
 
 /// The gate for one trace: the rows outside it (time, measured, simulated). A row passes within 1 m/s, or if the simulation
-/// reaches the measured speed within the time gate of that row: `gate_time_s` of the time since the last change of the
-/// controls (the event's own length so far: 2 frames or 2 % of it).
+/// reaches the measured speed within 2 video frames of that row (the speed curve sample by sample: the gate's 2 % applies to
+/// timed events, a drive's charge, not to each sample of a long change, where it would pass errors of metres a second).
 pub fn gate(tr: &Trace, sim: &[f64]) -> Vec<(f64, f64, f64)> {
     let Some(c) = columns(tr) else { return vec![(0.0, f64::NAN, f64::NAN)] };
     let times: Vec<f64> = tr.rows.iter().map(|r| r[c.t]).collect();
-    let control_cols: Vec<usize> = tr.columns.iter().enumerate().filter(|(_, n)| n.starts_with("key_") || n.starts_with("mouse_") || n.starts_with("pip_") || *n == "fa_off").map(|(i, _)| i).collect();
-    let mut since = times.first().copied().unwrap_or(0.0);
     let mut bad = Vec::new();
     for (i, r) in tr.rows.iter().enumerate() {
-        if i > 0 && control_cols.iter().any(|&j| tr.rows[i - 1][j] != r[j]) {
-            since = times[i];
-        }
         let (t, hud) = (times[i], r[c.speed]);
         if (sim[i] - hud).abs() <= GATE_SPEED_MPS {
             continue;
         }
-        let window = gate_time_s(t - since);
+        let window = gate_time_s(0.0);
         let near = times.iter().zip(sim).any(|(tt, s)| (tt - t).abs() <= window && (s - hud).abs() <= GATE_SPEED_MPS);
         if !near {
             bad.push((t, hud, sim[i]));

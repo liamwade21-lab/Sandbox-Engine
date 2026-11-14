@@ -256,7 +256,7 @@ pub fn fly(
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
     // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
     let setting = |name: &str, or: f32| assets.keys.value(name).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(or);
-    let full = elite_sim::data::stand_in::MOUSE_FULL_COUNTS as f32 / setting("MouseSensitivity", 1.0).max(0.01);
+    let full = elite_sim::data::measured::MOUSE_FULL_COUNTS as f32 / setting("MouseSensitivity", 1.0).max(0.01);
     pilot.stick = (pilot.stick + Vec2::new(keys.mouse.x, -keys.mouse.y) / full).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
     // The exe's rule (0x1408F2210, step 0.11): stick = sign(v) x ((|v| - dead zone) / (1 - dead zone)) ^ linearity.
     // (Without the setting in the file, the exe's defaults: dead zone 0.05, linearity 1: its table 0x145E77BD0.)

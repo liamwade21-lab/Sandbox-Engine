@@ -219,6 +219,11 @@ pub mod measured {
     /// assist's time constant's scale D (the approach to the cap: 0.87 s at 4 pips, 0.58 at 2, the 0.5 s floor at 0, read off
     /// the traces); block 0x28, the acceleration's jerk limit, m/s^3. (A HUD display lag was tried as well: the fit took it to
     /// 0.013 s, so the HUD shows the speed as it is.)
+    /// The mouse's counts for full stick at sensitivity 1 (the exe's R: v += counts x sensitivity / R, step 0.11). Session 2's
+    /// r02 and r03 (pitch and roll in steps of 100 counts) start turning at 59 counts on both axes; with the user's dead zone
+    /// of 0.05 and sensitivity of 0.2725 that is full stick at 1,180 counts, so R = 1,180 x 0.2725 (about +-5 %: the dead
+    /// zone's end read to a few counts).
+    pub const MOUSE_FULL_COUNTS: f64 = 321.6;
     pub const FWD_ACC: f64 = 44.38;
     pub const FWD_ACC_BASE: f64 = 44.20;
     pub const REV_ACC: f64 = 30.00;
@@ -240,9 +245,6 @@ pub mod stand_in {
     pub const FA_OFF_DAMP: [f64; 3] = [0.0; 3];
     /// The blue-zone curves: flat (no speed effect) until measured.
     pub const CURVE: crate::flight::Curve = crate::flight::Curve::FLAT;
-    /// The mouse's counts for full stick (the exe's R over the sensitivity: step 0.11 found the rule, v += counts x
-    /// sensitivity / R, but not R).
-    pub const MOUSE_FULL_COUNTS: f64 = 400.0;
 }
 
 /// The stock Sidewinder's performance block at `eng_pips` (0..4) and mass `mass_t`: the current block (after the pips'
