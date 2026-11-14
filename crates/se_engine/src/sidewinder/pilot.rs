@@ -252,7 +252,7 @@ pub fn fly(
     if keys.pip_reset {
         pilot.dist.reset();
     }
-    let rate = elite_sim::data::stand_in::THROTTLE_RATE * dt;
+    let rate = elite_sim::data::measured::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
     // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
     let setting = |name: &str, or: f32| assets.keys.value(name).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(or);

@@ -26,6 +26,11 @@ pub const TICK: f64 = 1.0 / 60.0;
 pub struct Replay {
     pub latency: f64,
     pub throttle_rate: f64,
+    /// The boost's firing time, s (`None`: `BoostSpec::sidewinder`'s stand-in).
+    pub boost_fire: Option<f64>,
+    /// The forward acceleration's multiplier while the boost fires (the exe's thruster data has boost acceleration
+    /// multipliers among its mass curves, A10: their numbers are data; 1 until measured).
+    pub boost_accel: f64,
 }
 
 /// The controls at one moment, from a trace row.
@@ -98,8 +103,11 @@ pub fn simulate(tr: &Trace, block_at: &dyn Fn(f64) -> (Block, f64), rp: &Replay)
             ctl_row += 1;
         }
         let k = if times[0] <= t - rp.latency { controls(tr, &c, ctl_row) } else { Controls::default() };
-        let (block, full_top) = block_at(k.eng_half / 2.0);
-        let spec = BoostSpec::sidewinder(block.boost_ramp);
+        let (mut block, full_top) = block_at(k.eng_half / 2.0);
+        let mut spec = BoostSpec::sidewinder(block.boost_ramp);
+        if let Some(fire) = rp.boost_fire {
+            spec.fire = fire;
+        }
         if k.x {
             throttle = 0.0;
         }
@@ -111,6 +119,9 @@ pub fn simulate(tr: &Trace, block_at: &dyn Fn(f64) -> (Block, f64), rp: &Replay)
         dist.recharge(TICK, true);
         boost.tick(&spec, TICK);
         let input = Input { forward: boost.forward(&spec, throttle), lateral: k.lat, vertical: k.vert, flight_assist: !k.fa_off, ..Input::default() };
+        if boost.firing() {
+            block.accel_fwd *= rp.boost_accel;
+        }
         flight::step(&block, full_top, boost.firing(), &input, DVec3::ZERO, &mut m, TICK);
         t += TICK;
         // Every row passed in this tick gets this tick's speed.

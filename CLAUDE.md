@@ -160,7 +160,9 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   Sonnet agent presses the flight keys in the user's Elite, in Solo only; since 2026-11-14 it may start Elite itself
   (`steam://rungameid/359320`) and click the Frontier launcher's "LOG IN WITH STEAM" button (the user: "it is ok to log in
   for me so i dont have to do it over and over"), and stops if a password, code, Steam Guard or terms screen appears; it
-  never types credentials, spends credits or touches other players. Nothing of the mod's rules is ever tuned by feel: a rule comes from
+  never types credentials, spends credits or touches other players. To close Elite when it isn't needed, use a command, not
+  its menus (the user, 2026-11-14): `taskkill /IM EliteDangerous64.exe` then `taskkill /IM EDLaunch.exe` (add `/F` only if
+  one is still running after ~15 s). Nothing of the mod's rules is ever tuned by feel: a rule comes from
   the exe's code or from a measurement, inside the measuring error.
 - V switches the free flight on and off and does nothing else (the user, 2026-11-11): photo mode moved to B. Q held is the
   spawn menu while on foot or playing a mod (in free flight Q is still the roll key, as "keep the existing flight controls" says).

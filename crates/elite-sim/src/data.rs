@@ -202,17 +202,37 @@ pub mod edsy {
     pub const MIN_PITCH: f64 = 34.0;
 }
 
+/// Measured in the user's Elite (grade D: step 0.9's traces in `tests/traces`, each named).
+pub mod measured {
+    /// Block 0x04, 0x08: the reverse and side speeds' shares of the cap. Session 2 (2026-11-14, `s02_reverse`, `s07_lat_vert`,
+    /// 2 ENG pips): reverse 97 m/s and lateral and vertical 129 against the forward cap of 160.9 (the HUD rounds; 0.6 and 0.8
+    /// give 96.5 and 128.7).
+    pub const BACK_SHARE: f64 = 0.6;
+    pub const SIDE_SHARE: f64 = 0.8;
+    /// The keyboard's throttle rate, a share a second: the HUD's throttle marker reached full 1.9 s after W went down in
+    /// session 2 (1.75 s in session 1's run, read off a recording that showed the whole gauge).
+    pub const THROTTLE_RATE: f64 = 0.526;
+    /// Fitted to every flight-assist-on trace of sessions 1 and 2 without a boost (`tests/traces.rs` `fit`, `FIT_SKIP=boost`,
+    /// 2026-11-14, the throttle rate held at the marker's; starting from values read off the traces by hand): they replay
+    /// those traces at 0.41 to 0.61 m/s rms. The forward acceleration of the full block (4 ENG pips) and of the base block
+    /// (0 pips), m/s^2: nearly equal, and EDSY's 44.39 within 0.5 %; reverse and lateral (EDSY 29.96); block 0x2C, flight
+    /// assist's time constant's scale D (the approach to the cap: 0.87 s at 4 pips, 0.58 at 2, the 0.5 s floor at 0, read off
+    /// the traces); block 0x28, the acceleration's jerk limit, m/s^3. (A HUD display lag was tried as well: the fit took it to
+    /// 0.013 s, so the HUD shows the speed as it is.)
+    pub const FWD_ACC: f64 = 44.38;
+    pub const FWD_ACC_BASE: f64 = 44.20;
+    pub const REV_ACC: f64 = 30.00;
+    pub const LAT_ACC: f64 = 30.05;
+    pub const FA_D: f64 = 0.991;
+    pub const JERK_LIN: f64 = 25.05;
+}
+
 /// Values the rules need that have no source yet: **stand-ins** (as the stand-in hull is), each the least-assuming choice the
 /// code allows, listed here so a measurement (step 0.9) replaces every one. None is tuned by feel.
 pub mod stand_in {
-    /// Block 0x04, 0x08: no extra clamp on reverse or lateral speed beyond the cap.
-    pub const BACK_SHARE: f64 = 1.0;
-    pub const SIDE_SHARE: f64 = 1.0;
-    /// Block 0x2C, 0x5C..0x64: 0, so the code's own floors hold (T = 0.5 s; tau_r = dt).
-    pub const FA_D: f64 = 0.0;
+    /// Block 0x5C..0x64: 0, so the code's own floor holds (tau_r = dt).
     pub const FA_R: [f64; 3] = [0.0; 3];
-    /// Block 0x28, 0x50..0x58: no jerk limits.
-    pub const JERK_LIN: f64 = 0.0;
+    /// Block 0x50..0x58: no angular jerk limits.
     pub const ANG_JERK: [f64; 3] = [0.0; 3];
     /// Block 0x10: the boost's ramp to full demand, s.
     pub const BOOST_RAMP: f64 = 0.0;
@@ -220,19 +240,19 @@ pub mod stand_in {
     pub const FA_OFF_DAMP: [f64; 3] = [0.0; 3];
     /// The blue-zone curves: flat (no speed effect) until measured.
     pub const CURVE: crate::flight::Curve = crate::flight::Curve::FLAT;
-    /// How fast the throttle moves while W or S is held (share a second), and the mouse's counts for full stick (the exe's
-    /// R over the sensitivity: step 0.11 found the rule, v += counts x sensitivity / R, but not R).
-    pub const THROTTLE_RATE: f64 = 1.0;
+    /// The mouse's counts for full stick (the exe's R over the sensitivity: step 0.11 found the rule, v += counts x
+    /// sensitivity / R, but not R).
     pub const MOUSE_FULL_COUNTS: f64 = 400.0;
 }
 
 /// The stock Sidewinder's performance block at `eng_pips` (0..4) and mass `mass_t`: the current block (after the pips'
 /// blend and the thrusters' mass curve, both grade C rules) and the full-power block's top speed.
 ///
-/// - Full-power block (t = 1, what the outfitting screen shows): speeds and turn rates B (coriolis), accelerations and
-///   angular accelerations EDSY hints, the rest stand-ins.
+/// - Full-power block (t = 1, what the outfitting screen shows): speeds and turn rates B (coriolis), the accelerations,
+///   flight assist's D and the jerk limit measured (D, `measured`), the angular accelerations EDSY hints, the rest stand-ins.
 /// - Base block (t = 0): the speeds at coriolis' `minthrust` share (the community's reading of that number: a hint), the
-///   turn rates at EDSY's `minpitch / pitch` (a hint), everything else as the full block (stand-in: no pip effect).
+///   turn rates at EDSY's `minpitch / pitch` (a hint), the forward acceleration measured (D), everything else as the full
+///   block (stand-in: no pip effect).
 /// - t = ENG pips / most pips (C, step 0.11: 0x1437FEF60); the most pips a channel takes, 4, is Elite's well-known rule but
 ///   comes from data the exe loads (D until measured).
 /// - The mass curve: thrusters 2E (B, coriolis), the same curve for speeds, accelerations and turn rates until their
@@ -243,14 +263,14 @@ pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (crate::flight::Block, f6
     let full = Block {
         top_speed: s.speed,
         boost_speed: s.boost,
-        back_share: stand_in::BACK_SHARE,
-        side_share: stand_in::SIDE_SHARE,
+        back_share: measured::BACK_SHARE,
+        side_share: measured::SIDE_SHARE,
         boost_ramp: stand_in::BOOST_RAMP,
-        accel_fwd: edsy::FWD_ACC,
-        accel_rev: edsy::REV_ACC,
-        accel_side: edsy::LAT_ACC,
-        jerk_lin: stand_in::JERK_LIN,
-        fa_d: stand_in::FA_D,
+        accel_fwd: measured::FWD_ACC,
+        accel_rev: measured::REV_ACC,
+        accel_side: measured::LAT_ACC,
+        jerk_lin: measured::JERK_LIN,
+        fa_d: measured::FA_D,
         turn: [s.pitch, s.yaw, s.roll],
         ang_accel: [edsy::PITCH_ACC, edsy::YAW_ACC, edsy::ROLL_ACC],
         ang_jerk: stand_in::ANG_JERK,
@@ -263,6 +283,7 @@ pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (crate::flight::Block, f6
     let share = s.min_thrust_pct / 100.0;
     let turn_share = edsy::MIN_PITCH / edsy::PITCH;
     let mut base = full.clone();
+    base.accel_fwd = measured::FWD_ACC_BASE;
     base.top_speed *= share;
     base.boost_speed *= share;
     for k in 0..3 {

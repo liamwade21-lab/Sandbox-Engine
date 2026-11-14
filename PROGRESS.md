@@ -4,8 +4,9 @@
 
 1. **Nothing for the measuring sessions unless one stops**: you allowed the agent to open Elite and log in through the
    launcher's "LOG IN WITH STEAM" (2026-11-14). It types nothing; if a password, code, Steam Guard or terms screen appears
-   it stops and this item comes back. Session 1 (the shakedown) worked: Elite is open in Solo, the Sidewinder idle in open
-   space in Synuefe XM-K b28-1. Leave it running if you can; closing it is fine too (the next session reopens it).
+   it stops and this item comes back. Sessions 1 (the shakedown) and 2 (the first flight measurements) worked; Elite was
+   closed through its own menu afterwards (you asked, 2026-11-14), the Sidewinder left at rest in open space in Synuefe
+   XM-K b28-1. The next session reopens it.
 2. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
    outfitting screen's Sidewinder page (or the measuring session) settles it.
 
@@ -27,10 +28,14 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     touchdown rule with the gear's feet; a crash on a damaged file); the cockpit recreated in Blender from your three cockpit
     shots and now drawn in the game (its shape lines up with your pictures; its colours are a guess and look pale in Earth's
     daylight: step 4's materials). Checked in a test run: lost in flight, touchdown at 0.7 m/s, out beside the ship.
-  - Being done now: the HUD digit reader (an agent); session 2's ticket and manoeuvres are written
-    (`.rea/tickets/measure/02-first-flight-measurements.md`, `re/elite/measure/scripts/`).
-  - Next: session 2 (step 0.9: the first flight measurements), then Phase 2 (the ship's systems: the distributor's model
-    is drafted in `crates/elite-sim/src/power.rs`, not yet wired).
+  - Measuring session 2 done (12 runs, nothing went wrong) and its speed runs fitted: the ship's acceleration (44.4 m/s^2),
+    braking (30.0), lateral (30.05), reverse and side speed shares (0.6, 0.8), flight assist's time constant and the jerk
+    limit are now measured numbers (grade D), close to the community's; the throttle rate comes from the HUD's throttle
+    marker. Every run replays at about 0.5 m/s rms, but the fast changes just after a key are up to 3.5 frames out, so the
+    strict gate is not passed yet (the open item). Rotation at rest measured too (yaw 7.7 deg/s; pitch caps at 17.6); the
+    FOV setting 56.249 is vertical. Step 2.1 (pips, capacitors, boost) is in the game (first cut).
+  - Next: session 3 (boost, flight assist off, capacitor recharge, the turn rates at several throttles, heat), then the
+    rest of Phase 2 (heat, shields and hull, landing, fuel, weapons).
 
 
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).

@@ -928,3 +928,56 @@ left, was refused. `sw pip eng|sys|wep|reset`, `sw boost`. Also drafted for late
 the ship's numbers stand-ins), `supercruise.rs` (5.2: the wells' slowdown, the cap, the drop, from A50; numbers stand-ins),
 `replay.rs` and `tests/traces.rs` (the gate's replay of measured traces, one fitted latency a trace, and a fit of the
 unmeasured numbers).
+
+### Step 0.9, session 2: the first flight measurements (2026-11-14). **Recorded; partly fitted**
+
+A Sonnet agent flew twelve scripted runs in the user's Elite (ticket `.rea/tickets/measure/02-first-flight-measurements.md`;
+log and files `re/elite/measure/raw/session2/`, out of git), in Solo in open space; nothing went wrong (heat never past 44 %).
+The HUD's speed was read off 60-frame crops by `hud_read.py` (33 of 33 frames checked by eye agree; it leaves a frame empty
+rather than guess) and the rotations off whole-desktop recordings by `rot_read.py` (star tracking, its angle scale closed by
+whole turns). All grade D:
+
+- **Top speeds, flight assist on** (a full tank less 0.6 t): 0 ENG pips 101 m/s, 2 pips 161, 4 pips 221; reverse 97 (2 pips),
+  lateral and vertical 129 (2 pips). The simulation gives 100.6, 160.9 and 221.2 at this session's mass (44.6 t: the
+  coriolis speeds and minimum-thrust share with the exe's blend and mass curve; `print_top_speeds`): inside the gate, and
+  each rounds to the HUD's number. **The reverse and side shares are 0.6 and 0.8 of the cap** (block 0x04, 0x08: they were
+  stand-ins of 1): 0.6 x 160.9 = 96.5 and 0.8 x 160.9 = 128.7 round to the HUD's 97 and 129.
+- **Boost** (4 pips): from rest it peaks at 272 m/s, at full throttle at 308; the stand-in boost (2 s firing) reaches 276
+  and 320: the boost's times and acceleration are still to fit.
+- **Rotation at rest** (2 pips, throttle zero): yaw on A 7.70 +- 0.03 deg/s (coriolis's 16 is the rate in the blue zone);
+  the mouse's pitch rises 3.52 deg/s per 100 counts from a dead zone of 59 counts and stops at 17.6 deg/s from 560 counts;
+  roll rises 9.88 deg/s per 100 counts from the same 59 counts, unbounded to 800 (73 deg/s). At the user's sensitivity
+  (0.2725) the stick's full deflection is near 1,180 counts (59 / 0.05), about 320 at the default file's 1.0. That the
+  pitch stops at 17.6 while its stick is under half deflected, and roll does not stop, means the turn's cap at rest is
+  smaller than the stick's scale: the exe's rule as step 0.10 read it (`clamp(stick x W, +-W)`, one W) does not fit both,
+  and session 3 measures the rates at several throttles to separate them.
+- **Q6 settled:** a pitch through whole turns (the stars back in place, 0.03 degrees off) gives a focal length of 1,347 px
+  on the 1,440-line screen: **the user's FOV setting of 56.249 degrees is the vertical field of view** (D).
+- **Odd, re-measured next:** with flight assist off, X (throttle to zero) left the throttle at full (s08); whether Elite
+  ignores it then or the press was lost is open (held out of the gate's traces).
+- **The fit so far:** the traces replay through the simulation (`tests/traces.rs`), but a fit of speed alone cannot tell the
+  throttle's movement from the thrust: it lands on a slow throttle with a strong, jerk-limited thrust and latencies scattered
+  from 0 to 0.9 s, while the capture's own start is known to 35 ms (capture.py now logs the first frame's time). The
+  HUD's throttle arc is being read so the two separate. The forward acceleration's straight part reads 43.5 m/s^2 and the
+  braking 29-30 m/s^2 off the traces by hand, near EDSY's 44.39 and 29.96.
+
+### Step 0.9, session 2's fit: normal flight's numbers measured (2026-11-14). **Steady speeds inside the gate; the fast changes 3.5 frames out**
+
+The speed traces (seven runs and session 1's) are scrubbed into `crates/elite-sim/tests/traces/` (numbers only, made by
+`make_trace.py`) and replayed through the simulation (`replay.rs`, `tests/traces.rs`). The shapes follow the exe's rules
+(C) once the right numbers are in: a jerk-limited start (12 m/s after 1 s, 28 after 1.5 s at every pip setting), a straight
+part at the acceleration's limit, then flight assist's exponential approach to the cap with the time constant
+`max(0.5, D (4/3 s / Vfull - 1/3))` (read off the traces: 0.87 s at 4 pips, 0.58 at 2, the 0.5 s floor at 0, all from one
+D). The keyboard's throttle rate comes straight from the HUD's throttle marker (`hud_read.py` now reads it: full 1.9 s after
+W, so 0.526 a second). A fit of the rest to all the traces without a boost (`fit`, `FIT_SKIP=boost`, the throttle held at
+the marker's) gives, grade D: **forward acceleration 44.38 m/s^2 at 4 pips and 44.20 at 0** (EDSY's hint 44.39), **reverse
+30.00, lateral 30.05** (EDSY 29.96), **flight assist's D 0.991** (block 0x2C), **the jerk limit 25.05 m/s^3** (block 0x28),
+the reverse and side shares 0.6 and 0.8; and the measuring chain's latency (0.04 s for session 2's crops, 0 for session 1's
+whole-desktop capture, each trace within 0.05 s of its chain's). A HUD display lag was tried and dropped (the fit took it to
+0.013 s). These are now `elite_sim::data::measured` and the flight uses them.
+
+**The gate (C10):** replayed from the data alone, every run is within 0.46 to 0.57 m/s rms, and all its steady speeds within
+the gate; but 3 to 23 rows a run (0.1 to 1 %) miss it, by up to 3 m/s (about 3.5 frames at 44 m/s^2), all in the fast
+changes just after a control (the corners of the start and of braking). So **the gate is not passed yet**:
+`measured_traces_pass_the_gate` is kept, ignored, as the open item; `traces_replay_no_worse` guards today's accuracy.
+Boost (s05, s06) and flight assist off (s08) are out of the gate until measured again (session 3).
