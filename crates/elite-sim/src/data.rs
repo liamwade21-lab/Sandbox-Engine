@@ -34,8 +34,6 @@ pub struct Ship {
     pub pitch: f64,
     pub roll: f64,
     pub yaw: f64,
-    /// B (coriolis `pipSpeed`): the community's speed-per-pip factor (3/22). Its use is the community's fit (E7: medium).
-    pub pip_speed: f64,
     /// B: the heat record's capacity (item data +0x20, +0xF0), the hull record's base shield (+0x0C: 55; coriolis says 40,
     /// EDSY 55) and base armour (+0x08), the armour's hardness (20), the mass lock factor (the prototype's MassLockComponent
     /// +0x18).
@@ -59,7 +57,6 @@ pub const SIDEWINDER: Ship = Ship {
     pitch: 43.0,
     roll: 110.0,
     yaw: 17.0,
-    pip_speed: 0.136_363_636_363_64,
     heat_capacity: 140.0,
     base_shield: 55.0,
     base_armour: 60.0,
@@ -308,7 +305,10 @@ pub mod record {
 /// Measured in the user's Elite (grade D: step 0.9's traces in `tests/traces`, each named).
 pub mod measured {
     /// The keyboard's throttle rate, a share a second: the HUD's throttle marker reached full 1.9 s after W went down in
-    /// session 2 (1.75 s in session 1's run, read off a recording that showed the whole gauge).
+    /// session 2 (1.75 s in session 1's run, read off a recording that showed the whole gauge). Re-read in task N2 with the
+    /// marker found in the blue zone too: full 1.78 s after W in run1, about 1.8 s in s03 and s06 (0.92 of the gauge at 1.63 s, rising 0.5 a second); it leaves idle 0.12-0.13 s after
+    /// W in run1, later than the speed starts to climb (the marker trails the throttle), so its start, and with it a better rate,
+    /// is not measured. Unchanged: every measured run replays the same with any rate from 0.4 a second up.
     pub const THROTTLE_RATE: f64 = 0.526;
     /// The mouse's counts for full stick at sensitivity 1 (the exe's R: v += counts x sensitivity / R, step 0.11). Session 2's
     /// r02 and r03 (pitch and roll in steps of 100 counts) start turning at 59 counts on both axes; with the user's dead zone

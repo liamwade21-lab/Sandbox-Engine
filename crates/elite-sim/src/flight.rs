@@ -314,7 +314,9 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
         if input.flight_assist {
             let target = (stick[k] * w_raw[k]).clamp(-w[k], w[k]);
             let tr = (block.fa_r[k] * (10.0 / 9.0 * s / block.top_speed.max(1e-9) - 1.0 / 9.0).max(0.0)).max(dt);
-            let mut al = ((target - m.omega[k]) / tr).clamp(-amax[k], amax[k]);
+            // tau_r can be 0 (at rest, R x 0, with dt 0): no error then asks for nothing, any other for the limit (not 0 / 0).
+            let err = target - m.omega[k];
+            let mut al = if err == 0.0 { 0.0 } else { (err / tr).clamp(-amax[k], amax[k]) };
             if block.ang_jerk[k] > 0.0 {
                 let most = m.last_alpha[k].abs() + block.ang_jerk[k].to_radians() * dt;
                 al = al.clamp(-most, most);
@@ -556,6 +558,18 @@ mod tests {
         assert!((w - 100f64.to_radians()).abs() < 0.1, "{w}");
         run(&b, Input { flight_assist: false, ..default_input() }, DVec3::ZERO, &mut m, 1.0);
         assert!((m.omega.z - w).abs() < 1e-9);
+    }
+
+    /// A tick of no time at rest (tau_r = R x 0 = dt = 0) leaves the spin 0, not NaN; a stick then asks for the limit.
+    #[test]
+    fn a_tick_of_no_time_at_rest_keeps_the_spin() {
+        let b = Block { fa_r: [0.1; 3], ..block() };
+        let mut m = Motion::default();
+        let s = step(&b, b.top_speed, false, &Input { flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, 0.0);
+        assert_eq!((s.alpha, m.omega, m.last_alpha), (DVec3::ZERO, DVec3::ZERO, DVec3::ZERO));
+        assert!(m.rot.is_finite() && m.vel.is_finite());
+        let s = step(&b, b.top_speed, false, &Input { pitch: 1.0, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, 0.0);
+        assert!((s.alpha.x - 200f64.to_radians()).abs() < 1e-9 && m.omega == DVec3::ZERO, "{:?}", s.alpha);
     }
 
     fn default_input() -> Input {

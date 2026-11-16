@@ -165,17 +165,20 @@ mod tests {
         assert_eq!(b.press(&spec, &mut d, false), Err(Denied::EngineOff));
     }
 
-    /// While firing the stock block's upper limits are four times the record's (from rest: 4 x 45 m/s^2 x the mass curve).
+    /// While firing the stock block's upper limits are four times the record's (from rest: 4 x 45 m/s^2 x the mass curve);
+    /// not firing, the plain 45. (The jerk limit rests while firing; not firing it would hold the first tick to 25 x dt, so the
+    /// second case starts with its memory already past 45, where only the acceleration limit can hold it.)
     #[test]
     fn firing_quadruples_the_acceleration() {
         use crate::flight::{step, Input, Motion};
         let (block, full_top) = data::sidewinder_block(4.0, data::THRUSTERS_2E.opt_mass);
-        let mut m = Motion::default();
+        let full = Input { forward: 1.0, flight_assist: true, ..Input::default() };
         let dt = 1.0 / 60.0;
-        step(&block, full_top, true, &Input { forward: 1.0, flight_assist: true, ..Input::default() }, glam::DVec3::ZERO, &mut m, dt);
-        assert!((m.vel.length() / dt - 180.0).abs() < 1e-6, "{}", m.vel.length() / dt);
         let mut m = Motion::default();
-        step(&block, full_top, false, &Input { forward: 1.0, flight_assist: true, ..Input::default() }, glam::DVec3::ZERO, &mut m, dt);
-        assert!(m.vel.length() / dt < 45.0 + 1e-6);
+        step(&block, full_top, true, &full, glam::DVec3::ZERO, &mut m, dt);
+        assert!((m.vel.length() / dt - 180.0).abs() < 1e-6, "{}", m.vel.length() / dt);
+        let mut m = Motion { last_acc: glam::DVec3::new(0.0, 0.0, 100.0), ..Motion::default() };
+        step(&block, full_top, false, &full, glam::DVec3::ZERO, &mut m, dt);
+        assert!((m.vel.length() / dt - 45.0).abs() < 1e-6, "{}", m.vel.length() / dt);
     }
 }

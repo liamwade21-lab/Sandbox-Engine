@@ -188,10 +188,24 @@ impl Speed {
 /// these wells (1 AU width unit, M in Earth masses) overruns the cap from about 20 s out and reaches the glide's shell at
 /// 0.38 c, where the game holds such an approach (the community's "seven seconds at 75 %"): the wells' M unit, orbital cruise's
 /// w or the rule's use is not yet understood (N1's S1 and G1 runs measure an approach).
+///
+/// Superseded by `Speed::step_held`, which keeps the jerk limit's memory as the exe's rule does (from 30 km/s at half
+/// throttle under a cap of 1,000 c this function adds 3.75e8 m/s in the first tick, the rule 2.8e6): kept, unchanged, until
+/// `pilot.rs` holds a `Speed`.
 pub fn step_speed(speed: f64, throttle: f64, cap: f64, dt: f64) -> f64 {
     let mut s = Speed { v: speed.min(cap), last_acc: f64::INFINITY };
     s.step(throttle, cap, MIN_SPEED, dt);
     s.v
+}
+
+impl Speed {
+    /// `step_speed` with the jerk limit (1e10 m/s^3, the supercruise block's): never over the wells' cap (the same hard
+    /// limit, E), then `Speed::step` at w = 0 with this ship's memory of its last acceleration (the exe's +0x630). A ship that
+    /// enters supercruise starts with `Speed { v, last_acc: 0.0 }`.
+    pub fn step_held(&mut self, throttle: f64, cap: f64, dt: f64) {
+        self.v = self.v.min(cap);
+        self.step(throttle, cap, MIN_SPEED, dt);
+    }
 }
 
 /// A60's swept test: the first point of this tick's path (`from`, the ship relative to a body's centre, then `step`) on the
@@ -406,6 +420,30 @@ mod tests {
         }
         let at = cap(&[(earth, 10.0 * C)]);
         assert!(step_speed(100.0 * C, 1.0, at, dt) <= at);
+        let mut s = Speed { v: 100.0 * C, last_acc: 0.0 };
+        s.step_held(1.0, at, dt);
+        assert!(s.v <= at);
+    }
+
+    /// The jerk limit in the path the game uses: from 30 km/s at half throttle under a cap of 1,000 c, the first tick adds
+    /// 1e10 x dt^2 (2.8e6 m/s; `step_speed` adds 3.75e8), each later one J dt^2 more than the one before, until the
+    /// acceleration reaches mode 2's forward limit (after 2.25 s).
+    #[test]
+    fn step_held_keeps_the_jerk_limit() {
+        let (dt, j) = (1.0 / 60.0, record::CRUISE.jerk_lin);
+        let cap = 1000.0 * C;
+        let mut s = Speed { v: MIN_SPEED, last_acc: 0.0 };
+        s.step_held(0.5, cap, dt);
+        assert!(((s.v - MIN_SPEED) - j * dt * dt).abs() < 1.0, "{}", s.v - MIN_SPEED);
+        assert!(step_speed(MIN_SPEED, 0.5, cap, dt) - MIN_SPEED > 100.0 * j * dt * dt);
+        let was = s.v;
+        s.step_held(0.5, cap, dt);
+        assert!(((s.v - was) - 2.0 * j * dt * dt).abs() < 1.0, "{}", s.v - was);
+        // Held 3 s, it has reached mode 2's forward acceleration (4.5e10 x k, k = cap / Vsc) and holds it.
+        for _ in 0..178 {
+            s.step_held(0.5, cap, dt);
+        }
+        assert!((s.last_acc - record::CRUISE.accel_fwd * cap / VSC).abs() < 1.0, "{}", s.last_acc);
     }
 
     /// The safe drop's window at a target in a well (x = 0: 20 km to 1,000 km, under 1,000 km/s) and a free one (x = 1: to
