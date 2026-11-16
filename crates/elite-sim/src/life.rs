@@ -11,21 +11,23 @@
 //! - The HUD's alarm (`0x142D59590`, `SetLifeSupportAlarm`): critical at 30 s or less left, otherwise on while the oxygen
 //!   runs (the 30.0 at `0x144DE168C`).
 //!
-//! Numbers: the full time is 300 s (the stock 1E life support's five minutes, the spec's F6: B). Stand-ins (E): both graces
-//! are data that wasn't found (0: the countdown starts at once, as the game is known to show); the canopy's health and how a
-//! hit reaches it weren't found either, so the canopy breaks once the hull is under a tenth.
+//! Numbers: the full time is 300 s (the stock 1E life support's five minutes, the spec's F6, and its module record: B). The
+//! two graces are the LifeSupportComponent template's (B, N1: the prototype `lifesupportmodule`, chosen by its name, since the
+//! module item names none). Stand-in (E): the canopy's health and how a hit reaches it weren't found, so the canopy breaks
+//! once the hull is under a tenth.
 
 /// The emergency oxygen's full time (s, B).
 pub const OXYGEN_S: f64 = 300.0;
 /// The alarm turns critical at this much oxygen left or less (s, C: `0x142D59590`).
 pub const CRITICAL_S: f64 = 30.0;
+/// The graces before the emergency oxygen starts (s, B): the canopy breached (template +0x18, against the breach clock
+/// +0x244), the module unpowered (+0x14, against the clock +0x240).
+pub const GRACE_BREACHED_S: f64 = 6.5;
+pub const GRACE_UNPOWERED_S: f64 = 0.4;
 
 /// Stand-ins (E).
 pub mod stand_in {
-    /// The graces before the emergency oxygen starts: the canopy breached, the module unpowered (s; the component's data).
-    pub const GRACE_BREACHED_S: f64 = 0.0;
-    pub const GRACE_UNPOWERED_S: f64 = 0.0;
-    /// The hull's share under which the canopy is broken (the canopy's own health is not known).
+    /// The hull's share under which the canopy is broken (the canopy's own health is not known; not flown: it needs damage).
     pub const CANOPY_HULL_SHARE: f64 = 0.10;
 }
 
@@ -83,7 +85,7 @@ impl Life {
         let breached = !self.canopy;
         self.breached_for = if breached { self.breached_for + dt } else { 0.0 };
         self.unpowered_for = if module_powered { 0.0 } else { self.unpowered_for + dt };
-        self.emergency = (breached && self.breached_for >= stand_in::GRACE_BREACHED_S) || (!module_powered && self.unpowered_for >= stand_in::GRACE_UNPOWERED_S);
+        self.emergency = (breached && self.breached_for >= GRACE_BREACHED_S) || (!module_powered && self.unpowered_for >= GRACE_UNPOWERED_S);
         if self.emergency {
             self.oxygen = (self.oxygen - dt).max(0.0);
         } else {
@@ -110,7 +112,15 @@ mod tests {
         t + DT
     }
 
-    /// A hull under a tenth breaks the canopy; the oxygen then lasts its 300 s, a second a second, and its end is reported once.
+    /// Ticks for `secs` seconds.
+    fn run(l: &mut Life, powered: bool, secs: f64) {
+        for _ in 0..(secs / DT).round() as usize {
+            l.tick(DT, powered);
+        }
+    }
+
+    /// A hull under a tenth breaks the canopy; after the breach's 6.5 s grace the oxygen lasts its 300 s, a second a second,
+    /// and its end is reported once.
     #[test]
     fn a_breach_runs_the_oxygen_down() {
         let mut l = Life::default();
@@ -119,17 +129,37 @@ mod tests {
         l.hull(0.05);
         assert!(!l.canopy);
         let t = until_out(&mut l, true);
-        assert!((t - OXYGEN_S).abs() < 2.0 * DT, "{t}");
+        assert!((t - GRACE_BREACHED_S - OXYGEN_S).abs() < 2.0 * DT, "{t}");
         assert!(l.oxygen == 0.0 && l.running());
+    }
+
+    /// The graces (the template's 6.5 s breached, 0.4 s unpowered): the oxygen is held full until one is over.
+    #[test]
+    fn the_graces() {
+        assert_eq!((GRACE_BREACHED_S, GRACE_UNPOWERED_S), (6.5, 0.4));
+        let mut l = Life { canopy: false, ..Life::default() };
+        run(&mut l, true, 6.4);
+        assert!(!l.running() && l.oxygen == OXYGEN_S);
+        run(&mut l, true, 0.2);
+        assert!(l.running());
+        let mut m = Life::default();
+        run(&mut m, false, 0.35);
+        assert!(!m.running());
+        run(&mut m, false, 0.1);
+        assert!(m.running());
     }
 
     /// At or under 0 with a breach (or without power) the commander is lost on every tick, not only the one that crosses 0;
     /// a whole canopy with power refills instead.
     #[test]
     fn lost_at_zero() {
-        let mut l = Life { canopy: false, oxygen: 0.0, ..Life::default() };
+        let mut l = Life { canopy: false, ..Life::default() };
+        run(&mut l, true, GRACE_BREACHED_S + 0.1);
+        l.oxygen = 0.0;
         assert!(l.tick(DT, true) && l.tick(DT, true) && l.tick(0.0, true));
-        let mut m = Life { oxygen: 0.0, ..Life::default() };
+        let mut m = Life::default();
+        run(&mut m, false, GRACE_UNPOWERED_S + 0.1);
+        m.oxygen = 0.0;
         assert!(m.tick(DT, false));
         assert!(!m.tick(DT, true) && m.oxygen == OXYGEN_S);
     }
@@ -139,17 +169,13 @@ mod tests {
     #[test]
     fn power_and_the_refill() {
         let mut l = Life::default();
-        for _ in 0..600 {
-            l.tick(DT, false);
-        }
-        assert!(l.running() && (l.oxygen - (OXYGEN_S - 10.0)).abs() < 0.05);
+        run(&mut l, false, 10.0);
+        assert!(l.running() && (l.oxygen - (OXYGEN_S - 10.0 + GRACE_UNPOWERED_S)).abs() < 0.05, "{}", l.oxygen);
         l.tick(DT, true);
         assert!(!l.running() && l.oxygen == OXYGEN_S);
         l.canopy = false;
-        for _ in 0..600 {
-            l.tick(DT, true);
-        }
-        assert!(l.running() && (l.oxygen - (OXYGEN_S - 10.0)).abs() < 0.05);
+        run(&mut l, true, 10.0);
+        assert!(l.running() && (l.oxygen - (OXYGEN_S - 10.0 + GRACE_BREACHED_S)).abs() < 0.05, "{}", l.oxygen);
         assert_eq!(Life::default().alarm(), Alarm::Off);
     }
 
@@ -157,7 +183,7 @@ mod tests {
     #[test]
     fn the_alarm() {
         let mut l = Life { canopy: false, ..Life::default() };
-        l.tick(DT, true);
+        run(&mut l, true, GRACE_BREACHED_S + 0.1);
         assert_eq!(l.alarm(), Alarm::On);
         l.oxygen = CRITICAL_S + DT / 2.0;
         l.tick(DT, true);

@@ -14,6 +14,7 @@ pub mod fuel;
 pub mod glide;
 pub mod heat;
 pub mod hyperspace;
+pub mod landing;
 pub mod life;
 pub mod power;
 pub mod replay;

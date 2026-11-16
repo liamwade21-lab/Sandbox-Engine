@@ -1,10 +1,11 @@
 //! Weapons (step 2.6, first cut): the stock pair of small gimballed pulse lasers, the hardpoints, the WEP capacitor and heat.
 //!
 //! Numbers: the lasers' fire interval, energy a shot (from the WEP capacitor, all or nothing: the distributor's rule, C), heat a
-//! shot, damage, range and falloff are coriolis's (B, `PULSE_LASER_GIMBAL_SMALL`); both guns of the fire group fire together.
-//! The hardpoints' deploy time is a stand-in (E) until measured, and with the hardpoints in nothing fires. Not found in the exe
-//! yet: the fire interval's and the beam's own rules (A21's list), the gimbals' aim (no targets here: the guns fire along the
-//! nose).
+//! shot, damage, range and falloff are coriolis's and the weapon record's (B, `PULSE_LASER_GIMBAL_SMALL`; the record's fields
+//! named by their values only); both guns of the fire group fire together. The hardpoints' deploy time and the beam's showing
+//! are stand-ins (E) until N1's W1 run films them (the hull rig's doors take 1.07 s out), and with the hardpoints in nothing
+//! fires. Not found in the exe yet: the fire interval's and the beam's own rules (A21's list), the falloff's rule, the gimbals'
+//! aim (no targets here: the guns fire along the nose).
 
 use crate::data::{Laser, PULSE_LASER_GIMBAL_SMALL};
 use crate::heat::{Heat, HeatSpec};

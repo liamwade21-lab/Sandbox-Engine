@@ -5,12 +5,13 @@
 //! channel recharges `lo + (hi - lo) x s^p` with `s = pips / most` while the power plant gives anything (`0x1437FD920`), up to
 //! its capacity (inferred); a draw takes all of what it asks or nothing (`0x143801BC0`), or what there is (`0x1438021C0`).
 //!
-//! Numbers: the pips are counted in halves, as Elite's `Status.json` counts them (grade B): 4/4/4 at the start, 8 a channel at
-//! most, a press moving 2 (session 1: Up twice went 4/4/4, 3/6/3, 2/8/2; grade D). How a press shares its take between the two
-//! other channels when one has too little is not measured: here the rest comes from the other (E). The capacitors' sizes and
-//! `hi` are coriolis's (B; that the outfitting "Recharge" is `hi`, the rate with every pip in the channel, is A20's reading of
-//! the engineering modifiers' fields); `lo` and `p` are not in the exe nor shown anywhere: stand-ins (`stand_in::RECHARGE_LO`,
-//! `RECHARGE_P`) until measured.
+//! Numbers: the pips are counted in halves, as Elite's `Status.json` counts them; the distributor prototype's
+//! PowerDistributorModule template (B, N1: bytes +0x10..+0x12 the start, 4/4/4; +0x13 the most a channel, 8; +0x14 the pool a
+//! reset leaves unassigned, 0; +0x16 a press's step, 2; read by 0x1437FEF60 and 0x143801FA0; the prototype chosen by its name)
+//! agrees with session 1 (Up twice went 4/4/4, 3/6/3, 2/8/2; grade D). How a press shares its take between the two other
+//! channels when one has too little is not measured: here the rest comes from the other (E). The capacitors' sizes and `hi`
+//! are the distributor's module record (+0 and +8 per channel, B; coriolis agrees), and so are `lo` (+4) and `p` (+0xC): 0
+//! and 1.1 on every channel (B).
 
 use crate::data;
 
@@ -18,18 +19,16 @@ pub const WEP: usize = 0;
 pub const ENG: usize = 1;
 pub const SYS: usize = 2;
 
-/// Half pips: the most in a channel, all three together, what a press moves, and the start (grade B and D, above).
+/// Half pips: the most in a channel, all three together (the start's, with no pool), what a press moves, and the start (B).
 pub const MOST_HALF: u8 = 8;
 pub const TOTAL_HALF: u8 = 12;
 pub const STEP_HALF: u8 = 2;
 pub const START_HALF: [u8; 3] = [4, 4, 4];
 
-/// Stand-ins (E) until a measurement of the capacitors' recharge against the pips: the share of `hi` with no pips, and the
-/// curve's power.
-pub mod stand_in {
-    pub const RECHARGE_LO: f64 = 0.0;
-    pub const RECHARGE_P: f64 = 1.0;
-}
+/// The recharge's rate with no pips in the channel, as a share of `hi`, and the curve's power (`lo + (hi - lo) s^p`): the
+/// module record's +4 and +0xC on every channel (B).
+pub const RECHARGE_LO: f64 = 0.0;
+pub const RECHARGE_P: f64 = 1.1;
 
 /// One channel's capacitor: its size (MJ) and its recharge rule's numbers (MW).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -51,7 +50,7 @@ pub struct Distributor {
 impl Distributor {
     /// A module's distributor, its capacitors full and the pips at the start.
     pub fn new(d: &data::Distributor) -> Distributor {
-        let cap = |capacity: f64, hi: f64| Capacitor { capacity, lo: stand_in::RECHARGE_LO * hi, hi, p: stand_in::RECHARGE_P };
+        let cap = |capacity: f64, hi: f64| Capacitor { capacity, lo: RECHARGE_LO * hi, hi, p: RECHARGE_P };
         let caps = [cap(d.wep_cap, d.wep_rate), cap(d.eng_cap, d.eng_rate), cap(d.sys_cap, d.sys_rate)];
         Distributor { half: START_HALF, charge: [caps[0].capacity, caps[1].capacity, caps[2].capacity], caps }
     }
@@ -161,5 +160,19 @@ mod tests {
         d.recharge(1000.0, true);
         assert_eq!(d.charge[ENG], d.caps[ENG].capacity);
         assert!((d.draw_some(WEP, 100.0) - d.caps[WEP].capacity).abs() < 1e-12);
+    }
+
+    /// The record's recharge curve: `hi x s^1.1` (lo 0): for the ENG's 0.4 MW, 0.4 x 0.5^1.1 = 0.187 MW at 2 pips of 4, the
+    /// whole 0.4 at 4 pips, nothing at 0.
+    #[test]
+    fn the_capacitor_curve() {
+        let mut d = Distributor::new(&data::DISTRIBUTOR_1E);
+        for (half, want) in [(0u8, 0.0), (4, 0.4 * 0.5f64.powf(1.1)), (8, 0.4)] {
+            d.half[ENG] = half;
+            d.charge[ENG] = 0.0;
+            d.recharge(1.0, true);
+            assert!((d.charge[ENG] - want).abs() < 1e-12, "{half}: {}", d.charge[ENG]);
+        }
+        assert_eq!((RECHARGE_LO, RECHARGE_P), (0.0, 1.1));
     }
 }

@@ -6,17 +6,15 @@
 //! block 0x10 s), cool-down (field 2 s), idle. While firing it adds heat at field 6 a second (label "Engines"); no energy is
 //! drawn while it fires.
 //!
-//! Numbers: the cost is coriolis's `boostEnergy` (B). The three times are data not yet measured: stand-ins (E), the coriolis
-//! `boostInt` (B: the interval between boosts) split evenly between firing and cooling, until step 0.9's boost runs (s05,
-//! s06) measure them. Field 6 (the heat) is step 2.2's.
+//! While firing the flight step also multiplies every upper acceleration limit by field 4 and takes field 5 as flight assist's
+//! D (`flight::step`, the block's `boost_accel`, `boost_fa_d`).
+//!
+//! Numbers (B, the ship item's boost record, performance record +0x24C, `data::record`): warm-up 1 s, firing 2 s, cool-down
+//! 1 s (together coriolis's `boostInt` of 4 s), 10 heat a second while firing; the cost 7 MJ (field 3, coriolis's
+//! `boostEnergy`). Session 2's boost runs (s05, s06) check them against the game (`tests/traces.rs`).
 
+use crate::data::{record, SIDEWINDER};
 use crate::power::{Distributor, ENG};
-
-/// Stand-ins (E) until measured: the warm-up, and the firing's share of the boost interval.
-pub mod stand_in {
-    pub const WARM_S: f64 = 0.0;
-    pub const FIRE_SHARE: f64 = 0.5;
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum State {
@@ -46,14 +44,21 @@ pub struct BoostSpec {
     pub cost: f64,
     /// Block 0x10: seconds for the forward demand to reach full while firing (0: at once).
     pub ramp: f64,
+    /// Field 6: heat a second while firing.
+    pub heat: f64,
 }
 
 impl BoostSpec {
-    /// The stock Sidewinder's (the cost B, the times stand-ins).
+    /// The stock Sidewinder's (B, the boost record).
     pub fn sidewinder(ramp: f64) -> BoostSpec {
-        let s = &crate::data::SIDEWINDER;
-        let fire = s.boost_interval * stand_in::FIRE_SHARE;
-        BoostSpec { warm: stand_in::WARM_S, fire, cool: s.boost_interval - fire, cost: s.boost_energy, ramp }
+        BoostSpec {
+            warm: record::BOOST_WARM_S,
+            fire: record::BOOST_FIRE_S,
+            cool: record::BOOST_COOL_S,
+            cost: SIDEWINDER.boost_energy,
+            ramp,
+            heat: record::BOOST_HEAT_PER_S,
+        }
     }
 }
 
@@ -101,6 +106,11 @@ impl Boost {
         matches!(self.state, State::Firing(_))
     }
 
+    /// The heat the boost adds now, a second (field 6 while firing, label "Engines": 0x142E4A820, 0x143813740).
+    pub fn heat_rate(&self, spec: &BoostSpec) -> f64 {
+        if self.firing() { spec.heat } else { 0.0 }
+    }
+
     /// The forward demand while firing: pushed towards full over the ramp's seconds.
     pub fn forward(&self, spec: &BoostSpec, demand: f64) -> f64 {
         match self.state {
@@ -128,19 +138,44 @@ mod tests {
         let full = d.charge[ENG];
         assert_eq!(b.press(&spec, &mut d, true), Ok(()));
         assert!((d.charge[ENG] - (full - spec.cost)).abs() < 1e-12);
-        assert!(b.firing());
-        assert_eq!(b.forward(&spec, 0.0), 1.0);
+        assert_eq!(b.state, State::Warm(0.0));
         assert_eq!(b.press(&spec, &mut d, true), Err(Denied::Busy));
-        let mut t = 0.0;
+        // The record's three times: 1 s warming (no push, no heat), 2 s firing (the push to full, 10 heat a second), 1 s
+        // cooling.
+        let dt = 1.0 / 60.0;
+        let (mut t, mut fired, mut heat) = (0.0, 0.0, 0.0);
         while b.state != State::Idle {
-            b.tick(&spec, 1.0 / 60.0);
-            t += 1.0 / 60.0;
+            if matches!(b.state, State::Warm(_)) {
+                assert_eq!(b.forward(&spec, 0.0), 0.0);
+            }
+            if b.firing() {
+                assert_eq!(b.forward(&spec, 0.0), 1.0);
+                fired += dt;
+            }
+            heat += b.heat_rate(&spec) * dt;
+            b.tick(&spec, dt);
+            t += dt;
         }
-        assert!((t - (spec.warm + spec.fire + spec.cool)).abs() < 0.02);
+        assert_eq!((spec.warm, spec.fire, spec.cool, spec.heat), (1.0, 2.0, 1.0, 10.0));
+        assert!((t - 4.0).abs() < 0.02 && (fired - 2.0).abs() < 0.02 && (heat - 20.0).abs() < 0.2, "{t} {fired} {heat}");
         // Too little left (1 MJ of 8): refused, untouched.
         let left = d.charge[ENG];
         assert_eq!(b.press(&spec, &mut d, true), Err(Denied::NotEnoughEnergy));
         assert_eq!(d.charge[ENG], left);
         assert_eq!(b.press(&spec, &mut d, false), Err(Denied::EngineOff));
+    }
+
+    /// While firing the stock block's upper limits are four times the record's (from rest: 4 x 45 m/s^2 x the mass curve).
+    #[test]
+    fn firing_quadruples_the_acceleration() {
+        use crate::flight::{step, Input, Motion};
+        let (block, full_top) = data::sidewinder_block(4.0, data::THRUSTERS_2E.opt_mass);
+        let mut m = Motion::default();
+        let dt = 1.0 / 60.0;
+        step(&block, full_top, true, &Input { forward: 1.0, flight_assist: true, ..Input::default() }, glam::DVec3::ZERO, &mut m, dt);
+        assert!((m.vel.length() / dt - 180.0).abs() < 1e-6, "{}", m.vel.length() / dt);
+        let mut m = Motion::default();
+        step(&block, full_top, false, &Input { forward: 1.0, flight_assist: true, ..Input::default() }, glam::DVec3::ZERO, &mut m, dt);
+        assert!(m.vel.length() / dt < 45.0 + 1e-6);
     }
 }

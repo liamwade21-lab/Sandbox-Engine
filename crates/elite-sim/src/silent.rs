@@ -44,7 +44,7 @@ mod tests {
         }
         let hot = h.fraction(&spec);
         assert!(hot > cool + 0.2, "{cool} -> {hot}");
-        for _ in 0..(shields::stand_in::DELAY_BROKEN_S as usize - 1) {
+        for _ in 0..(shields::DELAY_BROKEN_S as usize - 1) {
             second(&mut h, &mut s, &spec, false);
         }
         assert!(h.fraction(&spec) < hot && s.strength == 0.0, "the broken shield's delay counts from the power's return");

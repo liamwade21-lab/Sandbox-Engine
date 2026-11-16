@@ -40,8 +40,22 @@ impl Curve {
     }
 }
 
+/// The physics world's rate and its most sub-steps a frame (the `PhysicsWorld` component's template +0x10, +0x14, the same in
+/// every location prototype, read by 0x14228D5E0: grade B, `re/elite/notes/sidewinder_numbers.md`, "Component templates").
+pub const PHYSICS_HZ: f64 = 60.0;
+pub const MAX_SUBSTEPS: u32 = 4;
+
+/// The share of the reverse acceleration left as the forward braking limit while the forward demand is at least
+/// `FULL_FORWARD` (0x142E6AF90, C: the flag it also needs, +0x5E2, is set to 1 by the controller's constructor 0x142E32DD0 and no
+/// other writer was found, so it is taken as always set).
+pub const FULL_FORWARD_BRAKE: f64 = 0.25;
+pub const FULL_FORWARD: f64 = 0.999;
+/// Rotation-reversal mode 1 acts on an axis whose stick is past this (0x142E6E960, C).
+pub const REVERSAL_STICK: f64 = 0.2;
+
 /// The ship's performance block (the exe's 51 values; the ones the rules here read). Speeds m/s, accelerations m/s^2,
-/// turn rates deg/s (x pitch, y yaw, z roll), angular accelerations deg/s^2, jerks per second, times s.
+/// turn rates deg/s (x pitch, y yaw, z roll), angular accelerations deg/s^2, jerks per second, times s. A negative value in a
+/// full-power block means "keep the base block's" (the blend's rule).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     /// 0x00, 0x0C.
@@ -60,26 +74,38 @@ pub struct Block {
     pub jerk_lin: f64,
     /// 0x2C: the linear flight assist's time scale D.
     pub fa_d: f64,
+    /// 0x30, 0x34: the lateral and vertical upper limits' extra multipliers while boosting.
+    pub boost_side: [f64; 2],
     /// 0x38 (x), 0x40 (y), 0x3C (z).
     pub turn: [f64; 3],
-    /// 0x44..0x4C.
+    /// 0x44 (x), 0x4C (y), 0x48 (z): the same x, z, y order in the block as the turn rates (0x142E4A820 builds the limits
+    /// from controller +0x794, +0x79C, +0x798).
     pub ang_accel: [f64; 3],
-    /// 0x50..0x58 (0: none).
+    /// 0x50..0x58 (x, y, z in order; 0: none).
     pub ang_jerk: [f64; 3],
-    /// 0x5C..0x64: the rotational flight assist's time scales R.
+    /// 0x5C..0x64 (x, y, z in order): the rotational flight assist's time scales R.
     pub fa_r: [f64; 3],
     /// 0x68.. (angular acceleration), 0x78.. (turn rate, x and y), 0x88.. (turn rate, z).
     pub curve_accel: Curve,
     pub curve_turn: Curve,
     pub curve_roll: Curve,
+    /// 0xA8..0xB0: rotation-reversal mode 1's factors (block 0xA4 = 1, the only mode built: the Sidewinder's): with flight
+    /// assist on, an axis whose stick is past 0.2 and whose target opposes its spin turns with `alpha x (1 + factor)` (0: none).
+    pub reversal: [f64; 3],
     /// 0xC0..0xC8: flight assist off, the damping of a centred axis's spin while another axis is steered (step 0.11).
     pub fa_off_damp: [f64; 3],
+    /// From the performance record's boost record (+0x24C), read by the flight step while the boost fires, so carried with the
+    /// block: field 4, every upper acceleration limit's multiplier, and field 5, flight assist's D in place of 0x2C.
+    pub boost_accel: f64,
+    pub boost_fa_d: f64,
 }
 
 impl Block {
-    /// The distributor's blend (0x142E86E20, 0x141B2E310): base + (full - base) x t, field by field.
+    /// The distributor's blend (0x142E86E20, 0x141B2E310): base + (full - base) x t, field by field, a negative full-power
+    /// value keeping the base's; the reversal factors blend without that rule.
     pub fn blend(base: &Block, full: &Block, t: f64) -> Block {
         let l = |a: f64, b: f64| if b < 0.0 { a } else { a + (b - a) * t };
+        let l2 = |a: [f64; 2], b: [f64; 2]| [l(a[0], b[0]), l(a[1], b[1])];
         let l3 = |a: [f64; 3], b: [f64; 3]| [l(a[0], b[0]), l(a[1], b[1]), l(a[2], b[2])];
         let lc = |a: Curve, b: Curve| Curve { a: l(a.a, b.a), b: l(a.b, b.b), p: l(a.p, b.p) };
         Block {
@@ -93,6 +119,7 @@ impl Block {
             accel_side: l(base.accel_side, full.accel_side),
             jerk_lin: l(base.jerk_lin, full.jerk_lin),
             fa_d: l(base.fa_d, full.fa_d),
+            boost_side: l2(base.boost_side, full.boost_side),
             turn: l3(base.turn, full.turn),
             ang_accel: l3(base.ang_accel, full.ang_accel),
             ang_jerk: l3(base.ang_jerk, full.ang_jerk),
@@ -100,8 +127,25 @@ impl Block {
             curve_accel: lc(base.curve_accel, full.curve_accel),
             curve_turn: lc(base.curve_turn, full.curve_turn),
             curve_roll: lc(base.curve_roll, full.curve_roll),
+            reversal: [0, 1, 2].map(|k| base.reversal[k] + (full.reversal[k] - base.reversal[k]) * t),
             fa_off_damp: l3(base.fa_off_damp, full.fa_off_damp),
+            boost_accel: l(base.boost_accel, full.boost_accel),
+            boost_fa_d: l(base.boost_fa_d, full.boost_fa_d),
         }
+    }
+
+    /// Supercruise's "accel mode 2" (0x141B2D8F0) with the speed multiplier `k` and the ship's speed `v`: the top speed and the
+    /// forward and lateral accelerations times k; the reverse one `max(r k, r (v / V0) max(1, sqrt(v / (V0 k))))`, V0 the
+    /// block's own top speed: braking grows with the speed over the cap.
+    pub fn mode2(&self, k: f64, v: f64) -> Block {
+        let mut b = self.clone();
+        let (v0, r) = (self.top_speed.max(1e-9), self.accel_rev);
+        let over = (v / (v0 * k).max(1e-300)).max(0.0).sqrt().max(1.0);
+        b.accel_rev = (r * k).max(over * (v / v0) * r);
+        b.top_speed *= k;
+        b.accel_fwd *= k;
+        b.accel_side *= k;
+        b
     }
 
     /// The thrusters' mass multipliers (0x142EBDF60): `speed` scales the two speeds, `accel` the three accelerations,
@@ -157,7 +201,10 @@ pub struct Motion {
     pub vel: DVec3,
     pub rot: DQuat,
     pub omega: DVec3,
-    /// Last tick's thrust acceleration (ship axes) and angular acceleration: the jerk limits read them.
+    /// What the jerk limits remember. `last_acc`: the linear limit's (its length is read), the thrust acceleration as the jerk
+    /// limit left it, before the speed guard, written only on a tick the limit runs (flight assist on, not boosting): the exe's
+    /// +0x630 (0x142E6E960), so after a boost the limit goes on from where it stood before the boost. `last_alpha`: the
+    /// angular acceleration of last tick (+0x640, written every tick).
     pub last_acc: DVec3,
     pub last_alpha: DVec3,
 }
@@ -186,7 +233,8 @@ fn from_flight(f: DVec3) -> DVec3 {
 }
 
 /// One tick of the flight step (0x142E6E960) and its integration. `block` is this tick's current block (after the pips'
-/// blend and the mass curve), `full_top` the full-power block's top speed, `boosting` whether boost is firing, `outside` the
+/// blend and the mass curve), `full_top` the full-power block's top speed, `boosting` whether boost is firing (the cap is the
+/// boost speed, the upper limits take the boost's multiplier, D the boost's, and the linear jerk limit rests), `outside` the
 /// outside acceleration in the rest frame (gravity: the flight assist holds against it). Returns what the thrusters did.
 pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside: DVec3, m: &mut Motion, dt: f64) -> Step {
     let inv = m.rot.inverse();
@@ -195,11 +243,19 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     let s = m.vel.length();
     let cap = if boosting { block.boost_speed } else { block.top_speed };
     let d = DVec3::new(input.lateral, input.vertical, input.forward).clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
-    // The flight assist's time constant (both modes use tau).
-    let t_lin = (block.fa_d * (4.0 / 3.0 * s / full_top.max(1e-9) - 1.0 / 3.0).max(0.0)).max(0.5);
+    // The flight assist's time constant (both modes use tau): the speed's share of the full-power top speed is held to 1
+    // first (0x142E6E960), so T is at most D, over the cap after a boost too; D is the boost record's while boosting.
+    let fa_d = if boosting { block.boost_fa_d } else { block.fa_d };
+    let t_lin = (fa_d * (4.0 / 3.0 * (s / full_top.max(1e-9)).clamp(0.0, 1.0) - 1.0 / 3.0).max(0.0)).max(0.5);
     let tau = t_lin.max(dt);
-    let upper = DVec3::new(block.accel_side, block.accel_side, block.accel_fwd);
-    let lower = DVec3::new(-block.accel_side, -block.accel_side, -block.accel_rev);
+    // The limits (0x142E6AF90, 0x142E6E960): braking a full forward demand only at a quarter of the reverse acceleration;
+    // while boosting every upper limit times the boost's multiplier, lateral and vertical also times 0x30, 0x34.
+    let mut upper = DVec3::new(block.accel_side, block.accel_side, block.accel_fwd);
+    if boosting {
+        upper *= DVec3::new(block.boost_side[0], block.boost_side[1], 1.0) * block.boost_accel;
+    }
+    let brake = if d.z >= FULL_FORWARD { FULL_FORWARD_BRAKE * block.accel_rev } else { block.accel_rev };
+    let lower = DVec3::new(-block.accel_side, -block.accel_side, -brake);
     let share_cap = DVec3::new(block.side_share * cap, block.side_share * cap, cap);
     let mut a;
     if input.flight_assist {
@@ -217,6 +273,7 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
             if a.length() > most {
                 a = a.normalize_or_zero() * most;
             }
+            m.last_acc = a;
         }
         // The speed guard: never past the larger of the speed now and the cap.
         a = guard(v, a + g, s.max(cap), dt) - g;
@@ -252,6 +309,7 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     let amax = DVec3::from_array([0, 1, 2].map(|k| block.ang_accel[k].to_radians() * accel_factor));
     let stick = DVec3::new(input.pitch, input.yaw, input.roll).clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
     let mut alpha = DVec3::ZERO;
+    let mut remembered = DVec3::ZERO;
     for k in 0..3 {
         if input.flight_assist {
             let target = (stick[k] * w_raw[k]).clamp(-w[k], w[k]);
@@ -260,6 +318,12 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
             if block.ang_jerk[k] > 0.0 {
                 let most = m.last_alpha[k].abs() + block.ang_jerk[k].to_radians() * dt;
                 al = al.clamp(-most, most);
+            }
+            remembered[k] = al;
+            // Reversal mode 1: the stick past 0.2 and the target against the spin (the spin's sign taken as +1 at 0, as the
+            // exe's copysign does) turns harder; the jerk limit remembers the angular acceleration before this factor.
+            if stick[k].abs() > REVERSAL_STICK && target.signum() * m.omega[k].signum() <= 0.0 {
+                al *= 1.0 + block.reversal[k];
             }
             alpha[k] = al;
         } else {
@@ -270,6 +334,7 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
             if stick[k].abs() <= 0.001 && others && s <= cap + 0.1 {
                 alpha[k] += block.fa_off_damp[k] * -m.omega[k];
             }
+            remembered[k] = alpha[k];
         }
     }
     // Integration (semi-implicit): the velocity with this tick's thrust and pull, then the turn.
@@ -279,8 +344,7 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     if spin.length() > 0.0 {
         m.rot = (m.rot * DQuat::from_scaled_axis(spin)).normalize();
     }
-    m.last_acc = a;
-    m.last_alpha = alpha;
+    m.last_alpha = remembered;
     Step { thrust: from_flight(a), alpha, cap }
 }
 
@@ -317,6 +381,7 @@ mod tests {
             accel_side: 30.0,
             jerk_lin: 0.0,
             fa_d: 0.0,
+            boost_side: [1.0, 1.0],
             turn: [40.0, 20.0, 100.0],
             ang_accel: [200.0, 100.0, 240.0],
             ang_jerk: [0.0; 3],
@@ -324,8 +389,82 @@ mod tests {
             curve_accel: Curve::FLAT,
             curve_turn: Curve::FLAT,
             curve_roll: Curve::FLAT,
+            reversal: [0.0; 3],
             fa_off_damp: [0.0; 3],
+            boost_accel: 1.0,
+            boost_fa_d: 0.0,
         }
+    }
+
+    /// Boosting: every upper limit times the boost's multiplier (from rest the speed climbs at 4 x 40 m/s^2), the cap the
+    /// boost speed; braking a full forward demand only at a quarter of the reverse acceleration.
+    #[test]
+    fn boost_multiplies_the_limits_and_full_forward_brakes_softly() {
+        let b = Block { boost_accel: 4.0, ..block() };
+        let dt = 1.0 / 60.0;
+        let mut m = Motion::default();
+        let full = Input { forward: 1.0, flight_assist: true, ..default_input() };
+        step(&b, b.top_speed, true, &full, DVec3::ZERO, &mut m, dt);
+        assert!((m.vel.length() - 160.0 * dt).abs() < 1e-9, "{:?}", m.vel);
+        for _ in 0..600 {
+            step(&b, b.top_speed, true, &full, DVec3::ZERO, &mut m, dt);
+        }
+        assert!((m.vel.length() - b.boost_speed).abs() < 0.01);
+        // Over the cap with the throttle full: 0.25 x 30 m/s^2; with it at 0.9: the whole 30.
+        let was = m.vel.length();
+        step(&b, b.top_speed, false, &full, DVec3::ZERO, &mut m, dt);
+        assert!(((was - m.vel.length()) / dt - 7.5).abs() < 1e-6);
+        let was = m.vel.length();
+        step(&b, b.top_speed, false, &Input { forward: 0.9, ..full }, DVec3::ZERO, &mut m, dt);
+        assert!(((was - m.vel.length()) / dt - 30.0).abs() < 1e-6);
+    }
+
+    /// The linear jerk limit remembers only what it limited: a boost leaves its memory as it was, so braking after a boost
+    /// starts again from that, not from the boost's acceleration; and T is at most D over the cap.
+    #[test]
+    fn the_jerk_limit_rests_while_boosting() {
+        let b = Block { jerk_lin: 25.0, fa_d: 1.0, boost_fa_d: 1.0, boost_accel: 4.0, ..block() };
+        let dt = 1.0 / 60.0;
+        let mut m = Motion::default();
+        for _ in 0..120 {
+            step(&b, b.top_speed, true, &Input { forward: 1.0, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, dt);
+        }
+        assert_eq!(m.last_acc, DVec3::ZERO);
+        let was = m.vel.length();
+        step(&b, b.top_speed, false, &Input { flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, dt);
+        assert!(((was - m.vel.length()) / dt - 25.0 * dt).abs() < 1e-6, "{}", (was - m.vel.length()) / dt);
+        assert!((m.last_acc.length() - 25.0 * dt).abs() < 1e-9);
+    }
+
+    /// Reversal mode 1: a stick against the spin turns with alpha x (1 + factor); with the spin, as before.
+    #[test]
+    fn reversal_mode_one_doubles_a_reversing_turn() {
+        let b = Block { reversal: [1.0; 3], ..block() };
+        let dt = 1.0 / 60.0;
+        let mut m = Motion { omega: DVec3::new(0.3, 0.0, 0.0), ..Motion::default() };
+        let s = step(&b, b.top_speed, false, &Input { pitch: -1.0, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, dt);
+        assert!((s.alpha.x + 2.0 * 200f64.to_radians()).abs() < 1e-9, "{:?}", s.alpha);
+        assert!((m.last_alpha.x + 200f64.to_radians()).abs() < 1e-9);
+        let mut m = Motion { omega: DVec3::new(0.3, 0.0, 0.0), ..Motion::default() };
+        let s = step(&b, b.top_speed, false, &Input { pitch: 1.0, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, dt);
+        assert!((s.alpha.x - 200f64.to_radians()).abs() < 1e-9);
+        // Under 0.2 of stick: none.
+        let mut m = Motion { omega: DVec3::new(0.3, 0.0, 0.0), ..Motion::default() };
+        let s = step(&b, b.top_speed, false, &Input { pitch: -0.1, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, dt);
+        assert!(s.alpha.x.abs() <= 200f64.to_radians() + 1e-9);
+    }
+
+    /// Accel mode 2: the top speed and the forward and lateral accelerations times k; braking `r k` at or under the cap and
+    /// growing as `r (v / V0) sqrt(v / (V0 k))` over it.
+    #[test]
+    fn accel_mode_two() {
+        let b = Block { top_speed: 1000.0, accel_fwd: 40.0, accel_rev: 90.0, accel_side: 30.0, ..block() };
+        let at = b.mode2(0.5, 500.0);
+        assert_eq!((at.top_speed, at.accel_fwd, at.accel_side), (500.0, 20.0, 15.0));
+        assert!((at.accel_rev - 45.0).abs() < 1e-12);
+        let over = b.mode2(0.5, 2000.0);
+        assert!((over.accel_rev - 90.0 * 2.0 * 2.0).abs() < 1e-9, "{}", over.accel_rev);
+        assert!((b.mode2(0.5, 100.0).accel_rev - 45.0).abs() < 1e-12);
     }
 
     fn run(b: &Block, input: Input, outside: DVec3, m: &mut Motion, secs: f64) {

@@ -8,32 +8,41 @@
 //! 5 s; heat damage over the ship's threshold `t0`, at a rate rising to a ceiling by `f`, dealt every so many seconds, with
 //! `$HeatWarningDamage;` when `f` rises through `t0`, at most every 5 s (`0x142DC1940`).
 //!
-//! Numbers: the capacity is coriolis's (B). The radiator's min and max are EDSY's `heatdismin`/`heatdismax` for the Sidewinder
-//! (A20 matched them to the record by name: a provisional hint, E8); its `f0`, `f1`, the damage's numbers and every load's size
-//! (power plant, thrusters) are data not in the exe: stand-ins (`stand_in`) until step 0.9's heat traces fit them. What the HUD's
-//! heat percentage is (`f`, or a share of it) is open: `hud_percent` is `f x 100` until measured.
+//! Numbers: the capacity is the ship's heat record's (B: item data +0x20, +0xF0, 140; coriolis agrees). The radiator's are
+//! `ext_radiator_standard`'s record (B, N1: +0x08 the most, 18.15; +0x18, +0x1C the curve's ends, 0 and 1; that the radiator
+//! component's +0x1B0 is this record is inferred, its writer 0x1443A6BA0 taking it from a module-data object). The damage's
+//! interval is the heat record's +0x104 (B, 2 s). Open (`stand_in`): what the radiator's least is, what the damage's threshold
+//! and rates mean against the HUD's percentage, every load's size; and what the HUD's heat percentage is (`hud_percent` is
+//! `f x 100` until N1's H1 run reads it).
 
-/// Provisional hints (E8) and stand-ins (E), each to be replaced by a measurement.
+/// `ext_radiator_standard`'s R+0x08: the radiator's rate at the top of its curve (heat a second, B with the inferred link).
+pub const DISSIPATE_MAX: f64 = 18.15;
+/// R+0x18, R+0x1C: the heat fractions where the radiator's curve starts and reaches its top (B with the inferred link).
+pub const DISSIPATE_F0: f64 = 0.0;
+pub const DISSIPATE_F1: f64 = 1.0;
+/// The heat record's +0x104: heat damage is dealt every this many seconds (B).
+pub const DAMAGE_EVERY_S: f64 = 2.0;
+
+/// What is open, each kept as the mod has had it until a measurement says what the record's number means.
 pub mod stand_in {
-    /// EDSY's `heatdismin`, `heatdismax` for the Sidewinder (MJ a second): provisional hints.
+    /// The radiator's rate at the bottom of its curve (heat a second): EDSY's `heatdismin` 1.18, which is the record's R+0x00,
+    /// a field the rate code (0x144399D90) doesn't read; the field it reads, R+0x04, is 0. Something else may read 1.18 (a
+    /// passive loss): kept until N1's H1 run sees whether a cool idle ship still sheds heat.
     pub const DISSIPATE_MIN: f64 = 1.18;
-    pub const DISSIPATE_MAX: f64 = 18.15;
-    /// The heat fractions where the radiator's curve starts and reaches its maximum: stand-ins.
-    pub const DISSIPATE_F0: f64 = 0.0;
-    pub const DISSIPATE_F1: f64 = 1.0;
-    /// The radiator's multiplier `k` (starts at 1 in the exe's tick).
+    /// The radiator's multiplier `k` (starts at 1 in the exe's tick; its other values not found).
     pub const DISSIPATE_K: f64 = 1.0;
-    /// Heat damage: the threshold fraction, the fraction where the rate reaches its ceiling, the rates (hull share a second)
-    /// and the interval it's dealt at: stand-ins.
+    /// Heat damage: the threshold fraction, the fraction where the rate reaches its ceiling, the rates (a share of the hull a
+    /// second here). The heat record holds 2.5, 3.5, 0.5 and 1.5 (+0xF4..+0x100), but 2.5 as heat / capacity disagrees with the
+    /// game's known damage above 100 % unless the HUD's percentage is not heat / capacity, and the rates' unit is not known:
+    /// kept until N1's H1 run reads the HUD's scale.
     pub const DAMAGE_F0: f64 = 1.0;
     pub const DAMAGE_F1: f64 = 1.5;
     pub const DAMAGE_RATE_LO: f64 = 0.0;
     pub const DAMAGE_RATE_HI: f64 = 0.01;
-    pub const DAMAGE_EVERY_S: f64 = 1.0;
     /// The heat the ship makes idling (MJ a second: the power plant and whatever else runs), the one number that holds session
     /// 2's idle at its measured 36 % (s09, 60 s at rest, 2/2/2 pips; near the system's star, so the star's heat is in it) with
     /// the radiator's numbers above and the HUD's percentage taken as heat / capacity: a stand-in fitted to one measurement
-    /// (E) until t01's heat runs separate the loads.
+    /// (E) until N1's H1 and F1 runs separate the loads.
     pub const IDLE_LOAD: f64 = 3.379;
 }
 
@@ -60,18 +69,17 @@ pub struct HeatSpec {
 
 impl HeatSpec {
     pub fn sidewinder() -> HeatSpec {
-        use stand_in::*;
         HeatSpec {
             capacity: crate::data::SIDEWINDER.heat_capacity,
-            dis_min: DISSIPATE_MIN,
+            dis_min: stand_in::DISSIPATE_MIN,
             dis_max: DISSIPATE_MAX,
             dis_f0: DISSIPATE_F0,
             dis_f1: DISSIPATE_F1,
-            dis_k: DISSIPATE_K,
-            dmg_f0: DAMAGE_F0,
-            dmg_f1: DAMAGE_F1,
-            dmg_lo: DAMAGE_RATE_LO,
-            dmg_hi: DAMAGE_RATE_HI,
+            dis_k: stand_in::DISSIPATE_K,
+            dmg_f0: stand_in::DAMAGE_F0,
+            dmg_f1: stand_in::DAMAGE_F1,
+            dmg_lo: stand_in::DAMAGE_RATE_LO,
+            dmg_hi: stand_in::DAMAGE_RATE_HI,
             dmg_every: DAMAGE_EVERY_S,
         }
     }
@@ -194,10 +202,15 @@ mod tests {
         let ev = h.tick(&spec, 0.0, false, false);
         assert!(ev.warning);
         assert!(!h.tick(&spec, 0.0, false, false).warning);
-        let mut dealt = 0.0;
-        for _ in 0..120 {
-            dealt += h.tick(&spec, 1.0 / 60.0, false, false).damage;
+        // The damage is dealt every 2 s (the record's +0x104): nothing in the first 1.9 s, then all of it at once.
+        let mut dealt = Vec::new();
+        for i in 0..150 {
+            let d = h.tick(&spec, 1.0 / 60.0, false, false).damage;
+            if d > 0.0 {
+                dealt.push(i);
+            }
         }
-        assert!(dealt > 0.0);
+        assert_eq!(spec.dmg_every, 2.0);
+        assert!(dealt.len() == 1 && (119..=120).contains(&dealt[0]), "{dealt:?}");
     }
 }

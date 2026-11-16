@@ -14,17 +14,23 @@
 //! - while gliding the velocity is `speedLimit` along the nose; entering it (the hand-over from supercruise) the ship is set at
 //!   2,500 m/s along the nose and moved 3 x 2,500 m ahead. The body's gravity and size enter none of this.
 //!
-//! Numbers: the end distances, the hand-over's speed and the jump ahead are the exe's own (C). The `CruiseArrivalParams`
-//! (`speedLimit`, the band's two pitches, the grace, D, T, p, `endSpeed`) and the two heats are data not found (A60):
-//! stand-ins (E) until a planetary approach is measured: the band is the spec's hint (-5 to -60 degrees), T and p the
-//! struct's own defaults (1.5 s, 4: the sender overwrites them with numbers not found), D such that the deceleration starts at
-//! the speed limit (`speedLimit T / p`: F).
+//! Numbers: the end distances, the hand-over's speed and the jump ahead are the exe's own (C). The two "Planet Arrival" heats
+//! are the ship's (B: the performance record's +0x320, 72 at once, and +0x31C, 36 a second, read through 0x141B3AFF0 by
+//! 0x142C761B0). The `CruiseArrivalParams` (`speedLimit`, the band's two pitches, the grace, D, T, p, `endSpeed`) are in none
+//! of the records read (N1: their sender, component type 0x145F2F260's vt+0x180, is a lead): stand-ins (E) until N1's G1 run
+//! measures a glide: the band is the spec's hint (-5 to -60 degrees), T and p the struct's own defaults (1.5 s, 4: the sender
+//! overwrites them), D such that the deceleration starts at the speed limit (`speedLimit T / p`: F).
 
 /// The exe's constants (C).
 pub const HANDOVER_SPEED: f64 = 2500.0;
 pub const HANDOVER_AHEAD_M: f64 = 3.0 * HANDOVER_SPEED;
 pub const END_AHEAD_M: f64 = 10_000.0;
 pub const END_BELOW_M: f64 = 6500.0;
+
+/// The "Planet Arrival" heats (B): at a too steep entry or end, and each second too steep inside the grace, in heat units
+/// (the heat capacity is 140).
+pub const STEEP_HEAT: f64 = 72.0;
+pub const STEEP_HEAT_PER_S: f64 = 36.0;
 
 /// Stand-ins (E) until measured.
 pub mod stand_in {
@@ -38,12 +44,16 @@ pub mod stand_in {
     pub const POWER: f64 = 4.0;
     pub const DECEL_M: f64 = SPEED_LIMIT * DECEL_S / POWER;
     pub const END_SPEED: f64 = 150.0;
-    /// The "Planet Arrival" heats, as shares of the heat capacity: at a too steep entry or end, and each second too steep.
-    pub const STEEP_HEAT_SHARE: f64 = 0.2;
-    pub const STEEP_HEAT_RATE: f64 = 0.05;
-    /// The height over the ground a descending ship in supercruise enters the glide at (the spec's hint: about 25 km; the
-    /// exe's swept test's size is data, `+0x1D0`, not found).
+    /// The height over the ground a descending ship in supercruise enters the glide at (the spec's hint: about 25 km). The
+    /// exe's safe stop sweeps a sphere of the record's 8,000 m along the path (`supercruise::SWEPT_M`, B), but against which
+    /// radius of the body (its ground, its sea level, another shell) is open: kept until N1's G1 run shows the height a glide
+    /// starts at.
     pub const ENTRY_M: f64 = 25_000.0;
+}
+
+/// The two heats as shares of the stock Sidewinder's heat capacity (what `Tick::heat_share` carries).
+fn steep_share(heat: f64) -> f64 {
+    heat / crate::data::SIDEWINDER.heat_capacity
 }
 
 /// Why a glide ended (the exe's reasons that can happen here, its numbers in brackets).
@@ -144,7 +154,7 @@ impl Glide {
         } else if steep || shallow {
             self.out_of_band += dt;
             if steep {
-                heat_share += STEEP_HEAT_RATE * dt;
+                heat_share += steep_share(STEEP_HEAT_PER_S) * dt;
             }
             (self.out_of_band >= GRACE_S).then_some(if steep { GlideEnd::TooSteep } else { GlideEnd::TooShallow })
         } else {
@@ -153,7 +163,7 @@ impl Glide {
         };
         if let Some(e) = end {
             if e.heats() {
-                heat_share += STEEP_HEAT_SHARE;
+                heat_share += steep_share(STEEP_HEAT);
             }
             self.decel = Some(0.0);
             self.ended = Some(e);
@@ -200,7 +210,8 @@ mod tests {
             }
             assert_eq!(end, Some(want));
             assert!((t - stand_in::GRACE_S).abs() < 2.0 * dt, "{t}");
-            let want_heat = if want.heats() { stand_in::STEEP_HEAT_RATE * stand_in::GRACE_S + stand_in::STEEP_HEAT_SHARE } else { 0.0 };
+            // (72 at the end and 36 a second through the grace, of 140.)
+            let want_heat = if want.heats() { (STEEP_HEAT_PER_S * stand_in::GRACE_S + STEEP_HEAT) / 140.0 } else { 0.0 };
             assert!((heat - want_heat).abs() < 0.01, "{heat} {want_heat}");
         }
     }

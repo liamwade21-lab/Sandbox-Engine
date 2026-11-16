@@ -8,22 +8,21 @@
 //! it to zero and the rest, scaled by what was left over, goes on to the hull (inferred). The hull's strength is the ship's base
 //! armour times the bulkheads' multiplier (C form).
 //!
-//! Numbers: the base shield and armour are coriolis's (B); the generator's mass curve and its single regeneration figures are
-//! coriolis's (B: `regen`, `brokenRegen`, taken as the rate at either end of the SYS blend until measured); the delay while up,
-//! the share it returns at, and the energy each MJ costs are data not in the exe: stand-ins until a measurement (a shield hit:
-//! the user's call, the backlog).
+//! Numbers (B): the base shield (55) and armour are the hull record's (N1; coriolis's 40 for the shield is wrong, EDSY's 55
+//! right); the generator's mass curve and regeneration rates are its module record's (coriolis agrees: `regen` and
+//! `brokenRegen` are the rate at both ends of the SYS blend, the record holding the same number at each), and so are the delays
+//! and the share a broken shield comes back at (`DELAY_UP_S` ..). Not built: the energy and heat each regenerated MJ costs
+//! (record +0x44/+0x48 0.6, +0x40 1.2), which need the distributor and the heat here.
 
 use crate::data::{self, ShieldGenerator};
 use crate::flight::mass_curve;
 
-/// Stand-ins (E) until measured.
-pub mod stand_in {
-    /// The regeneration delay while the shield is up (s), the broken one's (the exe's default when the record has none: 16 s,
-    /// C), and the share of the maximum a broken shield comes back at.
-    pub const DELAY_UP_S: f64 = 2.0;
-    pub const DELAY_BROKEN_S: f64 = 16.0;
-    pub const RETURN_SHARE: f64 = 0.5;
-}
+/// The generator record's +0x4C: the regeneration delay while the shield is up (s, B).
+pub const DELAY_UP_S: f64 = 2.0;
+/// +0x50, +0x54: the broken shield's delay at no SYS pips and at all of them (both 16 s, so the blend leaves it 16; B).
+pub const DELAY_BROKEN_S: f64 = 16.0;
+/// +0x58: the share of the maximum a broken shield comes back at (B).
+pub const RETURN_SHARE: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shields {
@@ -67,12 +66,12 @@ impl Shields {
         }
         // (f64::MAX plus a tick stays f64::MAX: never hit.)
         self.since_hit += dt;
-        let delay = if self.up { stand_in::DELAY_UP_S } else { stand_in::DELAY_BROKEN_S };
+        let delay = if self.up { DELAY_UP_S } else { DELAY_BROKEN_S };
         if self.strength < self.max && self.since_hit >= delay {
             let rate = if self.up { self.regen_up } else { self.regen_broken };
             self.strength = (self.strength + rate * dt).min(self.max);
         }
-        if !self.up && self.strength > self.max * stand_in::RETURN_SHARE {
+        if !self.up && self.strength > self.max * RETURN_SHARE {
             self.up = true;
         }
         if self.strength <= f64::EPSILON {
@@ -136,6 +135,9 @@ mod tests {
         let m = data::JOURNAL_UNLADEN_MASS + 2.3;
         let mut s = Shields::sidewinder(m);
         assert!(s.max > 0.0 && s.up);
+        // The hull record's base shield, 55, times the generator's curve (at its optimal mass, 55 t, the curve's 0.8).
+        assert_eq!(data::SIDEWINDER.base_shield, 55.0);
+        assert!((Shields::sidewinder(data::SHIELD_2E.opt_mass).max - 44.0).abs() < 1e-9);
         assert_eq!(s.hit(1.0), 0.0);
         let rest = s.hit(s.strength + 5.0);
         assert!((rest - 5.0).abs() < 1e-9 && !s.up);

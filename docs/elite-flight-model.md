@@ -106,7 +106,8 @@ parameter byte +0x14 is the unassigned pool at a reset, not the total pips.
 | Heat dissipation | each tick heat = max(0, heat - rate x dt); rate = k x (R+0x04 + (R+0x08 - R+0x04) x s^2), s = clamp((f - R+0x18)/(R+0x1C - R+0x18), 0, 1), f = heat/capacity, s = 0 when unpowered; rate 0 under two switches (silent running likely, inferred) | 2.0 | C (rule); being the heat manager's processor inferred (registration not seen); R = the heat radiator's data (R+0x04, +0x08 = EDSY heatdismin 1.18, heatdismax 18.15 by name, inferred; +0x18, +0x1C D) | 0x144398F40, 0x144399D90 |
 | FSD charging heat | while charging: heat += (rec+0x0C + rec+0x10 x max(0, t - rec+0x04)) x dt, t = charge time; later state: rec+0x0C x dt | rec: drive data | C (form) | 0x142C71440 |
 | Star heat | per star: x = distance / radius - 1; heat += P+0x18 x clamp((x - P+0x20)/(P+0x1C - P+0x20), 0, 1) (x P+0x24 unless a test holds) x dt | P: data | C (form) | 0x142C83F60 |
-| Power plant heat, thruster heat (normal flight), heat sinks, silent running's switch | - | - | not found (D) | - |
+| Silent running's switch (found 2026-11-16) | silent running is the radiator's own switch: the silent-running button (`ToggleButtonUpInput`) shows byte +0xA5, the same byte that zeroes the radiator's rate. That it also drops the shields is the game's known behaviour (B), not found in the exe | - | C (the radiator); B (the shields) | 0x144399D90, 0x142D0CD20 |
+| Power plant heat, thruster heat (normal flight), heat sinks | - | - | not found (D) | - |
 | Fuel burn | consumers each frame return their burn; all of it comes from the reservoir: tonnes = burn / (+0x2D0 x 45000) | 45000.0 | C (form); +0x2D0 not found | 0x14380AE40 |
 | Reservoir refill | when the reservoir is empty: one reservoir capacity moves from main (or all of main if less); journal `ReservoirReplenished` | - | C | 0x14380C6E0 |
 | Fuel available, unlimited fuel | available = (main + reservoir levels) x +0x2D0 x 45000; an obfuscated flag (+0x228) makes it unlimited (no burn) | 45000.0 | C | 0x14380B790, 0x14380AE40 |
@@ -130,7 +131,10 @@ Notes: `re/elite/ghidra/notes/2.x-systems-b.md` (out of git). "Gen record" = the
 | Shield hit | mitigated damage T (7 damage types, resistances applied elsewhere); if T >= S: S = 0 and the hit scaled by (T - S)/T goes on (to the hull, inferred); else S -= T (that store not followed) | - | C (partial) | 0x143877C10 |
 | Hit penetration scale | unless hit flag 0x200: r = min(hit +0x2C / Y, 1), Y from the ship-side object; hit scaled by r when r < 1 (penetration / hardness: inferred) | 1 | C (names inferred) | 0x143877C10 (0x14387817B) |
 | Shield resistances | - | - | not found (data) | - |
-| Collision damage, canopy, life support, hull 0 | - | - | not studied (leads in the notes) | - |
+| Life support (found 2026-11-16) | two clocks, one for a breached canopy and one for the module without power (each 0 while its cause is absent). Past a grace period (module data +0x18 / +0x14) the emergency oxygen drops 1 s a second; at 0, with a breach or no power, the commander dies. Otherwise the oxygen is refilled (the exe writes `max(full, o + rate x dt)`; the mod holds it at full) | 300 s for the 1E module (B) | C; the grace periods are data (0 used, E) | 0x142EC3180, 0x142ECF1C0, 0x142EC80C0 |
+| Canopy breached (found 2026-11-16) | the canopy counts as breached while its own health is at or under 0. What takes its health down was not found: the mod breaks it on a hit that leaves under a tenth of the hull (E) | - | C (the test); E (the cause) | 0x1430C6130 |
+| Life support alarm (found 2026-11-16) | critical at 30 s of oxygen or less | 30.0 (0x144DE168C) | C | 0x142D59590 |
+| Collision damage, hull 0 | - | - | not studied (leads in the notes) | - |
 | Touchdown allowed | 0 <= h <= P14, speed <= P10 (velocity inferred), angle between ship down and gravity <= theta (landing record +0x38 deg, 60 deg without one); P10, P14 the landing component's parameters (data) | 60 deg | C (the +0x200 state gate not identified) | 0x1430ECE00, 0x1430F2FA0 |
 | Landing approach and footing | approach flag at h <= P1C; 4 rays along gravity (h + 100 m) from the landing points; all 4 must agree within 0.5 m to go on | 100, 0.5 (.data) | C (counting loop's reading inferred) | 0x1430ECE00 |
 | "Weapon Heat Dump" call | once a frame while a list is non-empty: a heat-type object gets minus record +0x148 (x dt if record +0x130 set); role not identified (heat removal or thermal load) | - | C (code); role open | 0x142F38830 |
@@ -186,3 +190,39 @@ Notes: `re/elite/ghidra/notes/6.1-planets.md` (out of git). Rows from A60 (plane
 | Exclusion shell (permit-locked bodies only) | inside radius a + Gp[0x18] (b - a) of a body that needs an entitlement or permit the ship is moved out to the sphere and told TooCloseToPlanet every Gp[0x1C] s (Gp = G's own parameter record at +0x50, not A50's Fp); class 0 bodies have none | Gp data | C (form); a, b inferred | 0x142C78F60, 0x142C793B0 |
 | Gravity and size in the code read | no gravity or mass term in the glide check, motion, end tests, deceleration, the safe stop or the hand-over; size enters only through geometry (the horizon of theta, the surface under the ship, the planet within +0x1D0 of the path); the fixed numbers (10,000 m, 6,500 m, 40,000, 2,500 m/s) do not scale with the radius; the unread component that sends CruiseArrivalParams may depend on the body (open) | - | C for the code read | whole of the above |
 | CruiseArrivalParams numbers and their sender (lead: the component of type id 0x145F2F260, vt+0x180, called at 0x142CA4BD0), the glide mode flag's setter, the store of state 0, S's mode and floats (orbital cruise's start and surface speed limit beyond A50's well slowdown), the warning voice lines' triggers, ShipMetresToTouchdown | - | - | not found (D) | - |
+
+## The game's own numbers (N1 and N1b-1, 2026-11-16)
+
+Read from the Sidewinder's records in Elite's data (the ship item, its stock modules, its prototype) by the study in
+`re/elite/notes/sidewinder_numbers.md` (out of git: every record layout, field and check), and applied in `crates/elite-sim`
+by N1b-1. Where a row here corrects one above, this one holds. The measuring plan for what the records lack:
+`re/elite/measure/BACKLOG.md`.
+
+| Rule | Formula (our words) | Constants | Grade | Source |
+|---|---|---|---|---|
+| Where the performance block comes from | the ship item's data object +0x30 is the performance record: base block +0x18, full-power block via +0xE8, supercruise block +0xF0, supercruise floats P +0x1BC, boost record +0x24C; the hull record is data +0x18, the heat record +0x20, the landing record +0x88 | Sidewinder: see `re/elite/notes/sidewinder_numbers.md` | B (data) + C (getters) | 0x141B3AFF0, 0x141B34F80, 0x141B3B2C0, 0x141B3B020, 0x142E512F0 |
+| Angular acceleration limit (correction) | A = (block 0x44 for x, 0x4C for y, 0x48 for z) x pi/180 ...; the jerk limits 0x50/0x54/0x58 and R 0x5C/0x60/0x64 are x, y, z in order | pitch 220, yaw 110, roll 240 deg/s^2 | C | 0x142E4A820 (+0x5F0 from +0x794, +0x79C, +0x798) |
+| Pip blend (numbers) | the full-power block holds only top speed 220, pitch 43, jerk x 300, R x 0.05, turn curve a 0.4 b 0.3, roll curve b 0.9; everything else -1 (kept from the base: 100 m/s, pitch 35 ...) | t = ENG/4 | B | records |
+| minthrust | coriolis's minthrust is the base block's top speed over the full block's (100 / 220); the boost speed has no full value | 45.45 % | B + C | 0x141B2E310 |
+| Thruster mass curves | three curves, accelerations (rec +0x0C), speeds (+0x24), turn rates (+0x3C), the same 24/48/72 t, 0.83/1/1.03 for the 2E; the boost curves and the ramp addition are neutral | - | B + C | 0x142EBDF60 |
+| Boost (numbers) | warm-up 1 s, firing 2 s, cool-down 1 s; while firing every upper acceleration limit x 4, heat 10 /s; cost 7 MJ | 1, 2, 1, 4, 10, 7 | B | performance record +0x24C |
+| Supercruise numbers | Vsc 6e11 m/s (2001.38 c); cap floors 200 km/s (planets), 1e8 m/s (stars); zero-throttle speed 30 km/s; star log constants 1.04, 0.03; drop window in a well under 1,000 km and 1,000 km/s, beyond 20 km (free targets 30,000 km and 30,000 km/s, no minimum); nose within 30 deg | P block | B | record +0x1BC |
+| Supercruise accelerations and turns | fwd 4.5e10, rev 9e10, lat 1e11 m/s^2 (x k in mode 2), jerk 1e10; turn pitch 38, yaw 12, roll 110 deg/s with turn curve (0.5, 0.6, 0.5) and roll curve (0.8, 0.8, 0.5); no pip blend | - | B | record +0xF0 |
+| Orbital cruise (numbers) | approach speed F = 2,500 m/s (cap and min speed blend to it with w); safe stop: a sphere of 8,000 m along the frame's path meets a free planet, speed under 5,050 m/s gives the glide, over 201,000 m/s an emergency stop | 8000, 5050, 200000, 2500 | B (w's source open) | record +0x1D0, +0x1F0, +0x1F4, P3C |
+| Glide heat | too steep: 36 heat /s inside the grace, 72 at the failure | 36, 72 | B | record +0x31C, +0x320 |
+| Star heat (numbers) | rate = 18 x clamp((f - 1)/(0.01 - 1), 0, 1) x 0.5 heat /s, f = d/R - 1 | 18, 1, 0.01, 0.5 | B (component link inferred) | ShipBodyProximityEffects template |
+| Heat dissipation (numbers) | rate = k (0 + 18.15 s^2), s = clamp(heat/capacity, 0, 1); R+0x00 = 1.18 not read by this code | 0, 18.15, 0, 1 | B (record link inferred) | ext_radiator_standard +0x120 |
+| Heat damage (numbers) | from heat/capacity 2.5: 0.5 rising to 1.5 at 3.5, dealt every 2 s | 2.5, 3.5, 0.5, 1.5, 2 | B | heat record +0xF4..+0x104 |
+| FSD heat, charge, cooldowns, alignment | charge to supercruise 5 s, jump charge 15 s, heat 10 /s charging and departing, cooldown 5 s after a drop and 40 s after a jump, nose within 10 deg (50 deg escaping a kind 2 body) | 5, 15, 10, 5, 40, 10, 50 | B | Fp, D |
+| Touchdown (numbers) | allowed when 0 <= h <= 100 m, speed <= 15 m/s, ship down within 20 deg of gravity; approach flag under 150 m | 15, 100, 150, 20 | B | PlanetLandingModule, landing record +0x38 |
+| Life support graces | the emergency oxygen starts 6.5 s after a canopy breach, 0.4 s after the module loses power | 6.5, 0.4 | B | LifeSupportComponent template |
+| Capacitor recharge (numbers) | lo 0, p 1.1 on every channel (rate = hi x s^1.1) | 0, 1.1 | B | distributor record |
+| Pips (numbers) | start 2/2/2, at most 4 a channel, a press moves 1, the reset leaves no unassigned pips | half pips 4/4/4, 8, 2, 0 | B | PowerDistributorModule template |
+| Simulation rate | 60 Hz, at most 4 sub-steps a frame, in every location | 60, 4 | B | PhysicsWorld template |
+| Mass lock factor | the Sidewinder's mass-lock factor 6 (stations' components 1, ranges 5,000 / 20,000 m by shape) | 6 | B (rule open) | MassLockComponent |
+| FA time constant (correction, N1b-1) | T = max(0.5, D x max(0, 4/3 x min(1, s/Vfull) - 1/3)); D is the boost record's field 5 while boosting | 0.5, 4/3, 1/3, 1 | C | 0x142E6E960 |
+| Linear jerk limit (correction, N1b-1) | the limit's memory (+0x630) is written only when it runs (FA on, not boosting), after the clamp, before the speed guard; a boost leaves it as it was (why braking after a boost ramps up) | - | C | 0x142E6E960 |
+| Full-forward brake (settles the flag, N1b-1) | lower forward limit = 0.25 x block 0x20 when the forward demand is 0.999 or more; flag +0x5E2 set to 1 by the constructor, no other writer found | 0.25, 0.999 | C | 0x142E6AF90, 0x142E32DD0 |
+| Reversal mode 1 (detail, N1b-1) | alpha x (1 + block 0xA8..) where the stick is over 0.2 and sign(target) x sign(omega) <= 0 (omega = 0 counts as +); applied after the jerk limit; +0x640 keeps the unmultiplied alpha | 0.2, factors 1 | C + B | 0x142E6E960 |
+| Boost limits (detail, N1b-1) | while firing, the upper limits x field 4, lateral and vertical also x 0x30 / 0x34; lower limits unchanged | x4 | C + B | 0x142E6E960 |
+| Turn rates, accelerations (replaces the block table's coriolis values) | pitch 35 to 43 by the ENG pips, yaw 17, roll 110 deg/s; forward 45, reverse 30, lateral 30 m/s^2 at every pip setting (session 2's fit of 43.42 at 0 pips is not supported by the records; neither value passes the strict gate) | - | B | performance record |
