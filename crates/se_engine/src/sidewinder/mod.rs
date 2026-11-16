@@ -338,6 +338,17 @@ impl Plugin for SidewinderPlugin {
                     .before(crate::viltrumite::hero::hero_move)
                     .before(crate::camera::sync_camera_transform),
             )
+            // Elite's field of view in the seat's view: inside the set that makes the view's matrices, so after everything
+            // that writes the projection before it (the flight's, the sandbox's first-person view), and before the capture
+            // views copy it.
+            .add_systems(
+                PostUpdate,
+                seat::seat_fov
+                    .run_if(resource_exists::<SidewinderAssets>)
+                    .in_set(bevy::camera::CameraUpdateSystems)
+                    .before(bevy::render::camera::camera_system)
+                    .before(crate::capture::follow_main),
+            )
             .add_systems(Update, seat::fade_clock.run_if(resource_exists::<SidewinderAssets>))
             .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, hud::draw_hud).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
         // (The spec's C20: never spawned, nothing of the mod runs. Its systems wait for a request, then for its files.)

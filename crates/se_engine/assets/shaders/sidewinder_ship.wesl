@@ -19,7 +19,8 @@ import super::hero_frame::{HeroFrame, HeroLight};
 struct ShipParams {
     // rgb the base colour when it is one colour.
     colour: vec4<f32>,
-    // x 1 when the base colour is the texture's.
+    // x 1 when the base colour is the texture's; y 1 for the seat's view (the cockpit and its chair), z its own near plane
+    // (m), w its share of the depth range (material.rs `SEAT_NEAR_M`, `SEAT_SLICE`).
     flags: vec4<f32>,
 };
 @group(constants::MATERIAL_BIND_GROUP) @binding(4) var<uniform> params: ShipParams;
@@ -50,6 +51,15 @@ fn vertex(v: Vertex) -> VertexOut {
     let world = mesh_position_local_to_world(m, vec4<f32>(v.position, 1.0));
     var o: VertexOut;
     o.clip = position_world_to_clip(world.xyz);
+    if params.flags.y > 0.5 {
+        // The seat's view, in the nearest slice of the depth range as Source draws a view model (sandbox_viewmodel.wesl),
+        // with the world's field of view: x, y and w (the distance along the view) stay the world's; the depth is a near
+        // plane of its own squeezed into the slice (reverse z: 1 is the near plane), so the port's near plane never cuts
+        // the cockpit, it always hides the world behind it, and its own order is kept. The mesh's scale (scaled space
+        // shrinks the ship about the camera) is taken out, so the near plane is in true metres.
+        let k = length(m[0].xyz);
+        o.clip.z = o.clip.w * (1.0 - params.flags.w) + params.flags.w * params.flags.z * k;
+    }
     o.world_normal = mesh_normal_local_to_world(v.normal, v.instance_index);
     o.world_tangent = mesh_tangent_local_to_world(m, v.tangent, v.instance_index);
     o.uv0 = v.uv0;

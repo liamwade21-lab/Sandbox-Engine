@@ -46,6 +46,9 @@ const FADE_MOST_DT: f32 = 0.1;
 #[derive(Resource, Default)]
 pub struct Seat {
     pub seated: bool,
+    /// The camera is at the pilot's eye this frame (`seat_camera` wrote it, or hyperspace's tunnel did): what `draw` shows
+    /// from (the seat's set) and when the view takes Elite's field of view (`seat_fov`).
+    pub view: bool,
     /// Head look: on, and the view's turn from straight ahead (radians: yaw to the left, pitch up).
     pub head_look: bool,
     pub look: Vec2,
@@ -320,6 +323,8 @@ pub fn seat_camera(
     mut sim: ResMut<SimTime>,
     data: Res<crate::data::SeData>,
 ) {
+    // (Set again below where the camera is at the eye: every other way through, it isn't there.)
+    seat.view = false;
     if !seat.seated {
         return;
     }
@@ -331,6 +336,8 @@ pub fn seat_camera(
     // the ship, and he goes back on Earth.
     if pilot.jump.is_some() {
         if control.pilot && sb.mode == Mode::Pilot && !pilot.destroyed {
+            // (The tunnel writes the camera at the eye: still the seat's view, Elite's field of view and all.)
+            seat.view = true;
             return;
         }
         seat.seated = false;
@@ -386,6 +393,7 @@ pub fn seat_camera(
         cam.pos = b.pos.offset_m(b.orient * eye_body);
         cam.rot = (b.orient * rot_body).normalize();
         crate::sandbox::bind_camera(&mut cam, b);
+        seat.view = true;
         return;
     }
     if control.pilot {
@@ -431,6 +439,34 @@ pub fn seat_camera(
     }
 }
 
+/// Elite's vertical field of view from the seat (degrees): the `<FOV>` of the user's Elite settings
+/// (`Options/Graphics/Settings.xml`), measured to be the vertical angle (grade B).
+pub const SEAT_FOV_DEG: f32 = 56.249;
+
+/// While the camera is at the eye (`Seat::view`), the main camera's vertical field of view is Elite's: written into its
+/// projection after everything else that sets it this frame (the flight's `FlyCamera::fov_deg` by `sync_camera_transform`,
+/// then the sandbox's first-person view), before its matrices are made and before the capture views copy it (the mod's
+/// `plugin` orders it). The player's own setting (`fov_deg`, saved with the settings) is never touched, so nothing has to
+/// be given back and nothing can leak: from the frame the seat gives the camera back (`seat_camera` clears `view` where it
+/// stops writing the camera), whichever way he left, the view's own field of view is drawn again. Both changes are logged.
+pub fn seat_fov(seat: Res<Seat>, mut proj: Query<&mut Projection, With<crate::camera::MainCamera>>, mut was: Local<bool>) {
+    for mut p in &mut proj {
+        let Projection::Perspective(p) = p.as_mut() else { continue };
+        if seat.view != *was {
+            let own = p.fov.to_degrees();
+            if seat.view {
+                info!("sidewinder: the seat's view: field of view {SEAT_FOV_DEG} degrees (the view's own was {own:.3})");
+            } else {
+                info!("sidewinder: out of the seat's view: the view's own field of view again, {own:.3} degrees");
+            }
+        }
+        if seat.view {
+            p.fov = SEAT_FOV_DEG.to_radians();
+        }
+    }
+    *was = seat.view;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +478,30 @@ mod tests {
         assert_eq!(leave_rule(true, false), Leave::Out);
         assert_eq!(leave_rule(false, true), Leave::Refused);
         assert_eq!(leave_rule(false, false), Leave::Lost);
+    }
+
+    /// In the seat's view the projection takes Elite's field of view; out of it the seat leaves the view's own (written each
+    /// frame by the camera's systems before it) as it is.
+    #[test]
+    fn the_seat_sets_elites_field_of_view_and_leaves_the_players() {
+        use bevy::ecs::system::RunSystemOnce;
+        let own = 75f32.to_radians();
+        let mut world = World::new();
+        let cam = world.spawn((crate::camera::MainCamera, Projection::Perspective(PerspectiveProjection { fov: own, ..default() }))).id();
+        let fov = |w: &World| match w.get::<Projection>(cam) {
+            Some(Projection::Perspective(p)) => p.fov,
+            _ => panic!("no perspective"),
+        };
+        world.insert_resource(Seat { seated: true, view: true, ..default() });
+        world.run_system_once(seat_fov).unwrap();
+        assert!((fov(&world).to_degrees() - SEAT_FOV_DEG).abs() < 1e-4, "{}", fov(&world).to_degrees());
+        // Out of the seat (any way: `view` is false), after the camera's systems wrote the view's own again.
+        if let Some(mut p) = world.get_mut::<Projection>(cam) {
+            *p = Projection::Perspective(PerspectiveProjection { fov: own, ..default() });
+        }
+        world.resource_mut::<Seat>().view = false;
+        world.run_system_once(seat_fov).unwrap();
+        assert_eq!(fov(&world), own);
     }
 
     /// The fade lasts the same real time at 30 and at 120 frames a second, and a long frame doesn't swallow it.

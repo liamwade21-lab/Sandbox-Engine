@@ -51,10 +51,13 @@ const DOORS_CLOSED: &str = "DoorsClosed";
 /// bones' sizes, and `!Hardpoint2`, `!Hardpoint3` (at the wing tips) have no doors. The weapon's own model is not among the
 /// mod's files, so the beam starts at the mount.
 const GUN_HARDPOINTS: [usize; 2] = [0, 1];
-/// The eye over the cockpit's seat bone, in the seat's frame (Elite's axes): a stand-in that T4b-1 replaces (from the
-/// cockpit's bones or the user's screenshots). Where the cockpit model's own `!Camera` bone sits over its `!Pilot_Chair`,
-/// read off by hand: about where a seated head is, looking along the nose.
-const EYE_OVER_SEAT: DVec3 = DVec3::new(0.0, 1.61, -0.13);
+/// The pilot's eye: the cockpit model's own camera bone (grade B: Elite's named point; the exe's use of it is not traced).
+/// It sits at the cockpit model's origin with no turn (decoded `sidewinder_cockpit.json`: 1.610 m over its `!Pilot_Chair`,
+/// 0.129 m behind it), so the eye looks along the nose. The hull's own `!Camera` is not it (0.36 m lower, 0.65 m nearer the
+/// nose: from it the frame's outline disagrees with the user's `1.webp` on twice as many pixels). Checked against `1.webp` by the frame's outline
+/// over the planet (`re/elite/work/eye`, T4b-1's report): within 5 px of the picture with a focal of 672 px, i.e. a field of
+/// view near 63 degrees; at the settings' 56.249 the picture would put the eye 0.17 m further back.
+const EYE_BONE: &str = "!Camera";
 /// A foot is the middle of a leg's points within this of its lowest (its pad's sole).
 const FOOT_BAND_M: f32 = 0.01;
 
@@ -471,19 +474,28 @@ fn convex_shell(points: &[Vec3]) -> Option<Vec<[Vec3; 3]>> {
     Some(faces.iter().map(|f| f.map(|i| corners[i as usize])).collect())
 }
 
-/// The eye (`EYE_OVER_SEAT` over the cockpit's seat) and the guns' mounts, in the ship's space with the gear down.
+/// A bone's place in Elite's model space: `node` posed, its model's bone `bone`.
+fn bone_point(rig: &ShipRig, node: &Placed, bone: &str) -> Result<DVec3, Fault> {
+    let model = node.model.unwrap_or("");
+    let bind = rig.bones.get(model, bone).ok_or_else(|| (SHIP_FILE.to_string(), format!("no bone {bone} in {model}")))?;
+    Ok((node.world * bind).w_axis.truncate())
+}
+
+/// The pilot's eye (`EYE_BONE` of the cockpit rig's root model) and the guns' mounts, in the ship's space with the gear down.
 fn eye_and_guns(rig: &ShipRig) -> Result<([f32; 3], [[f32; 3]; 2]), Fault> {
     let refuse = |why: String| (SHIP_FILE.to_string(), why);
     let placed = rig.walk(&rig.static_pose(true)).map_err(|e| refuse(e.to_string()))?;
-    let seat = placed.iter().find(|p| p.group == Group::InsideChair).ok_or_else(|| refuse("no seat in the cockpit".to_string()))?;
-    let eye = rig.space.point(seat.world.transform_point3(EYE_OVER_SEAT)).to_array();
+    let cockpit_model = &rig.ship.item.cockpit_model;
+    let cockpit = placed
+        .iter()
+        .find(|p| p.group == Group::Cockpit && p.model.is_some_and(|m| m.eq_ignore_ascii_case(cockpit_model)))
+        .ok_or_else(|| refuse(format!("no node hangs the cockpit {cockpit_model}")))?;
+    let eye = rig.space.point(bone_point(rig, cockpit, EYE_BONE)?).to_array();
     let hull = &placed[0];
-    let model = hull.model.unwrap_or("");
     let mut guns = [[0.0; 3]; 2];
     for (gun, &k) in guns.iter_mut().zip(&GUN_HARDPOINTS) {
         let bone = rig.ship.item.hardpoints.get(k).ok_or_else(|| refuse(format!("the item has no hardpoint {k}")))?;
-        let bind = rig.bones.get(model, bone).ok_or_else(|| refuse(format!("no bone {bone} in {model}")))?;
-        *gun = rig.space.point((hull.world * bind).w_axis.truncate()).to_array();
+        *gun = rig.space.point(bone_point(rig, hull, bone)?).to_array();
     }
     Ok((eye, guns))
 }
@@ -588,6 +600,24 @@ mod tests {
         std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string())
     }
 
+    /// The eye's source (the mod's shipped cockpit model, in git): the cockpit model has its own `EYE_BONE`, at the model's
+    /// origin with no turn (so the eye looks along the nose), 1.610 m over and 0.129 m behind the cockpit's seat bone.
+    #[test]
+    fn the_eye_is_the_cockpits_camera_bone() {
+        let ship = parse_ship(&read_mod(SHIP_FILE).unwrap()).unwrap();
+        let file = model_file(&ship.item.cockpit_model);
+        let edm = parse_edm(&read_mod(&file).unwrap()).unwrap();
+        let bind = |name: &str| {
+            let p = edm.parts.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("{file} has no bone {name}"));
+            elite_rig::elite_matrix(&p.inverse_bind.unwrap().map(|x| x as f64)).inverse()
+        };
+        let camera = bind(EYE_BONE);
+        assert!(camera.abs_diff_eq(DMat4::IDENTITY, 1e-5), "{EYE_BONE}: {camera}");
+        // (Elite's axes: +Y up, +Z the nose; the chair's bone is 1.61 m under the eye and 0.13 m nearer the nose.)
+        let over_seat = camera.w_axis.truncate() - bind("!Pilot_Chair").w_axis.truncate();
+        assert!((over_seat - DVec3::new(0.0, 1.6098, -0.12855)).length() < 1e-3, "{over_seat}");
+    }
+
     /// The mod's folder (ignored: reads the shipped files): the rest height the gear gives is 4.718 m, the three feet are
     /// on the ground, the box is about 21.4 x 14.2 m in plan (14.4 with the front toe), and the guns and eye are on the ship.
     #[test]
@@ -607,6 +637,9 @@ mod tests {
         assert!((plan.x - 21.4).abs() < 0.1 && plan.z > 14.15 && plan.z < 14.45, "plan {plan}");
         assert!(a.guns[0][0] < 0.0 && a.guns[1][0] > 0.0 && a.guns[0][2] < 0.0, "guns {:?}", a.guns);
         assert!(a.eye[1] > 4.718 && a.eye[1] < s.hi.y, "eye {:?}", a.eye);
+        // (The eye is the cockpit's origin, hung at the hull's `!Cockpit`: Elite (0.0001, 2.0043, -1.3465).)
+        let cockpit_bone = a.rig.space.point(DVec3::new(9.54866e-5, 2.00428, -1.34654));
+        assert!(Vec3::from_array(a.eye).distance(cockpit_bone) < 1e-3, "eye {:?} against {cockpit_bone}", a.eye);
         // The drag's outline (the stand-in's was 91 m^2 nose-on, 67 sideways): nose-on and sideways well under the plan,
         // from above the plan times the hull's fill (a trapezoid in plan: between half and all of the box).
         let (nose, side, above) = (outline(&s.drag_hull, Vec3::Z), outline(&s.drag_hull, Vec3::X), outline(&s.drag_hull, Vec3::Y));

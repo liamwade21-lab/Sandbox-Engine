@@ -7,7 +7,8 @@
 //! families' first base colour, the painted hull's Background key from the paint job; the lighting is `sandbox_prop.wesl`'s.
 //! Elite's own material maths (`decoded/shaders/`) and lit maths fill those two functions per shader family in T4b.
 //!
-//! Made once per Elite material at the first spawn; never changed after (per-frame values live in the light buffers).
+//! Made once per Elite material at the first spawn, twice for a material both the outside and the seat's view use (the
+//! seat's draws in its own depth slice: `SEAT_SLICE`); never changed after (per-frame values live in the light buffers).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec4;
@@ -98,9 +99,20 @@ fn srgb_to_linear(c: u8) -> f32 {
 pub struct ShipParams {
     /// rgb the base colour when it is one colour (`Base::Colour`).
     pub colour: Vec4,
-    /// x 1 when the base colour is the texture's, 0 when it is `colour`.
+    /// x 1 when the base colour is the texture's, 0 when it is `colour`; y 1 for the seat's view, z its near plane
+    /// (`SEAT_NEAR_M`), w its share of the depth range (`SEAT_SLICE`).
     pub flags: Vec4,
 }
+
+/// The seat's view (ARCHITECTURE.md A6): the cockpit and its chair are drawn in the nearest slice of the depth range, as the
+/// sandbox's weapon view models are (`sandbox_viewmodel.wesl`), so the port's near plane, which grows with the height and at
+/// the switch to scaled space, never cuts them and they always hide the world behind them. Their x, y and w are the
+/// world's (the same field of view); their depth comes from a near plane of their own (`SEAT_NEAR_M`), squeezed into this
+/// share of the range nearest the eye (reverse z: 1 is the near plane), so their order among themselves is kept.
+pub const SEAT_SLICE: f32 = 0.1;
+/// The seat view's own near plane (m): nearer than any of the cockpit's or the chair's points from the eye (the nearest is
+/// the chair's headrest, 0.151 m away), far enough that their depths keep a fine resolution over the cockpit's 12 m.
+pub const SEAT_NEAR_M: f32 = 0.1;
 
 /// The ship's material: the sandbox's two light buffers, one base colour texture with a repeating trilinear sampler, and
 /// `ShipParams`. Made once; never changed.
@@ -118,8 +130,9 @@ pub struct ShipMaterial {
 }
 
 impl ShipMaterial {
-    /// A material of base colour `base`: `texture` is that texture's image when it is one, `white` any other's.
-    pub fn new(light: &PropLight, base: Option<&Base>, texture: Option<Handle<Image>>, white: &Handle<Image>) -> ShipMaterial {
+    /// A material of base colour `base`: `texture` is that texture's image when it is one, `white` any other's; `seat_view`
+    /// for the pieces seen from the seat (drawn in the seat's depth slice).
+    pub fn new(light: &PropLight, base: Option<&Base>, texture: Option<Handle<Image>>, white: &Handle<Image>, seat_view: bool) -> ShipMaterial {
         let (colour, textured) = match base {
             Some(Base::Colour(c)) => (Vec4::new(c[0], c[1], c[2], 1.0), false),
             Some(Base::Texture { .. }) => (Vec4::ONE, texture.is_some()),
@@ -130,7 +143,7 @@ impl ShipMaterial {
             frame: light.frame.clone(),
             light: light.light.clone(),
             base: texture.filter(|_| textured).unwrap_or_else(|| white.clone()),
-            params: ShipParams { colour, flags: Vec4::new(if textured { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0) },
+            params: ShipParams { colour, flags: Vec4::new(if textured { 1.0 } else { 0.0 }, if seat_view { 1.0 } else { 0.0 }, SEAT_NEAR_M, SEAT_SLICE) },
         }
     }
 }
