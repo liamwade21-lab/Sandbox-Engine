@@ -91,8 +91,8 @@ const EMERGENCY_SHARE: f64 = 0.02;
 const EMERGENCY_M: f64 = 2000.0;
 const EMERGENCY_HIT: f64 = 40.0;
 
-/// The guns' places in model space (m): under the nose either side of the middle (E: Elite's hardpoints are on its in-game
-/// hull, which is not among the open files; placed on the stand-in hull until the hull is recreated).
+/// The guns' places in model space (m): under the nose either side of the middle (E: placed on the stand-in hull; Elite's
+/// own hardpoint places come with its original hull's anchor bones, `ship.json`, which replace these when it is drawn).
 pub const GUNS: [[f32; 3]; 2] = [[-1.5, 2.0, -6.0], [1.5, 2.0, -6.0]];
 
 /// A crash's damage (MJ, through the shield then the hull) from the speed into the ground: Elite's collision rule was not
@@ -143,6 +143,19 @@ pub struct PilotKeys {
     pub select_target: bool,
     /// The side panels' keys (step 4.2).
     pub panel: super::panels::PanelKeys,
+    /// Silent running (`ToggleButtonUpInput`, Delete), the cargo scoop (`ToggleCargoScoop`, Home), the lights
+    /// (`ShipSpotLightToggle`, Insert).
+    pub silent: bool,
+    pub scoop: bool,
+    pub lights: bool,
+}
+
+/// The ship's switches a test can press (`sw silent|scoop|lights`): the same as their keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Silent,
+    Scoop,
+    Lights,
 }
 
 /// The flight's state while seated.
@@ -199,6 +212,17 @@ pub struct Pilot {
     pub nav_body: Option<ObjectRef>,
     pub nav_note: String,
     pub planet: Option<PlanetHud>,
+    /// Silent running, the cargo scoop deployed, the lights on; the canopy and the emergency oxygen (`elite_sim::life`); the
+    /// destination's safe disengage (in supercruise with a destination: ready or not).
+    pub silent: bool,
+    pub scoop: bool,
+    pub lights: bool,
+    pub life: elite_sim::life::Life,
+    pub safe_drop: Option<bool>,
+    /// A test's pitch over the horizon to turn to, keeping the heading (`sw aim DEG`), and a test's press of a switch's key
+    /// (`sw silent|scoop|lights`).
+    pub dev_aim: Option<f64>,
+    pub dev_switch: Option<Switch>,
     /// The HUD's line for the target (its name, distance and the jump's fuel, or why not).
     pub target_note: String,
     /// The stars' heat this frame (a share of the capacity a second), for the HUD.
@@ -257,6 +281,13 @@ impl Default for Pilot {
             nav_body: None,
             nav_note: String::new(),
             planet: None,
+            silent: false,
+            scoop: false,
+            lights: false,
+            life: elite_sim::life::Life::default(),
+            safe_drop: None,
+            dev_aim: None,
+            dev_switch: None,
             target_note: String::new(),
             star_heat: 0.0,
             dev_face: false,
@@ -284,7 +315,7 @@ impl Pilot {
     /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
     /// capacitors) are kept.
     pub fn boarding(&self) -> Pilot {
-        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, ..Pilot::default() }
+        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, life: self.life, ..Pilot::default() }
     }
 
     /// A new ship: everything full.
@@ -299,6 +330,7 @@ impl Pilot {
         self.hull = Hull::sidewinder();
         self.heat = Heat::new(&self.heat_spec);
         self.powered = true;
+        self.life = elite_sim::life::Life::default();
     }
 
     /// The ship's mass now: unladen (the journal's) and the fuel aboard.
@@ -437,12 +469,33 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         jump: press("HyperSuperCombination"),
         select_target: press("SelectTarget"),
         panel,
+        silent: press("ToggleButtonUpInput"),
+        scoop: press("ToggleCargoScoop"),
+        lights: press("ShipSpotLightToggle"),
     };
     // A focused panel takes its keys from the flight, as in Elite (W S A D Q E and the arrows); the mouse still flies.
     if panel_open {
         PilotKeys { throttle_up: false, throttle_down: false, yaw: 0.0, lateral: 0.0, pip_eng: false, pip_sys: false, pip_wep: false, pip_reset: false, boost: k.boost && !k.panel.back, ..k }
     } else {
         k
+    }
+}
+
+/// The canopy and the emergency oxygen (step 2.3's F6: `elite_sim::life`), once a frame on the frame's whole real seconds:
+/// outside the flight's capped ticks (exact at any frame rate: the rule is linear in time) and before the tunnel's early
+/// return (life support runs whatever the ship is doing). The module needs its switch and the power plant. Out of oxygen the
+/// ship is lost through `destroyed`: in the tunnel `seat_camera`'s hyperspace branch loses it at once (it needs no body).
+fn life_support(pilot: &mut Pilot, real_dt: f64, msg: &mut crate::messages::Messages) {
+    pilot.life.hull(pilot.hull.percent() / 100.0);
+    let was_running = pilot.life.running();
+    let lost = pilot.life.tick(real_dt, pilot.powered && pilot.modules[super::panels::M_LIFE_SUPPORT]);
+    if pilot.life.running() != was_running {
+        info!("sidewinder: emergency oxygen {} ({:.1} s left, canopy {})", if was_running { "off" } else { "running" }, pilot.life.oxygen, if pilot.life.canopy { "whole" } else { "breached" });
+    }
+    if lost && !pilot.destroyed {
+        msg.show("Oxygen depleted".to_string());
+        info!("sidewinder: the emergency oxygen ran out{}", if pilot.jump.is_some() { " in hyperspace" } else { "" });
+        pilot.destroyed = true;
     }
 }
 
@@ -469,6 +522,7 @@ pub fn fly(
 ) {
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
+    life_support(&mut pilot, time.delta_secs_f64(), &mut msg);
     if pilot.jump.is_some() {
         return;
     }
@@ -597,6 +651,33 @@ pub fn fly(
         pilot.weapons.deployed = !pilot.weapons.deployed;
         msg.show(if pilot.weapons.deployed { "Hardpoints deployed" } else { "Hardpoints retracted" }.to_string());
     }
+    // Silent running (`elite_sim::silent`: the radiator off, C; the shields off, B), the cargo scoop (it refuses the drive in
+    // the exe's order, C; refused in supercruise: ours, F), the lights (a switch and the HUD's sign; the beam is drawn
+    // elsewhere). `Pilot`'s `silent`, `scoop` and `lights` are what the rest of the mod reads.
+    match pilot.dev_switch.take() {
+        Some(Switch::Silent) => keys.silent = true,
+        Some(Switch::Scoop) => keys.scoop = true,
+        Some(Switch::Lights) => keys.lights = true,
+        None => {}
+    }
+    let mut said = |m: &str| {
+        info!("sidewinder: {m}");
+        msg.show(m.to_string());
+    };
+    if keys.silent {
+        pilot.silent = !pilot.silent;
+        said(if pilot.silent { "Silent running" } else { "Silent running off" });
+    }
+    if keys.scoop && pilot.cruise.is_some() && !pilot.scoop {
+        said("Cargo scoop can't be deployed in supercruise");
+    } else if keys.scoop {
+        pilot.scoop = !pilot.scoop;
+        said(if pilot.scoop { "Cargo scoop deployed" } else { "Cargo scoop retracted" });
+    }
+    if keys.lights {
+        pilot.lights = !pilot.lights;
+        said(if pilot.lights { "Lights on" } else { "Lights off" });
+    }
     let rate = elite_sim::data::measured::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
     // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
@@ -648,11 +729,23 @@ pub fn fly(
             Err(Denied::Busy) => {}
         }
     }
-    // Hyperspace's target (step 5.3): T takes the star nearest the nose within the jump's range (ours: Elite targets
-    // systems from its Navigation panel and galaxy map, step 4.2), or clears it; then its angle from the nose, or why it can't
-    // be jumped to.
+    // A test's turn (`sw aim DEG`): the nose `deg` over the body's horizon, the heading kept, the wings level.
+    if let Some(deg) = pilot.dev_aim.take() {
+        let up = p.pos.normalize_or(DVec3::Y);
+        let nose = p.rot * DVec3::NEG_Z;
+        let flat = (nose - up * nose.dot(up)).normalize_or(up.any_orthonormal_vector());
+        let (s, c) = deg.to_radians().sin_cos();
+        let fwd = flat * c + up * s;
+        let right = fwd.cross(up).normalize_or(flat.cross(up));
+        let rot = DQuat::from_mat3(&bevy::math::DMat3::from_cols(right, right.cross(fwd), -fwd)).normalize();
+        p.rot = rot;
+        if let Some(cr) = pilot.cruise.as_mut() {
+            cr.rot = (b.orient * rot).normalize();
+        }
+        pilot.motion.omega = Default::default();
+    }
     if std::mem::take(&mut pilot.dev_face) {
-        if let Some(t) = pilot.target {
+        if let Some(t) = pilot.target.or(pilot.nav_body) {
             let from = pilot.cruise.map_or(b.pos.offset_m(b.orient * p.pos), |c| c.pos);
             let dir = se_core::ephemeris::Ephemeris::new(&data.catalog).position(t, sim.jd).delta_m(from).normalize_or(DVec3::NEG_Z);
             let rot_u = DQuat::from_rotation_arc(DVec3::NEG_Z, dir);
@@ -667,6 +760,9 @@ pub fn fly(
         Some(c) => (c.pos, c.rot),
         None => (b.pos.offset_m(b.orient * p.pos), (b.orient * p.rot).normalize()),
     };
+    // Hyperspace's target (step 5.3): T takes the star nearest the nose within the jump's range (ours: Elite targets
+    // systems from its Navigation panel and galaxy map, step 4.2), or clears it; then its angle from the nose, or why it can't
+    // be jumped to.
     let here = data.catalog.system_root(b.obj);
     if keys.select_target {
         let range = elite_sim::fsd::jump_range(&elite_sim::data::FSD_2E, pilot.mass_t(), pilot.fuel.main);
@@ -739,6 +835,7 @@ pub fn fly(
     let fsd = ShipState {
         hardpoints: pilot.weapons.deployed,
         gear_down: pilot.gear_down || pilot.gear_t < 0.999,
+        scoop: pilot.scoop,
         landed: pilot.landed,
         escape_angle: nose_body.dot(p.pos.normalize_or(DVec3::Y)).clamp(-1.0, 1.0).acos().to_degrees(),
         radii: p.pos.length() / b.radius_m.max(1.0),
@@ -764,7 +861,10 @@ pub fn fly(
                     _ => "Frame shift drive charge cancelled".to_string(),
                 });
             }
-            Err(r) => msg.show(r.message().to_string()),
+            Err(r) => {
+                info!("sidewinder: {}", r.message());
+                msg.show(r.message().to_string());
+            }
         }
     }
     // The bodies' wells this frame (their places move slowly against a tick).
@@ -845,13 +945,13 @@ pub fn fly(
         pilot.dist.recharge(TICK, powered);
         pilot.boost.tick(&spec, TICK);
         let sys_share = pilot.dist.share(SYS);
-        pilot.shields.tick(TICK, powered && pilot.modules[super::panels::M_SHIELDS], sys_share);
+        pilot.shields.tick(TICK, elite_sim::silent::shields_powered(powered && pilot.modules[super::panels::M_SHIELDS], pilot.silent), sys_share);
         // Heat: the idle load (a stand-in fitted to session 2's idle), then the radiator (step 2.2).
         let hs = pilot.heat_spec;
         if powered {
             pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
         }
-        let ev = pilot.heat.tick(&hs, TICK, powered, false);
+        let ev = pilot.heat.tick(&hs, TICK, powered, pilot.silent);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
         let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none() && pilot.glide.is_none();
         let guns = super::panels::M_LASERS.map(|m| trigger && pilot.modules[m]);
@@ -888,7 +988,10 @@ pub fn fly(
                 msg.show("Supercruise".to_string());
                 info!("sidewinder: supercruise");
             }
-            Err(r) => msg.show(r.message().to_string()),
+            Err(r) => {
+                info!("sidewinder: {}", r.message());
+                msg.show(r.message().to_string());
+            }
             Ok(Engage::Nothing) => {}
         }
         if let Some(c) = pilot.cruise.as_mut() {
@@ -1032,7 +1135,7 @@ pub fn fly(
             let drag = if density > 0.0 && vel.length() > 1e-6 {
                 let along = p.rot.inverse() * vel.normalize();
                 let area = elite_sim::air::outline_area(&air.areas, glam::DVec3::from_array(along.to_array()));
-                from_sim_v(elite_sim::air::drag_acceleration(to_sim_v(vel), density, area, pilot.mass_t() * 1000.0))
+                from_sim_v(elite_sim::air::drag_in(elite_sim::air::Flight::Thrusters, to_sim_v(vel), density, area, pilot.mass_t() * 1000.0))
             } else {
                 DVec3::ZERO
             };
@@ -1200,6 +1303,7 @@ pub fn fly(
     }
     // The planet HUD's readings (step 4.3): near a solid body's ground (a giant's radius), out of supercruise.
     pilot.planet = None;
+    pilot.safe_drop = None;
     // Supercruise's pose into the nearest body's frame (the parked pose is what the camera, the cockpit and the rest read);
     // a drop or an emergency drop back to normal flight there.
     if let Some(c) = pilot.cruise {
@@ -1233,6 +1337,11 @@ pub fn fly(
             info!("sidewinder: glide refused, the ground 7.5 km ahead");
             drop_now = true;
         }
+        pilot.safe_drop = pilot.nav_body.and_then(|o| wells.iter().find(|w| w.3 == o)).map(|(_, at, r, _, _)| {
+            let to = at.delta_m(c.pos);
+            let angle = (c.rot * DVec3::NEG_Z).angle_between(to).to_degrees();
+            supercruise::can_drop(to.length() - r, c.speed, angle)
+        });
         if drop_now || emergency {
             pilot.cruise = None;
             let v = p.rot * DVec3::NEG_Z * c.speed.min(block.top_speed);
@@ -1244,7 +1353,7 @@ pub fn fly(
                     pilot.destroyed = true;
                 }
                 msg.show(if too_fast_stop { "Emergency drop: too fast near the planet" } else { "Emergency drop" }.to_string());
-                info!("sidewinder: emergency drop{}", if too_fast_stop { " (too fast near the planet)" } else { "" });
+                info!("sidewinder: emergency drop{} at {:.1} km/s by {:?}", if too_fast_stop { " (too fast near the planet)" } else { "" }, c.speed / 1000.0, p.obj);
             } else {
                 msg.show("Supercruise exit".to_string());
                 info!("sidewinder: dropped from supercruise at {:.0} km/s", c.speed / 1000.0);

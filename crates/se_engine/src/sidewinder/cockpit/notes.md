@@ -1,7 +1,7 @@
 # The Sidewinder's cockpit, recreated (grade E) from the user's screenshots
 
-Ticket B05 (spec step 0.5, cockpit). Elite's own cockpit model is in its encrypted files and was never opened; nothing here
-comes from Elite's data. The only references were the user's screenshots `re/elite/screenshots/2026-11-14_user/1-9.webp`.
+Ticket B05 (spec step 0.5, cockpit). The stand-in is based on the user's screenshots
+`re/elite/screenshots/2026-11-14_user/1-9.webp`.
 
 ## Files
 

@@ -56,15 +56,17 @@ impl Shields {
         100.0 * self.strength / self.max.max(1e-9)
     }
 
-    /// A tick: regeneration while powered (`sys_share` 0..1), the delay since the last hit, collapse and return.
+    /// A tick: regeneration while powered (`sys_share` 0..1), the delay since the last hit, collapse and return. The delay's
+    /// clock runs only while powered, and losing the power empties the shield and restarts it (`0x14387A960`).
     pub fn tick(&mut self, dt: f64, powered: bool, _sys_share: f64) {
-        // (f64::MAX plus a tick stays f64::MAX: never hit.)
-        self.since_hit += dt;
         if !powered {
             self.strength = 0.0;
             self.up = false;
+            self.since_hit = 0.0;
             return;
         }
+        // (f64::MAX plus a tick stays f64::MAX: never hit.)
+        self.since_hit += dt;
         let delay = if self.up { stand_in::DELAY_UP_S } else { stand_in::DELAY_BROKEN_S };
         if self.strength < self.max && self.since_hit >= delay {
             let rate = if self.up { self.regen_up } else { self.regen_broken };

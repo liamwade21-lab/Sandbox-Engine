@@ -6,10 +6,10 @@
 //!   meshes are made from that, and made again after the sandbox moves its frame (a rebase takes every solid piece out) or
 //!   when the player comes back near it.
 //! - Spawning is its own request (`ShipRequest`), not "the mod on": a parked ship stays when another mod is turned on
-//!   (the spec's edge cases). Boarding is what will turn the mod on (step 1.3).
+//!   (the spec's edge cases). Boarding (E, `seat.rs`) is what turns the mod on.
 //! - Its files are read on a worker thread at the first spawn (`load`), checked as every mod's are (`mods::load_sidewinder`).
 //! - `draw.rs` draws it as the props are drawn (`PropMaterial`, the sandbox's light records), one mesh per draw.
-//! - `convert.rs` (tests only) makes the mod's files from the user's Elite install.
+//! - `convert` (tests only) makes the mod's files from Elite's files.
 
 pub mod draw;
 pub mod hyper;
@@ -18,6 +18,7 @@ pub mod hud;
 pub mod pilot;
 pub mod seat;
 pub mod solids;
+mod sound;
 
 #[cfg(test)]
 mod convert;
@@ -428,11 +429,13 @@ impl Plugin for SidewinderPlugin {
                     .before(crate::viltrumite::hero::hero_move)
                     .before(crate::camera::sync_camera_transform),
             )
+            .add_systems(Update, seat::fade_clock.run_if(resource_exists::<SidewinderAssets>))
             .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, hud::draw_hud).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
         // (The spec's C20: never spawned, nothing of the mod runs. Its systems wait for a request, then for its files.)
         app.add_systems(Update, handle_requests.run_if(asked))
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
             .add_systems(PostUpdate, keep_solid.run_if(resource_exists::<SidewinderAssets>).after(crate::sandbox::sandbox_step));
+        sound::plugin(app);
     }
 }
 
@@ -526,6 +529,44 @@ pub fn dev_command(world: &mut World, arg: &str) {
             };
             None
         }
+        // `sw dest NAME|none`: the destination (a body of this system, as the Navigation tab picks); `sw aim DEG`: the nose DEG
+        // over the horizon, the heading kept (a test's stick).
+        "dest" => {
+            let name = arg.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            let found = world.resource::<crate::data::SeData>().catalog.find(&name);
+            world.resource_mut::<pilot::Pilot>().nav_body = found;
+            None
+        }
+        "aim" => {
+            let deg = arg.split_whitespace().nth(1).and_then(|w| w.parse::<f64>().ok()).unwrap_or(0.0);
+            world.resource_mut::<pilot::Pilot>().dev_aim = Some(deg);
+            None
+        }
+        // `sw silent|scoop|lights`: the switch's key pressed (Delete, Home, Insert); `sw canopy [SECS]`: the canopy broken, with
+        // SECS of emergency oxygen left if given (a short clock for a test).
+        "silent" | "scoop" | "lights" => {
+            world.resource_mut::<pilot::Pilot>().dev_switch = Some(match verb.as_str() {
+                "silent" => pilot::Switch::Silent,
+                "scoop" => pilot::Switch::Scoop,
+                _ => pilot::Switch::Lights,
+            });
+            None
+        }
+        "canopy" => {
+            let word = arg.split_whitespace().nth(1);
+            let secs = word.map(|w| w.parse::<f64>().ok().filter(|s| s.is_finite() && *s >= 0.0));
+            if let Some(None) = secs {
+                warn!("sw canopy: {:?} isn't a finite number of seconds at or above 0", word.unwrap_or(""));
+                return;
+            }
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            pl.life.canopy = false;
+            if let Some(Some(s)) = secs {
+                pl.life.oxygen = s;
+            }
+            info!("sidewinder: the canopy is broken (a test), {:.1} s of oxygen", pl.life.oxygen);
+            None
+        }
         // `sw face`: turns the ship to face its target (a test's aim; the real one is the stick).
         "face" => {
             world.resource_mut::<pilot::Pilot>().dev_face = true;
@@ -602,7 +643,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}, planet HUD {:?}, held {:?}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}, planet HUD {:?}, held {:?}, silent {}, scoop {}, lights {}, life {:?}, safe drop {:?}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
@@ -616,7 +657,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.dist.charge[2],
                     pl.boost.state,
                     pl.drive,
-                    pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s", c.speed / 1000.0)),
+                    pl.cruise.map_or("no".to_string(), |c| format!("{:.0} km/s (the wells' cap {:.0} km/s)", c.speed / 1000.0, c.cap / 1000.0)),
                     pl.glide,
                     pl.target,
                     pl.fuel.main,
@@ -624,18 +665,23 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     pl.modules,
                     pl.nav_body,
                     pl.planet,
-                    pl.drive.held()
+                    pl.drive.held(),
+                    pl.silent,
+                    pl.scoop,
+                    pl.lights,
+                    pl.life,
+                    pl.safe_drop
                 );
                 if let Some(p) = ship.parked.as_ref() {
                     let nose = p.rot * bevy::math::DVec3::NEG_Z;
                     let down = -p.pos.normalize_or(bevy::math::DVec3::Y);
-                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, hull {:.0} %, air {:.4} kg/m3", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.hull.percent(), pl.air_density);
+                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, shields {:.0} % ({}), hull {:.0} %, air {:.4} kg/m3", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.shields.percent(), if pl.shields.up { "up" } else { "down" }, pl.hull.percent(), pl.air_density);
                 }
             }
             None
         }
         _ => {
-            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost");
+            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost | hardpoints | fire SECS | jump | target NAME|none | hyper NAME [fail] | face | put NAME ALT_KM | trace FILE|off | dest NAME|none | aim DEG | silent | scoop | lights | canopy [SECS]");
             None
         }
     };

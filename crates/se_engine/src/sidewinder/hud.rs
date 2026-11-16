@@ -6,11 +6,13 @@
 //!
 //! What it shows: the radar's ring under the view, heat on its upper left, the speed on its upper right with the throttle
 //! gauge's arc (the fill the speed, the marker the throttle, its blue band the blue zone), the ship's hologram ring with the
-//! shields' and hull's percentages, the three pip bars (the pips as notches, the capacitor as the fill), fuel and the three
-//! indicators (mass locked, landing gear, cargo scoop), and the keys at the bottom.
+//! shields' and hull's percentages, the three pip bars (the pips as notches, the capacitor as the fill), fuel and the four
+//! indicators (mass locked, landing gear, cargo scoop, lights), the notes (silent running, the safe disengage), the emergency
+//! oxygen's clock, and the keys at the bottom. The fade from black after boarding is `seat::draw_prompt`'s.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
+use elite_sim::life::Alarm;
 
 use crate::mods::ModControl;
 
@@ -107,6 +109,13 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if pilot.nav_body.is_some() {
         p.text(at(r, 0.0, 0.478), egui::Align2::CENTER_CENTER, format!("DESTINATION  {}", pilot.nav_note), font(0.013), ORANGE);
     }
+    // The canopy and the emergency oxygen (F6): the clock while it runs, red from 30 s left (the exe's critical alarm).
+    let alarm = pilot.life.alarm();
+    if alarm != Alarm::Off {
+        let s = pilot.life.oxygen.ceil() as u32;
+        let why = if pilot.life.canopy { "LIFE SUPPORT OFFLINE" } else { "CANOPY BREACHED" };
+        p.text(at(r, 0.0, -0.33), egui::Align2::CENTER_CENTER, format!("{why}  OXYGEN {}:{:02}", s / 60, s % 60), font(0.02), if alarm == Alarm::Critical { egui::Color32::RED } else { ORANGE });
+    }
     // The planet HUD (step 4.3, ours in its look: Elite's is a hologram): the altimeter and vertical speed to the right, the
     // heading over the view, the pitch and roll beside it; landed, the way out.
     if let Some(ph) = pilot.planet {
@@ -199,7 +208,7 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let fuel_share = (pilot.fuel.main / pilot.fuel.main_cap.max(1e-9)).clamp(0.0, 1.0) as f32;
     p.add(egui::Shape::line_segment([at(r, 0.683, 0.364), at(r, 0.875, 0.364)], egui::Stroke::new(0.004 * h, DIM)));
     p.add(egui::Shape::line_segment([at(r, 0.683, 0.364), at(r, 0.683 + 0.192 * fuel_share, 0.364)], egui::Stroke::new(0.004 * h, ORANGE)));
-    for (k, (label, on)) in [("MASS LOCKED", false), ("LANDING GEAR", pilot.gear_down), ("CARGO SCOOP", false)].iter().enumerate() {
+    for (k, (label, on)) in [("MASS LOCKED", false), ("LANDING GEAR", pilot.gear_down), ("CARGO SCOOP", pilot.scoop), ("LIGHTS", pilot.lights)].iter().enumerate() {
         let y = 0.392 + 0.02 * k as f32;
         let b = egui::Rect::from_center_size(at(r, 0.694, y), egui::vec2(0.009 * h, 0.009 * h));
         if *on {
@@ -229,6 +238,14 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     }
     if pilot.star_heat > 0.0 {
         notes.push("STAR PROXIMITY");
+    }
+    if pilot.silent {
+        notes.push("SILENT RUNNING");
+    }
+    match pilot.safe_drop {
+        Some(true) => notes.push("SAFE DISENGAGE READY"),
+        Some(false) if pilot.cruise.is_some() => notes.push("DESTINATION: TOO FAST OR TOO FAR TO DISENGAGE"),
+        _ => {}
     }
     for (k, n) in notes.iter().enumerate() {
         p.text(at(r, 0.0, 0.22 + 0.025 * k as f32), egui::Align2::CENTER_CENTER, *n, font(0.016), ORANGE);

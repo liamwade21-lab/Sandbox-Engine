@@ -35,10 +35,12 @@ pub mod stand_in {
     pub const STAR_P04: f64 = 1.0;
     /// The planet rule's M: the body's mass in Earth masses (an assumption: the unit is open).
     pub const PLANET_MASS_UNIT_KG: f64 = 5.972e24;
-    /// The planet rule's width unit: A50 read its constant as 20 AU, but the unit is not shown in the code; in AU an Earth's
-    /// well would be 40 AU wide, against every supercruise approach (planets slow a ship within tens of light seconds), so
-    /// light seconds stand in until session 5 measures an approach (E).
-    pub const PLANET_WIDTH_UNIT_M: f64 = 299_792_458.0;
+    /// The planet rule's width unit: A50 read its constant as 20 AU (the unit itself not shown in the code: inferred). With
+    /// the rule's (1 - x)^2 a 40 AU wide well caps the speed in proportion to the distance near the planet (about 2 c at 10
+    /// light seconds from Earth, the floor inside 1.1 radii), as Elite's wells do. (The first cut used light seconds, from a
+    /// wrong reading of that width: wells far too narrow, 875 c at 10 light seconds, and an approach at any throttle hit the
+    /// glide's shell too fast: checker 4. Until session 5 measures an approach: the unit E.)
+    pub const PLANET_WIDTH_UNIT_M: f64 = 1.495_978_707e11;
     /// The drop: under 1,000 km and under 1,000 km/s (the community's figures), the nose within 30 degrees (a stand-in).
     pub const DROP_DMIN_M: f64 = 0.0;
     pub const DROP_DMAX_M: f64 = 1.0e6;
@@ -87,10 +89,13 @@ pub fn cap(bodies: &[(Well, f64)]) -> f64 {
     stand_in::VSC * (1.0 - s)
 }
 
-/// Supercruise's speed after a tick: towards `throttle x cap` (never under the floor: at zero throttle a ship in supercruise
-/// slows to 30 km/s, not to a stop), accelerating at a share of the cap and braking harder while over it (the stand-in shares
-/// until the supercruise block is measured).
+/// Supercruise's speed after a tick: never over the wells' cap (a hard limit, the plain reading of A50's cap: how the speed
+/// meets a falling cap wasn't found, E; with a softer approach a ship coming in from between two bodies reached a moon's
+/// glide shell at thousands of km/s: checker 4), then towards `throttle x cap` (never under the floor: at zero throttle a ship
+/// in supercruise slows to 30 km/s, not to a stop), accelerating at a share of the cap and braking at a share of the speed
+/// (the stand-in shares until the supercruise block is measured).
 pub fn step_speed(speed: f64, throttle: f64, cap: f64, dt: f64) -> f64 {
+    let speed = speed.min(cap);
     let want = (throttle.clamp(0.0, 1.0) * cap).max(stand_in::FLOOR_PLANET.min(cap));
     if speed < want {
         (speed + stand_in::ACCEL_SHARE * cap.max(speed) * dt).min(want)
@@ -177,6 +182,34 @@ mod tests {
         assert!(cap(&[(sun, 6.957e8)]) >= stand_in::FLOOR_STAR - 1e-3);
         let earth = Well::Planet { radius: 6.371e6, mass: 5.972e24 };
         assert!(cap(&[(sun, 1.0 * AU), (earth, 1.0e7)]) <= cap(&[(sun, 1.0 * AU)]));
+    }
+
+    /// A planet's well (the 1 AU width unit): near the planet the cap grows in proportion to the distance (about 2 c at 10 light
+    /// seconds from Earth), it is the floor inside 1.1 radii, far out it is much higher; a fast ship coming in is held to it.
+    #[test]
+    fn a_planets_well_slows_supercruise() {
+        let earth = Well::Planet { radius: 6.371e6, mass: 5.972e24 };
+        let at = |d: f64| cap(&[(earth, d)]);
+        let ls = C;
+        assert!((at(10.0 * ls) / C - 2.0).abs() < 0.05, "{}", at(10.0 * ls) / C);
+        assert!((at(20.0 * ls) / at(10.0 * ls) - 2.0).abs() < 0.01);
+        assert!((at(1.05 * 6.371e6) - stand_in::FLOOR_PLANET).abs() < 1e-3);
+        assert!(at(1.0 * AU) > 40.0 * at(10.0 * ls));
+        // A heavier body's well is wider: slower at the same distance.
+        let jupiter = Well::Planet { radius: 6.99e7, mass: 1.898e27 };
+        assert!(cap(&[(jupiter, 100.0 * ls)]) < at(100.0 * ls));
+        // From 100 c into a 2 c cap: held to the cap the same tick.
+        assert_eq!(step_speed(100.0 * C, 1.0, at(10.0 * ls), 1.0 / 60.0), at(10.0 * ls));
+    }
+
+    /// The safe drop at a destination: within the distance, under the speed and with the nose near it; each alone refuses it.
+    #[test]
+    fn the_safe_drop() {
+        assert!(can_drop(5.0e5, 5.0e5, 10.0));
+        assert!(!can_drop(2.0e6, 5.0e5, 10.0), "too far");
+        assert!(!can_drop(5.0e5, 2.0e6, 10.0), "too fast");
+        assert!(!can_drop(5.0e5, 5.0e5, 45.0), "not facing it");
+        assert!(!can_drop(0.0, 5.0e5, 10.0), "inside the window's near edge");
     }
 
     #[test]

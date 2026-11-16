@@ -2,7 +2,7 @@
 //!
 //! Rules (grade C, A50, `docs/elite-flight-model.md`): the refusals come in the exe's order (`0x142C71440`: disabled,
 //! malfunction, cooldown, disrupted, mass lock, hardpoints, landing gear, cargo scoop, ...): the ones that can happen here are
-//! the cooldown, the hardpoints and the landing gear (and being landed); at the charge's end the drive needs the nose pointed
+//! the cooldown, the hardpoints, the landing gear and the cargo scoop (and being landed); at the charge's end the drive needs the nose pointed
 //! away from a nearby body (`requires_alignment_escape`, within an angle of the escape direction); after leaving supercruise
 //! the drive is `Arriving` for 5 s, then cools down for the module's own time (`0x142CB6D80`).
 //!
@@ -71,6 +71,7 @@ pub enum Refusal {
     Cooldown,
     Hardpoints,
     LandingGear,
+    CargoScoop,
     Landed,
     /// The nose isn't pointed away from the nearby body (`requires_alignment_escape`).
     Escape,
@@ -90,6 +91,7 @@ impl Refusal {
             Refusal::Cooldown => "Frame shift drive cooling down",
             Refusal::Hardpoints => "Frame shift drive: hardpoints deployed",
             Refusal::LandingGear => "Frame shift drive: landing gear deployed",
+            Refusal::CargoScoop => "Frame shift drive: cargo scoop deployed",
             Refusal::Landed => "Frame shift drive: landed",
             Refusal::Escape => "Frame shift drive: point away from the body",
             Refusal::OutOfRange => "Frame shift drive: target out of range",
@@ -106,6 +108,7 @@ impl Refusal {
 pub struct ShipState {
     pub hardpoints: bool,
     pub gear_down: bool,
+    pub scoop: bool,
     pub landed: bool,
     /// The angle (degrees) between the nose and straight away from the nearest body, and the distance from its centre in its
     /// radii.
@@ -127,6 +130,9 @@ impl Drive {
         }
         if s.gear_down {
             return Some(Refusal::LandingGear);
+        }
+        if s.scoop {
+            return Some(Refusal::CargoScoop);
         }
         if s.landed {
             return Some(Refusal::Landed);
@@ -287,6 +293,16 @@ mod tests {
         ShipState { radii: 10.0, ..ShipState::default() }
     }
 
+    /// The refusals in the exe's order (`0x142C71440`): hardpoints, then the landing gear, then the cargo scoop.
+    #[test]
+    fn refusals_in_the_exes_order() {
+        let all = ShipState { hardpoints: true, gear_down: true, scoop: true, landed: true, ..free() };
+        assert_eq!(Drive::Ready.press(&all), Err(Refusal::Hardpoints));
+        assert_eq!(Drive::Ready.press(&ShipState { hardpoints: false, ..all }), Err(Refusal::LandingGear));
+        assert_eq!(Drive::Ready.press(&ShipState { hardpoints: false, gear_down: false, ..all }), Err(Refusal::CargoScoop));
+        assert_eq!(Refusal::CargoScoop.message(), "Frame shift drive: cargo scoop deployed");
+    }
+
     /// Refused with the gear down or the hardpoints out; a charge engages after its time; the drop leads to Arriving and the
     /// cooldown, which refuse a new charge until they're over; near a body pointed at it, the charge ends without engaging.
     #[test]
@@ -294,6 +310,11 @@ mod tests {
         let mut d = Drive::Ready;
         assert_eq!(d.press(&ShipState { gear_down: true, ..free() }), Err(Refusal::LandingGear));
         assert_eq!(d.press(&ShipState { hardpoints: true, ..free() }), Err(Refusal::Hardpoints));
+        assert_eq!(d.press(&ShipState { scoop: true, ..free() }), Err(Refusal::CargoScoop));
+        assert_eq!(d.press(&free()), Ok(false));
+        // The cargo scoop deployed during the charge cancels it.
+        assert_eq!(d.tick(1.0 / 60.0, &ShipState { scoop: true, ..free() }), Err(Refusal::CargoScoop));
+        assert_eq!(d, Drive::Ready);
         assert_eq!(d.press(&free()), Ok(false));
         let mut engaged = false;
         for _ in 0..(16 * 60) {

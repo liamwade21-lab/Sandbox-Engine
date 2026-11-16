@@ -71,6 +71,7 @@ pub const MODULES: [(&str, bool); 10] = [
 ];
 pub const M_THRUSTERS: usize = 1;
 pub const M_FSD: usize = 2;
+pub const M_LIFE_SUPPORT: usize = 3;
 pub const M_SENSORS: usize = 5;
 pub const M_SHIELDS: usize = 7;
 pub const M_LASERS: [usize; 2] = [8, 9];

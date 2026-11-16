@@ -1,6 +1,7 @@
-//! Getting in and out of the Sidewinder and sitting in it (the spec's F2, step 1.3): E at the parked ship boards it (the screen
-//! fades in Elite; here the cut is immediate until step 3's sounds and step 4's panels), the camera sits at the pilot's eyes
-//! with Elite's head look on the middle button, and B (landed only, the spec's D8) sets him down beside it.
+//! Getting in and out of the Sidewinder and sitting in it (the spec's F2, step 1.3): E at the parked ship boards it, the camera
+//! sits at the pilot's eyes with Elite's head look on the middle button, and B (landed only, the spec's D8) sets him down
+//! beside it. Both cuts, into the seat and out of it, come up from black over `FADE_S` real seconds (ours, F: Elite's own
+//! boarding is Odyssey's walk-in sequence, not built).
 //!
 //! - Boarding turns the mod on (`ModControl::board`): the sandbox leaves first person at the end of that frame and the seat
 //!   writes the camera from then on (`seat_camera`, bound to the body every frame: the 500 m-a-frame rule).
@@ -36,6 +37,10 @@ const LOOK_YAW_MOST: f32 = 2.0;
 const LOOK_PITCH_MOST: f32 = 1.1;
 /// Out of the seat: this far out from the hull's left side, on the ground.
 const EXIT_OUT_M: f32 = 2.5;
+/// The fade from black after boarding and after getting out (real seconds; ours, F: kept short). A longer frame than
+/// `FADE_MOST_DT` counts as that much, so a hitch while the view changes doesn't swallow it.
+pub const FADE_S: f32 = 0.5;
+const FADE_MOST_DT: f32 = 0.1;
 
 /// The seat's state while he sits.
 #[derive(Resource, Default)]
@@ -49,6 +54,8 @@ pub struct Seat {
     regain: u8,
     /// The game clock's rate and pause as they were when he sat down (given back when he gets out).
     clock: Option<(f64, bool)>,
+    /// The fade from black after boarding or getting out: real seconds left of it (0: none).
+    pub fade: f32,
 }
 
 impl Seat {
@@ -57,12 +64,40 @@ impl Seat {
         let clock = Some((sim.rate, sim.paused));
         sim.rate = 1.0;
         sim.paused = false;
-        Seat { seated: true, regain: 3, clock, ..default() }
+        Seat { seated: true, regain: 3, clock, fade: FADE_S, ..default() }
     }
 
     /// Get out (as B does: only when landed).
     pub fn request_leave(&mut self) {
         self.leave = true;
+    }
+
+    /// The fade's black now (0 clear .. 1 black).
+    pub fn fade_alpha(&self) -> f32 {
+        (self.fade / FADE_S).clamp(0.0, 1.0)
+    }
+}
+
+/// The fade's seconds left after a frame of `real_dt` real seconds.
+pub fn fade_step(left: f32, real_dt: f32) -> f32 {
+    let left = left - real_dt.min(FADE_MOST_DT);
+    // (Frames' f32 seconds add up a hair off the whole: within a tenth of a millisecond it is over.)
+    if left > 1e-4 { left } else { 0.0 }
+}
+
+/// The fade's clock, on real seconds (`timing frame` steps them too, so a test's frames are its seconds); its end is logged
+/// with the frames and seconds it took.
+pub fn fade_clock(time: Res<Time<Real>>, mut seat: ResMut<Seat>, mut took: Local<(u32, f32)>) {
+    if seat.fade <= 0.0 {
+        return;
+    }
+    let dt = time.delta_secs();
+    seat.fade = fade_step(seat.fade, dt);
+    took.0 += 1;
+    took.1 += dt;
+    if seat.fade == 0.0 {
+        info!("sidewinder: the fade is over ({} frames, {:.3} real s)", took.0, took.1);
+        *took = (0, 0.0);
     }
 }
 
@@ -182,7 +217,13 @@ pub fn board(
 #[derive(Resource, Default)]
 pub struct BoardPrompt(pub bool);
 
-pub fn draw_prompt(mut contexts: bevy_egui::EguiContexts, prompt: Res<BoardPrompt>, control: Res<ModControl>) -> Result {
+pub fn draw_prompt(mut contexts: bevy_egui::EguiContexts, prompt: Res<BoardPrompt>, control: Res<ModControl>, seat: Res<Seat>) -> Result {
+    // The fade from black, seated or not (over the HUD, which is drawn on the background layer).
+    if seat.fade > 0.0 && !control.main_menu {
+        let ctx = contexts.ctx_mut()?;
+        let r = ctx.content_rect();
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sidewinder fade"))).rect_filled(r, 0.0, egui::Color32::from_black_alpha((255.0 * seat.fade_alpha()) as u8));
+    }
     if !prompt.0 || control.main_menu {
         return Ok(());
     }
@@ -263,8 +304,8 @@ pub fn take_keys(
     seat.regain = seat.regain.saturating_sub(1);
 }
 
-/// The seat's camera at the pilot's eyes (bound to the body this frame), and getting out: B (landed: always, until flight
-/// arrives in step 1.3's second half) or the mod off by any way.
+/// The seat's camera at the pilot's eyes (bound to the body this frame), and getting out: B (landed only, `leave_rule`) or the
+/// mod off by any way (in flight that loses the ship).
 #[allow(clippy::too_many_arguments)]
 pub fn seat_camera(
     mut sb: ResMut<Sandbox>,
@@ -286,7 +327,8 @@ pub fn seat_camera(
         seat.seated = false;
         return;
     };
-    // In hyperspace's tunnel `hyper::tunnel` holds the camera; the mod off there loses the ship, and he goes back on Earth.
+    // In hyperspace's tunnel `hyper::tunnel` holds the camera; the mod off there, or the ship destroyed (out of oxygen), loses
+    // the ship, and he goes back on Earth.
     if pilot.jump.is_some() {
         if control.pilot && sb.mode == Mode::Pilot && !pilot.destroyed {
             return;
@@ -307,8 +349,16 @@ pub fn seat_camera(
         if sb.mode == Mode::Pilot {
             crate::sandbox::put_on_earth(&data, sim.jd, &mut cam, &mut sb, "the Sidewinder was lost in hyperspace: back");
         }
-        msg.show("The Sidewinder was lost in hyperspace".to_string());
-        info!("sidewinder: the mod went off in hyperspace; the ship is lost");
+        if pilot.destroyed {
+            if control.pilot {
+                control.request_off();
+            }
+            msg.show("The Sidewinder was destroyed in hyperspace".to_string());
+            info!("sidewinder: destroyed in hyperspace; the ship is lost");
+        } else {
+            msg.show("The Sidewinder was lost in hyperspace".to_string());
+            info!("sidewinder: the mod went off in hyperspace; the ship is lost");
+        }
         return;
     }
     let Some(b) = bodies.iter().find(|b| b.obj == p.obj) else { return };
@@ -347,6 +397,7 @@ pub fn seat_camera(
     seat.seated = false;
     seat.head_look = false;
     seat.look = Vec2::ZERO;
+    seat.fade = FADE_S;
     if let Some((rate, paused)) = seat.clock.take() {
         sim.rate = rate;
         sim.paused = paused;
@@ -372,8 +423,8 @@ pub fn seat_camera(
         let side = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5);
         let point = pos + rot * side.as_dvec3();
         sb.set_down(obj, point, None, eye_body, rot);
-        msg.show(if lost { "The Sidewinder was lost" } else { "Disembarked" }.to_string());
-        info!("sidewinder: out, beside the ship{}", if lost { "; it was flying and is lost" } else { "" });
+        msg.show(if pilot.destroyed { "The Sidewinder was destroyed" } else if lost { "The Sidewinder was lost" } else { "Disembarked" }.to_string());
+        info!("sidewinder: out, beside the ship{}", if pilot.destroyed { "; it was destroyed" } else if lost { "; it was flying and is lost" } else { "" });
     } else if lost {
         msg.show("The Sidewinder was lost".to_string());
         info!("sidewinder: the mod went off while flying; the ship is lost");
@@ -391,5 +442,22 @@ mod tests {
         assert_eq!(leave_rule(true, false), Leave::Out);
         assert_eq!(leave_rule(false, true), Leave::Refused);
         assert_eq!(leave_rule(false, false), Leave::Lost);
+    }
+
+    /// The fade lasts the same real time at 30 and at 120 frames a second, and a long frame doesn't swallow it.
+    #[test]
+    fn the_fade_runs_on_real_seconds() {
+        let frames = |fps: f32| {
+            let (mut left, mut n) = (FADE_S, 0);
+            while left > 0.0 {
+                left = fade_step(left, 1.0 / fps);
+                n += 1;
+            }
+            n as f32 / fps
+        };
+        assert!((frames(30.0) - FADE_S).abs() < 1e-4 && (frames(120.0) - FADE_S).abs() < 1e-4);
+        assert!(fade_step(FADE_S, 2.0) > 0.0);
+        let seat = Seat { fade: FADE_S / 2.0, ..default() };
+        assert!((seat.fade_alpha() - 0.5).abs() < 1e-6);
     }
 }

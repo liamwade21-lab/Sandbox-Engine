@@ -25,6 +25,22 @@ pub fn outline_area(areas: &[DVec3], dir: DVec3) -> f64 {
     0.5 * areas.iter().map(|a| a.dot(dir).abs()).sum::<f64>()
 }
 
+/// How the ship flies (C15: real air acts only in thruster flight).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flight {
+    Thrusters,
+    Supercruise,
+    Glide,
+}
+
+/// The drag for how the ship flies: `drag_acceleration` in thruster flight, nothing in supercruise or the glide (C15).
+pub fn drag_in(flight: Flight, vel: DVec3, density: f64, area: f64, mass_kg: f64) -> DVec3 {
+    match flight {
+        Flight::Thrusters => drag_acceleration(vel, density, area, mass_kg),
+        Flight::Supercruise | Flight::Glide => DVec3::ZERO,
+    }
+}
+
 /// The drag's acceleration (m/s^2) for a velocity relative to the air, the air's density (kg/m^3), the outline's area along the
 /// motion (m^2) and the ship's mass (kg).
 pub fn drag_acceleration(vel: DVec3, density: f64, area: f64, mass_kg: f64) -> DVec3 {
@@ -59,5 +75,14 @@ mod tests {
         assert!(a1.x < 0.0 && a1.y == 0.0 && (a2.x / a1.x - 4.0).abs() < 1e-12);
         assert!((a1.x + 0.5 * 1.2 * 100.0 * 100.0 * 70.0 / 45_000.0).abs() < 1e-12);
         assert_eq!(drag_acceleration(v(100., 0., 0.), 0.0, 70.0, 45_000.0), DVec3::ZERO);
+    }
+
+    /// C15: in thick air the drag acts in thruster flight, not in supercruise or the glide.
+    #[test]
+    fn air_acts_only_in_thruster_flight() {
+        let vel = DVec3::new(0.0, 0.0, -2500.0);
+        assert!(drag_in(Flight::Thrusters, vel, 1.2, 70.0, 45_000.0).length() > 0.0);
+        assert_eq!(drag_in(Flight::Supercruise, vel, 1.2, 70.0, 45_000.0), DVec3::ZERO);
+        assert_eq!(drag_in(Flight::Glide, vel, 1.2, 70.0, 45_000.0), DVec3::ZERO);
     }
 }
