@@ -1,6 +1,6 @@
 // The Sidewinder's glass (ARCHITECTURE.md A6): the canopy seen from the seat, the canopy seen from outside, the canopy's
 // edges. Elite draws them with forward lit shaders; each function here is that shader's surface maths, lit by the parts of
-// sidewinder_lit.wesl that are the same maths (`specular_brdf`, the ship's lamps' loop, `shade`), and returns the colour and
+// sidewinder_lit.wesl that are the same maths (`specular_brdf`, `shade` with the ship's lamps' loop), and returns the colour and
 // coverage of a premultiplied-over blend (material.rs: `AlphaMode::Premultiplied`, drawn after everything opaque of its
 // view, depth-tested, no depth written; from the seat in the seat's depth slice and sorted after the world's see-through
 // things, `SEAT_GLASS_BIAS`). The glass has its own vertex stage (`glass_vertex`): its shaders read the vertex's colour
@@ -10,8 +10,8 @@
 //
 // | Family (material)                                        | Variant (pixel shader; vertex shader)                         | Why this one |
 // |----------------------------------------------------------|---------------------------------------------------------------|--------------|
-// | CockpitGlass (cockpit_glass_int)                          | ps_CockpitGlass_Forward_0_1_0_3_0; vs_..._0_1_0_0_0           | digit 3 is gCockpitGlassState (0 clean, 1 ice, 2 condensation: FUN_1434dd710 writes it, material.rs `GlassEffects::state`), 0 for the stock ship; digit 4 the lighting (0 the star alone, 2 adds the blemish map's stochastic tiling, 3 adds the clustered lamps): 3, the only one the cockpit's own lamps light |
-// | GlassSimple_Tintable_Roughness_Alpha (shipexternalglassmaterial) | ps_..._Forward_0_1_0_3_0; vs_..._Forward_0_1_0_0_0      | digit 3 = 1 folds the specular colour into the diffuse for metals; digit 1 and 4 the lights' loops (3 the full set) |
+// | CockpitGlass (cockpit_glass_int)                          | ps_CockpitGlass_Forward_0_1_0_3_0; vs_..._0_1_0_0_0           | digit 3 is gCockpitGlassState (0 clean, 1 ice, 2 condensation: FUN_1434dd710 writes it, material.rs `GlassEffects::state`), 0 for the stock ship; digit 4 the quality (2 adds the blemish map's stochastic tiling): 3. It has no lamp loop: its loops are the star's shadow cascades, the directional lights and a probe loop inside the crack block, and it reads none of the clustered lights' tables (cb1[249..252]), so the ship's lamps never light the canopy seen from the seat |
+// | GlassSimple_Tintable_Roughness_Alpha (shipexternalglassmaterial) | ps_..._Forward_0_1_0_3_0; vs_..._Forward_0_1_0_0_0      | digit 3 = 1 folds the specular colour into the diffuse for metals; digit 1 and 4 the lights' loops (3 the full set; both read the clustered lights' tables, so the ship's lamps light them) |
 // | GlassSimple_Roughness_Alpha_SingleSource (cockpit_glass_edges) | ps_..._Forward_0_1_0_3_0                                | as above |
 //
 // What has no counterpart in this forward pass, and how much of the look depends on it:
@@ -33,9 +33,10 @@
 //   cockpit.
 // - The outside glass's transmission is a second render target that Elite's dual-source blend multiplies the scene by
 //   (o1: the glass's colour x the tint, faded to 0 with distance). Dual-source blending is not enabled in this game, so
-//   it is the blend's coverage (1 - transmission) instead, which is exact while the transmission's channels are equal: the
-//   stock glass's colour texture is grey (measured: r = g = b in every texel) and both tints are grey
-//   (material.rs `outside_glass_is_grey`).
+//   it is the blend's coverage (1 - transmission) instead, which would be exact if the transmission's channels were equal:
+//   both tints are grey (material.rs `outside_glass_tints_are_grey`, which proves only that) and the stock glass's colour
+//   texture is grey to within 3 of 255 between its channels (measured), so the grey coverage is within that of Elite's
+//   coloured transmission.
 // - Blend states are not in the disassembly. The canopy's shader writes its albedo already multiplied by its coverage and
 //   its glints whole: a premultiplied-over output. The outside and edge glasses write reflected light and a coverage of 1
 //   everywhere on the stock ship (a constant slot): premultiplied and straight blending agree there.
@@ -43,7 +44,7 @@
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world, mesh_tangent_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
-import super::sidewinder_lit::{Surface, Scene, INV_PI, shade, specular_brdf, ship_lamps};
+import super::sidewinder_lit::{Surface, Scene, INV_PI, shade, specular_brdf};
 import super::sidewinder_surface_hull::{ShipParams, Frame, ship_depth, tangent_normal, metal_f0};
 import super::sidewinder_surface_cockpit::cockpit;
 
@@ -150,16 +151,18 @@ fn blemish_stochastic(t: texture_2d<f32>, smp: sampler, uv: vec2<f32>, rate: f32
 // pPackedCockpitGlassBlemishAlphaMaps (x the dirt, y the imperfections, stochastically tiled), cracks
 // pPackedCracksNormalAlpha (xy a normal, w the crack's alpha), both at UV0 x pCockpitTile.
 // - Layers: crack = saturate([crack key > pCracksMaskThreshold] x crack alpha); the dirt and the imperfections are the
-//   blemish channels x their keys, x (1 - saturate(pLayerMaskCutoff / 0.95)); the crack's occlusion saturate(crack x
+//   blemish channels x their keys, x (1 - saturate(pLayerMaskCutoff / 0.95)), with the material's own pLayerMaskCutoff
+//   (0.5: the hull's wear override, FUN_142d4faf0, writes the attribute by name into every material of the set it is
+//   handed, but which models' sets those are was not traced, so the canopy keeps its file's value); the crack's occlusion saturate(crack x
 //   pCracksOcclusionScale). The albedo is mix(the dirt x gCockpitGlassAlphaMultiplier x pDirtDiffuse, pCracksColour x
 //   gCockpitGlassAlphaMultiplier, occlusion), the roughness saturate(pCracksRoughness x occlusion + pImperfectionsRoughness
 //   x imperfection + pDirtRoughness x dirt), both x (1 - gCockpitGlassTintAlpha); the coverage min(occlusion + dirt +
 //   imperfection, 1), raised to gCockpitGlassTintAlpha's floor.
 // - Normals: the crack's decoded normal (t, n, b weights x, z, y) mixed by the crack from (0.5, 0.5, 1): as Elite does,
 //   so a clean pane's normal leans toward its bitangent. `outer` takes +n, `inner` -n (the stored normal faces the pilot).
-// - Light: the star and the lamps on `inner`, seen along V' = normalize(outer x pCockpitRefractionAmount + the direction
-//   to the eye): Lambert on the albedo, Elite's specular with F0 0.04 and the roughness (at least 0.001). No ambient: the
-//   shader has none.
+// - Light: the star on `inner`, seen along V' = normalize(outer x pCockpitRefractionAmount + the direction to the eye):
+//   Lambert on the albedo, Elite's specular with F0 0.04 and the roughness (at least 0.001). No ambient and no lamps: the
+//   shader has neither.
 fn glass_cockpit(in: GlassOut, blemish: texture_2d<f32>, cracks: texture_2d<f32>, smp: sampler, p: ShipParams, sc: Scene) -> vec4<f32> {
     let f = frame_of(in);
     let uv = in.uv0 * cockpit.glass_tile.xy;
@@ -190,13 +193,7 @@ fn glass_cockpit(in: GlassOut, blemish: texture_2d<f32>, cracks: texture_2d<f32>
     let l = sc.sun_dir;
     let nl = saturate(dot(inner, l));
     let nv = saturate(dot(inner, v));
-    var colour = albedo * (nl * INV_PI) * sc.sun + specular_brdf(inner, v, l, f0, a2, nv) * nl * sc.sun;
-    // The lamps, seen along V' (the loop takes the eye's place; one along V' from the point gives that view vector).
-    var s: Surface;
-    s.diffuse = albedo;
-    s.normal = inner;
-    let lamps = ship_lamps(s, in.world_pos, in.world_pos + v, f0, a2, p.lights.x, p.lights.y, false);
-    colour += lamps.diffuse + lamps.specular;
+    let colour = albedo * (nl * INV_PI) * sc.sun + specular_brdf(inner, v, l, f0, a2, nv) * nl * sc.sun;
     // (Through the place's haze as the opaque surfaces are, the haze's light for what the glass covers.)
     return vec4<f32>(colour * sc.haze_t + sc.haze_a * alpha, alpha);
 }

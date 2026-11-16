@@ -32,8 +32,8 @@
 
 // Elite's scene exposure inputs (ARCHITECTURE.md A6, the known gap), none of whose writers was found
 // (re/elite/notes/agent_paint.md, "sceneValue"): one small buffer bound to every ship material, written in place when a value
-// changes (material.rs `ShipScene`, which documents each and its default). Each shader reads exactly the global its
-// disassembly reads, where it reads it.
+// changes (material.rs `ShipScene`; lights.rs works each out from this game's exposure and gives the rule). Each shader
+// reads exactly the global its disassembly reads, where it reads it.
 struct ShipScene {
     // The lighting manager's scene value (the lights task uses it on the CPU for the lamps' factors; no shader here reads
     // it yet).
@@ -48,6 +48,15 @@ struct ShipScene {
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(15) var<storage, read> ship_scene: ShipScene;
+
+// What Elite's heat effect (ShipHeatEffectActivity) writes over its material element's attributes every frame: rgb
+// pEmissiveColour and gStandardMapScales, each lerp(cold, hot, glow) (material.rs `HeatGlow`, written by lights.rs).
+struct ShipGlow {
+    emissive: vec4<f32>,
+    map_scales: vec4<f32>,
+};
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(16) var<storage, read> ship_glow: ShipGlow;
 
 // Elite's renderer globals g_diffuseAOControl and g_specularAOControl (the resolve's cb1[24].z / .w) scale how much of the
 // G-buffer's occlusion reaches the lighting. The engine's globals, not found (an open item): 1.0, the occlusion as authored.

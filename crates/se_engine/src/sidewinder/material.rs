@@ -7,8 +7,8 @@
 //! (`ShipLights`, A6's contract).
 //!
 //! Made once per Elite material at the first spawn, twice for a material both the outside and the seat's view use (the
-//! seat's draws in its own depth slice: `SEAT_SLICE`); never changed after (per-frame values live in the storage buffers),
-//! but for the lights' test hook (`sw light test|off`), which sets the outside materials' light range once each way.
+//! seat's draws in its own depth slice: `SEAT_SLICE`); never changed after: per-frame values live in the storage buffers
+//! (`ShipLights`, `ShipScene`, `ShipGlow`), which `lights.rs` writes in place.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -671,7 +671,7 @@ pub struct ShipParams {
     /// x 1 for the seat's view, y its near plane (`SEAT_NEAR_M`), z its share of the depth range (`SEAT_SLICE`), w
     /// pDeferredFlags.
     pub view: Vec4,
-    /// x first, y count: the range of the ship's lights buffer that lights this material (A6; zero until the lights task).
+    /// x first, y count: the range of the ship's lights buffer that lights this material (A6; `lights::LightList::range`).
     pub lights: UVec4,
     /// The plain path: rgb the base colour when it is one colour, w 1 when it is the texture's.
     pub colour: Vec4,
@@ -696,6 +696,8 @@ pub struct ShipParams {
     pub stamp: Vec4,
     /// pDepthBias (`sidewinder_surface_hull.wesl` `ship_depth`).
     pub depth_bias: Vec4,
+    /// x 1: the heat effect drives this material's pEmissiveColour and gStandardMapScales (`ShipGlow`).
+    pub heat_glow: UVec4,
 }
 
 impl ShipParams {
@@ -818,7 +820,7 @@ const SEAT_GLASS_BIAS: f32 = 4.0e15;
 
 /// The ship's material: the sandbox's two light buffers, its family's textures (unused ones white) with one repeating,
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
-/// scene's exposure inputs (`ShipScene`). Made once.
+/// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`). Made once.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ShipKey)]
 pub struct ShipMaterial {
@@ -852,6 +854,8 @@ pub struct ShipMaterial {
     pub cockpit: CockpitParams,
     #[storage(15, read_only)]
     pub scene: Handle<ShaderBuffer>,
+    #[storage(16, read_only)]
+    pub glow: Handle<ShaderBuffer>,
     pub family: Family,
 }
 
@@ -871,7 +875,7 @@ impl ShipMaterial {
     /// A material of family `family` with its slots' images `textures` (in `Family::slots`' order; `white` for the rest),
     /// `params` and `cockpit`.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
+    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
         let tex = |i: usize| textures.get(i).cloned().unwrap_or_else(|| white.clone());
         ShipMaterial {
             frame: light.frame.clone(),
@@ -888,6 +892,7 @@ impl ShipMaterial {
             ies: ies.clone(),
             cockpit,
             scene: scene.buffer.clone(),
+            glow: glow.buffer.clone(),
             family,
         }
     }
@@ -1001,7 +1006,7 @@ pub const MAX_SHIP_LIGHTS: usize = 96;
 /// x the exposure factor, w source size; `dir_cos` xyz the spot's axis, w the cosine of its half cone (-2: a point light);
 /// `spot` x the cosine of the inner half angle, y K = pi / cone for the IES lookup, z 1 if the IES profile applies, w the
 /// specular scale.
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
 pub struct ShipLight {
     pub pos_range: Vec4,
     pub colour: Vec4,
@@ -1024,13 +1029,13 @@ struct ShipPoseGpu {
     rows: [Vec4; 3],
 }
 
-/// The ship's lights buffer and pose, bound to every `ShipMaterial`, written in place (never a material edit). The lights
-/// task fills it with `write`; `draw` writes the pose each frame while any light is on.
+/// The ship's lights buffer and pose, bound to every `ShipMaterial`, written in place (never a material edit): `lights.rs`
+/// fills the list with `write`; `draw` writes the pose each frame while any light is on.
 #[derive(Resource)]
 pub struct ShipLights {
     pub buffer: Handle<ShaderBuffer>,
     pub pose: Handle<ShaderBuffer>,
-    count: u32,
+    on: bool,
 }
 
 impl ShipLights {
@@ -1038,12 +1043,12 @@ impl ShipLights {
         let empty = ShipLightsGpu { count: 0, _pad: UVec3::ZERO, lights: [ShipLight::default(); MAX_SHIP_LIGHTS] };
         let buffer = buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&empty), RenderAssetUsages::default()));
         let pose = buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&ShipPoseGpu::default()), RenderAssetUsages::default()));
-        ShipLights { buffer, pose, count: 0 }
+        ShipLights { buffer, pose, on: false }
     }
 
-    /// How many lights are in the list.
-    pub fn count(&self) -> u32 {
-        self.count
+    /// Is any light of the list on (a colour above zero)?
+    pub fn any_on(&self) -> bool {
+        self.on
     }
 
     /// Writes the list in place (at most `MAX_SHIP_LIGHTS`; the count is the list's length).
@@ -1052,39 +1057,27 @@ impl ShipLights {
         for (slot, l) in gpu.lights.iter_mut().zip(lights) {
             *slot = *l;
         }
-        self.count = gpu.count;
-        if let Some(mut b) = buffers.get_mut(&self.buffer) {
-            if let Some(d) = b.cast_slice_mut::<u8>() {
-                let _ = encase::StorageBuffer::new(d).write(&gpu);
-            }
-        }
+        self.on = lights.iter().any(|l| l.colour.truncate() != Vec3::ZERO);
+        write_in_place(buffers, &self.buffer, &gpu);
     }
 
     /// The ship's pose this frame (`ship`: the ship's space to the render frame, its scale the scaled space's), for the lights'
     /// loop. Called only while a light is on.
     pub fn write_pose(&self, buffers: &mut Assets<ShaderBuffer>, ship: &Transform) {
         let inv = Mat4::from_scale_rotation_translation(ship.scale, ship.rotation, ship.translation).inverse();
-        let gpu = ShipPoseGpu { rows: [inv.row(0), inv.row(1), inv.row(2)] };
-        if let Some(mut b) = buffers.get_mut(&self.pose) {
-            if let Some(d) = b.cast_slice_mut::<u8>() {
-                let _ = encase::StorageBuffer::new(d).write(&gpu);
-            }
-        }
+        write_in_place(buffers, &self.pose, &ShipPoseGpu { rows: [inv.row(0), inv.row(1), inv.row(2)] });
     }
 }
 
 // ---- Elite's scene exposure inputs (ARCHITECTURE.md A6's known gap) ----
 
-/// Elite's scene exposure inputs (`sidewinder_lit.wesl` `ShipScene`, field for field), the one place they are set. None of
-/// their writers in the engine was found (re/elite/notes/agent_paint.md, "sceneValue"); the defaults reproduce the pictures
-/// made before this buffer existed, until the lights task measures them:
-/// - `scene_ev`: the lighting manager's scene value. Elite feeds it into each lamp's exposure factor on the CPU,
-///   2^(clamp(value + bias, min, max) - 3), which A6 puts in the lamp's colour (so the shaders never multiply a lamp by
-///   it). 3.0: a lamp with bias 0 whose band holds 3 gets the factor 1 every lamp had.
-/// - `self_illum_scale`: gGlobalSelfIllumScale (cb1[1].w), which the emissive families multiply their glow by. 1.0.
-/// - `emissive_multiplier`: gEmissiveMultiplier (cb1[61].z), the emissive rescaling's scene value for type 0. 1.0.
-/// - `luminance`: the texel of gAverageSceneLuminanceTexture (the auto-exposure's) that the rescaling reads, x 0.125, for
-///   types 1 and 2. 8.0, so that scene value is 1.
+/// Elite's scene exposure inputs (`sidewinder_lit.wesl` `ShipScene`, field for field): `lights.rs` works them out from this
+/// game's exposure each frame (its doc gives the rule and the one measured constant) and writes them in place.
+/// - `scene_ev`: the lighting manager's scene value, which Elite feeds into each lamp's exposure factor on the CPU,
+///   2^(clamp(value + bias, min, max) - 3); A6 puts the factor in the lamp's colour, so no shader reads this.
+/// - `self_illum_scale`: gGlobalSelfIllumScale (cb1[1].w), which the emissive families multiply their glow by.
+/// - `emissive_multiplier`: gEmissiveMultiplier (cb1[61].z), the emissive rescaling's scene value for type 0.
+/// - `luminance`: the texel of gAverageSceneLuminanceTexture that the rescaling reads, x 0.125, for types 1 and 2.
 #[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
 pub struct SceneExposure {
     pub scene_ev: f32,
@@ -1093,71 +1086,60 @@ pub struct SceneExposure {
     pub luminance: f32,
 }
 
-impl Default for SceneExposure {
-    fn default() -> SceneExposure {
-        SceneExposure { scene_ev: 3.0, self_illum_scale: 1.0, emissive_multiplier: 1.0, luminance: 8.0 }
+/// Writes `value`'s GPU layout into `buffer`'s bytes in place (the buffers below: never a material edit).
+fn write_in_place<T: ShaderType + encase::internal::WriteInto>(buffers: &mut Assets<ShaderBuffer>, buffer: &Handle<ShaderBuffer>, value: &T) {
+    if let Some(mut b) = buffers.get_mut(buffer) {
+        if let Some(d) = b.cast_slice_mut::<u8>() {
+            let _ = encase::StorageBuffer::new(d).write(value);
+        }
     }
 }
 
-/// The buffer holding `SceneExposure`, bound to every `ShipMaterial`: made once with the defaults; the lights task writes it
-/// in place (as `ShipLights::write`) when a value changes, never a material edit.
+/// The buffer holding `SceneExposure`, bound to every `ShipMaterial`, written in place by `lights.rs`.
 #[derive(Resource)]
 pub struct ShipScene {
     pub buffer: Handle<ShaderBuffer>,
 }
 
 impl ShipScene {
-    pub fn new(buffers: &mut Assets<ShaderBuffer>) -> ShipScene {
-        ShipScene { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&SceneExposure::default()), RenderAssetUsages::default())) }
+    pub fn new(buffers: &mut Assets<ShaderBuffer>, first: &SceneExposure) -> ShipScene {
+        ShipScene { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(first), RenderAssetUsages::default())) }
+    }
+
+    pub fn write(&self, buffers: &mut Assets<ShaderBuffer>, value: &SceneExposure) {
+        write_in_place(buffers, &self.buffer, value);
     }
 }
 
-/// `sw light test|off`: one white point light and one spot (the headlight's 60-degree cone, its IES profile) over the hull,
-/// to prove the loop; off by default. The numbers are the test's own, not Elite's.
-#[derive(Resource, Default)]
-pub struct LightTest {
-    want: Option<bool>,
-    /// The outside materials, whose light range the test sets.
-    pub outside: Vec<Handle<ShipMaterial>>,
+// ---- The heat effect's glow ----
+
+/// The values Elite's heat effect (`ShipHeatEffectActivity`, re/elite/work/csm/vfx/notes.md) writes over its material
+/// element's attributes every frame (`sidewinder_lit.wesl` `ShipGlow`): rgb pEmissiveColour and gStandardMapScales, each
+/// lerp(cold, hot, glow). Read only by a material whose `ShipParams::heat_glow` is set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct HeatGlow {
+    pub emissive: Vec4,
+    pub map_scales: Vec4,
 }
 
-/// `sw light test|off`.
-pub fn dev_light(world: &mut World, word: &str) {
-    world.resource_mut::<LightTest>().want = Some(word == "test");
+/// The buffer holding `HeatGlow`, bound to every `ShipMaterial`, written in place by `lights.rs`.
+#[derive(Resource)]
+pub struct ShipGlow {
+    pub buffer: Handle<ShaderBuffer>,
 }
 
-/// The test's two lights over the hull (`top`: the hull's highest point in the ship's space): the point light over the
-/// starboard wing, the spot over the port wing pointing straight down, apart so the falloff and the cone show separately.
-/// Their colours are colour x level x the exposure factor (A6), the factor 1 (what the shaders' stand-in multiplied the
-/// lamps by before the factor moved into the colour).
-fn test_lights(top: f32) -> [ShipLight; 2] {
-    let cone = 60f32.to_radians();
-    [
-        ShipLight { pos_range: Vec4::new(6.0, top + 1.0, 1.0, 6.0), colour: Vec4::new(6.0, 6.0, 6.0, 0.1), dir_cos: Vec4::new(0.0, -1.0, 0.0, -2.0), spot: Vec4::new(0.0, 0.0, 0.0, 1.0) },
-        ShipLight {
-            pos_range: Vec4::new(-6.0, top + 7.0, 1.0, 20.0),
-            colour: Vec4::new(120.0, 120.0, 120.0, 0.1),
-            dir_cos: Vec4::new(0.0, -1.0, 0.0, (cone * 0.5).cos()),
-            spot: Vec4::new((cone * 0.9 * 0.5).cos(), std::f32::consts::PI / cone, 1.0, 1.0),
-        },
-    ]
-}
-
-fn apply_light_test(mut test: ResMut<LightTest>, lights: Option<ResMut<ShipLights>>, assets: Option<Res<super::SidewinderAssets>>, mut buffers: ResMut<Assets<ShaderBuffer>>, mut mats: ResMut<Assets<ShipMaterial>>) {
-    let (Some(mut lights), Some(assets)) = (lights, assets) else { return };
-    let Some(on) = test.want.take() else { return };
-    let list: Vec<ShipLight> = if on { test_lights(assets.shape.hi.y).to_vec() } else { Vec::new() };
-    lights.write(&mut buffers, &list);
-    for h in &test.outside {
-        if let Some(mut m) = mats.get_mut(h) {
-            m.params.lights = UVec4::new(0, list.len() as u32, 0, 0);
-        }
+impl ShipGlow {
+    pub fn new(buffers: &mut Assets<ShaderBuffer>) -> ShipGlow {
+        ShipGlow { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&HeatGlow::default()), RenderAssetUsages::default())) }
     }
-    info!("sidewinder: the lights' test {} ({} lights)", if on { "on" } else { "off" }, list.len());
+
+    pub fn write(&self, buffers: &mut Assets<ShaderBuffer>, value: &HeatGlow) {
+        write_in_place(buffers, &self.buffer, value);
+    }
 }
 
 pub fn build(app: &mut App) {
-    app.add_plugins(MaterialPlugin::<ShipMaterial>::default()).init_resource::<LightTest>().add_systems(Update, apply_light_test.run_if(resource_exists::<ShipLights>));
+    app.add_plugins(MaterialPlugin::<ShipMaterial>::default());
 }
 
 #[cfg(test)]
@@ -1241,10 +1223,11 @@ mod tests {
         assert_eq!((with(0.5, 0.0), with(0.5, 0.5), with(0.2, 0.5), with(1.0e-8, 0.0)), (1, 1, 2, 0));
     }
 
-    /// The outside glass's transmission is grey (both tints' channels equal), so the blend's coverage carries it exactly
-    /// (`sidewinder_glass.wesl`'s header; the glass's colour texture was measured grey).
+    /// The outside glass's two tints are grey (each one's channels equal). That is all this proves: the transmission is
+    /// grey only as far as the glass's colour texture is too, whose channels differ by up to 3 of 255 (measured;
+    /// `sidewinder_glass.wesl`'s header), so the blend's coverage carries the transmission to within that.
     #[test]
-    fn outside_glass_is_grey() {
+    fn outside_glass_tints_are_grey() {
         let (materials, _) = shipped();
         let c = CockpitParams::new(materials.get("shipexternalglassmaterial").unwrap(), &GlassEffects::stock()).unwrap();
         for tint in [c.tint, c.tint_distant] {

@@ -51,7 +51,7 @@
 // and from the seat to the slice's own near-plane depth before it is squeezed into the slice (the slice's compression
 // would turn the same shift of the final depth into centimetres).
 
-import super::sidewinder_lit::{Surface, ship_scene, emissive_rescale};
+import super::sidewinder_lit::{Surface, ship_scene, ship_glow, emissive_rescale};
 
 // Everything the families' attributes give (material.rs `ShipParams`, field for field).
 struct ShipParams {
@@ -96,6 +96,9 @@ struct ShipParams {
     stamp: vec4<f32>,
     // pDepthBias (the overlays and the stamp; `ship_depth`).
     depth_bias: vec4<f32>,
+    // x 1: Elite's heat effect drives this material's pEmissiveColour and gStandardMapScales (sidewinder_lit.wesl
+    // `ShipGlow`; material.rs `ShipParams::heat_glow`).
+    heat_glow: vec4<u32>,
 };
 
 // A vertex's clip depth (sidewinder_ship.wesl's and sidewinder_glass.wesl's vertex stages): the seat's view in the nearest
@@ -280,11 +283,18 @@ fn surface_opaque(f: Frame, uv0: vec2<f32>, n_map: texture_2d<f32>, metal_map: t
 
 // The glowing strips and the outside cockpit. Port of ps_Metalness_Roughness_OpaqueDeferred_Emissive_GBuffer_0_0_0_0: as
 // `surface_opaque`, and the emitted light pEmissiveTexture (UV0 x pUVScaleOffset.xy + .zw) x pEmissiveColour x
-// gGlobalSelfIllumScale x pEmissiveScale x the rescaling (the scene's values are sidewinder_lit.wesl's `ShipScene`).
+// gGlobalSelfIllumScale x pEmissiveScale x the rescaling (the scene's values are sidewinder_lit.wesl's `ShipScene`). On the
+// heat effect's element (the hull's ElementGlow, `p.heat_glow`) the effect's per-frame values stand in for the material's
+// pEmissiveColour and gStandardMapScales, as Elite writes them over the attributes (`ShipGlow`).
 fn surface_emissive(f: Frame, uv0: vec2<f32>, n_map: texture_2d<f32>, metal_map: texture_2d<f32>, base_map: texture_2d<f32>, glow_map: texture_2d<f32>, smp: sampler, p: ShipParams) -> Surface {
-    var s = surface_opaque(f, uv0, n_map, metal_map, base_map, smp, p);
+    var q = p;
+    if p.heat_glow.x != 0u {
+        q.emissive = vec4<f32>(ship_glow.emissive.rgb, p.emissive.w);
+        q.map_scales = vec4<f32>(ship_glow.map_scales.xyz, p.map_scales.w);
+    }
+    var s = surface_opaque(f, uv0, n_map, metal_map, base_map, smp, q);
     let glow = textureSample(glow_map, smp, uv0 * p.uv_scale_offset.xy + p.uv_scale_offset.zw).rgb;
-    s.emissive = glow * p.emissive.rgb * (ship_scene.self_illum_scale * p.emissive.w) * emissive_rescale(p.rescale, p.rescale_clamps.xy);
+    s.emissive = glow * q.emissive.rgb * (ship_scene.self_illum_scale * q.emissive.w) * emissive_rescale(p.rescale, p.rescale_clamps.xy);
     return s;
 }
 

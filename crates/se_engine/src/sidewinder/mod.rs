@@ -16,6 +16,7 @@
 pub mod assets;
 pub mod draw;
 pub mod hyper;
+pub mod lights;
 pub mod material;
 pub mod panels;
 pub mod parts;
@@ -465,14 +466,15 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_aim = Some(deg);
             None
         }
-        // `sw silent|scoop|lights`: the switch's key pressed (Delete, Home, Insert); `sw canopy [SECS]`: the canopy broken, with
-        // SECS of emergency oxygen left if given (a short clock for a test).
-        "silent" | "scoop" | "lights" => {
-            world.resource_mut::<pilot::Pilot>().dev_switch = Some(match verb.as_str() {
-                "silent" => pilot::Switch::Silent,
-                "scoop" => pilot::Switch::Scoop,
-                _ => pilot::Switch::Lights,
-            });
+        // `sw silent|scoop`: the switch's key pressed (Delete, Home); `sw lights switch` presses the lights' (Insert). `sw canopy
+        // [SECS]`: the canopy broken, with SECS of emergency oxygen left if given (a short clock for a test).
+        "silent" | "scoop" => {
+            world.resource_mut::<pilot::Pilot>().dev_switch = Some(if verb == "silent" { pilot::Switch::Silent } else { pilot::Switch::Scoop });
+            None
+        }
+        // `sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]`: alone, logs every light.
+        "lights" => {
+            lights::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
             None
         }
         "canopy" => {
@@ -533,11 +535,6 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 "down" => Some(true),
                 _ => None,
             };
-            None
-        }
-        // `sw light test|off`: a point light and a spot over the hull (the lights buffer's test).
-        "light" => {
-            material::dev_light(world, arg.split_whitespace().nth(1).unwrap_or("off"));
             None
         }
         "hardpoints" => {
@@ -620,7 +617,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             None
         }
         _ => {
-            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost | hardpoints | fire SECS | jump | target NAME|none | hyper NAME [fail] | face | put NAME ALT_KM | trace FILE|off | dest NAME|none | aim DEG | silent | scoop | lights | canopy [SECS] | pose up|down|auto");
+            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost | hardpoints | fire SECS | jump | target NAME|none | hyper NAME [fail] | face | put NAME ALT_KM | trace FILE|off | dest NAME|none | aim DEG | silent | scoop | lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch] | canopy [SECS] | pose up|down|auto");
             None
         }
     };

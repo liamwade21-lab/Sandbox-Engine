@@ -77,6 +77,11 @@ impl ShipSpace {
         DVec3::new(p.x, p.y + self.lift, -p.z).as_vec3()
     }
 
+    /// A direction in Elite's model space, in the ship's.
+    pub fn direction(&self, d: DVec3) -> Vec3 {
+        DVec3::new(d.x, d.y, -d.z).as_vec3()
+    }
+
     /// A node's matrix (its model's space to Elite's model space), as one from the model's vertices in the mod's axes
     /// (`to_mod_space`) to the ship's space.
     pub fn matrix(&self, m: DMat4) -> Mat4 {
@@ -115,6 +120,16 @@ impl Group {
     pub fn inside(self) -> bool {
         matches!(self, Group::Cockpit | Group::InsideChair)
     }
+}
+
+/// Whose a state machine is (`ShipRig::machine_owner`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineOwner {
+    Hull,
+    Gear,
+    Cockpit,
+    /// Another file's (the cockpit tutorial's).
+    Other,
 }
 
 /// One rig node (or chair) of the ship, in `ShipRig::pose`'s order.
@@ -208,6 +223,62 @@ impl ShipRig {
     /// Every node's matrix in the ship's space with `values` (in `nodes`' order).
     pub fn pose(&self, values: &Values) -> Result<Vec<Mat4>, RigError> {
         Ok(self.walk(values)?.iter().map(|p| self.space.matrix(p.world)).collect())
+    }
+
+    /// The values the machines' states `states` (by `ship.machines` index) set: every machine's initial state's, then each
+    /// machine's own state's over them where it differs (`static_pose`'s rule; `elite_rig::state_pose`).
+    pub fn state_values(&self, states: &[String]) -> Values {
+        let mut v = Values::new();
+        for m in &self.ship.machines {
+            if let Some(s) = m.state(&m.initial) {
+                v.extend(elite_rig::state_pose(s));
+            }
+        }
+        for (i, m) in self.ship.machines.iter().enumerate() {
+            if let Some(s) = states.get(i).filter(|s| **s != m.initial).and_then(|s| m.state(s)) {
+                v.extend(elite_rig::state_pose(s));
+            }
+        }
+        v
+    }
+
+    /// Whose machine `ship.machines[i]` is: the hull rig's, a gear rig's or the cockpit rig's (by its owner and file).
+    pub fn machine_owner(&self, i: usize) -> MachineOwner {
+        let Some(m) = self.ship.machines.get(i) else { return MachineOwner::Other };
+        let of = |rig: usize| self.ship.rigs.get(rig).is_some_and(|r| r.name.eq_ignore_ascii_case(&m.owner) && r.file == m.file);
+        if of(self.hull) {
+            MachineOwner::Hull
+        } else if of(self.cockpit) {
+            MachineOwner::Cockpit
+        } else if self.gear.iter().any(|g| of(g.rig)) {
+            MachineOwner::Gear
+        } else {
+            MachineOwner::Other
+        }
+    }
+
+    /// Is `ship.machines[i]` a gear leg's machine, or one of the hull's gear doors' (`static_pose`'s)?
+    pub fn is_leg(&self, i: usize) -> bool {
+        self.legs.contains(&i)
+    }
+
+    pub fn is_gear_door(&self, i: usize) -> bool {
+        self.doors.contains(&i)
+    }
+
+    /// Each `Node!Bone` of `bones` (the light activities' form: the node's name, or its model's, then the bone without its
+    /// `!`) posed with `values`, in the ship's space: its place and its local +Z axis. None for a name no node or bone has.
+    pub fn bone_frames(&self, values: &Values, bones: &[String]) -> Result<Vec<Option<(Vec3, Vec3)>>, RigError> {
+        let placed = self.walk(values)?;
+        Ok(bones
+            .iter()
+            .map(|b| {
+                let (node, bone) = b.split_once('!')?;
+                let p = placed.iter().find(|p| p.name.eq_ignore_ascii_case(node) || p.model.is_some_and(|m| m.eq_ignore_ascii_case(node)))?;
+                let frame = p.world * self.bones.get(p.model?, &format!("!{bone}"))?;
+                Some((self.space.point(frame.w_axis.truncate()), self.space.direction(frame.z_axis.truncate().normalize())))
+            })
+            .collect())
     }
 
     /// A still pose: every machine in its initial state's pose, except the gear legs `Down` with the hull's gear doors

@@ -489,6 +489,12 @@ pub struct Light {
     pub cone_deg: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inner_fraction: Option<f64>,
+    /// Spot lights +0x8c: the inner cone, degrees; +0x18f: with `use_ies` set, the inner cone is 0.9 x the cone instead
+    /// (FUN_1435cc920; re/elite/notes/agent_paint.md, "The spot cone"). Typed from `raw` by the converter (`spot_inner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner_from_cone: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_ies: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,11 +502,202 @@ pub struct Light {
     /// The IES profile: the texture of that name (`tex/<lower case>.dds`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ies_profile: Option<String>,
-    /// The export's slot dump of the whole record (rows of `at` byte offset, `u32` / `f32` pairs, pointed-to blocks),
-    /// kept for the fields no name is proven for: the intensity animator's (+0x8c..+0xd0, +0x125 on point lights: fade
-    /// rates, blink timer, jitter, random-off chance; agent_csm.md section 5).
+    /// The intensity animator's fields, typed from `raw` by the converter (`LightAnimator::from_raw`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animator: Option<LightAnimator>,
+    /// The export's slot dump of the whole record (rows of `at` byte offset, `u32` / `f32` pairs, pointed-to blocks), kept
+    /// for the words no name is proven for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<Value>,
+}
+
+/// A light's intensity animator as the exe builds it from the record (point lights FUN_1435cb790, spot lights FUN_1435cc920,
+/// both into FUN_1435ea060; evaluated every frame by FUN_143598ba0; re/elite/notes/agent_paint.md section 6). Times in
+/// seconds. Every field names the record's offset it comes from (point / spot); a word the dump leaves out is zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightAnimator {
+    /// +0x8c / +0xc0: the jitter is not faded by the level (it takes 1 while the exposure factor is above 0).
+    pub hard: bool,
+    /// +0x90 / +0xc4 (an integer): how much of a period the first jitter draw's timer is spread by.
+    pub jitter_spread: u32,
+    /// +0x94 / +0xc8 and +0x98 / +0xcc: each jitter draw is uniform in [-jitter_below, jitter_above].
+    pub jitter_below: f64,
+    pub jitter_above: f64,
+    /// +0x9c / +0xd0: draws a second (0: no jitter).
+    pub jitter_rate_hz: f64,
+    /// +0xa0 (point lights): the jitter runs when a draw in [0, 1) at creation is at most this. Spot lights take a byte of
+    /// their runtime object instead (FUN_1435cc920 +0x28c, its writer not traced): None.
+    pub jitter_chance: Option<f64>,
+    /// The timed blink (FUN_1435ea060): +0xa4 / +0xd8 its rate r (0: none); an on phase lasts duty x 2 / r s and an off
+    /// phase (1 - duty) x 2 / r s, with +0xb0 / +0xe4 the duty; +0xa8 / +0xdc a start delay of start / r s; +0xac / +0xe0 a
+    /// random extra of up to extra / r s per phase.
+    pub blink_rate: f64,
+    pub blink_start: f64,
+    pub blink_extra: f64,
+    pub blink_duty: f64,
+    /// +0xb8 / +0xe8: the step pattern (`N` on, `F` off, each followed by its step count; FUN_1435dae40), which replaces the
+    /// timed blink; +0xc0 / +0xf0 the pattern's cycle.
+    pub pattern: Option<String>,
+    pub pattern_cycle_s: f64,
+    /// +0xc4 / +0xf4: how long the light stays on after it is switched off, before it fades.
+    pub hold_s: f64,
+    /// +0xc8 / +0xf8 and +0xcc / +0xfc: the fades' lengths, which also limit how fast the parameters' product moves.
+    pub fade_in_s: f64,
+    pub fade_out_s: f64,
+    /// +0xd0 / +0x100: the parameters' product is raised to this.
+    pub exponent: f64,
+    /// Point lights +0xe8: the float parameters multiplied into the level (the same names as `Light::driven_by`). No spot
+    /// light of the ship has a list there.
+    pub float_params: Vec<String>,
+    /// Point lights +0xf8, spot lights +0x118: the bool parameters that switch the light, combined by `bool_mode`.
+    pub bool_params: Vec<String>,
+    /// Point lights +0x125: 0 all true, 1 any true, 2 none true, anything else the light's own on state alone. Spot lights
+    /// pass 0. (The byte lies inside the +0x120 word: on a light with a colour parameter it is a byte of that name's
+    /// pointer at run time; no such light of the ship has a bool parameter, so it changes nothing there.)
+    pub bool_mode: u8,
+    /// Point lights +0x120: the colour parameter that replaces the record's colour when it exists (FUN_1435a5500's +0x208).
+    pub colour_param: Option<String>,
+}
+
+/// The record's offsets of the animator's fields, by kind (FUN_1435cb790 and FUN_1435cc920 build the same 17-float block).
+struct AnimatorOffsets {
+    hard: usize,
+    spread: usize,
+    below: usize,
+    above: usize,
+    rate: usize,
+    chance: Option<usize>,
+    blink: usize,
+    pattern: usize,
+    cycle: usize,
+    floats: Option<usize>,
+    bools: usize,
+    mode: Option<usize>,
+    colour: Option<usize>,
+}
+
+const POINT_ANIMATOR: AnimatorOffsets =
+    AnimatorOffsets { hard: 0x8c, spread: 0x90, below: 0x94, above: 0x98, rate: 0x9c, chance: Some(0xa0), blink: 0xa4, pattern: 0xb8, cycle: 0xc0, floats: Some(0xe8), bools: 0xf8, mode: Some(0x125), colour: Some(0x120) };
+const SPOT_ANIMATOR: AnimatorOffsets =
+    AnimatorOffsets { hard: 0xc0, spread: 0xc4, below: 0xc8, above: 0xcc, rate: 0xd0, chance: None, blink: 0xd8, pattern: 0xe8, cycle: 0xf0, floats: None, bools: 0x118, mode: None, colour: None };
+
+/// The export's slot dump (`Light::raw`): 8-byte rows by offset.
+struct Dump<'a>(&'a [Value]);
+
+impl Dump<'_> {
+    fn row(&self, at: usize) -> Option<&Value> {
+        self.0.iter().find(|r| r.get("at").and_then(Value::as_u64) == Some(at as u64))
+    }
+
+    /// The 32-bit word at `at` (4-aligned); zero when the dump leaves it out.
+    fn word(&self, at: usize) -> u32 {
+        self.row(at & !7).and_then(|r| r.get("u32")?.get((at & 4) / 4)?.as_u64()).map_or(0, |w| w as u32)
+    }
+
+    fn f32(&self, at: usize) -> f64 {
+        f32::from_bits(self.word(at)) as f64
+    }
+
+    fn byte(&self, at: usize) -> u8 {
+        (self.word(at & !3) >> (8 * (at & 3))) as u8
+    }
+
+    fn text(&self, at: usize) -> Option<String> {
+        self.row(at).and_then(|r| r.get("str")?.as_str()).map(str::to_string)
+    }
+
+    /// A list of strings: the pointer row's block (a string every 8 bytes) and the count at `at` + 8, which must agree.
+    fn texts(&self, at: usize) -> Result<Vec<String>, String> {
+        let count = self.word(at + 8) as usize;
+        let names: Vec<String> = match self.row(at).and_then(|r| r.get("block")?.as_array()) {
+            Some(block) => (0..count).map(|i| block.iter().find(|r| r.get("at").and_then(Value::as_u64) == Some(8 * i as u64)).and_then(|r| r.get("str")?.as_str()).map(str::to_string)).collect::<Option<_>>().ok_or_else(|| format!("the list at +{at:#x} holds fewer than its {count} names"))?,
+            None if count == 0 => Vec::new(),
+            None => return Err(format!("the list at +{at:#x} counts {count} names but points at none")),
+        };
+        Ok(names)
+    }
+}
+
+impl LightAnimator {
+    /// The animator's fields from a light's slot dump (`spot`: a `SpotLightActivity`'s offsets).
+    pub fn from_raw(raw: &[Value], spot: bool) -> Result<LightAnimator, String> {
+        let o = if spot { &SPOT_ANIMATOR } else { &POINT_ANIMATOR };
+        let d = Dump(raw);
+        if spot && d.row(0x108).is_some_and(|r| r.get("block").is_some()) {
+            return Err("a spot light with a list at +0x108, whose meaning isn't known".into());
+        }
+        let pattern = d.text(o.pattern);
+        if let Some(p) = &pattern {
+            parse_pattern(p)?;
+        }
+        Ok(LightAnimator {
+            hard: d.f32(o.hard) != 0.0,
+            jitter_spread: d.word(o.spread),
+            jitter_below: d.f32(o.below),
+            jitter_above: d.f32(o.above),
+            jitter_rate_hz: d.f32(o.rate),
+            jitter_chance: o.chance.map(|at| d.f32(at)),
+            blink_rate: d.f32(o.blink),
+            blink_start: d.f32(o.blink + 4),
+            blink_extra: d.f32(o.blink + 8),
+            blink_duty: d.f32(o.blink + 12),
+            pattern,
+            pattern_cycle_s: d.f32(o.cycle),
+            hold_s: d.f32(o.cycle + 4),
+            fade_in_s: d.f32(o.cycle + 8),
+            fade_out_s: d.f32(o.cycle + 12),
+            exponent: d.f32(o.cycle + 16),
+            float_params: o.floats.map(|at| d.texts(at)).transpose()?.unwrap_or_default(),
+            bool_params: d.texts(o.bools)?,
+            bool_mode: o.mode.map_or(0, |at| d.byte(at)),
+            colour_param: o.colour.and_then(|at| d.text(at)),
+        })
+    }
+}
+
+/// A spot light's inner cone from its slot dump: (+0x8c in degrees, +0x18f set).
+pub fn spot_inner(raw: &[Value]) -> (f64, bool) {
+    let d = Dump(raw);
+    (d.f32(0x8c), d.byte(0x18f) != 0)
+}
+
+/// A blink pattern's steps (FUN_1435dae40): letters are taken upper case; spaces, tabs and line breaks are skipped; `N`
+/// starts an on run and `F` an off run, and the next characters must be its decimal step count (a count of 0 adds
+/// nothing). Anything else where a letter is due, or no digit where a count is due, is an error; a last letter without a
+/// count adds nothing (the exe only checks for the count when it reads the next character). No steps: the timed blink.
+pub fn parse_pattern(text: &str) -> Result<Vec<bool>, String> {
+    let mut steps = Vec::new();
+    let mut run: Option<bool> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let c = c.to_ascii_uppercase();
+        if matches!(c, ' ' | '\t' | '\n' | '\r') {
+            continue;
+        }
+        match run.take() {
+            Some(on) => {
+                let mut digits = String::from(c);
+                if !c.is_ascii_digit() {
+                    return Err(format!("a step count is missing in the blink pattern {text:?}"));
+                }
+                while let Some(d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+                    digits.push(*d);
+                    chars.next();
+                }
+                let n: usize = digits.parse().map_err(|_| format!("a step count too large in the blink pattern {text:?}"))?;
+                steps.extend(std::iter::repeat_n(on, n));
+            }
+            None => {
+                run = Some(match c {
+                    'N' => true,
+                    'F' => false,
+                    _ => return Err(format!("invalid light state {c:?} in the blink pattern {text:?}")),
+                });
+            }
+        }
+    }
+    Ok(steps)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1482,6 +1679,74 @@ mod tests {
         Materials { materials: [("hull".to_string(), hull), ("null".to_string(), null), ("grey".to_string(), grey)].into_iter().collect() }
     }
 
+    /// The animator's fields from a slot dump laid out as the ship's red beacon's (point) and headlights' (spot) are: the
+    /// pattern, cycle, fades, exponent, bool list and mode at their offsets; a word the dump leaves out is zero.
+    #[test]
+    fn animator_from_the_dump() {
+        let f = |x: f32| x.to_bits() as u64;
+        let point = serde_json::json!([
+            {"at": 136, "u32": [f(1.0), 0]},
+            {"at": 144, "u32": [1, f(50.0)]},
+            {"at": 152, "u32": [f(50.0), f(60.0)]},
+            {"at": 160, "u32": [f(1.0), 0]},
+            {"at": 176, "u32": [f(0.5), 0]},
+            {"at": 184, "str": "f25n1f25"},
+            {"at": 192, "u32": [f(2.0), f(1.0)]},
+            {"at": 200, "u32": [f(0.02), f(0.1)]},
+            {"at": 208, "u32": [f(8.0), 0]},
+            {"at": 232, "block": [{"at": 0, "str": "HeatRadiator_VisualActiveDissipation"}], "ptr": [4, 1]},
+            {"at": 240, "u32": [1, 0]},
+            {"at": 248, "block": [{"at": 0, "str": "Warning_DangerProximity"}, {"at": 8, "str": "Warning_Overheating"}], "ptr": [5, 2]},
+            {"at": 256, "u32": [2, 1]},
+            // (+0x125, the bool mode: the second byte of the word at +0x124.)
+            {"at": 288, "u32": [0, 0x0100]},
+        ]);
+        let a = LightAnimator::from_raw(point.as_array().unwrap(), false).unwrap();
+        assert!(!a.hard && a.jitter_spread == 1 && a.jitter_below == 50.0 && a.jitter_above == 50.0 && a.jitter_rate_hz == 60.0);
+        assert_eq!((a.jitter_chance, a.blink_rate, a.blink_duty), (Some(1.0), 0.0, 0.5));
+        assert_eq!(a.pattern.as_deref(), Some("f25n1f25"));
+        assert_eq!((a.pattern_cycle_s, a.hold_s, a.fade_in_s as f32, a.fade_out_s as f32, a.exponent), (2.0, 1.0, 0.02, 0.1, 8.0));
+        assert_eq!(a.float_params, vec!["HeatRadiator_VisualActiveDissipation".to_string()]);
+        assert_eq!(a.bool_params, vec!["Warning_DangerProximity".to_string(), "Warning_Overheating".to_string()]);
+        assert_eq!((a.bool_mode, a.colour_param.as_deref()), (1, None));
+        let gui = serde_json::json!([{"at": 288, "str": "OverrideColour_Right"}]);
+        let g = LightAnimator::from_raw(gui.as_array().unwrap(), false).unwrap();
+        assert_eq!((g.bool_mode, g.colour_param.as_deref()), (0, Some("OverrideColour_Right")));
+        let spot = serde_json::json!([
+            {"at": 192, "u32": [0, 1]},
+            {"at": 224, "u32": [0, f(0.5)]},
+            {"at": 240, "u32": [f(1.0), 0]},
+            {"at": 248, "u32": [f(0.1), f(0.4)]},
+            {"at": 256, "u32": [f(1.0), 0]},
+            {"at": 280, "block": [{"at": 0, "str": "Option_HeadlightsEnabled"}], "ptr": [4, 1]},
+            {"at": 288, "u32": [1, 0]},
+            {"at": 392, "u32": [f(0.8), 0x0101_0103]},
+        ]);
+        assert_eq!(spot_inner(spot.as_array().unwrap()), (0.0, true), "+0x8c 0 degrees, +0x18f set");
+        let s = LightAnimator::from_raw(spot.as_array().unwrap(), true).unwrap();
+        assert_eq!((s.jitter_chance, s.blink_duty, s.pattern_cycle_s, s.fade_in_s as f32, s.fade_out_s as f32, s.exponent), (None, 0.5, 1.0, 0.1, 0.4, 1.0));
+        assert_eq!(s.bool_params, vec!["Option_HeadlightsEnabled".to_string()]);
+        assert!(s.float_params.is_empty() && s.colour_param.is_none() && s.bool_mode == 0);
+        // A count without its names is refused.
+        let broken = serde_json::json!([{"at": 288, "u32": [2, 0]}]);
+        assert!(LightAnimator::from_raw(broken.as_array().unwrap(), true).is_err());
+    }
+
+    /// FUN_1435dae40's pattern rules.
+    #[test]
+    fn blink_patterns() {
+        let red = parse_pattern("f25n1f25").unwrap();
+        assert_eq!(red.len(), 51);
+        assert_eq!(red.iter().position(|&s| s), Some(25));
+        assert_eq!(red.iter().filter(|&&s| s).count(), 1);
+        let blue = parse_pattern("f25n1f1n1f25").unwrap();
+        assert_eq!((blue.len(), blue[25], blue[26], blue[27]), (53, true, false, true));
+        assert_eq!(parse_pattern("N 2 f\t1").unwrap(), vec![true, true, false]);
+        assert_eq!(parse_pattern("n0f2n").unwrap(), vec![false, false], "a 0 count adds nothing, a last letter without one too");
+        assert!(parse_pattern("").unwrap().is_empty());
+        assert!(parse_pattern("x3").is_err() && parse_pattern("nf2").is_err());
+    }
+
     #[test]
     fn materials_round_trip() {
         let m = sample();
@@ -1610,6 +1875,9 @@ mod tests {
             use_ies: None,
             other_profile_name: None,
             ies_profile: None,
+            inner_deg: None,
+            inner_from_cone: None,
+            animator: None,
             raw: Some(serde_json::json!([{"at": 136, "u32": [1065353216, 0], "f32": [1.0, 0.0]}])),
         };
         let mut other = Map::new();

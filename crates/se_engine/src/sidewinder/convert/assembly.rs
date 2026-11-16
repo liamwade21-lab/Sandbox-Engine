@@ -15,8 +15,8 @@ use serde_json::{Map, Value};
 
 use se_core::elite_asset::parse_edm;
 use se_core::elite_ship::{
-    parse_ship, write_ship, Activity, CueEvents, GearAttach, Item, KnownActivity, Machine, Paint, PaintKey, Rig, RigNode, Ship, KNOWN_ACTIVITIES, PAINT_KEYS,
-    SHIP_FORMAT,
+    parse_ship, write_ship, Activity, CueEvents, GearAttach, Item, KnownActivity, LightAnimator, Machine, Paint, PaintKey, Rig, RigNode, Ship, KNOWN_ACTIVITIES,
+    PAINT_KEYS, SHIP_FORMAT, spot_inner,
 };
 
 use super::models::{exported_models, read_json, resolve_model, stock_rig, RIGS};
@@ -62,8 +62,8 @@ fn specular_scale(raw: &[Value]) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// A decoded activity in `ship.json`'s shape: the raw dump dropped, but a light's kept whole (its intensity animator's
-/// fields are only there) with a point light's specular scale read from it.
+/// A decoded activity in `ship.json`'s shape: the raw dump dropped, but a light's kept whole, with a point light's specular
+/// scale and every light's intensity animator (`LightAnimator::from_raw`) read from it.
 fn activity(a: &Value, file: &str) -> Result<Activity, String> {
     let mut a = a.as_object().cloned().ok_or_else(|| format!("{file}: an activity is not a table"))?;
     let raw = a.remove("raw");
@@ -71,9 +71,17 @@ fn activity(a: &Value, file: &str) -> Result<Activity, String> {
     let kind = a.get("type").and_then(Value::as_str).unwrap_or("");
     if matches!(kind, "PointLightActivity" | "SpotLightActivity") {
         let raw = raw.ok_or_else(|| format!("{file}: a light without its raw dump"))?;
-        if kind == "PointLightActivity" {
-            a.insert("specular_scale".into(), specular_scale(raw.as_array().map_or(&[][..], Vec::as_slice)).into());
+        let rows = raw.as_array().map_or(&[][..], Vec::as_slice);
+        let spot = kind == "SpotLightActivity";
+        if spot {
+            let (inner_deg, from_cone) = spot_inner(rows);
+            a.insert("inner_deg".into(), inner_deg.into());
+            a.insert("inner_from_cone".into(), from_cone.into());
+        } else {
+            a.insert("specular_scale".into(), specular_scale(rows).into());
         }
+        let animator = LightAnimator::from_raw(rows, spot).map_err(|e| format!("{file}: a light's animator: {e}"))?;
+        a.insert("animator".into(), serde_json::to_value(animator).map_err(|e| e.to_string())?);
         a.insert("raw".into(), raw);
     }
     let kind = a.get("type").and_then(Value::as_str).unwrap_or("?").to_string();

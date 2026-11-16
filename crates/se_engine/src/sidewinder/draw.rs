@@ -20,7 +20,8 @@ use crate::system::SystemBody;
 use crate::universe::ScaledSpace;
 
 use super::assets::ShipBuild;
-use super::material::{self, Family, LightTest, ShipLights, ShipMaterial, ShipScene, TexSource};
+use super::lights::{self, LightList};
+use super::material::{self, Family, ShipGlow, ShipLights, ShipMaterial, ShipScene, TexSource};
 use super::parts::Parts;
 use super::{Sidewinder, SidewinderAssets};
 
@@ -53,9 +54,10 @@ pub struct ShipDraw {
 
 pub fn build(app: &mut App) {
     material::build(app);
+    lights::build(app);
     app.init_resource::<Parts>().add_systems(Update, make.run_if(resource_exists::<ShipBuild>)).add_systems(
         PostUpdate,
-        (super::parts::update, place)
+        (super::parts::update, lights::update, place)
             .chain()
             .run_if(resource_exists::<SidewinderAssets>)
             .after(crate::universe::UniverseSet::Camera)
@@ -67,7 +69,8 @@ pub fn build(app: &mut App) {
 }
 
 /// The meshes and materials, from what the first spawn read and resolved (`ShipBuild`, dropped once used), the ship's lights
-/// buffer and its scene exposure inputs.
+/// (their list, `lights::LightList`, and buffer), its scene exposure inputs and the heat effect's glow: each material lit by
+/// its set's range of the list (`LightList::range`), the hull's ElementGlow taking the heat effect's values.
 #[allow(clippy::too_many_arguments)]
 fn make(
     mut commands: Commands,
@@ -79,7 +82,6 @@ fn make(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut ship_materials: ResMut<Assets<ShipMaterial>>,
     mut prop_materials: ResMut<Assets<PropMaterial>>,
-    mut test: ResMut<LightTest>,
 ) {
     let (Some(assets), Some(light), Some(mut build)) = (assets, light, build) else { return };
     let rig = &assets.rig;
@@ -89,8 +91,18 @@ fn make(
     let ies = textures.get(&(material::IES_FILE.to_string(), true)).cloned().unwrap_or_else(|| white.clone());
     let model_meshes: Vec<Vec<Handle<Mesh>>> = std::mem::take(&mut build.meshes).into_iter().map(|draws| draws.into_iter().map(|m| meshes.add(m)).collect()).collect();
     commands.remove_resource::<ShipBuild>();
+    let list = match LightList::new(rig, &rig.static_pose(true)) {
+        Ok(l) => l,
+        Err(e) => {
+            warn!("sidewinder: the ship's lights: {e}; drawn without them");
+            LightList { lamps: Vec::new(), hull: 0 }
+        }
+    };
     let lights = ShipLights::new(&mut buffers);
-    let scene = ShipScene::new(&mut buffers);
+    let scene = ShipScene::new(&mut buffers, &lights::scene_inputs(0.0, crate::exposure::AutoExposureSettings::default().target_bright));
+    let glow = ShipGlow::new(&mut buffers);
+    // (The heat effect's element: the outside materials of that name; only the hull's model has one outside.)
+    let glow_element = rig.ship.machines.iter().flat_map(|m| &m.states).find_map(lights::HeatEffect::of_state).map(|e| e.element.to_lowercase());
     let resolved = std::mem::take(&mut build.materials);
     let mut constants: HashMap<[u8; 4], Handle<Image>> = HashMap::new();
     // One material per Elite material and set (the seat's pieces draw in the seat's depth slice).
@@ -119,12 +131,10 @@ fn make(
                             TexSource::Constant(c) => constants.entry(*c).or_insert_with(|| material::constant(&mut images, *c)).clone(),
                         })
                         .collect();
-                    let params = if inside { r.params.in_seat() } else { r.params };
-                    let h = ship_materials.add(ShipMaterial::new(&light, &lights, &scene, r.family, &tex, &white, &ies, params, r.cockpit));
-                    if !inside {
-                        test.outside.push(h.clone());
-                    }
-                    h
+                    let mut params = if inside { r.params.in_seat() } else { r.params };
+                    params.lights = list.range(inside);
+                    params.heat_glow.x = (!inside && glow_element.as_deref() == Some(key.as_str())) as u32;
+                    ship_materials.add(ShipMaterial::new(&light, &lights, &scene, &glow, r.family, &tex, &white, &ies, params, r.cockpit))
                 })
                 .clone();
             pieces.push(
@@ -144,8 +154,11 @@ fn make(
     }
     let families: std::collections::HashSet<(Family, bool)> = mats.keys().filter_map(|(k, inside)| Some((resolved.get(k)?.family, *inside))).collect();
     info!("sidewinder: the ship's materials: {} ({} pipelines by family and set), {} textures, {} constants", mats.len(), families.len(), textures.len(), constants.len());
+    info!("sidewinder: the ship's lights: {} slots, {} the hull's (the outside's range), {} the cockpit's", list.lamps.len(), list.hull, list.lamps.len() - list.hull);
+    commands.insert_resource(list);
     commands.insert_resource(lights);
     commands.insert_resource(scene);
+    commands.insert_resource(glow);
     info!("sidewinder: the ship's {} meshes are made ({} models, {} materials, {} textures)", pieces.len(), model_meshes.len(), mats.len(), textures.len());
     // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
     // shows by day and night.
@@ -194,7 +207,7 @@ fn place(
                     *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
                 }
                 // (The lights' loop reads the ship's space: its pose this frame, while any light is on.)
-                if let Some(l) = lights.as_ref().filter(|l| l.count() > 0) {
+                if let Some(l) = lights.as_ref().filter(|l| l.any_on()) {
                     l.write_pose(&mut buffers, &ship_tf);
                 }
                 for (beam, mut tf, mut v) in beams.iter_mut() {
