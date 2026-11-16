@@ -7,13 +7,18 @@
 //!   when the player comes back near it.
 //! - Spawning is its own request (`ShipRequest`), not "the mod on": a parked ship stays when another mod is turned on
 //!   (the spec's edge cases). Boarding (E, `seat.rs`) is what turns the mod on.
-//! - Its files are read on a worker thread at the first spawn (`load`), checked as every mod's are (`mods::load_sidewinder`).
-//! - `draw.rs` draws it as the props are drawn (`PropMaterial`, the sandbox's light records), one mesh per draw.
+//! - Its files are read on a worker thread at the first spawn (`assets::load`), checked as every mod's are
+//!   (`mods::load_sidewinder`): Elite's own hull, gear, cockpit and chairs, posed by Elite's rigs (ARCHITECTURE.md A6).
+//! - `parts.rs` says which pose the moving parts have; `draw.rs` draws every rig node's model with `ShipMaterial`
+//!   (`material.rs`), lit by the sandbox's light records as the props are.
 //! - `convert` (tests only) makes the mod's files from Elite's files.
 
+pub mod assets;
 pub mod draw;
 pub mod hyper;
+pub mod material;
 pub mod panels;
+pub mod parts;
 pub mod hud;
 pub mod pilot;
 pub mod seat;
@@ -23,16 +28,15 @@ mod sound;
 #[cfg(test)]
 mod convert;
 
-use std::sync::Arc;
+pub use assets::{load, ShipShape, SidewinderAssets};
 
-use bevy::math::{DQuat, DVec3, Mat3, Quat, Vec3};
+use bevy::math::{DQuat, DVec3, Mat3, Vec3};
 use bevy::prelude::*;
 use bevy::tasks::{futures, AsyncComputeTaskPool, Task};
 use se_core::catalog::ObjectRef;
-use se_core::elite_asset::{parse_edm, Binds, Edm};
 
 use crate::mods::{ModControl, ModRegistry};
-use crate::sandbox::world::{SolidHandle, SolidShape, Surface};
+use crate::sandbox::world::{SandboxWorld, SolidHandle, SolidShape, Surface};
 use crate::sandbox::Sandbox;
 
 /// The mod's folder name and code.
@@ -59,124 +63,6 @@ pub enum ShipRequest {
     Remove,
 }
 
-/// The mod's files, read and checked at its first spawn (kept until quit).
-#[derive(Resource, Clone)]
-pub struct SidewinderAssets {
-    pub ship: Arc<Edm>,
-    pub cockpit: Arc<Edm>,
-    /// Elite's default keyboard and mouse controls and its default pad's (copies of its `.binds` files).
-    pub keys: Arc<Binds>,
-    pub pad: Arc<Binds>,
-    /// The ship's solid pieces and its box, at rest with the gear down (model space).
-    pub shape: Arc<ShipShape>,
-    /// The pilot's eyes in model space (the cockpit's part `eye`).
-    pub eye: [f32; 3],
-}
-
-/// The parked ship's solid shape: convex pieces (one per draw), its box, and its feet.
-#[derive(Clone, Debug)]
-pub struct ShipShape {
-    pub hulls: Vec<Vec<Vec3>>,
-    pub lo: Vec3,
-    pub hi: Vec3,
-    /// The lowest point of each landing gear leg (where it stands).
-    pub feet: Vec<Vec3>,
-    /// The hull's lowest point in each cell of a 3 x 3 grid over its plan (what touches the ground with the gear up or the
-    /// ship tilted).
-    pub belly: Vec<Vec3>,
-}
-
-/// Each part's transform in model space at rest (its parents' composed), as a matrix.
-pub fn rest_transforms(m: &Edm) -> Vec<Mat4> {
-    let mut out: Vec<Mat4> = Vec::with_capacity(m.parts.len());
-    for p in &m.parts {
-        let local = Mat4::from_rotation_translation(Quat::from_array(p.rotation).normalize(), Vec3::from_array(p.translation));
-        out.push(if p.parent >= 0 { out[p.parent as usize] * local } else { local });
-    }
-    out
-}
-
-/// Each part's transform with animation `name` at `t01` of its length (parts it doesn't move stay at rest).
-pub fn posed_transforms(m: &Edm, name: &str, t01: f32) -> Vec<Mat4> {
-    let anim = m.animations.iter().find(|a| a.name == name);
-    let mut out: Vec<Mat4> = Vec::with_capacity(m.parts.len());
-    for (i, p) in m.parts.iter().enumerate() {
-        let (mut tr, mut rot) = (Vec3::from_array(p.translation), Quat::from_array(p.rotation).normalize());
-        if let Some((t, secs)) = anim.and_then(|a| a.tracks.iter().find(|t| t.part as usize == i && !t.keys.is_empty()).map(|t| (t, a.seconds))) {
-            let time = t01.clamp(0.0, 1.0) * secs;
-            let k = t.keys.iter().rposition(|k| k.time <= time).unwrap_or(0);
-            let (a, b) = (&t.keys[k], &t.keys[(k + 1).min(t.keys.len() - 1)]);
-            let f = if b.time > a.time { ((time - a.time) / (b.time - a.time)).clamp(0.0, 1.0) } else { 0.0 };
-            tr = Vec3::from_array(a.translation).lerp(Vec3::from_array(b.translation), f);
-            rot = Quat::from_array(a.rotation).normalize().slerp(Quat::from_array(b.rotation).normalize(), f);
-        }
-        let local = Mat4::from_rotation_translation(rot, tr);
-        out.push(if p.parent >= 0 { out[p.parent as usize] * local } else { local });
-    }
-    out
-}
-
-fn ship_shape(m: &Edm) -> ShipShape {
-    let parts = rest_transforms(m);
-    let mut hulls = Vec::new();
-    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    let mut feet = Vec::new();
-    let mut gear = Vec::new();
-    for d in &m.draws {
-        let t = parts[d.part as usize];
-        let pts: Vec<Vec3> = d.vertices.iter().map(|v| t.transform_point3(Vec3::from_array(m.position_m(v)))).collect();
-        for p in &pts {
-            lo = lo.min(*p);
-            hi = hi.max(*p);
-        }
-        let is_gear = m.parts[d.part as usize].name.starts_with("gear");
-        if is_gear {
-            if let Some(f) = pts.iter().copied().min_by(|a, b| a.y.total_cmp(&b.y)) {
-                feet.push(Vec3::new(t.w_axis.x, f.y, t.w_axis.z));
-            }
-        }
-        gear.push(is_gear);
-        hulls.push(pts);
-    }
-    // The belly: the lowest hull point (not the gear's) in each cell of a 3 x 3 grid over the plan.
-    let mut cells: [Option<Vec3>; 9] = [None; 9];
-    let size = (hi - lo).max(Vec3::splat(1e-3));
-    for (pts, _) in hulls.iter().zip(&gear).filter(|(_, g)| !**g) {
-        for p in pts {
-            let i = (((p.x - lo.x) / size.x * 3.0) as usize).min(2) + 3 * (((p.z - lo.z) / size.z * 3.0) as usize).min(2);
-            if cells[i].is_none_or(|c| p.y < c.y) {
-                cells[i] = Some(*p);
-            }
-        }
-    }
-    let belly = cells.into_iter().flatten().collect();
-    ShipShape { hulls, lo, hi, feet, belly }
-}
-
-/// Reads the mod's files through `read` (the mods menu's checked reader: a refusal names the file and why).
-pub fn load(read: &dyn Fn(&str) -> Result<Vec<u8>, String>) -> Result<SidewinderAssets, (String, String)> {
-    let edm = |f: &str| -> Result<Edm, (String, String)> { parse_edm(&read(f).map_err(|e| (f.to_string(), e))?).map_err(|e| (f.to_string(), e.to_string())) };
-    let binds = |f: &str| -> Result<Binds, (String, String)> {
-        let b = read(f).map_err(|e| (f.to_string(), e))?;
-        Binds::parse(&String::from_utf8_lossy(&b)).map_err(|e| (f.to_string(), e.to_string()))
-    };
-    let ship = edm("ship.edm")?;
-    let shape = ship_shape(&ship);
-    if shape.feet.is_empty() {
-        return Err(("ship.edm".to_string(), "the ship has no landing gear to stand on".to_string()));
-    }
-    let cockpit = edm("cockpit.edm")?;
-    let eye = cockpit.parts.iter().find(|p| p.name == "eye").map(|p| p.translation).ok_or_else(|| ("cockpit.edm".to_string(), "no eye point".to_string()))?;
-    Ok(SidewinderAssets {
-        eye,
-        cockpit: Arc::new(cockpit),
-        keys: Arc::new(binds("binds/KeyboardMouseOnly.binds")?),
-        pad: Arc::new(binds("binds/ControlPad.binds")?),
-        shape: Arc::new(shape),
-        ship: Arc::new(ship),
-    })
-}
-
 /// The ship where it stands: its pose in its body's frame, and its solid pieces in the sandbox's world while near.
 pub struct Parked {
     pub obj: ObjectRef,
@@ -192,7 +78,7 @@ pub struct Parked {
 #[derive(Resource, Default)]
 pub struct Sidewinder {
     pub parked: Option<Parked>,
-    loading: Option<Task<Result<SidewinderAssets, crate::mods::FileFault>>>,
+    loading: Option<Task<Result<assets::Loaded, crate::mods::FileFault>>>,
     /// A spawn waiting for the files or for the player to be on foot, and for how long it has waited.
     want_spawn: Option<f32>,
 }
@@ -255,6 +141,20 @@ fn remove_solids(sb: &mut Sandbox, p: &mut Parked) {
     p.solids.clear();
 }
 
+/// Puts the ship's solid pieces in the sandbox's world where it stands (and refreshes the world's query tree).
+fn add_solids(world: &mut SandboxWorld, p: &mut Parked, shape: &ShipShape) {
+    let at = world.frame.from_body(p.pos).as_vec3();
+    let rot = (world.frame.rotation().inverse() * p.rot).normalize().as_quat();
+    for pts in &shape.hulls {
+        if let Some(h) = world.add_solid(&SolidShape::Hull(pts.clone()), at, rot, Surface::Metal) {
+            p.solids.push(h);
+        }
+    }
+    p.solids_epoch = Some(world.solids_cleared);
+    world.wake_props();
+    world.refresh();
+}
+
 /// The Mods row's, the keys' and the test commands' asks; the files read on a worker thread at the first spawn.
 #[allow(clippy::too_many_arguments)]
 fn handle_requests(
@@ -274,9 +174,21 @@ fn handle_requests(
         if let Some(done) = futures::check_ready(task) {
             ship.loading = None;
             match done {
-                Ok(a) => {
-                    info!("sidewinder: files read ({} draws, {} parts; {} key bindings)", a.ship.draws.len(), a.ship.parts.len(), a.keys.actions.len());
+                Ok(assets::Loaded { assets: a, build }) => {
+                    let r = &a.rig;
+                    let draws: usize = r.nodes.iter().filter_map(|n| n.model).map(|m| r.models[m].draws.len()).sum();
+                    info!(
+                        "sidewinder: files read ({} rig nodes, {} models, {draws} draws, {} textures; rest height {:.3} m, {} solid pieces, feet {:?}; {} key bindings)",
+                        r.nodes.len(),
+                        r.models.len(),
+                        build.images.len(),
+                        r.space.lift,
+                        a.shape.hulls.len(),
+                        a.shape.feet,
+                        a.keys.actions.len()
+                    );
                     commands.insert_resource(a);
+                    commands.insert_resource(build);
                 }
                 Err((grey, why)) => {
                     warn!("sidewinder: {grey}: {why}");
@@ -332,11 +244,14 @@ fn handle_requests(
             return;
         }
         ship.want_spawn = None;
+        // The ship being replaced mustn't stand in the new one's way: its pieces out first (`remove_solids` refreshes the
+        // world's query tree), and back in if there is no room.
+        let had_solids = ship.parked.as_ref().is_some_and(|p| p.solids_epoch.is_some());
+        if let Some(old) = ship.parked.as_mut() {
+            remove_solids(&mut sb, old);
+        }
         match spawn_place(&sb, &a.shape) {
             Ok((at, axes)) => {
-                if let Some(mut old) = ship.parked.take() {
-                    remove_solids(&mut sb, &mut old);
-                }
                 let world = sb.world.as_ref().unwrap();
                 let pos = world.frame.to_body(at.as_dvec3());
                 let rot = (world.frame.rotation() * DQuat::from_mat3(&axes.as_dmat3())).normalize();
@@ -348,6 +263,9 @@ fn handle_requests(
                 sb.cues.push(crate::sandbox::audio::Cue::ui("ui/buttonclickrelease.wav"));
             }
             Err(why) => {
+                if let (true, Some(old), Some(world)) = (had_solids, ship.parked.as_mut(), sb.world.as_mut()) {
+                    add_solids(world, old, &a.shape);
+                }
                 msg.show(why.to_string());
                 info!("sidewinder: no spawn: {why}");
             }
@@ -374,16 +292,7 @@ fn keep_solid(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: Opt
         p.solids_epoch = None;
     }
     if here && !present {
-        let at = world.frame.from_body(p.pos).as_vec3();
-        let rot = (world.frame.rotation().inverse() * p.rot).normalize().as_quat();
-        for pts in &assets.shape.hulls {
-            if let Some(h) = world.add_solid(&SolidShape::Hull(pts.clone()), at, rot, Surface::Metal) {
-                p.solids.push(h);
-            }
-        }
-        p.solids_epoch = Some(world.solids_cleared);
-        world.wake_props();
-        world.refresh();
+        add_solids(world, p, &assets.shape);
     } else if !here && present {
         for h in p.solids.drain(..) {
             world.remove_solid(h);
@@ -439,7 +348,7 @@ impl Plugin for SidewinderPlugin {
     }
 }
 
-/// `sw spawn|remove|restock|state`: test commands (`--run "sw ..."`).
+/// `sw spawn|remove|restock|state|pose ...`: test commands (`--run "sw ..."`).
 pub fn dev_command(world: &mut World, arg: &str) {
     if !world.contains_resource::<seat::Seat>() {
         warn!("sw: the sandbox is off (SE_SANDBOX=0): the Sidewinder mod plays in it");
@@ -602,6 +511,16 @@ pub fn dev_command(world: &mut World, arg: &str) {
             }
             None
         }
+        // `sw pose up|down|auto`: the parts drawn with the gear up or down whatever the pilot's (pictures from the free camera).
+        "pose" => {
+            let word = arg.split_whitespace().nth(1).unwrap_or("auto").to_ascii_lowercase();
+            world.resource_mut::<parts::Parts>().dev_gear = match word.as_str() {
+                "up" => Some(false),
+                "down" => Some(true),
+                _ => None,
+            };
+            None
+        }
         "hardpoints" => {
             let mut pl = world.resource_mut::<pilot::Pilot>();
             pl.weapons.deployed = !pl.weapons.deployed;
@@ -681,7 +600,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
             None
         }
         _ => {
-            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost | hardpoints | fire SECS | jump | target NAME|none | hyper NAME [fail] | face | put NAME ALT_KM | trace FILE|off | dest NAME|none | aim DEG | silent | scoop | lights | canopy [SECS]");
+            warn!("sw: spawn | remove | restock | state | board | leave | throttle X | thrust LAT VERT FWD SECS | stick PITCH ROLL YAW SECS | fa on|off | gear | log on|off | pip eng|sys|wep|reset | boost | hardpoints | fire SECS | jump | target NAME|none | hyper NAME [fail] | face | put NAME ALT_KM | trace FILE|off | dest NAME|none | aim DEG | silent | scoop | lights | canopy [SECS] | pose up|down|auto");
             None
         }
     };

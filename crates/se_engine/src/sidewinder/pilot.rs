@@ -91,9 +91,11 @@ const EMERGENCY_SHARE: f64 = 0.02;
 const EMERGENCY_M: f64 = 2000.0;
 const EMERGENCY_HIT: f64 = 40.0;
 
-/// The guns' places in model space (m): under the nose either side of the middle (E: placed on the stand-in hull; Elite's
-/// own hardpoint places come with its original hull's anchor bones, `ship.json`, which replace these when it is drawn).
-pub const GUNS: [[f32; 3]; 2] = [[-1.5, 2.0, -6.0], [1.5, 2.0, -6.0]];
+/// The gear's travel time either way (E, a stand-in until the animation task runs Elite's gear machines, whose legs take
+/// 5.33 s down and 4.23-5.03 s up: `re/elite/frea_export/sidewinder/decoded/README.md`). `Pilot::gear_t` runs over it.
+const GEAR_SECONDS: f32 = 3.0;
+/// The gear counts as out (its feet touch down) while `gear_t` is under this.
+const GEAR_OUT_T: f32 = 0.05;
 
 /// A crash's damage (MJ, through the shield then the hull) from the speed into the ground: Elite's collision rule was not
 /// studied (A21's list), so this is a stand-in (E): nothing under `CRASH_FREE_MPS`, then half the mass (t) times the excess
@@ -336,6 +338,11 @@ impl Pilot {
     /// The ship's mass now: unladen (the journal's) and the fuel aboard.
     pub fn mass_t(&self) -> f64 {
         elite_sim::data::JOURNAL_UNLADEN_MASS + self.fuel.total()
+    }
+
+    /// Is the gear out (the touchdown stands on its feet, the parts are drawn with it down)?
+    pub fn gear_out(&self) -> bool {
+        self.gear_t < GEAR_OUT_T
     }
 }
 
@@ -584,14 +591,8 @@ pub fn fly(
         air.obj = Some(b.obj);
     }
     if air.areas.is_empty() {
-        let parts = super::rest_transforms(&assets.ship);
-        for d in &assets.ship.draws {
-            let t = parts[d.part as usize];
-            let at = |i: u16| glam::DVec3::from_array(t.transform_point3(Vec3::from_array(assets.ship.position_m(&d.vertices[i as usize]))).as_dvec3().to_array());
-            for tri in d.indices.chunks_exact(3) {
-                air.areas.push(elite_sim::air::area_vector(at(tri[0]), at(tri[1]), at(tri[2])));
-            }
-        }
+        let at = |p: Vec3| glam::DVec3::from_array(p.as_dvec3().to_array());
+        air.areas.extend(assets.shape.drag_hull.iter().map(|t| elite_sim::air::area_vector(at(t[0]), at(t[1]), at(t[2]))));
     }
     let pilot = &mut *pilot;
     let dt = (time.delta_secs() as f64).min(0.25);
@@ -707,10 +708,9 @@ pub fn fly(
             pilot.dev = None;
         }
     }
-    // The gear's animation (3 s, the converter's `gear_up`).
-    let gear_s = assets.ship.animations.iter().find(|a| a.name == "gear_up").map_or(3.0, |a| a.seconds).max(0.1);
+    // The gear's travel (`GEAR_SECONDS`, a stand-in).
     let towards = if pilot.gear_down { 0.0 } else { 1.0 };
-    pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / gear_s, dt as f32 / gear_s);
+    pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / GEAR_SECONDS, dt as f32 / GEAR_SECONDS);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
     let (block, full_top) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), pilot.mass_t());
@@ -1211,7 +1211,7 @@ pub fn fly(
         }
         // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,
         // the belly's always), each straight down the radial.
-        let gear_out = pilot.gear_t < 0.05;
+        let gear_out = pilot.gear_out();
         let height = |p: &super::Parked, pt: Vec3| -> f64 {
             let w = p.pos + p.rot * pt.as_dvec3();
             w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
@@ -1362,7 +1362,8 @@ pub fn fly(
         return;
     }
     // Each beam runs along the nose from its gun to the ground or the lasers' range (a ray stepped against the loaded heights).
-    for (i, gun) in GUNS.iter().enumerate() {
+    // (The guns' mounts are the hull's hardpoint bones, `SidewinderAssets::guns`: the beam starts at the mount.)
+    for (i, gun) in assets.guns.iter().enumerate() {
         let from = p.pos + p.rot * Vec3::from_array(*gun).as_dvec3();
         let dir = p.rot * DVec3::NEG_Z;
         let range = pilot.weapons.laser.range_m;

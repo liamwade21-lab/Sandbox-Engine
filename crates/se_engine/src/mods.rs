@@ -206,7 +206,7 @@ pub struct HeroAssets {
 pub(crate) type FileFault = (GreyReason, String);
 
 /// The Sidewinder mod's files, checked and read (on a worker thread: `sidewinder/mod.rs`).
-pub(crate) fn load_sidewinder(id: &str, needs: &[String]) -> Result<crate::sidewinder::SidewinderAssets, FileFault> {
+pub(crate) fn load_sidewinder(id: &str, needs: &[String]) -> Result<crate::sidewinder::assets::Loaded, FileFault> {
     let roots = mod_roots();
     check_files(&roots, id, needs)?;
     let read = |rel: &str| read_need(&roots, id, rel).map_err(|(_, why)| why);
@@ -243,10 +243,20 @@ fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
         Some("ogg") => check_sound(bytes).map(|_| ()),
         Some("s3m") => se_core::skate3::parse_model(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("png") => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map(|_| ()).map_err(|e| e.to_string()),
-        Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("json") => check_json(rel, &bytes),
         Some("edm") => se_core::elite_asset::parse_edm(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("binds") => se_core::elite_asset::Binds::parse(&String::from_utf8_lossy(&bytes)).map(|_| ()).map_err(|e| e.to_string()),
         _ => Ok(()),
+    }
+}
+
+/// A `.json` need: the Sidewinder's `materials.json` and `ship.json` through their parsers (`se_core::elite_ship`), any
+/// other only as JSON.
+fn check_json(rel: &str, bytes: &[u8]) -> Result<(), String> {
+    match std::path::Path::new(rel).file_name().and_then(|n| n.to_str()) {
+        Some("materials.json") => se_core::elite_ship::parse_materials(bytes).map(|_| ()).map_err(|e| e.to_string()),
+        Some("ship.json") => se_core::elite_ship::parse_ship(bytes).map(|_| ()).map_err(|e| e.to_string()),
+        _ => serde_json::from_slice::<serde_json::Value>(bytes).map(|_| ()).map_err(|e| e.to_string()),
     }
 }
 
@@ -967,6 +977,20 @@ pub fn dev_ui_click(world: &mut World, arg: &str) {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// The Sidewinder's JSON needs go through their parsers on first enable: a damaged one greys the row with the
+    /// parser's message; any other JSON file is only read as JSON.
+    #[test]
+    fn json_needs_are_parsed_by_kind() {
+        let not_ship = br#"{"format": 1, "rigs": []}"#;
+        let e = check_inside("ship.json", not_ship.to_vec()).unwrap_err();
+        assert!(e.starts_with("ship.json: "), "{e}");
+        let e = check_inside("materials.json", br#"{"materials": {"Hull": {"shader": "s"}}}"#.to_vec()).unwrap_err();
+        assert!(e.contains("lower case"), "{e}");
+        assert!(check_inside("materials.json", br#"{"materials": {"hull": {"shader": "s"}}}"#.to_vec()).is_ok());
+        assert!(check_inside("other.json", not_ship.to_vec()).is_ok());
+        assert!(check_inside("other.json", b"{".to_vec()).is_err());
+    }
 
     fn pressed(keys: &[KeyCode]) -> ButtonInput<KeyCode> {
         let mut k = ButtonInput::default();
