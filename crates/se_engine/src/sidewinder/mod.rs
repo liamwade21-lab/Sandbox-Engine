@@ -532,6 +532,11 @@ pub fn dev_command(world: &mut World, arg: &str) {
             };
             None
         }
+        // `sw light test|off`: a point light and a spot over the hull (the lights buffer's test).
+        "light" => {
+            material::dev_light(world, arg.split_whitespace().nth(1).unwrap_or("off"));
+            None
+        }
         "hardpoints" => {
             let mut pl = world.resource_mut::<pilot::Pilot>();
             pl.weapons.deployed = !pl.weapons.deployed;

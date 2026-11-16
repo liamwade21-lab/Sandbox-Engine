@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::math::Vec4;
 use bevy::prelude::*;
+use bevy::render::storage::ShaderBuffer;
 
 use crate::camera::FlyCamera;
 use crate::sandbox::light::{PropLight, PropMaterial};
@@ -19,7 +20,7 @@ use crate::system::SystemBody;
 use crate::universe::ScaledSpace;
 
 use super::assets::ShipBuild;
-use super::material::{self, ShipMaterial};
+use super::material::{self, Family, LightTest, ShipLights, ShipMaterial, ShipScene, TexSource};
 use super::parts::Parts;
 use super::{Sidewinder, SidewinderAssets};
 
@@ -65,7 +66,8 @@ pub fn build(app: &mut App) {
     );
 }
 
-/// The meshes and materials, from what the first spawn read (`ShipBuild`, dropped once used).
+/// The meshes and materials, from what the first spawn read and resolved (`ShipBuild`, dropped once used), the ship's lights
+/// buffer and its scene exposure inputs.
 #[allow(clippy::too_many_arguments)]
 fn make(
     mut commands: Commands,
@@ -74,31 +76,55 @@ fn make(
     build: Option<ResMut<ShipBuild>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut ship_materials: ResMut<Assets<ShipMaterial>>,
     mut prop_materials: ResMut<Assets<PropMaterial>>,
+    mut test: ResMut<LightTest>,
 ) {
     let (Some(assets), Some(light), Some(mut build)) = (assets, light, build) else { return };
     let rig = &assets.rig;
     let white = material::white(&mut images);
-    let textures: HashMap<(String, bool), Handle<Image>> = std::mem::take(&mut build.images).into_iter().map(|(k, img)| (k, images.add(img))).collect();
+    let read = std::mem::take(&mut build.images);
+    let textures: HashMap<(String, bool), Handle<Image>> = read.into_iter().map(|(k, img)| (k, images.add(img))).collect();
+    let ies = textures.get(&(material::IES_FILE.to_string(), true)).cloned().unwrap_or_else(|| white.clone());
     let model_meshes: Vec<Vec<Handle<Mesh>>> = std::mem::take(&mut build.meshes).into_iter().map(|draws| draws.into_iter().map(|m| meshes.add(m)).collect()).collect();
     commands.remove_resource::<ShipBuild>();
-    // (By Elite's material and the set: the seat's pieces draw in the seat's depth slice.)
+    let lights = ShipLights::new(&mut buffers);
+    let scene = ShipScene::new(&mut buffers);
+    let resolved = std::mem::take(&mut build.materials);
+    let mut constants: HashMap<[u8; 4], Handle<Image>> = HashMap::new();
+    // One material per Elite material and set (the seat's pieces draw in the seat's depth slice).
     let mut mats: HashMap<(String, bool), Handle<ShipMaterial>> = HashMap::new();
     let mut pieces = Vec::new();
     for (i, node) in rig.nodes.iter().enumerate() {
         let Some(model) = node.model else { continue };
         let inside = node.group.inside();
         for (key, mesh) in rig.models[model].draws.iter().zip(&model_meshes[model]) {
+            // (Every drawn material was resolved when the files were read: `ShipBuild::materials`.)
+            let Some(r) = resolved.get(key) else { continue };
             let mat = mats
                 .entry((key.clone(), inside))
                 .or_insert_with(|| {
-                    let base = rig.materials.get(key).and_then(|m| material::base_colour(m, &rig.ship.paint));
-                    let tex = match &base {
-                        Some(material::Base::Texture { file, srgb }) => textures.get(&(file.clone(), *srgb)).cloned(),
-                        _ => None,
-                    };
-                    ship_materials.add(ShipMaterial::new(&light, base.as_ref(), tex, &white, inside))
+                    if let Some(m) = rig.materials.get(key) {
+                        let unread = material::unaccounted_attributes(m);
+                        if !unread.is_empty() {
+                            warn!("sidewinder: material {key}: attributes its family neither reads nor lists: {unread:?}");
+                        }
+                    }
+                    let tex: Vec<Handle<Image>> = r
+                        .textures
+                        .iter()
+                        .map(|s| match s {
+                            TexSource::File { file, srgb } => textures.get(&(file.clone(), *srgb)).cloned().unwrap_or_else(|| white.clone()),
+                            TexSource::Constant(c) => constants.entry(*c).or_insert_with(|| material::constant(&mut images, *c)).clone(),
+                        })
+                        .collect();
+                    let params = if inside { r.params.in_seat() } else { r.params };
+                    let h = ship_materials.add(ShipMaterial::new(&light, &lights, &scene, r.family, &tex, &white, &ies, params, r.cockpit));
+                    if !inside {
+                        test.outside.push(h.clone());
+                    }
+                    h
                 })
                 .clone();
             pieces.push(
@@ -116,6 +142,10 @@ fn make(
             );
         }
     }
+    let families: std::collections::HashSet<(Family, bool)> = mats.keys().filter_map(|(k, inside)| Some((resolved.get(k)?.family, *inside))).collect();
+    info!("sidewinder: the ship's materials: {} ({} pipelines by family and set), {} textures, {} constants", mats.len(), families.len(), textures.len(), constants.len());
+    commands.insert_resource(lights);
+    commands.insert_resource(scene);
     info!("sidewinder: the ship's {} meshes are made ({} models, {} materials, {} textures)", pieces.len(), model_meshes.len(), mats.len(), textures.len());
     // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
     // shows by day and night.
@@ -148,6 +178,8 @@ fn place(
     mut pieces: Query<(&ShipPiece, &mut Transform, &mut Visibility), Without<Beam>>,
     mut beams: Query<(&Beam, &mut Transform, &mut Visibility), Without<ShipPiece>>,
     frame: Res<bevy::diagnostic::FrameCount>,
+    lights: Option<Res<ShipLights>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let Some(mut draw) = draw else { return };
     let placed = ship.parked.as_ref().and_then(|p| Some((p, bodies.iter().find(|b| b.obj == p.obj)?)));
@@ -160,6 +192,10 @@ fn place(
                 let ship_tf = Transform { translation: (b.orient * rel * k).as_vec3(), rotation: (b.orient * p.rot).normalize().as_quat(), scale: Vec3::splat(k as f32) };
                 for (piece, mut tf, _) in pieces.iter_mut() {
                     *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
+                }
+                // (The lights' loop reads the ship's space: its pose this frame, while any light is on.)
+                if let Some(l) = lights.as_ref().filter(|l| l.count() > 0) {
+                    l.write_pose(&mut buffers, &ship_tf);
                 }
                 for (beam, mut tf, mut v) in beams.iter_mut() {
                     let on = seat.seated && pilot.weapons.beam(beam.0) && pilot.beam_len[beam.0] > 0.5;

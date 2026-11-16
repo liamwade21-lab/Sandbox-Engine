@@ -1,7 +1,7 @@
 //! The mod's files, read and made ready at the first spawn (ARCHITECTURE.md A6), on a worker thread through the mods' checked
 //! reader (`mods::load_sidewinder`): Elite's models (`models/NAME.edm`, decoded exactly by `se_core::elite::Vertex::decode`
 //! and turned into the mod's axes by `se_core::elite::to_mod_space`), `materials.json`, `ship.json` (the rigs, machines,
-//! paint job and the ship item's facts) and the base colour textures the drawn materials use. From them: the ship's
+//! paint job and the ship item's facts) and the textures the drawn materials' families read. From them: the ship's
 //! assembly (`ShipRig`: every rig node in one list, posed by `ShipRig::pose`), its solid shape, feet and belly (`ShipShape`),
 //! the pilot's eye and the guns' points.
 //!
@@ -20,14 +20,14 @@ use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::math::{DMat4, DVec3, Mat4, Vec3};
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use se_core::elite::{to_mod_space, DecodedVertex};
 use se_core::elite_asset::{parse_edm, Binds, Edm, VertexDecode};
 use se_core::elite_rig::{self, BoneTable, NodePose, RigError, Values};
-use se_core::elite_ship::{parse_materials, parse_ship, Machine, Materials, Rig, Ship};
+use se_core::elite_ship::{parse_materials, parse_ship, Machine, Materials, Paint, Rig, Ship};
 
-use super::material::{self, Base, ATTRIBUTE_UV_2};
+use super::material::{self, Family, ATTRIBUTE_COLOUR, ATTRIBUTE_UV_2};
 
 const SHIP_FILE: &str = "ship.json";
 const MATERIALS_FILE: &str = "materials.json";
@@ -264,12 +264,13 @@ pub struct SidewinderAssets {
     pub guns: [[f32; 3]; 2],
 }
 
-/// What the first spawn hands `draw` once, then drops: a mesh per drawn draw of each model (`ShipRig::models`' order), and
-/// the base colour textures by (file, sRGB).
+/// What the first spawn hands `draw` once, then drops: a mesh per drawn draw of each model (`ShipRig::models`' order), the
+/// textures the drawn materials read, by (file, sRGB), and every drawn material resolved (`material::resolve`), by key.
 #[derive(Resource)]
 pub struct ShipBuild {
     pub meshes: Vec<Vec<Mesh>>,
     pub images: HashMap<(String, bool), Image>,
+    pub materials: HashMap<String, material::Resolved>,
 }
 
 /// What `load` gives.
@@ -285,6 +286,10 @@ type Fault = (String, String);
 struct Decoded {
     vertices: Vec<DecodedVertex>,
     indices: Vec<u16>,
+    /// Part of the ship's solid shape: not the decals and the stamp, which lie on the hull (their hull would span the ship).
+    solid: bool,
+    /// Glass: its mesh carries the vertex's colour (`material::ATTRIBUTE_COLOUR`).
+    glass: bool,
 }
 
 fn model_file(name: &str) -> String {
@@ -292,7 +297,7 @@ fn model_file(name: &str) -> String {
 }
 
 /// A model's drawn draws (`material::material_drawn`): their materials' keys and their vertices decoded in the mod's axes.
-fn decode_model(edm: &Edm, materials: &Materials, name: &str) -> Result<(ShipModel, Vec<Decoded>), Fault> {
+fn decode_model(edm: &Edm, materials: &Materials, paint: &Paint, name: &str) -> Result<(ShipModel, Vec<Decoded>), Fault> {
     let bad = |why: String| (model_file(name), why);
     if edm.vertex_decode != VertexDecode::Elite {
         return Err(bad("not one of Elite's models (its vertices aren't Elite's)".to_string()));
@@ -301,7 +306,7 @@ fn decode_model(edm: &Edm, materials: &Materials, name: &str) -> Result<(ShipMod
     for d in &edm.draws {
         let mat_name = &edm.materials.get(d.material as usize).ok_or_else(|| bad(format!("a draw names material {}, which it hasn't", d.material)))?.name;
         let mat = materials.get(mat_name).ok_or_else(|| (MATERIALS_FILE.to_string(), format!("{name} names material {mat_name}, which isn't in it")))?;
-        if !material::material_drawn(mat) {
+        if !material::material_drawn(mat_name, mat, paint) {
             continue;
         }
         let mut vertices: Vec<DecodedVertex> = d.vertices.iter().map(|v| v.decode()).collect();
@@ -311,7 +316,9 @@ fn decode_model(edm: &Edm, materials: &Materials, name: &str) -> Result<(ShipMod
         }
         to_mod_space(&mut vertices, &mut indices);
         draws.push(mat_name.to_lowercase());
-        decoded.push(Decoded { vertices, indices });
+        let family = Family::of(mat.shader.as_deref().unwrap_or(""));
+        let solid = !matches!(family, Family::Overlay | Family::Stamp);
+        decoded.push(Decoded { vertices, indices, solid, glass: family.is_glass() });
     }
     Ok((ShipModel { draws }, decoded))
 }
@@ -388,7 +395,7 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
             rig.bones.insert(&name, &p.name, elite_rig::elite_matrix(&inv.map(|x| x as f64)).inverse());
         }
         if material::model_drawn(&name) {
-            let (model, draws) = decode_model(&edm, &rig.materials, &name)?;
+            let (model, draws) = decode_model(&edm, &rig.materials, &rig.ship.paint, &name)?;
             index.insert(name, rig.models.len());
             rig.models.push(model);
             decoded.push(draws);
@@ -409,7 +416,7 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
 /// Every outside node's drawn vertices in the ship's space with the matrices `pose` (`nodes`' order), with its group.
 fn outside_points<'a>(rig: &'a ShipRig, decoded: &'a [Vec<Decoded>], pose: &'a [Mat4]) -> impl Iterator<Item = (Group, Vec<Vec3>)> + 'a {
     rig.nodes.iter().zip(pose).filter(|(n, _)| !n.group.inside()).filter_map(|(n, m)| Some((n.group, n.model?, *m))).flat_map(move |(group, model, m)| {
-        decoded[model].iter().map(move |d| (group, d.vertices.iter().map(|v| m.transform_point3(Vec3::from_array(v.position))).collect()))
+        decoded[model].iter().filter(|d| d.solid).map(move |d| (group, d.vertices.iter().map(|v| m.transform_point3(Vec3::from_array(v.position))).collect()))
     })
 }
 
@@ -500,7 +507,7 @@ fn eye_and_guns(rig: &ShipRig) -> Result<([f32; 3], [[f32; 3]; 2]), Fault> {
     Ok((eye, guns))
 }
 
-/// A draw's mesh: position, normal, tangent (its sign in w), UV0, UV1, UV2.
+/// A draw's mesh: position, normal, tangent (its sign in w), UV0, UV1, UV2, and for the glass the vertex's colour.
 fn mesh(d: &Decoded) -> Mesh {
     let v = &d.vertices;
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
@@ -510,22 +517,33 @@ fn mesh(d: &Decoded) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, v.iter().map(|v| v.uv[0]).collect::<Vec<_>>());
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, v.iter().map(|v| v.uv[1]).collect::<Vec<_>>());
     mesh.insert_attribute(ATTRIBUTE_UV_2, v.iter().map(|v| v.uv[2]).collect::<Vec<_>>());
+    if d.glass {
+        mesh.insert_attribute(ATTRIBUTE_COLOUR, VertexAttributeValues::Unorm8x4(v.iter().map(|v| v.colour).collect()));
+    }
     mesh.insert_indices(Indices::U16(d.indices.clone()));
     mesh
 }
 
-/// The base colour textures the drawn materials use, each read once.
+/// The drawn materials, by key, each once.
+fn drawn_materials(rig: &ShipRig) -> Vec<(&str, &se_core::elite_ship::Material)> {
+    let mut keys: Vec<&str> = rig.models.iter().flat_map(|m| m.draws.iter().map(String::as_str)).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.into_iter().filter_map(|k| Some((k, rig.materials.get(k)?))).collect()
+}
+
+/// Every texture the drawn materials' families read (`material::texture_files`: the paint job's mask and the IES profile
+/// among them), each read once. A drawn material lacking a slot its family reads is refused here.
 fn textures(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, rig: &ShipRig) -> Result<HashMap<(String, bool), Image>, Fault> {
     let mut images = HashMap::new();
-    for key in rig.models.iter().flat_map(|m| &m.draws) {
-        let Some(mat) = rig.materials.get(key) else { continue };
-        let Some(Base::Texture { file, srgb }) = material::base_colour(mat, &rig.ship.paint) else { continue };
-        if images.contains_key(&(file.clone(), srgb)) {
-            continue;
-        }
+    let files = material::texture_files(drawn_materials(rig).into_iter(), &rig.ship.paint).map_err(|e| (MATERIALS_FILE.to_string(), e))?;
+    for (file, srgb) in files {
         let bytes = read(&file).map_err(|e| (file.clone(), e))?;
         let info = se_core::dds::parse_dds(&bytes).map_err(|e| (file.clone(), e.to_string()))?;
-        let image = crate::mr_assets::dds_image(&bytes, &info, srgb).map_err(|e| (file.clone(), e))?;
+        let mut image = crate::mr_assets::dds_image(&bytes, &info, srgb).map_err(|e| (file.clone(), e))?;
+        if file == material::IES_FILE {
+            material::ies_sampler(&mut image);
+        }
         images.insert((file, srgb), image);
     }
     Ok(images)
@@ -541,10 +559,17 @@ pub fn load(read: &dyn Fn(&str) -> Result<Vec<u8>, String>) -> Result<Loaded, Fa
     let shape = shape(&mut rig, &decoded)?;
     let (eye, guns) = eye_and_guns(&rig)?;
     let images = textures(read, &rig)?;
+    // (Every drawn material's slots and attributes, now: one missing refuses the files, so the Mods row greys.)
+    let paint = &rig.ship.paint;
+    let mask_size = images.get(&(paint.texture_file.clone(), false)).map_or(UVec2::ONE, |img| img.size());
+    let materials = drawn_materials(&rig)
+        .into_iter()
+        .map(|(key, m)| Ok((key.to_string(), material::resolve(key, m, paint, mask_size).map_err(|e| (MATERIALS_FILE.to_string(), e))?)))
+        .collect::<Result<HashMap<_, _>, Fault>>()?;
     let meshes = decoded.iter().map(|draws| draws.iter().map(mesh).collect()).collect();
     Ok(Loaded {
         assets: SidewinderAssets { keys: Arc::new(binds(KEYS_FILE)?), pad: Arc::new(binds(PAD_FILE)?), rig: Arc::new(rig), shape: Arc::new(shape), eye, guns },
-        build: ShipBuild { meshes, images },
+        build: ShipBuild { meshes, images, materials },
     })
 }
 
@@ -598,6 +623,31 @@ mod tests {
 
     fn read_mod(rel: &str) -> Result<Vec<u8>, String> {
         std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string())
+    }
+
+    /// The mod's files with one drawn material's slot or attribute taken out of `materials.json` (in memory: the folder is
+    /// untouched) are refused at load, the error naming the material and what it lacks (so the Mods row greys and `draw`
+    /// never meets it).
+    #[test]
+    fn a_missing_slot_or_attribute_refuses_the_files() {
+        let without = |material: &str, list: &str, name_key: &str, name: &str| {
+            let mut json: serde_json::Value = serde_json::from_slice(&read_mod(MATERIALS_FILE).unwrap()).unwrap();
+            let items = json["materials"][material][list].as_array_mut().unwrap();
+            let before = items.len();
+            items.retain(|t| t[name_key] != name);
+            assert_eq!(items.len(), before - 1, "{material} has one {name}");
+            let bytes = serde_json::to_vec(&json).unwrap();
+            let read = move |rel: &str| if rel == MATERIALS_FILE { Ok(bytes.clone()) } else { read_mod(rel) };
+            match load(&read) {
+                Ok(_) => panic!("{material} without {name} was accepted"),
+                Err((file, why)) => (file, why),
+            }
+        };
+        for (material, list, key, name) in [("sidewinder_tile_floor", "textures", "slot", "pAOMap"), ("cockpit_chair", "attrs", "name", "pOverrideBaseColour"), ("cockpit_glass_int", "attrs", "name", "pGlassThickness")] {
+            let (file, why) = without(material, list, key, name);
+            assert_eq!(file, MATERIALS_FILE);
+            assert!(why.contains(material) && why.contains(name), "{why}");
+        }
     }
 
     /// The eye's source (the mod's shipped cockpit model, in git): the cockpit model has its own `EYE_BONE`, at the model's

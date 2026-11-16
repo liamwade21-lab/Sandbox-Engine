@@ -1,29 +1,36 @@
-// The Sidewinder's hull, gear, cockpit and chairs (sidewinder/material.rs `ShipMaterial`): Elite's models lit by the sandbox's
-// light record at the player's place (hero_light.wesl writes it before the main pass), as the props are (sandbox_prop.wesl).
-// Nothing in a material changes a frame: the light is in the two storage buffers.
-//
-// The fragment stage is two functions: `surface` (what the material is at the pixel: base colour, normal, roughness,
-// metalness, emissive, ambient occlusion) and `light` (how it is lit). Today only the base colour is real and the lighting is
-// the props'; Elite's material maths per shader family and its lit maths replace them (T4b).
+// The Sidewinder's hull, gear, cockpit and chairs (sidewinder/material.rs `ShipMaterial`): Elite's models, each material
+// worked out by its Elite shader family's surface function and lit by Elite's lit maths (ARCHITECTURE.md A6). This file is
+// the vertex stage, the seat's depth slice and the family dispatch:
+// - sidewinder_surface_hull.wesl: the outside's families (painted hull, bare metal, opaque, emissive, decals, the stamp);
+// - sidewinder_surface_cockpit.wesl: the cockpit's tile, chair and console families;
+// - sidewinder_glass.wesl: the glass, with its own entry points (`vertex_glass`, `fragment_glass`: it reads the vertex's
+//   colour);
+// - sidewinder_lit.wesl: the lighting (the sandbox's light record at the player's place, which hero_light.wesl writes before
+//   the main pass, as the props take it, and the ship's own lights buffer).
+// Each material compiles only its own family's code (its key's shader def, material.rs `Family::def`). Nothing in a material
+// changes a frame: the light is in the storage buffers.
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world, mesh_tangent_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
-import super::ground_light::{PointLight, lit_surface};
+import bevy_pbr::render::mesh_view_bindings::view;
 import super::hero_frame::{HeroFrame, HeroLight};
+import super::sidewinder_lit::{Surface, Scene, shade, stamp_factor};
+import super::sidewinder_surface_hull::{ShipParams, Frame, ship_depth, surface_painted, surface_single_tile, surface_opaque, surface_emissive, surface_overlay, surface_stamp, surface_plain};
+import super::sidewinder_surface_cockpit::{surface_cockpit, surface_cockpit_emissive, surface_cockpit_tile};
+import super::sidewinder_glass::{GlassVertex, GlassOut, glass_vertex, glass_cockpit, glass_tinted, glass_edges};
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<storage, read> frame: HeroFrame;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var<storage, read> ship_light: HeroLight;
-@group(constants::MATERIAL_BIND_GROUP) @binding(2) var base_tex: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(3) var base_smp: sampler;
-
-struct ShipParams {
-    // rgb the base colour when it is one colour.
-    colour: vec4<f32>,
-    // x 1 when the base colour is the texture's; y 1 for the seat's view (the cockpit and its chair), z its own near plane
-    // (m), w its share of the depth range (material.rs `SEAT_NEAR_M`, `SEAT_SLICE`).
-    flags: vec4<f32>,
-};
-@group(constants::MATERIAL_BIND_GROUP) @binding(4) var<uniform> params: ShipParams;
+// The family's textures in its own order (sidewinder_surface_hull.wesl, material.rs `Family::slots`); one sampler.
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var tex0: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(3) var smp: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(4) var tex1: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(5) var tex2: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(6) var tex3: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(7) var tex4: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(8) var tex5: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(9) var<uniform> params: ShipParams;
+// (Bindings 10-13, the ship's lights, are sidewinder_lit.wesl's.)
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -43,6 +50,7 @@ struct VertexOut {
     @location(2) uv0: vec2<f32>,
     @location(3) uv1: vec2<f32>,
     @location(4) uv2: vec2<f32>,
+    @location(5) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -51,60 +59,85 @@ fn vertex(v: Vertex) -> VertexOut {
     let world = mesh_position_local_to_world(m, vec4<f32>(v.position, 1.0));
     var o: VertexOut;
     o.clip = position_world_to_clip(world.xyz);
-    if params.flags.y > 0.5 {
-        // The seat's view, in the nearest slice of the depth range as Source draws a view model (sandbox_viewmodel.wesl),
-        // with the world's field of view: x, y and w (the distance along the view) stay the world's; the depth is a near
-        // plane of its own squeezed into the slice (reverse z: 1 is the near plane), so the port's near plane never cuts
-        // the cockpit, it always hides the world behind it, and its own order is kept. The mesh's scale (scaled space
-        // shrinks the ship about the camera) is taken out, so the near plane is in true metres.
-        let k = length(m[0].xyz);
-        o.clip.z = o.clip.w * (1.0 - params.flags.w) + params.flags.w * params.flags.z * k;
-    }
+    // (The seat's depth slice and Elite's depth bias: sidewinder_surface_hull.wesl `ship_depth`.)
+    o.clip.z = ship_depth(o.clip, length(m[0].xyz), params);
     o.world_normal = mesh_normal_local_to_world(v.normal, v.instance_index);
     o.world_tangent = mesh_tangent_local_to_world(m, v.tangent, v.instance_index);
     o.uv0 = v.uv0;
     o.uv1 = v.uv1;
     o.uv2 = v.uv2;
+    o.world_pos = world.xyz;
     return o;
 }
 
-// What the material is at a pixel.
-struct Surface {
-    base: vec3<f32>,
-    normal: vec3<f32>,
-    roughness: f32,
-    metalness: f32,
-    emissive: vec3<f32>,
-    ao: f32,
-};
-
-fn surface(in: VertexOut) -> Surface {
-    var s: Surface;
-    s.base = params.colour.rgb;
-    if params.flags.x > 0.5 {
-        s.base = textureSample(base_tex, base_smp, in.uv0).rgb;
-    }
-    s.normal = normalize(in.world_normal);
-    s.roughness = 1.0;
-    s.metalness = 0.0;
-    s.emissive = vec3<f32>(0.0);
-    s.ao = 1.0;
-    return s;
-}
-
-// How it is lit: the ground's light at the player's place (sandbox_prop.wesl's).
-fn light(s: Surface) -> vec3<f32> {
+// The sandbox's light at the player's place, as sandbox_prop.wesl reads it.
+fn scene() -> Scene {
     let sun_dir = normalize(frame.light.sun_dir.xyz);
     let up = normalize(frame.up.xyz);
-    let pl = PointLight(ship_light.sun.rgb, ship_light.sky.rgb, ship_light.flat_e.rgb, ship_light.haze_t.rgb, ship_light.haze_a.rgb);
-    var c = lit_surface(pl, sun_dir, s.base, s.normal, up, 0.0, 0.0);
-    // By night the street lamps light it from above, as they do the road, the cars, the props and the hero.
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, sun_dir));
-    c += s.base * frame.town.rgb * night * (0.25 + 0.2 * max(dot(s.normal, up), 0.0));
-    return c * s.ao + s.emissive;
+    return Scene(sun_dir, ship_light.sun.rgb, ship_light.sky.rgb, ship_light.flat_e.rgb, ship_light.haze_t.rgb, ship_light.haze_a.rgb, up, frame.town.rgb * night);
 }
 
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(light(surface(in)), 1.0);
+    let n = normalize(in.world_normal);
+    let f = Frame(n, in.world_tangent.xyz, cross(n, in.world_tangent.xyz) * select(1.0, -1.0, in.world_tangent.w < 0.0));
+    let sc = scene();
+    var s: Surface;
+    @if(SHIP_PAINTED) {
+        s = surface_painted(f, in.uv0, in.uv1, in.uv2, tex0, tex1, tex2, tex3, tex4, tex5, smp, params);
+    }
+    @if(SHIP_SINGLE_TILE) {
+        s = surface_single_tile(f, in.uv0, in.uv1, tex0, tex1, tex2, tex3, smp, params);
+    }
+    @if(SHIP_OPAQUE) {
+        s = surface_opaque(f, in.uv0, tex0, tex1, tex2, smp, params);
+    }
+    @if(SHIP_EMISSIVE) {
+        s = surface_emissive(f, in.uv0, tex0, tex1, tex2, tex3, smp, params);
+    }
+    @if(SHIP_OVERLAY) {
+        s = surface_overlay(f, in.uv0, tex0, tex1, smp, params);
+    }
+    @if(SHIP_PLAIN) {
+        s = surface_plain(f, in.uv0, tex0, smp, params);
+    }
+    @if(SHIP_COCKPIT) {
+        s = surface_cockpit(f, in.uv0, tex0, tex1, tex2, smp, params);
+    }
+    @if(SHIP_COCKPIT_EMISSIVE) {
+        s = surface_cockpit_emissive(f, in.uv0, tex0, tex1, tex2, tex3, smp, params);
+    }
+    @if(SHIP_COCKPIT_TILE) {
+        s = surface_cockpit_tile(f, in.uv0, in.uv1, in.uv2, tex0, tex1, tex2, tex3, tex4, tex5, smp, params);
+    }
+    @if(SHIP_STAMP) {
+        // A multiplying blend over what is under it (sidewinder_surface_hull.wesl's header).
+        let st = surface_stamp(f, in.uv0, tex0, tex1, smp, params);
+        return vec4<f32>(vec3<f32>(stamp_factor(n, st.normal, st.ao, sc)), 1.0);
+    }
+    @if(!SHIP_STAMP) {
+        return vec4<f32>(shade(s, in.world_pos, view.world_position, sc, params.lights.x, params.lights.y), s.alpha);
+    }
+}
+
+// The glass's entry points (material.rs `Family::is_glass`): its own vertex stage, and its family's function, premultiplied.
+@if(SHIP_GLASS)
+@vertex
+fn vertex_glass(v: GlassVertex) -> GlassOut {
+    return glass_vertex(v, params);
+}
+
+@if(SHIP_GLASS)
+@fragment
+fn fragment_glass(in: GlassOut) -> @location(0) vec4<f32> {
+    @if(SHIP_GLASS_COCKPIT) {
+        return glass_cockpit(in, tex0, tex1, smp, params, scene());
+    }
+    @if(SHIP_GLASS_TINTED) {
+        return glass_tinted(in, tex0, tex1, tex2, smp, params, scene());
+    }
+    @if(SHIP_GLASS_EDGES) {
+        return glass_edges(in, tex0, tex1, tex2, smp, params, scene());
+    }
 }
