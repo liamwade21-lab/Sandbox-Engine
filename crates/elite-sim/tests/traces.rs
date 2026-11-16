@@ -5,13 +5,14 @@
 //! every trace; the measuring rig adds one number a capture chain, its latency (the game's reaction plus the capture's start
 //! offset: not a property of the ship), never one a trace.
 //!
-//! The gate's reading (task N2): a row passes if the simulated curve, straight between adjacent ticks, comes within 1 m/s of
-//! the HUD's number somewhere inside D10's window (2 video frames, or 2 % of the time since the control change the row
-//! answers). `report` prints, per trace, the rms against the curve and the rows outside under every reading side by side (the
-//! samples a tick with a 2-frame window, the samples under D10, the curve under D10: the gate, and the curve read as the HUD
-//! reads it, rounded), the worst miss and the control it followed, and the boost runs' peaks against the game's. The other
-//! ignored tests are the evidence for what is left (`latency_scan`, `throttle_scan`, `phase_shifts`, `print_stretch`) and
-//! `fit`, which fits the rig's numbers.
+//! The gate's reading (the spec's Decisions log T7, tasks N2 and N2b): a row passes if the simulated curve, straight between
+//! adjacent ticks and rounded to the nearest m/s as the HUD rounds its number, comes within 1 m/s of the HUD's number
+//! somewhere inside D10's window (2 video frames, or 2 % of the time since the control change the row answers). `report`
+//! prints, per trace, the rms against the curve and the rows outside under every reading side by side (the samples a tick with
+//! a 2-frame window, the samples under D10, the curve's exact value under D10, and the curve rounded under D10: the gate), the
+//! worst miss and the control it followed, and the boost runs' peaks against the game's. The other ignored tests are the
+//! evidence for what is left (`latency_scan`, `throttle_scan`, `phase_shifts`, `print_stretch`, `marker_frame_assumption`)
+//! and `fit`, which fits the rig's numbers.
 
 use elite_sim::data::{self, sidewinder_block};
 use elite_sim::replay::{self, Miss, Readout, Replay, Window};
@@ -46,15 +47,20 @@ fn session_one(name: &str) -> bool {
 }
 
 /// The measuring chain's latency: from a key's logged press to the game acting on it as seen in the recording (the game's own
-/// reaction and the capture's start). One number a chain, the rig's, never one a trace (a trace's own latency would push a
-/// model error into time). The replay acts on a control at its ticks, so any latency inside one tick-wide step gives the same
-/// replay (`latency_scan`).
+/// reaction and the capture's start). One number a recording session, the middle of the bound the throttle marker gives in
+/// the videos, never fitted and never one a trace (a trace's own latency would push a model error into time). The replay acts
+/// on a control at its ticks, so any latency inside one tick-wide step gives the same replay (`latency_scan`).
+///
+/// Both sessions' numbers rest on one assumption: the video frame in which the throttle marker moves shows the game's input
+/// BEFORE the simulation step that uses it (the marker is drawn from the value the next step reads). If it is drawn after
+/// that step, both delays are one tick (1/60 s) lower (`marker_frame_assumption` prints the gate both ways).
 fn chain_latency(name: &str) -> f64 {
     if session_one(name) { LATENCY_S1 } else { LATENCY_S2 }
 }
-/// Session 1: fitted (`latency_scan`: the least error at 0.000); its one clean throttle-marker event, X at 14.13 s, bounds it to
-/// -0.001..0.032 s (the marker still at full in the frame 1 ms before the key, leaving in the frame 32 ms after it).
-const LATENCY_S1: f64 = 0.0;
+/// Session 1: its one clean throttle-marker event, X (the key down at 14.0008 s), bounds it to -0.001..0.032 s (the marker
+/// still at full in the frame 1 ms before the key, leaving in the frame 32 ms after it); the bound's middle, by session 2's
+/// rule (task N2b; it was 0.000, the least error of `latency_scan`, at the bound's best end and on a tick's edge).
+const LATENCY_S1: f64 = 0.0155;
 /// Session 2: measured without the flight model (`re/elite/measure/tools/marker_latency.py`): after X in s01 and s03 the
 /// throttle marker was still seen 17 and 15 ms after the key and gone 34 and 32 ms after it, so the latency lies in
 /// 0.017..0.032 s; its middle. The fit (`latency_scan`) is least over 0.018..0.030: the same.
@@ -65,25 +71,29 @@ fn data_replay(name: &str) -> Replay {
     Replay { latency: chain_latency(name), throttle_rate: data::measured::THROTTLE_RATE }
 }
 
-/// One trace's replay against the data: the misses under the three readings (the samples with a 2-frame window, the samples
-/// under D10, the curve under D10: the gate).
+/// One trace's replay against the data: the misses under the four readings (the samples with a 2-frame window, the samples
+/// under D10, the curve's exact value under D10, the curve rounded under D10: the gate).
 struct Result {
     rms: f64,
     rows: usize,
     peak: f64,
     frames: Vec<Miss>,
     samples: Vec<Miss>,
-    d10: Vec<Miss>,
-    /// The curve read as the HUD reads it (rounded), under D10: reported, not the gate.
-    rounded: Vec<Miss>,
+    /// The curve's exact value under D10 (the gate's reading in task N2): reported.
+    exact: Vec<Miss>,
+    /// The curve read as the HUD reads it (rounded), under D10: the gate (T7).
+    gate: Vec<Miss>,
 }
 
 fn replay_trace(name: &str, tr: &Trace) -> Result {
+    replay_trace_with(tr, &data_replay(name))
+}
+
+fn replay_trace_with(tr: &Trace, rp: &Replay) -> Result {
     let m = mass(tr);
     let block_at = |e: f64| sidewinder_block(e, m);
-    let rp = data_replay(name);
-    let sim = replay::simulate(tr, &block_at, &rp).unwrap();
-    let ticks = replay::simulate_ticks(tr, &block_at, &rp).unwrap();
+    let sim = replay::simulate(tr, &block_at, rp).unwrap();
+    let ticks = replay::simulate_ticks(tr, &block_at, rp).unwrap();
     let rms = (replay::error_curve(tr, &ticks) / tr.rows.len() as f64).sqrt();
     Result {
         rms,
@@ -91,8 +101,8 @@ fn replay_trace(name: &str, tr: &Trace) -> Result {
         peak: ticks.speed.iter().copied().fold(0.0, f64::max),
         frames: replay::gate_with(tr, &sim, Window::Frames),
         samples: replay::gate_with(tr, &sim, Window::D10),
-        d10: replay::gate_curve(tr, &ticks, Window::D10),
-        rounded: replay::gate_read(tr, &ticks, Window::D10, Readout::Rounded),
+        exact: replay::gate_curve(tr, &ticks, Window::D10),
+        gate: replay::gate_read(tr, &ticks, Window::D10, Readout::Rounded),
     }
 }
 
@@ -106,34 +116,38 @@ fn describe(m: &Miss) -> String {
     format!("at {:.2} s measured {} simulated {:.2}, after {after}", m.t, m.measured, m.simulated)
 }
 
-/// A guard, not the gate: the records' replay may not get worse (2026-11-16, task N2, the curve's reading and one latency a
-/// chain: 0.46 to 0.65 m/s rms, the boost from rest 0.98; at most 1.3 % of rows outside the gate, s04's 30 of 2413).
+/// A guard, not the gate: the records' replay may not get worse (task N2b, the curve read rounded and one latency a session:
+/// 0.46 to 0.73 m/s rms, the boost from rest 0.98; at most 0.4 % of rows outside the gate, s04's 9 of 2413).
 #[test]
 fn traces_replay_no_worse() {
     for (name, tr) in traces() {
         let r = replay_trace(&name, &tr);
         assert!(r.rms <= GUARD_RMS, "{name}: rms {:.2} m/s", r.rms);
-        assert!(r.d10.len() as f64 <= GUARD_SHARE * r.rows as f64, "{name}: {} of {} rows outside the gate", r.d10.len(), r.rows);
+        assert!(r.gate.len() as f64 <= GUARD_SHARE * r.rows as f64, "{name}: {} of {} rows outside the gate", r.gate.len(), r.rows);
     }
 }
 const GUARD_RMS: f64 = 1.0;
-const GUARD_SHARE: f64 = 0.013;
+const GUARD_SHARE: f64 = 0.004;
 
-/// **The gate itself** (the spec's C10) under D10's reading against the curve (`replay::gate_curve`). Not passed yet
-/// (2026-11-16, task N2): 45 rows of 17,344 miss it, all after a throttle key or in a boost: s01 5 and s06 2 and s04 30 after
-/// W (up to 3.9 m/s, 1.7-2.1 s after it), s05 8 at the boost's peak (up to 2.1 m/s). `phase_shifts` shows what they are: in
-/// every manoeuvre the curve's shape fits the HUD all through (jerk ramp, climb, approach: one time shift fits each part),
-/// but the game answers W and S 20-60 ms later than the replay and X and the lateral keys 10-30 ms earlier, one chain
-/// latency for all; with any throttle rate from 0.4 a second to instant the misses are the same (`throttle_scan`). Run it
-/// with `-- --ignored`: it is the step's open item.
+/// **The gate itself** (the spec's C10) under D10's reading against the curve read as the HUD reads it (`replay::gate_read`
+/// with `Readout::Rounded`, the Decisions log's T7). Not passed yet (task N2b): 10 rows of 18,344 miss it, all 1.9-2.1 s
+/// after W: s01 1 (3.4 m/s) and s04 9 (up to 3.9 m/s); against the curve's exact value 46 miss (s00 1, s01 5, s04 30, s05 8,
+/// s06 2). `phase_shifts` shows what the rest is: in every manoeuvre the
+/// curve's shape fits the HUD all through (jerk ramp, climb, approach: one time shift fits each part), but the game acts on
+/// each key after its own delay (time from the key to the first tick it acts on, N2's review): X 15-22 ms, a thruster key's
+/// press 13-20 ms, the boost 26-32 ms, a thruster key's release 55-59 ms, the throttle keys W and S 67-92 ms; the replay acts
+/// on every key alike, one latency a session. With any throttle rate from 0.4 a second to instant the misses are the same
+/// (`throttle_scan`). The exe's path from a key to the flight controller's demands is read only part of the way (task N2b,
+/// `re/elite/notes/sidewinder_input.md`): the keys go through a node graph the game loads as data, so the delays have no
+/// rule yet. Run it with `-- --ignored`: it is the step's open item.
 #[test]
 #[ignore]
 fn measured_traces_pass_the_gate() {
     let mut failures = Vec::new();
     for (name, tr) in traces() {
         let r = replay_trace(&name, &tr);
-        if let Some(w) = worst(&r.d10) {
-            failures.push(format!("{name}: {} of {} rows outside the gate; worst {}", r.d10.len(), r.rows, describe(&w)));
+        if let Some(w) = worst(&r.gate) {
+            failures.push(format!("{name}: {} of {} rows outside the gate; worst {}", r.gate.len(), r.rows, describe(&w)));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -149,23 +163,23 @@ fn report() {
     for (name, tr) in traces() {
         let r = replay_trace(&name, &tr);
         println!(
-            "{name}: latency {:.3} s, rms {:.2} m/s, outside: {} (samples, 2 frames) / {} (samples, D10) / {} (curve, D10: the gate) / {} (curve rounded, D10) of {} rows",
+            "{name}: latency {:.4} s, rms {:.2} m/s, outside: {} (samples, 2 frames) / {} (samples, D10) / {} (curve exact, D10) / {} (curve rounded, D10: the gate) of {} rows",
             chain_latency(&name),
             r.rms,
             r.frames.len(),
             r.samples.len(),
-            r.d10.len(),
-            r.rounded.len(),
+            r.exact.len(),
+            r.gate.len(),
             r.rows
         );
-        for (label, bad) in [("samples, 2 frames", &r.frames), ("curve, D10", &r.d10)] {
+        for (label, bad) in [("samples, 2 frames", &r.frames), ("curve exact, D10", &r.exact), ("the gate", &r.gate)] {
             if let Some(w) = worst(bad) {
                 println!("    worst ({label}): {}", describe(&w));
             }
         }
-        // Where the misses fall: by the control they follow.
+        // Where the gate's misses fall: by the control they follow.
         let mut by: Vec<(String, usize, f64)> = Vec::new();
-        for m in &r.d10 {
+        for m in &r.gate {
             let key = m.after.map_or("start".to_string(), |(t, n)| format!("{n} at {t:.2} s"));
             let err = (m.simulated - m.measured).abs();
             match by.iter_mut().find(|b| b.0 == key) {
@@ -177,7 +191,7 @@ fn report() {
             }
         }
         for (key, n, err) in by {
-            println!("    D10: {n} rows after {key}, by up to {err:.2} m/s");
+            println!("    the gate: {n} rows after {key}, by up to {err:.2} m/s");
         }
         if let Some((_, peak)) = BOOST_PEAKS.iter().find(|(p, _)| name.starts_with(p)) {
             println!("    boost peak: game {peak}, simulated {:.2}", r.peak);
@@ -267,16 +281,40 @@ fn latency_scan() {
         println!("{chain}:");
         for i in -25..=50 {
             let l = i as f64 * 0.002;
-            let (mut e, mut miss) = (0.0, 0usize);
+            let (mut e, mut exact, mut gate) = (0.0, 0usize, 0usize);
             for (name, tr) in all.iter().filter(|(n, _)| session_one(n) == s1) {
                 let m = mass(tr);
                 let rp = Replay { latency: l, ..data_replay(name) };
                 let ticks = replay::simulate_ticks(tr, &|x: f64| sidewinder_block(x, m), &rp).unwrap();
                 e += replay::error_curve(tr, &ticks);
-                miss += replay::gate_curve(tr, &ticks, Window::D10).len();
+                exact += replay::gate_curve(tr, &ticks, Window::D10).len();
+                gate += replay::gate_read(tr, &ticks, Window::D10, Readout::Rounded).len();
             }
-            println!("    latency {l:.3} s: error {e:.1}, outside the gate {miss}");
+            println!("    latency {l:.3} s: error {e:.1}, outside: {exact} (curve exact) / {gate} (the gate)");
         }
+    }
+}
+
+/// The one assumption under both sessions' delays (`chain_latency`): the marker's frame shows the input before the step that
+/// uses it. Per trace, the rows outside (curve exact / the gate) as assumed, and with both delays one tick lower (the marker
+/// drawn after that step). `cargo test --profile agent -p elite-sim --test traces marker_frame_assumption -- --ignored
+/// --nocapture`.
+#[test]
+#[ignore]
+fn marker_frame_assumption() {
+    for (label, shift) in [("before the step (as used)", 0.0), ("after the step (one tick lower)", replay::TICK)] {
+        let mut total = (0usize, 0usize);
+        let counts: Vec<String> = traces()
+            .iter()
+            .map(|(name, tr)| {
+                let rp = Replay { latency: chain_latency(name) - shift, ..data_replay(name) };
+                let r = replay_trace_with(tr, &rp);
+                total.0 += r.exact.len();
+                total.1 += r.gate.len();
+                format!("{} {}/{}", &name[..3], r.exact.len(), r.gate.len())
+            })
+            .collect();
+        println!("{label}: {} (all {}/{})", counts.join(", "), total.0, total.1);
     }
 }
 
@@ -296,7 +334,7 @@ fn throttle_scan() {
                 let rp = Replay { throttle_rate: rate, ..data_replay(name) };
                 let ticks = replay::simulate_ticks(tr, &|x: f64| sidewinder_block(x, m), &rp).unwrap();
                 let rms = (replay::error_curve(tr, &ticks) / tr.rows.len() as f64).sqrt();
-                format!("{} {} ({rms:.3} m/s)", &name[..3], replay::gate_curve(tr, &ticks, Window::D10).len())
+                format!("{} {} ({rms:.3} m/s)", &name[..3], replay::gate_read(tr, &ticks, Window::D10, Readout::Rounded).len())
             })
             .collect();
         println!("throttle rate {rate}: {}", counts.join(", "));

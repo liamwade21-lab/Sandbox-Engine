@@ -3,14 +3,17 @@
 //! A trace (`trace.rs`, made by `re/elite/measure/tools/make_trace.py` from a run in the user's Elite) holds, a row a video
 //! frame, the HUD's speed and the controls at that moment: the keys held (`key_w` ..), the mouse's counts, the pips and flight
 //! assist. The replay flies the same controls through `flight::step` at the physics rate from the same start and gives the
-//! simulated speed curve (`Ticks`: a value a tick, straight between them) and its samples at the rows. The gate (D10) is
-//! `gate_curve`: a row passes if the curve comes within 1 m/s of the HUD's number somewhere inside the row's time window (2
-//! video frames, or 2 % of the time since the control it answers). `gate_with` reads the samples alone (the readings before
-//! task N2, kept for the report) and `gate_read` the curve as the HUD shows a number (`Readout`).
+//! simulated speed curve (`Ticks`: a value a tick, straight between them) and its samples at the rows. The gate (D10, read as
+//! the spec's Decisions log T7 says) is `gate_read` with `Readout::Rounded`: a row passes if the curve, rounded to the nearest
+//! m/s as the HUD rounds its number, comes within 1 m/s of the HUD's number somewhere inside the row's time window (2 video
+//! frames, or 2 % of the time since the control it answers). `gate_curve` reads the curve's exact value and `gate_with` the
+//! samples alone (the readings before task N2b and N2, kept for the report).
 //!
 //! What the replay itself assumes (each a parameter of `Replay`, measured or fitted, never tuned by feel):
 //! - `latency`: the time from a key's press in the log to the game acting on it, plus the capture's start offset (capture.py
-//!   logs when it launched ffmpeg, not its first frame): one number a capture chain, the rig's (`tests/traces.rs`).
+//!   logs when it launched ffmpeg, not its first frame): one number a recording session, the middle of the bound the throttle
+//!   marker gives in its videos (`tests/traces.rs`). The game acts on different keys after different delays (task N2's
+//!   review); their rule is not read out of the exe yet (task N2b), so the replay acts on every key alike.
 //! - `throttle_rate`: how fast the throttle moves while W or S is held (share a second): the keyboard's rule, not found in
 //!   the exe, measured off the HUD's throttle marker. (Any rate from 0.4 a second up gives the measured runs the same replay.)
 //! - The ship's block comes from the caller (`data::sidewinder_block` or a candidate during a fit); the boost is the
@@ -258,7 +261,8 @@ pub fn gate_with(tr: &Trace, sim: &[f64], w: Window) -> Vec<Miss> {
     bad
 }
 
-/// The gate against the simulated curve (the gate's reading since task N2): a row passes if the curve, straight between
+/// The gate against the simulated curve's exact value (the gate's reading in task N2; since N2b the gate reads it rounded,
+/// `gate_read` with `Readout::Rounded`): a row passes if the curve, straight between
 /// adjacent ticks (`Ticks`), comes within 1 m/s of the HUD's speed anywhere inside the row's time window. The game's ticks and
 /// ours have an arbitrary phase and the HUD can be read between them, so the samples alone (`gate_with`) step by a tick's
 /// change (3 m/s in a boost) against the 1 m/s band. Nothing is smoothed and nothing is extrapolated: outside the simulated
@@ -270,10 +274,12 @@ pub fn gate_curve(tr: &Trace, ticks: &Ticks, w: Window) -> Vec<Miss> {
 /// How the simulated curve is read before it meets the HUD's number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readout {
-    /// The curve's own value (the gate's reading).
+    /// The curve's own value (reported beside the gate).
     Exact,
     /// As the HUD shows a speed: rounded to the nearest m/s (task N2: the four steady speeds of session 2, 160.86, 100.54,
     /// 96.52 and 221.18 m/s by the records, read 161, 101, 97 and 221; cutting the fraction off would read 160, 100, 96).
+    /// The gate's reading (the spec's Decisions log T7). The HUD's redraw 30 times a second is not modelled: it falls
+    /// inside the window's 2 frames.
     Rounded,
 }
 
@@ -373,7 +379,11 @@ mod tests {
     }
 
     fn curve(f: impl Fn(f64) -> f64) -> Ticks {
-        Ticks { t0: 0.0, speed: (0..120).map(|k| f(k as f64 * TICK)).collect() }
+        curve_n(120, f)
+    }
+
+    fn curve_n(n: usize, f: impl Fn(f64) -> f64) -> Ticks {
+        Ticks { t0: 0.0, speed: (0..n).map(|k| f(k as f64 * TICK)).collect() }
     }
 
     /// The curve is straight between ticks and unknown outside them.
@@ -389,14 +399,52 @@ mod tests {
     }
 
     /// The curve's reading keeps D10's band and window: a curve 3 video frames late on a 2 m/s-a-frame climb (inside the
-    /// first 1.67 s after W, so the window is 2 frames) still misses; 1 frame late passes.
+    /// first 1.67 s after W, so the window is 2 frames) still misses; 1 and 2 frames late pass. Read rounded (the gate) too.
     #[test]
     fn a_curve_three_frames_late_fails() {
         let tr = climb_trace();
         let late3 = curve(|t| climb(t - 3.0 * VIDEO_FRAME_S));
         let miss = gate_curve(&tr, &late3, Window::D10);
         assert!(!miss.is_empty() && miss.iter().all(|m| m.after == Some((0.5, "W"))), "{miss:?}");
-        assert!(gate_curve(&tr, &curve(|t| climb(t - VIDEO_FRAME_S)), Window::D10).is_empty());
+        assert!(!gate_read(&tr, &late3, Window::D10, Readout::Rounded).is_empty());
+        for frames in [1.0, 2.0] {
+            let late = curve(|t| climb(t - frames * VIDEO_FRAME_S));
+            assert!(gate_curve(&tr, &late, Window::D10).is_empty(), "{frames} frames late");
+            assert!(gate_read(&tr, &late, Window::D10, Readout::Rounded).is_empty(), "{frames} frames late, rounded");
+        }
+    }
+
+    /// D10's 2 % part: a climb that starts 5.5 s after W (its window 0.11 s, 6.6 frames) met by a curve 5 frames late passes
+    /// D10's window and misses the 2-frame one; 8 frames late misses both.
+    #[test]
+    fn the_curve_window_grows_two_percent_after_the_control() {
+        let late_climb = |t: f64| 120.0 * (t - 6.0).clamp(0.0, 0.5);
+        let mut tr = Trace::new(&["t", "speed", "key_w"]);
+        for i in 0..420 {
+            let t = i as f64 * VIDEO_FRAME_S;
+            tr.rows.push(vec![t, late_climb(t), (t >= 0.5) as i32 as f64]);
+        }
+        let late5 = curve_n(420, |t| late_climb(t - 5.0 * VIDEO_FRAME_S));
+        assert!(gate_curve(&tr, &late5, Window::D10).is_empty());
+        assert!(gate_read(&tr, &late5, Window::D10, Readout::Rounded).is_empty());
+        let miss = gate_curve(&tr, &late5, Window::Frames);
+        assert!(!miss.is_empty() && miss.iter().all(|m| m.after == Some((0.5, "W")) && m.t > 6.0), "{miss:?}");
+        assert!(!gate_curve(&tr, &curve_n(420, |t| late_climb(t - 8.0 * VIDEO_FRAME_S)), Window::D10).is_empty());
+    }
+
+    /// The rounded reading: a steady 100.4 m/s reads 100, so a reading of 101 passes and 101.3 does not; the exact reading
+    /// meets 101.3 too.
+    #[test]
+    fn the_rounded_reading_is_the_huds_number() {
+        let mut tr = Trace::new(&["t", "speed", "key_w"]);
+        for (i, hud) in [101.0, 101.3, 101.6].into_iter().enumerate() {
+            tr.rows.push(vec![i as f64 * VIDEO_FRAME_S, hud, 0.0]);
+        }
+        let flat = curve(|_| 100.4);
+        let rounded: Vec<f64> = gate_read(&tr, &flat, Window::D10, Readout::Rounded).iter().map(|m| m.measured).collect();
+        assert_eq!(rounded, vec![101.3, 101.6]);
+        let exact: Vec<f64> = gate_curve(&tr, &flat, Window::D10).iter().map(|m| m.measured).collect();
+        assert_eq!(exact, vec![101.6]);
     }
 
     /// The band is 1 m/s: a curve 0.9 m/s off on a steady speed passes, 1.1 m/s off fails.
