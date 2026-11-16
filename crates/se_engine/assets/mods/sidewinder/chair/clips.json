@@ -1,0 +1,2843 @@
+{
+  "format": 1,
+  "source": "53d917bd9cf21fbe372bfd4cf5a9417bae9c2637",
+  "skeleton": "models/cockpit_chair.edm",
+  "keys_file": "chair/clips.bin",
+  "key_layout": "per clip: rotations int16 [frames][rot channels][x, y, z, w] at rot_keys_at, then positions int16 [frames][pos channels][x, y, z, 32767] at pos_keys_at",
+  "clips": [
+    {
+      "name": "chairmale_rightstickmove",
+      "set": "_rightstick.maniset45c3cda2",
+      "duration_s": 1.666666,
+      "frames": 41,
+      "flags": 13,
+      "additive": true,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.0,
+          1.776357e-17,
+          2.4229507e-12
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 0,
+      "pos_keys_at": 656
+    },
+    {
+      "name": "chairmale_rightstick_yaw",
+      "set": "_rightstick.maniset45c3cda2",
+      "duration_s": 0.866666,
+      "frames": 27,
+      "flags": 13,
+      "additive": true,
+      "fps": 30.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 1312,
+      "pos_keys_at": 1528
+    },
+    {
+      "name": "chairmale_righttriggerupper_in",
+      "set": "_rightstick.maniset45c3cda2",
+      "duration_s": 0.125,
+      "frames": 4,
+      "flags": 13,
+      "additive": true,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.00001106807,
+          0.004187811,
+          0.000010997057
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 1744,
+      "pos_keys_at": 1776
+    },
+    {
+      "name": "chairmale_righttriggerupper_loop",
+      "set": "_rightstick.maniset45c3cda2",
+      "duration_s": 0.041666,
+      "frames": 2,
+      "flags": 13,
+      "additive": true,
+      "fps": 24.0004,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.00001106807,
+          0.008375622,
+          0.000010997057
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 1808,
+      "pos_keys_at": 1824
+    },
+    {
+      "name": "chairmale_righttriggerupper_out",
+      "set": "_rightstick.maniset45c3cda2",
+      "duration_s": 0.416666,
+      "frames": 11,
+      "flags": 13,
+      "additive": true,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.00001106807,
+          0.0039561093,
+          0.000010997057
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 1840,
+      "pos_keys_at": 1928
+    },
+    {
+      "name": "chairmale_leftstickmove",
+      "set": "_leftstick.manisetc8f63cbc",
+      "duration_s": 0.625,
+      "frames": 16,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.009426012,
+          -0.02111867,
+          0.025400084
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 2016,
+      "pos_keys_at": 2272
+    },
+    {
+      "name": "chairmale_buffetleftsmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 0.916666,
+      "frames": 23,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.0,
+          -0.660911,
+          0.04591598
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 2528,
+      "pos_keys_at": 2896
+    },
+    {
+      "name": "chairmale_buffetrightsmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 0.916666,
+      "frames": 23,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          -0.0,
+          -1.32182,
+          0.09183036
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 3264,
+      "pos_keys_at": 3448
+    },
+    {
+      "name": "chair_buffetabovesmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 1.208333,
+      "frames": 30,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          0.0,
+          -0.691351,
+          0.04591513
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 3632,
+      "pos_keys_at": 4112
+    },
+    {
+      "name": "chair_buffetbacksmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 0.916666,
+      "frames": 23,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch08_joint",
+          "skeleton_index": 71,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch07_joint",
+          "skeleton_index": 65,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch06_joint",
+          "skeleton_index": 66,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch05_joint",
+          "skeleton_index": 69,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch04_joint",
+          "skeleton_index": 67,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch03_joint",
+          "skeleton_index": 68,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch02_joint",
+          "skeleton_index": 72,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch01_joint",
+          "skeleton_index": 70,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 1
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch08_joint",
+          "skeleton_index": 71,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch07_joint",
+          "skeleton_index": 65,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch06_joint",
+          "skeleton_index": 66,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch05_joint",
+          "skeleton_index": 69,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch04_joint",
+          "skeleton_index": 67,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch03_joint",
+          "skeleton_index": 68,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch02_joint",
+          "skeleton_index": 72,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch01_joint",
+          "skeleton_index": 70,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          -0.0010811538,
+          0.37539032,
+          0.18730026
+        ],
+        [
+          -0.0,
+          -1.32182,
+          0.09183036
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.2344127,
+          1.0
+        ],
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 4592,
+      "pos_keys_at": 17472
+    },
+    {
+      "name": "chair_buffetfwdsmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 0.916666,
+      "frames": 23,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch08_joint",
+          "skeleton_index": 71,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch07_joint",
+          "skeleton_index": 65,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch06_joint",
+          "skeleton_index": 66,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch05_joint",
+          "skeleton_index": 69,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch04_joint",
+          "skeleton_index": 67,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch03_joint",
+          "skeleton_index": 68,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch02_joint",
+          "skeleton_index": 72,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ToggleSwitch01_joint",
+          "skeleton_index": 70,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 1
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch08_joint",
+          "skeleton_index": 71,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch07_joint",
+          "skeleton_index": 65,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch06_joint",
+          "skeleton_index": 66,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch05_joint",
+          "skeleton_index": 69,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch04_joint",
+          "skeleton_index": 67,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch03_joint",
+          "skeleton_index": 68,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch02_joint",
+          "skeleton_index": 72,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ToggleSwitch01_joint",
+          "skeleton_index": 70,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          -0.0010811538,
+          0.37539032,
+          0.18730026
+        ],
+        [
+          -0.0,
+          -1.32182,
+          0.09183036
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.2344127,
+          1.0
+        ],
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 30352,
+      "pos_keys_at": 43232
+    },
+    {
+      "name": "chair_buffetundersmall",
+      "set": "_buffets.manisetdef4065b",
+      "duration_s": 1.208333,
+      "frames": 30,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0,
+      "skeleton_bones": 142,
+      "rot_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          -1.7763565e-17,
+          -0.6809405,
+          0.04591513
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 56112,
+      "pos_keys_at": 56592
+    },
+    {
+      "name": "chairmale_baseloop",
+      "set": "_idles.manisete2237e5f",
+      "duration_s": 0.041666,
+      "frames": 2,
+      "flags": 12,
+      "additive": false,
+      "fps": 24.0004,
+      "skeleton_bones": 144,
+      "rot_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_CentreScreenLowerArm_joint",
+          "skeleton_index": 142,
+          "in_chair": false
+        },
+        {
+          "bone": "BN_CentreScreen_joint",
+          "skeleton_index": 143,
+          "in_chair": false
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true
+        },
+        {
+          "bone": "LHControlBase02",
+          "skeleton_index": 82,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true
+        }
+      ],
+      "pos_channels": [
+        {
+          "bone": "Cockpit_ChairRoot_joint",
+          "skeleton_index": 0,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "Cockpit_Chair_joint",
+          "skeleton_index": 1,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_MainChairRotate_joint",
+          "skeleton_index": 3,
+          "in_chair": true,
+          "table": 1
+        },
+        {
+          "bone": "BN_MainChair_joint",
+          "skeleton_index": 4,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut03_joint",
+          "skeleton_index": 7,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut01_joint",
+          "skeleton_index": 6,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ChairStrut02_joint",
+          "skeleton_index": 5,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_CentreScreenLowerArm_joint",
+          "skeleton_index": 142,
+          "in_chair": false,
+          "table": 0
+        },
+        {
+          "bone": "BN_CentreScreen_joint",
+          "skeleton_index": 143,
+          "in_chair": false,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConArm_joint",
+          "skeleton_index": 8,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHConRail_joint",
+          "skeleton_index": 17,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHControlBase01_joint",
+          "skeleton_index": 26,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickSlider_joint",
+          "skeleton_index": 31,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStick_joint",
+          "skeleton_index": 49,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickBall_joint",
+          "skeleton_index": 89,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickLowerTrigger_joint",
+          "skeleton_index": 123,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickTrigger01_joint",
+          "skeleton_index": 124,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick02_joint",
+          "skeleton_index": 125,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton01_joint",
+          "skeleton_index": 126,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickButton02_joint",
+          "skeleton_index": 127,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_JoyStickCoveredButtonn_joint",
+          "skeleton_index": 128,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ButtonCover01_joint",
+          "skeleton_index": 131,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_ThumbStick003_joint",
+          "skeleton_index": 132,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton01_joint",
+          "skeleton_index": 37,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton02_joint",
+          "skeleton_index": 39,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton03_joint",
+          "skeleton_index": 36,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton04_joint",
+          "skeleton_index": 40,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHControlBase02_joint",
+          "skeleton_index": 38,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton07_joint",
+          "skeleton_index": 60,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton06n_joint",
+          "skeleton_index": 56,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton05_joint",
+          "skeleton_index": 62,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton08n_joint",
+          "skeleton_index": 61,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton09_joint",
+          "skeleton_index": 57,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHButton10_joint",
+          "skeleton_index": 59,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch_joint",
+          "skeleton_index": 63,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHRockerSwitch02_joint",
+          "skeleton_index": 58,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_RHDialWheel_joint",
+          "skeleton_index": 64,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConArm_joint",
+          "skeleton_index": 9,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHConRail_joint",
+          "skeleton_index": 20,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase01_joint",
+          "skeleton_index": 29,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton07_joint",
+          "skeleton_index": 41,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton06_joint",
+          "skeleton_index": 43,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton05_joint",
+          "skeleton_index": 45,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton04_joint",
+          "skeleton_index": 44,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LeftControlBase02_joint",
+          "skeleton_index": 42,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton01_joint",
+          "skeleton_index": 76,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton02_joint",
+          "skeleton_index": 75,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton03_joint",
+          "skeleton_index": 77,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHFingerButton04_joint",
+          "skeleton_index": 78,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHThumbButton_joint",
+          "skeleton_index": 79,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton01_joint",
+          "skeleton_index": 74,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton02_joint",
+          "skeleton_index": 80,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHButton03_joint",
+          "skeleton_index": 73,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelSlider_joint",
+          "skeleton_index": 46,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelLever_joint",
+          "skeleton_index": 81,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton02_joint",
+          "skeleton_index": 102,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccellThumbStick01_joint",
+          "skeleton_index": 99,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHAccelButton01_joint",
+          "skeleton_index": 100,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_LHTrigger_joint",
+          "skeleton_index": 101,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperUpperLeg_joint",
+          "skeleton_index": 10,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestUpperLeg_joint",
+          "skeleton_index": 19,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLowerLeg_joint",
+          "skeleton_index": 28,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestLeftFoot_joint",
+          "skeleton_index": 34,
+          "in_chair": true,
+          "table": 0
+        },
+        {
+          "bone": "BN_FootRestRightFoot_joint",
+          "skeleton_index": 35,
+          "in_chair": true,
+          "table": 0
+        }
+      ],
+      "pos_offset": [
+        [
+          -0.0010811538,
+          0.37539032,
+          0.20270011
+        ],
+        [
+          -0.0,
+          -1.32182,
+          0.09183036
+        ]
+      ],
+      "pos_scale": [
+        [
+          1.0,
+          1.2344127,
+          1.0
+        ],
+        [
+          1.0,
+          1.0,
+          1.0
+        ]
+      ],
+      "rot_keys_at": 57072,
+      "pos_keys_at": 58112
+    }
+  ]
+}

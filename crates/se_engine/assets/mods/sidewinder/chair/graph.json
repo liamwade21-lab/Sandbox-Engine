@@ -1,0 +1,882 @@
+{
+  "format": 1,
+  "source": "660a195dc12d3fc7194ac4dff5bc12996d56fd6c.bin",
+  "build": "2026.10.23.334925",
+  "variables": [
+    {
+      "name": "ThrottleControl",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "JoystickWeight",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "JoystickProp",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "JoystickYawProp",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "PrimaryTriggerPress",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "GoToGunner",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "GoToFighter",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "GoToPilot",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetLeftSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetRightSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetFwdSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetBackSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetAboveSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetUnderSmall",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "CockpitChairAction_Loop",
+      "type": 3,
+      "type_name": "enum",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "CockpitChairAction_Action",
+      "type": 3,
+      "type_name": "enum",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": -1
+    },
+    {
+      "name": "CockpitChairAction_ActionPending",
+      "type": 3,
+      "type_name": "enum",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": -1
+    },
+    {
+      "name": "CockpitChairAction_Update",
+      "type": 2,
+      "type_name": "event",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetIntensityProp",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    },
+    {
+      "name": "BuffetSpeedProp",
+      "type": 1,
+      "type_name": "float",
+      "min": 0.0,
+      "max": 1.0,
+      "default_i32": 0
+    }
+  ],
+  "loop_enum": [
+    "Uninitialised",
+    "Empty_Ship",
+    "Empty_Buggy",
+    "Mode_Ship",
+    "Mode_Buggy",
+    "Action_GunnerRelaxedMode",
+    "Action_GunnerAlertMode",
+    "Action_FighterRelaxedMode",
+    "Action_FighterAlertMode"
+  ],
+  "oneshot_enum": [
+    "Test"
+  ],
+  "action_pattern": "CockpitChairAction",
+  "root_outputs": [
+    {
+      "key": 1,
+      "enum_name": "Uninitialised",
+      "state": 40
+    },
+    {
+      "key": 2,
+      "enum_name": "Empty_Ship",
+      "state": 1
+    },
+    {
+      "key": 4,
+      "enum_name": "Mode_Ship",
+      "state": 8
+    }
+  ],
+  "states": [
+    {
+      "id": 1,
+      "activities": [
+        "1:3216",
+        "1:3072"
+      ],
+      "transitions": [
+        {
+          "block": "0:4208",
+          "targets": [
+            8
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "activities": [
+        "1:3216",
+        "1:3072",
+        "1:2832",
+        "1:2784",
+        "1:2736",
+        "0:13912"
+      ],
+      "transitions": [
+        {
+          "block": "0:4208",
+          "targets": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "activities": [],
+      "transitions": [
+        {
+          "block": "0:4208",
+          "targets": [
+            1
+          ]
+        }
+      ]
+    }
+  ],
+  "activities": {
+    "0:13912": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_LeftStickMove",
+      "flags": 0,
+      "layer": 4,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": "ThrottleControl",
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:1056": {
+      "type": "AnimationActivity",
+      "clip": "Chair_BuffetAboveSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:1344": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetUnderSmall",
+      "activity": "1:2544",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:1392": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetRightSmall",
+      "activity": "1:2496",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:1440": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetLeftSmall",
+      "activity": "1:2448",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:1488": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetFwdSmall",
+      "activity": "1:2400",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:1536": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetBackSmall",
+      "activity": "1:2352",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:1584": {
+      "type": "TriggeredActivityActivity",
+      "trigger_variable": "BuffetAboveSmall",
+      "activity": "1:1056",
+      "fade_in_s": 0.0,
+      "fade_out_s": 0.0,
+      "hold_min_flag": 0,
+      "min_time_s": 0.0,
+      "output_variable": null
+    },
+    "1:2256": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_RightTriggerUpper_Out",
+      "flags": 2,
+      "layer": 0,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2304": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_RightTriggerUpper_Loop",
+      "flags": 3,
+      "layer": 0,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2352": {
+      "type": "AnimationActivity",
+      "clip": "Chair_BuffetBackSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2400": {
+      "type": "AnimationActivity",
+      "clip": "Chair_BuffetFwdSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2448": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_BuffetLeftSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2496": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_BuffetRightSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2544": {
+      "type": "AnimationActivity",
+      "clip": "Chair_BuffetUnderSmall",
+      "flags": 0,
+      "layer": 1,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetIntensityProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "BuffetSpeedProp",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 2.0,
+            "y": 2.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2688": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_RightTriggerUpper_In",
+      "flags": 2,
+      "layer": 0,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2736": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_RightStick_Yaw",
+      "flags": 2,
+      "layer": 5,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": "JoystickYawProp",
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:2784": {
+      "type": "JoystickButtonActivity",
+      "button_variable": "PrimaryTriggerPress",
+      "in": "1:2688",
+      "loop": "1:2304",
+      "out": "1:2256"
+    },
+    "1:2832": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_RightStickMove",
+      "flags": 2,
+      "layer": 3,
+      "weight": {
+        "const": 1.0,
+        "bound": true,
+        "variable": "JoystickWeight",
+        "keys": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "interp": 5,
+            "a": 1.0,
+            "b": 1.0
+          },
+          {
+            "x": 1.0,
+            "y": 1.0,
+            "interp": 1,
+            "a": 0.0,
+            "b": 0.0
+          }
+        ]
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": "JoystickProp",
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:3072": {
+      "type": "AnimationActivity",
+      "clip": "ChairMale_BaseLoop",
+      "flags": 17,
+      "layer": 0,
+      "weight": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "rate": {
+        "const": 1.0,
+        "bound": false,
+        "variable": null,
+        "keys": []
+      },
+      "start_phase": 0.0,
+      "phase_variable": null,
+      "phase_offset": 0.0,
+      "phase_output_variable": null
+    },
+    "1:3216": {
+      "type": "GroupedActivityActivity",
+      "children": [
+        "1:1584",
+        "1:1536",
+        "1:1488",
+        "1:1440",
+        "1:1392",
+        "1:1344"
+      ]
+    }
+  },
+  "transition_blocks": {
+    "0:4208": {
+      "at": "0:4208",
+      "fade_time_s": 0.5,
+      "curve": null,
+      "wait_flag": 0,
+      "wait_slack_s": 0.0,
+      "route_by_path_table": 0,
+      "path_cost": 100
+    },
+    "default": {
+      "at": "0:4736",
+      "fade_time_s": -1.0,
+      "curve": null,
+      "wait_flag": 0,
+      "wait_slack_s": 0.0,
+      "route_by_path_table": 1,
+      "path_cost": 65535
+    }
+  },
+  "default_block": "default",
+  "hierarchy": {
+    "flags": 4,
+    "top_node": 0,
+    "nodes": [
+      {
+        "name": "RootPoseNode",
+        "type": 1,
+        "type_name": "PoseNode"
+      },
+      {
+        "name": "MotionGraphHook",
+        "type": 4,
+        "type_name": "HookNode"
+      }
+    ],
+    "links": [
+      [
+        0,
+        1
+      ]
+    ]
+  },
+  "templates": {
+    "loop_handler": "CockpitChairAction",
+    "initial_loop": "Uninitialised",
+    "occupied_loop": "Mode_Ship",
+    "vacated_loop": "Empty_Ship",
+    "throttle_variable": "ThrottleControl",
+    "throttle_control": "ForwardReverseThrust",
+    "trigger_variable": "PrimaryTriggerPress",
+    "trigger_control": "PrimaryFire",
+    "pitch_control": "Pitch",
+    "roll_control": "Roll",
+    "yaw_control": "Yaw",
+    "joystick_weight_variable": "JoystickWeight",
+    "joystick_prop_variable": "JoystickProp",
+    "joystick_yaw_variable": "JoystickYawProp",
+    "buffet_events": [
+      "BuffetLeftSmall",
+      "BuffetRightSmall",
+      "BuffetBackSmall",
+      "BuffetFwdSmall",
+      "BuffetAboveSmall",
+      "BuffetUnderSmall"
+    ],
+    "buffet_intensity_variable": "BuffetIntensityProp",
+    "buffet_speed_variable": "BuffetSpeedProp",
+    "buffet_thresholds": [
+      0.00001,
+      0.00001,
+      0.00001
+    ]
+  }
+}

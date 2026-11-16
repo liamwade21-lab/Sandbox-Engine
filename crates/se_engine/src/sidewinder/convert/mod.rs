@@ -223,6 +223,7 @@ fn check_folder(ctx: &Ctx) -> Result<usize, String> {
             Some("binds") => se_core::elite_asset::Binds::parse(&String::from_utf8_lossy(&bytes)).map(|_| ()).map_err(|e| e.to_string()),
             Some("json") if name == "materials.json" => se_core::elite_ship::parse_materials(&bytes).map(|_| ()).map_err(|e| e.to_string()),
             Some("json") if name == "ship.json" => assembly::check(ctx, &bytes),
+            Some("json") if name == "sounds.json" => sound::check(&bytes),
             Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
             _ => Ok(()),
         };
@@ -244,7 +245,8 @@ fn shipped_files_are_the_exports() {
         let ctx = Ctx::from_env()?;
         check_folder(&ctx)?;
         models::verify(&ctx)?;
-        assembly::verify(&ctx)
+        assembly::verify(&ctx)?;
+        chair::verify(&ctx)
     };
     if let Err(e) = check() {
         panic!("shipped_files_are_the_exports: {e}");

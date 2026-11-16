@@ -876,6 +876,580 @@ fn write_value(v: &Value, depth: usize, out: &mut String) {
     }
 }
 
+// ------------------------------------------------------------------------------------------------ chair/
+//
+// The pilot chair's animation (written by `copy_sidewinder` from the decoded export's `animation/chair_clips.json`,
+// `chair_clips.bin` and `chair_motiongraph.json`; the proofs are `re/elite/notes/sidewinder_chair.md` and
+// `agent_motiongraph.md`). The rules that play it are `crate::elite_chair`.
+//
+// `chair/clips.bin`: each shipped clip's 16-bit keys exactly as the game's own decoder writes them, little-endian, 4 x
+// i16 per key, frame-major: the rotations `[frames][rot channels][x, y, z, w]` at `rot_keys_at`, then the positions
+// `[frames][pos channels][x, y, z, 32767]` at `pos_keys_at` (byte offsets). `chair/clips.json` describes them;
+// `chair/graph.json` is the motion graph trimmed to the states a seated solo pilot's chair can be in.
+
+/// `chair/clips.json` and `chair/graph.json`'s format number; the parsers refuse any other.
+pub const CHAIR_FORMAT: u32 = 1;
+
+/// How deep activities may start activities (a group, a trigger, a button, a clip): a bound so no file can make the
+/// rules walk without end. The stock graph nests 3 deep (the buffet group, its triggers, their clips).
+pub const CHAIR_MAX_NESTING: usize = 8;
+
+const CHAIR_CLIPS_FILE: &str = "chair/clips.json";
+const CHAIR_CLIPS_BIN: &str = "chair/clips.bin";
+const CHAIR_GRAPH_FILE: &str = "chair/graph.json";
+
+/// `chair/clips.json` with the keys of `chair/clips.bin` (`keys`, not in the JSON).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairClips {
+    pub format: u32,
+    /// Elite's clip file (`SharedChairAnimation`, 40 hex).
+    pub source: String,
+    /// The model whose skeleton the clips were matched to.
+    pub skeleton: String,
+    /// The key file in the mod's folder.
+    pub keys_file: String,
+    pub key_layout: String,
+    pub clips: Vec<ChairClip>,
+    /// The key file's 16-bit values, in file order.
+    #[serde(skip)]
+    pub keys: Vec<i16>,
+}
+
+/// One clip (`mani`), as Elite's record holds it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairClip {
+    /// Elite's name in lower case (the motion graph writes it in mixed case: match without case).
+    pub name: String,
+    /// The animation set (`manis`) it came from.
+    pub set: String,
+    pub duration_s: f32,
+    /// One key per frame, evenly spaced over the duration.
+    pub frames: u32,
+    /// The record's flags: bit 0 additive, bit 2 compressed, bit 3 set at load.
+    pub flags: u32,
+    /// Flag bit 0: the keys are deltas laid over the pose under them.
+    pub additive: bool,
+    pub fps: f32,
+    /// Bone count of the skeleton the clip was made for (142, or 144 with the centre-screen arm).
+    pub skeleton_bones: u32,
+    pub rot_channels: Vec<ChairChannel>,
+    pub pos_channels: Vec<ChairChannel>,
+    /// Each position table entry's offset and scale: a key is `x / 32767 x scale + offset`, float32.
+    pub pos_offset: Vec<[f32; 3]>,
+    pub pos_scale: Vec<[f32; 3]>,
+    /// Byte offsets of the rotation and position keys in the key file.
+    pub rot_keys_at: u64,
+    pub pos_keys_at: u64,
+}
+
+/// A channel: the bone it moves (by name; its index in the skeleton the clip was made for), and for a position
+/// channel its table entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairChannel {
+    pub bone: String,
+    pub skeleton_index: u16,
+    /// False for the two centre-screen bones the Sidewinder's chair does not have (they drive nothing).
+    pub in_chair: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<u8>,
+}
+
+impl ChairClips {
+    /// A clip by name, without case.
+    pub fn clip(&self, name: &str) -> Option<&ChairClip> {
+        self.clips.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The byte range of a clip's rotation or position keys in the key file, when it can be worked out without overflow.
+    pub fn key_range(clip: &ChairClip, rotations: bool) -> Option<std::ops::Range<u64>> {
+        let (start, count) = if rotations { (clip.rot_keys_at, clip.rot_channels.len()) } else { (clip.pos_keys_at, clip.pos_channels.len()) };
+        let bytes = (clip.frames as u64).checked_mul(count as u64)?.checked_mul(8)?;
+        Some(start..start.checked_add(bytes)?)
+    }
+
+    /// What `parse_chair_clips` refuses (the key file is `keys`): another format, a clip twice, no frames, a duration
+    /// that isn't positive and finite, an additive flag that disagrees with bit 0, a position channel without a table
+    /// entry in range, offset and scale lists of different lengths or not finite, a channel's keys outside the key file,
+    /// off a key's boundary or past what the numbers can hold. Every sampling index then lies inside `keys`.
+    pub fn check(&self) -> Result<(), ShipDataError> {
+        let fail = |why: String| bad(CHAIR_CLIPS_FILE, why);
+        if self.format != CHAIR_FORMAT {
+            return Err(fail(format!("format {}, this build reads {CHAIR_FORMAT}", self.format)));
+        }
+        let bin_len = self.keys.len() as u64 * 2;
+        for (i, clip) in self.clips.iter().enumerate() {
+            let at = |why: String| fail(format!("clip {}: {why}", clip.name));
+            if self.clips[..i].iter().any(|o| o.name.eq_ignore_ascii_case(&clip.name)) {
+                return Err(at("appears twice".into()));
+            }
+            if clip.frames == 0 || !(clip.duration_s > 0.0 && clip.duration_s.is_finite()) {
+                return Err(at(format!("{} frames over {} s", clip.frames, clip.duration_s)));
+            }
+            if clip.additive != (clip.flags & 1 != 0) {
+                return Err(at(format!("additive {} but flags {:#x}", clip.additive, clip.flags)));
+            }
+            if clip.pos_offset.len() != clip.pos_scale.len() {
+                return Err(at(format!("{} position offsets for {} scales", clip.pos_offset.len(), clip.pos_scale.len())));
+            }
+            if clip.pos_offset.iter().chain(&clip.pos_scale).flatten().any(|v| !v.is_finite()) {
+                return Err(at("a position offset or scale is not finite".into()));
+            }
+            if let Some(ch) = clip.rot_channels.iter().find(|ch| ch.table.is_some()) {
+                return Err(at(format!("rotation channel {} names a position table entry", ch.bone)));
+            }
+            if let Some(ch) = clip.pos_channels.iter().find(|ch| ch.table.map_or(true, |t| t as usize >= clip.pos_offset.len())) {
+                return Err(at(format!("position channel {} has no table entry among the {}", ch.bone, clip.pos_offset.len())));
+            }
+            for (what, rotations) in [("rotation", true), ("position", false)] {
+                let start = if rotations { clip.rot_keys_at } else { clip.pos_keys_at };
+                match Self::key_range(clip, rotations) {
+                    None => return Err(at(format!("its {what} keys' offset {start} and size overflow"))),
+                    Some(r) if start % 8 != 0 || r.end > bin_len => {
+                        return Err(bad(CHAIR_CLIPS_BIN, format!("clip {}: its {what} keys ({} bytes at {start}) are not inside the {bin_len}-byte key file", clip.name, r.end - r.start)));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads `chair/clips.json` and `chair/clips.bin`, refusing what `ChairClips::check` refuses and a key file of odd length.
+pub fn parse_chair_clips(json: &[u8], bin: &[u8]) -> Result<ChairClips, ShipDataError> {
+    let mut c: ChairClips = serde_json::from_slice(json).map_err(|e| bad(CHAIR_CLIPS_FILE, e.to_string()))?;
+    if bin.len() % 2 != 0 {
+        return Err(bad(CHAIR_CLIPS_BIN, format!("{} bytes, not whole 16-bit keys", bin.len())));
+    }
+    c.keys = bin.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+    c.check()?;
+    Ok(c)
+}
+
+/// Writes `chair/clips.json` (pretty-printed, LF line endings) and `chair/clips.bin`.
+pub fn write_chair_clips(c: &ChairClips) -> (Vec<u8>, Vec<u8>) {
+    let mut json = serde_json::to_vec_pretty(c).expect("the clip table is plain data");
+    json.push(b'\n');
+    (json, c.keys.iter().flat_map(|k| k.to_le_bytes()).collect())
+}
+
+/// `chair/graph.json`: the motion graph `CockpitChairMotionGraph` for the states a seated solo pilot's chair can be
+/// in (the template's initial, occupied and vacated values and the cheapest routes between them), with the variables,
+/// enums, blend hierarchy and the chair templates' values the rules read. Values as Elite's file holds them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairGraph {
+    pub format: u32,
+    /// Elite's motion graph file (40 hex).
+    pub source: String,
+    pub build: String,
+    pub variables: Vec<ChairVariable>,
+    /// The loop enum (`CockpitChairAction_Loop`'s names, in order) and the one-shot enum.
+    pub loop_enum: Vec<String>,
+    pub oneshot_enum: Vec<String>,
+    /// The root action handler's `VariableNamePattern`.
+    pub action_pattern: String,
+    /// The root handler's results that are states: key = loop enum index + 1.
+    pub root_outputs: Vec<ChairOutput>,
+    pub states: Vec<ChairState>,
+    /// By the export's id (`pool:offset`).
+    pub activities: BTreeMap<String, ChairActivity>,
+    /// Each transition block's first group (the only one the exe reads), by id.
+    pub transition_blocks: BTreeMap<String, ChairBlock>,
+    /// The root's default block, used when the current state lists no transition to the target.
+    pub default_block: String,
+    pub hierarchy: ChairHierarchy,
+    pub templates: ChairTemplates,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairVariable {
+    pub name: String,
+    /// 1 float, 2 event, 3 enum.
+    #[serde(rename = "type")]
+    pub kind: u32,
+    pub type_name: String,
+    pub min: f32,
+    pub max: f32,
+    pub default_i32: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairOutput {
+    pub key: u32,
+    pub enum_name: String,
+    pub state: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairState {
+    pub id: u32,
+    /// Activity ids, in the order the state starts them.
+    pub activities: Vec<String>,
+    /// "From this state you may go to those states" through the block (targets outside the shipped states dropped).
+    pub transitions: Vec<ChairTransition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairTransition {
+    pub block: String,
+    pub targets: Vec<u32>,
+}
+
+/// An activity, by Elite's type name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum ChairActivity {
+    AnimationActivity {
+        clip: String,
+        /// Bit 0 loop, 1 additive edge, 2 mirror, 3 edge event weight, 4 LoopEvent at the wrap, 5 re-evaluate, 6 no stream.
+        flags: u32,
+        /// The blend layer it enters.
+        layer: u32,
+        weight: ChairParam,
+        /// Clip seconds per second (negative: backwards).
+        rate: ChairParam,
+        /// Below 0: random.
+        start_phase: f32,
+        phase_variable: Option<String>,
+        phase_offset: f32,
+        phase_output_variable: Option<String>,
+    },
+    GroupedActivityActivity { children: Vec<String> },
+    TriggeredActivityActivity {
+        trigger_variable: String,
+        activity: String,
+        fade_in_s: f32,
+        fade_out_s: f32,
+        hold_min_flag: u8,
+        min_time_s: f32,
+        output_variable: Option<String>,
+    },
+    JoystickButtonActivity {
+        button_variable: String,
+        #[serde(rename = "in")]
+        in_activity: String,
+        #[serde(rename = "loop")]
+        loop_activity: String,
+        #[serde(rename = "out")]
+        out_activity: String,
+    },
+}
+
+/// A ParamBlock: a constant, or a curve of a bound variable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairParam {
+    #[serde(rename = "const")]
+    pub constant: f32,
+    pub bound: bool,
+    pub variable: Option<String>,
+    pub keys: Vec<ChairKey>,
+}
+
+/// A curve key: the left key's `interp` shapes the span to the next (0 step, 1 linear, 2 pow, 3 exp, 4 smoothstep,
+/// 5 hermite with tangents `a`, `b`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairKey {
+    pub x: f32,
+    pub y: f32,
+    pub interp: u8,
+    pub a: f32,
+    pub b: f32,
+}
+
+/// A transition block's group 0.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairBlock {
+    /// Where it sits in Elite's file.
+    pub at: String,
+    /// Without a curve: a linear fade over this; below 0: 0.2 s; 0: a cut.
+    pub fade_time_s: f32,
+    pub curve: Option<Vec<ChairKey>>,
+    /// Wait for the current state's completion (or its LoopEvent) before changing.
+    pub wait_flag: u16,
+    pub wait_slack_s: f32,
+    /// Route along the cheapest path when no listed transition matches (the default block).
+    pub route_by_path_table: u16,
+    /// 0xffff: unusable for routing.
+    pub path_cost: u16,
+}
+
+/// The stored blend hierarchy (the layer nodes under the hook are made at run time).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairHierarchy {
+    pub flags: u32,
+    pub top_node: u32,
+    pub nodes: Vec<ChairHierNode>,
+    /// (parent, child) node indices.
+    pub links: Vec<[u32; 2]>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairHierNode {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: u32,
+    pub type_name: String,
+}
+
+/// The chair prototype's template values a seated pilot needs (decrypted prototype data, values only).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChairTemplates {
+    /// ChairMotiongraphComponent +0x78: the loop handler the seat writes to.
+    pub loop_handler: String,
+    /// MotionGraphComponent +0x58: the loop value the graph starts with.
+    pub initial_loop: String,
+    /// ChairMotiongraphComponent +0x80 (written on occupy) and +0x90 (on vacate).
+    pub occupied_loop: String,
+    pub vacated_loop: String,
+    /// +0x10 / +0x18: the graph variable fed the smoothed throttle and the control it reads.
+    pub throttle_variable: String,
+    pub throttle_control: String,
+    /// +0x20 / +0x28: the trigger.
+    pub trigger_variable: String,
+    pub trigger_control: String,
+    /// +0x30 (stick y), +0x38 (stick x), +0x40.
+    pub pitch_control: String,
+    pub roll_control: String,
+    pub yaw_control: String,
+    /// +0x48, +0x50, +0x58.
+    pub joystick_weight_variable: String,
+    pub joystick_prop_variable: String,
+    pub joystick_yaw_variable: String,
+    /// CockpitCollisionAnimationComponent +0x10: the six buffet events in table order (x < 0, x >= 0, z >= 0, z < 0,
+    /// y < 0, y >= 0).
+    pub buffet_events: Vec<String>,
+    /// +0x20, +0x28.
+    pub buffet_intensity_variable: String,
+    pub buffet_speed_variable: String,
+    /// CockpitComponent +0x40, +0x44, +0x48: the per-axis thresholds of the velocity change (x, y, z).
+    pub buffet_thresholds: [f32; 3],
+}
+
+impl ChairGraph {
+    pub fn state(&self, id: u32) -> Option<&ChairState> {
+        self.states.iter().find(|s| s.id == id)
+    }
+
+    pub fn variable(&self, name: &str) -> Option<&ChairVariable> {
+        self.variables.iter().find(|v| v.name == name)
+    }
+
+    /// The state the root handler picks for a loop value (by name), if it is a shipped state.
+    pub fn output_state(&self, loop_value: &str) -> Option<u32> {
+        let index = self.loop_enum.iter().position(|n| n.eq_ignore_ascii_case(loop_value))?;
+        self.root_outputs.iter().find(|o| o.key as usize == index + 1).map(|o| o.state)
+    }
+
+    /// Every clip an activity names.
+    pub fn clips(&self) -> Vec<&str> {
+        self.activities.values().filter_map(|a| if let ChairActivity::AnimationActivity { clip, .. } = a { Some(clip.as_str()) } else { None }).collect()
+    }
+
+    /// What `parse_chair_graph` refuses: another format, a state twice, a state, activity, block or variable named and
+    /// missing, a root output outside the loop enum, a curve without keys or whose keys don't increase, an unknown
+    /// interpolation, a number that isn't finite, activities that start themselves (through any chain) or nest deeper
+    /// than `CHAIR_MAX_NESTING`, six buffet events not, or template loop values not in the loop enum.
+    pub fn check(&self) -> Result<(), ShipDataError> {
+        let fail = |why: String| bad(CHAIR_GRAPH_FILE, why);
+        let g = self;
+        if g.format != CHAIR_FORMAT {
+            return Err(fail(format!("format {}, this build reads {CHAIR_FORMAT}", g.format)));
+        }
+        for (i, s) in g.states.iter().enumerate() {
+            if g.states[..i].iter().any(|o| o.id == s.id) {
+                return Err(fail(format!("state {} appears twice", s.id)));
+            }
+            if let Some(a) = s.activities.iter().find(|a| !g.activities.contains_key(*a)) {
+                return Err(fail(format!("state {}: no activity {a}", s.id)));
+            }
+            for t in &s.transitions {
+                if !g.transition_blocks.contains_key(&t.block) {
+                    return Err(fail(format!("state {}: no transition block {}", s.id, t.block)));
+                }
+                if let Some(n) = t.targets.iter().find(|n| g.state(**n).is_none()) {
+                    return Err(fail(format!("state {}: a transition to state {n}, which isn't there", s.id)));
+                }
+            }
+        }
+        for o in &g.root_outputs {
+            if o.key == 0 || g.loop_enum.get(o.key as usize - 1) != Some(&o.enum_name) || g.state(o.state).is_none() {
+                return Err(fail(format!("root output {} ({}): not loop enum index + 1, or no state {}", o.key, o.enum_name, o.state)));
+            }
+        }
+        for (id, a) in &g.activities {
+            let at = |why: String| fail(format!("activity {id}: {why}"));
+            let var = |n: &String| if g.variable(n).is_some() { Ok(()) } else { Err(at(format!("no variable {n}"))) };
+            if let Some(n) = a.children().into_iter().find(|n| !g.activities.contains_key(*n)) {
+                return Err(at(format!("no activity {n}")));
+            }
+            match a {
+                ChairActivity::AnimationActivity { weight, rate, phase_variable, start_phase, phase_offset, .. } => {
+                    check_param(weight, g).map_err(|e| at(format!("weight: {e}")))?;
+                    check_param(rate, g).map_err(|e| at(format!("rate: {e}")))?;
+                    if let Some(v) = phase_variable {
+                        var(v)?;
+                    }
+                    if !start_phase.is_finite() || !phase_offset.is_finite() {
+                        return Err(at("its start phase or phase offset is not finite".into()));
+                    }
+                }
+                ChairActivity::GroupedActivityActivity { .. } => {}
+                ChairActivity::TriggeredActivityActivity { trigger_variable, fade_in_s, fade_out_s, min_time_s, .. } => {
+                    var(trigger_variable)?;
+                    if ![fade_in_s, fade_out_s, min_time_s].iter().all(|v| v.is_finite()) {
+                        return Err(at("a fade or minimum time is not finite".into()));
+                    }
+                }
+                ChairActivity::JoystickButtonActivity { button_variable, .. } => var(button_variable)?,
+            }
+        }
+        for s in &g.states {
+            g.check_nesting(s).map_err(|e| fail(format!("state {}: {e}", s.id)))?;
+        }
+        if !g.transition_blocks.contains_key(&g.default_block) {
+            return Err(fail(format!("no default block {}", g.default_block)));
+        }
+        for (id, b) in &g.transition_blocks {
+            if !b.fade_time_s.is_finite() || !b.wait_slack_s.is_finite() {
+                return Err(fail(format!("block {id}: its fade time or wait slack is not finite")));
+            }
+            if let Some(c) = &b.curve {
+                if c.is_empty() {
+                    return Err(fail(format!("block {id}: a curve without keys")));
+                }
+                check_keys(c).map_err(|e| fail(format!("block {id}: {e}")))?;
+            }
+        }
+        let t = &g.templates;
+        for v in [&t.initial_loop, &t.occupied_loop, &t.vacated_loop] {
+            if !g.loop_enum.iter().any(|n| n.eq_ignore_ascii_case(v)) {
+                return Err(fail(format!("template loop value {v} is not in the loop enum")));
+            }
+        }
+        if t.buffet_events.len() != 6 {
+            return Err(fail(format!("{} buffet events, not 6", t.buffet_events.len())));
+        }
+        if !t.buffet_thresholds.iter().all(|v| v.is_finite()) {
+            return Err(fail("a buffet threshold is not finite".into()));
+        }
+        for v in t.buffet_events.iter().chain([
+            &t.throttle_variable,
+            &t.trigger_variable,
+            &t.joystick_weight_variable,
+            &t.joystick_prop_variable,
+            &t.joystick_yaw_variable,
+            &t.buffet_intensity_variable,
+            &t.buffet_speed_variable,
+        ]) {
+            if g.variable(v).is_none() {
+                return Err(fail(format!("template variable {v} is not a graph variable")));
+            }
+        }
+        Ok(())
+    }
+
+    /// The activities a state starts, walked without recursion: none may start itself through any chain, none may nest
+    /// deeper than `CHAIR_MAX_NESTING`. (Every named activity exists: checked before.)
+    fn check_nesting(&self, s: &ChairState) -> Result<(), String> {
+        // how deep the activities under each one already walked go (so a shared child is walked once)
+        let mut height: BTreeMap<&str, usize> = BTreeMap::new();
+        for root in &s.activities {
+            let mut path: Vec<(&str, usize)> = vec![(root.as_str(), 0)];
+            while let Some(&(id, next)) = path.last() {
+                let kids = self.activities.get(id).map(ChairActivity::children).unwrap_or_default();
+                let Some(kid) = kids.get(next).map(|k| k.as_str()) else {
+                    let h = 1 + kids.iter().filter_map(|k| height.get(k.as_str())).max().copied().unwrap_or(0);
+                    height.insert(id, h);
+                    path.pop();
+                    continue;
+                };
+                if let Some(top) = path.last_mut() {
+                    top.1 += 1;
+                }
+                if path.iter().any(|(p, _)| *p == kid) {
+                    let chain: Vec<&str> = path.iter().map(|(p, _)| *p).chain([kid]).collect();
+                    return Err(format!("activity {kid} starts itself ({})", chain.join(" -> ")));
+                }
+                if path.len() + height.get(kid).copied().unwrap_or(1) > CHAIR_MAX_NESTING {
+                    return Err(format!("activity {root} nests activities deeper than {CHAIR_MAX_NESTING}"));
+                }
+                if !height.contains_key(kid) {
+                    path.push((kid, 0));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ChairActivity {
+    /// The activities this one starts in its turn (a group's children, a trigger's clip, a button's three stages).
+    pub fn children(&self) -> Vec<&String> {
+        match self {
+            ChairActivity::AnimationActivity { .. } => vec![],
+            ChairActivity::GroupedActivityActivity { children } => children.iter().collect(),
+            ChairActivity::TriggeredActivityActivity { activity, .. } => vec![activity],
+            ChairActivity::JoystickButtonActivity { in_activity, loop_activity, out_activity, .. } => vec![in_activity, loop_activity, out_activity],
+        }
+    }
+}
+
+fn check_param(p: &ChairParam, g: &ChairGraph) -> Result<(), String> {
+    if let Some(v) = &p.variable {
+        if g.variable(v).is_none() {
+            return Err(format!("no variable {v}"));
+        }
+        if p.keys.is_empty() {
+            return Err(format!("{v}: a curve without keys"));
+        }
+    }
+    if !p.constant.is_finite() {
+        return Err("its constant is not finite".into());
+    }
+    check_keys(&p.keys)
+}
+
+fn check_keys(keys: &[ChairKey]) -> Result<(), String> {
+    if let Some(k) = keys.iter().find(|k| k.interp > 5) {
+        return Err(format!("a key's interpolation {} is unknown", k.interp));
+    }
+    if keys.iter().any(|k| ![k.x, k.y, k.a, k.b].iter().all(|v| v.is_finite())) {
+        return Err("a key's number is not finite".into());
+    }
+    if keys.windows(2).any(|w| !(w[1].x >= w[0].x)) {
+        return Err("key positions don't increase".into());
+    }
+    Ok(())
+}
+
+/// Reads `chair/graph.json`, refusing what `ChairGraph::check` refuses.
+pub fn parse_chair_graph(bytes: &[u8]) -> Result<ChairGraph, ShipDataError> {
+    let g: ChairGraph = serde_json::from_slice(bytes).map_err(|e| bad(CHAIR_GRAPH_FILE, e.to_string()))?;
+    g.check()?;
+    Ok(g)
+}
+
+/// Writes `chair/graph.json` (pretty-printed, LF line endings).
+pub fn write_chair_graph(g: &ChairGraph) -> Vec<u8> {
+    let mut b = serde_json::to_vec_pretty(g).expect("the graph is plain data");
+    b.push(b'\n');
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,5 +1796,122 @@ mod tests {
         // with a route from Down back to Up, Down's SetTargetState routes there and nothing loops
         s.machines[0].states[2].transitions.push(Transition { target: "Up".into(), cost: 2, wait_for_activities: true, input: 1, kind: 2 });
         assert!(parse_ship(&write_ship(&s)).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod chair_tests {
+    //! The chair's files, from `tests/data/elite/chair/` (the shipped clips and graph as make_chair_vectors.py trims them).
+    use super::*;
+
+    fn data(name: &str) -> Vec<u8> {
+        let path = format!("{}/tests/data/elite/chair/{name}", env!("CARGO_MANIFEST_DIR"));
+        miniz_oxide::inflate::decompress_to_vec_zlib(&std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))).expect(name)
+    }
+
+    #[test]
+    fn chair_clips_round_trip() {
+        let c = parse_chair_clips(&data("clips.json.z"), &data("clips.bin.z")).unwrap();
+        assert!(c.clip("ChairMale_RightStickMove").is_some_and(|k| k.additive && k.frames == 41));
+        let (json, bin) = write_chair_clips(&c);
+        assert_eq!(bin, data("clips.bin.z"));
+        assert_eq!(parse_chair_clips(&json, &bin).unwrap(), c);
+    }
+
+    #[test]
+    fn chair_clips_refusals_name_the_fault() {
+        let (json, bin) = (data("clips.json.z"), data("clips.bin.z"));
+        let c = parse_chair_clips(&json, &bin).unwrap();
+        let fails = |c: &ChairClips, bin: &[u8], what: &str| {
+            let e = parse_chair_clips(&write_chair_clips(c).0, bin).unwrap_err().to_string();
+            assert!((e.starts_with("chair/clips.json: ") || e.starts_with("chair/clips.bin: ")) && e.contains(what), "{e}");
+        };
+        let last = c.clips.iter().max_by_key(|k| k.pos_keys_at).unwrap().name.clone();
+        fails(&c, &bin[..bin.len() - 8], &format!("chair/clips.bin: clip {last}: its position keys"));
+        fails(&c, &bin[..bin.len() - 1], "chair/clips.bin: ");
+        let mut d = c.clone();
+        d.clips[0].rot_keys_at += 2;
+        fails(&d, &bin, "rotation keys");
+        // offsets and sizes whose sum or product overflows are refused, never wrapped
+        let mut d = c.clone();
+        d.clips[0].rot_keys_at = u64::MAX - 7;
+        fails(&d, &bin, &format!("chair/clips.json: clip {}: its rotation keys' offset {} and size overflow", d.clips[0].name, u64::MAX - 7));
+        let mut d = c.clone();
+        d.clips[0].frames = u32::MAX;
+        fails(&d, &bin, "chair/clips.bin: clip chairmale_rightstickmove: its rotation keys (68719476720 bytes at 0)");
+        // (JSON holds no infinity; a table built in code is checked the same way)
+        let mut d = c.clone();
+        d.clips[0].pos_scale[0][1] = f32::INFINITY;
+        assert!(d.check().unwrap_err().to_string().contains("not finite"));
+        let mut d = c.clone();
+        d.clips[1].additive = !d.clips[1].additive;
+        fails(&d, &bin, "additive");
+        let mut d = c.clone();
+        d.clips[0].pos_channels[0].table = Some(9);
+        fails(&d, &bin, "no table entry");
+        let mut d = c.clone();
+        d.clips[2].name = d.clips[3].name.to_uppercase();
+        fails(&d, &bin, "appears twice");
+        let mut d = c.clone();
+        d.format = 2;
+        fails(&d, &bin, "format 2");
+        assert!(parse_chair_clips(b"{}", &bin).unwrap_err().to_string().starts_with("chair/clips.json: "));
+    }
+
+    #[test]
+    fn chair_graph_round_trip() {
+        let g = parse_chair_graph(&data("graph.json.z")).unwrap();
+        assert_eq!(parse_chair_graph(&write_chair_graph(&g)).unwrap(), g);
+        assert_eq!((g.output_state("Mode_Ship"), g.output_state("empty_ship"), g.output_state("Uninitialised")), (Some(8), Some(1), Some(40)));
+        assert_eq!(g.output_state("Action_GunnerAlertMode"), None);
+        assert_eq!(g.templates.buffet_thresholds, [1e-5; 3]);
+        let text = String::from_utf8(write_chair_graph(&g)).unwrap();
+        for k in ["\"type\": \"JoystickButtonActivity\"", "\"in\": ", "\"const\": 1.0", "\"occupied_loop\": \"Mode_Ship\""] {
+            assert!(text.contains(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn chair_graph_refusals_name_the_fault() {
+        let g = parse_chair_graph(&data("graph.json.z")).unwrap();
+        let fails = |g: &ChairGraph, what: &str| {
+            let e = parse_chair_graph(&write_chair_graph(g)).unwrap_err().to_string();
+            assert!(e.starts_with("chair/graph.json: ") && e.contains(what), "{e}");
+        };
+        let mut d = g.clone();
+        d.states[0].activities.push("9:9".into());
+        fails(&d, "no activity 9:9");
+        let mut d = g.clone();
+        d.states[0].transitions[0].targets.push(99);
+        fails(&d, "state 99");
+        let mut d = g.clone();
+        d.root_outputs[0].key += 1;
+        fails(&d, "root output");
+        let mut d = g.clone();
+        d.templates.occupied_loop = "Mode_Boat".into();
+        fails(&d, "Mode_Boat");
+        let mut d = g.clone();
+        if let Some(ChairActivity::AnimationActivity { weight, .. }) = d.activities.values_mut().find(|a| matches!(a, ChairActivity::AnimationActivity { weight, .. } if weight.variable.is_some())) {
+            weight.keys[0].interp = 9;
+        }
+        fails(&d, "interpolation 9");
+        let mut d = g.clone();
+        d.templates.buffet_events.pop();
+        fails(&d, "5 buffet events");
+        let mut d = g.clone();
+        d.default_block = "0:0".into();
+        fails(&d, "no default block");
+        // a group that starts itself, through another group: the state and the chain are named
+        let mut d = g.clone();
+        let gid = d.activities.iter().find(|(_, a)| matches!(a, ChairActivity::GroupedActivityActivity { .. })).map(|(k, _)| k.clone()).unwrap();
+        d.activities.insert("9:1".into(), ChairActivity::GroupedActivityActivity { children: vec![gid.clone()] });
+        if let Some(ChairActivity::GroupedActivityActivity { children }) = d.activities.get_mut(&gid) {
+            children.push("9:1".into());
+        }
+        let owner = d.states.iter().find(|s| s.activities.contains(&gid)).unwrap().id;
+        fails(&d, &format!("state {owner}: activity {gid} starts itself ({gid} -> 9:1 -> {gid})"));
+        let mut d = g.clone();
+        d.transition_blocks.values_mut().for_each(|b| b.fade_time_s = f32::INFINITY);
+        assert!(d.check().unwrap_err().to_string().contains("not finite"));
     }
 }

@@ -1,0 +1,560 @@
+//! The Faulcon DeLacy Sidewinder's sounds as Elite Dangerous's Wwise banks define them: the data (`sounds.json`, [`data`])
+//! and a pure runtime ([`Mixer`]) doing what the Wwise sound engine does with it: events posted and game parameters,
+//! states and switches set over time in, which recordings play, how loud, at what pitch and filtered how out. No Bevy, no
+//! audio device, no files, no clock of its own; deterministic for a seed. The game's side (`sidewinder/sound.rs`) plays
+//! what [`Mixer::step`] reports.
+//!
+//! # What is built (the behaviours the shipped events' data uses)
+//! Counts are shipped events using each (with the events they post), of the 446 in `sounds.json` (223 `SHIP_EVENTS`,
+//! 223 `OPEN_EVENTS`), counted by `re/elite/work/sound/t5b/survey.py`.
+//! - Event actions: Play (317), PlayEvent (45), Stop (126), SetState (39), SetSwitch (11), SetGameParameter (23),
+//!   SetVolume (6), ResetVolume (8), SetPitch (7), ResetPitch (6), Seek (4, relative to the duration); delays with their
+//!   random range; fade times with the seven fade curves in use (Linear 387, SCurve 30, Sine 9, Exp1 7, Log1 5,
+//!   SineRecip 5, Exp3 4); scopes game object (397), global (33), global all (39), game object without target (11);
+//!   absolute and offset values with their random range.
+//! - Sound (317): loop count (infinite on 390 objects, 57 events), initial delay (property 37, randomiser 37, game
+//!   parameter curve 4).
+//! - RanSeqCntr (249): random (normal, shuffle) and sequence, step and continuous, avoid-repeat (249), weights, loop
+//!   counts, per game object (2) or global playlists, reset at each play or not (2); transitions Disabled, Delay,
+//!   TriggerRate, SampleAccurate, CrossFadeAmp, CrossFadePower, their random time modifier (46) and the game parameter
+//!   on the transition time (`PlayMechanismSpecialTransitionsValue`, 22).
+//! - SwitchCntr (80): on switch groups (66), state groups (48) and game-parameter-driven switches (64); continuous
+//!   validation (56) with each child's stop / continue / first-only and fade times.
+//! - LayerCntr (71): all children together, blend tracks with their crossfade curves (4) and track curves (7).
+//! - Properties down the actor-mixer chain (additive: Volume, MakeUpGain, Pitch, LPF, HPF, InitialDelay, OutputBus*) and
+//!   up the bus chain (Volume, BusVolume, Pitch, LPF, HPF, OutputBus*), randomisers (Volume 51, Pitch 86, LPF 21, HPF 1,
+//!   InitialDelay 37).
+//! - Game parameter curves (Volume 307, Pitch 217, LPF 214, HPF 150, Priority 134, OutputBusVolume / LPF 128,
+//!   MaxNumInstances 3, InitialDelay 4; on buses Volume / BusVolume 312, LPF 223, OutputBus* 260) with every
+//!   interpolation shape (all ten in use) and the dB scaling ([`curve`]); game parameter defaults, SlewRate (312) and
+//!   FilteringOverTime (313) ramps, the built-in Distance parameter (132).
+//! - States (333): their deltas on nodes and buses, transition times (per pair and default).
+//! - Distance attenuation (269): VolumeDry, LowPassFilter (134), HighPassFilter (29) curves.
+//! - Bus ducking (45); playback limits with priority and its distance factor (node limits 130, bus limits 21), each
+//!   killing or, where `use_virtual_behavior` is set (35 limited nodes), making the voices beyond it virtual, and
+//!   `ignore_parent_max_instances` (what plays under such a node does not count against the limits above it); virtual
+//!   voice behaviour below the volume threshold (all four behaviours, the three queue behaviours).
+//! - Loop regions: a looping recording with an intro (11 of the shipped ones) reports the region it repeats
+//!   ([`VoiceStart::loop_region`], from `Media::loop_region`, the bank's smpl loop points).
+//! - Source plugins: Wwise Silence (10; timing only, no update), Motion Generator (21; a `Rumble` output), Tone
+//!   Generator (2; a `Synth` output carrying the source id: synthesis is the player's).
+//! - Loads refuse what would never end: an object holding itself (any cycle of children or switch nodes) and an event
+//!   posting itself without a delay (any cycle); every walk is iterative or bounded (64 levels).
+//! - Time: a step that is not finite or not positive counts as 0; a step's first second is run event by event and the
+//!   rest, up to an hour, at once ([`Mixer::step`]); setters ignore values that are not finite.
+//!
+//! # Not built (kept in the data, never refused, listed with the shipped events they touch)
+//! - Effects and plugins on buses and objects (bus effects 312, object effects 214, bus mixer plugins 225, BypassFX
+//!   curves 181 and state deltas 162), aux sends (user 291, game 183, their curves 137) and the attenuation's wet curves
+//!   (269), HDR (every bus carries HDR settings: 317; HDR envelope 24), loudness normalisation (203).
+//! - Panning and spatialisation: speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Spread (267)
+//!   and Focus (4) attenuation curves, positioning-type blend curves (10), a 2D pan curve (1), path automation (13),
+//!   held emitter / listener orientation (7), cone attenuation (9; the update has no orientation): the update carries
+//!   the emitter's position for the player to pan.
+//! - Modulators: LFO (42) and envelope (10) modulator curves contribute nothing (their output formulas are not public,
+//!   and `events.json` names their properties with the node table's names).
+//! - The global voice cap (256).
+//! - A blend container's continuous validation (true on 7 of the 138, 3 shipped events): a child whose crossfade falls
+//!   to 0 plays on silently instead of being stopped and started again when the parameter comes back. With it false (the
+//!   other 131) the children likewise play at their crossfade gain.
+//! - Low-pass / high-pass in Hz: Wwise's published table of cutoff frequencies could not be read (Audiokinetic's pages
+//!   refused the request); [`VoiceUpdate::lowpass_hz`] stays `None`, the 0-100 values are given.
+//!
+//! Choices the data and the public sources leave open, made here and named: FilteringOverTime is a first-order low pass
+//! whose time constant is the stored time; `PlayMechanismSpecialTransitionsValue` adds seconds to the transition time;
+//! playback limits count globally (the limit's scope bit is not in `events.json`); blend track crossfade values are
+//! linear gains; crossfade transitions start the next item that long before a recording's end (only where the item is
+//! a Sound of known length; otherwise at its end); LPF / HPF contributions add up, clamped to 0-100; trigger-rate
+//! intervals are at least 10 ms; a state change in the middle of a transition starts from the values it has then.
+//!
+//! Not verified against an independent source (the review's list): a fade-out runs the action's curve from 1 to 0
+//! (`AkInterpolation` from the start value to the target, as for fades in); FilteringOverTime's time constant; the
+//! limits' scope (global); ducking's `max_duck_volume_db` read as the floor of the sum of a bus's ducks; a blend
+//! container played as a whole (no step mode: all children start together).
+
+pub mod curve;
+pub mod data;
+mod mixer;
+
+#[cfg(test)]
+mod tests;
+
+pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
+pub use mixer::{Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S};
+
+use data::*;
+use std::collections::HashMap;
+
+/// What went wrong.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoundError {
+    /// `sounds.json` is damaged or needs a behaviour the mixer does not have.
+    Bad(String),
+    /// An event name no shipped event hashes to.
+    UnknownEvent(String),
+}
+
+impl std::fmt::Display for SoundError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SoundError::Bad(s) => write!(f, "{s}"),
+            SoundError::UnknownEvent(s) => write!(f, "no sound event {s:?}"),
+        }
+    }
+}
+
+impl std::error::Error for SoundError {}
+
+/// Wwise's id of a name (`AK::SoundEngine::GetIDFromString`): FNV-1 32-bit of the lower-cased name.
+pub fn wwise_id(name: &str) -> Id {
+    let mut h: u32 = 2166136261;
+    for b in name.bytes() {
+        h = h.wrapping_mul(16777619) ^ u32::from(b.to_ascii_lowercase());
+    }
+    Id(h)
+}
+
+/// The id an event name posts: Wwise's hash of the name, or, for the banks' unnamed events, the id written as
+/// `event_<8 hex>` (how `events.json` names them).
+pub fn event_id(name: &str) -> Id {
+    match name.strip_prefix("event_").filter(|h| h.len() == 8).and_then(|h| u32::from_str_radix(h, 16).ok()) {
+        Some(id) => Id(id),
+        None => wwise_id(name),
+    }
+}
+
+/// Properties the mixer applies (on nodes, buses, in state deltas and game parameter curves).
+const BUILT_PARAMS: &[&str] = &[
+    "Volume", "MakeUpGain", "BusVolume", "OutputBusVolume", "Pitch", "LPF", "HPF", "OutputBusLPF", "OutputBusHPF", "InitialDelay",
+    "Priority", "PriorityDistanceOffset", "MaxNumInstances", "PlayMechanismSpecialTransitionsValue", "Loop", "AttenuationID",
+];
+
+/// Properties kept and listed as not built (see the module's docs).
+const NOT_BUILT_PARAMS: &[&str] = &[
+    "UserAuxSendVolume0", "UserAuxSendVolume1", "UserAuxSendVolume2", "UserAuxSendVolume3", "GameAuxSendVolume", "ReflectionBusVolume",
+    "CenterPCT", "PAN_LR", "PAN_FR", "HDRActiveRange", "HDRBusThreshold", "HDRBusRatio", "HDRBusReleaseTime", "HDRBusGameParamMax",
+    "BypassFX0", "BypassFX1", "BypassFX2", "BypassFX3", "BypassAllFX", "PositioningTypeBlend", "Position_PAN_X_2D", "Position_PAN_Y_2D",
+];
+
+const RANGED_BUILT: &[&str] = &["Volume", "Pitch", "LPF", "HPF", "InitialDelay"];
+
+/// A cycle in a graph (iterative depth-first search), as the ids along it, the first repeated at the end.
+fn find_cycle(nodes: impl Iterator<Item = Id>, next: impl Fn(Id) -> Vec<Id>) -> Option<Vec<Id>> {
+    // 1 = on the current path, 2 = done.
+    let mut mark: HashMap<Id, u8> = HashMap::new();
+    for start in nodes {
+        if mark.contains_key(&start) {
+            continue;
+        }
+        let mut stack: Vec<(Id, Vec<Id>, usize)> = vec![(start, next(start), 0)];
+        mark.insert(start, 1);
+        while let Some(top) = stack.last_mut() {
+            if top.2 < top.1.len() {
+                let n = top.1[top.2];
+                top.2 += 1;
+                match mark.get(&n) {
+                    Some(1) => {
+                        let at = stack.iter().position(|s| s.0 == n).unwrap_or(0);
+                        let mut c: Vec<Id> = stack[at..].iter().map(|s| s.0).collect();
+                        c.push(n);
+                        return Some(c);
+                    }
+                    Some(_) => {}
+                    None => {
+                        mark.insert(n, 1);
+                        let nn = next(n);
+                        stack.push((n, nn, 0));
+                    }
+                }
+            } else {
+                mark.insert(top.0, 2);
+                stack.pop();
+            }
+        }
+    }
+    None
+}
+
+fn ids_text(ids: &[Id]) -> String {
+    ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" -> ")
+}
+
+/// `sounds.json` read and checked, with the lookups the mixer needs.
+#[derive(Debug)]
+pub struct SoundBank {
+    pub file: SoundFile,
+    /// Each node's actor-mixer chain: itself, then its parents up to the root.
+    chains: HashMap<Id, Vec<Id>>,
+    /// Each bus's chain: itself, then its parents up to the master.
+    bus_chains: HashMap<Id, Vec<Id>>,
+}
+
+fn bad(s: String) -> SoundError {
+    SoundError::Bad(s)
+}
+
+impl SoundBank {
+    /// Checks every reference and every behaviour ([`parse_sounds`] calls it).
+    pub fn new(file: SoundFile) -> Result<SoundBank, SoundError> {
+        let mut chains = HashMap::new();
+        let mut bus_chains = HashMap::new();
+        for (id, o) in &file.objects {
+            match o {
+                Object::Bus(_) => {
+                    let mut c = vec![*id];
+                    let mut b = o;
+                    while let Object::Bus(bus) = b {
+                        let Some(p) = &bus.parent_bus else { break };
+                        if c.contains(&p.id) {
+                            return Err(bad(format!("bus {id}: its parents loop")));
+                        }
+                        b = file.objects.get(&p.id).ok_or_else(|| bad(format!("bus {id}: parent bus {} is missing", p.id)))?;
+                        if !matches!(b, Object::Bus(_)) {
+                            return Err(bad(format!("bus {id}: parent {} is not a bus", p.id)));
+                        }
+                        c.push(p.id);
+                    }
+                    bus_chains.insert(*id, c);
+                }
+                o if o.node().is_some() => {
+                    let mut c = vec![*id];
+                    let mut n = o.node().unwrap();
+                    while let Some(p) = &n.parent {
+                        if c.contains(&p.id) {
+                            return Err(bad(format!("{id}: its parents loop")));
+                        }
+                        n = file.objects.get(&p.id).and_then(Object::node).ok_or_else(|| bad(format!("{id}: parent {} is missing", p.id)))?;
+                        c.push(p.id);
+                    }
+                    chains.insert(*id, c);
+                }
+                _ => {}
+            }
+        }
+        let bank = SoundBank { file, chains, bus_chains };
+        bank.check()?;
+        bank.check_playable()?;
+        bank.check_cycles()?;
+        Ok(bank)
+    }
+
+    fn check(&self) -> Result<(), SoundError> {
+        let f = &self.file;
+        let obj = |id: &Id| f.objects.get(id);
+        for name in f.ship_events.iter().chain(&f.open_events) {
+            if !f.events.contains_key(&event_id(name)) {
+                return Err(bad(format!("event {name} is listed but not in the file")));
+            }
+        }
+        for (eid, e) in &f.events {
+            if let Some(n) = &e.name {
+                if wwise_id(n) != *eid {
+                    return Err(bad(format!("event {eid}: its name {n} hashes to {}", wwise_id(n))));
+                }
+            }
+            for a in &e.actions {
+                let Some(Object::Action(act)) = obj(a) else { return Err(bad(format!("event {eid}: action {a} is missing"))) };
+                self.check_action(act)?;
+            }
+        }
+        for (id, o) in &f.objects {
+            let at = |s: String| bad(format!("{} {id}: {s}", o.type_name()));
+            if let Some(n) = o.node() {
+                self.check_node(n).map_err(at)?;
+            }
+            match o {
+                Object::Sound(s) => {
+                    if s.plugin_type == 2 {
+                        let p = f.source_plugins.get(&s.source_id).ok_or_else(|| at(format!("source plugin {} has no parameters", s.source_id)))?;
+                        if !matches!(p.name.as_str(), "Wwise Silence" | "Wwise Motion Generator" | "Wwise Tone Generator") {
+                            return Err(at(format!("source plugin {} is not one the mixer knows", p.name)));
+                        }
+                        if p.name == "Wwise Silence" && p.params.get("fDuration").and_then(serde_json::Value::as_f64).is_none() {
+                            return Err(at("silence without fDuration".into()));
+                        }
+                    } else if !f.media.contains_key(&s.source_id) {
+                        return Err(at(format!("media {} is not shipped", s.source_id)));
+                    }
+                }
+                Object::RanSeqCntr(r) => {
+                    if r.restart_backward {
+                        return Err(at("restart backward is not built".into()));
+                    }
+                    if r.loop_mod_min != 0 || r.loop_mod_max != 0 {
+                        return Err(at("loop count randomiser is not built".into()));
+                    }
+                    for p in &r.playlist {
+                        if !r.children.contains(&p.id) {
+                            return Err(at(format!("playlist item {} is not a child", p.id)));
+                        }
+                    }
+                }
+                // A switch value may name a node that is not in the file: one whose bank is not among those at rest (6 such
+                // in the export), or the child of a switch container only met as the parent of what plays. It plays
+                // nothing, as in Wwise with that bank not loaded; `check_playable` holds everything a Play reaches.
+                Object::SwitchCntr(_) => {}
+                Object::LayerCntr(l) => {
+                    for layer in &l.layers {
+                        self.check_rtpcs(&layer.rtpc).map_err(at)?;
+                        if layer.crossfade_rtpc_type != RtpcType::GameParameter {
+                            return Err(at("a blend track crossfade by a modulator is not built".into()));
+                        }
+                    }
+                }
+                Object::ActorMixer(_) => {}
+                Object::Bus(b) => {
+                    self.check_props(&b.props).map_err(at)?;
+                    self.check_rtpcs(&b.rtpc).map_err(at)?;
+                    self.check_states(&b.states).map_err(at)?;
+                    for d in &b.ducks {
+                        if d.target_prop != 0 {
+                            return Err(at(format!("ducking property {} is not built (only volume)", d.target_prop)));
+                        }
+                        // A ducked bus not in the file carries none of the shipped sounds (nothing to duck).
+                        if obj(&d.bus.id).is_some_and(|o| !matches!(o, Object::Bus(_))) {
+                            return Err(at(format!("ducked {} is not a bus", d.bus.id)));
+                        }
+                    }
+                }
+                Object::Attenuation(a) => {
+                    self.check_rtpcs(&a.rtpc).map_err(at)?;
+                    if !a.rtpc.is_empty() {
+                        return Err(at("game parameter curves on an attenuation are not built".into()));
+                    }
+                    for (k, i) in &a.curve_to_use {
+                        if !matches!(k.as_str(), "VolumeDry" | "LowPassFilter" | "HighPassFilter" | "VolumeWetGame" | "VolumeWetUser" | "Spread" | "Focus") {
+                            return Err(at(format!("attenuation curve use {k} is not known")));
+                        }
+                        if *i >= a.curves.len() as i32 {
+                            return Err(at(format!("{k} names curve {i}")));
+                        }
+                    }
+                }
+                Object::Action(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// No object holds itself (container children, switch nodes, any length of cycle) and no event posts itself without a
+    /// delay (PlayEvent actions whose delay can be 0, any length of cycle): either would never end.
+    fn check_cycles(&self) -> Result<(), SoundError> {
+        let f = &self.file;
+        let kids = |id: Id| -> Vec<Id> {
+            match f.objects.get(&id) {
+                Some(Object::RanSeqCntr(r)) => r.children.clone(),
+                Some(Object::LayerCntr(l)) => l.children.clone(),
+                Some(Object::SwitchCntr(s)) => {
+                    let mut k = s.children.clone();
+                    k.extend(s.switches.iter().flat_map(|e| e.nodes.iter().copied()).filter(|n| f.objects.contains_key(n)));
+                    k
+                }
+                _ => Vec::new(),
+            }
+        };
+        let posts = |id: Id| -> Vec<Id> {
+            f.events
+                .get(&id)
+                .map(|e| {
+                    e.actions
+                        .iter()
+                        .filter_map(|a| match f.objects.get(a) {
+                            Some(Object::Action(act)) if act.kind == ActionKind::PlayEvent => {
+                                let least = act.props.get("DelayTime").and_then(PropValue::num).unwrap_or(0.0) + act.ranged.get("DelayTime").map(|r| r.min).unwrap_or(0.0);
+                                (least <= 0.0).then_some(act.target)
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        if let Some(c) = find_cycle(f.objects.keys().copied(), kids) {
+            return Err(bad(format!("objects hold themselves: {}", ids_text(&c))));
+        }
+        if let Some(c) = find_cycle(f.events.keys().copied(), posts) {
+            return Err(bad(format!("events post themselves without a delay: {}", ids_text(&c))));
+        }
+        Ok(())
+    }
+
+    /// Everything a Play action can reach is in the file: its target and, down the tree, every child. (An object only
+    /// stopped, sought or set may list children that nothing plays; they are left out.)
+    fn check_playable(&self) -> Result<(), SoundError> {
+        let mut todo: Vec<Id> = self
+            .file
+            .objects
+            .values()
+            .filter_map(|o| match o {
+                Object::Action(a) if a.kind == ActionKind::Play => Some(a.target),
+                _ => None,
+            })
+            .collect();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let kids: &[Id] = match self.file.objects.get(&id) {
+                Some(Object::RanSeqCntr(r)) => &r.children,
+                Some(Object::SwitchCntr(s)) => &s.children,
+                Some(Object::LayerCntr(l)) => &l.children,
+                Some(Object::Sound(_)) => &[],
+                _ => return Err(bad(format!("{id}, which a Play action reaches, is missing or not playable"))),
+            };
+            todo.extend(kids.iter().copied());
+        }
+        Ok(())
+    }
+
+    fn check_props(&self, p: &Props) -> Result<(), String> {
+        for (k, v) in p {
+            if !BUILT_PARAMS.contains(&k.as_str()) && !NOT_BUILT_PARAMS.contains(&k.as_str()) {
+                return Err(format!("property {k} is not one the mixer knows"));
+            }
+            if k == "AttenuationID" {
+                let PropValue::Ref(r) = v else { return Err("AttenuationID is not a reference".into()) };
+                if !matches!(self.file.objects.get(&r.id), Some(Object::Attenuation(_))) {
+                    return Err(format!("attenuation {} is missing", r.id));
+                }
+            } else if v.num().is_none() {
+                return Err(format!("property {k} is not a number"));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_rtpcs(&self, rs: &[Rtpc]) -> Result<(), String> {
+        for r in rs {
+            let p = r.param.as_str();
+            if !BUILT_PARAMS.contains(&p) && !NOT_BUILT_PARAMS.contains(&p) {
+                return Err(format!("a curve on {p} is not built"));
+            }
+            if r.accumulation == Accumulation::Exclusive && !matches!(p, "MaxNumInstances" | "PositioningTypeBlend") {
+                return Err(format!("an exclusive curve on {p} is not built"));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_states(&self, s: &StateBlock) -> Result<(), String> {
+        for g in &s.groups {
+            for st in &g.states {
+                for k in st.deltas.keys() {
+                    if !BUILT_PARAMS.contains(&k.as_str()) && !NOT_BUILT_PARAMS.contains(&k.as_str()) {
+                        return Err(format!("state delta on {k} is not built"));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_node(&self, n: &Node) -> Result<(), String> {
+        self.check_props(&n.props)?;
+        for k in n.ranged.keys() {
+            if !RANGED_BUILT.contains(&k.as_str()) {
+                return Err(format!("randomiser on {k} is not built"));
+            }
+        }
+        self.check_rtpcs(&n.rtpc)?;
+        self.check_states(&n.states)?;
+        if let Some(b) = &n.override_bus {
+            if !self.bus_chains.contains_key(&b.id) {
+                return Err(format!("output bus {} is missing", b.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_action(&self, a: &Action) -> Result<(), SoundError> {
+        let at = |s: &str| bad(format!("action {}: {s}", a.id));
+        if a.params.exceptions.as_ref().is_some_and(|e| !e.is_empty()) {
+            return Err(at("exceptions are not built"));
+        }
+        if a.target_is_bus {
+            return Err(at("actions on buses are not built"));
+        }
+        for k in a.props.keys() {
+            if !matches!(k.as_str(), "DelayTime" | "TransitionTime" | "Probability") {
+                return Err(at(&format!("property {k} is not built")));
+            }
+        }
+        for k in a.ranged.keys() {
+            if k != "DelayTime" {
+                return Err(at(&format!("randomiser {k} is not built")));
+            }
+        }
+        // A Stop / Set / Seek target need not be in the file: it is matched against the chains of what plays.
+        let node_target = || match self.file.objects.get(&a.target) {
+            Some(o) if o.node().is_none() => Err(at(&format!("target {} is not an actor-mixer node", a.target))),
+            _ => Ok(()),
+        };
+        match a.kind {
+            ActionKind::Play => match self.file.objects.get(&a.target) {
+                Some(Object::Sound(_) | Object::RanSeqCntr(_) | Object::SwitchCntr(_) | Object::LayerCntr(_)) => {}
+                _ => return Err(at(&format!("play target {} is missing or not playable", a.target))),
+            },
+            ActionKind::Stop | ActionKind::SetVolume | ActionKind::ResetVolume | ActionKind::SetPitch | ActionKind::ResetPitch => node_target()?,
+            ActionKind::Seek => {
+                node_target()?;
+                if a.params.seek_relative_to_duration != Some(true) || a.params.snap_to_nearest_marker != Some(false) || a.params.seek.is_none() {
+                    return Err(at("only a seek relative to the duration, without markers, is built"));
+                }
+            }
+            ActionKind::PlayEvent => {
+                if !self.file.events.contains_key(&a.target) {
+                    return Err(at(&format!("posted event {} is missing", a.target)));
+                }
+            }
+            ActionKind::SetState => {
+                if a.params.state_group.is_none() || a.params.state.is_none() {
+                    return Err(at("SetState without its group and state"));
+                }
+            }
+            ActionKind::SetSwitch => {
+                if a.params.switch_group.is_none() || a.params.switch.is_none() {
+                    return Err(at("SetSwitch without its group and value"));
+                }
+            }
+            ActionKind::SetGameParameter => {
+                if a.params.value.is_none() || a.params.value_meaning.is_none() {
+                    return Err(at("SetGameParameter without its value"));
+                }
+            }
+        }
+        if matches!(a.kind, ActionKind::SetVolume | ActionKind::SetPitch | ActionKind::ResetVolume | ActionKind::ResetPitch) && a.params.value.is_none() {
+            return Err(at("a set / reset without its value"));
+        }
+        Ok(())
+    }
+
+    /// The event a name posts, if it is in the file.
+    pub fn event(&self, name: &str) -> Option<&Event> {
+        self.file.events.get(&event_id(name))
+    }
+
+    pub fn object(&self, id: Id) -> Option<&Object> {
+        self.file.objects.get(&id)
+    }
+
+    /// A node's actor-mixer chain (itself first).
+    pub fn chain(&self, id: Id) -> &[Id] {
+        self.chains.get(&id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn bus_chain(&self, id: Id) -> &[Id] {
+        self.bus_chains.get(&id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn node(&self, id: Id) -> Option<&Node> {
+        self.file.objects.get(&id).and_then(Object::node)
+    }
+
+    fn bus(&self, id: Id) -> Option<&Bus> {
+        match self.file.objects.get(&id) {
+            Some(Object::Bus(b)) => Some(b),
+            _ => None,
+        }
+    }
+}
