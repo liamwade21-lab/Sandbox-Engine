@@ -1,8 +1,365 @@
-The Faulcon DeLacy Sidewinder mod's files: where each came from. Written by copy_sidewinder (sidewinder/convert.rs).
-Elite Dangerous is Frontier Developments'; every file below taken from its install is theirs (version 2026.10.23.334925).
+The Faulcon DeLacy Sidewinder mod's files: where each came from. Written by copy_sidewinder (src/sidewinder/convert/).
+Elite Dangerous is Frontier Developments'; every file below taken from it is theirs (install version 2026.10.23.334925).
 Grades are the plan's (docs/spec-mods-sidewinder.md): A = Elite's own bytes, E = recreated.
+Elite's original assets come from the decoded export (re/elite/frea_export/sidewinder/decoded, made from the install by the export tool, out of git): its README gives the exact vertex decode and the spaces.
+Models: LOD0 only: Elite's LOD switch rule is not known.
 
-ship.edm: the hull is Elite file 4387928be519b4cfc8aa67be4113e19e2fbb09f5 (chunk 0, its most detailed part: 2332 triangles), vertex bytes and indices unchanged (A). It is Elite's simplified Sidewinder, believed to be the HUD's hologram model; the in-game hull is not among the open files. Its place, scale (14.4 x 22.2 x 4.2 m) and the landing gear are recreated (E) from the user's screenshots and Frontier's published size. A stand-in until step 0.5's recreation.
-cockpit.edm: recreated in Blender (E) from the user's three cockpit screenshots (src/sidewinder/cockpit: make_cockpit.py, cockpit.obj, notes.md); Elite's own cockpit is in its encrypted files and was never opened.
-binds/KeyboardMouseOnly.binds: a copy of Elite's ControlSchemes/KeyboardMouseOnly.binds (A).
-binds/ControlPad.binds: a copy of Elite's ControlSchemes/ControlPad.binds (A).
+Not shipped: the pg_sidewinder_extendedengine drive bolt-ons (the export's engine_left / engine_right: rigs PG_SideWinder_ExtendedEngineLeft / Right, models driveboltonleft, driveboltonright, plateleft, plateright, fin, material SideWinder_DriveBoltOn) are the Proving Ground arena's by the evidence at rest: their pg_ names, as the arena's pg_sidewinder hull and cockpit, and the item database listing them only beside the CQC loadouts.
+
+ship.edm (A + E): STAND-IN (T4 removes it). The hull is Elite file 4387928be519b4cfc8aa67be4113e19e2fbb09f5 (chunk 0, its most detailed part: 2332 triangles), vertex bytes and indices unchanged (A); it is Elite's simplified Sidewinder, believed to be the HUD's hologram model. Its place, scale (14.4 x 22.2 x 4.2 m) and the landing gear are recreated (E) from the user's screenshots and Frontier's published size.
+  from: Elite install file 4387928be519b4cfc8aa67be4113e19e2fbb09f5
+cockpit.edm (E): STAND-IN (T4 removes it). Recreated in Blender from the user's three cockpit screenshots (src/sidewinder/cockpit: make_cockpit.py, cockpit.obj, notes.md).
+  from: src/sidewinder/cockpit/cockpit.obj
+binds/KeyboardMouseOnly.binds (A): A copy of Elite's key file.
+  from: Elite install ControlSchemes/KeyboardMouseOnly.binds
+binds/ControlPad.binds (A): A copy of Elite's key file.
+  from: Elite install ControlSchemes/ControlPad.binds
+models/cockpit_chair.edm (A): Elite's model cockpit_chair, LOD0 (9 draws, 27368 triangles, 23678 vertices): vertex and index bytes unchanged, 142 bones (inverse binds in full, as float32), 7 materials by Elite's name.
+  from: decoded/models/cockpit_chair.json; decoded/models/cockpit_chair.0.buf0.bin; Elite file 781c37a239c7a9d83bd64a6b297bad3ee43ba355
+models/cockpit_ui_hightlight_activefiregroup.edm (A): Elite's model cockpit_ui_hightlight_activefiregroup, LOD0 (1 draws, 86 triangles, 128 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_activefiregroup.json; decoded/models/cockpit_ui_hightlight_activefiregroup.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_compass.edm (A): Elite's model cockpit_ui_hightlight_compass, LOD0 (1 draws, 108 triangles, 216 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_compass.json; decoded/models/cockpit_ui_hightlight_compass.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_health.edm (A): Elite's model cockpit_ui_hightlight_health, LOD0 (1 draws, 108 triangles, 216 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_health.json; decoded/models/cockpit_ui_hightlight_health.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_mainpanel_l.edm (A): Elite's model cockpit_ui_hightlight_mainpanel_l, LOD0 (1 draws, 32 triangles, 48 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_mainpanel_l.json; decoded/models/cockpit_ui_hightlight_mainpanel_l.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_mainpanel_r.edm (A): Elite's model cockpit_ui_hightlight_mainpanel_r, LOD0 (1 draws, 32 triangles, 48 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_mainpanel_r.json; decoded/models/cockpit_ui_hightlight_mainpanel_r.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_masslock.edm (A): Elite's model cockpit_ui_hightlight_masslock, LOD0 (1 draws, 32 triangles, 48 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_masslock.json; decoded/models/cockpit_ui_hightlight_masslock.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_radar.edm (A): Elite's model cockpit_ui_hightlight_radar, LOD0 (1 draws, 108 triangles, 216 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_radar.json; decoded/models/cockpit_ui_hightlight_radar.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_target.edm (A): Elite's model cockpit_ui_hightlight_target, LOD0 (1 draws, 108 triangles, 216 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_target.json; decoded/models/cockpit_ui_hightlight_target.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_targetpanel.edm (A): Elite's model cockpit_ui_hightlight_targetpanel, LOD0 (1 draws, 32 triangles, 48 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_targetpanel.json; decoded/models/cockpit_ui_hightlight_targetpanel.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_targetpanel_2.edm (A): Elite's model cockpit_ui_hightlight_targetpanel_2, LOD0 (1 draws, 32 triangles, 48 vertices): vertex and index bytes unchanged, 0 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_targetpanel_2.json; decoded/models/cockpit_ui_hightlight_targetpanel_2.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpit_ui_hightlight_throttle.edm (A): Elite's model cockpit_ui_hightlight_throttle, LOD0 (1 draws, 46 triangles, 68 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpit_ui_hightlight_throttle.json; decoded/models/cockpit_ui_hightlight_throttle.0.buf0.bin; Elite file 3e3724b6074809cb2ac064ce55f219b6c83d2d2f
+models/cockpitchair_bone_rig.edm (A): Elite's model cockpitchair_bone_rig, LOD0 (1 draws, 1 triangles, 3 vertices): vertex and index bytes unchanged, 22 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/cockpitchair_bone_rig.json; decoded/models/cockpitchair_bone_rig.0.buf0.bin; Elite file 5d49d882f6b1fbd1b19f6a1bd173330021e86884
+models/commandercreator_cockpit_low.edm (A): Elite's model commandercreator_cockpit_low, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged, 12 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/commandercreator_cockpit_low.json; decoded/models/commandercreator_cockpit_low.0.buf0.bin; Elite file bb810dfce55a91ec4aaadd6d1cd8ccd5ce127665
+models/ext_cockpit_chair.edm (A): Elite's model ext_cockpit_chair, LOD0 (1 draws, 1251 triangles, 1787 vertices): vertex and index bytes unchanged, 75 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/ext_cockpit_chair.json; decoded/models/ext_cockpit_chair.0.buf0.bin; Elite file 74736d73e69c944143bfe292ef51f73ef02f04ec
+models/geartoepiston1.edm (A): Elite's model geartoepiston1, LOD0 (1 draws, 36 triangles, 64 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/geartoepiston1.json; decoded/models/geartoepiston1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/geartoepiston2.edm (A): Elite's model geartoepiston2, LOD0 (1 draws, 36 triangles, 64 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/geartoepiston2.json; decoded/models/geartoepiston2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/geartoepiston3.edm (A): Elite's model geartoepiston3, LOD0 (1 draws, 36 triangles, 64 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/geartoepiston3.json; decoded/models/geartoepiston3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/heelpistonb1.edm (A): Elite's model heelpistonb1, LOD0 (1 draws, 236 triangles, 252 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/heelpistonb1.json; decoded/models/heelpistonb1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/heelpistonb2.edm (A): Elite's model heelpistonb2, LOD0 (1 draws, 236 triangles, 252 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/heelpistonb2.json; decoded/models/heelpistonb2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/heelpistonb3.edm (A): Elite's model heelpistonb3, LOD0 (1 draws, 236 triangles, 252 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/heelpistonb3.json; decoded/models/heelpistonb3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/landinggearfront.edm (A): Elite's model landinggearfront, LOD0 (1 draws, 2234 triangles, 4154 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/landinggearfront.json; decoded/models/landinggearfront.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/landinggearfrontdoorleft.edm (A): Elite's model landinggearfrontdoorleft, LOD0 (2 draws, 88 triangles, 125 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/landinggearfrontdoorleft.json; decoded/models/landinggearfrontdoorleft.0.buf0.bin; Elite file 8c2103546ee92a152d50ef838c7dba7587758dcb
+models/landinggearfrontdoorright.edm (A): Elite's model landinggearfrontdoorright, LOD0 (2 draws, 88 triangles, 125 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/landinggearfrontdoorright.json; decoded/models/landinggearfrontdoorright.0.buf0.bin; Elite file c5737898210b7a1728dc70e1424ab3b870c6912d
+models/landinggearleft.edm (A): Elite's model landinggearleft, LOD0 (1 draws, 1954 triangles, 3804 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/landinggearleft.json; decoded/models/landinggearleft.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/landinggearright.edm (A): Elite's model landinggearright, LOD0 (1 draws, 1954 triangles, 3803 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/landinggearright.json; decoded/models/landinggearright.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/landinggearroot.edm (A): Elite's model landinggearroot, LOD0 (1 draws, 1 triangles, 3 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/landinggearroot.json; decoded/models/landinggearroot.0.buf0.bin; Elite file 4d64944d9695b833b8753213dcbf8f8427652833
+models/pistontop1.edm (A): Elite's model pistontop1, LOD0 (1 draws, 64 triangles, 101 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/pistontop1.json; decoded/models/pistontop1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/pistontop2.edm (A): Elite's model pistontop2, LOD0 (1 draws, 64 triangles, 101 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/pistontop2.json; decoded/models/pistontop2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/pistontop3.edm (A): Elite's model pistontop3, LOD0 (1 draws, 64 triangles, 101 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/pistontop3.json; decoded/models/pistontop3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargearfootjoin1.edm (A): Elite's model reargearfootjoin1, LOD0 (2 draws, 380 triangles, 436 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearfootjoin1.json; decoded/models/reargearfootjoin1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargearfootjoin2.edm (A): Elite's model reargearfootjoin2, LOD0 (2 draws, 380 triangles, 436 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearfootjoin2.json; decoded/models/reargearfootjoin2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargearfootjoin3.edm (A): Elite's model reargearfootjoin3, LOD0 (2 draws, 380 triangles, 436 vertices): vertex and index bytes unchanged, 8 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearfootjoin3.json; decoded/models/reargearfootjoin3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargearheel1.edm (A): Elite's model reargearheel1, LOD0 (2 draws, 394 triangles, 552 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearheel1.json; decoded/models/reargearheel1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargearheel2.edm (A): Elite's model reargearheel2, LOD0 (2 draws, 394 triangles, 554 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearheel2.json; decoded/models/reargearheel2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargearheel3.edm (A): Elite's model reargearheel3, LOD0 (2 draws, 360 triangles, 536 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearheel3.json; decoded/models/reargearheel3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargearheelpiston1.edm (A): Elite's model reargearheelpiston1, LOD0 (1 draws, 432 triangles, 512 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/reargearheelpiston1.json; decoded/models/reargearheelpiston1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargearheelpiston2.edm (A): Elite's model reargearheelpiston2, LOD0 (1 draws, 432 triangles, 512 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/reargearheelpiston2.json; decoded/models/reargearheelpiston2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargearheelpiston3.edm (A): Elite's model reargearheelpiston3, LOD0 (1 draws, 432 triangles, 512 vertices): vertex and index bytes unchanged, 3 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/reargearheelpiston3.json; decoded/models/reargearheelpiston3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargearpivot1.edm (A): Elite's model reargearpivot1, LOD0 (2 draws, 468 triangles, 592 vertices): vertex and index bytes unchanged, 9 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearpivot1.json; decoded/models/reargearpivot1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargearpivot2.edm (A): Elite's model reargearpivot2, LOD0 (2 draws, 468 triangles, 592 vertices): vertex and index bytes unchanged, 9 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearpivot2.json; decoded/models/reargearpivot2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargearpivot3.edm (A): Elite's model reargearpivot3, LOD0 (2 draws, 468 triangles, 592 vertices): vertex and index bytes unchanged, 9 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargearpivot3.json; decoded/models/reargearpivot3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargeartoe1.edm (A): Elite's model reargeartoe1, LOD0 (2 draws, 340 triangles, 488 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartoe1.json; decoded/models/reargeartoe1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargeartoe2.edm (A): Elite's model reargeartoe2, LOD0 (2 draws, 340 triangles, 486 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartoe2.json; decoded/models/reargeartoe2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargeartoe3.edm (A): Elite's model reargeartoe3, LOD0 (2 draws, 424 triangles, 611 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartoe3.json; decoded/models/reargeartoe3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/reargeartopbrace1.edm (A): Elite's model reargeartopbrace1, LOD0 (2 draws, 500 triangles, 588 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartopbrace1.json; decoded/models/reargeartopbrace1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/reargeartopbrace2.edm (A): Elite's model reargeartopbrace2, LOD0 (2 draws, 500 triangles, 588 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartopbrace2.json; decoded/models/reargeartopbrace2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/reargeartopbrace3.edm (A): Elite's model reargeartopbrace3, LOD0 (2 draws, 500 triangles, 588 vertices): vertex and index bytes unchanged, 7 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/reargeartopbrace3.json; decoded/models/reargeartopbrace3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/shard001.edm (A): Elite's model shard001, LOD0 (2 draws, 100 triangles, 106 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard001.json; decoded/models/shard001.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard002.edm (A): Elite's model shard002, LOD0 (2 draws, 176 triangles, 164 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard002.json; decoded/models/shard002.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard003.edm (A): Elite's model shard003, LOD0 (2 draws, 80 triangles, 80 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard003.json; decoded/models/shard003.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard004.edm (A): Elite's model shard004, LOD0 (2 draws, 68 triangles, 79 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard004.json; decoded/models/shard004.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard005.edm (A): Elite's model shard005, LOD0 (2 draws, 64 triangles, 70 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard005.json; decoded/models/shard005.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard006.edm (A): Elite's model shard006, LOD0 (2 draws, 60 triangles, 66 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard006.json; decoded/models/shard006.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard007.edm (A): Elite's model shard007, LOD0 (2 draws, 68 triangles, 86 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard007.json; decoded/models/shard007.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard008.edm (A): Elite's model shard008, LOD0 (2 draws, 116 triangles, 118 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard008.json; decoded/models/shard008.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard009.edm (A): Elite's model shard009, LOD0 (2 draws, 56 triangles, 64 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard009.json; decoded/models/shard009.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard010.edm (A): Elite's model shard010, LOD0 (2 draws, 100 triangles, 106 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard010.json; decoded/models/shard010.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard011.edm (A): Elite's model shard011, LOD0 (2 draws, 88 triangles, 86 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard011.json; decoded/models/shard011.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard012.edm (A): Elite's model shard012, LOD0 (2 draws, 84 triangles, 84 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard012.json; decoded/models/shard012.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard013.edm (A): Elite's model shard013, LOD0 (2 draws, 84 triangles, 96 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard013.json; decoded/models/shard013.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard014.edm (A): Elite's model shard014, LOD0 (2 draws, 96 triangles, 104 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard014.json; decoded/models/shard014.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard015.edm (A): Elite's model shard015, LOD0 (2 draws, 92 triangles, 102 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard015.json; decoded/models/shard015.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard016.edm (A): Elite's model shard016, LOD0 (2 draws, 100 triangles, 104 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard016.json; decoded/models/shard016.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard017.edm (A): Elite's model shard017, LOD0 (2 draws, 148 triangles, 162 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard017.json; decoded/models/shard017.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard018.edm (A): Elite's model shard018, LOD0 (2 draws, 164 triangles, 160 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard018.json; decoded/models/shard018.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard019.edm (A): Elite's model shard019, LOD0 (2 draws, 136 triangles, 130 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard019.json; decoded/models/shard019.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/shard020.edm (A): Elite's model shard020, LOD0 (2 draws, 56 triangles, 62 vertices): vertex and index bytes unchanged, 2 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/shard020.json; decoded/models/shard020.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/sidewinder.edm (A): Elite's model sidewinder, LOD0 (11 draws, 66168 triangles, 86283 vertices): vertex and index bytes unchanged, 156 bones (inverse binds in full, as float32), 11 materials by Elite's name.
+  from: decoded/models/sidewinder.json; decoded/models/sidewinder.0.buf0.bin; Elite file 28693531b5c5356b1beff9ba30847457a27ff805
+models/sidewinder_cockpit.edm (A): Elite's model sidewinder_cockpit, LOD0 (23 draws, 114347 triangles, 117711 vertices): vertex and index bytes unchanged, 148 bones (inverse binds in full, as float32), 23 materials by Elite's name.
+  from: decoded/models/sidewinder_cockpit.json; decoded/models/sidewinder_cockpit.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/sidewinder_landinggearreardoor_left.edm (A): Elite's model sidewinder_landinggearreardoor_left, LOD0 (2 draws, 130 triangles, 218 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_landinggearreardoor_left.json; decoded/models/sidewinder_landinggearreardoor_left.0.buf0.bin; Elite file ee44863b5b7a83092b5370597f9bfadfe6b8a294
+models/sidewinder_landinggearreardoor_right.edm (A): Elite's model sidewinder_landinggearreardoor_right, LOD0 (2 draws, 130 triangles, 216 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_landinggearreardoor_right.json; decoded/models/sidewinder_landinggearreardoor_right.0.buf0.bin; Elite file ab868c934a548e6bac4b062af908065ac20ea408
+models/sidewinder_leftplateleft.edm (A): Elite's model sidewinder_leftplateleft, LOD0 (2 draws, 360 triangles, 472 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_leftplateleft.json; decoded/models/sidewinder_leftplateleft.0.buf0.bin; Elite file 16bbd9582c5bf289a1844fe0d39c70522be53d5e
+models/sidewinder_leftplateright.edm (A): Elite's model sidewinder_leftplateright, LOD0 (2 draws, 360 triangles, 472 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_leftplateright.json; decoded/models/sidewinder_leftplateright.0.buf0.bin; Elite file e0170174627248f6311c9b3a8875de202027147b
+models/sidewinder_reardoorleft.edm (A): Elite's model sidewinder_reardoorleft, LOD0 (2 draws, 136 triangles, 188 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_reardoorleft.json; decoded/models/sidewinder_reardoorleft.0.buf0.bin; Elite file 492d81330ba5f7752019fdb243e8c333391ea10d
+models/sidewinder_reardoorright.edm (A): Elite's model sidewinder_reardoorright, LOD0 (2 draws, 136 triangles, 188 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_reardoorright.json; decoded/models/sidewinder_reardoorright.0.buf0.bin; Elite file 39e35c530f6e20d207155ba5ca83e0a7f0b7321a
+models/sidewinder_rearplateleft.edm (A): Elite's model sidewinder_rearplateleft, LOD0 (2 draws, 328 triangles, 446 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_rearplateleft.json; decoded/models/sidewinder_rearplateleft.0.buf0.bin; Elite file b22dbab333479a1de8d0da4ac00b566cd0fbb8ca
+models/sidewinder_rearplateright.edm (A): Elite's model sidewinder_rearplateright, LOD0 (2 draws, 328 triangles, 446 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_rearplateright.json; decoded/models/sidewinder_rearplateright.0.buf0.bin; Elite file d9391b1f6ffc5d81dd2883d3e9a4ec2b0a61f995
+models/sidewinder_rightplateleft.edm (A): Elite's model sidewinder_rightplateleft, LOD0 (2 draws, 360 triangles, 472 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_rightplateleft.json; decoded/models/sidewinder_rightplateleft.0.buf0.bin; Elite file 901c54ca1fd706c55fe15b2b1d03b1ac7733dac1
+models/sidewinder_rightplateright.edm (A): Elite's model sidewinder_rightplateright, LOD0 (2 draws, 360 triangles, 472 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_rightplateright.json; decoded/models/sidewinder_rightplateright.0.buf0.bin; Elite file 10cf2e612fc3499b52f8052fb5b8b3be8d2713ab
+models/sidewinder_schematic.edm (A): Elite's model sidewinder_schematic, LOD0 (1 draws, 1308 triangles, 1968 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/sidewinder_schematic.json; decoded/models/sidewinder_schematic.0.buf0.bin; Elite file 4d64944d9695b833b8753213dcbf8f8427652833
+models/sidewinder_screen.edm (A): Elite's model sidewinder_screen, LOD0 (1 draws, 2084 triangles, 1208 vertices): vertex and index bytes unchanged, 1 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/sidewinder_screen.json; decoded/models/sidewinder_screen.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/sidewinder_screen_damagestate_02.edm (A): Elite's model sidewinder_screen_damagestate_02, LOD0 (2 draws, 2229 triangles, 1836 vertices): vertex and index bytes unchanged, 21 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_screen_damagestate_02.json; decoded/models/sidewinder_screen_damagestate_02.0.buf0.bin; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1
+models/sidewinder_shield.edm (A): Elite's model sidewinder_shield, LOD0 (1 draws, 704 triangles, 386 vertices): vertex and index bytes unchanged, 3 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/sidewinder_shield.json; decoded/models/sidewinder_shield.0.buf0.bin; Elite file 4d64944d9695b833b8753213dcbf8f8427652833
+models/sidewinder_vent0leftdoor.edm (A): Elite's model sidewinder_vent0leftdoor, LOD0 (2 draws, 218 triangles, 458 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent0leftdoor.json; decoded/models/sidewinder_vent0leftdoor.0.buf0.bin; Elite file da1a5e87824c4a8fac3a70b2c7f4670b31ae822e
+models/sidewinder_vent0rightdoor.edm (A): Elite's model sidewinder_vent0rightdoor, LOD0 (2 draws, 218 triangles, 458 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent0rightdoor.json; decoded/models/sidewinder_vent0rightdoor.0.buf0.bin; Elite file 8712c5ae076cfd1907b45ccd6713da30c5559bfe
+models/sidewinder_vent1leftdoor.edm (A): Elite's model sidewinder_vent1leftdoor, LOD0 (2 draws, 200 triangles, 273 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent1leftdoor.json; decoded/models/sidewinder_vent1leftdoor.0.buf0.bin; Elite file 73006516355a07b7c9a579070829a816f7fcc1bd
+models/sidewinder_vent1rightdoor.edm (A): Elite's model sidewinder_vent1rightdoor, LOD0 (2 draws, 200 triangles, 273 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent1rightdoor.json; decoded/models/sidewinder_vent1rightdoor.0.buf0.bin; Elite file c40f2b38dc16d883a24529ddc617735c6a6b5827
+models/sidewinder_vent2leftdoor.edm (A): Elite's model sidewinder_vent2leftdoor, LOD0 (2 draws, 196 triangles, 272 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent2leftdoor.json; decoded/models/sidewinder_vent2leftdoor.0.buf0.bin; Elite file b46f59f8280c0a8bcf55c4ff777dcdd50b061a10
+models/sidewinder_vent2rightdoor.edm (A): Elite's model sidewinder_vent2rightdoor, LOD0 (2 draws, 196 triangles, 272 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent2rightdoor.json; decoded/models/sidewinder_vent2rightdoor.0.buf0.bin; Elite file 64486f9ff42a60b985b6a24d02d3430c3684d0e6
+models/sidewinder_vent3leftdoor.edm (A): Elite's model sidewinder_vent3leftdoor, LOD0 (2 draws, 90 triangles, 122 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent3leftdoor.json; decoded/models/sidewinder_vent3leftdoor.0.buf0.bin; Elite file 4ff90cd7ff58f4bae91848bf3634f32e263c0228
+models/sidewinder_vent3rightdoor.edm (A): Elite's model sidewinder_vent3rightdoor, LOD0 (2 draws, 90 triangles, 122 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 2 materials by Elite's name.
+  from: decoded/models/sidewinder_vent3rightdoor.json; decoded/models/sidewinder_vent3rightdoor.0.buf0.bin; Elite file ec809229baf4b7e5e426983972b8c8af18f6597a
+models/sidewinder_ventrightclasp1.edm (A): Elite's model sidewinder_ventrightclasp1, LOD0 (1 draws, 240 triangles, 372 vertices): vertex and index bytes unchanged, 4 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/sidewinder_ventrightclasp1.json; decoded/models/sidewinder_ventrightclasp1.0.buf0.bin; Elite file e9542138db48209782b4e672500698a1a5387dd0
+models/toebrace1.edm (A): Elite's model toebrace1, LOD0 (1 draws, 132 triangles, 181 vertices): vertex and index bytes unchanged, 6 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebrace1.json; decoded/models/toebrace1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/toebrace2.edm (A): Elite's model toebrace2, LOD0 (1 draws, 132 triangles, 181 vertices): vertex and index bytes unchanged, 6 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebrace2.json; decoded/models/toebrace2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/toebrace3.edm (A): Elite's model toebrace3, LOD0 (1 draws, 124 triangles, 173 vertices): vertex and index bytes unchanged, 6 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebrace3.json; decoded/models/toebrace3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+models/toebraceb1.edm (A): Elite's model toebraceb1, LOD0 (1 draws, 36 triangles, 42 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebraceb1.json; decoded/models/toebraceb1.0.buf0.bin; Elite file db2a2ea31b7e38235b6787015867145087f4da95
+models/toebraceb2.edm (A): Elite's model toebraceb2, LOD0 (1 draws, 36 triangles, 42 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebraceb2.json; decoded/models/toebraceb2.0.buf0.bin; Elite file 5885c31dd9e4fcc67c977a17f089d4857e93208c
+models/toebraceb3.edm (A): Elite's model toebraceb3, LOD0 (1 draws, 36 triangles, 42 vertices): vertex and index bytes unchanged, 5 bones (inverse binds in full, as float32), 1 materials by Elite's name.
+  from: decoded/models/toebraceb3.json; decoded/models/toebraceb3.0.buf0.bin; Elite file 78148031754c838643502d08166769655bedd496
+materials.json (A): Every material the models name (45): Elite's shader, texture slots and attribute values as its material files hold them. No file of Elite's install defines ["sidewinder_window"]: the engine draws them with its default material, null.
+  from: Elite file 14730881daf3a7149c9ea2f37aaeb10dccb3823b; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f; Elite file 6438c1b3c3c446d5603bc760d168bff46a52c56b; Elite file 74736d73e69c944143bfe292ef51f73ef02f04ec; Elite file 781c37a239c7a9d83bd64a6b297bad3ee43ba355; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1; Elite file aac57d6a4f03f783a5e66a9afc3c0ca0d734a8f9; Elite file b3a983f25f9880ff6815826c0fde30d444888548; Elite file c503a9db8a718302a5c0c281538da6c8e437f82f; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195; decoded/materials.json
+tex/alliance_stripplating_02__pbasecolour_roughness.dds (A): Elite's texture alliance_stripplating_02.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/alliance_stripplating_02__pbasecolour_roughness.dds; Elite file aac57d6a4f03f783a5e66a9afc3c0ca0d734a8f9 (its OVL); Elite file 70e6355cc7897e01544ca4da395a7096d330468d; Elite file b7e433b0cfaba2d2df551a976f1e8d1c1758154b
+tex/alliance_stripplating_02__pmetalnessmap.dds (A): Elite's texture alliance_stripplating_02.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/alliance_stripplating_02__pmetalnessmap.dds; Elite file aac57d6a4f03f783a5e66a9afc3c0ca0d734a8f9 (its OVL); Elite file 8f31bbf72573e803a11ee78a566d57f7f3a3a241; Elite file 76fa581608cd9751caf738cdbe66a3420a3dbc8a
+tex/alliance_stripplating_02__pnormaltexture.dds (A): Elite's texture alliance_stripplating_02.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/alliance_stripplating_02__pnormaltexture.dds; Elite file aac57d6a4f03f783a5e66a9afc3c0ca0d734a8f9 (its OVL); Elite file 00879fbcfef0695d928116742a774e27af79064b; Elite file 27e39d9583a7d259e2002d99d2277d89fa64dc2f
+tex/baremetal_enabledecals_imperial_pbr__pdirt_flake_0.dds (A): Elite's texture baremetal_enabledecals_imperial_pbr.pdirt_flake_0 (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/baremetal_enabledecals_imperial_pbr__pdirt_flake_0.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/baremetal_enabledecals_pbr__pbasecolour_roughness_1.dds (A): Elite's texture baremetal_enabledecals_pbr.pbasecolour_roughness_1 (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/baremetal_enabledecals_pbr__pbasecolour_roughness_1.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/cockpit_chair__pbasecolour_roughness.dds (A): Elite's texture cockpit_chair.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_chair__pbasecolour_roughness.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 4d040b5d9bf018fe752d79fc9f04679862f98133; Elite file cefc2aac5b2279e40519afa5df8937655cd0352a
+tex/cockpit_chair__pmetalnessmap.dds (A): Elite's texture cockpit_chair.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/cockpit_chair__pmetalnessmap.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 183162177a7c2b1a58711080041c428aa79f8272; Elite file 3e97c495e208caf42612f52f3dffedfb36520147
+tex/cockpit_chair__pnormaltexture.dds (A): Elite's texture cockpit_chair.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/cockpit_chair__pnormaltexture.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 3fc1553585fcdaa73d5eb8e79e8bbba8b23bb26d; Elite file 23c9c3f35a4253f47650b3578503fc6d061964a3
+tex/cockpit_chair_controls__pbasecolour_roughness.dds (A): Elite's texture cockpit_chair_controls.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_chair_controls__pbasecolour_roughness.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 9b1f13988274bcf3ad41ce504b68b51769f6046b
+tex/cockpit_chair_controls__pemissivetexture.dds (A): Elite's texture cockpit_chair_controls.pemissivetexture (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_chair_controls__pemissivetexture.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 4506a747f512d5219578d5e4e5957c62dcf368df
+tex/cockpit_chair_controls__pmetalnessmap.dds (A): Elite's texture cockpit_chair_controls.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/cockpit_chair_controls__pmetalnessmap.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 0306e0c330a9f3c9f0a8d3c1ba8c61f89108c5d0
+tex/cockpit_chair_controls__pnormaltexture.dds (A): Elite's texture cockpit_chair_controls.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/cockpit_chair_controls__pnormaltexture.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 0dcdfd12dbf9e2ad3f71b1432b5ad475f9ca3ff8
+tex/cockpit_chair_decals__pmetalnessalphamap.dds (A): Elite's texture cockpit_chair_decals.pmetalnessalphamap (BC5), every level byte for byte.
+  from: decoded/textures/cockpit_chair_decals__pmetalnessalphamap.dds; Elite file 3045f4740accfbdf660670147d03420f83fd09c9 (its OVL); Elite file 0e7c030355b5e810756dcfc337e1317a6862dfe7; Elite file 1089705138c38088ed7321533dcb92f4c7b10147
+tex/cockpit_consoles_delacey__pbasecolour_roughness.dds (A): Elite's texture cockpit_consoles_delacey.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_consoles_delacey__pbasecolour_roughness.dds; Elite file 09432fbb06a8deb41484815e809233ea2577610d (its OVL)
+tex/cockpit_consoles_delacey__pemissivetexture.dds (A): Elite's texture cockpit_consoles_delacey.pemissivetexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_consoles_delacey__pemissivetexture.dds; Elite file 09432fbb06a8deb41484815e809233ea2577610d (its OVL)
+tex/cockpit_consoles_delacey__pmetalnessmap.dds (A): Elite's texture cockpit_consoles_delacey.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/cockpit_consoles_delacey__pmetalnessmap.dds; Elite file 09432fbb06a8deb41484815e809233ea2577610d (its OVL)
+tex/cockpit_consoles_delacey__pnormaltexture.dds (A): Elite's texture cockpit_consoles_delacey.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/cockpit_consoles_delacey__pnormaltexture.dds; Elite file 09432fbb06a8deb41484815e809233ea2577610d (its OVL)
+tex/cockpit_glass_edges__pbasecolour_roughness.dds (A): Elite's texture cockpit_glass_edges.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_glass_edges__pbasecolour_roughness.dds; Elite file ee5f663b2d96c8133f878bc8444b5ac92c2cac34 (its OVL)
+tex/cockpit_glass_edges__pnormaltexture.dds (A): Elite's texture cockpit_glass_edges.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/cockpit_glass_edges__pnormaltexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file 56eed1131f48b185454121668a9531e67f75a980
+tex/cockpit_glass_int__pcracksidtexture.dds (A): Elite's texture cockpit_glass_int.pcracksidtexture (BC4), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__pcracksidtexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file 7d590450a45a4f5d351f4758452285a777a30aa9
+tex/cockpit_glass_int__pcracksinteriornormtexture.dds (A): Elite's texture cockpit_glass_int.pcracksinteriornormtexture (BC7), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__pcracksinteriornormtexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file 6bb2cf4e07628fc8a10ebbf5403198ddbfc071a9
+tex/cockpit_glass_int__ppackedcockpitglassblemishalphamaps.dds (A): Elite's texture cockpit_glass_int.ppackedcockpitglassblemishalphamaps (BC7), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__ppackedcockpitglassblemishalphamaps.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file e97ace46b02d9605e27189741326260d2aeb1efc
+tex/cockpit_glass_int__ppackedcondensationnormalalpha.dds (A): Elite's texture cockpit_glass_int.ppackedcondensationnormalalpha (BC3), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__ppackedcondensationnormalalpha.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file cf063844ee6c016cd1ec150cf7ae3a0306d5d80a
+tex/cockpit_glass_int__ppackedcracksnormalalpha.dds (A): Elite's texture cockpit_glass_int.ppackedcracksnormalalpha (BC7), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__ppackedcracksnormalalpha.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file 2eeef3d5f16411c728e54a92e151582f2185c9a1
+tex/cockpit_glass_int__ppackedicenormalalpha.dds (A): Elite's texture cockpit_glass_int.ppackedicenormalalpha (BC3), every level byte for byte.
+  from: decoded/textures/cockpit_glass_int__ppackedicenormalalpha.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file f438b3284fe868c6656eb6253a0d9a777c8b42ef
+tex/cockpit_ui_hightlight_m__pdiffuse_alphatexture.dds (A): Elite's texture cockpit_ui_hightlight_m.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_ui_hightlight_m__pdiffuse_alphatexture.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/cockpit_ui_hightlight_m__pemissivetexture.dds (A): Elite's texture cockpit_ui_hightlight_m.pemissivetexture (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/cockpit_ui_hightlight_m__pemissivetexture.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/customdecal0__pdecalblenddissolvetexture.dds (A): Elite's texture customdecal0.pdecalblenddissolvetexture (BC1), every level byte for byte.
+  from: decoded/textures/customdecal0__pdecalblenddissolvetexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/customdecal0__pmaterialmaskstexture.dds (A): Elite's texture customdecal0.pmaterialmaskstexture (BC1), every level byte for byte.
+  from: decoded/textures/customdecal0__pmaterialmaskstexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/elementglow__pbasecolour_roughness.dds (A): Elite's texture elementglow.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/elementglow__pbasecolour_roughness.dds; Elite file c503a9db8a718302a5c0c281538da6c8e437f82f (its OVL)
+tex/elementglow__pnormaltexture.dds (A): Elite's texture elementglow.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/elementglow__pnormaltexture.dds; Elite file c503a9db8a718302a5c0c281538da6c8e437f82f (its OVL)
+tex/ext_cockpit_chair__pbasecolour_roughness.dds (A): Elite's texture ext_cockpit_chair.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/ext_cockpit_chair__pbasecolour_roughness.dds; Elite file 4af5a67523c9d1a0a8026935a6da3bc6d9a853db (its OVL); Elite file cb48a0134414b0d3e9ba908068fac3b81d44f327
+tex/ext_cockpit_chair__pmetalnessmap.dds (A): Elite's texture ext_cockpit_chair.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/ext_cockpit_chair__pmetalnessmap.dds; Elite file 4af5a67523c9d1a0a8026935a6da3bc6d9a853db (its OVL); Elite file 2422fcd5d66c26919104bae93616696bf6ce93dc
+tex/ext_cockpit_chair__pnormaltexture.dds (A): Elite's texture ext_cockpit_chair.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/ext_cockpit_chair__pnormaltexture.dds; Elite file 4af5a67523c9d1a0a8026935a6da3bc6d9a853db (its OVL); Elite file 6e677738b6e82e9b917ce2ddb0cc4bda41704192
+tex/ies_emergency_elmre_lp220l_fxo.dds (A): the headlight's IES profile, every level byte for byte.
+  from: decoded/textures/ies_emergency_elmre_lp220l_fxo.dds; Elite file abc77f429827706d1bd7ed0338519d8e629288f4 (its OVL)
+tex/large_landinggear__pbasecolour_roughness.dds (A): Elite's texture large_landinggear.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/large_landinggear__pbasecolour_roughness.dds; Elite file 6438c1b3c3c446d5603bc760d168bff46a52c56b (its OVL); Elite file 617326c40f24e551e51bdab94f89ad72ccb195f1; Elite file 0cee9cad8bb58657e3d8586fa8c0698840414a55
+tex/large_landinggear__pmetalnessmap.dds (A): Elite's texture large_landinggear.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/large_landinggear__pmetalnessmap.dds; Elite file 6438c1b3c3c446d5603bc760d168bff46a52c56b (its OVL); Elite file 4a9521b08031ad7db0f1aee85771bfcfa0c534f5; Elite file e11931aca3410ec079f5e0a780bbd0e61fc5bce7
+tex/large_landinggear__pnormaltexture.dds (A): Elite's texture large_landinggear.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/large_landinggear__pnormaltexture.dds; Elite file 6438c1b3c3c446d5603bc760d168bff46a52c56b (its OVL); Elite file 1cf33aa7ac8d040308679d3b53f50eacd1fb2f71; Elite file f6524a6cecf4448621c2243c28641f02f5074747
+tex/null__pdiffuse_alphatexture.dds (A): Elite's texture null.pdiffuse_alphatexture (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/null__pdiffuse_alphatexture.dds; Elite file b3a983f25f9880ff6815826c0fde30d444888548 (its OVL)
+tex/paintedmetal_2_enabledecals_pbr__pdirt_flake_0.dds (A): Elite's texture paintedmetal_2_enabledecals_pbr.pdirt_flake_0 (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/paintedmetal_2_enabledecals_pbr__pdirt_flake_0.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/paintedmetal_2_enabledecals_pbr__pswappainteffectdissolvetexture.dds (A): Elite's texture paintedmetal_2_enabledecals_pbr.pswappainteffectdissolvetexture (BC1), every level byte for byte.
+  from: decoded/textures/paintedmetal_2_enabledecals_pbr__pswappainteffectdissolvetexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/paintedmetal_enabledecals_pbr__pbasecolour_roughness_0.dds (A): Elite's texture paintedmetal_enabledecals_pbr.pbasecolour_roughness_0 (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/paintedmetal_enabledecals_pbr__pbasecolour_roughness_0.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL)
+tex/paintjob_sidewinder_default__texture.dds (A): the default paint job's mask (paintjobs.json's DefaultPaintJob), every level byte for byte.
+  from: decoded/textures/paintjob_sidewinder_default__texture.dds; Elite file b9979cbb9b5db39d69d95c3b6a6a8e55e40cbd09 (its OVL); Elite file 14168f362e6b01afdf6b516792afbbd71a3cda27
+tex/schematic__pheightmaptexture.dds (A): Elite's texture schematic.pheightmaptexture (BC4), every level byte for byte.
+  from: decoded/textures/schematic__pheightmaptexture.dds; Elite file 0004d822cea7d4f5f9e5489eebe3c30f56ef9a5a (its OVL); Elite file e32198a55f006b163f6e09af49356d967e442166
+tex/shared_ship_watson_trim__paomap.dds (A): Elite's texture shared_ship_watson_trim.paomap (BC4), every level byte for byte.
+  from: decoded/textures/shared_ship_watson_trim__paomap.dds; Elite file 14730881daf3a7149c9ea2f37aaeb10dccb3823b (its OVL); Elite file 50dd791a716d79a8312b768e6ba53e429f019335; Elite file 2b92b108deeaa15dfe99f233b52d059ab5221b4b
+tex/shared_ship_watson_trim__pnormaldetailmap.dds (A): Elite's texture shared_ship_watson_trim.pnormaldetailmap (BC5), every level byte for byte.
+  from: decoded/textures/shared_ship_watson_trim__pnormaldetailmap.dds; Elite file 14730881daf3a7149c9ea2f37aaeb10dccb3823b (its OVL); Elite file ef60030c88b23d6863be3e6da02d1c2a123ec72a; Elite file 8c26bea883a8ced893038fe81c76429ee22c7d0b
+tex/shieldmki__pmonotexture.dds (A): Elite's texture shieldmki.pmonotexture (BC7), every level byte for byte.
+  from: decoded/textures/shieldmki__pmonotexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file e0ee19a78768c74a95b25b7e90729219f7af4592
+tex/shieldmki__pshieldmaptexture.dds (A): Elite's texture shieldmki.pshieldmaptexture (BC1), every level byte for byte.
+  from: decoded/textures/shieldmki__pshieldmaptexture.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file d49f2c9ff1b59036d22956cb8030eb97e77718de
+tex/shipexternalglassmaterial__pbasecolour_roughness.dds (A): Elite's texture shipexternalglassmaterial.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/shipexternalglassmaterial__pbasecolour_roughness.dds; Elite file f12f774afc2cf9ffb8edcb5792116b98d37c1195 (its OVL); Elite file f16e31fad4a734fad1a2be12bda111799cd0c924
+tex/sidewinder_bespoke__pbasecolour_roughness.dds (A): Elite's texture sidewinder_bespoke.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_bespoke__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_bespoke__pmetalnessmap.dds (A): Elite's texture sidewinder_bespoke.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/sidewinder_bespoke__pmetalnessmap.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_bespoke__pnormaltexture.dds (A): Elite's texture sidewinder_bespoke.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/sidewinder_bespoke__pnormaltexture.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_bespokeparts__pbasecolour_roughness.dds (A): Elite's texture sidewinder_bespokeparts.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_bespokeparts__pbasecolour_roughness.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file 0994e934cb4e48b908e40ce798acc93b6bac91a6
+tex/sidewinder_bespokeparts__pnormaltexture.dds (A): Elite's texture sidewinder_bespokeparts.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/sidewinder_bespokeparts__pnormaltexture.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file c83f1d9b90ca55acef9da9fa56b399248ae13a4a
+tex/sidewinder_decals__pbasecolour_roughness.dds (A): Elite's texture sidewinder_decals.pbasecolour_roughness (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_decals__pbasecolour_roughness.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file 11d5329b4906e474bad6c58776bec65503b7f77c
+tex/sidewinder_decals__pmetalnessalphamap.dds (A): Elite's texture sidewinder_decals.pmetalnessalphamap (BC5), every level byte for byte.
+  from: decoded/textures/sidewinder_decals__pmetalnessalphamap.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file 6ba603562272d0628426f478458495ab342a7329
+tex/sidewinder_ext_cockpit__pbasecolour_roughness.dds (A): Elite's texture sidewinder_ext_cockpit.pbasecolour_roughness (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_ext_cockpit__pbasecolour_roughness.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file 85ffc364462c57d0ffa401c20a0350baf1040779
+tex/sidewinder_ext_cockpit__pemissivetexture.dds (A): Elite's texture sidewinder_ext_cockpit.pemissivetexture (BC1, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_ext_cockpit__pemissivetexture.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file cb697131e143871986d959f257a355d8a8926bf8
+tex/sidewinder_tile_floor__paomap.dds (A): Elite's texture sidewinder_tile_floor.paomap (BC4), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_floor__paomap.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_floor__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_floor.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_floor__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_floor__pnormaltexture.dds (A): Elite's texture sidewinder_tile_floor.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_floor__pnormaltexture.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_floor__proughnessdetailmap.dds (A): Elite's texture sidewinder_tile_floor.proughnessdetailmap (BC4), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_floor__proughnessdetailmap.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_hardplastic__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_hardplastic.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_hardplastic__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_hardplastic__pnormaltexture.dds (A): Elite's texture sidewinder_tile_hardplastic.pnormaltexture (BC5), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_hardplastic__pnormaltexture.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_mainsurface__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_mainsurface.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_mainsurface__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_mainsurface_beige__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_mainsurface_beige.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_mainsurface_beige__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_mainsurface_orange__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_mainsurface_orange.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_mainsurface_orange__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_metalsmooth__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_metalsmooth.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_metalsmooth__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_metalsmooth__pmetalnessmap.dds (A): Elite's texture sidewinder_tile_metalsmooth.pmetalnessmap (BC4), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_metalsmooth__pmetalnessmap.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_metalsmooth_beige__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_metalsmooth_beige.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_metalsmooth_beige__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_metalsmooth_brown__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_metalsmooth_brown.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_metalsmooth_brown__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinder_tile_metalsmooth_orange__pbasecolour_roughness.dds (A): Elite's texture sidewinder_tile_metalsmooth_orange.pbasecolour_roughness (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/textures/sidewinder_tile_metalsmooth_orange__pbasecolour_roughness.dds; Elite file 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1 (its OVL)
+tex/sidewinderhull_baremetal__pdirtmaskmaterialmaskscruffinessao.dds (A): Elite's texture sidewinderhull_baremetal.pdirtmaskmaterialmaskscruffinessao (BC7), every level byte for byte.
+  from: decoded/textures/sidewinderhull_baremetal__pdirtmaskmaterialmaskscruffinessao.dds; Elite file 5a1fd6ec79673ad8092625a939576677d8583d7f (its OVL); Elite file d528a67d98e942bc23ae85fe0e751a3a23d982ea; Elite file dca9558197399830f350dacf49145080099d703c
+ship.json (A): The assembly: the stock ship's rigs, every state machine of their files with typed activities, the default paint job, what the ship item says. Elite's values and model space.
+  from: decoded/animation/index.json; decoded/animation/hull_sidewinder.json (Elite's 4d64944d9695b833b8753213dcbf8f8427652833); decoded/animation/gear_front.json (Elite's 957da798ba3ab732f7ae396d6fe08f78aa376609); decoded/animation/gear_left.json (Elite's 98c94da8f570e6c2253c8712c361df4c6156ddc3); decoded/animation/gear_right.json (Elite's 46e0cc9f2d793451e2fa5e2d3fb6587693ed7b9e); decoded/animation/cockpit.json (Elite's 81619cc8f0d1ff1fe3b73930516e2681e54c0ba1); decoded/animation/cockpit_tutorial.json (Elite's 3e3724b6074809cb2ac064ce55f219b6c83d2d2f); decoded/paintjobs.json (Elite's b9979cbb9b5db39d69d95c3b6a6a8e55e40cbd09); decoded/models/sidewinder.json (the bone names); re/elite/notes/sidewinder_paintjob.md (the ship item SideWinder, item database 201ee494..., and its prototype 86ec03fb...)
+SOURCES.txt (-): This list.

@@ -1,28 +1,25 @@
-//! Making the Faulcon DeLacy Sidewinder mod's files from the user's Elite Dangerous install, once:
-//! `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture` (`ELITE_PATH` names the product folder that
-//! holds `Win64`; the default is the user's Steam copy). Elite's install is read only here and in the ignored checks below,
-//! never while the game runs (the spec's C4).
-//!
-//! What it writes (`assets/mods/sidewinder`, the spec's "The mod's files"):
+//! The stand-ins the game draws today (`copy_sidewinder`'s first kind), written as they were before the original assets
+//! were decoded; T4 switches the drawing to `models/` and removes them. Read from Elite's install (`Ctx::install`):
 //! - `ship.edm`: the hull is Elite's own simplified Sidewinder (`HULL_FILE`, believed to be the HUD's hologram model: the
 //!   in-game hull is not among the open files, Build log step 0.3), its vertex bytes and indices unchanged (grade A); its place,
 //!   scale and the landing gear are recreated (grade E) from the user's screenshots and Frontier's published sizes.
-//! - `cockpit.edm`: the cockpit recreated in Blender (grade E: step 0.5, `cockpit/` beside this file: `make_cockpit.py` builds
-//!   `cockpit.obj` from the user's three cockpit screenshots, `notes.md` says how well each view lines up); Elite's own
-//!   cockpit is in its encrypted files and was never opened.
-//! - `binds/KeyboardMouseOnly.binds`, `binds/ControlPad.binds`: copies of Elite's files (grade A).
-//! - `SOURCES.txt` and `mod.cfg` (a `Need` for every file).
+//! - `cockpit.edm`: the cockpit recreated in Blender (grade E: step 0.5, `cockpit/` beside `convert/`: `make_cockpit.py`
+//!   builds `cockpit.obj` from the user's three cockpit screenshots, `notes.md` says how well each view lines up).
+//! - `binds/KeyboardMouseOnly.binds`, `binds/ControlPad.binds`: copies of Elite's files (grade A; not stand-ins: the key
+//!   tables the seat reads).
 //!
-//! Model space (the mod's, both files): metres, X right, Y up, -Z forward (the nose), the gear's feet on Y = 0.
+//! Model space (the mod's, both models): metres, X right, Y up, -Z forward (the nose), the gear's feet on Y = 0.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use se_core::elite::{self, Vertex};
-use se_core::elite_asset::{material_flags, write_edm, Edm, EdmAnimation, EdmDraw, EdmKey, EdmMaterial, EdmPart, EdmTrack};
+use se_core::elite_asset::{material_flags, parse_edm, write_edm, Binds, Edm, EdmAnimation, EdmDraw, EdmKey, EdmMaterial, EdmPart, EdmTrack, VertexDecode};
+
+use super::{Ctx, Shipped};
 
 /// Elite's simplified Sidewinder: its outline from above matches the user's top screenshot (width/length 1.537 against 1.536).
-const HULL_FILE: &str = "4387928be519b4cfc8aa67be4113e19e2fbb09f5";
+pub(super) const HULL_FILE: &str = "4387928be519b4cfc8aa67be4113e19e2fbb09f5";
 /// Frontier's published size (elitedangerous.com): 14.9 m long, 21.4 m wide. The model's plan is 1.537 wide for its length
 /// against 1.44 for these, so the scale makes its plan's area theirs (each side within 3.5 %).
 const PUBLISHED_LENGTH_M: f64 = 14.9;
@@ -39,19 +36,9 @@ const REAR_LEG_OUT: f32 = 0.21;
 const GEAR_TRAVEL_M: f32 = 1.2;
 const GEAR_SECONDS: f32 = 3.0;
 
-fn install() -> PathBuf {
-    std::env::var_os("ELITE_PATH").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"D:\SteamLibrary\steamapps\common\Elite Dangerous\Products\elite-dangerous-odyssey-64"))
-}
-
-fn out_dir() -> PathBuf {
-    let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("mods").join("sidewinder");
-    std::fs::create_dir_all(out.join("binds")).unwrap();
-    out
-}
-
 /// The hull's most detailed part as Elite stores it: (indices, vertices).
-fn hull_part() -> (Vec<[u16; 3]>, Vec<Vertex>) {
-    let raw = std::fs::read(elite::data_file(&install().join("Win64"), HULL_FILE)).expect("the hull's file in the install");
+pub(super) fn hull_part(install: &Path) -> (Vec<[u16; 3]>, Vec<Vertex>) {
+    let raw = std::fs::read(elite::data_file(&install.join("Win64"), HULL_FILE)).expect("the hull's file in the install");
     let m = elite::parse_mesh(&elite::unpack(&raw).unwrap()).unwrap();
     let p = m.chunks.iter().flat_map(|c| c.parts.iter()).max_by_key(|p| p.triangles.len()).unwrap();
     (p.triangles.clone(), p.vertices.clone())
@@ -118,7 +105,7 @@ fn boxes(list: &[([f32; 3], [f32; 3])], unit: f64) -> (Vec<Vertex>, Vec<u16>) {
 }
 
 fn identity_part(name: &str, parent: i16, at: [f32; 3]) -> EdmPart {
-    EdmPart { name: name.into(), parent, translation: at, rotation: [0.0, 0.0, 0.0, 1.0] }
+    EdmPart { name: name.into(), parent, translation: at, rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0, inverse_bind: None }
 }
 
 fn material(name: &str, grey: f32, flags: u32) -> EdmMaterial {
@@ -126,8 +113,8 @@ fn material(name: &str, grey: f32, flags: u32) -> EdmMaterial {
 }
 
 /// The ship: the hull (Elite's bytes) placed and scaled, and the recreated landing gear.
-pub(super) fn ship_model() -> (Edm, Summary) {
-    let (tris, verts) = hull_part();
+fn ship_model(install: &Path) -> (Edm, Summary) {
+    let (tris, verts) = hull_part(install);
     let raw: Vec<[i32; 3]> = verts.iter().map(|v| v.position_raw()).collect();
     let lo = [0, 1, 2].map(|k| raw.iter().map(|p| p[k]).min().unwrap());
     let hi = [0, 1, 2].map(|k| raw.iter().map(|p| p[k]).max().unwrap());
@@ -147,7 +134,7 @@ pub(super) fn ship_model() -> (Edm, Summary) {
     let (rot, sx) = if nose_plus_z { ([0.0, 1.0, 0.0, 0.0], -1.0) } else { ([0.0, 0.0, 0.0, 1.0], 1.0) };
     let hull_at = [(-mid[0] * sx) as f32, GEAR_M - (lo[1] as f64 * unit) as f32, (-mid[2] * sx) as f32];
 
-    let mut parts = vec![identity_part("ship", -1, [0.0; 3]), EdmPart { name: "hull".into(), parent: 0, translation: hull_at, rotation: rot }];
+    let mut parts = vec![identity_part("ship", -1, [0.0; 3]), EdmPart { rotation: rot, ..identity_part("hull", 0, hull_at) }];
     let materials = vec![material("hull", 0.82, 0), material("gear", 0.32, 0)];
     let mut draws = vec![EdmDraw {
         part: 1,
@@ -170,22 +157,22 @@ pub(super) fn ship_model() -> (Edm, Summary) {
         tracks.push(EdmTrack { part, keys: vec![key(0.0, 0.0), key(GEAR_SECONDS, GEAR_TRAVEL_M)] });
     }
     let animations = vec![EdmAnimation { name: "gear_up".into(), seconds: GEAR_SECONDS, tracks }];
-    let edm = Edm { metres_per_unit: unit as f32, parts, materials, draws, animations };
+    let edm = Edm { metres_per_unit: unit as f32, vertex_decode: VertexDecode::UniformScale, parts, materials, draws, animations };
     (edm, Summary { unit, len, wid, ht, nose_plus_z, triangles: tris.len() })
 }
 
-pub(super) struct Summary {
-    pub unit: f64,
-    pub len: f32,
-    pub wid: f32,
-    pub ht: f32,
-    pub nose_plus_z: bool,
-    pub triangles: usize,
+struct Summary {
+    unit: f64,
+    len: f32,
+    wid: f32,
+    ht: f32,
+    nose_plus_z: bool,
+    triangles: usize,
 }
 
 /// Where the pilot's eyes are in the model (the stand-in's seat is built round it; the seat camera starts here). The canopy
 /// in the user's top shot is on the middle line, 35-58 % of the length back from the nose: the eyes at 42 %, near the top.
-pub(super) fn eye_point(s: &Summary) -> [f32; 3] {
+fn eye_point(s: &Summary) -> [f32; 3] {
     [0.0, GEAR_M + 0.72 * s.ht, -s.len / 2.0 + 0.42 * s.len]
 }
 
@@ -266,7 +253,7 @@ fn read_mtl(text: &str) -> HashMap<String, [f32; 3]> {
 /// The cockpit (step 0.5, recreated: E): `cockpit/cockpit.obj` beside this file, in the pilot's eye's space (metres, X right,
 /// Y up, -Z forward), placed at the eye point. The glass is its own draw (one-sided, facing in, flagged GLASS: drawn when
 /// step 4 gives it a see-through material); the rest is drawn two-sided as the stand-in was.
-pub(super) fn cockpit_model(s: &Summary) -> Edm {
+fn cockpit_model(s: &Summary) -> Edm {
     let unit = s.unit;
     let eye = eye_point(s);
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("sidewinder").join("cockpit");
@@ -294,6 +281,7 @@ pub(super) fn cockpit_model(s: &Summary) -> Edm {
     }
     Edm {
         metres_per_unit: unit as f32,
+        vertex_decode: VertexDecode::UniformScale,
         // The eyes: where the seat's camera sits (`SidewinderAssets::eye`).
         parts: vec![identity_part("cockpit", -1, [0.0; 3]), identity_part("eye", 0, eye)],
         materials,
@@ -302,92 +290,52 @@ pub(super) fn cockpit_model(s: &Summary) -> Edm {
     }
 }
 
-#[test]
-#[ignore]
-fn copy_sidewinder() {
-    let out = out_dir();
-    // (VersionInfo.txt is a line of JSON: only its "Version" is wanted.)
-    let info = std::fs::read_to_string(install().join("VersionInfo.txt")).unwrap_or_default();
-    let version = info.split("\"Version\"").nth(1).and_then(|s| s.split('"').nth(1)).unwrap_or("").trim().to_string();
-    let (ship, s) = ship_model();
+/// Writes the stand-ins and the key tables, then reads them back.
+pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
+    let (ship, s) = ship_model(&ctx.install);
     let cockpit = cockpit_model(&s);
-    std::fs::write(out.join("ship.edm"), write_edm(&ship)).unwrap();
-    std::fs::write(out.join("cockpit.edm"), write_edm(&cockpit)).unwrap();
-    let mut files = vec!["ship.edm".to_string(), "cockpit.edm".to_string()];
-    let mut sources = format!(
-        "The Faulcon DeLacy Sidewinder mod's files: where each came from. Written by copy_sidewinder (sidewinder/convert.rs).\n\
-         Elite Dangerous is Frontier Developments'; every file below taken from its install is theirs ({}).\n\
-         Grades are the plan's (docs/spec-mods-sidewinder.md): A = Elite's own bytes, E = recreated.\n\n\
-         ship.edm: the hull is Elite file {HULL_FILE} (chunk 0, its most detailed part: {} triangles), vertex bytes and indices unchanged \
-         (A). It is Elite's simplified Sidewinder, believed to be the HUD's hologram model; the in-game hull is not among the open files. \
-         Its place, scale ({:.1} x {:.1} x {:.1} m) and the landing gear are recreated (E) from the user's screenshots and Frontier's \
-         published size. A stand-in until step 0.5's recreation.\n\
-         cockpit.edm: recreated in Blender (E) from the user's three cockpit screenshots (src/sidewinder/cockpit: make_cockpit.py, \
-         cockpit.obj, notes.md); Elite's own cockpit is in its encrypted files and was never opened.\n",
-        if version.is_empty() { "version unknown".to_string() } else { format!("version {version}") },
-        s.triangles,
-        s.len,
-        s.wid,
-        s.ht
+    for (name, edm) in [("ship.edm", &ship), ("cockpit.edm", &cockpit)] {
+        ctx.write(name, &write_edm(edm))?;
+        let back = parse_edm(&ctx.read(name)?).map_err(|e| format!("{name}: {e}"))?;
+        if back != *edm {
+            return Err(format!("{name} reads back different"));
+        }
+    }
+    shipped.add(
+        "ship.edm",
+        &[format!("Elite install file {HULL_FILE}")],
+        "A + E",
+        &format!(
+            "STAND-IN (T4 removes it). The hull is Elite file {HULL_FILE} (chunk 0, its most detailed part: {} triangles), vertex \
+             bytes and indices unchanged (A); it is Elite's simplified Sidewinder, believed to be the HUD's hologram model. Its \
+             place, scale ({:.1} x {:.1} x {:.1} m) and the landing gear are recreated (E) from the user's screenshots and \
+             Frontier's published size.",
+            s.triangles, s.len, s.wid, s.ht
+        ),
+    );
+    shipped.add(
+        "cockpit.edm",
+        &["src/sidewinder/cockpit/cockpit.obj".to_string()],
+        "E",
+        "STAND-IN (T4 removes it). Recreated in Blender from the user's three cockpit screenshots (src/sidewinder/cockpit: \
+         make_cockpit.py, cockpit.obj, notes.md).",
     );
     for b in ["KeyboardMouseOnly.binds", "ControlPad.binds"] {
-        let from = install().join("ControlSchemes").join(b);
-        std::fs::copy(&from, out.join("binds").join(b)).unwrap_or_else(|e| panic!("{b}: {e}"));
-        files.push(format!("binds/{b}"));
-        sources.push_str(&format!("binds/{b}: a copy of Elite's ControlSchemes/{b} (A).\n"));
-    }
-    std::fs::write(out.join("SOURCES.txt"), sources).unwrap();
-    files.push("SOURCES.txt".to_string());
-    files.sort();
-    let mut cfg = String::from(
-        "// The Mods menu reads this at start (mods.rs). Written by copy_sidewinder (sidewinder/convert.rs): every file the mod needs.\n\
-         Name \"Faulcon DeLacy Sidewinder\"\n\
-         Description \"Elite Dangerous's starter ship: spawn it where you look, walk up and press E to fly it by Elite's rules.\"\n\
-         Code \"sidewinder\"\n",
-    );
-    for f in &files {
-        cfg.push_str(&format!("Need \"{f}\"\n"));
-    }
-    std::fs::write(out.join("mod.cfg"), cfg).unwrap();
-    // Everything reads back.
-    let back = se_core::elite_asset::parse_edm(&std::fs::read(out.join("ship.edm")).unwrap()).unwrap();
-    assert_eq!(back, ship);
-    se_core::elite_asset::parse_edm(&std::fs::read(out.join("cockpit.edm")).unwrap()).unwrap();
-    for b in ["KeyboardMouseOnly.binds", "ControlPad.binds"] {
-        se_core::elite_asset::Binds::parse(&std::fs::read_to_string(out.join("binds").join(b)).unwrap()).unwrap();
+        let rel = format!("binds/{b}");
+        let from = ctx.install.join("ControlSchemes").join(b);
+        ctx.write(&rel, &std::fs::read(&from).map_err(|e| format!("{}: {e}", from.display()))?)?;
+        Binds::parse(&String::from_utf8_lossy(&ctx.read(&rel)?)).map_err(|e| format!("{rel}: {e}"))?;
+        shipped.add(&rel, &[format!("Elite install ControlSchemes/{b}")], "A", "A copy of Elite's key file.");
     }
     println!(
-        "sidewinder: hull {} triangles at {:.3e} m a step, {:.2} x {:.2} x {:.2} m (nose at Elite's {}Z), eyes at {:?}; {} files",
+        "stand-ins: hull {} triangles at {:.3e} m a step, {:.2} x {:.2} x {:.2} m (nose at Elite's {}Z), eyes at {:?}",
         s.triangles,
         s.unit,
         s.len,
         s.wid,
         s.ht,
         if s.nose_plus_z { "+" } else { "-" },
-        eye_point(&s),
-        files.len()
+        eye_point(&s)
     );
-}
-
-/// C6 (geometry): the hull's draw holds the install's bytes, unchanged.
-#[test]
-#[ignore]
-fn geometry_is_elites() {
-    let ship = se_core::elite_asset::parse_edm(&std::fs::read(out_dir().join("ship.edm")).unwrap()).unwrap();
-    let (tris, verts) = hull_part();
-    let d = &ship.draws[0];
-    assert!(d.source.starts_with(HULL_FILE));
-    assert_eq!(d.vertices, verts, "vertex bytes");
-    assert_eq!(d.indices, tris.iter().flat_map(|t| t.iter().copied()).collect::<Vec<u16>>(), "indices");
-}
-
-/// C12: the shipped key files are Elite's, byte for byte.
-#[test]
-#[ignore]
-fn bindings_match_elite() {
-    for b in ["KeyboardMouseOnly.binds", "ControlPad.binds"] {
-        let ours = std::fs::read(out_dir().join("binds").join(b)).unwrap();
-        let theirs = std::fs::read(install().join("ControlSchemes").join(b)).unwrap();
-        assert_eq!(ours, theirs, "{b}");
-    }
+    Ok(())
 }

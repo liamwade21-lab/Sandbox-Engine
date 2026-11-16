@@ -23,6 +23,12 @@
 //! index inside its part, 215,351,280 triangles and 267,544,373 vertices, normals and tangents of unit length and at right
 //! angles, bone weights summing to 255, and a few hundred drawn from three sides as recognisable things (go/no-go G1).
 //! The other 112 files are kinds not yet read: 91 whose rows are not 24 bytes long, 21 whose bodies don't fit the layout.
+//!
+//! **Vertices, exactly** (2026-11-16, from Elite's own vertex shaders: `re/elite/frea_export/sidewinder/decoded/README.md`,
+//! "Vertices"; `re/elite/tools/cobra/vertex.py` is the reference): `Vertex::decode` gives every attribute in float32 as the
+//! GPU computes it, the position with its per-vertex exponent. `position_raw`, `normal`, `uv` and the rest are the older
+//! readings the stand-in models use (one scale for every vertex), kept as they were. `to_mod_space` turns a decoded model
+//! from Elite's space (+X starboard, +Y up, +Z nose, left-handed) into the mod's (X right, Y up, -Z nose).
 
 use std::path::{Path, PathBuf};
 
@@ -161,7 +167,8 @@ impl Vertex {
     pub fn byte15(&self) -> u8 {
         self.0[15]
     }
-    /// Bytes 16-19: the texture coordinate, two u16 as (v - 32767) / 2047 (the edges of a quad read exactly 0 and 1).
+    /// Bytes 16-19: the texture coordinate, two u16 as (v - 32767) / 2047 (the edges of a quad read exactly 0 and 1). The
+    /// stand-ins' reading: Elite's shaders' exact one is `decode().uv`.
     pub fn uv(&self) -> [f32; 2] {
         [uv16(self.0[16], self.0[17]), uv16(self.0[18], self.0[19])]
     }
@@ -180,6 +187,88 @@ impl Vertex {
     /// Bytes 36-39: four bone weights; they sum to 255 in every vertex looked at.
     pub fn weights(&self) -> [u8; 4] {
         self.0[36..40].try_into().unwrap()
+    }
+
+    /// The little-endian 32-bit word `i` (the shaders' PACKEDVERTEXDATA A, B, C read the 40 bytes as ten of them).
+    fn word(&self, i: usize) -> u32 {
+        u32::from_le_bytes(self.0[4 * i..4 * i + 4].try_into().unwrap())
+    }
+
+    /// Every attribute as Elite's vertex shaders decode it, in float32 (the module's notes). Elite's model space, metres.
+    pub fn decode(&self) -> DecodedVertex {
+        let (a0, a1, a2) = (self.word(0), self.word(1), self.word(2));
+        let e = (a2 >> 24) & 0x7f;
+        let position = if e != 64 {
+            // Three 21-bit fields over +-2^e, finer near the middle. Every Sidewinder vertex has e <= 20; above that the
+            // shift amount is taken mod 32, as the GPU's integer shift does.
+            let u = [a0 & 0x1f_ffff, ((a1 & 0x3ff) << 11) + (a0 >> 21), (a1 >> 10) & 0x1f_ffff];
+            let rcp = 1.0 / (1u32.wrapping_shl(20u32.wrapping_sub(e)).wrapping_sub(1) as f32);
+            let off = (1u32 << ((a2 >> 24) & 31)) as f32;
+            u.map(|u| u as f32 * rcp - off)
+        } else {
+            // A magnitude times a direction (none of the Sidewinder's vertices).
+            let mag = ((a1 >> 16) as f32 * K16 * 16.0).exp2() - 1.0;
+            let d = |u: u32| u as f32 * K16 * 2.0 - 1.0;
+            [mag * d(a0 & 0xffff), mag * d(a0 >> 16), mag * d(a1 & 0xffff)]
+        };
+        let unit = |b: u8| b as f32 * K127 - 1.0;
+        let uv = |w: u32| [((w & 0xffff) as f32 * K32767 - 1.0) * 16.0, ((w >> 16) as f32 * K32767 - 1.0) * 16.0];
+        DecodedVertex {
+            position,
+            normal: [unit(self.0[8]), unit(self.0[9]), unit(self.0[10])],
+            tangent: [unit(self.0[12]), unit(self.0[13]), unit(self.0[14])],
+            tangent_sign: if a2 & 0x8000_0000 != 0 { -1.0 } else { 1.0 },
+            uv: [uv(self.word(4)), uv(self.word(6)), uv(self.word(7))],
+            colour: self.colour(),
+            material: self.0[15],
+            bones: self.bones(),
+            weights: self.weights().map(|w| w as f32 * K255),
+        }
+    }
+}
+
+/// 1 / 65535 as the shaders store it.
+const K16: f32 = f32::from_bits(0x3780_0080);
+/// 1 / 127 as the shaders store it.
+const K127: f32 = f32::from_bits(0x3c01_0204);
+/// 1 / 32767 as the shaders store it.
+const K32767: f32 = f32::from_bits(0x3800_0100);
+/// 1 / 255 as the shaders store it.
+const K255: f32 = f32::from_bits(0x3b80_8081);
+
+/// One vertex decoded exactly (`Vertex::decode`): float32 as the GPU computes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecodedVertex {
+    /// Metres.
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub tangent: [f32; 3],
+    /// The tangent frame's sign: byte 11's top bit (set = -1).
+    pub tangent_sign: f32,
+    /// UV0 (bytes 16-19), UV1 (24-27), UV2 (28-31); Direct3D's convention, v down the texture.
+    pub uv: [[f32; 2]; 3],
+    /// Bytes 20-23 (unused by the ship's shaders).
+    pub colour: [u8; 4],
+    /// Byte 15: the vertex's material index in its model set (the cockpit's colour override reads half of it).
+    pub material: u8,
+    pub bones: [u8; 4],
+    /// Bytes 36-39 / 255.
+    pub weights: [f32; 4],
+}
+
+/// Turns a decoded model from Elite's model space (+X starboard, +Y up, +Z nose, left-handed) into the mod's (X right,
+/// Y up, -Z nose, right-handed): z negated in positions, normals and tangents, the tangent sign negated (the mirror flips
+/// the bitangent), and two indices of every triangle swapped so the front faces stay in front. UVs are unchanged.
+/// `indices` holds whole triangles (three per triangle).
+pub fn to_mod_space(vertices: &mut [DecodedVertex], indices: &mut [u16]) {
+    for v in vertices.iter_mut() {
+        v.position[2] = -v.position[2];
+        v.normal[2] = -v.normal[2];
+        v.tangent[2] = -v.tangent[2];
+        v.tangent_sign = -v.tangent_sign;
+    }
+    for t in indices.chunks_exact_mut(3) {
+        t.swap(1, 2);
     }
 }
 
@@ -268,38 +357,73 @@ pub fn parse_mesh(d: &[u8]) -> R<MeshFile> {
     let mut o = d.len() - total;
     let mut chunks = Vec::with_capacity(n);
     for c in &descs {
-        let mut rows = Vec::with_capacity(c.rows / 24);
-        for r in 0..c.rows / 24 {
-            let w = |k: usize| u32::from_le_bytes(d[o + 24 * r + 4 * k..o + 24 * r + 4 * k + 4].try_into().unwrap()) as usize;
-            rows.push((w(0), w(2)));
-        }
-        let index_bytes: usize = rows.iter().map(|&(t, _)| pad4(6 * t)).sum();
-        let verts: usize = rows.iter().map(|&(_, v)| v).sum();
-        if index_bytes + VERTEX_BYTES * verts != c.body {
-            return Err(EliteError::Bad("a chunk's body doesn't fit its rows".into()));
-        }
-        let mut io = o + c.rows;
-        let mut vo = io + index_bytes;
-        let mut parts = Vec::with_capacity(rows.len());
-        for &(t, v) in &rows {
-            let mut triangles = Vec::with_capacity(t);
-            for k in 0..t {
-                let i = |j: usize| u16::from_le_bytes([d[io + 6 * k + 2 * j], d[io + 6 * k + 2 * j + 1]]);
-                let tri = [i(0), i(1), i(2)];
-                if tri.iter().any(|&x| x as usize >= v) {
-                    return Err(EliteError::Bad("an index outside its part".into()));
-                }
-                triangles.push(tri);
-            }
-            let vertices = (0..v).map(|k| Vertex(d[vo + VERTEX_BYTES * k..vo + VERTEX_BYTES * (k + 1)].try_into().unwrap())).collect();
-            parts.push(MeshPart { triangles, vertices });
-            io += pad4(6 * t);
-            vo += VERTEX_BYTES * v;
-        }
+        let parts = parse_chunk(&d[o..o + c.rows + c.body], c.rows / 24)?;
         chunks.push(MeshChunk { id: c.id, kind: c.kind, parts });
         o += c.rows + c.body;
     }
     Ok(MeshFile { id: word(d, 5)?, chunks })
+}
+
+/// Where one part of a chunk lies in the chunk's bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartLayout {
+    pub triangles: usize,
+    pub vertices: usize,
+    /// The first byte of its u16 indices (`6 * triangles` bytes, then padding to 4).
+    pub index_at: usize,
+    /// The first byte of its 40-byte vertices.
+    pub vertex_at: usize,
+}
+
+impl PartLayout {
+    /// Its indices' bytes, without the padding.
+    pub fn index_bytes(&self) -> std::ops::Range<usize> {
+        self.index_at..self.index_at + 6 * self.triangles
+    }
+    pub fn vertex_bytes(&self) -> std::ops::Range<usize> {
+        self.vertex_at..self.vertex_at + VERTEX_BYTES * self.vertices
+    }
+}
+
+/// The layout of one chunk, `d` being exactly its bytes: `parts` rows of 24 bytes (triangles, -, vertices, -, -, -: 32-bit
+/// words), then each part's indices padded to 4 bytes, then every part's vertices. A model set's buffer (the decoded
+/// export's `NAME.M.bufK.bin`) is one such chunk.
+pub fn chunk_layout(d: &[u8], parts: usize) -> R<Vec<PartLayout>> {
+    let rows_end = parts.checked_mul(24).filter(|&n| n <= d.len()).ok_or(EliteError::Short(d.len()))?;
+    let rows: Vec<(usize, usize)> = (0..parts).map(|r| (word(d, 6 * r).unwrap() as usize, word(d, 6 * r + 2).unwrap() as usize)).collect();
+    let index_bytes: usize = rows.iter().map(|&(t, _)| pad4(6 * t)).sum();
+    let verts: usize = rows.iter().map(|&(_, v)| v).sum();
+    if index_bytes + VERTEX_BYTES * verts != d.len() - rows_end {
+        return Err(EliteError::Bad("a chunk's body doesn't fit its rows".into()));
+    }
+    let (mut io, mut vo) = (rows_end, rows_end + index_bytes);
+    Ok(rows
+        .iter()
+        .map(|&(triangles, vertices)| {
+            let p = PartLayout { triangles, vertices, index_at: io, vertex_at: vo };
+            io += pad4(6 * triangles);
+            vo += VERTEX_BYTES * vertices;
+            p
+        })
+        .collect())
+}
+
+/// Reads one chunk (`chunk_layout`): each part's triangles, counted from its own first vertex, and its vertices.
+pub fn parse_chunk(d: &[u8], parts: usize) -> R<Vec<MeshPart>> {
+    chunk_layout(d, parts)?
+        .iter()
+        .map(|p| {
+            let triangles: Vec<[u16; 3]> = d[p.index_bytes()]
+                .chunks_exact(6)
+                .map(|t| [0, 1, 2].map(|j| u16::from_le_bytes([t[2 * j], t[2 * j + 1]])))
+                .collect();
+            if triangles.iter().flatten().any(|&x| x as usize >= p.vertices) {
+                return Err(EliteError::Bad("an index outside its part".into()));
+            }
+            let vertices = d[p.vertex_bytes()].chunks_exact(VERTEX_BYTES).map(|v| Vertex(v.try_into().unwrap())).collect();
+            Ok(MeshPart { triangles, vertices })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -399,6 +523,73 @@ mod tests {
         assert_eq!(v.uv(), [1.0, 0.0]);
         assert_eq!(v.uv2(), [[0.0, 0.0], [0.0, 0.0]]);
         assert_eq!((v.colour(), v.bones(), v.weights(), v.byte11(), v.byte15()), ([0, 0, 0, 255], [0; 4], [255, 0, 0, 0], 3, 0));
+    }
+
+    /// The decoded export's 48 vertices (`vertex_test_vectors.json`, float32 as the GPU computes them, written as the
+    /// float32 values' exact decimal) decode bit for bit.
+    #[test]
+    fn decodes_the_test_vectors_exactly() {
+        let text = include_str!("../tests/data/elite/vertex_test_vectors.json");
+        let list: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
+        assert_eq!(list.len(), 48);
+        let floats = |v: &serde_json::Value, k: &str| -> Vec<u32> {
+            v[k].as_array().unwrap_or_else(|| panic!("{k}")).iter().map(|x| (x.as_f64().unwrap() as f32).to_bits()).collect()
+        };
+        let bytes = |v: &serde_json::Value, k: &str| -> Vec<u8> { v[k].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u8).collect() };
+        let bits = |f: &[f32]| f.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+        for (n, v) in list.iter().enumerate() {
+            let hex = v["raw"].as_str().unwrap();
+            let raw: Vec<u8> = (0..40).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap()).collect();
+            let d = Vertex(raw.try_into().unwrap()).decode();
+            assert_eq!(bits(&d.position), floats(v, "pos"), "vector {n}: position");
+            assert_eq!(bits(&d.normal), floats(v, "normal"), "vector {n}: normal");
+            assert_eq!(bits(&d.tangent), floats(v, "tangent"), "vector {n}: tangent");
+            assert_eq!(bits(&[d.tangent_sign]), floats(v, "sign"), "vector {n}: sign");
+            for (k, uv) in d.uv.iter().enumerate() {
+                assert_eq!(bits(uv), floats(v, &format!("uv{k}")), "vector {n}: uv{k}");
+            }
+            assert_eq!(d.colour.to_vec(), bytes(v, "colour"), "vector {n}: colour");
+            assert_eq!(d.bones.to_vec(), bytes(v, "bones"), "vector {n}: bones");
+            assert_eq!(bits(&d.weights), floats(v, "weights"), "vector {n}: weights");
+        }
+    }
+
+    /// The magnitude-and-direction branch (exponent 64), which no Sidewinder vertex uses, and the move to the mod's space.
+    #[test]
+    fn decodes_the_far_branch_and_mirrors() {
+        let mut v = [0u8; 40];
+        // a0: x direction 65535 (+1), y direction 0 (-1); a1: z direction 32767 (about 0), magnitude 65535 (2^16 - 1).
+        v[0..4].copy_from_slice(&0x0000_ffffu32.to_le_bytes());
+        v[4..8].copy_from_slice(&0xffff_7fffu32.to_le_bytes());
+        v[11] = 64 | 0x80;
+        v[8..11].copy_from_slice(&[127, 127, 254]);
+        v[12..15].copy_from_slice(&[254, 127, 127]);
+        v[15] = 3;
+        let d = Vertex(v).decode();
+        let want = [65535.0f32, -65535.0, 0.0];
+        for k in 0..3 {
+            assert!((d.position[k] - want[k]).abs() < 2.0, "{:?}", d.position);
+        }
+        assert_eq!((d.normal, d.tangent, d.tangent_sign, d.material), ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], -1.0, 3));
+        let mut vs = [d];
+        let mut tri = [0u16, 1, 2, 3, 4, 5];
+        to_mod_space(&mut vs, &mut tri);
+        assert_eq!(tri, [0, 2, 1, 3, 5, 4]);
+        assert_eq!((vs[0].position[2], vs[0].normal, vs[0].tangent, vs[0].tangent_sign), (-d.position[2], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], 1.0));
+        assert_eq!(vs[0].uv, d.uv);
+    }
+
+    /// A chunk read alone, as the export's buffers are, places each part's bytes.
+    #[test]
+    fn lays_out_a_chunk() {
+        let d = built_mesh(false);
+        let chunk = &d[29 * 4..];
+        let l = chunk_layout(chunk, 2).unwrap();
+        assert_eq!((l[0].triangles, l[0].vertices, l[0].index_at, l[0].vertex_at), (1, 3, 48, 68));
+        assert_eq!((l[1].index_at, l[1].vertex_at, l[1].vertex_bytes().end), (56, 188, chunk.len()));
+        assert_eq!(parse_chunk(chunk, 2).unwrap(), parse_mesh(&d).unwrap().chunks[0].parts);
+        assert!(chunk_layout(chunk, 3).is_err());
+        assert!(chunk_layout(&chunk[..40], 2).is_err());
     }
 
     #[test]

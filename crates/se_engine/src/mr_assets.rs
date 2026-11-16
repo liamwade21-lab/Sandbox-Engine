@@ -95,6 +95,8 @@ fn gpu_format(f: DdsFormat, srgb: bool) -> Option<TextureFormat> {
         (DdsFormat::Bc3, true) => TextureFormat::Bc3RgbaUnormSrgb,
         (DdsFormat::Bc4, _) => TextureFormat::Bc4RUnorm,
         (DdsFormat::Bc5, _) => TextureFormat::Bc5RgUnorm,
+        (DdsFormat::Bc7, false) => TextureFormat::Bc7RgbaUnorm,
+        (DdsFormat::Bc7, true) => TextureFormat::Bc7RgbaUnormSrgb,
         (DdsFormat::Rgba8, false) => TextureFormat::Rgba8Unorm,
         (DdsFormat::Rgba8, true) => TextureFormat::Rgba8UnormSrgb,
         (DdsFormat::Rgba8Snorm, _) => TextureFormat::Rgba8Snorm,

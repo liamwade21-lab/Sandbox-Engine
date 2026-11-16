@@ -1,5 +1,6 @@
 //! Minimal DDS reader: the top mip level of DXT1/DXT3/DXT5 (BC1/BC2/BC3), `ATI2` (BC5)
-//! normal maps and uncompressed 24/32-bit images, decoded to RGBA8.
+//! normal maps and uncompressed 24/32-bit images, decoded to RGBA8. `parse_dds` also reads the
+//! layout of BC4 and BC7 files (Elite Dangerous's textures), which are uploaded to the GPU as they are.
 //!
 //! The spacecraft textures (`textures/spacecraft/ShipsTex.pak`) are mostly DXT1/DXT5
 //! with a full mip chain; only the first (largest) level is decoded. BC5 normal maps come
@@ -184,6 +185,8 @@ pub enum DdsFormat {
     Bc3,
     Bc4,
     Bc5,
+    /// DXGI 98 / 99, BC7 (unorm / sRGB: the caller says which way it is sampled). Uploaded as it is, never decoded here.
+    Bc7,
     /// 32-bit with the masks of D3DFMT_A8R8G8B8: bytes B, G, R, A in memory.
     Bgra8,
     /// D3DFMT_X8R8G8B8: as Bgra8 with the alpha byte unused (opaque).
@@ -209,7 +212,7 @@ impl DdsFormat {
     pub fn unit_bytes(self) -> usize {
         match self {
             DdsFormat::Bc1 | DdsFormat::Bc4 => 8,
-            DdsFormat::Bc2 | DdsFormat::Bc3 | DdsFormat::Bc5 => 16,
+            DdsFormat::Bc2 | DdsFormat::Bc3 | DdsFormat::Bc5 | DdsFormat::Bc7 => 16,
             DdsFormat::Bgra8 | DdsFormat::Bgrx8 | DdsFormat::Rgba8 | DdsFormat::Rgba8Snorm | DdsFormat::R32F => 4,
             DdsFormat::R8 => 1,
             DdsFormat::Rg8 | DdsFormat::Rg8Snorm => 2,
@@ -218,7 +221,7 @@ impl DdsFormat {
     }
 
     pub fn is_block(self) -> bool {
-        matches!(self, DdsFormat::Bc1 | DdsFormat::Bc2 | DdsFormat::Bc3 | DdsFormat::Bc4 | DdsFormat::Bc5)
+        matches!(self, DdsFormat::Bc1 | DdsFormat::Bc2 | DdsFormat::Bc3 | DdsFormat::Bc4 | DdsFormat::Bc5 | DdsFormat::Bc7)
     }
 
     /// Bytes of one mip level of `w` x `h` texels.
@@ -338,6 +341,7 @@ pub fn parse_dds(bytes: &[u8]) -> Result<DdsInfo, DdsError> {
                     77 | 78 => DdsFormat::Bc3,
                     80 => DdsFormat::Bc4,
                     83 => DdsFormat::Bc5,
+                    98 | 99 => DdsFormat::Bc7,
                     87 | 91 => DdsFormat::Bgra8,
                     88 | 93 => DdsFormat::Bgrx8,
                     other => return Err(DdsError::Unsupported(format!("DXGI format {other}"))),
@@ -396,6 +400,7 @@ pub fn decode_level(bytes: &[u8], info: &DdsInfo, layer: u32, mip: u32) -> Resul
         DdsFormat::Bc2 => block(Block::Bc2)?,
         DdsFormat::Bc3 => block(Block::Bc3)?,
         DdsFormat::Bc5 => block(Block::Bc5)?,
+        DdsFormat::Bc7 => return Err(DdsError::Unsupported("BC7 decoding (it is uploaded to the GPU as it is)".into())),
         DdsFormat::Bc4 => {
             let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
             let mut out = vec![0u8; w * h * 4];
@@ -609,6 +614,28 @@ mod tests {
         let info = parse_dds(&d).unwrap();
         assert_eq!((info.format, info.layers, info.data_offset), (DdsFormat::Bc3, 3, 148));
         assert_eq!(info.level(&d, 2, 0).unwrap(), &[2u8; 16][..]);
+    }
+
+    /// A BC7 file as Elite's export writes them: DX10 header, DXGI 98 (99 for sRGB), a full mip chain of 16-byte blocks,
+    /// including a strip 4 texels tall (the headlight's IES profile is 1024 x 4).
+    #[test]
+    fn parse_bc7() {
+        for dxgi in [98u32, 99] {
+            let mut d = header(16, 4, b"DX10");
+            d[8..12].copy_from_slice(&0x20000u32.to_le_bytes());
+            d[28..32].copy_from_slice(&5u32.to_le_bytes());
+            for v in [dxgi, 3, 0, 1, 0] {
+                d.extend_from_slice(&v.to_le_bytes());
+            }
+            // 16x4: 4 blocks, 8x2: 2, 4x1: 1, 2x1: 1, 1x1: 1 = 9 blocks of 16 bytes.
+            d.extend((0..9 * 16).map(|i| i as u8));
+            let info = parse_dds(&d).unwrap();
+            assert_eq!((info.format, info.width, info.height, info.mips, info.layers, info.data_offset), (DdsFormat::Bc7, 16, 4, 5, 1, 148));
+            assert_eq!(info.data_bytes(), 9 * 16);
+            assert_eq!(info.level(&d, 0, 1).unwrap(), &d[148 + 64..148 + 96]);
+            assert!(matches!(decode_level(&d, &info, 0, 0), Err(DdsError::Unsupported(_))));
+            assert_eq!(parse_dds(&d[..d.len() - 1]).unwrap_err(), DdsError::Truncated);
+        }
     }
 
     #[test]

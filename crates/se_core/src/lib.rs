@@ -16,6 +16,8 @@ pub mod custom_model;
 pub mod dds;
 pub mod elite;
 pub mod elite_asset;
+pub mod elite_rig;
+pub mod elite_ship;
 pub mod ephemeris;
 pub mod galaxy_model;
 pub mod gmod;

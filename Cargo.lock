@@ -4701,6 +4701,8 @@ dependencies = [
  "libm",
  "log",
  "miniz_oxide 0.9.1",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
