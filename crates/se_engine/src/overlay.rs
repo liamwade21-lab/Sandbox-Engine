@@ -618,9 +618,22 @@ pub(crate) struct View {
     centre: (f64, f64),
 }
 
+/// The main camera's vertical field of view as drawn (degrees): its projection's, which the sandbox's walking view and the
+/// Sidewinder's seat set over the player's own (`FlyCamera::fov_deg`, saved with the settings). Read from the camera's
+/// matrix as `camera_system` made it from the projection (the systems that ask run unordered against the ones that write
+/// the projection; the matrix comes after all of them: this frame's or the last's). Where it is the player's own (free
+/// flight) that value is given back as it is, so free flight is unchanged to the bit; without a perspective matrix yet, too.
+pub(crate) fn view_fov_deg(cam: &FlyCamera, camera: Option<&Camera>) -> f32 {
+    let Some(m) = camera.map(|c| c.clip_from_view()).filter(|m| m.y_axis.y > 0.0 && m.w_axis.w == 0.0) else { return cam.fov_deg };
+    let drawn = (2.0 * (1.0 / m.y_axis.y).atan()).to_degrees();
+    // (The matrix's f32 round trip is within a few millionths of a degree.)
+    if (drawn - cam.fov_deg).abs() < 1e-3 { cam.fov_deg } else { drawn }
+}
+
 impl View {
-    pub fn new(cam: &FlyCamera, vp: Vec2) -> Self {
-        let focal = vp.y as f64 * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan();
+    /// With the vertical field of view `fov_deg` (degrees): the drawn one is `view_fov_deg`.
+    pub fn of(cam: &FlyCamera, vp: Vec2, fov_deg: f32) -> Self {
+        let focal = vp.y as f64 * 0.5 / (fov_deg as f64 * 0.5).to_radians().tan();
         Self { inv: cam.rot.inverse(), focal, centre: (vp.x as f64 * 0.5, vp.y as f64 * 0.5) }
     }
 
@@ -685,7 +698,7 @@ pub(crate) fn draw_orbits(
     let ctx = contexts.ctx_mut()?;
     let skin = crate::skin::text(ctx);
     let px = 1.0 / ctx.pixels_per_point();
-    let view = View::new(&cam, vp);
+    let view = View::of(&cam, vp, view_fov_deg(&cam, Some(camera)));
     let eph = Ephemeris::new(&data.catalog);
     let spheres: Vec<(DVec3, f64)> =
         bodies.iter().filter(|b| b.px_radius > 1.0 && b.radius_m > 0.0).map(|b| (b.pos.delta_m(cam.pos), b.radius_m)).collect();
@@ -1346,7 +1359,7 @@ fn draw_selection_pointer(
         return Ok(());
     }
     let radius = eph.radius_m(sel);
-    let focal = vp.y * 0.5 / (cam.fov_deg.to_radians() as f32 * 0.5).tan();
+    let focal = vp.y * 0.5 / (view_fov_deg(&cam, Some(camera)).to_radians() * 0.5).tan();
     let ang = if radius >= dist { std::f32::consts::FRAC_PI_2 } else { (radius / dist).asin() as f32 };
     let r_px = focal * ang.tan().min(1.0e4);
     if r_px > 0.45 * vp.min_element() {
@@ -1567,7 +1580,8 @@ fn pick_on_click(
     }
     let Ok((camera, cam_tf)) = cameras.single() else { return };
     let Ok(ray) = camera.viewport_to_world(cam_tf, pos) else { return };
-    let rad_per_px = (cam.fov_deg as f64).to_radians() / window.height().max(1.0) as f64;
+    let fov_deg = view_fov_deg(&cam, Some(camera)) as f64;
+    let rad_per_px = fov_deg.to_radians() / window.height().max(1.0) as f64;
     // Render space is the universe frame around the camera.
     let picked = pick_in_sky(
         ray.direction.as_dvec3(),
@@ -1581,7 +1595,7 @@ fn pick_on_click(
         far_mag_limits(
             &gal_settings,
             gal_state.map_or(1.0, |s| s.gain),
-            window.resolution.physical_height() as f64 * 0.5 / (cam.fov_deg as f64 * 0.5).to_radians().tan(),
+            window.resolution.physical_height() as f64 * 0.5 / (fov_deg * 0.5).to_radians().tan(),
         ),
         &|c| cluster_filter.shows(c, proc_settings.clusters),
     );

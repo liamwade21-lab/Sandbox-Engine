@@ -640,6 +640,7 @@ fn run_hires(
     proj: Res<crate::projection::ProjectionSettings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cams: Query<&mut Camera, With<CaptureView>>,
+    main: Query<&Camera, (With<crate::camera::MainCamera>, Without<CaptureView>)>,
     terrains: Query<&crate::terrain::Terrain>,
     (mut msg, i18n): (ResMut<crate::messages::Messages>, Res<crate::i18n::I18n>),
 ) {
@@ -661,7 +662,8 @@ fn run_hires(
         out.resize(memory_bytes(s.target) as usize, 0);
         let (grid, tile) = tile_grid(s.target, clamp_tile_res(s.tile_res));
         let win = windows.iter().next().map(|w| w.width() / w.height().max(1.0)).unwrap_or(16.0 / 9.0);
-        let fov = hires_fov(cam.fov_deg.to_radians(), win, s.target.x as f32 / s.target.y as f32);
+        // (The view's field of view as drawn: the walking view's or the seat's over the player's own.)
+        let fov = hires_fov(crate::overlay::view_fov_deg(&cam, main.single().ok()).to_radians(), win, s.target.x as f32 / s.target.y as f32);
         // No bloom: spread over each tile's own pixels it would show the tile edges.
         // Every tile shows the view as it is now.
         let fixed = Some(cam.rot.as_quat());

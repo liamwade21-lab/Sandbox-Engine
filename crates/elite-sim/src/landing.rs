@@ -1,5 +1,4 @@
-//! Touching down (the landing component's numbers; the rule is `pilot.rs`'s `touchdown`, which still holds its own constants
-//! until a later task points it here).
+//! Touching down (the landing component's numbers; `pilot.rs`'s `touchdown` applies them at contact).
 //!
 //! Rule (grade C, `0x1430ECE00`, A21): touchdown is allowed while the height h is `0 <= h <= P14`, the speed at most P10
 //! (`|v|^2 <= P10^2`) and the ship's down within the landing record's tilt of gravity's; the approach flag is set under P1C; the

@@ -9,8 +9,11 @@
 //!   port's own readers never see them (K would slow the clock, I open the wiki); Esc (the menu) and F11 (a screenshot) are
 //!   left. The game clock runs at real time while he sits and is given back when he gets out (the spec's edge cases).
 //! - Getting out (`leave_rule`): B only when landed (the spec's D8); the mod turned off by any other way while flying loses
-//!   the ship (the spec's edge cases: "if that was in flight it is lost"). Landed, he is set down beside the ship's left side,
-//!   unless something else already put him somewhere (the main menu's Play puts him on Earth).
+//!   the ship (the spec's edge cases: "if that was in flight it is lost"). Every way out (B, the mod off, the ship destroyed,
+//!   lost in hyperspace, removed) goes through one function, `release` (`exit_rule` says where he goes, the spec's F6):
+//!   beside the ship's left side when it is landed, on the ground under it when it was flying by ground he can stand on,
+//!   else on Earth, unless something else already put him somewhere (the main menu's Play puts him on Earth). The seat's
+//!   view stays until the sandbox has set him down.
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::math::{DQuat, Vec3};
@@ -23,6 +26,7 @@ use crate::camera::FlyCamera;
 use crate::mods::{ModControl, ModRegistry};
 use crate::sandbox::{Mode, Sandbox};
 use crate::system::SystemBody;
+use crate::terrain::Terrain;
 use crate::universe::SimTime;
 
 use super::pilot::{Pilot, PilotKeys};
@@ -54,11 +58,15 @@ pub struct Seat {
     pub look: Vec2,
     /// B was pressed this frame (`seat_camera` acts on it).
     leave: bool,
+    /// The ship is to be removed while he sits in it (`ShipRequest::Remove`: `seat_camera` releases the seat, then takes it).
+    remove: bool,
     regain: u8,
     /// The game clock's rate and pause as they were when he sat down (given back when he gets out).
     clock: Option<(f64, bool)>,
     /// The fade from black after boarding or getting out: real seconds left of it (0: none).
     pub fade: f32,
+    /// Out of the seat and not yet set down by the sandbox: the seat's view is kept meanwhile (`seat_camera`).
+    setting_down: bool,
 }
 
 impl Seat {
@@ -73,6 +81,11 @@ impl Seat {
     /// Get out (as B does: only when landed).
     pub fn request_leave(&mut self) {
         self.leave = true;
+    }
+
+    /// The ship is to be removed while he sits in it: the seat is released first (`seat_camera`).
+    pub fn request_remove(&mut self) {
+        self.remove = true;
     }
 
     /// The fade's black now (0 clear .. 1 black).
@@ -122,6 +135,70 @@ pub fn leave_rule(landed: bool, by_b: bool) -> Leave {
         (false, true) => Leave::Refused,
         (false, false) => Leave::Lost,
     }
+}
+
+/// Why the seat is released (every way out of it goes through `release`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// B while landed, or the mod turned off by any way (in flight, or in hyperspace, that loses the ship).
+    Out,
+    /// The hull at zero or the oxygen run out.
+    Destroyed,
+    /// The ship removed (`sw remove`, the Mods row) while he sits in it.
+    Removed,
+}
+
+/// Where he goes out of the seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// Beside the ship's left side, on the ground (it is landed).
+    Beside,
+    /// On the ground under the ship, on its body (it was flying: destroyed, lost or removed in flight).
+    Under,
+    /// On Earth, as the main menu's Play puts him: there is no ground to stand on by the ship.
+    Earth,
+    /// Nowhere: the sandbox isn't in the seat's mode (he is already somewhere: the mod went off before it took the camera).
+    Stay,
+}
+
+/// The release's rule (the spec's F6): whether the ship is lost and where he goes. Beside the ship when it is landed; on the
+/// ground under it when it was flying by a body he can stand on (`ground`: a solid body's loaded ground, out of supercruise
+/// and hyperspace); else (deep space, the tunnel, a star, a gas giant, ground not loaded, no ship) on Earth.
+pub fn exit_rule(why: Why, landed: bool, ground: bool, ship: bool, in_seat_mode: bool) -> (bool, Place) {
+    let lost = match why {
+        Why::Out => leave_rule(landed, false) == Leave::Lost,
+        Why::Destroyed | Why::Removed => true,
+    };
+    let place = match (in_seat_mode, ship && ground, landed) {
+        (false, _, _) => Place::Stay,
+        (true, false, _) => Place::Earth,
+        (true, true, true) => Place::Beside,
+        (true, true, false) => Place::Under,
+    };
+    (lost, place)
+}
+
+/// The release's state changes (the pure part of `release`): out of the seat, the game clock given back, head look cleared,
+/// the fade from black, the mod asked off if it is the one piloting, and the flight's transient states (hyperspace's tunnel,
+/// supercruise, the glide) ended.
+fn free_seat(seat: &mut Seat, sim: &mut SimTime, control: &mut ModControl, pilot: &mut Pilot) {
+    seat.seated = false;
+    seat.leave = false;
+    seat.remove = false;
+    seat.head_look = false;
+    seat.look = Vec2::ZERO;
+    seat.fade = FADE_S;
+    seat.setting_down = true;
+    if let Some((rate, paused)) = seat.clock.take() {
+        sim.rate = rate;
+        sim.paused = paused;
+    }
+    if control.pilot {
+        control.request_off();
+    }
+    pilot.jump = None;
+    pilot.cruise = None;
+    pilot.glide = None;
 }
 
 /// Elite's name for a key as Bevy's key code (the keys its default files use).
@@ -307,8 +384,8 @@ pub fn take_keys(
     seat.regain = seat.regain.saturating_sub(1);
 }
 
-/// The seat's camera at the pilot's eyes (bound to the body this frame), and getting out: B (landed only, `leave_rule`) or the
-/// mod off by any way (in flight that loses the ship).
+/// The seat's camera at the pilot's eyes (bound to the body this frame), and every way out of the seat (`release`): B
+/// (landed only, `leave_rule`), the mod off by any way (in flight that loses the ship), the ship destroyed or removed.
 #[allow(clippy::too_many_arguments)]
 pub fn seat_camera(
     mut sb: ResMut<Sandbox>,
@@ -317,7 +394,7 @@ pub fn seat_camera(
     mut ship: ResMut<Sidewinder>,
     assets: Option<Res<SidewinderAssets>>,
     mut cam: ResMut<FlyCamera>,
-    bodies: Query<&SystemBody>,
+    bodies: Query<(&SystemBody, Option<&Terrain>)>,
     mut msg: ResMut<crate::messages::Messages>,
     mut pilot: ResMut<Pilot>,
     mut sim: ResMut<SimTime>,
@@ -326,117 +403,134 @@ pub fn seat_camera(
     // (Set again below where the camera is at the eye: every other way through, it isn't there.)
     seat.view = false;
     if !seat.seated {
+        // Out, and not yet set down: the camera waits at the eye (the sandbox holds it there), so the seat's view, its draw set
+        // and Elite's field of view, stays until the frame the sandbox has set him down.
+        if seat.setting_down {
+            seat.setting_down = sb.walking() && !sb.placed;
+            seat.view = seat.setting_down;
+        }
         return;
     }
-    let (Some(assets), Some(p)) = (assets, ship.parked.as_ref()) else {
-        seat.seated = false;
-        return;
-    };
-    // In hyperspace's tunnel `hyper::tunnel` holds the camera; the mod off there, or the ship destroyed (out of oxygen), loses
-    // the ship, and he goes back on Earth.
-    if pilot.jump.is_some() {
-        if control.pilot && sb.mode == Mode::Pilot && !pilot.destroyed {
-            // (The tunnel writes the camera at the eye: still the seat's view, Elite's field of view and all.)
-            seat.view = true;
-            return;
-        }
-        seat.seated = false;
-        seat.head_look = false;
-        seat.look = Vec2::ZERO;
-        if let Some((rate, paused)) = seat.clock.take() {
-            sim.rate = rate;
-            sim.paused = paused;
-        }
-        pilot.jump = None;
-        pilot.cruise = None;
-        if let Some(mut gone) = ship.parked.take() {
-            super::remove_solids(&mut sb, &mut gone);
-        }
-        control.ship_parked = false;
-        if sb.mode == Mode::Pilot {
-            crate::sandbox::put_on_earth(&data, sim.jd, &mut cam, &mut sb, "the Sidewinder was lost in hyperspace: back");
-        }
-        if pilot.destroyed {
-            if control.pilot {
-                control.request_off();
+    let Some(assets) = assets else { return };
+    // Every way out: the ship removed (or gone), destroyed, the mod turned off by any way, B while landed.
+    let why = if seat.remove || ship.parked.is_none() {
+        Some(Why::Removed)
+    } else if pilot.destroyed {
+        Some(Why::Destroyed)
+    } else if !control.pilot {
+        Some(Why::Out)
+    } else if std::mem::take(&mut seat.leave) {
+        match leave_rule(pilot.landed, true) {
+            Leave::Out => Some(Why::Out),
+            _ => {
+                msg.show("Disembark is only possible when landed".to_string());
+                info!("sidewinder: B refused: disembark is only possible when landed");
+                None
             }
-            msg.show("The Sidewinder was destroyed in hyperspace".to_string());
-            info!("sidewinder: destroyed in hyperspace; the ship is lost");
-        } else {
-            msg.show("The Sidewinder was lost in hyperspace".to_string());
-            info!("sidewinder: the mod went off in hyperspace; the ship is lost");
         }
+    } else {
+        None
+    };
+    if let Some(why) = why {
+        let mut out = Out { seat: &mut *seat, sim: &mut *sim, control: &mut *control, pilot: &mut *pilot, ship: &mut *ship, sb: &mut *sb, cam: &mut *cam, msg: &mut *msg };
+        release(why, &mut out, &bodies, &data, &assets);
+        // (The camera is at the eye this frame: the seat's view until he is set down.)
+        seat.view = seat.setting_down && sb.walking() && !sb.placed;
         return;
     }
-    let Some(b) = bodies.iter().find(|b| b.obj == p.obj) else { return };
+    // In hyperspace's tunnel `hyper::tunnel` writes the camera at the eye: still the seat's view, Elite's field of view and all.
+    if pilot.jump.is_some() {
+        seat.view = true;
+        return;
+    }
+    let Some(p) = ship.parked.as_ref() else { return };
+    let Some((b, _)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
     let eye = Vec3::from_array(assets.eye).as_dvec3();
     let look = DQuat::from_rotation_y(seat.look.x as f64) * DQuat::from_rotation_x(seat.look.y as f64);
     let eye_body = p.pos + p.rot * eye;
     let rot_body = (p.rot * look).normalize();
-    // Destroyed (the hull at zero): the ship is lost and he is set down where it was.
-    if pilot.destroyed && control.pilot {
-        msg.show("The Sidewinder was destroyed".to_string());
-        info!("sidewinder: destroyed");
-        control.request_off();
-    }
-    if seat.leave {
-        seat.leave = false;
-        match leave_rule(pilot.landed, true) {
-            Leave::Out => {
-                control.request_off();
-                info!("sidewinder: B: getting out");
-            }
-            _ => msg.show("Disembark is only possible when landed".to_string()),
-        }
-    }
     if control.pilot && sb.mode == Mode::Pilot {
         cam.pos = b.pos.offset_m(b.orient * eye_body);
         cam.rot = (b.orient * rot_body).normalize();
         crate::sandbox::bind_camera(&mut cam, b);
         seat.view = true;
-        return;
     }
-    if control.pilot {
-        // (Boarded this frame: the sandbox leaves first person at the end of its step; the seat takes the camera next frame.)
-        return;
-    }
-    // Out. Beside the ship's left side, on the ground, facing the way the ship faces; unless he's already been put somewhere.
-    // Flying, the ship is lost (left alone it would hang in the air as a solid thing: the checker's first finding).
-    seat.seated = false;
-    seat.head_look = false;
-    seat.look = Vec2::ZERO;
-    seat.fade = FADE_S;
-    if let Some((rate, paused)) = seat.clock.take() {
-        sim.rate = rate;
-        sim.paused = paused;
-    }
-    let lost = pilot.destroyed || leave_rule(pilot.landed, false) == Leave::Lost;
-    let (obj, pos, rot) = (p.obj, p.pos, p.rot);
-    // In supercruise, or by a star or another body with no ground to stand on, there is nowhere beside the ship to set him
-    // down (checker 2: he landed on an asteroid millions of km out, or would wait for ever by a star): back on Earth, as the
-    // main menu's Play does.
-    let far = pilot.cruise.is_some() || bodies.iter().find(|bb| bb.obj == obj).is_none_or(|bb| bb.star);
-    pilot.cruise = None;
-    pilot.glide = None;
-    if lost {
-        if let Some(mut gone) = ship.parked.take() {
-            super::remove_solids(&mut sb, &mut gone);
+    // (Otherwise boarded this frame: the sandbox leaves first person at the end of its step; the seat takes the camera next
+    // frame.)
+}
+
+/// What the seat's release changes (borrowed from `seat_camera`'s parameters).
+struct Out<'a> {
+    seat: &'a mut Seat,
+    sim: &'a mut SimTime,
+    control: &'a mut ModControl,
+    pilot: &'a mut Pilot,
+    ship: &'a mut Sidewinder,
+    sb: &'a mut Sandbox,
+    cam: &'a mut FlyCamera,
+    msg: &'a mut crate::messages::Messages,
+}
+
+/// Releases the seat, whichever way he leaves it (`Why`): `free_seat`'s state changes; the camera written once more this
+/// frame at the eye and bound to the body (the 500 m-a-frame rule: whatever takes it carries it on from there); he is put
+/// down beside the landed ship, on the ground under a flying one, else on Earth (`exit_rule`); a lost or removed ship goes
+/// (left alone in flight it would hang in the air as a solid thing: the checker's first finding).
+fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain>)>, data: &crate::data::SeData, assets: &SidewinderAssets) {
+    let in_jump = out.pilot.jump.is_some();
+    let in_cruise = out.pilot.cruise.is_some();
+    let landed = out.pilot.landed;
+    let at = out.ship.parked.as_ref().map(|p| (p.obj, p.pos, p.rot));
+    let body = at.and_then(|(obj, _, _)| bodies.iter().find(|(b, _)| b.obj == obj));
+    // Ground to stand on by the ship: a solid body's (not a star's or a gas giant's), loaded under it, out of supercruise and
+    // hyperspace (checker 2: he landed on an asteroid millions of km out, or would wait for ever by a star).
+    let ground = !in_cruise
+        && !in_jump
+        && body.zip(at).is_some_and(|((b, t), (_, pos, _))| {
+            t.filter(|t| !b.star && !t.proc.kind.is_giant()).is_some_and(|t| crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos).1.is_some())
+        });
+    let (lost, place) = exit_rule(why, landed, ground, at.is_some(), out.sb.mode == Mode::Pilot);
+    free_seat(out.seat, out.sim, out.control, out.pilot);
+    let eye = Vec3::from_array(assets.eye).as_dvec3();
+    match (place, at, body) {
+        (Place::Beside | Place::Under, Some((obj, pos, rot)), Some((b, _))) => {
+            let eye_body = pos + rot * eye;
+            out.cam.pos = b.pos.offset_m(b.orient * eye_body);
+            out.cam.rot = (b.orient * rot).normalize();
+            crate::sandbox::bind_camera(out.cam, b);
+            // Beside: out from the hull's left side; under: the ship's own place (the sandbox drops the point to the ground).
+            let point = if place == Place::Beside {
+                pos + rot * Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5).as_dvec3()
+            } else {
+                pos
+            };
+            out.sb.set_down(obj, point, None, eye_body, rot);
         }
-        control.ship_parked = false;
+        (Place::Beside | Place::Under | Place::Earth, ..) => {
+            // (`put_on_earth` writes the camera at the spot it waits at, bound to Earth.)
+            crate::sandbox::put_on_earth(data, out.sim.jd, out.cam, out.sb, "out of the Sidewinder far from ground beside it: back");
+        }
+        (Place::Stay, ..) => {}
     }
-    if sb.mode == Mode::Pilot && far {
-        crate::sandbox::put_on_earth(&data, sim.jd, &mut cam, &mut sb, "the Sidewinder was lost far from any ground: back");
-        msg.show(if pilot.destroyed { "The Sidewinder was destroyed" } else { "The Sidewinder was lost" }.to_string());
-    } else if sb.mode == Mode::Pilot {
-        let side = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5);
-        let point = pos + rot * side.as_dvec3();
-        sb.set_down(obj, point, None, eye_body, rot);
-        msg.show(if pilot.destroyed { "The Sidewinder was destroyed" } else if lost { "The Sidewinder was lost" } else { "Disembarked" }.to_string());
-        info!("sidewinder: out, beside the ship{}", if pilot.destroyed { "; it was destroyed" } else if lost { "; it was flying and is lost" } else { "" });
-    } else if lost {
-        msg.show("The Sidewinder was lost".to_string());
-        info!("sidewinder: the mod went off while flying; the ship is lost");
+    if lost {
+        if let Some(mut gone) = out.ship.parked.take() {
+            super::remove_solids(out.sb, &mut gone);
+        }
     }
+    out.control.ship_parked = out.ship.parked.is_some();
+    let where_ = if in_jump { " in hyperspace" } else { "" };
+    let text = match (why, lost) {
+        (Why::Destroyed, _) => format!("The Sidewinder was destroyed{where_}"),
+        (Why::Removed, _) => "The Sidewinder was removed".to_string(),
+        (Why::Out, true) => format!("The Sidewinder was lost{where_}"),
+        (Why::Out, false) => "Disembarked".to_string(),
+    };
+    out.msg.show(text.clone());
+    info!("sidewinder: the seat is released ({why:?}): {text}; {}", match place {
+        Place::Beside => "out, beside the ship",
+        Place::Under => "out, on the ground under the ship",
+        Place::Earth => "back on Earth",
+        Place::Stay => "already out of the seat's mode",
+    });
 }
 
 /// Elite's vertical field of view from the seat (degrees): the `<FOV>` of the user's Elite settings
@@ -447,8 +541,8 @@ pub const SEAT_FOV_DEG: f32 = 56.249;
 /// projection after everything else that sets it this frame (the flight's `FlyCamera::fov_deg` by `sync_camera_transform`,
 /// then the sandbox's first-person view), before its matrices are made and before the capture views copy it (the mod's
 /// `plugin` orders it). The player's own setting (`fov_deg`, saved with the settings) is never touched, so nothing has to
-/// be given back and nothing can leak: from the frame the seat gives the camera back (`seat_camera` clears `view` where it
-/// stops writing the camera), whichever way he left, the view's own field of view is drawn again. Both changes are logged.
+/// be given back and nothing can leak: from the frame the camera leaves the eye (`seat_camera` clears `view` once the sandbox
+/// has set him down), whichever way he left, the view's own field of view is drawn again. Both changes are logged.
 pub fn seat_fov(seat: Res<Seat>, mut proj: Query<&mut Projection, With<crate::camera::MainCamera>>, mut was: Local<bool>) {
     for mut p in &mut proj {
         let Projection::Perspective(p) = p.as_mut() else { continue };
@@ -478,6 +572,53 @@ mod tests {
         assert_eq!(leave_rule(true, false), Leave::Out);
         assert_eq!(leave_rule(false, true), Leave::Refused);
         assert_eq!(leave_rule(false, false), Leave::Lost);
+    }
+
+    /// The release's rule (F6): out while landed keeps the ship and sets him down beside it; in flight the ship is lost and he
+    /// goes to the ground under it, or to Earth with no ground to stand on; destroyed or removed, the ship goes; outside the
+    /// seat's mode he stays where he is.
+    #[test]
+    fn the_release_rule() {
+        // (why, landed, ground, ship, in the seat's mode)
+        assert_eq!(exit_rule(Why::Out, true, true, true, true), (false, Place::Beside));
+        assert_eq!(exit_rule(Why::Out, false, true, true, true), (true, Place::Under));
+        assert_eq!(exit_rule(Why::Out, false, false, true, true), (true, Place::Earth));
+        assert_eq!(exit_rule(Why::Destroyed, true, true, true, true), (true, Place::Beside));
+        assert_eq!(exit_rule(Why::Destroyed, false, true, true, true), (true, Place::Under));
+        assert_eq!(exit_rule(Why::Destroyed, false, false, true, true), (true, Place::Earth));
+        assert_eq!(exit_rule(Why::Removed, true, true, true, true), (true, Place::Beside));
+        assert_eq!(exit_rule(Why::Removed, false, true, true, true), (true, Place::Under));
+        assert_eq!(exit_rule(Why::Removed, true, true, false, true), (true, Place::Earth));
+        assert_eq!(exit_rule(Why::Out, true, true, true, false), (false, Place::Stay));
+    }
+
+    /// The release's state changes: out of the seat, the old clock given back, head look and a pending B or removal cleared,
+    /// the fade started, the flight's transient states ended; the ship's systems kept.
+    #[test]
+    fn the_release_frees_the_seat() {
+        let mut sim = SimTime { jd: 2_460_000.0, rate: 1000.0, paused: true };
+        let mut seat = Seat::boarded(&mut sim);
+        assert_eq!((sim.rate, sim.paused), (1.0, false));
+        seat.head_look = true;
+        seat.look = Vec2::new(0.5, -0.2);
+        seat.request_leave();
+        seat.request_remove();
+        let mut control = ModControl::default();
+        control.pilot = true;
+        control.active = Some(CODE.to_string());
+        let mut pilot = Pilot::default();
+        pilot.glide = Some(elite_sim::glide::Glide::default());
+        pilot.fuel.main = 1.25;
+        free_seat(&mut seat, &mut sim, &mut control, &mut pilot);
+        assert!(!seat.seated && !seat.head_look && seat.look == Vec2::ZERO && !seat.leave && !seat.remove);
+        assert!(seat.setting_down && seat.fade == FADE_S && seat.clock.is_none());
+        assert_eq!((sim.rate, sim.paused), (1000.0, true));
+        assert!(pilot.glide.is_none() && pilot.cruise.is_none() && pilot.jump.is_none());
+        assert_eq!(pilot.fuel.main, 1.25);
+        // A second release (nothing kept of the clock) leaves the clock as it is.
+        sim.rate = 5.0;
+        free_seat(&mut seat, &mut sim, &mut control, &mut pilot);
+        assert_eq!(sim.rate, 5.0);
     }
 
     /// In the seat's view the projection takes Elite's field of view; out of it the seat leaves the view's own (written each

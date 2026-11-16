@@ -4,8 +4,9 @@
 //! gear down by Elite's touchdown rule; the power distributor (pips, capacitors) and boost (step 2.1, `elite_sim::power`,
 //! `elite_sim::boost`).
 //!
-//! - The tick is 60 Hz (the spec's Q8: Elite's own rate was not found in its exe), at most 6 a frame, the rest dropped (the
-//!   spec's edge cases), on real seconds (the game clock runs at real time while seated).
+//! - The tick is the physics world's 60 Hz, at most its 4 sub-steps a frame (`elite_sim::flight::PHYSICS_HZ`,
+//!   `MAX_SUBSTEPS`: the game's record), the rest dropped (the spec's edge cases), on real seconds (the game clock runs at
+//!   real time while seated). Life support runs on the frame's whole real seconds, outside that cap.
 //! - The ship meets the ground's loaded heights and, near it, the buildings and trees the scatter's probe lists (`solids.rs`,
 //!   ours: F). Its systems (heat, shields, fuel, the lasers), the frame shift drive, the glide, the air and the panels are
 //!   below; what is a stand-in and what is measured is in `elite_sim` (each number labelled) and the spec's Build log.
@@ -21,9 +22,10 @@ use elite_sim::heat::{Heat, HeatSpec};
 use elite_sim::shields::{Hull, Shields};
 use elite_sim::drive::{Drive, Engage, ShipState};
 use elite_sim::glide::{self, Glide};
+use elite_sim::landing;
 use elite_sim::supercruise::{self, Well};
 use elite_sim::weapons::Weapons;
-use se_core::catalog::ObjectRef;
+use se_core::catalog::{BodyTag, Catalog, ObjectRef};
 use se_core::upos::UPos;
 use elite_sim::power::{Distributor, ENG, SYS, WEP};
 
@@ -37,9 +39,9 @@ use crate::universe::SimTime;
 use super::seat::{action_pressed, Seat};
 use super::{Sidewinder, SidewinderAssets};
 
-/// The simulation's tick (the spec's Q8 fallback) and the most ticks a frame.
-pub const TICK: f64 = 1.0 / 60.0;
-const MOST_TICKS: u32 = 6;
+/// The simulation's tick: the physics world's rate (B, `elite_sim::flight::PHYSICS_HZ`); at most
+/// `elite_sim::flight::MAX_SUBSTEPS` of them a frame.
+pub const TICK: f64 = 1.0 / flight::PHYSICS_HZ;
 /// Supercruise's pose: where the ship is in the universe, its turn (model space to universe axes) and its speed along the nose.
 #[derive(Clone, Copy, Debug)]
 pub struct Cruise {
@@ -83,8 +85,48 @@ pub const PLANET_HUD_M: f64 = 100_000.0;
 /// stand about 1.6 km).
 const TOWN_ASK_M: f64 = 2500.0;
 
-/// Supercruise starts at its floor (the community's 30 km/s, `supercruise::stand_in`).
-const CRUISE_START: f64 = supercruise::stand_in::FLOOR_PLANET;
+/// What a SpaceEngine object is, for Elite's supercruise rules (the wells and the escape cone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    /// A star, or a barycentre (a star record with no body of its own).
+    Star { barycenter: bool },
+    Body(BodyTag),
+    /// Anything else (galaxies, clusters, nebulae: never a system's member).
+    Other,
+}
+
+fn class_of(cat: &Catalog, obj: ObjectRef) -> Class {
+    match obj {
+        ObjectRef::Star(i) => Class::Star { barycenter: cat.stars.get(i as usize).is_some_and(|s| s.barycenter) },
+        ObjectRef::Body(i) => cat.bodies.get(i as usize).map_or(Class::Other, |b| Class::Body(b.tag)),
+        _ => Class::Other,
+    }
+}
+
+/// A body's supercruise well by Elite's kinds (`elite_sim::supercruise::Well`): a star is a star (kind 1); SpaceEngine's
+/// planets, moons and dwarf planets follow the planet rule (Elite's kinds 2 and 7: the study proves the rule, not which
+/// bodies; the decision of task N1b-2). Asteroids, comets, spacecraft and barycentres have no well and no escape cone of their
+/// own (`Well::Other`): Elite has no such free bodies, so this part is ours (grade F); it also keeps a 5 km asteroid from a
+/// planet's 20 AU well.
+fn well_of(class: Class, radius: f64, mass: impl FnOnce() -> f64) -> Well {
+    match class {
+        Class::Star { barycenter: false } => Well::Star { radius },
+        Class::Body(BodyTag::Planet | BodyTag::DwarfPlanet | BodyTag::Moon | BodyTag::DwarfMoon) => Well::Planet { radius, mass: mass() },
+        Class::Star { barycenter: true } | Class::Body(BodyTag::Asteroid | BodyTag::Comet | BodyTag::Spacecraft) | Class::Other => Well::Other { radius },
+    }
+}
+
+/// The escape cone leaving a body for supercruise (degrees from straight away from it): `Fp[0x34]` from a planet-rule body
+/// (kind 2), `Fp[0x30]` from a star (`elite_sim::drive::escape_deg`); none from a body without a well (ours, F, as
+/// `well_of`): the whole sphere.
+fn escape_cone_deg(well: Well) -> f64 {
+    match well {
+        Well::Planet { .. } => elite_sim::drive::escape_deg(true),
+        Well::Star { .. } => elite_sim::drive::escape_deg(false),
+        Well::Other { .. } => 180.0,
+    }
+}
+
 /// Too close to a body's surface in supercruise: an emergency drop (E: A50 found the drop's effects but not its triggers),
 /// within this share of its radius or this many metres, whichever is more; and the shields' hit it costs (E).
 const EMERGENCY_SHARE: f64 = 0.02;
@@ -104,15 +146,6 @@ const CRASH_FREE_MPS: f64 = 10.0;
 fn crash_damage(mass_t: f64, speed: f64) -> f64 {
     0.5 * mass_t * (speed - CRASH_FREE_MPS).max(0.0).powi(2) / 1000.0
 }
-
-/// Touching the ground with the gear down slower than this lands it; faster it is stopped there (the landing component's
-/// speed limit, P10 in A21's notes, is data: a stand-in until step 2.4 measures it).
-const TOUCHDOWN_MPS: f64 = 10.0;
-/// Elite's touchdown rule (0x1430ECE00, A21, grade C): the ship's down within this many degrees of gravity's (the landing
-/// record's +0x38; 60 without a record: the record is data, so 60 until measured) and its landing points' rays agreeing
-/// within this many metres.
-const TOUCHDOWN_TILT_DEG: f64 = 60.0;
-const TOUCHDOWN_SPREAD_M: f64 = 0.5;
 
 /// What the seat's keys asked for this frame (read by `seat::take_keys` before it takes the presses from everyone else).
 #[derive(Resource, Default, Clone, Copy, Debug)]
@@ -717,7 +750,8 @@ pub fn fly(
     let spec = BoostSpec::sidewinder(block.boost_ramp);
     pilot.full_top = full_top;
     pilot.top_share = block.top_speed / full_top.max(1e-9);
-    pilot.blue_zone = blue_band(&block.curve_turn);
+    let cruise_block = elite_sim::data::sidewinder_cruise_block();
+    pilot.blue_zone = blue_band(if pilot.cruise.is_some() { &cruise_block.curve_turn } else { &block.curve_turn });
     // Boost: the press draws its cost from the ENG capacitor or is refused (the exe's messages, our words until step 3.3).
     // (Landed it does nothing: the flight doesn't run on the ground. Not from the exe: E.)
     let boost_pressed = keys.boost || std::mem::take(&mut pilot.dev_boost);
@@ -842,6 +876,8 @@ pub fn fly(
         cruise: pilot.cruise.is_some(),
         target: target_state.map(|s| s.map(|(angle, _)| angle)),
     };
+    // The escape cone from the body the ship is by (its well's kind: the cone doesn't read the mass).
+    let escape_deg = escape_cone_deg(well_of(class_of(&data.catalog, b.obj), b.radius_m, || 0.0));
     let mut drop_now = false;
     let jump = keys.jump || std::mem::take(&mut pilot.dev_jump);
     if jump && !pilot.modules[super::panels::M_FSD] {
@@ -871,10 +907,7 @@ pub fn fly(
     let wells: Vec<(Well, UPos, f64, ObjectRef, DQuat)> = if pilot.cruise.is_some() || matches!(pilot.drive, Drive::Charging(_)) {
         bodies
             .iter()
-            .map(|(sb, _)| {
-                let w = if sb.star { Well::Star { radius: sb.radius_m } } else { Well::Planet { radius: sb.radius_m, mass: crate::ship::body_mass(&data, sb.obj, sb.radius_m) } };
-                (w, sb.pos, sb.radius_m, sb.obj, sb.orient)
-            })
+            .map(|(sb, _)| (well_of(class_of(&data.catalog, sb.obj), sb.radius_m, || crate::ship::body_mass(&data, sb.obj, sb.radius_m)), sb.pos, sb.radius_m, sb.obj, sb.orient))
             .collect()
     } else {
         Vec::new()
@@ -924,7 +957,7 @@ pub fn fly(
     }
     pilot.accum += dt;
     let mut n = 0;
-    while pilot.accum >= TICK && n < MOST_TICKS {
+    while pilot.accum >= TICK && n < flight::MAX_SUBSTEPS {
         pilot.accum -= TICK;
         n += 1;
         pilot.ticks += 1;
@@ -943,14 +976,16 @@ pub fn fly(
         }
         let powered = pilot.powered;
         pilot.dist.recharge(TICK, powered);
-        pilot.boost.tick(&spec, TICK);
         let sys_share = pilot.dist.share(SYS);
         pilot.shields.tick(TICK, elite_sim::silent::shields_powered(powered && pilot.modules[super::panels::M_SHIELDS], pilot.silent), sys_share);
-        // Heat: the idle load (a stand-in fitted to session 2's idle), then the radiator (step 2.2).
+        // Heat: the idle load (a stand-in fitted to session 2's idle) and the boost's while it fires (the boost record's
+        // 10 a second, B), then the radiator (step 2.2).
         let hs = pilot.heat_spec;
         if powered {
             pilot.heat.add(&hs, elite_sim::heat::stand_in::IDLE_LOAD * TICK, None);
         }
+        pilot.heat.add(&hs, pilot.boost.heat_rate(&spec) * TICK, None);
+        pilot.boost.tick(&spec, TICK);
         let ev = pilot.heat.tick(&hs, TICK, powered, pilot.silent);
         // The lasers (step 2.6): both guns of the fire group, WEP's energy and heat a shot.
         let trigger = (keys.fire || pilot.dev_fire > 0.0) && powered && pilot.cruise.is_none() && pilot.glide.is_none();
@@ -978,15 +1013,17 @@ pub fn fly(
         if charge_heat > 0.0 {
             pilot.heat.add(&hs, charge_heat * hs.capacity * TICK, None);
         }
-        match pilot.drive.tick(TICK, &fsd) {
+        match pilot.drive.tick_escaping(TICK, &fsd, escape_deg) {
             Ok(Engage::Jump) => {
                 jump_now = true;
                 break;
             }
             Ok(Engage::Supercruise) => {
-                pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: CRUISE_START, cap: CRUISE_START, carrier: Some((b.obj, b.pos)) });
+                // (At the zero-throttle speed, supercruise's entry speed: P10, B.)
+                let start = supercruise::MIN_SPEED;
+                pilot.cruise = Some(Cruise { pos: b.pos.offset_m(b.orient * p.pos), rot: (b.orient * p.rot).normalize(), speed: start, cap: start, carrier: Some((b.obj, b.pos)) });
                 msg.show("Supercruise".to_string());
-                info!("sidewinder: supercruise");
+                info!("sidewinder: supercruise at {:.0} km/s (the escape cone {escape_deg:.0} degrees, the nose {:.1} from straight away)", start / 1000.0, fsd.escape_angle);
             }
             Err(r) => {
                 info!("sidewinder: {}", r.message());
@@ -995,20 +1032,21 @@ pub fn fly(
             Ok(Engage::Nothing) => {}
         }
         if let Some(c) = pilot.cruise.as_mut() {
-            // Supercruise: the turn by the normal block with the speed curve read at the throttle (the supercruise block's
-            // turn rates are data, not measured: E; "best turning at half throttle" is the spec's hint), the speed towards the
-            // throttle's share of the wells' cap (A50), along the nose; no gravity, no ground.
+            // Supercruise: the turn by the supercruise block (its turn rates, accelerations, jerks and curves: the record's, B),
+            // in accel mode 2 so its top speed is the wells' cap and its speed curve reads the speed over the cap (the block's
+            // x); the speed towards the throttle's share of the cap (A50), along the nose; no gravity, no ground.
             let throttle = pilot.throttle.max(0.0);
-            let mut m = Motion { rot: to_sim_q(c.rot), omega: pilot.motion.omega, last_alpha: pilot.motion.last_alpha, ..Motion::default() };
-            m.vel = m.rot * glam::DVec3::new(0.0, 0.0, -throttle * block.top_speed);
-            let rin = Input { pitch: input.pitch, yaw: input.yaw, roll: input.roll, flight_assist: true, ..Input::default() };
-            flight::step(&block, full_top, false, &rin, glam::DVec3::ZERO, &mut m, TICK);
-            c.rot = from_sim_q(m.rot).normalize();
-            pilot.motion.omega = m.omega;
-            pilot.motion.last_alpha = m.last_alpha;
             let near: Vec<(Well, f64)> = wells.iter().map(|(w, at, _, _, _)| (*w, c.pos.delta_m(*at).length())).collect();
             let cap = supercruise::cap(&near);
             c.cap = cap;
+            let turning = cruise_block.mode2(cap / supercruise::VSC, c.speed);
+            let mut m = Motion { rot: to_sim_q(c.rot), omega: pilot.motion.omega, last_alpha: pilot.motion.last_alpha, ..Motion::default() };
+            m.vel = m.rot * glam::DVec3::new(0.0, 0.0, -c.speed);
+            let rin = Input { pitch: input.pitch, yaw: input.yaw, roll: input.roll, flight_assist: true, ..Input::default() };
+            flight::step(&turning, cap, false, &rin, glam::DVec3::ZERO, &mut m, TICK);
+            c.rot = from_sim_q(m.rot).normalize();
+            pilot.motion.omega = m.omega;
+            pilot.motion.last_alpha = m.last_alpha;
             c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
             let heading = c.rot * DVec3::NEG_Z;
             let step = heading * c.speed * TICK;
@@ -1240,9 +1278,9 @@ pub fn fly(
             let up = p.pos.normalize();
             let vel = from_sim_v(pilot.motion.vel);
             let down_speed = -vel.dot(up);
-            // Elite's touchdown (0x1430ECE00, A21): the ship's down within 60 degrees of gravity's, its landing points' rays
-            // agreeing within 0.5 m (C); the speed's limit is the landing component's data (a stand-in here); that the gear must
-            // be down is our reading (E: the exe's +0x200 state gate wasn't identified).
+            // Elite's touchdown (0x1430ECE00, A21, C): the ship's down within the landing record's 20 degrees of gravity's, at
+            // most the landing component's 15 m/s (B), its landing points' rays agreeing within 0.5 m; that the gear must be
+            // down is our reading (E: the exe's +0x200 state gate wasn't identified).
             let tilt = (p.rot * DVec3::Y).dot(up).clamp(-1.0, 1.0).acos().to_degrees();
             let spread = feet.iter().copied().fold(f64::MIN, f64::max) - feet.iter().copied().fold(f64::MAX, f64::min);
             if let Some(why) = touchdown(gear_out && !feet.is_empty(), tilt, spread, vel.length()) {
@@ -1408,19 +1446,20 @@ fn larger(a: f64, b: f64) -> f64 {
     if a.abs() >= b.abs() { a } else { b }
 }
 
-/// Elite's touchdown rule (0x1430ECE00, A21): None when the ship may touch down, else why not. `spread` is how far apart the
-/// landing points' heights over the ground are.
+/// Elite's touchdown rule (0x1430ECE00, A21; its numbers the landing component's and the landing record's,
+/// `elite_sim::landing`): None when the ship may touch down, else why not. `spread` is how far apart the landing points'
+/// heights over the ground are. It is tested at contact, where the height over the ground is 0 (within P14's 100 m).
 fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option<&'static str> {
     if !gear_out {
         Some("the landing gear isn't down")
-    } else if tilt_deg > TOUCHDOWN_TILT_DEG {
+    } else if tilt_deg > landing::TOUCHDOWN_TILT_DEG {
         Some("tilted too far")
-    } else if spread_m > TOUCHDOWN_SPREAD_M {
+    } else if spread_m > landing::TOUCHDOWN_SPREAD_M {
         Some("the ground under the feet is too uneven")
-    } else if speed > TOUCHDOWN_MPS {
-        Some("too fast")
-    } else {
+    } else if landing::allowed(0.0, speed, tilt_deg) {
         None
+    } else {
+        Some("too fast")
     }
 }
 
@@ -1428,17 +1467,55 @@ fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option
 mod tests {
     use super::*;
 
-    /// Elite's touchdown rule: gear down, tilt at most 60 degrees, the feet within 0.5 m of each other, slow enough.
+    /// Elite's touchdown rule on the game's numbers: gear down, tilt at most 20 degrees, the feet within 0.5 m of each other,
+    /// at most 15 m/s (12 m/s lands, 17 doesn't).
     #[test]
     fn touchdown_is_elites_rule() {
         assert_eq!(touchdown(true, 0.0, 0.0, 1.0), None);
-        assert_eq!(touchdown(true, 60.0, 0.5, 1.0), None);
-        assert!(touchdown(false, 0.0, 0.0, 1.0).is_some());
-        assert!(touchdown(true, 60.5, 0.0, 1.0).is_some());
-        assert!(touchdown(true, 0.0, 0.51, 1.0).is_some());
-        assert!(touchdown(true, 0.0, 0.0, TOUCHDOWN_MPS + 0.1).is_some());
+        assert_eq!(touchdown(true, 20.0, 0.5, 12.0), None);
+        assert_eq!(touchdown(true, 0.0, 0.0, 15.0), None);
+        assert_eq!(touchdown(false, 0.0, 0.0, 1.0), Some("the landing gear isn't down"));
+        assert_eq!(touchdown(true, 20.5, 0.0, 1.0), Some("tilted too far"));
+        assert_eq!(touchdown(true, 0.0, 0.51, 1.0), Some("the ground under the feet is too uneven"));
+        assert_eq!(touchdown(true, 0.0, 0.0, 17.0), Some("too fast"));
         assert_eq!(larger(0.2, -0.5), -0.5);
         assert_eq!(larger(-0.7, 0.5), -0.7);
+    }
+
+    /// Each SpaceEngine body class's supercruise well (the decision of task N1b-2): stars the star rule, planets, moons and
+    /// dwarf planets the planet rule (kind 2), asteroids, comets, spacecraft and barycentres none.
+    #[test]
+    fn well_kind_of_each_body_class() {
+        let (r, m) = (1.0e6, 2.0e22);
+        assert_eq!(well_of(Class::Star { barycenter: false }, r, || m), Well::Star { radius: r });
+        for tag in [BodyTag::Planet, BodyTag::DwarfPlanet, BodyTag::Moon, BodyTag::DwarfMoon] {
+            assert_eq!(well_of(Class::Body(tag), r, || m), Well::Planet { radius: r, mass: m }, "{tag:?}");
+        }
+        for class in [Class::Star { barycenter: true }, Class::Body(BodyTag::Asteroid), Class::Body(BodyTag::Comet), Class::Body(BodyTag::Spacecraft), Class::Other] {
+            assert_eq!(well_of(class, r, || panic!("no mass for a body without a well")), Well::Other { radius: r }, "{class:?}");
+        }
+        // A body without a well doesn't hold the cap down: near a 5 km asteroid it is the star's alone.
+        let sun = Well::Star { radius: 6.957e8 };
+        let asteroid = well_of(Class::Body(BodyTag::Asteroid), 5000.0, || 1.0e15);
+        let au = supercruise::AU;
+        assert_eq!(supercruise::cap(&[(sun, 2.0 * au), (asteroid, 10_000.0)]), supercruise::cap(&[(sun, 2.0 * au)]));
+    }
+
+    /// The escape cone by the body's kind: 50 degrees from a planet-rule body, 10 from a star, none from a body without a well.
+    #[test]
+    fn escape_cone_by_body_kind() {
+        let planet = well_of(Class::Body(BodyTag::Moon), 1.7e6, || 7.3e22);
+        assert_eq!(escape_cone_deg(planet), 50.0);
+        assert_eq!(escape_cone_deg(well_of(Class::Star { barycenter: false }, 7.0e8, || 0.0)), 10.0);
+        assert_eq!(escape_cone_deg(well_of(Class::Body(BodyTag::Comet), 5000.0, || 0.0)), 180.0);
+        // A complete charge 1.01 radii out, the nose 30 degrees off straight away: engages by a planet, holds by a star.
+        let near = ShipState { radii: 1.01, escape_angle: 30.0, ..ShipState::default() };
+        let mut d = Drive::Charging(elite_sim::drive::CHARGE_S);
+        assert_eq!(d.tick_escaping(TICK, &near, escape_cone_deg(planet)), Ok(Engage::Supercruise));
+        let mut d = Drive::Charging(elite_sim::drive::CHARGE_S);
+        assert_eq!(d.tick_escaping(TICK, &near, 10.0), Ok(Engage::Nothing));
+        let mut d = Drive::Charging(elite_sim::drive::CHARGE_S);
+        assert_eq!(d.tick_escaping(TICK, &ShipState { escape_angle: 179.0, ..near }, escape_cone_deg(Well::Other { radius: 5000.0 })), Ok(Engage::Supercruise));
     }
 
     fn shipped(name: &str) -> se_core::elite_asset::Binds {

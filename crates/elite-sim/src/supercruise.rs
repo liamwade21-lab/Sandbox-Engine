@@ -79,7 +79,7 @@ pub mod stand_in {
     /// moon's journal `MassEM`).
     pub const PLANET_MASS_UNIT_KG: f64 = 5.972e24;
     /// The floor `cap`, `slowdown` and `step_speed`'s callers have used near planets since step 5.2: 30 km/s, which is in truth
-    /// P10, the zero-throttle speed (`super::MIN_SPEED`, B), and is what `pilot.rs` starts supercruise at through this name. The
+    /// P10, the zero-throttle speed (`super::MIN_SPEED`, B; `pilot.rs` starts supercruise at that name). The
     /// record's floor near planets is 200 km/s (`super::FLOOR_PLANET`), but without orbital cruise's blend w (its source open:
     /// N1's G1 run) no ship would then slow under the safe stop's f (5,050 m/s) and every planet approach would end in an
     /// emergency stop: the old functions keep this until w is built (`cruise_cap`, `min_speed`, `safe_stop` take it).

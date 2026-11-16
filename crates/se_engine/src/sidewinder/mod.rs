@@ -167,6 +167,7 @@ fn handle_requests(
     assets: Option<Res<SidewinderAssets>>,
     mut msg: ResMut<crate::messages::Messages>,
     mut pilot: Option<ResMut<pilot::Pilot>>,
+    mut seat: ResMut<seat::Seat>,
 ) {
     let ship = &mut *ship;
     // The files, once read.
@@ -217,6 +218,8 @@ fn handle_requests(
                 }
             }
         }
+        // (Seated, the seat is released first and takes the ship: `seat::seat_camera`, later this frame.)
+        Some(ShipRequest::Remove) if seat.seated => seat.request_remove(),
         Some(ShipRequest::Remove) => {
             if let Some(mut p) = ship.parked.take() {
                 remove_solids(&mut sb, &mut p);
@@ -610,7 +613,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 if let Some(p) = ship.parked.as_ref() {
                     let nose = p.rot * bevy::math::DVec3::NEG_Z;
                     let down = -p.pos.normalize_or(bevy::math::DVec3::Y);
-                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; heat {:.1} %, stars' heat {:.4} a second, shields {:.0} % ({}), hull {:.0} %, air {:.4} kg/m3", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), pl.heat_percent(), pl.star_heat, pl.shields.percent(), if pl.shields.up { "up" } else { "down" }, pl.hull.percent(), pl.air_density);
+                    let w = pl.motion.omega;
+                    info!("sidewinder: {:.3} km from {:?}'s centre, the nose {:.1} degrees over the horizon; turning {:.1} {:.1} {:.1} deg/s (pitch, yaw, roll); heat {:.1} %, stars' heat {:.4} a second, shields {:.0} % ({}), hull {:.0} %, air {:.4} kg/m3", p.pos.length() / 1000.0, p.obj, elite_sim::glide::pitch_deg(nose.to_array(), down.to_array()), w.x.to_degrees(), w.y.to_degrees(), w.z.to_degrees(), pl.heat_percent(), pl.star_heat, pl.shields.percent(), if pl.shields.up { "up" } else { "down" }, pl.hull.percent(), pl.air_density);
                 }
             }
             None

@@ -332,7 +332,7 @@ pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (Block, f64) {
 
 /// The supercruise block as the record holds it (no pips, no thruster curves: 0x142E86E20's supercruise branch). Its turn
 /// rates (38 / 12 / 110 deg/s), angular accelerations, jerks, R and curves are what supercruise turns by; its speed curve's
-/// x is the speed over supercruise's cap. Not used by the mod yet (`pilot.rs` turns supercruise with the normal block).
+/// x is the speed over supercruise's cap (`pilot.rs` turns by it in accel mode 2, whose top speed is the cap).
 pub fn sidewinder_cruise_block() -> Block {
     record::CRUISE
 }

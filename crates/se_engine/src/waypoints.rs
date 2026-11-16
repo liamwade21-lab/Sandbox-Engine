@@ -216,7 +216,7 @@ fn draw_waypoints(
     let Some(vp) = camera.logical_viewport_size() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;
     let painter = ctx.layer_painter(crate::overlay::overlay_layer());
-    let view = crate::overlay::View::new(&cam, vp);
+    let view = crate::overlay::View::of(&cam, vp, crate::overlay::view_fov_deg(&cam, Some(camera)));
     let eph = Ephemeris::new(&data.catalog);
     let font = egui::FontId::proportional(13.0);
     let max_px = vp.length() * 2.0;

@@ -394,7 +394,7 @@ fn draw_gui(
         // The selected object (or waypoint) on screen.
         let Ok(camera) = cams.single() else { return Ok(()) };
         let Some(vp) = camera.logical_viewport_size() else { return Ok(()) };
-        let view = crate::overlay::View::new(&cam, vp);
+        let view = crate::overlay::View::of(&cam, vp, crate::overlay::view_fov_deg(&cam, Some(camera)));
         let eph = Ephemeris::new(&data.catalog);
         let target = match (cam.selected, wps.selected()) {
             (Some(s), _) => Some((eph.position(s, sim.jd), eph.radius_m(s))),

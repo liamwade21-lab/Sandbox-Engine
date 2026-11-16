@@ -306,14 +306,14 @@ fn update_flares(
     cam: Res<FlyCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     bodies: Query<&SystemBody>,
-    mut camera: Query<(Entity, Option<&mut FlareDraw>, Option<&mut SeBloom>), With<MainCamera>>,
+    mut camera: Query<(Entity, &Camera, Option<&mut FlareDraw>, Option<&mut SeBloom>), With<MainCamera>>,
     mut lens: ResMut<LensTextures>,
 ) {
     let Some(presets) = presets else { return };
-    let Ok((cam_entity, draw, bloom)) = camera.single_mut() else { return };
+    let Ok((cam_entity, main, draw, bloom)) = camera.single_mut() else { return };
     let (w, h) = windows.iter().next().map(|w| (w.width(), w.height())).unwrap_or((1600.0, 900.0));
     let aspect = w / h.max(1.0);
-    let tan_half = (cam.fov_deg * 0.5).to_radians().tan() as f64;
+    let tan_half = (crate::overlay::view_fov_deg(&cam, Some(main)) * 0.5).to_radians().tan() as f64;
     let inv = cam.rot.inverse();
     let cat = &data.catalog;
 

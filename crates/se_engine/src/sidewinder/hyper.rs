@@ -264,7 +264,7 @@ pub fn tunnel(
     p.obj = star.obj;
     p.pos = star.orient.inverse() * j.arrive.delta_m(star.pos);
     p.rot = (star.orient.inverse() * j.rot).normalize();
-    let start = elite_sim::supercruise::stand_in::FLOOR_PLANET;
+    let start = elite_sim::supercruise::MIN_SPEED;
     pilot.cruise = Some(Cruise { pos: j.arrive, rot: j.rot, speed: start, cap: start, carrier: Some((star.obj, star.pos)) });
     pilot.drive = elite_sim::drive::Drive::arrived();
     pilot.jump = None;

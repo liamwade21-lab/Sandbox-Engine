@@ -134,7 +134,7 @@ pub(crate) fn draw_grids(
     let skin = crate::skin::text(ctx);
     let cfg = cfg.as_deref().copied().unwrap_or_default();
     let geo = geo.get_or_insert_with(GridGeometry::default);
-    let view = View::new(&cam, vp);
+    let view = View::of(&cam, vp, crate::overlay::view_fov_deg(&cam, Some(camera)));
     let occ = Occluders::new(bodies.iter(), &cam);
     let mut mesh = PrimLines::new(cfg.lines_width, ctx.pixels_per_point(), vp);
     let mut pts: Vec<(DVec3, f32)> = Vec::new();
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn sky_paths_cull_what_is_out_of_view() {
         let cam = FlyCamera::default();
-        let view = View::new(&cam, Vec2::new(1600.0, 900.0));
+        let view = View::of(&cam, Vec2::new(1600.0, 900.0), cam.fov_deg);
         let cone = ViewCone::new(&cam, &view);
         // The equator seen looking down -Z: only the part round -Z is in view.
         let path = SkyPath::new((0..=360).map(|k| sph(k as f64, 0.0)).map(|v| DVec3::new(v.y, v.z, v.x)).collect());

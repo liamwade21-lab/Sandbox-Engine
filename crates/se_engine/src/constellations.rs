@@ -346,7 +346,7 @@ pub(crate) fn draw_constellations(
     let ctx = contexts.ctx_mut()?;
     let skin = crate::skin::text(ctx);
     let cfg = cfg.as_deref().copied().unwrap_or_default();
-    let view = View::new(&cam, vp);
+    let view = View::of(&cam, vp, crate::overlay::view_fov_deg(&cam, Some(camera)));
     let occ = Occluders::new(bodies.iter(), &cam);
     // Camera space, and 0 where a body hides the point (points behind the camera are cut anyway).
     let local = |v: DVec3, a: f32| {

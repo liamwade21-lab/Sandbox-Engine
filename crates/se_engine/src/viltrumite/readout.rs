@@ -103,8 +103,8 @@ pub(super) fn draw(
     });
     if control.panels_hidden() {
         guide(ctx, &hero);
-        if let Some(vp) = cams.single().ok().and_then(|c| c.logical_viewport_size()) {
-            targets(ctx, &hero, &cam, vp, &data, sim.jd);
+        if let Some((vp, fov)) = cams.single().ok().and_then(|c| Some((c.logical_viewport_size()?, crate::overlay::view_fov_deg(&cam, Some(c))))) {
+            targets(ctx, &hero, &cam, vp, fov, &data, sim.jd);
         }
     }
     Ok(())
@@ -112,7 +112,7 @@ pub(super) fn draw(
 
 /// The lock-on's marks (`lock.rs`): a thin ring on the selection while the left button selects, gold corners on what he's locked on,
 /// with its name, the distance to the stop and the trip's time from here (or an arrow at the screen's edge pointing round to it).
-fn targets(ctx: &egui::Context, hero: &Hero, cam: &FlyCamera, vp: Vec2, data: &SeData, jd: f64) {
+fn targets(ctx: &egui::Context, hero: &Hero, cam: &FlyCamera, vp: Vec2, fov_deg: f32, data: &SeData, jd: f64) {
     let picking = super::lock::picks(hero);
     let show_sel = cam.selected.filter(|s| picking && Some(*s) != hero.lock);
     if hero.lock.is_none() && show_sel.is_none() {
@@ -121,7 +121,7 @@ fn targets(ctx: &egui::Context, hero: &Hero, cam: &FlyCamera, vp: Vec2, data: &S
     let screen = ctx.content_rect();
     let s = (screen.height() / 540.0).max(1.0);
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("hero_lock")));
-    let view = crate::overlay::View::new(cam, vp);
+    let view = crate::overlay::View::of(cam, vp, fov_deg);
     let eph = Ephemeris::new(&data.catalog);
     let dir_of = |o| view.local(eph.position(o, jd).delta_m(cam.pos).normalize_or_zero());
     let text = |at: egui::Pos2, align: egui::Align2, t: String, colour: egui::Color32| {
