@@ -449,6 +449,17 @@ impl Pilot {
     pub fn mass_t(&self) -> f64 {
         elite_sim::data::JOURNAL_UNLADEN_MASS + self.fuel.total()
     }
+
+    /// The gear down or the cargo scoop out halves the top and boost speeds (`elite_sim::deployables`, C; the record's 0.5, B).
+    pub fn speed_k(&self) -> f64 {
+        elite_sim::deployables::speed_factor(self.gear_down, self.scoop)
+    }
+
+    /// The current block and the full-power block's top speed as the flight flies by them: the ENG pips' blend, the mass and
+    /// `speed_k` (`elite_sim::data::sidewinder_block_with`).
+    pub fn block(&self) -> (elite_sim::flight::Block, f64) {
+        elite_sim::data::sidewinder_block_with(self.dist.pips(ENG), self.mass_t(), self.speed_k())
+    }
 }
 
 /// The speed shares where a blue-zone curve is within 2 % of its best (the HUD's blue band).
@@ -843,9 +854,8 @@ pub fn fly(
     pilot.controls = input;
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
-    // The gear down or the cargo scoop out halves the top and boost speeds (`elite_sim::deployables`, C; the record's 0.5, B).
-    let speed_k = elite_sim::deployables::speed_factor(pilot.gear_down, pilot.scoop);
-    let (block, full_top) = elite_sim::data::sidewinder_block_with(pilot.dist.pips(ENG), pilot.mass_t(), speed_k);
+    let speed_k = pilot.speed_k();
+    let (block, full_top) = pilot.block();
     let spec = BoostSpec::sidewinder(block.boost_ramp);
     pilot.full_top = full_top;
     pilot.top_share = block.top_speed / full_top.max(1e-9);

@@ -3,19 +3,24 @@
 //! state goes in as a [`ShipView`] once a frame; what Elite's audio objects would call comes out as [`Call`]s, which
 //! `mod.rs` hands to the mixer. Nothing here reads Bevy or the mixer, so the rules are tested alone.
 //!
-//! Only entries whose certainty is `proven`, `proven, one link inferred` or `measured` are here. The inferred link is
-//! nearly always the same (the notes' "feeders": what fills the audio component's fields was not found), so a field's
-//! meaning is the event it posts, and the motion inputs' units are the bank curves' x ranges (marked `UNIT INFERRED`).
-//! What the ship's state cannot drive (no such state in the flight) is listed in `mod.rs`.
+//! Only entries whose certainty is `proven`, `proven, one link inferred` or `measured` are here. What the ship's state
+//! cannot drive (no such state in the flight) is listed in `mod.rs`.
 //!
-//! Two entries have no function yet: `engine_mass_modifier` and `speed_stationary` (their setters are proven,
-//! `FUN_14415ab60` and `FUN_14415c5c0`; T5e found what feeds them, the next task's work), so each stays at the bank's
-//! default. `audio_engine_class` is set (`ENGINE_CLASS`).
-//!
-//! The motion feeds below keep their readings (`UNIT INFERRED`); T5e found the producer that fills the component
-//! (triggers.json `motion_rtpcs`, the notes' "T5e") and its rules are the next task's: nothing here follows them yet.
+//! **The engine's inputs (T5d-6)** are Elite's audio data producer's rules (`Producer`: 0x14415ebc0, 0x14415deb0; the
+//! notes' "T5e" and its table "for the sound's writer"), in Elite's units: percents of the full-power and the current top
+//! speed, their changes over the physics time simulated, the spin's shares of the speed-limited turn rates (high-passed
+//! with assist off), "stationary", `engine_mass_modifier`; then the audio object's slews on the physics time
+//! (0x14415c5c0, 0x14415c3d0). The flight's numbers come in as `facts::SoundMotion`: nothing of the flight is worked out
+//! here. Not built, for want of an identified source: the producer's state flags 0x37 (the "stopped" test, and the slewed
+//! physics time it selects), 0x48 (the predicted speed in place of the controller's), producer+0xbc8 (which zeroes the
+//! turn lanes), the object at producer+0x688 (which snaps "stationary" to 1), the component's byte D+0x30 (which snaps
+//! speed_relative), the full-power top speed's slew (0xaf0: rate 3 after a change of 10 % or more, or while the object at
+//! producer+0x5f8 answers; not in T5e's table, one of its two thresholds not read) and the Euler decomposition of the spin
+//! (0x1405e0db0: taken as the spin's own components).
 
 use elite_sim::drive::Drive;
+
+use super::super::facts::SoundMotion;
 
 /// Something Elite's audio objects call: post an event on an emitter, set a global state, set a game parameter (global:
 /// Elite's per-object values are not known per emitter, and the mixer falls back to the global one).
@@ -95,27 +100,29 @@ pub const RELATIVE_MOST: f64 = 199.9;
 /// inside; the shields' recordings labelled `_int` / `_ext` by the old export's roles are the other way round.
 pub const INSIDE: f32 = 1.0;
 
-/// The audio component's motion floats (`motion_rtpcs`: offsets +0x00..+0x44), as the feeder (`motion_in`) fills them.
+/// `motion_rtpcs`: the producer's motion block (Elite's audio data D+0x00..+0x44, T5e items 4, 5), in Elite's units.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MotionIn {
-    /// +0x00 `spaceship_accel_self`.
+    /// D+0x00 `spaceship_accel_self`: the change of `speed` over the physics time (percent a second).
     pub accel: f64,
-    /// +0x04 (`spaceship_speed_self`, and speed_relative with flight assist on).
+    /// D+0x04 `spaceship_speed_self`: the speed in percent of the full-power top speed (speed_relative's with assist off).
     pub speed: f64,
-    /// +0x08 (speed_relative with flight assist off).
-    pub speed_fa_off: f64,
-    /// +0x0c `spaceship_speed_physical_self`.
+    /// D+0x08: the speed in percent of the current top speed, negative backwards (speed_relative's with assist on).
+    pub relative: f64,
+    /// D+0x0c `spaceship_speed_physical_self`: the body's speed in percent of the full-power top speed.
     pub speed_physical: f64,
-    /// +0x10, +0x14 (no curve at rest uses them).
+    /// D+0x10, D+0x14: `accel` over the current block's forward acceleration, its size and signed.
     pub accel_normalised: f64,
     pub accel_dir_normalised: f64,
-    /// +0x18 (smoothed into `_relative_smooth` and `_relative_slow`).
+    /// D+0x18: the change of `relative`'s size over the physics time (smoothed into `_relative_smooth` and `_relative_slow`).
     pub accel_relative: f64,
-    /// +0x1c (smoothed into `spaceship_accel_directional_self`).
+    /// D+0x1c: the change of `relative` over the physics time (smoothed into `spaceship_accel_directional_self`).
     pub accel_directional: f64,
-    /// +0x20 (smoothed into `spaceship_target_speed_relative_self`).
+    /// D+0x20: the forward demand in percent (smoothed into `spaceship_target_speed_relative_self`).
     pub target_speed: f64,
-    /// +0x34, +0x38, +0x3c, +0x40, +0x44.
+    /// D+0x2c `spaceship_speed_stationary_self` (`speed_stationary`).
+    pub stationary: f64,
+    /// D+0x34, +0x38, +0x3c, +0x40, +0x44: the spin's shares of the speed-limited turn rates, and the largest.
     pub pitch: f64,
     pub yaw: f64,
     pub roll: f64,
@@ -123,59 +130,96 @@ pub struct MotionIn {
     pub out_of_control_yaw: f64,
 }
 
-/// What the feeder reads from the flight (ship axes: X right, Y up, -Z the nose).
+/// D+0x08 turns negative while the ship moves backwards faster than this (m/s; 0x14415ebc0 line 224).
+pub const BACKWARDS_MPS: f64 = 1.0;
+/// `speed_stationary`: with assist off the target is 1 while `speed` moves by more than this in an update; the slew's rates
+/// rising and falling (0x14415ebc0 lines 308-345).
+pub const STATIONARY_MOVE: f64 = 0.1;
+pub const STATIONARY_UP: f64 = 3.0;
+pub const STATIONARY_DOWN: f64 = 0.5;
+/// Assist off, each turn lane is high-passed: `clamp((raw - slew(raw, 1.0)) x 2.5, +-2)` (0x14415deb0 lines 33-105).
+pub const HIGH_PASS_SLEW: f64 = 1.0;
+pub const HIGH_PASS_GAIN: f64 = 2.5;
+pub const HIGH_PASS_MOST: f64 = 2.0;
+/// The pitch and roll lanes' clamp (0x14415deb0 lines 159-180).
+pub const LANE_MOST: f64 = 1.99;
+
+/// The ship audio data producer's motion rules (`motion_rtpcs`, `speed_stationary`: 0x14415ebc0 speeds, accelerations,
+/// target and stationary; 0x14415deb0 rotation), with what they keep from one update to the next. Made afresh whenever the
+/// audio starts (a boarding), so its first update has nothing to differ from.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Flight {
-    /// Velocity and acceleration in ship axes (m/s, m/s^2).
-    pub vel: [f64; 3],
-    pub acc: [f64; 3],
-    /// Spin in ship axes (rad/s: x pitch nose up, y yaw nose left, z roll).
-    pub omega: [f64; 3],
-    /// This block's top speed and forward acceleration (m/s, m/s^2), the reverse speed's share of the top.
-    pub top_speed: f64,
-    pub accel_fwd: f64,
-    pub back_share: f64,
-    pub throttle: f64,
+pub struct Producer {
+    /// `speed` and `relative` at the last update (None before the first: its derivatives are 0).
+    last: Option<(f64, f64)>,
+    /// D+0x00 and D+0x1c as last worked out: held through an update with no physics time.
+    accel: f64,
+    directional: f64,
+    /// D+0x2c as slewed (None before the first update: it starts at its target).
+    stationary: Option<f64>,
+    /// The high-pass's slewed lanes (pitch, yaw, roll), moved only while assist is off.
+    high_pass: [f64; 3],
 }
 
-/// The feeder (the notes' open item: the code that fills the component was not found). Each field's reading is from
-/// its curves' x range and the notes; every one is `UNIT INFERRED` except where said.
-pub fn motion_in(f: &Flight) -> MotionIn {
-    let fwd_speed = -f.vel[2];
-    let speed = (f.vel[0] * f.vel[0] + f.vel[1] * f.vel[1] + f.vel[2] * f.vel[2]).sqrt();
-    let acc_len = (f.acc[0] * f.acc[0] + f.acc[1] * f.acc[1] + f.acc[2] * f.acc[2]).sqrt();
-    let fwd_acc = -f.acc[2];
-    let top = f.top_speed.max(1e-6);
-    let amax = f.accel_fwd.max(1e-6);
-    let w = (f.omega[0] * f.omega[0] + f.omega[1] * f.omega[1] + f.omega[2] * f.omega[2]).sqrt();
-    MotionIn {
-        // UNIT INFERRED: m/s^2 along the nose (curves -100..100).
-        accel: fwd_acc,
-        // UNIT INFERRED: the speed along the nose in percent of this block's top speed (curves 0..150: boost reaches 145 %;
-        // speed_relative's -200..200 "percent" reads the same field with flight assist on).
-        speed: fwd_speed / top * 100.0,
-        // UNIT INFERRED: with flight assist off the exe reads another field; here the whole speed in percent, signed by the
-        // nose's component (the field's meaning is not known).
-        speed_fa_off: speed.copysign(fwd_speed) / top * 100.0,
-        // m/s by the range (the notes' reading: curves 0..1000).
-        speed_physical: speed,
-        // (No curve at rest reads these two.) The acceleration's share of the forward one, along the nose and whole.
-        accel_normalised: fwd_acc / amax,
-        accel_dir_normalised: acc_len / amax,
-        // UNIT INFERRED: the acceleration along the nose in percent of the forward thrust's (curves -100..100).
-        accel_relative: fwd_acc / amax * 100.0,
-        // UNIT INFERRED: the whole acceleration in percent of the forward thrust's (curves -100..100).
-        accel_directional: acc_len / amax * 100.0,
-        // UNIT INFERRED: the throttle's target speed in percent of the top (curves -150..150; reverse is the back share).
-        target_speed: if f.throttle >= 0.0 { f.throttle * 100.0 } else { f.throttle * f.back_share * 100.0 },
-        // UNIT INFERRED: rad/s for pitch and roll (curves -2..2), degrees a second for yaw (curves -30..30).
-        pitch: f.omega[0],
-        yaw: f.omega[1].to_degrees(),
-        roll: f.omega[2],
-        // UNIT INFERRED: the spin's rate in rad/s (curves 0..1, smoothed 0..2).
-        speed_rot: w,
-        // The flight is never out of control here.
-        out_of_control_yaw: 0.0,
+impl Producer {
+    /// One update: the flight's numbers this frame, the forward demand (-1..1), flight assist and the frame's real seconds.
+    pub fn update(&mut self, f: &SoundMotion, throttle: f64, flight_assist: bool, dt: f64) -> MotionIn {
+        let dtp = f.physics_dt;
+        let [_, _, vz] = f.vel;
+        let s = f.vel.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let percent_of = |top: f64| if top > 0.0 { 100.0 * s / top } else { 0.0 };
+        let speed = percent_of(f.full_top);
+        // (Elite's nose is +z, ours -z.)
+        let relative = if -vz < -BACKWARDS_MPS { -percent_of(f.top) } else { percent_of(f.top) };
+        let (accel, accel_relative, directional) = match self.last {
+            Some((s0, r0)) if dtp > 0.0 => ((speed - s0) / dtp, (relative.abs() - r0.abs()) / dtp, (relative - r0) / dtp),
+            Some(_) => (self.accel, 0.0, self.directional),
+            None => (0.0, 0.0, 0.0),
+        };
+        let normalised = if f.accel_fwd != 0.0 { accel / f.accel_fwd } else { 0.0 };
+        let stationary = self.speed_stationary(speed, flight_assist, dt);
+        self.last = Some((speed, relative));
+        self.accel = accel;
+        self.directional = directional;
+        // The spin's share of each speed-limited turn rate; assist off, only its changes (the high-pass).
+        let mut lane = [0, 1, 2].map(|k| if f.turn_limits[k] > 0.0 { f.omega[k] / f.turn_limits[k] } else { 0.0 });
+        let out_of_control_yaw = lane[1];
+        if !flight_assist {
+            for (l, hp) in lane.iter_mut().zip(self.high_pass.iter_mut()) {
+                *hp = slew(*hp, *l, HIGH_PASS_SLEW, dt);
+                *l = ((*l - *hp) * HIGH_PASS_GAIN).clamp(-HIGH_PASS_MOST, HIGH_PASS_MOST);
+            }
+        }
+        MotionIn {
+            accel,
+            speed,
+            relative,
+            // (The mod's flight has one velocity: the controller's and the body's speeds are the same.)
+            speed_physical: speed,
+            accel_normalised: normalised.abs(),
+            accel_dir_normalised: normalised,
+            accel_relative,
+            accel_directional: directional,
+            target_speed: 100.0 * throttle,
+            stationary,
+            pitch: lane[0].clamp(-LANE_MOST, LANE_MOST),
+            yaw: lane[1],
+            roll: lane[2].clamp(-LANE_MOST, LANE_MOST),
+            speed_rot: lane.iter().map(|l| l.clamp(-1.0, 1.0).abs()).fold(0.0, f64::max),
+            out_of_control_yaw,
+        }
+    }
+
+    /// `speed_stationary`: the target 1 with assist on; off, 1 while `speed` moved by more than `STATIONARY_MOVE` since the
+    /// last update, else 0 (the "stopped" flag, state flag 0x37, not identified: never set here); slewed at frame time.
+    fn speed_stationary(&mut self, speed: f64, flight_assist: bool, dt: f64) -> f64 {
+        let moving = self.last.is_some_and(|(s0, _)| (speed - s0).abs() > STATIONARY_MOVE);
+        let target = if flight_assist || moving { 1.0 } else { 0.0 };
+        let now = match self.stationary {
+            Some(v) => slew(v, target, if v < target { STATIONARY_UP } else { STATIONARY_DOWN }, dt),
+            None => target,
+        };
+        self.stationary = Some(now);
+        now
     }
 }
 
@@ -212,7 +256,9 @@ pub struct ShipView {
     pub jump_pressed: bool,
     pub safe_drop: Option<bool>,
     pub glide: bool,
-    pub motion: MotionIn,
+    /// The flight's numbers the motion rules read (`facts::SoundMotion`) and the forward demand (-1..1: Elite's input +0x10).
+    pub motion: SoundMotion,
+    pub throttle: f64,
     /// The pips (0..4) of systems, engines, weapons.
     pub pips: [f64; 3],
 }
@@ -242,10 +288,41 @@ impl ShipView {
             jump_pressed: false,
             safe_drop: None,
             glide: false,
-            motion: MotionIn::default(),
+            motion: SoundMotion { physics_dt: 1.0 / 60.0, ..stock(2.0, [0.0; 3]) },
+            throttle: 0.0,
             pips: [2.0; 3],
         }
     }
+}
+
+/// The old feeder's input, kept only so `voices.rs`'s tests (another task's file) still build: `motion_in` makes the flight's
+/// numbers of a ship flying at `vel` with `top_speed` as both top speeds and no physics time (the throttle is `ShipView`'s
+/// now). TO GO when `voices.rs`'s tests use `stock`.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Flight {
+    pub vel: [f64; 3],
+    pub acc: [f64; 3],
+    pub omega: [f64; 3],
+    pub top_speed: f64,
+    pub accel_fwd: f64,
+    pub back_share: f64,
+    pub throttle: f64,
+}
+
+#[cfg(test)]
+pub fn motion_in(f: &Flight) -> SoundMotion {
+    SoundMotion { full_top: f.top_speed, top: f.top_speed, accel_fwd: f.accel_fwd, vel: f.vel, omega: f.omega, mass_k: 1.0, ..SoundMotion::default() }
+}
+
+/// The stock ship's flight numbers (its mass with a full tank, the gear up) at `eng` ENG pips, flying at `vel` (ship axes,
+/// m/s) with no spin and no physics time, for the sound's tests.
+#[cfg(test)]
+pub fn stock(eng: f64, vel: [f64; 3]) -> SoundMotion {
+    use elite_sim::data::{sidewinder_block, FUEL_TANK_T, JOURNAL_UNLADEN_MASS, SIDEWINDER};
+    let mass = JOURNAL_UNLADEN_MASS + FUEL_TANK_T + SIDEWINDER.reserve_fuel;
+    let (block, full_top) = sidewinder_block(eng, mass);
+    SoundMotion::new(&block, full_top, vel, [0.0; 3], 0, mass)
 }
 
 /// The heat voice (`carried_02`).
@@ -420,7 +497,10 @@ pub struct Triggers {
     cooldown: bool,
     countdown: Countdown,
     safe_drop: Option<bool>,
-    smooth: Smooth,
+    /// The producer's motion rules and the audio object's smoothed values (None before the first update: they start where
+    /// their inputs are).
+    producer: Producer,
+    smooth: Option<Smooth>,
     heat_pct: Option<f64>,
     /// The mode transition handle whose `_b` was posted (`audio_mode_transitions`): its `_e` comes with the next one.
     transition: Option<String>,
@@ -552,9 +632,9 @@ impl Triggers {
         orbital_cruise(v.mode, out);
         post(out, format!("{}_enter", mode_name(v.mode)), Emitter::Ship);
         // landing_gear: Retracted at set-up, then the gear as it is (no cockpit cue for the start). carried_00: state
-        // FlightAssist On when assist is OFF.
+        // FlightAssist On while assist is on (the set-up 0x14414d320 reads the input's byte +0x95, non-zero with assist on).
         out.push(Call::State("LandingGear", if v.gear_down { "Deployed" } else { "Retracted" }));
-        out.push(Call::State("FlightAssist", if v.flight_assist { "Off" } else { "On" }));
+        out.push(Call::State("FlightAssist", if v.flight_assist { "On" } else { "Off" }));
         out.push(Call::State("GlideState", if v.glide { "Glide" } else { "NotGlide" }));
         self.cockpit_atmosphere(v, out);
         player_location(out);
@@ -577,8 +657,6 @@ impl Triggers {
         self.drive = Some(v.drive);
         self.safe_drop = v.safe_drop;
         self.hull.resume();
-        let m = v.motion;
-        self.smooth = Smooth { relative: m.speed, accel: m.accel_relative, directional: m.accel_directional, target: m.target_speed, rot: m.speed_rot };
     }
 
     /// One frame: what Elite would call for this state.
@@ -648,17 +726,26 @@ impl Triggers {
         }
     }
 
-    /// motion_rtpcs, power_heat_contacts_rtpcs, player_inside_switch, supercruise_rtpcs' heat, the charge's game parameters.
+    /// motion_rtpcs, speed_stationary, engine_mass_modifier, power_heat_contacts_rtpcs, player_inside_switch,
+    /// supercruise_rtpcs' heat, the charge's game parameters.
     fn motion(&mut self, v: &ShipView, out: &mut Vec<Call>) {
-        let m = v.motion;
+        let m = self.producer.update(&v.motion, v.throttle, v.flight_assist, v.dt);
         let dt = v.dt;
-        let s = &mut self.smooth;
-        let rel_in = if v.flight_assist { m.speed } else { m.speed_fa_off };
-        s.relative = if (rel_in - s.relative).abs() > SLEW_RELATIVE { slew(s.relative, rel_in, SLEW_RELATIVE, dt) } else { rel_in };
-        s.accel = slew(s.accel, m.accel_relative, SLEW, dt);
-        s.directional = slew(s.directional, m.accel_directional, SLEW, dt);
-        s.target = slew(s.target, m.target_speed, SLEW, dt);
-        s.rot = slew(s.rot, m.speed_rot, SLEW_ROT, dt);
+        // The audio object's slews run on the physics time (0x144143830 hands 0x14415c5c0 and 0x14415c3d0 D+0x1ac): none
+        // moves in a frame with no physics step. speed_relative reads D+0x08 with assist on, D+0x04 with it off.
+        let dtp = v.motion.physics_dt;
+        let rel_in = if v.flight_assist { m.relative } else { m.speed };
+        let s = match self.smooth {
+            None => Smooth { relative: rel_in, accel: m.accel_relative, directional: m.accel_directional, target: m.target_speed, rot: m.speed_rot },
+            Some(s) => Smooth {
+                relative: if (rel_in - s.relative).abs() > SLEW_RELATIVE { slew(s.relative, rel_in, SLEW_RELATIVE, dtp) } else { rel_in },
+                accel: slew(s.accel, m.accel_relative, SLEW, dtp),
+                directional: slew(s.directional, m.accel_directional, SLEW, dtp),
+                target: slew(s.target, m.target_speed, SLEW, dtp),
+                rot: slew(s.rot, m.speed_rot, SLEW_ROT, dtp),
+            },
+        };
+        self.smooth = Some(s);
         let g = |n: &'static str, x: f64| Call::Gp(n, x as f32);
         out.extend([
             g("spaceship_speed_self", m.speed),
@@ -671,6 +758,7 @@ impl Triggers {
             g("spaceship_accel_relative_slow_self", s.accel),
             g("spaceship_accel_directional_self", s.directional),
             g("spaceship_target_speed_relative_self", s.target),
+            g("spaceship_speed_stationary_self", m.stationary),
             g("spaceship_pitch_self", m.pitch),
             g("spaceship_yaw_self", m.yaw),
             g("spaceship_roll_self", m.roll),
@@ -683,6 +771,8 @@ impl Triggers {
             g("num_contacts", 0.0),
             g("num_hostile_ships", 0.0),
             Call::Gp("PlayerInsideAndEmitterAttached", INSIDE),
+            // engine_mass_modifier: the thrusters' top-speed mass multiplier, every frame (0x14415ab60).
+            g("engine_mass_modifier", v.motion.mass_k),
         ]);
         // Heat in percent (power_heat_contacts_rtpcs; supercruise_rtpcs sends the same ratio x 100 and its change a second).
         let pct = v.heat * 100.0;
@@ -736,15 +826,16 @@ impl Triggers {
     fn cockpit(&mut self, v: &ShipView, out: &mut Vec<Call>) {
         if v.flight_assist != self.flight_assist {
             self.flight_assist = v.flight_assist;
-            // The ship's pair: _b when assist goes OFF (state On), _e when it comes back ON (state Off). The cockpit's beep
-            // the other way round (measured: carried_01).
+            // carried_00 (T5e): assist ON posts the ship's _b and state On, OFF its _e and state Off (0x144143830 on D+0x49,
+            // the input's +0x95, non-zero with assist on; the recording's beeps agree). carried_01: the cockpit's pair the same
+            // way round (measured).
             if v.flight_assist {
-                post(out, "FlightAssist_e", Emitter::Ship);
-                out.push(Call::State("FlightAssist", "Off"));
-                post(out, "Cockpit_FlightAssist_b", Emitter::CockpitOrigin);
-            } else {
                 post(out, "FlightAssist_b", Emitter::Ship);
                 out.push(Call::State("FlightAssist", "On"));
+                post(out, "Cockpit_FlightAssist_b", Emitter::CockpitOrigin);
+            } else {
+                post(out, "FlightAssist_e", Emitter::Ship);
+                out.push(Call::State("FlightAssist", "Off"));
                 post(out, "Cockpit_FlightAssist_e", Emitter::CockpitOrigin);
             }
         }
@@ -988,23 +1079,37 @@ mod tests {
         assert!(!t && v.is_empty());
     }
 
+    /// carried_00 as T5e corrected it: assist ON is state On and FlightAssist_b, OFF state Off and FlightAssist_e (the
+    /// start too), each once per change; the cockpit's pair the same way round (carried_01).
     #[test]
-    fn flight_assist_pairs_have_opposite_senses() {
+    fn flight_assist_follows_elite_both_ways() {
         let mut t = Triggers::default();
         let mut v = view();
-        run(&mut t, &v);
+        let mut out = Vec::new();
+        t.step(&v, &mut out);
+        assert_eq!(states(&out, "FlightAssist"), ["On"], "the start with assist on");
+        assert!(!posts(&out).iter().any(|p| p.contains("FlightAssist")));
         v.flight_assist = false;
-        let mut out = Vec::new();
+        out.clear();
         t.step(&v, &mut out);
         let p = posts(&out);
-        assert!(p.contains(&"FlightAssist_b".to_string()) && p.contains(&"Cockpit_FlightAssist_e".to_string()));
-        assert!(out.contains(&Call::State("FlightAssist", "On")));
+        assert!(p.contains(&"FlightAssist_e".to_string()) && p.contains(&"Cockpit_FlightAssist_e".to_string()), "{p:?}");
+        assert!(!p.iter().any(|p| p.ends_with("FlightAssist_b")));
+        assert_eq!(states(&out, "FlightAssist"), ["Off"]);
+        out.clear();
+        t.step(&v, &mut out);
+        assert!(!posts(&out).iter().any(|p| p.contains("FlightAssist")) && states(&out, "FlightAssist").is_empty(), "once per change");
         v.flight_assist = true;
-        let mut out = Vec::new();
+        out.clear();
         t.step(&v, &mut out);
         let p = posts(&out);
-        assert!(p.contains(&"FlightAssist_e".to_string()) && p.contains(&"Cockpit_FlightAssist_b".to_string()));
-        assert!(out.contains(&Call::State("FlightAssist", "Off")));
+        assert!(p.contains(&"FlightAssist_b".to_string()) && p.contains(&"Cockpit_FlightAssist_b".to_string()), "{p:?}");
+        assert!(!p.iter().any(|p| p.ends_with("FlightAssist_e")));
+        assert_eq!(states(&out, "FlightAssist"), ["On"]);
+        let mut t = Triggers::default();
+        out.clear();
+        t.step(&ShipView { flight_assist: false, ..view() }, &mut out);
+        assert_eq!(states(&out, "FlightAssist"), ["Off"], "the start with assist off");
     }
 
     fn states(calls: &[Call], group: &str) -> Vec<&'static str> {
@@ -1126,31 +1231,276 @@ mod tests {
         assert!(p.contains(&"hyperdrive_cancel_internal".to_string()) && p.contains(&"Cockpit_FrameShiftCancel".to_string()));
     }
 
+    const TICK: f64 = 1.0 / 60.0;
+
+    /// A game parameter's last value in the calls.
+    fn gp(calls: &[Call], name: &str) -> f64 {
+        let x = calls.iter().rev().find_map(|c| match c {
+            Call::Gp(n, x) if *n == name => Some(*x),
+            _ => None,
+        });
+        f64::from(x.unwrap_or_else(|| panic!("{name} is not set")))
+    }
+
+    /// `frames` frames of the same view; the last frame's calls.
+    fn settle(t: &mut Triggers, v: &ShipView, frames: usize) -> Vec<Call> {
+        let mut out = Vec::new();
+        for _ in 0..frames {
+            out.clear();
+            t.step(v, &mut out);
+        }
+        out
+    }
+
+    fn near(got: f64, want: f64, what: &str) {
+        assert!((got - want).abs() < 1e-3 * want.abs().max(1.0), "{what}: {got} against {want}");
+    }
+
+    /// A ship flying steadily at `vel` (ship axes) at `eng` pips, a tick every frame at 60 frames a second.
+    fn flying(eng: f64, vel: [f64; 3], fa: bool, throttle: f64) -> ShipView {
+        ShipView { flight_assist: fa, throttle, motion: SoundMotion { physics_dt: TICK, ..stock(eng, vel) }, ..view() }
+    }
+
+    /// The slew: min(|d|, r sqrt(|d|) dt); r <= 0 snaps.
     #[test]
-    fn motion_mapping_from_a_ship_state() {
-        let f = Flight { vel: [0.0, 0.0, -110.0], acc: [0.0, 0.0, -20.0], omega: [0.5, 0.2, -1.0], top_speed: 220.0, accel_fwd: 40.0, back_share: 0.5, throttle: -0.5 };
-        let m = motion_in(&f);
-        assert!((m.speed - 50.0).abs() < 1e-9);
-        assert!((m.speed_physical - 110.0).abs() < 1e-9);
-        assert!((m.accel - 20.0).abs() < 1e-9);
-        assert!((m.accel_relative - 50.0).abs() < 1e-9);
-        assert!((m.target_speed + 25.0).abs() < 1e-9);
-        assert!((m.yaw - 0.2f64.to_degrees()).abs() < 1e-9);
-        assert_eq!((m.pitch, m.roll), (0.5, -1.0));
-        // The slew: min(|d|, r sqrt(|d|) dt).
+    fn the_slew() {
         assert!((slew(0.0, 100.0, 3.0, 0.1) - 3.0).abs() < 1e-9);
         assert_eq!(slew(0.0, 0.01, 3.0, 1.0), 0.01);
         assert_eq!(slew(5.0, 7.0, 0.0, 0.1), 7.0);
-        // speed_relative snaps under a 5-point gap and is clamped to 199.9.
-        let mut t = Triggers::default();
-        let mut v = view();
-        run(&mut t, &v);
-        v.motion.speed = 300.0;
-        let mut out = Vec::new();
-        for _ in 0..600 {
-            out.clear();
-            t.step(&v, &mut out);
+        assert_eq!(slew(5.0, 7.0, 3.0, 0.0), 5.0);
+    }
+
+    /// Full throttle on each pip setting (T5e's table): speed_self and speed_physical are percents of the full-power top
+    /// speed (45.5, 72.7 and 100 at 0, 2, 4 ENG pips), speed_relative 100 with assist on (the current top speed's percent)
+    /// and speed_self with it off; the target 100; nothing changes, so the accelerations are 0.
+    #[test]
+    fn full_throttle_on_each_pip_setting() {
+        for (eng, share) in [(0.0, 100.0 / 220.0), (2.0, 160.0 / 220.0), (4.0, 1.0)] {
+            let top = stock(eng, [0.0; 3]).top;
+            for fa in [true, false] {
+                let out = settle(&mut Triggers::default(), &flying(eng, [0.0, 0.0, -top], fa, 1.0), 30);
+                let what = format!("ENG {eng}, assist {fa}");
+                near(gp(&out, "spaceship_speed_self"), 100.0 * share, &what);
+                near(gp(&out, "spaceship_speed_physical_self"), 100.0 * share, &what);
+                near(gp(&out, "spaceship_speed_relative_self"), if fa { 100.0 } else { 100.0 * share }, &what);
+                near(gp(&out, "spaceship_target_speed_relative_self"), 100.0, &what);
+                for n in ["spaceship_accel_self", "spaceship_accel_relative_smooth_self", "spaceship_accel_directional_self", "spaceship_accel_normalised_self"] {
+                    assert_eq!(gp(&out, n), 0.0, "{what}: {n}");
+                }
+            }
         }
-        assert!(out.contains(&Call::Gp("spaceship_speed_relative_self", 199.9)));
+    }
+
+    /// Reverse: speed_relative turns negative only past 1 m/s backwards; speed_self stays a size; the target follows the
+    /// demand's sign (100 x the forward demand, no back share).
+    #[test]
+    fn reverse_and_the_backwards_threshold() {
+        let top = stock(2.0, [0.0; 3]).top;
+        let out = settle(&mut Triggers::default(), &flying(2.0, [0.0, 0.0, 0.6 * top], true, -0.6), 30);
+        near(gp(&out, "spaceship_speed_relative_self"), -60.0, "backwards");
+        near(gp(&out, "spaceship_speed_self"), 60.0 * 160.0 / 220.0, "backwards");
+        near(gp(&out, "spaceship_target_speed_relative_self"), -60.0, "the demand");
+        let out = settle(&mut Triggers::default(), &flying(2.0, [0.0, 0.0, 0.5], true, 0.0), 3);
+        assert!(gp(&out, "spaceship_speed_relative_self") > 0.0, "0.5 m/s backwards is not past the threshold");
+    }
+
+    /// A boost: past the top speed the percents pass 100 (320 m/s is 145 % of the full-power top speed); speed_relative's
+    /// clamp holds it at 199.9 (ENG 2: 200 % of 160 m/s), reached at the slew's rate 5 over a gap of more than 5.
+    #[test]
+    fn a_boost_passes_one_hundred_percent() {
+        let boost = 320.0 * stock(4.0, [0.0; 3]).full_top / 220.0;
+        let out = settle(&mut Triggers::default(), &flying(4.0, [0.0, 0.0, -boost], true, 1.0), 30);
+        near(gp(&out, "spaceship_speed_self"), 100.0 * 320.0 / 220.0, "boost");
+        near(gp(&out, "spaceship_speed_relative_self"), 100.0 * 320.0 / 220.0, "boost");
+        let mut t = Triggers::default();
+        settle(&mut t, &flying(2.0, [0.0, 0.0, -100.0], true, 1.0), 3);
+        let out = settle(&mut t, &flying(2.0, [0.0, 0.0, -boost], true, 1.0), 1);
+        let first = gp(&out, "spaceship_speed_relative_self");
+        let from = 100.0 * 100.0 / stock(2.0, [0.0; 3]).top;
+        let gap: f64 = 200.0 - from;
+        near(first, from + SLEW_RELATIVE * gap.sqrt() * TICK, "the slew's first step");
+        let out = settle(&mut t, &flying(2.0, [0.0, 0.0, -boost], true, 1.0), 600);
+        assert_eq!(gp(&out, "spaceship_speed_relative_self"), RELATIVE_MOST as f32 as f64);
+    }
+
+    /// Turning: each lane is the spin's share of the speed-limited turn rate (pitch's, yaw's, roll's rate x the turn curve's
+    /// blue zone at s / Vcur, roll's too), 1 at the full rate and 0.5 at half; pitch and roll clamped to 1.99, speed_rot the
+    /// largest share clamped to 1, outOfControlYaw the yaw share.
+    #[test]
+    fn a_turn_at_the_full_rate_and_at_half() {
+        let top = stock(2.0, [0.0; 3]).top;
+        let base = flying(2.0, [0.0, 0.0, -top], true, 1.0);
+        let w = base.motion.turn_limits;
+        // At the top speed the share's divisors are the raw rates x the turn curve's b (0.35 at ENG 2), roll's too.
+        let k = elite_sim::data::thrusters_mass_k(elite_sim::data::JOURNAL_UNLADEN_MASS + 2.3);
+        for (got, rate) in w.iter().zip([39.0f64, 17.0, 110.0]) {
+            near(*got, (rate * k).to_radians() * 0.35, "a divisor");
+        }
+        for (axis, name) in [(0, "spaceship_pitch_self"), (1, "spaceship_yaw_self"), (2, "spaceship_roll_self")] {
+            for share in [1.0, 0.5, 2.5] {
+                let mut omega = [0.0; 3];
+                omega[axis] = share * w[axis];
+                let v = ShipView { motion: SoundMotion { omega, ..base.motion }, ..base };
+                let out = settle(&mut Triggers::default(), &v, 30);
+                let want = if axis == 1 { share } else { share.min(LANE_MOST) };
+                near(gp(&out, name), want, name);
+                near(gp(&out, "spaceship_speed_rot_self"), share.min(1.0), name);
+                near(gp(&out, "spaceship_speed_rot_self_smooth"), share.min(1.0), name);
+                near(gp(&out, "spaceship_outOfControlYaw_self"), if axis == 1 { share } else { 0.0 }, name);
+            }
+        }
+    }
+
+    /// Assist off, only the spin's changes sound: a turn begun at the full rate is (1 - slew(0, 1, 1.0, dt)) x 2.5 clamped
+    /// to 2 at once (pitch 1.99), and fades to 0 as the high-pass catches up (2 s at the slew's rate); outOfControlYaw is the
+    /// raw share. With assist on the lanes are the shares again. A new start forgets the high-pass.
+    #[test]
+    fn assist_off_high_passes_the_turn() {
+        let top = stock(2.0, [0.0; 3]).top;
+        let mut v = flying(2.0, [0.0, 0.0, -top], false, 1.0);
+        let mut t = Triggers::default();
+        settle(&mut t, &v, 5);
+        let w = v.motion.turn_limits;
+        v.motion.omega = [w[0], 0.5 * w[1], 0.0];
+        let out = settle(&mut t, &v, 1);
+        near(gp(&out, "spaceship_pitch_self"), LANE_MOST, "the step");
+        near(gp(&out, "spaceship_yaw_self"), ((0.5 - slew(0.0, 0.5, HIGH_PASS_SLEW, TICK)) * HIGH_PASS_GAIN).min(HIGH_PASS_MOST), "the step");
+        near(gp(&out, "spaceship_outOfControlYaw_self"), 0.5, "raw");
+        let out = settle(&mut t, &v, 180);
+        assert!(gp(&out, "spaceship_pitch_self").abs() < 1e-6 && gp(&out, "spaceship_speed_rot_self").abs() < 1e-6, "settled to 0");
+        near(gp(&out, "spaceship_outOfControlYaw_self"), 0.5, "raw");
+        v.flight_assist = true;
+        let out = settle(&mut t, &v, 1);
+        near(gp(&out, "spaceship_pitch_self"), 1.0, "assist on");
+        let mut out = Vec::new();
+        t.teardown(&mut out);
+        v.flight_assist = false;
+        let out = settle(&mut t, &v, 1);
+        near(gp(&out, "spaceship_pitch_self"), LANE_MOST, "a new start: the high-pass from 0");
+    }
+
+    /// At rest and landed (ticks running, no motion): every motion input 0, stationary 1 with assist on and 0 with it off
+    /// (not moving), the mass modifier the thrusters' multiplier.
+    #[test]
+    fn at_rest_and_landed() {
+        for fa in [true, false] {
+            let v = ShipView { flight_assist: fa, ..view() };
+            let out = settle(&mut Triggers::default(), &v, 30);
+            for n in ["spaceship_speed_self", "spaceship_speed_relative_self", "spaceship_accel_self", "spaceship_pitch_self", "spaceship_speed_rot_self", "spaceship_target_speed_relative_self"] {
+                assert_eq!(gp(&out, n), 0.0, "{n}");
+            }
+            assert_eq!(gp(&out, "spaceship_speed_stationary_self"), if fa { 1.0 } else { 0.0 });
+            near(gp(&out, "engine_mass_modifier"), v.motion.mass_k, "mass");
+            assert!((1.004..1.006).contains(&gp(&out, "engine_mass_modifier")));
+        }
+    }
+
+    /// "Stationary" with assist off: 1 while the speed moves more than 0.1 % of the full-power top speed an update, rising
+    /// at 3.0 and falling at 0.5 (frame time); with assist on always 1.
+    #[test]
+    fn stationary_follows_the_speeds_changes_with_assist_off() {
+        let mut v = view();
+        v.flight_assist = false;
+        let mut t = Triggers::default();
+        settle(&mut t, &v, 2);
+        // 45 m/s^2: 0.75 m/s a tick, 0.34 % of 221 m/s.
+        let full = v.motion.full_top;
+        let mut speed = 0.0;
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            speed += 45.0 * TICK;
+            v.motion.vel = [0.0, 0.0, -speed];
+            out = settle(&mut t, &v, 1);
+        }
+        assert!(100.0 * 45.0 * TICK / full > STATIONARY_MOVE);
+        let mut want = 0.0;
+        for _ in 0..3 {
+            want = slew(want, 1.0, STATIONARY_UP, TICK);
+        }
+        near(gp(&out, "spaceship_speed_stationary_self"), want, "rising");
+        let out = settle(&mut t, &v, 1);
+        near(gp(&out, "spaceship_speed_stationary_self"), slew(want, 0.0, STATIONARY_DOWN, TICK), "falling: the speed held");
+    }
+
+    /// The accelerations are the percents' changes over the physics time: the same motion (45 m/s^2 forward from rest, 60
+    /// ticks a second) seen at 20, 60 and 144 frames a second gives the same inputs in every frame with a tick, holds
+    /// accel_self and gives accel_relative 0 in a frame without one, and its smoothed values (slewed on the physics time)
+    /// meet; the first update after a start gives 0, never a spike.
+    #[test]
+    fn derivatives_are_the_same_at_any_frame_rate() {
+        let a = 45.0;
+        let mut ends = Vec::new();
+        for fps in [20u32, 60, 144] {
+            let mut t = Triggers::default();
+            let mut v = view();
+            v.throttle = 1.0;
+            let (mut ticks, mut vel) = (0u32, 0.0);
+            let mut out = Vec::new();
+            // accel_self as last worked out (0 from the first update until a frame with a tick).
+            let mut held = None;
+            for frame in 1..=(5 * fps) {
+                let now = frame * 60 / fps;
+                let n = now - ticks;
+                for _ in 0..n {
+                    vel += a * TICK;
+                }
+                ticks = now;
+                v.dt = 1.0 / f64::from(fps);
+                v.motion = SoundMotion { physics_dt: f64::from(n) * TICK, ..stock(2.0, [0.0, 0.0, -vel]) };
+                out.clear();
+                t.step(&v, &mut out);
+                let (accel, what) = (gp(&out, "spaceship_accel_self"), format!("{fps} fps, frame {frame}"));
+                let rate = 100.0 * a / v.motion.full_top;
+                match held {
+                    None => {
+                        assert_eq!(accel, 0.0, "{what}: the first update");
+                        held = Some(0.0);
+                    }
+                    Some(_) if n > 0 => {
+                        near(accel, rate, &what);
+                        near(gp(&out, "spaceship_accel_directional_normalised_self"), rate / v.motion.accel_fwd, &what);
+                        held = Some(rate);
+                    }
+                    Some(h) => near(accel, h, &format!("{what}: held")),
+                }
+            }
+            ends.push((gp(&out, "spaceship_accel_relative_smooth_self"), gp(&out, "spaceship_accel_directional_self"), gp(&out, "spaceship_speed_relative_self")));
+        }
+        let want = 100.0 * a / stock(2.0, [0.0; 3]).top;
+        for (fps, (smooth, dir, rel)) in [20, 60, 144].iter().zip(&ends) {
+            // (The sqrt-law slew reaches its input in 2 sqrt(x) / 3 s, 3.5 s for these 28 %/s: 5 s is past it.)
+            near(*smooth, want, &format!("{fps} fps: accel_relative_smooth"));
+            near(*dir, want, &format!("{fps} fps: accel_directional"));
+            near(*rel, ends[1].2, &format!("{fps} fps: speed_relative"));
+        }
+    }
+
+    /// Nothing non-finite from a zero top speed, a zero full-power top speed, no physics time, no turn rate or no forward
+    /// acceleration, moving and spinning.
+    #[test]
+    fn nothing_non_finite_from_zeros() {
+        let zero = SoundMotion { full_top: 0.0, top: 0.0, accel_fwd: 0.0, turn_limits: [0.0; 3], physics_dt: 0.0, vel: [3.0, -2.0, -50.0], omega: [0.4, -0.2, 1.0], mass_k: 1.0 };
+        for fa in [true, false] {
+            let mut t = Triggers::default();
+            for m in [zero, SoundMotion { physics_dt: TICK, ..zero }, SoundMotion { vel: [0.0; 3], ..zero }] {
+                let out = settle(&mut t, &ShipView { flight_assist: fa, motion: m, ..view() }, 3);
+                for c in &out {
+                    if let Call::Gp(n, x) = c {
+                        assert!(x.is_finite(), "{n} = {x}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Supercruise (the drive loops are off there): the motion inputs go on from the flight's numbers as in normal space
+    /// (T5e is silent on what Elite feeds there: the mod's behaviour kept).
+    #[test]
+    fn supercruise_keeps_the_motion_inputs() {
+        let top = stock(2.0, [0.0; 3]).top;
+        let v = ShipView { mode: 2, drive: Drive::Supercruise, gear_down: false, ..flying(2.0, [0.0, 0.0, -top], true, 1.0) };
+        let out = settle(&mut Triggers::default(), &v, 30);
+        near(gp(&out, "spaceship_speed_relative_self"), 100.0, "supercruise");
+        assert!(out.iter().all(|c| !matches!(c, Call::Gp(_, x) if !x.is_finite())));
     }
 }

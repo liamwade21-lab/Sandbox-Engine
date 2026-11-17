@@ -2,14 +2,15 @@
 //! `Pilot` and `Seat` before the parts run, read by the machines (`machines.rs`, `parts.rs`), the lights and the sound. It
 //! keeps the tests' overrides of those facts (`sw lights heat`, `sw pose`, `sw canopy damage`), so no reader holds another's. Nothing of the
 //! parts, the lights or the sound is read here. The pilot chair (`chair.rs`) reads the controls and the cockpit's changes of
-//! velocity, tick by tick, from here too.
+//! velocity, tick by tick, from here too, and the sound its engine inputs' numbers (`SoundMotion`).
 
 use bevy::diagnostic::FrameCount;
+use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use elite_sim::heat::{visual_dissipation, VisualDissipation};
 
 use super::panels::{Panels, Side};
-use super::pilot::{Pilot, PilotKeys, TickChanges};
+use super::pilot::{Pilot, PilotKeys, TickChanges, TICK};
 use super::seat::Seat;
 
 /// The ship's damage the cockpit's cracks read (0..1): the cockpit's `Damage` parameter is bound to the ship's `ShipDamage`
@@ -28,6 +29,56 @@ pub enum JumpPhase {
     Charging,
     Departing,
     Arriving,
+}
+
+/// What the sound's engine inputs read from the flight this frame (ARCHITECTURE.md A7, "The engine's inputs"): what Elite's
+/// audio update reads from the flight controller and the physics world (`re/elite/notes/sidewinder_sound_events.md`, T5e
+/// items 2, 4-6), each value from the function the flight itself flies by. The sound works its inputs out from these alone.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SoundMotion {
+    /// The full-power block's top speed, the current block's top speed and forward acceleration (m/s, m/s^2): `Pilot::block`
+    /// (Elite's controller +0x81c [0], +0x750 [0] and [0x1C]).
+    pub full_top: f64,
+    pub top: f64,
+    pub accel_fwd: f64,
+    /// The speed-limited turn rates the controller divides the spin by (rad/s; x pitch, y yaw, z roll):
+    /// `elite_sim::flight::share_limits` of the current block at the speed now.
+    pub turn_limits: [f64; 3],
+    /// The physics time simulated this frame: the flight's ticks this frame x the tick (s; 0 in a frame with none).
+    pub physics_dt: f64,
+    /// The velocity and the spin in the ship's axes (m/s, rad/s; x right, y up, z back; spin x pitch nose up, y yaw nose left,
+    /// z roll right wing up).
+    pub vel: [f64; 3],
+    pub omega: [f64; 3],
+    /// The thrusters' mass multiplier at the ship's mass now (`elite_sim::data::thrusters_mass_k`).
+    pub mass_k: f64,
+}
+
+impl SoundMotion {
+    /// From the current block and the full-power top speed (`Pilot::block`), the velocity and spin in the ship's axes, the
+    /// flight ticks run this frame and the ship's mass (t).
+    pub fn new(block: &elite_sim::flight::Block, full_top: f64, vel: [f64; 3], omega: [f64; 3], ticks: usize, mass_t: f64) -> SoundMotion {
+        let speed = vel.iter().map(|v| v * v).sum::<f64>().sqrt();
+        SoundMotion {
+            full_top,
+            top: block.top_speed,
+            accel_fwd: block.accel_fwd,
+            turn_limits: elite_sim::flight::share_limits(block, speed).to_array(),
+            physics_dt: ticks as f64 * TICK,
+            vel,
+            omega,
+            mass_k: elite_sim::data::thrusters_mass_k(mass_t),
+        }
+    }
+
+    /// From the pilot's flight and the number of flight ticks run this frame.
+    fn of(pilot: &Pilot, ticks: usize) -> SoundMotion {
+        let (block, full_top) = pilot.block();
+        // (elite_sim's glam may not be Bevy's: through arrays.)
+        let rot = DQuat::from_array(pilot.motion.rot.to_array());
+        let vel = rot.inverse() * DVec3::from_array(pilot.motion.vel.to_array());
+        SoundMotion::new(&block, full_top, vel.to_array(), pilot.motion.omega.to_array(), ticks, pilot.mass_t())
+    }
 }
 
 /// What of the ship's state the machines, the lights and the sound read this frame.
@@ -75,6 +126,8 @@ pub struct ShipFacts {
     /// The cockpit point's change of velocity of each of this frame's flight ticks, in order, in the ship's axes (m/s):
     /// `Pilot::tick_dv` when the flight recorded it this frame, else none (`Pilot::record_tick` gives the rule).
     pub ticks: TickChanges,
+    /// What the sound's engine inputs read from the flight (`SoundMotion`).
+    pub motion: SoundMotion,
 }
 
 impl ShipFacts {
@@ -92,6 +145,7 @@ impl ShipFacts {
         let heat = prev.dev_heat.unwrap_or_else(|| pilot.heat.fraction(&pilot.heat_spec));
         let radiator = pilot.powered && !pilot.silent;
         let controls = pilot.controls();
+        let ticks = if pilot.tick_dv.frame == frame { pilot.tick_dv } else { TickChanges::default() };
         ShipFacts {
             powered: pilot.powered,
             silent: pilot.silent,
@@ -117,7 +171,8 @@ impl ShipFacts {
             yaw: controls.yaw,
             roll: controls.roll,
             fire: keys.fire || pilot.dev_fire > 0.0,
-            ticks: if pilot.tick_dv.frame == frame { pilot.tick_dv } else { TickChanges::default() },
+            ticks,
+            motion: SoundMotion::of(pilot, ticks.as_slice().len()),
         }
     }
 
@@ -175,5 +230,31 @@ mod tests {
         assert!(!f.fire && ShipFacts::of(&pilot, &PilotKeys { fire: true, ..keys }, true, 0, &f).fire);
         pilot.dev_fire = 1.0;
         assert!(ShipFacts::of(&pilot, &keys, true, 0, &f).fire);
+    }
+
+    /// The sound's numbers are the flight's: the blocks it flies by (`Pilot::block`: the pips, the mass, the gear's factor),
+    /// the velocity in the ship's axes, the controller's divisors at that speed, the ticks' physics time, the thrusters'
+    /// mass multiplier.
+    #[test]
+    fn the_sound_motion_is_the_flights() {
+        let mut pilot = Pilot::default();
+        pilot.gear_down = false;
+        // The nose (-z) turned to the world's -x, flying that way at 100 m/s, spinning.
+        pilot.motion.rot = glam::DQuat::from_array(DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2).to_array());
+        pilot.motion.vel = glam::DVec3::new(-100.0, 0.0, 0.0);
+        pilot.motion.omega = glam::DVec3::new(0.1, -0.2, 0.3);
+        let m = ShipFacts::of(&pilot, &PilotKeys::default(), true, 0, &ShipFacts::default()).motion;
+        let (block, full_top) = pilot.block();
+        assert!((DVec3::from_array(m.vel) - DVec3::new(0.0, 0.0, -100.0)).length() < 1e-9, "{:?}", m.vel);
+        assert_eq!((m.full_top, m.top, m.accel_fwd, m.omega), (full_top, block.top_speed, block.accel_fwd, [0.1, -0.2, 0.3]));
+        let w = elite_sim::flight::share_limits(&block, 100.0).to_array();
+        assert!(m.turn_limits.iter().zip(w).all(|(a, b)| (a - b).abs() < 1e-12), "{:?}", m.turn_limits);
+        assert_eq!(m.mass_k, elite_sim::data::thrusters_mass_k(pilot.mass_t()));
+        assert_eq!(m.physics_dt, 0.0, "no tick this frame");
+        assert_eq!(SoundMotion::new(&block, full_top, m.vel, m.omega, 3, pilot.mass_t()).physics_dt, 3.0 * TICK);
+        // The gear down halves both top speeds (the flight's own factor).
+        pilot.gear_down = true;
+        let down = ShipFacts::of(&pilot, &PilotKeys::default(), true, 0, &ShipFacts::default()).motion;
+        assert!((down.full_top - 0.5 * full_top).abs() < 1e-9 && (down.top - 0.5 * block.top_speed).abs() < 1e-9);
     }
 }

@@ -330,12 +330,19 @@ pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (Block, f64) {
     sidewinder_block_with(eng_pips, mass_t, 1.0)
 }
 
+/// The stock thrusters' mass multiplier at the ship's mass `mass_t` (0x142EBDF60: the module record's three mass curves hold
+/// the same six numbers, so one multiplier scales the speeds, accelerations and turn rates). Its top-speed value is the
+/// thruster module's +0x148, which Elite's audio update hands on as `engine_mass_modifier` (T5e item 6).
+pub fn thrusters_mass_k(mass_t: f64) -> f64 {
+    let th = &THRUSTERS_2E;
+    mass_curve(mass_t, [th.min_mass, th.opt_mass, th.max_mass], [th.min_mul, th.opt_mul, th.max_mul])
+}
+
 /// `sidewinder_block` with the speed multiplier `speed_k` of 0x142E86E20's step 4 (the gear's and the scoop's,
 /// `deployables::speed_factor`), which scales both blocks' top and boost speeds after the thrusters' curves (0x141B2DA50).
 pub fn sidewinder_block_with(eng_pips: f64, mass_t: f64, speed_k: f64) -> (Block, f64) {
     let t = (eng_pips / 4.0).clamp(0.0, 1.0);
-    let th = &THRUSTERS_2E;
-    let k = mass_curve(mass_t, [th.min_mass, th.opt_mass, th.max_mass], [th.min_mul, th.opt_mul, th.max_mul]);
+    let k = thrusters_mass_k(mass_t);
     let current = Block::blend(&record::BASE, &record::FULL, t).scaled(k, k, k).speeds_times(speed_k);
     let full_top = Block::blend(&record::BASE, &record::FULL, 1.0).top_speed * k * speed_k;
     (current, full_top)
@@ -392,6 +399,20 @@ mod tests {
         }
         assert_eq!(sidewinder_cruise_block().turn, [38.0, 12.0, 110.0]);
         assert_eq!(sidewinder_block(4.0, THRUSTERS_2E.opt_mass).0.curve_turn, Curve { a: 0.4, b: 0.3, p: 0.5 });
+    }
+
+    /// The thrusters' multiplier is T5e's `engine_mass_modifier`: 0.83 + 0.2 (1 - x)^0.2345, x = clamp((m - 24) / 48, 0, 1)
+    /// (the exponent rounded there), about 1.005 for the stock ship with its fuel.
+    #[test]
+    fn the_thrusters_mass_multiplier() {
+        for m in [20.0, 30.0, 42.9, 45.2, 60.0, 80.0] {
+            let x = ((m - 24.0) / 48.0f64).clamp(0.0, 1.0);
+            let want = 0.83 + 0.2 * (1.0 - x).powf(0.2345);
+            assert!((thrusters_mass_k(m) - want).abs() < 1e-4, "{m}: {} against {want}", thrusters_mass_k(m));
+        }
+        let k = thrusters_mass_k(JOURNAL_UNLADEN_MASS + FUEL_TANK_T + SIDEWINDER.reserve_fuel);
+        assert!((1.004..1.006).contains(&k), "{k}");
+        assert_eq!(sidewinder_block(4.0, 45.2).1, 220.0 * thrusters_mass_k(45.2));
     }
 
     #[test]

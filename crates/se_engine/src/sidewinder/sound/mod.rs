@@ -15,8 +15,10 @@
 //! record of an emergency drop), the fuel scoop, power plant and reboot cues (not modelled), the cargo scoop's acquired
 //! and warning cues (no cargo), the canopy's crack stages 01-04 and its voice reports (which lines report kinds 0 and 1 is
 //! not closed), the heat sink and malfunction lines (no heat sink, no malfunctions), `UnderAttack`, `EnginesOn_<suffix>`
-//! (no event of the banks), the supercruise speed and SCO parameters (not decompiled). Left at the banks' defaults, their
-//! setters found (`triggers.rs`): `engine_mass_modifier`, `spaceship_speed_stationary_self`.
+//! (no event of the banks), the supercruise speed and SCO parameters (not decompiled).
+//!
+//! **The engine's inputs** are Elite's own rules in Elite's units (T5d-6, `triggers.rs` `Producer`), from the flight's
+//! numbers in `ShipFacts::motion` (the flight owns them: nothing of the flight is worked out here).
 //!
 //! **Where each sound sits (T5d-5).** The listener is the pilot's head: the seat's eye (`SidewinderAssets::eye`) turned by
 //! the head this frame (`seat::head_turn` of `Seat::head`, what the camera is written with). The state machines' cues come
@@ -55,7 +57,7 @@ use std::sync::Arc;
 
 use bevy::audio::AddAudioSource;
 use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest};
-use bevy::math::{DQuat, DVec3};
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{futures, AsyncComputeTaskPool, Task};
 use se_core::catalog::ObjectRef;
@@ -66,12 +68,13 @@ use crate::mods::ModControl;
 use crate::sound::SoundSettings;
 
 use super::assets::ShipRig;
+use super::facts::ShipFacts;
 use super::parts::{Parts, ShipEvent};
-use super::pilot::{Pilot, PilotKeys, TICK};
+use super::pilot::{Pilot, PilotKeys};
 use super::seat::{head_turn, Seat};
 use super::{Sidewinder, SidewinderAssets};
 use load::{Clip, Loaded, Rumble};
-use triggers::{Call, Emitter, Flight, ShipView, Triggers};
+use triggers::{Call, Emitter, ShipView, Triggers};
 use voices::{Event, ShipOutput, Voices};
 
 /// Wwise's 0 dB (a mixer gain of 1) as Bevy's volume: unity at the game's default sound volume (`SoundSettings::volume`,
@@ -106,9 +109,6 @@ pub struct ShipSound {
     active: bool,
     /// The parked pose when the audio last stopped: a different one at the next boarding is a new ship.
     left_at: Option<(ObjectRef, DVec3)>,
-    /// The flight's velocity (its rest frame) and tick count when last read, and the acceleration worked out from them.
-    last_vel: Option<(u64, DVec3)>,
-    acc: DVec3,
     /// Motion Generator voices: their age (s) and source.
     rumbling: HashMap<u32, (f64, se_core::elite_sound::Id)>,
     rumble_on: bool,
@@ -235,8 +235,6 @@ impl ShipSound {
             voices: Voices::default(),
             active: false,
             left_at: None,
-            last_vel: None,
-            acc: DVec3::ZERO,
             rumbling: HashMap::new(),
             rumble_on: false,
             now: BTreeMap::new(),
@@ -362,7 +360,6 @@ impl ShipSound {
         self.cue_emitters.clear();
         self.cue_rev = None;
         self.active = false;
-        self.last_vel = None;
         self.rumbling.clear();
         self.now.clear();
         if std::mem::take(&mut self.rumble_on) {
@@ -379,26 +376,11 @@ fn note_presses(pilot: Res<Pilot>, keys: Res<PilotKeys>, mut p: ResMut<Presses>)
     *p = Presses { jump: keys.jump || pilot.dev_jump, boost: keys.boost || pilot.dev_boost };
 }
 
-/// The ship's state as the triggers read it (the feeders: what fills Elite's audio component is not known, so each field
-/// is read from the flight as `triggers.rs` says).
-fn view(pilot: &Pilot, presses: &Presses, dt: f64, acc: DVec3) -> ShipView {
+/// The ship's state as the triggers read it: the pilot's state, and the flight's numbers for the engine's inputs as the
+/// facts carry them (`ShipFacts::motion`, the flight's demands).
+fn view(pilot: &Pilot, presses: &Presses, dt: f64, facts: &ShipFacts) -> ShipView {
     use elite_sim::boost::State;
     use elite_sim::power::{ENG, SYS, WEP};
-    let rot = DQuat::from_array(pilot.motion.rot.to_array());
-    let vel = rot.inverse() * DVec3::from_array(pilot.motion.vel.to_array());
-    let acc = rot.inverse() * acc;
-    // (The gear down or the scoop out halve the top speed, as the flight's own block has it: `pilot.rs`.)
-    let speed_k = elite_sim::deployables::speed_factor(pilot.gear_down, pilot.scoop);
-    let (block, _) = elite_sim::data::sidewinder_block_with(pilot.dist.pips(ENG), pilot.mass_t(), speed_k);
-    let flight = Flight {
-        vel: vel.to_array(),
-        acc: acc.to_array(),
-        omega: pilot.motion.omega.to_array(),
-        top_speed: block.top_speed,
-        accel_fwd: block.accel_fwd,
-        back_share: block.back_share,
-        throttle: pilot.throttle,
-    };
     let boost = match pilot.boost.state {
         State::Idle => 0,
         State::Warm(_) => 1,
@@ -426,7 +408,8 @@ fn view(pilot: &Pilot, presses: &Presses, dt: f64, acc: DVec3) -> ShipView {
         jump_pressed: presses.jump,
         safe_drop: pilot.safe_drop,
         glide: pilot.glide.is_some(),
-        motion: triggers::motion_in(&flight),
+        motion: facts.motion,
+        throttle: facts.throttle,
         pips: [pilot.dist.pips(SYS), pilot.dist.pips(ENG), pilot.dist.pips(WEP)],
     }
 }
@@ -459,7 +442,7 @@ fn drive(
     control: Res<ModControl>,
     pilot: Res<Pilot>,
     ship: Res<Sidewinder>,
-    (parts, assets): (Res<Parts>, Res<SidewinderAssets>),
+    (parts, assets, facts): (Res<Parts>, Res<SidewinderAssets>, Res<ShipFacts>),
     settings: Res<SoundSettings>,
     mut outputs: ResMut<Assets<ShipOutput>>,
     pads: Query<Entity, With<Gamepad>>,
@@ -483,17 +466,7 @@ fn drive(
         info!("sidewinder sound: started");
     }
     let dt = time.delta_secs_f64().min(0.25);
-    // The acceleration from the flight's ticks (a frame may hold none or several).
-    let vel = DVec3::from_array(pilot.motion.vel.to_array());
-    match snd.last_vel {
-        Some((ticks, last)) if pilot.ticks > ticks => snd.acc = (vel - last) / ((pilot.ticks - ticks) as f64 * TICK),
-        Some(_) => {}
-        None => snd.acc = DVec3::ZERO,
-    }
-    if snd.last_vel.is_none_or(|(t, _)| pilot.ticks != t) {
-        snd.last_vel = Some((pilot.ticks, vel));
-    }
-    let v = view(&pilot, &presses, dt, snd.acc);
+    let v = view(&pilot, &presses, dt, &facts);
     let mut calls = Vec::new();
     snd.triggers.step(&v, &mut calls);
     snd.call(&calls);
@@ -640,11 +613,14 @@ const LISTED: &[&str] = &[
     "spaceship_accel_relative_smooth_self",
     "spaceship_accel_directional_self",
     "spaceship_target_speed_relative_self",
+    "spaceship_speed_stationary_self",
     "spaceship_pitch_self",
     "spaceship_yaw_self",
     "spaceship_roll_self",
     "spaceship_speed_rot_self",
     "spaceship_speed_rot_self_smooth",
+    "spaceship_outOfControlYaw_self",
+    "engine_mass_modifier",
     "spaceship_heat_self",
     "hyperdrive_charge_self",
     "hyperdrive_countdown_self",
@@ -781,13 +757,87 @@ mod tests {
             eprintln!("  at rest: voice {} {:?} emitter {:#x} {:.1} dB fade {:.2}{}", u.voice, u.output, u.emitter, u.volume_db, u.fade, if u.virtual_voice { " virtual" } else { "" });
         }
         let mut moving = v;
-        moving.motion = triggers::motion_in(&Flight { vel: [0.0, 0.0, -150.0], acc: [0.0, 0.0, -20.0], omega: [0.2, 0.1, 0.3], top_speed: 220.0, accel_fwd: 40.0, back_share: 0.5, throttle: 0.7 });
+        moving.motion = super::super::facts::SoundMotion { omega: [0.2, 0.1, 0.3], physics_dt: 1.0 / 60.0, ..triggers::stock(2.0, [0.0, 0.0, -150.0]) };
+        moving.throttle = 0.7;
         let flying = frames(&mut t, &mut m, &moving, 300);
         drop(frames);
         assert!(missing.is_empty(), "{missing:?}");
         let meter_flying = m.game_parameter_id(se_core::elite_sound::Id(0x1e5b_a700), None);
         eprintln!("audible voices: {rest} at rest, {flying} at 150 m/s; the drives' meter {meter:.1} dB at rest, {meter_flying:.1} flying");
         assert!(flying > 0);
+    }
+
+    /// T5e's offline check run on the code as built (T5d-6): the flight itself (`elite_sim::flight::step`, a tick a frame at
+    /// 60 frames a second, assist on, the gear up, the stock mass) flown to full throttle on 0, 2 and 4 ENG pips, its numbers
+    /// handed over as `ShipFacts` does (`SoundMotion::new`), the triggers and the shipped data's mixer: the drive layer
+    /// 02ad84c3's pitch and level on each plateau, then on the ENG 2 plateau a full pitch, yaw and roll and a half-rate pitch
+    /// held until the spin settles: the turning layer 12567705's level. Prints its table (`--nocapture`; T5d-6's numbers:
+    /// `re/elite/work/sound/t5d6/offline.txt`).
+    #[test]
+    #[ignore]
+    fn t5e_offline_check_on_the_built_code() {
+        use elite_sim::data::{sidewinder_block, FUEL_TANK_T, JOURNAL_UNLADEN_MASS, SIDEWINDER};
+        use elite_sim::flight::{step, Input, Motion};
+        use se_core::elite_sound::Id;
+        const DRIVE: Id = Id(0x02ad_84c3);
+        const TURN: Id = Id(0x1256_7705);
+        let bank = shipped();
+        let mass = JOURNAL_UNLADEN_MASS + FUEL_TANK_T + SIDEWINDER.reserve_fuel;
+        let dt = 1.0 / 60.0;
+        // (voice, dB, cents) of a source among this step's updates.
+        let find = |u: &[VoiceUpdate], id: Id| {
+            u.iter().find(|u| matches!(u.output, Output::Audio { source } if source == id) && !u.stop).map(|u| (20.0 * f64::from(u.gain).max(1e-12).log10(), u.pitch_cents, u.virtual_voice))
+        };
+        let show = |what: &str, u: &[VoiceUpdate]| {
+            let f = |x: Option<(f64, f32, bool)>| x.map_or("not playing".to_string(), |(db, c, virt)| format!("{db:6.1} dB {c:6.0} c{}", if virt { " virtual" } else { "" }));
+            eprintln!("{what:<34} drive 02ad84c3 {}   turning 12567705 {}", f(find(u, DRIVE)), f(find(u, TURN)));
+        };
+        let full = Input { forward: 1.0, flight_assist: true, ..Input::default() };
+        // From a fresh start: 25 s at full throttle, then `then` for 4 s; the mixer and the last step's voices.
+        let run = |eng: f64, then: Input| {
+            let (block, full_top) = sidewinder_block(eng, mass);
+            let mut m = Mixer::new(bank.clone(), 1);
+            let mut t = Triggers::default();
+            let mut motion = Motion::default();
+            let mut v = ShipView { gear_down: false, pips: [2.0, eng, 4.0 - eng], ..ShipView::at_rest() };
+            let mut last = Vec::new();
+            for (secs, input) in [(25.0, full), (4.0, then)] {
+                for _ in 0..(secs / dt) as usize {
+                    step(&block, full_top, false, &input, glam::DVec3::ZERO, &mut motion, dt);
+                    let vel = (motion.rot.inverse() * motion.vel).to_array();
+                    v.motion = super::super::facts::SoundMotion::new(&block, full_top, vel, motion.omega.to_array(), 1, mass);
+                    v.throttle = input.forward;
+                    let mut calls = Vec::new();
+                    t.step(&v, &mut calls);
+                    for c in &calls {
+                        match c {
+                            Call::Post(name, e) => {
+                                let _ = m.post(name, e.id());
+                            }
+                            Call::State(g, s) => m.set_state(g, s),
+                            Call::Gp(name, x) => m.set_game_parameter(name, *x, None),
+                        }
+                    }
+                    last = m.step(dt as f32).to_vec();
+                }
+            }
+            eprintln!("  {:.1} m/s (top {:.1}, full-power {:.1}), speed_relative {:.1}", motion.vel.length(), block.top_speed, full_top, m.game_parameter("spaceship_speed_relative_self", None));
+            (m, last)
+        };
+        for (eng, label) in [(2.0, "s01 plateau, ENG 2"), (4.0, "s03 plateau, ENG 4"), (0.0, "s04 plateau, ENG 0")] {
+            show(label, &run(eng, full).1);
+        }
+        for (name, input) in [
+            ("s01 + full pitch", Input { pitch: 1.0, ..full }),
+            ("s01 + full yaw", Input { yaw: 1.0, ..full }),
+            ("s01 + full roll", Input { roll: 1.0, ..full }),
+            // (At the top speed the blue zone holds pitch to 0.35 of its raw 39 deg/s: a stick of 0.175 asks half of that.)
+            ("s01 + half-rate pitch", Input { pitch: 0.175, ..full }),
+        ] {
+            let (m, u) = run(2.0, input);
+            let shares = ["spaceship_pitch_self", "spaceship_yaw_self", "spaceship_roll_self", "spaceship_speed_rot_self"].map(|n| m.game_parameter(n, None));
+            show(&format!("{name} ({:.2} {:.2} {:.2}, rot {:.2})", shares[0], shares[1], shares[2], shares[3]), &u);
+        }
     }
 
     /// The one effect of the shipped data that is not exact for want of modulators: the ship voice's Guitar Distortion

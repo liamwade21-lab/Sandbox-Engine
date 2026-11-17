@@ -309,12 +309,11 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     }
     // Rotation.
     let x = s / cap.max(1e-9);
-    let turn_factor = [block.curve_turn.at(x), block.curve_turn.at(x), block.curve_roll.at(x)];
     let accel_factor = block.curve_accel.at(x);
     // (0x142E6E960, `rotation-clamp.md`) The stick scales the raw turn rate; only the clamp's bound carries the speed curve:
     // target = clamp(stick x W_raw, +-F x W_raw), F the turn curve for pitch and yaw and the roll curve for roll.
-    let w_raw = DVec3::from_array([0, 1, 2].map(|k| block.turn[k].to_radians()));
-    let w = DVec3::from_array([0, 1, 2].map(|k| w_raw[k] * turn_factor[k]));
+    let w_raw = raw_turn_rates(block);
+    let w = turn_limits(block, x);
     let amax = DVec3::from_array([0, 1, 2].map(|k| block.ang_accel[k].to_radians() * accel_factor));
     let stick = DVec3::new(input.pitch, input.yaw, input.roll).clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
     let mut alpha = DVec3::ZERO;
@@ -357,6 +356,27 @@ pub fn step(block: &Block, full_top: f64, boosting: bool, input: &Input, outside
     }
     m.last_alpha = remembered;
     Step { thrust: from_flight(a), alpha, cap }
+}
+
+/// The block's raw turn rates in rad/s (x pitch, y yaw, z roll: the block's 0x38, 0x40, 0x3C), before any speed curve.
+pub fn raw_turn_rates(block: &Block) -> DVec3 {
+    DVec3::from_array([0, 1, 2].map(|k| block.turn[k].to_radians()))
+}
+
+/// The rotation clamp's bounds at the speed share `x` (0x142E6E960, `rotation-clamp.md`): the raw turn rates times the blue
+/// zone, the turn curve for pitch and yaw and the roll curve for roll. The speed-limited turn rates `step` turns by at most.
+pub fn turn_limits(block: &Block, x: f64) -> DVec3 {
+    let f = [block.curve_turn.at(x), block.curve_turn.at(x), block.curve_roll.at(x)];
+    raw_turn_rates(block) * DVec3::from_array(f)
+}
+
+/// The turn rates the flight controller divides the spin by for its readers (controller +0x960, written by its job
+/// 0x142E440D0: `re/elite/notes/sidewinder_sound_events.md`, T5e item 5, grade C): each raw turn rate times the turn curve's
+/// blue zone (block 0x78) at the speed `speed` over the block's own top speed, for all three axes (one call of 0x142E50650,
+/// its arguments read in the disassembly: roll's lane too takes the x / y curve, not the roll curve). A spin at these rates
+/// is a share of 1.
+pub fn share_limits(block: &Block, speed: f64) -> DVec3 {
+    raw_turn_rates(block) * block.curve_turn.at(speed / block.top_speed.max(1e-9))
 }
 
 /// The speed guard: the acceleration shortened so that |v + a dt| is at most `limit` (only when it would pass it).
@@ -567,6 +587,23 @@ mod tests {
         assert!((w - 100f64.to_radians()).abs() < 0.1, "{w}");
         run(&b, Input { flight_assist: false, ..default_input() }, DVec3::ZERO, &mut m, 1.0);
         assert!((m.omega.z - w).abs() < 1e-9);
+    }
+
+    /// The clamp's bounds settle the spin: a full stick held with assist on spins at `turn_limits` (the turn curve for pitch
+    /// and yaw, the roll curve for roll); the controller's divisors (`share_limits`) take the turn curve on every axis at the
+    /// speed over the block's top speed, and nothing is infinite at a top speed of 0.
+    #[test]
+    fn turn_limits_settle_the_spin_and_the_share_limits_read_the_turn_curve() {
+        let b = Block { curve_turn: Curve { a: 0.5, b: 0.4, p: 0.5 }, curve_roll: Curve { a: 0.8, b: 0.9, p: 0.5 }, ..block() };
+        let mut m = Motion::default();
+        run(&b, Input { pitch: 1.0, yaw: 1.0, roll: 1.0, flight_assist: true, ..default_input() }, DVec3::ZERO, &mut m, 3.0);
+        let w = turn_limits(&b, 0.0);
+        assert!((m.omega - w).length() < 1e-6, "{:?} against {w:?}", m.omega);
+        assert!((w - DVec3::new(20f64.to_radians(), 10f64.to_radians(), 80f64.to_radians())).length() < 1e-12);
+        let full = share_limits(&b, b.top_speed);
+        assert!((full - raw_turn_rates(&b) * 0.4).length() < 1e-12, "{full:?}");
+        assert!((share_limits(&b, 0.5 * b.top_speed) - raw_turn_rates(&b)).length() < 1e-12);
+        assert!(share_limits(&Block { top_speed: 0.0, ..b.clone() }, 10.0).is_finite());
     }
 
     /// A tick of no time at rest (tau_r = R x 0 = dt = 0) leaves the spin 0, not NaN; a stick then asks for the limit.
