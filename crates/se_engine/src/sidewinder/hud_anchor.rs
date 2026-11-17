@@ -17,12 +17,13 @@
 //! their pixels, cast from the eye onto the plane with that picture's own focal, 676.5 px (S1: its six red canopy lamps
 //! against the mod's own picture, residuals under 1 px; the picture is 0.864 times the scale of Elite's full frames at the
 //! settings' 56.249 degrees, which the lamps of measuring session 1's 3440 x 1440 frames match within 1 %: the eye is the
-//! bone and the field of view the setting's; `1.webp` was taken wider).
+//! bone and the field of view the setting's; `1.webp` was taken wider). The side panels are measured on `2.webp` and
+//! `3.webp`, each through its own camera (S1b, `s1b_fit.py`: its own focal and head turn from the lamps seen in it).
 
-use bevy::math::{Quat, Vec2, Vec3};
+use bevy::math::{Quat, Vec3};
 use bevy_egui::egui;
 
-use super::seat::{head_turn, seat_vertical_fov};
+use super::seat::{head_turn, view_vertical_fov, Head};
 
 /// Where a grade comes from (the spec's grades).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,31 +123,34 @@ pub const ALTITUDE_BOX: DesignBox = DesignBox { x: 0.35, y: 0.0325, hw: 0.05, hh
 pub const ATTITUDE: Anchor = anchor([-0.5105, 6.7051, 0.0226], [0.0708, 0.0, 0.0004], [0.0, 0.0177, -0.0001], (Grade::A, Grade::E));
 pub const ATTITUDE_BOX: DesignBox = DesignBox { x: -0.35, y: 0.0325, hw: 0.05, hh: 0.0125 };
 
-/// The side panels' own layout: (0, 0) the panel's top left, `PANEL_W` x `PANEL_H` shares (the width from the measured
-/// panel's 0.947 x 0.601 m).
-pub const PANEL_W: f32 = 0.788;
+/// The side panels' own layout: (0, 0) the panel's top left, `PANEL_W` x `PANEL_H` shares (the width from the measured left
+/// panel's 0.847 x 0.478 m; the right's is 0.854 wide).
+pub const PANEL_W: f32 = 0.886;
 pub const PANEL_H: f32 = 0.5;
 pub const PANEL_BOX: DesignBox = DesignBox { x: PANEL_W / 2.0, y: PANEL_H / 2.0, hw: PANEL_W / 2.0, hh: PANEL_H / 2.0 };
 
-/// The left panel (Navigation). Plane and extent (D, D): the rectangle its frame's corners in the user's 2.webp, (193, 350),
-/// (869, 335), (895, 705), (208, 778), fit when seen by the seat's camera turned as there (`seat::PANEL_TURN_LEFT`) at that
-/// picture's focal (residuals 0.6 to 5 px; `s1_panel.py`), its middle held on the cockpit's `!Left_Panel` bone's plane
-/// (-1.046, -0.391, -0.577 from the eye, facing it from 70 degrees left). It faces 23.5 degrees nearer the eye than the
-/// bone: on the bone's own plane no rectangle fits the corners (28 to 43 px off), which says Elite's head also moves when
-/// it turns (its head look camera has displacements, `FUN_14109b320`'s `HeadlookRelDisp` and `HeadlookAbsDisp`: not built,
-/// the seat only turns).
-pub const LEFT_PANEL: Anchor = anchor([-1.1321, 6.3804, 1.0018], [0.3162, 0.0112, -0.3523], [-0.0405, 0.2963, -0.0269], (Grade::D, Grade::D));
-/// The right panel: the left's mirror (the bones are mirrors within 3 mm). The check, 3.webp's top corners at its fitted head
-/// turn (`seat::PANEL_TURN_RIGHT`): (1139, 405) and (1837, 425) against the picture's (1158, 405) and (1910, 420) (19 and 73
-/// px; the picture holds only those two corners, too few to fit the right panel alone).
-pub const RIGHT_PANEL: Anchor = anchor([1.1321, 6.3804, 1.0018], [0.3162, -0.0112, 0.3523], [0.0405, 0.2963, -0.0269], (Grade::D, Grade::D));
+/// The left panel (Navigation). Plane and extent (D, D): fitted by itself on the user's 2.webp, seen by that picture's own
+/// camera (the head turned `seat::PANEL_TURN_LEFT`, focal 740.8 px at 2000 wide: S1b, `s1b_fit.py`): its frame's corners,
+/// where its edges' lines meet (the tab bar's top line, the faint right edge, the bottom line), (188.5, 357), (869.9, 336.9),
+/// (899.7, 601.0), (232.5, 781) (residuals under 0.1 px: four corners, seven unknowns), its middle held on the cockpit's
+/// `!Left_Panel` bone's plane (-1.046, -0.391, -0.577 from the eye, facing it from 70 degrees left: one picture can't tell
+/// depth from size). It faces 11.6 degrees off the bone's plane (+-0.7 for 1 px on each corner), its corners 4 and 81 mm
+/// off it: on the bone's own plane the best rectangle misses the corners by 11 to 16 px.
+pub const LEFT_PANEL: Anchor = anchor([-1.0785, 6.4332, 0.8562], [0.1106, 0.0013, -0.4088], [-0.0429, 0.2347, -0.0109], (Grade::D, Grade::D));
+/// The right panel. Plane and extent (D, D): fitted by itself on the user's 3.webp with that picture's own camera
+/// (`seat::PANEL_TURN_RIGHT`, focal 747.9 px): its top corners where the tab bar's top line meets the content's edges,
+/// (1157.8, 402.1) and (1904.6, 421.9), and six points down each of those edges (residuals 0 to 2.2 px); its bottom is under
+/// the picture, so its height is the left panel's. Its middle on the `!Right_Panel` bone's plane; it faces 7.7 degrees off
+/// it (+-2.1), its corners 24 and 40 mm off (on the bone's plane: up to 11 px). Not the left's mirror: the two fits' facings
+/// differ by 5.0 degrees and their middles by 23 mm, more than their errors (2.2 degrees, 6 mm).
+pub const RIGHT_PANEL: Anchor = anchor([1.0884, 6.4382, 0.8752], [0.1385, -0.0020, 0.4038], [0.0296, 0.2369, -0.0089], (Grade::D, Grade::D));
 
 /// Nothing nearer the eye than this along the view is drawn (m).
 const NEAR_M: f32 = 0.05;
 
-/// The seat's camera this frame, as the cockpit is drawn with it: the eye (ship space), the head's turn (`seat::head_turn`),
-/// the vertical field of view for the screen's aspect (`seat::seat_vertical_fov`, the projection's own), and the screen
-/// (egui's points).
+/// The seat's camera this frame, as the cockpit is drawn with it: the eye (ship space), the head look camera (`seat::Head`:
+/// its turn by `seat::head_turn`, its field of view's channel), the vertical field of view for the screen's aspect and that
+/// channel (`seat::view_vertical_fov`, the projection's own), and the screen (egui's points).
 #[derive(Clone, Copy, Debug)]
 pub struct SeatView {
     eye: Vec3,
@@ -156,9 +160,9 @@ pub struct SeatView {
 }
 
 impl SeatView {
-    pub fn new(eye: Vec3, look: Vec2, screen: egui::Rect) -> SeatView {
-        let fov = seat_vertical_fov(screen.width() / screen.height().max(1.0));
-        SeatView { eye, turn_inv: head_turn(look).inverse(), focal: 0.5 * screen.height() / (0.5 * fov).tan(), screen }
+    pub fn new(eye: Vec3, head: Head, screen: egui::Rect) -> SeatView {
+        let fov = view_vertical_fov(screen.width() / screen.height().max(1.0), head.fov_add);
+        SeatView { eye, turn_inv: head_turn(head.turn).inverse(), focal: 0.5 * screen.height() / (0.5 * fov).tan(), screen }
     }
 
     /// A point of the ship's space on the screen; None behind the eye (or nearer than `NEAR_M`).
@@ -258,10 +262,11 @@ impl<'a> Sketch<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::seat::{eye_pose, PANEL_TURN_LEFT, PANEL_TURN_RIGHT};
+    use super::super::seat::{eye_pose, panel_head, PANEL_TURN_LEFT, PANEL_TURN_RIGHT};
+    use super::super::panels::Side;
     use super::*;
     use bevy::camera::CameraProjection;
-    use bevy::math::{DQuat, DVec3, Mat4, Vec4Swizzles};
+    use bevy::math::{DQuat, DVec3, Mat4, Vec2, Vec4Swizzles};
     use bevy::prelude::{PerspectiveProjection, Transform};
 
     /// The eye: the cockpit's `!Camera` bone in the ship's space (`SidewinderAssets::eye` from the shipped files).
@@ -277,7 +282,7 @@ mod tests {
     #[test]
     fn ahead_is_the_middle_and_behind_is_nothing() {
         for (w, h) in SIZES {
-            let view = SeatView::new(EYE, Vec2::ZERO, screen(w, h));
+            let view = SeatView::new(EYE, Head::default(), screen(w, h));
             let p = view.project(EYE + Vec3::new(0.0, 0.0, -1.5)).unwrap();
             assert!((p - egui::pos2(w / 2.0, h / 2.0)).length() < 1e-3, "{p:?}");
             let at = |o: Vec3| (EYE + o).to_array();
@@ -290,24 +295,25 @@ mod tests {
         }
         // Off the screen (far to the right of a straight view) is nothing too; the head turned to it shows it.
         let side = anchor((EYE + Vec3::new(5.0, 0.0, -1.0)).to_array(), [0.1, 0.0, 0.0], [0.0, 0.1, 0.0], (Grade::A, Grade::A));
-        assert!(SeatView::new(EYE, Vec2::ZERO, screen(1600.0, 900.0)).corners(&side).is_none());
-        assert!(SeatView::new(EYE, Vec2::new(-1.37, 0.0), screen(1600.0, 900.0)).corners(&side).is_some());
+        assert!(SeatView::new(EYE, Head::default(), screen(1600.0, 900.0)).corners(&side).is_none());
+        assert!(SeatView::new(EYE, Head::turned(Vec2::new(-1.37, 0.0)), screen(1600.0, 900.0)).corners(&side).is_some());
     }
 
     /// The HUD's projection is the cockpit's: a ship-space point lands where Bevy's own camera puts it, the camera made by the
     /// seat's own code (`seat::eye_pose`, the head turned by `seat::head_turn`) with the projection's field of view
-    /// (`seat::seat_vertical_fov` of the aspect), straight ahead, turned left and down, and turned to each panel, at both
-    /// sizes. If the seat and the HUD ever turned the head or took the field of view differently, this fails.
+    /// (`seat::view_vertical_fov` of the aspect and the head look's channel), straight ahead, turned left and down, and
+    /// focused on each panel (its turn and its narrower view), at both sizes. If the seat and the HUD ever turned the head or
+    /// took the field of view differently, this fails.
     #[test]
     fn a_head_turn_matches_the_cockpits_projection() {
         let ship = DQuat::from_euler(bevy::math::EulerRot::YXZ, 0.7, -0.2, 0.3);
         let at = DVec3::new(12.0, -4.0, 30.0);
         for (w, h) in SIZES {
-            for look in [Vec2::ZERO, Vec2::new(30f32.to_radians(), -0.25), PANEL_TURN_LEFT, PANEL_TURN_RIGHT] {
-                let view = SeatView::new(EYE, look, screen(w, h));
-                let (pos, rot) = eye_pose(at, ship, EYE, look);
+            for head in [Head::default(), Head::turned(Vec2::new(30f32.to_radians(), -0.25)), panel_head(Side::Left, EYE, w / h), panel_head(Side::Right, EYE, w / h)] {
+                let view = SeatView::new(EYE, head, screen(w, h));
+                let (pos, rot) = eye_pose(at, ship, EYE, head.turn);
                 let cam = Transform { translation: pos.as_vec3(), rotation: rot.as_quat(), ..Default::default() };
-                let proj = PerspectiveProjection { fov: seat_vertical_fov(w / h), aspect_ratio: w / h, ..Default::default() };
+                let proj = PerspectiveProjection { fov: view_vertical_fov(w / h, head.fov_add), aspect_ratio: w / h, ..Default::default() };
                 let clip_from_world: Mat4 = proj.get_clip_from_view() * cam.to_matrix().inverse();
                 let mut seen = 0;
                 for p in [RADAR.centre, LEFT_PANEL.centre, RIGHT_PANEL.centre, HEALTH.centre, (EYE + Vec3::new(-0.3, 0.1, -1.2)).to_array()] {
@@ -316,10 +322,10 @@ mod tests {
                     let c = clip_from_world * (at + ship * ship_p.as_dvec3()).as_vec3().extend(1.0);
                     let ndc = c.xyz() / c.w;
                     let bevy = egui::pos2((ndc.x + 1.0) * 0.5 * w, (1.0 - ndc.y) * 0.5 * h);
-                    assert!((ours - bevy).length() < 0.1, "{p:?} at {look:?}, {w}x{h}: ours {ours:?}, Bevy's {bevy:?}");
+                    assert!((ours - bevy).length() < 0.1, "{p:?} at {head:?}, {w}x{h}: ours {ours:?}, Bevy's {bevy:?}");
                     seen += 1;
                 }
-                assert!(seen >= 2, "{look:?}");
+                assert!(seen >= 2, "{head:?}");
             }
         }
     }
@@ -330,7 +336,7 @@ mod tests {
     fn an_anchor_stays_with_the_cockpit_when_the_eye_moves() {
         let r = screen(3440.0, 1440.0);
         let moved = EYE + Vec3::new(0.0, 0.05, 0.2);
-        let (before, after) = (SeatView::new(EYE, Vec2::ZERO, r), SeatView::new(moved, Vec2::ZERO, r));
+        let (before, after) = (SeatView::new(EYE, Head::default(), r), SeatView::new(moved, Head::default(), r));
         for a in [RADAR, FUEL, TARGET, HEALTH] {
             let corner = Vec3::from_array(a.centre) - Vec3::from_array(a.right) + Vec3::from_array(a.up);
             let (b, m) = (before.corners(&a).unwrap()[0], after.corners(&a).unwrap()[0]);
@@ -341,12 +347,12 @@ mod tests {
     }
 
     /// Every anchor is in front of the eye with real half-vectors, and seen straight ahead the HUD's groups are on the screen
-    /// at both sizes while the side panels are not; turned to a panel (`seat::PANEL_TURN_*`) the panel's rows are on the
-    /// screen at 3440 x 1440, the user's.
+    /// at both sizes while the side panels are not; focused on a panel (`seat::panel_head`) the panel's first ten rows are on
+    /// the screen at 3440 x 1440, the user's, and at 1600 x 900.
     #[test]
     fn the_anchors_are_where_the_cockpit_is() {
         for (w, h) in SIZES {
-            let view = SeatView::new(EYE, Vec2::ZERO, screen(w, h));
+            let view = SeatView::new(EYE, Head::default(), screen(w, h));
             for a in [RADAR, HEAT, THROTTLE, HEALTH, FUEL, PIPS, TARGET, MESSAGES, TOP, ALTITUDE, ATTITUDE] {
                 assert!(a.centre[2] - EYE.z < -0.5 && Vec3::from_array(a.right).length() > 0.01 && Vec3::from_array(a.up).length() > 0.01, "{a:?}");
                 let c = view.corners(&a).unwrap_or_else(|| panic!("{a:?} off the straight view at {w}x{h}"));
@@ -356,15 +362,23 @@ mod tests {
                 assert!(view.corners(&a).is_none_or(|c| !egui::Rect::from_points(&c).intersects(screen(w, h).shrink(0.3 * w))));
             }
         }
-        // The rows fill the panel's top 60 % (`panels::draw`: 0.04 + 10 rows x 0.022 of PANEL_H 0.5, and the selection's
-        // margin): that part of each panel on the user's screen.
-        let (w, h) = (3440.0, 1440.0);
-        for (a, look) in [(LEFT_PANEL, PANEL_TURN_LEFT), (RIGHT_PANEL, PANEL_TURN_RIGHT)] {
-            let view = SeatView::new(EYE, look, screen(w, h));
-            for (s, t) in [(-1.0, 1.0), (1.0, 1.0), (-1.0, -0.2), (1.0, -0.2)] {
-                let p = view.project(SeatView::on(&a, s, t)).unwrap();
-                assert!(screen(w, h).contains(p), "{a:?} ({s}, {t}) at {p:?}");
+        // The tabs and the first ten rows fill the panel's top 60 % (`panels::draw`: 0.04 + 10 rows x 0.022 of PANEL_H 0.5,
+        // and the selection's margin): that part of each panel on the screen, but for the right panel's outer edge, which is
+        // cut as Elite's is on the user's screen (`seat::panel_turn`): there it reaches past the screen's right side, by no
+        // more than on the user's screen at 1600 x 900.
+        for (w, h) in SIZES {
+            for (a, side) in [(LEFT_PANEL, Side::Left), (RIGHT_PANEL, Side::Right)] {
+                let view = SeatView::new(EYE, panel_head(side, EYE, w / h), screen(w, h));
+                for (s, t) in [(-1.0, 1.0), (1.0, 1.0), (-1.0, -0.2), (1.0, -0.2)] {
+                    let p = view.project(SeatView::on(&a, s, t)).unwrap();
+                    let cut = side == Side::Right && s > 0.0;
+                    assert!(p.y >= -0.5 && p.y <= h + 0.5 && p.x >= -0.5 && (cut || p.x <= w + 0.5), "{a:?} ({s}, {t}) at {w}x{h}: {p:?}");
+                    assert!(!cut || (p.x > w && p.x < 1.05 * w), "{a:?} ({s}, {t}) at {w}x{h}: {p:?}");
+                }
             }
         }
+        // The measured turns are the panel heads' on the user's screen.
+        assert_eq!(panel_head(Side::Left, EYE, 3440.0 / 1440.0).turn, PANEL_TURN_LEFT);
+        assert_eq!(panel_head(Side::Right, EYE, 3440.0 / 1440.0).turn, PANEL_TURN_RIGHT);
     }
 }

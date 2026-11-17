@@ -3,8 +3,9 @@
 //! aren't built). Elite's own keys (its `.binds`): 1 the left panel, 4 the right, Q and E the tabs, W and S (or the arrows) the rows,
 //! Space selects, A and D change a setting, Backspace closes; head look turned far left or right focuses that panel. While a
 //! panel is focused those keys work it, not the ship, as in Elite; the mouse still flies. Since T4e-4 an open panel hangs at
-//! Elite's place beside the seat (`hud_anchor`), and opening one by its key turns the head to it (`seat::head_aim`, the
-//! turns measured on the user's pictures). What each tab lists and does is ours
+//! Elite's place beside the seat (`hud_anchor`), and opening one by its key turns the head to it and narrows the view
+//! (`seat::head_aim`, the turns and the views measured on the user's pictures); getting out closes it. What each tab lists and
+//! does is ours
 //! where Elite's panels hold more (F): the Navigation tab lists this system's bodies and the stars within the jump's range
 //! (the spec's F5), nearest first.
 
@@ -96,6 +97,13 @@ pub struct PanelKeys {
 }
 
 impl Panels {
+    /// Closes the open panel, however it was opened (getting out of the seat: `seat::free_seat`); each side's tab is kept.
+    pub fn close(&mut self) {
+        self.open = None;
+        self.by_look = false;
+        self.row = 0;
+    }
+
     /// How many rows the open tab has (`ship` the Ship functions' count).
     fn rows(&self) -> usize {
         match (self.open, self.tab) {
