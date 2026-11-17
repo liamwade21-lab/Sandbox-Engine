@@ -100,7 +100,7 @@ use bevy::prelude::*;
 use se_core::elite_sound::compressor::{self, Compressor, CompressorCounts};
 use se_core::elite_sound::data::{EqFilter, MasterSuite};
 use se_core::elite_sound::filter::{self, Coefs, Distortion, Section};
-use se_core::elite_sound::master::MasterChain;
+use se_core::elite_sound::master::{MasterChain, MasterCounts};
 use se_core::elite_sound::place::{Rows, DOWN_MIX_L, DOWN_MIX_R, LISTENER_AXES};
 use se_core::elite_sound::tone::ToneGen;
 use se_core::elite_sound::{BusNow, CompressorNow, DistortionNow, EqNow, FxNow, PlaceNow, Placement, VoiceUpdate, OUTPUT_RATE};
@@ -149,12 +149,14 @@ pub struct Meter {
     over_limit: AtomicU64,
     /// Voices or decoders the audio thread had to drop itself (the game thread's hands were full or busy).
     dropped_here: AtomicU64,
-    /// The master's plug-in (`MasterChain::counts`): frames through it, frames where a compressor band reduced its gain,
-    /// frames where the limiter's peak was over its threshold, blocks its guard silenced.
+    /// The master's plug-in (`MasterChain::counts`): frames through it, frames where a compressor band reduced its gain
+    /// by more than 0.01 dB (`master::REDUCED_GAIN`), frames where the limiter's peak was over its threshold, blocks its
+    /// guard silenced, and each compressor band's least gain (`f32` bits; 1 while it never went under).
     master_frames: AtomicU64,
     master_compressed: AtomicU64,
     master_limited: AtomicU64,
     master_guarded: AtomicU64,
+    master_least: [AtomicU32; 4],
     /// The sub-mix's compressor (`CompressorCounts`): frames through it, frames whose gain was under its gain at rest (it
     /// reduced the sub-mix), the least gain met (`f32` bits; infinite until it runs), blocks its guard silenced.
     bus_frames: AtomicU64,
@@ -165,7 +167,12 @@ pub struct Meter {
 
 impl Meter {
     fn new() -> Meter {
-        Meter { limit: AtomicU32::new(f32::INFINITY.to_bits()), bus_least: AtomicU32::new(f32::INFINITY.to_bits()), ..Default::default() }
+        Meter {
+            limit: AtomicU32::new(f32::INFINITY.to_bits()),
+            bus_least: AtomicU32::new(f32::INFINITY.to_bits()),
+            master_least: std::array::from_fn(|_| AtomicU32::new(1f32.to_bits())),
+            ..Default::default()
+        }
     }
 }
 
@@ -1472,6 +1479,11 @@ impl OutputSource {
                     a.fetch_add(d, Ordering::Relaxed);
                 }
             }
+            for ((a, g), w) in me.master_least.iter().zip(now.least_gain).zip(was.least_gain) {
+                if g < w {
+                    a.fetch_min(g.to_bits(), Ordering::Relaxed);
+                }
+            }
         }
         self.pos = 0;
         self.hand_back();
@@ -1788,10 +1800,16 @@ impl Voices {
         }
         self.master_told = frames;
         let pct = |n: u64| 100.0 * n as f64 / frames.max(1) as f64;
+        let least = self.meter.master_least.each_ref().map(|a| f32::from_bits(a.load(Ordering::Relaxed)));
+        let most = MasterCounts { least_gain: least, ..MasterCounts::default() }.most_db();
         info!(
-            "sidewinder sound: the master's plug-in so far: {frames} frames ({:.1} s), a compressor band reducing on {compressed} ({:.2} %), the limiter over its threshold on {limited} ({:.3} %), {guarded} blocks guarded",
+            "sidewinder sound: the master's plug-in so far: {frames} frames ({:.1} s), a compressor band reducing by over 0.01 dB on {compressed} ({:.2} %), the bands' largest reductions {:.2} / {:.2} / {:.2} / {:.2} dB, the limiter over its threshold on {limited} ({:.3} %), {guarded} blocks guarded",
             frames as f64 / f64::from(OUTPUT_RATE),
             pct(compressed),
+            most[0],
+            most[1],
+            most[2],
+            most[3],
             pct(limited)
         );
     }

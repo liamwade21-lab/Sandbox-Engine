@@ -16,9 +16,11 @@ fn data(name: &str) -> Vec<u8> {
     miniz_oxide::inflate::decompress_to_vec_zlib(&b).expect(name)
 }
 
-/// The slice, its version written as today's (it was cut at version 1, which differs from 2 only by the master's plug-in
-/// in the shipped file's effects: the slice's master bus names it in its slot, its effect is not in the slice, and the
-/// mixer runs only the effects a file holds).
+/// The slice, its version written as today's. It was cut at version 1, and the rewrite changes that one string and nothing
+/// else: versions 2 and 3 differ from 1 only by effects a file ships (2 the master's plug-in 0x00BA0003, 3 the buses'
+/// Wwise Compressors), and the slice holds no effect at all (its `effects` is empty: its buses name effects in their slots
+/// that are not in it, and the mixer runs only the effects a file holds) and not the sub-mix bus aa299971, so under any of
+/// the three versions it is the same data.
 fn slice_bytes() -> Vec<u8> {
     let b = data("slice.json.z");
     let old = b"\"format\":\"sidewinder-sounds 1\"";
@@ -1111,15 +1113,17 @@ fn voices_carry_their_route_and_recording_gain() {
     assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("up-mix")), "{e:?}");
 }
 
-/// T5d-8: a file of the old version is refused with a message (never a panic); the master's plug-in 0x00BA0003 in the
+/// T5d-8, T5d-9: a file of an older version (1, 2) is refused with a message (never a panic); the master's plug-in 0x00BA0003 in the
 /// master bus's slot is handed to the player (`master_suite`), bypassed by nothing in the data, and refused if its block
 /// needs what is not built; a Tone Generator whose block needs what is not built is refused at load.
 #[test]
 fn the_master_plug_in_and_the_tone_blocks_are_checked() {
     let mut v: Value = serde_json::from_slice(&slice_bytes()).unwrap();
-    v["format"] = "sidewinder-sounds 1".into();
-    let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
-    assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("sidewinder-sounds 2") && m.contains("copy_sidewinder")), "{e:?}");
+    for old in ["sidewinder-sounds 1", "sidewinder-sounds 2"] {
+        v["format"] = old.into();
+        let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+        assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains(data::FORMAT) && m.contains("copy_sidewinder")), "{old}: {e:?}");
+    }
     v["format"] = data::FORMAT.into();
     let b = parse_sounds(&serde_json::to_vec(&v).unwrap()).unwrap();
     assert!(Mixer::new(Arc::new(b), 0).master_suite().is_none(), "the slice holds no master plug-in's block");

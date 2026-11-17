@@ -66,6 +66,26 @@ const FLOOR_DB: f32 = -100.0;
 const LOG2_10: f32 = f32::from_bits(0x4054_9a78);
 const EXP_A: f32 = 0.25;
 const EXP_B: f32 = 0.75;
+/// Ours: a band counts as reducing a frame only when its gain is more than 0.01 dB under 1 (10^(-0.01/20)). The release
+/// itself stops about 1.3e-4 short of 1 in `f32`, as Elite's does (`g (1 - rel) + rel` rounds back to the same value), so
+/// "under 1" counted nearly every frame after the first reduction; the sound does not depend on this.
+pub const REDUCED_GAIN: f32 = 0.998_849_4;
+/// Ours (as the voices' filters, `super::filter`): a biquad's output and the compressor's power under this are 0, so a
+/// tail decays to an exact 0 instead of through the subnormal floats, whose arithmetic is many times slower (in silence
+/// 95,846 of 96,000 output samples were subnormal and the chain cost 3.9 ms a second of audio instead of 2.4). About
+/// -300 dB: no sample of a signal in the normal range is touched. Whether Wwise flushes them was not read.
+const FLUSH: f32 = 1e-15;
+
+/// A value under [`FLUSH`] (in magnitude) made 0.
+#[inline]
+fn flush(v: f32) -> f32 {
+    #[cfg(test)]
+    if tests::NO_FLUSH.with(std::cell::Cell::get) {
+        return v;
+    }
+    if v.abs() < FLUSH { 0.0 } else { v }
+}
+
 /// The compressor works its level out every this many frames of a call (`test bl, 0x1f`).
 const LEVEL_EVERY: u64 = 32;
 /// The limiter's look-ahead (frames), attack coefficient (`0x3d3b91cb`, fixed in mode 2) and the margin taken off its
@@ -196,11 +216,12 @@ impl Biquad {
     }
 
     /// Two frames of one channel, as 0x144afe590's two-channel branch adds them (its lanes 0 and 1):
-    /// `y0 = x0 b0 + x0 0 + x1' b1 + x2' b2 + y1' a1 + y2' a2`, `y1 = x0 c1 + x1 b0 + x1' c2 + x2' c3 + y1' c4 + y2' c5`.
+    /// `y0 = x0 b0 + x0 0 + x1' b1 + x2' b2 + y1' a1 + y2' a2`, `y1 = x0 c1 + x1 b0 + x1' c2 + x2' c3 + y1' c4 + y2' c5`; each
+    /// under [`FLUSH`] made 0 (ours).
     #[inline]
     fn two(&self, m: &mut Mem, x0: f32, x1: f32) -> (f32, f32) {
-        let y0 = x0 * self.b0 + x0 * 0.0 + m.x1 * self.b1 + m.x2 * self.b2 + m.y1 * self.a1 + m.y2 * self.a2;
-        let y1 = x0 * self.c1 + x1 * self.b0 + m.x1 * self.c2 + m.x2 * self.c3 + m.y1 * self.c4 + m.y2 * self.c5;
+        let y0 = flush(x0 * self.b0 + x0 * 0.0 + m.x1 * self.b1 + m.x2 * self.b2 + m.y1 * self.a1 + m.y2 * self.a2);
+        let y1 = flush(x0 * self.c1 + x1 * self.b0 + m.x1 * self.c2 + m.x2 * self.c3 + m.y1 * self.c4 + m.y2 * self.c5);
         *m = Mem { x1, x2: x0, y1, y2: y0 };
         (y0, y1)
     }
@@ -217,7 +238,7 @@ impl Biquad {
         }
         if i < frames {
             let x0 = buf[2 * i + ch];
-            let y0 = x0 * self.b0 + x0 * 0.0 + m.x1 * self.b1 + m.x2 * self.b2 + m.y1 * self.a1 + m.y2 * self.a2;
+            let y0 = flush(x0 * self.b0 + x0 * 0.0 + m.x1 * self.b1 + m.x2 * self.b2 + m.y1 * self.a1 + m.y2 * self.a2);
             *m = Mem { x1: x0, x2: m.x1, y1: y0, y2: m.y1 };
             buf[2 * i + ch] = y0;
         }
@@ -295,18 +316,20 @@ impl CompBand {
 
     /// The band's compression of its filtered signal in place (stereo, interleaved), from frame number `start` (the level
     /// is worked out on frames whose number is a multiple of 32: the frame within the engine's call). `reduced[i]` is set
-    /// where its gain is under 1 on either channel.
-    fn compress(&mut self, buf: &mut [f32], frames: usize, start: u64, reduced: &mut [bool]) {
+    /// where its gain is under [`REDUCED_GAIN`] on either channel; `least` is its least gain met. The power under
+    /// [`FLUSH`] is 0 (ours).
+    fn compress(&mut self, buf: &mut [f32], frames: usize, start: u64, reduced: &mut [bool], least: &mut f32) {
         for (i, r) in reduced.iter_mut().enumerate().take(frames) {
             let level = (start + i as u64) % LEVEL_EVERY == 0;
             for ch in 0..2 {
                 let x = buf[2 * i + ch];
-                self.power[ch] = x * x * self.power_c + self.power[ch] * self.one_minus_power_c;
+                self.power[ch] = flush(x * x * self.power_c + self.power[ch] * self.one_minus_power_c);
                 if level {
                     self.target[ch] = fast_gain(self.gain_db(fast_db(self.power[ch])));
                 }
                 self.gain[ch] = self.smooth(self.gain[ch], self.target[ch]);
-                *r |= self.gain[ch] < ONE;
+                *r |= self.gain[ch] < REDUCED_GAIN;
+                *least = least.min(self.gain[ch]);
                 buf[2 * i + ch] = x * (self.gain[ch] * self.makeup);
             }
         }
@@ -374,14 +397,29 @@ impl Limiter {
     }
 }
 
-/// What the chain has done since it was made: frames (stereo) through it, frames where a compressor band's gain was under
-/// 1, frames where the limiter's target was under 1, and blocks silenced by the guard.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What the chain has done since it was made: frames (stereo) through it, frames where a compressor band's gain was more
+/// than 0.01 dB under 1 ([`REDUCED_GAIN`]), frames where the limiter's target was under 1, blocks silenced by the guard,
+/// and each compressor band's least gain (1 while it never went under).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MasterCounts {
     pub frames: u64,
     pub compressed: u64,
     pub limited: u64,
     pub guarded: u64,
+    pub least_gain: [f32; 4],
+}
+
+impl Default for MasterCounts {
+    fn default() -> MasterCounts {
+        MasterCounts { frames: 0, compressed: 0, limited: 0, guarded: 0, least_gain: [ONE; 4] }
+    }
+}
+
+impl MasterCounts {
+    /// Each band's largest reduction (dB under 1; 0 if none).
+    pub fn most_db(&self) -> [f32; 4] {
+        self.least_gain.map(|g| if g > 0.0 { -20.0 * g.min(ONE).log10() } else { f32::INFINITY })
+    }
 }
 
 /// The whole plug-in on a stereo output ([`MasterChain::process`]). Everything is made by [`MasterChain::new`]; processing
@@ -607,7 +645,7 @@ impl MasterChain {
     }
 
     /// The compressor over one call: each band from the module's input through its filters, compressed, the bands summed in
-    /// order; `reduced` marks the frames where a band's gain was under 1.
+    /// order; `reduced` marks the frames where a band's gain was under [`REDUCED_GAIN`].
     fn compress(&mut self, buf: &mut [f32], frames: usize) {
         let n = 2 * frames;
         self.input[..n].copy_from_slice(&buf[..n]);
@@ -626,7 +664,7 @@ impl MasterChain {
                 }
             }
             if !band.off {
-                band.compress(&mut self.band[..n], frames, self.clock, &mut self.reduced);
+                band.compress(&mut self.band[..n], frames, self.clock, &mut self.reduced, &mut self.counts.least_gain[k]);
             }
             if k == 0 {
                 buf[..n].copy_from_slice(&self.band[..n]);
@@ -770,6 +808,45 @@ mod tests {
         }
     }
 
+    thread_local! {
+        /// The flush switched off on this thread (to compare with the chain as it was).
+        pub(super) static NO_FLUSH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The flush of tails (ours): a normal signal (a 1 kHz tone at -20 dB, -40 dB noise, 2 s, loud enough for the
+    /// compressor and the limiter) gives the same output bits with it and without it; after a loud burst, silence in gives
+    /// exact zeros out once the tails have died (within 1 s), and no subnormal sample on the way, where without the flush
+    /// most of the silence comes out subnormal.
+    #[test]
+    fn tails_end_in_exact_zeros_and_normal_signals_are_untouched() {
+        let run = |input: &[f32], no_flush: bool| {
+            NO_FLUSH.with(|f| f.set(no_flush));
+            let mut c = MasterChain::new(&elite()).unwrap();
+            let mut b = input.to_vec();
+            for part in b.chunks_mut(2 * 128) {
+                c.process(part);
+            }
+            NO_FLUSH.with(|f| f.set(false));
+            b
+        };
+        let signal: Vec<f32> = (0..2 * 96_000)
+            .map(|i| {
+                let t = (i / 2) as f32 / 48_000.0;
+                0.1 * (std::f32::consts::TAU * 1000.0 * t).sin() + 0.01 * ((((i * 7919) % 2000) as f32 / 1000.0) - 1.0)
+            })
+            .collect();
+        let (with, without) = (run(&signal, false), run(&signal, true));
+        assert!(with.iter().zip(&without).all(|(a, b)| a.to_bits() == b.to_bits()), "a normal signal's output changed");
+        let mut burst = signal[..2 * 24_000].to_vec();
+        burst.extend(std::iter::repeat_n(0.0f32, 2 * 96_000));
+        let (with, without) = (run(&burst, false), run(&burst, true));
+        let sub = |v: &[f32]| v.iter().filter(|x| x.is_subnormal()).count();
+        let tail = &with[2 * (24_000 + 48_000)..];
+        eprintln!("silence after a burst: {} subnormal samples with the flush, {} without; the last second all 0: {}", sub(&with), sub(&without), tail.iter().all(|x| *x == 0.0));
+        assert_eq!(sub(&with), 0);
+        assert!(tail.iter().all(|x| x.to_bits() == 0), "silence in, exact zeros out after the tails");
+    }
+
     /// Each band's static curve: under its threshold the band passes with its make-up; over it the ratio's slope, within
     /// the fast power's own error (up to 0.25 dB: its quadratic for 2^f), and exactly the exe's formula
     /// (`fast_gain(gain_db(fast_db(p)))` times the make-up) once the power has settled; band 0's knee bends it between.
@@ -784,7 +861,7 @@ mod tests {
                 let x = 10f64.powf(l / 20.0) as f32;
                 let mut buf = vec![x; 2 * 48000];
                 let mut reduced = vec![false; 48000];
-                b.compress(&mut buf, 48000, 0, &mut reduced);
+                b.compress(&mut buf, 48000, 0, &mut reduced, &mut 1.0);
                 let out = 20.0 * f64::from(buf[2 * 47999]).abs().log10();
                 let want = if l < t { l } else { t + (l - t) / r } + 20.0 * f64::from(b.makeup).log10();
                 assert!((out - want).abs() < 0.3, "band {k} at {l} dB: {out:.3} dB out, the curve says {want:.3}");
@@ -903,10 +980,11 @@ mod tests {
         assert_eq!(c.counts().compressed + c.counts().limited, 0);
     }
 
-    /// The same output whatever the blocks it is handed in (whole calls of 256 or the output's 128), and a reset leaves no
-    /// tail of what went before.
+    /// The same output for blocks of 128 frames (the output's, always) and of 256 (whole engine calls): only those two cuts
+    /// are tested (the compressor's 32-frame cadence follows the frame count, not the cut, and 32 divides both). A
+    /// reset leaves no tail of what went before.
     #[test]
-    fn cuts_change_nothing_and_a_reset_leaves_no_tail() {
+    fn blocks_of_128_and_256_give_the_same_output_and_a_reset_leaves_no_tail() {
         let input: Vec<f32> = (0..2 * 20480).map(|i| ((i * 7919) % 2000) as f32 / 1000.0 - 1.0).collect();
         let run = |cut: usize| {
             let mut c = MasterChain::new(&elite()).unwrap();

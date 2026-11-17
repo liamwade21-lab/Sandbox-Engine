@@ -11,8 +11,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The version `sounds.json` carries (2 since T5d-8: the master's plug-in 0x00BA0003 is shipped, without which the sound
-/// would play 14 dB too quiet; a file of version 1 is refused with a message to re-make it).
-pub const FORMAT: &str = "sidewinder-sounds 2";
+/// would play 14 dB too quiet; 3 since T5d-9: the buses' Wwise Compressors are shipped, without which the supercruise bus
+/// would play with no sub-mix and no compressor). An older file is refused with a message to re-make it.
+pub const FORMAT: &str = "sidewinder-sounds 3";
 
 /// A Wwise id (FNV-1 hash or object id), written as 8 lower-case hex digits as `events.json` writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
