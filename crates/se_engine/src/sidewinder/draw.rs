@@ -1,6 +1,7 @@
 //! Drawing the Sidewinder (ARCHITECTURE.md A6): one entity per drawn draw of each rig node's model (`ShipRig::nodes`), its
 //! mesh shared by every node of that model and its `ShipMaterial` shared by every draw of that Elite material; placed each
-//! frame from the camera as the props are (`place_props`), each node at its matrix now (`Parts`) under the ship's pose.
+//! frame from the camera as the props are (`place_props`), each node at its matrix now (`Parts`) under the ship's pose (in
+//! hyperspace's tunnel, where no body is near, the jump's pose with the eye at the camera: `hyper::tunnel_place`).
 //! What shows (ARCHITECTURE.md A6): the cockpit model carries its own copy of the hull's shell as seen from the seat, and
 //! the outside chair is a low-detail twin of the cockpit's, so the two sets are never drawn together. From the seat (the
 //! camera at the pilot's eye this frame, `Seat::view`) only the cockpit rig's models and its chair, in the seat's depth
@@ -26,6 +27,7 @@ use crate::universe::ScaledSpace;
 use super::assets::ShipBuild;
 use super::lights::{self, LightList};
 use super::chair::ChairPose;
+use super::hyper::tunnel_place;
 use super::material::{self, Family, GlassEffects, ShipGlass, ShipGlow, ShipLights, ShipMaterial, ShipPalette, ShipScene, TexSource};
 use super::parts::Parts;
 use super::{Sidewinder, SidewinderAssets};
@@ -62,7 +64,8 @@ pub struct ShipDraw {
 }
 
 impl ShipDraw {
-    /// The ship's space to the render frame this frame, while drawn (`shadow.rs` works from it).
+    /// The ship's space to the render frame this frame, while drawn by its body (`shadow.rs` works from it); None in
+    /// hyperspace's tunnel, where no star lights it.
     pub fn placed(&self) -> Option<Transform> {
         self.placed
     }
@@ -240,45 +243,59 @@ pub(super) fn place(
     frame: Res<bevy::diagnostic::FrameCount>,
     lights: Option<Res<ShipLights>>,
     glass: Option<ResMut<ShipGlass>>,
+    scene: Option<ResMut<ShipScene>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let Some(mut draw) = draw else { return };
+    // No light from outside the ship in hyperspace's tunnel (ours): the star's, the sky's and the street lamps' terms at 0.
+    if let Some(mut scene) = scene {
+        let outside = if pilot.jump.is_some() { 0.0 } else { 1.0 };
+        if scene.outside() != outside {
+            scene.set_outside(&mut buffers, outside);
+        }
+    }
     // The canopy's glass effects: the crack amount the cockpit's cracks keep (`Parts::crack`), the rest as made.
     if let Some(mut g) = glass {
         g.write(&mut buffers, GlassEffects { crack: parts.crack(), ..GlassEffects::stock() });
     }
-    let placed = ship.parked.as_ref().and_then(|p| Some((p, bodies.iter().find(|b| b.obj == p.obj)?)));
     draw.placed = None;
-    let near = match placed {
-        Some((p, b)) => {
-            let cam_body = b.orient.inverse() * cam.pos.delta_m(b.pos);
-            let rel = p.pos - cam_body;
-            if rel.length() < DRAW_M {
-                let k = space.factor(b.pos.delta_m(cam.pos).length());
-                let ship_tf = Transform { translation: (b.orient * rel * k).as_vec3(), rotation: (b.orient * p.rot).normalize().as_quat(), scale: Vec3::splat(k as f32) };
+    // In hyperspace's tunnel no body is near (the old system's go): the ship is the jump's pose, its eye at the camera
+    // (`seat::seat_camera` writes the camera there), the render frame's origin. Not `placed` there: no star lights it in the
+    // tunnel (the outside light's scale, `ShipScene::set_outside`), so the shadow passes rest.
+    let tunnel = pilot.jump.filter(|_| seat.view).map(|j| tunnel_place(&j, Vec3::from_array(assets.eye)));
+    let near = match tunnel.or_else(|| {
+        let p = ship.parked.as_ref()?;
+        let b = bodies.iter().find(|b| b.obj == p.obj)?;
+        let cam_body = b.orient.inverse() * cam.pos.delta_m(b.pos);
+        let rel = p.pos - cam_body;
+        (rel.length() < DRAW_M).then(|| {
+            let k = space.factor(b.pos.delta_m(cam.pos).length());
+            Transform { translation: (b.orient * rel * k).as_vec3(), rotation: (b.orient * p.rot).normalize().as_quat(), scale: Vec3::splat(k as f32) }
+        })
+    }) {
+        Some(ship_tf) => {
+            if tunnel.is_none() {
                 draw.placed = Some(ship_tf);
-                for (piece, mut tf, _) in pieces.iter_mut() {
-                    *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
-                }
-                // (The lights' loop reads the ship's space: its pose this frame, while any light is on.)
-                if let Some(l) = lights.as_ref().filter(|l| l.any_on()) {
-                    l.write_pose(&mut buffers, &ship_tf);
-                }
-                for (beam, mut tf, mut v) in beams.iter_mut() {
-                    let on = seat.seated && pilot.weapons.beam(beam.0) && pilot.beam_len[beam.0] > 0.5;
-                    let want = if on { Visibility::Visible } else { Visibility::Hidden };
-                    if *v != want {
-                        *v = want;
-                    }
-                    if on {
-                        let gun = Vec3::from_array(assets.guns[beam.0]);
-                        *tf = ship_tf * Transform::from_translation(gun).with_scale(Vec3::new(1.0, 1.0, pilot.beam_len[beam.0]));
-                    }
-                }
-                true
-            } else {
-                false
             }
+            for (piece, mut tf, _) in pieces.iter_mut() {
+                *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
+            }
+            // (The lights' loop reads the ship's space: its pose this frame, while any light is on.)
+            if let Some(l) = lights.as_ref().filter(|l| l.any_on()) {
+                l.write_pose(&mut buffers, &ship_tf);
+            }
+            for (beam, mut tf, mut v) in beams.iter_mut() {
+                let on = seat.seated && pilot.weapons.beam(beam.0) && pilot.beam_len[beam.0] > 0.5;
+                let want = if on { Visibility::Visible } else { Visibility::Hidden };
+                if *v != want {
+                    *v = want;
+                }
+                if on {
+                    let gun = Vec3::from_array(assets.guns[beam.0]);
+                    *tf = ship_tf * Transform::from_translation(gun).with_scale(Vec3::new(1.0, 1.0, pilot.beam_len[beam.0]));
+                }
+            }
+            true
         }
         None => false,
     };

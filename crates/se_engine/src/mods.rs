@@ -140,6 +140,9 @@ pub struct ModControl {
     pub main_menu: bool,
     /// The mod that is on is the Faulcon DeLacy Sidewinder (`Code "sidewinder"`) and the player sits in its seat.
     pub pilot: bool,
+    /// A mod is drawing hyperspace (the Sidewinder's tunnel; `sidewinder/seat.rs` sets it every frame): nothing of the universe's
+    /// overlays is shown.
+    pub tunnel: bool,
     /// What the Mods row or a test asks of the Sidewinder (spawn, restock): not "a mod on" (`sidewinder/mod.rs`).
     pub ship_request: Option<crate::sidewinder::ShipRequest>,
     /// A Sidewinder is parked somewhere (set by `sidewinder/mod.rs`): the row offers the restock.
@@ -191,6 +194,7 @@ impl ModControl {
         self.hero = false;
         self.skate = false;
         self.pilot = false;
+        self.tunnel = false;
     }
 }
 

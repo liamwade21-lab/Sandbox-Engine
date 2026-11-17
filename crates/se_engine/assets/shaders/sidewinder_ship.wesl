@@ -15,7 +15,7 @@ import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_lo
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
 import super::hero_frame::{HeroFrame, HeroLight};
-import super::sidewinder_lit::{Surface, Scene, shade, stamp_factor, star_shadow};
+import super::sidewinder_lit::{Surface, Scene, shade, stamp_factor, star_shadow, outside_light};
 import super::sidewinder_surface_hull::{ShipParams, Frame, ship_depth, surface_painted, surface_single_tile, surface_opaque, surface_emissive, surface_overlay, surface_stamp, surface_plain};
 import super::sidewinder_surface_cockpit::{surface_cockpit, surface_cockpit_emissive, surface_cockpit_tile};
 import super::sidewinder_glass::{GlassVertex, GlassOut, glass_vertex, glass_cockpit, glass_tinted, glass_edges};
@@ -103,7 +103,23 @@ fn scene(world_pos: vec3<f32>, n: vec3<f32>) -> Scene {
     let up = normalize(frame.up.xyz);
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, sun_dir));
     let shadow = star_shadow(world_pos, n, sun_dir, params.view.x > 0.5);
-    return Scene(sun_dir, ship_light.sun.rgb * shadow, ship_light.sky.rgb, ship_light.flat_e.rgb, ship_light.haze_t.rgb, ship_light.haze_a.rgb, up, frame.town.rgb * night);
+    // (Everything of it that is light from outside the ship times `outside_light`: 0 in hyperspace's tunnel. At 1 the terms are
+    // taken as they are, not multiplied: a multiply by 1 is exact, but it would let the compiler fuse differently downstream
+    // (an FMA into the haze's add moved the glass's pixels by one level), and the pictures must stay bit for bit.)
+    let k = outside_light();
+    let whole = k == 1.0;
+    let sun = ship_light.sun.rgb * shadow;
+    let town = frame.town.rgb * night;
+    return Scene(
+        sun_dir,
+        select(sun * k, sun, whole),
+        select(ship_light.sky.rgb * k, ship_light.sky.rgb, whole),
+        select(ship_light.flat_e.rgb * k, ship_light.flat_e.rgb, whole),
+        ship_light.haze_t.rgb,
+        select(ship_light.haze_a.rgb * k, ship_light.haze_a.rgb, whole),
+        up,
+        select(town * k, town, whole),
+    );
 }
 
 @fragment

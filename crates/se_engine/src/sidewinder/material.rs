@@ -1171,8 +1171,9 @@ pub(super) fn write_in_place<T: ShaderType + encase::internal::WriteInto>(buffer
     }
 }
 
-/// `sidewinder_lit.wesl` `ShipScene`: the inputs, x 1 when the automatic exposure's compensation applies (photo mode 2),
-/// and each slot's exposure term (`lights::Lamp::exposure_terms`: x 1 with the exposure term on, y its bias, z, w its clamp).
+/// `sidewinder_lit.wesl` `ShipScene`: the inputs; `adapt_on` x 1 when the automatic exposure's compensation applies (photo
+/// mode 2), y the outside light's scale (`ShipScene::set_outside`); and each slot's exposure term (`lights::Lamp::exposure_terms`:
+/// x 1 with the exposure term on, y its bias, z, w its clamp).
 #[derive(ShaderType)]
 struct ShipSceneGpu {
     inputs: SceneExposure,
@@ -1180,33 +1181,57 @@ struct ShipSceneGpu {
     lamps: [Vec4; MAX_SHIP_LIGHTS],
 }
 
+/// Where `ShipSceneGpu::adapt_on`'s y lies in the buffer (the inputs' 16 bytes, then x): `set_outside` writes those 4 bytes
+/// alone (a test checks it against the layout).
+const OUTSIDE_AT: usize = 20;
+
 /// The buffer holding `ShipSceneGpu`, bound to every `ShipMaterial`, written in place by `lights.rs`; and `adapt`, a copy of
 /// the automatic exposure's state (`exposure::AutoExposureBuffers::state`: x the adapted compensation in stops, positive
-/// darker), which only the GPU writes (`super::exposure`, before the opaque pass). Extracted for that copy.
+/// darker), which only the GPU writes (`super::exposure`, before the opaque pass). Extracted for that copy. `outside` is the
+/// scale of the light that reaches the ship from outside it (the light record's star, sky, flat ambient, street lamps and
+/// haze light; never the ship's own lamps or glow): 1, and 0 in hyperspace's tunnel (ours: no star there; `draw::place` sets
+/// it). A multiply by 1 is exact, so every picture outside the tunnel is as it was.
 #[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
 #[extract_app(bevy::render::RenderApp)]
 pub struct ShipScene {
     pub buffer: Handle<ShaderBuffer>,
     pub adapt: Handle<ShaderBuffer>,
+    outside: f32,
 }
 
 impl ShipScene {
     pub fn new(buffers: &mut Assets<ShaderBuffer>, first: &SceneExposure) -> ShipScene {
-        let gpu = ShipSceneGpu { inputs: *first, adapt_on: Vec4::ZERO, lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
+        let gpu = ShipSceneGpu { inputs: *first, adapt_on: Vec4::new(0.0, 1.0, 0.0, 0.0), lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
         ShipScene {
             buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&gpu), RenderAssetUsages::default())),
             adapt: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&Vec4::ZERO), RenderAssetUsages::RENDER_WORLD)),
+            outside: 1.0,
         }
     }
 
     /// The inputs, whether the adapted compensation applies (`auto`) and the slots' exposure terms (at most
-    /// `MAX_SHIP_LIGHTS`, in the lights buffer's order).
+    /// `MAX_SHIP_LIGHTS`, in the lights buffer's order); the outside light's scale as last set.
     pub fn write(&self, buffers: &mut Assets<ShaderBuffer>, value: &SceneExposure, auto: bool, lamps: &[Vec4]) {
-        let mut gpu = ShipSceneGpu { inputs: *value, adapt_on: Vec4::new(auto as u32 as f32, 0.0, 0.0, 0.0), lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
+        let mut gpu = ShipSceneGpu { inputs: *value, adapt_on: Vec4::new(auto as u32 as f32, self.outside, 0.0, 0.0), lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
         for (slot, t) in gpu.lamps.iter_mut().zip(lamps) {
             *slot = *t;
         }
         write_in_place(buffers, &self.buffer, &gpu);
+    }
+
+    /// The outside light's scale now.
+    pub fn outside(&self) -> f32 {
+        self.outside
+    }
+
+    /// A new outside light's scale, written into the buffer in place (its 4 bytes alone: the rest is `write`'s).
+    pub fn set_outside(&mut self, buffers: &mut Assets<ShaderBuffer>, outside: f32) {
+        self.outside = outside;
+        if let Some(mut b) = buffers.get_mut(&self.buffer) {
+            if let Some(d) = b.cast_slice_mut::<u8>() {
+                d[OUTSIDE_AT..OUTSIDE_AT + 4].copy_from_slice(&outside.to_le_bytes());
+            }
+        }
     }
 }
 
@@ -1294,6 +1319,17 @@ mod tests {
     fn shipped() -> (se_core::elite_ship::Materials, Paint) {
         let read = |rel: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).unwrap();
         (parse_materials(&read("materials.json")).unwrap(), parse_ship(&read("ship.json")).unwrap().paint)
+    }
+
+    /// `ShipScene::set_outside` writes exactly the bytes of `adapt_on`'s y in the GPU layout, and nothing else.
+    #[test]
+    fn the_outside_scale_has_its_place() {
+        let inputs = SceneExposure { scene_ev: 1.0, self_illum_scale: 2.0, emissive_multiplier: 3.0, luminance: 4.0 };
+        let bytes = |y: f32| crate::stars::gpu_bytes(&ShipSceneGpu { inputs, adapt_on: Vec4::new(1.0, y, 0.0, 0.0), lamps: [Vec4::ONE; MAX_SHIP_LIGHTS] });
+        let (a, b) = (bytes(1.0), bytes(0.25));
+        let differ: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+        assert!(!differ.is_empty() && differ.iter().all(|i| (OUTSIDE_AT..OUTSIDE_AT + 4).contains(i)), "{differ:?}");
+        assert_eq!(b[OUTSIDE_AT..OUTSIDE_AT + 4], 0.25f32.to_le_bytes());
     }
 
     /// The tables keep what this task doesn't draw out, and the families it does in.

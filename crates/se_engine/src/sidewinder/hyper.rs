@@ -4,7 +4,8 @@
 //! (`system.rs` `select_active_system`, which follows the camera's nearest star and builds its system in the background) swaps
 //! the systems: the camera waits at the arrival point, and the tunnel ends once the target's system is the active one and its
 //! star's body is spawned (G4), and not before the tunnel's measured length. Then the ship's parked pose is re-parented to that star and it goes on in supercruise.
-//! Until then `fly` and `seat_camera` stand aside (the old system's bodies are gone, and with them the frame the ship was in).
+//! Until then `fly` stands aside and `seat_camera` puts the camera at the eye of the jump's pose (the old system's bodies are
+//! gone, and with them the frame the ship was in). The tunnel is drawn in the scene behind the cockpit by `tunnel.rs`.
 
 use bevy::math::{DQuat, DVec3, Vec3};
 use bevy::prelude::*;
@@ -21,7 +22,7 @@ use crate::universe::SimTime;
 
 use super::pilot::{Cruise, Pilot};
 use super::seat::Seat;
-use super::{Sidewinder, SidewinderAssets};
+use super::Sidewinder;
 
 /// A jump in progress: the tunnel.
 #[derive(Clone, Copy, Debug)]
@@ -154,6 +155,13 @@ pub fn arrival(data: &SeData, jd: f64, from: UPos, target: ObjectRef, radii: f64
     (star.offset_m(-dir * radii * r), DQuat::from_rotation_arc(DVec3::NEG_Z, dir))
 }
 
+/// The ship's space to the render frame in the tunnel: the jump's turn, its eye (`eye`, ship space) at the camera, which is
+/// the render frame's origin (`seat::seat_camera` puts the camera at the eye of the jump's pose; the head's turn moves only
+/// the camera's turn, not its place). What `draw::place` draws the ship with while no body is near.
+pub fn tunnel_place(j: &Jump, eye: Vec3) -> Transform {
+    Transform { translation: -(j.rot * eye.as_dvec3()).as_vec3(), rotation: j.rot.as_quat(), scale: Vec3::ONE }
+}
+
 /// The jump begins: the tunnel to `target` from the ship's universe place `from`.
 #[allow(clippy::too_many_arguments)]
 pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, from_rot: DQuat, from_obj: ObjectRef, fuel: f64, target: ObjectRef) {
@@ -171,8 +179,9 @@ pub fn begin(data: &SeData, jd: f64, pilot: &mut Pilot, from: UPos, from_rot: DQ
     info!("sidewinder: hyperspace to {target:?} (root {root}), {:.3} ly", from.delta_m(arrive).length() / se_core::units::METERS_PER_LY);
 }
 
-/// The tunnel, each frame: the camera held at the arrival point (unbound: the body it was bound to goes with the old system)
-/// until the target's system is entered; then the ship arrives in supercruise there.
+/// The tunnel, each frame: the camera held at the arrival point (unbound: the body it was bound to goes with the old system;
+/// `seat_camera` writes it at the eye of the jump's pose) until the target's system is entered; then the ship arrives in
+/// supercruise there. The tunnel's picture is `tunnel.rs`'s, drawn while `Pilot::jump` is set.
 #[allow(clippy::too_many_arguments)]
 pub fn tunnel(
     time: Res<Time<Real>>,
@@ -182,14 +191,15 @@ pub fn tunnel(
     seat: Res<Seat>,
     control: Res<ModControl>,
     sb: Res<Sandbox>,
-    assets: Option<Res<SidewinderAssets>>,
     mut ship: ResMut<Sidewinder>,
     mut pilot: ResMut<Pilot>,
     mut cam: ResMut<FlyCamera>,
     bodies: Query<&SystemBody>,
     mut msg: ResMut<crate::messages::Messages>,
 ) {
-    let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
+    if !(seat.seated && control.pilot && sb.mode == Mode::Pilot) {
+        return;
+    }
     let Some(p) = ship.parked.as_mut() else { return };
     let pilot = &mut *pilot;
     // A test's jump (`sw hyper NAME [fail]`): from where the ship is now, no fuel taken.
@@ -210,9 +220,7 @@ pub fn tunnel(
     let Some(j) = pilot.jump.as_mut() else { return };
     j.seconds += time.delta_secs_f64();
     j.frames += 1;
-    let eye = Vec3::from_array(assets.eye).as_dvec3();
-    cam.pos = j.arrive.offset_m(j.rot * eye);
-    cam.rot = j.rot;
+    // (The camera's place and turn: `seat_camera`, at the eye of the jump's pose with the head's turn, later this frame.)
     cam.follow = None;
     cam.velocity = DVec3::ZERO;
     cam.travel = None;
@@ -271,4 +279,20 @@ pub fn tunnel(
     pilot.target = None;
     msg.show(format!("Arrived: {}", active.name));
     info!("sidewinder: arrived at {} after {} frames, {:.1} s", active.name, j.frames, j.seconds);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// In the tunnel the ship stands so that its eye is the render frame's origin (the camera) and its turn is the jump's.
+    #[test]
+    fn the_tunnel_puts_the_eye_at_the_camera() {
+        let rot = DQuat::from_rotation_y(0.7) * DQuat::from_rotation_x(-0.3);
+        let j = Jump { target: ObjectRef::Star(0), root: 0, arrive: UPos::default(), rot, seconds: 0.0, frames: 0, from: (ObjectRef::Star(0), DVec3::ZERO, DQuat::IDENTITY, false), fuel: 0.0, returning: false, fail: false };
+        let eye = Vec3::new(0.1, 1.9, -3.2);
+        let tf = tunnel_place(&j, eye);
+        assert!(tf.transform_point(eye).length() < 1e-5, "{:?}", tf.transform_point(eye));
+        assert!(tf.rotation.dot(rot.as_quat()).abs() > 1.0 - 1e-6);
+    }
 }

@@ -10,7 +10,8 @@
 //! shields' and hull's percentages, the three pip bars (the pips as notches, the capacitor as the fill), fuel and the four
 //! indicators (mass locked, landing gear, cargo scoop, lights), the notes (silent running, the safe disengage), the emergency
 //! oxygen's clock, and the keys at the bottom (the mod's help, not Elite's HUD: still flat on the screen, as the hyperspace
-//! tunnel is). The fade from black after boarding is `seat::draw_prompt`'s.
+//! tunnel's name is; the tunnel itself is in the scene, `tunnel.rs`). The fade from black after boarding is
+//! `seat::draw_prompt`'s.
 
 use bevy::math::Vec3;
 use bevy::prelude::*;
@@ -42,27 +43,11 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let ctx = contexts.ctx_mut()?;
     let r = ctx.content_rect();
     let h = r.height();
-    // Hyperspace's tunnel: over everything while the destination loads (ours: Elite's tunnel isn't built).
-    if let Some(j) = pilot.jump {
-        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sidewinder tunnel")));
-        p.rect_filled(r, 0.0, egui::Color32::from_rgb(4, 6, 16));
-        let c = r.center();
-        let most = 0.5 * r.width().hypot(h);
-        for i in 0..160u32 {
-            let k = (i.wrapping_mul(2_654_435_761) >> 8) as f32 / (1u32 << 24) as f32;
-            let a = k * std::f32::consts::TAU;
-            let phase = ((i.wrapping_mul(40_503) >> 4) % 1000) as f32 / 1000.0;
-            let f = ((j.seconds as f32 * 0.6 + phase) % 1.0).powi(2);
-            let dir = egui::vec2(a.cos(), a.sin());
-            let (r0, r1) = (f * most, (f * 1.25 + 0.02) * most);
-            let col = egui::Color32::from_rgba_unmultiplied(150, 190, 255, (40.0 + 215.0 * f) as u8);
-            p.add(egui::Shape::line_segment([c + dir * r0, c + dir * r1], egui::Stroke::new((0.001 + 0.004 * f) * h, col)));
-        }
-        p.circle_filled(c, 0.04 * h, egui::Color32::from_rgba_unmultiplied(200, 220, 255, 90));
-        p.text(egui::pos2(c.x, r.bottom() - 0.12 * h), egui::Align2::CENTER_CENTER, "HYPERSPACE", egui::FontId::monospace(0.026 * h), ORANGE);
-        return Ok(());
-    }
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder hud")));
+    // Hyperspace's tunnel is drawn in the scene behind the cockpit (`tunnel.rs`); its name stays flat on the screen, as the keys.
+    if pilot.jump.is_some() {
+        p.text(egui::pos2(r.center().x, r.bottom() - 0.12 * h), egui::Align2::CENTER_CENTER, "HYPERSPACE", egui::FontId::monospace(0.026 * h), ORANGE);
+    }
     // The seat's camera as the cockpit is drawn with it this frame: the eye, the head's turn `seat_camera` wrote the camera
     // with (this pass runs after it: the mod's `plugin` orders them), Elite's field of view for the screen's aspect.
     let view = SeatView::new(Vec3::from_array(assets.eye), seat.head, r);

@@ -49,7 +49,7 @@ struct ShipScene {
     // The auto-exposure texel gAverageSceneLuminanceTexture holds: the rescaling's scene value x 0.125, types 1 and 2 (which
     // read its texels 0 and 1: one value stands in for both).
     luminance: f32,
-    // x 1 when the adapted compensation applies (photo mode 2), else 0.
+    // x 1 when the adapted compensation applies (photo mode 2), else 0; y the outside light's scale (`outside_light`).
     adapt_on: vec4<f32>,
     // Each slot of the lights buffer's exposure term (FUN_1435a5500): x 1 when on, y the bias, z and w the clamp.
     lamps: array<vec4<f32>, 96>,
@@ -63,6 +63,12 @@ struct ShipScene {
 // The stops the automatic exposure darkens the frame by now (0 outside photo mode 2).
 fn adapted() -> f32 {
     return ship_scene.adapt_on.x * ship_adapt.x;
+}
+
+// The scale of the light reaching the ship from outside it (material.rs `ShipScene::set_outside`): the light record's star,
+// sky, flat ambient, street lamps and haze light, never the ship's own lamps or glow. 1, and 0 in hyperspace's tunnel (ours).
+fn outside_light() -> f32 {
+    return ship_scene.adapt_on.y;
 }
 
 // A slot's exposure factor (FUN_1435a5500, FUN_142832db0): 2^(clamp(scene value + bias, min, max) - 3) with its term on, else 1.

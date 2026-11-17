@@ -690,7 +690,7 @@ pub(crate) fn draw_orbits(
     control: Res<crate::mods::ModControl>,
 ) -> Result {
     // (Nor over the main menu: these layers draw over its Background area.)
-    if !settings.orbits || control.main_menu {
+    if !settings.orbits || control.main_menu || control.tunnel {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };
@@ -1293,7 +1293,7 @@ fn draw_labels(
     cam: Res<FlyCamera>,
     control: Res<crate::mods::ModControl>,
 ) -> Result {
-    if (settings.labels_mode == 0 && !settings.markers) || control.main_menu {
+    if (settings.labels_mode == 0 && !settings.markers) || control.main_menu || control.tunnel {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
@@ -1348,7 +1348,7 @@ fn draw_selection_pointer(
     control: Res<crate::mods::ModControl>,
 ) -> Result {
     // (Not while the sandbox's player walks: it would point at the centre of the planet he stands on. Nor over the main menu.)
-    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer && !control.walker && !control.main_menu) else { return Ok(()) };
+    let Some(sel) = cam.selected.filter(|_| settings.selection_pointer && !control.walker && !control.main_menu && !control.tunnel) else { return Ok(()) };
     let Ok(camera) = cams.single() else { return Ok(()) };
     let Some(vp) = camera.logical_viewport_size() else { return Ok(()) };
     let ctx = contexts.ctx_mut()?;

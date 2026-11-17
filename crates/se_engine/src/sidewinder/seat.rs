@@ -52,7 +52,7 @@ const FADE_MOST_DT: f32 = 0.1;
 #[derive(Resource, Default)]
 pub struct Seat {
     pub seated: bool,
-    /// The camera is at the pilot's eye this frame (`seat_camera` wrote it, or hyperspace's tunnel did): what `draw` shows
+    /// The camera is at the pilot's eye this frame (`seat_camera` wrote it, in hyperspace's tunnel too): what `draw` shows
     /// from (the seat's set) and when the view takes Elite's field of view (`seat_fov`).
     pub view: bool,
     /// Head look: on, and the view's turn from straight ahead (radians: yaw to the left, pitch up).
@@ -580,8 +580,10 @@ pub fn seat_camera(
     mut panels: ResMut<Panels>,
     window: Query<&Window, With<PrimaryWindow>>,
 ) {
-    // (Set again below where the camera is at the eye: every other way through, it isn't there.)
+    // (Set again below where the camera is at the eye: every other way through, it isn't there. Likewise the tunnel's flag for
+    // the universe's overlays, set only where the camera is in hyperspace's tunnel.)
     seat.view = false;
+    control.tunnel = false;
     if !seat.seated {
         // Out, and not yet set down: the camera waits at the eye (the sandbox holds it there), so the seat's view, its draw set
         // and Elite's field of view, stays until the frame the sandbox has set him down.
@@ -630,13 +632,6 @@ pub fn seat_camera(
         seat.view = seat.setting_down && sb.walking() && !sb.placed;
         return;
     }
-    // In hyperspace's tunnel `hyper::tunnel` writes the camera at the eye: still the seat's view, Elite's field of view and all.
-    if pilot.jump.is_some() {
-        seat.view = true;
-        return;
-    }
-    let Some(p) = ship.parked.as_ref() else { return };
-    let Some((b, _)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
     let eye = Vec3::from_array(assets.eye);
     let aspect = window.single().map_or(ELITE_ASPECT, |w| w.width() / w.height().max(1.0));
     if let Some(bad) = seat.test_look.filter(|t| test_turn(*t).is_none()) {
@@ -644,6 +639,18 @@ pub fn seat_camera(
         seat.test_look = None;
     }
     seat.head = head_aim(seat.test_look, seat.head_look, seat.look, panels.open.map(|side| panel_head(side, eye, aspect)));
+    // In hyperspace's tunnel the ship's pose is the jump's (in the universe: the old system's bodies go meanwhile), held by
+    // `hyper::tunnel`; the camera is at the eye there, unbound, the head turned as in flight.
+    if let Some(j) = pilot.jump {
+        let (eye_at, rot) = eye_pose(DVec3::ZERO, j.rot, eye, seat.head.turn);
+        cam.pos = j.arrive.offset_m(eye_at);
+        cam.rot = rot;
+        seat.view = true;
+        control.tunnel = true;
+        return;
+    }
+    let Some(p) = ship.parked.as_ref() else { return };
+    let Some((b, _)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
     let (eye_body, rot_body) = eye_pose(p.pos, p.rot, eye, seat.head.turn);
     if control.pilot && sb.mode == Mode::Pilot {
         cam.pos = b.pos.offset_m(b.orient * eye_body);
