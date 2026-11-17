@@ -820,7 +820,8 @@ const SEAT_GLASS_BIAS: f32 = 4.0e15;
 
 /// The ship's material: the sandbox's two light buffers, its family's textures (unused ones white) with one repeating,
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
-/// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`). Made once.
+/// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`), the automatic exposure's adapted compensation
+/// (`ShipScene::adapt`). Made once.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ShipKey)]
 pub struct ShipMaterial {
@@ -856,6 +857,8 @@ pub struct ShipMaterial {
     pub scene: Handle<ShaderBuffer>,
     #[storage(16, read_only)]
     pub glow: Handle<ShaderBuffer>,
+    #[storage(17, read_only)]
+    pub adapt: Handle<ShaderBuffer>,
     pub family: Family,
 }
 
@@ -893,6 +896,7 @@ impl ShipMaterial {
             cockpit,
             scene: scene.buffer.clone(),
             glow: glow.buffer.clone(),
+            adapt: scene.adapt.clone(),
             family,
         }
     }
@@ -1003,7 +1007,8 @@ pub fn white(images: &mut Assets<Image>) -> Handle<Image> {
 pub const MAX_SHIP_LIGHTS: usize = 96;
 
 /// One light, in the ship's space, metres, linear colour (A6): `pos_range` xyz position, w range; `colour` rgb colour x level
-/// x the exposure factor, w source size; `dir_cos` xyz the spot's axis, w the cosine of its half cone (-2: a point light);
+/// (the exposure factor is the shader's: `ShipScene`'s lamp terms, so it follows the exposure the frame is drawn with), w
+/// source size; `dir_cos` xyz the spot's axis, w the cosine of its half cone (-2: a point light);
 /// `spot` x the cosine of the inner half angle, y K = pi / cone for the IES lookup, z 1 if the IES profile applies, w the
 /// specular scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
@@ -1071,10 +1076,13 @@ impl ShipLights {
 
 // ---- Elite's scene exposure inputs (ARCHITECTURE.md A6's known gap) ----
 
-/// Elite's scene exposure inputs (`sidewinder_lit.wesl` `ShipScene`, field for field): `lights.rs` works them out from this
-/// game's exposure each frame (its doc gives the rule and the one measured constant) and writes them in place.
-/// - `scene_ev`: the lighting manager's scene value, which Elite feeds into each lamp's exposure factor on the CPU,
-///   2^(clamp(value + bias, min, max) - 3); A6 puts the factor in the lamp's colour, so no shader reads this.
+/// Elite's scene exposure inputs (`sidewinder_lit.wesl` `ShipScene`, its first four fields): `lights.rs` works them out from
+/// the camera's exposure (`ColorGrading`, the compensation's stops) each frame (its doc gives the rule and the one measured
+/// constant) and writes them in place. In photo mode 2 the automatic exposure darkens the frame further by the adapted
+/// compensation, which lives on the GPU only (`exposure.rs`'s state buffer): the shader adds it (`ShipScene::adapt`), so
+/// these four are the values without it.
+/// - `scene_ev`: the lighting manager's scene value, which Elite feeds into each lamp's exposure factor,
+///   2^(clamp(value + bias, min, max) - 3) (FUN_1435a5500 on the CPU; here the shader, from each slot's terms).
 /// - `self_illum_scale`: gGlobalSelfIllumScale (cb1[1].w), which the emissive families multiply their glow by.
 /// - `emissive_multiplier`: gEmissiveMultiplier (cb1[61].z), the emissive rescaling's scene value for type 0.
 /// - `luminance`: the texel of gAverageSceneLuminanceTexture that the rescaling reads, x 0.125, for types 1 and 2.
@@ -1095,19 +1103,42 @@ fn write_in_place<T: ShaderType + encase::internal::WriteInto>(buffers: &mut Ass
     }
 }
 
-/// The buffer holding `SceneExposure`, bound to every `ShipMaterial`, written in place by `lights.rs`.
-#[derive(Resource)]
+/// `sidewinder_lit.wesl` `ShipScene`: the inputs, x 1 when the automatic exposure's compensation applies (photo mode 2),
+/// and each slot's exposure term (`lights::Lamp::exposure_terms`: x 1 with the exposure term on, y its bias, z, w its clamp).
+#[derive(ShaderType)]
+struct ShipSceneGpu {
+    inputs: SceneExposure,
+    adapt_on: Vec4,
+    lamps: [Vec4; MAX_SHIP_LIGHTS],
+}
+
+/// The buffer holding `ShipSceneGpu`, bound to every `ShipMaterial`, written in place by `lights.rs`; and `adapt`, a copy of
+/// the automatic exposure's state (`exposure::AutoExposureBuffers::state`: x the adapted compensation in stops, positive
+/// darker), which only the GPU writes (`super::exposure`, before the opaque pass). Extracted for that copy.
+#[derive(Resource, Clone, bevy::render::extract_resource::ExtractResource)]
+#[extract_app(bevy::render::RenderApp)]
 pub struct ShipScene {
     pub buffer: Handle<ShaderBuffer>,
+    pub adapt: Handle<ShaderBuffer>,
 }
 
 impl ShipScene {
     pub fn new(buffers: &mut Assets<ShaderBuffer>, first: &SceneExposure) -> ShipScene {
-        ShipScene { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(first), RenderAssetUsages::default())) }
+        let gpu = ShipSceneGpu { inputs: *first, adapt_on: Vec4::ZERO, lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
+        ShipScene {
+            buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&gpu), RenderAssetUsages::default())),
+            adapt: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&Vec4::ZERO), RenderAssetUsages::RENDER_WORLD)),
+        }
     }
 
-    pub fn write(&self, buffers: &mut Assets<ShaderBuffer>, value: &SceneExposure) {
-        write_in_place(buffers, &self.buffer, value);
+    /// The inputs, whether the adapted compensation applies (`auto`) and the slots' exposure terms (at most
+    /// `MAX_SHIP_LIGHTS`, in the lights buffer's order).
+    pub fn write(&self, buffers: &mut Assets<ShaderBuffer>, value: &SceneExposure, auto: bool, lamps: &[Vec4]) {
+        let mut gpu = ShipSceneGpu { inputs: *value, adapt_on: Vec4::new(auto as u32 as f32, 0.0, 0.0, 0.0), lamps: [Vec4::ZERO; MAX_SHIP_LIGHTS] };
+        for (slot, t) in gpu.lamps.iter_mut().zip(lamps) {
+            *slot = *t;
+        }
+        write_in_place(buffers, &self.buffer, &gpu);
     }
 }
 
@@ -1140,6 +1171,7 @@ impl ShipGlow {
 
 pub fn build(app: &mut App) {
     app.add_plugins(MaterialPlugin::<ShipMaterial>::default());
+    super::exposure::build(app);
 }
 
 #[cfg(test)]

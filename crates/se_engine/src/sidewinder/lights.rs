@@ -3,17 +3,31 @@
 //! (`ShipGlow`), each in place and only when a value changes (every frame only while an animator moves). Nothing here runs
 //! before the first spawn: the systems wait for the ship's files (`LightList` is made with the meshes, `draw::make`).
 //!
-//! The list (`LightList`): one slot per light activity and bone (`Model!Bone`: a light at each), the hull's machines' first,
-//! then the cockpit's, each machine's states and activities in the file's order; a slot keeps its place whatever its level.
-//! The outside's materials take the hull's range, the seat's materials the whole list (`LightList::range`), so hull surfaces
-//! never loop over the cockpit's lamps. A light sits at its bone's origin, a spot pointing along the bone's local +Z (ours,
-//! from the data: the headlights' bones' +Z runs along the nose, the bottom spots' and the back spots' at the hull; the exe's
-//! choice of axis was not traced) and pulled back along it by inner fraction / tan(cone / 2), its colour times (1 + that)^2
-//! (FUN_143590b40). A light is on while its machine's state (`Parts::states`) is the activity's state; its level is the
-//! intensity animator's (`Animator`, FUN_143598ba0 to the letter): the record's off and on levels, its bool parameters
-//! switching it, its float parameters' product (rate-limited by the fades, raised to the exponent) scaling it, its fades,
-//! hold, timed blink or step pattern, and jitter; times the exposure factor 2^(clamp(scene_ev + bias, min, max) - 3) for a
-//! light with exposure on (FUN_1435a5500, FUN_142832db0).
+//! The list (`LightList`): one slot per light activity and bone (`Model!Bone`: a light at each); a slot keeps its place
+//! whatever its level. Which lights a surface takes is Elite's light gather (FUN_1435b9020, the job FUN_1435ac1c0 builds per
+//! view from the view's flags +0x688): a view with bit 3 set (FUN_142855570) takes ONLY the lights whose light record's +0x36
+//! is set, which FUN_1435cb790 copies from the data's byte +0x5a (`Light::bytes_88[2]`; set on the cockpit's lamps but the red
+//! warning lamp, and on the vent lights), matched by the record's +0x18 handle (the data's +0xd8 / +0xe0 name, empty on every
+//! light of the ship, so the match lets every flagged light through); a view without it takes every light (both after the
+//! layer mask, light +0x14 against the view's +0xa0, not traced). The seat's view is taken to be the flagged one (Elite draws
+//! the cockpit as its own scene; which view sets bit 3 was not traced: a reading), the outside's keeps the hull's lights (the
+//! unflagged rule would give it the cockpit's too, behind the untraced layer mask: an open item). So the slots go: the hull's
+//! unflagged lights, the hull's flagged (the vents), the cockpit's flagged, the cockpit's unflagged (the red warning lamp),
+//! each group in the machines', states' and activities' file order; the outside's materials take the hull's range, the
+//! seat's the flagged range (`LightList::range`), each contiguous.
+//!
+//! A light sits at its bone's origin, a spot pointing along the bone's local +Z (ours, from the data: the headlights' bones'
+//! +Z runs along the nose, the bottom spots' and the back spots' at the hull; the exe's choice of axis was not traced) and
+//! pulled back along it by inner fraction / tan(cone / 2), its colour times (1 + that)^2 (FUN_143590b40). A light shines only
+//! while its machine's state (`Parts::states`) is the activity's state: leaving the state stops the activity (vtable slot 13,
+//! FUN_1435bc330, the spot's FUN_1435bc470, unsubscribes the per-frame job that Start, slot 12, subscribed; no fade-out runs
+//! after it in the code at hand; re/elite/notes/agent_csm.md 5b), so the light gives none at once and its animator stands still until the state comes back (whether Elite
+//! makes the activity anew then, restarting the animator, was not traced). In its state its level is the intensity
+//! animator's (`Animator`, FUN_143598ba0 to the letter): the record's off and on levels, its bool parameters switching it, its
+//! float parameters' product (rate-limited by the fades, raised to the exponent) scaling it, its fades, hold, timed blink or
+//! step pattern, and jitter; times the exposure factor 2^(clamp(scene_ev + bias, min, max) - 3) for a light with exposure on
+//! (FUN_1435a5500, FUN_142832db0), which the shader applies from each slot's terms (`Lamp::exposure_terms`, `ShipScene`), so
+//! it follows the exposure the frame is drawn with (`super::exposure`).
 //!
 //! The parameters (what feeds each, in the order: the notes, the exe, else the data's default as a labelled stand-in):
 //! - `Option_HeadlightsEnabled` (bool, the headlights): the pilot's lights switch (`Pilot::lights`; the name and the
@@ -34,24 +48,29 @@
 //! - `OverrideBrightnessScale` (float) and the GUI lamps' `OverrideColour_*`: FUN_1430dbae0 works them out from the HUD's
 //!   panel colours, which the mod has none of: the brightness `OVERRIDE_BRIGHTNESS`, 1.0, and the GUI lamps keep the
 //!   record's colour, (0, 0, 0): those five lamps stay dark (an open item).
-//! - The lighting component's brightness (FUN_1435a5500: the colour times vtable +0x80 of the light's lighting object, for
-//!   every light without data +0x14a): not traced: `LIGHTING_BRIGHTNESS`, 1.0.
+//! - The lighting component's brightness (FUN_1435a5500: the colour times vtable +0x80 of the light's owner's lighting
+//!   object, for every light without data +0x14a): its writer was not traced (`lighting_brightness`: the hull's 1.0, the
+//!   cockpit's a measured stand-in, its doc).
 //!
 //! **Elite's exposure inputs (A6's known gap; the user's decision: the mod's own exposure stands in).** Elite's lit output is
 //! in its renderer's units; this game's light record (the star, the sky) is in its own. Every stand-in is worked out from
 //! this game's exposure through one mapping:
 //! 1. `ELITE_UNIT` (U): this game's light units per Elite renderer unit, one constant for everything Elite emits or lights
-//!    (lamps and glows add into the same target in Elite). A lamp's buffer colour is colour x level x factor x U, so a hull
-//!    lamp (exposure off) keeps its ratio to the sunlight whatever the exposure. U is measured (its doc).
-//! 2. The game's exposure E = 2^(the main camera's ColorGrading exposure, which holds `ExposureComp`'s stops); the scene
-//!    luminance it maps to the auto exposure's target is L = AutoExpTargetBright / E (in photo mode 2 the adapted
-//!    compensation lives on the GPU, `exposure.rs`'s state buffer, which no CPU system reads: L leaves it out).
+//!    (lamps and glows add into the same target in Elite). A lamp's light is colour x level x factor x U, so a hull lamp
+//!    (exposure off) keeps its ratio to the sunlight whatever the exposure. U is bracketed by a measurement (its doc).
+//! 2. The game's exposure E = 2^(the main camera's ColorGrading exposure, which holds `ExposureComp`'s stops), and in photo
+//!    mode 2 times 2^-(the adapted compensation, on the GPU only: `super::exposure` copies it to the ship's shaders); the
+//!    scene luminance it maps to the auto exposure's target is L = AutoExpTargetBright / E.
 //! 3. `scene_ev` = log2(L / U): the scene's luminance in Elite's units, as an EV (the manager's +0x6c read as the average
 //!    luminance's log, agent_paint.md "sceneValue": a reading). It only moves the cockpit lamps inside their clamps (8..8.5
 //!    or 8.5..9: the factor stays within 2^5..2^6), so no screenshot can fix it any closer.
 //! 4. `luminance` = 2^scene_ev (the rescaling's texel; x 0.125 in the shader, which is the lamps' "- 3") and
 //!    `emissive_multiplier` = 2^(scene_ev - 3), so a rescaled glow is e x U x L / U x 2^(bias - 3): steady on screen.
 //! 5. `self_illum_scale` = U x `SELF_ILLUM` (gGlobalSelfIllumScale, not found: 1.0), so a glow keeps its ratio to the lamps.
+//!
+//! The CPU works out steps 3 and 4 for the camera's exposure alone (`scene_inputs`, `ShipScene`'s inputs); the shader adds the
+//! adapted compensation's stops to `scene_ev` and multiplies `luminance` and `emissive_multiplier` by 2^them while photo mode
+//! 2 is on (`sidewinder_lit.wesl` `adapted`).
 
 use bevy::math::{UVec4, Vec3, Vec4};
 use bevy::prelude::*;
@@ -66,18 +85,45 @@ use super::pilot::Pilot;
 use super::SidewinderAssets;
 
 /// U: this game's light units per Elite renderer unit (the module's notes, step 1), a stand-in for the unfound exposure
-/// inputs. Measured on the green navigation light, the one lamp whose light falls on hull out of the sun in both pictures:
-/// the user's top view `7.webp` against the game's (the Moon by day, the same framing), each picture's pixels made linear and
+/// inputs, grade E: a round number that a measurement brackets, nothing in Elite's code. (Elite's gHDRScalingWrite is also
+/// 1/256, but that is only the scale its HDR target is stored at, undone on reading: no reason for this value.) The
+/// measurement, on the green navigation light, the one lamp whose light falls on hull out of the sun in both pictures: the
+/// user's top view `7.webp` against the game's (the Moon by day, the same framing), each picture's pixels made linear and
 /// divided by its own sunlit white hull (sRGB 148 in Elite's, 178 in the game's). The hull lit green above 0.1, 0.2, 0.4 and
 /// 0.8 of that white covers 0.22, 0.16, 0.12, 0.076 m^2 in Elite's picture and 0.30, 0.17, 0.10, 0.044 m^2 in the game's at
 /// this U; matching the areas threshold by threshold puts Elite's lamp at 0.65, 0.89, 1.16 and 1.47 times the game's (the
-/// spread is the two tone curves' and Elite's bloom), geometric mean 0.99: U holds within a factor of 1.5. 1/256 is Elite's
-/// gHDRScalingWrite, so this game's light record reads as Elite's HDR target does.
+/// spread is the two tone curves' and Elite's bloom), geometric mean 0.99: U holds within 0.65 to 1.56 times. It is
+/// relative to the sunlit hull, so it also depends on how bright the star was in `7.webp` (not known) against the Moon's sun.
 pub const ELITE_UNIT: f32 = 1.0 / 256.0;
 /// gGlobalSelfIllumScale: not found; 1.0 (a stand-in).
 pub const SELF_ILLUM: f32 = 1.0;
-/// The lighting component's brightness every light's colour is multiplied by (FUN_1435a5500): not traced; 1.0.
-pub const LIGHTING_BRIGHTNESS: f32 = 1.0;
+/// The hull's lighting component's brightness, which every light of its machines is multiplied by (FUN_1435a5500: vtable +0x80
+/// of the owner's lighting object): its writer was not traced; 1.0, a stand-in (the hull's lamps match `4.webp` and `7.webp`
+/// with it, within U's bracket).
+pub const HULL_LIGHTING_BRIGHTNESS: f32 = 1.0;
+/// The cockpit's lighting component's brightness (the same multiplier for the cockpit machines' lights; the cockpit is an
+/// owner of its own), grade D: a measured stand-in for the lighting brightness whose writer was not found (the exe gives
+/// the cockpit lamps' exposure factor, 2^5 to 2^5.5, exactly: FUN_1435a5500, FUN_142832db0; their light was ~20 times too
+/// strong with 1.0). Measured from the seat at night, where only the cockpit's lamps light the console (with them off it is
+/// black) and the red canopy lamps glow by themselves (self-illumination, not this): the user's `1.webp` (in space, beside a
+/// station and a planet) against the game's picture from the same eye at 3440x1440 (`.optimize/scratch/run/t4a4_measure.py`,
+/// both at 2000 px wide, linear luminance over the left red lamp's median, 0.086 in Elite's, 0.101 in the game's), the
+/// regions placed about the radar's middle in each: the radar's plinth 0.021 against the game's 0.88 (42 times), the radar's
+/// lower half 0.028 against 0.86 (31), the left console 0.0010 against 0.0147 (15), the right 0.0015 against 0.0168 (11).
+/// This is 1 / their geometric mean, 21.6; the regions spread it by a factor of 2 either way, and Elite's darkest values are
+/// a code or two of its 8-bit picture. Elite's console may also take light from the HUD's holograms or the planet (the
+/// plinth lies under the radar's hologram), which would make the true factor smaller still.
+pub const COCKPIT_LIGHTING_BRIGHTNESS: f32 = 1.0 / 21.6;
+
+/// The lighting component's brightness a light of `owner`'s machines is multiplied by (the list holds only the hull's and the
+/// cockpit's).
+pub fn lighting_brightness(owner: MachineOwner) -> f32 {
+    if owner == MachineOwner::Cockpit {
+        COCKPIT_LIGHTING_BRIGHTNESS
+    } else {
+        HULL_LIGHTING_BRIGHTNESS
+    }
+}
 /// `cockpitAmberLightIntensity`: its creation value (FUN_144733e70); its writer was not found.
 pub const AMBER: f32 = 1.0;
 /// `OverrideBrightnessScale`: worked out from the HUD's panel colours (FUN_1430dbae0), which the mod hasn't; 1.0.
@@ -160,7 +206,8 @@ impl Animator {
         s
     }
 
-    /// One frame of `dt` s (FUN_143598ba0): `on` is the activity's own state (its machine in the activity's state), `bools`
+    /// One frame of `dt` s (FUN_143598ba0): `on` is the animator's running byte (+0x30; `update` steps a lamp only while its
+    /// machine is in its state, so always true there), `bools`
     /// and `floats` its parameters' values in its lists' order, `steps` its pattern (empty: the timed blink), `scale` the
     /// exposure factor. The level out: max(0, level2 x jitter + off + (on - off) x level) x scale.
     #[allow(clippy::too_many_arguments)]
@@ -250,6 +297,7 @@ pub fn scene_inputs(exposure: f32, target: f32) -> SceneExposure {
 #[derive(Clone, Debug)]
 pub struct Lamp {
     pub machine: usize,
+    pub owner: MachineOwner,
     pub state: String,
     pub bone: String,
     pub spot: bool,
@@ -266,12 +314,27 @@ impl Lamp {
         self.light.holder.as_deref().unwrap_or("(no holder)")
     }
 
-    /// The buffer's record at `level` (the animator's: the intensity x the exposure factor): the colour x the lighting's
-    /// brightness x `level` x U.
+    /// Is the light gathered by the flagged view (the record's +0x36, from the data's +0x5a: the module's notes)?
+    pub fn flagged(&self) -> bool {
+        self.light.bytes_88[2] != 0
+    }
+
+    /// The slot's exposure term for the shader (`ShipScene`): x 1 with the term on (data +0x68), y the bias (+0x6c), z and w
+    /// the clamp (+0x70, +0x74); all 0 with it off (a factor of 1).
+    pub fn exposure_terms(&self) -> Vec4 {
+        let l = &self.light;
+        if !l.exposure_enable {
+            return Vec4::ZERO;
+        }
+        Vec4::new(1.0, l.exposure_bias as f32, l.floats_112[0] as f32, l.floats_112[1] as f32)
+    }
+
+    /// The buffer's record at `level` (the animator's intensity, without the exposure factor, which the shader applies): the
+    /// colour x the owner's lighting brightness x `level` x U.
     pub fn record(&self, level: f32) -> ShipLight {
         let Some((pos, axis)) = self.place else { return ShipLight::default() };
         let l = &self.light;
-        let colour = Vec3::from_array(l.colour.map(|c| c as f32)) * (LIGHTING_BRIGHTNESS * level * ELITE_UNIT);
+        let colour = Vec3::from_array(l.colour.map(|c| c as f32)) * (lighting_brightness(self.owner) * level * ELITE_UNIT);
         let (range, size) = (l.range_m as f32, l.source_size as f32);
         if !self.spot {
             let specular = l.specular_scale.unwrap_or(1.0).clamp(0.0, 1.0) as f32;
@@ -293,7 +356,8 @@ impl Lamp {
     }
 }
 
-/// The ship's light slots in the buffer's order, and the hull's share (A6). Made once with the ship's meshes.
+/// The ship's light slots in the buffer's order (the module's notes), and the hull's share (A6). Made once with the ship's
+/// meshes.
 #[derive(Resource, Clone, Debug)]
 pub struct LightList {
     pub lamps: Vec<Lamp>,
@@ -302,11 +366,13 @@ pub struct LightList {
 }
 
 impl LightList {
-    /// Every light activity of the hull's machines, then of the cockpit's, at each of its bones, placed with `values`.
+    /// Every light activity of the hull's machines, then of the cockpit's, at each of its bones, placed with `values`; the
+    /// hull's unflagged lights before its flagged ones, the cockpit's flagged before its unflagged, so the flagged are one run.
     pub fn new(rig: &ShipRig, values: &se_core::elite_rig::Values) -> Result<LightList, String> {
         let mut lamps = Vec::new();
         let mut hull = 0;
         for owner in [MachineOwner::Hull, MachineOwner::Cockpit] {
+            let start = lamps.len();
             for (i, m) in rig.ship.machines.iter().enumerate().filter(|(i, _)| rig.machine_owner(*i) == owner) {
                 for s in &m.states {
                     for a in &s.activities {
@@ -319,11 +385,13 @@ impl LightList {
                         let animator = light.animator.clone().ok_or_else(|| named("no animator (ship.json is older than the lights)".into()))?;
                         let steps = animator.pattern.as_deref().map(parse_pattern).transpose().map_err(named)?.unwrap_or_default();
                         for bone in &light.bones {
-                            lamps.push(Lamp { machine: i, state: s.name.clone(), bone: bone.clone(), spot, light: light.clone(), animator: animator.clone(), steps: steps.clone(), place: None });
+                            lamps.push(Lamp { machine: i, owner, state: s.name.clone(), bone: bone.clone(), spot, light: light.clone(), animator: animator.clone(), steps: steps.clone(), place: None });
                         }
                     }
                 }
             }
+            // (A stable sort: each group keeps the file's order.)
+            lamps[start..].sort_by_key(|l| l.flagged() == (owner == MachineOwner::Hull));
             if owner == MachineOwner::Hull {
                 hull = lamps.len();
             }
@@ -345,9 +413,15 @@ impl LightList {
         Ok(())
     }
 
-    /// The range of the buffer a material lights with (A6): the outside's the hull's lights, the seat's the whole list.
+    /// The range of the buffer a material lights with (A6): the outside's the hull's lights, the seat's the flagged ones (one
+    /// run by `new`'s order).
     pub fn range(&self, inside: bool) -> UVec4 {
-        UVec4::new(0, if inside { self.lamps.len() } else { self.hull } as u32, 0, 0)
+        if !inside {
+            return UVec4::new(0, self.hull as u32, 0, 0);
+        }
+        let first = self.lamps.iter().position(Lamp::flagged).unwrap_or(0);
+        let count = self.lamps[first..].iter().take_while(|l| l.flagged()).count();
+        UVec4::new(first as u32, count as u32, 0, 0)
     }
 }
 
@@ -456,7 +530,8 @@ pub struct LightsState {
     levels: Vec<f32>,
     heat_level: f32,
     written: Vec<ShipLight>,
-    scene: Option<SceneExposure>,
+    /// The scene's inputs as last written, and whether the adapted compensation applied.
+    scene: Option<(SceneExposure, bool)>,
     glow: Option<HeatGlow>,
     placed: u64,
     /// `sw lights heat F|auto`, `sw lights head on|off|auto`: a test's heat fraction and lights switch over the pilot's.
@@ -480,6 +555,7 @@ pub fn update(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     cams: Query<&ColorGrading, With<crate::camera::MainCamera>>,
     auto: Res<crate::exposure::AutoExposureSettings>,
+    photo: Res<crate::exposure::PhotoMode>,
 ) {
     let (Some(mut list), Some(mut lights), Some(scene), Some(glow)) = (list, lights, scene, glow) else { return };
     let states = parts.states();
@@ -500,12 +576,13 @@ pub fn update(
         st.animators = list.lamps.iter().zip(st.rngs.iter_mut()).map(|(l, r)| Animator::new(&l.animator, r)).collect();
         st.levels = vec![0.0; n];
     }
-    // The scene's exposure inputs.
+    // The scene's exposure inputs for the camera's exposure, whether the adapted compensation applies, the slots' terms.
     let exposure = cams.iter().next().map_or(0.0, |g| g.global.exposure);
-    let inputs = scene_inputs(exposure, auto.target_bright);
-    if state.scene != Some(inputs) {
-        scene.write(&mut buffers, &inputs);
-        state.scene = Some(inputs);
+    let now = (scene_inputs(exposure, auto.target_bright), photo.auto());
+    if state.scene != Some(now) {
+        let terms: Vec<Vec4> = list.lamps.iter().map(Lamp::exposure_terms).collect();
+        scene.write(&mut buffers, &now.0, now.1, &terms);
+        state.scene = Some(now);
     }
     // The parameters.
     let f = state.dev_heat.unwrap_or_else(|| pilot.heat.fraction(&pilot.heat_spec));
@@ -514,12 +591,17 @@ pub fn update(
     let st = &mut *state;
     let mut records = Vec::with_capacity(n);
     for (i, lamp) in list.lamps.iter().enumerate() {
+        // Out of its state the activity is stopped: no light, and nothing steps its animator (the module's notes).
+        if !states.get(lamp.machine).is_some_and(|s| *s == lamp.state) {
+            st.levels[i] = 0.0;
+            records.push(lamp.record(0.0));
+            continue;
+        }
         let a = &lamp.animator;
-        let on = states.get(lamp.machine).is_some_and(|s| *s == lamp.state);
         let bools: Vec<bool> = a.bool_params.iter().map(|b| p.bool(b)).collect();
         let floats: Vec<f32> = a.float_params.iter().map(|x| p.float(x)).collect();
-        let scale = exposure_factor(&lamp.light, inputs.scene_ev);
-        let level = st.animators[i].step(a, &lamp.steps, dt, on, &bools, &floats, (lamp.light.intensity as f32, lamp.light.float_120 as f32), scale, &mut st.rngs[i]);
+        // (The exposure factor, which multiplies the whole level, is the shader's: the level here is without it.)
+        let level = st.animators[i].step(a, &lamp.steps, dt, true, &bools, &floats, (lamp.light.intensity as f32, lamp.light.float_120 as f32), 1.0, &mut st.rngs[i]);
         st.levels[i] = level;
         records.push(lamp.record(level));
     }
@@ -542,21 +624,25 @@ pub fn update(
     }
 }
 
-/// `sw lights`: every light, the scene's inputs and the glow.
+/// `sw lights`: every light (its level without the exposure factor, and the factor at the camera's own exposure: in photo
+/// mode 2 the shader's is higher by the adapted compensation), the scene's inputs and the glow.
 fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipRig, p: &Params) {
+    let scene_ev = st.scene.map_or(0.0, |(s, _)| s.scene_ev);
     for (i, lamp) in list.lamps.iter().enumerate() {
         let r = lamp.record(st.levels[i]);
         let machine = rig.ship.machines.get(lamp.machine).map_or("?", |m| m.name.as_str());
         let now = states.get(lamp.machine).map_or("?", String::as_str);
         info!(
-            "sidewinder light {i:2} {}: {} '{}' at {} ({machine} {} {}, now {now}); level {:.4}, colour {:.4} {:.4} {:.4}, range {:.2} m, animator {}",
+            "sidewinder light {i:2} {}{}: {} '{}' at {} ({machine} {} {}, now {now}); level {:.4} x factor {:.3}, colour {:.4} {:.4} {:.4}, range {:.2} m, animator {}",
             if i < list.hull { "hull" } else { "cockpit" },
+            if lamp.flagged() { " (seat)" } else { "" },
             if lamp.spot { "spot" } else { "point" },
             lamp.holder(),
             lamp.bone,
             if states.get(lamp.machine).is_some_and(|s| *s == lamp.state) { "in" } else { "out of" },
             lamp.state,
             st.levels[i],
+            exposure_factor(&lamp.light, scene_ev),
             r.colour.x,
             r.colour.y,
             r.colour.z,
@@ -564,7 +650,20 @@ fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipR
             if st.animators[i].moving(&lamp.animator, !lamp.steps.is_empty()) { "running" } else { "still" },
         );
     }
-    info!("sidewinder lights: {} slots ({} hull, {} cockpit); parameters {p:?}; scene {:?}; heat glow level {:.3} {:?}", list.lamps.len(), list.hull, list.lamps.len() - list.hull, st.scene, st.heat_level, st.glow);
+    let (inside, outside) = (list.range(true), list.range(false));
+    info!(
+        "sidewinder lights: {} slots ({} hull, {} cockpit; the outside's range {}..{}, the seat's {}..{}); parameters {p:?}; scene {:?}; heat glow level {:.3} {:?}",
+        list.lamps.len(),
+        list.hull,
+        list.lamps.len() - list.hull,
+        outside.x,
+        outside.x + outside.y,
+        inside.x,
+        inside.x + inside.y,
+        st.scene,
+        st.heat_level,
+        st.glow
+    );
 }
 
 /// `sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]`: alone it logs every light; the words
@@ -752,18 +851,26 @@ mod tests {
         assert_eq!((p.float("cockpitAmberLightIntensity"), p.float("NoSuchParameter")), (1.0, 1.0));
     }
 
-    /// The list on the mod's ship: the hull's lights first, then the cockpit's; each material's range; every slot placed;
-    /// the headlights' spots point along the nose (-Z) from in front of the cockpit.
+    /// The list on the mod's ship: the hull's lights first (its unflagged, then the vents'), then the cockpit's (its flagged,
+    /// then the red warning lamp's two); each material's range; every slot placed; the headlights' spots point along the nose
+    /// (-Z) from in front of the cockpit.
     #[test]
     fn the_list_and_its_ranges() {
         let read = |rel: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string());
         let rig = super::super::assets::load(&read).unwrap_or_else(|(f, why)| panic!("{f}: {why}")).assets.rig;
         let list = LightList::new(&rig, &rig.static_pose(true)).unwrap();
         assert_eq!((list.hull, list.lamps.len()), (47, 84), "the hull's 47 slots, the cockpit's 37");
-        assert!(list.lamps[..list.hull].iter().all(|l| rig.machine_owner(l.machine) == MachineOwner::Hull));
-        assert!(list.lamps[list.hull..].iter().all(|l| rig.machine_owner(l.machine) == MachineOwner::Cockpit));
+        assert!(list.lamps[..list.hull].iter().all(|l| rig.machine_owner(l.machine) == MachineOwner::Hull && l.owner == MachineOwner::Hull));
+        assert!(list.lamps[list.hull..].iter().all(|l| rig.machine_owner(l.machine) == MachineOwner::Cockpit && l.owner == MachineOwner::Cockpit));
         assert_eq!(list.range(false), UVec4::new(0, 47, 0, 0));
-        assert_eq!(list.range(true), UVec4::new(0, 84, 0, 0));
+        assert_eq!(list.range(true), UVec4::new(27, 55, 0, 0), "the 20 vent lights and the cockpit's 35 flagged lamps");
+        let seat = &list.lamps[27..82];
+        assert!(seat.iter().all(Lamp::flagged) && list.lamps[..27].iter().chain(&list.lamps[82..]).all(|l| !l.flagged()));
+        assert!(seat[..20].iter().all(|l| rig.ship.machines[l.machine].name == "HeatVents"));
+        assert!(list.lamps[82..].iter().all(|l| l.holder() == "Light_Warning_Red"));
+        // The exposure terms: the cockpit's lamps 8..8.5 or 8.5..9 with no bias, the hull's off.
+        assert!(list.lamps[..list.hull].iter().all(|l| l.exposure_terms() == Vec4::ZERO));
+        assert!(list.lamps[list.hull..].iter().all(|l| { let t = l.exposure_terms(); t.x == 1.0 && t.y == 0.0 && (t.z == 8.0 || t.z == 8.5) && t.w == t.z + 0.5 }));
         assert!(list.lamps.iter().all(|l| l.place.is_some()), "{:?}", list.lamps.iter().filter(|l| l.place.is_none()).map(|l| &l.bone).collect::<Vec<_>>());
         let head = list.lamps.iter().find(|l| l.spot && l.light.ies_profile.is_some()).unwrap();
         let (pos, axis) = head.place.unwrap();

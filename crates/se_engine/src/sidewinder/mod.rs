@@ -15,6 +15,7 @@
 
 pub mod assets;
 pub mod draw;
+mod exposure;
 pub mod hyper;
 pub mod lights;
 pub mod material;

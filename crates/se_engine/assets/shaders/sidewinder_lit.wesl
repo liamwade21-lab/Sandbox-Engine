@@ -25,18 +25,19 @@
 // light record's sky taken as the ground takes it (lit_surface), and the specular ambient is OURS, as plain as it can be:
 // the same sky irradiance seen along the reflected ray, over pi, times the usual approximation of the GGX model's
 // environment BRDF (`env_brdf`), so it falls with roughness as the direct light's highlight does. The ship's own lamps come
-// from the lights buffer (A6's contract: `ShipLights`, in the ship's space), each lamp's colour already carrying its own
-// exposure factor (worked out on the CPU, as Elite does).
+// from the lights buffer (A6's contract: `ShipLights`, in the ship's space), each lamp's colour times its exposure factor
+// (Elite works it out on the CPU, FUN_1435a5500; here `lamp_exposure`, so it follows the exposure the frame is drawn with).
 
 // ---- The known gaps ----
 
 // Elite's scene exposure inputs (ARCHITECTURE.md A6, the known gap), none of whose writers was found
 // (re/elite/notes/agent_paint.md, "sceneValue"): one small buffer bound to every ship material, written in place when a value
 // changes (material.rs `ShipScene`; lights.rs works each out from this game's exposure and gives the rule). Each shader
-// reads exactly the global its disassembly reads, where it reads it.
+// reads exactly the global its disassembly reads, where it reads it. The four inputs are the values for the camera's own
+// exposure; in photo mode 2 (`adapt_on.x` 1) the frame is darker by the automatic exposure's adapted compensation (`ship_adapt`),
+// which raises the scene value by as many stops (`adapted`).
 struct ShipScene {
-    // The lighting manager's scene value (the lights task uses it on the CPU for the lamps' factors; no shader here reads
-    // it yet).
+    // The lighting manager's scene value: the lamps' exposure factors (`lamp_exposure`).
     scene_ev: f32,
     // gGlobalSelfIllumScale (cb1[1].w): the emissive families' glow.
     self_illum_scale: f32,
@@ -45,9 +46,30 @@ struct ShipScene {
     // The auto-exposure texel gAverageSceneLuminanceTexture holds: the rescaling's scene value x 0.125, types 1 and 2 (which
     // read its texels 0 and 1: one value stands in for both).
     luminance: f32,
+    // x 1 when the adapted compensation applies (photo mode 2), else 0.
+    adapt_on: vec4<f32>,
+    // Each slot of the lights buffer's exposure term (FUN_1435a5500): x 1 when on, y the bias, z and w the clamp.
+    lamps: array<vec4<f32>, 96>,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(15) var<storage, read> ship_scene: ShipScene;
+// The automatic exposure's state as the previous frame left it (x the adapted compensation in stops, positive darker),
+// copied here before the opaque pass (sidewinder/exposure.rs).
+@group(constants::MATERIAL_BIND_GROUP) @binding(17) var<storage, read> ship_adapt: vec4<f32>;
+
+// The stops the automatic exposure darkens the frame by now (0 outside photo mode 2).
+fn adapted() -> f32 {
+    return ship_scene.adapt_on.x * ship_adapt.x;
+}
+
+// A slot's exposure factor (FUN_1435a5500, FUN_142832db0): 2^(clamp(scene value + bias, min, max) - 3) with its term on, else 1.
+fn lamp_exposure(i: u32) -> f32 {
+    let t = ship_scene.lamps[i];
+    if t.x < 0.5 {
+        return 1.0;
+    }
+    return exp2(clamp(ship_scene.scene_ev + adapted() + t.y, t.z, t.w) - 3.0);
+}
 
 // What Elite's heat effect (ShipHeatEffectActivity) writes over its material element's attributes every frame: rgb
 // pEmissiveColour and gStandardMapScales, each lerp(cold, hot, glow) (material.rs `HeatGlow`, written by lights.rs).
@@ -72,7 +94,7 @@ const INV_PI: f32 = 0.318310;
 struct ShipLight {
     // xyz position, w range (m).
     pos_range: vec4<f32>,
-    // rgb colour x level x the exposure factor, w source size (m).
+    // rgb colour x level (the exposure factor is `lamp_exposure`'s), w source size (m).
     colour: vec4<f32>,
     // xyz the spot's axis, w the cosine of its half cone (-2: a point light).
     dir_cos: vec4<f32>,
@@ -135,7 +157,7 @@ struct Scene {
 
 // pEmissiveRescaling* (FWD 2915-2969, the same in every emissive shader): r = (Enable, Type, EVOffset, EnableClamping),
 // clamps = EVClamps. The scene value s is gEmissiveMultiplier for type 0, the luminance texture's texel x 0.125 for types 1
-// and 2, 1 for any other type (`ShipScene`).
+// and 2, 1 for any other type (`ShipScene`; both follow the scene value, so the adapted compensation's stops raise them).
 fn emissive_rescale(r: vec4<f32>, clamps: vec2<f32>) -> f32 {
     if r.x == 0.0 {
         return 1.0;
@@ -143,9 +165,9 @@ fn emissive_rescale(r: vec4<f32>, clamps: vec2<f32>) -> f32 {
     let kind = i32(round(r.y));
     var s = 1.0;
     if kind == 0 {
-        s = ship_scene.emissive_multiplier;
+        s = ship_scene.emissive_multiplier * exp2(adapted());
     } else if kind == 1 || kind == 2 {
-        s = ship_scene.luminance * 0.125;
+        s = ship_scene.luminance * exp2(adapted()) * 0.125;
     }
     if r.w != 0.0 {
         return exp2(min(max(log2(s) + r.z, clamps.x), clamps.y));
@@ -237,8 +259,8 @@ fn ship_lamps(s: Surface, world_pos: vec3<f32>, cam_pos: vec3<f32>, f0: vec3<f32
         let m = max(d2, s2);
         let w = max(1.0 - (m / (range * range)) * (m / (range * range)), 0.0);
         let att = w * w / m * shape;
-        // (The colour carries the lamp's level and its exposure factor: A6's contract.)
-        let e = lamp.colour.rgb;
+        // (The colour carries the lamp's level: A6's contract; its exposure factor is the slot's term.)
+        let e = lamp.colour.rgb * lamp_exposure(i);
         out.diffuse += s.diffuse * (nl * INV_PI) * att * e;
         out.specular += specular_brdf(n, v, l, f0, a2, nv) * nl * att * lamp.spot.w * e;
     }
