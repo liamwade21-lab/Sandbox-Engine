@@ -9,7 +9,8 @@
 //! Made once per Elite material at the first spawn, twice for a material both the outside and the seat's view use (the
 //! seat's draws in its own depth slice: `SEAT_SLICE`), and once more for a skinned model's draws (`ShipMaterial::skinned`:
 //! the pilot chair seen from the seat); never changed after: per-frame values live in the storage buffers (`ShipLights`,
-//! `ShipScene`, `ShipGlow`, which `lights.rs` writes in place, and `ShipGlass` and `ShipPalette`, which `draw.rs` does).
+//! `ShipScene`, `ShipGlow`, which `lights.rs` writes in place, and `ShipGlass` and `ShipPalette`, which `draw.rs` does;
+//! the shadow's record, which the render world writes: `shadow.rs`).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -24,6 +25,8 @@ use bevy::shader::ShaderRef;
 use se_core::elite_ship::{Material as EliteMaterial, Paint, SlotValue};
 
 use crate::sandbox::light::PropLight;
+
+use super::shadow::ShipShadow;
 
 /// Elite's third texture coordinate (`DecodedVertex::uv[2]`: the paint mask's on the painted hull). Position, normal,
 /// tangent (with its sign in w), UV0 and UV1 are Bevy's own attributes.
@@ -860,7 +863,8 @@ const SEAT_GLASS_BIAS: f32 = 4.0e15;
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
 /// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`), the automatic exposure's adapted compensation
 /// (`ShipScene::adapt`), the canopy's glass effects (`ShipGlass`), the pilot chair's bone palette (`ShipPalette`: bound to
-/// every material, read only by a skinned one). Made once.
+/// every material, read only by a skinned one), the ship's shadow maps and their record (`shadow::ShipShadow`: the star's
+/// term at the pixel, `sidewinder_lit.wesl` `star_shadow`). Made once.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ShipKey)]
 pub struct ShipMaterial {
@@ -902,6 +906,13 @@ pub struct ShipMaterial {
     pub glass: Handle<ShaderBuffer>,
     #[storage(19, read_only)]
     pub palette: Handle<ShaderBuffer>,
+    /// The shadow maps' moments (layer 0 the outside set's, 1 the seat's: `shadow.rs`), drawn by the mod's own pass.
+    #[texture(20, dimension = "2d_array")]
+    #[sampler(21)]
+    pub shadow_map: Handle<Image>,
+    /// Their record (`shadow::ShadowRecord`), written by the render world each frame the maps are drawn.
+    #[storage(22, read_only)]
+    pub shadow: Handle<ShaderBuffer>,
     pub family: Family,
     /// Its meshes carry the vertex's bone (`ATTRIBUTE_BONE`) and its vertex stage skins them by the palette (the shader def
     /// `SHIP_SKINNED`). Never a glass family's (the skinned chair has no glass: `assets.rs` refuses it).
@@ -925,7 +936,7 @@ impl ShipMaterial {
     /// A material of family `family` with its slots' images `textures` (in `Family::slots`' order; `white` for the rest),
     /// `params` and `cockpit`; unskinned (`skinned` set after for a skinned model's draw).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, glass: &ShipGlass, palette: &ShipPalette, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
+    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, glass: &ShipGlass, palette: &ShipPalette, shadow: &ShipShadow, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
         let tex = |i: usize| textures.get(i).cloned().unwrap_or_else(|| white.clone());
         ShipMaterial {
             frame: light.frame.clone(),
@@ -946,6 +957,8 @@ impl ShipMaterial {
             adapt: scene.adapt.clone(),
             glass: glass.buffer.clone(),
             palette: palette.buffer.clone(),
+            shadow_map: shadow.moments.clone(),
+            shadow: shadow.record.clone(),
             family,
             skinned: false,
         }
@@ -1150,7 +1163,7 @@ pub struct SceneExposure {
 }
 
 /// Writes `value`'s GPU layout into `buffer`'s bytes in place (the buffers below: never a material edit).
-fn write_in_place<T: ShaderType + encase::internal::WriteInto>(buffers: &mut Assets<ShaderBuffer>, buffer: &Handle<ShaderBuffer>, value: &T) {
+pub(super) fn write_in_place<T: ShaderType + encase::internal::WriteInto>(buffers: &mut Assets<ShaderBuffer>, buffer: &Handle<ShaderBuffer>, value: &T) {
     if let Some(mut b) = buffers.get_mut(buffer) {
         if let Some(d) = b.cast_slice_mut::<u8>() {
             let _ = encase::StorageBuffer::new(d).write(value);

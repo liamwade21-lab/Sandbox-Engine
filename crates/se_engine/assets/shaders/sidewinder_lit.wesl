@@ -20,13 +20,16 @@
 //
 // What this game feeds it instead of Elite's scene: the star and the sky are the sandbox's light record at the player's
 // place (sandbox/light.rs `PropLight`, read as sandbox_prop.wesl reads it: the star's light with its terrain, cloud and
-// eclipse shadow already in it, the sky light, the flat ambient, the street lamps by night, the haze). Elite's ambient is
+// eclipse shadow already in it, the sky light, the flat ambient, the street lamps by night, the haze), and the ship's own
+// shadow on the star's light from the mod's shadow maps (`star_shadow`, Elite's own filter). Elite's ambient is
 // image-based (its light probes); nothing here holds SpaceEngine's surroundings as probes, so the diffuse ambient is the
 // light record's sky taken as the ground takes it (lit_surface), and the specular ambient is OURS, as plain as it can be:
 // the same sky irradiance seen along the reflected ray, over pi, times the usual approximation of the GGX model's
 // environment BRDF (`env_brdf`), so it falls with roughness as the direct light's highlight does. The ship's own lamps come
 // from the lights buffer (A6's contract: `ShipLights`, in the ship's space), each lamp's colour times its exposure factor
 // (Elite works it out on the CPU, FUN_1435a5500; here `lamp_exposure`, so it follows the exposure the frame is drawn with).
+
+import super::sidewinder_shadow_common::{ShipShadow, to_ship_point, to_ship_dir, map_point, map_uv, filtered_moments, visibility};
 
 // ---- The known gaps ----
 
@@ -145,6 +148,7 @@ struct Surface {
 // The sandbox's light at the player's place (sandbox_prop.wesl's reading of `PropLight`).
 struct Scene {
     sun_dir: vec3<f32>,
+    // The star's light at the pixel: the record's, times the ship's own shadow there (`star_shadow`).
     sun: vec3<f32>,
     sky: vec3<f32>,
     flat_e: vec3<f32>,
@@ -267,6 +271,31 @@ fn ship_lamps(s: Surface, world_pos: vec3<f32>, cam_pos: vec3<f32>, f0: vec3<f32
     return out;
 }
 
+// ---- The ship's own shadow on the star's light (sidewinder/shadow.rs; the maths: sidewinder_shadow_common.wesl) ----
+
+// The moments maps (layer 0 the outside set's casters, 1 the seat's: the cockpit set for its own surfaces), their sampler (clamped,
+// Elite's ClampSampler) and their record, written by the render world each frame the maps are drawn.
+@group(constants::MATERIAL_BIND_GROUP) @binding(20) var shadow_map: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(21) var shadow_smp: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(22) var<storage, read> ship_shadow: ShipShadow;
+
+// How much of the star's light reaches `world_pos` past the ship's own casters (1 all of it): Elite's filter on the map of the
+// set drawn (`seat`: the seat's), the point moved along its normal, turned to the star's side, by the record's offset (ours:
+// two texels, the filter's half width, so a surface does not shadow itself). 1 while this frame's maps are not drawn.
+fn star_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, seat: bool) -> f32 {
+    if ship_shadow.live.x == 0u {
+        return 1.0;
+    }
+    let l = to_ship_dir(ship_shadow, sun_dir);
+    let n = to_ship_dir(ship_shadow, normal);
+    let p = to_ship_point(ship_shadow, world_pos) + n * select(-1.0, 1.0, dot(n, l) >= 0.0) * ship_shadow.bias.x;
+    let m = map_point(ship_shadow, p, l);
+    if abs(m.x) >= 1.0 || abs(m.y) >= 1.0 || m.z < 0.0 || m.z > 1.0 {
+        return 1.0;
+    }
+    return visibility(ship_shadow, filtered_moments(shadow_map, shadow_smp, select(0, 1, seat), map_uv(m.xy), ship_shadow), m.z);
+}
+
 // One texel of Elite's G-buffer lit: the star, the sky, the street lamps, the ship's lamps in [first, first + count), the
 // emitted light, through the haze. `cam_pos` and `world_pos` are in the render frame.
 fn shade(s: Surface, world_pos: vec3<f32>, cam_pos: vec3<f32>, sc: Scene, first: u32, count: u32) -> vec3<f32> {
@@ -287,7 +316,8 @@ fn shade(s: Surface, world_pos: vec3<f32>, cam_pos: vec3<f32>, sc: Scene, first:
     let v = normalize(cam_pos - world_pos);
     var diffuse = vec3<f32>(0.0);
     var specular = vec3<f32>(0.0);
-    // The star (Elite's directional light; flag 4: unlit by it where no shadow map says otherwise, and the ship has none).
+    // The star (Elite's directional light, its light already times the ship's own shadow: `Scene::sun`, `star_shadow`; flag 4:
+    // unlit by it where no shadow map says otherwise, kept as the port had it).
     if (flags & 4u) == 0u {
         let l = sc.sun_dir;
         let n = facing(s.normal, l, two_sided);

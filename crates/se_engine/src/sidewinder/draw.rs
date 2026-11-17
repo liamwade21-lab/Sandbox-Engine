@@ -57,6 +57,20 @@ pub struct ShipDraw {
     shown: (bool, bool),
     /// The parts' shown nodes as last applied (`Parts::shown_revision`: the `KModelState` activities).
     nodes_shown: u64,
+    /// The ship's space to the render frame this frame (its scale the scaled space's), while it is near enough to draw.
+    placed: Option<Transform>,
+}
+
+impl ShipDraw {
+    /// The ship's space to the render frame this frame, while drawn (`shadow.rs` works from it).
+    pub fn placed(&self) -> Option<Transform> {
+        self.placed
+    }
+
+    /// The seat's set shows (else the outside set, while drawn).
+    pub fn seat_shown(&self) -> bool {
+        self.shown.1
+    }
 }
 
 pub fn build(app: &mut App) {
@@ -95,6 +109,7 @@ fn make(
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     mut ship_materials: ResMut<Assets<ShipMaterial>>,
     mut prop_materials: ResMut<Assets<PropMaterial>>,
+    device: Option<Res<bevy::render::renderer::RenderDevice>>,
 ) {
     let (Some(assets), Some(light), Some(mut build)) = (assets, light, build) else { return };
     let rig = &assets.rig;
@@ -102,6 +117,8 @@ fn make(
     let read = std::mem::take(&mut build.images);
     let textures: HashMap<(String, bool), Handle<Image>> = read.into_iter().map(|(k, img)| (k, images.add(img))).collect();
     let ies = textures.get(&(material::IES_FILE.to_string(), true)).cloned().unwrap_or_else(|| white.clone());
+    // (The shadow's own copy of the casters' triangles, from the meshes before they become assets.)
+    let casters = super::shadow::Casters::new(rig, &build.meshes, &build.materials);
     let model_meshes: Vec<Vec<Handle<Mesh>>> = std::mem::take(&mut build.meshes).into_iter().map(|draws| draws.into_iter().map(|m| meshes.add(m)).collect()).collect();
     commands.remove_resource::<ShipBuild>();
     let list = match LightList::new(rig, &rig.static_pose(true)) {
@@ -116,6 +133,7 @@ fn make(
     let glow = ShipGlow::new(&mut buffers);
     let glass = ShipGlass::new(&mut buffers);
     let palette = ShipPalette::new(&mut buffers);
+    let shadow = super::shadow::ShipShadow::new(&mut images, &mut buffers, &light, &palette, casters, rig.nodes.len(), device.as_deref());
     // (The heat effect's element: the outside materials of that name; only the hull's model has one outside.)
     let glow_element = rig.ship.machines.iter().flat_map(|m| &m.states).find_map(lights::HeatEffect::of_state).map(|e| e.element.to_lowercase());
     let resolved = std::mem::take(&mut build.materials);
@@ -151,7 +169,7 @@ fn make(
                     let mut params = if inside { r.params.in_seat() } else { r.params };
                     params.lights = list.range(inside);
                     params.heat_glow.x = (!inside && glow_element.as_deref() == Some(key.as_str())) as u32;
-                    ship_materials.add(ShipMaterial { skinned, ..ShipMaterial::new(&light, &lights, &scene, &glow, &glass, &palette, r.family, &tex, &white, &ies, params, r.cockpit) })
+                    ship_materials.add(ShipMaterial { skinned, ..ShipMaterial::new(&light, &lights, &scene, &glow, &glass, &palette, &shadow, r.family, &tex, &white, &ies, params, r.cockpit) })
                 })
                 .clone();
             pieces.push(
@@ -178,6 +196,7 @@ fn make(
     commands.insert_resource(glow);
     commands.insert_resource(glass);
     commands.insert_resource(palette);
+    commands.insert_resource(shadow);
     info!("sidewinder: the ship's {} meshes are made ({} models, {} materials, {} textures)", pieces.len(), model_meshes.len(), mats.len(), textures.len());
     // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
     // shows by day and night.
@@ -192,7 +211,7 @@ fn make(
     for i in 0..2 {
         commands.spawn((Name::new("Sidewinder laser beam"), Beam(i), Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling));
     }
-    commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX });
+    commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX, placed: None });
 }
 
 /// The pilot chair's palette (`ShipPalette`) written in place when its pose changed (`ChairPose::revision`): each bone's
@@ -206,7 +225,7 @@ fn skin(assets: Res<SidewinderAssets>, pose: Res<ChairPose>, palette: Option<Res
 /// The parked ship where it stands this frame, from the camera, as `place_props` places the props; the canopy's glass effects
 /// written where they changed.
 #[allow(clippy::too_many_arguments)]
-fn place(
+pub(super) fn place(
     ship: Res<Sidewinder>,
     seat: Res<super::seat::Seat>,
     pilot: Res<super::pilot::Pilot>,
@@ -229,6 +248,7 @@ fn place(
         g.write(&mut buffers, GlassEffects { crack: parts.crack(), ..GlassEffects::stock() });
     }
     let placed = ship.parked.as_ref().and_then(|p| Some((p, bodies.iter().find(|b| b.obj == p.obj)?)));
+    draw.placed = None;
     let near = match placed {
         Some((p, b)) => {
             let cam_body = b.orient.inverse() * cam.pos.delta_m(b.pos);
@@ -236,6 +256,7 @@ fn place(
             if rel.length() < DRAW_M {
                 let k = space.factor(b.pos.delta_m(cam.pos).length());
                 let ship_tf = Transform { translation: (b.orient * rel * k).as_vec3(), rotation: (b.orient * p.rot).normalize().as_quat(), scale: Vec3::splat(k as f32) };
+                draw.placed = Some(ship_tf);
                 for (piece, mut tf, _) in pieces.iter_mut() {
                     *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
                 }

@@ -29,6 +29,7 @@ pub mod hud;
 pub mod hud_anchor;
 pub mod pilot;
 pub mod seat;
+pub mod shadow;
 pub mod solids;
 mod sound;
 
@@ -331,6 +332,7 @@ impl Plugin for SidewinderPlugin {
         }
         draw::build(app);
         beam::build(app);
+        shadow::build(app);
         app.init_resource::<seat::Seat>()
             .init_resource::<seat::BoardPrompt>()
             // E at the ship and the seat's keys: after the frame's input, before the sandbox's reader takes E as "use".

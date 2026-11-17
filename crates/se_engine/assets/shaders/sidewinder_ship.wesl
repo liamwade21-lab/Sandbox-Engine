@@ -15,7 +15,7 @@ import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_lo
 import bevy_pbr::render::view_transformations::position_world_to_clip;
 import bevy_pbr::render::mesh_view_bindings::view;
 import super::hero_frame::{HeroFrame, HeroLight};
-import super::sidewinder_lit::{Surface, Scene, shade, stamp_factor};
+import super::sidewinder_lit::{Surface, Scene, shade, stamp_factor, star_shadow};
 import super::sidewinder_surface_hull::{ShipParams, Frame, ship_depth, surface_painted, surface_single_tile, surface_opaque, surface_emissive, surface_overlay, surface_stamp, surface_plain};
 import super::sidewinder_surface_cockpit::{surface_cockpit, surface_cockpit_emissive, surface_cockpit_tile};
 import super::sidewinder_glass::{GlassVertex, GlassOut, glass_vertex, glass_cockpit, glass_tinted, glass_edges};
@@ -96,19 +96,21 @@ fn vertex(input: Vertex) -> VertexOut {
     return o;
 }
 
-// The sandbox's light at the player's place, as sandbox_prop.wesl reads it.
-fn scene() -> Scene {
+// The sandbox's light at the player's place, as sandbox_prop.wesl reads it; the star's light at `world_pos` (normal `n`) past
+// the ship's own casters (sidewinder_lit.wesl `star_shadow`, the seat's map for the seat's draws).
+fn scene(world_pos: vec3<f32>, n: vec3<f32>) -> Scene {
     let sun_dir = normalize(frame.light.sun_dir.xyz);
     let up = normalize(frame.up.xyz);
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, sun_dir));
-    return Scene(sun_dir, ship_light.sun.rgb, ship_light.sky.rgb, ship_light.flat_e.rgb, ship_light.haze_t.rgb, ship_light.haze_a.rgb, up, frame.town.rgb * night);
+    let shadow = star_shadow(world_pos, n, sun_dir, params.view.x > 0.5);
+    return Scene(sun_dir, ship_light.sun.rgb * shadow, ship_light.sky.rgb, ship_light.flat_e.rgb, ship_light.haze_t.rgb, ship_light.haze_a.rgb, up, frame.town.rgb * night);
 }
 
 @fragment
 fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
     let f = Frame(n, in.world_tangent.xyz, cross(n, in.world_tangent.xyz) * select(1.0, -1.0, in.world_tangent.w < 0.0));
-    let sc = scene();
+    let sc = scene(in.world_pos, n);
     var s: Surface;
     @if(SHIP_PAINTED) {
         s = surface_painted(f, in.uv0, in.uv1, in.uv2, tex0, tex1, tex2, tex3, tex4, tex5, smp, params);
@@ -157,13 +159,14 @@ fn vertex_glass(v: GlassVertex) -> GlassOut {
 @if(SHIP_GLASS)
 @fragment
 fn fragment_glass(in: GlassOut) -> @location(0) vec4<f32> {
+    let sc = scene(in.world_pos, normalize(in.world_normal));
     @if(SHIP_GLASS_COCKPIT) {
-        return glass_cockpit(in, tex0, tex1, smp, params, scene());
+        return glass_cockpit(in, tex0, tex1, smp, params, sc);
     }
     @if(SHIP_GLASS_TINTED) {
-        return glass_tinted(in, tex0, tex1, tex2, smp, params, scene());
+        return glass_tinted(in, tex0, tex1, tex2, smp, params, sc);
     }
     @if(SHIP_GLASS_EDGES) {
-        return glass_edges(in, tex0, tex1, tex2, smp, params, scene());
+        return glass_edges(in, tex0, tex1, tex2, smp, params, sc);
     }
 }
