@@ -9,7 +9,12 @@
 //! - The block refresh (`0x142E86E20`, step 4) multiplies both blocks' (current and full power) top speed and boost speed
 //!   (`0x141B2DA50`; nothing else: not the accelerations, not the turn rates) by `min(A, B)` times the other factors (1 here).
 //!   So gear and scoop together slow the ship as much as either alone. The blue zone reads the speed over the lowered top speed
-//!   (`flight::step`), so the turn rates follow it.
+//!   (`flight::step`), so the turn rates follow it. That is the branch taken in normal flight.
+//! - In supercruise (the refresh's handle +0x480 active) the same product `min(A, B) x m` (m the cruise multiplier +0x670)
+//!   goes instead into accel mode 2's k (`0x141B2D8F0`) of the current block alone, not through `0x141B2DA50`: the top
+//!   speed, the forward and lateral accelerations and the reverse one's first term take it, the full-power block and the
+//!   zero-throttle speed do not (`supercruise::cruise_block`, `Speed::step_with`, `step_held_with`, which take
+//!   `speed_factor` as their `factor`).
 //! - The boost is allowed with either deployed (`0x142E4A820`: its only refusals are the engines off and too little energy)
 //!   and fires to the lowered boost speed. The hardpoints change no speed (nothing of theirs is in `0x142E86E20`); the drive's
 //!   refusals are `drive.rs`'s.

@@ -46,8 +46,11 @@ pub const PHYSICS_HZ: f64 = 60.0;
 pub const MAX_SUBSTEPS: u32 = 4;
 
 /// The share of the reverse acceleration left as the forward braking limit while the forward demand is at least
-/// `FULL_FORWARD` (0x142E6AF90, C: the flag it also needs, +0x5E2, is set to 1 by the controller's constructor 0x142E32DD0 and no
-/// other writer was found, so it is taken as always set).
+/// `FULL_FORWARD` (0x142E6AF90, C), while the controller's flag +0x5E2 is set. The constructor (0x142E32DD0) sets it to 1;
+/// supercruise (0x142EA9810, through virtual +0x180, 0x142E787C0) sets it to `w <= 0.01` in each frame where the object at
+/// cruise +0x128 is missing or inactive (`supercruise::ORBITAL_BRAKE_W`); normal flight never writes it, so after leaving
+/// orbital cruise it stays as last set. `step` takes it as set; in the exe it is clear in normal flight only after a drop or
+/// glide from w over 0.01, until the next supercruise frame (not carried over by the mod).
 pub const FULL_FORWARD_BRAKE: f64 = 0.25;
 pub const FULL_FORWARD: f64 = 0.999;
 /// Rotation-reversal mode 1 acts on an axis whose stick is past this (0x142E6E960, C).

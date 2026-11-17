@@ -10,10 +10,19 @@
 //! - The cap: `V = Vsc m`, `m = 1 - (s + (1 - max(P40, F) / Vsc - s) w)`, and the speed at zero throttle `P10 + (F - P10) w`
 //!   (`0x142EA9810`, `0x142E780C0`): w is orbital cruise's blend, the ship's ShipPlanetProximityComponent's (`orbital.rs`);
 //!   at w = 0 the cap is `Vsc (1 - s)` and the zero-throttle speed P10. In that component's mode 1 with a target the cap
-//!   also takes `heading_factor` (up to x2.5 with a ship axis square to the target). The same frame sets the full-throttle
-//!   brake's flag to `w <= 0.01` (`ORBITAL_BRAKE_W`).
-//! - The speed: flight assist on's rule along the nose (`0x142E6E960`) with the supercruise block in accel mode 2
-//!   (`0x141B2D8F0`, `Block::mode2`, k = m): the forward target `c + (V - c) x throttle`, the time constant, the limits (braking
+//!   also takes `heading_factor` (up to x2.5 with a ship axis square to the target). The frame then hands m on: to the
+//!   object at cruise +0x128 (its virtual +0x50) whenever that object exists; and only while it is missing or inactive (its
+//!   virtual +0x18 false) to the flight controller (virtual +0x158, `0x142E79C60`: +0x670 = m, accel mode +0x68C = 2), with
+//!   the full-throttle brake's flag `w <= 0.01` (virtual +0x180, `ORBITAL_BRAKE_W`). What the +0x128 object is, is open.
+//! - The block (`0x142E86E20`, its supercruise branch): both blocks are the supercruise record's block; the current one alone
+//!   goes through accel mode 2 with `k = m x min(A, B)` (the gear's and the scoop's factor, `deployables::speed_factor`;
+//!   the thrusters' and the drive's factors there are taken as 1, as in normal flight), and only when k is not exactly 1
+//!   (`cruise_block`). So the gear down in supercruise halves the top speed the throttle and the speed guard read (the wells'
+//!   cap `cruise_cap` itself is unchanged), the forward and lateral accelerations, and doubles the speed curve's x (the turn
+//!   reads the speed over the current block's top); the zero-throttle speed (`min_speed`) does not take it.
+//! - The speed: flight assist on's rule along the nose (`0x142E6E960`) with that block (`0x141B2D8F0`, `Block::mode2`): the
+//!   forward target `c + (V - c) x throttle` held to V, the time constant (by the speed over Vsc, `time_constant`), the
+//!   limits (braking
 //!   a full throttle at a quarter, `0x142E6AF90`), the jerk limit and the speed guard (never past the larger of the speed and
 //!   the cap: over a falling cap it brakes, harder the further over). `Speed::step_held`, what `pilot.rs` calls, also holds the speed
 //!   to the cap (E; its doc says why).
@@ -29,7 +38,7 @@
 //! (`orbital.rs`), which bodies are kinds 2 and 7 (N1's S1 and G1 runs, `re/elite/measure/BACKLOG.md`).
 
 use crate::data::record;
-use crate::flight::{FULL_FORWARD, FULL_FORWARD_BRAKE};
+use crate::flight::{Block, FULL_FORWARD, FULL_FORWARD_BRAKE};
 use crate::orbital::Mode;
 
 /// The speed of light, m/s.
@@ -65,7 +74,8 @@ pub const HEADING_FULL_DEG: f64 = 2.0;
 pub const HEADING_NONE_DEG: f64 = 6.0;
 pub const HEADING_BOOST: f64 = 2.5;
 /// The full-throttle brake (`flight::FULL_FORWARD_BRAKE`) holds in supercruise only while w is at most this
-/// (`0x142EA9810` hands the controller's flag +0x5E2 `w <= 0.01`, the float at 0x144E299A4, through its virtual +0x180).
+/// (`0x142EA9810` hands the controller's flag +0x5E2 `w <= 0.01`, the float at 0x144E299A4, through its virtual +0x180, in
+/// each supercruise frame where the object at cruise +0x128 is missing or inactive; otherwise the flag keeps its last value).
 pub const ORBITAL_BRAKE_W: f64 = 0.01;
 /// The planet rule's width unit: the AU (C: 0x142E96C30 multiplies by 0x145E8D8B0 = 1.49598e11 and 0x145E8D8A0 = 1.0, then by
 /// 20.0 at 0x145E895BC). With M in Earth masses every planet's well is tens of AU wide (`a_planets_well_slows_supercruise`).
@@ -171,6 +181,27 @@ pub fn heading_factor(axis_dot: f64) -> f64 {
     1.0 + (HEADING_BOOST - 1.0) * g
 }
 
+/// The current block in supercruise (`0x142E86E20`'s supercruise branch, controller +0x750): the record's supercruise block
+/// in accel mode 2 (`Block::mode2`) with `k = (cap / Vsc) x factor` and the ship's speed `v`, `cap` the cap now
+/// (`cruise_cap`: Vsc m), `factor` the gear's and the scoop's `deployables::speed_factor` (1 with both stowed). The refresh
+/// scales only when k is not exactly 1, so at k = 1 the block is the record's as it is. The full-power block (+0x81C) stays
+/// the record's in supercruise, untouched by m and the factor.
+pub fn cruise_block(cap: f64, factor: f64, v: f64) -> Block {
+    let k = (cap / VSC).max(0.0) * factor;
+    if k == 1.0 {
+        record::CRUISE
+    } else {
+        record::CRUISE.mode2(k, v)
+    }
+}
+
+/// Flight assist's time constant in supercruise (`0x142E6E960` ~663): `max(0.5, D max(0, 4/3 min(1, v / V) - 1/3))`, V the
+/// full-power block's top speed (+0x81C), which in supercruise is the record's Vsc (mode 2 scales the current block alone),
+/// not the cap. With D = 1 it leaves the 0.5 s floor only over 0.625 Vsc (about 1,251 c).
+fn time_constant(fa_d: f64, v: f64) -> f64 {
+    (fa_d * (4.0 / 3.0 * (v / VSC).clamp(0.0, 1.0) - 1.0 / 3.0).max(0.0)).max(0.5)
+}
+
 /// Supercruise's speed along the nose and what its jerk limit remembers (the exe's +0x630).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Speed {
@@ -181,15 +212,21 @@ pub struct Speed {
 impl Speed {
     /// A tick: flight assist on's rule along the nose with the supercruise block in accel mode 2 (see the module's doc),
     /// `throttle` 0..1, `cap` the cap now (`cruise_cap`), `w` orbital cruise's blend (the zero-throttle speed `min_speed(w)`;
-    /// the full-throttle brake only while `w <= ORBITAL_BRAKE_W`).
+    /// the full-throttle brake only while `w <= ORBITAL_BRAKE_W`), with the gear and the scoop stowed.
     pub fn step(&mut self, throttle: f64, cap: f64, w: f64, dt: f64) {
+        self.step_with(throttle, cap, w, 1.0, dt);
+    }
+
+    /// `step` with the gear's and the scoop's `factor` (`deployables::speed_factor`), which goes into accel mode 2's k
+    /// (`cruise_block`): the top speed the target and the guard read, the forward acceleration and the reverse one's first
+    /// term take it; the zero-throttle speed does not.
+    pub fn step_with(&mut self, throttle: f64, cap: f64, w: f64, factor: f64, dt: f64) {
         let throttle = throttle.clamp(0.0, 1.0);
-        let k = (cap / VSC).max(0.0);
-        let b = record::CRUISE.mode2(k, self.v);
+        let b = cruise_block(cap, factor, self.v);
         let v_cap = b.top_speed;
         let low = min_speed(w);
         let want = (low + (v_cap - low) * throttle).min(v_cap);
-        let t = (b.fa_d * (4.0 / 3.0 * (self.v / v_cap.max(1e-9)).clamp(0.0, 1.0) - 1.0 / 3.0).max(0.0)).max(0.5);
+        let t = time_constant(b.fa_d, self.v);
         let brake = if throttle >= FULL_FORWARD && w <= ORBITAL_BRAKE_W { FULL_FORWARD_BRAKE * b.accel_rev } else { b.accel_rev };
         let mut a = ((want - self.v) / t.max(dt)).clamp(-brake, b.accel_fwd);
         if b.jerk_lin > 0.0 {
@@ -213,8 +250,14 @@ impl Speed {
     /// at 0.38 c, where the game holds such an approach (the community's "seven seconds at 75 %"): the wells' M unit and
     /// orbital cruise's zone numbers are not yet known (N1's S1 and G1 runs measure an approach).
     pub fn step_held(&mut self, throttle: f64, cap: f64, dt: f64) {
+        self.step_held_with(throttle, cap, 1.0, dt);
+    }
+
+    /// `step_held` with the gear's and the scoop's `factor` (`step_with`). The hold stays at the wells' cap (it stands in
+    /// for their unknown numbers); a speed over the lowered top speed is braked by the exe's own guard.
+    pub fn step_held_with(&mut self, throttle: f64, cap: f64, factor: f64, dt: f64) {
         self.v = self.v.min(cap);
-        self.step(throttle, cap, 0.0, dt);
+        self.step_with(throttle, cap, 0.0, factor, dt);
     }
 }
 
@@ -263,6 +306,9 @@ pub enum SafeStop {
 /// The exe's safe stop (`0x142CAE4A0`) when the swept sphere meets a free planet: without a target body, or closing at
 /// z + 1,000 m/s or more, an emergency stop; else by S's mode: nothing (`None`) in mode 0; in mode 1 an emergency stop when
 /// closing faster than `2 (z + (f - z) w)`, else nothing; in mode 2 the glide under f, else an emergency stop.
+/// f is always the record's here: in modes 1 and 2 the exe takes another value instead when the object at +0x1F8 of the
+/// component running the safe stop gives one (its virtual +0xF8, an optional float, `0x142CAE4A0`; read as a per-body
+/// value, inferred); that object is not identified, so the override is not built.
 pub fn safe_stop(closing: f64, target: bool, mode: Mode, w: f64) -> Option<SafeStop> {
     if !target || closing >= SAFE_STOP_Z + 1000.0 {
         return Some(SafeStop::Emergency);
@@ -435,6 +481,89 @@ mod tests {
         let mut s = Speed { v, last_acc: f64::INFINITY };
         s.step(1.0, cap, 0.0, dt);
         assert!(((v - s.v) / dt - 0.25 * want).abs() / want < 1e-9);
+    }
+
+    /// The gear's factor in supercruise (`0x142E86E20` -> `0x141B2D8F0` with k = m x 0.5, the current block only): at the
+    /// record's planet floor (200 km/s) and 400 km/s the top speed is 100 km/s, the forward and lateral accelerations x k, the
+    /// reverse one `r (v / Vsc) sqrt(v / (Vsc k))` = r x 8e5 / Vsc (120,000 m/s^2); turns, curves and boost speed unchanged.
+    #[test]
+    fn the_gear_goes_into_mode_twos_k() {
+        let (cap, v) = (FLOOR_PLANET, 400_000.0);
+        let k = cap / VSC * 0.5;
+        let r = record::CRUISE;
+        let b = cruise_block(cap, 0.5, v);
+        assert_eq!(b, r.mode2(k, v));
+        assert!((b.top_speed - 100_000.0).abs() < 1e-6, "{}", b.top_speed);
+        assert!((b.accel_fwd - r.accel_fwd * k).abs() / b.accel_fwd < 1e-12);
+        assert!((b.accel_side - r.accel_side * k).abs() / b.accel_side < 1e-12);
+        let rev = r.accel_rev * 8.0e5 / r.top_speed;
+        assert!((b.accel_rev - rev).abs() / rev < 1e-12 && (rev - 120_000.0).abs() < 1.0, "{} {rev}", b.accel_rev);
+        assert_eq!((b.boost_speed, b.turn, b.ang_accel, b.curve_turn, b.curve_roll), (r.boost_speed, r.turn, r.ang_accel, r.curve_turn, r.curve_roll));
+        // Stowed, the block is the one `Speed::step` has always used.
+        assert_eq!(cruise_block(cap, 1.0, v), r.mode2(cap / VSC, v));
+    }
+
+    /// The refresh scales only when k is not exactly 1: at Vsc with nothing out the block is the record's, braking at r even
+    /// over the cap (mode 2 at k = 1 would brake at r x 2 sqrt 2 at twice Vsc).
+    #[test]
+    fn the_refresh_leaves_k_of_one() {
+        assert_eq!(cruise_block(VSC, 1.0, 2.0 * VSC), record::CRUISE);
+        let scaled = record::CRUISE.mode2(1.0, 2.0 * VSC).accel_rev;
+        assert!((scaled / record::CRUISE.accel_rev - 2.0 * 2f64.sqrt()).abs() < 1e-9);
+    }
+
+    /// With the gear down at the planet floor: full throttle settles at half the cap (100 km/s, braked there from the cap by
+    /// the guard), zero throttle still at the zero-throttle speed (30 km/s). In orbital cruise (w = 1) the lowered top speed
+    /// (1,250 m/s) is under the zero-throttle speed (2,500 m/s), and the target is held to it at any throttle.
+    #[test]
+    fn the_gear_in_supercruise_halves_the_speed_not_the_floor() {
+        let dt = 1.0 / 60.0;
+        // (Braked at a quarter of the reverse acceleration: a full throttle.)
+        let mut s = Speed { v: FLOOR_PLANET, last_acc: 0.0 };
+        for _ in 0..2400 {
+            s.step_held_with(1.0, FLOOR_PLANET, 0.5, dt);
+        }
+        assert!((s.v - 0.5 * FLOOR_PLANET).abs() < 1.0, "{}", s.v);
+        for _ in 0..1200 {
+            s.step_held_with(0.0, FLOOR_PLANET, 0.5, dt);
+        }
+        assert!((s.v - MIN_SPEED).abs() < 1.0, "{}", s.v);
+        for throttle in [0.0, 1.0] {
+            let mut s = Speed { v: 3000.0, last_acc: 0.0 };
+            for _ in 0..1200 {
+                s.step_with(throttle, APPROACH_CAP, 1.0, 0.5, dt);
+            }
+            assert!((s.v - 0.5 * APPROACH_CAP).abs() < 1.0, "{throttle} {}", s.v);
+        }
+    }
+
+    /// Ticks from 90 % of `cap` to within 1 % of it at full throttle outside orbital cruise.
+    fn ticks_to_cap(cap: f64) -> usize {
+        let mut s = Speed { v: 0.9 * cap, last_acc: 0.0 };
+        (1..10_000).find(|_| {
+            s.step(1.0, cap, 0.0, 1.0 / 60.0);
+            s.v >= 0.99 * cap
+        }).unwrap()
+    }
+
+    /// The time constant reads the speed over Vsc (`0x142E6E960` ~663): the 0.5 s floor up to 0.625 Vsc (about 1,251 c), so
+    /// at every speed under a planet's or a star's floor and far above them; D = 1 at Vsc.
+    #[test]
+    fn the_time_constant_reads_vsc() {
+        let d = record::CRUISE.fa_d;
+        for v in [0.0, MIN_SPEED, FLOOR_PLANET, FLOOR_STAR, 100.0 * C, 0.625 * VSC] {
+            assert_eq!(time_constant(d, v), 0.5, "{v}");
+        }
+        assert!(time_constant(d, 0.63 * VSC) > 0.5);
+        assert!((0.625 * VSC / C - 1250.9).abs() < 0.1);
+        assert_eq!(time_constant(d, VSC), d);
+    }
+
+    /// What reading Vsc changed: from 90 % of a cap to within 1 % of it at full throttle in 89 ticks; over the cap (T 0.87 to
+    /// 1 s there) it took 135 (measured before the change). The same at a planet's floor and a star's: k scales the limits.
+    #[test]
+    fn the_approach_to_the_cap_from_ninety_percent() {
+        assert_eq!((ticks_to_cap(FLOOR_PLANET), ticks_to_cap(FLOOR_STAR)), (89, 89));
     }
 
     /// A planet's well (the 1 AU width unit): near the planet the cap grows in proportion to the distance (about 2 c at 10 light

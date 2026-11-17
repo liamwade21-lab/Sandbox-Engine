@@ -93,7 +93,9 @@ impl Zone {
         (target, mode)
     }
 
-    /// Orbital cruise's blend w for the target body in `mode` (`0x142C99400`).
+    /// Orbital cruise's blend w for the target body in `mode` (`0x142C99400`). Not built: the exe's w is also 0 unless the
+    /// handle at S+0x98 is set (S+0xA0 not null) and that object's virtual +0x18 answers true; the object is not
+    /// identified, so here it is taken as always true.
     pub fn blend(&self, body: &Body, mode: Mode) -> f64 {
         if mode == Mode::Free {
             return 0.0;
