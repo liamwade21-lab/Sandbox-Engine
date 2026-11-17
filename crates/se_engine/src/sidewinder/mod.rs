@@ -14,6 +14,7 @@
 //! - `convert` (tests only) makes the mod's files from Elite's files.
 
 pub mod assets;
+pub mod beam;
 pub mod chair;
 pub mod draw;
 mod exposure;
@@ -329,6 +330,7 @@ impl Plugin for SidewinderPlugin {
             return;
         }
         draw::build(app);
+        beam::build(app);
         app.init_resource::<seat::Seat>()
             .init_resource::<seat::BoardPrompt>()
             // E at the ship and the seat's keys: after the frame's input, before the sandbox's reader takes E as "use".

@@ -6,7 +6,7 @@
 // same stars, eclipses, cloud shadows, sky light, ambient light and haze.
 
 import super::atmosphere_common::AtmParams;
-import super::ground_light::{PatchLight, CloudShadow, PointLight, LightBody, point_light_at, lit_surface};
+import super::ground_light::{PatchLight, CloudShadow, PointLight, LightBody, point_light_at, lit_surface, ship_beam_facing, ship_beam_texels, beam_texel};
 
 struct Body {
     m0: vec4<f32>,
@@ -143,9 +143,10 @@ fn dither2(frag: vec2<f32>) -> f32 {
 @group(2) @binding(9) var cloud_weather: texture_cube<f32>;
 @group(2) @binding(10) var cloud_pattern: texture_cube<f32>;
 
-// The ground's normal-free light at `world` (ground_light.wesl `point_light_at`).
+// The ground's normal-free light at `world` (ground_light.wesl `point_light_at`), and a ship's headlights there while one is
+// lit (`ship_beam_facing`).
 fn point_light(world: vec3<f32>) -> PointLight {
-    return point_light_at(
+    var pl = point_light_at(
         LightBody(body.m0, body.m1, body.m2, body.centre, body.atm_flags, body.key),
         body.atm,
         body.light,
@@ -162,6 +163,19 @@ fn point_light(world: vec3<f32>) -> PointLight {
         cloud_pattern,
         world,
     );
+    if cloud_sh.beam.head.x > 0.5 {
+        let x = ship_beam_texels(cloud_sh, world);
+        pl.flat_e += ship_beam_facing(cloud_sh, world, vec4<f32>(beam_profile(x.x), beam_profile(x.y), beam_profile(x.z), beam_profile(x.w)));
+    }
+    return pl;
+}
+
+// A ship's headlights' profile at texel coordinate `x` (ground_light.wesl `ship_beam_texels`), read through this binding: the
+// two texels the ship's linear sampler blends.
+fn beam_profile(x: f32) -> f32 {
+    let a = beam_texel(x, 0u);
+    let c = beam_texel(x, 1u);
+    return mix(cloud_sh.beam.profile[a.x][a.y], cloud_sh.beam.profile[c.x][c.y], fract(x));
 }
 
 fn pack_light(pl: PointLight) -> LightRec {

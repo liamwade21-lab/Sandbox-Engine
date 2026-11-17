@@ -48,6 +48,36 @@ struct CloudShadow {
     // place on the ground, w how much it holds (0 with the mod off); `hero_end` its end, where his shadow ends.
     hero: vec4<f32>,
     hero_end: vec4<f32>,
+    // A ship's headlights on the ground (`ship_beam_at`), after the hero's two: all zeros with no headlight lit.
+    beam: ShipBeam,
+};
+
+// One headlight of a ship (volumetric_clouds.rs `BeamLamp`, filled by the Sidewinder mod's sidewinder/beam.rs): its slot of
+// the ship's lights buffer (sidewinder_lit.wesl `ShipLight`) as it is this frame, placed from the camera instead of in the ship.
+struct ShipBeamLamp {
+    // xyz the lamp's apex from the camera (m, the render frame's axes), w its range (m).
+    pos_range: vec4<f32>,
+    // rgb its colour x level x the stand-in unit (the exposure factor is `beam_exposure`'s), w its source size (m).
+    colour: vec4<f32>,
+    // xyz the spot's axis (the render frame's), w the cosine of its half cone (-2: a point light).
+    dir_cos: vec4<f32>,
+    // x the cosine of the inner half angle, y K = pi / cone for the profile, z 1 when the profile applies.
+    spot: vec4<f32>,
+    // The slot's exposure term (sidewinder_lit.wesl `ShipScene::lamps`): x 1 when on, y its bias, z and w its clamp.
+    exposure: vec4<f32>,
+};
+
+// The ship's headlights (volumetric_clouds.rs `BeamRecord`), as many as the Sidewinder's lights' switch drives (four: the two
+// spots and the two point lights at their housings).
+struct ShipBeam {
+    // x 1 while a headlight is lit (0: the whole record is zeros, and the callers skip the term), y the scene value
+    // (sidewinder_lit.wesl `ShipScene::scene_ev`), z 1 when the automatic exposure's compensation applies, w that compensation
+    // in stops (written on the GPU each frame while lit: sidewinder/exposure.rs).
+    head: vec4<f32>,
+    lamps: array<ShipBeamLamp, 4>,
+    // The headlights' IES profile as the ship's sampler reads it (sidewinder_lit.wesl `ies_tex` at v 0.5) at each of its row's
+    // 1024 texels, four a vec4 (written on the GPU each frame while lit: sidewinder/exposure.rs).
+    profile: array<vec4<f32>, 256>,
 };
 
 // The light left by the volumetric clouds over the body-frame direction `bdir` at `height` m on a
@@ -285,6 +315,109 @@ fn point_light_at(
         o.haze_t = atm_apply_aerial(atm, tex_s, tex_t, smp, vec3<f32>(1.0), cam_km, view_km, l, vec3<f32>(0.0));
     }
     return o;
+}
+
+// ---- A ship's headlights (`CloudShadow::beam`) ----
+//
+// The same rule as the ship's own lamps (sidewinder_lit.wesl `ship_lamps`, Elite's spot loop: the windowed inverse square
+// with the source size, the cone, the IES profile, the exposure factor), so a white matte surface facing a headlight is as
+// bright on the ground as on the ship. Only its diffuse term: the ground has no Elite specular. Callers take it only while
+// `beam.head.x` is 1 (one uniform branch), so nothing changes without a lit headlight.
+//
+// In two steps, because the profile's table must be read through the caller's own binding: indexed in a record passed by value
+// (as here), the whole table is copied to a local for every pixel, which cost the ground half a millisecond even with the
+// lamps off (measured). So `ship_beam_texels` says where each lamp reads the profile, the caller reads it there from its
+// binding (its `beam_profile`, with `beam_texel`), and `ship_beam_at` / `ship_beam_facing` take the four values.
+
+// The profile's texels in `ShipBeam::profile` (the IES texture's width).
+const BEAM_PROFILE_TEXELS: f32 = 1024.0;
+
+// A slot's exposure factor (sidewinder_lit.wesl `lamp_exposure`): 2^(clamp(scene value + adapted + bias, min, max) - 3) with
+// its term on, else 1.
+fn beam_exposure(b: ShipBeam, t: vec4<f32>) -> f32 {
+    if t.x < 0.5 {
+        return 1.0;
+    }
+    return exp2(clamp(b.head.y + b.head.z * b.head.w + t.y, t.z, t.w) - 3.0);
+}
+
+// Where a lamp reads its profile, from the camera at `p` (m): the texel coordinate of the ship's lookup
+// (sidewinder_lit.wesl `ship_lamps`: u = u1 - (u1 - u0) K (1 - cos theta) across the texels' centres), clamped to the row as
+// the ship's clamped sampler is.
+fn beam_texel_x(lamp: ShipBeamLamp, p: vec3<f32>) -> f32 {
+    let to = lamp.pos_range.xyz - p;
+    let cos_t = dot(lamp.dir_cos.xyz, -(to * inverseSqrt(dot(to, to))));
+    let u0 = 0.5 / BEAM_PROFILE_TEXELS;
+    let u1 = (BEAM_PROFILE_TEXELS - 0.5) / BEAM_PROFILE_TEXELS;
+    let u = u1 - (u1 - u0) * lamp.spot.y * (1.0 - saturate(cos_t));
+    return clamp(u * BEAM_PROFILE_TEXELS - 0.5, 0.0, BEAM_PROFILE_TEXELS - 1.0);
+}
+
+// Each lamp's texel coordinate in the profile at `world` (`beam_texel_x`).
+fn ship_beam_texels(sh: CloudShadow, world: vec3<f32>) -> vec4<f32> {
+    return vec4<f32>(beam_texel_x(sh.beam.lamps[0], world), beam_texel_x(sh.beam.lamps[1], world), beam_texel_x(sh.beam.lamps[2], world), beam_texel_x(sh.beam.lamps[3], world));
+}
+
+// The table's entry (xy: `profile[x][y]`) of the texel `k` (0 or 1) after the coordinate `x`: the two the linear sampler blends
+// by `fract(x)`.
+fn beam_texel(x: f32, k: u32) -> vec2<u32> {
+    let i = min(u32(x) + k, u32(BEAM_PROFILE_TEXELS) - 1u);
+    return vec2<u32>(i / 4u, i % 4u);
+}
+
+// One headlight at `p` (from the camera, m) with its profile there `ies` (unused without one): xyz its irradiance on a surface
+// facing it, and the direction towards it (both zero where it gives none).
+fn beam_lamp(b: ShipBeam, lamp: ShipBeamLamp, p: vec3<f32>, ies: f32) -> array<vec3<f32>, 2> {
+    let none = array<vec3<f32>, 2>(vec3<f32>(0.0), vec3<f32>(0.0));
+    if all(lamp.colour.rgb == vec3<f32>(0.0)) {
+        return none;
+    }
+    let to = lamp.pos_range.xyz - p;
+    let d2 = dot(to, to);
+    let range = lamp.pos_range.w;
+    if d2 >= range * range || d2 <= 0.0 {
+        return none;
+    }
+    let l = to * inverseSqrt(d2);
+    var shape = 1.0;
+    if lamp.dir_cos.w > -1.5 {
+        let cos_t = dot(lamp.dir_cos.xyz, -l);
+        if lamp.spot.z > 0.5 {
+            if ies < 0.001 {
+                return none;
+            }
+            shape = ies;
+        }
+        let lo = lamp.dir_cos.w;
+        let hi = lamp.spot.x;
+        shape *= saturate((cos_t - lo) / (hi - lo));
+    }
+    let s2 = lamp.colour.w * lamp.colour.w;
+    let m = max(d2, s2);
+    let w = max(1.0 - (m / (range * range)) * (m / (range * range)), 0.0);
+    let att = w * w / m * shape;
+    return array<vec3<f32>, 2>(lamp.colour.rgb * beam_exposure(b, lamp.exposure) * att, l);
+}
+
+// One headlight's irradiance on a surface with normal `n` (the ship's `nl = saturate(dot(n, l))`).
+fn beam_lamp_on(b: ShipBeam, lamp: ShipBeamLamp, p: vec3<f32>, ies: f32, n: vec3<f32>) -> vec3<f32> {
+    let e = beam_lamp(b, lamp, p, ies);
+    return e[0] * saturate(dot(n, e[1]));
+}
+
+// The headlights' irradiance at `world` (from the camera, m, the render frame's axes) on a surface with normal `n`, each lamp's
+// profile there in `ies` (the caller's reading at `ship_beam_texels`): the caller multiplies it by albedo / pi, as the ship's
+// diffuse term (`s.diffuse * nl / pi * att * e`). (Each lamp by a constant index: a loop's index would copy the array too.)
+fn ship_beam_at(sh: CloudShadow, world: vec3<f32>, n: vec3<f32>, ies: vec4<f32>) -> vec3<f32> {
+    return beam_lamp_on(sh.beam, sh.beam.lamps[0], world, ies.x, n) + beam_lamp_on(sh.beam, sh.beam.lamps[1], world, ies.y, n)
+        + beam_lamp_on(sh.beam, sh.beam.lamps[2], world, ies.z, n) + beam_lamp_on(sh.beam, sh.beam.lamps[3], world, ies.w, n);
+}
+
+// The same for a light with no normal (the scatter's per-instance light, `PointLight::flat_e`): taken as facing each
+// headlight, N.L = 1 (ours: the record has no normal; the side of a tree or a wall facing the ship is what the beam shows).
+fn ship_beam_facing(sh: CloudShadow, world: vec3<f32>, ies: vec4<f32>) -> vec3<f32> {
+    return beam_lamp(sh.beam, sh.beam.lamps[0], world, ies.x)[0] + beam_lamp(sh.beam, sh.beam.lamps[1], world, ies.y)[0]
+        + beam_lamp(sh.beam, sh.beam.lamps[2], world, ies.z)[0] + beam_lamp(sh.beam, sh.beam.lamps[3], world, ies.w)[0];
 }
 
 // A surface's colour from its point's light, albedo and normal `n`: `l` towards the brightest star, `wrap`

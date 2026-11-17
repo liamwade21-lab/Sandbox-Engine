@@ -177,6 +177,63 @@ struct CloudShadow {
     /// The Viltrumite mod's hero ([`HeroSoil`]).
     hero: Vec4,
     hero_end: Vec4,
+    /// A ship's headlights ([`ShipBeam`]), after the hero's two.
+    beam: BeamRecord,
+}
+
+/// The headlights a ship lights the ground with ([`ShipBeam`]): the Sidewinder's four lights its lights' switch drives (in its
+/// `ship.json` the headlight spot activity's two bones and the point light activity's two at their housings;
+/// `sidewinder/beam.rs` checks the shipped file against it).
+pub(crate) const SHIP_BEAM_LAMPS: usize = 4;
+/// The beam profile's table ([`BeamRecord::profile`]): a value per texel of the headlights' IES profile's row (1024 wide; the
+/// mod refuses another width), four a `Vec4`.
+pub(crate) const BEAM_PROFILE_TEXELS: usize = 1024;
+
+/// One headlight as `ground_light.wesl` `ShipBeamLamp` reads it: its slot of the ship's lights buffer this frame placed from the
+/// camera. `pos_range` xyz the apex from the camera (m, the render frame's axes), w the range (m); `colour` rgb colour x level x
+/// the stand-in unit, w the source size (m); `dir_cos` xyz the spot's axis (render frame), w the cosine of the half cone (-2: a
+/// point light); `spot` x the cosine of the inner half angle, y K = pi / cone, z 1 when the profile applies; `exposure` the
+/// slot's exposure term (x 1 on, y bias, z, w clamp).
+#[derive(Clone, Copy, ShaderType, Default, Debug, PartialEq)]
+pub(crate) struct BeamLamp {
+    pub pos_range: Vec4,
+    pub colour: Vec4,
+    pub dir_cos: Vec4,
+    pub spot: Vec4,
+    pub exposure: Vec4,
+}
+
+/// A ship's headlights lighting the ground (`ground_light.wesl` `ship_beam_at`), written by the Sidewinder mod
+/// (`sidewinder/beam.rs`) as [`HeroSoil`] is by the hero's: `head` x 1 while a headlight is lit, y the scene value, z 1 when the
+/// automatic exposure's compensation applies (w is the GPU's: left 0); `lamps` each headlight. All zeros with no ship, the lamps
+/// off or the ship unpowered: the ground's shaders then skip the term, so the ground is as without the mod.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct ShipBeam {
+    pub head: Vec4,
+    pub lamps: [BeamLamp; SHIP_BEAM_LAMPS],
+}
+
+/// [`ShipBeam`] in the record (`ground_light.wesl` `ShipBeam`), with two parts only the GPU writes, each frame while a headlight
+/// is lit (`sidewinder/exposure.rs`, before anything reads the record): `head.w`, the automatic exposure's compensation, and
+/// `profile`, the IES profile as the ship's sampler reads it. The CPU's copy holds zeros there; a rewrite of the record lands
+/// before that pass in the same frame.
+#[derive(Clone, Copy, ShaderType, Debug, PartialEq)]
+struct BeamRecord {
+    head: Vec4,
+    lamps: [BeamLamp; SHIP_BEAM_LAMPS],
+    profile: [Vec4; BEAM_PROFILE_TEXELS / 4],
+}
+
+impl Default for BeamRecord {
+    fn default() -> Self {
+        BeamRecord::of(&ShipBeam::default())
+    }
+}
+
+impl BeamRecord {
+    fn of(b: &ShipBeam) -> Self {
+        BeamRecord { head: b.head, lamps: b.lamps, profile: [Vec4::ZERO; BEAM_PROFILE_TEXELS / 4] }
+    }
 }
 
 /// Where the ground should hold still for the Viltrumite mod's hero, a line from the camera (m): `start` his soles' place on the
@@ -378,6 +435,7 @@ impl Plugin for VolumetricCloudsPlugin {
         app.insert_resource(ready.clone())
             .init_resource::<VolumetricClouds>()
             .init_resource::<HeroSoil>()
+            .init_resource::<ShipBeam>()
             .init_resource::<ViewShake>()
             .init_resource::<detail::DetailCover>()
             .init_resource::<NoiseJob>()
@@ -819,7 +877,7 @@ fn update_cloud_view(
         Res<AmbientLighting>,
         Res<crate::terrain::SelfEmission>,
     ),
-    (cam, hero_soil, shake): (Res<FlyCamera>, Res<HeroSoil>, Res<ViewShake>),
+    (cam, hero_soil, shake, ship_beam): (Res<FlyCamera>, Res<HeroSoil>, Res<ViewShake>, Res<ShipBeam>),
     ready: Res<CloudsReady>,
     noise: Option<Res<CloudNoise>>,
     (mut state, mut cloud_body, mut images): (ResMut<VolumetricClouds>, ResMut<CloudBody>, ResMut<Assets<Image>>),
@@ -1057,6 +1115,7 @@ fn update_cloud_view(
                 map_e2: out.shadow_e2,
                 hero: Vec4::ZERO,
                 hero_end: Vec4::ZERO,
+                beam: BeamRecord::default(),
             };
             // The detail cover's levels, each once the camera is low enough for its texels to show.
             detail::update(&mut detail_cover, &mut detail_jobs, cloud_body.id, &specs, &spins, cam_s, terrain.radius, lod_on() && !giant, &data.vfs);
@@ -1102,6 +1161,7 @@ fn update_cloud_view(
     shadow.sun.w = 1.0 - clouds_share;
     shadow.hero = hero_soil.start;
     shadow.hero_end = hero_soil.end;
+    shadow.beam = BeamRecord::of(&ship_beam);
     if let Some(a) = assets
         && shadow != *last_shadow
         && let Some(mut b) = buffers.get_mut(&a.shadow)

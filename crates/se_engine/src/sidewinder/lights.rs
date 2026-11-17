@@ -635,6 +635,18 @@ pub struct LightsState {
     pub log: bool,
 }
 
+impl LightsState {
+    /// The lights buffer's records as last written, in the list's order (`beam.rs` reads the headlights' there).
+    pub fn written(&self) -> &[ShipLight] {
+        &self.written
+    }
+
+    /// The scene's exposure inputs as last written, and whether the adapted compensation applies.
+    pub fn scene(&self) -> Option<(SceneExposure, bool)> {
+        self.scene
+    }
+}
+
 /// One frame: the parameters, every slot's level, the buffers written where they changed.
 #[allow(clippy::too_many_arguments)]
 pub fn update(

@@ -11,7 +11,7 @@ import super::gas_giant::{GiantParams, gas_giant_albedo, gg_fbm, gg_hash, gg_has
 // The light record, the clouds' shadow, the terminator and the haze, shared with the objects on the
 // ground (scatter_draw.wesl). PatchLight: the node's lighting (terrain.rs), one record per node in the
 // material's light page, at `planet.slot`.
-import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_shadow_at, ground_haze};
+import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_shadow_at, ground_haze, ship_beam_at, ship_beam_texels, beam_texel};
 // The biome weights and their noises, shared with the objects placed on the ground (the scatter's cull
 // pass). The wrappers below (`terra_noise`, `se_terra_snow`, `se_terra_weights`, `biome_weights`, ...)
 // pass them this material's values.
@@ -169,6 +169,14 @@ struct Biomes {
 // where the star's ray crosses the layer's cloud mass, as the map's mean.
 fn cloud_shadow(bdir: vec3<f32>, height: f32) -> f32 {
     return cloud_shadow_at(cloud_sh, cloud_cover, cloud_cover_smp, cloud_map, cloud_map_smp, cloud_weather, cloud_pattern, planet.planet.w, planet.proc_params2.xy, bdir, height);
+}
+
+// A ship's headlights' profile at texel coordinate `x` (ground_light.wesl `ship_beam_texels`), read through this binding: the
+// two texels the ship's linear sampler blends.
+fn beam_profile(x: f32) -> f32 {
+    let a = beam_texel(x, 0u);
+    let c = beam_texel(x, 1u);
+    return mix(cloud_sh.beam.profile[a.x][a.y], cloud_sh.beam.profile[c.x][c.y], fract(x));
 }
 
 const PI: f32 = 3.14159265359;
@@ -2325,6 +2333,14 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     s.col += albedo / PI * lit[planet.slot].levels.x * planet.atm_flags.y + emission;
     s.col += city_emit * ((1.0 - smoothstep(-0.12, 0.03, dot(up, l))) * lit[planet.slot].levels.z);
     s.e_level += vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y);
+    // A ship's headlights (ground_light.wesl `ship_beam_at`), on the shading normal as the star's light; only while one is lit,
+    // so the ground is untouched otherwise. The pixel's place from the camera in metres.
+    if cloud_sh.beam.head.x > 0.5 {
+        let p_m = in.world_pos * (planet.planet.w / max(in.centre.w, 1e-30));
+        let x = ship_beam_texels(cloud_sh, p_m);
+        let ies = vec4<f32>(beam_profile(x.x), beam_profile(x.y), beam_profile(x.z), beam_profile(x.w));
+        s.col += albedo / PI * ship_beam_at(cloud_sh, p_m, ns, ies);
+    }
     // The soils' sheen: GGX with their roughness (dielectric, F0 0.04), only where the
     // mesh's own surface faces the star.
     // Beyond the soils' 2 km, the sample layers' roughness where they show.
