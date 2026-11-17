@@ -339,28 +339,6 @@ impl ShipView {
     }
 }
 
-/// The old feeder's input, kept only so `voices.rs`'s tests (another task's file) still build: `motion_in` makes the flight's
-/// numbers of a ship flying at `vel` with `top_speed` as both top speeds and no physics time (the throttle is `ShipView`'s
-/// now). TO GO when `voices.rs`'s tests use `stock` (its writer's change no longer calls it: unused until then).
-#[cfg(test)]
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Flight {
-    pub vel: [f64; 3],
-    pub acc: [f64; 3],
-    pub omega: [f64; 3],
-    pub top_speed: f64,
-    pub accel_fwd: f64,
-    pub back_share: f64,
-    pub throttle: f64,
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn motion_in(f: &Flight) -> SoundMotion {
-    SoundMotion { full_top: f.top_speed, top: f.top_speed, accel_fwd: f.accel_fwd, vel: f.vel, omega: f.omega, mass_k: 1.0, ..SoundMotion::default() }
-}
-
 /// The stock ship's flight numbers (its mass with a full tank, the gear up) at `eng` ENG pips, flying at `vel` (ship axes,
 /// m/s) with no spin and no physics time, for the sound's tests.
 #[cfg(test)]

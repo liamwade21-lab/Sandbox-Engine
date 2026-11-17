@@ -1,25 +1,37 @@
 //! Reading the ship's sounds: `sounds.json` (`se_core::elite_sound`: parsed, every reference and behaviour checked) and
 //! every recording its media table names, each decoded whole by the decoder that will play it before anything can
 //! (`mods::check_sound`, `mods::check_wav`), on worker threads. A damaged recording is logged and stays silent; a damaged
-//! `sounds.json` leaves the ship silent.
+//! `sounds.json` leaves the ship silent. Each Wwise Tone Generator is a clip too (T5d-8: `se_core::elite_sound::tone`
+//! makes its samples as it plays), under its source plug-in's id; every noise voice shares one noise state, as in the
+//! exe.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use bevy::audio::AudioSource;
 use se_core::elite_sound::data::{Interp, Point};
-use se_core::elite_sound::{parse_sounds, Id, SoundBank};
+use se_core::elite_sound::tone::{ToneParams, NOISE_SEED};
+use se_core::elite_sound::{parse_sounds, Id, SoundBank, OUTPUT_RATE};
 
 use super::super::CODE;
 
 /// A recording, checked: its bytes and the length the media table gives (the decoder's own end is cut there, so a loop
-/// joins sample for sample).
+/// joins sample for sample); or a Tone Generator, whose samples are made as it plays (its own length: `frames` endless).
 pub struct Clip {
-    pub source: AudioSource,
+    pub source: ClipSource,
     pub file: String,
     pub frames: u64,
     pub channels: u16,
     pub rate: u32,
+}
+
+/// Where a clip's samples come from.
+pub enum ClipSource {
+    Recorded(AudioSource),
+    /// A Tone Generator's block and the noise state every noise voice shares (`DAT_145ee0fd0`, from its first value in the
+    /// exe's image at each load).
+    Tone(ToneParams, Arc<AtomicU32>),
 }
 
 /// A Wwise Motion Generator's first two channels (the pad's left and right motors: `carried_07`) and its length.
@@ -54,7 +66,7 @@ fn clip(file: &str, channels: u32, rate: u32, samples: u64) -> Result<Clip, Stri
     if decoded + 64 < samples {
         return Err(format!("decodes to {decoded} samples, the media table says {samples}"));
     }
-    Ok(Clip { source, file: file.to_string(), frames: samples.min(decoded.max(1)), channels: channels as u16, rate })
+    Ok(Clip { source: ClipSource::Recorded(source), file: file.to_string(), frames: samples.min(decoded.max(1)), channels: channels as u16, rate })
 }
 
 fn rumble(params: &serde_json::Value) -> Option<Rumble> {
@@ -90,5 +102,13 @@ pub fn load() -> Result<Loaded, (String, String)> {
         }
     }
     let rumbles = bank.file.source_plugins.iter().filter(|(_, p)| p.name == "Wwise Motion Generator").filter_map(|(id, p)| Some((*id, rumble(&p.params)?))).collect();
+    // (The bank's load checked every Tone Generator's block.)
+    let noise = Arc::new(AtomicU32::new(NOISE_SEED));
+    for (id, p) in bank.file.source_plugins.iter().filter(|(_, p)| p.name == "Wwise Tone Generator") {
+        if let Ok(t) = ToneParams::from_block(&p.params_hex) {
+            let clip = Clip { source: ClipSource::Tone(t, noise.clone()), file: format!("tone {id}"), frames: u64::MAX, channels: 1, rate: OUTPUT_RATE as u32 };
+            clips.insert(*id, Arc::new(clip));
+        }
+    }
     Ok(Loaded { bank: Arc::new(bank), clips, rumbles, refused, seconds: started.elapsed().as_secs_f64() })
 }

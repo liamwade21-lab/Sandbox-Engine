@@ -16,8 +16,16 @@ fn data(name: &str) -> Vec<u8> {
     miniz_oxide::inflate::decompress_to_vec_zlib(&b).expect(name)
 }
 
+/// The slice, its version written as today's (it was cut at version 1, which differs from 2 only by the master's plug-in
+/// in the shipped file's effects: the slice's master bus names it in its slot, its effect is not in the slice, and the
+/// mixer runs only the effects a file holds).
 fn slice_bytes() -> Vec<u8> {
-    data("slice.json.z")
+    let b = data("slice.json.z");
+    let old = b"\"format\":\"sidewinder-sounds 1\"";
+    match b.windows(old.len()).position(|w| w == old) {
+        Some(i) => [&b[..i], format!("\"format\":{:?}", data::FORMAT).as_bytes(), &b[i + old.len()..]].concat(),
+        None => b,
+    }
 }
 
 fn reference() -> Value {
@@ -895,6 +903,8 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
         }),
         distortion: None,
         limiter: None,
+        master: None,
+        compressor: None,
         rtpc: vec![
             // Band 0's gain to 30 (held to 24), band 1's type to 4.9 (truncated to 4: LOWSHELF) and turned on.
             curve(1, Accumulation::Exclusive, 30.0),
@@ -1002,6 +1012,8 @@ fn distortion_and_limiter_stages_follow_their_curves_and_clamps() {
                     wet_dry: 0.0,
                 }),
                 limiter: None,
+                master: None,
+                compressor: None,
                 // Pre-EQ band 1's type to 3.7 (design 3: low-pass), post-EQ band 0's gain to 60 (held to 48), the drive to
                 // 140 (100), the output level to 30 dB (24 dB: a gain of 15.85), the wet share to 48.
                 rtpc: vec![curve(10, 3.7), curve(31, 60.0), curve(GD_PARAM_DRIVE, 140.0), curve(GD_PARAM_OUTPUT_LEVEL, 30.0), curve(GD_PARAM_WET, 48.0)],
@@ -1015,6 +1027,8 @@ fn distortion_and_limiter_stages_follow_their_curves_and_clamps() {
                 eq: None,
                 distortion: None,
                 limiter: Some(data::PeakLimiter { threshold_db: 0.0, ratio: 50.0, lookahead_s: 0.01, release_s: 0.2, output_level_db: 0.0, process_lfe: true, channel_link: true }),
+                master: None,
+                compressor: None,
                 rtpc: vec![curve(LIMITER_PARAM_THRESHOLD, -4.0), curve(LIMITER_PARAM_OUTPUT_LEVEL, 1.28)],
             });
             f.game_syncs.game_parameters.insert(
@@ -1085,14 +1099,77 @@ fn voices_carry_their_route_and_recording_gain() {
     let mut v: Value = serde_json::from_slice(&slice_bytes()).unwrap();
     let buses: Vec<String> = v["objects"].as_object().unwrap().iter().filter(|(_, o)| o["type"] == "Bus").map(|(k, _)| k.clone()).collect();
     let tall_bus = buses.iter().find(|k| v["objects"][k.as_str()]["channel_config"] == "0x2d63f10c").unwrap().clone();
-    let child = buses.iter().find(|k| v["objects"][k.as_str()]["parent_bus"]["id"] == tall_bus.as_str()).cloned();
+    // (The child chosen is one a Sound's route goes through: only a route is checked for an up-mix.)
+    let routed = |k: &str| u32::from_str_radix(k, 16).is_ok_and(|bus| b.file.objects.keys().any(|id| b.output_bus(*id).is_some_and(|ob| b.bus_chain(ob).contains(&Id(bus)))));
+    let child = buses.iter().find(|k| v["objects"][k.as_str()]["parent_bus"]["id"] == tall_bus.as_str() && routed(k)).cloned().expect("a routed bus under a 7.1.4 one");
     v["objects"][tall_bus.as_str()]["channel_config"] = "0x0006370c".into();
     let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
     assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("not a layout")), "{e:?}");
-    if let Some(child) = child {
-        v["objects"][tall_bus.as_str()]["channel_config"] = "0x2d63f10c".into();
-        v["objects"][child.as_str()]["channel_config"] = "0x00003102".into();
+    v["objects"][tall_bus.as_str()]["channel_config"] = "0x2d63f10c".into();
+    v["objects"][child.as_str()]["channel_config"] = "0x00003102".into();
+    let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+    assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("up-mix")), "{e:?}");
+}
+
+/// T5d-8: a file of the old version is refused with a message (never a panic); the master's plug-in 0x00BA0003 in the
+/// master bus's slot is handed to the player (`master_suite`), bypassed by nothing in the data, and refused if its block
+/// needs what is not built; a Tone Generator whose block needs what is not built is refused at load.
+#[test]
+fn the_master_plug_in_and_the_tone_blocks_are_checked() {
+    let mut v: Value = serde_json::from_slice(&slice_bytes()).unwrap();
+    v["format"] = "sidewinder-sounds 1".into();
+    let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+    assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("sidewinder-sounds 2") && m.contains("copy_sidewinder")), "{e:?}");
+    v["format"] = data::FORMAT.into();
+    let b = parse_sounds(&serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(Mixer::new(Arc::new(b), 0).master_suite().is_none(), "the slice holds no master plug-in's block");
+    let master = v["objects"].as_object().unwrap().iter().filter(|(_, o)| o["type"] == "Bus" && o["parent_bus"].is_null());
+    assert!(master.flat_map(|(_, o)| o["fx"]["fx"].as_array().cloned().unwrap_or_default()).any(|s| s["fx_id"]["id"] == "4cc84cba"), "the master bus names 4cc84cba in a slot");
+    let band = |kind: u32, f: f64, g: f64, q: f64| serde_json::json!({ "kind": kind, "frequency": f, "gain_db": g, "q": q, "on": true });
+    let comp = |t: f64, r: f64, a: f64, rl: f64, m: f64, k: f64| serde_json::json!({ "threshold_db": t, "ratio": r, "attack_s": a, "release_s": rl, "makeup_db": m, "knee_db": k });
+    let suite = serde_json::json!({
+        "modules_on": [true, true, true, true], "eq_bands_n": 6,
+        "eq": [band(2, 50.0, -0.61, 1.02), band(3, 300.0, -1.7, 1.5), band(3, 150.0, -1.25, 1.0), band(3, 600.0, 1.0, 1.0), band(3, 1500.0, -1.5, 0.8), band(4, 1500.0, 1.0, 1.0)],
+        "comp_bands_n": 4, "comp_link": 0, "comp_link_amount": 0.0, "comp_link_flag": false, "comp_bands_on": [true, true, true, true],
+        "crossovers": [141.661, 423.6636, 3986.479],
+        "comp": [comp(-18.0, 2.0, 0.04, 0.2, 1.0, 0.5), comp(-23.0, 1.5, 0.05, 0.14, 0.0, 0.0), comp(-14.0, 1.5, 0.01, 0.1, 1.0, 0.0), comp(-23.0, 1.5, 0.01, 0.1, 1.0, 0.0)],
+        "channel_gains_db": [0.0, 0.0, 1.0, -3.0, -2.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "limiter_mode": 2, "limiter_threshold_db": -14.0, "limiter_attack_s": 0.0, "limiter_release_s": 0.0, "limiter_makeup_db": 14.0, "limiter_link": false,
+    });
+    v["effects"]["4cc84cba"] = serde_json::json!({ "type": "FxShareSet", "id": "4cc84cba", "name": null, "plugin": MASTER_SUITE, "params_hex": "", "master": suite, "rtpc": [] });
+    let b = parse_sounds(&serde_json::to_vec(&v).unwrap()).unwrap();
+    let m = Mixer::new(Arc::new(b), 0);
+    let s = m.master_suite().expect("handed out");
+    assert_eq!((s.limiter_threshold_db, s.limiter_makeup_db, s.eq.len()), (-14.0, 14.0, 6));
+    v["effects"]["4cc84cba"]["master"]["comp_link"] = 2.into();
+    let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+    assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("4cc84cba") && m.contains("link")), "{e:?}");
+    // A Tone Generator needing a waveform that is not built (triangle, 1).
+    let mut v: Value = serde_json::from_slice(&slice_bytes()).unwrap();
+    let tone = v["source_plugins"].as_object().unwrap().iter().find(|(_, p)| p["name"] == "Wwise Tone Generator").map(|(k, _)| k.clone());
+    if let Some(t) = tone {
+        let hex = v["source_plugins"][t.as_str()]["params_hex"].as_str().unwrap().to_string();
+        assert!(tone::ToneParams::from_block(&hex).is_ok(), "the slice's own block");
+        let mut bad = hex.clone();
+        bad.replace_range(0x21 * 2..0x21 * 2 + 2, "01");
+        v["source_plugins"][t.as_str()]["params_hex"] = bad.into();
         let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
-        assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("up-mix")) || e.is_ok(), "{e:?}");
+        assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("waveform 1")), "{e:?}");
     }
+}
+
+/// T5d-8: an emitter's orientation reaches its voices' updates; one not finite is ignored.
+#[test]
+fn an_emitters_orientation_reaches_its_voices() {
+    let b = bank();
+    let r = reference();
+    let name = r["at_start"].as_object().unwrap().keys().next().unwrap().clone();
+    let mut m = Mixer::new(b, 0);
+    m.set_emitter(7, [1.0, 0.0, -2.0]);
+    m.set_emitter_orientation(7, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    m.set_emitter_orientation(7, [f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    m.post(&name, 7).unwrap();
+    let u = m.step(0.0);
+    assert!(!u.is_empty());
+    assert!(u.iter().all(|u| u.orientation == Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])), "{:?}", u.first().map(|u| u.orientation));
 }

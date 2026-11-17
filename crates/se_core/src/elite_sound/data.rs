@@ -10,8 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// The version `sounds.json` carries.
-pub const FORMAT: &str = "sidewinder-sounds 1";
+/// The version `sounds.json` carries (2 since T5d-8: the master's plug-in 0x00BA0003 is shipped, without which the sound
+/// would play 14 dB too quiet; a file of version 1 is refused with a message to re-make it).
+pub const FORMAT: &str = "sidewinder-sounds 2";
 
 /// A Wwise id (FNV-1 hash or object id), written as 8 lower-case hex digits as `events.json` writes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -938,12 +939,85 @@ pub struct PeakLimiter {
     pub channel_link: bool,
 }
 
+/// A Wwise Compressor's parameter block (plug-in 0x006c0003, `AkCompressorFXParams`; Elite's `SetParamsBlock` at
+/// 0x1449f5300 copies it as stored, the output level made `powf(10, level / 20)`; its `SetParam` 0x1449f5180 numbers them
+/// 0-6 in this order): f32 threshold (dB), ratio, attack (s), release (s), output level (dB), then u8 LFE and channel link.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compressor {
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub attack_s: f64,
+    pub release_s: f64,
+    pub output_level_db: f64,
+    pub process_lfe: bool,
+    pub channel_link: bool,
+}
+
+/// One band of the master plug-in's equaliser as its block stores it (`SetParamsBlock` 0x144af9670: block +0x0e + 16 n a
+/// u32 type, f32 frequency, gain, Q; its on byte at block +0x08 + n): the type is the engine's own design type
+/// (`FUN_144afed20`'s switch: 1 low-pass, 2 high-pass, 3 peaking, 4 high shelf, ...).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasterEqBand {
+    pub kind: u32,
+    pub frequency: f64,
+    pub gain_db: f64,
+    pub q: f64,
+    pub on: bool,
+}
+
+/// One band of the master plug-in's compressor (block +0x8b + 24 n: threshold, ratio, attack, release, make-up, knee).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasterCompBand {
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub attack_s: f64,
+    pub release_s: f64,
+    pub makeup_db: f64,
+    pub knee_db: f64,
+}
+
+/// The master bus's last plug-in, 0x00BA0003 (four modules in a row: an equaliser, a multiband compressor, channel gains,
+/// a limiter), its 304-byte parameter block as Elite's own `SetParamsBlock` (0x144af9670) reads it, every value as stored
+/// (the modules' convert routines hold them to their ranges at run time: [`super::master`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasterSuite {
+    /// Block bytes 0-3: each module on (equaliser, compressor, channel gains, limiter).
+    pub modules_on: [bool; 4],
+    /// Block +0x04: the equaliser's band count; its bands (+0x0e, on bytes +0x08).
+    pub eq_bands_n: u32,
+    pub eq: Vec<MasterEqBand>,
+    /// Block +0x6e: the compressor's band count, +0x72 its channel link mode, +0x76 the link amount (percent), +0x7a a flag
+    /// of the link, +0x7b.. each band on; +0x7f its three crossovers (Hz); +0x8b its bands.
+    pub comp_bands_n: u32,
+    pub comp_link: u32,
+    pub comp_link_amount: f64,
+    pub comp_link_flag: bool,
+    pub comp_bands_on: [bool; 4],
+    pub crossovers: [f64; 3],
+    pub comp: Vec<MasterCompBand>,
+    /// Block +0xeb: the channel gains (dB) by the engine's speaker order (FL, FR, C, LFE, side L, side R, back L, back R, ...).
+    pub channel_gains_db: [f64; 12],
+    /// Block +0x11b: the limiter's mode, threshold (dB), attack (s), release (s), make-up (dB); +0x12f its channel link.
+    pub limiter_mode: u32,
+    pub limiter_threshold_db: f64,
+    pub limiter_attack_s: f64,
+    pub limiter_release_s: f64,
+    pub limiter_makeup_db: f64,
+    pub limiter_link: bool,
+}
+
 /// An effect the mixer runs: a Wwise Parametric EQ (`eq`), Guitar Distortion (`distortion`) or Peak Limiter (`limiter`),
-/// exactly one of them, by `plugin` (the module's docs list the others, kept out). `rtpc` are the game parameter curves on
-/// its parameters, by the plug-in's own parameter index (`param_id`, as its `SetParam` in Elite's exe numbers them: the
-/// EQ's `0x144a10630`, band n's type, gain, frequency, Q and on/off at 5n..5n+4, the output level at 15, LFE at 16; the
-/// Guitar Distortion's `0x144a04b60`, pre-EQ band n at 10n..10n+4, post-EQ band n at 30+10n.., then type 60, drive 61, tone
-/// 62, rectification 63, output level 64, wet share 65; the limiter's `0x144a12330`, its fields' order).
+/// the master's plug-in 0x00BA0003 (`master`, run on the output's sum: [`super::master`]) or a Wwise Compressor
+/// (`compressor`, [`super::compressor`]), exactly one of them, by `plugin` (the module's docs list the others, kept out).
+/// `rtpc` are the game parameter curves on its parameters, by the plug-in's own parameter index (`param_id`, as its
+/// `SetParam` in Elite's exe numbers them: the EQ's `0x144a10630`, band n's type, gain, frequency, Q and on/off at
+/// 5n..5n+4, the output level at 15, LFE at 16; the Guitar Distortion's `0x144a04b60`, pre-EQ band n at 10n..10n+4, post-EQ
+/// band n at 30+10n.., then type 60, drive 61, tone 62, rectification 63, output level 64, wet share 65; the limiter's
+/// `0x144a12330` and the compressor's `0x1449f5180`, their fields' order).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effect {
@@ -959,6 +1033,12 @@ pub struct Effect {
     pub distortion: Option<GuitarDistortion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limiter: Option<PeakLimiter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master: Option<MasterSuite>,
+    /// A Wwise Compressor: run only on the bus the output mixes as a sub-mix ([`super::SUBMIX_BUS`]); on every other bus
+    /// it is kept, not built (none would act at the ship's levels: `no_bus_compressor_would_act`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressor: Option<Compressor>,
     pub rtpc: Vec<Rtpc>,
 }
 
@@ -1001,7 +1081,7 @@ pub struct SoundFile {
 pub fn parse_sounds(bytes: &[u8]) -> Result<super::SoundBank, SoundError> {
     let file: SoundFile = serde_json::from_slice(bytes).map_err(|e| SoundError::Bad(format!("sounds.json: {e}")))?;
     if file.format != FORMAT {
-        return Err(SoundError::Bad(format!("sounds.json: format {:?}, expected {FORMAT:?}", file.format)));
+        return Err(SoundError::Bad(format!("sounds.json: format {:?}, expected {FORMAT:?} (an older file: re-make it with copy_sidewinder)", file.format)));
     }
     super::SoundBank::new(file)
 }

@@ -1,12 +1,13 @@
 //! The runtime: what the Wwise sound engine does with `sounds.json` (the module's docs list what is built).
 
+use super::compressor::{self as comp, CompressorNow};
 use super::curve::{cents_to_ratio, db_to_gain, eval, find, gain_to_db, interpolate};
 use super::data::*;
 use super::filter;
 use super::place::Placement;
 use super::{
-    event_id, wwise_id, FxStage, SoundBank, SoundError, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL, GD_PARAM_DRIVE, GD_PARAM_OUTPUT_LEVEL, GD_PARAM_RECTIFICATION,
-    GD_PARAM_TONE, GD_PARAM_TYPE, GD_PARAM_WET, LIMITER_PARAM_OUTPUT_LEVEL, LIMITER_PARAM_THRESHOLD,
+    event_id, wwise_id, FxStage, SoundBank, SoundError, Submix, COMPRESSOR_PARAM_OUTPUT_LEVEL, COMPRESSOR_PARAM_THRESHOLD, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL, GD_PARAM_DRIVE,
+    GD_PARAM_OUTPUT_LEVEL, GD_PARAM_RECTIFICATION, GD_PARAM_TONE, GD_PARAM_TYPE, GD_PARAM_WET, LIMITER_PARAM_OUTPUT_LEVEL, LIMITER_PARAM_THRESHOLD,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -105,6 +106,9 @@ pub struct VoiceUpdate {
     pub emitter: u32,
     /// The emitter's position from the listener, if the game gave one ([`Mixer::set_emitter`]).
     pub position: Option<[f32; 3]>,
+    /// Its orientation (front, top in the listener's axes), if the game gave one ([`Mixer::set_emitter_orientation`]);
+    /// a placed voice's spread cloud turns with it (the listener's own without one).
+    pub orientation: Option<[[f32; 3]; 2]>,
     /// Where the voice sits, for the player (T5d-5): given when the game placed its emitter and its sound's positioning in
     /// force is 3D on the emitter's position ([`Placement`]). The player then applies the distance's curves (volume,
     /// low-pass, high-pass) and works out its matrix itself, from the place it is given each frame ([`Placement::at`]), so
@@ -116,9 +120,9 @@ pub struct VoiceUpdate {
     /// channel count) as a voice at the listener: what a voice that is not placed plays through for its life (an emitter
     /// the game has not placed is at the listener, so straight ahead; its distance's share, at 0 m, is in `gain`).
     pub matrix: [[f32; 2]; 2],
-    /// The recording's own gain ([`super::data::Media::akd_gain_2`], 1 without it): the player multiplies the recording's
-    /// samples by it before any filter or effect (Elite multiplies the voice's make-up gain by it at 0x144a78c80, ahead of
-    /// the voice's effects: the Guitar Distortion on a node is not linear).
+    /// The recording's own gain ([`super::data::Media::akd_gain_2`], 1 without it): the player applies it with the voice's
+    /// level, after its filters and effects (Elite folds it into the voice's make-up gain at 0x144a78c80, and the make-up
+    /// gain acts after the voice's effects: the Guitar Distortion on a node is not linear, so the place matters).
     pub media_gain: f32,
     pub start: Option<VoiceStart>,
     /// Ends now (the player stops it; any fade has already run down to silence).
@@ -149,6 +153,36 @@ pub struct VoiceUpdate {
     /// `every_effect_on_a_bus_is_linear_where_it_acts`). The EQs' and the limiter's output levels are in `gain` and
     /// `volume_db`; a distortion's is its own. Empty for a virtual voice and a stop.
     pub fx: Vec<FxNow>,
+    /// For a voice mixed into the sub-mix ([`super::SUBMIX_BUS`]; not for a virtual voice or a stop): its share of it.
+    /// `gain`, `matrix` and `fx` keep the voice's whole way (what it gave mixed straight to the output); the player mixes it
+    /// by this instead, the rest of its way being the sub-mix's ([`Mixer::bus_now`]).
+    pub bus: Option<BusShare>,
+}
+
+/// A voice's share of the sub-mix: its gains on the bus's 12 channels at the listener ([`super::place::Placement::
+/// listener_rows`]; a placed voice's player works them out from its place, [`super::place::Placement::rows_at`]), how
+/// many of its `fx` run on the voice (those before the compressor), and its gain up to the compressor's input (its whole
+/// `gain` less what comes after the compressor: the bus's later slots' output levels, its bus volume, the buses above;
+/// the fades in it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusShare {
+    pub rows: super::place::Rows,
+    pub stages: usize,
+    pub gain: f32,
+}
+
+/// The sub-mix's way from its compressor on, now ([`Mixer::bus_now`]): the compressor's parameters (its block's, its
+/// curves' through its `SetParam`), the effects after it in signal order (run on the sum folded to stereo: each linear and
+/// the same on every channel, `SoundBank::submix`), and the gain after it (those effects' output levels, the bus's bus
+/// volume and ducking, every bus above: linear). Read at the global values of the game parameters, as a bus's mix is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BusNow {
+    pub compressor: CompressorNow,
+    /// The compressor's slot not bypassed (bypassed, the sum passes it untouched: ours, E, as how Wwise hands a bypassed
+    /// slot's buffer on was not read; the data bypasses it nowhere).
+    pub compressor_on: bool,
+    pub fx: Vec<FxNow>,
+    pub gain: f32,
 }
 
 /// SplitMix64: the mixer's one source of chance.
@@ -457,6 +491,8 @@ pub struct Mixer {
     states: BTreeMap<Id, StateNow>,
     switches: BTreeMap<(Id, u32), Id>,
     emitters: BTreeMap<u32, [f32; 3]>,
+    /// The emitters' orientations the game gave (front, top in the listener's axes).
+    orientations: BTreeMap<u32, [[f32; 3]; 2]>,
     /// Each sound's way to the output (made once a sound: `placement_of`).
     placements: BTreeMap<Id, Arc<Placement>>,
     /// Delayed actions by (due time's bits, order posted): due times are never negative, so their bits sort as they do.
@@ -520,6 +556,7 @@ impl Mixer {
             states: BTreeMap::new(),
             switches: BTreeMap::new(),
             emitters: BTreeMap::new(),
+            orientations: BTreeMap::new(),
             placements: BTreeMap::new(),
             pending: BTreeMap::new(),
             insts: BTreeMap::new(),
@@ -685,6 +722,15 @@ impl Mixer {
     pub fn set_emitter(&mut self, emitter: u32, position_from_listener: [f32; 3]) {
         if position_from_listener.iter().all(|x| x.is_finite()) {
             self.emitters.insert(emitter, position_from_listener);
+        }
+    }
+
+    /// An emitter's orientation (`front`, `top`: unit vectors in the listener's axes, x right, y up, -z ahead), handed to its
+    /// placed voices (`VoiceUpdate::orientation`): it turns their spread cloud. One not finite is ignored; an emitter the
+    /// game orients not is the listener's own ([`super::place::LISTENER_AXES`]).
+    pub fn set_emitter_orientation(&mut self, emitter: u32, front: [f32; 3], top: [f32; 3]) {
+        if front.iter().chain(&top).all(|x| x.is_finite()) {
+            self.orientations.insert(emitter, [front, top]);
         }
     }
 
@@ -1001,23 +1047,27 @@ impl Mixer {
                     },
                     _ => Out::Audio(s.source_id),
                 };
-                let dur = match out {
-                    Out::Audio(src) => bank.file.media.get(&src).map(Media::duration),
-                    _ => {
-                        let p = &bank.file.source_plugins[&s.source_id].params;
-                        let f = |k: &str| p.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-                        Some(match out {
-                            Out::Silence => (f("fDuration") + self.rng.range(f("fRandomizedLengthMinus"), f("fRandomizedLengthPlus"))).max(0.0),
-                            Out::Rumble(_) => f("length_s"),
-                            _ if p.get("eGenMode").and_then(serde_json::Value::as_str) == Some("FIX") => f("fFixDur"),
-                            _ => f("fAttackDur") + f("fDecayDur") + f("fSustainDur") + f("fReleaseDur"),
-                        })
-                    }
-                };
                 let loops = match prop_opt(&node.props, "Loop") {
                     Some(n) if n <= 0.0 => None,
                     Some(n) => Some(n as u32),
                     None => Some(1),
+                };
+                let dur = match out {
+                    Out::Audio(src) => bank.file.media.get(&src).map(Media::duration),
+                    _ => {
+                        let plugin = &bank.file.source_plugins[&s.source_id];
+                        let p = &plugin.params;
+                        let f = |k: &str| p.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                        match out {
+                            Out::Silence => Some((f("fDuration") + self.rng.range(f("fRandomizedLengthMinus"), f("fRandomizedLengthPlus"))).max(0.0)),
+                            Out::Rumble(_) => Some(f("length_s")),
+                            // A Tone Generator's play is its period (`tone::ToneParams::play_frames` for one loop: the
+                            // fixed mode's two fades when it plays once); the load checked its block.
+                            _ => super::tone::ToneParams::from_block(&plugin.params_hex)
+                                .ok()
+                                .map(|t| f64::from(t.period_frames(OUTPUT_RATE as u32, loops == Some(1))) / f64::from(OUTPUT_RATE)),
+                        }
+                    }
                 };
                 // The loop region of a looping recording, unless it is the whole recording.
                 let region = match out {
@@ -1830,6 +1880,7 @@ impl Mixer {
         } else if let Some(l) = &e.limiter {
             StageNow { fx: FxNow::Off, gain_db: f64::from(self.limiter_params(e, l, emitter).output_db) }
         } else {
+            // (The master's plug-in 0x00BA0003 is not linear: the player runs it on the output's sum, `master_suite`.)
             StageNow { fx: FxNow::Off, gain_db: 0.0 }
         }
     }
@@ -1931,6 +1982,79 @@ impl Mixer {
             let st = FxStage { holder: master, slot: s.index, effect: fx, on_bus: true };
             (!self.fx_bypassed(&st, NO_EMITTER)).then(|| self.limiter_params(e, l, NO_EMITTER))
         })
+    }
+
+    /// The master bus's last plug-in (0x00BA0003) now, or None if the master holds none or it is bypassed: the player runs
+    /// it on the summed output after the limiter's output gain (T5f: slot 3, after the Peak Limiter's slot 2; nothing in
+    /// the data drives its parameters, so the block's values are its values).
+    pub fn master_suite(&self) -> Option<&MasterSuite> {
+        self.bank.file.objects.iter().find_map(|(id, o)| {
+            let Object::Bus(bus) = o else { return None };
+            if bus.parent_bus.is_some() {
+                return None;
+            }
+            bus.fx.fx.iter().find_map(|s| {
+                let fx = s.fx_id.as_ref()?.id;
+                let m = self.bank.file.effects.get(&fx)?.master.as_ref()?;
+                let st = FxStage { holder: *id, slot: s.index, effect: fx, on_bus: true };
+                (!self.fx_bypassed(&st, NO_EMITTER)).then_some(m)
+            })
+        })
+    }
+
+    /// The sub-mix's way from its compressor on, now (None when the file holds no sub-mix): for the player, once a frame.
+    pub fn bus_now(&self) -> Option<BusNow> {
+        let sub = self.bank.submix()?;
+        let e = self.bank.file.effects.get(&sub.effect)?;
+        let c = e.compressor.as_ref()?;
+        let st = FxStage { holder: sub.bus, slot: sub.slot, effect: sub.effect, on_bus: true };
+        let mut fx = Vec::new();
+        let db = self.after_compressor(sub, NO_EMITTER, Some(&mut fx));
+        Some(BusNow { compressor: self.compressor_params(e, c, NO_EMITTER), compressor_on: !self.fx_bypassed(&st, NO_EMITTER), fx, gain: db_to_gain(db) as f32 })
+    }
+
+    /// A voice's share of the sub-mix ([`BusShare`]) when its sound mixes into it: `db` and `fade` its whole level.
+    fn bus_share(&self, obj: Id, emitter: u32, db: f64, fade: f64, routed: &Placement, channels: usize) -> Option<BusShare> {
+        let (sub, stages) = self.bank.submix().zip(self.bank.submix_stages(obj))?;
+        let after = self.after_compressor(sub, emitter, None);
+        Some(BusShare { rows: routed.listener_rows(channels), stages, gain: (db_to_gain(db - after) * fade) as f32 })
+    }
+
+    /// What comes after the sub-mix's compressor (dB) at `emitter`'s values: the effects after it (their output levels;
+    /// each, or Off where bypassed, into `fx`), the bus's own bus volume and ducking, and every bus above (its voice volume
+    /// as well): the part of a voice's level `voice_mix_fx` adds from there on.
+    fn after_compressor(&self, sub: &Submix, emitter: u32, mut fx: Option<&mut Vec<FxNow>>) -> f64 {
+        let mut db = 0.0;
+        for st in &sub.after {
+            let now = (!self.fx_bypassed(st, emitter)).then(|| self.stage_now(st, emitter));
+            db += now.map_or(0.0, |n| n.gain_db);
+            if let Some(out) = fx.as_deref_mut() {
+                out.push(now.map_or(FxNow::Off, |n| n.fx));
+            }
+        }
+        for (i, bid) in self.bank.bus_chain(sub.bus).iter().enumerate() {
+            let (pre, post) = self.bus_mix(*bid, emitter);
+            db += post + if i > 0 { pre.db } else { 0.0 };
+        }
+        db
+    }
+
+    /// A Wwise Compressor's parameters now ([`CompressorNow`]); a parameter a curve sets goes through its `SetParam`
+    /// (`0x1449f5180`): the threshold held to -96.3..0 dB, attack and release to 0..2 s, the output level to -24..24 dB and
+    /// made `powf(10, level / 20)` (as `SetParamsBlock` makes the block's), the ratio as it is.
+    fn compressor_params(&self, e: &Effect, c: &Compressor, emitter: u32) -> CompressorNow {
+        let base = [c.threshold_db, c.ratio, c.attack_s, c.release_s, c.output_level_db, f64::from(u8::from(c.process_lfe)), f64::from(u8::from(c.channel_link))];
+        let (value, set) = self.plugin_params(e, base, emitter);
+        let at = |p: u32, (lo, hi): (f64, f64)| (if set[p as usize] { held(value[p as usize], lo, hi) } else { value[p as usize] }) as f32;
+        CompressorNow {
+            threshold_db: at(COMPRESSOR_PARAM_THRESHOLD, comp::THRESHOLD_RANGE),
+            ratio: value[1] as f32,
+            attack_s: at(2, comp::TIME_RANGE),
+            release_s: at(3, comp::TIME_RANGE),
+            output_gain: comp::output_gain(at(COMPRESSOR_PARAM_OUTPUT_LEVEL, comp::OUTPUT_RANGE)),
+            process_lfe: c.process_lfe,
+            channel_link: c.channel_link,
+        }
     }
 
     /// What loudness normalisation adds to a voice (dB): the recording's `akd ` gain where the node in force normalises.
@@ -2132,6 +2256,9 @@ impl Mixer {
             virt |= over_limit.contains(&id);
             let position = self.emitters.get(&emitter).copied();
             let (channels, media_gain) = self.media_of(v.out);
+            // (A placed voice's player applies the attenuation's shares itself.)
+            let (db, lowpass, highpass) = if place.is_some() { (m.db - m.att_db, m.lpf - m.att_lpf, m.hpf - m.att_hpf) } else { (m.db, m.lpf.clamp(0.0, 100.0), m.hpf.clamp(0.0, 100.0)) };
+            let bus = if virt { None } else { self.bus_share(obj, emitter, db, fade, &routed, channels) };
             let Some(out) = output(v.out) else { continue };
             let Some(Inst { kind: Kind::Voice(v), .. }) = self.insts.get_mut(&id) else { continue };
             let mut seek = v.seek.take();
@@ -2157,14 +2284,13 @@ impl Mixer {
             if virt {
                 seek = None;
             }
-            // (A placed voice's player applies the attenuation's shares itself.)
-            let (db, lowpass, highpass) = if place.is_some() { (m.db - m.att_db, m.lpf - m.att_lpf, m.hpf - m.att_hpf) } else { (m.db, m.lpf.clamp(0.0, 100.0), m.hpf.clamp(0.0, 100.0)) };
             let gain = db_to_gain(db) * fade;
             self.updates.push(VoiceUpdate {
                 voice: v.id,
                 output: out,
                 emitter,
                 position,
+                orientation: self.orientations.get(&emitter).copied(),
                 place,
                 matrix: routed.listener_matrix(channels),
                 media_gain,
@@ -2182,6 +2308,7 @@ impl Mixer {
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: virt,
                 fx: if virt { Vec::new() } else { fx.clone() },
+                bus,
             });
         }
         for k in kills {
@@ -2204,6 +2331,7 @@ impl Mixer {
                 output: out,
                 emitter: inst.emitter,
                 position: self.emitters.get(&inst.emitter).copied(),
+                orientation: self.orientations.get(&inst.emitter).copied(),
                 place: None,
                 matrix,
                 media_gain,
@@ -2221,6 +2349,7 @@ impl Mixer {
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: false,
                 fx: Vec::new(),
+                bus: None,
             });
         }
         self.updates.sort_by_key(|u| u.voice);

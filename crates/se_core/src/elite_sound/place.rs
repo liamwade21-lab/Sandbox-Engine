@@ -73,9 +73,12 @@ const SQRT_HALF: f64 = 0.7071067690849304;
 /// PAN_LR and PAN_FR to the 0..1 balance (`FUN_144a2e100`: x 0.005 + 0.5) and the balance-fade's third.
 const PAN_SCALE: f64 = 0.004999999888241291;
 const THIRD: f64 = 0.3333333432674408;
-/// The emitter's orientation in the listener's axes (front, top): the listener's own (E, the module's notes).
+/// The orientation of an emitter the game gives none (front, top in Wwise's listener space): the listener's own (E, the
+/// module's notes).
 const EMITTER_FRONT: [f64; 3] = [0.0, 0.0, 1.0];
 const EMITTER_TOP: [f64; 3] = [0.0, 1.0, 0.0];
+/// The listener's own axes as an emitter's orientation in the listener's axes (front, top; x right, y up, -z ahead).
+pub const LISTENER_AXES: [[f32; 3]; 2] = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
 
 /// Wwise's channel masks of the two layouts the ship's buses use (a channel configuration word's top 20 bits).
 pub const MASK_STEREO: u32 = 0x3;
@@ -173,9 +176,15 @@ pub struct Placement {
     pub highpass: Option<AttCurve>,
     pub spread: Option<AttCurve>,
     pub focus: Option<AttCurve>,
-    /// The matrix of a voice at the listener, for a mono and a stereo source (worked out when made).
+    /// The matrix of a voice at the listener, for a mono and a stereo source (worked out when made), and on a 7.1.4 route
+    /// its 12 speakers' gains before the down-mix.
     at_listener: [[[f32; 2]; 2]; 2],
+    rows_at_listener: [[[f32; 12]; 2]; 2],
 }
+
+/// A voice's gains on the 12 channels of a 7.1.4 bus (`[input channel][channel]`, in
+/// [`super::compressor::CHANNELS`]' order: the 11 speakers as [`DOWN_MIX_L`] lists them, the LFE's 0 last).
+pub type Rows = [[f32; 12]; 2];
 
 /// What a placement gives at one place: the distance's gain (linear), its low-pass and high-pass shares (0-100, added to
 /// the voice's), and the matrix (`matrix[input channel][output channel]`, the distance's gain in it).
@@ -208,8 +217,10 @@ impl Placement {
             spread: curve("Spread"),
             focus: curve("Focus"),
             at_listener: [[[0.0; 2]; 2]; 2],
+            rows_at_listener: [[[0.0; 12]; 2]; 2],
         };
-        p.at_listener = [p.pan_at([0.0; 3], 1), p.pan_at([0.0; 3], 2)];
+        p.at_listener = [p.pan_at([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 1), p.pan_at([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 2)];
+        p.rows_at_listener = [p.rows_of([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 1), p.rows_of([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 2)];
         p
     }
 
@@ -245,45 +256,112 @@ impl Placement {
         self.at_listener[channels.clamp(1, 2) - 1]
     }
 
-    /// At `rel`, the emitter's place from the listener in the listener's axes (metres; x right, y up, -z ahead), for a
-    /// source of `channels` channels. A place not finite counts as the listener's own (no distance, straight ahead).
-    pub fn at(&self, rel: [f32; 3], channels: usize) -> PlaceNow {
-        let [x, y, z] = if rel.iter().all(|v| v.is_finite()) { rel.map(f64::from) } else { [0.0; 3] };
-        let d = (x * x + y * y + z * z).sqrt();
-        let gain = curve::db_to_gain(self.volume_db(d)) as f32;
-        let mut matrix = self.pan_at([x, y, -z], channels);
+    /// A voice at the listener on a 7.1.4 route: its gains on the bus's 12 channels, what its matrix is before the
+    /// down-mix (zeros on a stereo route).
+    pub fn listener_rows(&self, channels: usize) -> Rows {
+        self.rows_at_listener[channels.clamp(1, 2) - 1]
+    }
+
+    /// At `rel`, the emitter's place from the listener in the listener's axes (metres; x right, y up, -z ahead), its
+    /// orientation `axes` (front, top: unit vectors in the same axes, [`LISTENER_AXES`] for the listener's own; it turns
+    /// only the spread cloud), for a source of `channels` channels. A place not finite counts as the listener's own (no
+    /// distance, straight ahead); axes not finite, or not a unit front at right angles to a unit top (within 1e-3), as the
+    /// listener's.
+    pub fn at(&self, rel: [f32; 3], axes: [[f32; 3]; 2], channels: usize) -> PlaceNow {
+        let (d, dist, front, top) = wwise_place(rel, axes);
+        let gain = curve::db_to_gain(self.volume_db(dist)) as f32;
+        let mut matrix = self.pan_at(d, front, top, channels);
         for row in &mut matrix {
             row.iter_mut().for_each(|g| *g *= gain);
         }
-        PlaceNow { gain, lowpass: self.lowpass_at(d) as f32, highpass: self.highpass_at(d) as f32, matrix }
+        PlaceNow { gain, lowpass: self.lowpass_at(dist) as f32, highpass: self.highpass_at(dist) as f32, matrix }
+    }
+
+    /// At a place (as [`Placement::at`]), a voice on a 7.1.4 route: its gains on the bus's 12 channels, the distance's gain
+    /// in them (zeros on a stereo route).
+    pub fn rows_at(&self, rel: [f32; 3], axes: [[f32; 3]; 2], channels: usize) -> Rows {
+        let (d, dist, front, top) = wwise_place(rel, axes);
+        let gain = curve::db_to_gain(self.volume_db(dist)) as f32;
+        let mut rows = self.rows_of(d, front, top, channels);
+        for row in &mut rows {
+            row.iter_mut().for_each(|g| *g *= gain);
+        }
+        rows
     }
 
     /// The matrix without the distance's gain of a source of `channels` channels whose emitter is at `d` in Wwise's
-    /// listener space (x right, y up, z ahead; metres). The spread and focus curves read the distance in the listener's
-    /// right-ahead plane (`FUN_144a2e2d0`: the up component left out; the scaling factor 1).
-    fn pan_at(&self, d: [f64; 3], channels: usize) -> [[f32; 2]; 2] {
+    /// listener space (x right, y up, z ahead; metres), oriented by `front` and `top` (the same space). The spread and
+    /// focus curves read the distance in the listener's right-ahead plane (`FUN_144a2e2d0`: the up component left out; the
+    /// scaling factor 1).
+    fn pan_at(&self, d: [f64; 3], front: [f64; 3], top: [f64; 3], channels: usize) -> [[f32; 2]; 2] {
         let n = channels.clamp(1, 2);
         let r = &self.route;
-        let g = if self.pan {
-            let h = (d[0] * d[0] + d[2] * d[2]).sqrt();
-            let (spread, focus) = (self.spread_at(h).clamp(0.0, 100.0), self.focus_at(h).clamp(0.0, 100.0));
-            match r.layout {
-                Layout::Stereo => planar(d, n, spread, focus, EMITTER_FRONT, EMITTER_TOP),
-                Layout::Height714 => height(d, n, spread, r.centre_pct, focus, EMITTER_FRONT, EMITTER_TOP).map(down_mix),
+        let g = match (self.pan, r.layout) {
+            (_, Layout::Height714) => self.speakers(d, front, top, n).map(down_mix),
+            (true, Layout::Stereo) => {
+                let (spread, focus) = self.spread_focus(d);
+                planar(d, n, spread, focus, front, top)
             }
-        } else {
-            unplaced(r, n)
+            (false, Layout::Stereo) => unplaced(r, n),
         };
         let m = g.map(|row| row.map(|v| v as f32));
         if m.iter().flatten().all(|v| v.is_finite()) { m } else { unplaced(r, n).map(|row| row.map(|v| v as f32)) }
     }
+
+    /// The spread and focus (percent) at `d` (the distance in the right-ahead plane).
+    fn spread_focus(&self, d: [f64; 3]) -> (f64, f64) {
+        let h = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        (self.spread_at(h).clamp(0.0, 100.0), self.focus_at(h).clamp(0.0, 100.0))
+    }
+
+    /// On a 7.1.4 route, each input channel's gains on the 11 speakers before the down-mix (as [`Placement::pan_at`] takes
+    /// them): the mesh panner when positioned in space, else the 2D panner.
+    fn speakers(&self, d: [f64; 3], front: [f64; 3], top: [f64; 3], n: usize) -> [[f64; 11]; 2] {
+        let r = &self.route;
+        if self.pan {
+            let (spread, focus) = self.spread_focus(d);
+            height(d, n, spread, r.centre_pct, focus, front, top)
+        } else {
+            unplaced_714_rows(n, r.panner, r.centre_pct, r.pan_lr, r.pan_fr)
+        }
+    }
+
+    /// The 12-channel rows without the distance's gain (zeros on a stereo route; the 2D panner's where a value is not
+    /// finite, as [`Placement::pan_at`] falls back).
+    fn rows_of(&self, d: [f64; 3], front: [f64; 3], top: [f64; 3], channels: usize) -> Rows {
+        let r = &self.route;
+        if r.layout != Layout::Height714 {
+            return [[0.0; 12]; 2];
+        }
+        let n = channels.clamp(1, 2);
+        let to_rows = |s: [[f64; 11]; 2]| s.map(|row| std::array::from_fn(|c| if c < 11 { row[c] as f32 } else { 0.0 }));
+        let rows: Rows = to_rows(self.speakers(d, front, top, n));
+        if rows.iter().flatten().all(|v| v.is_finite()) { rows } else { to_rows(unplaced_714_rows(n, r.panner, r.centre_pct, r.pan_lr, r.pan_fr)) }
+    }
+}
+
+/// A place from the listener and an orientation as the panner takes them: the place in Wwise's listener space (x right,
+/// y up, z ahead; the listener's own if not finite), its distance, and the front and top (the listener's own if not finite
+/// or not unit vectors at right angles, within 1e-3).
+fn wwise_place(rel: [f32; 3], axes: [[f32; 3]; 2]) -> ([f64; 3], f64, [f64; 3], [f64; 3]) {
+    let [x, y, z] = if rel.iter().all(|v| v.is_finite()) { rel.map(f64::from) } else { [0.0; 3] };
+    let d = (x * x + y * y + z * z).sqrt();
+    let [f, t] = axes.map(|v| v.map(f64::from));
+    let unit = |v: [f64; 3]| (dot(v, v) - 1.0).abs() < 1e-3;
+    let (front, top) = if f.iter().chain(&t).all(|v| v.is_finite()) && unit(f) && unit(t) && dot(f, t).abs() < 1e-3 {
+        ([f[0], f[1], -f[2]], [t[0], t[1], -t[2]])
+    } else {
+        (EMITTER_FRONT, EMITTER_TOP)
+    };
+    ([x, y, -z], d, front, top)
 }
 
 // ------------------------------------------------------------------------------------------------ not positioned in space
 
-/// The balance of a pan value (`clamp(pan x 0.005 + 0.5, 0, 1)`).
+/// The balance of a pan value (`clamp(pan x 0.005 + 0.5, 0, 1)`), in `f32` as the exe works it: at a pan of +-100 it is
+/// exactly 1 or 0 (in `f64` the product left 1.1e-8 over, a -80 dB leak into the other channel).
 fn balance(pan: f64) -> f64 {
-    (pan * PAN_SCALE + 0.5).clamp(0.0, 1.0)
+    f64::from(((pan as f32) * (PAN_SCALE as f32) + 0.5).clamp(0.0, 1.0))
 }
 
 /// A share's square root (a share the float rounding leaves a hair under 0 is 0: the exe's float32 sums give 0 there).
@@ -305,9 +383,14 @@ fn unplaced(r: &Route, n: usize) -> [[f64; 2]; 2] {
     }
 }
 
-/// Not spatialised into a 7.1.4 bus (`FUN_144a4e3c0` into mask 0x2d63f; balance-fade lines 120-149 for mono,
-/// `FUN_144a534d0` for stereo), then the down-mix (`panmodel3d.unplaced_714`).
+/// Not spatialised into a 7.1.4 bus, then the down-mix (`panmodel3d.unplaced_714`).
 fn unplaced_714(n: usize, panner: Panner, centre_pct: f64, pan_lr: f64, pan_fr: f64) -> [[f64; 2]; 2] {
+    unplaced_714_rows(n, panner, centre_pct, pan_lr, pan_fr).map(down_mix)
+}
+
+/// Not spatialised into a 7.1.4 bus (`FUN_144a4e3c0` into mask 0x2d63f; balance-fade lines 120-149 for mono,
+/// `FUN_144a534d0` for stereo): each input channel's gains on the 11 speakers, before the down-mix.
+fn unplaced_714_rows(n: usize, panner: Panner, centre_pct: f64, pan_lr: f64, pan_fr: f64) -> [[f64; 11]; 2] {
     let c = centre_pct * 0.01;
     let (x, y) = (balance(pan_lr), balance(pan_fr));
     let mut rows = [[0.0; 11]; 2];
@@ -317,7 +400,11 @@ fn unplaced_714(n: usize, panner: Panner, centre_pct: f64, pan_lr: f64, pan_fr: 
             rows[0][1] = rows[0][0];
             rows[0][2] = c.sqrt();
         }
-        Panner::DirectSpeakerAssignment => return [[1.0, 0.0], [0.0, 1.0]],
+        // (Stereo: left on FL, right on FR; the down-mix gives 1:1.)
+        Panner::DirectSpeakerAssignment => {
+            rows[0][0] = 1.0;
+            rows[1][1] = 1.0;
+        }
         Panner::BalanceFade => {
             let rear = ((3.0 - y * 4.0) * THIRD).max(0.0);
             let front = ((y * 4.0 - 1.0) * THIRD).max(0.0);
@@ -341,7 +428,7 @@ fn unplaced_714(n: usize, panner: Panner, centre_pct: f64, pan_lr: f64, pan_fr: 
             }
         }
     }
-    rows.map(down_mix)
+    rows
 }
 
 // ------------------------------------------------------------------------------ the shared steps of the 3D panner (T5g s2)
@@ -906,7 +993,7 @@ mod tests {
     fn placed(layout: Layout, spread: f64) -> Placement {
         let mut p = Placement::routed(Route { layout, ..Route::default() }, true, None);
         p.spread = Some(flat(spread));
-        p.at_listener = [p.pan_at([0.0; 3], 1), p.pan_at([0.0; 3], 2)];
+        p.at_listener = [p.pan_at([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 1), p.pan_at([0.0; 3], EMITTER_FRONT, EMITTER_TOP, 2)];
         p
     }
 
@@ -1029,11 +1116,39 @@ mod tests {
     fn the_legs_sit_where_the_model_puts_them() {
         let p = placed(Layout::Height714, 49.7);
         for &(x, y, z, l, r) in v::LEGS {
-            let m = p.at([x as f32, y as f32, z as f32], 1).matrix[0];
+            let m = p.at([x as f32, y as f32, z as f32], LISTENER_AXES, 1).matrix[0];
             assert!((f64::from(m[0]) - l).abs() < 1e-6 && (f64::from(m[1]) - r).abs() < 1e-6, "({x}, {y}, {z}): {m:?} against {l} / {r}");
         }
         let db = |i: usize| 20.0 * (v::LEGS[i].3 / v::LEGS[i].4).log10();
         assert!((db(0) - 10.3).abs() < 0.05 && (db(2) + 11.4).abs() < 0.05, "{} {}", db(0), db(2));
+    }
+
+    /// T5d-8: a pan of +-100 sends exactly nothing to the other side (the balance in float32, as the exe's), on a stereo
+    /// route and a 7.1.4 one.
+    #[test]
+    fn a_full_pan_leaves_the_other_side_silent() {
+        for (pan, side) in [(-100.0, 1), (100.0, 0)] {
+            let r = Route { panner: Panner::BalanceFade, pan_lr: pan, ..Route::default() };
+            assert_eq!(unplaced(&r, 1)[0][side], 0.0, "stereo, pan {pan}");
+            assert_eq!(unplaced(&r, 2)[side][side], 0.0, "stereo source, pan {pan}");
+            let tall = Route { layout: Layout::Height714, ..r };
+            assert_eq!(unplaced(&tall, 1)[0][side], 0.0, "7.1.4, pan {pan}");
+        }
+    }
+
+    /// T5d-8: the emitter's own orientation turns the spread cloud (a half-spread voice to the right sounds otherwise when
+    /// its emitter faces another way); the listener's axes give what no orientation gave; axes not finite or not at right
+    /// angles count as the listener's.
+    #[test]
+    fn the_emitters_orientation_turns_its_spread() {
+        let mut p = Placement::routed(Route::default(), true, None);
+        p.spread = Some(AttCurve { points: vec![Point { x: 0.0, y: 50.0, interp: Interp::Linear }, Point { x: 100.0, y: 50.0, interp: Interp::Linear }], scaling: Scaling::None });
+        let rel = [2.0, 0.0, -1.0];
+        let plain = p.at(rel, LISTENER_AXES, 2).matrix;
+        let turned = p.at(rel, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], 2).matrix;
+        assert_ne!(plain, turned);
+        assert_eq!(p.at(rel, [[f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0]], 2).matrix, plain);
+        assert_eq!(p.at(rel, [[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], 2).matrix, plain);
     }
 
     /// An emitter at the listener sounds straight ahead; straight above and straight behind as the model has them; a
@@ -1043,22 +1158,22 @@ mod tests {
         for layout in [Layout::Stereo, Layout::Height714] {
             let p = placed(layout, 50.0);
             for n in [1, 2] {
-                let ahead = p.pan_at(dir(0.0, 0.0), n);
-                assert_eq!(p.at([0.0; 3], n).matrix, ahead, "{layout:?} {n} ch: at the listener");
+                let ahead = p.pan_at(dir(0.0, 0.0), EMITTER_FRONT, EMITTER_TOP, n);
+                assert_eq!(p.at([0.0; 3], LISTENER_AXES, n).matrix, ahead, "{layout:?} {n} ch: at the listener");
                 assert_eq!(p.listener_matrix(n), ahead);
                 for bad in [[f32::NAN, 0.0, 0.0], [0.0, f32::INFINITY, 1.0], [0.0, 0.0, f32::NEG_INFINITY]] {
-                    let m = p.at(bad, n).matrix;
+                    let m = p.at(bad, LISTENER_AXES, n).matrix;
                     assert_eq!(m, ahead, "{layout:?} {n} ch: {bad:?}");
                 }
                 // Straight above (mod axes: +y) and straight behind (+z).
-                let above = p.at([0.0, 3.0, 0.0], n).matrix;
-                let behind = p.at([0.0, 0.0, 3.0], n).matrix;
+                let above = p.at([0.0, 3.0, 0.0], LISTENER_AXES, n).matrix;
+                let behind = p.at([0.0, 0.0, 3.0], LISTENER_AXES, n).matrix;
                 assert!(above.iter().chain(&behind).flatten().all(|g| g.is_finite()));
             }
         }
         // Straight above at spread 0: the model's 0.7071 each on the stereo route, 0.604 each on the 7.1.4 one; behind
         // 0.7071 / 0.5.
-        let pt = |layout, rel: [f32; 3]| placed(layout, 0.0).at(rel, 1).matrix[0];
+        let pt = |layout, rel: [f32; 3]| placed(layout, 0.0).at(rel, LISTENER_AXES, 1).matrix[0];
         let c = |a: [f32; 2], b: f32| (a[0] - b).abs() < 1e-3 && (a[1] - b).abs() < 1e-3;
         assert!(c(pt(Layout::Stereo, [0.0, 2.0, 0.0]), 0.70711) && c(pt(Layout::Height714, [0.0, 2.0, 0.0]), 0.604));
         assert!(c(pt(Layout::Stereo, [0.0, 0.0, 2.0]), 0.70711) && c(pt(Layout::Height714, [0.0, 0.0, 2.0]), 0.5));
@@ -1071,7 +1186,7 @@ mod tests {
         for layout in [Layout::Stereo, Layout::Height714] {
             let mut p = Placement::routed(Route { layout, ..Route::default() }, false, None);
             p.volume = Some(flat(-6.0));
-            let now = p.at([-4.0, 0.0, -1.0], 2);
+            let now = p.at([-4.0, 0.0, -1.0], LISTENER_AXES, 2);
             let g = now.gain;
             assert!((g - 0.5012).abs() < 1e-3);
             assert_eq!(now.matrix, [[g, 0.0], [0.0, g]], "{layout:?}");
@@ -1090,7 +1205,7 @@ mod tests {
                 let mut sum = 0.0f32;
                 for k in 0..2000 {
                     let a = k as f32 * 0.01;
-                    sum += p.at([3.0 * a.sin(), -1.0, -3.0 * a.cos()], n).matrix[0][0];
+                    sum += p.at([3.0 * a.sin(), -1.0, -3.0 * a.cos()], LISTENER_AXES, n).matrix[0][0];
                 }
                 eprintln!("{layout:?}, {n} ch: {:.1} us a matrix ({sum:.1})", t.elapsed().as_secs_f64() * 1e6 / 2000.0);
             }
@@ -1103,10 +1218,10 @@ mod tests {
     fn the_matrix_depends_on_the_place_alone() {
         let p = placed(Layout::Height714, 30.0);
         let rel = [2.0, -1.0, -3.0];
-        let first = p.at(rel, 1);
+        let first = p.at(rel, LISTENER_AXES, 1);
         for _ in 0..5 {
-            assert_eq!(p.at(rel, 1), first);
+            assert_eq!(p.at(rel, LISTENER_AXES, 1), first);
         }
-        assert_eq!(p.clone().at(rel, 1), first);
+        assert_eq!(p.clone().at(rel, LISTENER_AXES, 1), first);
     }
 }

@@ -11,8 +11,8 @@
 //! parents, the buses up to the master, the attenuations, the game syncs they name (from the Init bank), the media, the
 //! source plugins and the names. Left out as derived or not used by the mixer: each object's `resolved` summary, `bank`,
 //! `banks`, a Sound's `media` summary (the `media` table replaces it), the State objects (their deltas are inline in each
-//! node's state block), the modulators, and the effects other than the Parametric EQ, Guitar Distortion and Peak Limiter
-//! (not built: `se_core::elite_sound`'s docs). Those in the kept nodes' and buses' slots come from `effects.json` (beside
+//! node's state block), the modulators, and the effects other than the Parametric EQ, Guitar Distortion, Peak Limiter and
+//! the master's plug-in 0x00BA0003 (not built: `se_core::elite_sound`'s docs). Those in the kept nodes' and buses' slots come from `effects.json` (beside
 //! `events.json`, made by `re/elite/tools/sidewinder_effects.py`: the buses' effects are in the Init bank, which
 //! `events.json` does not hold), their parameter blocks decoded (`effect`). Every recording shipped
 //! passed `sidewinder_media.py`'s proof (`decode_identical` in `media/index.json`: the file decodes to the `.wem`'s audio,
@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, GUITAR_DISTORTION, PARAMETRIC_EQ, PEAK_LIMITER};
+use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, COMPRESSOR, GUITAR_DISTORTION, MASTER_SUITE, PARAMETRIC_EQ, PEAK_LIMITER};
 
 use super::{Ctx, Shipped};
 
@@ -667,6 +667,8 @@ fn effect(id: &str, e: &Value) -> Result<Option<Value>, String> {
         Some(PARAMETRIC_EQ) => ("eq", eq_block(id, e)?),
         Some(GUITAR_DISTORTION) => ("distortion", distortion_block(id, e)?),
         Some(PEAK_LIMITER) => ("limiter", limiter_block(id, e)?),
+        Some(MASTER_SUITE) => ("master", master_block(id, e)?),
+        Some(COMPRESSOR) => ("compressor", compressor_block(id, e)?),
         _ => return Ok(None),
     };
     let mut v = serde_json::json!({
@@ -747,6 +749,62 @@ fn limiter_block(id: &str, e: &Value) -> Result<Value, String> {
     }))
 }
 
+/// A Wwise Compressor's parameter block (`AkCompressorFXParams`, as Elite's `SetParamsBlock` 0x1449f5300 copies it, in
+/// the order of its `SetParam` 0x1449f5180): f32 threshold (dB), ratio, attack (s), release (s), output level (dB), then u8
+/// LFE and channel link.
+fn compressor_block(id: &str, e: &Value) -> Result<Value, String> {
+    let b = block(id, e, "Compressor", 22)?;
+    let [threshold, ratio, attack, release, level] = [0, 4, 8, 12, 16].map(|o| f32_at(&b, o));
+    let (lfe, link) = (b[20] != 0, b[21] != 0);
+    check_effect_props(id, e, "Compressor", &[threshold, ratio, attack, release, level, f64::from(u8::from(lfe)), f64::from(u8::from(link))])?;
+    Ok(serde_json::json!({
+        "threshold_db": threshold, "ratio": ratio, "attack_s": attack, "release_s": release, "output_level_db": level,
+        "process_lfe": lfe, "channel_link": link,
+    }))
+}
+
+/// The master bus's last plug-in 0x00BA0003's 304-byte block as Elite's own `SetParamsBlock` (0x144af9670) reads it: bytes
+/// 0-3 the four modules on; the equaliser's band count (u32 at 4), its bands' on bytes (8..14) and bands (0x0e + 16 n: u32
+/// type, f32 frequency, gain, Q); the compressor's band count (u32 0x6e), link mode (u32 0x72), link amount (f32 0x76),
+/// link flag (0x7a), bands' on bytes (0x7b..0x7f), crossovers (f32 0x7f, 0x83, 0x87), bands (0x8b + 24 n: threshold, ratio,
+/// attack, release, make-up, knee); the channel gains (12 f32 at 0xeb); the limiter's mode (u32 0x11b), threshold, attack,
+/// release, make-up (f32 0x11f..0x12b) and link (0x12f). Every value as stored; no curve or state may drive it.
+fn master_block(id: &str, e: &Value) -> Result<Value, String> {
+    let b = block(id, e, "master plug-in", 0x130)?;
+    check_effect_props(id, e, "master plug-in", &[])?;
+    let eq: Vec<Value> = (0..6)
+        .map(|n| {
+            let o = 0x0e + 16 * n;
+            serde_json::json!({ "kind": u32_at(&b, o), "frequency": f32_at(&b, o + 4), "gain_db": f32_at(&b, o + 8), "q": f32_at(&b, o + 12), "on": b[8 + n] != 0 })
+        })
+        .collect();
+    let comp: Vec<Value> = (0..4)
+        .map(|n| {
+            let [t, r, a, rl, m, k] = [0, 4, 8, 12, 16, 20].map(|i| f32_at(&b, 0x8b + 24 * n + i));
+            serde_json::json!({ "threshold_db": t, "ratio": r, "attack_s": a, "release_s": rl, "makeup_db": m, "knee_db": k })
+        })
+        .collect();
+    Ok(serde_json::json!({
+        "modules_on": [b[0] != 0, b[1] != 0, b[2] != 0, b[3] != 0],
+        "eq_bands_n": u32_at(&b, 4),
+        "eq": eq,
+        "comp_bands_n": u32_at(&b, 0x6e),
+        "comp_link": u32_at(&b, 0x72),
+        "comp_link_amount": f32_at(&b, 0x76),
+        "comp_link_flag": b[0x7a] != 0,
+        "comp_bands_on": [b[0x7b] != 0, b[0x7c] != 0, b[0x7d] != 0, b[0x7e] != 0],
+        "crossovers": [f32_at(&b, 0x7f), f32_at(&b, 0x83), f32_at(&b, 0x87)],
+        "comp": comp,
+        "channel_gains_db": (0..12).map(|n| f32_at(&b, 0xeb + 4 * n)).collect::<Vec<f64>>(),
+        "limiter_mode": u32_at(&b, 0x11b),
+        "limiter_threshold_db": f32_at(&b, 0x11f),
+        "limiter_attack_s": f32_at(&b, 0x123),
+        "limiter_release_s": f32_at(&b, 0x127),
+        "limiter_makeup_db": f32_at(&b, 0x12b),
+        "limiter_link": b[0x12f] != 0,
+    }))
+}
+
 /// `sounds.json` built from the export: the file and the media files to copy (source id, file in `media/`).
 struct Built {
     file: SoundFile,
@@ -815,8 +873,9 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
 
         objects.insert(id.clone(), Value::Object(o));
     }
-    // The effects the mixer runs: the Parametric EQs, Guitar Distortions and Peak Limiters in the slots of the nodes and
-    // buses kept.
+    // The effects the mixer runs: the Parametric EQs, Guitar Distortions, Peak Limiters and Compressors in the slots of the
+    // nodes and buses kept (a bus's compressor is run only on the sub-mix bus), and the master's plug-in 0x00BA0003 (run on
+    // the output's sum).
     let mut effects = Map::new();
     for o in objects.values() {
         let chain = o.get("node").and_then(|n| n.get("fx")).or_else(|| o.get("fx"));
@@ -950,8 +1009,8 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
         "A",
         &format!(
             "The ship's Wwise events ({} the game posts, {} whose sender is not found) and all they reach: {} events with the ones \
-             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, {} Guitar Distortions, {} Peak Limiter(s), the Init \
-             bank's game syncs. Values are the banks'.",
+             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, {} Guitar Distortions, {} Peak Limiter(s), {} \
+             master plug-in(s) 0x00BA0003, {} Compressors, the Init bank's game syncs. Values are the banks'.",
             built.file.ship_events.len(),
             built.file.open_events.len(),
             built.file.events.len(),
@@ -960,7 +1019,9 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
             built.file.source_plugins.len(),
             built.file.effects.values().filter(|e| e.eq.is_some()).count(),
             built.file.effects.values().filter(|e| e.distortion.is_some()).count(),
-            built.file.effects.values().filter(|e| e.limiter.is_some()).count()
+            built.file.effects.values().filter(|e| e.limiter.is_some()).count(),
+            built.file.effects.values().filter(|e| e.master.is_some()).count(),
+            built.file.effects.values().filter(|e| e.compressor.is_some()).count()
         ),
     );
     // sfx/ is this kind's alone: emptied first, so a recording no longer shipped (or now shipped as another file) goes.
@@ -1012,7 +1073,8 @@ fn read_back(ctx: &Ctx, built: &Built) -> Result<(), String> {
     Ok(())
 }
 
-/// `sounds.json` as the game reads it: parsed, every `SHIP_EVENTS` event in it, and a mixer made from it.
+/// `sounds.json` as the game reads it: parsed, every `SHIP_EVENTS` event in it, and a mixer made from it that hands out the
+/// master's plug-in 0x00BA0003 (without it the ship would sound 14 dB too quiet).
 pub(super) fn check(bytes: &[u8]) -> Result<(), String> {
     let bank = parse_sounds(bytes).map_err(|e| e.to_string())?;
     for (name, _) in SHIP_EVENTS {
@@ -1020,7 +1082,9 @@ pub(super) fn check(bytes: &[u8]) -> Result<(), String> {
             return Err(format!("event {name} is missing"));
         }
     }
-    let _ = Mixer::new(std::sync::Arc::new(bank), 0);
+    if Mixer::new(std::sync::Arc::new(bank), 0).master_suite().is_none() {
+        return Err("the master bus's plug-in 0x00BA0003 is missing".into());
+    }
     Ok(())
 }
 

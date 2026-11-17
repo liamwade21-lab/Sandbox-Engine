@@ -29,7 +29,9 @@
 //!   `bOverrideAnalysis`, else the top one) has `bNormalizeLoudness`; make-up gain stays its own additive property.
 //! - The `akd ` chunk's second gain ([`data::Media::akd_gain_2`], T5g section 1, C: the leaf at 0x144a78c80 multiplies
 //!   every voice's make-up gain by it, whatever its positioning; 1 without the chunk): handed to the player apart
-//!   ([`VoiceUpdate::media_gain`]), which applies it to the recording's samples before any effect.
+//!   ([`VoiceUpdate::media_gain`]), which applies it where the make-up gain acts, with the voice's level after its
+//!   effects (T5d-8; until then it went before them, and the 7 sounds with a Guitar Distortion on their node were driven
+//!   3 dB harder).
 //! - Where a voice sits and how it reaches the stereo output ([`place`], T5d-5 and T5d-7): each Sound's route
 //!   ([`SoundBank::route`]) and placement, a voice's matrix ([`VoiceUpdate::matrix`]).
 //! - Wwise Meter effects on buses (10 shipped, [`data::Meter`]): an RMS meter without ballistics (2: both on the drives'
@@ -54,6 +56,15 @@
 //!   0x144a108d0 runs the limiter, then ramps the buffer by the output gain), so it is in every voice's gain (+1.28 dB at
 //!   DynamicRange's default); its threshold (-4 dB) is reported ([`Mixer::master_limiter`]) for the player to count frames
 //!   over it. The limiting itself is not built: the mix's peaks stay under the threshold (the count stays 0).
+//! - The master bus's last plug-in 0x00BA0003 (T5d-8, [`master`]: an equaliser, a 4-band compressor, the channel gains and
+//!   a limiter with 14 dB of make-up, each ported from Elite's own copy): handed to the player ([`Mixer::master_suite`]),
+//!   which runs it on the summed output after the voices.
+//! - The Wwise Compressor (plug-in 0x006c0003; 20 shipped, all on buses) on ONE bus, [`SUBMIX_BUS`] (T5d-9,
+//!   [`compressor`]: Elite's own copy, its linked detector, static curve, attack and release, output gain): that bus's voices
+//!   are handed to the player as a 12-channel sub-mix ([`VoiceUpdate::bus`], [`Mixer::bus_now`], [`SoundBank::submix`]),
+//!   which runs the compressor on their sum and what comes after it on the sum folded to stereo.
+//! - The Wwise Tone Generator (source plug-in 0x00660002; 4 shipped Sounds, T5d-8, [`tone`]): its sine and white noise, in
+//!   its envelope and fixed modes, from Elite's own copy; the player plays it as it plays a recording.
 //! - Virtual voices are reported without a start and built by the player only when heard ([`VoiceStart`]), from where
 //!   their queue behaviour puts them.
 //! - LayerCntr (71): all children together, blend tracks with their crossfade curves (4) and track curves (7).
@@ -76,7 +87,7 @@
 //! - Loop regions: a looping recording with an intro (11 of the shipped ones) reports the region it repeats
 //!   ([`VoiceStart::loop_region`], from `Media::loop_region`, the bank's smpl loop points).
 //! - Source plugins: Wwise Silence (10; timing only, no update), Motion Generator (21; a `Rumble` output), Tone
-//!   Generator (2; a `Synth` output carrying the source id: synthesis is the player's).
+//!   Generator (2; a `Synth` output carrying the source id: [`tone`] makes its samples, the player plays them).
 //! - Loads refuse what would never end: an object holding itself (any cycle of children or switch nodes) and an event
 //!   posting itself without a delay (any cycle); every walk is iterative or bounded (64 levels).
 //! - Time: a step that is not finite or not positive counts as 0; a step's first second is run event by event and the
@@ -84,10 +95,8 @@
 //!
 //! # Not built (kept in the data, never refused, listed with the shipped events they touch)
 //! - The other effects (`re/elite/work/sound/t5d2/bus_fx.py` lists every one on the shipped sounds' ways with its
-//!   parameters, `effects.json` holds them): on buses the Wwise Compressor (21 slots; by T5d-2's reading none acts at the
-//!   mix's levels), the Peak Limiter's limiting, the master's plug-in 0x00BA0003 (four modules by its `SetParamsBlock`
-//!   0x144af9670: a 6-band EQ with gains -1.7..+1 dB, a 4-band compressor with crossovers 142, 424 and 3986 Hz and
-//!   thresholds -14..-23 dB at ratios 1.5-2, two more; its DSP engine `FUN_144af8720` not read), the Meters with
+//!   parameters, `effects.json` holds them): on buses the Wwise Compressor but [`SUBMIX_BUS`]'s (shipped, never run: by
+//!   `no_bus_compressor_would_act` none acts at the mix's levels), the Peak Limiter's limiting, the Meters with
 //!   ballistics, the DTS 3D-headphone plug-ins (Frontier's company id: 0x03E80C63 `DtsI3daEffectPlugin` in 3 bus slots,
 //!   0x03E90C66 `DtsI3daPannerPlugin` as 11 buses' mixer plug-in; the user's Elite has `hp3d` disabled); on nodes
 //!   Tremolo (31) and Flanger (5); on the aux paths reverbs and delays. Tremolo and Flanger modulate in time by LFOs. Aux sends (user
@@ -127,11 +136,14 @@
 //! limits' scope (global); ducking's `max_duck_volume_db` read as the floor of the sum of a bus's ducks; a blend
 //! container played as a whole (no step mode: all children start together).
 
+pub mod compressor;
 pub mod curve;
 pub mod data;
 pub mod filter;
+pub mod master;
 mod mixer;
 pub mod place;
+pub mod tone;
 
 #[cfg(test)]
 mod place_vectors;
@@ -139,7 +151,8 @@ mod place_vectors;
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
-pub use mixer::{DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
+pub use compressor::CompressorNow;
+pub use mixer::{BusNow, BusShare, DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
 pub use place::{Layout, Panner, PlaceNow, Placement, Route};
 
 use data::*;
@@ -198,10 +211,24 @@ const NOT_BUILT_PARAMS: &[&str] = &[
 ];
 
 /// The plug-ins the mixer runs as effects (`SoundFile::effects`): the Wwise Parametric EQ, Guitar Distortion and Peak
-/// Limiter.
+/// Limiter, and the master's last plug-in 0x00BA0003 ([`master`]).
 pub const PARAMETRIC_EQ: &str = "00690003";
 pub const GUITAR_DISTORTION: &str = "007e0003";
 pub const PEAK_LIMITER: &str = "006e0003";
+pub const MASTER_SUITE: &str = "00ba0003";
+/// The Wwise Compressor ([`compressor`]): run only on [`SUBMIX_BUS`].
+pub const COMPRESSOR: &str = "006c0003";
+/// The compressor's parameter indices (its `SetParam`, `0x1449f5180`): threshold 0, ratio 1, attack 2, release 3, output
+/// level 4, LFE 5, channel link 6.
+pub const COMPRESSOR_PARAM_THRESHOLD: u32 = 0;
+pub const COMPRESSOR_PARAM_OUTPUT_LEVEL: u32 = 4;
+pub const COMPRESSOR_PARAM_LINK: u32 = 6;
+/// The one bus the output mixes as a sub-mix of its own (T5d-9): the supercruise layers' 12-channel bus, whose compressor
+/// (87c72d00: -35.5 dB, 20:1) is the only one of the buses' that can act at the ship's levels (T5d-7: its input reads
+/// about 9 dB over its threshold in stereo; every other compressor stays 8 dB or more under, `no_bus_compressor_would_act`).
+/// Its voices are summed in its 12 channels, the compressor runs on that sum, and what comes after it on the way to the
+/// master runs on the sum folded to stereo ([`SoundBank::submix`]).
+pub const SUBMIX_BUS: Id = Id(0xaa29_9971);
 /// The Parametric EQ's parameter indices (its `SetParam` in Elite's exe, `0x144a10630`: band = index / 5).
 pub const EQ_PARAM_OUTPUT_LEVEL: u32 = 15;
 pub const EQ_PARAM_LFE: u32 = 16;
@@ -276,6 +303,17 @@ pub struct FxStage {
     pub on_bus: bool,
 }
 
+/// The bus mixed as a sub-mix ([`SUBMIX_BUS`]): its compressor's slot and effect, and the effects after the compressor on
+/// the way to the master, in signal order (the bus's later slots, then each bus above it): they run on the sub-mix once
+/// compressed and folded to stereo, so the voices through it run only the effects before them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Submix {
+    pub bus: Id,
+    pub slot: u32,
+    pub effect: Id,
+    pub after: Vec<FxStage>,
+}
+
 /// `sounds.json` read and checked, with the lookups the mixer needs.
 #[derive(Debug)]
 pub struct SoundBank {
@@ -289,6 +327,10 @@ pub struct SoundBank {
     fx_stages: HashMap<Id, Vec<FxStage>>,
     /// Each Sound's way to the output ([`SoundBank::route`]).
     routes: HashMap<Id, place::Route>,
+    /// The sub-mix, when the file holds its bus and the bus's compressor ([`SoundBank::submix`]), and for each Sound mixed
+    /// into it how many of its effects run on the voice ([`SoundBank::submix_stages`]).
+    submix: Option<Submix>,
+    submix_stages: HashMap<Id, usize>,
 }
 
 fn bad(s: String) -> SoundError {
@@ -333,10 +375,11 @@ impl SoundBank {
                 _ => {}
             }
         }
-        let mut bank = SoundBank { file, chains, bus_chains, fx_stages: HashMap::new(), routes: HashMap::new() };
+        let mut bank = SoundBank { file, chains, bus_chains, fx_stages: HashMap::new(), routes: HashMap::new(), submix: None, submix_stages: HashMap::new() };
         bank.fx_stages = bank.stages();
         bank.routes = bank.routes().map_err(bad)?;
         bank.check()?;
+        (bank.submix, bank.submix_stages) = bank.submix_of().map_err(|e| bad(format!("the sub-mix bus {SUBMIX_BUS}: {e}")))?;
         bank.check_playable()?;
         bank.check_cycles()?;
         Ok(bank)
@@ -375,6 +418,9 @@ impl SoundBank {
                         }
                         if p.name == "Wwise Silence" && p.params.get("fDuration").and_then(serde_json::Value::as_f64).is_none() {
                             return Err(at("silence without fDuration".into()));
+                        }
+                        if p.name == "Wwise Tone Generator" {
+                            tone::ToneParams::from_block(&p.params_hex).map_err(|e| at(format!("Tone Generator {}: {e}", s.source_id)))?;
                         }
                     } else if !f.media.contains_key(&s.source_id) {
                         return Err(at(format!("media {} is not shipped", s.source_id)));
@@ -526,14 +572,20 @@ impl SoundBank {
     /// the mixer builds, or a Peak Limiter, each with exactly its own parameter block, whose curves drive its parameters by
     /// game parameters (a modulator's curve is kept, not built).
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
-        let blocks = [e.eq.is_some(), e.distortion.is_some(), e.limiter.is_some()];
+        let blocks = [e.eq.is_some(), e.distortion.is_some(), e.limiter.is_some(), e.master.is_some(), e.compressor.is_some()];
         let known: fn(u32) -> bool = match e.plugin.as_str() {
-            PARAMETRIC_EQ if blocks == [true, false, false] => |p| p <= EQ_PARAM_LFE,
-            GUITAR_DISTORTION if blocks == [false, true, false] => gd_param_known,
-            PEAK_LIMITER if blocks == [false, false, true] => |p| p <= LIMITER_PARAM_LINK,
-            PARAMETRIC_EQ | GUITAR_DISTORTION | PEAK_LIMITER => return Err(format!("plug-in {} with another plug-in's block", e.plugin)),
+            PARAMETRIC_EQ if blocks == [true, false, false, false, false] => |p| p <= EQ_PARAM_LFE,
+            GUITAR_DISTORTION if blocks == [false, true, false, false, false] => gd_param_known,
+            PEAK_LIMITER if blocks == [false, false, true, false, false] => |p| p <= LIMITER_PARAM_LINK,
+            // (No curve or state drives the master's plug-in in the data: one would not be built.)
+            MASTER_SUITE if blocks == [false, false, false, true, false] => |_| false,
+            COMPRESSOR if blocks == [false, false, false, false, true] => |p| p <= COMPRESSOR_PARAM_LINK,
+            PARAMETRIC_EQ | GUITAR_DISTORTION | PEAK_LIMITER | MASTER_SUITE | COMPRESSOR => return Err(format!("plug-in {} with another plug-in's block", e.plugin)),
             _ => return Err(format!("plug-in {} is not one the mixer runs", e.plugin)),
         };
+        if let Some(m) = &e.master {
+            master::MasterChain::new(m)?;
+        }
         if let Some(eq) = &e.eq {
             if eq.bands.len() != 3 {
                 return Err(format!("{} bands, the Parametric EQ of bank v135 has 3", eq.bands.len()));
@@ -565,14 +617,19 @@ impl SoundBank {
         Ok(())
     }
 
+    /// The effects of one node's or bus's slots the mixer runs on its voices, in slot order, into `out`: every shipped
+    /// effect but the compressors (a bus's compressor acts on its mix: only the sub-mix's is built, on the sub-mix).
+    fn shipped_stages(&self, c: &FxChain, holder: Id, on_bus: bool, out: &mut Vec<FxStage>) {
+        let f = &self.file;
+        let mut slots: Vec<&FxSlot> = c.fx.iter().filter(|s| s.fx_id.as_ref().and_then(|r| f.effects.get(&r.id)).is_some_and(|e| e.compressor.is_none())).collect();
+        slots.sort_by_key(|s| s.index);
+        out.extend(slots.into_iter().map(|s| FxStage { holder, slot: s.index, effect: s.fx_id.as_ref().unwrap().id, on_bus }));
+    }
+
     /// Every Sound's effects the mixer runs ([`SoundBank::fx_stages`]).
     fn stages(&self) -> HashMap<Id, Vec<FxStage>> {
         let f = &self.file;
-        let shipped = |c: &FxChain, holder: Id, on_bus: bool, out: &mut Vec<FxStage>| {
-            let mut slots: Vec<&FxSlot> = c.fx.iter().filter(|s| s.fx_id.as_ref().is_some_and(|r| f.effects.contains_key(&r.id))).collect();
-            slots.sort_by_key(|s| s.index);
-            out.extend(slots.into_iter().map(|s| FxStage { holder, slot: s.index, effect: s.fx_id.as_ref().unwrap().id, on_bus }));
-        };
+        let shipped = |c: &FxChain, holder: Id, on_bus: bool, out: &mut Vec<FxStage>| self.shipped_stages(c, holder, on_bus, out);
         let mut all = HashMap::new();
         for (id, o) in &f.objects {
             if !matches!(o, Object::Sound(_)) {
@@ -601,6 +658,66 @@ impl SoundBank {
     /// A Sound's effects the mixer runs, in signal order.
     pub fn fx_stages(&self, sound: Id) -> &[FxStage] {
         self.fx_stages.get(&sound).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The bus mixed as a sub-mix ([`SUBMIX_BUS`]), when the file holds it with its compressor.
+    pub fn submix(&self) -> Option<&Submix> {
+        self.submix.as_ref()
+    }
+
+    /// For a Sound mixed into the sub-mix (its bus or any bus under it), how many of its effects ([`SoundBank::fx_stages`])
+    /// run on its voice: those before the compressor (its node's, the buses' under the sub-mix bus, the bus's earlier
+    /// slots). None for any other Sound.
+    pub fn submix_stages(&self, sound: Id) -> Option<usize> {
+        self.submix_stages.get(&sound).copied()
+    }
+
+    /// The sub-mix and its Sounds' splits, checked: [`SUBMIX_BUS`] holds one compressor in its slots, linked (the unlinked
+    /// routine is not built) and with no curve on what only its Init reads (Process LFE, Channel Link); every Sound mixed
+    /// into it mixes in 7.1.4 (the sub-mix's 12 channels); every effect after the compressor on the way to the master is
+    /// linear and the same on every channel (an EQ, the limiter's output level: they run on the sum once folded to stereo,
+    /// which is exact only for such); each such Sound's effects end with those. None when the file holds no such bus or
+    /// compressor (an older file: every voice plays as before).
+    fn submix_of(&self) -> Result<(Option<Submix>, HashMap<Id, usize>), String> {
+        let none = Ok((None, HashMap::new()));
+        let Some(bus) = self.bus(SUBMIX_BUS) else { return none };
+        let comps: Vec<(u32, &Effect)> = bus.fx.fx.iter().filter_map(|s| self.file.effects.get(&s.fx_id.as_ref()?.id).filter(|e| e.compressor.is_some()).map(|e| (s.index, e))).collect();
+        let (slot, e) = match comps[..] {
+            [] => return none,
+            [one] => one,
+            _ => return Err(format!("{} compressors in its slots (one is built)", comps.len())),
+        };
+        if !e.compressor.as_ref().is_some_and(|c| c.channel_link) {
+            return Err(format!("its compressor {} does not link its channels (the unlinked routine is not built)", e.id));
+        }
+        if e.rtpc.iter().any(|r| r.param_id > COMPRESSOR_PARAM_OUTPUT_LEVEL) {
+            return Err(format!("a curve on its compressor {}'s Process LFE or Channel Link (read once, at Init) is not built", e.id));
+        }
+        let mut after = Vec::new();
+        let mut own = Vec::new();
+        self.shipped_stages(&bus.fx, SUBMIX_BUS, true, &mut own);
+        after.extend(own.into_iter().filter(|s| s.slot > slot));
+        for b in self.bus_chain(SUBMIX_BUS).iter().skip(1) {
+            if let Some(x) = self.bus(*b) {
+                self.shipped_stages(&x.fx, *b, true, &mut after);
+            }
+        }
+        if let Some(st) = after.iter().find(|st| self.file.effects.get(&st.effect).is_some_and(|x| x.distortion.is_some())) {
+            return Err(format!("the Guitar Distortion {} on bus {} after its compressor is not linear: it cannot run on the folded sum", st.effect, st.holder));
+        }
+        let mut splits = HashMap::new();
+        for (id, o) in &self.file.objects {
+            if !matches!(o, Object::Sound(_)) || !self.output_bus(*id).is_some_and(|b| self.bus_chain(b).contains(&SUBMIX_BUS)) {
+                continue;
+            }
+            if self.route(*id).layout != place::Layout::Height714 {
+                return Err(format!("Sound {id} mixes into it in stereo (its 12 channels are built)"));
+            }
+            let all = self.fx_stages(*id);
+            let n = all.len().checked_sub(after.len()).filter(|n| all[*n..] == after[..]).ok_or_else(|| format!("Sound {id}: its effects do not end with those after the compressor"))?;
+            splits.insert(*id, n);
+        }
+        Ok((Some(Submix { bus: SUBMIX_BUS, slot, effect: e.id, after }), splits))
     }
 
     /// The positioning in force on an object: the nearest node up its chain that overrides its parent's, else the top one.

@@ -26,11 +26,12 @@
 //! bones (`ShipSound::cue_emitter`: the two rear legs are two emitters), placed every frame at its bones as posed now
 //! (`ShipRig::bone_frames` with the parts' values; `MODEL_ORIGIN` at its rig node's origin, `Parts::matrix`) from the
 //! head, in the head's axes; their voices are panned and attenuated by the output (`voices.rs`,
-//! `se_core::elite_sound::place`). Placed: the three legs' (at `ModelOrigin`, read as each leg model's origin, E). The
+//! `se_core::elite_sound::place`). Placed: the three legs' (at `ModelOrigin`, read as each leg model's origin, E; oriented
+//! by that node's axes, its -Z ahead and +Y up, E: the orientation turns a placed voice's spread cloud, T5d-8). The
 //! hull's cues name bones no shipped model has (`Ship_Origin`, `HardpointDoorLeft`, `HardpointDoorRight`): their emitters
 //! are the listener's own. The machines' audio states (`AudioState`) are set from the same list. Every other emitter is
-//! the listener's own and plays centred: the loops' and reporters' emitters
-//! (`ship.json`'s `Internal_MainDrive_Left`, `Cockpit_Back_Centre`, `Internal_Cockpit_Origin`, `Alarms` ... 21 names:
+//! the listener's own (its voices play through their sound's route as voices at the listener): the loops' and
+//! reporters' emitters (`ship.json`'s `Internal_MainDrive_Left`, `Cockpit_Back_Centre`, `Internal_Cockpit_Origin`, `Alarms` ... 21 names:
 //! `triggers::Emitter`'s `Drive`, `Cockpit`, `CockpitOrigin`, `Ship`, `Voice`) are Elite's audio emitter components named
 //! by the entity's template, and no bone, locator or rig node of the shipped models carries those names (the hull's 156
 //! bones and the cockpit's 148 checked in T5c; the rigs' 84 nodes in T5d-5), so the data gives them no place. Not built:
@@ -62,6 +63,7 @@ use bevy::prelude::*;
 use bevy::tasks::{futures, AsyncComputeTaskPool, Task};
 use se_core::catalog::ObjectRef;
 use se_core::elite_rig::Event as MachineEvent;
+use se_core::elite_sound::place::LISTENER_AXES;
 use se_core::elite_sound::{curve, Mixer, Output, SoundBank, VoiceUpdate};
 
 use crate::mods::ModControl;
@@ -136,6 +138,10 @@ struct CueEmitter {
     nodes: Vec<usize>,
     names: Vec<String>,
     at: Option<Vec3>,
+    /// Its orientation in the ship's space (front, top), from the first of its bones at a model's origin (`MODEL_ORIGIN`:
+    /// the gear legs' cues), whose node's axes the parts give; None for an emitter of other bones (the rig gives only their
+    /// place and +Z: the listener's own orientation then).
+    axes: Option<(Vec3, Vec3)>,
 }
 
 /// The cue bone that names its model's origin: the gear legs' cues are all at `ModelOrigin`, which is no bone of the leg
@@ -162,6 +168,11 @@ impl Listener {
     /// A point of the ship's space from the head, in the head's axes (x right, y up, -z ahead).
     fn from(&self, p: Vec3) -> [f32; 3] {
         (self.turn.inverse() * (p - self.eye)).to_array()
+    }
+
+    /// A direction of the ship's space in the head's axes.
+    fn turned(&self, d: Vec3) -> [f32; 3] {
+        (self.turn.inverse() * d).to_array()
     }
 }
 
@@ -222,6 +233,7 @@ fn load_sounds(mut commands: Commands, mut load: ResMut<SoundLoad>) {
 impl ShipSound {
     fn new(l: Loaded) -> ShipSound {
         let mixer = Mixer::new(l.bank.clone(), 1);
+        let voices = Voices::with_master(mixer.master_suite()).with_bus(mixer.bus_now());
         for (effect, modulator, param) in l.bank.effects_not_exact() {
             info!("sidewinder sound: effect {effect} is not exact: its modulator {modulator} (on its parameter {param}) is not built, so that parameter keeps its value without it");
         }
@@ -232,7 +244,7 @@ impl ShipSound {
             mixer,
             seeds: 1,
             triggers: Triggers::default(),
-            voices: Voices::default(),
+            voices,
             active: false,
             left_at: None,
             rumbling: HashMap::new(),
@@ -280,7 +292,7 @@ impl ShipSound {
         }
         let id = FIRST_CUE_EMITTER + self.cue_emitters.len() as u32;
         let names = bones.iter().zip(&nodes).filter_map(|(b, n)| rig.nodes.get(*n).map(|node| format!("{}!{b}", node.name))).collect();
-        self.cue_emitters.insert(id, CueEmitter { machine, bones: bones.to_vec(), nodes, names, at: None });
+        self.cue_emitters.insert(id, CueEmitter { machine, bones: bones.to_vec(), nodes, names, at: None, axes: None });
         self.cue_rev = None;
         id
     }
@@ -305,11 +317,22 @@ impl ShipSound {
                     .filter_map(|((b, n), f)| f.map(|f| f.0).or_else(|| (b == MODEL_ORIGIN).then(|| parts.matrix(*n).w_axis.truncate())))
                     .collect();
                 e.at = (!found.is_empty()).then(|| middle(&found));
+                // (Which of the node's axes Elite takes as the emitter's front is not read: its -Z, the model's ahead,
+                // and its +Y, grade E.)
+                e.axes = e.bones.iter().zip(&e.nodes).find(|(b, _)| *b == MODEL_ORIGIN).and_then(|(_, n)| {
+                    let m = parts.matrix(*n);
+                    let front = (-m.z_axis.truncate()).normalize_or_zero();
+                    let top = m.y_axis.truncate().reject_from(front).normalize_or_zero();
+                    (front != Vec3::ZERO && top != Vec3::ZERO).then_some((front, top))
+                });
             }
         }
         for (id, e) in &self.cue_emitters {
             if let Some(at) = e.at {
                 self.mixer.set_emitter(*id, listener.from(at));
+            }
+            if let Some((front, top)) = e.axes {
+                self.mixer.set_emitter_orientation(*id, listener.turned(front), listener.turned(top));
             }
         }
     }
@@ -473,14 +496,15 @@ fn drive(
     snd.call(&calls);
     snd.place_cue_emitters(&assets.rig, &parts, &Listener::of(&assets, &seat));
     let level = LEVEL * settings.volume;
-    let ShipSound { mixer, voices, clips, rumbles, rumbling, now, log, warned, .. } = snd;
+    let ShipSound { mixer, voices, clips, rumbles, rumbling, now, log, .. } = snd;
     let log = *log;
     let stepped = std::time::Instant::now();
     let updates = mixer.step(dt as f32);
     let mut motors = [0.0f32; 2];
     for u in updates {
         match u.output {
-            Output::Audio { source } => {
+            // (A Tone Generator is a clip too, under its source plug-in's id: `load.rs`.)
+            Output::Audio { source } | Output::Synth { source } => {
                 let clip = clips.get(&source);
                 if log {
                     if let Some(to) = u.seek_to {
@@ -531,14 +555,10 @@ fn drive(
                 }
                 age.0 += dt;
             }
-            Output::Synth { source } => {
-                if warned.insert(format!("synth {source}")) {
-                    info!("sidewinder sound: a Tone Generator voice (source {source}) is not built: silent");
-                }
-            }
         }
     }
     snd.voices.set_limit(snd.mixer.master_limiter(), level);
+    snd.voices.set_bus(snd.mixer.bus_now().as_ref(), level);
     let built = std::time::Instant::now();
     let queued = snd.voices.queued();
     snd.voices.start_queued(&mut commands, &mut outputs);
@@ -589,10 +609,10 @@ fn drive(
 }
 
 /// A placed voice's place for the log: where its emitter is from the head, the distance's gain and filter shares and the
-/// pan's gains on each channel (empty for a centred voice).
+/// pan's gains on each channel (empty for a voice not placed).
 fn placed_text(u: &VoiceUpdate, clip: Option<&Arc<Clip>>) -> String {
     let (Some(p), Some(at)) = (&u.place, u.position) else { return String::new() };
-    let now = p.at(at, clip.map_or(1, |c| usize::from(c.channels)));
+    let now = p.at(at, u.orientation.unwrap_or(LISTENER_AXES), clip.map_or(1, |c| usize::from(c.channels)));
     let [x, y, z] = at;
     format!(
         ", placed at ({x:.2}, {y:.2}, {z:.2}) m: distance {:+.1} dB, low-pass {:+.1}, high-pass {:+.1}, left / right {:.3} / {:.3}{}",
@@ -707,7 +727,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 let at = snd.mixer.emitter(*id).map_or("not placed".to_string(), |[x, y, z]| format!("({x:.2}, {y:.2}, {z:.2}) m from the head"));
                 info!("sidewinder sound: emitter {id:#x}: machine {} at {:?} (rig nodes {:?}), {at}", e.machine, e.bones, e.nodes);
             }
-            info!("sidewinder sound: every other emitter (the drive loops 0x100-0x107, the cockpit positions 0x200-0x208, the cockpit's origin 0x300, the voice 0x302) is the listener's own: centred");
+            info!("sidewinder sound: every other emitter (the drive loops 0x100-0x107, the cockpit positions 0x200-0x208, the cockpit's origin 0x300, the voice 0x302) is the listener's own: it plays through its sound's route as a voice at the listener");
         }
         _ => warn!("sw sound: log on|off | state | emitters | cue MACHINE EVENT"),
     }
