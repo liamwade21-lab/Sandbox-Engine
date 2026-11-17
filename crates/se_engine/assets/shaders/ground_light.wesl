@@ -327,7 +327,9 @@ fn point_light_at(
 // In two steps, because the profile's table must be read through the caller's own binding: indexed in a record passed by value
 // (as here), the whole table is copied to a local for every pixel, which cost the ground half a millisecond even with the
 // lamps off (measured). So `ship_beam_texels` says where each lamp reads the profile, the caller reads it there from its
-// binding (its `beam_profile`, with `beam_texel`), and `ship_beam_at` / `ship_beam_facing` take the four values.
+// binding (its `beam_profile`, with `beam_texel`), and `ship_beam_at` / `ship_beam_facing` take the four values. A lamp that
+// gives the pixel nothing (out of its range or its cone) says so first (-1), and the caller reads nothing for it: with the
+// lamps on, the ground outside the beams reads no table.
 
 // The profile's texels in `ShipBeam::profile` (the IES texture's width).
 const BEAM_PROFILE_TEXELS: f32 = 1024.0;
@@ -343,10 +345,23 @@ fn beam_exposure(b: ShipBeam, t: vec4<f32>) -> f32 {
 
 // Where a lamp reads its profile, from the camera at `p` (m): the texel coordinate of the ship's lookup
 // (sidewinder_lit.wesl `ship_lamps`: u = u1 - (u1 - u0) K (1 - cos theta) across the texels' centres), clamped to the row as
-// the ship's clamped sampler is.
+// the ship's clamped sampler is; -1 where it reads none: a lamp with no profile, or one that gives the point nothing whatever
+// the profile says (`beam_lamp`'s own tests, in its order: no colour, out of its range, outside its cone, where the cone's
+// factor is 0, so the profile's value there multiplies nothing).
 fn beam_texel_x(lamp: ShipBeamLamp, p: vec3<f32>) -> f32 {
+    if all(lamp.colour.rgb == vec3<f32>(0.0)) || lamp.dir_cos.w <= -1.5 || lamp.spot.z <= 0.5 {
+        return -1.0;
+    }
     let to = lamp.pos_range.xyz - p;
-    let cos_t = dot(lamp.dir_cos.xyz, -(to * inverseSqrt(dot(to, to))));
+    let d2 = dot(to, to);
+    let range = lamp.pos_range.w;
+    if d2 >= range * range || d2 <= 0.0 {
+        return -1.0;
+    }
+    let cos_t = dot(lamp.dir_cos.xyz, -(to * inverseSqrt(d2)));
+    if cos_t <= lamp.dir_cos.w {
+        return -1.0;
+    }
     let u0 = 0.5 / BEAM_PROFILE_TEXELS;
     let u1 = (BEAM_PROFILE_TEXELS - 0.5) / BEAM_PROFILE_TEXELS;
     let u = u1 - (u1 - u0) * lamp.spot.y * (1.0 - saturate(cos_t));
@@ -365,8 +380,9 @@ fn beam_texel(x: f32, k: u32) -> vec2<u32> {
     return vec2<u32>(i / 4u, i % 4u);
 }
 
-// One headlight at `p` (from the camera, m) with its profile there `ies` (unused without one): xyz its irradiance on a surface
-// facing it, and the direction towards it (both zero where it gives none).
+// One headlight at `p` (from the camera, m) with its profile there `ies` (unused without one; 0, the caller's for no reading,
+// where `beam_texel_x` found it gives nothing, which ends the same, at zero): xyz its irradiance on a surface facing it, and the
+// direction towards it (both zero where it gives none).
 fn beam_lamp(b: ShipBeam, lamp: ShipBeamLamp, p: vec3<f32>, ies: f32) -> array<vec3<f32>, 2> {
     let none = array<vec3<f32>, 2>(vec3<f32>(0.0), vec3<f32>(0.0));
     if all(lamp.colour.rgb == vec3<f32>(0.0)) {

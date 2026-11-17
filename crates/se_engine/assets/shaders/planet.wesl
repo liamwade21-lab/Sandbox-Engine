@@ -172,8 +172,12 @@ fn cloud_shadow(bdir: vec3<f32>, height: f32) -> f32 {
 }
 
 // A ship's headlights' profile at texel coordinate `x` (ground_light.wesl `ship_beam_texels`), read through this binding: the
-// two texels the ship's linear sampler blends.
+// two texels the ship's linear sampler blends; 0 where the lamp gives nothing (`beam_texel_x`'s -1).
 fn beam_profile(x: f32) -> f32 {
+    // (-1: the lamp gives nothing here, nothing is read.)
+    if x < 0.0 {
+        return 0.0;
+    }
     let a = beam_texel(x, 0u);
     let c = beam_texel(x, 1u);
     return mix(cloud_sh.beam.profile[a.x][a.y], cloud_sh.beam.profile[c.x][c.y], fract(x));

@@ -26,8 +26,8 @@ use crate::system::SystemBody;
 use crate::volumetric_clouds::{BeamLamp, ShipBeam, SHIP_BEAM_LAMPS};
 
 use super::facts::ShipFacts;
-use super::lights::{LightList, LightsState};
-use super::material::ShipMaterial;
+use super::lights::{Lamp, LightList, LightsState};
+use super::material::{ShipLight, ShipMaterial};
 use super::Sidewinder;
 
 /// The parameter of the lights' switch: the slots whose animator it drives are the headlights.
@@ -45,6 +45,19 @@ pub struct BeamProfile {
     pub ies: Handle<Image>,
 }
 
+/// One headlight's record: its slot `lamp` as `lights.rs` last wrote it to the lights buffer (`r`), placed by `point` and
+/// turned by `axis` (the ship's model space to the camera's), with the slot's exposure term, the one the ship's materials take
+/// for it (`Lamp::exposure_terms`, `ShipScene`).
+fn beam_lamp(lamp: &Lamp, r: &ShipLight, point: impl Fn(Vec3) -> Vec3, axis: impl Fn(Vec3) -> Vec3) -> BeamLamp {
+    BeamLamp {
+        pos_range: point(r.pos_range.truncate()).extend(r.pos_range.w),
+        colour: r.colour,
+        dir_cos: axis(r.dir_cos.truncate()).extend(r.dir_cos.w),
+        spot: r.spot,
+        exposure: lamp.exposure_terms(),
+    }
+}
+
 /// The record this frame: `None` (zeros) without a powered ship whose headlights give light.
 fn lit(ship: &Sidewinder, facts: &ShipFacts, list: &LightList, state: &LightsState, cam: &FlyCamera, bodies: &Query<&SystemBody>) -> Option<ShipBeam> {
     if !facts.powered {
@@ -60,13 +73,7 @@ fn lit(ship: &Sidewinder, facts: &ShipFacts, list: &LightList, state: &LightsSta
     let mut out = ShipBeam::default();
     for (k, i) in headlight_slots(list).into_iter().take(SHIP_BEAM_LAMPS).enumerate() {
         let Some(r) = state.written().get(i).filter(|r| r.colour.truncate() != Vec3::ZERO) else { continue };
-        out.lamps[k] = BeamLamp {
-            pos_range: point(r.pos_range.truncate()).extend(r.pos_range.w),
-            colour: r.colour,
-            dir_cos: axis(r.dir_cos.truncate()).extend(r.dir_cos.w),
-            spot: r.spot,
-            exposure: list.lamps[i].exposure_terms(),
-        };
+        out.lamps[k] = beam_lamp(&list.lamps[i], r, point, axis);
     }
     if out.lamps.iter().all(|l| l.colour.truncate() == Vec3::ZERO) {
         return None;
@@ -134,5 +141,37 @@ mod tests {
             assert!(i < list.hull && !l.flagged() && l.spot == (l.light.use_ies == Some(true)), "slot {i}: {}", l.holder());
         }
         assert_eq!(slots.iter().filter(|&&i| list.lamps[i].spot).count(), 2, "the two spots");
+    }
+
+    /// The exposure path, which the shipped headlights never take (their exposure switch is off in Elite's data): for a
+    /// headlight whose switch is on, the record carries the slot's own term (what the ship's materials read for that slot,
+    /// `ShipScene`), and the ground's rule on it (`ground_light.wesl` `beam_exposure`, stated here) gives the ship's factor
+    /// (`lights::exposure_factor`), the adapted compensation's stops added to the scene value in photo mode 2.
+    #[test]
+    fn a_headlight_with_exposure_on_takes_the_ships_factor() {
+        use super::super::lights::{exposure_factor, PanelGlow};
+        let read = |rel: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string());
+        let rig = super::super::assets::load(&read).unwrap_or_else(|(f, why)| panic!("{f}: {why}")).assets.rig;
+        let mut list = LightList::new(&rig, &rig.static_pose(true)).expect("the list");
+        let i = headlight_slots(&list).into_iter().find(|&i| list.lamps[i].spot).expect("a spot");
+        assert!(!list.lamps[i].light.exposure_enable, "the shipped headlights' exposure switch is off");
+        let l = &mut list.lamps[i].light;
+        (l.exposure_enable, l.exposure_bias, l.floats_112) = (true, 0.5, [8.0, 8.5]);
+        let lamp = &list.lamps[i];
+        let r = lamp.record(1.0, &PanelGlow::default());
+        let rec = beam_lamp(lamp, &r, |v| v, |v| v);
+        assert_eq!(rec.exposure, Vec4::new(1.0, 0.5, 8.0, 8.5));
+        assert_eq!(rec.exposure, lamp.exposure_terms(), "the ship's slot term");
+        assert_eq!((rec.colour, rec.spot, rec.pos_range.w), (r.colour, r.spot, r.pos_range.w), "the slot as the lights buffer has it");
+        // `beam_exposure(head, t)`: head = (lit, scene value, adapt on, adapted stops).
+        let ground = |head: Vec4, t: Vec4| if t.x < 0.5 { 1.0 } else { (head.y + head.z * head.w + t.y).clamp(t.z, t.w).exp2() / 8.0 };
+        for scene_ev in [5.0f32, 7.6, 7.9, 8.2, 12.0] {
+            for adapted in [0.0f32, 0.3, -1.0] {
+                let want = exposure_factor(&lamp.light, scene_ev + adapted);
+                let got = ground(Vec4::new(1.0, scene_ev, 1.0, adapted), rec.exposure);
+                assert!((got - want).abs() <= want * 1e-6, "scene {scene_ev} adapted {adapted}: {got} vs {want}");
+            }
+            assert_eq!(ground(Vec4::new(1.0, scene_ev, 0.0, 2.0), rec.exposure), exposure_factor(&lamp.light, scene_ev), "photo mode 2 off");
+        }
     }
 }
