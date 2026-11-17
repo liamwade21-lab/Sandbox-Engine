@@ -368,8 +368,8 @@ chair/clips.bin (A): Those clips' 16-bit keys, the game's own decoder's output, 
   from: decoded/animation/chair_clips.json and animation/chair_clips.bin (Elite's 53d917bd9cf21fbe372bfd4cf5a9417bae9c2637)
 chair/graph.json (A): The chair's motion graph CockpitChairMotionGraph for the states a seated solo pilot's chair can be in (Uninitialised, Empty_Ship, Mode_Ship and the routes between them): activities, transition blocks, variables, enums, the blend hierarchy, the chair templates' values. Elite's values.
   from: decoded/animation/chair_clips.json and animation/chair_clips.bin (Elite's 53d917bd9cf21fbe372bfd4cf5a9417bae9c2637); decoded/animation/chair_motiongraph.json (Elite's 660a195dc12d3fc7194ac4dff5bc12996d56fd6c.bin, build 2026.10.23.334925)
-sounds.json (A): The ship's Wwise events (222 the game posts, 209 whose sender is not found) and all they reach: 476 events with the ones they post, 3291 objects, 849 media, 32 source plugins, the Init bank's game syncs. Values are the banks'.
-  from: re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py)
+sounds.json (A): The ship's Wwise events (227 the game posts, 204 whose sender is not found) and all they reach: 476 events with the ones they post, 3291 objects, 849 media, 32 source plugins, 42 Parametric EQs, the Init bank's game syncs. Values are the banks'.
+  from: re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py); re/elite/frea_export/sidewinder_audio/effects.json (the effects in the nodes' and buses' slots, from the same payloads, by sidewinder_effects.py)
 sfx/00084529.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
   from: Wwise source 00084529 (re/elite/frea_export/sidewinder_audio/media/00084529.wav)
 sfx/000858a6.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.

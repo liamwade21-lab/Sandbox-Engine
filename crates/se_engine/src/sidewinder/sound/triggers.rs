@@ -7,6 +7,12 @@
 //! nearly always the same (the notes' "feeders": what fills the audio component's fields was not found), so a field's
 //! meaning is the event it posts, and the motion inputs' units are the bank curves' x ranges (marked `UNIT INFERRED`).
 //! What the ship's state cannot drive (no such state in the flight) is listed in `mod.rs`.
+//!
+//! Three entries have no function because the game sets nothing for them: `audio_engine_class`, `engine_mass_modifier`
+//! and `speed_stationary` (certainty "proven setter, input not found"). Their setters are proven (`FUN_14415ab60` sets
+//! the state AudioEngineClass from the ship audio component's +0x08 and engine_mass_modifier from its +0x04;
+//! `FUN_14415c5c0` sets spaceship_speed_stationary_self from its +0x2c every frame), but what fills those fields is not
+//! found and no record of the Sidewinder holds them, so each stays at the bank's default.
 
 use elite_sim::drive::Drive;
 

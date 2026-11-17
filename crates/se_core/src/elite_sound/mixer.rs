@@ -3,7 +3,7 @@
 use super::curve::{cents_to_ratio, db_to_gain, eval, find, gain_to_db, interpolate};
 use super::data::*;
 use super::filter;
-use super::{event_id, wwise_id, SoundBank, SoundError};
+use super::{event_id, wwise_id, FxStage, SoundBank, SoundError, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -18,17 +18,38 @@ pub enum Output {
     Synth { source: Id },
 }
 
-/// A voice starting this step.
+/// A voice the player builds now: the first update in which it is heard, or the first after it was virtual (Wwise's
+/// virtual voices make no sound and cost the player nothing; the player drops a voice whose update says virtual and builds
+/// it again from here when it is heard again).
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct VoiceStart {
-    /// Seconds into the recording to start from (a voice started between two steps is already this far along).
+    /// Seconds into the recording to start from (a voice started between two steps is already this far along; one coming
+    /// back from virtual starts where its virtual behaviour says: the beginning, the time it would have reached, or where it
+    /// went virtual).
     pub offset: f32,
     pub looping: bool,
-    /// How many times it plays in all; `None` = for ever.
+    /// How many times it plays from `offset` on, this pass included; `None` = for ever.
     pub loop_count: Option<u32>,
     /// The part that repeats, in sample frames, start inclusive, end exclusive (the recording's smpl loop: its intro plays
     /// once, then this region loops); `None` = the whole recording. Only on a looping voice.
     pub loop_region: Option<(u64, u64)>,
+}
+
+/// One band of a Parametric EQ on a voice's way, as its parameters are now (bank values, curves and the plug-in's own clamps
+/// applied): `filter` None for a type number out of the plug-in's range. A band that is off, or whose effect is bypassed,
+/// passes the signal untouched.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EqNow {
+    pub on: bool,
+    pub filter: Option<EqFilter>,
+    pub frequency: f32,
+    pub gain_db: f32,
+    pub q: f32,
+}
+
+impl EqNow {
+    /// A band that passes the signal untouched.
+    pub const OFF: EqNow = EqNow { on: false, filter: None, frequency: 0.0, gain_db: 0.0, q: 0.0 };
 }
 
 /// One voice this step.
@@ -60,8 +81,14 @@ pub struct VoiceUpdate {
     /// bypassed (a value of at most 0.1).
     pub lowpass_hz: Option<f32>,
     pub highpass_hz: Option<f32>,
-    /// Below the volume threshold and kept as a virtual voice: the player silences it.
+    /// Below the volume threshold, or beyond a playback limit that makes voices virtual: the player drops it (a virtual
+    /// voice is not heard and is not built; it is built again from its next `start`).
     pub virtual_voice: bool,
+    /// The Parametric EQ bands on its way to the master, in signal order (three a stage, [`SoundBank::fx_stages`]): the
+    /// node's in force, then each bus's; the player runs them after the voice's own filters (a linear effect on a bus
+    /// gives the bus's mix what it gives each voice). Their output levels are in `gain` and `volume_db`. Empty for a
+    /// virtual voice and a stop.
+    pub eq: Vec<EqNow>,
 }
 
 /// SplitMix64: the mixer's one source of chance.
@@ -209,6 +236,8 @@ struct Voice {
     region: Option<(u64, u64, f64)>,
     started: bool,
     reported: bool,
+    /// The player holds it (a start was reported and no virtual update since).
+    built: bool,
     offset: f64,
     seek: Option<f64>,
     virt: bool,
@@ -216,6 +245,36 @@ struct Voice {
 }
 
 impl Voice {
+    /// Where `pos` (seconds played, every pass counted) lies in the recording and how many plays are left from there, this
+    /// one included: the first pass runs to the loop region's end (or the recording's), each later one from the region's
+    /// start, the last on to the recording's end (as the player plays them).
+    fn place(&self, pos: f64) -> (f64, Option<u32>) {
+        let Some(d) = self.dur.filter(|d| *d > 0.0) else { return (pos.max(0.0), self.loops) };
+        if self.loops == Some(1) {
+            return (pos.clamp(0.0, d), Some(1));
+        }
+        let (restart, end) = self.region.map(|(a, b, rate)| (a as f64 / rate, (b as f64 / rate).min(d))).unwrap_or((0.0, d));
+        let again = (end - restart).max(1e-9);
+        if pos < end {
+            return (pos.max(0.0), self.loops);
+        }
+        let k = ((pos - end) / again).floor();
+        let mut within = pos - end - k * again;
+        let mut k = k as u64;
+        if let Some(n) = self.loops {
+            // (The last play runs on past the region's end: the passes beyond the last are in its tail.)
+            let last = u64::from(n.max(2)) - 2;
+            if k >= last {
+                within += (k - last) as f64 * again;
+                k = last;
+            }
+            let left = u64::from(n).saturating_sub(k + 1) as u32;
+            return ((restart + within).min(d), Some(left.max(1)));
+        }
+        let _ = k;
+        (restart + within, None)
+    }
+
     fn total(&self) -> Option<f64> {
         match (self.dur, self.loops) {
             (Some(d), Some(n)) => {
@@ -822,13 +881,10 @@ impl Mixer {
 
     /// Moves every playing voice on by `dt` (to the step's end) at its pitch.
     fn advance_voices(&mut self, dt: f64) {
-        let ids: Vec<u64> = self.insts.keys().copied().collect();
-        for id in ids {
-            let rate = self.insts.get(&id).map(|i| self.voice_rate(i)).unwrap_or(1.0);
+        let rates: Vec<(u64, f64)> = self.insts.iter().filter(|(_, i)| matches!(&i.kind, Kind::Voice(v) if v.started)).map(|(k, i)| (*k, self.voice_rate(i))).collect();
+        for (id, rate) in rates {
             if let Some(Inst { kind: Kind::Voice(v), .. }) = self.insts.get_mut(&id) {
-                if v.started {
-                    v.pos += dt * rate;
-                }
+                v.pos += dt * rate;
             }
         }
     }
@@ -908,6 +964,7 @@ impl Mixer {
                     region,
                     started: false,
                     reported: false,
+                    built: false,
                     offset: 0.0,
                     seek: None,
                     virt: false,
@@ -1343,7 +1400,7 @@ impl Mixer {
             if let Kind::Voice(v) = &mut i.kind {
                 let Some(d) = v.dur else { continue };
                 let p = (frac.clamp(0.0, 1.0) * d).min(d);
-                if v.reported {
+                if v.built {
                     v.seek = Some(p);
                     v.pos = p;
                 } else {
@@ -1422,7 +1479,8 @@ impl Mixer {
     fn waiting(&self, inst: &Inst) -> bool {
         let Kind::Switch(sw) = &inst.kind else { return false };
         let Some(Object::SwitchCntr(s)) = self.bank.object(inst.obj) else { return false };
-        s.continuous_validation && inst.stop_at.is_none() && switch_nodes(s, sw.value).iter().all(|n| self.bank.node(*n).is_none())
+        let entry = sw.value.and_then(|v| s.switches.iter().find(|e| e.value.id == v));
+        s.continuous_validation && inst.stop_at.is_none() && entry.is_none_or(|e| e.nodes.iter().all(|n| self.bank.node(*n).is_none()))
     }
 
     /// Containers with nothing playing and nothing to come are done.
@@ -1523,6 +1581,11 @@ impl Mixer {
 
     /// Everything one voice's level, pitch and filters add up to now: (mix, linear fade and crossfade factor).
     fn voice_mix(&self, id: u64) -> (Mix, f64) {
+        self.voice_mix_eq(id, None)
+    }
+
+    /// `voice_mix`, and the voice's EQ bands into `bands` if given ([`VoiceUpdate::eq`]).
+    fn voice_mix_eq(&self, id: u64, bands: Option<&mut Vec<EqNow>>) -> (Mix, f64) {
         let bank = &self.bank;
         let inst = &self.insts[&id];
         let mut m = self.mix_of(inst);
@@ -1553,6 +1616,18 @@ impl Mixer {
             }
         }
         m.db += self.normalisation_db(inst);
+        // The effects' output levels (a gain: linear, so a voice's share of it is the whole of it).
+        let stages = self.fx_now(inst);
+        m.db += stages.iter().filter_map(|(_, e)| e.as_ref().map(|e| e.1)).sum::<f64>();
+        if let Some(out) = bands {
+            out.clear();
+            for (_, e) in &stages {
+                match e {
+                    Some((b, _)) => out.extend_from_slice(b),
+                    None => out.extend_from_slice(&[EqNow::OFF; 3]),
+                }
+            }
+        }
         if let Some(b) = self.output_bus(inst.obj) {
             for bid in bank.bus_chain(b) {
                 let (pre, post) = self.bus_mix(*bid, inst.emitter);
@@ -1563,6 +1638,83 @@ impl Mixer {
             }
         }
         (m, fade)
+    }
+
+    /// The effects on an instance's way (a voice's), each with its EQ bands and output level (dB) now, or None if bypassed.
+    fn fx_now(&self, inst: &Inst) -> Vec<(FxStage, Option<([EqNow; 3], f64)>)> {
+        if !matches!(inst.kind, Kind::Voice(_)) {
+            return Vec::new();
+        }
+        self.bank.fx_stages(inst.obj).iter().map(|st| (*st, (!self.fx_bypassed(st, inst.emitter)).then(|| self.eq_now(st, inst.emitter)))).collect()
+    }
+
+    /// A slot bypassed now: by the bank's bits, or by the holder's `BypassFX<slot>` / `BypassAllFX` properties, curves and
+    /// states (a sum of at least 0.5: the data's curves and deltas are 0 or 1, a state transition blends them).
+    fn fx_bypassed(&self, st: &FxStage, emitter: u32) -> bool {
+        const SLOT: [&str; 4] = ["BypassFX0", "BypassFX1", "BypassFX2", "BypassFX3"];
+        let (fx, props, rtpc, states) = match self.bank.object(st.holder) {
+            Some(Object::Bus(b)) => (&b.fx, &b.props, &b.rtpc, &b.states),
+            Some(o) => match o.node() {
+                Some(n) => (&n.fx, &n.props, &n.rtpc, &n.states),
+                None => return false,
+            },
+            None => return false,
+        };
+        if fx.bypassed(st.slot) {
+            return true;
+        }
+        let keys = [SLOT[st.slot.min(3) as usize], "BypassAllFX"];
+        let mut v: f64 = keys.iter().map(|k| prop(props, k)).sum();
+        for r in rtpc.iter().filter(|r| r.rtpc_type == RtpcType::GameParameter && keys.contains(&r.param.as_str())) {
+            v += eval(&r.points, r.scaling, self.gp_value(r.game_parameter.id, emitter));
+        }
+        for g in &states.groups {
+            let Some(now) = self.states.get(&g.group.id) else { continue };
+            for (sid, w) in now.weights(self.now) {
+                if let Some(x) = g.states.iter().find(|x| x.state.id == sid) {
+                    v += keys.iter().filter_map(|k| x.deltas.get(*k)).sum::<f64>() * w;
+                }
+            }
+        }
+        v >= 0.5
+    }
+
+    /// A Parametric EQ's bands and output level (dB) now: each parameter its bank value, or its curves' (an exclusive curve
+    /// replaces it, additive ones add to it), and a parameter a curve sets goes through the plug-in's `SetParam`
+    /// (`0x144a10630`): the type truncated to an integer, the gains and the output level held to -24..24 dB, on/off from
+    /// a value other than 0; frequencies and Qs as they are.
+    fn eq_now(&self, st: &FxStage, emitter: u32) -> ([EqNow; 3], f64) {
+        let Some(e) = self.bank.file.effects.get(&st.effect) else { return ([EqNow::OFF; 3], 0.0) };
+        let mut base = [0.0f64; 17];
+        for (k, b) in e.eq.bands.iter().take(3).enumerate() {
+            base[k * 5..k * 5 + 5].copy_from_slice(&[b.filter as u8 as f64, b.gain_db, b.frequency, b.q, if b.on { 1.0 } else { 0.0 }]);
+        }
+        base[EQ_PARAM_OUTPUT_LEVEL as usize] = e.eq.output_level_db;
+        base[EQ_PARAM_LFE as usize] = if e.eq.process_lfe { 1.0 } else { 0.0 };
+        let (mut exclusive, mut added, mut set) = ([None::<f64>; 17], [0.0f64; 17], [false; 17]);
+        for r in e.rtpc.iter().filter(|r| r.rtpc_type == RtpcType::GameParameter) {
+            let p = r.param_id.min(EQ_PARAM_LFE) as usize;
+            let y = eval(&r.points, r.scaling, self.gp_value(r.game_parameter.id, emitter));
+            set[p] = true;
+            match r.accumulation {
+                Accumulation::Exclusive => exclusive[p] = Some(y),
+                _ => added[p] += y,
+            }
+        }
+        let value = |p: usize| exclusive[p].unwrap_or(base[p] + added[p]);
+        // (`SetParam`'s clamp: under -24, or not a number, is -24; else at most 24.)
+        let level = |p: usize| {
+            let v = value(p);
+            if set[p] { if v >= -24.0 { v.min(24.0) } else { -24.0 } } else { v }
+        };
+        let mut bands = [EqNow::OFF; 3];
+        for (k, b) in bands.iter_mut().enumerate() {
+            let p = k * 5;
+            let filter = if set[p] { EqFilter::from_index(value(p) as i64) } else { e.eq.bands.get(k).map(|b| b.filter) };
+            let on = if set[p + 4] { value(p + 4) != 0.0 } else { e.eq.bands.get(k).is_some_and(|b| b.on) };
+            *b = EqNow { on, filter, gain_db: level(p + 1) as f32, frequency: value(p + 2) as f32, q: value(p + 3) as f32 };
+        }
+        (bands, level(EQ_PARAM_OUTPUT_LEVEL as usize))
     }
 
     /// What loudness normalisation adds to a voice (dB): the recording's `akd ` gain where the node in force normalises.
@@ -1663,6 +1815,13 @@ impl Mixer {
                 let Some(rms) = rms else { continue };
                 let (m, fade) = self.voice_mix(*id);
                 let mut db = m.db;
+                // (The output levels of effects after the meter's slot: later slots of its bus, and the buses beyond.)
+                for (st, e) in self.fx_now(inst) {
+                    let after = st.on_bus && chain.iter().position(|b| *b == st.holder).is_some_and(|k| k > at || (k == at && st.slot > meter.slot));
+                    if let (true, Some((_, out))) = (after, e) {
+                        db -= out;
+                    }
+                }
                 if !meter.apply_downstream_volume {
                     db -= self.bus_mix(meter.bus, inst.emitter).1;
                     for b in &chain[at + 1..] {
@@ -1731,8 +1890,9 @@ impl Mixer {
         let ids: Vec<u64> = self.insts.iter().filter(|(_, i)| matches!(&i.kind, Kind::Voice(v) if v.started && v.out != Out::Silence)).map(|(k, _)| *k).collect();
         let mut kills = Vec::new();
         let over_limit = self.limited_virtual();
+        let mut bands = Vec::new();
         for id in ids {
-            let (m, fade) = self.voice_mix(id);
+            let (m, fade) = self.voice_mix_eq(id, Some(&mut bands));
             let level_db = m.db + gain_to_db(fade);
             let (behaviour, queue) = self.below_threshold(self.insts[&id].obj);
             let inst = &self.insts[&id];
@@ -1755,31 +1915,29 @@ impl Mixer {
             let emitter = inst.emitter;
             let Some(out) = output(v.out) else { continue };
             let Some(Inst { kind: Kind::Voice(v), .. }) = self.insts.get_mut(&id) else { continue };
-            let start = (!v.reported).then(|| VoiceStart {
-                offset: (v.pos as f32).max(0.0),
-                looping: v.loops != Some(1),
-                loop_count: v.loops,
-                loop_region: v.region.map(|(a, b, _)| (a, b)),
-            });
             let mut seek = v.seek.take();
             if virt && !v.virt {
                 v.virt_pos = v.pos;
             } else if !virt && v.virt && v.reported {
                 // Back from virtual: by the queue behaviour (0 from the beginning, 1 from the elapsed time, 2 resume).
                 match queue {
-                    0 => {
-                        v.pos = 0.0;
-                        seek = Some(0.0);
-                    }
-                    2 => {
-                        v.pos = v.virt_pos;
-                        seek = Some(v.virt_pos);
-                    }
+                    0 => v.pos = 0.0,
+                    2 => v.pos = v.virt_pos,
                     _ => {}
                 }
             }
+            // Heard and not held by the player: built now, from where it is (a seek asked meanwhile is where it is).
+            let start = (!virt && !v.built).then(|| {
+                seek = None;
+                let (offset, plays) = v.place(v.pos);
+                VoiceStart { offset: offset as f32, looping: v.loops != Some(1), loop_count: plays, loop_region: v.region.map(|(a, b, _)| (a, b)) }
+            });
+            v.built = !virt;
             v.virt = virt;
             v.reported = true;
+            if virt {
+                seek = None;
+            }
             let gain = db_to_gain(m.db) * fade;
             self.updates.push(VoiceUpdate {
                 voice: v.id,
@@ -1799,6 +1957,7 @@ impl Mixer {
                 lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: virt,
+                eq: if virt { Vec::new() } else { bands.clone() },
             });
         }
         for k in kills {
@@ -1819,12 +1978,7 @@ impl Mixer {
                 output: out,
                 emitter: inst.emitter,
                 position: self.emitters.get(&inst.emitter).copied(),
-                start: (!v.reported).then(|| VoiceStart {
-                    offset: v.offset as f32,
-                    looping: v.loops != Some(1),
-                    loop_count: v.loops,
-                    loop_region: v.region.map(|(a, b, _)| (a, b)),
-                }),
+                start: None,
                 stop: true,
                 seek_to: None,
                 gain: if premix.is_some() { (db_to_gain(m.db) * fade) as f32 } else { 0.0 },
@@ -1837,6 +1991,7 @@ impl Mixer {
                 lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: false,
+                eq: Vec::new(),
             });
         }
         self.updates.sort_by_key(|u| u.voice);

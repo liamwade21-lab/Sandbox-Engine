@@ -83,10 +83,11 @@ pub fn find(points: &[Point], x: f64) -> f64 {
 pub const DB_FLOOR: f64 = -96.3;
 
 /// `CAkConversionTable::ApplyCurveScaling` (versions 72 and up): `None` as is; `dB` stores linear gain - 1, clamped to
-/// -1..1, -1 being the floor.
+/// -1..1, -1 being the floor; `Log` is 10^y (the data's reading: [`Scaling`]).
 pub fn scale(y: f64, scaling: Scaling) -> f64 {
     match scaling {
         Scaling::None => y,
+        Scaling::Log => 10f64.powf(y),
         Scaling::DB => {
             let v = y.clamp(-1.0, 1.0);
             if v == -1.0 {
@@ -175,6 +176,9 @@ mod tests {
         assert!((scale(-0.5, Scaling::DB) - 20.0 * 0.5f64.log10()).abs() < 1e-12);
         assert_eq!(scale(5.0, Scaling::DB), scale(1.0, Scaling::DB));
         assert_eq!(scale(7.5, Scaling::None), 7.5);
+        // Log: the EQ frequencies of the drives' bus (11338178) at the default 3 of their game parameters.
+        assert!((scale(2.0, Scaling::Log) - 100.0).abs() < 1e-9);
+        assert!((scale(3.0, Scaling::Log) - 1000.0).abs() < 1e-9);
     }
 
     #[test]

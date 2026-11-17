@@ -5,7 +5,8 @@
 //!   threads, `sounds.json` and every recording, each checked before anything can play it. The ship flies silent until then.
 //! - `triggers.rs`: `Pilot`'s, `Seat`'s state to Elite's posts, states and game parameters, rule by rule
 //!   (`triggers.json`'s ids).
-//! - `voices.rs`: the mixer's voice updates as Bevy audio entities.
+//! - `voices.rs`: the mixer's voice updates as sound: one output source mixing every heard voice, built off the game
+//!   thread.
 //!
 //! Getting out, losing the ship or the mod going off stops every voice at once and starts the mixer afresh.
 //!
@@ -14,19 +15,23 @@
 //! record of an emergency drop), the fuel scoop, power plant and reboot cues (not modelled), the cargo scoop's acquired
 //! and warning cues (no cargo), the canopy's crack stages 01-04 and its voice reports (which lines report kinds 0 and 1 is
 //! not closed), the heat sink and malfunction lines (no heat sink, no malfunctions), `UnderAttack`, `EnginesOn_<suffix>`
-//! (no event of the banks), `engine_mass_modifier` and `AudioEngineClass` (their source is not identified), the supercruise
-//! speed and SCO parameters (not decompiled), and the gear's and doors' state machine cues (`ShipSound::post_cue`, for the
-//! animation task).
+//! (no event of the banks), the supercruise speed and SCO parameters (not decompiled), and the gear's and doors' state
+//! machine cues (`ShipSound::post_cue`, for the animation task). Left at the banks' defaults, their setters found but not
+//! what they read (`triggers.rs`, `unset_engine_syncs`): `AudioEngineClass`, `engine_mass_modifier`,
+//! `spaceship_speed_stationary_self`.
 //!
 //! **Emitters have no positions, so every voice plays centred:** the loops' emitters (`ship.json`'s `Internal_MainDrive_Left`,
 //! `Cockpit_Back_Centre`, `Internal_Cockpit_Origin` ... 21 names) are Elite's audio emitter components, named by the
 //! entity's template (not at rest); no bone or locator of the shipped models carries those names (the hull's 156 bones and
 //! the cockpit's 148 checked, T5c), so where each hangs is not proven. 112 of the shipped events play 3D-positioned
 //! recordings (positioning Emitter, spatialised) and all sound centred until their emitters are found. The state
-//! machines' cues name their bones (`ShipSound::post_cue` places those).
+//! machines' cues name their bones (`ShipSound::post_cue` gives the mixer their places, for its distance curves; the
+//! player still plays them centred).
 //!
-//! **Filters:** each voice's low-pass and high-pass run as Elite's own sound engine runs them (`voices.rs`,
-//! `se_core::elite_sound::filter`, decompiled from the exe).
+//! **Filters and effects:** each voice's low-pass and high-pass run as Elite's own sound engine runs them, then the
+//! Parametric EQs on its way to the master, node's and buses' (`voices.rs`, `se_core::elite_sound::filter`, decompiled from
+//! the exe). The buses' other effects (compressors, the master's limiter, meters' ballistics, Frontier's own plug-ins) are
+//! not built: `se_core::elite_sound`'s docs list them.
 
 mod load;
 mod triggers;
@@ -35,7 +40,7 @@ mod voices;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use bevy::audio::{AddAudioSource, AudioSink, SpatialAudioSink};
+use bevy::audio::AddAudioSource;
 use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
@@ -45,7 +50,6 @@ use se_core::elite_sound::{curve, wwise_id, Mixer, Output, SoundBank, VoiceUpdat
 
 use crate::mods::ModControl;
 use crate::sound::SoundSettings;
-use crate::system::SystemBody;
 
 use super::parts::Parts;
 use super::pilot::{Pilot, PilotKeys, TICK};
@@ -53,7 +57,7 @@ use super::seat::Seat;
 use super::{Sidewinder, SidewinderAssets};
 use load::{Clip, Loaded, Rumble};
 use triggers::{Call, Emitter, Flight, ShipView, Triggers};
-use voices::{Event, ShipVoice, VoiceSound, Voices};
+use voices::{Event, ShipOutput, Voices};
 
 /// Wwise's 0 dB (a mixer gain of 1) as Bevy's volume: unity at the game's default sound volume (`SoundSettings::volume`,
 /// 0.3, which multiplies it), so the mixer's gain reaches the speakers as it is. A principle, not a fit (the orchestrator's
@@ -114,7 +118,7 @@ pub fn plugin(app: &mut App) {
     if !crate::sandbox::enabled() {
         return;
     }
-    app.add_audio_source::<VoiceSound>().init_resource::<SoundLoad>().init_resource::<Presses>();
+    app.add_audio_source::<ShipOutput>().init_resource::<SoundLoad>().init_resource::<Presses>();
     // (The spec's C20: nothing before a spawn's files are read.)
     app.add_systems(Update, load_sounds.run_if(resource_exists::<SidewinderAssets>).run_if(|l: Res<SoundLoad>| l.task.is_some() || !l.started));
     app.add_systems(
@@ -253,7 +257,9 @@ fn view(pilot: &Pilot, presses: &Presses, dt: f64, acc: DVec3) -> ShipView {
     let rot = DQuat::from_array(pilot.motion.rot.to_array());
     let vel = rot.inverse() * DVec3::from_array(pilot.motion.vel.to_array());
     let acc = rot.inverse() * acc;
-    let (block, _) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), pilot.mass_t());
+    // (The gear down or the scoop out halve the top speed, as the flight's own block has it: `pilot.rs`.)
+    let speed_k = elite_sim::deployables::speed_factor(pilot.gear_down, pilot.scoop);
+    let (block, _) = elite_sim::data::sidewinder_block_with(pilot.dist.pips(ENG), pilot.mass_t(), speed_k);
     let flight = Flight {
         vel: vel.to_array(),
         acc: acc.to_array(),
@@ -307,9 +313,7 @@ fn drive(
     pilot: Res<Pilot>,
     ship: Res<Sidewinder>,
     settings: Res<SoundSettings>,
-    bodies: Query<&SystemBody>,
-    mut sounds: ResMut<Assets<VoiceSound>>,
-    mut sinks: Query<(Option<&mut AudioSink>, Option<&mut SpatialAudioSink>, &mut Transform), With<ShipVoice>>,
+    mut outputs: ResMut<Assets<ShipOutput>>,
     pads: Query<Entity, With<Gamepad>>,
     mut rumble: MessageWriter<GamepadRumbleRequest>,
 ) {
@@ -345,12 +349,6 @@ fn drive(
     let mut calls = Vec::new();
     snd.triggers.step(&v, &mut calls);
     snd.call(&calls);
-    // The ship's turn in the render frame's axes (placed voices' directions).
-    let to_render = match (pilot.jump.as_ref(), ship.parked.as_ref()) {
-        (Some(j), _) => j.rot.as_quat(),
-        (None, Some(p)) => bodies.iter().find(|b| b.obj == p.obj).map_or(Quat::IDENTITY, |b| (b.orient * p.rot).as_quat()),
-        _ => Quat::IDENTITY,
-    };
     let level = LEVEL * settings.volume;
     let ShipSound { mixer, voices, clips, rumbles, rumbling, now, log, warned, .. } = snd;
     let log = *log;
@@ -366,7 +364,7 @@ fn drive(
                         info!("sidewinder sound: voice {} seeks to {to:.3} s", u.voice);
                     }
                 }
-                voices.apply(u, clip, level, to_render, &mut sinks, &mut commands, &mut |e| if log {
+                voices.apply(u, clip, level, &mut |e| if log {
                     match e {
                         Event::Started(u, file) => info!(
                             "sidewinder sound: voice {} starts {file} on emitter {:#x}: gain {:.4} ({:.1} dB), pitch {:.3}, low-pass {:.0}, high-pass {:.0}{}{}",
@@ -381,6 +379,7 @@ fn drive(
                             if u.virtual_voice { ", virtual" } else { "" }
                         ),
                         Event::Stopped(u) => info!("sidewinder sound: voice {} stops", u.voice),
+                        Event::Virtual(u) => info!("sidewinder sound: voice {} goes virtual (dropped until heard)", u.voice),
                         Event::Silent(u) => info!("sidewinder sound: voice {} has no recording (source {source})", u.voice),
                     }
                 });
@@ -417,15 +416,21 @@ fn drive(
     }
     let built = std::time::Instant::now();
     let queued = snd.voices.queued();
-    snd.voices.start_queued(level, to_render, &mut commands, &mut sounds);
+    snd.voices.start_queued(&mut commands, &mut outputs);
+    let handed = snd.voices.hand_over();
     snd.voices.tell_guard();
+    if snd.log {
+        for (n, waited) in &handed {
+            info!("sidewinder sound: {n} starts handed to the output together, {:.1} ms after they were asked for", waited * 1000.0);
+        }
+    }
     // The audio thread's heartbeat, once a second (`sw sound log on`): frames its voices made, samples it found not finite.
     let t = time.elapsed_secs_f64();
     if snd.log && t - snd.beat.0 >= 1.0 {
-        let (made, bad, skipped, longest_us, top) = snd.voices.meter();
+        let (made, bad, skipped, longest_us, refused, top) = snd.voices.meter();
         let top: Vec<String> = top.iter().map(|(id, f, n, s)| format!("{id} {f} {n} at {s:.2}")).collect();
         info!(
-            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} samples not finite so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
+            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} samples not finite, {refused} voices refused so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
             made - snd.beat.1,
             t - snd.beat.0,
             snd.voices.count(),
@@ -436,7 +441,7 @@ fn drive(
     }
     if snd.log && (queued > 0 || dt > LONG_FRAME_S) {
         info!(
-            "sidewinder sound: frame {:.1} ms (the last), mixer {:.2} ms, {queued} starts built in {:.2} ms",
+            "sidewinder sound: frame {:.1} ms (the last), mixer {:.2} ms, {queued} starts sent to be built in {:.2} ms",
             dt * 1000.0,
             (built - stepped).as_secs_f64() * 1000.0,
             built.elapsed().as_secs_f64() * 1000.0
@@ -565,8 +570,119 @@ mod tests {
         assert!(flying > 0);
     }
 
-    /// How many shipped events start a voice with a non-zero low-pass or high-pass (the filters are not applied: the
-    /// cutoff table is missing).
+    /// Nothing the triggers post is an `OPEN_EVENTS` event, and everything they post is a `SHIP_EVENTS` one: the triggers
+    /// run through every state the flight can give them (each cockpit switch both ways, the boost's stages and a refusal,
+    /// heat and hull falling, the shields, the canopy and the mask, the engines, a glide, the drive's supercruise and jump
+    /// with their drops, cancels and refusals), and every name posted is checked against the shipped file's two lists.
+    #[test]
+    fn nothing_open_is_ever_posted() {
+        use elite_sim::drive::Drive;
+        let bank = shipped();
+        let mut t = Triggers::default();
+        let mut posted = HashSet::new();
+        let mut run = |t: &mut Triggers, v: &ShipView, frames: usize| {
+            for _ in 0..frames {
+                let mut calls = Vec::new();
+                t.step(v, &mut calls);
+                for c in calls {
+                    if let Call::Post(n, _) = c {
+                        posted.insert(n);
+                    }
+                }
+            }
+        };
+        let mut v = ShipView::at_rest();
+        run(&mut t, &v, 5);
+        for flip in 0..2 {
+            let on = flip == 0;
+            v.flight_assist = !on;
+            v.gear_down = !on;
+            v.lights = on;
+            v.scoop = on;
+            v.silent = on;
+            v.glide = on;
+            v.engines_on = !on;
+            run(&mut t, &v, 240);
+        }
+        for stage in [1u8, 2, 3, 0] {
+            v.boost = stage;
+            run(&mut t, &v, 30);
+        }
+        v.boost_refused = true;
+        run(&mut t, &v, 1);
+        v.boost_refused = false;
+        run(&mut t, &v, 2);
+        for h in [0.5, 1.25, 1.6, 0.3] {
+            v.heat = h;
+            run(&mut t, &v, 10);
+        }
+        for h in [0.9, 0.5, 0.2] {
+            v.hull = h;
+            run(&mut t, &v, 2);
+        }
+        for (up, powered) in [(false, true), (true, true), (false, false), (true, true)] {
+            v.shields_up = up;
+            v.shields_powered = powered;
+            run(&mut t, &v, 2);
+        }
+        v.canopy_breached = true;
+        v.oxygen_mask = true;
+        run(&mut t, &v, 2);
+        v.canopy_breached = false;
+        v.oxygen_mask = false;
+        v.jump_pressed = true;
+        run(&mut t, &v, 1);
+        v.jump_pressed = false;
+        let mut drive = |t: &mut Triggers, v: &mut ShipView, mode: u8, d: Drive, frames: usize| {
+            v.mode = mode;
+            v.drive = d;
+            run(t, v, frames);
+        };
+        // A supercruise charge cancelled, one that goes in, the drop with both messages, the cooldown.
+        drive(&mut t, &mut v, 1, Drive::Charging(1.0), 60);
+        v.jump_pressed = true;
+        drive(&mut t, &mut v, 1, Drive::Ready, 1);
+        v.jump_pressed = false;
+        for left in (0..5).rev() {
+            drive(&mut t, &mut v, 1, Drive::Charging(f64::from(left)), 60);
+        }
+        drive(&mut t, &mut v, 2, Drive::Supercruise, 60);
+        for safe in [Some(false), Some(true), None] {
+            v.safe_drop = safe;
+            drive(&mut t, &mut v, 2, Drive::Supercruise, 5);
+        }
+        drive(&mut t, &mut v, 1, Drive::Arriving(4.0), 60);
+        drive(&mut t, &mut v, 1, Drive::Cooldown(4.0), 60);
+        drive(&mut t, &mut v, 1, Drive::Ready, 5);
+        // A jump: cancelled once, then charged through the countdown, the tunnel, arriving in supercruise, the drop.
+        drive(&mut t, &mut v, 1, Drive::JumpCharging(3.0), 30);
+        drive(&mut t, &mut v, 1, Drive::Ready, 5);
+        for left in (0..15).rev() {
+            drive(&mut t, &mut v, 1, Drive::JumpCharging(f64::from(left) + 0.5), 60);
+        }
+        for left in (0..5).rev() {
+            drive(&mut t, &mut v, 1, Drive::Departing(f64::from(left) + 0.5), 60);
+        }
+        drive(&mut t, &mut v, 3, Drive::Tunnel, 120);
+        drive(&mut t, &mut v, 2, Drive::Arrived(5.0), 120);
+        drive(&mut t, &mut v, 2, Drive::Supercruise, 60);
+        drive(&mut t, &mut v, 1, Drive::Arriving(4.0), 60);
+        drive(&mut t, &mut v, 1, Drive::Ready, 5);
+        let mut calls = Vec::new();
+        t.teardown(&mut calls);
+        posted.extend(calls.into_iter().filter_map(|c| if let Call::Post(n, _) = c { Some(n) } else { None }));
+        let open: HashSet<se_core::elite_sound::Id> = bank.file.open_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
+        let ship: HashSet<se_core::elite_sound::Id> = bank.file.ship_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
+        let mut names: Vec<&String> = posted.iter().collect();
+        names.sort();
+        let opened: Vec<&&String> = names.iter().filter(|n| open.contains(&se_core::elite_sound::event_id(n))).collect();
+        let unlisted: Vec<&&String> = names.iter().filter(|n| !ship.contains(&se_core::elite_sound::event_id(n))).collect();
+        assert!(opened.is_empty(), "OPEN_EVENTS posted: {opened:?}");
+        assert!(unlisted.is_empty(), "posted but not in SHIP_EVENTS: {unlisted:?}");
+        assert!(names.len() > 100, "the sweep posts {} events", names.len());
+    }
+
+    /// How many shipped events start a voice with a non-zero low-pass or high-pass.
     #[test]
     #[ignore]
     fn count_events_with_filters() {

@@ -10,7 +10,10 @@
 //! parents, the buses up to the master, the attenuations, the game syncs they name (from the Init bank), the media, the
 //! source plugins and the names. Left out as derived or not used by the mixer: each object's `resolved` summary, `bank`,
 //! `banks`, a Sound's `media` summary (the `media` table replaces it), the State objects (their deltas are inline in each
-//! node's state block), the modulators and effects (not built: `se_core::elite_sound`'s docs). Every recording shipped
+//! node's state block), the modulators, and the effects other than the Parametric EQ (not built: `se_core::elite_sound`'s
+//! docs). The EQs in the kept nodes' and buses' slots come from `effects.json` (beside `events.json`, made by
+//! `re/elite/tools/sidewinder_effects.py`: the buses' effects are in the Init bank, which `events.json` does not hold),
+//! their parameter blocks decoded (`eq_effect`). Every recording shipped
 //! passed `sidewinder_media.py`'s proof (`decode_identical` in `media/index.json`: the file decodes to the `.wem`'s audio,
 //! sample for sample); `build` refuses any other.
 
@@ -18,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile};
+use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, PARAMETRIC_EQ};
 
 use super::{Ctx, Shipped};
 
@@ -157,6 +160,13 @@ pub(super) const SHIP_EVENTS: &[(&str, &str)] = &[
     ("supercruise_normalflight_transition_b", "audio_mode_transitions"),
     ("supercruise_hyperspace_transition_b", "audio_mode_transitions"),
     ("hyperspace_supercruise_transition_b", "audio_mode_transitions"),
+    // (Each transition's _e when the next transition begins: FUN_14427b320 releases the last handle, whose destructor
+    // FUN_1440ac360 posts it.)
+    ("normalflight_supercruise_transition_e", "audio_mode_transitions"),
+    ("normalflight_hyperspace_transition_e", "audio_mode_transitions"),
+    ("supercruise_normalflight_transition_e", "audio_mode_transitions"),
+    ("supercruise_hyperspace_transition_e", "audio_mode_transitions"),
+    ("hyperspace_supercruise_transition_e", "audio_mode_transitions"),
     ("normalflight_enter", "frame_shift_state"),
     ("normalflight_enter_from_supercruise", "frame_shift_state"),
     ("normalflight_enter_from_hyperspace", "frame_shift_state"),
@@ -278,11 +288,6 @@ pub(super) const OPEN_EVENTS: &[(&str, &str)] = &[
     ("supercruise_jump_internal_e", "fsd_jump: no poster found"),
     ("hyperdrive_jump_internal", "fsd_jump: no poster found"),
     ("supercruise_jump_internal", "fsd_jump: no poster found"),
-    ("normalflight_supercruise_transition_e", "audio_mode_transitions: when the _e is posted is not traced"),
-    ("normalflight_hyperspace_transition_e", "audio_mode_transitions: when the _e is posted is not traced"),
-    ("supercruise_normalflight_transition_e", "audio_mode_transitions: when the _e is posted is not traced"),
-    ("supercruise_hyperspace_transition_e", "audio_mode_transitions: when the _e is posted is not traced"),
-    ("hyperspace_supercruise_transition_e", "audio_mode_transitions: when the _e is posted is not traced"),
     ("supercruise_enter_Internal", "frame_shift_state: the *_Internal events have no poster found"),
     ("supercruise_emergencystop_Internal", "frame_shift_state: no poster found"),
     ("hyperspace_enter_Internal", "frame_shift_state: no poster found"),
@@ -383,6 +388,8 @@ struct Export {
     units: Value,
     /// The Wwise Meter effects in the buses' slots (`events.json`'s `meters`, decoded by `sidewinder_events.py`).
     meters: Vec<Value>,
+    /// Every effect in a slot of a node or bus of `events.json` (`effects.json`, by `sidewinder_effects.py`).
+    effects: Map<String, Value>,
 }
 
 impl Export {
@@ -418,7 +425,17 @@ impl Export {
         let syncs = v.get("game_syncs").cloned().ok_or("events.json: no game_syncs")?;
         let units = v.get("units").cloned().ok_or("events.json: no units")?;
         let meters = v.get("meters").and_then(Value::as_array).cloned().ok_or("events.json: no meters (re-make it with sidewinder_events.py)")?;
-        Ok(Export { events, by_name, by_bank, objects, syncs, units, meters })
+        let fx = read_json(&audio.join("effects.json")).map_err(|e| format!("{e} (make it with re/elite/tools/sidewinder_effects.py)"))?;
+        let effects = fx.get("effects").and_then(Value::as_object).cloned().ok_or("effects.json: no effects")?;
+        // (The game parameters the effects' curves read, defined by the Init bank: events.json defines only its objects'.)
+        let mut syncs = syncs;
+        let defs = fx.get("game_parameters").and_then(Value::as_object).ok_or("effects.json: no game_parameters (re-make it with sidewinder_effects.py)")?;
+        if let Some(table) = syncs.get_mut("game_parameters").and_then(Value::as_object_mut) {
+            for (id, d) in defs {
+                table.entry(id.clone()).or_insert_with(|| d.clone());
+            }
+        }
+        Ok(Export { events, by_name, by_bank, objects, syncs, units, meters, effects })
     }
 
     /// The event id of a name of the tables (events.json's own key, case aside).
@@ -607,6 +624,53 @@ fn check_container_modes(x: &Export) -> Result<(), String> {
     Ok(())
 }
 
+/// A Parametric EQ of `effects.json` in `sounds.json`'s shape (`se_core::elite_sound::data::Effect`): its parameter block
+/// (bank v135, wwiser's `CAkParameterEQFXParams__SetParamsBlock` for versions up to 168, the layout Elite's own
+/// `SetParamsBlock` at 0x144a107a0 copies) decoded: three bands of a u32 filter type, f32 gain (dB), frequency (Hz), Q and
+/// a u8 on / off, then the f32 output level (dB) and a u8 LFE flag; every value as stored. The base an additive curve adds
+/// to is the property value the bank keeps for its parameter, which must be the block's; no state may act on it.
+fn eq_effect(id: &str, e: &Value) -> Result<Value, String> {
+    const TYPES: [&str; 7] = ["LOWPASS", "HIPASS", "BANDPASS", "NOTCH", "LOWSHELF", "HISHELF", "PEAKINGEQ"];
+    let at = |s: String| format!("effects.json: EQ {id}: {s}");
+    let hex = e.get("params_hex").and_then(Value::as_str).ok_or_else(|| at("no parameter block".into()))?;
+    let b: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)).collect::<Result<_, _>>().map_err(|_| at("its block is not hex".into()))?;
+    if b.len() != 56 {
+        return Err(at(format!("a block of {} bytes, the three-band layout is 56", b.len())));
+    }
+    let f32_at = |o: usize| f64::from(f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
+    let mut values = [0.0f64; 17];
+    let mut bands = Vec::new();
+    for k in 0..3 {
+        let o = 17 * k;
+        let t = u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
+        let filter = TYPES.get(t).ok_or_else(|| at(format!("band {k}'s filter type {t}")))?;
+        let (gain, freq, q, on) = (f32_at(o + 4), f32_at(o + 8), f32_at(o + 12), b[o + 16] != 0);
+        values[5 * k..5 * k + 5].copy_from_slice(&[t as f64, gain, freq, q, if on { 1.0 } else { 0.0 }]);
+        bands.push(serde_json::json!({ "filter": filter, "gain_db": gain, "frequency": freq, "q": q, "on": on }));
+    }
+    let (out, lfe) = (f32_at(51), b[55] != 0);
+    values[15] = out;
+    values[16] = if lfe { 1.0 } else { 0.0 };
+    for pv in e.get("prop_values").and_then(Value::as_array).into_iter().flatten() {
+        let (p, v) = (pv.get("id").and_then(Value::as_u64).unwrap_or(99) as usize, pv.get("value").and_then(Value::as_f64).unwrap_or(f64::NAN));
+        if values.get(p).is_none_or(|x| (x - v).abs() > 1e-6) {
+            return Err(at(format!("property {p} = {v} differs from its block value")));
+        }
+    }
+    if e.pointer("/states/groups").and_then(Value::as_array).is_some_and(|g| !g.is_empty()) {
+        return Err(at("states on its parameters are not built".into()));
+    }
+    Ok(serde_json::json!({
+        "type": e.get("type"),
+        "id": id,
+        "name": e.get("name"),
+        "plugin": PARAMETRIC_EQ,
+        "params_hex": hex,
+        "eq": { "bands": bands, "output_level_db": out, "process_lfe": lfe },
+        "rtpc": e.get("rtpc"),
+    }))
+}
+
 /// `sounds.json` built from the export: the file and the media files to copy (source id, file in `media/`).
 struct Built {
     file: SoundFile,
@@ -674,6 +738,23 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
         }
 
         objects.insert(id.clone(), Value::Object(o));
+    }
+    // The effects the mixer runs: the Parametric EQs in the slots of the nodes and buses kept.
+    let mut effects = Map::new();
+    for o in objects.values() {
+        let chain = o.get("node").and_then(|n| n.get("fx")).or_else(|| o.get("fx"));
+        for slot in chain.and_then(|c| c.get("fx")).and_then(Value::as_array).into_iter().flatten() {
+            let Some(fid) = slot.pointer("/fx_id/id").and_then(Value::as_str) else { continue };
+            let Some(e) = x.effects.get(fid) else { continue };
+            if e.get("plugin").and_then(Value::as_str) == Some(PARAMETRIC_EQ) && !effects.contains_key(fid) {
+                effects.insert(fid.to_string(), eq_effect(fid, e)?);
+            }
+        }
+    }
+    // (The game parameters their curves read need the Init bank's definitions: their defaults set the EQs' bands where
+    // nothing sets them.)
+    for e in effects.values() {
+        all.rtpcs(e.get("rtpc"));
     }
     let mut events = Map::new();
     for id in &all.events {
@@ -770,6 +851,7 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
         "source_plugins": source_plugins,
         "names": names,
         "meters": meters,
+        "effects": effects,
     });
     let file: SoundFile = serde_json::from_value(file).map_err(|e| format!("sounds.json's shape: {e}"))?;
     SoundBank::new(file.clone()).map_err(|e| format!("sounds.json: {e}"))?;
@@ -782,17 +864,21 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
     ctx.write("sounds.json", &bytes)?;
     shipped.add(
         "sounds.json",
-        &["re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py)".to_string()],
+        &[
+            "re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py)".to_string(),
+            "re/elite/frea_export/sidewinder_audio/effects.json (the effects in the nodes' and buses' slots, from the same payloads, by sidewinder_effects.py)".to_string(),
+        ],
         "A",
         &format!(
             "The ship's Wwise events ({} the game posts, {} whose sender is not found) and all they reach: {} events with the ones \
-             they post, {} objects, {} media, {} source plugins, the Init bank's game syncs. Values are the banks'.",
+             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, the Init bank's game syncs. Values are the banks'.",
             built.file.ship_events.len(),
             built.file.open_events.len(),
             built.file.events.len(),
             built.file.objects.len(),
             built.file.media.len(),
-            built.file.source_plugins.len()
+            built.file.source_plugins.len(),
+            built.file.effects.len()
         ),
     );
     // sfx/ is this kind's alone: emptied first, so a recording no longer shipped (or now shipped as another file) goes.

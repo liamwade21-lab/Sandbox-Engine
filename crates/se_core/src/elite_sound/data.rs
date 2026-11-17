@@ -93,12 +93,15 @@ pub enum Interp {
     Constant,
 }
 
-/// A curve's y scaling (`AkCurveScaling`): as is, or dB stored as linear gain - 1.
+/// A curve's y scaling (`AkCurveScaling`): as is, dB stored as linear gain - 1, or `Log`: the value is 10^y. Log is met
+/// only on effect parameters that are frequencies (the Parametric EQ's bands: y 2 to 4.3 = 100 Hz to 20 kHz; wwiser's
+/// `_ScalingFromLog` reads 10^(y/20), which would put every band at 1-2 Hz).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Scaling {
     None,
     #[serde(rename = "dB")]
     DB,
+    Log,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -224,11 +227,46 @@ pub struct Adv {
     pub enable_envelope: bool,
 }
 
-/// The parameters every actor-mixer hierarchy node carries (`NodeBaseParams`). `fx` and `aux` are kept but not built.
+/// One effect slot of a node or bus (wwiser's `FXChunk`): its index (0-3) and the effect in it (an effect share set or a
+/// custom effect: `SoundFile::effects` holds the ones the mixer runs).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FxSlot {
+    pub index: u32,
+    pub fx_id: Option<Ref>,
+    pub is_share_set: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_rendered: Option<bool>,
+}
+
+/// A node's or bus's effect slots: `bypass_bits` bit n bypasses slot n, bit 4 all of them (wwiser's `bitsFXBypass`); a
+/// node's `override_parent` (Wwise's "Override parent" on the Effects tab): the effects in force on a sound are those of the
+/// nearest node up its chain that overrides, else the top node's.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct FxChain {
+    pub count: u32,
+    pub fx: Vec<FxSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypass_bits: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_parent: Option<bool>,
+}
+
+impl FxChain {
+    /// Slot `slot` bypassed by the bank's bits (its own bit or the bit for all).
+    pub fn bypassed(&self, slot: u32) -> bool {
+        let b = self.bypass_bits.unwrap_or(0);
+        b & (1 << slot.min(3)) != 0 || b & 0x10 != 0
+    }
+}
+
+/// The parameters every actor-mixer hierarchy node carries (`NodeBaseParams`). `aux` is kept but not built; of the effects
+/// in `fx` the Parametric EQ is run ([`Effect`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Node {
-    pub fx: Value,
+    pub fx: FxChain,
     pub override_attachment_params: bool,
     pub override_bus: Option<Ref>,
     pub parent: Option<Ref>,
@@ -514,7 +552,8 @@ pub struct Duck {
     pub target_prop: u32,
 }
 
-/// An audio bus (or aux bus met as a parent). `fx`, `mixer_plugin` and `aux` are kept, not built.
+/// An audio bus (or aux bus met as a parent). `mixer_plugin` and `aux` are kept, not built; of the effects in `fx` the
+/// Parametric EQ is run ([`Effect`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bus {
@@ -534,7 +573,7 @@ pub struct Bus {
     pub recovery_time_ms: i64,
     pub max_duck_volume_db: f64,
     pub ducks: Vec<Duck>,
-    pub fx: Value,
+    pub fx: FxChain,
     pub mixer_plugin: Value,
     pub override_attachment_params: bool,
     pub props: Props,
@@ -795,6 +834,79 @@ impl Media {
     }
 }
 
+/// A Parametric EQ band's filter (wwiser's `CAkParameterEQ__AkFilterType`, the band's `eFilterType` 0-6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EqFilter {
+    #[serde(rename = "LOWPASS")]
+    LowPass,
+    #[serde(rename = "HIPASS")]
+    HiPass,
+    #[serde(rename = "BANDPASS")]
+    BandPass,
+    #[serde(rename = "NOTCH")]
+    Notch,
+    #[serde(rename = "LOWSHELF")]
+    LowShelf,
+    #[serde(rename = "HISHELF")]
+    HiShelf,
+    #[serde(rename = "PEAKINGEQ")]
+    PeakingEq,
+}
+
+impl EqFilter {
+    /// The filter of a type number (a curve sets the type as a float, which the plug-in truncates to an integer).
+    pub fn from_index(i: i64) -> Option<EqFilter> {
+        Some(match i {
+            0 => EqFilter::LowPass,
+            1 => EqFilter::HiPass,
+            2 => EqFilter::BandPass,
+            3 => EqFilter::Notch,
+            4 => EqFilter::LowShelf,
+            5 => EqFilter::HiShelf,
+            6 => EqFilter::PeakingEq,
+            _ => return None,
+        })
+    }
+}
+
+/// One band of a Parametric EQ as its parameter block stores it (`EQModuleParams`): gain in dB, frequency in Hz.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EqBand {
+    pub filter: EqFilter,
+    pub gain_db: f64,
+    pub frequency: f64,
+    pub q: f64,
+    pub on: bool,
+}
+
+/// A Wwise Parametric EQ's parameter block (plug-in 0x00690003, `CAkParameterEQFXParams`, three bands in bank v135):
+/// decoded by the converter from `params_hex`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParamEq {
+    pub bands: Vec<EqBand>,
+    pub output_level_db: f64,
+    pub process_lfe: bool,
+}
+
+/// An effect the mixer runs (only the Wwise Parametric EQ: the module's docs list the others, kept out). `rtpc` are the
+/// game parameter curves on its parameters, by the plug-in's own parameter index (`param_id`; the EQ's, from its
+/// `SetParam` in Elite's exe, `0x144a10630`: band n's type, gain, frequency, Q and on/off at 5n..5n+4, the output level
+/// at 15, LFE at 16).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Effect {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub id: Id,
+    pub name: Option<String>,
+    pub plugin: String,
+    pub params_hex: String,
+    pub eq: ParamEq,
+    pub rtpc: Vec<Rtpc>,
+}
+
 /// A Wwise source plugin met as a Sound (no recording): Silence, Tone Generator or Motion Generator, with its parameters
 /// as the audio export decoded them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -825,6 +937,9 @@ pub struct SoundFile {
     /// The Meter effects on the buses the shipped sounds go through (each writes a game parameter; absent in older files).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub meters: Vec<Meter>,
+    /// The effects the mixer runs, in the slots of the nodes and buses kept (absent in older files).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effects: BTreeMap<Id, Effect>,
 }
 
 /// Reads `sounds.json`: the shape, then every reference and every behaviour checked ([`super::check`]).

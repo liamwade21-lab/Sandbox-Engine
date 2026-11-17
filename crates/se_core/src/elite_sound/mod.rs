@@ -32,6 +32,16 @@
 //!   its bus's level into its game parameter, worked out from the voices' gains and each recording's RMS.
 //! - Low-pass / high-pass cutoffs in Hz ([`filter`]): Elite's own conversion and Butterworth sections, decompiled from its
 //!   copy of the sound engine (the value-to-cutoff function, the sections, the 8-step ramp and the 0.1 bypass).
+//! - The Wwise Parametric EQ (plug-in 0x00690003; 42 shipped, `SoundFile::effects`), in the effect slots of the node in
+//!   force on a sound (the nearest that overrides its parent's effects, else the top node: run per voice) and of every bus
+//!   on its way to the master ([`SoundBank::fx_stages`]; a linear effect on a bus gives the bus's mix what it gives each
+//!   voice, so the player runs it per voice: [`VoiceUpdate::eq`]). From Elite's own copy of the plug-in (registration
+//!   record 0x145ee0248; `SetParam` 0x144a10630 with its parameter indices and clamps, `SetParamsBlock` 0x144a107a0,
+//!   `Execute` 0x144a0f9c0, the band designs `FUN_144a0f510` / `FUN_144a05110`: [`filter::eq_coefs`]): the game parameter
+//!   curves on its parameters (exclusive or added to the block's value; `Log` scaled frequencies), the output level, the
+//!   slot bypass bits and the holder's BypassFX properties, curves and states.
+//! - Virtual voices are reported without a start and built by the player only when heard ([`VoiceStart`]), from where
+//!   their queue behaviour puts them.
 //! - LayerCntr (71): all children together, blend tracks with their crossfade curves (4) and track curves (7).
 //! - Properties down the actor-mixer chain (additive: Volume, MakeUpGain, Pitch, LPF, HPF, InitialDelay, OutputBus*) and
 //!   up the bus chain (Volume, BusVolume, Pitch, LPF, HPF, OutputBus*), randomisers (Volume 51, Pitch 86, LPF 21, HPF 1,
@@ -56,10 +66,16 @@
 //!   rest, up to an hour, at once ([`Mixer::step`]); setters ignore values that are not finite.
 //!
 //! # Not built (kept in the data, never refused, listed with the shipped events they touch)
-//! - Effects and plugins on buses and objects (bus effects 312, object effects 214, bus mixer plugins 225, BypassFX
-//!   curves 181 and state deltas 162), aux sends (user 291, game 183, their curves 137) and the attenuation's wet curves
-//!   (269), HDR (every bus carries HDR settings: 317; HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or
-//!   1.414 on mono recordings, its meaning not proven).
+//! - The effects other than the Parametric EQ (`re/elite/work/sound/t5d2/bus_fx.py` lists every one on the shipped
+//!   sounds' ways with its parameters, `effects.json` holds them): on buses the Wwise Compressor (21 slots), Guitar
+//!   Distortion (2), the master bus's Peak Limiter (threshold -4 dB and output +1.28 dB at DynamicRange's default -23) and
+//!   plug-in 0x00BA0003 (Audiokinetic's, not in wwiser's table), the Meters with ballistics, Frontier's own plug-ins
+//!   0x03E80C63 (effect) and 0x03E90C66 (the buses' mixer plug-in, 13 buses); on nodes, run per voice, Guitar Distortion
+//!   (15), Tremolo (31) and Flanger (5); on the aux paths reverbs and delays. Compressors, limiters and distortion are not
+//!   linear; Tremolo and Flanger modulate in time by LFOs whose formulas are Wwise's own and not public. Aux sends (user
+//!   291, game 183, their curves 137) and the attenuation's wet curves (269), HDR (every bus carries HDR settings: 317;
+//!   HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or 1.414 on mono recordings, its meaning not
+//!   proven).
 //! - Panning and spatialisation: speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Spread (267)
 //!   and Focus (4) attenuation curves, positioning-type blend curves (10), a 2D pan curve (1), path automation (13),
 //!   held emitter / listener orientation (7), cone attenuation (9; the update has no orientation): the update carries
@@ -68,8 +84,10 @@
 //!   and `events.json` names their properties with the node table's names).
 //! - The global voice cap (256).
 //! - Meters other than RMS without ballistics (8 of the 10 shipped: 5 Peak, 3 RMS with attack / release / hold, whose
-//!   formulas are not public): kept, their game parameters stay where the game or their default leaves them; the effects
-//!   in the slots before a meter (a parametric EQ before both built ones) are not applied to its reading.
+//!   formulas are not public): kept, their game parameters stay where the game or their default leaves them. A built
+//!   meter's reading counts the EQs' output levels before its slot but not their bands (it reads each recording's RMS: the
+//!   EQ in the slot before both built ones, on the drives' bus, has every band switched off by its curves at the
+//!   defaults of its game parameters 782e5048 and 7eefbbc4, which the game never sets).
 //! - A blend container's continuous validation (true on 7 of the 138, 3 shipped events): a child whose crossfade falls
 //!   to 0 plays on silently instead of being stopped and started again when the parameter comes back. With it false (the
 //!   other 131) the children likewise play at their crossfade gain.
@@ -99,7 +117,7 @@ mod mixer;
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
-pub use mixer::{Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
+pub use mixer::{EqNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
 
 use data::*;
 use std::collections::HashMap;
@@ -146,14 +164,21 @@ pub fn event_id(name: &str) -> Id {
 const BUILT_PARAMS: &[&str] = &[
     "Volume", "MakeUpGain", "BusVolume", "OutputBusVolume", "Pitch", "LPF", "HPF", "OutputBusLPF", "OutputBusHPF", "InitialDelay",
     "Priority", "PriorityDistanceOffset", "MaxNumInstances", "PlayMechanismSpecialTransitionsValue", "Loop", "AttenuationID",
+    "BypassFX0", "BypassFX1", "BypassFX2", "BypassFX3", "BypassAllFX",
 ];
 
 /// Properties kept and listed as not built (see the module's docs).
 const NOT_BUILT_PARAMS: &[&str] = &[
     "UserAuxSendVolume0", "UserAuxSendVolume1", "UserAuxSendVolume2", "UserAuxSendVolume3", "GameAuxSendVolume", "ReflectionBusVolume",
     "CenterPCT", "PAN_LR", "PAN_FR", "HDRActiveRange", "HDRBusThreshold", "HDRBusRatio", "HDRBusReleaseTime", "HDRBusGameParamMax",
-    "BypassFX0", "BypassFX1", "BypassFX2", "BypassFX3", "BypassAllFX", "PositioningTypeBlend", "Position_PAN_X_2D", "Position_PAN_Y_2D",
+    "PositioningTypeBlend", "Position_PAN_X_2D", "Position_PAN_Y_2D",
 ];
+
+/// The plug-in the mixer runs as an effect: the Wwise Parametric EQ (`SoundFile::effects`).
+pub const PARAMETRIC_EQ: &str = "00690003";
+/// The Parametric EQ's parameter indices (its `SetParam` in Elite's exe, `0x144a10630`: band = index / 5).
+pub const EQ_PARAM_OUTPUT_LEVEL: u32 = 15;
+pub const EQ_PARAM_LFE: u32 = 16;
 
 const RANGED_BUILT: &[&str] = &["Volume", "Pitch", "LPF", "HPF", "InitialDelay"];
 
@@ -198,6 +223,16 @@ fn ids_text(ids: &[Id]) -> String {
     ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" -> ")
 }
 
+/// One effect the mixer runs on a sound's way to the master: the node or bus holding it, its slot, the effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FxStage {
+    pub holder: Id,
+    pub slot: u32,
+    pub effect: Id,
+    /// On a bus (else in the actor-mixer node whose effects are in force: run per voice).
+    pub on_bus: bool,
+}
+
 /// `sounds.json` read and checked, with the lookups the mixer needs.
 #[derive(Debug)]
 pub struct SoundBank {
@@ -206,6 +241,9 @@ pub struct SoundBank {
     chains: HashMap<Id, Vec<Id>>,
     /// Each bus's chain: itself, then its parents up to the master.
     bus_chains: HashMap<Id, Vec<Id>>,
+    /// Each Sound's effects the mixer runs, in signal order: the slots of the node in force (the nearest up its chain whose
+    /// effects override its parent's, else the top node), then each bus from its output bus to the master.
+    fx_stages: HashMap<Id, Vec<FxStage>>,
 }
 
 fn bad(s: String) -> SoundError {
@@ -250,7 +288,8 @@ impl SoundBank {
                 _ => {}
             }
         }
-        let bank = SoundBank { file, chains, bus_chains };
+        let mut bank = SoundBank { file, chains, bus_chains, fx_stages: HashMap::new() };
+        bank.fx_stages = bank.stages();
         bank.check()?;
         bank.check_playable()?;
         bank.check_cycles()?;
@@ -352,6 +391,9 @@ impl SoundBank {
                 Object::Action(_) => {}
             }
         }
+        for (id, e) in &f.effects {
+            self.check_effect(e).map_err(|s| bad(format!("effect {id}: {s}")))?;
+        }
         for m in &f.meters {
             if !self.bus_chains.contains_key(&m.bus) {
                 return Err(bad(format!("meter {}: bus {} is missing", m.fx, m.bus)));
@@ -432,6 +474,68 @@ impl SoundBank {
             todo.extend(kids.iter().copied());
         }
         Ok(())
+    }
+
+    /// An effect the mixer runs: a Parametric EQ of three bands whose curves drive its parameters 0-16 by game parameters
+    /// (a modulator's curve is kept, not built).
+    fn check_effect(&self, e: &Effect) -> Result<(), String> {
+        if e.plugin != PARAMETRIC_EQ {
+            return Err(format!("plug-in {} is not one the mixer runs", e.plugin));
+        }
+        if e.eq.bands.len() != 3 {
+            return Err(format!("{} bands, the Parametric EQ of bank v135 has 3", e.eq.bands.len()));
+        }
+        for r in &e.rtpc {
+            if r.param_id > EQ_PARAM_LFE || r.param != format!("plugin parameter {}", r.param_id) {
+                return Err(format!("a curve on {} ({}) is not a parameter of the EQ", r.param, r.param_id));
+            }
+            if r.accumulation == Accumulation::Boolean {
+                return Err(format!("a boolean curve on parameter {} is not built", r.param_id));
+            }
+            // (A parameter's default sets the band where nothing sets it: one the file does not define would read 0.)
+            if r.rtpc_type == RtpcType::GameParameter && !self.file.game_syncs.game_parameters.contains_key(&r.game_parameter.id) {
+                return Err(format!("game parameter {} of a curve on parameter {} is not defined", r.game_parameter.id, r.param_id));
+            }
+        }
+        Ok(())
+    }
+
+    /// Every Sound's effects the mixer runs ([`SoundBank::fx_stages`]).
+    fn stages(&self) -> HashMap<Id, Vec<FxStage>> {
+        let f = &self.file;
+        let shipped = |c: &FxChain, holder: Id, on_bus: bool, out: &mut Vec<FxStage>| {
+            let mut slots: Vec<&FxSlot> = c.fx.iter().filter(|s| s.fx_id.as_ref().is_some_and(|r| f.effects.contains_key(&r.id))).collect();
+            slots.sort_by_key(|s| s.index);
+            out.extend(slots.into_iter().map(|s| FxStage { holder, slot: s.index, effect: s.fx_id.as_ref().unwrap().id, on_bus }));
+        };
+        let mut all = HashMap::new();
+        for (id, o) in &f.objects {
+            if !matches!(o, Object::Sound(_)) {
+                continue;
+            }
+            let chain = self.chain(*id);
+            let mut out = Vec::new();
+            let holder = chain.iter().copied().find(|a| self.node(*a).is_some_and(|n| n.fx.override_parent == Some(true))).or_else(|| chain.last().copied());
+            if let Some(h) = holder {
+                if let Some(n) = self.node(h) {
+                    shipped(&n.fx, h, false, &mut out);
+                }
+            }
+            if let Some(b) = chain.iter().find_map(|a| self.node(*a).and_then(|n| n.override_bus.as_ref().map(|b| b.id))) {
+                for bid in self.bus_chain(b) {
+                    if let Some(bus) = self.bus(*bid) {
+                        shipped(&bus.fx, *bid, true, &mut out);
+                    }
+                }
+            }
+            all.insert(*id, out);
+        }
+        all
+    }
+
+    /// A Sound's effects the mixer runs, in signal order.
+    pub fn fx_stages(&self, sound: Id) -> &[FxStage] {
+        self.fx_stages.get(&sound).map(Vec::as_slice).unwrap_or(&[])
     }
 
     fn check_props(&self, p: &Props) -> Result<(), String> {

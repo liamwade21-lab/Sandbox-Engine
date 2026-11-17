@@ -105,7 +105,9 @@ fn events_start_what_the_reference_walker_says() {
             m.post(name, 7).unwrap();
             // (The walker lists recordings only: the boost's events also start Motion Generator rumbles.)
             for u in m.step(0.0).iter().filter(|u| matches!(u.output, Output::Audio { .. })).cloned().collect::<Vec<_>>() {
-                assert!(u.start.is_some(), "{name}: a voice at t = 0 must be starting");
+                // (A voice under the volume threshold is virtual: it is built only once it is heard.)
+                // (One ending at once is reported stopped, never built.)
+                assert!(u.start.is_some() || u.virtual_voice || u.stop, "{name}: a voice at t = 0 must be starting");
                 let src = source(&u);
                 assert!(allowed.contains(&src), "{name}: {src} is not one the walker allows ({allowed:?})");
                 let ok = cands.iter().filter(|c| id(&c["source"]) == src).any(|c| {
@@ -341,7 +343,9 @@ fn looping_sound_stops_on_its_end_event() {
     let r = reference();
     let le = &r["loop_end"];
     let looping: BTreeSet<Id> = le["looping"].as_array().unwrap().iter().map(id).collect();
-    let mut m = Mixer::new(bank(), 4);
+    // (Nothing under the volume threshold, so every voice is heard and starts at once.)
+    let b = edited(|f| f.game_syncs.volume_threshold_db = -1000.0).unwrap();
+    let mut m = Mixer::new(Arc::new(b), 4);
     m.post(le["begin"].as_str().unwrap(), 1).unwrap();
     let start: Vec<VoiceUpdate> = m.step(0.0).to_vec();
     let voices: BTreeMap<u32, Id> = start.iter().filter(|u| looping.contains(&source(u))).map(|u| (u.voice, source(u))).collect();
@@ -626,6 +630,8 @@ fn looping_recordings_report_their_loop_region() {
         if let Some(m) = f.media.get_mut(&src) {
             m.loop_region = Some([100, 1000]);
         }
+        // (Nothing virtual: every voice starts at once.)
+        f.game_syncs.volume_threshold_db = -1000.0;
     })
     .unwrap();
     let mut m = Mixer::new(Arc::new(b), 4);
@@ -703,7 +709,8 @@ fn boost_layers_sound_through_warmup_firing_and_cooldown() {
                     playing.remove(&u.voice);
                     continue;
                 }
-                if u.start.is_some() {
+                // (A voice met for the first time, heard or virtual.)
+                if !playing.contains_key(&u.voice) {
                     started.insert(source);
                 }
                 playing.insert(u.voice, (source, u.fade >= 0.999));
@@ -793,4 +800,149 @@ fn the_meter_writes_its_bus_level() {
     let (a, b2) = (level(0.25), level(0.5));
     assert!(a > -60.0 && b2 < 0.0, "within the meter's range: {a} {b2}");
     assert!((b2 - a - 6.0206).abs() < 1e-3, "{a} -> {b2}");
+}
+
+/// A voice under the volume threshold is virtual: reported without a start (the player builds nothing) until it is heard,
+/// then started once from where its virtual behaviour puts it (inside its recording, no seek with it); going virtual again
+/// and coming back starts it again. The drive loops at rest are virtual and are heard at speed.
+#[test]
+fn virtual_voices_start_when_heard() {
+    let r = reference();
+    let le = &r["loop_end"];
+    let b = bank();
+    let mut m = Mixer::new(b.clone(), 4);
+    m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+    let mut starts: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut was_virtual: BTreeMap<u32, bool> = BTreeMap::new();
+    let run = |m: &mut Mixer, secs: f32, starts: &mut BTreeMap<u32, usize>, was_virtual: &mut BTreeMap<u32, bool>| {
+        for _ in 0..(secs * 60.0) as usize {
+            for u in m.step(1.0 / 60.0).iter().filter(|u| !u.stop && matches!(u.output, Output::Audio { .. })) {
+                if let Some(s) = u.start {
+                    assert!(!u.virtual_voice && u.seek_to.is_none(), "a start is heard and carries no seek: {u:?}");
+                    let dur = b.file.media[&source(u)].duration() as f32;
+                    assert!((0.0..=dur + 1e-3).contains(&s.offset), "{} s into a {dur} s recording", s.offset);
+                    assert!(was_virtual.get(&u.voice).is_none_or(|v| *v), "started again while heard: {u:?}");
+                    *starts.entry(u.voice).or_default() += 1;
+                } else {
+                    assert!(u.virtual_voice || starts.contains_key(&u.voice), "heard before it started: {u:?}");
+                }
+                assert!(!u.virtual_voice || u.eq.is_empty());
+                was_virtual.insert(u.voice, u.virtual_voice);
+            }
+        }
+    };
+    run(&mut m, 1.0, &mut starts, &mut was_virtual);
+    let at_rest_virtual = was_virtual.values().filter(|v| **v).count();
+    for (n, x) in [("spaceship_speed_self", 100.0), ("spaceship_speed_relative_self", 100.0), ("spaceship_speed_physical_self", 220.0), ("spaceship_target_speed_relative_self", 100.0)] {
+        m.set_game_parameter(n, x, None);
+    }
+    run(&mut m, 3.0, &mut starts, &mut was_virtual);
+    let heard_later = starts.keys().filter(|v| starts[v] >= 1).count();
+    for n in ["spaceship_speed_self", "spaceship_speed_relative_self", "spaceship_speed_physical_self", "spaceship_target_speed_relative_self"] {
+        m.set_game_parameter(n, 0.0, None);
+    }
+    run(&mut m, 3.0, &mut starts, &mut was_virtual);
+    for (n, x) in [("spaceship_speed_self", 100.0), ("spaceship_speed_relative_self", 100.0), ("spaceship_speed_physical_self", 220.0), ("spaceship_target_speed_relative_self", 100.0)] {
+        m.set_game_parameter(n, x, None);
+    }
+    run(&mut m, 3.0, &mut starts, &mut was_virtual);
+    eprintln!("{at_rest_virtual} voices virtual at rest; {heard_later} started; starts per voice {starts:?}");
+    assert!(at_rest_virtual > 0, "the slice's drive loops are virtual at rest");
+    assert!(starts.values().any(|n| *n >= 2), "a voice that went virtual and came back started again");
+}
+
+/// A Parametric EQ on a voice's bus reaches its update: three bands in the stage's order, a curve's value through the
+/// plug-in's `SetParam` (a gain of 30 held to 24, the type truncated), the output level in the voice's volume; bypassed
+/// (the bank's bit for its slot), its bands pass and its level is gone.
+#[test]
+fn eq_stages_follow_their_curves_clamps_and_bypass() {
+    let r = reference();
+    let le = &r["loop_end"];
+    let probe = |edit: &dyn Fn(&mut SoundFile)| -> (Vec<EqNow>, f32) {
+        let b = edited(|f| {
+            f.game_syncs.volume_threshold_db = -1000.0;
+            edit(f);
+        })
+        .unwrap();
+        let mut m = Mixer::new(Arc::new(b), 4);
+        m.set_game_parameter("eq_probe", 3.7, None);
+        m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+        let u = m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).cloned().unwrap();
+        (u.eq, u.volume_db)
+    };
+    // The bus the event's first voice goes through.
+    let b = bank();
+    let mut m = Mixer::new(b.clone(), 4);
+    m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+    let src = source(m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).unwrap());
+    let snd = b.file.objects.iter().find(|(_, o)| matches!(o, Object::Sound(s) if s.source_id == src)).map(|(k, _)| *k).unwrap();
+    let bus = b.chain(snd).iter().find_map(|a| b.object(*a).and_then(Object::node).and_then(|n| n.override_bus.as_ref().map(|r| r.id))).unwrap();
+    let fx = Id(0x0e0e_0e0e);
+    let effect = |out_db: f64| Effect {
+        kind: "FxShareSet".into(),
+        id: fx,
+        name: None,
+        plugin: PARAMETRIC_EQ.into(),
+        params_hex: String::new(),
+        eq: data::ParamEq {
+            bands: vec![
+                data::EqBand { filter: data::EqFilter::PeakingEq, gain_db: 3.0, frequency: 500.0, q: 1.0, on: true },
+                data::EqBand { filter: data::EqFilter::LowShelf, gain_db: 0.0, frequency: 100.0, q: 1.0, on: false },
+                data::EqBand { filter: data::EqFilter::HiShelf, gain_db: -2.0, frequency: 8000.0, q: 1.0, on: true },
+            ],
+            output_level_db: out_db,
+            process_lfe: false,
+        },
+        rtpc: vec![
+            // Band 0's gain to 30 (held to 24), band 1's type to 4.9 (truncated to 4: LOWSHELF) and turned on.
+            curve(1, Accumulation::Exclusive, 30.0),
+            curve(5, Accumulation::Exclusive, 4.9),
+            curve(9, Accumulation::Exclusive, 1.0),
+        ],
+    };
+    fn curve(param: u32, accumulation: Accumulation, y: f64) -> Rtpc {
+        Rtpc {
+            game_parameter: data::Ref { id: wwise_id("eq_probe"), name: None },
+            rtpc_type: RtpcType::GameParameter,
+            accumulation,
+            param_id: param,
+            param: format!("plugin parameter {param}"),
+            curve_id: Id(param),
+            scaling: Scaling::None,
+            points: vec![Point { x: 0.0, y, interp: Interp::Constant }, Point { x: 10.0, y, interp: Interp::Constant }],
+        }
+    }
+    let add = |bits: Option<u32>, out_db: f64| {
+        move |f: &mut SoundFile| {
+            f.effects.insert(fx, effect(out_db));
+            f.game_syncs.game_parameters.insert(
+                wwise_id("eq_probe"),
+                data::GameParameter { name: None, defined_in_init: true, default: 0.0, ramp: data::Ramp::None, ramp_up: 0.0, ramp_down: 0.0, built_in: 0 },
+            );
+            if let Some(Object::Bus(bb)) = f.objects.get_mut(&bus) {
+                bb.fx.fx.push(data::FxSlot { index: 3, fx_id: Some(data::Ref { id: fx, name: None }), is_share_set: true, is_rendered: None });
+                bb.fx.count += 1;
+                bb.fx.bypass_bits = bits;
+            }
+        }
+    };
+    let (plain, plain_db) = probe(&|_| {});
+    let (eq, db) = probe(&add(None, 6.0));
+    assert_eq!(eq.len(), plain.len() + 3, "one stage of three bands more");
+    let ours = &eq[eq.len() - 3..];
+    assert_eq!((ours[0].on, ours[0].filter, ours[0].gain_db, ours[0].frequency), (true, Some(data::EqFilter::PeakingEq), 24.0, 500.0));
+    assert_eq!((ours[1].on, ours[1].filter), (true, Some(data::EqFilter::LowShelf)));
+    assert_eq!((ours[2].on, ours[2].gain_db), (true, -2.0));
+    assert!((db - plain_db - 6.0).abs() < 1e-4, "the output level: {plain_db} -> {db}");
+    let (bypassed, bdb) = probe(&add(Some(1 << 3), 6.0));
+    assert!(bypassed[bypassed.len() - 3..].iter().all(|b| !b.on), "bypassed by its slot's bit");
+    assert!((bdb - plain_db).abs() < 1e-4, "and its level with it");
+    let (_, all_db) = probe(&add(Some(0x10), 6.0));
+    assert!((all_db - plain_db).abs() < 1e-4, "the bit for all slots");
+    // A curve on a game parameter the file does not define is refused (its default would be read as 0).
+    let undefined = edited(|f| {
+        add(None, 0.0)(f);
+        f.game_syncs.game_parameters.remove(&wwise_id("eq_probe"));
+    });
+    assert!(matches!(undefined, Err(SoundError::Bad(ref e)) if e.contains("not defined")), "{undefined:?}");
 }
