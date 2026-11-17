@@ -63,9 +63,9 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
         return Ok(());
     }
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("sidewinder hud")));
-    // The seat's camera as the cockpit is drawn with it this frame: the eye, the head's turn (written before this pass, in
-    // `seat::take_keys`), Elite's field of view.
-    let view = SeatView::new(Vec3::from_array(assets.eye), seat.look, super::seat::SEAT_FOV_DEG, r);
+    // The seat's camera as the cockpit is drawn with it this frame: the eye, the head's turn `seat_camera` wrote the camera
+    // with (this pass runs after it: the mod's `plugin` orders them), Elite's field of view for the screen's aspect.
+    let view = SeatView::new(Vec3::from_array(assets.eye), seat.head, r);
     let font = |s: f32| egui::FontId::monospace(s * h);
     let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
 

@@ -3,7 +3,8 @@
 //! aren't built). Elite's own keys (its `.binds`): 1 the left panel, 4 the right, Q and E the tabs, W and S (or the arrows) the rows,
 //! Space selects, A and D change a setting, Backspace closes; head look turned far left or right focuses that panel. While a
 //! panel is focused those keys work it, not the ship, as in Elite; the mouse still flies. Since T4e-4 an open panel hangs at
-//! Elite's place beside the seat (`hud_anchor`), seen when the head turns to it. What each tab lists and does is ours
+//! Elite's place beside the seat (`hud_anchor`), and opening one by its key turns the head to it (`seat::head_aim`, the
+//! turns measured on the user's pictures). What each tab lists and does is ours
 //! where Elite's panels hold more (F): the Navigation tab lists this system's bodies and the stars within the jump's range
 //! (the spec's F5), nearest first.
 

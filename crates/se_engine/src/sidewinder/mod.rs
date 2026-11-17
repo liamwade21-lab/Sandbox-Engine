@@ -362,7 +362,10 @@ impl Plugin for SidewinderPlugin {
                     .before(crate::capture::follow_main),
             )
             .add_systems(Update, seat::fade_clock.run_if(resource_exists::<SidewinderAssets>))
-            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, hud::draw_hud).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw));
+            .add_systems(bevy_egui::EguiPrimaryContextPass, (seat::draw_prompt, hud::draw_hud).run_if(resource_exists::<SidewinderAssets>).in_set(crate::skin::UiSet::Draw))
+            // The HUD draws with the head's turn the seat wrote the camera with this frame: egui's pass (which runs the HUD)
+            // after `seat_camera`.
+            .configure_sets(PostUpdate, bevy_egui::EguiPostUpdateSet::EndPass.after(seat::seat_camera));
         // (The spec's C20: never spawned, nothing of the mod runs. Its systems wait for a request, then for its files.)
         app.add_systems(Update, handle_requests.run_if(asked))
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
@@ -400,6 +403,17 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         "leave" => {
             world.resource_mut::<seat::Seat>().request_leave();
+            None
+        }
+        // `sw look YAW PITCH` (degrees, yaw to the left, pitch up): the head turned so, for pictures; `sw look off` gives it back.
+        "look" => {
+            let words: Vec<f32> = arg.split_whitespace().skip(1).filter_map(|w| w.parse().ok()).collect();
+            let look = match words[..] {
+                [yaw, pitch] => Some(Vec2::new(yaw.to_radians(), pitch.to_radians())),
+                _ => None,
+            };
+            info!("sidewinder: the head {}", look.map_or("is the pilot's again".to_string(), |l| format!("turned {:.2} {:.2} degrees (a test)", l.x.to_degrees(), l.y.to_degrees())));
+            world.resource_mut::<seat::Seat>().test_look = look;
             None
         }
         "pip" => {
