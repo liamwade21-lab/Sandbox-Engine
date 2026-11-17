@@ -107,10 +107,19 @@ pub struct VoiceUpdate {
     pub position: Option<[f32; 3]>,
     /// Where the voice sits, for the player (T5d-5): given when the game placed its emitter and its sound's positioning in
     /// force is 3D on the emitter's position ([`Placement`]). The player then applies the distance's curves (volume,
-    /// low-pass, high-pass) and the pan itself, from the place it is given each frame, so `gain`, `volume_db`, `lowpass` and
-    /// `highpass` leave the attenuation's share out (and the filter values are not clamped: the player adds the distance's
-    /// share, then clamps to 0-100, as the mixer clamps the sum). None: the voice plays centred, as given.
+    /// low-pass, high-pass) and works out its matrix itself, from the place it is given each frame ([`Placement::at`]), so
+    /// `gain`, `volume_db`, `lowpass` and `highpass` leave the attenuation's share out (and the filter values are not
+    /// clamped: the player adds the distance's share, then clamps to 0-100, as the mixer clamps the sum). None: the voice
+    /// plays through `matrix`, as given.
     pub place: Option<Arc<Placement>>,
+    /// The voice's stereo gains (`[input channel][output channel]`, T5d-7: its sound's route and pan, for its recording's
+    /// channel count) as a voice at the listener: what a voice that is not placed plays through for its life (an emitter
+    /// the game has not placed is at the listener, so straight ahead; its distance's share, at 0 m, is in `gain`).
+    pub matrix: [[f32; 2]; 2],
+    /// The recording's own gain ([`super::data::Media::akd_gain_2`], 1 without it): the player multiplies the recording's
+    /// samples by it before any filter or effect (Elite multiplies the voice's make-up gain by it at 0x144a78c80, ahead of
+    /// the voice's effects: the Guitar Distortion on a node is not linear).
+    pub media_gain: f32,
     pub start: Option<VoiceStart>,
     /// Ends now (the player stops it; any fade has already run down to silence).
     pub stop: bool,
@@ -448,8 +457,8 @@ pub struct Mixer {
     states: BTreeMap<Id, StateNow>,
     switches: BTreeMap<(Id, u32), Id>,
     emitters: BTreeMap<u32, [f32; 3]>,
-    /// Each sound's placement for a placed emitter (made once a sound: `placement_of`).
-    placements: BTreeMap<Id, Option<Arc<Placement>>>,
+    /// Each sound's way to the output (made once a sound: `placement_of`).
+    placements: BTreeMap<Id, Arc<Placement>>,
     /// Delayed actions by (due time's bits, order posted): due times are never negative, so their bits sort as they do.
     pending: BTreeMap<(u64, u64), Pending>,
     insts: BTreeMap<u64, Inst>,
@@ -1593,29 +1602,59 @@ impl Mixer {
     }
 
     fn output_bus(&self, obj: Id) -> Option<Id> {
-        self.bank.chain(obj).iter().find_map(|a| self.bank.node(*a).and_then(|n| n.override_bus.as_ref().map(|b| b.id)))
+        self.bank.output_bus(obj)
     }
 
-    /// The positioning in force on an object: the nearest node up its chain that overrides its parent's, else the top one.
     fn positioning(&self, obj: Id) -> Option<&Positioning> {
-        let bank = &self.bank;
-        let chain = bank.chain(obj);
-        chain.iter().filter_map(|a| bank.node(*a)).find(|n| n.positioning.override_parent).or_else(|| chain.last().and_then(|a| bank.node(*a))).map(|n| &n.positioning)
+        self.bank.positioning(obj)
     }
 
-    /// A sound's placement on a placed emitter (made once a sound and kept): its positioning in force is 3D on the
-    /// emitter's position (listener-relative routing, position type Emitter), panned unless its spatialisation is None,
-    /// with its attenuation's curves. A path automation's voice and a 2D sound's are not placed (they play centred).
-    fn placement_of(&mut self, obj: Id) -> Option<Arc<Placement>> {
+    /// A sound's way to the output (made once a sound and kept): its route ([`SoundBank::route`]), positioned in space when
+    /// its positioning in force routes relative to the listener with a 3D spatialisation (Wwise's dispatch,
+    /// `FUN_144aac180`: otherwise the 2D panner), and its attenuation's curves.
+    pub fn placement_of(&mut self, obj: Id) -> Arc<Placement> {
         if let Some(p) = self.placements.get(&obj) {
             return p.clone();
         }
-        let p = self.positioning(obj).filter(|p| p.listener_relative_routing && p.position_3d_type == "Emitter").and_then(|p| {
-            let pan = p.spatialization.as_deref().is_some_and(|s| s != "None");
-            Placement::new(pan, self.attenuation(obj)).map(Arc::new)
-        });
+        let pan = self.positioning(obj).is_some_and(|p| p.listener_relative_routing && p.spatialization.as_deref().is_some_and(|s| s != "None"));
+        let p = Arc::new(Placement::routed(self.bank.route(obj), pan, self.attenuation(obj)));
         self.placements.insert(obj, p.clone());
         p
+    }
+
+    /// The placement a voice on `emitter` hands its player to place it by: when the game placed the emitter and the
+    /// sound's positioning in force is 3D on the emitter's position (listener-relative routing, position type Emitter),
+    /// panned or attenuated. A path automation's voice and a 2D sound's are not placed (they play as at the listener).
+    fn placed(&mut self, obj: Id, emitter: u32) -> Option<Arc<Placement>> {
+        let on_emitter = self.positioning(obj).is_some_and(|p| p.listener_relative_routing && p.position_3d_type == "Emitter");
+        let p = self.placement_of(obj);
+        (self.emitters.contains_key(&emitter) && on_emitter && (p.pan || self.attenuation(obj).is_some())).then_some(p)
+    }
+
+    /// The gain (dB) a voice's level takes after each effect slot (0-3) of each bus on its way, its output bus first: that
+    /// bus's later slots' output levels, its bus volume, and everything of the buses above. For the check that the buses'
+    /// compressors, which are not built, would not act at the voices' levels (T5d-7: a compressor's input is the voice's
+    /// output less this). Empty for a voice that is not playing.
+    pub fn gains_after_slots(&self, voice: u32) -> Vec<(Id, [f64; 4])> {
+        let Some(inst) = self.insts.values().find(|i| matches!(&i.kind, Kind::Voice(v) if v.id == voice)) else { return Vec::new() };
+        let Some(b) = self.output_bus(inst.obj) else { return Vec::new() };
+        let stages = self.fx_now(inst);
+        let on = |bus: Id, from: u32| stages.iter().filter(|(st, _)| st.on_bus && st.holder == bus && st.slot >= from).filter_map(|(_, n)| n.map(|n| n.gain_db)).sum::<f64>();
+        let mut above = 0.0;
+        let mut out: Vec<(Id, [f64; 4])> = Vec::new();
+        for bid in self.bank.bus_chain(b).iter().rev() {
+            let (pre, post) = self.bus_mix(*bid, inst.emitter);
+            out.push((*bid, [1, 2, 3, 4].map(|s| on(*bid, s) + post + above)));
+            above += pre.db + post + on(*bid, 0);
+        }
+        out.reverse();
+        out
+    }
+
+    /// A voice's recording's channel count and its own gain (`akd_gain_2`, 1 without it or for a plug-in's voice).
+    fn media_of(&self, out: Out) -> (usize, f32) {
+        let Out::Audio(src) = out else { return (1, 1.0) };
+        self.bank.file.media.get(&src).map_or((1, 1.0), |m| (m.channels.max(1) as usize, m.akd_gain_2.filter(|g| g.is_finite() && *g > 0.0).unwrap_or(1.0) as f32))
     }
 
     /// The attenuation that applies: the nearest AttenuationID on the chain, if the positioning in force is 3D with
@@ -2070,7 +2109,8 @@ impl Mixer {
         let mut fx = Vec::new();
         for id in ids {
             let (obj, emitter) = (self.insts[&id].obj, self.insts[&id].emitter);
-            let place = if self.emitters.contains_key(&emitter) { self.placement_of(obj) } else { None };
+            let place = self.placed(obj, emitter);
+            let routed = self.placement_of(obj);
             let (m, fade) = self.voice_mix_fx(id, Some(&mut fx));
             let level_db = m.db + gain_to_db(fade);
             let (behaviour, queue) = self.below_threshold(self.insts[&id].obj);
@@ -2091,6 +2131,7 @@ impl Mixer {
             }
             virt |= over_limit.contains(&id);
             let position = self.emitters.get(&emitter).copied();
+            let (channels, media_gain) = self.media_of(v.out);
             let Some(out) = output(v.out) else { continue };
             let Some(Inst { kind: Kind::Voice(v), .. }) = self.insts.get_mut(&id) else { continue };
             let mut seek = v.seek.take();
@@ -2125,6 +2166,8 @@ impl Mixer {
                 emitter,
                 position,
                 place,
+                matrix: routed.listener_matrix(channels),
+                media_gain,
                 start,
                 stop: false,
                 seek_to: seek.map(|s| s as f32),
@@ -2153,6 +2196,8 @@ impl Mixer {
         for Ended { inst, premix } in ended {
             let Kind::Voice(v) = &inst.kind else { continue };
             let Some(out) = output(v.out) else { continue };
+            let (channels, media_gain) = self.media_of(v.out);
+            let matrix = self.placement_of(inst.obj).listener_matrix(channels);
             let (m, fade) = premix.unwrap_or_default();
             self.updates.push(VoiceUpdate {
                 voice: v.id,
@@ -2160,6 +2205,8 @@ impl Mixer {
                 emitter: inst.emitter,
                 position: self.emitters.get(&inst.emitter).copied(),
                 place: None,
+                matrix,
+                media_gain,
                 start: None,
                 stop: true,
                 seek_to: None,

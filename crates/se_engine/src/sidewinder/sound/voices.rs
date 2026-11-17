@@ -1,7 +1,7 @@
 //! The mixer's voices as sound. The ship has one output on the audio device: [`ShipOutput`], an `AudioPlayer` entity
 //! spawned when the first voice starts and despawned when the sound stops, whose [`OutputSource`] mixes every built voice
-//! on the audio thread at the output rate (two channels; a centred mono voice on both at full level, as the player had it;
-//! a placed one panned). The game thread hands it voices and writes each voice's controls in place ([`VoiceCtl`]: level,
+//! on the audio thread at the output rate (two channels, each voice through its matrix of gains: Wwise's pan rules, T5d-7).
+//! The game thread hands it voices and writes each voice's controls in place ([`VoiceCtl`]: level,
 //! speed, filter values, EQ bands, its emitter's place, a seek, a stop); nothing else crosses between the threads.
 //!
 //! A voice's recording is played by [`VoiceSource`]: cut at the media table's length and looped by starting the decoder
@@ -56,9 +56,15 @@
 //! sequence lock written from the update, as its other controls are written); at each block's start it works out the
 //! distance's gain, low-pass and high-pass shares, spread and pan (`se_core::elite_sound::place`), adds the filter shares
 //! to the mixer's values before their ramp, and the output mixes it through the pan matrix (the distance's gain in it),
-//! each gain ramped frame by frame from the last block's over the block (`mix_placed`). Every other voice plays centred
-//! exactly as before (a mono voice on both channels at full level): the pan law puts a mono source straight ahead at full
-//! level on both too.
+//! each gain ramped frame by frame from the last block's over the block (`mix_through`).
+//!
+//! **How every voice reaches the output (T5d-7):** one matrix of gains a voice (`[input channel][output channel]`), by
+//! Wwise's own pan rules as Elite's exe holds them (`se_core::elite_sound::place`: the 2D or 3D panner into its route's
+//! stereo or 7.1.4 layout, a 7.1.4 route down-mixed by Elite's table, all folded into the one matrix). A voice that is not
+//! placed plays through the matrix the mixer hands it (`VoiceUpdate::matrix`, a voice at the listener) for its life; a
+//! placed one through the matrix its place gives. The recording's own gain (`akd_gain_2`, `VoiceUpdate::media_gain`)
+//! multiplies its samples as they are resampled, before the filters and effects (a node's Guitar Distortion is not
+//! linear).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -283,9 +289,14 @@ pub struct VoiceCtl {
     /// batch begins, so a stop and the starts of one mixer step meet at one sample (`Voices::start_queued`).
     stop_with: AtomicU64,
     fx: FxTable,
-    /// Where it sits (`VoiceUpdate::place`, fixed for the voice's life; None: centred) and its emitter's place now.
+    /// Where it sits (`VoiceUpdate::place`, fixed for the voice's life; None: it plays through `matrix`) and its emitter's
+    /// place now.
     placement: Option<Arc<Placement>>,
     place: PlaceWords,
+    /// The stereo gains of a voice that is not placed (`VoiceUpdate::matrix`) and the recording's own gain
+    /// (`VoiceUpdate::media_gain`), both fixed for the voice's life.
+    matrix: [[f32; 2]; 2],
+    media_gain: f32,
     /// Blocks of this voice in which the guard found a sample not finite or beyond the bound, and the low-pass, high-pass
     /// and speed in force at the first (`f32` bits), for the one line the game thread logs.
     bad_blocks: AtomicU32,
@@ -317,6 +328,8 @@ impl VoiceCtl {
             fx: FxTable::default(),
             placement: None,
             place: PlaceWords::default(),
+            matrix: [[0.0; 2]; 2],
+            media_gain: 1.0,
             bad_blocks: AtomicU32::new(0),
             first_bad: Default::default(),
             made: AtomicU64::new(0),
@@ -335,6 +348,9 @@ impl VoiceCtl {
         if let Some(p) = u.position {
             c.place.write(p);
         }
+        // (Values not finite play nothing: a matrix of zeros, a gain of 1.)
+        c.matrix = if u.matrix.iter().flatten().all(|g| g.is_finite()) { u.matrix } else { [[0.0; 2]; 2] };
+        c.media_gain = if u.media_gain.is_finite() { u.media_gain } else { 1.0 };
         c
     }
 
@@ -870,12 +886,13 @@ impl VoiceSource {
         self.step_controls();
         let ch = self.cur.len();
         let inc = f64::from(self.clip.rate) / f64::from(OUTPUT_RATE) * f64::from(self.speed.now);
+        let gain = self.ctl.media_gain;
         let mut n = 0;
         while n < BLOCK && !self.over {
             self.advance();
             let k = self.phase as f32;
             for (c, (a, b)) in self.cur.iter().zip(&self.nxt).enumerate() {
-                self.buf[c * BLOCK + n] = a + (b - a) * k;
+                self.buf[c * BLOCK + n] = (a + (b - a) * k) * gain;
             }
             self.phase += inc;
             n += 1;
@@ -1041,7 +1058,7 @@ impl OutputSource {
     }
 
     /// One output block: the batches that arrived join first (all of a batch at its first frame), then every voice adds its
-    /// block (a mono voice to both channels at full level, as the player had it); a voice stopped (at once, or with a
+    /// block through its matrix (`mix_through`); a voice stopped (at once, or with a
     /// batch now begun) or over is held to be handed back. Each frame whose mix passes the limiter's threshold is counted.
     fn mix_block(&mut self) {
         while let Ok((seq, mut batch)) = self.rx.try_recv() {
@@ -1066,21 +1083,8 @@ impl OutputSource {
             let stopped = r.ctl.stop.load(Ordering::Relaxed) || (with != 0 && with <= self.begun);
             let n = if stopped { 0 } else { r.src.make_block() };
             let (b, ch) = (&r.src.buf, r.src.cur.len());
-            match &r.src.placed {
-                Some(p) => mix_placed(&mut self.mix, b, ch, n, p.from, p.now.matrix),
-                None if ch == 1 => {
-                    for (f, s) in self.mix.chunks_exact_mut(2).zip(&b[..n]) {
-                        f[0] += s;
-                        f[1] += s;
-                    }
-                }
-                None => {
-                    for (f, (l, rt)) in self.mix.chunks_exact_mut(2).zip(b[..n].iter().zip(&b[BLOCK..BLOCK + n])) {
-                        f[0] += l;
-                        f[1] += rt;
-                    }
-                }
-            }
+            let (from, to) = r.src.placed.as_ref().map_or((r.ctl.matrix, r.ctl.matrix), |p| (p.from, p.now.matrix));
+            mix_through(&mut self.mix, b, ch, n, from, to);
             if n < BLOCK {
                 let done = self.active.swap_remove(i);
                 self.hold_voice(done);
@@ -1098,10 +1102,11 @@ impl OutputSource {
     }
 }
 
-/// A placed voice's first `n` frames (`ch` channels, `BLOCK` apart in `b`) added to the stereo mix through its pan matrix
-/// (`[input channel][output channel]`), each gain ramped frame by frame from the last block's matrix to this one's over a
-/// ramp step, so a moving emitter or a turning head never steps a gain.
-fn mix_placed(mix: &mut [f32; 2 * BLOCK], b: &[f32], ch: usize, n: usize, from: [[f32; 2]; 2], to: [[f32; 2]; 2]) {
+/// A voice's first `n` frames (`ch` channels, `BLOCK` apart in `b`) added to the stereo mix through its matrix (`[input
+/// channel][output channel]`), each gain ramped frame by frame from the last block's matrix to this one's over a ramp step,
+/// so a moving emitter or a turning head never steps a gain (a voice not placed has the same matrix at both ends: the ramp
+/// adds exactly 0, the same bits as a fixed gain).
+fn mix_through(mix: &mut [f32; 2 * BLOCK], b: &[f32], ch: usize, n: usize, from: [[f32; 2]; 2], to: [[f32; 2]; 2]) {
     let d = |c: usize, o: usize| (to[c][o] - from[c][o]) / RAMP_FRAMES as f32;
     let (d00, d01, d10, d11) = (d(0, 0), d(0, 1), d(1, 0), d(1, 1));
     for (i, f) in mix.chunks_exact_mut(2).take(n).enumerate() {
@@ -1577,10 +1582,14 @@ mod tests {
         Clip { source, file: "ramp.wav".into(), frames: u64::from(frames), channels: 1, rate: 48000 }
     }
 
-    /// A voice's controls at level 1, nothing else set.
+    /// A mono voice on both channels at full level (these tests' matrix: their samples are the voice's own).
+    const MONO_BOTH: [[f32; 2]; 2] = [[1.0, 1.0], [0.0, 0.0]];
+
+    /// A voice's controls at level 1 through `MONO_BOTH`, nothing else set.
     fn ctl() -> Arc<VoiceCtl> {
-        let c = VoiceCtl::idle(Arc::default());
+        let mut c = VoiceCtl::idle(Arc::default());
         c.level.store(1f32.to_bits(), Ordering::Relaxed);
+        c.matrix = MONO_BOTH;
         Arc::new(c)
     }
 
@@ -1703,7 +1712,7 @@ mod tests {
 
     // ------------------------------------------------------------------ the audio thread offline
 
-    use super::super::triggers::{motion_in, Call, Flight, ShipView, Triggers};
+    use super::super::triggers::{stock, Call, ShipView, Triggers};
     use elite_sim::drive::{Drive, ARRIVING_S, CHARGE_S, COOLDOWN_S, JUMP_CHARGE_S};
     use se_core::elite_sound::{Id, Mixer, Output};
     use std::collections::BTreeMap;
@@ -1733,6 +1742,83 @@ mod tests {
         simulated: f64,
         cpu: std::time::Duration,
         most: usize,
+        /// The buses' compressors' inputs, when a check watches them (`no_bus_compressor_would_act`).
+        taps: Option<Taps>,
+    }
+
+    /// The compressors on the shipped sounds' buses (not built: `se_core::elite_sound`'s docs) and their thresholds as the
+    /// banks hold them at DynamicRange's default (T5d-2's `re/elite/work/sound/t5d2/bus_fx.json`: each `Wwise Compressor`
+    /// in a bus slot the ship's events reach, its block's threshold plus its curve on parameter 0 at the default; bypassed
+    /// slots left out: 13d02225's). The eight on 12-channel buses (25b1912f, 34b88e1e, 80c77eb0, 94f4d066, aa299971,
+    /// b28d0893, b804e991, and 87de5a42, which no ship event reaches) read their bus's power averaged over 12 channels;
+    /// here every one is read in stereo, on the safe side (T5g-2 section 5: 7.8 dB higher for a point source ahead).
+    const COMPRESSORS: &[(u32, u32, f64)] = &[
+        (0x180710c3, 3, -18.0),
+        (0x25b1912f, 3, -20.0),
+        (0x34b88e1e, 1, -44.6),
+        (0x368d104e, 0, -25.0),
+        (0x722bdfeb, 0, -17.0),
+        (0x80c77eb0, 3, -17.0),
+        (0x8ad0fcab, 3, -17.0),
+        (0x8f2aa457, 3, -18.0),
+        (0x94f4d066, 3, -15.0),
+        (0x964c90e0, 3, -13.22),
+        (0x987ecc5e, 3, -25.0),
+        (0xa1542164, 3, -13.22),
+        (0xa9952ab4, 3, -20.0),
+        (0xaa299971, 3, -35.5),
+        (0xb28d0893, 3, -17.0),
+        (0xb7a6077a, 0, -17.0),
+        (0xb804e991, 3, -17.0),
+        (0xbfd4c387, 3, -12.0),
+        (0xd4fc004a, 1, -17.0),
+    ];
+
+    /// What reaches each compressor: the voices on its bus's way summed in stereo through their matrices, each less the
+    /// gain it takes after the compressor's slot (`Mixer::gains_after_slots`), and the loudest mean square over a frame
+    /// (10 ms) so far, against the threshold. (The effects after the slot shape a voice's output as well as scale it:
+    /// only their output levels are taken back out, so a band they cut reads low here.)
+    struct Taps {
+        sums: Vec<Vec<[f32; 2]>>,
+        loudest: Vec<(f64, f64)>,
+    }
+
+    impl Taps {
+        fn new() -> Taps {
+            Taps { sums: vec![Vec::new(); COMPRESSORS.len()], loudest: vec![(f64::NEG_INFINITY, 0.0); COMPRESSORS.len()] }
+        }
+
+        /// A voice's frame (`ch` channels interleaved) added at each compressor on its way.
+        fn add(&mut self, buf: &[f32], ch: usize, m: [[f32; 2]; 2], after: &[(Id, [f64; 4])]) {
+            for (k, (bus, slot, _)) in COMPRESSORS.iter().enumerate() {
+                let Some((_, g)) = after.iter().find(|(b, _)| b.0 == *bus) else { continue };
+                let undo = 10f64.powf(-g[*slot as usize] / 20.0) as f32;
+                let sum = &mut self.sums[k];
+                let n = buf.len() / ch;
+                if sum.len() < n {
+                    sum.resize(n, [0.0; 2]);
+                }
+                for (f, s) in sum.iter_mut().zip(buf.chunks_exact(ch)) {
+                    let r = if ch > 1 { s[1] } else { 0.0 };
+                    f[0] += (s[0] * m[0][0] + r * m[1][0]) * undo;
+                    f[1] += (s[0] * m[0][1] + r * m[1][1]) * undo;
+                }
+            }
+        }
+
+        /// The frame's sums read and cleared.
+        fn end_frame(&mut self, at: f64) {
+            for (sum, loudest) in self.sums.iter_mut().zip(&mut self.loudest) {
+                if !sum.is_empty() {
+                    let ms = sum.iter().map(|f| f64::from(f[0]).powi(2) + f64::from(f[1]).powi(2)).sum::<f64>() / (2 * sum.len()) as f64;
+                    let db = 10.0 * ms.max(1e-30).log10();
+                    if db > loudest.0 {
+                        *loudest = (db, at);
+                    }
+                }
+                sum.clear();
+            }
+        }
     }
 
     impl Run {
@@ -1756,6 +1842,7 @@ mod tests {
                 simulated: 0.0,
                 cpu: std::time::Duration::ZERO,
                 most: 0,
+                taps: None,
             }
         }
 
@@ -1819,16 +1906,19 @@ mod tests {
             if self.audio {
                 let t = std::time::Instant::now();
                 let mut ended = Vec::new();
-                for (id, (src, _, carry)) in &mut self.sources {
+                let mut tap = Vec::new();
+                for (id, (src, ctl, carry)) in &mut self.sources {
                     let want = f64::from(OUTPUT_RATE) * v.dt + *carry;
                     let frames = want.floor();
                     *carry = want - frames;
+                    tap.clear();
                     for _ in 0..frames as u64 * u64::from(src.clip.channels) {
                         match src.next() {
                             Some(s) => {
                                 assert!(s.is_finite() && s.abs() <= 4.0, "voice {id} {}: {s}", src.clip.file);
                                 self.worst = self.worst.max(s.abs());
                                 self.samples += 1;
+                                tap.push(s);
                             }
                             None => {
                                 ended.push(*id);
@@ -1836,6 +1926,12 @@ mod tests {
                             }
                         }
                     }
+                    if let Some(t) = &mut self.taps {
+                        t.add(&tap, usize::from(src.clip.channels.max(1)), ctl.matrix, &self.mixer.gains_after_slots(*id));
+                    }
+                }
+                if let Some(t) = &mut self.taps {
+                    t.end_frame(self.simulated);
                 }
                 for id in ended {
                     self.sources.remove(&id);
@@ -1871,7 +1967,7 @@ mod tests {
             let mut v = ShipView::at_rest();
             v.dt = 0.01;
             v.gear_down = false;
-            v.motion = motion_in(&Flight { vel: [0.0, 0.0, -100.0], acc: [0.0; 3], omega: [0.0; 3], top_speed: 220.0, accel_fwd: 40.0, back_share: 0.5, throttle: 1.0 });
+            v.motion = stock(2.0, [0.0, 0.0, -100.0]);
             v
         }
 
@@ -2039,6 +2135,8 @@ mod tests {
             emitter: 0,
             position: None,
             place: None,
+            matrix: MONO_BOTH,
+            media_gain: 1.0,
             start: None,
             stop: false,
             seek_to: None,
@@ -2076,21 +2174,28 @@ mod tests {
 
     /// A mono 16-bit WAV clip of the given samples at 48 kHz.
     fn wav(samples: &[i16]) -> Clip {
+        wav_of(samples, 1)
+    }
+
+    /// A 16-bit WAV clip at 48 kHz of `channels` channels, the samples interleaved.
+    fn wav_of(samples: &[i16], channels: u16) -> Clip {
         let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
         let mut b = Vec::new();
         b.extend_from_slice(b"RIFF");
         b.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
         b.extend_from_slice(b"WAVEfmt ");
         b.extend_from_slice(&16u32.to_le_bytes());
-        b.extend_from_slice(&[1, 0, 1, 0]);
+        b.extend_from_slice(&[1, 0]);
+        b.extend_from_slice(&channels.to_le_bytes());
         b.extend_from_slice(&48000u32.to_le_bytes());
-        b.extend_from_slice(&96000u32.to_le_bytes());
-        b.extend_from_slice(&[2, 0, 16, 0]);
+        b.extend_from_slice(&(96000 * u32::from(channels)).to_le_bytes());
+        b.extend_from_slice(&(2 * channels).to_le_bytes());
+        b.extend_from_slice(&[16, 0]);
         b.extend_from_slice(b"data");
         b.extend_from_slice(&(data.len() as u32).to_le_bytes());
         b.extend_from_slice(&data);
         let (source, _) = crate::mods::check_wav(b).unwrap();
-        Clip { source, file: "click.wav".into(), frames: samples.len() as u64, channels: 1, rate: 48000 }
+        Clip { source, file: "click.wav".into(), frames: (samples.len() / usize::from(channels)) as u64, channels, rate: 48000 }
     }
 
     /// Two voices built apart (as two worker threads build them) and handed over as one batch while the output is already
@@ -2181,6 +2286,8 @@ mod tests {
             emitter: 0,
             position: None,
             place: None,
+            matrix: MONO_BOTH,
+            media_gain: 1.0,
             start: (!stop).then_some(se_core::elite_sound::VoiceStart { offset: 0.0, looping: true, loop_count: None, loop_region: None }),
             stop,
             seek_to: None,
@@ -2246,25 +2353,42 @@ mod tests {
         assert!(ctl.stop.load(Ordering::Relaxed) && v.waiting.is_empty());
     }
 
+    /// A voice through `p`, of a steady level 1 (its matrix the one at the listener), placed at `at` when given.
+    fn voice_through(clip: &Arc<Clip>, p: Placement, at: Option<[f32; 3]>, media_gain: f32) -> Ready {
+        let mut c = VoiceCtl::idle(Arc::default());
+        c.level.store(1f32.to_bits(), Ordering::Relaxed);
+        c.matrix = p.listener_matrix(usize::from(clip.channels));
+        c.media_gain = media_gain;
+        if let Some(at) = at {
+            c.placement = Some(Arc::new(p));
+            c.place.write(at);
+        }
+        let ctl = Arc::new(c);
+        Ready { src: VoiceSource::new(clip.clone(), ctl.clone(), 0, None, None), ctl }
+    }
+
+    /// The first `frames` frames the output makes of one voice.
+    fn mixed(r: Ready, frames: usize) -> Vec<f32> {
+        let (tx, rx) = channel();
+        let o = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+        send_batch(&tx, vec![r]);
+        o.take(2 * frames).collect()
+    }
+
     /// A placed voice of a steady level as the output mixes it, its emitter moved each block (as the game writes it each
-    /// frame) from hard left to hard right round the front: the left and right gains go from sqrt 2 / 0 to 0 / sqrt 2
-    /// through 1 / 1 straight ahead, and no gain ever steps by more than 1 % from one frame to the next (each is ramped
-    /// over its block). Straight ahead, a placed mono voice gives exactly the samples a centred one gives.
+    /// frame) from hard left to hard right round the front, on a stereo route (T5g's planar panner): fully left at -90
+    /// degrees, 0.7071 / 0.7071 straight ahead, fully right at +90, and no gain ever steps by more than 1 % from one frame
+    /// to the next (each is ramped over its block). Straight ahead, a placed mono voice gives exactly the samples a voice
+    /// not positioned in space gives (2D, direct assignment: 0.7071 on both).
     #[test]
     fn a_moving_emitter_pans_smoothly() {
+        use se_core::elite_sound::Route;
         let level = 0.25f32;
         let clip = Arc::new(wav(&vec![(level * 32768.0) as i16; 48000]));
-        let placed = |at: [f32; 3]| {
-            let mut c = VoiceCtl::idle(Arc::default());
-            c.level.store(1f32.to_bits(), Ordering::Relaxed);
-            c.placement = Some(Arc::new(Placement { pan: true, volume: None, lowpass: None, highpass: None, spread: None }));
-            c.place.write(at);
-            let ctl = Arc::new(c);
-            Ready { src: VoiceSource::new(clip.clone(), ctl.clone(), 0, None, None), ctl }
-        };
+        let spatial = || Placement::routed(Route::default(), true, None);
         let (tx, rx) = channel();
         let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
-        let r = placed([-3.0, 0.0, 0.0]);
+        let r = voice_through(&clip, spatial(), Some([-3.0, 0.0, 0.0]), 1.0);
         let moving = r.ctl.clone();
         send_batch(&tx, vec![r]);
         let mut got: Vec<f32> = Vec::new();
@@ -2279,25 +2403,90 @@ mod tests {
         let gains: Vec<[f32; 2]> = got.chunks_exact(2).map(|f| [f[0] / level, f[1] / level]).collect();
         let first = gains[BLOCK];
         let last = *gains.last().unwrap();
-        let r2 = std::f32::consts::SQRT_2;
-        assert!((first[0] - r2).abs() < 0.02 && first[1].abs() < 0.02, "hard left first: {first:?}");
-        assert!(last[0].abs() < 1e-3 && (last[1] - r2).abs() < 1e-3, "hard right last: {last:?}");
+        assert!((first[0] - 1.0).abs() < 1e-3 && first[1].abs() < 1e-3, "hard left first: {first:?}");
+        assert!(last[0].abs() < 1e-3 && (last[1] - 1.0).abs() < 1e-3, "hard right last: {last:?}");
         let mid = gains[gains.len() / 2 - BLOCK];
-        assert!((mid[0] - 1.0).abs() < 0.1 && (mid[1] - 1.0).abs() < 0.1, "near the middle: {mid:?}");
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((mid[0] - h).abs() < 0.1 && (mid[1] - h).abs() < 0.1, "near the middle: {mid:?}");
         let step = gains.windows(2).map(|w| (w[1][0] - w[0][0]).abs().max((w[1][1] - w[0][1]).abs())).fold(0.0f32, f32::max);
         assert!(step <= 0.01, "a gain stepped by {step} in one frame");
-        // Straight ahead: the same bits as centred.
-        let mix = |r: Ready| {
-            let (tx, rx) = channel();
-            let o = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
-            send_batch(&tx, vec![r]);
-            o.take(2 * 4 * BLOCK).map(f32::to_bits).collect::<Vec<u32>>()
+        // Straight ahead: the same bits as a voice not positioned in space.
+        let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<u32>>();
+        let ahead = bits(mixed(voice_through(&clip, spatial(), Some([0.0, 0.0, -2.0]), 1.0), 4 * BLOCK));
+        let flat = bits(mixed(voice_through(&clip, Placement::routed(Route::default(), false, None), None, 1.0), 4 * BLOCK));
+        assert_eq!(ahead, flat);
+        assert_eq!(f32::from_bits(flat[2 * BLOCK]), level * 0.70710677);
+    }
+
+    /// A stereo voice with a place but no spatialisation keeps both its channels (the T5d-5 review: a placed voice's matrix
+    /// was a mono one whatever its channels, so a stereo one lost its right channel), on either route.
+    #[test]
+    fn a_placed_stereo_voice_keeps_both_channels() {
+        use se_core::elite_sound::{Layout, Route};
+        let (l, r) = (0.25f32, -0.5f32);
+        let frames: Vec<i16> = (0..4800).flat_map(|_| [(l * 32768.0) as i16, (r * 32768.0) as i16]).collect();
+        let clip = Arc::new(wav_of(&frames, 2));
+        for layout in [Layout::Stereo, Layout::Height714] {
+            let p = Placement::routed(Route { layout, ..Route::default() }, false, None);
+            let got = mixed(voice_through(&clip, p, Some([-4.0, 0.0, -1.0]), 1.0), 4 * BLOCK);
+            assert!(got.chunks_exact(2).all(|f| f[0] == l && f[1] == r), "{layout:?}: {:?}", &got[..4]);
+        }
+    }
+
+    /// Only the frame rate changing (the game writing a still emitter's place every block, every fourth, or once) changes
+    /// nothing the output makes: the same bits, on a 7.1.4 route.
+    #[test]
+    fn the_frame_rate_changes_nothing() {
+        use se_core::elite_sound::{Layout, Route};
+        let clip = Arc::new(wav(&(0..9600).map(|i| ((f64::from(i) * 0.05).sin() * 8000.0) as i16).collect::<Vec<_>>()));
+        let at = [2.0, -1.0, -3.0];
+        let runs: Vec<Vec<u32>> = [1, 4, 1000]
+            .iter()
+            .map(|every| {
+                let r = voice_through(&clip, Placement::routed(Route { layout: Layout::Height714, ..Route::default() }, true, None), Some(at), 1.0);
+                let ctl = r.ctl.clone();
+                let (tx, rx) = channel();
+                let mut o = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+                send_batch(&tx, vec![r]);
+                let mut got = Vec::new();
+                for k in 0..32 {
+                    if k % every == 0 {
+                        ctl.place.write(at);
+                    }
+                    got.extend(o.by_ref().take(2 * BLOCK).map(f32::to_bits));
+                }
+                got
+            })
+            .collect();
+        assert!(runs.windows(2).all(|w| w[0] == w[1]));
+        assert!(runs[0].iter().any(|b| *b != 0));
+    }
+
+    /// The recording's own gain (`akd_gain_2`) multiplies the samples before the voice's effects: with a Guitar Distortion
+    /// on the voice, 1.414 x the recording goes into the distortion, which is not 1.414 x what the distortion makes of it.
+    #[test]
+    fn the_recordings_gain_comes_before_the_effects() {
+        let tone: Vec<i16> = (0..4800).map(|i| ((std::f64::consts::TAU * 440.0 * f64::from(i) / 48000.0).sin() * 12000.0) as i16).collect();
+        let clip = Arc::new(wav(&tone));
+        let d = DistortionNow { pre: [EqNow::OFF; 3], post: [EqNow::OFF; 3], kind: filter::DISTORTION_OVERDRIVE, drive: 60.0, tone: 50.0, rectification: 0.0, level: 1.0, wet: 100.0 };
+        let g = std::f32::consts::SQRT_2;
+        let c = ctl();
+        let mut c = Arc::into_inner(c).unwrap();
+        c.media_gain = g;
+        c.fx.write(&[FxNow::Distortion(d)]);
+        let got: Vec<f32> = VoiceSource::new(clip, Arc::new(c), 0, Some(1), None).collect();
+        let run = |pre: f32, post: f32| -> Vec<f32> {
+            let mut p = Distortion::new(1, OUTPUT_RATE);
+            p.set(&d);
+            tone.iter().map(|s| {
+                let mut f = [f32::from(*s) / 32768.0 * pre];
+                p.frame(&mut f);
+                f[0] * post
+            }).collect()
         };
-        let centred = {
-            let c = ctl();
-            Ready { src: VoiceSource::new(clip.clone(), c.clone(), 0, None, None), ctl: c }
-        };
-        assert_eq!(mix(placed([0.0, 0.0, -2.0])), mix(centred));
+        let (before, after) = (run(g, 1.0), run(1.0, g));
+        assert!(got.iter().zip(&before).all(|(a, b)| (a - b).abs() < 1e-6), "the gain goes into the distortion");
+        assert!(got.iter().zip(&after).any(|(a, b)| (a - b).abs() > 1e-3), "and the order matters");
     }
 
     /// The block path against the frame-at-a-time path it replaced (kept here only): a supercruise entry's heard voices
@@ -2319,7 +2508,7 @@ mod tests {
             s.advance();
             let k = s.phase as f32;
             s.level += s.level_step;
-            let mut work: Vec<f32> = s.cur.iter().zip(&s.nxt).map(|(a, b)| a + (b - a) * k).collect();
+            let mut work: Vec<f32> = s.cur.iter().zip(&s.nxt).map(|(a, b)| (a + (b - a) * k) * s.ctl.media_gain).collect();
             for (c, x) in work.iter_mut().enumerate() {
                 for f in &mut s.filters {
                     if let (Some(co), Some(sec)) = (&f.coefs, f.channels.get_mut(c)) {
@@ -2356,8 +2545,14 @@ mod tests {
         for f in want.chunks_exact_mut(2) {
             for (s, since, live) in &mut old {
                 if *live && old_frame(s, since, &mut o) {
-                    f[0] += o[0];
-                    f[1] += o.get(1).copied().unwrap_or(o[0]);
+                    // (Through the voice's matrix, as `mix_through` does it.)
+                    let m = s.ctl.matrix;
+                    f[0] += o[0] * m[0][0];
+                    f[1] += o[0] * m[0][1];
+                    if let Some(r) = o.get(1) {
+                        f[0] += r * m[1][0];
+                        f[1] += r * m[1][1];
+                    }
                 } else {
                     *live = false;
                 }
@@ -2582,6 +2777,118 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Decision 6 of T5d-7: the buses' compressors stay unbuilt while none would act. A whole flight offline, every voice
+    /// through its matrix and its recording's gain (at rest, full throttle, the boost through its states, flight assist
+    /// off and on, the gear's cues all at once on an emitter at the listener, which is louder than their places, a
+    /// supercruise trip and a hyperspace jump): each compressor's input, read in stereo (the safe side for the 12-channel
+    /// ones), against its threshold. Prints the table; fails if one would act.
+    #[test]
+    #[ignore]
+    fn no_bus_compressor_would_act() {
+        let mut r = Run::new(true);
+        r.taps = Some(Taps::new());
+        let mut v = Run::flying();
+        v.throttle = 0.0;
+        r.hold(&v, 2.0);
+        v.throttle = 1.0;
+        r.hold(&v, 3.0);
+        for (state, secs) in [(1, 0.6), (2, 2.0), (3, 1.0), (0, 0.5)] {
+            v.boost = state;
+            r.hold(&v, secs);
+        }
+        for fa in [false, true] {
+            v.flight_assist = fa;
+            r.hold(&v, 1.0);
+        }
+        for name in [
+            "SideWinder_Rear_Deploy_Motor01_b_landinggear",
+            "SideWinder_Rear_Deploy_Motor02_b_landinggear",
+            "SideWinder_Rear_Deploy_Door_Hinge_b_landinggear",
+            "Sidewinder_Deploy_Motor01_b_landinggear",
+            "DoorOpen_Rear_b_sidewinder_external",
+            "LandingGearLower_b_sidewinder",
+        ] {
+            let _ = r.mixer.post(name, 0x1000);
+        }
+        r.hold(&v, 3.0);
+        r.supercruise_trip(5.0, 2.0);
+        r.jump_trip(2.0);
+        let t = r.taps.take().unwrap();
+        let mut acting = Vec::new();
+        eprintln!("bus      slot threshold  loudest input (10 ms mean square, stereo)  at");
+        for ((bus, slot, threshold), (db, at)) in COMPRESSORS.iter().zip(&t.loudest) {
+            eprintln!("{bus:08x} {slot}    {threshold:+7.2}    {db:+7.2} dB ({:+.2} under)  {at:.2} s", threshold - db);
+            if db > threshold {
+                acting.push(format!("{bus:08x}"));
+            }
+        }
+        assert!(acting.is_empty(), "compressors that would act: {acting:?}");
+    }
+
+    /// T5d-7's table: what each voice's matrix (Wwise's pan rules, at the listener, as every emitter but the legs' is) and
+    /// its recording's own gain change in level against the player before them (a mono voice at 1.0 on both channels, a
+    /// stereo one 1:1, no recording gain), for every Sound the shipped events reach, by class (route, channels, the
+    /// recording's gain, panner): mono exactly, stereo from the recording's own samples (the first 30 s: the L / R
+    /// correlation counts), as T5g-2's `classes.py` did with the studies' models.
+    #[test]
+    #[ignore]
+    fn level_change_by_class() {
+        use se_core::elite_sound::{Layout, Object, Panner};
+        let l = super::super::load::load().unwrap_or_else(|(f, e)| panic!("{f}: {e}"));
+        let bank = l.bank.clone();
+        let mut mixer = Mixer::new(bank.clone(), 1);
+        let mut todo: Vec<Id> = bank.file.ship_events.iter().chain(&bank.file.open_events).filter_map(|n| bank.event(n)).flat_map(|e| e.actions.iter().copied()).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut sounds = Vec::new();
+        while let Some(id) = todo.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match bank.object(id) {
+                Some(Object::Action(a)) if a.kind == se_core::elite_sound::data::ActionKind::Play => todo.push(a.target),
+                Some(Object::Sound(s)) if bank.file.media.contains_key(&s.source_id) => sounds.push((id, s.source_id)),
+                Some(Object::RanSeqCntr(c)) => todo.extend(&c.children),
+                Some(Object::LayerCntr(c)) => todo.extend(&c.children),
+                Some(Object::SwitchCntr(c)) => todo.extend(c.children.iter().chain(c.switches.iter().flat_map(|s| s.nodes.iter()))),
+                _ => {}
+            }
+        }
+        let mut classes: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for (id, src) in &sounds {
+            let media = &bank.file.media[src];
+            let p = mixer.placement_of(*id);
+            let ch = media.channels as usize;
+            let g = f64::from(media.akd_gain_2.map_or(1.0, |g| g as f32));
+            let m = p.listener_matrix(ch).map(|r| r.map(|x| f64::from(x) * g));
+            let change = if ch == 1 {
+                10.0 * ((m[0][0].powi(2) + m[0][1].powi(2)) / 2.0).log10()
+            } else {
+                let Some(clip) = l.clips.get(src) else { continue };
+                let (mut old, mut new) = (0.0f64, 0.0f64);
+                let mut dec = clip.source.decoder();
+                for _ in 0..(clip.frames as usize).min(48000 * 30) {
+                    let (Some(a), Some(b)) = (dec.next(), dec.next()) else { break };
+                    let (a, b) = (f64::from(a), f64::from(b));
+                    old += a * a + b * b;
+                    new += (a * m[0][0] + b * m[1][0]).powi(2) + (a * m[0][1] + b * m[1][1]).powi(2);
+                }
+                if old <= 0.0 {
+                    continue;
+                }
+                10.0 * (new / old).log10()
+            };
+            let r = p.route;
+            let kind = if p.pan { "3D" } else if r.panner == Panner::BalanceFade { "2D balance-fade" } else { "2D direct" };
+            let key = format!("{:5} {:6} akd {:6} {}", if r.layout == Layout::Height714 { "7.1.4" } else { "2.0" }, if ch == 1 { "mono" } else { "stereo" }, if g > 1.2 { "1.414" } else { "1/none" }, kind);
+            classes.entry(key).or_default().push(change);
+        }
+        eprintln!("{} Sound objects with recordings on the shipped events' paths", sounds.len());
+        for (k, mut v) in classes {
+            v.sort_by(f64::total_cmp);
+            eprintln!("{k:40} n {:3}  median {:+6.2}  min {:+6.2}  max {:+6.2}", v.len(), v[v.len() / 2], v[0], v[v.len() - 1]);
         }
     }
 

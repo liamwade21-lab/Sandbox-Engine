@@ -27,6 +27,11 @@
 //! - Loudness normalisation (527 shipped sounds, gains -17.4 to +36.1 dB): the recording's `akd ` gain
 //!   ([`data::Media::loudness_gain`]) where the node in force (the nearest overriding its parent's analysis, wwiser's
 //!   `bOverrideAnalysis`, else the top one) has `bNormalizeLoudness`; make-up gain stays its own additive property.
+//! - The `akd ` chunk's second gain ([`data::Media::akd_gain_2`], T5g section 1, C: the leaf at 0x144a78c80 multiplies
+//!   every voice's make-up gain by it, whatever its positioning; 1 without the chunk): handed to the player apart
+//!   ([`VoiceUpdate::media_gain`]), which applies it to the recording's samples before any effect.
+//! - Where a voice sits and how it reaches the stereo output ([`place`], T5d-5 and T5d-7): each Sound's route
+//!   ([`SoundBank::route`]) and placement, a voice's matrix ([`VoiceUpdate::matrix`]).
 //! - Wwise Meter effects on buses (10 shipped, [`data::Meter`]): an RMS meter without ballistics (2: both on the drives'
 //!   bus, one writing 1e5ba700, the switch that turns the cockpit's background beds off while the drives are loud) writes
 //!   its bus's level into its game parameter, worked out from the voices' gains and each recording's RMS.
@@ -87,12 +92,13 @@
 //!   0x03E90C66 `DtsI3daPannerPlugin` as 11 buses' mixer plug-in; the user's Elite has `hp3d` disabled); on nodes
 //!   Tremolo (31) and Flanger (5); on the aux paths reverbs and delays. Tremolo and Flanger modulate in time by LFOs. Aux sends (user
 //!   291, game 183, their curves 137) and the attenuation's wet curves (269), HDR (every bus carries HDR settings: 317;
-//!   HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or 1.414 on mono recordings, its meaning not
-//!   proven).
-//! - Panning and spatialisation beyond [`place`]'s (the pan of a placed voice by azimuth and the Spread curve): 2D
-//!   speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Focus curve (4), positioning-type blend
-//!   curves (10), a 2D pan curve (1), path automation (13: such a voice is not placed), held emitter / listener
-//!   orientation (7), cone attenuation (9; no emitter orientation is known), the attenuations' own game parameter curves.
+//!   HDR envelope 24).
+//! - Panning and spatialisation beyond [`place`]'s (Wwise's 2D and 3D panners into a stereo or 7.1.4 route, the spread
+//!   and focus curves, the down-mix; the nodes' CenterPCT, PAN_LR and PAN_FR values are read, T5d-7): curves and state
+//!   deltas on those three, positioning-type blend curves (10), a 2D pan curve (1), path automation (13: such a voice pans
+//!   as one at the listener), held emitter / listener orientation (7), cone attenuation (9; no emitter orientation is
+//!   known), the attenuations' own game parameter curves, the buses' own pan values (their connections are direct
+//!   assignment).
 //! - Modulators: LFO (42) and envelope (10) modulator curves contribute nothing (their output formulas are not public,
 //!   and `events.json` names their properties with the node table's names).
 //! - The global voice cap (256).
@@ -128,11 +134,13 @@ mod mixer;
 pub mod place;
 
 #[cfg(test)]
+mod place_vectors;
+#[cfg(test)]
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
 pub use mixer::{DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
-pub use place::{PlaceNow, Placement};
+pub use place::{Layout, Panner, PlaceNow, Placement, Route};
 
 use data::*;
 use std::collections::HashMap;
@@ -279,6 +287,8 @@ pub struct SoundBank {
     /// Each Sound's effects the mixer runs, in signal order: the slots of the node in force (the nearest up its chain whose
     /// effects override its parent's, else the top node), then each bus from its output bus to the master.
     fx_stages: HashMap<Id, Vec<FxStage>>,
+    /// Each Sound's way to the output ([`SoundBank::route`]).
+    routes: HashMap<Id, place::Route>,
 }
 
 fn bad(s: String) -> SoundError {
@@ -323,8 +333,9 @@ impl SoundBank {
                 _ => {}
             }
         }
-        let mut bank = SoundBank { file, chains, bus_chains, fx_stages: HashMap::new() };
+        let mut bank = SoundBank { file, chains, bus_chains, fx_stages: HashMap::new(), routes: HashMap::new() };
         bank.fx_stages = bank.stages();
+        bank.routes = bank.routes().map_err(bad)?;
         bank.check()?;
         bank.check_playable()?;
         bank.check_cycles()?;
@@ -575,7 +586,7 @@ impl SoundBank {
                     shipped(&n.fx, h, false, &mut out);
                 }
             }
-            if let Some(b) = chain.iter().find_map(|a| self.node(*a).and_then(|n| n.override_bus.as_ref().map(|b| b.id))) {
+            if let Some(b) = self.output_bus(*id) {
                 for bid in self.bus_chain(b) {
                     if let Some(bus) = self.bus(*bid) {
                         shipped(&bus.fx, *bid, true, &mut out);
@@ -590,6 +601,68 @@ impl SoundBank {
     /// A Sound's effects the mixer runs, in signal order.
     pub fn fx_stages(&self, sound: Id) -> &[FxStage] {
         self.fx_stages.get(&sound).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// The positioning in force on an object: the nearest node up its chain that overrides its parent's, else the top one.
+    pub fn positioning(&self, obj: Id) -> Option<&Positioning> {
+        let chain = self.chain(obj);
+        chain.iter().filter_map(|a| self.node(*a)).find(|n| n.positioning.override_parent).or_else(|| chain.last().and_then(|a| self.node(*a))).map(|n| &n.positioning)
+    }
+
+    /// The bus a sound mixes into: the nearest output bus up its chain.
+    pub fn output_bus(&self, obj: Id) -> Option<Id> {
+        self.chain(obj).iter().find_map(|a| self.node(*a).and_then(|n| n.override_bus.as_ref().map(|b| b.id)))
+    }
+
+    /// A Sound's way to the output ([`place::Route`]; a stereo route, direct assignment, for an id that is not a Sound).
+    pub fn route(&self, sound: Id) -> place::Route {
+        self.routes.get(&sound).copied().unwrap_or_default()
+    }
+
+    /// Every Sound's route, checked: the layout its output bus mixes in (T5g-2 section 2: a bus's own channel configuration,
+    /// else its parent's, the master's the device's), every 12-channel bus on it connecting by direct assignment (the
+    /// connections built: 12 to 12 the identity, 12 to stereo Elite's down-mix); the 2D panner of its positioning in force;
+    /// and its CenterPCT, PAN_LR and PAN_FR, each the nearest value up its chain as far as the node whose positioning is in
+    /// force (`levels.py`'s rule; 0 where none is set: the property table 0x145ee0b00). A sound with no output bus on its
+    /// chain mixes into the master.
+    fn routes(&self) -> Result<HashMap<Id, place::Route>, String> {
+        use place::{Layout, Panner, Route};
+        let mut own = HashMap::new();
+        for (id, o) in &self.file.objects {
+            if let Object::Bus(b) = o {
+                let word = b.channel_config.strip_prefix("0x").and_then(|h| u32::from_str_radix(h, 16).ok()).ok_or_else(|| format!("bus {id}: channel configuration {:?} is not a number", b.channel_config))?;
+                own.insert(*id, Layout::of_config(word).map_err(|e| format!("bus {id}: {e}"))?);
+            }
+        }
+        let mut routes = HashMap::new();
+        for (id, o) in &self.file.objects {
+            if !matches!(o, Object::Sound(_)) {
+                continue;
+            }
+            let at = |e: String| format!("Sound {id}: {e}");
+            let buses = self.output_bus(*id).map(|b| self.bus_chain(b)).unwrap_or(&[]);
+            let layouts: Vec<Option<Layout>> = buses.iter().map(|b| own.get(b).copied().flatten()).collect();
+            let layout = Layout::of_route(&layouts).map_err(at)?;
+            for (i, b) in buses.iter().enumerate() {
+                if Layout::of_route(&layouts[i..]).map_err(at)? == Layout::Height714 && self.bus(*b).is_some_and(|bus| bus.positioning.panner_type != "DirectSpeakerAssignment") {
+                    return Err(at(format!("12-channel bus {b} connects by {} (only direct assignment is built)", self.bus(*b).map_or("", |x| x.positioning.panner_type.as_str()))));
+                }
+            }
+            let panner = self.positioning(*id).map_or(Ok(Panner::DirectSpeakerAssignment), |p| Panner::of_name(&p.panner_type)).map_err(at)?;
+            let value = |k: &str| {
+                for n in self.chain(*id).iter().filter_map(|a| self.node(*a)) {
+                    if let Some(v) = n.props.get(k).and_then(PropValue::num) {
+                        return v;
+                    }
+                    if n.positioning.override_parent {
+                        break;
+                    }
+                }
+                0.0
+            };
+            routes.insert(*id, Route { layout, panner, centre_pct: value("CenterPCT"), pan_lr: value("PAN_LR"), pan_fr: value("PAN_FR") });
+        }
+        Ok(routes)
     }
 
     /// The effects the mixer hands out that are NOT EXACT because a modulator drives one of their parameters and

@@ -1048,3 +1048,51 @@ fn distortion_and_limiter_stages_follow_their_curves_and_clamps() {
     assert!(none.is_none());
     assert!((u.volume_db - plain.volume_db - 1.28).abs() < 1e-4, "the limiter's output level in the voice's volume (the distortion's is its own): {} -> {}", plain.volume_db, u.volume_db);
 }
+
+/// T5d-7: every voice carries its recording's own gain (`akd_gain_2`, 1 without it) and the matrix of its sound's route;
+/// the slice holds sounds on 7.1.4 routes whose output bus has no layout of its own (they take a parent's), and a
+/// damaged channel configuration or an up-mix is refused with a message.
+#[test]
+fn voices_carry_their_route_and_recording_gain() {
+    let b = bank();
+    let r = reference();
+    let (mut met, mut tall) = (0, 0);
+    for name in r["at_start"].as_object().unwrap().keys() {
+        let mut m = Mixer::new(b.clone(), 0);
+        m.post(name, 7).unwrap();
+        for u in m.step(0.0).iter().filter(|u| matches!(u.output, Output::Audio { .. }) && !u.stop) {
+            let media = &b.file.media[&source(u)];
+            assert_eq!(f64::from(u.media_gain), media.akd_gain_2.map_or(1.0, |g| f64::from(g as f32)), "{name}");
+            let sound = b.file.objects.iter().find_map(|(id, o)| matches!(o, Object::Sound(s) if s.source_id == source(u)).then_some(*id)).unwrap();
+            let route = b.route(sound);
+            let pan = b.positioning(sound).is_some_and(|p| p.listener_relative_routing && p.spatialization.as_deref().is_some_and(|s| s != "None"));
+            assert!(u.matrix.iter().flatten().all(|g| g.is_finite() && *g >= 0.0), "{name}: {:?}", u.matrix);
+            if !pan && route.layout == place::Layout::Stereo && route.panner == place::Panner::DirectSpeakerAssignment {
+                let want = if media.channels == 1 { [[0.70710677, 0.70710677], [0.0, 0.0]] } else { [[1.0, 0.0], [0.0, 1.0]] };
+                assert_eq!(u.matrix, want, "{name}: a voice not positioned in space on a stereo route");
+            }
+            tall += usize::from(route.layout == place::Layout::Height714);
+            met += 1;
+        }
+    }
+    assert!(met >= 10, "{met} voices");
+    let inherited = b.file.objects.iter().filter(|(id, o)| {
+        matches!(o, Object::Sound(_)) && b.route(**id).layout == place::Layout::Height714 && b.output_bus(**id).is_some_and(|ob| matches!(b.object(ob), Some(Object::Bus(x)) if x.channel_config == "0x00000000"))
+    });
+    assert!(inherited.count() > 0, "a 7.1.4 route through a bus with no layout of its own");
+    eprintln!("{met} voices started by the slice's events, {tall} on 7.1.4 routes");
+    // A damaged layout, and a 7.1.4 bus's child given a stereo layout of its own (an up-mix), are refused.
+    let mut v: Value = serde_json::from_slice(&slice_bytes()).unwrap();
+    let buses: Vec<String> = v["objects"].as_object().unwrap().iter().filter(|(_, o)| o["type"] == "Bus").map(|(k, _)| k.clone()).collect();
+    let tall_bus = buses.iter().find(|k| v["objects"][k.as_str()]["channel_config"] == "0x2d63f10c").unwrap().clone();
+    let child = buses.iter().find(|k| v["objects"][k.as_str()]["parent_bus"]["id"] == tall_bus.as_str()).cloned();
+    v["objects"][tall_bus.as_str()]["channel_config"] = "0x0006370c".into();
+    let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+    assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("not a layout")), "{e:?}");
+    if let Some(child) = child {
+        v["objects"][tall_bus.as_str()]["channel_config"] = "0x2d63f10c".into();
+        v["objects"][child.as_str()]["channel_config"] = "0x00003102".into();
+        let e = parse_sounds(&serde_json::to_vec(&v).unwrap());
+        assert!(matches!(&e, Err(SoundError::Bad(m)) if m.contains("up-mix")) || e.is_ok(), "{e:?}");
+    }
+}

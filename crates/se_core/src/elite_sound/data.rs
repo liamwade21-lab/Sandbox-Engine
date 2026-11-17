@@ -779,7 +779,8 @@ pub struct Media {
     /// The stream's `akd ` chunk (Wwise's analysis of the recording), its first two floats as stored: the loudness
     /// normalisation gain (a linear factor: it brings the recording's integrated loudness to one target, -23.5 +- 2 LUFS
     /// over 42 recordings measured by `re/elite/work/sound/t5c/akd_vs_lufs.py`) and a second gain (1 or 1.414 on mono
-    /// streams, 1 on stereo: its meaning is not proven and the mixer does not apply it). Absent without the chunk.
+    /// streams, 1 on stereo: Wwise's down-mix normalisation, which Elite applies to every voice of the recording, T5g
+    /// section 1; [`super::VoiceUpdate::media_gain`]). Absent without the chunk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loudness_gain: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
