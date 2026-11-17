@@ -1,14 +1,17 @@
 //! The cockpit's side panels (step 4.2, first cut): the left panel's Navigation tab and the right panel's tabs (Home, Modules
-//! with on and off, Fire groups, Ship functions, Status), drawn as a flat overlay (4.1's fallback: Elite's holograms aren't
-//! built). Elite's own keys (its `.binds`): 1 the left panel, 4 the right, Q and E the tabs, W and S (or the arrows) the rows,
+//! with on and off, Fire groups, Ship functions, Status), drawn as flat shapes and text (4.1's fallback: Elite's holograms
+//! aren't built). Elite's own keys (its `.binds`): 1 the left panel, 4 the right, Q and E the tabs, W and S (or the arrows) the rows,
 //! Space selects, A and D change a setting, Backspace closes; head look turned far left or right focuses that panel. While a
-//! panel is focused those keys work it, not the ship, as in Elite; the mouse still flies. What each tab lists and does is ours
+//! panel is focused those keys work it, not the ship, as in Elite; the mouse still flies. Since T4e-4 an open panel hangs at
+//! Elite's place beside the seat (`hud_anchor`), seen when the head turns to it. What each tab lists and does is ours
 //! where Elite's panels hold more (F): the Navigation tab lists this system's bodies and the stars within the jump's range
 //! (the spec's F5), nearest first.
 
 use bevy::prelude::*;
 use bevy_egui::egui;
 use se_core::catalog::ObjectRef;
+
+use super::hud_anchor::{SeatView, Sketch, LEFT_PANEL, PANEL_BOX, PANEL_H, PANEL_W, RIGHT_PANEL};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -205,43 +208,46 @@ pub struct StatusLines {
     pub status: Vec<String>,
 }
 
-/// Draws the open panel (a flat overlay on its side of the view). `on` is each module's switch, `ship` each ship function's
-/// state.
-pub fn draw(p: &egui::Painter, r: egui::Rect, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, orange: egui::Color32, dim: egui::Color32) {
+/// Draws the open panel on its anchor beside the seat (`hud_anchor::LEFT_PANEL`, `RIGHT_PANEL`: Elite's place, seen when the
+/// head turns to it), laid out in its own shares (`hud_anchor::PANEL_W` x `PANEL_H`, (0, 0) its top left). `on` is each
+/// module's switch, `ship` each ship function's state.
+#[allow(clippy::too_many_arguments)]
+pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, orange: egui::Color32, dim: egui::Color32) {
     let Some(side) = panels.open else { return };
     let h = r.height();
-    let w = 0.36 * h;
-    let x0 = if side == Side::Left { r.left() + 0.04 * h } else { r.right() - 0.04 * h - w };
-    let rect = egui::Rect::from_min_size(egui::pos2(x0, r.top() + 0.18 * h), egui::vec2(w, 0.5 * h));
-    p.rect_filled(rect, 4.0, egui::Color32::from_rgba_unmultiplied(20, 8, 0, 170));
-    p.rect_stroke(rect, 4.0, egui::Stroke::new((0.0016 * h).max(1.0), orange), egui::StrokeKind::Inside);
+    let at = |x: f32, y: f32| egui::pos2(r.center().x + x * h, r.center().y + y * h);
+    let mut g = Sketch::new(p, r);
+    let rect = egui::Rect::from_min_max(at(0.0, 0.0), at(PANEL_W, PANEL_H));
+    let w = rect.width();
+    g.rect_filled(rect, 4.0, egui::Color32::from_rgba_unmultiplied(20, 8, 0, 170));
+    g.rect_stroke(rect, 4.0, egui::Stroke::new((0.0016 * h).max(1.0), orange), egui::StrokeKind::Inside);
     let font = |s: f32| egui::FontId::monospace(s * h);
     let s = side as usize;
     let tabs: &[&str] = if side == Side::Left { &LEFT_TABS } else { &RIGHT_TABS };
     let mut tx = rect.left() + 0.01 * h;
     for (i, t) in tabs.iter().enumerate() {
         let c = if i == panels.tab[s] { orange } else { dim };
-        let g = p.layout_no_wrap(t.to_string(), font(0.011), c);
-        let tw = g.size().x;
-        p.galley(egui::pos2(tx, rect.top() + 0.008 * h), g, c);
+        let galley = g.layout_no_wrap(t.to_string(), font(0.011), c);
+        let tw = galley.size().x;
+        g.galley(egui::pos2(tx, rect.top() + 0.008 * h), galley, c);
         if i == panels.tab[s] {
-            p.line_segment([egui::pos2(tx, rect.top() + 0.026 * h), egui::pos2(tx + tw, rect.top() + 0.026 * h)], egui::Stroke::new(0.002 * h, orange));
+            g.line_segment([egui::pos2(tx, rect.top() + 0.026 * h), egui::pos2(tx + tw, rect.top() + 0.026 * h)], egui::Stroke::new(0.002 * h, orange));
         }
         tx += tw + 0.014 * h;
     }
     let row_h = 0.022 * h;
     let top = rect.top() + 0.04 * h;
-    let line = |i: usize, text: String, right: String, lit: bool, selected: bool| {
+    let line = |g: &mut Sketch, i: usize, text: String, right: String, lit: bool, selected: bool| {
         let y = top + row_h * i as f32;
         if y + row_h > rect.bottom() {
             return;
         }
         if selected {
-            p.rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 0.004 * h, y), egui::vec2(w - 0.008 * h, row_h)), 2.0, orange.gamma_multiply(0.35));
+            g.rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 0.004 * h, y), egui::vec2(w - 0.008 * h, row_h)), 2.0, orange.gamma_multiply(0.35));
         }
         let c = if lit { orange } else { dim };
-        p.text(egui::pos2(rect.left() + 0.012 * h, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
-        p.text(egui::pos2(rect.right() - 0.012 * h, y + row_h * 0.5), egui::Align2::RIGHT_CENTER, right, font(0.0115), c);
+        g.text(egui::pos2(rect.left() + 0.012 * h, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
+        g.text(egui::pos2(rect.right() - 0.012 * h, y + row_h * 0.5), egui::Align2::RIGHT_CENTER, right, font(0.0115), c);
     };
     match (side, panels.tab[s]) {
         (Side::Left, _) => {
@@ -249,22 +255,22 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, panels: &Panels, on: &[bool; 10], 
             let shown = ((rect.height() - 0.05 * h) / row_h) as usize;
             let first = panels.row.saturating_sub(shown.saturating_sub(1));
             for (k, n) in panels.nav.iter().enumerate().skip(first).take(shown) {
-                line(k - first, format!("{} {}", n.kind, n.name), distance_text(n.dist_m), true, k == panels.row);
+                line(&mut g, k - first, format!("{} {}", n.kind, n.name), distance_text(n.dist_m), true, k == panels.row);
             }
             if panels.nav.is_empty() {
-                line(0, "Nothing in range".to_string(), String::new(), false, false);
+                line(&mut g, 0, "Nothing in range".to_string(), String::new(), false, false);
             }
         }
         (Side::Right, 1) => {
             for (i, (name, switchable)) in MODULES.iter().enumerate() {
                 let state = if !switchable { "ALWAYS ON" } else if on[i] { "ON" } else { "OFF" };
-                line(i, name.to_string(), state.to_string(), on[i], i == panels.row);
+                line(&mut g, i, name.to_string(), state.to_string(), on[i], i == panels.row);
             }
         }
         (Side::Right, 3) => {
             let words = [("ON", "OFF"), ("DOWN", "UP"), ("DEPLOYED", "RETRACTED")];
             for (i, (name, _)) in SHIP_FUNCTIONS.iter().enumerate() {
-                line(i, name.to_string(), (if ship[i] { words[i].0 } else { words[i].1 }).to_string(), true, i == panels.row);
+                line(&mut g, i, name.to_string(), (if ship[i] { words[i].0 } else { words[i].1 }).to_string(), true, i == panels.row);
             }
         }
         (Side::Right, t) => {
@@ -274,11 +280,12 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, panels: &Panels, on: &[bool; 10], 
                 _ => &lines.status,
             };
             for (i, l) in ls.iter().enumerate() {
-                line(i, l.clone(), String::new(), true, false);
+                line(&mut g, i, l.clone(), String::new(), true, false);
             }
         }
     }
-    p.text(egui::pos2(rect.center().x, rect.bottom() - 0.012 * h), egui::Align2::CENTER_CENTER, "Q E tabs  W S rows  Space select  A D change  Backspace close", egui::FontId::proportional(0.009 * h), dim);
+    g.text(egui::pos2(rect.center().x, rect.bottom() - 0.012 * h), egui::Align2::CENTER_CENTER, "Q E tabs  W S rows  Space select  A D change  Backspace close", egui::FontId::proportional(0.009 * h), dim);
+    g.finish(view, if side == Side::Left { &LEFT_PANEL } else { &RIGHT_PANEL }, PANEL_BOX);
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ pub mod material;
 pub mod panels;
 pub mod parts;
 pub mod hud;
+pub mod hud_anchor;
 pub mod pilot;
 pub mod seat;
 pub mod solids;
