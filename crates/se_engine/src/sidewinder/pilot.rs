@@ -133,11 +133,6 @@ const EMERGENCY_SHARE: f64 = 0.02;
 const EMERGENCY_M: f64 = 2000.0;
 const EMERGENCY_HIT: f64 = 40.0;
 
-/// The gear's travel time either way (E, a stand-in until the animation task runs Elite's gear machines, whose legs take
-/// 5.33 s down and 4.23-5.03 s up: `re/elite/frea_export/sidewinder/decoded/README.md`). `Pilot::gear_t` runs over it.
-const GEAR_SECONDS: f32 = 3.0;
-/// The gear counts as out (its feet touch down) while `gear_t` is under this.
-const GEAR_OUT_T: f32 = 0.05;
 
 /// A crash's damage (MJ, through the shield then the hull) from the speed into the ground: Elite's collision rule was not
 /// studied (A21's list), so this is a stand-in (E): nothing under `CRASH_FREE_MPS`, then half the mass (t) times the excess
@@ -191,6 +186,8 @@ pub enum Switch {
     Silent,
     Scoop,
     Lights,
+    /// The gear's key (`sw gear`): refused while landed as the key is.
+    Gear,
 }
 
 /// The flight's state while seated.
@@ -255,7 +252,7 @@ pub struct Pilot {
     pub life: elite_sim::life::Life,
     pub safe_drop: Option<bool>,
     /// A test's pitch over the horizon to turn to, keeping the heading (`sw aim DEG`), and a test's press of a switch's key
-    /// (`sw silent|scoop|lights`).
+    /// (`sw silent|scoop|lights|gear`).
     pub dev_aim: Option<f64>,
     pub dev_switch: Option<Switch>,
     /// The HUD's line for the target (its name, distance and the jump's fuel, or why not).
@@ -264,9 +261,11 @@ pub struct Pilot {
     pub star_heat: f64,
     /// A test's turn to face the target (`sw face`).
     pub dev_face: bool,
+    /// The gear's command (L toggles it); its real state is the gear machines' (`parts::Parts::gear`).
     pub gear_down: bool,
-    /// The gear's animation, 0 down .. 1 up.
-    pub gear_t: f32,
+    /// A test's placing (`sw put`) happened this frame (it sets the gear up): the gear's machines are settled to it, not
+    /// animated (`facts::ShipFacts::settle`). Cleared at the start of every frame's flight.
+    pub put: bool,
     pub landed: bool,
     /// The mouse's virtual stick (x roll, y pitch), -1..1: it stays where the mouse left it (Elite's default: no decay).
     pub stick: Vec2,
@@ -327,7 +326,7 @@ impl Default for Pilot {
             star_heat: 0.0,
             dev_face: false,
             gear_down: true,
-            gear_t: 0.0,
+            put: false,
             landed: true,
             stick: Vec2::ZERO,
             accum: 0.0,
@@ -350,7 +349,8 @@ impl Pilot {
     /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
     /// capacitors) are kept.
     pub fn boarding(&self) -> Pilot {
-        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, life: self.life, ..Pilot::default() }
+        // (A parked ship is landed on its gear: its command is down, whatever it was when he left.)
+        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, life: self.life, gear_down: true, landed: true, ..Pilot::default() }
     }
 
     /// A new ship: everything full.
@@ -371,11 +371,6 @@ impl Pilot {
     /// The ship's mass now: unladen (the journal's) and the fuel aboard.
     pub fn mass_t(&self) -> f64 {
         elite_sim::data::JOURNAL_UNLADEN_MASS + self.fuel.total()
-    }
-
-    /// Is the gear out (the touchdown stands on its feet, the parts are drawn with it down)?
-    pub fn gear_out(&self) -> bool {
-        self.gear_t < GEAR_OUT_T
     }
 }
 
@@ -559,8 +554,13 @@ pub fn fly(
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
     mut panels: ResMut<super::panels::Panels>,
-    (mut ask, probe, lib, mut town): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>),
+    (mut ask, probe, lib, mut town, parts): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>),
 ) {
+    // The gear's real state, as the gear machines left it (`parts::update`, last frame).
+    let gear = parts.gear();
+    if pilot.put {
+        pilot.put = false;
+    }
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
     life_support(&mut pilot, time.delta_secs_f64(), &mut msg);
@@ -584,7 +584,7 @@ pub fn fly(
             pilot.glide = None;
             pilot.landed = false;
             pilot.gear_down = false;
-            pilot.gear_t = 1.0;
+            pilot.put = true;
             pilot.motion = Motion { rot: to_sim_q(p.rot), ..Motion::default() };
             info!("sidewinder: put over {obj:?} at {:.1} km", alt / 1000.0);
         }
@@ -660,9 +660,21 @@ pub fn fly(
         }
     }
     // The controls of this frame.
+    if matches!(pilot.dev_switch, Some(Switch::Gear)) {
+        pilot.dev_switch = None;
+        keys.gear = true;
+    }
     if keys.gear {
-        pilot.gear_down = !pilot.gear_down;
-        msg.show(if pilot.gear_down { "Landing gear deployed" } else { "Landing gear retracted" }.to_string());
+        match gear_toggle(pilot.landed, pilot.gear_down) {
+            Ok(down) => {
+                pilot.gear_down = down;
+                msg.show(if down { "Landing gear deployed" } else { "Landing gear retracted" }.to_string());
+            }
+            Err(why) => {
+                msg.show(why.to_string());
+                info!("sidewinder: gear refused: {why}");
+            }
+        }
     }
     if keys.flight_assist {
         pilot.flight_assist = !pilot.flight_assist;
@@ -693,7 +705,7 @@ pub fn fly(
         Some(Switch::Silent) => keys.silent = true,
         Some(Switch::Scoop) => keys.scoop = true,
         Some(Switch::Lights) => keys.lights = true,
-        None => {}
+        Some(Switch::Gear) | None => {}
     }
     let mut said = |m: &str| {
         info!("sidewinder: {m}");
@@ -742,9 +754,6 @@ pub fn fly(
             pilot.dev = None;
         }
     }
-    // The gear's travel (`GEAR_SECONDS`, a stand-in).
-    let towards = if pilot.gear_down { 0.0 } else { 1.0 };
-    pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / GEAR_SECONDS, dt as f32 / GEAR_SECONDS);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
     // The gear down or the cargo scoop out halves the top and boost speeds (`elite_sim::deployables`, C; the record's 0.5, B).
@@ -871,7 +880,9 @@ pub fn fly(
     let nose_body = p.rot * DVec3::NEG_Z;
     let fsd = ShipState {
         hardpoints: pilot.weapons.deployed,
-        gear_down: pilot.gear_down || pilot.gear_t < 0.999,
+        // The gear's request, not its legs: the drive's refusal (FUN_142c71440 near line 1620) reads FUN_142c99670's bit 2,
+        // which is the control state's byte +0xBB, the request the speed rule reads too. So it charges while the legs rise.
+        gear_down: pilot.gear_down,
         scoop: pilot.scoop,
         landed: pilot.landed,
         escape_angle: nose_body.dot(p.pos.normalize_or(DVec3::Y)).clamp(-1.0, 1.0).acos().to_degrees(),
@@ -1042,18 +1053,20 @@ pub fn fly(
             let near: Vec<(Well, f64)> = wells.iter().map(|(w, at, _, _, _)| (*w, c.pos.delta_m(*at).length())).collect();
             let cap = supercruise::cap(&near);
             c.cap = cap;
-            let turning = cruise_block.mode2(cap / supercruise::VSC, c.speed);
+            // (The gear's and the scoop's factor scales the cruise block as it does the normal one: `supercruise::cruise_block`.)
+            let turning = supercruise::cruise_block(cap, speed_k, c.speed);
             let mut m = Motion { rot: to_sim_q(c.rot), omega: pilot.motion.omega, last_alpha: pilot.motion.last_alpha, ..Motion::default() };
             m.vel = m.rot * glam::DVec3::new(0.0, 0.0, -c.speed);
             let rin = Input { pitch: input.pitch, yaw: input.yaw, roll: input.roll, flight_assist: true, ..Input::default() };
-            flight::step(&turning, cap, false, &rin, glam::DVec3::ZERO, &mut m, TICK);
+            // (The second argument is the full-power block's top speed: in supercruise the record's Vsc.)
+            flight::step(&turning, supercruise::VSC, false, &rin, glam::DVec3::ZERO, &mut m, TICK);
             c.rot = from_sim_q(m.rot).normalize();
             pilot.motion.omega = m.omega;
             pilot.motion.last_alpha = m.last_alpha;
-            // (The jerk limit's memory is the flight controller's one +0x630, normal flight's and supercruise's alike: kept in
-            // `Motion::last_acc`, forward along z.)
+            // (The jerk limit's memory, the flight controller's +0x630, kept in `Motion::last_acc` forward along z: every drop
+            // and glide resets it; it carries only into supercruise and across a hyperspace jump.)
             let mut speed = supercruise::Speed { v: c.speed, last_acc: pilot.motion.last_acc.length() };
-            speed.step_held(throttle, cap, TICK);
+            speed.step_held_with(throttle, cap, speed_k, TICK);
             c.speed = speed.v;
             pilot.motion.last_acc = glam::DVec3::new(0.0, 0.0, speed.last_acc);
             let heading = c.rot * DVec3::NEG_Z;
@@ -1255,14 +1268,18 @@ pub fn fly(
                 }
             }
         }
-        // The ground under the ship: its contact points' heights over the loaded ground (the gear's feet while it is down,
-        // the belly's always), each straight down the radial.
-        let gear_out = pilot.gear_out();
+        // The ground under the ship: its contact points' heights over the loaded ground (each leg's foot while the leg has its
+        // body, the belly's always), each straight down the radial. Elite gives a leg its physics body from gear state 1 on
+        // (FUN_14307f8a0), moving with it: the feet are where the legs' poses put them now (`Parts::feet`), so a ship coming
+        // down on moving legs stands on them and rises as they extend. Touching down needs every leg deployed (the leg's own
+        // test, state 2 or 4: 0x1430c94e0).
+        let gear_out = gear.deployed();
         let height = |p: &super::Parked, pt: Vec3| -> f64 {
             let w = p.pos + p.rot * pt.as_dvec3();
             w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
         };
-        let feet: Vec<f64> = if gear_out { assets.shape.feet.iter().map(|f| height(p, *f)).collect() } else { Vec::new() };
+        let contact = parts.feet(&assets.shape);
+        let feet: Vec<f64> = contact.iter().map(|f| height(p, *f)).collect();
         let lowest = assets.shape.belly.iter().map(|q| height(p, *q)).chain(feet.iter().copied()).fold(f64::MAX, f64::min);
         if lowest < 0.0 {
             if pilot.glide.take().is_some() {
@@ -1287,8 +1304,8 @@ pub fn fly(
             let vel = from_sim_v(pilot.motion.vel);
             let down_speed = -vel.dot(up);
             // Elite's touchdown (0x1430ECE00, A21, C): the ship's down within the landing record's 20 degrees of gravity's, at
-            // most the landing component's 15 m/s (B), its landing points' rays agreeing within 0.5 m; that the gear must be
-            // down is our reading (E: the exe's +0x200 state gate wasn't identified).
+            // most the landing component's 15 m/s (B), its landing points' rays agreeing within 0.5 m; that every leg must be
+            // deployed is our reading (E: the exe's +0x200 state gate wasn't identified; "deployed" is the leg's own test).
             let tilt = (p.rot * DVec3::Y).dot(up).clamp(-1.0, 1.0).acos().to_degrees();
             let spread = feet.iter().copied().fold(f64::MIN, f64::max) - feet.iter().copied().fold(f64::MAX, f64::min);
             if let Some(why) = touchdown(gear_out && !feet.is_empty(), tilt, spread, vel.length()) {
@@ -1301,7 +1318,7 @@ pub fn fly(
                 let flat = (fwd - up * fwd.dot(up)).normalize_or(up.any_orthonormal_vector());
                 let right = flat.cross(up);
                 p.rot = DQuat::from_mat3(&bevy::math::DMat3::from_cols(right, up, -flat)).normalize();
-                let low = assets.shape.feet.iter().map(|f| height(p, *f)).fold(f64::MAX, f64::min);
+                let low = contact.iter().map(|f| height(p, *f)).fold(f64::MAX, f64::min);
                 p.pos -= up * low;
                 pilot.motion = Motion { rot: to_sim_q(p.rot), ..Motion::default() };
                 pilot.landed = true;
@@ -1448,7 +1465,7 @@ pub fn fly(
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);
         let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos);
-        info!("sidewinder: {:.1} m/s, {:.1} m over the ground (its origin), throttle {:.2}, FA {}, gear {}, scoop {}, top {:.1} m/s, boost {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down, pilot.scoop, block.top_speed, pilot.boost.firing());
+        info!("sidewinder: {:.1} m/s, {:.3} m over the ground (its origin), throttle {:.2}, FA {}, gear {}, scoop {}, top {:.1} m/s, boost {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down, pilot.scoop, block.top_speed, pilot.boost.firing());
     }
 }
 
@@ -1460,6 +1477,16 @@ fn larger(a: f64, b: f64) -> f64 {
 /// Elite's touchdown rule (0x1430ECE00, A21; its numbers the landing component's and the landing record's,
 /// `elite_sim::landing`): None when the ship may touch down, else why not. `spread` is how far apart the landing points'
 /// heights over the ground are. It is tested at contact, where the height over the ground is 0 (within P14's 100 m).
+/// The gear's key (and the panel's row): the new command, or why it is refused. While landed the command can't change (ours,
+/// F: what Elite does there was not traced; without it the legs rose under a landed ship and left its hull on nothing).
+fn gear_toggle(landed: bool, down: bool) -> Result<bool, &'static str> {
+    if landed {
+        Err("The landing gear can't be retracted while landed")
+    } else {
+        Ok(!down)
+    }
+}
+
 fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option<&'static str> {
     if !gear_out {
         Some("the landing gear isn't down")
@@ -1477,6 +1504,19 @@ fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// While landed the gear's command stays (down); flying, the key toggles it; boarding a parked ship gives the command
+    /// down whatever it was.
+    #[test]
+    fn the_gear_is_refused_while_landed() {
+        assert!(gear_toggle(true, true).is_err());
+        assert_eq!((gear_toggle(false, true), gear_toggle(false, false)), (Ok(false), Ok(true)));
+        let mut pilot = Pilot::default();
+        pilot.gear_down = false;
+        pilot.landed = false;
+        let boarded = pilot.boarding();
+        assert!(boarded.gear_down && boarded.landed);
+    }
 
     /// Elite's touchdown rule on the game's numbers: gear down, tilt at most 20 degrees, the feet within 0.5 m of each other,
     /// at most 15 m/s (12 m/s lands, 17 doesn't).

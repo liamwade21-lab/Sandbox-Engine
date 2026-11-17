@@ -67,6 +67,9 @@ pub struct Seat {
     pub fade: f32,
     /// Out of the seat and not yet set down by the sandbox: the seat's view is kept meanwhile (`seat_camera`).
     setting_down: bool,
+    /// Boarded and the sandbox not yet in the seat's mode (`Mode::Pilot`): only then is a boarding from anywhere but on foot
+    /// refused (`boarding_refused`).
+    boarding: bool,
 }
 
 impl Seat {
@@ -75,7 +78,7 @@ impl Seat {
         let clock = Some((sim.rate, sim.paused));
         sim.rate = 1.0;
         sim.paused = false;
-        Seat { seated: true, regain: 3, clock, fade: FADE_S, ..default() }
+        Seat { seated: true, regain: 3, clock, fade: FADE_S, boarding: true, ..default() }
     }
 
     /// Get out (as B does: only when landed).
@@ -178,11 +181,21 @@ pub fn exit_rule(why: Why, landed: bool, ground: bool, ship: bool, in_seat_mode:
     (lost, place)
 }
 
+/// Whether a boarding is refused this frame (`seat_camera`): only while boarding, before the sandbox first gives the seat
+/// its mode, and only from anywhere but on foot (the sandbox gives the seat its mode only from walking: a test's `sw board`
+/// in the free flight would leave the free camera where it was). Once seated in the seat's mode, a mode the seat loses is
+/// one of the ways out (`release`), never a refused boarding: a refusal there would free the seat with the ship left hanging
+/// in the air.
+pub fn boarding_refused(boarding: bool, mode: Mode) -> bool {
+    boarding && !matches!(mode, Mode::Walk | Mode::Pilot)
+}
+
 /// The release's state changes (the pure part of `release`): out of the seat, the game clock given back, head look cleared,
 /// the fade from black, the mod asked off if it is the one piloting, and the flight's transient states (hyperspace's tunnel,
 /// supercruise, the glide) ended.
 fn free_seat(seat: &mut Seat, sim: &mut SimTime, control: &mut ModControl, pilot: &mut Pilot) {
     seat.seated = false;
+    seat.boarding = false;
     seat.leave = false;
     seat.remove = false;
     seat.head_look = false;
@@ -412,6 +425,18 @@ pub fn seat_camera(
         return;
     }
     let Some(assets) = assets else { return };
+    // Boarding is from foot only (`board`: E at the hull while walking): refused on the boarding frames alone, the parked
+    // ship left as it stands (`boarding_refused`).
+    if boarding_refused(seat.boarding, sb.mode) {
+        free_seat(&mut seat, &mut sim, &mut control, &mut pilot);
+        seat.setting_down = false;
+        msg.show("Board the Sidewinder on foot".to_string());
+        info!("sidewinder: boarding refused: not on foot");
+        return;
+    }
+    if sb.mode == Mode::Pilot {
+        seat.boarding = false;
+    }
     // Every way out: the ship removed (or gone), destroyed, the mod turned off by any way, B while landed.
     let why = if seat.remove || ship.parked.is_none() {
         Some(Why::Removed)
@@ -481,12 +506,17 @@ fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain
     let landed = out.pilot.landed;
     let at = out.ship.parked.as_ref().map(|p| (p.obj, p.pos, p.rot));
     let body = at.and_then(|(obj, _, _)| bodies.iter().find(|(b, _)| b.obj == obj));
-    // Ground to stand on by the ship: a solid body's (not a star's or a gas giant's), loaded under it, out of supercruise and
-    // hyperspace (checker 2: he landed on an asteroid millions of km out, or would wait for ever by a star).
+    // Ground to stand on by the ship: a solid body's (not a star's or a gas giant's), loaded under it and not the sea (the
+    // set-down's own test: an ocean world's ground at or under its radius), out of supercruise and hyperspace (checker 2: he
+    // landed on an asteroid millions of km out, or would wait for ever by a star). Else the launch's dry-land place.
     let ground = !in_cruise
         && !in_jump
         && body.zip(at).is_some_and(|((b, t), (_, pos, _))| {
-            t.filter(|t| !b.star && !t.proc.kind.is_giant()).is_some_and(|t| crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos).1.is_some())
+            t.filter(|t| !b.star && !t.proc.kind.is_giant()).is_some_and(|t| {
+                let (r, level) = crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos);
+                let land = (pos / b.shape).try_normalize().map_or(0.0, |dir| r / (dir * b.shape).length() - b.radius_m);
+                level.is_some() && !(t.has_ocean && land <= 0.0)
+            })
         });
     let (lost, place) = exit_rule(why, landed, ground, at.is_some(), out.sb.mode == Mode::Pilot);
     free_seat(out.seat, out.sim, out.control, out.pilot);
@@ -590,6 +620,21 @@ mod tests {
         assert_eq!(exit_rule(Why::Removed, false, true, true, true), (true, Place::Under));
         assert_eq!(exit_rule(Why::Removed, true, true, false, true), (true, Place::Earth));
         assert_eq!(exit_rule(Why::Out, true, true, true, false), (false, Place::Stay));
+    }
+
+    /// A boarding is refused only before the seat's mode first comes and only away from foot; seated in the seat's mode, any
+    /// other mode (another mod turned on in flight) is not a refusal but a way out, which loses a flying ship.
+    #[test]
+    fn only_a_boarding_is_refused() {
+        assert!(boarding_refused(true, Mode::Fly) && boarding_refused(true, Mode::Hero));
+        assert!(!boarding_refused(true, Mode::Walk) && !boarding_refused(true, Mode::Pilot));
+        for mode in [Mode::Walk, Mode::Fly, Mode::Hero, Mode::Pilot] {
+            assert!(!boarding_refused(false, mode), "{mode:?}");
+        }
+        let mut sim = SimTime { jd: 2_460_000.0, rate: 1.0, paused: false };
+        assert!(Seat::boarded(&mut sim).boarding);
+        // Another mod on in flight: the release's rule loses the ship.
+        assert_eq!(exit_rule(Why::Out, false, true, true, false).0, true);
     }
 
     /// The release's state changes: out of the seat, the old clock given back, head look and a pending B or removal cleared,

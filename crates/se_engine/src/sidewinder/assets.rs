@@ -225,23 +225,6 @@ impl ShipRig {
         Ok(self.walk(values)?.iter().map(|p| self.space.matrix(p.world)).collect())
     }
 
-    /// The values the machines' states `states` (by `ship.machines` index) set: every machine's initial state's, then each
-    /// machine's own state's over them where it differs (`static_pose`'s rule; `elite_rig::state_pose`).
-    pub fn state_values(&self, states: &[String]) -> Values {
-        let mut v = Values::new();
-        for m in &self.ship.machines {
-            if let Some(s) = m.state(&m.initial) {
-                v.extend(elite_rig::state_pose(s));
-            }
-        }
-        for (i, m) in self.ship.machines.iter().enumerate() {
-            if let Some(s) = states.get(i).filter(|s| **s != m.initial).and_then(|s| m.state(s)) {
-                v.extend(elite_rig::state_pose(s));
-            }
-        }
-        v
-    }
-
     /// Whose machine `ship.machines[i]` is: the hull rig's, a gear rig's or the cockpit rig's (by its owner and file).
     pub fn machine_owner(&self, i: usize) -> MachineOwner {
         let Some(m) = self.ship.machines.get(i) else { return MachineOwner::Other };
@@ -257,13 +240,49 @@ impl ShipRig {
         }
     }
 
-    /// Is `ship.machines[i]` a gear leg's machine, or one of the hull's gear doors' (`static_pose`'s)?
+    /// The nodes' group of machine `i`'s own rig (None for another file's machine).
+    fn machine_group(&self, i: usize) -> Option<Group> {
+        let m = self.ship.machines.get(i)?;
+        match self.machine_owner(i) {
+            MachineOwner::Hull => Some(Group::Hull),
+            MachineOwner::Cockpit => Some(Group::Cockpit),
+            MachineOwner::Gear => self.gear.iter().position(|g| self.ship.rigs[g.rig].name.eq_ignore_ascii_case(&m.owner)).map(Group::Gear),
+            MachineOwner::Other => None,
+        }
+    }
+
+    /// The node of machine `i`'s own rig with this name (a `KModelState`'s node names), any case.
+    pub fn machine_node(&self, i: usize, name: &str) -> Option<usize> {
+        let group = self.machine_group(i)?;
+        self.nodes.iter().position(|n| n.group == group && n.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The nodes a sound cue's emitter bones are on (what `sound::ShipSound::post_cue` places the emitter by): for each bone
+    /// (its name without the `!`), the first node of machine `i`'s own rig whose model has that bone, else the rig's first
+    /// node.
+    pub fn cue_nodes(&self, i: usize, bones: &[String]) -> Vec<usize> {
+        let (Some(group), Ok(placed)) = (self.machine_group(i), self.walk(&Values::new())) else { return Vec::new() };
+        let in_rig: Vec<usize> = (0..placed.len()).filter(|&n| placed[n].group == group).collect();
+        bones
+            .iter()
+            .filter_map(|b| {
+                let bone = format!("!{b}");
+                in_rig.iter().copied().find(|&n| placed[n].model.is_some_and(|m| self.bones.get(m, &bone).is_some())).or(in_rig.first().copied())
+            })
+            .collect()
+    }
+
+    /// Is `ship.machines[i]` a gear leg's machine?
     pub fn is_leg(&self, i: usize) -> bool {
         self.legs.contains(&i)
     }
 
-    pub fn is_gear_door(&self, i: usize) -> bool {
-        self.doors.contains(&i)
+    /// The gear rig (its index in the ship item's gear, `Group::Gear`'s) a leg's machine belongs to.
+    pub fn gear_of_leg(&self, i: usize) -> Option<usize> {
+        match self.machine_group(i) {
+            Some(Group::Gear(g)) if self.is_leg(i) => Some(g),
+            _ => None,
+        }
     }
 
     /// Each `Node!Bone` of `bones` (the light activities' form: the node's name, or its model's, then the bone without its
@@ -307,8 +326,11 @@ pub struct ShipShape {
     pub hulls: Vec<Vec<Vec3>>,
     pub lo: Vec3,
     pub hi: Vec3,
-    /// Each landing gear leg's ground contact point (its lowest point; y 0 at rest).
+    /// Each landing gear leg's ground contact point (its lowest point; y 0 at rest), in the gear's order.
     pub feet: Vec<Vec3>,
+    /// Each leg's foot on its own node, in the gear's order: the node holding the leg's lowest drawn point, and the foot
+    /// (`feet`) in that node's frame at rest, so the node's matrix in any pose carries it (`parts::Parts::feet`).
+    pub foot_nodes: Vec<(usize, Vec3)>,
     /// The hull's lowest point in each cell of a 3 x 3 grid over its plan, the gear up and its doors closed (what touches
     /// the ground with the gear up or the ship tilted).
     pub belly: Vec<Vec3>,
@@ -484,10 +506,11 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
     Ok((rig, decoded))
 }
 
-/// Every outside node's drawn vertices in the ship's space with the matrices `pose` (`nodes`' order), with its group.
-fn outside_points<'a>(rig: &'a ShipRig, decoded: &'a [Vec<Decoded>], pose: &'a [Mat4]) -> impl Iterator<Item = (Group, Vec<Vec3>)> + 'a {
-    rig.nodes.iter().zip(pose).filter(|(n, _)| !n.group.inside()).filter_map(|(n, m)| Some((n.group, n.model?, *m))).flat_map(move |(group, model, m)| {
-        decoded[model].iter().filter(|d| d.solid).map(move |d| (group, d.vertices.iter().map(|v| m.transform_point3(Vec3::from_array(v.position))).collect()))
+/// Every outside node's drawn vertices in the ship's space with the matrices `pose` (`nodes`' order), with the node and its
+/// group.
+fn outside_points<'a>(rig: &'a ShipRig, decoded: &'a [Vec<Decoded>], pose: &'a [Mat4]) -> impl Iterator<Item = (usize, Group, Vec<Vec3>)> + 'a {
+    rig.nodes.iter().zip(pose).enumerate().filter(|(_, (n, _))| !n.group.inside()).filter_map(|(i, (n, m))| Some((i, n.group, n.model?, *m))).flat_map(move |(i, group, model, m)| {
+        decoded[model].iter().filter(|d| d.solid).map(move |d| (i, group, d.vertices.iter().map(|v| m.transform_point3(Vec3::from_array(v.position))).collect()))
     })
 }
 
@@ -497,8 +520,8 @@ fn shape(rig: &mut ShipRig, decoded: &[Vec<Decoded>]) -> Result<ShipShape, Fault
     let down_values = rig.static_pose(true);
     rig.space = ShipSpace { lift: 0.0 };
     let lowest = outside_points(rig, decoded, &rig.pose(&down_values).map_err(refuse)?)
-        .filter(|(g, _)| matches!(g, Group::Gear(_)))
-        .flat_map(|(_, pts)| pts.into_iter().map(|p| p.y))
+        .filter(|(_, g, _)| matches!(g, Group::Gear(_)))
+        .flat_map(|(_, _, pts)| pts.into_iter().map(|p| p.y))
         .fold(f32::MAX, f32::min);
     if lowest == f32::MAX {
         return Err((SHIP_FILE.to_string(), "the landing gear has nothing drawn to stand on".to_string()));
@@ -508,20 +531,25 @@ fn shape(rig: &mut ShipRig, decoded: &[Vec<Decoded>]) -> Result<ShipShape, Fault
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
     let mut hulls = Vec::new();
     let mut legs: Vec<Vec<Vec3>> = vec![Vec::new(); rig.gear.len()];
-    for (group, pts) in outside_points(rig, decoded, &down) {
+    // Each leg's lowest point's node (the foot's) and height.
+    let mut lowest_node: Vec<(usize, f32)> = vec![(usize::MAX, f32::MAX); rig.gear.len()];
+    for (node, group, pts) in outside_points(rig, decoded, &down) {
         for p in &pts {
             lo = lo.min(*p);
             hi = hi.max(*p);
         }
         if let Group::Gear(i) = group {
             legs[i].extend(&pts);
+            if let Some(y) = pts.iter().map(|p| p.y).reduce(f32::min).filter(|&y| y < lowest_node[i].1) {
+                lowest_node[i] = (node, y);
+            }
         }
         // (The piece is its hull's points: the sandbox's world makes the hull again from them each time it adds it.)
         if let Ok((corners, _)) = rapier3d::parry::transformation::try_convex_hull(&pts) {
             hulls.push(corners);
         }
     }
-    let feet = legs
+    let feet: Vec<Vec3> = legs
         .iter()
         .map(|pts| {
             let low = pts.iter().map(|p| p.y).fold(f32::MAX, f32::min);
@@ -530,11 +558,17 @@ fn shape(rig: &mut ShipRig, decoded: &[Vec<Decoded>]) -> Result<ShipShape, Fault
             Vec3::new(mid.x, low, mid.z)
         })
         .collect();
+    let foot_nodes = feet
+        .iter()
+        .zip(&lowest_node)
+        .map(|(foot, &(node, _))| down.get(node).map(|m| (node, m.inverse().transform_point3(*foot))))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| (SHIP_FILE.to_string(), "a landing gear leg has nothing drawn to stand on".to_string()))?;
     // The belly: the hull's lowest point (not the gear's) in each cell of a 3 x 3 grid over the plan, the gear up.
     let up = rig.pose(&rig.static_pose(false)).map_err(refuse)?;
     let mut cells: [Option<Vec3>; 9] = [None; 9];
     let size = (hi - lo).max(Vec3::splat(1e-3));
-    let hull_up: Vec<Vec3> = outside_points(rig, decoded, &up).filter(|(g, _)| *g == Group::Hull).flat_map(|(_, pts)| pts).collect();
+    let hull_up: Vec<Vec3> = outside_points(rig, decoded, &up).filter(|(_, g, _)| *g == Group::Hull).flat_map(|(_, _, pts)| pts).collect();
     for &p in &hull_up {
         let i = (((p.x - lo.x) / size.x * 3.0) as usize).min(2) + 3 * (((p.z - lo.z) / size.z * 3.0) as usize).min(2);
         if cells[i].is_none_or(|c| p.y < c.y) {
@@ -543,7 +577,7 @@ fn shape(rig: &mut ShipRig, decoded: &[Vec<Decoded>]) -> Result<ShipShape, Fault
     }
     // (The drag: the hull rig's vertices with the gear up, its doors closed.)
     let drag_hull = convex_shell(&hull_up).ok_or_else(|| (SHIP_FILE.to_string(), "the hull has no volume to meet the air with".to_string()))?;
-    Ok(ShipShape { hulls, lo, hi, feet, belly: cells.into_iter().flatten().collect(), drag_hull })
+    Ok(ShipShape { hulls, lo, hi, feet, foot_nodes, belly: cells.into_iter().flatten().collect(), drag_hull })
 }
 
 /// The triangles of the convex hull round `points` (None when they have no volume).

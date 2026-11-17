@@ -4,7 +4,7 @@
 //! (`0x143813D20`); an addition may be capped to a share of the capacity, and heat never goes under 0 (`0x143813740`); the
 //! radiator takes `k x (min + (max - min) x s^2)` a second, `s = clamp((f - f0) / (f1 - f0), 0, 1)` of the heat fraction
 //! `f = heat / capacity`, nothing while unpowered or under the two switches that turn it off (silent running is one: inferred)
-//! (`0x144399D90`); the voice line `$HeatWarning100;` and the journal's `HeatWarning` when `f` rises through 1.5, at most every
+//! (`0x144399D90`, which also gives the radiator's two visual values: `visual_dissipation`); the voice line `$HeatWarning100;` and the journal's `HeatWarning` when `f` rises through 1.5, at most every
 //! 5 s; heat damage over the ship's threshold `t0`, at a rate rising to a ceiling by `f`, dealt every so many seconds, with
 //! `$HeatWarningDamage;` when `f` rises through `t0`, at most every 5 s (`0x142DC1940`).
 //!
@@ -44,6 +44,24 @@ pub mod stand_in {
     /// the radiator's numbers above and the HUD's percentage taken as heat / capacity: a stand-in fitted to one measurement
     /// (E) until N1's H1 and F1 runs separate the loads.
     pub const IDLE_LOAD: f64 = 3.379;
+}
+
+/// The radiator's two visual values, which the ship's lights and its vents' flaps read as generic parameters.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VisualDissipation {
+    /// `HeatRadiator_VisualActiveDissipation`.
+    pub active: f64,
+    /// `HeatRadiator_VisualPassiveDissipation`.
+    pub passive: f64,
+}
+
+/// The radiator's visual values from the heat fraction `f` (FUN_144399d90, through FUN_144398f40): active clamp((f - f0) /
+/// (1 - f0), 0, 1), passive clamp(f / f1, 0, 1), f0 and f1 the radiator record's +0x18 and +0x1C (`DISSIPATE_F0`,
+/// `DISSIPATE_F1`); both 0 while the radiator is off (`radiator` false: unpowered or silent running). Its second condition
+/// (vtable +0x70 of the component's +0x158) and the heat sink's term (a ship without one has none) are taken as passing.
+pub fn visual_dissipation(f: f64, radiator: bool) -> VisualDissipation {
+    let on = |x: f64| if radiator { x.clamp(0.0, 1.0) } else { 0.0 };
+    VisualDissipation { active: on((f - DISSIPATE_F0) / (1.0 - DISSIPATE_F0)), passive: on(f / DISSIPATE_F1) }
 }
 
 /// The exe's constants (C).
@@ -189,6 +207,17 @@ mod tests {
         assert_eq!(h.heat, 0.0);
         h.add(&spec, 1000.0, Some(0.5));
         assert!((h.fraction(&spec) - 0.5).abs() < 1e-12);
+    }
+
+    /// The radiator's visual values (FUN_144399d90): the active one over f0..1, the passive one over 0..f1, both clamped and
+    /// both 0 with the radiator off.
+    #[test]
+    fn visual_dissipation_values() {
+        let d = visual_dissipation(0.4, true);
+        assert!((d.active - 0.4).abs() < 1e-12 && (d.passive - 0.4).abs() < 1e-12);
+        assert_eq!(visual_dissipation(2.0, true), VisualDissipation { active: 1.0, passive: 1.0 });
+        assert_eq!(visual_dissipation(-0.5, true), VisualDissipation { active: 0.0, passive: 0.0 });
+        assert_eq!(visual_dissipation(0.9, false), VisualDissipation::default());
     }
 
     /// The warning fires once as the fraction rises through 1.5; heat damage over the threshold is dealt on its interval.

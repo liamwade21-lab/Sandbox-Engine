@@ -32,18 +32,16 @@
 //! The parameters (what feeds each, in the order: the notes, the exe, else the data's default as a labelled stand-in):
 //! - `Option_HeadlightsEnabled` (bool, the headlights): the pilot's lights switch (`Pilot::lights`; the name and the
 //!   headlights' spot activity, re/elite/notes/agent_paint.md section 6).
-//! - `Option_LandingGearDeployed` (bool, the two beacons' pairs): the gear as the parts are posed (`Parts::gear_down`).
+//! - `Option_LandingGearDeployed` (bool, the two beacons' pairs): the gear as the parts are posed (`Parts::gear`, every leg
+//!   deployed).
 //! - `Warning_Overheating` (bool, the red warning lamp): heat / capacity at least 1.5 (FUN_1441988d0 compares the heat
 //!   object's +0x20 with 1.5 at 0x144dedfd8).
 //! - `Warning_DangerProximity` (bool, the red warning lamp, which needs both: its bool mode is 0, all true): no writer
 //!   found (FUN_142ea6b00, FUN_142e64a20 only bind it): `DANGER_PROXIMITY`, false, a stand-in.
-//! - `HeatRadiator_VisualActiveDissipation` (float, the vent lights): FUN_144399d90 via FUN_144398f40: clamp((f - f0) /
-//!   (1 - f0), 0, 1) of the heat fraction f, 0 while the radiator is off (silent running); f0 the radiator record's +0x18
-//!   (`elite_sim::heat::DISSIPATE_F0`, 0). Its second condition (vtable +0x70 of the component's +0x158) and the heat
-//!   sink's term (a ship without one has none) are taken as passing.
-//! - `HeatRadiator_VisualPassiveDissipation` (float, the heat effect's glow): the same function's clamp(f / f1, 0, 1), f1
-//!   the record's +0x1c (`DISSIPATE_F1`, 1), 0 while the radiator is off. Its `_OverRide` (used when at least 0) is never
-//!   set by the mod.
+//! - `HeatRadiator_VisualActiveDissipation` (float, the vent lights) and `HeatRadiator_VisualPassiveDissipation` (float, the
+//!   heat effect's glow): the exe's rule, `elite_sim::heat::visual_dissipation` (FUN_144399d90 via FUN_144398f40), of the
+//!   heat fraction and whether the radiator runs (`facts::ShipFacts`, where a test's `sw lights heat` lives). The passive
+//!   one's `_OverRide` (used when at least 0) is never set by the mod.
 //! - `cockpitAmberLightIntensity` (float): created with 1.0 by FUN_144733e70; its writer was not found: `AMBER`, 1.0.
 //! - `OverrideBrightnessScale` (float) and the GUI lamps' `OverrideColour_*`: FUN_1430dbae0 works them out from the HUD's
 //!   panel colours, which the mod has none of: the brightness `OVERRIDE_BRIGHTNESS`, 1.0, and the GUI lamps keep the
@@ -79,6 +77,7 @@ use bevy::render::view::ColorGrading;
 use se_core::elite_ship::{parse_pattern, Activity, KnownActivity, Light, LightAnimator};
 
 use super::assets::{MachineOwner, ShipRig};
+use super::facts::ShipFacts;
 use super::material::{HeatGlow, SceneExposure, ShipGlow, ShipLight, ShipLights, ShipScene, MAX_SHIP_LIGHTS};
 use super::parts::Parts;
 use super::pilot::Pilot;
@@ -440,9 +439,8 @@ pub struct Params {
 impl Params {
     /// From the ship's heat fraction `f`, whether its radiator runs, the pilot's lights switch and the gear.
     pub fn of(f: f64, radiator: bool, headlights: bool, gear_deployed: bool) -> Params {
-        let (f0, f1) = (elite_sim::heat::DISSIPATE_F0, elite_sim::heat::DISSIPATE_F1);
-        let on = |x: f64| if radiator { x.clamp(0.0, 1.0) as f32 } else { 0.0 };
-        Params { headlights, gear_deployed, overheating: f >= OVERHEAT_WARNING, active_dissipation: on((f - f0) / (1.0 - f0)), passive_dissipation: on(f / f1) }
+        let d = elite_sim::heat::visual_dissipation(f, radiator);
+        Params { headlights, gear_deployed, overheating: f >= OVERHEAT_WARNING, active_dissipation: d.active as f32, passive_dissipation: d.passive as f32 }
     }
 
     /// A bool parameter by name; one the game doesn't feed is false (a generic parameter is made with 0).
@@ -534,8 +532,7 @@ pub struct LightsState {
     scene: Option<(SceneExposure, bool)>,
     glow: Option<HeatGlow>,
     placed: u64,
-    /// `sw lights heat F|auto`, `sw lights head on|off|auto`: a test's heat fraction and lights switch over the pilot's.
-    pub dev_heat: Option<f64>,
+    /// `sw lights head on|off|auto`: a test's lights switch over the pilot's (its heat is the facts': `ShipFacts::dev_heat`).
     pub dev_headlights: Option<bool>,
     pub log: bool,
 }
@@ -545,6 +542,7 @@ pub struct LightsState {
 pub fn update(
     assets: Res<SidewinderAssets>,
     parts: Res<Parts>,
+    facts: Res<ShipFacts>,
     pilot: Res<Pilot>,
     time: Res<Time>,
     list: Option<ResMut<LightList>>,
@@ -585,8 +583,7 @@ pub fn update(
         state.scene = Some(now);
     }
     // The parameters.
-    let f = state.dev_heat.unwrap_or_else(|| pilot.heat.fraction(&pilot.heat_spec));
-    let p = Params::of(f, pilot.powered && !pilot.silent, state.dev_headlights.unwrap_or(pilot.lights), parts.gear_down().unwrap_or(true));
+    let p = Params::of(facts.heat, facts.radiator, state.dev_headlights.unwrap_or(pilot.lights), parts.gear().deployed());
     let dt = time.delta_secs();
     let st = &mut *state;
     let mut records = Vec::with_capacity(n);
@@ -666,25 +663,19 @@ fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipR
     );
 }
 
-/// `sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]`: alone it logs every light; the words
-/// set a test's heat fraction or headlights switch over the pilot's, a machine's state over the table's, or press the
-/// pilot's lights switch (Insert).
+/// `sw lights [heat F|auto] [head on|off|auto] [switch]`: alone it logs every light; the words set a test's heat fraction
+/// (the facts') or headlights switch over the pilot's, or press the pilot's lights switch (Insert). (`sw lights state
+/// MACHINE STATE|auto` is the parts' `ask`: `mod.rs` hands it there.)
 pub fn dev_command(world: &mut World, args: &str) {
     let words: Vec<&str> = args.split_whitespace().collect();
     match words.as_slice() {
         [] => world.resource_mut::<LightsState>().log = true,
-        ["heat", x] => world.resource_mut::<LightsState>().dev_heat = x.parse::<f64>().ok(),
+        ["heat", x] => world.resource_mut::<ShipFacts>().dev_heat = x.parse::<f64>().ok(),
         ["head", w] => world.resource_mut::<LightsState>().dev_headlights = match *w {
             "on" => Some(true),
             "off" => Some(false),
             _ => None,
         },
-        ["state", machine, "auto"] => world.resource_mut::<Parts>().dev_states.retain(|(m, _)| !m.eq_ignore_ascii_case(machine)),
-        ["state", machine, rest @ ..] if !rest.is_empty() => {
-            let mut parts = world.resource_mut::<Parts>();
-            parts.dev_states.retain(|(m, _)| !m.eq_ignore_ascii_case(machine));
-            parts.dev_states.push((machine.to_string(), rest.join(" ")));
-        }
         ["switch"] => world.resource_mut::<Pilot>().dev_switch = Some(super::pilot::Switch::Lights),
         _ => warn!("sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]"),
     }

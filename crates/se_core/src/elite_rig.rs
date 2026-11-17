@@ -17,11 +17,13 @@
 //!
 //! The machines (`Runner`, one per machine): a request names a target; each `step` takes one transition of the cheapest
 //! route (Dijkstra over `cost`), leaving at once (`wait_for_activities` 0) or once the state's running activities have
-//! finished or completed a cycle (1). Only curves (by `counts_as_running`) and `WaitSomeGameTime` ever run; every other
-//! type keeps the framework's default IsRunning, false (agent_csm.md sections 1, 2, 9a).
-//! - Door requests couple the gear legs to the hull's doors as an event (`Event::DoorRequest`): the caller requests the
-//!   matching `LandingGearDoors*` machine. The leg does not wait for the doors: nothing in agent_csm.md gives
-//!   `DoorClientRequest` an IsRunning, and the leg's Lowering plays the door hinge in its own first 2.33 s.
+//! finished or completed a cycle (1). Curves (by `counts_as_running`), `WaitSomeGameTime` and waiting door requests run;
+//! every other type keeps the framework's default IsRunning, false (agent_csm.md sections 1, 2, 9a).
+//! - Door requests couple the gear legs to the hull's doors (`Event::DoorRequest`: the caller requests the door's
+//!   machine). `DoorClientRequest` has its own IsFinished (0x1443aa5d0): with `door[1]` set it is unfinished while the
+//!   door client says its door is busy, so the leg's DoorsOpen -> Lowering and DoorsClosed -> Up (both waiting) wait for
+//!   the doors (sidewinder_animation.md, "Who requests the machines' states"). The runner knows nothing of other
+//!   machines: `step_with` takes the caller's answer for "is this door busy"; `step` means no door is ever busy.
 //! - A step longer than a frame (`MAX_FRAME_S`) runs as frames, so it gives the events a run of frames would, in that
 //!   order; a step changes state at most as many times as the machine has states (then `Event::Fault`).
 //! - Not traced in the exe, chosen and marked here: entering a state with `SetTargetState X` makes X the machine's
@@ -390,7 +392,14 @@ struct CurveRun {
 enum Run {
     Curve(CurveRun),
     Wait(f64),
+    /// A `DoorClientRequest`: its `door` value (0 open or close, 1 whether to wait for the door).
+    Door([u16; 2]),
     Idle,
+}
+
+/// The door answer of `Runner::step`: no door is ever busy.
+fn no_door_busy(_: [u16; 2]) -> bool {
+    false
 }
 
 /// Runs one state machine: requests name a target state; `step` advances it.
@@ -453,9 +462,19 @@ impl Runner {
         Ok(())
     }
 
-    /// Whether any activity of the current state is running (as a waiting transition sees it).
+    /// Whether any activity of the current state is running (as a waiting transition sees it), no door being busy.
     pub fn busy(&self) -> bool {
-        (0..self.runs.len()).any(|i| self.running(i))
+        self.busy_with(&no_door_busy)
+    }
+
+    /// `busy` with the caller's answer for the doors (`step_with`).
+    pub fn busy_with(&self, door_busy: &dyn Fn([u16; 2]) -> bool) -> bool {
+        (0..self.runs.len()).any(|i| self.running(i, door_busy))
+    }
+
+    /// The state the machine is walking to (a request's or a `SetTargetState`'s), None before any.
+    pub fn target(&self) -> Option<&str> {
+        self.target.map(|t| self.machine.states[t].name.as_str())
     }
 
     /// Where the current state's curve activity `index` stands on its clock, seconds (None: not a running curve).
@@ -476,12 +495,20 @@ impl Runner {
     /// state changes in one step than the machine has states: past that it stops, clears its target and says so with
     /// `Event::Fault`.
     pub fn step(&mut self, dt: f64, values: &mut Values) -> Vec<Event> {
+        self.step_with(dt, values, &no_door_busy)
+    }
+
+    /// `step` with the caller's answer for the doors: a `DoorClientRequest` whose `door[1]` is set counts as running while
+    /// `door_busy(door)` says its door is busy (its IsFinished, 0x1443aa5d0: `door[1] == 0 || !DoorClient.busy()`), so a
+    /// waiting transition out of its state waits for the door. The machine knows nothing of other machines: the answer is
+    /// the caller's whole part.
+    pub fn step_with(&mut self, dt: f64, values: &mut Values, door_busy: &dyn Fn([u16; 2]) -> bool) -> Vec<Event> {
         let dt = if dt > 0.0 { dt } else { 0.0 };
         let frames = ((dt / MAX_FRAME_S).ceil() as usize).clamp(1, MAX_FRAMES);
         let h = dt / frames as f64;
         let (mut events, mut changes) = (Vec::new(), 0);
         for k in 0..frames {
-            if !self.frame(h, values, &mut events, &mut changes) || (k + 1 < frames && self.settled()) {
+            if !self.frame(h, values, &mut events, &mut changes, door_busy) || (k + 1 < frames && self.settled()) {
                 break;
             }
         }
@@ -489,7 +516,7 @@ impl Runner {
     }
 
     /// One frame: the clocks, then the route's next transition when it may leave. False after a fault.
-    fn frame(&mut self, dt: f64, values: &mut Values, events: &mut Vec<Event>, changes: &mut usize) -> bool {
+    fn frame(&mut self, dt: f64, values: &mut Values, events: &mut Vec<Event>, changes: &mut usize, door_busy: &dyn Fn([u16; 2]) -> bool) -> bool {
         let state = self.current;
         for i in 0..self.runs.len() {
             let act = &self.machine.states[state].activities[i];
@@ -503,11 +530,11 @@ impl Runner {
             return true;
         };
         if self.waiting.as_ref().map(|w| w.0) != Some(next) {
-            let list = if wait { (0..self.runs.len()).filter(|&i| self.running(i)).map(|i| (i, self.cycles(i))).collect() } else { Vec::new() };
+            let list = if wait { (0..self.runs.len()).filter(|&i| self.running(i, door_busy)).map(|i| (i, self.cycles(i))).collect() } else { Vec::new() };
             self.waiting = Some((next, list));
         }
         let pending: Vec<(usize, u32)> = self.waiting.as_ref().map(|w| w.1.clone()).unwrap_or_default();
-        let still: Vec<(usize, u32)> = pending.into_iter().filter(|&(i, c)| self.running(i) && self.cycles(i) <= c).collect();
+        let still: Vec<(usize, u32)> = pending.into_iter().filter(|&(i, c)| self.running(i, door_busy) && self.cycles(i) <= c).collect();
         if still.is_empty() {
             return self.change(next, values, events, changes);
         }
@@ -560,9 +587,10 @@ impl Runner {
         first[target]
     }
 
-    fn running(&self, i: usize) -> bool {
+    fn running(&self, i: usize, door_busy: &dyn Fn([u16; 2]) -> bool) -> bool {
         let act = &self.machine.states[self.current].activities[i];
         match (&self.runs[i], act) {
+            (Run::Door(door), _) => door[1] != 0 && door_busy(*door),
             (Run::Curve(run), Activity::Known(KnownActivity::KinematicBezierCurveMultiple(c))) => {
                 let o = &c.options;
                 if o.driven_input.is_some() {
@@ -625,7 +653,7 @@ impl Runner {
                 }
                 Activity::Known(KnownActivity::DoorClientRequest { door }) => {
                     events.push(Event::DoorRequest { open: door[0] != 0, door: *door });
-                    Run::Idle
+                    Run::Door(*door)
                 }
                 Activity::Known(KnownActivity::SetTargetState { target }) => {
                     if let Some(t) = self.machine.state_index(target) {
@@ -750,6 +778,46 @@ fn step_curve(run: &mut CurveRun, c: &CurveActivity, dt: f64, values: &mut Value
             }
         }
     }
+}
+
+// ------------------------------------------------------------------------------------- the gear, the doors, the drive
+
+/// The gear leg's "deployed" test (the leg component's vtable +0x30, 0x1430c94e0) on its `SetLandingGearState` value
+/// (0 up, 1 doors open, 2 down, 3 rising, 4 raised): down or raised.
+pub fn gear_deployed(state: u32) -> bool {
+    matches!(state, 2 | 4)
+}
+
+/// The gear leg's "moving" test (vtable +0x38, 0x1430c9500): doors open or rising.
+pub fn gear_moving(state: u32) -> bool {
+    matches!(state, 1 | 3)
+}
+
+/// Whether the leg has its physics body: the landing gear manager's update (FUN_14307f8a0) adds it at states 1 and 3 (and
+/// while the raised stance, 4, is on), keeps it at 2 and removes it at 0, so a leg touches the ground from doors-open on.
+pub fn gear_has_body(state: u32) -> bool {
+    matches!(state, 1..=4)
+}
+
+/// A door's busy test, as the door client asks the door manager (slot +0x50, 0x142e68ab0, which is FUN_142d393d0 on the
+/// door's machine): busy while the machine is not in its own target state (FUN_140a22430 the target, FUN_140a21680 "is in
+/// state"). A machine with no target (never asked, or stopped by a fault) is never busy.
+pub fn door_busy(door: &Runner) -> bool {
+    door.target().is_some_and(|t| t != door.state())
+}
+
+/// `GenericParamDriveKinematicActivity`'s target each frame (re/elite/work/csm/logic/notes.md, the per-frame job
+/// 0x1442e1c20): the source parameter's place in its range [start, end], clamped to 0..1 (0 for an empty range).
+pub fn param_drive_target(source: f64, range: (f64, f64)) -> f64 {
+    let (a, b) = range;
+    if b != a { ((source - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// ... and its output after a frame of `dt` seconds: toward the target at most `rate` a second (a rate of 0 or less: there
+/// at once).
+pub fn param_drive_step(out: f64, target: f64, rate: f64, dt: f64) -> f64 {
+    let step = if rate > 0.0 { (target - out).clamp(-rate * dt, rate * dt) } else { target - out };
+    out + step
 }
 
 #[cfg(test)]
@@ -1059,6 +1127,96 @@ mod tests {
         }
     }
 
+    /// A gear leg and its doors as the game runs them: the doors step first, then the leg with "busy" = the doors' machine
+    /// not in the state the leg's request asked for; the leg's door requests go to the doors' machine.
+    struct Pair {
+        leg: Sim,
+        door: Sim,
+    }
+
+    impl Pair {
+        fn new(leg: &Machine, door: &Machine) -> Pair {
+            let mut p = Pair { leg: Sim::new(leg), door: Sim::new(door) };
+            let first: Vec<Event> = p.leg.log.iter().map(|(_, e)| e.clone()).collect();
+            p.ask_doors(&first);
+            p
+        }
+
+        fn ask_doors(&mut self, events: &[Event]) {
+            for e in events {
+                if let Event::DoorRequest { open, .. } = e {
+                    self.door.runner.request(if *open { "DoorsOpen" } else { "DoorsClosed" }).unwrap();
+                }
+            }
+        }
+
+        fn step(&mut self) {
+            self.door.step();
+            self.leg.t += DT;
+            let door = self.door.runner.state().to_string();
+            let busy = move |d: [u16; 2]| door != if d[0] != 0 { "DoorsOpen" } else { "DoorsClosed" };
+            let ev = self.leg.runner.step_with(DT, &mut self.leg.values, &busy);
+            self.ask_doors(&ev);
+            let t = self.leg.t;
+            self.leg.log.extend(ev.into_iter().map(|e| (t, e)));
+        }
+
+        fn run_to(&mut self, state: &str) {
+            self.leg.runner.request(state).unwrap();
+            let until = self.leg.t + 30.0;
+            while self.leg.runner.state() != state || self.leg.runner.busy() {
+                self.step();
+                assert!(self.leg.t < until, "never reached {state}");
+            }
+        }
+    }
+
+    /// The door wait (0x1443aa5d0): a leg stays in DoorsOpen until its doors are open, then lowers (doors + 5.33 s in all);
+    /// retracting, it reaches Up (gear state 0) only once its doors have closed.
+    #[test]
+    fn legs_wait_for_their_doors() {
+        let ms = machines();
+        let hull = |name: &str| ms.iter().find(|m| m.file == "hull_sidewinder" && m.name == name).unwrap().clone();
+        for (file, doors, open, close) in [
+            ("gear_front", "LandingGearDoorsFront", 2.5, 2.3666666),
+            ("gear_left", "LandingGearDoorsLeft", 2.7333333, 2.5),
+            ("gear_right", "LandingGearDoorsRight", 2.6333334, 2.5),
+        ] {
+            let mut p = Pair::new(&gear(&ms, file), &hull(doors));
+            p.run_to("Down");
+            let held = p.leg.entered("Lowering") - p.leg.entered("DoorsOpen");
+            assert!((held - open).abs() <= 2.0 * DT + 1e-9, "{file}: held in DoorsOpen {held} s, doors {open} s");
+            assert!(p.leg.entered("Lowering") >= p.door.entered("DoorsOpen"), "{file}: lowered before the doors were open");
+            assert!(near(p.leg.entered("Down") - p.leg.entered("Lowering"), 5.3333335), "{file}");
+            p.run_to("Up");
+            assert!(p.leg.entered("Up") >= p.door.entered("DoorsClosed"), "{file}: up before the doors were closed");
+            let held = p.leg.entered("Up") - p.leg.entered("DoorsClosed");
+            assert!((held - close).abs() <= 2.0 * DT + 1e-9, "{file}: held in DoorsClosed {held} s, doors {close} s");
+            assert_eq!(p.leg.gear_states().last(), Some(&("Up".to_string(), 0)), "{file}");
+        }
+    }
+
+    /// `step` is `step_with` no door busy: a full cycle gives the same events at the same times either way.
+    #[test]
+    fn step_is_step_with_no_busy_door() {
+        let ms = machines();
+        let m = gear(&ms, "gear_left");
+        let run = |with: bool| {
+            let mut s = Sim::new(&m);
+            s.runner.request("Down").unwrap();
+            for k in 0..(12.0 / DT) as usize {
+                if k == (7.0 / DT) as usize {
+                    s.runner.request("Up").unwrap();
+                }
+                s.t += DT;
+                let ev = if with { s.runner.step_with(DT, &mut s.values, &|_| false) } else { s.runner.step(DT, &mut s.values) };
+                s.log.extend(ev.into_iter().map(|e| (s.t, e)));
+            }
+            (s.log, s.runner.state().to_string())
+        };
+        assert_eq!(run(true), run(false));
+    }
+
     /// The pose a curve state hands over to: along its waiting transitions, past states that set none.
     fn next_pose(m: &Machine, state: &str) -> Option<Values> {
         let mut s = m.state(state)?;
@@ -1263,5 +1421,52 @@ mod tests {
             assert_eq!(long, run(600, 1.0 / 60.0), "{}", m.name);
             assert!(long.iter().filter(|e| matches!(e, Event::SoundBegin { .. } | Event::Entered(_))).count() >= 4);
         }
+    }
+
+    /// The leg's two tests and its body over the five gear states (0x1430c94e0, 0x1430c9500, FUN_14307f8a0).
+    #[test]
+    fn the_gear_tests() {
+        let row = |s: u32| (gear_deployed(s), gear_moving(s), gear_has_body(s));
+        assert_eq!((0..5).map(row).collect::<Vec<_>>(), [(false, false, false), (false, true, true), (true, false, true), (false, true, true), (true, false, true)]);
+    }
+
+    /// A door is busy from the request until its machine stands in the state asked for, whatever asked it; never asked or
+    /// stopped by a fault, it is never busy (FUN_142d393d0).
+    #[test]
+    fn a_door_is_busy_until_it_reaches_its_target() {
+        let ms = machines();
+        let mut values = Values::new();
+        let (mut door, _) = Runner::new(&hull(&ms, "LandingGearDoorsRight"), &mut values).unwrap();
+        assert!(!door_busy(&door));
+        door.request("DoorsOpen").unwrap();
+        assert!(door_busy(&door));
+        let mut t = 0.0;
+        while door.state() != "DoorsOpen" && t < 10.0 {
+            door.step(DT, &mut values);
+            t += DT;
+            assert_eq!(door_busy(&door), door.state() != "DoorsOpen");
+        }
+        assert!(!door_busy(&door) && near(t, 2.6333334 + DT));
+        // Asked back mid-way, it is busy toward the new target.
+        door.request("DoorsClosed").unwrap();
+        assert!(door_busy(&door));
+        let looped = toy(&[("A", &["B"], Some("B")), ("B", &["A"], Some("A"))]);
+        let (mut r, _) = Runner::new(&looped, &mut values).unwrap();
+        assert!(matches!(r.step(1.0, &mut values).last(), Some(Event::Fault(_))));
+        assert!(!door_busy(&r), "a stopped machine is never busy");
+    }
+
+    /// The parameter drive: the source's place in its range, clamped, and the output moving toward it at its rate (the
+    /// vents': 0.6..0.8 at 0.2 a second).
+    #[test]
+    fn the_parameter_drive() {
+        assert!((param_drive_target(0.7, (0.6, 0.8)) - 0.5).abs() < 1e-12);
+        assert_eq!((param_drive_target(0.5, (0.6, 0.8)), param_drive_target(0.9, (0.6, 0.8)), param_drive_target(0.9, (0.6, 0.6))), (0.0, 1.0, 0.0));
+        assert!((param_drive_step(0.0, 1.0, 0.2, 0.5) - 0.1).abs() < 1e-12);
+        assert_eq!(param_drive_step(0.95, 1.0, 0.2, 0.5), 1.0);
+        assert!((param_drive_step(0.3, 0.1, 0.2, 0.5) - 0.2).abs() < 1e-12);
+        assert!((param_drive_step(0.3, 0.9, 0.0, 0.01) - 0.9).abs() < 1e-12);
+        let at = |fps: f64| (0..(fps * 3.0) as usize).fold(0.0, |o, _| param_drive_step(o, 1.0, 0.2, 1.0 / fps));
+        assert!((at(30.0) - 0.6).abs() < 1e-9 && (at(120.0) - 0.6).abs() < 1e-9);
     }
 }

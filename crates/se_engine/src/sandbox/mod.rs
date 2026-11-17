@@ -784,7 +784,8 @@ pub(crate) fn sandbox_step(
     // 500 m a frame round the Sun: a camera left where last frame had it is that far off.)
     let mut leave = None;
     if control.hero && sb.mode != Mode::Hero {
-        sb.before_hero = sb.mode;
+        // (The Sidewinder's seat is released when a mod takes over from it: its mode is never gone back to, walking is.)
+        sb.before_hero = if sb.mode == Mode::Pilot { Mode::Walk } else { sb.mode };
         if sb.mode == Mode::Walk {
             leave = Some(Mode::Hero);
         } else {

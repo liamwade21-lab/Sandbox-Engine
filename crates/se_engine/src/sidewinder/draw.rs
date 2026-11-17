@@ -5,7 +5,8 @@
 //! the outside chair is a low-detail twin of the cockpit's, so the two sets are never drawn together. From the seat (the
 //! camera at the pilot's eye this frame, `Seat::view`) only the cockpit rig's models and its chair, in the seat's depth
 //! slice (`material::SEAT_SLICE`); from anywhere else (parked, walking round it, the free camera) only the hull rig's, the
-//! gear rigs' and the outside chair. Made once, the first time the files are read; never changed after.
+//! gear rigs' and the outside chair; a node the state machines hide (`Parts::shown`: the `KModelState` activities, the
+//! windscreen once breached) in neither. Made once, the first time the files are read; never changed after.
 
 use std::collections::HashMap;
 
@@ -50,14 +51,17 @@ pub struct ShipDraw {
     pieces: Vec<Entity>,
     /// What shows: (outside, inside).
     shown: (bool, bool),
+    /// The parts' shown nodes as last applied (`Parts::shown_revision`: the `KModelState` activities).
+    nodes_shown: u64,
 }
 
 pub fn build(app: &mut App) {
     material::build(app);
     lights::build(app);
-    app.init_resource::<Parts>().add_systems(Update, make.run_if(resource_exists::<ShipBuild>)).add_systems(
+    app.init_resource::<Parts>().init_resource::<super::facts::ShipFacts>().add_systems(Update, make.run_if(resource_exists::<ShipBuild>)).add_systems(
         PostUpdate,
-        (super::parts::update, lights::update, place)
+        // (The facts first: from this frame's flight, before the machines, the lights and the sound read them.)
+        (super::facts::update, super::parts::update, lights::update, place)
             .chain()
             .run_if(resource_exists::<SidewinderAssets>)
             .after(crate::universe::UniverseSet::Camera)
@@ -173,7 +177,7 @@ fn make(
     for i in 0..2 {
         commands.spawn((Name::new("Sidewinder laser beam"), Beam(i), Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling));
     }
-    commands.insert_resource(ShipDraw { pieces, shown: (false, false) });
+    commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX });
 }
 
 /// The parked ship where it stands this frame, from the camera, as `place_props` places the props.
@@ -236,17 +240,21 @@ fn place(
         }
     }
     let show = shown(near, seat.view);
-    if draw.shown != show {
+    if draw.shown != show || draw.nodes_shown != parts.shown_revision() {
+        if draw.shown != show {
+            let what = match show {
+                (true, _) => "the outside set (hull, gear, outside chair)",
+                (_, true) => "the seat's set (cockpit, its chair)",
+                _ => "nothing",
+            };
+            info!("sidewinder: drawing {what} from frame {}", frame.0);
+        }
         draw.shown = show;
-        let what = match show {
-            (true, _) => "the outside set (hull, gear, outside chair)",
-            (_, true) => "the seat's set (cockpit, its chair)",
-            _ => "nothing",
-        };
-        info!("sidewinder: drawing {what} from frame {}", frame.0);
+        draw.nodes_shown = parts.shown_revision();
         for e in draw.pieces.clone() {
             if let Ok((piece, _, mut v)) = pieces.get_mut(e) {
-                let on = if piece.inside { show.1 } else { show.0 };
+                // (A node the machines hide, `KModelState`, isn't drawn in either set: the windscreen once breached.)
+                let on = if piece.inside { show.1 } else { show.0 } && parts.shown(piece.node);
                 *v = if on { Visibility::Visible } else { Visibility::Hidden };
             }
         }

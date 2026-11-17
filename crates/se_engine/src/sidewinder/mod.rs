@@ -16,8 +16,10 @@
 pub mod assets;
 pub mod draw;
 mod exposure;
+pub mod facts;
 pub mod hyper;
 pub mod lights;
+mod machines;
 pub mod material;
 pub mod panels;
 pub mod parts;
@@ -206,6 +208,9 @@ fn handle_requests(
     match control.ship_request.take() {
         Some(ShipRequest::Spawn) => {
             ship.want_spawn = Some(0.0);
+            if !(sb.walking() && sb.placed && sb.world.is_some()) {
+                info!("sidewinder: the spawn waits for the player to be on foot (at most {SPAWN_WAIT_S} s)");
+            }
             if assets.is_none() && ship.loading.is_none() {
                 let needs = reg.mods.iter().find(|m| m.code == CODE).map(|m| m.needs.clone());
                 match needs {
@@ -245,6 +250,7 @@ fn handle_requests(
             ship.want_spawn = (waited < SPAWN_WAIT_S).then_some(waited);
             if ship.want_spawn.is_none() {
                 msg.show("Spawn the Sidewinder while on foot".to_string());
+                info!("sidewinder: no spawn: the player isn't on foot");
             }
             return;
         }
@@ -475,7 +481,12 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         // `sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]`: alone, logs every light.
         "lights" => {
-            lights::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
+            let rest = arg.split_once(' ').map_or("", |(_, rest)| rest);
+            // (`sw lights state MACHINE STATE|auto` is the parts' `ask`.)
+            match rest.trim_start().strip_prefix("state ") {
+                Some(ask) => parts::dev_command(world, &format!("ask {ask}")),
+                None => lights::dev_command(world, rest),
+            }
             None
         }
         "canopy" => {
@@ -528,10 +539,15 @@ pub fn dev_command(world: &mut World, arg: &str) {
             }
             None
         }
-        // `sw pose up|down|auto`: the parts drawn with the gear up or down whatever the pilot's (pictures from the free camera).
+        // `sw pose up|down|auto`: the gear commanded up or down whatever the pilot's (the machines move it; pictures from the free
+        // camera). `sw parts [log on|off] [ask MACHINE STATE|auto]`: the state machines.
+        "parts" => {
+            parts::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
+            None
+        }
         "pose" => {
             let word = arg.split_whitespace().nth(1).unwrap_or("auto").to_ascii_lowercase();
-            world.resource_mut::<parts::Parts>().dev_gear = match word.as_str() {
+            world.resource_mut::<facts::ShipFacts>().dev_gear = match word.as_str() {
                 "up" => Some(false),
                 "down" => Some(true),
                 _ => None,
@@ -560,7 +576,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
             match verb.as_str() {
                 "throttle" => pl.throttle = g(0).clamp(-1.0, 1.0),
                 "fa" => pl.flight_assist = word != "off",
-                "gear" => pl.gear_down = !pl.gear_down,
+                // (The key's press: refused while landed, as the key is.)
+                "gear" => pl.dev_switch = Some(pilot::Switch::Gear),
                 "log" => pl.log = word != "off",
                 // `sw thrust LAT VERT FWD SECS`, `sw stick PITCH ROLL YAW SECS`: demands held for the seconds given.
                 "thrust" => pl.dev = Some((elite_sim::flight::Input { lateral: g(0), vertical: g(1), forward: g(2), ..default() }, g(3) as f32)),
@@ -583,13 +600,13 @@ pub fn dev_command(world: &mut World, arg: &str) {
             if seat.seated {
                 let v = pl.motion.vel;
                 info!(
-                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:.2}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}, planet HUD {:?}, held {:?}, silent {}, scoop {}, lights {}, life {:?}, safe drop {:?}",
+                    "sidewinder: seated; {}, {:.2} m/s, throttle {:.2}, flight assist {}, gear {} ({:?}), {} ticks; pips (half) WEP/ENG/SYS {:?}, capacitors {:.2}/{:.2}/{:.2} MJ, boost {:?}; drive {:?}, supercruise {}, glide {:?}, target {:?}, fuel {:.6} t main, {:.6} t reservoir; modules {:?}, destination {:?}, planet HUD {:?}, held {:?}, silent {}, scoop {}, lights {}, life {:?}, safe drop {:?}",
                     if pl.landed { "landed" } else { "flying" },
                     v.length(),
                     pl.throttle,
                     pl.flight_assist,
                     if pl.gear_down { "down" } else { "up" },
-                    pl.gear_t,
+                    world.resource::<parts::Parts>().gear().legs(),
                     pl.ticks,
                     pl.dist.half,
                     pl.dist.charge[0],
