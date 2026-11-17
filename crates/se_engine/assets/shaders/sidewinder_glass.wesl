@@ -19,14 +19,19 @@
 //   the star's and the lamps' light on its dirt and imperfections plus their glints, its coverage the layers' (with
 //   gCockpitGlassTintAlpha 0 the clean glass covers nothing, so the world shows through untouched). The refraction amount
 //   only bends the view vector its glints are seen along (Elite's own maths, ported).
-// - Not ported, because their maths needs what this pass hasn't: the cracks' interior reflection (state 0's last block,
-//   run only on a crack whose ID texel differs through the glass's thickness: Elite's light probes and its split-sum LUT,
-//   g_Tex_SpecularFresnelLUTTexture, neither among the mod's files) and the ice and condensation variants (digit 3 = 1, 2:
-//   they sample gBlurSceneTexture, the blurred scene behind the glass, distorted by their normals). Their attributes are in
-//   `CockpitParams` for the canopy-breach task. The stock ship never reaches them: gCockpitGlassCrackAmount is 0 (the
-//   glass effects object is made with it 0 and the cracks activity writes it only past 20 % damage), so the crack key is
-//   0 < pCracksMaskThreshold and the crack layer is 0; the ice and condensation scales are 0, so the state is 0
-//   (material.rs `stock_glass_shows_no_damage`).
+// - The cracks: gCockpitGlassCrackAmount comes each frame from `ship_glass` (the cracks activity's level, parts.rs
+//   `Cracks`; 0 while the ship's damage is 0, which is all the mod feeds: its writer was not found), so the crack key
+//   (colour . pCracksVertexMask + 1/255) x amount passes pCracksMaskThreshold only on a damaged canopy. Drawn: the crack
+//   layer (its alpha, normal, colour, occlusion and roughness, all above). Not ported: their interior reflection (state 0's
+//   last block, lines 713-1047: run only where pCracksIDTexture's texel differs between the pixel's uv and the uv moved
+//   along the refracted view by cb2[14].x (lines 144-155); it reads pCracksInteriorNormTexture, then loops over the clustered
+//   light probes (the probe index tables t0 / t2, Elite's probe cube array t3) weighting each by its box or sphere, with the
+//   split-sum LUT g_Tex_SpecularFresnelLUTTexture (t4), and lifts the coverage by 0.2 x the crack's alpha towards 0.95).
+//   It is not an addition to what is drawn: it needs Elite's probes (no counterpart: the scene is SpaceEngine's) and the
+//   LUT (not among the mod's files); the two crack textures it reads are (tex/cockpit_glass_int__pcracksidtexture.dds,
+//   __pcracksinteriornormtexture.dds). The ice and condensation variants (digit 3 = 1, 2) are not ported either: they
+//   sample gBlurSceneTexture, the blurred scene behind the glass, distorted by their normals; nothing writes their scales
+//   (material.rs `GlassEffects`), so the state stays 0 (`stock_glass_shows_no_damage`).
 // - The outside glass's environment reflection: Elite's light probes stand in as the sandbox's sky light seen along the
 //   reflected ray, and its split-sum LUT as the usual analytic fit of it (`shade`'s specular ambient, `env_brdf`: ours).
 //   This is most of what the outside canopy shows by day away from the sun: a grey reflection of the sky over the dimmed
@@ -47,6 +52,16 @@ import bevy_pbr::render::mesh_view_bindings::view;
 import super::sidewinder_lit::{Surface, Scene, INV_PI, shade, specular_brdf};
 import super::sidewinder_surface_hull::{ShipParams, Frame, ship_depth, tangent_normal, metal_f0};
 import super::sidewinder_surface_cockpit::cockpit;
+
+// The canopy's glass effects' globals this frame (material.rs `GlassEffects`, `ShipGlass`, written in place by draw.rs):
+// `effects` gCockpitGlassCrackAmount, gCockpitGlassIceScale, gCockpitGlassCondensationScale, gCockpitGlassTintAlpha; `more`
+// gCockpitGlassAlphaMultiplier x, gCockpitGlassState y.
+struct ShipGlass {
+    effects: vec4<f32>,
+    more: vec4<f32>,
+};
+
+@group(constants::MATERIAL_BIND_GROUP) @binding(18) var<storage, read> ship_glass: ShipGlass;
 
 struct GlassVertex {
     @builtin(instance_index) instance_index: u32,
@@ -90,7 +105,7 @@ fn glass_vertex(v: GlassVertex, p: ShipParams) -> GlassOut {
         // the multiplier, both by pImperfectionMaskScaleOffset (scale .z, offset .w: the shader's own choice for both).
         let so = cockpit.mask_scale_offset;
         o.key = vec4<f32>(
-            (dot(v.colour, cockpit.masks[0]) + 0.003922) * cockpit.effects.x,
+            (dot(v.colour, cockpit.masks[0]) + 0.003922) * ship_glass.effects.x,
             saturate((dot(v.colour, cockpit.masks[2]) + so.w) * so.z) * cockpit.occlusion.w,
             saturate((dot(v.colour, cockpit.masks[3]) + so.w) * so.z),
             0.0,
@@ -179,8 +194,8 @@ fn glass_cockpit(in: GlassOut, blemish: texture_2d<f32>, cracks: texture_2d<f32>
     let inner = normalize(w.x * f.t - w.y * f.n + w.z * f.b);
     let occlusion = saturate(crack * cockpit.occlusion.x);
     let coverage = min(occlusion + dirt + imperfection, 1.0);
-    let am = cockpit.effects_more.x;
-    let tint_alpha = cockpit.effects.w;
+    let am = ship_glass.more.x;
+    let tint_alpha = ship_glass.effects.w;
     let albedo = mix(dirt * am * cockpit.dirt.rgb, cockpit.cracks_colour.rgb * am, occlusion) * (1.0 - tint_alpha);
     let rough = saturate(cockpit.roughness.x * occlusion + cockpit.roughness.w * imperfection + cockpit.dirt_roughness.x * dirt) * (1.0 - tint_alpha);
     let alpha = tint_alpha * (1.0 - coverage) + coverage;

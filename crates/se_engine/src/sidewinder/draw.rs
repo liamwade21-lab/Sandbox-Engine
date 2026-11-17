@@ -6,7 +6,8 @@
 //! camera at the pilot's eye this frame, `Seat::view`) only the cockpit rig's models and its chair, in the seat's depth
 //! slice (`material::SEAT_SLICE`); from anywhere else (parked, walking round it, the free camera) only the hull rig's, the
 //! gear rigs' and the outside chair; a node the state machines hide (`Parts::shown`: the `KModelState` activities, the
-//! windscreen once breached) in neither. Made once, the first time the files are read; never changed after.
+//! windscreen once breached, its broken twin while whole) in neither. Made once, the first time the files are read; never
+//! changed after.
 
 use std::collections::HashMap;
 
@@ -22,7 +23,7 @@ use crate::universe::ScaledSpace;
 
 use super::assets::ShipBuild;
 use super::lights::{self, LightList};
-use super::material::{self, Family, ShipGlow, ShipLights, ShipMaterial, ShipScene, TexSource};
+use super::material::{self, Family, GlassEffects, ShipGlass, ShipGlow, ShipLights, ShipMaterial, ShipScene, TexSource};
 use super::parts::Parts;
 use super::{Sidewinder, SidewinderAssets};
 
@@ -73,8 +74,9 @@ pub fn build(app: &mut App) {
 }
 
 /// The meshes and materials, from what the first spawn read and resolved (`ShipBuild`, dropped once used), the ship's lights
-/// (their list, `lights::LightList`, and buffer), its scene exposure inputs and the heat effect's glow: each material lit by
-/// its set's range of the list (`LightList::range`), the hull's ElementGlow taking the heat effect's values.
+/// (their list, `lights::LightList`, and buffer), its scene exposure inputs, the heat effect's glow and the canopy's glass
+/// effects: each material lit by its set's range of the list (`LightList::range`), the hull's ElementGlow taking the heat
+/// effect's values.
 #[allow(clippy::too_many_arguments)]
 fn make(
     mut commands: Commands,
@@ -105,6 +107,7 @@ fn make(
     let lights = ShipLights::new(&mut buffers);
     let scene = ShipScene::new(&mut buffers, &lights::scene_inputs(0.0, crate::exposure::AutoExposureSettings::default().target_bright));
     let glow = ShipGlow::new(&mut buffers);
+    let glass = ShipGlass::new(&mut buffers);
     // (The heat effect's element: the outside materials of that name; only the hull's model has one outside.)
     let glow_element = rig.ship.machines.iter().flat_map(|m| &m.states).find_map(lights::HeatEffect::of_state).map(|e| e.element.to_lowercase());
     let resolved = std::mem::take(&mut build.materials);
@@ -138,7 +141,7 @@ fn make(
                     let mut params = if inside { r.params.in_seat() } else { r.params };
                     params.lights = list.range(inside);
                     params.heat_glow.x = (!inside && glow_element.as_deref() == Some(key.as_str())) as u32;
-                    ship_materials.add(ShipMaterial::new(&light, &lights, &scene, &glow, r.family, &tex, &white, &ies, params, r.cockpit))
+                    ship_materials.add(ShipMaterial::new(&light, &lights, &scene, &glow, &glass, r.family, &tex, &white, &ies, params, r.cockpit))
                 })
                 .clone();
             pieces.push(
@@ -163,6 +166,7 @@ fn make(
     commands.insert_resource(lights);
     commands.insert_resource(scene);
     commands.insert_resource(glow);
+    commands.insert_resource(glass);
     info!("sidewinder: the ship's {} meshes are made ({} models, {} materials, {} textures)", pieces.len(), model_meshes.len(), mats.len(), textures.len());
     // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
     // shows by day and night.
@@ -180,7 +184,8 @@ fn make(
     commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX });
 }
 
-/// The parked ship where it stands this frame, from the camera, as `place_props` places the props.
+/// The parked ship where it stands this frame, from the camera, as `place_props` places the props; the canopy's glass effects
+/// written where they changed.
 #[allow(clippy::too_many_arguments)]
 fn place(
     ship: Res<Sidewinder>,
@@ -196,9 +201,14 @@ fn place(
     mut beams: Query<(&Beam, &mut Transform, &mut Visibility), Without<ShipPiece>>,
     frame: Res<bevy::diagnostic::FrameCount>,
     lights: Option<Res<ShipLights>>,
+    glass: Option<ResMut<ShipGlass>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
 ) {
     let Some(mut draw) = draw else { return };
+    // The canopy's glass effects: the crack amount the cockpit's cracks keep (`Parts::crack`), the rest as made.
+    if let Some(mut g) = glass {
+        g.write(&mut buffers, GlassEffects { crack: parts.crack(), ..GlassEffects::stock() });
+    }
     let placed = ship.parked.as_ref().and_then(|p| Some((p, bodies.iter().find(|b| b.obj == p.obj)?)));
     let near = match placed {
         Some((p, b)) => {

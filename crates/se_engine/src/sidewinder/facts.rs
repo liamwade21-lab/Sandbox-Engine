@@ -1,6 +1,6 @@
 //! The ship's facts this frame (ARCHITECTURE.md A6, "Who reads whom"): one resource, `ShipFacts`, written once a frame from
 //! `Pilot` and `Seat` before the parts run, read by the machines (`machines.rs`, `parts.rs`), the lights and the sound. It
-//! keeps the tests' overrides of those facts (`sw lights heat`, `sw pose`), so no reader holds another's. Nothing of the
+//! keeps the tests' overrides of those facts (`sw lights heat`, `sw pose`, `sw canopy damage`), so no reader holds another's. Nothing of the
 //! parts, the lights or the sound is read here. The pilot chair (`chair.rs`) reads the controls and the cockpit's change of
 //! velocity from here too.
 
@@ -8,9 +8,15 @@ use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use elite_sim::heat::{visual_dissipation, VisualDissipation};
 
+use super::panels::{Panels, Side};
 use super::pilot::{Pilot, PilotKeys};
 use super::seat::Seat;
 use super::SidewinderAssets;
+
+/// The ship's damage the cockpit's cracks read (0..1): the cockpit's `Damage` parameter is bound to the ship's `ShipDamage`
+/// (FUN_1430c6130, lines 178-188), whose writer was not found (the name's only reference in the exe's strings is that
+/// binding): 0, so the canopy stays whole until it breaches.
+pub const SHIP_DAMAGE: f32 = 0.0;
 
 /// The frame shift drive's phase as `JumpEffects` reads it (FUN_142c71440 at 0x142c757a8: the drive's phase byte +0x759).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,6 +41,11 @@ pub struct ShipFacts {
     pub canopy_intact: bool,
     pub seated: bool,
     pub jump: JumpPhase,
+    /// The side panels open (left, right), as the panels stand (`panels::Panels::open`, written by `update`): the GUI panel
+    /// lamps' fades.
+    pub panels_open: [bool; 2],
+    /// The ship's damage the cracks read: a test's `sw canopy damage F` over `SHIP_DAMAGE`.
+    pub damage: f32,
     /// The heat fraction (heat / capacity), a test's `sw lights heat F` over the ship's.
     pub heat: f64,
     /// The radiator runs: powered and not silent (`elite_sim::heat::visual_dissipation`'s switch).
@@ -47,6 +58,8 @@ pub struct ShipFacts {
     pub dev_heat: Option<f64>,
     /// `sw pose up|down|auto`: a test's gear command over the pilot's (seated, the free camera can't look at the ship).
     pub dev_gear: Option<bool>,
+    /// `sw canopy damage F|auto`: a test's ship damage over `SHIP_DAMAGE`.
+    pub dev_damage: Option<f32>,
     /// The flight's demands this frame (`Pilot::controls`, the flight's signs): the throttle (forward +1, reverse -1) and the
     /// turn (pitch nose up +, yaw nose left +, roll right wing up +), each -1..1.
     pub throttle: f64,
@@ -69,7 +82,7 @@ pub struct ShipFacts {
 impl ShipFacts {
     /// From the pilot's state (which belongs to the ship, parked or flown: `Pilot::boarding`), the seat's keys, the seat and
     /// the cockpit point (`SidewinderAssets::eye`, the ship's space), the tests' overrides and the last cockpit velocity
-    /// kept from `prev`.
+    /// kept from `prev` (and the panels' state, which `update` writes).
     pub fn of(pilot: &Pilot, keys: &PilotKeys, seated: bool, cockpit: Vec3, prev: &ShipFacts) -> ShipFacts {
         use elite_sim::drive::Drive;
         let jump = match pilot.drive {
@@ -98,12 +111,15 @@ impl ShipFacts {
             canopy_intact: pilot.life.canopy,
             seated,
             jump,
+            panels_open: prev.panels_open,
+            damage: prev.dev_damage.unwrap_or(SHIP_DAMAGE),
             heat,
             radiator,
             dissipation: visual_dissipation(heat, radiator),
             settle: pilot.put,
             dev_heat: prev.dev_heat,
             dev_gear: prev.dev_gear,
+            dev_damage: prev.dev_damage,
             throttle: controls.forward,
             pitch: controls.pitch,
             yaw: controls.yaw,
@@ -126,8 +142,9 @@ impl ShipFacts {
 }
 
 /// Writes the facts once a frame (before `parts::update` and `chair::update`), only when one changed.
-pub(super) fn update(pilot: Res<Pilot>, keys: Res<PilotKeys>, seat: Res<Seat>, assets: Res<SidewinderAssets>, mut facts: ResMut<ShipFacts>) {
-    let now = ShipFacts::of(&pilot, &keys, seat.seated, Vec3::from_array(assets.eye), &facts);
+pub(super) fn update(pilot: Res<Pilot>, keys: Res<PilotKeys>, seat: Res<Seat>, panels: Res<Panels>, assets: Res<SidewinderAssets>, mut facts: ResMut<ShipFacts>) {
+    let panels_open = [panels.open == Some(Side::Left), panels.open == Some(Side::Right)];
+    let now = ShipFacts { panels_open, ..ShipFacts::of(&pilot, &keys, seat.seated, Vec3::from_array(assets.eye), &facts) };
     if *facts != now {
         *facts = now;
     }
@@ -149,9 +166,11 @@ mod tests {
         assert_eq!(f.param("HeatRadiator_VisualActiveDissipation"), Some(visual_dissipation(f.heat, true).active));
         assert_eq!(f.param("cockpitAmberLightIntensity"), None);
         assert!(ShipFacts::of(&pilot, &keys, false, Vec3::ZERO, &f).gear_down);
-        let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), ..f };
+        assert!(f.damage == SHIP_DAMAGE && f.panels_open == [false; 2]);
+        let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), dev_damage: Some(0.65), panels_open: [true, false], ..f };
         let g = ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev);
         assert!(g.gear_down && g.heat == 1.6 && g.dissipation.active == 1.0 && g.dev_heat == Some(1.6) && g.dev_gear == Some(true));
+        assert!(g.damage == 0.65 && g.dev_damage == Some(0.65) && g.panels_open == [true, false], "the damage's override; the panels kept");
         pilot.silent = true;
         assert_eq!(ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev).dissipation, VisualDissipation::default());
     }

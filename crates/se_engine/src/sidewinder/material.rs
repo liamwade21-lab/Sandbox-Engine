@@ -8,7 +8,7 @@
 //!
 //! Made once per Elite material at the first spawn, twice for a material both the outside and the seat's view use (the
 //! seat's draws in its own depth slice: `SEAT_SLICE`); never changed after: per-frame values live in the storage buffers
-//! (`ShipLights`, `ShipScene`, `ShipGlow`), which `lights.rs` writes in place.
+//! (`ShipLights`, `ShipScene`, `ShipGlow`, which `lights.rs` writes in place, and `ShipGlass`, which `draw.rs` does).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -47,7 +47,6 @@ pub const NOT_YET_MATERIALS: &[(&str, &str)] = &[];
 /// Models not drawn yet, by the start of the model's file name, and why.
 pub const NOT_YET_MODELS: &[(&str, &str)] = &[
     ("shard0", "the canopy blowout's 20 shards"),
-    ("sidewinder_screen_damagestate", "the canopy's damaged twin (with the edge glass: the canopy-breach task)"),
     ("sidewinder_schematic", "the HUD's hologram"),
     ("sidewinder_shield", "the shield bubble"),
     ("cockpit_ui_hightlight_", "the tutorial's highlight overlays"),
@@ -420,7 +419,7 @@ pub fn resolve(name: &str, m: &EliteMaterial, paint: &Paint, mask_size: UVec2) -
     let named = |e: String| format!("material {name}: {e}");
     let textures = textures_of(m, paint).map_err(named)?;
     let params = ShipParams::new(m, paint, mask_size, false, !textures.is_empty()).map_err(named)?;
-    let cockpit = CockpitParams::new(m, &GlassEffects::stock()).map_err(named)?;
+    let cockpit = CockpitParams::new(m).map_err(named)?;
     Ok(Resolved { family: Family::of(m.shader.as_deref().unwrap_or("")), textures, params, cockpit })
 }
 
@@ -545,11 +544,12 @@ impl ShipWear {
 
 /// The cockpit glass's effects object (`CockpitGlassEffects`, made by FUN_1434dcba0, owned by the cockpit's render object at
 /// +0x90): FUN_1434dd710 writes its fields into six shader globals every frame. Made with the ice, condensation, crack and
-/// tint 0 and the alpha multiplier 1.0. The cracks activity writes the crack level only past its first stage's damage
-/// threshold (20 %; `cockpit.json`, re/elite/work/csm/logic/notes.md); a few of the cockpit's activities write the ice and
-/// the condensation (calls of its slot 0x90 followed by a store to +0x40 / +0x44: 0x1434d949b, 0x1434debdb, 0x1434dfcd0);
-/// no store to the tint (+0x4c) or the alpha multiplier (+0x50) was found among those callers. The canopy-breach task drives
-/// these; the stock ship has `stock()`.
+/// tint 0 and the alpha multiplier 1.0. The crack amount (+0x48) is the cracks activity's level (`CockpitCracksActivity`,
+/// FUN_1434dd8b0, written every frame it runs and kept after it stops: `parts::Cracks`, `Parts::crack`); a few of the
+/// cockpit's activities write the ice and the condensation (calls of its slot 0x90 followed by a store to +0x40 / +0x44:
+/// 0x1434d949b, 0x1434debdb, 0x1434dfcd0; not run); no store to the tint (+0x4c) or the alpha multiplier (+0x50) was found
+/// among those callers. Its values reach the glass through `ShipGlass`, a buffer written in place (`draw.rs`), never a
+/// material edit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlassEffects {
     /// gCockpitGlassIceScale (+0x40).
@@ -577,6 +577,42 @@ impl GlassEffects {
             if self.condensation <= self.ice { 1 } else { 2 }
         } else {
             0
+        }
+    }
+
+    /// The globals as the glass reads them (`sidewinder_glass.wesl` `ShipGlass`).
+    pub fn gpu(&self) -> GlassEffectsGpu {
+        GlassEffectsGpu { effects: Vec4::new(self.crack, self.ice, self.condensation, self.tint_alpha), more: Vec4::new(self.alpha_multiplier, self.state() as f32, 0.0, 0.0) }
+    }
+}
+
+/// `sidewinder_glass.wesl` `ShipGlass`: x gCockpitGlassCrackAmount, y gCockpitGlassIceScale, z
+/// gCockpitGlassCondensationScale, w gCockpitGlassTintAlpha; `more` x gCockpitGlassAlphaMultiplier, y gCockpitGlassState.
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType)]
+pub struct GlassEffectsGpu {
+    pub effects: Vec4,
+    pub more: Vec4,
+}
+
+/// The buffer holding `GlassEffectsGpu`, bound to every `ShipMaterial` (only the canopy's family reads it), written in place
+/// by `draw.rs` when the glass effects change.
+#[derive(Resource)]
+pub struct ShipGlass {
+    pub buffer: Handle<ShaderBuffer>,
+    written: GlassEffects,
+}
+
+impl ShipGlass {
+    pub fn new(buffers: &mut Assets<ShaderBuffer>) -> ShipGlass {
+        let stock = GlassEffects::stock();
+        ShipGlass { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&stock.gpu()), RenderAssetUsages::default())), written: stock }
+    }
+
+    /// Writes `value` in place if it differs from what was last written.
+    pub fn write(&mut self, buffers: &mut Assets<ShaderBuffer>, value: GlassEffects) {
+        if value != self.written {
+            write_in_place(buffers, &self.buffer, &value.gpu());
+            self.written = value;
         }
     }
 }
@@ -608,17 +644,15 @@ pub struct CockpitParams {
     pub roughness: Vec4,
     pub dirt_roughness: Vec4,
     pub smears: Vec4,
-    pub effects: Vec4,
-    pub effects_more: Vec4,
     pub tint: Vec4,
     pub tint_distant: Vec4,
     pub fresnel: Vec4,
 }
 
 impl CockpitParams {
-    /// A material's: its family's attributes by name, and for the canopy the glass effects' globals (`effects`). Refuses a
-    /// material lacking an attribute its family reads.
-    pub fn new(m: &EliteMaterial, effects: &GlassEffects) -> Result<CockpitParams, String> {
+    /// A material's: its family's attributes by name (the canopy's glass effects' globals change while it is drawn: they are
+    /// `ShipGlass`'s). Refuses a material lacking an attribute its family reads.
+    pub fn new(m: &EliteMaterial) -> Result<CockpitParams, String> {
         let get = |name: &str, n: usize| attr4(m, name, n);
         let one = |name: &str| Ok::<f32, String>(get(name, 1)?.x);
         let mut c = CockpitParams::default();
@@ -648,8 +682,6 @@ impl CockpitParams {
                 c.dirt_roughness = Vec4::new(one("pDirtRoughness")?, one("pGlassThickness")?, 0.0, 0.0);
                 let (periods, scale_offset) = (get("pSmearsPeriods", 2)?, get("pSmearsScaleOffset", 2)?);
                 c.smears = Vec4::new(periods.x, periods.y, scale_offset.x, scale_offset.y);
-                c.effects = Vec4::new(effects.crack, effects.ice, effects.condensation, effects.tint_alpha);
-                c.effects_more = Vec4::new(effects.alpha_multiplier, effects.state() as f32, 0.0, 0.0);
             }
             Family::GlassTinted => {
                 c.tint = get("pGlassColourTint", 3)?.truncate().extend(one("pDistanceToOpaque")?);
@@ -821,7 +853,7 @@ const SEAT_GLASS_BIAS: f32 = 4.0e15;
 /// The ship's material: the sandbox's two light buffers, its family's textures (unused ones white) with one repeating,
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
 /// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`), the automatic exposure's adapted compensation
-/// (`ShipScene::adapt`). Made once.
+/// (`ShipScene::adapt`), the canopy's glass effects (`ShipGlass`). Made once.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ShipKey)]
 pub struct ShipMaterial {
@@ -859,6 +891,8 @@ pub struct ShipMaterial {
     pub glow: Handle<ShaderBuffer>,
     #[storage(17, read_only)]
     pub adapt: Handle<ShaderBuffer>,
+    #[storage(18, read_only)]
+    pub glass: Handle<ShaderBuffer>,
     pub family: Family,
 }
 
@@ -878,7 +912,7 @@ impl ShipMaterial {
     /// A material of family `family` with its slots' images `textures` (in `Family::slots`' order; `white` for the rest),
     /// `params` and `cockpit`.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
+    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, glass: &ShipGlass, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
         let tex = |i: usize| textures.get(i).cloned().unwrap_or_else(|| white.clone());
         ShipMaterial {
             frame: light.frame.clone(),
@@ -897,6 +931,7 @@ impl ShipMaterial {
             scene: scene.buffer.clone(),
             glow: glow.buffer.clone(),
             adapt: scene.adapt.clone(),
+            glass: glass.buffer.clone(),
             family,
         }
     }
@@ -1209,7 +1244,8 @@ mod tests {
         let fallback = EliteMaterial { shader: None, textures: Vec::new(), attrs: Vec::new(), fallback_to: Some("null".into()), why: None };
         assert!(!material_drawn("x", &fallback, &paint));
         assert!(model_drawn("sidewinder") && model_drawn("landinggearfront") && model_drawn("cockpit_chair") && model_drawn("sidewinder_screen"));
-        assert!(!model_drawn("shard014") && !model_drawn("sidewinder_screen_damagestate_02") && !model_drawn("cockpit_ui_hightlight_radar"));
+        assert!(model_drawn("sidewinder_screen_damagestate_02"), "the breached windscreen (its two glass families are built)");
+        assert!(!model_drawn("shard014") && !model_drawn("cockpit_ui_hightlight_radar"));
         // Every material the cockpit and the glass use has a family of its own now: none is drawn plain.
         let (materials, _) = shipped();
         for (name, mat) in &materials.materials {
@@ -1231,7 +1267,7 @@ mod tests {
                 continue;
             }
             assert_eq!(attr4(m, "pMaterialModulationSlot", 1).unwrap().x, u32::MAX as f32, "{name}");
-            let c = CockpitParams::new(m, &GlassEffects::stock()).unwrap();
+            let c = CockpitParams::new(m).unwrap();
             assert_eq!(c.override_colour.w, 0.0, "{name}: {:?}", c.override_colour);
             n += 1;
         }
@@ -1246,9 +1282,9 @@ mod tests {
         let (materials, _) = shipped();
         let glass = materials.get("cockpit_glass_int").unwrap();
         let stock = GlassEffects::stock();
-        let c = CockpitParams::new(glass, &stock).unwrap();
-        assert_eq!(c.effects, Vec4::new(0.0, 0.0, 0.0, 0.0), "crack, ice, condensation, tint");
-        assert_eq!(c.effects_more.x, 1.0, "the alpha multiplier");
+        let c = CockpitParams::new(glass).unwrap();
+        assert_eq!(stock.gpu().effects, Vec4::new(0.0, 0.0, 0.0, 0.0), "crack, ice, condensation, tint");
+        assert_eq!(stock.gpu().more, Vec4::new(1.0, 0.0, 0.0, 0.0), "the alpha multiplier, the state");
         assert!(c.cracks_colour.w > 0.0, "the threshold {} is above any crack key", c.cracks_colour.w);
         assert_eq!(stock.state(), 0);
         let with = |ice: f32, condensation: f32| GlassEffects { ice, condensation, ..stock }.state();
@@ -1261,7 +1297,7 @@ mod tests {
     #[test]
     fn outside_glass_tints_are_grey() {
         let (materials, _) = shipped();
-        let c = CockpitParams::new(materials.get("shipexternalglassmaterial").unwrap(), &GlassEffects::stock()).unwrap();
+        let c = CockpitParams::new(materials.get("shipexternalglassmaterial").unwrap()).unwrap();
         for tint in [c.tint, c.tint_distant] {
             assert!(tint.x == tint.y && tint.y == tint.z, "{tint:?}");
         }
@@ -1316,7 +1352,7 @@ mod tests {
             }
             sources(m, &paint).unwrap_or_else(|e| panic!("{name}: {e}"));
             ShipParams::new(m, &paint, UVec2::new(256, 256), false, true).unwrap_or_else(|e| panic!("{name}: {e}"));
-            CockpitParams::new(m, &GlassEffects::stock()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            CockpitParams::new(m).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(unaccounted_attributes(m).is_empty(), "{name}: {:?}", unaccounted_attributes(m));
         }
     }

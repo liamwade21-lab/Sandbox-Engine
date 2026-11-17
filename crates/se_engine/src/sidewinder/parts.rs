@@ -1,13 +1,15 @@
 //! The ship's state machines running, and the pose of its moving parts (ARCHITECTURE.md A6): one `elite_rig::Runner` per
 //! machine (`ship.machines`' order) over the rigs' values, asked by the ship's facts (`facts::ShipFacts`) as Elite asks them
 //! (`machines.rs`), stepped in real seconds, their events acted on; every rig node's matrix in the ship's space for `draw`,
-//! every machine's state for `lights`, the gear's real state and its feet for the flight, every cue and audio state for the
-//! sound (`Parts::events`). Nothing of the lights or the sound is read here.
+//! every machine's state for `lights`, the canopy's crack amount for the glass (`Parts::crack`), the gear's real state and
+//! its feet for the flight, every cue and audio state for the sound (`Parts::events`). Nothing of the lights or the sound is
+//! read here.
 //!
 //! Each frame: (a) a machine is asked for a state only when what is wanted of it changes (`ask`; Elite's code asks on a
 //! change too: the gear manager when its request byte changes, FUN_14307f8a0, the power distributor when its state does);
 //! (b) the activities the runner leaves to the caller that this module runs step (the heat vents'
-//! `GenericParamDriveKinematicActivity`, `elite_rig::param_drive_step`); (c) every machine steps, the gear doors and every
+//! `GenericParamDriveKinematicActivity`, `elite_rig::param_drive_step`; the cockpit's `CockpitCracksActivity`, `elite_rig::Cracks`, fed
+//! `ShipFacts::damage`); (c) every machine steps, the gear doors and every
 //! other machine before the legs, in frames of at most `elite_rig::MAX_FRAME_S`; a leg waiting on its doors asks whether
 //! the doors' machine is busy (`elite_rig::door_busy`: not in its own target state, FUN_142d393d0); (d) the events are acted
 //! on after each of those frames: a leg's door request reaches its doors' machine at once, in the same frame (Elite's request
@@ -20,7 +22,7 @@ use std::collections::HashSet;
 use bevy::math::{DQuat, DVec3, Mat4};
 use bevy::prelude::*;
 use se_core::catalog::ObjectRef;
-use se_core::elite_rig::{self, Event, Runner, Values, MAX_FRAMES, MAX_FRAME_S};
+use se_core::elite_rig::{self, Cracks, Event, Runner, Values, CRACKS_NONE, MAX_FRAMES, MAX_FRAME_S};
 use se_core::elite_ship::Activity;
 use serde_json::{Map, Value};
 
@@ -133,6 +135,8 @@ struct Run {
     legs: Vec<usize>,
     leg_gear: Vec<Option<usize>>,
     drives: Vec<Drive>,
+    /// The running cracks activity: (machine, activity), its state.
+    cracks: Option<(usize, usize, Cracks)>,
     /// Nodes a `KModelState` with `restore_on_stop` changed, to give back at its Stop: (machine, activity, node, shown).
     saved: Vec<(usize, usize, usize, bool)>,
     /// The parked ship these machines are for (its place, to tell a new ship).
@@ -152,6 +156,9 @@ pub struct Parts {
     pub dev_states: Vec<(String, String)>,
     /// `sw parts log on`: each state change and event, with the machines' clock.
     pub log: bool,
+    /// The canopy's crack amount (the cockpit render object's +0x48, gCockpitGlassCrackAmount): the cracks activity's level,
+    /// kept when it stops; 0 for a new ship (the glass effects object is made with it 0).
+    crack: f32,
     values: Values,
     run: Option<Run>,
     gear: Gear,
@@ -214,6 +221,12 @@ impl Parts {
         self.shown_revision
     }
 
+    /// The canopy's crack amount now (`crack`), for the glass.
+    pub fn crack(&self) -> f32 {
+        self.crack
+    }
+
+
     /// This frame's events for the sound (`ShipEvent`). (Its next task reads them here; until then one call to
     /// `ShipSound::post_cue` in `update` plays the cues.)
     #[allow(dead_code)]
@@ -257,8 +270,9 @@ impl Parts {
         let order = (0..n).filter(|i| !legs.contains(i)).chain(legs.iter().copied()).collect();
         let entered = runners.iter().map(|r| r.state().to_string()).collect();
         let leg_gear = legs.iter().map(|&l| rig.gear_of_leg(l)).collect();
-        self.run = Some(Run { runners, order, asked: vec![None; n], entered, door_of, door_open: vec![None; n], legs: legs.clone(), leg_gear, drives: Vec::new(), saved: Vec::new(), ship });
+        self.run = Some(Run { runners, order, asked: vec![None; n], entered, door_of, door_open: vec![None; n], legs: legs.clone(), leg_gear, drives: Vec::new(), cracks: None, saved: Vec::new(), ship });
         self.values = values;
+        self.crack = 0.0;
         self.gear = Gear { legs: vec![0; legs.len()] };
         self.shown = vec![true; rig.nodes.len()];
         self.shown_revision += 1;
@@ -338,6 +352,14 @@ impl Parts {
         for s in unfed {
             self.warn_once(format!("drive {s}"), || format!("nothing feeds the drive's parameter {s}: it stands still"));
         }
+        // (b) The cracks.
+        let damage = facts.damage;
+        if let Some((machine, _, cracks)) = self.run.as_mut().and_then(|r| r.cracks.as_mut()) {
+            let (machine, group) = (*machine, cracks.group.clone());
+            let states = cracks.step(damage, dt as f32);
+            self.crack = cracks.level;
+            self.post_cracks(machine, &group, states, quiet);
+        }
         // (c), (d) The machines in frames, the doors and every other before the legs, each frame's events acted on.
         let frames = ((dt / MAX_FRAME_S).ceil() as usize).clamp(1, MAX_FRAMES);
         let h = dt / frames as f64;
@@ -408,6 +430,21 @@ impl Parts {
                             None => self.warn_once(format!("drive {i}"), || format!("{name}: a drive without its fields")),
                         },
                         "GenericParamDriveKinematicActivity" => run.drives.retain(|d| (d.machine, d.index) != (i, *index)),
+                        "CockpitCracksActivity" if start => match Cracks::new(&fields) {
+                            Some(mut c) => {
+                                let (group, states) = (c.group.clone(), c.start(facts.damage));
+                                self.crack = c.level;
+                                run.cracks = Some((i, *index, c));
+                                self.post_cracks(i, &group, states, quiet);
+                            }
+                            None => self.warn_once(format!("cracks {i}"), || format!("{name}: a cracks activity without its fields")),
+                        },
+                        // (Stop, FUN_1434de0e0: the Wwise state back to none; the level stays where it was.)
+                        "CockpitCracksActivity" => {
+                            if let Some((_, _, c)) = run.cracks.take_if(|(m, a, _)| (*m, *a) == (i, *index)) {
+                                self.post_cracks(i, &c.group, vec![CRACKS_NONE.to_string()], quiet);
+                            }
+                        }
                         k if k.starts_with("Audio") || k.starts_with("KeepAudio") || k == "ShipVoiceReporter" => {
                             if !quiet {
                                 self.events.push(ShipEvent { machine: i, event: e.clone() });
@@ -428,6 +465,19 @@ impl Parts {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The Wwise states the cracks activity of machine `i` set, as the sound's events (quiet: a settling's, none).
+    fn post_cracks(&mut self, i: usize, group: &str, states: Vec<String>, quiet: bool) {
+        if quiet {
+            return;
+        }
+        for state in states {
+            if self.log {
+                info!("sidewinder parts: {:.3} s the cracks set {group} to {state}, the crack amount {:.2}", self.clock, self.crack);
+            }
+            self.events.push(ShipEvent { machine: i, event: Event::AudioState { group: group.to_string(), state } });
         }
     }
 
@@ -481,6 +531,7 @@ impl Parts {
         for d in &run.drives {
             info!("sidewinder parts: drive {} of {}: {:.3} -> {:.3}", d.names.join("/"), d.source, d.out, d.target);
         }
+        info!("sidewinder parts: the crack amount {:.3} (the cracks activity {})", self.crack, run.cracks.as_ref().map_or("stopped".to_string(), |(_, _, c)| format!("at stage {}, clock {:.2} s", c.index, c.clock)));
     }
 }
 
@@ -795,15 +846,63 @@ mod tests {
         assert!(moving.iter().zip(&shape.feet).all(|(m, rest)| m.y > rest.y + 0.05), "{moving:?}");
     }
 
-    /// A breached canopy hides the windscreen (its `KModelState`s).
+    /// A breached canopy hides the windscreen and shows its broken twin (their `KModelState`s), whole: Normal shows the
+    /// windscreen alone; the breach goes through Breaching (5 s) to Canopy Breached, both showing the broken one alone.
     #[test]
     fn the_windscreen_goes_with_the_canopy() {
         let rig = rig();
-        let screen = rig.nodes.iter().position(|n| n.name == "Cockpit_Windscreen").unwrap();
+        let node = |name: &str| rig.nodes.iter().position(|n| n.name == name).unwrap();
+        let (screen, broken) = (node("Cockpit_Windscreen"), node("Cockpit_Windscreen_Broken"));
+        assert!(rig.nodes[broken].model.is_some(), "the broken windscreen is drawn");
+        let mut s = Sim::new(&rig, true, 1.0 / 60.0);
+        assert!(s.parts.shown(screen) && !s.parts.shown(broken));
+        let state = rig.ship.machines.iter().position(|m| m.name == "CockpitState").unwrap();
+        let breached = ShipFacts { canopy_intact: false, ..facts(true) };
+        for _ in 0..60 {
+            s.parts.frame(&rig, &breached, s.dt, false);
+        }
+        assert_eq!(s.state(state), "Breaching");
+        assert!(!s.parts.shown(screen) && s.parts.shown(broken));
+        for _ in 0..360 {
+            s.parts.frame(&rig, &breached, s.dt, false);
+        }
+        assert_eq!(s.state(state), "Canopy Breached");
+        assert!(!s.parts.shown(screen) && s.parts.shown(broken));
         let mut parts = Parts::default();
-        parts.make(&rig, SHIP, &facts(true));
-        assert!(parts.shown(screen));
-        parts.make(&rig, SHIP, &ShipFacts { canopy_intact: false, ..facts(true) });
-        assert!(!parts.shown(screen));
+        parts.make(&rig, SHIP, &breached);
+        assert!(!parts.shown(screen) && parts.shown(broken), "a ship made breached");
+    }
+
+    /// The cracks in the game (their rule is `elite_rig::Cracks`, tested there): the ship's own cracks activity (four stages,
+    /// group `CockpitCrack`) runs in Normal; the facts' damage cracks the canopy; the breach stops the activity and the amount
+    /// stays whatever the damage after, and the glass reads it (`Parts::crack`).
+    #[test]
+    fn the_cracks_follow_the_damage() {
+        let rig = rig();
+        let fields = rig.ship.machines.iter().flat_map(|m| &m.states).flat_map(|s| &s.activities).find_map(|a| match a {
+            Activity::Other(o) if o.kind == "CockpitCracksActivity" => Some(o.fields.clone()),
+            _ => None,
+        });
+        let c = Cracks::new(&fields.unwrap()).unwrap();
+        assert_eq!((c.stages.len(), c.group.as_str()), (4, "CockpitCrack"));
+        let dt = 1.0 / 60.0;
+        // In the game: a test's damage cracks the canopy; the breach stops the activity and the amount stays.
+        let mut s = Sim::new(&rig, true, dt);
+        let cracked = ShipFacts { damage: 0.65, ..facts(true) };
+        for _ in 0..240 {
+            s.parts.frame(&rig, &cracked, s.dt, false);
+        }
+        assert_eq!(s.parts.crack(), 3.67);
+        let breached = ShipFacts { canopy_intact: false, ..cracked };
+        for _ in 0..30 {
+            s.parts.frame(&rig, &breached, s.dt, false);
+        }
+        assert!(s.parts.run.as_ref().unwrap().cracks.is_none(), "stopped by the breach");
+        assert!(s.parts.events.iter().any(|e| matches!(&e.event, Event::AudioState { group, state } if group == "CockpitCrack" && state == "None")));
+        let whole_again = ShipFacts { damage: 0.0, ..breached };
+        for _ in 0..30 {
+            s.parts.frame(&rig, &whole_again, s.dt, false);
+        }
+        assert_eq!(s.parts.crack(), 3.67, "kept after the breach, whatever the damage");
     }
 }

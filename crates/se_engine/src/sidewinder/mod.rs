@@ -497,7 +497,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_switch = Some(if verb == "silent" { pilot::Switch::Silent } else { pilot::Switch::Scoop });
             None
         }
-        // `sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]`: alone, logs every light.
+        // `sw lights [heat F|auto] [head on|off|auto] [gui off|auto] [cockpit X|auto] [state MACHINE STATE|auto] [switch]`:
+        // alone, logs every light.
         "lights" => {
             let rest = arg.split_once(' ').map_or("", |(_, rest)| rest);
             // (`sw lights state MACHINE STATE|auto` is the parts' `ask`.)
@@ -505,6 +506,14 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 Some(ask) => parts::dev_command(world, &format!("ask {ask}")),
                 None => lights::dev_command(world, rest),
             }
+            None
+        }
+        // `sw canopy damage F|auto`: a test's ship damage (0..1) for the cockpit's cracks (`ShipFacts::dev_damage`).
+        "canopy" if arg.split_whitespace().nth(1) == Some("damage") => {
+            let word = arg.split_whitespace().nth(2).unwrap_or("auto");
+            let damage = word.parse::<f32>().ok().filter(|d| d.is_finite());
+            info!("sidewinder: the ship's damage for the cracks {}", damage.map_or("is the ship's again".to_string(), |d| format!("{d} (a test)")));
+            world.resource_mut::<facts::ShipFacts>().dev_damage = damage;
             None
         }
         "canopy" => {

@@ -9,7 +9,9 @@
 //! (the colour correction reads it the same frame). While the exposure settles the ship is one adaptation step behind: at
 //! 60 frames a second at most 1 - e^(-5/60) = 8 % of the way left to go (`AutoExpSpeedUp` 5/s), none once it has settled.
 //!
-//! Nothing runs before the first spawn: the pipeline is queued, and the pass runs, only once `ShipScene` exists.
+//! Nothing runs before the first spawn: the pipeline is queued only once `ShipScene` exists, and the pass runs only while a
+//! ship exists (`Sidewinder::parked`, extracted each frame as `ShipPresent`), with one bind group kept until either buffer
+//! behind it is made anew.
 
 use bevy::core_pipeline::core_3d::main_opaque_pass_3d;
 use bevy::core_pipeline::{Core3d, Core3dSystems};
@@ -21,12 +23,13 @@ use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, ViewQuery};
 use bevy::render::storage::GpuShaderBuffer;
 use bevy::render::view::ExtractedView;
-use bevy::render::{Render, RenderApp, RenderSystems};
+use bevy::render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 
 use crate::exposure::AutoExposureBuffers;
 use crate::viltrumite::draw::MainView;
 
 use super::material::ShipScene;
+use super::Sidewinder;
 
 /// The copy's layout and pipeline, made at the first frame with a ship.
 #[derive(Resource)]
@@ -48,22 +51,44 @@ fn queue_copy(mut commands: Commands, assets: Res<AssetServer>, cache: Res<Pipel
     commands.insert_resource(AdaptCopy { layout, pipeline });
 }
 
-/// The state into `ShipScene::adapt`, once per frame (the main view only), before the opaque pass.
+/// Whether a ship exists this frame (the render world's copy of `Sidewinder::parked.is_some()`).
+#[derive(Resource, Default)]
+struct ShipPresent(bool);
+
+fn extract_present(mut commands: Commands, ship: Extract<Option<Res<Sidewinder>>>, mut was: Local<bool>) {
+    let present = ship.as_ref().is_some_and(|s| s.parked.is_some());
+    if present != *was {
+        info!("sidewinder: the exposure copy {}", if present { "runs (a ship exists)" } else { "stops (no ship)" });
+        *was = present;
+    }
+    commands.insert_resource(ShipPresent(present));
+}
+
+/// The state into `ShipScene::adapt`, once per frame (the main view only), before the opaque pass, while a ship exists. The
+/// bind group is kept with the two buffers' ids it was made for.
+#[allow(clippy::too_many_arguments)]
 fn copy(
     _view: ViewQuery<&ExtractedView, MainView>,
+    present: Option<Res<ShipPresent>>,
     scene: Option<Res<ShipScene>>,
     copy: Option<Res<AdaptCopy>>,
     auto: Option<Res<AutoExposureBuffers>>,
     buffers: Res<RenderAssets<GpuShaderBuffer>>,
     cache: Res<PipelineCache>,
+    mut group: Local<Option<(BufferId, BufferId, BindGroup)>>,
     mut ctx: RenderContext,
 ) {
-    let (Some(scene), Some(copy), Some(auto)) = (scene, copy, auto) else { return };
+    let (Some(true), Some(scene), Some(copy), Some(auto)) = (present.map(|p| p.0), scene, copy, auto) else { return };
     let (Some(pipeline), Some(target)) = (cache.get_compute_pipeline(copy.pipeline), buffers.get(&scene.adapt)) else { return };
-    let layout = cache.get_bind_group_layout(&copy.layout);
-    let group = ctx.render_device().create_bind_group("sidewinder_adapt", &layout, &BindGroupEntries::sequential((auto.state.as_entire_buffer_binding(), target.buffer.as_entire_buffer_binding())));
+    let ids = (auto.state.id(), target.buffer.id());
+    if group.as_ref().is_none_or(|(a, b, _)| (*a, *b) != ids) {
+        let layout = cache.get_bind_group_layout(&copy.layout);
+        let made = ctx.render_device().create_bind_group("sidewinder_adapt", &layout, &BindGroupEntries::sequential((auto.state.as_entire_buffer_binding(), target.buffer.as_entire_buffer_binding())));
+        *group = Some((ids.0, ids.1, made));
+    }
+    let Some((_, _, group)) = group.as_ref() else { return };
     let mut pass = ctx.command_encoder().begin_compute_pass(&ComputePassDescriptor { label: Some("sidewinder_adapt"), ..default() });
-    pass.set_bind_group(0, &group, &[]);
+    pass.set_bind_group(0, group, &[]);
     pass.set_pipeline(pipeline);
     pass.dispatch_workgroups(1, 1, 1);
 }
@@ -72,6 +97,8 @@ pub fn build(app: &mut App) {
     app.add_plugins(ExtractResourcePlugin::<ShipScene>::default());
     let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
     render_app
+        // (Nothing before the first spawn: both wait for the extracted `ShipScene` and the queued pipeline.)
+        .add_systems(ExtractSchedule, extract_present.run_if(resource_exists::<ShipScene>))
         .add_systems(Render, queue_copy.in_set(RenderSystems::PrepareResources).run_if(resource_exists::<ShipScene>).run_if(not(resource_exists::<AdaptCopy>)))
-        .add_systems(Core3d, copy.in_set(Core3dSystems::Prepass).before(main_opaque_pass_3d));
+        .add_systems(Core3d, copy.in_set(Core3dSystems::Prepass).before(main_opaque_pass_3d).run_if(resource_exists::<AdaptCopy>));
 }

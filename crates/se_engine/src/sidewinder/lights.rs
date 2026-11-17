@@ -21,8 +21,10 @@
 //! pulled back along it by inner fraction / tan(cone / 2), its colour times (1 + that)^2 (FUN_143590b40). A light shines only
 //! while its machine's state (`Parts::states`) is the activity's state: leaving the state stops the activity (vtable slot 13,
 //! FUN_1435bc330, the spot's FUN_1435bc470, unsubscribes the per-frame job that Start, slot 12, subscribed; no fade-out runs
-//! after it in the code at hand; re/elite/notes/agent_csm.md 5b), so the light gives none at once and its animator stands still until the state comes back (whether Elite
-//! makes the activity anew then, restarting the animator, was not traced). In its state its level is the intensity
+//! after it in the code at hand; re/elite/notes/agent_csm.md 5b). That the light then gives none at once is a reading (C):
+//! the code at hand stops updating the light, but whether the light record itself is cleared or released then was not
+//! proven; the mod gives it no light from that frame, and its animator stands still until the state comes back (whether
+//! Elite makes the activity anew then, restarting the animator, was not traced). In its state its level is the intensity
 //! animator's (`Animator`, FUN_143598ba0 to the letter): the record's off and on levels, its bool parameters switching it, its
 //! float parameters' product (rate-limited by the fades, raised to the exponent) scaling it, its fades, hold, timed blink or
 //! step pattern, and jitter; times the exposure factor 2^(clamp(scene_ev + bias, min, max) - 3) for a light with exposure on
@@ -43,9 +45,13 @@
 //!   heat fraction and whether the radiator runs (`facts::ShipFacts`, where a test's `sw lights heat` lives). The passive
 //!   one's `_OverRide` (used when at least 0) is never set by the mod.
 //! - `cockpitAmberLightIntensity` (float): created with 1.0 by FUN_144733e70; its writer was not found: `AMBER`, 1.0.
-//! - `OverrideBrightnessScale` (float) and the GUI lamps' `OverrideColour_*`: FUN_1430dbae0 works them out from the HUD's
-//!   panel colours, which the mod has none of: the brightness `OVERRIDE_BRIGHTNESS`, 1.0, and the GUI lamps keep the
-//!   record's colour, (0, 0, 0): those five lamps stay dark (an open item).
+//! - The five GUI lamps' colours (`OverrideColour_*`, each lamp's animator names one: its `colour_param`) and
+//!   `OverrideBrightnessScale` (float): FUN_1430dbae0 (called by FUN_14308fa30, the cockpit HUD component's update, each
+//!   time it runs: taken as 60 a second, E) writes them, as `PanelGlow` does: the HUD's two display colours made unit length, the side panels' and
+//!   the role panel's faded in and out as they open and close; the display colour itself is a measured stand-in
+//!   (`HUD_SRGB`, D), the brightness `OVERRIDE_BRIGHTNESS`, 1.0 (the branch that changes it was not traced). A lamp with
+//!   an override takes it for its record's colour (FUN_1435a5500 lines 83-95: the override, data +0x208, replaces the
+//!   colour, which is (0, 0, 0) in the data of all five).
 //! - The lighting component's brightness (FUN_1435a5500: the colour times vtable +0x80 of the light's owner's lighting
 //!   object, for every light without data +0x14a): its writer was not traced (`lighting_brightness`: the hull's 1.0, the
 //!   cockpit's a measured stand-in, its doc).
@@ -102,17 +108,24 @@ pub const SELF_ILLUM: f32 = 1.0;
 pub const HULL_LIGHTING_BRIGHTNESS: f32 = 1.0;
 /// The cockpit's lighting component's brightness (the same multiplier for the cockpit machines' lights; the cockpit is an
 /// owner of its own), grade D: a measured stand-in for the lighting brightness whose writer was not found (the exe gives
-/// the cockpit lamps' exposure factor, 2^5 to 2^5.5, exactly: FUN_1435a5500, FUN_142832db0; their light was ~20 times too
-/// strong with 1.0). Measured from the seat at night, where only the cockpit's lamps light the console (with them off it is
-/// black) and the red canopy lamps glow by themselves (self-illumination, not this): the user's `1.webp` (in space, beside a
-/// station and a planet) against the game's picture from the same eye at 3440x1440 (`.optimize/scratch/run/t4a4_measure.py`,
-/// both at 2000 px wide, linear luminance over the left red lamp's median, 0.086 in Elite's, 0.101 in the game's), the
-/// regions placed about the radar's middle in each: the radar's plinth 0.021 against the game's 0.88 (42 times), the radar's
-/// lower half 0.028 against 0.86 (31), the left console 0.0010 against 0.0147 (15), the right 0.0015 against 0.0168 (11).
-/// This is 1 / their geometric mean, 21.6; the regions spread it by a factor of 2 either way, and Elite's darkest values are
-/// a code or two of its 8-bit picture. Elite's console may also take light from the HUD's holograms or the planet (the
-/// plinth lies under the radar's hologram), which would make the true factor smaller still.
-pub const COCKPIT_LIGHTING_BRIGHTNESS: f32 = 1.0 / 21.6;
+/// the cockpit lamps' exposure factor, 2^5 to 2^5.5, exactly: FUN_1435a5500, FUN_142832db0). Measured from the seat at
+/// night, where only the cockpit's lamps light the console and the red canopy lamps glow by themselves (self-illumination,
+/// not this): the user's `1.webp` against the game's picture from the same eye at 3440x1440, each pixel of a region in
+/// `1.webp` sampled in the game's picture along the same direction (both pinhole cameras at `!Camera`: `1.webp` 676.5 px at
+/// 2000 wide, its middle shifted 1.7, 2.4 px; the game 56.249 degrees; `.optimize/scratch/run/t4a5_measure.py`), linear
+/// luminance medians over the outer left red lamp's median (0.086 in Elite's, 0.095 in the game's). Only regions the
+/// mod's own lamps light (the radar lamp and the ambients; out of the GUI lamps' reach: the target and own-ship lamps' 0.5 m,
+/// the side panels' 1 m): the radar dish inside its rings (930..1070 x 640..690 of `1.webp`, 0.0163 in Elite's) and the
+/// radar housing's face under its ticks (900..1100 x 750..760, 0.0100). The game's picture is not linear in this value (its
+/// tone curve's toe: from 1.0 to 1/21.6 these regions darkened 61 and 126 times, so the T4a-4 fit, which divided the
+/// ratios measured at 1.0, came out too dark: the dish 0.59 and the face 0.20 of Elite's at 1/21.6), so it is found by
+/// steps (`sw lights cockpit X`: 0.046, 0.067, 0.091, 0.125, 0.167, the run `t4a5_scan`): the dish matches at 1/15.8, the
+/// face at 1/8.2 (log-log between the two steps around each). This is their geometric mean, 1/11.4; the two regions
+/// spread it by 1.4 either way, the dish's value in Elite's picture holds the radar hologram's rings, and Elite's darkest
+/// values are a few codes of its 8-bit picture. Not matched by it: the side consoles Elite shows lit in `2.webp` and
+/// `3.webp` stay black in the game at any value up to 1/6 (the lamps the mod has, the GUI panel lamps included, reach
+/// little of them; Elite's own image-based light from its probes, which the mod has no counterpart of, is a likely part).
+pub const COCKPIT_LIGHTING_BRIGHTNESS: f32 = 1.0 / 11.4;
 
 /// The lighting component's brightness a light of `owner`'s machines is multiplied by (the list holds only the hull's and the
 /// cockpit's).
@@ -125,8 +138,87 @@ pub fn lighting_brightness(owner: MachineOwner) -> f32 {
 }
 /// `cockpitAmberLightIntensity`: its creation value (FUN_144733e70); its writer was not found.
 pub const AMBER: f32 = 1.0;
-/// `OverrideBrightnessScale`: worked out from the HUD's panel colours (FUN_1430dbae0), which the mod hasn't; 1.0.
+/// `OverrideBrightnessScale` (FUN_1430dbae0, its +0x550): 1.0 unless an object's vtable +0x248 answers true and the flag
+/// DAT_145e85b7b is set, then the product of that object's vtable +0x28 and +0x70 values (neither traced): 1.0.
 pub const OVERRIDE_BRIGHTNESS: f32 = 1.0;
+
+// ---- The GUI panel lamps' colours (FUN_1430dbae0) ----
+
+/// The HUD's display colour as its data gives it (sRGB bytes), a measured stand-in, grade D. FUN_1430dbae0 reads two colours,
+/// each +0x1960 of a display object (FUN_1436be090 indices 0 and 1, FUN_142a44e70), which FUN_142a3ce80 / FUN_142a41d80
+/// write as the display's configured colour (its data record +0x2fc) raised to 2.2 (0x14530ab98) when the record's +0x368
+/// is set (taken as set: the record was not read) and times 10 (0x14510be6c); the record is the HUD's, not among the
+/// Sidewinder's files. Only its direction matters (the lamps take it
+/// made unit length), so the stand-in is a hue: the colour of the user's `2.webp` where the HUD fills a surface with its own
+/// colour unblended (the left panel's selected NAVIGATION tab, pixels 235..435 x 354..378 at 2000 wide, the 1,211 with a
+/// channel over 200: median (202, 107, 0)). Its spread: the selected row of the same panel (420..860 x 430..447) gives
+/// (201, 103, 0), whose unit colour differs by 0.015 in green (0.226 against 0.241). Both displays take it (the user's
+/// pictures show one orange on the left and right holograms; Elite's default HUD).
+pub const HUD_SRGB: [u8; 3] = [202, 107, 0];
+/// fVar38 of FUN_1430dbae0, the colours' scale: 1.0 (DAT_144e328c0) unless the HUD component's +0x418 is -1 and +0x420 is
+/// set, then that object's vtable +0xd0 value (not traced): 1.0.
+pub const PANEL_COLOUR_SCALE: f32 = 1.0;
+/// A panel's fade steps per call of FUN_1430dbae0: up by 0.1 (0x144dee294) while the panel's state (its vtable +8) is 2 or
+/// more, down by 0.03 (0x145121488) otherwise, kept in 0..1.
+pub const PANEL_OPEN_STEP: f32 = 0.1;
+pub const PANEL_CLOSE_STEP: f32 = 0.03;
+/// The calls a second of real time, grade E: its caller FUN_14308fa30 is the cockpit HUD component's update, whose rate was
+/// not traced; taken as 60 a second, so the fades don't follow the frame rate (`PanelGlow::advance`).
+pub const PANEL_UPDATES_HZ: f64 = 60.0;
+
+/// The display colour's direction: the data's colour to the power 2.2, unit length (the weights 0.2126, 0.7152, 0.0722 at
+/// 0x1450ffa20 multiply it by its luminance first, which a positive luminance leaves unchanged after the normalising).
+pub fn hud_colour() -> Vec3 {
+    Vec3::from_array(HUD_SRGB.map(|c| (c as f32 / 255.0).powf(2.2))).normalize_or_zero()
+}
+
+/// The GUI panel lamps' override colours, FUN_1430dbae0: `OverrideColour_Left` the second display's colour, `_Right` the
+/// first's, each unit length x `PANEL_COLOUR_SCALE`; `_SidePanelLeft`, `_SidePanelRight` and `_RoleSwitchPanel` the first
+/// display's x its panel's fade (the panels the component's +0x4da, +0x4dc, +0x4de name, taken to be those three by the
+/// parameters' names). The mod's left and right panels are its side panels (`ShipFacts::panels_open`); it has no role
+/// panel, so that fade stays 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PanelGlow {
+    /// The left side panel's, the right's and the role panel's fade, 0..1.
+    pub fades: [f32; 3],
+    /// `sw lights gui off`: a test's override, every colour black (the five lamps dark, as before they were built).
+    pub dark: bool,
+    /// Real seconds not yet taken by a call (`advance`).
+    pending: f64,
+}
+
+impl PanelGlow {
+    /// `dt` real seconds: as many calls as `PANEL_UPDATES_HZ` gives in them (a long frame takes several; at most enough to
+    /// close a panel from full), the rest kept for the next.
+    pub fn advance(&mut self, dt: f64, open: [bool; 3]) {
+        self.pending += dt.max(0.0);
+        // (A hair of slack so that a frame rate dividing the rate exactly never loses a call to rounding.)
+        let calls = (self.pending * PANEL_UPDATES_HZ + 1e-6).floor();
+        self.pending = (self.pending - calls / PANEL_UPDATES_HZ).max(0.0);
+        for _ in 0..(calls as usize).min(64) {
+            self.step(open);
+        }
+    }
+
+    /// One call: each fade towards its panel's state (`open`).
+    pub fn step(&mut self, open: [bool; 3]) {
+        for (f, o) in self.fades.iter_mut().zip(open) {
+            *f = if o { (*f + PANEL_OPEN_STEP).min(1.0) } else { (*f - PANEL_CLOSE_STEP).max(0.0) };
+        }
+    }
+
+    /// An override colour by its parameter's name; None for a name it doesn't write.
+    pub fn colour(&self, name: &str) -> Option<Vec3> {
+        let c = if self.dark { Vec3::ZERO } else { hud_colour() * PANEL_COLOUR_SCALE };
+        Some(match name {
+            "OverrideColour_Left" | "OverrideColour_Right" => c,
+            "OverrideColour_SidePanelLeft" => c * self.fades[0],
+            "OverrideColour_SidePanelRight" => c * self.fades[1],
+            "OverrideColour_RoleSwitchPanel" => c * self.fades[2],
+            _ => return None,
+        })
+    }
+}
 /// `Warning_DangerProximity`: no writer found; false.
 pub const DANGER_PROXIMITY: bool = false;
 /// `Warning_Overheating` is heat / capacity at least this (FUN_1441988d0, 0x144dedfd8).
@@ -329,11 +421,13 @@ impl Lamp {
     }
 
     /// The buffer's record at `level` (the animator's intensity, without the exposure factor, which the shader applies): the
-    /// colour x the owner's lighting brightness x `level` x U.
-    pub fn record(&self, level: f32) -> ShipLight {
+    /// colour (the GUI panel lamps' override from `glow` in place of the data's) x the owner's lighting brightness x `level`
+    /// x U.
+    pub fn record(&self, level: f32, glow: &PanelGlow) -> ShipLight {
         let Some((pos, axis)) = self.place else { return ShipLight::default() };
         let l = &self.light;
-        let colour = Vec3::from_array(l.colour.map(|c| c as f32)) * (lighting_brightness(self.owner) * level * ELITE_UNIT);
+        let base = self.animator.colour_param.as_deref().and_then(|p| glow.colour(p)).unwrap_or_else(|| Vec3::from_array(l.colour.map(|c| c as f32)));
+        let colour = base * (lighting_brightness(self.owner) * level * ELITE_UNIT);
         let (range, size) = (l.range_m as f32, l.source_size as f32);
         if !self.spot {
             let specular = l.specular_scale.unwrap_or(1.0).clamp(0.0, 1.0) as f32;
@@ -531,9 +625,13 @@ pub struct LightsState {
     /// The scene's inputs as last written, and whether the adapted compensation applied.
     scene: Option<(SceneExposure, bool)>,
     glow: Option<HeatGlow>,
+    /// The GUI panel lamps' colours (FUN_1430dbae0's fades).
+    panels: PanelGlow,
     placed: u64,
     /// `sw lights head on|off|auto`: a test's lights switch over the pilot's (its heat is the facts': `ShipFacts::dev_heat`).
     pub dev_headlights: Option<bool>,
+    /// `sw lights cockpit X|auto`: a test's cockpit lighting brightness over `COCKPIT_LIGHTING_BRIGHTNESS` (measuring it).
+    pub dev_cockpit: Option<f32>,
     pub log: bool,
 }
 
@@ -554,6 +652,7 @@ pub fn update(
     cams: Query<&ColorGrading, With<crate::camera::MainCamera>>,
     auto: Res<crate::exposure::AutoExposureSettings>,
     photo: Res<crate::exposure::PhotoMode>,
+    real: Res<Time<Real>>,
 ) {
     let (Some(mut list), Some(mut lights), Some(scene), Some(glow)) = (list, lights, scene, glow) else { return };
     let states = parts.states();
@@ -586,12 +685,14 @@ pub fn update(
     let p = Params::of(facts.heat, facts.radiator, state.dev_headlights.unwrap_or(pilot.lights), parts.gear().deployed());
     let dt = time.delta_secs();
     let st = &mut *state;
+    // The GUI panel lamps' colours: FUN_1430dbae0's calls in this frame's real time, the side panels as the facts give them.
+    st.panels.advance(real.delta_secs_f64(), [facts.panels_open[0], facts.panels_open[1], false]);
     let mut records = Vec::with_capacity(n);
     for (i, lamp) in list.lamps.iter().enumerate() {
         // Out of its state the activity is stopped: no light, and nothing steps its animator (the module's notes).
         if !states.get(lamp.machine).is_some_and(|s| *s == lamp.state) {
             st.levels[i] = 0.0;
-            records.push(lamp.record(0.0));
+            records.push(lamp.record(0.0, &st.panels));
             continue;
         }
         let a = &lamp.animator;
@@ -600,7 +701,9 @@ pub fn update(
         // (The exposure factor, which multiplies the whole level, is the shader's: the level here is without it.)
         let level = st.animators[i].step(a, &lamp.steps, dt, true, &bools, &floats, (lamp.light.intensity as f32, lamp.light.float_120 as f32), 1.0, &mut st.rngs[i]);
         st.levels[i] = level;
-        records.push(lamp.record(level));
+        // (A test's cockpit brightness in place of the stand-in's: `sw lights cockpit`.)
+        let dev = st.dev_cockpit.filter(|_| lamp.owner == MachineOwner::Cockpit).map_or(1.0, |c| c / COCKPIT_LIGHTING_BRIGHTNESS);
+        records.push(lamp.record(level * dev, &st.panels));
     }
     if records != st.written {
         lights.write(&mut buffers, &records);
@@ -626,16 +729,19 @@ pub fn update(
 fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipRig, p: &Params) {
     let scene_ev = st.scene.map_or(0.0, |(s, _)| s.scene_ev);
     for (i, lamp) in list.lamps.iter().enumerate() {
-        let r = lamp.record(st.levels[i]);
+        let r = lamp.record(st.levels[i], &st.panels);
         let machine = rig.ship.machines.get(lamp.machine).map_or("?", |m| m.name.as_str());
         let now = states.get(lamp.machine).map_or("?", String::as_str);
         info!(
-            "sidewinder light {i:2} {}{}: {} '{}' at {} ({machine} {} {}, now {now}); level {:.4} x factor {:.3}, colour {:.4} {:.4} {:.4}, range {:.2} m, animator {}",
+            "sidewinder light {i:2} {}{}: {} '{}' at {} {:.3} {:.3} {:.3} ({machine} {} {}, now {now}); level {:.4} x factor {:.3}, colour {:.4} {:.4} {:.4}, range {:.2} m, animator {}",
             if i < list.hull { "hull" } else { "cockpit" },
             if lamp.flagged() { " (seat)" } else { "" },
             if lamp.spot { "spot" } else { "point" },
             lamp.holder(),
             lamp.bone,
+            r.pos_range.x,
+            r.pos_range.y,
+            r.pos_range.z,
             if states.get(lamp.machine).is_some_and(|s| *s == lamp.state) { "in" } else { "out of" },
             lamp.state,
             st.levels[i],
@@ -649,7 +755,7 @@ fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipR
     }
     let (inside, outside) = (list.range(true), list.range(false));
     info!(
-        "sidewinder lights: {} slots ({} hull, {} cockpit; the outside's range {}..{}, the seat's {}..{}); parameters {p:?}; scene {:?}; heat glow level {:.3} {:?}",
+        "sidewinder lights: {} slots ({} hull, {} cockpit; the outside's range {}..{}, the seat's {}..{}); parameters {p:?}; scene {:?}; heat glow level {:.3} {:?}; the GUI panels' fades {:?}",
         list.lamps.len(),
         list.hull,
         list.lamps.len() - list.hull,
@@ -659,12 +765,14 @@ fn log_lights(list: &LightList, st: &LightsState, states: &[String], rig: &ShipR
         inside.x + inside.y,
         st.scene,
         st.heat_level,
-        st.glow
+        st.glow,
+        st.panels.fades
     );
 }
 
-/// `sw lights [heat F|auto] [head on|off|auto] [switch]`: alone it logs every light; the words set a test's heat fraction
-/// (the facts') or headlights switch over the pilot's, or press the pilot's lights switch (Insert). (`sw lights state
+/// `sw lights [heat F|auto] [head on|off|auto] [gui off|auto] [cockpit X|auto] [switch]`: alone it logs every light; the
+/// words set a test's heat fraction (the facts') or headlights switch over the pilot's, darken the five GUI panel lamps or
+/// set the cockpit's lighting brightness (measuring), or press the pilot's lights switch (Insert). (`sw lights state
 /// MACHINE STATE|auto` is the parts' `ask`: `mod.rs` hands it there.)
 pub fn dev_command(world: &mut World, args: &str) {
     let words: Vec<&str> = args.split_whitespace().collect();
@@ -677,7 +785,9 @@ pub fn dev_command(world: &mut World, args: &str) {
             _ => None,
         },
         ["switch"] => world.resource_mut::<Pilot>().dev_switch = Some(super::pilot::Switch::Lights),
-        _ => warn!("sw lights [heat F|auto] [head on|off|auto] [state MACHINE STATE|auto] [switch]"),
+        ["gui", w] => world.resource_mut::<LightsState>().panels.dark = *w == "off",
+        ["cockpit", x] => world.resource_mut::<LightsState>().dev_cockpit = x.parse::<f32>().ok().filter(|c| c.is_finite() && *c >= 0.0),
+        _ => warn!("sw lights [heat F|auto] [head on|off|auto] [gui off|auto] [cockpit X|auto] [state MACHINE STATE|auto] [switch]"),
     }
 }
 
@@ -866,7 +976,7 @@ mod tests {
         let head = list.lamps.iter().find(|l| l.spot && l.light.ies_profile.is_some()).unwrap();
         let (pos, axis) = head.place.unwrap();
         assert!(axis.z < -0.99 && pos.z < -5.0, "{pos} {axis}");
-        let r = head.record(1.0);
+        let r = head.record(1.0, &PanelGlow::default());
         assert!((r.dir_cos.w - 30f32.to_radians().cos()).abs() < 1e-5 && (r.spot.x - 27f32.to_radians().cos()).abs() < 1e-5 && (r.spot.y - 3.0).abs() < 1e-4 && r.spot.z == 1.0);
         // The heat effect of the parked ship's OperationsMode state, and its glow's ends.
         let ops = rig.ship.machines.iter().find(|m| m.name == "OperationsMode").unwrap();
@@ -875,5 +985,71 @@ mod tests {
         assert_eq!(e.glow(0.0), HeatGlow::default());
         assert_eq!(e.glow(1.0).map_scales, Vec4::new(1.0, 0.1, 0.5, 0.0));
         assert!((e.follow(0.0, 1.0, 0.5) - 0.5).abs() < 1e-6 && e.follow(0.9, 0.0, 2.0) == 0.0);
+        // The five GUI panel lamps of InFlight: each names its override colour; the HUD's colour (unit length) on the target
+        // and own-ship lamps always, on a side panel's only while it is open (faded in over 10 calls, out over 34).
+        let gui: Vec<&Lamp> = list.lamps.iter().filter(|l| l.state == "InFlight" && l.animator.colour_param.is_some()).collect();
+        let names: Vec<&str> = gui.iter().map(|l| l.holder()).collect();
+        assert_eq!(names, ["Cockpit_GUI_LeftPanel", "Cockpit_GUI_PlayerShip", "Cockpit_GUI_RightPanel", "Cockpit_GUI_Target", "RoleSwitchGuiPanelLight"]);
+        assert!(gui.iter().all(|l| l.light.colour == [0.0; 3]), "black in the data: the override is all their colour");
+        let left = gui[0];
+        let mut glow = PanelGlow::default();
+        assert_eq!(left.record(1.0, &glow).colour.truncate(), Vec3::ZERO, "a closed panel's lamp is dark");
+        let target = gui[3].record(1.0, &glow).colour.truncate();
+        assert!((target.length() - COCKPIT_LIGHTING_BRIGHTNESS * ELITE_UNIT).abs() < 1e-9, "the unit colour at level 1: {target}");
+        assert!((hud_colour().length() - 1.0).abs() < 1e-6 && hud_colour().x > 0.95 && hud_colour().z == 0.0);
+        let mut calls = 0;
+        while glow.fades[0] < 1.0 {
+            glow.step([true, false, false]);
+            calls += 1;
+        }
+        assert!((10..=11).contains(&calls) && glow.fades[1] == 0.0, "{calls} calls to open");
+        let open = left.record(1.0, &glow).colour.truncate();
+        assert!((open - hud_colour() * COCKPIT_LIGHTING_BRIGHTNESS * ELITE_UNIT).length() < 1e-9, "{open}");
+        let mut calls = 0;
+        while glow.fades[0] > 0.0 {
+            glow.step([false; 3]);
+            calls += 1;
+        }
+        assert!((34..=35).contains(&calls), "{calls} calls to close");
+    }
+
+    /// The panel fades follow real time, not frames: 0.5 s open then 0.5 s closed at 30, 60 and 144 frames a second end at
+    /// the same fades (30 calls each way: full after 10, then down 0.9).
+    #[test]
+    fn panel_fades_ignore_the_frame_rate() {
+        let at = |fps: f64| {
+            let mut g = PanelGlow::default();
+            let n = (0.5 * fps).round() as usize;
+            (0..n).for_each(|_| g.advance(1.0 / fps, [true, false, false]));
+            let open = g.fades[0];
+            (0..n).for_each(|_| g.advance(1.0 / fps, [false; 3]));
+            (open, g.fades[0])
+        };
+        let (a, b, c) = (at(30.0), at(60.0), at(144.0));
+        assert_eq!(a.0, 1.0);
+        assert!((a.1 - 0.1).abs() < 1e-5, "{a:?}");
+        for x in [b, c] {
+            assert!((x.0 - a.0).abs() < 1e-6 && (x.1 - a.1).abs() < 1e-6, "{a:?} against {x:?}");
+        }
+        // A long frame takes several calls.
+        let mut g = PanelGlow::default();
+        g.advance(0.1, [true, false, false]);
+        assert!((g.fades[0] - 0.6).abs() < 1e-6, "{:?}", g.fades);
+    }
+
+    /// Every cockpit lamp's place relative to the eye (the seat's camera, `!Camera`), for measuring pictures from the seat:
+    /// `cargo test --profile agent -p se_engine print_cockpit_lamps -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_cockpit_lamps() {
+        let read = |rel: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string());
+        let a = super::super::assets::load(&read).unwrap_or_else(|(f, why)| panic!("{f}: {why}")).assets;
+        let list = LightList::new(&a.rig, &a.rig.static_pose(true)).unwrap();
+        let eye = Vec3::from_array(a.eye);
+        for (i, l) in list.lamps.iter().enumerate().skip(list.hull) {
+            let (pos, _) = l.place.unwrap_or_default();
+            let d = pos - eye;
+            println!("{i:2} {:34} {:10} {:>36} rel ({:6.3} {:6.3} {:6.3}) range {:.2} intensity {:.2} colour {:?} param {:?}", l.holder(), l.state, l.bone, d.x, d.y, d.z, l.light.range_m, l.light.intensity, l.light.colour, l.animator.colour_param);
+        }
     }
 }

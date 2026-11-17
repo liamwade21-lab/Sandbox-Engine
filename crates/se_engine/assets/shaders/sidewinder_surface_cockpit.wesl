@@ -69,11 +69,7 @@ struct CockpitParams {
     dirt_roughness: vec4<f32>,
     // pSmearsPeriods xy, pSmearsScaleOffset zw.
     smears: vec4<f32>,
-    // The glass effects' globals (material.rs `GlassEffects`): gCockpitGlassCrackAmount, gCockpitGlassIceScale,
-    // gCockpitGlassCondensationScale, gCockpitGlassTintAlpha.
-    effects: vec4<f32>,
-    // gCockpitGlassAlphaMultiplier x, gCockpitGlassState y.
-    effects_more: vec4<f32>,
+    // (The canopy's glass effects' globals change while it is drawn: sidewinder_glass.wesl `ship_glass`.)
     // The outside glass: pGlassColourTint rgb, pDistanceToOpaque w.
     tint: vec4<f32>,
     // pGlassColourTint_Distant rgb, pFadeRange w.

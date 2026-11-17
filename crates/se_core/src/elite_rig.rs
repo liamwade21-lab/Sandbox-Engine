@@ -820,6 +820,125 @@ pub fn param_drive_step(out: f64, target: f64, rate: f64, dt: f64) -> f64 {
     out + step
 }
 
+// ---- The canopy's cracks (`CockpitCracksActivity`; the game runs it from `sidewinder/parts.rs`) ----
+
+/// One stage of the cracks activity's data (re/elite/work/csm/logic/notes.md "CockpitCracksActivity").
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrackStage {
+    pub threshold: f32,
+    pub level: f32,
+    pub grow: f32,
+    pub hold: f32,
+    pub audio: Option<String>,
+}
+
+/// A running `CockpitCracksActivity`, to the letter in f32 (Start FUN_1434de9a0, the frame FUN_1434dd8b0, its stage pick
+/// FUN_1434ddfc0, its reset FUN_1434de570; decompiles in re/elite/work/csm/dec/; its data is `CockpitState`'s Normal in `ship.json`): the stage index steps one at a time
+/// towards the last stage whose threshold is below the damage, each stage's clock running up to its grow + hold time (the
+/// damage above the stage's threshold) or down to 0; the level ramps from the previous stage's to this one's over its grow
+/// time. It is the crack amount the cockpit's render object keeps (+0x48), written every frame the activity runs and left as
+/// it is when it stops (Stop, FUN_1434de0e0, sets the Wwise state to none and writes no level). The activity's running-time sums (+0xec, +0xf0, +0xf4) and its second job (FUN_1434d9560: something
+/// at the hard-coded thresholds 0.1, 0.2, 0.3) touch nothing drawn: not kept.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cracks {
+    pub stages: Vec<CrackStage>,
+    /// The Wwise state group its stages set (`audio_state_group`).
+    pub group: String,
+    /// +0xe0: the stage now (-1 none).
+    pub index: i32,
+    /// +0xe8: the stage's clock.
+    pub clock: f32,
+    /// +0xc0: the level.
+    pub level: f32,
+    /// +0xb8: the threshold of the stage last stepped into (Start leaves it as it was: 0 for the object as made, taken).
+    threshold: f32,
+    /// +0xbc: the damage is above that threshold.
+    rising: bool,
+}
+
+/// The cracks' Wwise state when no stage is entered (DAT_144e27250; the notes' "None").
+pub const CRACKS_NONE: &str = "None";
+
+impl Cracks {
+    /// From the activity's fields; None when they aren't the cracks activity's.
+    pub fn new(f: &serde_json::Map<String, serde_json::Value>) -> Option<Cracks> {
+        let x = |s: &serde_json::Value, k: &str| s.get(k).and_then(serde_json::Value::as_f64).map(|v| v as f32);
+        let stages = f
+            .get("stages")?
+            .as_array()?
+            .iter()
+            .map(|s| Some(CrackStage { threshold: x(s, "damage_threshold")?, level: x(s, "crack_level")?, grow: x(s, "grow_time")?, hold: x(s, "hold_time")?, audio: s.get("audio_state").and_then(serde_json::Value::as_str).map(str::to_string) }))
+            .collect::<Option<Vec<_>>>()?;
+        let group = f.get("audio_state_group").and_then(serde_json::Value::as_str)?.to_string();
+        Some(Cracks { stages, group, index: -1, clock: 0.0, level: 0.0, threshold: 0.0, rising: true })
+    }
+
+    /// Stage `i`: below 0 the activity's own zero record (+0xc8), past the end the last.
+    fn stage(&self, i: i32) -> CrackStage {
+        let zero = CrackStage { threshold: 0.0, level: 0.0, grow: 0.0, hold: 0.0, audio: None };
+        if i < 0 {
+            zero
+        } else {
+            self.stages.get(i as usize).or(self.stages.last()).cloned().unwrap_or(zero)
+        }
+    }
+
+    /// The last stage whose threshold is strictly below `damage` (-1 none).
+    fn target(&self, damage: f32) -> i32 {
+        self.stages.iter().rposition(|s| s.threshold < damage).map_or(-1, |i| i as i32)
+    }
+
+    /// FUN_1434ddfc0 with its flag 0: straight to the damage's stage, its clock full when rising, its level.
+    fn pick(&mut self, damage: f32) {
+        self.index = self.target(damage);
+        let s = self.stage(self.index);
+        self.clock = if self.rising { s.hold + s.grow } else { 0.0 };
+        self.level = s.level;
+    }
+
+    /// Start (and the reset, FUN_1434de570): no stage, the Wwise state none, then the damage's stage. The Wwise states it
+    /// sets.
+    pub fn start(&mut self, damage: f32) -> Vec<String> {
+        (self.index, self.clock, self.level, self.rising) = (-1, 0.0, 0.0, true);
+        self.pick(damage);
+        vec![CRACKS_NONE.to_string()]
+    }
+
+    /// One frame of `dt` s with `damage`: the Wwise states it sets.
+    pub fn step(&mut self, damage: f32, dt: f32) -> Vec<String> {
+        let target = self.target(damage);
+        self.rising = self.threshold < damage;
+        if damage <= 0.0 {
+            return if self.level > 0.0 { self.start(damage) } else { Vec::new() };
+        }
+        let cur = self.stage(self.index);
+        let span = cur.hold + cur.grow;
+        let dir = if self.rising { 1 } else { -1 };
+        let clock = dir as f32 * dt + self.clock;
+        self.clock = if clock >= 0.0 { clock.min(span) } else { 0.0 };
+        self.level = if cur.grow <= 0.0 {
+            cur.level
+        } else {
+            let prev = self.stage(self.index - 1);
+            self.clock.min(cur.grow) / cur.grow * (cur.level - prev.level) + prev.level
+        };
+        let at_end = if self.rising { self.clock == span } else { self.clock == 0.0 };
+        if self.index == target || !at_end {
+            return Vec::new();
+        }
+        self.index += dir;
+        let next = self.stage(self.index);
+        self.threshold = next.threshold;
+        if self.rising {
+            self.clock = 0.0;
+            next.audio.into_iter().collect()
+        } else {
+            self.clock = next.hold + next.grow;
+            vec![CRACKS_NONE.to_string()]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1468,5 +1587,49 @@ mod tests {
         assert!((param_drive_step(0.3, 0.9, 0.0, 0.01) - 0.9).abs() < 1e-12);
         let at = |fps: f64| (0..(fps * 3.0) as usize).fold(0.0, |o, _| param_drive_step(o, 1.0, 0.2, 1.0 / fps));
         assert!((at(30.0) - 0.6).abs() < 1e-9 && (at(120.0) - 0.6).abs() < 1e-9);
+    }
+
+    /// The cracks activity by FUN_1434dd8b0 on the Sidewinder's stages (`ship.json`, CockpitState Normal: 0.2, 0.4, 0.6,
+    /// 0.9, levels 0.92, 2.27, 3.67, 10; the first three with no grow and a 1 s hold, the last a 2.5 s grow): damage 0
+    /// keeps the canopy whole; at 0.95 the stages come one a second, each setting its Wwise state, the last ramping to 10
+    /// over 2.5 s; damage falling back to 0.5 steps down one stage each time the stage's clock has run down to 0 (a lower
+    /// stage's clock starts full, at its grow + hold), setting the state to none; damage 0 resets at once.
+    #[test]
+    fn cracks_follow_the_damage() {
+        let stage = |t: f64, l: f64, g: f64, h: f64, a: &str| serde_json::json!({"damage_threshold": t, "crack_level": l, "grow_time": g, "hold_time": h, "audio_state": a});
+        let fields = serde_json::json!({"audio_state_group": "CockpitCrack", "damage_param": "Damage", "stages": [
+            stage(0.2, 0.92, 0.0, 1.0, "CockpitCrack_01"), stage(0.4, 2.27, 0.0, 1.0, "CockpitCrack_02"),
+            stage(0.6, 3.67, 0.0, 1.0, "CockpitCrack_03"), stage(0.9, 10.0, 2.5, 0.0, "CockpitCrack_04")]});
+        let mut c = Cracks::new(fields.as_object().unwrap()).unwrap();
+        assert!(Cracks::new(serde_json::json!({"stages": []}).as_object().unwrap()).is_none(), "no group: not the cracks' fields");
+        assert_eq!((c.stages.len(), c.group.as_str()), (4, "CockpitCrack"));
+        assert_eq!(c.start(0.0), ["None"]);
+        let dt = 1.0 / 60.0;
+        let run = |c: &mut Cracks, damage: f32, secs: f32| -> (Vec<(f32, String)>, Vec<f32>) {
+            let (mut states, mut levels) = (Vec::new(), Vec::new());
+            for k in 0..(secs / dt).round() as usize {
+                states.extend(c.step(damage, dt).into_iter().map(|s| (k as f32 * dt, s)));
+                levels.push(c.level);
+            }
+            (states, levels)
+        };
+        let (states, levels) = run(&mut c, 0.0, 1.0);
+        assert!(states.is_empty() && levels.iter().all(|&l| l == 0.0), "whole at no damage");
+        let (states, levels) = run(&mut c, 0.95, 6.0);
+        let names: Vec<&str> = states.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(names, ["CockpitCrack_01", "CockpitCrack_02", "CockpitCrack_03", "CockpitCrack_04"]);
+        for (k, (t, _)) in states.iter().enumerate() {
+            // (A stage steps on the frame its clock reaches the span: a frame late when the sum of the steps falls short.)
+            assert!(t - k as f32 >= -dt && t - k as f32 <= (k + 1) as f32 * 1.5 * dt, "stage {} entered at {t} s", k + 1);
+        }
+        let at = |t: f32| levels[(t / dt) as usize];
+        assert_eq!((at(0.5), at(1.5), at(2.5)), (0.92, 2.27, 3.67));
+        assert!((at(3.0 + 1.25) - (3.67 + 0.5 * (10.0 - 3.67))).abs() < 0.2, "half way up the last grow: {}", at(4.25));
+        assert!((levels.last().unwrap() - 10.0).abs() < 1e-5);
+        let (states, _) = run(&mut c, 0.5, 6.0);
+        assert_eq!(states.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>(), ["None", "None"], "down to the 0.4 stage");
+        assert_eq!((c.index, c.level), (1, 2.27));
+        let (states, levels) = run(&mut c, 0.0, dt);
+        assert_eq!((states.len(), levels[0], c.index), (1, 0.0, -1), "reset at damage 0");
     }
 }
