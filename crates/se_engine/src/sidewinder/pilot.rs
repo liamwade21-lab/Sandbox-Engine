@@ -278,6 +278,8 @@ pub struct Pilot {
     pub dev_fire: f32,
     pub dev_jump: bool,
     pub log: bool,
+    /// The demands the flight read this frame (`controls`).
+    controls: Input,
 }
 
 impl Default for Pilot {
@@ -336,11 +338,19 @@ impl Default for Pilot {
             dev_fire: 0.0,
             dev_jump: false,
             log: false,
+            controls: Input::default(),
         }
     }
 }
 
 impl Pilot {
+    /// The demands the flight read this frame (the keys, mouse or pad after Elite's dead zone and linearity, or a test's
+    /// `sw stick` / `sw thrust`): pitch nose up +, yaw nose left +, roll right wing up +, forward the throttle. Kept from the
+    /// last frame the flight ran (seated, in Pilot mode); a boarding starts them at rest.
+    pub fn controls(&self) -> Input {
+        self.controls
+    }
+
     /// The HUD's heat percentage.
     pub fn heat_percent(&self) -> f64 {
         self.heat.hud_percent(&self.heat_spec)
@@ -754,6 +764,7 @@ pub fn fly(
             pilot.dev = None;
         }
     }
+    pilot.controls = input;
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
     // The gear down or the cargo scoop out halves the top and boost speeds (`elite_sim::deployables`, C; the record's 0.5, B).

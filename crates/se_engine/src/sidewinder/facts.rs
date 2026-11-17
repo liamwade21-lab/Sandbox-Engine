@@ -1,13 +1,16 @@
 //! The ship's facts this frame (ARCHITECTURE.md A6, "Who reads whom"): one resource, `ShipFacts`, written once a frame from
 //! `Pilot` and `Seat` before the parts run, read by the machines (`machines.rs`, `parts.rs`), the lights and the sound. It
 //! keeps the tests' overrides of those facts (`sw lights heat`, `sw pose`), so no reader holds another's. Nothing of the
-//! parts, the lights or the sound is read here.
+//! parts, the lights or the sound is read here. The pilot chair (`chair.rs`) reads the controls and the cockpit's change of
+//! velocity from here too.
 
+use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use elite_sim::heat::{visual_dissipation, VisualDissipation};
 
-use super::pilot::Pilot;
+use super::pilot::{Pilot, PilotKeys};
 use super::seat::Seat;
+use super::SidewinderAssets;
 
 /// The frame shift drive's phase as `JumpEffects` reads it (FUN_142c71440 at 0x142c757a8: the drive's phase byte +0x759).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,12 +47,30 @@ pub struct ShipFacts {
     pub dev_heat: Option<f64>,
     /// `sw pose up|down|auto`: a test's gear command over the pilot's (seated, the free camera can't look at the ship).
     pub dev_gear: Option<bool>,
+    /// The flight's demands this frame (`Pilot::controls`, the flight's signs): the throttle (forward +1, reverse -1) and the
+    /// turn (pitch nose up +, yaw nose left +, roll right wing up +), each -1..1.
+    pub throttle: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+    pub roll: f64,
+    /// The primary trigger held: its key or button (`PilotKeys::fire`, as the lasers read it) or a test's `sw fire SECS`.
+    pub fire: bool,
+    /// The cockpit point's velocity in the flight's rest frame (m/s): the ship's, plus its spin about the ship's origin
+    /// carried to the cockpit (v + w x r; Elite's cockpit-point velocity, `sidewinder_chair.md` "Buffets").
+    pub cockpit_velocity: DVec3,
+    /// The flight's motion is the ship's this frame: not in supercruise (whose speed and turn live in `Cruise`), not in the
+    /// tunnel, not on a test's placing (which resets it).
+    pub motion_live: bool,
+    /// The cockpit point's change of velocity since the last frame, in the ship's space (m/s); zero unless the motion was
+    /// the ship's this frame and the last.
+    pub cockpit_dv: Vec3,
 }
 
 impl ShipFacts {
-    /// From the pilot's state (which belongs to the ship, parked or flown: `Pilot::boarding`) and the seat, the tests'
-    /// overrides kept from `prev`.
-    pub fn of(pilot: &Pilot, seated: bool, prev: &ShipFacts) -> ShipFacts {
+    /// From the pilot's state (which belongs to the ship, parked or flown: `Pilot::boarding`), the seat's keys, the seat and
+    /// the cockpit point (`SidewinderAssets::eye`, the ship's space), the tests' overrides and the last cockpit velocity
+    /// kept from `prev`.
+    pub fn of(pilot: &Pilot, keys: &PilotKeys, seated: bool, cockpit: Vec3, prev: &ShipFacts) -> ShipFacts {
         use elite_sim::drive::Drive;
         let jump = match pilot.drive {
             Drive::Charging(_) | Drive::JumpCharging(_) => JumpPhase::Charging,
@@ -59,6 +80,14 @@ impl ShipFacts {
         };
         let heat = prev.dev_heat.unwrap_or_else(|| pilot.heat.fraction(&pilot.heat_spec));
         let radiator = pilot.powered && !pilot.silent;
+        let controls = pilot.controls();
+        // (The flight's motion: `vel` in the rest frame, `rot` ship axes to it, `omega` in ship axes; elite_sim's glam, so
+        // through arrays. The ship's axes are the ship's space's: X right, Y up, -Z the nose.)
+        let rot = DQuat::from_array(pilot.motion.rot.to_array());
+        let omega = DVec3::from_array(pilot.motion.omega.to_array());
+        let cockpit_velocity = DVec3::from_array(pilot.motion.vel.to_array()) + rot * omega.cross(cockpit.as_dvec3());
+        let motion_live = pilot.cruise.is_none() && pilot.jump.is_none() && !pilot.put;
+        let cockpit_dv = if motion_live && prev.motion_live { (rot.inverse() * (cockpit_velocity - prev.cockpit_velocity)).as_vec3() } else { Vec3::ZERO };
         ShipFacts {
             powered: pilot.powered,
             silent: pilot.silent,
@@ -75,6 +104,14 @@ impl ShipFacts {
             settle: pilot.put,
             dev_heat: prev.dev_heat,
             dev_gear: prev.dev_gear,
+            throttle: controls.forward,
+            pitch: controls.pitch,
+            yaw: controls.yaw,
+            roll: controls.roll,
+            fire: keys.fire || pilot.dev_fire > 0.0,
+            cockpit_velocity,
+            motion_live,
+            cockpit_dv,
         }
     }
 
@@ -88,9 +125,9 @@ impl ShipFacts {
     }
 }
 
-/// Writes the facts once a frame (before `parts::update`), only when one changed.
-pub(super) fn update(pilot: Res<Pilot>, seat: Res<Seat>, mut facts: ResMut<ShipFacts>) {
-    let now = ShipFacts::of(&pilot, seat.seated, &facts);
+/// Writes the facts once a frame (before `parts::update` and `chair::update`), only when one changed.
+pub(super) fn update(pilot: Res<Pilot>, keys: Res<PilotKeys>, seat: Res<Seat>, assets: Res<SidewinderAssets>, mut facts: ResMut<ShipFacts>) {
+    let now = ShipFacts::of(&pilot, &keys, seat.seated, Vec3::from_array(assets.eye), &facts);
     if *facts != now {
         *facts = now;
     }
@@ -105,16 +142,48 @@ mod tests {
     fn the_facts_and_their_overrides() {
         let mut pilot = Pilot::default();
         pilot.gear_down = false;
-        let f = ShipFacts::of(&pilot, true, &ShipFacts::default());
+        let keys = PilotKeys::default();
+        let f = ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &ShipFacts::default());
         assert!(!f.gear_down && f.powered && f.radiator && f.canopy_intact && !f.settle);
         assert!((f.heat - pilot.heat.fraction(&pilot.heat_spec)).abs() < 1e-12);
         assert_eq!(f.param("HeatRadiator_VisualActiveDissipation"), Some(visual_dissipation(f.heat, true).active));
         assert_eq!(f.param("cockpitAmberLightIntensity"), None);
-        assert!(ShipFacts::of(&pilot, false, &f).gear_down);
+        assert!(ShipFacts::of(&pilot, &keys, false, Vec3::ZERO, &f).gear_down);
         let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), ..f };
-        let g = ShipFacts::of(&pilot, true, &dev);
+        let g = ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev);
         assert!(g.gear_down && g.heat == 1.6 && g.dissipation.active == 1.0 && g.dev_heat == Some(1.6) && g.dev_gear == Some(true));
         pilot.silent = true;
-        assert_eq!(ShipFacts::of(&pilot, true, &dev).dissipation, VisualDissipation::default());
+        assert_eq!(ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev).dissipation, VisualDissipation::default());
+    }
+
+    /// The cockpit point's change of velocity: the ship's own change turned into its axes, plus the spin carried to the
+    /// cockpit; nothing on the first frame, in supercruise or on the frame after it; the trigger from the key or a test.
+    #[test]
+    fn the_cockpits_change_of_velocity() {
+        let keys = PilotKeys::default();
+        let cockpit = Vec3::new(0.0, 6.7, -1.3);
+        let mut pilot = Pilot::default();
+        // (The ship turned 90 degrees left about its up axis: its nose, -Z in its axes, points along -X of the rest frame.)
+        pilot.motion.rot = glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2);
+        let first = ShipFacts::of(&pilot, &keys, true, cockpit, &ShipFacts::default());
+        assert!(first.motion_live && first.cockpit_dv == Vec3::ZERO && !first.fire);
+        // 3 m/s more along the rest frame's -X: straight ahead of the ship, its -Z.
+        pilot.motion.vel = glam::DVec3::new(-3.0, 0.0, 0.0);
+        let next = ShipFacts::of(&pilot, &keys, true, cockpit, &first);
+        assert!((next.cockpit_dv - Vec3::new(0.0, 0.0, -3.0)).length() < 1e-5, "{}", next.cockpit_dv);
+        // A spin of 1 rad/s about the ship's up axis (to the left) moves the cockpit (1.3 m ahead of the origin) to the left.
+        pilot.motion.omega = glam::DVec3::new(0.0, 1.0, 0.0);
+        let spun = ShipFacts::of(&pilot, &keys, true, cockpit, &next);
+        assert!((spun.cockpit_dv - Vec3::new(-1.3, 0.0, 0.0)).length() < 1e-5, "{}", spun.cockpit_dv);
+        // Supercruise's motion isn't the flight's: nothing then, nor on the frame after.
+        pilot.motion.vel = glam::DVec3::new(-500.0, 0.0, 0.0);
+        pilot.cruise = Some(super::super::pilot::Cruise { pos: Default::default(), rot: DQuat::IDENTITY, speed: 3e4, cap: 3e4, carrier: None });
+        let cruise = ShipFacts::of(&pilot, &keys, true, cockpit, &spun);
+        pilot.cruise = None;
+        let after = ShipFacts::of(&pilot, &keys, true, cockpit, &cruise);
+        assert!(!cruise.motion_live && cruise.cockpit_dv == Vec3::ZERO && after.motion_live && after.cockpit_dv == Vec3::ZERO);
+        pilot.dev_fire = 1.0;
+        assert!(ShipFacts::of(&pilot, &keys, true, cockpit, &after).fire);
+        assert!(ShipFacts::of(&Pilot::default(), &PilotKeys { fire: true, ..keys }, true, cockpit, &after).fire);
     }
 }

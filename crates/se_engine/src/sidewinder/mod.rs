@@ -14,6 +14,7 @@
 //! - `convert` (tests only) makes the mod's files from Elite's files.
 
 pub mod assets;
+pub mod chair;
 pub mod draw;
 mod exposure;
 pub mod facts;
@@ -371,6 +372,8 @@ impl Plugin for SidewinderPlugin {
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
             .add_systems(PostUpdate, keep_solid.run_if(resource_exists::<SidewinderAssets>).after(crate::sandbox::sandbox_step));
         sound::plugin(app);
+        // The pilot chair's pose: from this frame's facts, for the parked ship.
+        app.init_resource::<chair::ChairPose>().add_systems(PostUpdate, chair::update.run_if(resource_exists::<SidewinderAssets>).after(facts::update));
     }
 }
 
@@ -558,6 +561,11 @@ pub fn dev_command(world: &mut World, arg: &str) {
         // camera). `sw parts [log on|off] [ask MACHINE STATE|auto]`: the state machines.
         "parts" => {
             parts::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
+            None
+        }
+        // `sw chair [log on|off]`: the pilot chair's state, clips, variables and bones; its changes logged.
+        "chair" => {
+            chair::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
             None
         }
         "pose" => {

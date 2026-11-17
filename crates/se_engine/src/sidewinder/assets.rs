@@ -355,6 +355,8 @@ pub struct SidewinderAssets {
     pub eye: [f32; 3],
     /// The guns' mounts in the ship's space (port, starboard).
     pub guns: [[f32; 3]; 2],
+    /// The pilot chair's clips, motion graph and skeleton (the seat's chair model's bones), checked (`chair::load`).
+    pub chair: Arc<super::chair::ChairData>,
 }
 
 /// What the first spawn hands `draw` once, then drops: a mesh per drawn draw of each model (`ShipRig::models`' order), the
@@ -673,7 +675,7 @@ pub fn load(read: &dyn Fn(&str) -> Result<Vec<u8>, String>) -> Result<Loaded, Fa
         .collect::<Result<HashMap<_, _>, Fault>>()?;
     let meshes = decoded.iter().map(|draws| draws.iter().map(mesh).collect()).collect();
     Ok(Loaded {
-        assets: SidewinderAssets { keys: Arc::new(binds(KEYS_FILE)?), pad: Arc::new(binds(PAD_FILE)?), rig: Arc::new(rig), shape: Arc::new(shape), eye, guns },
+        assets: SidewinderAssets { keys: Arc::new(binds(KEYS_FILE)?), pad: Arc::new(binds(PAD_FILE)?), chair: super::chair::load(read, &model_file(&rig.cockpit_seat.chair))?, rig: Arc::new(rig), shape: Arc::new(shape), eye, guns },
         build: ShipBuild { meshes, images, materials },
     })
 }
