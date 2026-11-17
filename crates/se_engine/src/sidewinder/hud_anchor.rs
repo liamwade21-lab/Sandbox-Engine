@@ -138,12 +138,13 @@ pub const PANEL_BOX: DesignBox = DesignBox { x: PANEL_W / 2.0, y: PANEL_H / 2.0,
 /// off it: on the bone's own plane the best rectangle misses the corners by 11 to 16 px.
 pub const LEFT_PANEL: Anchor = anchor([-1.0785, 6.4332, 0.8562], [0.1106, 0.0013, -0.4088], [-0.0429, 0.2347, -0.0109], (Grade::D, Grade::D));
 /// The right panel. Plane and extent (D, D): fitted by itself on the user's 3.webp with that picture's own camera
-/// (`seat::PANEL_TURN_RIGHT`, focal 747.9 px): its top corners where the tab bar's top line meets the content's edges,
-/// (1157.8, 402.1) and (1904.6, 421.9), and six points down each of those edges (residuals 0 to 2.2 px); its bottom is under
-/// the picture, so its height is the left panel's. Its middle on the `!Right_Panel` bone's plane; it faces 7.7 degrees off
-/// it (+-2.1), its corners 24 and 40 mm off (on the bone's plane: up to 11 px). Not the left's mirror: the two fits' facings
-/// differ by 5.0 degrees and their middles by 23 mm, more than their errors (2.2 degrees, 6 mm).
-pub const RIGHT_PANEL: Anchor = anchor([1.0884, 6.4382, 0.8752], [0.1385, -0.0020, 0.4038], [0.0296, 0.2369, -0.0089], (Grade::D, Grade::D));
+/// (`seat::PANEL_TURN_RIGHT`, focal 747.9 px; S1c, `s1c/s1c_fit.py`): its top corners where the tab bar's top line meets the
+/// content's edges, (1157.8, 402.1) and (1904.6, 421.9), six points down each of those edges and 23 along its bottom edge
+/// (seen from x 1160 to 1600, where it runs off the picture), residuals 0 to 2.2 px (rms 0.6): 0.861 x 0.481 m (+-1 mm; the
+/// review's own marks gave 0.860 x 0.481 and 9.0 degrees). Its middle on the `!Right_Panel` bone's plane; it faces 9.5 +-
+/// 0.4 degrees off it, its corners 9 and 74 mm off (on the bone's plane: up to 13 px). Not the left's mirror: the two fits'
+/// facings differ by 3.2 degrees and their middles by 10 mm, more than their errors (0.9 degrees, 2 mm).
+pub const RIGHT_PANEL: Anchor = anchor([1.0844, 6.4359, 0.8642], [0.1078, 0.0009, 0.4169], [0.0305, 0.2383, -0.0084], (Grade::D, Grade::D));
 
 /// Nothing nearer the eye than this along the view is drawn (m).
 const NEAR_M: f32 = 0.05;
@@ -181,6 +182,31 @@ impl SeatView {
         let c = [self.project(Self::on(anchor, -1.0, 1.0))?, self.project(Self::on(anchor, 1.0, 1.0))?, self.project(Self::on(anchor, 1.0, -1.0))?, self.project(Self::on(anchor, -1.0, -1.0))?];
         let bounds = egui::Rect::from_points(&c);
         bounds.intersects(self.screen).then_some(c)
+    }
+
+    /// The part of `anchor` across (`s` in -1..1 along its right half-vector) that is on the screen from its top to its
+    /// bottom: every point of it between `lo` and `hi`, at every height, lands between the screen's left and right sides
+    /// (projected as everything else is). (-1, 1) when nothing is cut, or when none of it is on the screen at all.
+    pub fn visible_across(&self, anchor: &Anchor) -> (f32, f32) {
+        let inside = |s: f32| {
+            [1.0, -1.0].iter().all(|&t| self.project(Self::on(anchor, s, t)).is_some_and(|p| p.x >= self.screen.left() && p.x <= self.screen.right()))
+        };
+        // (Along a straight line across the rectangle the screen's x changes one way only, so what is on the screen is one
+        // stretch: find a point of it, then each end by halving.)
+        const STEPS: usize = 40;
+        let Some(mid) = (0..=STEPS).map(|i| -1.0 + 2.0 * i as f32 / STEPS as f32).find(|&s| inside(s)) else { return (-1.0, 1.0) };
+        let end = |towards: f32| {
+            if inside(towards) {
+                return towards;
+            }
+            let (mut ok, mut out) = (mid, towards);
+            for _ in 0..30 {
+                let m = 0.5 * (ok + out);
+                if inside(m) { ok = m } else { out = m }
+            }
+            ok
+        };
+        (end(-1.0), end(1.0))
     }
 }
 
@@ -327,6 +353,26 @@ mod tests {
                 }
                 assert!(seen >= 2, "{head:?}");
             }
+        }
+    }
+
+    /// The part of a focused panel on the screen (`SeatView::visible_across`), which its columns use: the whole left panel at
+    /// 3440 x 1440, 1920 x 1080 and 1600 x 900 (nothing of it is cut, so its layout is as before); the right panel without
+    /// its outer strip, the strip's inner end exactly at the screen's right side at its top or bottom, so every column of
+    /// both panels is on the screen.
+    #[test]
+    fn a_panels_columns_are_the_part_of_it_on_the_screen() {
+        for (w, h) in [(3440.0f32, 1440.0f32), (1920.0, 1080.0), (1600.0, 900.0)] {
+            let r = screen(w, h);
+            let left = SeatView::new(EYE, panel_head(Side::Left, EYE, w / h), r);
+            assert_eq!(left.visible_across(&LEFT_PANEL), (-1.0, 1.0), "{w}x{h}");
+            let right = SeatView::new(EYE, panel_head(Side::Right, EYE, w / h), r);
+            let (lo, hi) = right.visible_across(&RIGHT_PANEL);
+            // (Its columns end at 0.920 of its -1..1 at all three: the yaw rule keeps the same cut.)
+            assert!(lo == -1.0 && (hi - 0.920).abs() < 0.001, "{w}x{h}: {lo} {hi}");
+            let x = |s: f32, t: f32| right.project(SeatView::on(&RIGHT_PANEL, s, t)).unwrap().x;
+            assert!(x(hi, 1.0) <= w + 1e-2 && x(hi, -1.0) <= w + 1e-2, "{w}x{h}");
+            assert!((x(hi, 1.0).max(x(hi, -1.0)) - w).abs() < 0.05, "{w}x{h}: {} {}", x(hi, 1.0), x(hi, -1.0));
         }
     }
 

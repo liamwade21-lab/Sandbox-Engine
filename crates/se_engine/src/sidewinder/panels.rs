@@ -217,23 +217,34 @@ pub struct StatusLines {
     pub status: Vec<String>,
 }
 
+/// The panel's columns in its own layout (`rect`, its whole frame there): the part of it across that is on the screen
+/// (`across`, `SeatView::visible_across`: -1..1 left to right), so the tabs, the rows' text and their right-hand column stay
+/// on the screen where the window's view cuts the panel (the right panel at Elite's turn on the user's screen). The frame and
+/// the background stay the whole panel; where nothing is cut the columns are the whole panel.
+pub fn columns(rect: egui::Rect, across: (f32, f32)) -> egui::Rect {
+    let x = |s: f32| rect.left() + 0.5 * (s + 1.0) * rect.width();
+    egui::Rect::from_x_y_ranges(x(across.0)..=x(across.1), rect.y_range())
+}
+
 /// Draws the open panel on its anchor beside the seat (`hud_anchor::LEFT_PANEL`, `RIGHT_PANEL`: Elite's place, seen when the
-/// head turns to it), laid out in its own shares (`hud_anchor::PANEL_W` x `PANEL_H`, (0, 0) its top left). `on` is each
-/// module's switch, `ship` each ship function's state.
+/// head turns to it), laid out in its own shares (`hud_anchor::PANEL_W` x `PANEL_H`, (0, 0) its top left), its columns in
+/// the part of it on the screen (`columns`). `on` is each module's switch, `ship` each ship function's state.
 #[allow(clippy::too_many_arguments)]
 pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, orange: egui::Color32, dim: egui::Color32) {
     let Some(side) = panels.open else { return };
+    let anchor = if side == Side::Left { &LEFT_PANEL } else { &RIGHT_PANEL };
     let h = r.height();
     let at = |x: f32, y: f32| egui::pos2(r.center().x + x * h, r.center().y + y * h);
     let mut g = Sketch::new(p, r);
     let rect = egui::Rect::from_min_max(at(0.0, 0.0), at(PANEL_W, PANEL_H));
-    let w = rect.width();
+    let cols = columns(rect, view.visible_across(anchor));
+    let w = cols.width();
     g.rect_filled(rect, 4.0, egui::Color32::from_rgba_unmultiplied(20, 8, 0, 170));
     g.rect_stroke(rect, 4.0, egui::Stroke::new((0.0016 * h).max(1.0), orange), egui::StrokeKind::Inside);
     let font = |s: f32| egui::FontId::monospace(s * h);
     let s = side as usize;
     let tabs: &[&str] = if side == Side::Left { &LEFT_TABS } else { &RIGHT_TABS };
-    let mut tx = rect.left() + 0.01 * h;
+    let mut tx = cols.left() + 0.01 * h;
     for (i, t) in tabs.iter().enumerate() {
         let c = if i == panels.tab[s] { orange } else { dim };
         let galley = g.layout_no_wrap(t.to_string(), font(0.011), c);
@@ -252,11 +263,11 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
             return;
         }
         if selected {
-            g.rect_filled(egui::Rect::from_min_size(egui::pos2(rect.left() + 0.004 * h, y), egui::vec2(w - 0.008 * h, row_h)), 2.0, orange.gamma_multiply(0.35));
+            g.rect_filled(egui::Rect::from_min_size(egui::pos2(cols.left() + 0.004 * h, y), egui::vec2(w - 0.008 * h, row_h)), 2.0, orange.gamma_multiply(0.35));
         }
         let c = if lit { orange } else { dim };
-        g.text(egui::pos2(rect.left() + 0.012 * h, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
-        g.text(egui::pos2(rect.right() - 0.012 * h, y + row_h * 0.5), egui::Align2::RIGHT_CENTER, right, font(0.0115), c);
+        g.text(egui::pos2(cols.left() + 0.012 * h, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
+        g.text(egui::pos2(cols.right() - 0.012 * h, y + row_h * 0.5), egui::Align2::RIGHT_CENTER, right, font(0.0115), c);
     };
     match (side, panels.tab[s]) {
         (Side::Left, _) => {
@@ -293,13 +304,23 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
             }
         }
     }
-    g.text(egui::pos2(rect.center().x, rect.bottom() - 0.012 * h), egui::Align2::CENTER_CENTER, "Q E tabs  W S rows  Space select  A D change  Backspace close", egui::FontId::proportional(0.009 * h), dim);
-    g.finish(view, if side == Side::Left { &LEFT_PANEL } else { &RIGHT_PANEL }, PANEL_BOX);
+    g.text(egui::pos2(cols.center().x, rect.bottom() - 0.012 * h), egui::Align2::CENTER_CENTER, "Q E tabs  W S rows  Space select  A D change  Backspace close", egui::FontId::proportional(0.009 * h), dim);
+    g.finish(view, anchor, PANEL_BOX);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The columns are the part of the panel's layout across that is on the screen: all of it with nothing cut.
+    #[test]
+    fn the_columns_are_the_visible_part() {
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(886.0, 500.0));
+        assert_eq!(columns(rect, (-1.0, 1.0)), rect);
+        let c = columns(rect, (-1.0, 0.8));
+        assert_eq!((c.left(), c.top(), c.bottom()), (rect.left(), rect.top(), rect.bottom()));
+        assert!((c.right() - (rect.left() + 0.9 * rect.width())).abs() < 1e-3);
+    }
 
     /// 1 and 4 open and close the panels; Q/E change tabs; W/S move round the rows; Space on the Navigation tab targets a star
     /// of another system or picks a body; on Modules it switches a module that can be switched; head look focuses a side.

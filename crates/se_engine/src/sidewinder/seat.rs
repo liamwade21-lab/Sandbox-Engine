@@ -63,7 +63,9 @@ pub struct Seat {
     /// `seat_camera` writes it, the camera and the projection (`seat_fov`) take it and the HUD draws with it (after
     /// `seat_camera`: the mod's `plugin` orders them).
     pub head: Head,
-    /// A test's head turn (`sw look YAW PITCH`; None: the head is the pilot's again).
+    /// A test's head turn (`sw look YAW PITCH`; None: the head is the pilot's again). Taken as it is, with no limits (a yaw
+    /// past 180 degrees comes round the other way, a pitch past 90 looks on over backwards, upside down), but only if
+    /// finite: `seat_camera` drops one that is not (`test_turn`).
     pub test_look: Option<Vec2>,
     /// B was pressed this frame (`seat_camera` acts on it).
     leave: bool,
@@ -501,7 +503,7 @@ fn half_across(aspect: f32, fov_add: f32) -> f32 {
 
 /// The margin (radians) a panel's outer edge keeps from the screen's edge in the measured case: on the user's 3440 x 1440
 /// screen at the game's view (the configured one with the panel's channel) with the measured turn. Negative is a cut of that
-/// many degrees: the left panel's 1.58 degrees, the right's -1.56 (its last 1.56 degrees are off the screen, as Elite's are
+/// many degrees: the left panel's 1.58 degrees, the right's -1.58 (its last 1.58 degrees are off the screen, as Elite's are
 /// there: its head aims at the target's bone whatever the view).
 fn panel_margin(side: Side, eye: Vec3) -> f32 {
     let measured = if side == Side::Left { PANEL_TURN_LEFT } else { PANEL_TURN_RIGHT };
@@ -539,6 +541,12 @@ pub fn panel_turn(side: Side, eye: Vec3, aspect: f32) -> Vec2 {
 /// field of view's channel.
 pub fn panel_head(side: Side, eye: Vec3, aspect: f32) -> Head {
     Head { turn: panel_turn(side, eye, aspect), fov_add: panel_fov_add(side) }
+}
+
+/// A test's head turn as the seat takes it: any finite turn, as it is (no limits); None for one that is not finite (a NaN
+/// or an infinity would leave the camera's turn undefined).
+pub fn test_turn(turn: Vec2) -> Option<Vec2> {
+    turn.is_finite().then_some(turn)
 }
 
 /// The head look camera this frame (`Seat::head`): a test's turn (`sw look`) over all, then head look's while it is on (both
@@ -631,6 +639,10 @@ pub fn seat_camera(
     let Some((b, _)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
     let eye = Vec3::from_array(assets.eye);
     let aspect = window.single().map_or(ELITE_ASPECT, |w| w.width() / w.height().max(1.0));
+    if let Some(bad) = seat.test_look.filter(|t| test_turn(*t).is_none()) {
+        warn!("sidewinder: a test's head turn of {:?} degrees is not a number: refused, the head is the pilot's", bad * 180.0 / std::f32::consts::PI);
+        seat.test_look = None;
+    }
     seat.head = head_aim(seat.test_look, seat.head_look, seat.look, panels.open.map(|side| panel_head(side, eye, aspect)));
     let (eye_body, rot_body) = eye_pose(p.pos, p.rot, eye, seat.head.turn);
     if control.pilot && sb.mode == Mode::Pilot {
@@ -658,8 +670,8 @@ struct Out<'a> {
 
 /// Releases the seat, whichever way he leaves it (`Why`): `free_seat`'s state changes; the camera written once more this
 /// frame at the eye and bound to the body (the 500 m-a-frame rule: whatever takes it carries it on from there); he is put
-/// down beside the landed ship, on the ground under a flying one, else on Earth (`exit_rule`); a lost or removed ship goes
-/// (left alone in flight it would hang in the air as a solid thing: the checker's first finding).
+/// down beside the landed ship, on the ground under a flying one, else on Earth (`exit_rule`); a lost or removed ship goes,
+/// solids and all (a ship left behind in flight would hang in the air as a solid thing).
 fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain>)>, data: &crate::data::SeData, assets: &SidewinderAssets) {
     let in_jump = out.pilot.jump.is_some();
     let in_cruise = out.pilot.cruise.is_some();
@@ -667,8 +679,8 @@ fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain
     let at = out.ship.parked.as_ref().map(|p| (p.obj, p.pos, p.rot));
     let body = at.and_then(|(obj, _, _)| bodies.iter().find(|(b, _)| b.obj == obj));
     // Ground to stand on by the ship: a solid body's (not a star's or a gas giant's), loaded under it and not the sea (the
-    // set-down's own test: an ocean world's ground at or under its radius), out of supercruise and hyperspace (checker 2: he
-    // landed on an asteroid millions of km out, or would wait for ever by a star). Else the launch's dry-land place.
+    // set-down's own test: an ocean world's ground at or under its radius), out of supercruise and hyperspace (there the ship's
+    // body can be millions of km away, or a star with no ground at all). Else the launch's dry-land place.
     let ground = !in_cruise
         && !in_jump
         && body.zip(at).is_some_and(|((b, t), (_, pos, _))| {
@@ -960,7 +972,7 @@ mod tests {
     const EYE: Vec3 = Vec3::new(0.0001, 6.7223, 1.3465);
 
     /// A panel's turn by the stated rule (`panel_turn`): on the user's screen (and a wider one) both turns are exactly the
-    /// measured ones, the right panel's last 1.56 degrees off the screen; on narrower windows the pitch is still the measured
+    /// measured ones, the right panel's last 1.58 degrees off the screen; on narrower windows the pitch is still the measured
     /// one and each panel's outer edge, where its rows are, keeps its margin from the user's screen (projected as the HUD
     /// projects it, at the panel's own view), the yaw grown only as far as that takes.
     #[test]
@@ -968,7 +980,7 @@ mod tests {
         use super::super::hud_anchor::SeatView;
         use bevy_egui::egui;
         let margin = |side| panel_margin(side, EYE).to_degrees();
-        assert!((margin(Side::Left) - 1.583).abs() < 0.001 && (margin(Side::Right) + 1.558).abs() < 0.001, "{} {}", margin(Side::Left), margin(Side::Right));
+        assert!((margin(Side::Left) - 1.583).abs() < 0.001 && (margin(Side::Right) + 1.584).abs() < 0.001, "{} {}", margin(Side::Left), margin(Side::Right));
         for aspect in [MEASURED_ASPECT, 32.0 / 9.0] {
             assert_eq!(panel_turn(Side::Left, EYE, aspect), PANEL_TURN_LEFT);
             assert_eq!(panel_turn(Side::Right, EYE, aspect), PANEL_TURN_RIGHT);
@@ -994,7 +1006,18 @@ mod tests {
         }
         let yaw = |side: Side, aspect: f32| panel_turn(side, EYE, aspect).x.to_degrees();
         // At 16:9 (1920 x 1080, 1600 x 900) the left 46.60 degrees, the right 44.48.
-        assert!((yaw(Side::Left, 16.0 / 9.0) - 46.60).abs() < 0.01 && (yaw(Side::Right, 16.0 / 9.0) + 44.48).abs() < 0.01);
+        assert!((yaw(Side::Left, 16.0 / 9.0) - 46.60).abs() < 0.01 && (yaw(Side::Right, 16.0 / 9.0) + 44.48).abs() < 0.01, "{} {}", yaw(Side::Left, 16.0 / 9.0), yaw(Side::Right, 16.0 / 9.0));
+    }
+
+    /// A test's head turn: any finite turn is taken as it is, past the head look's limits too; one that is not finite is
+    /// refused.
+    #[test]
+    fn a_test_turn_must_be_finite() {
+        assert_eq!(test_turn(Vec2::new(0.5, -0.2)), Some(Vec2::new(0.5, -0.2)));
+        assert_eq!(test_turn(Vec2::new(4.0, 2.0)), Some(Vec2::new(4.0, 2.0)));
+        for bad in [Vec2::new(f32::NAN, 0.0), Vec2::new(0.0, f32::INFINITY), Vec2::new(f32::NEG_INFINITY, f32::NAN)] {
+            assert_eq!(test_turn(bad), None, "{bad:?}");
+        }
     }
 
     /// The seat's camera: at the eye turned by the ship, then the head (yaw about the ship's up, then pitch, no roll).
