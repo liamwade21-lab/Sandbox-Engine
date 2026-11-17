@@ -2,23 +2,24 @@
 //! `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture`. Only this test and the ignored checks
 //! below read Elite's install or the decoded export; the game never does (the spec's C4).
 //!
-//! Inputs: `ELITE_PATH`, the install's product folder holding `Win64` (default: the user's Steam copy), read only, for the
-//! stand-ins and the key files; `ELITE_EXPORT`, the Sidewinder's export (default `re/elite/frea_export/sidewinder`; its
-//! `decoded/` subfolder is what is read, `README.md` there the reference) for Elite's original assets; and the audio export
-//! beside it (`sidewinder_audio`). Without the decoded export the run fails, naming it. The FREA key is never read.
+//! Inputs: `ELITE_PATH`, the install's product folder (default: the user's Steam copy), read only, for the key files
+//! (`ControlSchemes`) and the version line of `SOURCES.txt` (`VersionInfo.txt`) alone; `ELITE_EXPORT`, the Sidewinder's
+//! export (default `re/elite/frea_export/sidewinder`; its `decoded/` subfolder is what is read, `README.md` there the
+//! reference) for Elite's original assets; and the audio export beside it (`sidewinder_audio`). Without the decoded
+//! export the run fails, naming it. The FREA key is never read.
 //!
 //! Each kind of file is its own file here, `convert(ctx, shipped)` writing its files into `Ctx::out`, reading them back
-//! and reporting each in `Shipped`: `standins.rs` (today's `ship.edm`, `cockpit.edm` and the key files), `models.rs`
-//! (Elite's models, materials and textures), `assembly.rs` (`ship.json`, checked against the models by `assembly::check`),
-//! `chair.rs`, `sound.rs`. Then `SOURCES.txt` and `mod.cfg` are
-//! written from `Shipped`, and every file of the folder is read back: each must be a `Need`, read as the game reads it,
-//! and be at most 90 MB.
+//! and reporting each in `Shipped`: `binds.rs` (Elite's key files), `models.rs` (Elite's models, materials and
+//! textures), `assembly.rs` (`ship.json`, checked against the models by `assembly::check`), `chair.rs`, `sound.rs`.
+//! Then `SOURCES.txt` and `mod.cfg` are written from `Shipped`, and every file of the folder is read back: each must be
+//! a `Need`, read as the game reads it, and be at most 90 MB. A file the converter no longer ships is not deleted by it:
+//! the read-back refuses the folder until it is removed (`git rm`).
 
 mod assembly;
+mod binds;
 mod chair;
 mod models;
 mod sound;
-mod standins;
 
 use std::path::{Path, PathBuf};
 
@@ -118,7 +119,7 @@ fn copy_sidewinder() {
 fn run() -> Result<(), String> {
     let ctx = Ctx::from_env()?;
     let mut shipped = Shipped::default();
-    standins::convert(&ctx, &mut shipped)?;
+    binds::convert(&ctx, &mut shipped)?;
     models::convert(&ctx, &mut shipped)?;
     assembly::convert(&ctx, &mut shipped)?;
     chair::convert(&ctx, &mut shipped)?;
@@ -253,23 +254,11 @@ fn shipped_files_are_the_exports() {
     }
 }
 
-/// C6 (geometry): the stand-in hull's draw holds the install's bytes, unchanged.
-#[test]
-#[ignore]
-fn geometry_is_elites() {
-    let ship = se_core::elite_asset::parse_edm(&std::fs::read(out_dir().join("ship.edm")).unwrap()).unwrap();
-    let (tris, verts) = standins::hull_part(&install());
-    let d = &ship.draws[0];
-    assert!(d.source.starts_with(standins::HULL_FILE));
-    assert_eq!(d.vertices, verts, "vertex bytes");
-    assert_eq!(d.indices, tris.iter().flat_map(|t| t.iter().copied()).collect::<Vec<u16>>(), "indices");
-}
-
 /// C12: the shipped key files are Elite's, byte for byte.
 #[test]
 #[ignore]
 fn bindings_match_elite() {
-    for b in ["KeyboardMouseOnly.binds", "ControlPad.binds"] {
+    for b in binds::FILES {
         let ours = std::fs::read(out_dir().join("binds").join(b)).unwrap();
         let theirs = std::fs::read(install().join("ControlSchemes").join(b)).unwrap();
         assert_eq!(ours, theirs, "{b}");

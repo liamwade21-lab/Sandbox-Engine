@@ -26,11 +26,9 @@
 //!
 //! **Vertices, exactly** (2026-11-16, from Elite's own vertex shaders: `re/elite/frea_export/sidewinder/decoded/README.md`,
 //! "Vertices"; `re/elite/tools/cobra/vertex.py` is the reference): `Vertex::decode` gives every attribute in float32 as the
-//! GPU computes it, the position with its per-vertex exponent. `position_raw`, `normal`, `uv` and the rest are the older
-//! readings the stand-in models use (one scale for every vertex), kept as they were. `to_mod_space` turns a decoded model
-//! from Elite's space (+X starboard, +Y up, +Z nose, left-handed) into the mod's (X right, Y up, -Z nose).
-
-use std::path::{Path, PathBuf};
+//! GPU computes it, the position with its per-vertex exponent. `position_raw` is the mesh survey's older reading (one
+//! scale for every vertex; `MeshChunk::bounds_raw`). `to_mod_space` turns a decoded model from Elite's space (+X
+//! starboard, +Y up, +Z nose, left-handed) into the mod's (X right, Y up, -Z nose).
 
 /// The tag that starts every encrypted file.
 pub const ENCRYPTED_TAG: &[u8; 4] = b"FREA";
@@ -125,23 +123,9 @@ pub fn file_kind(head: &[u8]) -> FileKind {
     FileKind::Other
 }
 
-/// Where a data file of the install lies: `Win64/0X/NAME` with X the name's first digit.
-pub fn data_file(win64: &Path, name: &str) -> PathBuf {
-    let first = name.chars().next().unwrap_or('0');
-    win64.join(format!("0{first}")).join(name)
-}
-
 /// One vertex as Elite stores it. The bytes are kept as they are (grade A); the methods read them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Vertex(pub [u8; VERTEX_BYTES]);
-
-fn unorm8(b: u8) -> f32 {
-    (b as f32 - 127.0) / 127.0
-}
-
-fn uv16(lo: u8, hi: u8) -> f32 {
-    (u16::from_le_bytes([lo, hi]) as f32 - 32767.0) / 2047.0
-}
 
 impl Vertex {
     /// The position's three fields, each minus 2^20 (bits 0-20 x, 21-41 y, 42-62 z). Y is up: a wine glass, a
@@ -151,34 +135,13 @@ impl Vertex {
         let f = |s: u32| ((q >> s) & 0x1f_ffff) as i32 - POSITION_BIAS;
         [f(0), f(21), f(42)]
     }
-    /// Bytes 8-10: the normal (unit length, checked over the install).
-    pub fn normal(&self) -> [f32; 3] {
-        [unorm8(self.0[8]), unorm8(self.0[9]), unorm8(self.0[10])]
-    }
-    /// Byte 11: its top bit is believed to be the tangent frame's handedness; the low seven bits are not known.
-    pub fn byte11(&self) -> u8 {
-        self.0[11]
-    }
-    /// Bytes 12-14: the tangent (unit length and at right angles to the normal, checked over the install).
-    pub fn tangent(&self) -> [f32; 3] {
-        [unorm8(self.0[12]), unorm8(self.0[13]), unorm8(self.0[14])]
-    }
     /// Byte 15: the same within each part; its meaning is not known.
     pub fn byte15(&self) -> u8 {
         self.0[15]
     }
-    /// Bytes 16-19: the texture coordinate, two u16 as (v - 32767) / 2047 (the edges of a quad read exactly 0 and 1). The
-    /// stand-ins' reading: Elite's shaders' exact one is `decode().uv`.
-    pub fn uv(&self) -> [f32; 2] {
-        [uv16(self.0[16], self.0[17]), uv16(self.0[18], self.0[19])]
-    }
     /// Bytes 20-23: believed to be a colour (mostly `00 00 00 ff`).
     pub fn colour(&self) -> [u8; 4] {
         self.0[20..24].try_into().unwrap()
-    }
-    /// Bytes 24-31: believed to be a second and third texture coordinate, read as `uv` (mostly zero).
-    pub fn uv2(&self) -> [[f32; 2]; 2] {
-        [[uv16(self.0[24], self.0[25]), uv16(self.0[26], self.0[27])], [uv16(self.0[28], self.0[29]), uv16(self.0[30], self.0[31])]]
     }
     /// Bytes 32-35: believed to be four bone indices (all zero in most meshes).
     pub fn bones(&self) -> [u8; 4] {
@@ -429,6 +392,7 @@ pub fn parse_chunk(d: &[u8], parts: usize) -> R<Vec<MeshPart>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     /// Packs a position as Elite does (three 21-bit fields, each plus 2^20).
     fn pack_position(p: [i32; 3]) -> [u8; 8] {
@@ -518,11 +482,7 @@ mod tests {
         assert_eq!(p, vec![[-1 << 20, 5, 7], [(1 << 20) - 1, 0, 0], [0, -300, 0], [0, 0, 524_288]]);
         assert_eq!(c.bounds_raw(), Some(([-1 << 20, -300, 0], [(1 << 20) - 1, 1000, 524_288])));
         let v = c.parts[0].vertices[1];
-        assert_eq!(v.normal(), [0.0, 1.0, 0.0]);
-        assert_eq!(v.tangent(), [1.0, 0.0, 0.0]);
-        assert_eq!(v.uv(), [1.0, 0.0]);
-        assert_eq!(v.uv2(), [[0.0, 0.0], [0.0, 0.0]]);
-        assert_eq!((v.colour(), v.bones(), v.weights(), v.byte11(), v.byte15()), ([0, 0, 0, 255], [0; 4], [255, 0, 0, 0], 3, 0));
+        assert_eq!((v.colour(), v.bones(), v.weights(), v.byte15()), ([0, 0, 0, 255], [0; 4], [255, 0, 0, 0], 0));
     }
 
     /// The decoded export's 48 vertices (`vertex_test_vectors.json`, float32 as the GPU computes them, written as the

@@ -10,10 +10,6 @@ Chair: 3 of the motion graph's 41 states and 13 of the 91 chair clips are shippe
 
 Sounds: the open events left out because the banks at rest lack their media: event_3b16927e (laser_fire: which of the unnamed events is the shot (and its LOD rule) is in the hardpoint's data, not at rest): its media is not at rest; event_8acf4d18 (laser_fire: which of the unnamed events is the shot (and its LOD rule) is in the hardpoint's data, not at rest): its media is not at rest; event_a266f96c (laser_fire: which of the unnamed events is the shot (and its LOD rule) is in the hardpoint's data, not at rest): its media is not at rest; event_a7e81522 (laser_fire: which of the unnamed events is the shot (and its LOD rule) is in the hardpoint's data, not at rest): its media is not at rest.
 
-ship.edm (A + E): STAND-IN (T4 removes it). The hull is Elite file 4387928be519b4cfc8aa67be4113e19e2fbb09f5 (chunk 0, its most detailed part: 2332 triangles), vertex bytes and indices unchanged (A); it is Elite's simplified Sidewinder, believed to be the HUD's hologram model. Its place, scale (14.4 x 22.2 x 4.2 m) and the landing gear are recreated (E) from the user's screenshots and Frontier's published size.
-  from: Elite install file 4387928be519b4cfc8aa67be4113e19e2fbb09f5
-cockpit.edm (E): STAND-IN (T4 removes it). Recreated in Blender from the user's three cockpit screenshots (src/sidewinder/cockpit: make_cockpit.py, cockpit.obj, notes.md).
-  from: src/sidewinder/cockpit/cockpit.obj
 binds/KeyboardMouseOnly.binds (A): A copy of Elite's key file.
   from: Elite install ControlSchemes/KeyboardMouseOnly.binds
 binds/ControlPad.binds (A): A copy of Elite's key file.

@@ -213,11 +213,10 @@ impl Binds {
 //
 // Written only by the converter (`se_engine/src/sidewinder/convert/`, an ignored test), read on the mod's first enable.
 // It keeps Elite's own vertex bytes and triangle indices unchanged (40-byte vertices, `crate::elite::Vertex`; u16 indices
-// counted from the draw's first vertex), so a test can compare them with Elite's (grade A). Two kinds of file, told apart
-// by `Edm::vertex_decode`:
-// - `UniformScale` (the stand-ins `ship.edm`, `cockpit.edm`): positions are the raw fields times `metres_per_unit`, in the
-//   mod's axes; the parts, materials (textures, tint, flags) and keyed part animations are recreated (grade E).
-// - `Elite` (`models/NAME.edm`, LOD0 of one of Elite's model sets): vertices decode exactly (`Vertex::decode`, Elite's
+// counted from the draw's first vertex), so a test can compare them with Elite's (grade A). Every file is of one kind,
+// `VertexDecode::Elite` (the recreated stand-ins' uniform-scale kind, decode 0, and the version 1 files went with them,
+// 2026-11-16):
+// - `models/NAME.edm`, LOD0 of one of Elite's model sets: vertices decode exactly (`Vertex::decode`, Elite's
 //   model space, metres; `elite::to_mod_space` turns them into the mod's at load); the parts are the model's bones in
 //   Elite's order (parent, local translation, rotation, scale, the stored inverse bind), so a vertex's bone bytes index
 //   them; each material carries only Elite's name (its data is in `materials.json`, `crate::elite_ship`), in the model
@@ -228,9 +227,9 @@ impl Binds {
 //   bone, and its vertices may name bone 0 (only 0). Read a vertex's bone with `Edm::vertex_bone`, never by indexing
 //   `parts` with the raw byte.
 //
-// Layout: magic `SWEDM001`, u32 version (2; version 1 files, without the fields marked v2, still read); f32
-// metres_per_unit; v2: u8 vertex decode (0 uniform scale, 1 Elite's); then counted lists (u16 count unless said): parts
-// (name, i16 parent, translation f32x3, rotation f32x4 x y z w; v2: scale f32, then u8 1 and the inverse bind f32x16
+// Layout: magic `SWEDM001`, u32 version (2); f32 metres_per_unit (1, unused); u8 vertex decode (1, Elite's: anything
+// else is refused); then counted lists (u16 count unless said): parts (name, i16 parent, translation f32x3, rotation
+// f32x4 x y z w, scale f32, then u8 1 and the inverse bind f32x16
 // (row-major, translation in the last row) or u8 0), materials (name, u8 texture count, each (slot, file), tint f32x4, u32
 // flags), draws (u16 part, u16 material, source text, u32 vertex count then the vertices' bytes, u32 index count then the
 // indices), animations (name, f32 seconds, u16 tracks: each u16 part, u16 keys, each (f32 time, translation f32x3,
@@ -242,11 +241,10 @@ const EDM_VERSION: u32 = 2;
 /// A draw's part in an `Elite` file: none (its vertices name their bones).
 pub const NO_PART: u16 = u16::MAX;
 
-/// How a file's vertex positions decode.
+/// How a file's vertex positions decode: one kind is left (the format keeps its byte, so the shipped files are
+/// unchanged; `sidewinder/assets.rs` and `elite_chair`'s tests name it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VertexDecode {
-    /// The raw fields times `metres_per_unit` (`Edm::position_m`), in the mod's axes: the stand-ins.
-    UniformScale,
     /// Elite's exact decode (`crate::elite::Vertex::decode`), Elite's model space in metres.
     Elite,
 }
@@ -281,10 +279,10 @@ pub struct EdmPart {
     pub translation: [f32; 3],
     /// x, y, z, w.
     pub rotation: [f32; 4],
-    /// Uniform scale (1 in version 1 files).
+    /// Uniform scale.
     pub scale: f32,
     /// The bone's inverse bind matrix as Elite stores it (row-major, translation in the last row, Elite's model space);
-    /// None for the stand-ins' parts.
+    /// None for a part without one.
     pub inverse_bind: Option<[f32; 16]>,
 }
 
@@ -299,11 +297,10 @@ pub struct EdmMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdmDraw {
-    /// An index into `parts`, or `NO_PART` (`Elite` files only).
+    /// An index into `parts`, or `NO_PART`.
     pub part: u16,
     pub material: u16,
-    /// Where it came from: an Elite file, chunk and part (`NAME#chunk/part`), the export's buffer and part, or
-    /// `recreated: ...`.
+    /// Where it came from: the export's buffer and part.
     pub source: String,
     pub vertices: Vec<crate::elite::Vertex>,
     pub indices: Vec<u16>,
@@ -331,7 +328,7 @@ pub struct EdmAnimation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edm {
-    /// Metres per raw position step (`UniformScale` files; 1 and unused in `Elite` files).
+    /// 1 and unused (the stand-ins' metres per raw position step; the format keeps the field).
     pub metres_per_unit: f32,
     pub vertex_decode: VertexDecode,
     pub parts: Vec<EdmPart>,
@@ -341,21 +338,15 @@ pub struct Edm {
 }
 
 impl Edm {
-    /// A vertex's bone in an `Elite` file: the part its heaviest weight names (the first on a tie). None in a file with
-    /// no parts (rigid, no bone) and in a `UniformScale` file (its draws name their parts).
+    /// A vertex's bone: the part its heaviest weight names (the first on a tie). None in a file with no parts (rigid,
+    /// no bone).
     pub fn vertex_bone(&self, v: &crate::elite::Vertex) -> Option<usize> {
-        if self.vertex_decode != VertexDecode::Elite || self.parts.is_empty() {
+        if self.parts.is_empty() {
             return None;
         }
         let (bones, weights) = (v.bones(), v.weights());
         let k = (0..4).fold(0, |best, k| if weights[k] > weights[best] { k } else { best });
         Some(bones[k] as usize).filter(|&b| b < self.parts.len())
-    }
-
-    /// A vertex's position in metres in its part's frame, in a `UniformScale` file (`Vertex::decode` for an `Elite` one).
-    pub fn position_m(&self, v: &crate::elite::Vertex) -> [f32; 3] {
-        let p = v.position_raw();
-        [p[0] as f32 * self.metres_per_unit, p[1] as f32 * self.metres_per_unit, p[2] as f32 * self.metres_per_unit]
     }
 }
 
@@ -382,7 +373,6 @@ pub fn write_edm(m: &Edm) -> Vec<u8> {
     w.u32(EDM_VERSION);
     w.f32s(&[m.metres_per_unit]);
     w.0.push(match m.vertex_decode {
-        VertexDecode::UniformScale => 0,
         VertexDecode::Elite => 1,
     });
     w.u16(m.parts.len() as u16);
@@ -482,7 +472,7 @@ impl<'a> Rdr<'a> {
     }
 }
 
-/// An `Elite` file's vertices name only its parts and materials (the format comment's rule and its one exception).
+/// A file's vertices name only its parts and materials (the format comment's rule and its one exception).
 fn check_elite_vertices(vertices: &[crate::elite::Vertex], parts: usize, materials: usize) -> Result<(), String> {
     for (i, v) in vertices.iter().enumerate() {
         let (bones, weights) = (v.bones(), v.weights());
@@ -505,12 +495,11 @@ pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
         return Err(EdmError::Magic);
     }
     let version = r.u32()?;
-    if !(1..=EDM_VERSION).contains(&version) {
+    if version != EDM_VERSION {
         return Err(EdmError::Version(version));
     }
     let metres_per_unit = r.f32()?;
-    let vertex_decode = match if version >= 2 { r.take(1)?[0] } else { 0 } {
-        0 => VertexDecode::UniformScale,
+    let vertex_decode = match r.take(1)?[0] {
         1 => VertexDecode::Elite,
         k => return Err(EdmError::Bad(format!("unknown vertex decode {k}"))),
     };
@@ -518,16 +507,12 @@ pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
     for _ in 0..r.u16()? {
         let name = r.str()?;
         let parent = i16::from_le_bytes(r.take(2)?.try_into().unwrap());
-        let (translation, rotation) = (r.f3()?, r.f4()?);
-        let (mut scale, mut inverse_bind) = (1.0, None);
-        if version >= 2 {
-            scale = r.f32()?;
-            inverse_bind = match r.take(1)?[0] {
-                0 => None,
-                1 => Some(r.f16()?),
-                k => return Err(EdmError::Bad(format!("part {name}: inverse bind flag {k}"))),
-            };
-        }
+        let (translation, rotation, scale) = (r.f3()?, r.f4()?, r.f32()?);
+        let inverse_bind = match r.take(1)?[0] {
+            0 => None,
+            1 => Some(r.f16()?),
+            k => return Err(EdmError::Bad(format!("part {name}: inverse bind flag {k}"))),
+        };
         parts.push(EdmPart { name, parent, translation, rotation, scale, inverse_bind });
     }
     for (i, p) in parts.iter().enumerate() {
@@ -557,13 +542,11 @@ pub fn parse_edm(b: &[u8]) -> Result<Edm, EdmError> {
         let ni = r.u32()? as usize;
         let ib = r.take(ni.checked_mul(2).ok_or(EdmError::Short(r.at))?)?;
         let indices: Vec<u16> = ib.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        let part_ok = (part as usize) < parts.len() || (part == NO_PART && vertex_decode == VertexDecode::Elite);
+        let part_ok = (part as usize) < parts.len() || part == NO_PART;
         if !part_ok || material as usize >= materials.len() || indices.len() % 3 != 0 || indices.iter().any(|&i| i as usize >= nv) {
             return Err(EdmError::Bad(format!("draw {} is broken", draws.len())));
         }
-        if vertex_decode == VertexDecode::Elite {
-            check_elite_vertices(&vertices, parts.len(), materials.len()).map_err(|why| EdmError::Bad(format!("draw {}: {why}", draws.len())))?;
-        }
+        check_elite_vertices(&vertices, parts.len(), materials.len()).map_err(|why| EdmError::Bad(format!("draw {}: {why}", draws.len())))?;
         draws.push(EdmDraw { part, material, source, vertices, indices });
     }
     let mut animations = Vec::new();
@@ -606,8 +589,8 @@ mod tests {
         v[36] = 255;
         let identity = std::array::from_fn(|k| if k % 5 == 0 { 1.0 } else { 0.0 });
         Edm {
-            metres_per_unit: 1.0 / 32768.0,
-            vertex_decode: VertexDecode::UniformScale,
+            metres_per_unit: 1.0,
+            vertex_decode: VertexDecode::Elite,
             parts: vec![
                 EdmPart { name: "hull".into(), parent: -1, translation: [0.0; 3], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0, inverse_bind: None },
                 EdmPart {
@@ -652,26 +635,29 @@ mod tests {
         let mut broken = m.clone();
         broken.draws[0].indices = vec![0, 1, 3];
         assert!(matches!(parse_edm(&write_edm(&broken)), Err(EdmError::Bad(_))));
-        // A draw without a part only in a file of Elite's decode.
-        let mut elite = m.clone();
-        elite.draws[0].part = NO_PART;
-        assert!(matches!(parse_edm(&write_edm(&elite)), Err(EdmError::Bad(_))));
-        elite.vertex_decode = VertexDecode::Elite;
-        assert_eq!(parse_edm(&write_edm(&elite)).unwrap(), elite);
-        let mut unknown = write_edm(&elite);
-        unknown[16] = 7;
-        assert!(matches!(parse_edm(&unknown), Err(EdmError::Bad(_))));
-        let mut future = write_edm(&elite);
-        future[8] = 3;
-        assert_eq!(parse_edm(&future), Err(EdmError::Version(3)));
+        // A draw without a part (its vertices name their bones).
+        let mut unparted = m.clone();
+        unparted.draws[0].part = NO_PART;
+        assert_eq!(parse_edm(&write_edm(&unparted)).unwrap(), unparted);
+        // Byte 16 is the vertex decode: only Elite's (1) reads; 0 was the stand-ins' uniform scale.
+        for k in [0, 7] {
+            let mut unknown = b.clone();
+            unknown[16] = k;
+            assert!(matches!(parse_edm(&unknown), Err(EdmError::Bad(_))), "decode {k}");
+        }
+        // Only version 2: version 1 was the stand-ins' before it.
+        for v in [1, 3] {
+            let mut other = b.clone();
+            other[8] = v;
+            assert_eq!(parse_edm(&other), Err(EdmError::Version(v as u32)));
+        }
     }
 
-    /// In a file of Elite's decode a vertex can only name a part (by its weighted bone bytes) and a material (byte 15);
-    /// a file with no parts is rigid and its vertices may name bone 0.
+    /// A vertex can only name a part (by its weighted bone bytes) and a material (byte 15); a file with no parts is
+    /// rigid and its vertices may name bone 0.
     #[test]
     fn elite_vertices_name_only_their_parts() {
         let mut m = sample_edm();
-        m.vertex_decode = VertexDecode::Elite;
         m.draws[0].part = NO_PART;
         let v = m.draws[0].vertices[0];
         assert_eq!(parse_edm(&write_edm(&m)).unwrap().vertex_bone(&v), Some(0));
@@ -703,27 +689,6 @@ mod tests {
         assert_eq!(back.vertex_bone(&back.draws[0].vertices[0]), None);
         reweigh(&mut rigid, 1, [255, 0, 0, 0], 0);
         assert!(parse_edm(&write_edm(&rigid)).is_err(), "only bone 0 in a file without parts");
-        // the stand-ins' vertices aren't read for bones
-        assert_eq!(sample_edm().vertex_bone(&v), None);
-    }
-
-    /// A version 1 file (today's stand-ins before version 2) still reads: uniform scale, parts of scale 1 and no bind.
-    #[test]
-    fn edm_version_1_reads() {
-        let mut b = EDM_MAGIC.to_vec();
-        b.extend_from_slice(&1u32.to_le_bytes());
-        b.extend_from_slice(&0.5f32.to_le_bytes());
-        b.extend_from_slice(&1u16.to_le_bytes());
-        b.extend_from_slice(&4u16.to_le_bytes());
-        b.extend_from_slice(b"ship");
-        b.extend_from_slice(&(-1i16).to_le_bytes());
-        for x in [1.0f32, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0] {
-            b.extend_from_slice(&x.to_le_bytes());
-        }
-        b.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
-        let m = parse_edm(&b).unwrap();
-        assert_eq!((m.metres_per_unit, m.vertex_decode, m.parts.len()), (0.5, VertexDecode::UniformScale, 1));
-        assert_eq!(m.parts[0], EdmPart { name: "ship".into(), parent: -1, translation: [1.0, 2.0, 3.0], rotation: [0.0, 0.0, 0.0, 1.0], scale: 1.0, inverse_bind: None });
     }
 
     const SAMPLE: &str = "\u{feff}<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Root PresetName=\"KeyboardMouseOnly\" SortOrder=\"0\">\n\
