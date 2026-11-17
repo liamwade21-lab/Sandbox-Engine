@@ -575,6 +575,10 @@ pub struct PlanetMaterial {
     pub cloud_weather: Handle<Image>,
     #[texture(33, dimension = "cube")]
     pub cloud_pattern: Handle<Image>,
+    /// A ship's shadow maps (volumetric_clouds.rs `SHIP_SHADE_IMAGE`, the same texture for every node from
+    /// start-up), read with the shadow map's sampler (31) only while a ship casts (`ShipShade::live`).
+    #[texture(34)]
+    pub ship_shade: Handle<Image>,
     /// A node's skirts (the walls hung under its edges that close the cracks to coarser
     /// neighbours), drawn after every node's ground ([`Material::alpha_mode`]). Not a binding.
     pub skirt: bool,
@@ -2827,6 +2831,7 @@ fn update_terrain(
                 cloud_map: cloud_assets.map.clone(),
                 cloud_weather: cloud_assets.weather.clone(),
                 cloud_pattern: cloud_assets.pattern.clone(),
+                ship_shade: crate::volumetric_clouds::SHIP_SHADE_IMAGE,
                 skirt: false,
                 variant: used_noise,
             };

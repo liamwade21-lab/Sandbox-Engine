@@ -400,6 +400,8 @@ fn init_gpu(
                 sampler(SamplerBindingType::Filtering),
                 texture_cube(filt()),
                 texture_cube(filt()),
+                // (A ship's shadow maps: volumetric_clouds.rs `SHIP_SHADE_IMAGE`.)
+                texture_2d(filt()),
             ),
         ),
     );
@@ -767,8 +769,8 @@ fn prepare_bind_groups(
         let atm = f.body.atmosphere.as_ref().and_then(|(s, t, e)| Some((images.get(s)?, images.get(t)?, images.get(e)?)));
         let (s3, t2, e2) = atm.map_or((&fallback.d3, &fallback.d2, &fallback.d2), |a| a);
         let get = |h: &Handle<Image>| images.get(h);
-        if let (Some(cover), Some(pattern), Some(map), Some(weather), Some(rec)) =
-            (get(&sh.cover), get(&sh.pattern), get(&sh.map), get(&sh.weather), buffers.get(&sh.shadow))
+        if let (Some(cover), Some(pattern), Some(map), Some(weather), Some(shade), Some(rec)) =
+            (get(&sh.cover), get(&sh.pattern), get(&sh.map), get(&sh.weather), get(&crate::volumetric_clouds::SHIP_SHADE_IMAGE), buffers.get(&sh.shadow))
         {
             let layout = cache.get_bind_group_layout(&draw.light_layout);
             gpu.light_group = Some(device.create_bind_group(
@@ -786,6 +788,7 @@ fn prepare_bind_groups(
                     &map.sampler,
                     &weather.texture_view,
                     &pattern.texture_view,
+                    &shade.texture_view,
                 )),
             ));
         }

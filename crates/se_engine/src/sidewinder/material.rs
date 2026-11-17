@@ -859,7 +859,7 @@ pub const SEAT_NEAR_M: f32 = 0.1;
 /// (`aurora.rs`; render distances stay below ~3e8). The seat's other see-through draws (the chair's decals) lie behind it.
 const SEAT_GLASS_BIAS: f32 = 4.0e15;
 
-/// The ship's material: the sandbox's two light buffers, its family's textures (unused ones white) with one repeating,
+/// The ship's material: the sandbox's two light buffers (its light without a ship's shadow on the world: `PropLight::ship_light`), its family's textures (unused ones white) with one repeating,
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
 /// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`), the automatic exposure's adapted compensation
 /// (`ShipScene::adapt`), the canopy's glass effects (`ShipGlass`), the pilot chair's bone palette (`ShipPalette`: bound to
@@ -906,8 +906,10 @@ pub struct ShipMaterial {
     pub glass: Handle<ShaderBuffer>,
     #[storage(19, read_only)]
     pub palette: Handle<ShaderBuffer>,
-    /// The shadow maps' moments (layer 0 the outside set's, 1 the seat's: `shadow.rs`), drawn by the mod's own pass.
-    #[texture(20, dimension = "2d_array")]
+    /// The shadow maps' moments texture of its set (each map a region of it: `shadow.rs`), drawn by the mod's own passes: the
+    /// outside set's the engine's (`ShipShadow::moments`, which the world's receivers read too), the seat's the mod's own
+    /// (`ShipShadow::seat_moments`).
+    #[texture(20)]
     #[sampler(21)]
     pub shadow_map: Handle<Image>,
     /// Their record (`shadow::ShadowRecord`), written by the render world each frame the maps are drawn.
@@ -940,7 +942,7 @@ impl ShipMaterial {
         let tex = |i: usize| textures.get(i).cloned().unwrap_or_else(|| white.clone());
         ShipMaterial {
             frame: light.frame.clone(),
-            light: light.light.clone(),
+            light: light.ship_light.clone(),
             tex0: tex(0),
             tex1: tex(1),
             tex2: tex(2),
@@ -957,7 +959,7 @@ impl ShipMaterial {
             adapt: scene.adapt.clone(),
             glass: glass.buffer.clone(),
             palette: palette.buffer.clone(),
-            shadow_map: shadow.moments.clone(),
+            shadow_map: if params.view.x > 0.5 { shadow.seat_moments.clone() } else { shadow.moments.clone() },
             shadow: shadow.record.clone(),
             family,
             skinned: false,

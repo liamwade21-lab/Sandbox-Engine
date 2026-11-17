@@ -29,7 +29,8 @@
 // from the lights buffer (A6's contract: `ShipLights`, in the ship's space), each lamp's colour times its exposure factor
 // (Elite works it out on the CPU, FUN_1435a5500; here `lamp_exposure`, so it follows the exposure the frame is drawn with).
 
-import super::sidewinder_shadow_common::{ShipShadow, to_ship_point, to_ship_dir, map_point, map_uv, filtered_moments, visibility};
+import super::sidewinder_shadow_common::{ShipShadow, to_ship_point, to_ship_dir, light_axes, map_point, map_visibility};
+import super::moment_shadow::{cascade_pick, cascade_blend};
 
 // ---- The known gaps ----
 
@@ -277,29 +278,50 @@ fn ship_lamps(s: Surface, world_pos: vec3<f32>, cam_pos: vec3<f32>, f0: vec3<f32
     return out;
 }
 
-// ---- The ship's own shadow on the star's light (sidewinder/shadow.rs; the maths: sidewinder_shadow_common.wesl) ----
+// ---- The ship's own shadow on the star's light (sidewinder/shadow.rs; the maths: moment_shadow.wesl, the record:
+// sidewinder_shadow_common.wesl) ----
 
-// The moments maps (layer 0 the outside set's casters, 1 the seat's: the cockpit set for its own surfaces), their sampler (clamped,
-// Elite's ClampSampler) and their record, written by the render world each frame the maps are drawn.
-@group(constants::MATERIAL_BIND_GROUP) @binding(20) var shadow_map: texture_2d_array<f32>;
+// The moments texture of this material's set (the outside set's: the engine's, which the world's receivers read too; the
+// seat's: the mod's own; each map's region: shadow.rs, sidewinder_shadow_common.wesl), its sampler (clamped, Elite's
+// ClampSampler) and the record, written by the render world each frame the maps are drawn.
+@group(constants::MATERIAL_BIND_GROUP) @binding(20) var shadow_map: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(21) var shadow_smp: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(22) var<storage, read> ship_shadow: ShipShadow;
 
-// How much of the star's light reaches `world_pos` past the ship's own casters (1 all of it): Elite's filter on the map of the
-// set drawn (`seat`: the seat's), the point moved along its normal, turned to the star's side, by the record's offset (ours:
-// two texels, the filter's half width, so a surface does not shadow itself). 1 while this frame's maps are not drawn.
-fn star_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, seat: bool) -> f32 {
+// Map `m`'s visibility at `p` (ship space, normal `n`, the star towards `l`): the point moved along its normal, turned to the
+// star's side, by the map's offset times the sine of the light's angle to it (ours: `ShipShadow::offsets`, so a surface does
+// not shadow itself through the filter's reach).
+fn map_shadow(p: vec3<f32>, n: vec3<f32>, l: vec3<f32>, m: u32) -> f32 {
+    let nl = dot(n, l);
+    let along = select(-1.0, 1.0, nl >= 0.0) * ship_shadow.offsets[m / 4u][m % 4u] * sqrt(max(1.0 - nl * nl, 0.0));
+    return map_visibility(shadow_map, shadow_smp, ship_shadow, m, map_point(ship_shadow, p + n * along, l));
+}
+
+// How much of the star's light reaches `world_pos` past the ship's own casters (1 all of it), seen from the camera at `cam_pos`
+// looking along `cam_ahead` (all in the render frame), by Elite's pick of a cascade (`cascade_pick`, `cascade_blend`): the
+// outside set's maps for the outside set's draws, the seat's two for the seat's (the cockpit set, which lies well inside the
+// second cascade's box from the eye: shadow.rs `the_map_covers_every_caster`). A cascade with no map here reads lit. 1 while
+// this frame's maps are not drawn.
+fn star_shadow(world_pos: vec3<f32>, normal: vec3<f32>, sun_dir: vec3<f32>, cam_pos: vec3<f32>, cam_ahead: vec3<f32>, seat: bool) -> f32 {
     if ship_shadow.live.x == 0u {
         return 1.0;
     }
     let l = to_ship_dir(ship_shadow, sun_dir);
     let n = to_ship_dir(ship_shadow, normal);
-    let p = to_ship_point(ship_shadow, world_pos) + n * select(-1.0, 1.0, dot(n, l) >= 0.0) * ship_shadow.bias.x;
-    let m = map_point(ship_shadow, p, l);
-    if abs(m.x) >= 1.0 || abs(m.y) >= 1.0 || m.z < 0.0 || m.z > 1.0 {
-        return 1.0;
+    let p = to_ship_point(ship_shadow, world_pos);
+    let pick = cascade_pick(ship_shadow.ahead, ship_shadow.half, ship_shadow.fade, p, light_axes(l), to_ship_point(ship_shadow, cam_pos), to_ship_dir(ship_shadow, cam_ahead));
+    // (The seat's maps follow the outside set's three: its cascades 0 and 1 at 3 and 4, none for the third.)
+    let first = select(0u, 3u, seat);
+    let maps = select(3.0, 2.0, seat);
+    var v1 = 1.0;
+    var v2 = 1.0;
+    if pick.x < maps {
+        v1 = map_shadow(p, n, l, first + u32(pick.x));
     }
-    return visibility(ship_shadow, filtered_moments(shadow_map, shadow_smp, select(0, 1, seat), map_uv(m.xy), ship_shadow), m.z);
+    if pick.y != 1.0 && pick.z < maps {
+        v2 = map_shadow(p, n, l, first + u32(pick.z));
+    }
+    return cascade_blend(pick, v1, v2);
 }
 
 // One texel of Elite's G-buffer lit: the star, the sky, the street lamps, the ship's lamps in [first, first + count), the

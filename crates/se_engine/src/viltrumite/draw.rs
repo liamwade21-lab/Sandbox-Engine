@@ -301,11 +301,14 @@ impl HeroLightInput {
 
 /// The light pass (`hero_light.wesl`) for one frame record and one light record: his own, and the sandbox's (its props
 /// and weapon are lit at the player's place as he is at his: `sandbox/light.rs`). The pipeline is queued the first time it's on.
+/// The light record takes a ship's shadow at its point; a second record (`plain`) gets the same light without it, for the
+/// Sidewinder's own materials (the sandbox's); without one the pass writes that copy into a scratch buffer of its own.
 #[derive(Default)]
 pub(crate) struct LightPass {
     layout: Option<BindGroupLayoutDescriptor>,
     pipeline: Option<CachedComputePipelineId>,
     group: Option<BindGroup>,
+    scratch: Option<Buffer>,
 }
 
 /// The compute pass's pipeline, queued on first enable.
@@ -340,6 +343,12 @@ impl LightProbe {
         let (nearest, near) = light_record(&mut self.frame, p, pos, cam, cam_up, LightPath::Auto);
         town_light(&mut self.frame, &mut self.town_timer, &mut self.town_task, || nearest.filter(|_| near.is_some()).and_then(|(b, t, _)| town_job(p, b, t?, pos)));
         near
+    }
+
+    /// Towards the star its light comes from (the render frame's axes): the direction the Sidewinder's shadow maps are drawn
+    /// along (`sidewinder/shadow.rs`), which reads the sandbox's record.
+    pub(crate) fn sun_dir(&self) -> Vec3 {
+        self.frame.light.sun_dir.truncate()
     }
 
     /// Write the record into its buffer, in place.
@@ -1009,7 +1018,7 @@ fn prepare_light_pass(
     device: Res<RenderDevice>,
     assets: Res<AssetServer>,
 ) {
-    pass.0.prepare(input.on, &input.frame, &input.light, input.tables.as_ref(), shadow.as_deref(), &buffers, &images, &fallback, &cache, &device, &assets);
+    pass.0.prepare(input.on, &input.frame, &input.light, None, input.tables.as_ref(), shadow.as_deref(), &buffers, &images, &fallback, &cache, &device, &assets);
 }
 
 /// The body's inscatter, transmittance and irradiance tables.
@@ -1023,6 +1032,7 @@ impl LightPass {
         on: bool,
         frame: &Handle<ShaderBuffer>,
         light: &Handle<ShaderBuffer>,
+        plain: Option<&Handle<ShaderBuffer>>,
         tables: Option<&LightTables>,
         shadow: Option<&CloudShadowAssets>,
         buffers: &RenderAssets<GpuShaderBuffer>,
@@ -1057,6 +1067,8 @@ impl LightPass {
                     sampler(SamplerBindingType::Filtering),
                     texture_cube(filt()),
                     texture_cube(filt()),
+                    texture_2d(filt()),
+                    storage_buffer_sized(false, None),
                 ),
             ),
         );
@@ -1072,7 +1084,17 @@ impl LightPass {
     let Some(sh) = shadow else { return };
     let (Some(frame), Some(light), Some(rec)) = (buffers.get(frame), buffers.get(light), buffers.get(&sh.shadow)) else { return };
     let get = |h: &Handle<Image>| images.get(h);
-    let (Some(cover), Some(pattern), Some(map), Some(weather)) = (get(&sh.cover), get(&sh.pattern), get(&sh.map), get(&sh.weather)) else { return };
+    let (Some(cover), Some(pattern), Some(map), Some(weather), Some(shade)) = (get(&sh.cover), get(&sh.pattern), get(&sh.map), get(&sh.weather), get(&crate::volumetric_clouds::SHIP_SHADE_IMAGE)) else { return };
+    let plain = match plain {
+        Some(h) => match buffers.get(h) {
+            Some(b) => b.buffer.clone(),
+            None => return,
+        },
+        None => pass
+            .scratch
+            .get_or_insert_with(|| device.create_buffer(&BufferDescriptor { label: Some("hero_light_plain"), size: HeroLightGpu::min_size().get(), usage: BufferUsages::STORAGE, mapped_at_creation: false }))
+            .clone(),
+    };
     let tables = tables.and_then(|(s, t, e)| Some((images.get(s)?, images.get(t)?, images.get(e)?)));
     let (s3, t2, e2) = tables.map_or((&fallback.d3, &fallback.d2, &fallback.d2), |a| a);
     let layout = cache.get_bind_group_layout(pass.layout.as_ref().unwrap());
@@ -1093,6 +1115,8 @@ impl LightPass {
             &map.sampler,
             &weather.texture_view,
             &pattern.texture_view,
+            &shade.texture_view,
+            plain.as_entire_binding(),
         )),
     );
     pass.group = Some(group);

@@ -7,6 +7,7 @@
 import super::atmosphere_common::{AtmParams, ATM_AMBIENT_SCALE, ATM_PI, atm_transmittance_sun, atm_irradiance, atm_apply_aerial};
 import super::eclipse::{EclipseLight, eclipse_light};
 import super::cloud_cover::{weather_cover, weather_shaped, climb_dist};
+import super::moment_shadow::{moment_map_visibility, cascade_pick, cascade_blend};
 
 // A body's lighting (terrain.rs PatchLight): one record per ground node in the material's light page,
 // and the body's own copy for the objects on it. Clouds.wesl has the same struct.
@@ -29,7 +30,8 @@ struct PatchLight {
     flags: vec4<f32>,
 };
 
-// The volumetric clouds' shadow record (volumetric_clouds.rs CloudShadow).
+// The volumetric clouds' shadow record (volumetric_clouds.rs CloudShadow). Its last fields are `hero`, `hero_end`, `beam` and
+// `shade`, in that order, here, in clouds.wesl and in volumetric_clouds.rs, which change together.
 struct CloudShadow {
     // x: the body's radius (m), y: its seed fraction (as `planet.proc_params2.xy`), z: 1 on.
     key: vec4<f32>,
@@ -50,6 +52,8 @@ struct CloudShadow {
     hero_end: vec4<f32>,
     // A ship's headlights on the ground (`ship_beam_at`), after the hero's two: all zeros with no headlight lit.
     beam: ShipBeam,
+    // A ship's shadow on the star's light (`ship_shade_at`), after the headlights, the record's last: all zeros with no ship.
+    shade: ShipShade,
 };
 
 // One headlight of a ship (volumetric_clouds.rs `BeamLamp`, filled by the Sidewinder mod's sidewinder/beam.rs): its slot of
@@ -78,6 +82,50 @@ struct ShipBeam {
     // The headlights' IES profile as the ship's sampler reads it (sidewinder_lit.wesl `ies_tex` at v 0.5) at each of its row's
     // 1024 texels, four a vec4 (written on the GPU each frame while lit: sidewinder/exposure.rs).
     profile: array<vec4<f32>, 256>,
+};
+
+// A ship's shadow on the world (volumetric_clouds.rs `ShipShade`, filled by the Sidewinder mod's sidewinder/shadow.rs): what a
+// receiver needs to go from its place (m from the camera, the render frame's axes: as `ShipBeamLamp::pos_range`) into the
+// outside set's moment maps of the ship (sidewinder_shadow_common.wesl, in the texture each receiver binds:
+// volumetric_clouds.rs `SHIP_SHADE_IMAGE`) and read them as the ship's own surfaces do (moment_shadow.wesl).
+// No arrays (the record is passed by value): each row and map a field of its own.
+struct ShipShade {
+    // x 1 once this frame's maps are drawn (written on the GPU by the mod's map pass after drawing them; the CPU's copy holds
+    // 0, so every rewrite of the record clears it until they are drawn again). 0 with no ship: the callers skip everything.
+    live: vec4<u32>,
+    // The ship's space from a receiver's place: p_ship = (dot(to_ship_x, p), dot(to_ship_y, p), dot(to_ship_z, p)), p = (x, y,
+    // z, 1).
+    to_ship_x: vec4<f32>,
+    to_ship_y: vec4<f32>,
+    to_ship_z: vec4<f32>,
+    // The maps' axes in the ship's space (sidewinder_shadow_common.wesl `light_axes`): across, across, towards the star.
+    axis_u: vec4<f32>,
+    axis_v: vec4<f32>,
+    axis_l: vec4<f32>,
+    // xyz the maps' middle in the ship's space, w their radius (m).
+    sphere: vec4<f32>,
+    // The camera in the ship's space, and the way it looks (for Elite's pick of a cascade, as the ship's own pixels pick).
+    eye: vec4<f32>,
+    view: vec4<f32>,
+    // The outside set's maps at Elite's cascades 0, 1, 2: xy the region's corner in the texture (texels), z its size (moment
+    // texels a side), w its moment texel (m).
+    map0: vec4<f32>,
+    map1: vec4<f32>,
+    map2: vec4<f32>,
+    // The texture's width and height in texels, and 1 / those.
+    texels: vec4<f32>,
+    // Elite's cascades' boxes and fade (sidewinder_shadow_common.wesl `ShipShadow`: `ahead`, `half`, `fade`).
+    ahead: vec4<f32>,
+    half: vec4<f32>,
+    fade: vec4<f32>,
+    // x Elite's quantisation offset, y the moment bias (3e-5), z the light-bleeding cutoff (0.3), w the depth a point beyond the
+    // maps' sphere (further from the star than every caster) is compared at.
+    msm: vec4<f32>,
+    // Elite's moments from the quantised ones (FWD 346-349), row by row.
+    read0: vec4<f32>,
+    read1: vec4<f32>,
+    read2: vec4<f32>,
+    read3: vec4<f32>,
 };
 
 // The light left by the volumetric clouds over the body-frame direction `bdir` at `height` m on a
@@ -434,6 +482,48 @@ fn ship_beam_at(sh: CloudShadow, world: vec3<f32>, n: vec3<f32>, ies: vec4<f32>)
 fn ship_beam_facing(sh: CloudShadow, world: vec3<f32>, ies: vec4<f32>) -> vec3<f32> {
     return beam_lamp(sh.beam, sh.beam.lamps[0], world, ies.x)[0] + beam_lamp(sh.beam, sh.beam.lamps[1], world, ies.y)[0]
         + beam_lamp(sh.beam, sh.beam.lamps[2], world, ies.z)[0] + beam_lamp(sh.beam, sh.beam.lamps[3], world, ies.w)[0];
+}
+
+// ---- A ship's shadow (`CloudShadow::shade`) ----
+//
+// Each receiver multiplies the star's DIRECT light by this, where the clouds' shadow already scales the star's light, so it
+// darkens only what it lit with the star (a face turned from the star keeps its sky light): the ground per pixel (planet.wesl
+// `lit_ground`), the scatter's grass, trees and buildings once an instance at its place (scatter_draw.wesl `point_light`: a
+// tree or a building is shadowed as a whole from that one point, ours), and the hero, the props, the walker's weapon and the
+// skater at their light pass's one point (hero_light.wesl: the sandbox's record is the player's place, so every prop follows
+// the player's point, a known limit). The ship's own surfaces keep their own lookup (sidewinder_lit.wesl `star_shadow`) and a
+// light record without this, so they are not shadowed twice. Callers take it only while `shade.live.x` is 1 (one uniform
+// branch), so nothing changes, and nothing is read, without a ship. The maps are the ship's true outline: a point between two
+// parts of the ship along the star's ray is simply in the map's shadow (the ground under a wing).
+
+// The share of the star's direct light that reaches `world` (m from the camera, the render frame's axes) past the ship (1 all
+// of it), through the outside set's maps in `t` (any sampler: the filter only gathers, and its taps stay inside each map's
+// region). A point off the maps' square or nearer the star than their sphere pays that one test and reads nothing.
+fn ship_shade_at(s: ShipShade, t: texture_2d<f32>, smp: sampler, world: vec3<f32>) -> f32 {
+    let h = vec4<f32>(world, 1.0);
+    let p = vec3<f32>(dot(s.to_ship_x, h), dot(s.to_ship_y, h), dot(s.to_ship_z, h));
+    let q = (p - s.sphere.xyz) / s.sphere.w;
+    let m = vec3<f32>(dot(q, s.axis_u.xyz), dot(q, s.axis_v.xyz), 0.5 - 0.5 * dot(q, s.axis_l.xyz));
+    if abs(m.x) >= 1.0 || abs(m.y) >= 1.0 || m.z < 0.0 {
+        return 1.0;
+    }
+    // Elite's pick over the three maps; a point beyond the sphere is compared just inside its far side, past every caster.
+    let pick = cascade_pick(s.ahead, s.half, s.fade, p, mat3x3<f32>(s.axis_u.xyz, s.axis_v.xyz, s.axis_l.xyz), s.eye.xyz, s.view.xyz);
+    let mz = vec3<f32>(m.xy, min(m.z, s.msm.w));
+    var v1 = 1.0;
+    var v2 = 1.0;
+    if pick.x < 2.5 {
+        v1 = moment_map_visibility(t, smp, s.texels.zw, ship_shade_map(s, pick.x), s.msm, s.read0, s.read1, s.read2, s.read3, mz);
+    }
+    if pick.y != 1.0 && pick.z < 2.5 {
+        v2 = moment_map_visibility(t, smp, s.texels.zw, ship_shade_map(s, pick.z), s.msm, s.read0, s.read1, s.read2, s.read3, mz);
+    }
+    return cascade_blend(pick, v1, v2);
+}
+
+// Map `k` (0, 1 or 2) of the record, without indexing an array.
+fn ship_shade_map(s: ShipShade, k: f32) -> vec4<f32> {
+    return select(select(s.map2, s.map1, k < 1.5), s.map0, k < 0.5);
 }
 
 // A surface's colour from its point's light, albedo and normal `n`: `l` towards the brightest star, `wrap`

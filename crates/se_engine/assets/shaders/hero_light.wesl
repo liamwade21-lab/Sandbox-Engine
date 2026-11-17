@@ -1,10 +1,17 @@
 // The Viltrumite mod's hero: his light for this frame (viltrumite/draw.rs), one compute invocation a frame
 // before the main pass, through the same function the scatter's trees and buildings use (ground_light.wesl
 // `point_light_at`). Once a frame instead of per vertex: it reads about 30 textures, and he has 165,706
-// vertices. Only his own draws read the result.
+// vertices. Only his own draws read the result. The sandbox runs the same pass for the player's place (sandbox/light.rs): its
+// props, the weapon and the skater read `out_light`, the Sidewinder's own materials `out_plain`.
+//
+// A ship's shadow (ground_light.wesl `ship_shade_at`) takes its share of the star's direct light at the record's one point in
+// `out_light`, while one casts (one uniform branch): his light at his place; for the sandbox's record the player's place, so the
+// walker's weapon is shadowed while he stands in the ship's shadow and every prop follows the player's point wherever it stands
+// (a known limit of one record for all). `out_plain` is the light without it, for the ship's own materials, which shadow
+// themselves (sidewinder_lit.wesl `star_shadow`) and must not take it twice. With no ship the two are the same bits.
 
 import super::eclipse::eclipse_light;
-import super::ground_light::{CloudShadow, point_light_at, cloud_shadow_at};
+import super::ground_light::{CloudShadow, point_light_at, cloud_shadow_at, ship_shade_at};
 import super::hero_frame::{HeroFrame, HeroLight};
 
 @group(0) @binding(0) var<storage, read> frame: HeroFrame;
@@ -20,6 +27,10 @@ import super::hero_frame::{HeroFrame, HeroLight};
 @group(0) @binding(10) var cloud_map_smp: sampler;
 @group(0) @binding(11) var cloud_weather: texture_cube<f32>;
 @group(0) @binding(12) var cloud_pattern: texture_cube<f32>;
+// A ship's shadow maps (volumetric_clouds.rs `SHIP_SHADE_IMAGE`), read through `cloud_map_smp`.
+@group(0) @binding(13) var ship_moments: texture_2d<f32>;
+// The light without the ship's shadow (the hero's own pass writes a scratch buffer of the pass's here).
+@group(0) @binding(14) var<storage, read_write> out_plain: HeroLight;
 
 @compute @workgroup_size(1)
 fn light() {
@@ -65,5 +76,12 @@ fn light() {
     let direct = cloud_shadow_at(sh, cloud_cover, cloud_cover_smp, cloud_map, cloud_map_smp, cloud_weather, cloud_pattern, b.centre.w, b.key.xy, normalize(local), length(rel) - b.centre.w)
         * dot(eclipse_light(frame.light.eclipse[0], rel / b.centre.w, normalize(frame.light.sun_dir.xyz)), vec3<f32>(1.0 / 3.0));
     let down = frame.point.w;
-    out_light = HeroLight(vec4<f32>(pl.sun * down, direct), vec4<f32>(pl.sky * down, 0.0), vec4<f32>(pl.flat_e * down, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
+    let plain = HeroLight(vec4<f32>(pl.sun * down, direct), vec4<f32>(pl.sky * down, 0.0), vec4<f32>(pl.flat_e * down, 0.0), vec4<f32>(pl.haze_t, 0.0), vec4<f32>(pl.haze_a, 0.0));
+    out_plain = plain;
+    var lit = plain;
+    // (The star's direct light and its share, which his own shadow fades by: in the ship's shadow he casts none.)
+    if cloud_sh.shade.live.x != 0u {
+        lit.sun *= ship_shade_at(cloud_sh.shade, ship_moments, cloud_map_smp, frame.point.xyz);
+    }
+    out_light = lit;
 }

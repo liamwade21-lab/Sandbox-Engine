@@ -102,7 +102,7 @@ fn scene(world_pos: vec3<f32>, n: vec3<f32>) -> Scene {
     let sun_dir = normalize(frame.light.sun_dir.xyz);
     let up = normalize(frame.up.xyz);
     let night = 1.0 - smoothstep(-0.12, 0.03, dot(up, sun_dir));
-    let shadow = star_shadow(world_pos, n, sun_dir, params.view.x > 0.5);
+    let shadow = star_shadow(world_pos, n, sun_dir, view.world_position, -normalize(view.world_from_view[2].xyz), params.view.x > 0.5);
     // (Everything of it that is light from outside the ship times `outside_light`: 0 in hyperspace's tunnel. At 1 the terms are
     // taken as they are, not multiplied: a multiply by 1 is exact, but it would let the compiler fuse differently downstream
     // (an FMA into the haze's add moved the glass's pixels by one level), and the pictures must stay bit for bit.)

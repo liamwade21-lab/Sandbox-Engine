@@ -46,7 +46,8 @@ use bevy::render::render_resource::binding_types::{
     texture_depth_2d_multisampled, texture_storage_2d_array, uniform_buffer,
 };
 use bevy::render::render_resource::*;
-use bevy::render::renderer::{RenderContext, RenderDevice, ViewQuery};
+use bevy::render::renderer::{RenderAdapter, RenderContext, RenderDevice, ViewQuery};
+use bevy::render::settings::WgpuFeatures;
 use bevy::render::storage::ShaderBuffer;
 use bevy::render::texture::{CachedTexture, FallbackImage, GpuImage, TextureCache};
 use bevy::render::view::{Msaa, ViewDepthStencilTexture, ViewTarget};
@@ -179,6 +180,9 @@ struct CloudShadow {
     hero_end: Vec4,
     /// A ship's headlights ([`ShipBeam`]), after the hero's two.
     beam: BeamRecord,
+    /// A ship's shadow on the world ([`ShipShade`]), after the headlights: the record's last field (`ground_light.wesl`,
+    /// `clouds.wesl` and this change together).
+    shade: ShipShade,
 }
 
 /// The headlights a ship lights the ground with ([`ShipBeam`]): the Sidewinder's four lights its lights' switch drives (in its
@@ -236,6 +240,92 @@ impl BeamRecord {
     }
 }
 
+/// A ship's shadow on the world (`ground_light.wesl` `ShipShade`, `ship_shade_at`), written by the Sidewinder mod
+/// (`sidewinder/shadow.rs`) as [`ShipBeam`] is: what a receiver (the ground per pixel, the scatter's objects once an instance,
+/// the hero's and the sandbox's light passes at their point) needs to go from its place (m from the camera, the render frame's
+/// axes) into the outside set's moment maps of the ship in [`SHIP_SHADE_IMAGE`], and to read them by Elite's pick
+/// and filter (`moment_shadow.wesl`). No arrays: the shaders take the record by value. All zeros with no ship, the ship past its
+/// draw distance or in the tunnel, or `SE_SHIP_SHADOW=0`: every receiver then skips the term (one uniform branch on `live.x`) and
+/// is as without the mod. `live.x` is the GPU's alone: the mod's map pass sets it to 1 after drawing this frame's maps (at
+/// [`ship_shade_live_offset`]); the CPU's copy holds 0, so every rewrite of the record clears it until the maps are drawn again,
+/// and no receiver reads a map that was never drawn. (The star's light at the ship 0, at night or in an eclipse, is known only on
+/// the GPU: the maps then rest and keep their last moments, which only a star term of 0 reads, as on the ship's own surfaces.)
+#[derive(Resource, Clone, Copy, ShaderType, Default, Debug, PartialEq)]
+pub(crate) struct ShipShade {
+    pub live: UVec4,
+    /// The ship's space from a receiver's place, row by row.
+    pub to_ship_x: Vec4,
+    pub to_ship_y: Vec4,
+    pub to_ship_z: Vec4,
+    /// The maps' axes in the ship's space: across, across, towards the star.
+    pub axis_u: Vec4,
+    pub axis_v: Vec4,
+    pub axis_l: Vec4,
+    /// xyz the maps' middle in the ship's space, w their radius (m).
+    pub sphere: Vec4,
+    /// The camera in the ship's space, and the way it looks.
+    pub eye: Vec4,
+    pub view: Vec4,
+    /// The outside set's maps at Elite's cascades 0, 1, 2: the region's corner in the texture, its size (texels), its texel (m).
+    pub map0: Vec4,
+    pub map1: Vec4,
+    pub map2: Vec4,
+    /// The texture's width and height in texels, and 1 / those.
+    pub texels: Vec4,
+    /// Elite's cascades' boxes (how far ahead, half-widths) and fade thresholds.
+    pub ahead: Vec4,
+    pub half: Vec4,
+    pub fade: Vec4,
+    /// x Elite's quantisation offset, y the moment bias, z the light-bleeding cutoff, w the depth a point beyond the maps'
+    /// sphere is compared at.
+    pub msm: Vec4,
+    /// Elite's dequantisation, row by row.
+    pub read0: Vec4,
+    pub read1: Vec4,
+    pub read2: Vec4,
+    pub read3: Vec4,
+}
+
+/// Where in the record (bytes) [`ShipShade::live`] lies: the record's last field, so its size less the shade's.
+pub(crate) fn ship_shade_live_offset() -> u64 {
+    CloudShadow::min_size().get() - ShipShade::min_size().get()
+}
+
+/// A ship's shadow maps ([`ShipShade`]): the texture every receiver binds (the ground's material, the scatter's light pass, the
+/// hero's and the sandbox's light passes) and the Sidewinder mod's map pass draws the outside set's maps into (the ship's own
+/// outside materials read them from it too). Allocated once at start-up (`init_cloud_assets`), at [`SHIP_SHADE_TEXELS`], about
+/// 22 MB of video memory paid by every player whether or not a ship is ever spawned, and never replaced: a material's bind
+/// group is not rebuilt when an image asset changes in this Bevy (0.20 rebuilds one only for a changed `ShaderBuffer`), so a
+/// texture swapped in at a spawn would never reach the ground's materials made before it. Nothing is ever read from it without
+/// a ship ([`ShipShade::live`]); its texels are undefined until the first map pass.
+pub(crate) const SHIP_SHADE_IMAGE: Handle<Image> = bevy::asset::uuid_handle!("5e57c0a1-7d4e-4b2a-9c1f-3a6b8d0e2f41");
+/// [`SHIP_SHADE_IMAGE`]'s size: the outside set's three map regions of the Sidewinder mod (`sidewinder/shadow.rs` `REGIONS`,
+/// its first three: 1,536 texels square, 256 and 64 under it), in its moments' format.
+pub(crate) const SHIP_SHADE_TEXELS: (u32, u32) = (1536, 1792);
+/// Four 16-bit fixed-point moments (Elite's `R16G16B16A16un`: the filter's constants assume it).
+pub(crate) const SHIP_SHADE_FORMAT: TextureFormat = TextureFormat::Rgba16Unorm;
+/// What the moments texture must do on this GPU: be drawn into and sampled, through a filtering sampler's binding (the
+/// materials bind it as a filterable float texture; the filter only gathers).
+const SHIP_SHADE_USES: TextureUsages = TextureUsages::TEXTURE_BINDING.union(TextureUsages::RENDER_ATTACHMENT);
+/// `SE_SHIP_SHADE_FALLBACK=1` takes the path of a GPU without them (tests).
+const SHIP_SHADE_FALLBACK_ENV: &str = "SE_SHIP_SHADE_FALLBACK";
+
+/// The moments' format if this GPU can use it as the ship's shadow needs: the device has 16-bit fixed-point textures
+/// (`feature`) and the adapter says the format can be drawn into, sampled and filtered (`uses`, `flags`); `None` (the ship's
+/// shadow off for the session) otherwise, or when `forced_off`.
+pub(crate) fn ship_shade_decision(feature: bool, uses: TextureUsages, flags: TextureFormatFeatureFlags, forced_off: bool) -> Option<TextureFormat> {
+    (feature && uses.contains(SHIP_SHADE_USES) && flags.contains(TextureFormatFeatureFlags::FILTERABLE) && !forced_off).then_some(SHIP_SHADE_FORMAT)
+}
+
+/// The start-up's decision ([`ship_shade_decision`]), made once by `init_cloud_assets` before any ship can exist.
+static SHIP_SHADE: std::sync::OnceLock<Option<TextureFormat>> = std::sync::OnceLock::new();
+
+/// [`SHIP_SHADE_IMAGE`]'s format on this GPU, which the Sidewinder mod draws all its maps in; `None` when this GPU cannot
+/// use it: the image is then a 1 x 1 texture nothing draws, and the mod leaves the ship's shadow off for the session.
+pub(crate) fn ship_shade_format() -> Option<TextureFormat> {
+    SHIP_SHADE.get().copied().flatten()
+}
+
 /// Where the ground should hold still for the Viltrumite mod's hero, a line from the camera (m): `start` his soles' place on the
 /// ground, w how much it holds; `end` where his shadow ends. All 0 with the mod off or nothing of him over land. Goes in the
 /// `CloudShadow` record, the ground's one per-frame buffer that is written in place: `planet.wesl`'s soil displacement fades out
@@ -258,7 +348,13 @@ fn shadow_buffer(s: &CloudShadow) -> ShaderBuffer {
     ShaderBuffer::new(bytes.into_inner(), RenderAssetUsages::RENDER_WORLD)
 }
 
-fn init_cloud_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+fn init_cloud_assets(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut buffers: ResMut<Assets<ShaderBuffer>>,
+    device: Option<Res<RenderDevice>>,
+    adapter: Option<Res<RenderAdapter>>,
+) {
     let mut cover = Image::new_uninit(
         Extent3d { width: COVER_SIZE, height: COVER_SIZE, depth_or_array_layers: 6 },
         TextureDimension::D2,
@@ -276,6 +372,31 @@ fn init_cloud_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>, 
     // (Drawn every frame: no data to upload, which would have to hold every mip.)
     map.data = None;
     map.sampler = bevy::image::ImageSampler::linear();
+    let support = adapter.as_deref().map(|a| a.get_texture_format_features(SHIP_SHADE_FORMAT));
+    let feature = device.as_deref().is_some_and(|d| d.features().contains(WgpuFeatures::TEXTURE_FORMAT_16BIT_NORM));
+    let forced_off = std::env::var(SHIP_SHADE_FALLBACK_ENV).is_ok_and(|v| v == "1");
+    let decided = ship_shade_decision(feature, support.map_or(TextureUsages::empty(), |f| f.allowed_usages), support.map_or(TextureFormatFeatureFlags::empty(), |f| f.flags), forced_off);
+    let _ = SHIP_SHADE.set(decided);
+    let shade = match decided {
+        Some(format) => {
+            let (w, h) = SHIP_SHADE_TEXELS;
+            let mut shade = Image::new_uninit(Extent3d { width: w, height: h, depth_or_array_layers: 1 }, TextureDimension::D2, format, RenderAssetUsages::RENDER_WORLD);
+            shade.texture_descriptor.usage = SHIP_SHADE_USES;
+            // (Elite's ClampSampler, as the ship's material reads it: linear, clamped; the filter's gathers read it unfiltered.)
+            shade.sampler = bevy::image::ImageSampler::linear();
+            info!("a ship's shadow maps: {w} x {h} {format:?} from start-up ({:.1} MB), read only while a ship casts", (w * h * 8) as f64 / 1048576.0);
+            shade
+        }
+        None => {
+            warn!(
+                "a ship's shadow is off for this session: {SHIP_SHADE_FORMAT:?} can't be drawn into and filtered here (16-bit fixed-point textures {feature}, uses {:?}, flags {:?}{})",
+                support.map(|f| f.allowed_usages),
+                support.map(|f| f.flags),
+                if forced_off { format!(", {SHIP_SHADE_FALLBACK_ENV}=1") } else { String::new() }
+            );
+            Image::new_fill(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2, &[255; 4], TextureFormat::Rgba8Unorm, RenderAssetUsages::RENDER_WORLD)
+        }
+    };
     commands.insert_resource(CloudShadowAssets {
         cover: images.add(cover),
         pattern: images.add(pattern),
@@ -284,6 +405,7 @@ fn init_cloud_assets(mut commands: Commands, mut images: ResMut<Assets<Image>>, 
         weather: images.add(weather_sim::weather_cube()),
         derived: images.add(weather_sim::derived_image()),
     });
+    let _ = images.insert(&SHIP_SHADE_IMAGE, shade);
 }
 
 /// The tiling noise volumes (`se_core::cloud_noise`), once built.
@@ -423,6 +545,11 @@ pub struct CloudView {
     pub atm: AtmosphereParamsUniform,
 }
 
+/// Where the ground's record (`CloudShadow`) is filled from this frame's resources (`HeroSoil`, `ShipBeam`, `ShipShade`), for
+/// what must write them before it (sidewinder/shadow.rs).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CloudRecordSet;
+
 /// `clouds_pass` (Core3d), for what must draw before or after it (viltrumite/fx.rs).
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CloudsPassSet;
@@ -436,6 +563,7 @@ impl Plugin for VolumetricCloudsPlugin {
             .init_resource::<VolumetricClouds>()
             .init_resource::<HeroSoil>()
             .init_resource::<ShipBeam>()
+            .init_resource::<ShipShade>()
             .init_resource::<ViewShake>()
             .init_resource::<detail::DetailCover>()
             .init_resource::<NoiseJob>()
@@ -447,7 +575,7 @@ impl Plugin for VolumetricCloudsPlugin {
             // sun makes its weather maps).
             .add_systems(
                 PostUpdate,
-                (update_cloud_view, weather_sim::update_weather)
+                (update_cloud_view.in_set(CloudRecordSet), weather_sim::update_weather)
                     .chain()
                     .after(CameraUpdateSystems)
                     .after(crate::universe::UniverseSet::FloatingOrigin),
@@ -877,7 +1005,7 @@ fn update_cloud_view(
         Res<AmbientLighting>,
         Res<crate::terrain::SelfEmission>,
     ),
-    (cam, hero_soil, shake, ship_beam): (Res<FlyCamera>, Res<HeroSoil>, Res<ViewShake>, Res<ShipBeam>),
+    (cam, hero_soil, shake, ship_beam, ship_shade): (Res<FlyCamera>, Res<HeroSoil>, Res<ViewShake>, Res<ShipBeam>, Res<ShipShade>),
     ready: Res<CloudsReady>,
     noise: Option<Res<CloudNoise>>,
     (mut state, mut cloud_body, mut images): (ResMut<VolumetricClouds>, ResMut<CloudBody>, ResMut<Assets<Image>>),
@@ -1116,6 +1244,7 @@ fn update_cloud_view(
                 hero: Vec4::ZERO,
                 hero_end: Vec4::ZERO,
                 beam: BeamRecord::default(),
+                shade: ShipShade::default(),
             };
             // The detail cover's levels, each once the camera is low enough for its texels to show.
             detail::update(&mut detail_cover, &mut detail_jobs, cloud_body.id, &specs, &spins, cam_s, terrain.radius, lod_on() && !giant, &data.vfs);
@@ -1162,6 +1291,7 @@ fn update_cloud_view(
     shadow.hero = hero_soil.start;
     shadow.hero_end = hero_soil.end;
     shadow.beam = BeamRecord::of(&ship_beam);
+    shadow.shade = *ship_shade;
     if let Some(a) = assets
         && shadow != *last_shadow
         && let Some(mut b) = buffers.get_mut(&a.shadow)
@@ -2206,5 +2336,95 @@ mod tests {
         c.opaque_map = true;
         let (b, _, cu) = layer_volume(&c, true, 0.0);
         assert!(cu == 0.0 && b > 59_000.0);
+    }
+
+    /// A WGSL struct's fields, in order, as (name, type), from `src`.
+    fn wgsl_fields(src: &str, name: &str) -> Vec<(String, String)> {
+        let start = src.find(&format!("struct {name} {{")).unwrap_or_else(|| panic!("struct {name}"));
+        let body = &src[start..src[start..].find("};").map(|e| start + e).expect("end")];
+        body.lines()
+            .skip(1)
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && l.contains(':'))
+            .map(|l| {
+                let (n, t) = l.trim_end_matches(',').split_once(':').unwrap();
+                (n.trim().to_string(), t.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// The ship's shadow record is the same in the three places that declare it: `ShipShade` field for field, in order, in
+    /// `ground_light.wesl`, `clouds.wesl` and the Rust struct (no arrays: the shaders take it by value), 22 vec4s; `shade` the
+    /// last field of `CloudShadow` in both shaders, after `beam`; and `live` where the mod's map pass writes it.
+    /// The moments texture is made only where the GPU can draw into it, sample it and filter it in `Rgba16Unorm` with
+    /// 16-bit fixed-point textures on; anything missing (or `SE_SHIP_SHADE_FALLBACK=1`) turns the ship's shadow off.
+    #[test]
+    fn the_ship_shade_format_is_checked() {
+        let all = TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST;
+        let filt = TextureFormatFeatureFlags::FILTERABLE;
+        assert_eq!(ship_shade_decision(true, all, filt, false), Some(TextureFormat::Rgba16Unorm));
+        assert_eq!(ship_shade_decision(false, all, filt, false), None, "no 16-bit fixed-point textures");
+        assert_eq!(ship_shade_decision(true, TextureUsages::TEXTURE_BINDING, filt, false), None, "not a render target");
+        assert_eq!(ship_shade_decision(true, TextureUsages::RENDER_ATTACHMENT, filt, false), None, "not sampled");
+        assert_eq!(ship_shade_decision(true, all, TextureFormatFeatureFlags::empty(), false), None, "not filterable");
+        assert_eq!(ship_shade_decision(true, all, filt, true), None, "forced off");
+    }
+
+    #[test]
+    fn the_ship_shade_record_matches_the_shaders() {
+        // (The names in the record's order: the shaders' are read below, the Rust side's checked by its bytes.)
+        let rust = [
+            "live", "to_ship_x", "to_ship_y", "to_ship_z", "axis_u", "axis_v", "axis_l", "sphere", "eye", "view", "map0", "map1", "map2", "texels", "ahead",
+            "half", "fade", "msm", "read0", "read1", "read2", "read3",
+        ];
+        assert_eq!(ShipShade::min_size().get(), 16 * rust.len() as u64);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shaders");
+        for file in ["ground_light.wesl", "clouds.wesl"] {
+            let src = std::fs::read_to_string(dir.join(file)).unwrap();
+            let shade = wgsl_fields(&src, "ShipShade");
+            let names: Vec<&str> = shade.iter().map(|(n, _)| n.as_str()).collect();
+            assert_eq!(names, rust, "{file}");
+            assert!(shade.iter().all(|(n, t)| t == if n == "live" { "vec4<u32>" } else { "vec4<f32>" }), "{file}: {shade:?}");
+            let record = wgsl_fields(&src, "CloudShadow");
+            let tail: Vec<&str> = record.iter().rev().take(4).map(|(n, _)| n.as_str()).collect();
+            assert_eq!(tail, ["shade", "beam", "hero_end", "hero"], "{file}");
+            assert_eq!(record.last().unwrap().1, "ShipShade", "{file}");
+        }
+        // The Rust side in the same order: each field set to its index in `rust`, read back at 16 bytes a field from `live`.
+        let k = |i: usize| Vec4::splat(i as f32);
+        let shade = ShipShade {
+            live: UVec4::splat(0),
+            to_ship_x: k(1),
+            to_ship_y: k(2),
+            to_ship_z: k(3),
+            axis_u: k(4),
+            axis_v: k(5),
+            axis_l: k(6),
+            sphere: k(7),
+            eye: k(8),
+            view: k(9),
+            map0: k(10),
+            map1: k(11),
+            map2: k(12),
+            texels: k(13),
+            ahead: k(14),
+            half: k(15),
+            fade: k(16),
+            msm: k(17),
+            read0: k(18),
+            read1: k(19),
+            read2: k(20),
+            read3: k(21),
+        };
+        let mut r = CloudShadow::default();
+        r.shade = ShipShade { live: UVec4::new(7, 0, 0, 0), ..shade };
+        let bytes = crate::stars::gpu_bytes(&r);
+        let at = ship_shade_live_offset() as usize;
+        assert_eq!(bytes.len() as u64, CloudShadow::min_size().get());
+        assert_eq!(u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()), 7);
+        for (i, name) in rust.iter().enumerate().skip(1) {
+            let o = at + 16 * i;
+            assert_eq!(f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()), i as f32, "{name} is not field {i}");
+        }
     }
 }

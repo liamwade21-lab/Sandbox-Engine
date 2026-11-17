@@ -6,7 +6,7 @@
 // same stars, eclipses, cloud shadows, sky light, ambient light and haze.
 
 import super::atmosphere_common::AtmParams;
-import super::ground_light::{PatchLight, CloudShadow, PointLight, LightBody, point_light_at, lit_surface, ship_beam_facing, ship_beam_texels, beam_texel};
+import super::ground_light::{PatchLight, CloudShadow, PointLight, LightBody, point_light_at, lit_surface, ship_beam_facing, ship_beam_texels, beam_texel, ship_shade_at};
 
 struct Body {
     m0: vec4<f32>,
@@ -142,9 +142,13 @@ fn dither2(frag: vec2<f32>) -> f32 {
 @group(2) @binding(8) var cloud_map_smp: sampler;
 @group(2) @binding(9) var cloud_weather: texture_cube<f32>;
 @group(2) @binding(10) var cloud_pattern: texture_cube<f32>;
+// A ship's shadow maps (volumetric_clouds.rs `SHIP_SHADE_IMAGE`), read through `cloud_map_smp` and only while
+// `cloud_sh.shade.live.x` is 1.
+@group(2) @binding(11) var ship_moments: texture_2d<f32>;
 
-// The ground's normal-free light at `world` (ground_light.wesl `point_light_at`), and a ship's headlights there while one is
-// lit (`ship_beam_facing`).
+// The ground's normal-free light at `world` (ground_light.wesl `point_light_at`), a ship's headlights there while one is lit
+// (`ship_beam_facing`), and a ship's shadow on its star's direct light while one casts (`ship_shade_at`: the whole object
+// shadowed as at this one point, ours).
 fn point_light(world: vec3<f32>) -> PointLight {
     var pl = point_light_at(
         LightBody(body.m0, body.m1, body.m2, body.centre, body.atm_flags, body.key),
@@ -166,6 +170,9 @@ fn point_light(world: vec3<f32>) -> PointLight {
     if cloud_sh.beam.head.x > 0.5 {
         let x = ship_beam_texels(cloud_sh, world);
         pl.flat_e += ship_beam_facing(cloud_sh, world, vec4<f32>(beam_profile(x.x), beam_profile(x.y), beam_profile(x.z), beam_profile(x.w)));
+    }
+    if cloud_sh.shade.live.x != 0u {
+        pl.sun *= ship_shade_at(cloud_sh.shade, ship_moments, cloud_map_smp, world);
     }
     return pl;
 }

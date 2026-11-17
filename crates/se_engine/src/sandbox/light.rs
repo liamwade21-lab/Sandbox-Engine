@@ -2,7 +2,10 @@
 //! (the star through the air, the sky, cloud shadows, night, haze) comes from `ground_light.wesl` `point_light_at`, which the
 //! Viltrumite mod's hero already runs once a frame for his own place (`hero_light.wesl`, `viltrumite/draw.rs`). The sandbox
 //! runs the same pass a second time, for the player's place, with records of its own (`LightProbe`, `LightPass`), so it works
-//! with the mod off, and every prop's material reads the result (`sandbox_prop.wesl`).
+//! with the mod off, and every prop's material reads the result (`sandbox_prop.wesl`). That result takes a ship's shadow at the
+//! player's place (`ground_light.wesl` `ship_shade_at`): the weapon is shadowed while he stands in it, and every prop follows the
+//! player's point wherever it stands (a known limit of one record for all). The Sidewinder's own materials read a second copy
+//! without it (`ship_light`), since they shadow themselves.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::core_pipeline::core_3d::main_opaque_pass_3d;
@@ -93,7 +96,13 @@ impl Material for PropMaterial {
 pub struct PropLight {
     pub on: bool,
     pub frame: Handle<ShaderBuffer>,
+    /// The light at the player's place with a ship's shadow there (the props, the weapon, the skater).
     pub light: Handle<ShaderBuffer>,
+    /// The same light without the ship's shadow, for the Sidewinder's own materials and its shadow passes (the same bits with
+    /// no ship).
+    pub ship_light: Handle<ShaderBuffer>,
+    /// Towards the star the record's light comes from (the render frame's axes), this frame.
+    pub sun: Vec3,
     tables: Option<LightTables>,
 }
 
@@ -121,7 +130,8 @@ fn make_records(mut commands: Commands, mut buffers: ResMut<Assets<ShaderBuffer>
     let probe = LightProbe::new();
     let frame = buffers.add(ShaderBuffer::new(probe.frame_bytes(), RenderAssetUsages::default()));
     let light = buffers.add(ShaderBuffer::new(LightProbe::light_bytes(), RenderAssetUsages::RENDER_WORLD));
-    commands.insert_resource(PropLight { on: false, frame, light, tables: None });
+    let ship_light = buffers.add(ShaderBuffer::new(LightProbe::light_bytes(), RenderAssetUsages::RENDER_WORLD));
+    commands.insert_resource(PropLight { on: false, frame, light, ship_light, sun: Vec3::ZERO, tables: None });
     commands.insert_resource(PropLightRecord(probe));
 }
 
@@ -136,7 +146,14 @@ fn update_light(sb: Res<Sandbox>, ship: Res<crate::sidewinder::Sidewinder>, cam:
     if !on {
         return;
     }
+    // The one point every prop, the weapon, the skater and the ship's own materials are lit at: the camera's place. Seated,
+    // that is the eye inside the cockpit, so every prop and the skater dim while a strut of the canopy shades the eye (a known
+    // limit of one record for all; the ship's own materials read the copy without the ship's shadow).
     let near = record.0.fill(&p, cam.pos, cam.pos, cam.rot * DVec3::Y);
+    let sun = record.0.sun_dir();
+    if light.sun != sun {
+        light.sun = sun;
+    }
     let tables = near.and_then(|t| t.atmosphere.as_ref()).map(|a| (a.inscatter.clone(), a.transmittance.clone(), a.irradiance.clone()));
     if light.tables != tables {
         light.tables = tables;
@@ -158,7 +175,7 @@ fn prepare_pass(
     device: Res<RenderDevice>,
     assets: Res<AssetServer>,
 ) {
-    pass.0.prepare(input.on, &input.frame, &input.light, input.tables.as_ref(), shadow.as_deref(), &buffers, &images, &fallback, &cache, &device, &assets);
+    pass.0.prepare(input.on, &input.frame, &input.light, Some(&input.ship_light), input.tables.as_ref(), shadow.as_deref(), &buffers, &images, &fallback, &cache, &device, &assets);
 }
 
 fn run_pass(_view: ViewQuery<&ExtractedView, MainView>, pass: Res<PropLightPass>, cache: Res<PipelineCache>, mut ctx: RenderContext) {

@@ -11,7 +11,7 @@ import super::gas_giant::{GiantParams, gas_giant_albedo, gg_fbm, gg_hash, gg_has
 // The light record, the clouds' shadow, the terminator and the haze, shared with the objects on the
 // ground (scatter_draw.wesl). PatchLight: the node's lighting (terrain.rs), one record per node in the
 // material's light page, at `planet.slot`.
-import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_shadow_at, ground_haze, ship_beam_at, ship_beam_texels, beam_texel};
+import super::ground_light::{PatchLight, CloudShadow, cloud_shadow_at, horizon_shadow_at, ground_haze, ship_beam_at, ship_beam_texels, beam_texel, ship_shade_at};
 // The biome weights and their noises, shared with the objects placed on the ground (the scatter's cull
 // pass). The wrappers below (`terra_noise`, `se_terra_snow`, `se_terra_weights`, `biome_weights`, ...)
 // pass them this material's values.
@@ -163,6 +163,9 @@ struct Biomes {
 @group(constants::MATERIAL_BIND_GROUP) @binding(32) var cloud_weather: texture_cube<f32>;
 // The weather's own cloud's pattern (volumetric_clouds.wesl `weather_pattern`), with the cover's sampler.
 @group(constants::MATERIAL_BIND_GROUP) @binding(33) var cloud_pattern: texture_cube<f32>;
+// A ship's shadow maps (the outside set's moments, volumetric_clouds.rs `SHIP_SHADE_IMAGE`), read through
+// `cloud_map_smp` (ground_light.wesl `ship_shade_at` only gathers) and only while `cloud_sh.shade.live.x` is 1.
+@group(constants::MATERIAL_BIND_GROUP) @binding(34) var ship_moments: texture_2d<f32>;
 
 // The light left by the volumetric clouds over the body-frame direction `bdir` at `height` m: near
 // the camera their shadow map (traced through the clouds themselves), farther out each layer's cover
@@ -1915,14 +1918,14 @@ fn sea_light(s: Surf, n: vec3<f32>, v: vec3<f32>, rough: f32) -> SeaLight {
 // SE's waterFogAccum (planet.glsl:959, 1157-1159, 1245) before the water's colour: AmbientColor plus
 // each light's direct light on level ground and sky irradiance, at hdrWaterSurfaceBright.
 fn water_fog_light(s: Surf) -> vec3<f32> {
-    return (vec3<f32>(lit[planet.slot].levels.x) + s.e_direct / planet.atm_flags.y + (s.e_city - s.e_direct) / PI) * WATER_SURFACE_BRIGHT;
+    return (vec3<f32>(lit[planet.slot].levels.x) + s.e_direct / planet.atm_flags.y + (s.e_city - s.e_direct_free) / PI) * WATER_SURFACE_BRIGHT;
 }
 
 // SE's ambSeaAccum light (planet.glsl:1026, 1132-1144, 1213): AmbientColor plus each light's day
 // ambient and sky irradiance (at hdrAtmoIllumBright 1), `amb_k` x AmbientColor (water.glsl tints
 // the AmbientColor by the water's colour twice).
 fn water_amb_light(s: Surf, amb_k: vec3<f32>) -> vec3<f32> {
-    return lit[planet.slot].levels.x * amb_k + (s.e_level - s.e_direct - vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y)) / PI;
+    return lit[planet.slot].levels.x * amb_k + (s.e_level - s.e_direct_free - vec3<f32>(lit[planet.slot].levels.x * planet.atm_flags.y)) / PI;
 }
 
 // SE's water in the ground pass (planet.glsl:807-867, 1243-1275), over the lit ground `col`: the ground
@@ -2007,8 +2010,11 @@ struct Surf {
     // The light on level ground from the stars and their sky light, shadowed (SE's
     // cityLightingAccum), which switches the night lights.
     e_city: vec3<f32>,
-    // Of `e_city`, the stars' direct light (SE's sunLightHorShadow x NdotLSC), for the water.
+    // Of `e_city`, the stars' direct light (SE's sunLightHorShadow x NdotLSC), for the water: with a ship's shadow in it.
     e_direct: vec3<f32>,
+    // The same without a ship's shadow (equal to `e_direct` with no ship): what the water takes out of `e_level` and `e_city`
+    // to leave their sky light, which keep the whole direct light (the town lights' cutoff).
+    e_direct_free: vec3<f32>,
     // The further stars' light at the ground (as `sun_at_ground`), for the sea's glint.
     sun_x: array<vec3<f32>, 3>,
     // A generated planet's civilization: its towns' density here (their lights by night).
@@ -2258,16 +2264,37 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     var s: Surf;
     s.e_sun = e_sun;
     s.sun_at_ground = sun * terminator;
+    // A ship's shadow (ground_light.wesl `ship_shade_at`): the share of the star's direct light that reaches the pixel past the
+    // ship, as the direct term's own visibility (`atm_surface_irradiance`'s `sun_vis`; the airless path's direct term times
+    // it), so the sky light keeps its own value; and the same share of the direct light everything after reads (the Hapke
+    // term, the water, the sheen, the glints). The level-ground light (the town lights' cutoff) keeps all of it. Only while a
+    // ship casts (one uniform branch): otherwise the old calls, untouched. The pixel's place from the camera in metres.
+    let ship = cloud_sh.shade.live.x != 0u;
+    var ship_vis = 1.0;
+    if ship {
+        ship_vis = ship_shade_at(cloud_sh.shade, ship_moments, cloud_map_smp, in.world_pos * (planet.planet.w / max(in.centre.w, 1e-30)));
+    }
     if has_atm {
-        let e = atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, l, e_sun, 1.0);
-        s.col = albedo / PI * e;
+        if ship {
+            s.col = albedo / PI * atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, l, e_sun, ship_vis);
+        } else {
+            let e = atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, ns, l, e_sun, 1.0);
+            s.col = albedo / PI * e;
+        }
         let r = length(pos_km);
         s.sun_at_ground = sun * atm_transmittance_sun(planet.atm, transmittance_tex, atm_smp, r, dot(pos_km / r, l));
         s.e_level = atm_surface_irradiance(planet.atm, transmittance_tex, irradiance_tex, atm_smp, pos_km, up, l, e_sun, 1.0);
     } else {
         // Same radiometric scale as the atmosphere path (albedo / pi * irradiance).
         s.col = albedo / PI * max(dot(ns, l), 0.0) * terminator * sun * planet.atm_flags.y;
+        if ship {
+            s.col *= ship_vis;
+        }
         s.e_level = max(dot(up, l), 0.0) * terminator * e_sun;
+    }
+    let sun_free = s.sun_at_ground;
+    if ship {
+        s.sun_at_ground *= ship_vis;
     }
     s.e_city = s.e_level;
     // The civilization's lights are on where the main star's light on level ground is under SE's
@@ -2278,6 +2305,10 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
     s.city = city * (1.0 - smoothstep(civ_cut * 0.2, civ_cut, dot(s.e_level, vec3<f32>(0.3, 0.59, 0.11))));
     s.lamp = lamp;
     s.e_direct = s.sun_at_ground * (planet.atm_flags.y * max(dot(up, l), 0.0));
+    s.e_direct_free = s.e_direct;
+    if ship {
+        s.e_direct_free = sun_free * (planet.atm_flags.y * max(dot(up, l), 0.0));
+    }
     s.sun_x = array<vec3<f32>, 3>(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     // SE's Hapke BRDF (terrain_pbr.glh) on the direct light: Lommel-Seeliger with the opposition
     // surge (SpotBright over SpotWidth, and the coherent-backscatter spot), mixed in by `Hapke`.
@@ -2319,6 +2350,7 @@ fn lit_ground(in: VertexOut, n: vec3<f32>, up: vec3<f32>, l: vec3<f32>, pos_km: 
         s.e_level += level_x;
         s.e_city += level_x;
         s.e_direct += ground_x * (planet.atm_flags.y * max(dot(up, lx), 0.0));
+        s.e_direct_free += ground_x * (planet.atm_flags.y * max(dot(up, lx), 0.0));
         s.sun_x[i] = ground_x;
         if planet.modulate.w > 0.0 {
             let v = normalize(-in.world_pos);

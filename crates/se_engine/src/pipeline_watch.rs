@@ -436,6 +436,7 @@ fn warm_ground(
             cloud_map: c.map.clone(),
             cloud_weather: c.weather.clone(),
             cloud_pattern: c.pattern.clone(),
+            ship_shade: crate::volumetric_clouds::SHIP_SHADE_IMAGE,
             skirt: kind == GroundKind::Skirt,
             variant: noise,
         });

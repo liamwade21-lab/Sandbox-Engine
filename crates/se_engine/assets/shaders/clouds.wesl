@@ -79,8 +79,10 @@ struct CloudShadow {
     hero_end: vec4<f32>,
     // A ship's headlights on the ground (ground_light.wesl `ShipBeam`, after the hero's two); the shells don't read them.
     beam: ShipBeam,
+    // A ship's shadow on the world (ground_light.wesl `ShipShade`, after the headlights, the record's last); the shells don't read it.
+    shade: ShipShade,
 };
-// ground_light.wesl's `ShipBeamLamp` and `ShipBeam`, for the record's layout.
+// ground_light.wesl's `ShipBeamLamp`, `ShipBeam` and `ShipShade`, for the record's layout.
 struct ShipBeamLamp {
     pos_range: vec4<f32>,
     colour: vec4<f32>,
@@ -92,6 +94,30 @@ struct ShipBeam {
     head: vec4<f32>,
     lamps: array<ShipBeamLamp, 4>,
     profile: array<vec4<f32>, 256>,
+};
+struct ShipShade {
+    live: vec4<u32>,
+    to_ship_x: vec4<f32>,
+    to_ship_y: vec4<f32>,
+    to_ship_z: vec4<f32>,
+    axis_u: vec4<f32>,
+    axis_v: vec4<f32>,
+    axis_l: vec4<f32>,
+    sphere: vec4<f32>,
+    eye: vec4<f32>,
+    view: vec4<f32>,
+    map0: vec4<f32>,
+    map1: vec4<f32>,
+    map2: vec4<f32>,
+    texels: vec4<f32>,
+    ahead: vec4<f32>,
+    half: vec4<f32>,
+    fade: vec4<f32>,
+    msm: vec4<f32>,
+    read0: vec4<f32>,
+    read1: vec4<f32>,
+    read2: vec4<f32>,
+    read3: vec4<f32>,
 };
 @group(constants::MATERIAL_BIND_GROUP) @binding(8) var cloud_weather: texture_cube<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(9) var cloud_weather_smp: sampler;
