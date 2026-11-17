@@ -10,10 +10,10 @@
 //! parents, the buses up to the master, the attenuations, the game syncs they name (from the Init bank), the media, the
 //! source plugins and the names. Left out as derived or not used by the mixer: each object's `resolved` summary, `bank`,
 //! `banks`, a Sound's `media` summary (the `media` table replaces it), the State objects (their deltas are inline in each
-//! node's state block), the modulators, and the effects other than the Parametric EQ (not built: `se_core::elite_sound`'s
-//! docs). The EQs in the kept nodes' and buses' slots come from `effects.json` (beside `events.json`, made by
-//! `re/elite/tools/sidewinder_effects.py`: the buses' effects are in the Init bank, which `events.json` does not hold),
-//! their parameter blocks decoded (`eq_effect`). Every recording shipped
+//! node's state block), the modulators, and the effects other than the Parametric EQ, Guitar Distortion and Peak Limiter
+//! (not built: `se_core::elite_sound`'s docs). Those in the kept nodes' and buses' slots come from `effects.json` (beside
+//! `events.json`, made by `re/elite/tools/sidewinder_effects.py`: the buses' effects are in the Init bank, which
+//! `events.json` does not hold), their parameter blocks decoded (`effect`). Every recording shipped
 //! passed `sidewinder_media.py`'s proof (`decode_identical` in `media/index.json`: the file decodes to the `.wem`'s audio,
 //! sample for sample); `build` refuses any other.
 
@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, PARAMETRIC_EQ};
+use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, GUITAR_DISTORTION, PARAMETRIC_EQ, PEAK_LIMITER};
 
 use super::{Ctx, Shipped};
 
@@ -624,35 +624,23 @@ fn check_container_modes(x: &Export) -> Result<(), String> {
     Ok(())
 }
 
-/// A Parametric EQ of `effects.json` in `sounds.json`'s shape (`se_core::elite_sound::data::Effect`): its parameter block
-/// (bank v135, wwiser's `CAkParameterEQFXParams__SetParamsBlock` for versions up to 168, the layout Elite's own
-/// `SetParamsBlock` at 0x144a107a0 copies) decoded: three bands of a u32 filter type, f32 gain (dB), frequency (Hz), Q and
-/// a u8 on / off, then the f32 output level (dB) and a u8 LFE flag; every value as stored. The base an additive curve adds
-/// to is the property value the bank keeps for its parameter, which must be the block's; no state may act on it.
-fn eq_effect(id: &str, e: &Value) -> Result<Value, String> {
-    const TYPES: [&str; 7] = ["LOWPASS", "HIPASS", "BANDPASS", "NOTCH", "LOWSHELF", "HISHELF", "PEAKINGEQ"];
-    let at = |s: String| format!("effects.json: EQ {id}: {s}");
+/// A parameter block from `effects.json`'s hex, with its length checked.
+fn block(id: &str, e: &Value, what: &str, len: usize) -> Result<Vec<u8>, String> {
+    let at = |s: String| format!("effects.json: {what} {id}: {s}");
     let hex = e.get("params_hex").and_then(Value::as_str).ok_or_else(|| at("no parameter block".into()))?;
     let b: Vec<u8> = (0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)).collect::<Result<_, _>>().map_err(|_| at("its block is not hex".into()))?;
-    if b.len() != 56 {
-        return Err(at(format!("a block of {} bytes, the three-band layout is 56", b.len())));
+    if b.len() != len {
+        return Err(at(format!("a block of {} bytes, its layout is {len}", b.len())));
     }
-    let f32_at = |o: usize| f64::from(f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]));
-    let mut values = [0.0f64; 17];
-    let mut bands = Vec::new();
-    for k in 0..3 {
-        let o = 17 * k;
-        let t = u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
-        let filter = TYPES.get(t).ok_or_else(|| at(format!("band {k}'s filter type {t}")))?;
-        let (gain, freq, q, on) = (f32_at(o + 4), f32_at(o + 8), f32_at(o + 12), b[o + 16] != 0);
-        values[5 * k..5 * k + 5].copy_from_slice(&[t as f64, gain, freq, q, if on { 1.0 } else { 0.0 }]);
-        bands.push(serde_json::json!({ "filter": filter, "gain_db": gain, "frequency": freq, "q": q, "on": on }));
-    }
-    let (out, lfe) = (f32_at(51), b[55] != 0);
-    values[15] = out;
-    values[16] = if lfe { 1.0 } else { 0.0 };
+    Ok(b)
+}
+
+/// The rules every shipped effect keeps: the base an additive curve adds to is the property value the bank keeps for its
+/// parameter, which must be the block's value (`values`, by parameter index); no state may act on its parameters.
+fn check_effect_props(id: &str, e: &Value, what: &str, values: &[f64]) -> Result<(), String> {
+    let at = |s: String| format!("effects.json: {what} {id}: {s}");
     for pv in e.get("prop_values").and_then(Value::as_array).into_iter().flatten() {
-        let (p, v) = (pv.get("id").and_then(Value::as_u64).unwrap_or(99) as usize, pv.get("value").and_then(Value::as_f64).unwrap_or(f64::NAN));
+        let (p, v) = (pv.get("id").and_then(Value::as_u64).unwrap_or(999) as usize, pv.get("value").and_then(Value::as_f64).unwrap_or(f64::NAN));
         if values.get(p).is_none_or(|x| (x - v).abs() > 1e-6) {
             return Err(at(format!("property {p} = {v} differs from its block value")));
         }
@@ -660,14 +648,101 @@ fn eq_effect(id: &str, e: &Value) -> Result<Value, String> {
     if e.pointer("/states/groups").and_then(Value::as_array).is_some_and(|g| !g.is_empty()) {
         return Err(at("states on its parameters are not built".into()));
     }
-    Ok(serde_json::json!({
+    Ok(())
+}
+
+fn f32_at(b: &[u8], o: usize) -> f64 {
+    f64::from(f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]))
+}
+
+fn u32_at(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+/// An effect of `effects.json` the mixer runs, in `sounds.json`'s shape (`se_core::elite_sound::data::Effect`), or None for
+/// a plug-in it does not run.
+fn effect(id: &str, e: &Value) -> Result<Option<Value>, String> {
+    let parsed = match e.get("plugin").and_then(Value::as_str) {
+        Some(PARAMETRIC_EQ) => ("eq", eq_block(id, e)?),
+        Some(GUITAR_DISTORTION) => ("distortion", distortion_block(id, e)?),
+        Some(PEAK_LIMITER) => ("limiter", limiter_block(id, e)?),
+        _ => return Ok(None),
+    };
+    let mut v = serde_json::json!({
         "type": e.get("type"),
         "id": id,
         "name": e.get("name"),
-        "plugin": PARAMETRIC_EQ,
-        "params_hex": hex,
-        "eq": { "bands": bands, "output_level_db": out, "process_lfe": lfe },
+        "plugin": e.get("plugin"),
+        "params_hex": e.get("params_hex"),
         "rtpc": e.get("rtpc"),
+    });
+    v[parsed.0] = parsed.1;
+    Ok(Some(v))
+}
+
+/// A Parametric EQ's parameter block (bank v135, wwiser's `CAkParameterEQFXParams__SetParamsBlock` for versions up to
+/// 168, the layout Elite's own `SetParamsBlock` at 0x144a107a0 copies) decoded: three bands of a u32 filter type, f32 gain
+/// (dB), frequency (Hz), Q and a u8 on / off, then the f32 output level (dB) and a u8 LFE flag; every value as stored.
+fn eq_block(id: &str, e: &Value) -> Result<Value, String> {
+    const TYPES: [&str; 7] = ["LOWPASS", "HIPASS", "BANDPASS", "NOTCH", "LOWSHELF", "HISHELF", "PEAKINGEQ"];
+    let b = block(id, e, "EQ", 56)?;
+    let mut values = [0.0f64; 17];
+    let mut bands = Vec::new();
+    for k in 0..3 {
+        let o = 17 * k;
+        let t = u32_at(&b, o) as usize;
+        let filter = TYPES.get(t).ok_or_else(|| format!("effects.json: EQ {id}: band {k}'s filter type {t}"))?;
+        let (gain, freq, q, on) = (f32_at(&b, o + 4), f32_at(&b, o + 8), f32_at(&b, o + 12), b[o + 16] != 0);
+        values[5 * k..5 * k + 5].copy_from_slice(&[t as f64, gain, freq, q, if on { 1.0 } else { 0.0 }]);
+        bands.push(serde_json::json!({ "filter": filter, "gain_db": gain, "frequency": freq, "q": q, "on": on }));
+    }
+    let (out, lfe) = (f32_at(&b, 51), b[55] != 0);
+    values[15] = out;
+    values[16] = if lfe { 1.0 } else { 0.0 };
+    check_effect_props(id, e, "EQ", &values)?;
+    Ok(serde_json::json!({ "bands": bands, "output_level_db": out, "process_lfe": lfe }))
+}
+
+/// A Guitar Distortion's parameter block, as Elite's `SetParamsBlock` (0x144a04f50) copies it: six bands (three pre-EQ,
+/// three post-EQ) of a u32 type, f32 gain (dB), frequency (Hz), Q and a u8 on / off, then the u32 distortion type and the
+/// f32 drive, tone, rectification, output level (dB) and wet share. A band's type is `FUN_144a05110`'s design type
+/// (`FUN_144a06470` passes it straight through): its filter by `EqFilter::from_design`. Its parameter indices are its
+/// `SetParam`'s (0x144a04b60): band k at (k / 3) x 30 + (k % 3) x 10, then 60-65.
+fn distortion_block(id: &str, e: &Value) -> Result<Value, String> {
+    const DESIGNS: [&str; 7] = ["LOWSHELF", "PEAKINGEQ", "HISHELF", "LOWPASS", "HIPASS", "BANDPASS", "NOTCH"];
+    let b = block(id, e, "Guitar Distortion", 126)?;
+    let mut values = [0.0f64; 66];
+    let mut bands = Vec::new();
+    for k in 0..6 {
+        let o = 17 * k;
+        let t = u32_at(&b, o) as usize;
+        let filter = DESIGNS.get(t).ok_or_else(|| format!("effects.json: Guitar Distortion {id}: band {k}'s design type {t} is not built"))?;
+        let (gain, freq, q, on) = (f32_at(&b, o + 4), f32_at(&b, o + 8), f32_at(&b, o + 12), b[o + 16] != 0);
+        let p = (k / 3) * 30 + (k % 3) * 10;
+        values[p..p + 5].copy_from_slice(&[t as f64, gain, freq, q, if on { 1.0 } else { 0.0 }]);
+        bands.push(serde_json::json!({ "filter": filter, "gain_db": gain, "frequency": freq, "q": q, "on": on }));
+    }
+    let kind = u32_at(&b, 102);
+    let [drive, tone, rect, level, wet] = [106, 110, 114, 118, 122].map(|o| f32_at(&b, o));
+    values[60..66].copy_from_slice(&[f64::from(kind), drive, tone, rect, level, wet]);
+    check_effect_props(id, e, "Guitar Distortion", &values)?;
+    let post = bands.split_off(3);
+    Ok(serde_json::json!({
+        "pre_eq": bands, "post_eq": post, "distortion": kind, "drive": drive, "tone": tone, "rectification": rect,
+        "output_level_db": level, "wet_dry": wet,
+    }))
+}
+
+/// A Peak Limiter's parameter block (`AkPeakLimiterFXParams`, in the order of Elite's `SetParam` 0x144a12330): f32
+/// threshold (dB), ratio, lookahead (s), release (s), output level (dB), then u8 LFE and channel link.
+fn limiter_block(id: &str, e: &Value) -> Result<Value, String> {
+    let b = block(id, e, "Peak Limiter", 22)?;
+    let [threshold, ratio, lookahead, release, level] = [0, 4, 8, 12, 16].map(|o| f32_at(&b, o));
+    let (lfe, link) = (b[20] != 0, b[21] != 0);
+    check_effect_props(id, e, "Peak Limiter", &[threshold, ratio, lookahead, release, level, f64::from(u8::from(lfe)), f64::from(u8::from(link))])?;
+    Ok(serde_json::json!({
+        "threshold_db": threshold, "ratio": ratio, "lookahead_s": lookahead, "release_s": release, "output_level_db": level,
+        "process_lfe": lfe, "channel_link": link,
     }))
 }
 
@@ -739,20 +814,23 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
 
         objects.insert(id.clone(), Value::Object(o));
     }
-    // The effects the mixer runs: the Parametric EQs in the slots of the nodes and buses kept.
+    // The effects the mixer runs: the Parametric EQs, Guitar Distortions and Peak Limiters in the slots of the nodes and
+    // buses kept.
     let mut effects = Map::new();
     for o in objects.values() {
         let chain = o.get("node").and_then(|n| n.get("fx")).or_else(|| o.get("fx"));
         for slot in chain.and_then(|c| c.get("fx")).and_then(Value::as_array).into_iter().flatten() {
             let Some(fid) = slot.pointer("/fx_id/id").and_then(Value::as_str) else { continue };
             let Some(e) = x.effects.get(fid) else { continue };
-            if e.get("plugin").and_then(Value::as_str) == Some(PARAMETRIC_EQ) && !effects.contains_key(fid) {
-                effects.insert(fid.to_string(), eq_effect(fid, e)?);
+            if !effects.contains_key(fid) {
+                if let Some(v) = effect(fid, e)? {
+                    effects.insert(fid.to_string(), v);
+                }
             }
         }
     }
-    // (The game parameters their curves read need the Init bank's definitions: their defaults set the EQs' bands where
-    // nothing sets them.)
+    // (The game parameters their curves read need the Init bank's definitions: their defaults set the effects' values
+    // where nothing sets them.)
     for e in effects.values() {
         all.rtpcs(e.get("rtpc"));
     }
@@ -871,14 +949,17 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
         "A",
         &format!(
             "The ship's Wwise events ({} the game posts, {} whose sender is not found) and all they reach: {} events with the ones \
-             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, the Init bank's game syncs. Values are the banks'.",
+             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, {} Guitar Distortions, {} Peak Limiter(s), the Init \
+             bank's game syncs. Values are the banks'.",
             built.file.ship_events.len(),
             built.file.open_events.len(),
             built.file.events.len(),
             built.file.objects.len(),
             built.file.media.len(),
             built.file.source_plugins.len(),
-            built.file.effects.len()
+            built.file.effects.values().filter(|e| e.eq.is_some()).count(),
+            built.file.effects.values().filter(|e| e.distortion.is_some()).count(),
+            built.file.effects.values().filter(|e| e.limiter.is_some()).count()
         ),
     );
     // sfx/ is this kind's alone: emptied first, so a recording no longer shipped (or now shipped as another file) goes.

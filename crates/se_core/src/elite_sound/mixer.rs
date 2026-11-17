@@ -3,7 +3,10 @@
 use super::curve::{cents_to_ratio, db_to_gain, eval, find, gain_to_db, interpolate};
 use super::data::*;
 use super::filter;
-use super::{event_id, wwise_id, FxStage, SoundBank, SoundError, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL};
+use super::{
+    event_id, wwise_id, FxStage, SoundBank, SoundError, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL, GD_PARAM_DRIVE, GD_PARAM_OUTPUT_LEVEL, GD_PARAM_RECTIFICATION,
+    GD_PARAM_TONE, GD_PARAM_TYPE, GD_PARAM_WET, LIMITER_PARAM_OUTPUT_LEVEL, LIMITER_PARAM_THRESHOLD,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -52,6 +55,46 @@ impl EqNow {
     pub const OFF: EqNow = EqNow { on: false, filter: None, frequency: 0.0, gain_db: 0.0, q: 0.0 };
 }
 
+/// A Guitar Distortion on a voice's way as its parameters are now (bank values, curves and its `SetParam`'s clamps
+/// applied, `0x144a04b60`: band gains held to -48..48 dB, drive, tone, rectification and wet share to 0-100, the output
+/// level to -24..24 dB and made a linear gain by `powf(10, level / 20)`), for [`super::filter::Distortion`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DistortionNow {
+    pub pre: [EqNow; 3],
+    pub post: [EqNow; 3],
+    pub kind: u32,
+    pub drive: f32,
+    pub tone: f32,
+    pub rectification: f32,
+    /// The output level, a linear gain.
+    pub level: f32,
+    pub wet: f32,
+}
+
+/// One effect on a voice's way, in signal order ([`VoiceUpdate::fx`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FxNow {
+    /// Bypassed, or an effect whose only work is a gain already in the voice's `gain` (the master's limiter).
+    Off,
+    /// A Parametric EQ's three bands (its output level is in the voice's `gain`).
+    Eq([EqNow; 3]),
+    Distortion(DistortionNow),
+}
+
+/// The master bus's Peak Limiter now: its threshold (dB) and output level (dB, in every voice's `gain`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LimiterNow {
+    pub threshold_db: f32,
+    pub output_db: f32,
+}
+
+/// What an effect on a voice's way does now: what the player runs, and the gain (dB) it adds to the voice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StageNow {
+    fx: FxNow,
+    gain_db: f64,
+}
+
 /// One voice this step.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceUpdate {
@@ -84,11 +127,12 @@ pub struct VoiceUpdate {
     /// Below the volume threshold, or beyond a playback limit that makes voices virtual: the player drops it (a virtual
     /// voice is not heard and is not built; it is built again from its next `start`).
     pub virtual_voice: bool,
-    /// The Parametric EQ bands on its way to the master, in signal order (three a stage, [`SoundBank::fx_stages`]): the
-    /// node's in force, then each bus's; the player runs them after the voice's own filters (a linear effect on a bus
-    /// gives the bus's mix what it gives each voice). Their output levels are in `gain` and `volume_db`. Empty for a
-    /// virtual voice and a stop.
-    pub eq: Vec<EqNow>,
+    /// The effects on its way to the master, in signal order (one a stage, [`SoundBank::fx_stages`]): the node's in force,
+    /// then each bus's; the player runs them after the voice's own filters and before its level (a linear effect on a bus
+    /// gives the bus's mix what it gives each voice; the Guitar Distortions the data puts on buses act on nothing heard,
+    /// `every_effect_on_a_bus_is_linear_where_it_acts`). The EQs' and the limiter's output levels are in `gain` and
+    /// `volume_db`; a distortion's is its own. Empty for a virtual voice and a stop.
+    pub fx: Vec<FxNow>,
 }
 
 /// SplitMix64: the mixer's one source of chance.
@@ -1581,11 +1625,11 @@ impl Mixer {
 
     /// Everything one voice's level, pitch and filters add up to now: (mix, linear fade and crossfade factor).
     fn voice_mix(&self, id: u64) -> (Mix, f64) {
-        self.voice_mix_eq(id, None)
+        self.voice_mix_fx(id, None)
     }
 
-    /// `voice_mix`, and the voice's EQ bands into `bands` if given ([`VoiceUpdate::eq`]).
-    fn voice_mix_eq(&self, id: u64, bands: Option<&mut Vec<EqNow>>) -> (Mix, f64) {
+    /// `voice_mix`, and the voice's effects into `fx` if given ([`VoiceUpdate::fx`]).
+    fn voice_mix_fx(&self, id: u64, fx: Option<&mut Vec<FxNow>>) -> (Mix, f64) {
         let bank = &self.bank;
         let inst = &self.insts[&id];
         let mut m = self.mix_of(inst);
@@ -1616,17 +1660,12 @@ impl Mixer {
             }
         }
         m.db += self.normalisation_db(inst);
-        // The effects' output levels (a gain: linear, so a voice's share of it is the whole of it).
+        // The effects' output levels that are plain gains (linear, so a voice's share of it is the whole of it).
         let stages = self.fx_now(inst);
-        m.db += stages.iter().filter_map(|(_, e)| e.as_ref().map(|e| e.1)).sum::<f64>();
-        if let Some(out) = bands {
+        m.db += stages.iter().filter_map(|(_, e)| e.as_ref().map(|e| e.gain_db)).sum::<f64>();
+        if let Some(out) = fx {
             out.clear();
-            for (_, e) in &stages {
-                match e {
-                    Some((b, _)) => out.extend_from_slice(b),
-                    None => out.extend_from_slice(&[EqNow::OFF; 3]),
-                }
-            }
+            out.extend(stages.iter().map(|(_, e)| e.map_or(FxNow::Off, |e| e.fx)));
         }
         if let Some(b) = self.output_bus(inst.obj) {
             for bid in bank.bus_chain(b) {
@@ -1640,12 +1679,12 @@ impl Mixer {
         (m, fade)
     }
 
-    /// The effects on an instance's way (a voice's), each with its EQ bands and output level (dB) now, or None if bypassed.
-    fn fx_now(&self, inst: &Inst) -> Vec<(FxStage, Option<([EqNow; 3], f64)>)> {
+    /// The effects on an instance's way (a voice's), each with what it does now, or None if bypassed.
+    fn fx_now(&self, inst: &Inst) -> Vec<(FxStage, Option<StageNow>)> {
         if !matches!(inst.kind, Kind::Voice(_)) {
             return Vec::new();
         }
-        self.bank.fx_stages(inst.obj).iter().map(|st| (*st, (!self.fx_bypassed(st, inst.emitter)).then(|| self.eq_now(st, inst.emitter)))).collect()
+        self.bank.fx_stages(inst.obj).iter().map(|st| (*st, (!self.fx_bypassed(st, inst.emitter)).then(|| self.stage_now(st, inst.emitter)))).collect()
     }
 
     /// A slot bypassed now: by the bank's bits, or by the holder's `BypassFX<slot>` / `BypassAllFX` properties, curves and
@@ -1679,21 +1718,12 @@ impl Mixer {
         v >= 0.5
     }
 
-    /// A Parametric EQ's bands and output level (dB) now: each parameter its bank value, or its curves' (an exclusive curve
-    /// replaces it, additive ones add to it), and a parameter a curve sets goes through the plug-in's `SetParam`
-    /// (`0x144a10630`): the type truncated to an integer, the gains and the output level held to -24..24 dB, on/off from
-    /// a value other than 0; frequencies and Qs as they are.
-    fn eq_now(&self, st: &FxStage, emitter: u32) -> ([EqNow; 3], f64) {
-        let Some(e) = self.bank.file.effects.get(&st.effect) else { return ([EqNow::OFF; 3], 0.0) };
-        let mut base = [0.0f64; 17];
-        for (k, b) in e.eq.bands.iter().take(3).enumerate() {
-            base[k * 5..k * 5 + 5].copy_from_slice(&[b.filter as u8 as f64, b.gain_db, b.frequency, b.q, if b.on { 1.0 } else { 0.0 }]);
-        }
-        base[EQ_PARAM_OUTPUT_LEVEL as usize] = e.eq.output_level_db;
-        base[EQ_PARAM_LFE as usize] = if e.eq.process_lfe { 1.0 } else { 0.0 };
-        let (mut exclusive, mut added, mut set) = ([None::<f64>; 17], [0.0f64; 17], [false; 17]);
-        for r in e.rtpc.iter().filter(|r| r.rtpc_type == RtpcType::GameParameter) {
-            let p = r.param_id.min(EQ_PARAM_LFE) as usize;
+    /// A plug-in's parameters now: each its block value (`base`), or its curves' (an exclusive curve replaces it, additive
+    /// ones add to it), and whether a curve sets it (such a value goes through the plug-in's `SetParam`, its clamps).
+    fn plugin_params<const N: usize>(&self, e: &Effect, base: [f64; N], emitter: u32) -> ([f64; N], [bool; N]) {
+        let (mut exclusive, mut added, mut set) = ([None::<f64>; N], [0.0f64; N], [false; N]);
+        for r in e.rtpc.iter().filter(|r| r.rtpc_type == RtpcType::GameParameter && (r.param_id as usize) < N) {
+            let p = r.param_id as usize;
             let y = eval(&r.points, r.scaling, self.gp_value(r.game_parameter.id, emitter));
             set[p] = true;
             match r.accumulation {
@@ -1701,20 +1731,121 @@ impl Mixer {
                 _ => added[p] += y,
             }
         }
-        let value = |p: usize| exclusive[p].unwrap_or(base[p] + added[p]);
-        // (`SetParam`'s clamp: under -24, or not a number, is -24; else at most 24.)
-        let level = |p: usize| {
-            let v = value(p);
-            if set[p] { if v >= -24.0 { v.min(24.0) } else { -24.0 } } else { v }
-        };
+        (std::array::from_fn(|p| exclusive[p].unwrap_or(base[p] + added[p])), set)
+    }
+
+    /// What an effect does now ([`StageNow`]).
+    fn stage_now(&self, st: &FxStage, emitter: u32) -> StageNow {
+        let Some(e) = self.bank.file.effects.get(&st.effect) else { return StageNow { fx: FxNow::Off, gain_db: 0.0 } };
+        if let Some(eq) = &e.eq {
+            let (bands, out) = self.eq_now(e, eq, emitter);
+            StageNow { fx: FxNow::Eq(bands), gain_db: out }
+        } else if let Some(d) = &e.distortion {
+            StageNow { fx: FxNow::Distortion(self.distortion_now(e, d, emitter)), gain_db: 0.0 }
+        } else if let Some(l) = &e.limiter {
+            StageNow { fx: FxNow::Off, gain_db: f64::from(self.limiter_params(e, l, emitter).output_db) }
+        } else {
+            StageNow { fx: FxNow::Off, gain_db: 0.0 }
+        }
+    }
+
+    /// A Parametric EQ's bands and output level (dB) now; a parameter a curve sets goes through the plug-in's `SetParam`
+    /// (`0x144a10630`): the type truncated to an integer, the gains and the output level held to -24..24 dB, on/off from
+    /// a value other than 0 (one that is not a number is off: `ucomiss` with 0, then `jz`, at 0x144a106e9); frequencies
+    /// and Qs as they are.
+    fn eq_now(&self, e: &Effect, eq: &ParamEq, emitter: u32) -> ([EqNow; 3], f64) {
+        let mut base = [0.0f64; 17];
+        for (k, b) in eq.bands.iter().take(3).enumerate() {
+            base[k * 5..k * 5 + 5].copy_from_slice(&[b.filter as u8 as f64, b.gain_db, b.frequency, b.q, if b.on { 1.0 } else { 0.0 }]);
+        }
+        base[EQ_PARAM_OUTPUT_LEVEL as usize] = eq.output_level_db;
+        base[EQ_PARAM_LFE as usize] = if eq.process_lfe { 1.0 } else { 0.0 };
+        let (value, set) = self.plugin_params(e, base, emitter);
+        let level = |p: usize| if set[p] { held(value[p], -24.0, 24.0) } else { value[p] };
         let mut bands = [EqNow::OFF; 3];
         for (k, b) in bands.iter_mut().enumerate() {
             let p = k * 5;
-            let filter = if set[p] { EqFilter::from_index(value(p) as i64) } else { e.eq.bands.get(k).map(|b| b.filter) };
-            let on = if set[p + 4] { value(p + 4) != 0.0 } else { e.eq.bands.get(k).is_some_and(|b| b.on) };
-            *b = EqNow { on, filter, gain_db: level(p + 1) as f32, frequency: value(p + 2) as f32, q: value(p + 3) as f32 };
+            let filter = if set[p] { EqFilter::from_index(value[p] as i64) } else { eq.bands.get(k).map(|b| b.filter) };
+            let on = if set[p + 4] { switch(value[p + 4]) } else { eq.bands.get(k).is_some_and(|b| b.on) };
+            *b = EqNow { on, filter, gain_db: level(p + 1) as f32, frequency: value[p + 2] as f32, q: value[p + 3] as f32 };
         }
         (bands, level(EQ_PARAM_OUTPUT_LEVEL as usize))
+    }
+
+    /// A Guitar Distortion's parameters now; a parameter a curve sets goes through its `SetParam` (`0x144a04b60`): a band's
+    /// type truncated to an integer (`FUN_144a05110`'s design type), its gain held to -48..48 dB (`DAT_1457dc0f4`,
+    /// `DAT_1457dc0f0`), on/off from a value other than 0 (not a number: off, `ucomiss` / `jz` at 0x144a04be3); drive, tone,
+    /// rectification and the wet share held to 0-100 (`DAT_144dec67c`); the output level held to -24..24 dB (`DAT_1457db4a8`,
+    /// `DAT_145220f4c`). The output level becomes `powf(10, level / 20)` whether a curve sets it or the block does
+    /// (`SetParamsBlock` `0x144a04f50` converts it too).
+    fn distortion_now(&self, e: &Effect, d: &GuitarDistortion, emitter: u32) -> DistortionNow {
+        let stored: Vec<&EqBand> = d.pre_eq.iter().chain(&d.post_eq).collect();
+        let at = |k: usize| (k / 3) * 30 + (k % 3) * 10;
+        let mut base = [0.0f64; 66];
+        for (k, b) in stored.iter().take(6).enumerate() {
+            base[at(k)..at(k) + 5].copy_from_slice(&[design_of(b.filter), b.gain_db, b.frequency, b.q, if b.on { 1.0 } else { 0.0 }]);
+        }
+        base[GD_PARAM_TYPE as usize] = f64::from(d.distortion);
+        base[GD_PARAM_DRIVE as usize] = d.drive;
+        base[GD_PARAM_TONE as usize] = d.tone;
+        base[GD_PARAM_RECTIFICATION as usize] = d.rectification;
+        base[GD_PARAM_OUTPUT_LEVEL as usize] = d.output_level_db;
+        base[GD_PARAM_WET as usize] = d.wet_dry;
+        let (value, set) = self.plugin_params(e, base, emitter);
+        let pct = |p: u32| (if set[p as usize] { held(value[p as usize], 0.0, 100.0) } else { value[p as usize] }) as f32;
+        let band = |k: usize| {
+            let p = at(k);
+            let b = stored.get(k);
+            EqNow {
+                on: if set[p + 4] { switch(value[p + 4]) } else { b.is_some_and(|b| b.on) },
+                filter: if set[p] { EqFilter::from_design(value[p] as i64) } else { b.map(|b| b.filter) },
+                gain_db: (if set[p + 1] { held(value[p + 1], -48.0, 48.0) } else { value[p + 1] }) as f32,
+                frequency: value[p + 2] as f32,
+                q: value[p + 3] as f32,
+            }
+        };
+        let lp = GD_PARAM_OUTPUT_LEVEL as usize;
+        let level_db = (if set[lp] { held(value[lp], -24.0, 24.0) } else { value[lp] }) as f32;
+        DistortionNow {
+            pre: std::array::from_fn(band),
+            post: std::array::from_fn(|k| band(k + 3)),
+            kind: d.distortion,
+            drive: pct(GD_PARAM_DRIVE),
+            tone: pct(GD_PARAM_TONE),
+            rectification: pct(GD_PARAM_RECTIFICATION),
+            level: 10f32.powf(level_db * 0.05),
+            wet: pct(GD_PARAM_WET),
+        }
+    }
+
+    /// A Peak Limiter's threshold and output level (dB) now; set by a curve, its `SetParam` (`0x144a12330`) holds the
+    /// threshold to -96.3..0 dB (`DAT_1457db3f8`) and the output level to -24..24 dB. The output level is a gain after the
+    /// limiting: its `Execute` (`0x144a108d0`) runs the limiter's routine on the buffer first, then `FUN_1449f4310` ramps
+    /// the buffer from the last buffer's output gain to this one's.
+    fn limiter_params(&self, e: &Effect, l: &PeakLimiter, emitter: u32) -> LimiterNow {
+        let base = [l.threshold_db, l.ratio, l.lookahead_s, l.release_s, l.output_level_db, f64::from(u8::from(l.process_lfe)), f64::from(u8::from(l.channel_link))];
+        let (value, set) = self.plugin_params(e, base, emitter);
+        let (t, o) = (LIMITER_PARAM_THRESHOLD as usize, LIMITER_PARAM_OUTPUT_LEVEL as usize);
+        LimiterNow {
+            threshold_db: (if set[t] { held(value[t], -96.3, 0.0) } else { value[t] }) as f32,
+            output_db: (if set[o] { held(value[o], -24.0, 24.0) } else { value[o] }) as f32,
+        }
+    }
+
+    /// The master bus's Peak Limiter now, or None if the master holds none or it is bypassed (for the player's count of
+    /// samples over its threshold). Its curves read the global values: a bus's effect works on the bus's mix.
+    pub fn master_limiter(&self) -> Option<LimiterNow> {
+        let (master, bus) = self.bank.file.objects.iter().find_map(|(id, o)| match o {
+            Object::Bus(b) if b.parent_bus.is_none() && b.fx.fx.iter().any(|s| s.fx_id.as_ref().is_some_and(|r| self.bank.file.effects.get(&r.id).is_some_and(|e| e.limiter.is_some()))) => Some((*id, b)),
+            _ => None,
+        })?;
+        bus.fx.fx.iter().find_map(|s| {
+            let fx = s.fx_id.as_ref()?.id;
+            let e = self.bank.file.effects.get(&fx)?;
+            let l = e.limiter.as_ref()?;
+            let st = FxStage { holder: master, slot: s.index, effect: fx, on_bus: true };
+            (!self.fx_bypassed(&st, NO_EMITTER)).then(|| self.limiter_params(e, l, NO_EMITTER))
+        })
     }
 
     /// What loudness normalisation adds to a voice (dB): the recording's `akd ` gain where the node in force normalises.
@@ -1818,8 +1949,8 @@ impl Mixer {
                 // (The output levels of effects after the meter's slot: later slots of its bus, and the buses beyond.)
                 for (st, e) in self.fx_now(inst) {
                     let after = st.on_bus && chain.iter().position(|b| *b == st.holder).is_some_and(|k| k > at || (k == at && st.slot > meter.slot));
-                    if let (true, Some((_, out))) = (after, e) {
-                        db -= out;
+                    if let (true, Some(e)) = (after, e) {
+                        db -= e.gain_db;
                     }
                 }
                 if !meter.apply_downstream_volume {
@@ -1890,9 +2021,9 @@ impl Mixer {
         let ids: Vec<u64> = self.insts.iter().filter(|(_, i)| matches!(&i.kind, Kind::Voice(v) if v.started && v.out != Out::Silence)).map(|(k, _)| *k).collect();
         let mut kills = Vec::new();
         let over_limit = self.limited_virtual();
-        let mut bands = Vec::new();
+        let mut fx = Vec::new();
         for id in ids {
-            let (m, fade) = self.voice_mix_eq(id, Some(&mut bands));
+            let (m, fade) = self.voice_mix_fx(id, Some(&mut fx));
             let level_db = m.db + gain_to_db(fade);
             let (behaviour, queue) = self.below_threshold(self.insts[&id].obj);
             let inst = &self.insts[&id];
@@ -1957,7 +2088,7 @@ impl Mixer {
                 lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: virt,
-                eq: if virt { Vec::new() } else { bands.clone() },
+                fx: if virt { Vec::new() } else { fx.clone() },
             });
         }
         for k in kills {
@@ -1991,7 +2122,7 @@ impl Mixer {
                 lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: false,
-                eq: Vec::new(),
+                fx: Vec::new(),
             });
         }
         self.updates.sort_by_key(|u| u.voice);
@@ -2047,6 +2178,34 @@ fn output(o: Out) -> Option<Output> {
         Out::Rumble(s) => Some(Output::Rumble { source: s }),
         Out::Synth(s) => Some(Output::Synth { source: s }),
         Out::Silence => None,
+    }
+}
+
+/// No emitter: a game parameter read at its global value.
+const NO_EMITTER: u32 = u32::MAX;
+
+/// A plug-in `SetParam`'s clamp as Elite's copies compile it (`comiss` with the low bound, `jc` to it): under `lo`, or not a
+/// number, is `lo`; else at most `hi`.
+fn held(v: f64, lo: f64, hi: f64) -> f64 {
+    if v >= lo { v.min(hi) } else { lo }
+}
+
+/// A plug-in's on / off parameter: on for a value other than 0; one that is not a number is off (`ucomiss` with 0 sets the
+/// zero flag on an unordered compare, and the `jz` takes it as 0).
+fn switch(v: f64) -> bool {
+    v != 0.0 && !v.is_nan()
+}
+
+/// A filter's design type of `FUN_144a05110` ([`EqFilter::from_design`]'s inverse), as a parameter value.
+fn design_of(f: EqFilter) -> f64 {
+    match f {
+        EqFilter::LowShelf => 0.0,
+        EqFilter::PeakingEq => 1.0,
+        EqFilter::HiShelf => 2.0,
+        EqFilter::LowPass => 3.0,
+        EqFilter::HiPass => 4.0,
+        EqFilter::BandPass => 5.0,
+        EqFilter::Notch => 6.0,
     }
 }
 

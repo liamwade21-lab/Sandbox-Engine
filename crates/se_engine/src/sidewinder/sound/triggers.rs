@@ -456,6 +456,24 @@ fn orbital_cruise(mode: u8, out: &mut Vec<Call>) {
     }
 }
 
+/// player_location: the player's audio context sets state group player_location whenever its value changes
+/// (`FUN_1441e45d0`, the ids made by `FUN_1441dc7d0`): unknown to start with; near a station's docking component the station's
+/// states (inside_station, inside_docking_bay, the outpost's and planet port's bays, nearby_outpost by flag 0x53); with no
+/// station's component near it falls to outside_station (0x1441e4a3a..0x1441e4a76: flag 0x53 clear -> outside_station).
+/// The mod has no stations, so outside_station from the start, in normal space, supercruise and on a planet alike (the
+/// function tells them apart only by the context's mode 0xb, which keeps the last value). Its only effect on the shipped
+/// objects: bus b2e99de6's EQ 36b637f5 (a 400 Hz low-pass and -18 dB) is bypassed (BypassFX0).
+fn player_location(out: &mut Vec<Call>) {
+    out.push(Call::State("player_location", "outside_station"));
+}
+
+/// on_foot_location: the on-foot audio context sets OnFootLocation (`FUN_1441e5190`): NotOnFoot whenever the player is not
+/// on foot (its last branch: the static "NotOnFoot", set when it differs from the last one set), the on-foot places otherwise. A
+/// seated pilot is never on foot. (The same function sets the game parameter inside_vacuum, which no shipped object reads.)
+fn on_foot_location(out: &mut Vec<Call>) {
+    out.push(Call::State("OnFootLocation", "NotOnFoot"));
+}
+
 fn begin_end(name: &str, begin: bool) -> String {
     name.replace('#', if begin { "b" } else { "e" })
 }
@@ -527,6 +545,8 @@ impl Triggers {
         out.push(Call::State("FlightAssist", if v.flight_assist { "Off" } else { "On" }));
         out.push(Call::State("GlideState", if v.glide { "Glide" } else { "NotGlide" }));
         self.cockpit_atmosphere(v, out);
+        player_location(out);
+        on_foot_location(out);
         self.boost = v.boost;
         self.flight_assist = v.flight_assist;
         self.gear_down = v.gear_down;

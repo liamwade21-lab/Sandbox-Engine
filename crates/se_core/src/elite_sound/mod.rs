@@ -35,11 +35,20 @@
 //! - The Wwise Parametric EQ (plug-in 0x00690003; 42 shipped, `SoundFile::effects`), in the effect slots of the node in
 //!   force on a sound (the nearest that overrides its parent's effects, else the top node: run per voice) and of every bus
 //!   on its way to the master ([`SoundBank::fx_stages`]; a linear effect on a bus gives the bus's mix what it gives each
-//!   voice, so the player runs it per voice: [`VoiceUpdate::eq`]). From Elite's own copy of the plug-in (registration
+//!   voice, so the player runs it per voice: [`VoiceUpdate::fx`]). From Elite's own copy of the plug-in (registration
 //!   record 0x145ee0248; `SetParam` 0x144a10630 with its parameter indices and clamps, `SetParamsBlock` 0x144a107a0,
 //!   `Execute` 0x144a0f9c0, the band designs `FUN_144a0f510` / `FUN_144a05110`: [`filter::eq_coefs`]): the game parameter
 //!   curves on its parameters (exclusive or added to the block's value; `Log` scaled frequencies), the output level, the
 //!   slot bypass bits and the holder's BypassFX properties, curves and states.
+//! - The Wwise Guitar Distortion (plug-in 0x007e0003; 16 shipped: 14 in node slots, run per voice; 2 on buses, the GUI and
+//!   Voice buses, whose wet share is 0 wherever the mod plays them, so per voice is exact there too), from Elite's own copy
+//!   (record 0x145ee00f8; `SetParam` 0x144a04b60, `SetParamsBlock` 0x144a04f50, `Execute` 0x144a04230: [`filter::Distortion`],
+//!   its parameters [`DistortionNow`]): pre-EQ, the Overdrive and Heavy curves (the only types in the data), the
+//!   rectifier, post-EQ, the wet / dry mix and output level, the DC blocker, every gain ramped over a 1024-frame buffer.
+//! - The master bus's Wwise Peak Limiter (plug-in 0x006e0003): its output level is a gain after the limiting (`Execute`
+//!   0x144a108d0 runs the limiter, then ramps the buffer by the output gain), so it is in every voice's gain (+1.28 dB at
+//!   DynamicRange's default); its threshold (-4 dB) is reported ([`Mixer::master_limiter`]) for the player to count frames
+//!   over it. The limiting itself is not built: the mix's peaks stay under the threshold (the count stays 0).
 //! - Virtual voices are reported without a start and built by the player only when heard ([`VoiceStart`]), from where
 //!   their queue behaviour puts them.
 //! - LayerCntr (71): all children together, blend tracks with their crossfade curves (4) and track curves (7).
@@ -66,13 +75,14 @@
 //!   rest, up to an hour, at once ([`Mixer::step`]); setters ignore values that are not finite.
 //!
 //! # Not built (kept in the data, never refused, listed with the shipped events they touch)
-//! - The effects other than the Parametric EQ (`re/elite/work/sound/t5d2/bus_fx.py` lists every one on the shipped
-//!   sounds' ways with its parameters, `effects.json` holds them): on buses the Wwise Compressor (21 slots), Guitar
-//!   Distortion (2), the master bus's Peak Limiter (threshold -4 dB and output +1.28 dB at DynamicRange's default -23) and
-//!   plug-in 0x00BA0003 (Audiokinetic's, not in wwiser's table), the Meters with ballistics, Frontier's own plug-ins
-//!   0x03E80C63 (effect) and 0x03E90C66 (the buses' mixer plug-in, 13 buses); on nodes, run per voice, Guitar Distortion
-//!   (15), Tremolo (31) and Flanger (5); on the aux paths reverbs and delays. Compressors, limiters and distortion are not
-//!   linear; Tremolo and Flanger modulate in time by LFOs whose formulas are Wwise's own and not public. Aux sends (user
+//! - The other effects (`re/elite/work/sound/t5d2/bus_fx.py` lists every one on the shipped sounds' ways with its
+//!   parameters, `effects.json` holds them): on buses the Wwise Compressor (21 slots; by T5d-2's reading none acts at the
+//!   mix's levels), the Peak Limiter's limiting, the master's plug-in 0x00BA0003 (four modules by its `SetParamsBlock`
+//!   0x144af9670: a 6-band EQ with gains -1.7..+1 dB, a 4-band compressor with crossovers 142, 424 and 3986 Hz and
+//!   thresholds -14..-23 dB at ratios 1.5-2, two more; its DSP engine `FUN_144af8720` not read), the Meters with
+//!   ballistics, the DTS 3D-headphone plug-ins (Frontier's company id: 0x03E80C63 `DtsI3daEffectPlugin` in 3 bus slots,
+//!   0x03E90C66 `DtsI3daPannerPlugin` as 11 buses' mixer plug-in; the user's Elite has `hp3d` disabled); on nodes
+//!   Tremolo (31) and Flanger (5); on the aux paths reverbs and delays. Tremolo and Flanger modulate in time by LFOs. Aux sends (user
 //!   291, game 183, their curves 137) and the attenuation's wet curves (269), HDR (every bus carries HDR settings: 317;
 //!   HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or 1.414 on mono recordings, its meaning not
 //!   proven).
@@ -117,7 +127,7 @@ mod mixer;
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
-pub use mixer::{EqNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
+pub use mixer::{DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
 
 use data::*;
 use std::collections::HashMap;
@@ -174,11 +184,31 @@ const NOT_BUILT_PARAMS: &[&str] = &[
     "PositioningTypeBlend", "Position_PAN_X_2D", "Position_PAN_Y_2D",
 ];
 
-/// The plug-in the mixer runs as an effect: the Wwise Parametric EQ (`SoundFile::effects`).
+/// The plug-ins the mixer runs as effects (`SoundFile::effects`): the Wwise Parametric EQ, Guitar Distortion and Peak
+/// Limiter.
 pub const PARAMETRIC_EQ: &str = "00690003";
+pub const GUITAR_DISTORTION: &str = "007e0003";
+pub const PEAK_LIMITER: &str = "006e0003";
 /// The Parametric EQ's parameter indices (its `SetParam` in Elite's exe, `0x144a10630`: band = index / 5).
 pub const EQ_PARAM_OUTPUT_LEVEL: u32 = 15;
 pub const EQ_PARAM_LFE: u32 = 16;
+/// The Guitar Distortion's parameter indices (its `SetParam`, `0x144a04b60`: pre-EQ band n at 10n + 0..4 (type, gain,
+/// frequency, Q, on), post-EQ band n at 30 + 10n + 0..4, then these).
+pub const GD_PARAM_TYPE: u32 = 60;
+pub const GD_PARAM_DRIVE: u32 = 61;
+pub const GD_PARAM_TONE: u32 = 62;
+pub const GD_PARAM_RECTIFICATION: u32 = 63;
+pub const GD_PARAM_OUTPUT_LEVEL: u32 = 64;
+pub const GD_PARAM_WET: u32 = 65;
+/// The Peak Limiter's parameter indices (its `SetParam`, `0x144a12330`): threshold 0, ratio 1, lookahead 2, release 3, these.
+pub const LIMITER_PARAM_THRESHOLD: u32 = 0;
+pub const LIMITER_PARAM_OUTPUT_LEVEL: u32 = 4;
+pub const LIMITER_PARAM_LINK: u32 = 6;
+
+/// A Guitar Distortion parameter index its `SetParam` knows.
+pub fn gd_param_known(p: u32) -> bool {
+    (p < 60 && p % 10 < 5) || (GD_PARAM_TYPE..=GD_PARAM_WET).contains(&p)
+}
 
 const RANGED_BUILT: &[&str] = &["Volume", "Pitch", "LPF", "HPF", "InitialDelay"];
 
@@ -476,18 +506,37 @@ impl SoundBank {
         Ok(())
     }
 
-    /// An effect the mixer runs: a Parametric EQ of three bands whose curves drive its parameters 0-16 by game parameters
-    /// (a modulator's curve is kept, not built).
+    /// An effect the mixer runs: a Parametric EQ of three bands, a Guitar Distortion of three and three bands with a curve
+    /// the mixer builds, or a Peak Limiter, each with exactly its own parameter block, whose curves drive its parameters by
+    /// game parameters (a modulator's curve is kept, not built).
     fn check_effect(&self, e: &Effect) -> Result<(), String> {
-        if e.plugin != PARAMETRIC_EQ {
-            return Err(format!("plug-in {} is not one the mixer runs", e.plugin));
+        let blocks = [e.eq.is_some(), e.distortion.is_some(), e.limiter.is_some()];
+        let known: fn(u32) -> bool = match e.plugin.as_str() {
+            PARAMETRIC_EQ if blocks == [true, false, false] => |p| p <= EQ_PARAM_LFE,
+            GUITAR_DISTORTION if blocks == [false, true, false] => gd_param_known,
+            PEAK_LIMITER if blocks == [false, false, true] => |p| p <= LIMITER_PARAM_LINK,
+            PARAMETRIC_EQ | GUITAR_DISTORTION | PEAK_LIMITER => return Err(format!("plug-in {} with another plug-in's block", e.plugin)),
+            _ => return Err(format!("plug-in {} is not one the mixer runs", e.plugin)),
+        };
+        if let Some(eq) = &e.eq {
+            if eq.bands.len() != 3 {
+                return Err(format!("{} bands, the Parametric EQ of bank v135 has 3", eq.bands.len()));
+            }
         }
-        if e.eq.bands.len() != 3 {
-            return Err(format!("{} bands, the Parametric EQ of bank v135 has 3", e.eq.bands.len()));
+        if let Some(d) = &e.distortion {
+            if d.pre_eq.len() != 3 || d.post_eq.len() != 3 {
+                return Err(format!("{} + {} bands, the Guitar Distortion has 3 + 3", d.pre_eq.len(), d.post_eq.len()));
+            }
+            if d.distortion > filter::DISTORTION_HEAVY {
+                return Err(format!("distortion type {} is not built (Fuzz and Clip are not in the data)", d.distortion));
+            }
         }
         for r in &e.rtpc {
-            if r.param_id > EQ_PARAM_LFE || r.param != format!("plugin parameter {}", r.param_id) {
-                return Err(format!("a curve on {} ({}) is not a parameter of the EQ", r.param, r.param_id));
+            if !known(r.param_id) || r.param != format!("plugin parameter {}", r.param_id) {
+                return Err(format!("a curve on {} ({}) is not a parameter of plug-in {}", r.param, r.param_id, e.plugin));
+            }
+            if e.plugin == GUITAR_DISTORTION && r.param_id == GD_PARAM_TYPE {
+                return Err("a curve on the distortion's type is not built".into());
             }
             if r.accumulation == Accumulation::Boolean {
                 return Err(format!("a boolean curve on parameter {} is not built", r.param_id));

@@ -826,7 +826,7 @@ fn virtual_voices_start_when_heard() {
                 } else {
                     assert!(u.virtual_voice || starts.contains_key(&u.voice), "heard before it started: {u:?}");
                 }
-                assert!(!u.virtual_voice || u.eq.is_empty());
+                assert!(!u.virtual_voice || u.fx.is_empty());
                 was_virtual.insert(u.voice, u.virtual_voice);
             }
         }
@@ -858,7 +858,7 @@ fn virtual_voices_start_when_heard() {
 fn eq_stages_follow_their_curves_clamps_and_bypass() {
     let r = reference();
     let le = &r["loop_end"];
-    let probe = |edit: &dyn Fn(&mut SoundFile)| -> (Vec<EqNow>, f32) {
+    let probe = |edit: &dyn Fn(&mut SoundFile)| -> (Vec<FxNow>, f32) {
         let b = edited(|f| {
             f.game_syncs.volume_threshold_db = -1000.0;
             edit(f);
@@ -868,7 +868,7 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
         m.set_game_parameter("eq_probe", 3.7, None);
         m.post(le["begin"].as_str().unwrap(), 1).unwrap();
         let u = m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).cloned().unwrap();
-        (u.eq, u.volume_db)
+        (u.fx, u.volume_db)
     };
     // The bus the event's first voice goes through.
     let b = bank();
@@ -884,7 +884,7 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
         name: None,
         plugin: PARAMETRIC_EQ.into(),
         params_hex: String::new(),
-        eq: data::ParamEq {
+        eq: Some(data::ParamEq {
             bands: vec![
                 data::EqBand { filter: data::EqFilter::PeakingEq, gain_db: 3.0, frequency: 500.0, q: 1.0, on: true },
                 data::EqBand { filter: data::EqFilter::LowShelf, gain_db: 0.0, frequency: 100.0, q: 1.0, on: false },
@@ -892,7 +892,9 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
             ],
             output_level_db: out_db,
             process_lfe: false,
-        },
+        }),
+        distortion: None,
+        limiter: None,
         rtpc: vec![
             // Band 0's gain to 30 (held to 24), band 1's type to 4.9 (truncated to 4: LOWSHELF) and turned on.
             curve(1, Accumulation::Exclusive, 30.0),
@@ -928,14 +930,14 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
     };
     let (plain, plain_db) = probe(&|_| {});
     let (eq, db) = probe(&add(None, 6.0));
-    assert_eq!(eq.len(), plain.len() + 3, "one stage of three bands more");
-    let ours = &eq[eq.len() - 3..];
+    assert_eq!(eq.len(), plain.len() + 1, "one stage more");
+    let Some(FxNow::Eq(ours)) = eq.last() else { panic!("the last stage is the EQ: {eq:?}") };
     assert_eq!((ours[0].on, ours[0].filter, ours[0].gain_db, ours[0].frequency), (true, Some(data::EqFilter::PeakingEq), 24.0, 500.0));
     assert_eq!((ours[1].on, ours[1].filter), (true, Some(data::EqFilter::LowShelf)));
     assert_eq!((ours[2].on, ours[2].gain_db), (true, -2.0));
     assert!((db - plain_db - 6.0).abs() < 1e-4, "the output level: {plain_db} -> {db}");
     let (bypassed, bdb) = probe(&add(Some(1 << 3), 6.0));
-    assert!(bypassed[bypassed.len() - 3..].iter().all(|b| !b.on), "bypassed by its slot's bit");
+    assert_eq!(bypassed.last(), Some(&FxNow::Off), "bypassed by its slot's bit");
     assert!((bdb - plain_db).abs() < 1e-4, "and its level with it");
     let (_, all_db) = probe(&add(Some(0x10), 6.0));
     assert!((all_db - plain_db).abs() < 1e-4, "the bit for all slots");
@@ -945,4 +947,104 @@ fn eq_stages_follow_their_curves_clamps_and_bypass() {
         f.game_syncs.game_parameters.remove(&wwise_id("eq_probe"));
     });
     assert!(matches!(undefined, Err(SoundError::Bad(ref e)) if e.contains("not defined")), "{undefined:?}");
+}
+
+/// A Guitar Distortion on a voice's bus and a Peak Limiter on the master reach the update: the distortion's bands by
+/// their design types, a curve's values through its `SetParam` (a band gain of 60 held to 48, a drive of 140 held to
+/// 100, an output level of 30 dB held to 24 and made linear), its level not in the voice's volume; the limiter's output
+/// level is in every voice's volume and `master_limiter` reads its threshold.
+#[test]
+fn distortion_and_limiter_stages_follow_their_curves_and_clamps() {
+    let r = reference();
+    let le = &r["loop_end"];
+    let b = bank();
+    let mut m = Mixer::new(b.clone(), 4);
+    m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+    let src = source(m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).unwrap());
+    let snd = b.file.objects.iter().find(|(_, o)| matches!(o, Object::Sound(s) if s.source_id == src)).map(|(k, _)| *k).unwrap();
+    let bus = b.chain(snd).iter().find_map(|a| b.object(*a).and_then(Object::node).and_then(|n| n.override_bus.as_ref().map(|r| r.id))).unwrap();
+    let master = *b.bus_chain(bus).last().unwrap();
+    let (gd, lim) = (Id(0x0d0d_0d0d), Id(0x0c0c_0c0c));
+    fn curve(param: u32, y: f64) -> Rtpc {
+        Rtpc {
+            game_parameter: data::Ref { id: wwise_id("fx_probe"), name: None },
+            rtpc_type: RtpcType::GameParameter,
+            accumulation: Accumulation::Exclusive,
+            param_id: param,
+            param: format!("plugin parameter {param}"),
+            curve_id: Id(param),
+            scaling: Scaling::None,
+            points: vec![Point { x: 0.0, y, interp: Interp::Constant }, Point { x: 10.0, y, interp: Interp::Constant }],
+        }
+    }
+    let band = |filter, gain_db| data::EqBand { filter, gain_db, frequency: 462.0, q: 1.0, on: true };
+    let probe = |with: bool| {
+        let file = edited(|f| {
+            f.game_syncs.volume_threshold_db = -1000.0;
+            if !with {
+                return;
+            }
+            f.effects.insert(gd, Effect {
+                kind: "FxShareSet".into(),
+                id: gd,
+                name: None,
+                plugin: GUITAR_DISTORTION.into(),
+                params_hex: String::new(),
+                eq: None,
+                distortion: Some(data::GuitarDistortion {
+                    pre_eq: vec![band(data::EqFilter::LowShelf, 12.5), band(data::EqFilter::PeakingEq, -2.0), band(data::EqFilter::HiShelf, -2.0)],
+                    post_eq: vec![band(data::EqFilter::PeakingEq, 3.0), band(data::EqFilter::PeakingEq, -2.5), band(data::EqFilter::HiShelf, -3.0)],
+                    distortion: filter::DISTORTION_OVERDRIVE,
+                    drive: 0.0,
+                    tone: 35.0,
+                    rectification: 0.0,
+                    output_level_db: 0.0,
+                    wet_dry: 0.0,
+                }),
+                limiter: None,
+                // Pre-EQ band 1's type to 3.7 (design 3: low-pass), post-EQ band 0's gain to 60 (held to 48), the drive to
+                // 140 (100), the output level to 30 dB (24 dB: a gain of 15.85), the wet share to 48.
+                rtpc: vec![curve(10, 3.7), curve(31, 60.0), curve(GD_PARAM_DRIVE, 140.0), curve(GD_PARAM_OUTPUT_LEVEL, 30.0), curve(GD_PARAM_WET, 48.0)],
+            });
+            f.effects.insert(lim, Effect {
+                kind: "FxShareSet".into(),
+                id: lim,
+                name: None,
+                plugin: PEAK_LIMITER.into(),
+                params_hex: String::new(),
+                eq: None,
+                distortion: None,
+                limiter: Some(data::PeakLimiter { threshold_db: 0.0, ratio: 50.0, lookahead_s: 0.01, release_s: 0.2, output_level_db: 0.0, process_lfe: true, channel_link: true }),
+                rtpc: vec![curve(LIMITER_PARAM_THRESHOLD, -4.0), curve(LIMITER_PARAM_OUTPUT_LEVEL, 1.28)],
+            });
+            f.game_syncs.game_parameters.insert(
+                wwise_id("fx_probe"),
+                data::GameParameter { name: None, defined_in_init: true, default: 0.0, ramp: data::Ramp::None, ramp_up: 0.0, ramp_down: 0.0, built_in: 0 },
+            );
+            for (holder, fx) in [(bus, gd), (master, lim)] {
+                if let Some(Object::Bus(bb)) = f.objects.get_mut(&holder) {
+                    bb.fx.fx.retain(|s| s.index != 3);
+                    bb.fx.fx.push(data::FxSlot { index: 3, fx_id: Some(data::Ref { id: fx, name: None }), is_share_set: true, is_rendered: None });
+                    bb.fx.count = bb.fx.fx.len() as u32;
+                    bb.fx.bypass_bits = None;
+                }
+            }
+        })
+        .unwrap();
+        let mut m = Mixer::new(Arc::new(file), 4);
+        m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+        let u = m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).cloned().unwrap();
+        (u, m.master_limiter())
+    };
+    let (plain, none) = probe(false);
+    let (u, limiter) = probe(true);
+    let Some(FxNow::Distortion(d)) = u.fx.iter().find(|f| matches!(f, FxNow::Distortion(_))).copied() else { panic!("no distortion stage: {:?}", u.fx) };
+    assert_eq!(d.pre[0].filter, Some(data::EqFilter::LowShelf));
+    assert_eq!(d.pre[1].filter, Some(data::EqFilter::LowPass), "a curve's type is a design type, truncated");
+    assert_eq!((d.post[0].gain_db, d.drive, d.wet, d.kind), (48.0, 100.0, 48.0, filter::DISTORTION_OVERDRIVE));
+    assert!((d.level - 10f32.powf(1.2)).abs() < 1e-4, "the level held to 24 dB and linear: {}", d.level);
+    let l = limiter.expect("the master's limiter");
+    assert_eq!((l.threshold_db, l.output_db), (-4.0, 1.28));
+    assert!(none.is_none());
+    assert!((u.volume_db - plain.volume_db - 1.28).abs() < 1e-4, "the limiter's output level in the voice's volume (the distortion's is its own): {} -> {}", plain.volume_db, u.volume_db);
 }

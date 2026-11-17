@@ -19,10 +19,12 @@
 //! **Filters and effects:** each voice runs Wwise's low-pass and high-pass sections as Elite's own copy of the sound engine
 //! does (`se_core::elite_sound::filter`: its cutoff of a 0-100 value, the Butterworth sections, the value ramped from the
 //! last one to the new in 8 steps of 128 frames, bypassed at 0.1 and under, its memory cleared when it engages), at the
-//! output rate after the resampling; then the Parametric EQ bands on its way to the master, node's and buses' in signal
-//! order ([`VoiceUpdate::eq`]: a linear effect on a bus gives the bus's mix what it gives each voice), each band's section
-//! designed as the exe designs it (`filter::eq_coefs`) when its values change, its memory kept (the plug-in keeps it). A
-//! band that is off passes the signal.
+//! output rate after the resampling; then the effects on its way to the master, node's and buses' in signal order
+//! ([`VoiceUpdate::fx`]: a linear effect on a bus gives the bus's mix what it gives each voice): a Parametric EQ's bands,
+//! each section designed as the exe designs it (`filter::eq_coefs`) when its values change, its memory kept (the plug-in
+//! keeps it), a band that is off passing the signal; a Guitar Distortion (`filter::Distortion`, its parameters taken once
+//! a buffer of 1024 frames and ramped over it). The level comes last, as Wwise applies a voice's volume after its effects.
+//! A sample at the chain's end beyond `filter::CHAIN_BOUND`, or not finite, is the guard's (below).
 //!
 //! **Virtual voices** are not built: a voice is built when the mixer reports it heard (`VoiceUpdate::start`, from where its
 //! virtual behaviour says) and dropped when it goes virtual; a virtual voice costs the audio thread nothing.
@@ -34,7 +36,7 @@
 //! sample for sample (`a_batch_starts_at_one_sample`). The delay is logged with `sw sound log on`. Batches go in the order
 //! they were asked for.
 //!
-//! **The guard:** a sample of the last stage that is not finite becomes 0, its voice's filters start from rest, and it is
+//! **The guard:** a sample of the last stage that is not finite, or beyond the bound, becomes 0, its voice's filters start from rest, and it is
 //! counted (one log line a voice, `Voices::tell_guard`); an update whose level, speed or filter value is not finite is
 //! dropped (the last value stays) and logged once a voice; a build that panics loses that voice only. `sw sound log on`
 //! logs the audio thread's heartbeat once a second (`Voices::meter`: frames made, the busiest voices, frames skipped).
@@ -42,15 +44,15 @@
 //! Every voice plays centred: where each emitter sits is a later task (the mixer's distances already act on its gains).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use bevy::audio::{AudioPlayer, AudioSource, ChannelCount, Decodable, PlaybackSettings, SampleRate, Source, Volume};
 use bevy::prelude::*;
 use se_core::elite_sound::data::EqFilter;
-use se_core::elite_sound::filter::{self, Coefs, Section};
-use se_core::elite_sound::{EqNow, VoiceUpdate, OUTPUT_RATE};
+use se_core::elite_sound::filter::{self, Coefs, Distortion, Section};
+use se_core::elite_sound::{DistortionNow, EqNow, FxNow, VoiceUpdate, OUTPUT_RATE};
 
 use super::load::Clip;
 
@@ -66,8 +68,10 @@ const RAMP_FRAMES: u32 = 128;
 const BUILD_ALONE: usize = 4;
 /// A loop region up to this long (s) is decoded when the voice is built and replayed from memory.
 const LOOP_CACHE_S: f64 = 3.0;
-/// The most EQ bands a voice runs: 16 stages of 3 (the shipped sounds have at most 12 stages: `every_sounds_eq_fits`).
-pub const MAX_EQ_BANDS: usize = 48;
+/// The most effects a voice runs (the shipped sounds have at most 13: `every_sounds_chain_fits`), and the words each takes
+/// in its table.
+pub const MAX_STAGES: usize = 16;
+const STAGE_WORDS: usize = 32;
 /// The output's room for voices, made when it is made (the Init bank's voice cap is 256): a voice beyond it is counted
 /// and not played, never a buffer grown on the audio thread.
 const MAX_ACTIVE: usize = 512;
@@ -84,56 +88,115 @@ pub struct Meter {
     longest_skip_us: AtomicU64,
     /// Voices the output had no room for.
     refused: AtomicU64,
+    /// The master limiter's threshold as an output sample (`f32` bits: the threshold times the limiter's output gain and
+    /// the game's volume, as the mix carries both; infinite until the game sets it), and the frames whose mix passed it:
+    /// a frame counted is one where Elite's limiter would have acted (the mod builds its output gain only).
+    limit: AtomicU32,
+    over_limit: AtomicU64,
+    /// Voices or decoders the audio thread had to drop itself (the game thread's hands were full or busy).
+    dropped_here: AtomicU64,
 }
 
-/// A voice's EQ bands, written by the game thread and read by the audio thread at each ramp step under a sequence lock:
-/// the writer makes `seq` odd, writes, makes it even; a reader that finds it odd, or changed by the end, keeps what it had.
-/// Each band is four words: on and the filter (`bit 8` on, the low byte the filter's index or 0xff), frequency, gain, Q.
-#[derive(Debug)]
-struct EqTable {
-    seq: AtomicU32,
-    n: AtomicU32,
-    bands: [[AtomicU32; 4]; MAX_EQ_BANDS],
-}
-
-impl Default for EqTable {
-    fn default() -> Self {
-        EqTable { seq: AtomicU32::new(0), n: AtomicU32::new(0), bands: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))) }
+impl Meter {
+    fn new() -> Meter {
+        Meter { limit: AtomicU32::new(f32::INFINITY.to_bits()), ..Default::default() }
     }
 }
 
-impl EqTable {
-    fn write(&self, bands: &[EqNow]) {
-        let n = bands.len().min(MAX_EQ_BANDS);
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        for (slot, b) in self.bands.iter().zip(&bands[..n]) {
-            let kind = u32::from(b.on) << 8 | b.filter.map_or(0xff, |f| f as u32);
-            for (a, v) in slot.iter().zip([kind, b.frequency.to_bits(), b.gain_db.to_bits(), b.q.to_bits()]) {
+/// A voice's effects, written by the game thread and read by the audio thread at each ramp step under a sequence lock:
+/// the writer makes `seq` odd, writes, makes it even; a reader that finds it odd, or changed by the end, keeps what it had.
+/// Each stage is `STAGE_WORDS` words: its kind (0 off, 1 EQ, 2 distortion), then an EQ's three bands or a distortion's six
+/// (four words each: on and the filter, `bit 8` on and the low byte the filter's index or 0xff; frequency; gain; Q),
+/// then a distortion's type, drive, tone, rectification, level and wet share.
+#[derive(Debug)]
+struct FxTable {
+    seq: AtomicU32,
+    n: AtomicU32,
+    stages: [[AtomicU32; STAGE_WORDS]; MAX_STAGES],
+}
+
+impl Default for FxTable {
+    fn default() -> Self {
+        FxTable { seq: AtomicU32::new(0), n: AtomicU32::new(0), stages: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))) }
+    }
+}
+
+/// A band as four words.
+fn band_words(b: &EqNow) -> [u32; 4] {
+    [u32::from(b.on) << 8 | b.filter.map_or(0xff, |f| f as u32), b.frequency.to_bits(), b.gain_db.to_bits(), b.q.to_bits()]
+}
+
+fn band_of(w: &[u32]) -> EqNow {
+    EqNow { on: w[0] & 0x100 != 0, filter: EqFilter::from_index(i64::from(w[0] & 0xff)), frequency: f32::from_bits(w[1]), gain_db: f32::from_bits(w[2]), q: f32::from_bits(w[3]) }
+}
+
+/// A stage as its words.
+fn stage_words(fx: &FxNow) -> [u32; STAGE_WORDS] {
+    let mut w = [0u32; STAGE_WORDS];
+    match fx {
+        FxNow::Off => {}
+        FxNow::Eq(bands) => {
+            w[0] = 1;
+            for (k, b) in bands.iter().enumerate() {
+                w[1 + 4 * k..5 + 4 * k].copy_from_slice(&band_words(b));
+            }
+        }
+        FxNow::Distortion(d) => {
+            w[0] = 2;
+            for (k, b) in d.pre.iter().chain(&d.post).enumerate() {
+                w[1 + 4 * k..5 + 4 * k].copy_from_slice(&band_words(b));
+            }
+            w[25..31].copy_from_slice(&[d.kind, d.drive.to_bits(), d.tone.to_bits(), d.rectification.to_bits(), d.level.to_bits(), d.wet.to_bits()]);
+        }
+    }
+    w
+}
+
+fn stage_of(w: &[u32; STAGE_WORDS]) -> FxNow {
+    let band = |k: usize| band_of(&w[1 + 4 * k..5 + 4 * k]);
+    match w[0] {
+        1 => FxNow::Eq(std::array::from_fn(band)),
+        2 => FxNow::Distortion(DistortionNow {
+            pre: std::array::from_fn(band),
+            post: std::array::from_fn(|k| band(k + 3)),
+            kind: w[25],
+            drive: f32::from_bits(w[26]),
+            tone: f32::from_bits(w[27]),
+            rectification: f32::from_bits(w[28]),
+            level: f32::from_bits(w[29]),
+            wet: f32::from_bits(w[30]),
+        }),
+        _ => FxNow::Off,
+    }
+}
+
+impl FxTable {
+    fn write(&self, fx: &[FxNow]) {
+        let n = fx.len().min(MAX_STAGES);
+        self.seq.fetch_add(1, Ordering::Relaxed);
+        fence(Ordering::Release);
+        for (slot, f) in self.stages.iter().zip(&fx[..n]) {
+            for (a, v) in slot.iter().zip(stage_words(f)) {
                 a.store(v, Ordering::Relaxed);
             }
         }
         self.n.store(n as u32, Ordering::Relaxed);
-        self.seq.fetch_add(1, Ordering::AcqRel);
+        self.seq.fetch_add(1, Ordering::Release);
     }
 
-    /// The bands into `out` (their count returned) if the table changed since `seen` and was read whole.
-    fn read(&self, seen: &mut u32, out: &mut [EqNow; MAX_EQ_BANDS]) -> Option<usize> {
+    /// The stages into `out` (their count returned) if the table changed since `seen` and was read whole (the data's
+    /// loads, then an acquire fence, then the sequence again: a write that overlapped shows as a changed sequence).
+    fn read(&self, seen: &mut u32, out: &mut [FxNow; MAX_STAGES]) -> Option<usize> {
         let s0 = self.seq.load(Ordering::Acquire);
         if s0 == *seen || s0 & 1 == 1 {
             return None;
         }
-        let n = (self.n.load(Ordering::Relaxed) as usize).min(MAX_EQ_BANDS);
-        for (o, slot) in out.iter_mut().zip(&self.bands).take(n) {
-            let [kind, f, g, q] = slot.each_ref().map(|a| a.load(Ordering::Relaxed));
-            *o = EqNow {
-                on: kind & 0x100 != 0,
-                filter: EqFilter::from_index(i64::from(kind & 0xff)),
-                frequency: f32::from_bits(f),
-                gain_db: f32::from_bits(g),
-                q: f32::from_bits(q),
-            };
+        let n = (self.n.load(Ordering::Relaxed) as usize).min(MAX_STAGES);
+        for (o, slot) in out.iter_mut().zip(&self.stages).take(n) {
+            *o = stage_of(&slot.each_ref().map(|a| a.load(Ordering::Relaxed)));
         }
-        (self.seq.load(Ordering::Acquire) == s0).then(|| {
+        fence(Ordering::Acquire);
+        (self.seq.load(Ordering::Relaxed) == s0).then(|| {
             *seen = s0;
             n
         })
@@ -141,7 +204,6 @@ impl EqTable {
 }
 
 /// What a voice's source reads from the game while it plays.
-#[derive(Debug)]
 pub struct VoiceCtl {
     /// A frame to jump to (`NO_SEEK`: none).
     seek: AtomicU64,
@@ -153,7 +215,7 @@ pub struct VoiceCtl {
     level: AtomicU32,
     /// Stopped: the output drops it.
     stop: AtomicBool,
-    eq: EqTable,
+    fx: FxTable,
     /// Samples of this voice found not finite, and the low-pass, high-pass and speed in force at the first (`f32` bits),
     /// for the one line the game thread logs.
     bad: AtomicU32,
@@ -161,7 +223,16 @@ pub struct VoiceCtl {
     /// Frames this voice has made (as `Meter::made`).
     made: AtomicU64,
     meter: Arc<Meter>,
+    /// A long loop's restart (its region not kept in memory): a decoder already at the loop's start, made off the audio
+    /// thread, which the source takes at the restart (`try_lock`: it never waits), asking for the next with `wants_spare`;
+    /// and the decoder it put down, for the game thread to drop.
+    spare: Mutex<Option<Decoder>>,
+    wants_spare: AtomicBool,
+    retired: Mutex<Option<Decoder>>,
 }
+
+/// A recording's decoder.
+type Decoder = <AudioSource as Decodable>::Decoder;
 
 impl VoiceCtl {
     fn idle(meter: Arc<Meter>) -> VoiceCtl {
@@ -172,18 +243,21 @@ impl VoiceCtl {
             speed: AtomicU32::new(1f32.to_bits()),
             level: AtomicU32::new(0),
             stop: AtomicBool::new(false),
-            eq: EqTable::default(),
+            fx: FxTable::default(),
             bad: AtomicU32::new(0),
             first_bad: Default::default(),
             made: AtomicU64::new(0),
             meter,
+            spare: Mutex::new(None),
+            wants_spare: AtomicBool::new(false),
+            retired: Mutex::new(None),
         }
     }
 
     fn new(u: &VoiceUpdate, level: f32, meter: Arc<Meter>) -> VoiceCtl {
         let c = VoiceCtl::idle(meter);
         c.write(u, level);
-        c.eq.write(&u.eq);
+        c.fx.write(&u.fx);
         c
     }
 
@@ -282,6 +356,65 @@ impl EqStage {
     }
 }
 
+/// One effect on a voice: what it runs now, a Parametric EQ's three bands and a Guitar Distortion, both made when the voice
+/// is built (so a change of kind allocates nothing); a change of kind starts the new one from rest.
+struct Stage {
+    now: FxNow,
+    bands: [EqStage; 3],
+    dist: Distortion,
+}
+
+impl Stage {
+    fn new(channels: usize) -> Stage {
+        Stage {
+            now: FxNow::Off,
+            bands: std::array::from_fn(|_| EqStage { now: EqNow::OFF, coefs: None, channels: vec![Section::default(); channels] }),
+            dist: Distortion::new(channels, OUTPUT_RATE),
+        }
+    }
+
+    fn set(&mut self, fx: FxNow) {
+        if fx == self.now {
+            return;
+        }
+        if std::mem::discriminant(&fx) != std::mem::discriminant(&self.now) {
+            self.clear();
+        }
+        self.now = fx;
+        match fx {
+            FxNow::Eq(bands) => {
+                for (stage, b) in self.bands.iter_mut().zip(bands) {
+                    stage.set(b);
+                }
+            }
+            FxNow::Distortion(d) => self.dist.set(&d),
+            FxNow::Off => {}
+        }
+    }
+
+    fn clear(&mut self) {
+        self.bands.iter_mut().for_each(|b| b.channels.iter_mut().for_each(|c| *c = Section::default()));
+        self.dist.reset();
+    }
+
+    /// One frame, every channel, in place.
+    fn run(&mut self, frame: &mut [f32]) {
+        match self.now {
+            FxNow::Eq(_) => {
+                for (c, y) in frame.iter_mut().enumerate() {
+                    for b in &mut self.bands {
+                        if let (Some(co), Some(s)) = (&b.coefs, b.channels.get_mut(c)) {
+                            *y = s.run(co, *y);
+                        }
+                    }
+                }
+            }
+            FxNow::Distortion(_) => self.dist.frame(frame),
+            FxNow::Off => {}
+        }
+    }
+}
+
 /// A voice's speed moving to the latest in `RAMP_STEPS` steps, as its filter values do.
 struct SpeedRamp {
     now: f32,
@@ -316,11 +449,14 @@ fn finite_speed(s: f32) -> f32 {
 
 /// The samples of a voice, at the output rate: the clip from `start_frame`, cut at `clip.frames`, again and again while
 /// plays are left, resampled by its speed (linear between the recording's frames), then through its two filters and its
-/// EQ bands. Everything it holds is made when it is built: on the audio thread it allocates nothing.
+/// effects. Everything it holds is made when it is built, on a worker thread. On the audio thread it allocates only what
+/// the Vorbis decoder does per packet (the decoding library's own buffers, a packet's worth) and, for a seek backwards
+/// (a Seek action), the decoder made again; a long loop's restart takes a decoder made off the thread (`VoiceCtl::spare`)
+/// and a source that ends is handed back to the game thread to be dropped (`OutputSource`).
 pub struct VoiceSource {
     clip: Arc<Clip>,
     ctl: Arc<VoiceCtl>,
-    dec: <AudioSource as Decodable>::Decoder,
+    dec: Decoder,
     /// The next frame of the recording to hand out, and the decoder's own position (they differ while the loop region
     /// plays from memory).
     frame: u64,
@@ -342,11 +478,13 @@ pub struct VoiceSource {
     out_chan: usize,
     speed: SpeedRamp,
     filters: [Filter; 2],
-    /// The EQ bands (room for `MAX_EQ_BANDS`, `eq_n` of them in use), the table's sequence last read and a scratch copy.
-    eq: Vec<EqStage>,
-    eq_n: usize,
-    eq_seen: u32,
-    eq_read: Box<[EqNow; MAX_EQ_BANDS]>,
+    /// The effects (room for `MAX_STAGES`, `stages_n` of them in use), the table's sequence last read and a scratch copy;
+    /// the frame being made, a sample a channel.
+    stages: Vec<Stage>,
+    stages_n: usize,
+    fx_seen: u32,
+    fx_read: Box<[FxNow; MAX_STAGES]>,
+    work: Vec<f32>,
     /// Output frames since the last ramp step.
     since_step: u32,
     /// The level now and where its ramp goes (over one step).
@@ -372,7 +510,7 @@ impl VoiceSource {
             Filter::new(false, f32::from_bits(ctl.lowpass.load(Ordering::Relaxed)), clip.channels),
             Filter::new(true, f32::from_bits(ctl.highpass.load(Ordering::Relaxed)), clip.channels),
         ];
-        let eq = (0..MAX_EQ_BANDS).map(|_| EqStage { now: EqNow::OFF, coefs: None, channels: vec![Section::default(); ch] }).collect();
+        let stages = (0..MAX_STAGES).map(|_| Stage::new(ch)).collect();
         let mut s = VoiceSource {
             clip,
             ctl,
@@ -391,10 +529,11 @@ impl VoiceSource {
             out_chan: 0,
             speed: SpeedRamp { now: speed, from: speed, to: speed, step: RAMP_STEPS },
             filters,
-            eq,
-            eq_n: 0,
-            eq_seen: u32::MAX,
-            eq_read: Box::new([EqNow::OFF; MAX_EQ_BANDS]),
+            stages,
+            stages_n: 0,
+            fx_seen: u32::MAX,
+            fx_read: Box::new([FxNow::Off; MAX_STAGES]),
+            work: vec![0.0; ch],
             since_step: 0,
             level,
             level_to: level,
@@ -402,9 +541,15 @@ impl VoiceSource {
             over: false,
             built: false,
         };
-        s.read_eq();
+        s.read_fx();
         s.cache_loop();
         s.skip_to(start_frame.min(s.clip.frames.saturating_sub(1)));
+        if s.long_loop() {
+            let spare = spare_decoder(&s.clip, s.restart);
+            if let Ok(mut slot) = s.ctl.spare.lock() {
+                *slot = Some(spare);
+            }
+        }
         let mut first = std::mem::take(&mut s.cur);
         s.over = !s.read_frame(&mut first);
         s.cur = first;
@@ -441,6 +586,33 @@ impl VoiceSource {
             self.looped = buf;
         }
         self.frame = self.dec_at;
+    }
+
+    /// It loops from the decoder, its region not kept in memory: each restart takes a spare decoder.
+    fn long_loop(&self) -> bool {
+        self.plays_left != Some(1) && self.looped.is_empty()
+    }
+
+    /// A long loop's restart: the spare decoder taken if it is there (the one put down goes to the game thread to drop, or
+    /// is dropped here if its slot is still full); else the decoder made again here (`skip_to`, counted as a skip).
+    fn restart_loop(&mut self) {
+        let spare = self.ctl.spare.try_lock().ok().and_then(|mut s| s.take());
+        let Some(dec) = spare else {
+            self.skip_to(self.restart);
+            return;
+        };
+        let old = std::mem::replace(&mut self.dec, dec);
+        match self.ctl.retired.try_lock() {
+            Ok(mut slot) if slot.is_none() => *slot = Some(old),
+            _ => {
+                self.ctl.meter.dropped_here.fetch_add(1, Ordering::Relaxed);
+                drop(old);
+            }
+        }
+        self.dec_at = self.restart;
+        self.frame = self.restart;
+        self.from_cache = false;
+        self.ctl.wants_spare.store(true, Ordering::Release);
     }
 
     /// The decoder back to the clip's start and on to `frame` (decoded and dropped: exact to the sample).
@@ -490,7 +662,7 @@ impl VoiceSource {
                 self.frame = self.restart;
                 self.from_cache = true;
             } else {
-                self.skip_to(self.restart);
+                self.restart_loop();
                 if self.frame >= self.clip.frames {
                     // (The loop's start lies past what the decoder holds: nothing left to loop.)
                     return false;
@@ -523,13 +695,14 @@ impl VoiceSource {
         true
     }
 
-    /// The EQ table read if it changed: each band's section redesigned where its values changed.
-    fn read_eq(&mut self) {
-        if let Some(n) = self.ctl.eq.read(&mut self.eq_seen, &mut self.eq_read) {
-            for (stage, b) in self.eq.iter_mut().zip(self.eq_read.iter()).take(n) {
-                stage.set(*b);
+    /// The effects' table read if it changed: each stage given its values (a band's section redesigned where its values
+    /// changed, a distortion's taken at its next buffer).
+    fn read_fx(&mut self) {
+        if let Some(n) = self.ctl.fx.read(&mut self.fx_seen, &mut self.fx_read) {
+            for (stage, f) in self.stages.iter_mut().zip(self.fx_read.iter()).take(n) {
+                stage.set(*f);
             }
-            self.eq_n = n;
+            self.stages_n = n;
         }
     }
 
@@ -544,7 +717,7 @@ impl VoiceSource {
             for (f, t) in self.filters.iter_mut().zip(targets) {
                 f.tick(f32::from_bits(t));
             }
-            self.read_eq();
+            self.read_fx();
             let to = f32::from_bits(self.ctl.level.load(Ordering::Relaxed));
             if to.is_finite() {
                 self.level = self.level_to;
@@ -569,17 +742,17 @@ impl VoiceSource {
         }
         let k = self.phase as f32;
         self.level += self.level_step;
-        let mut bad = false;
-        for c in 0..self.out.len() {
+        for c in 0..self.work.len() {
             let x = self.cur[c] + (self.nxt[c] - self.cur[c]) * k;
             let low = self.filters[0].run(c, x);
-            let mut y = self.filters[1].run(c, low);
-            for stage in &mut self.eq[..self.eq_n] {
-                if let (Some(co), Some(s)) = (&stage.coefs, stage.channels.get_mut(c)) {
-                    y = s.run(co, y);
-                }
-            }
-            self.out[c] = if y.is_finite() { y * self.level } else {
+            self.work[c] = self.filters[1].run(c, low);
+        }
+        for stage in &mut self.stages[..self.stages_n] {
+            stage.run(&mut self.work);
+        }
+        let mut bad = false;
+        for (o, y) in self.out.iter_mut().zip(&self.work) {
+            *o = if y.is_finite() && y.abs() <= filter::CHAIN_BOUND { y * self.level } else {
                 bad = true;
                 0.0
             };
@@ -595,12 +768,13 @@ impl VoiceSource {
         true
     }
 
-    /// The guard of the last stage: a frame with a sample that is not finite has it as 0, the voice's filters and EQ start
-    /// again from rest, and it is counted (the values in force at the first are kept for the game thread's log line).
+    /// The guard of the last stage: a frame with a sample that is not finite or beyond `filter::CHAIN_BOUND` has it as 0,
+    /// the voice's filters and effects start again from rest, and it is counted (the values in force at the first are kept
+    /// for the game thread's log line).
     #[cold]
     fn not_finite(&mut self) {
         self.filters.iter_mut().for_each(Filter::clear);
-        self.eq.iter_mut().for_each(|s| s.channels.iter_mut().for_each(|c| *c = Section::default()));
+        self.stages.iter_mut().for_each(Stage::clear);
         self.ctl.meter.bad.fetch_add(1, Ordering::Relaxed);
         if self.ctl.bad.fetch_add(1, Ordering::Relaxed) == 0 {
             let now = [self.filters[0].now, self.filters[1].now, self.speed.now];
@@ -650,48 +824,110 @@ pub struct Ready {
     ctl: Arc<VoiceCtl>,
 }
 
+/// What the output hands back to the game thread to drop: voices that ended (a decoder and up to a megabyte of loop
+/// region each) and the batches' emptied lists. The room is made with it; the game thread empties it every frame.
+#[derive(Default)]
+pub struct Returned {
+    voices: Vec<Ready>,
+    batches: Vec<Vec<Ready>>,
+}
+
+impl Returned {
+    fn with_room() -> Returned {
+        Returned { voices: Vec::with_capacity(MAX_ACTIVE), batches: Vec::with_capacity(MAX_ACTIVE) }
+    }
+}
+
 /// The ship's output: every built voice mixed at the output rate into two channels. Batches of voices arrive whole
-/// through `rx` and start at one output frame. On the audio thread it allocates nothing (its voice list's room is made
-/// with it) and never blocks (`try_recv`).
+/// through `rx` and start at one output frame. On the audio thread it allocates nothing of its own (its lists' room is
+/// made with it), never blocks (`try_recv`, `try_lock`), and drops nothing it can hand back: what ends waits in `held`
+/// and goes to `returned` when its lock is free (a full list drops the rest here, counted in `Meter::dropped_here`).
+/// The channel itself frees a block of its own every 31 batches received (the standard library's list channel).
 pub struct OutputSource {
     rx: Receiver<Vec<Ready>>,
     active: Vec<Ready>,
+    held: Returned,
+    returned: Arc<Mutex<Returned>>,
     frame: [f32; 2],
     chan: usize,
     meter: Arc<Meter>,
 }
 
 impl OutputSource {
-    fn new(rx: Receiver<Vec<Ready>>, meter: Arc<Meter>) -> OutputSource {
-        OutputSource { rx, active: Vec::with_capacity(MAX_ACTIVE), frame: [0.0; 2], chan: 0, meter }
+    fn new(rx: Receiver<Vec<Ready>>, meter: Arc<Meter>, returned: Arc<Mutex<Returned>>) -> OutputSource {
+        OutputSource { rx, active: Vec::with_capacity(MAX_ACTIVE), held: Returned::with_room(), returned, frame: [0.0; 2], chan: 0, meter }
+    }
+
+    /// A voice that ended, or a spent batch list, kept to hand back (dropped here only if the room is full).
+    fn hold_voice(&mut self, r: Ready) {
+        if self.held.voices.len() < self.held.voices.capacity() {
+            self.held.voices.push(r);
+        } else {
+            self.meter.dropped_here.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn hold_batch(&mut self, b: Vec<Ready>) {
+        if self.held.batches.len() < self.held.batches.capacity() {
+            self.held.batches.push(b);
+        } else {
+            self.meter.dropped_here.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// What is held handed to the game thread, as much as its room takes, if its lock is free now.
+    fn hand_back(&mut self) {
+        if self.held.voices.is_empty() && self.held.batches.is_empty() {
+            return;
+        }
+        let Ok(mut r) = self.returned.try_lock() else { return };
+        while r.voices.len() < r.voices.capacity() {
+            let Some(v) = self.held.voices.pop() else { break };
+            r.voices.push(v);
+        }
+        while r.batches.len() < r.batches.capacity() {
+            let Some(b) = self.held.batches.pop() else { break };
+            r.batches.push(b);
+        }
     }
 
     /// One output frame: the batches that arrived join first (all of a batch at this frame), then every voice adds its
-    /// frame; a voice stopped or over is dropped.
+    /// frame; a voice stopped or over is held to be handed back. A frame whose mix passes the limiter's threshold is
+    /// counted.
     fn mix(&mut self) {
-        while let Ok(batch) = self.rx.try_recv() {
-            for r in batch {
+        while let Ok(mut batch) = self.rx.try_recv() {
+            while let Some(r) = batch.pop() {
                 if r.ctl.stop.load(Ordering::Relaxed) {
-                    continue;
-                }
-                if self.active.len() < MAX_ACTIVE {
+                    self.hold_voice(r);
+                } else if self.active.len() < MAX_ACTIVE {
                     self.active.push(r);
                 } else {
                     self.meter.refused.fetch_add(1, Ordering::Relaxed);
+                    self.hold_voice(r);
                 }
             }
+            self.hold_batch(batch);
         }
         let mut f = [0.0f32; 2];
-        self.active.retain_mut(|r| {
+        let mut i = 0;
+        while i < self.active.len() {
+            let r = &mut self.active[i];
             if r.ctl.stop.load(Ordering::Relaxed) || !r.src.make_frame() {
-                return false;
+                let done = self.active.swap_remove(i);
+                self.hold_voice(done);
+                continue;
             }
             let o = &r.src.out;
             f[0] += o[0];
             f[1] += o.get(1).copied().unwrap_or(o[0]);
-            true
-        });
+            i += 1;
+        }
+        let limit = f32::from_bits(self.meter.limit.load(Ordering::Relaxed));
+        if f[0].abs() > limit || f[1].abs() > limit {
+            self.meter.over_limit.fetch_add(1, Ordering::Relaxed);
+        }
         self.frame = f;
+        self.hand_back();
     }
 }
 
@@ -737,7 +973,7 @@ impl Decodable for ShipOutput {
     type Decoder = OutputSource;
 
     fn decoder(&self) -> OutputSource {
-        self.ready.lock().ok().and_then(|mut r| r.take()).unwrap_or_else(|| OutputSource::new(channel().1, Arc::default()))
+        self.ready.lock().ok().and_then(|mut r| r.take()).unwrap_or_else(|| OutputSource::new(channel().1, Arc::new(Meter::new()), Arc::default()))
     }
 }
 
@@ -749,31 +985,62 @@ fn start_of(u: &VoiceUpdate, rate: u32) -> Option<(u64, Option<u32>, Option<(u64
     Some((frame, plays, if start.looping { start.loop_region } else { None }))
 }
 
+/// Where a voice's loop restarts (frames): its region's start, as `VoiceSource::new` takes the region.
+fn loop_restart(region: Option<(u64, u64)>, frames: u64) -> u64 {
+    region.map(|(a, b)| (a, b.min(frames))).filter(|(a, b)| a < b).map_or(0, |(a, _)| a)
+}
+
 /// The output's entity.
 #[derive(Component)]
 pub struct ShipVoice;
 
 /// The voices built or being built (the mixer's id to their controls and recording), this frame's starts, the batches on
 /// worker threads and the output.
-#[derive(Default)]
 pub struct Voices {
     playing: HashMap<u32, Playing>,
     queued: Vec<Queued>,
     building: VecDeque<Batch>,
     output: Option<(Entity, Sender<Vec<Ready>>)>,
     meter: Arc<Meter>,
+    /// What the output hands back, emptied (and dropped) here every frame.
+    returned: Arc<Mutex<Returned>>,
+    /// Voices whose long loop asked for a spare decoder, being made on worker threads.
+    spares: Vec<std::thread::JoinHandle<()>>,
+    /// The output stopped: its entity, despawned `RETIRE_S` later (the output hands back what ends every frame, so by then
+    /// its voices are back here to be dropped).
+    retiring: Option<(Entity, std::time::Instant)>,
 }
+
+impl Default for Voices {
+    fn default() -> Self {
+        Voices {
+            playing: HashMap::new(),
+            queued: Vec::new(),
+            building: VecDeque::new(),
+            output: None,
+            meter: Arc::new(Meter::new()),
+            returned: Arc::new(Mutex::new(Returned::with_room())),
+            spares: Vec::new(),
+            retiring: None,
+        }
+    }
+}
+
+/// How long a stopped output is kept for its voices to come back before it is despawned.
+const RETIRE_S: f64 = 0.5;
 
 struct Playing {
     ctl: Arc<VoiceCtl>,
     clip: Arc<Clip>,
-    /// The EQ bands last written (the table is written only when they change).
-    eq: Vec<EqNow>,
+    /// The effects last written (the table is written only when they change).
+    fx: Vec<FxNow>,
     /// The guard's lines already logged for this voice: an update not finite, a sample not finite.
     told_update: bool,
     told_sample: bool,
     /// The voice's frame count at the last `meter`.
     made_seen: u64,
+    /// Where its loop restarts (frames), for a spare decoder.
+    restart: u64,
 }
 
 /// A start waiting for `start_queued`.
@@ -807,6 +1074,18 @@ fn volume(u: &VoiceUpdate, level: f32) -> Option<f32> {
     v.is_finite().then(|| v.clamp(0.0, MOST_VOLUME))
 }
 
+/// A decoder at `frame` of the clip (decoded and dropped up to it), made off the audio thread.
+fn spare_decoder(clip: &Clip, frame: u64) -> Decoder {
+    let mut dec = clip.source.decoder();
+    let samples = frame * u64::from(clip.channels.max(1));
+    for _ in 0..samples {
+        if dec.next().is_none() {
+            break;
+        }
+    }
+    dec
+}
+
 /// Builds one voice; a build that panics gives None (that voice is lost, the others of its batch go on).
 fn build(q: &Queued) -> Option<Ready> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Ready { src: VoiceSource::new(q.clip.clone(), q.ctl.clone(), q.start_frame, q.plays, q.region), ctl: q.ctl.clone() })).ok()
@@ -832,14 +1111,67 @@ impl Voices {
         self.queued.len()
     }
 
-    /// Every voice stopped at once (the output despawned with all it holds; batches still building are dropped when done).
+    /// Every voice stopped at once: each is told to stop, so the output hands it back to be dropped here, and the output
+    /// is despawned `RETIRE_S` later (`service`); batches still building are dropped when done. A new start meanwhile makes
+    /// a new output.
     pub fn stop_all(&mut self, commands: &mut Commands) {
+        for p in self.playing.values() {
+            p.ctl.stop.store(true, Ordering::Relaxed);
+        }
         if let Some((e, _)) = self.output.take() {
-            commands.entity(e).try_despawn();
+            if let Some((old, _)) = self.retiring.replace((e, std::time::Instant::now())) {
+                commands.entity(old).try_despawn();
+            }
         }
         self.playing.clear();
         self.queued.clear();
         self.building.clear();
+    }
+
+    /// Once a frame, playing or not: what the output handed back dropped here, the spare decoders long loops asked for
+    /// made on worker threads (and the ones they put down dropped), a stopped output despawned once its voices are back.
+    pub fn service(&mut self, commands: &mut Commands) {
+        let back = self.returned.lock().map(|mut r| (std::mem::take(&mut r.voices), std::mem::take(&mut r.batches))).ok();
+        if let Some((voices, batches)) = back {
+            drop(voices);
+            drop(batches);
+            if let Ok(mut r) = self.returned.lock() {
+                r.voices.reserve(MAX_ACTIVE);
+                r.batches.reserve(MAX_ACTIVE);
+            }
+        }
+        if let Some((e, at)) = self.retiring {
+            if at.elapsed().as_secs_f64() > RETIRE_S {
+                commands.entity(e).try_despawn();
+                self.retiring = None;
+            }
+        }
+        self.spares.retain(|t| !t.is_finished());
+        for p in self.playing.values() {
+            let retired = p.ctl.retired.try_lock().ok().and_then(|mut r| r.take());
+            drop(retired);
+            if p.ctl.wants_spare.swap(false, Ordering::AcqRel) {
+                let (ctl, clip) = (p.ctl.clone(), p.clip.clone());
+                let restart = p.restart;
+                self.spares.push(std::thread::spawn(move || {
+                    let dec = spare_decoder(&clip, restart);
+                    if let Ok(mut s) = ctl.spare.lock() {
+                        *s = Some(dec);
+                    }
+                }));
+            }
+        }
+    }
+
+    /// Frames the master limiter would have acted on so far, and the threshold the output compares with (an output sample:
+    /// the limiter's threshold times its output gain and the game's volume).
+    pub fn set_limit(&self, limiter: Option<se_core::elite_sound::LimiterNow>, level: f32) {
+        let v = limiter.map_or(f32::INFINITY, |l| 10f32.powf((l.threshold_db + l.output_db) / 20.0) * level);
+        self.meter.limit.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn over_limit(&self) -> (u64, u64) {
+        (self.meter.over_limit.load(Ordering::Relaxed), self.meter.dropped_here.load(Ordering::Relaxed))
     }
 
     /// One mixer update: queue its voice's start, update it in place, drop it when it goes virtual or stop it. `level`
@@ -860,7 +1192,7 @@ impl Voices {
             };
             log(Event::Started(u, &c.file));
             let ctl = Arc::new(VoiceCtl::new(u, level, self.meter.clone()));
-            if let Some(old) = self.playing.insert(u.voice, Playing { ctl: ctl.clone(), clip: c.clone(), eq: u.eq.clone(), told_update: false, told_sample: false, made_seen: 0 }) {
+            if let Some(old) = self.playing.insert(u.voice, Playing { ctl: ctl.clone(), clip: c.clone(), fx: u.fx.clone(), told_update: false, told_sample: false, made_seen: 0, restart: loop_restart(region, c.frames) }) {
                 old.ctl.stop.store(true, Ordering::Relaxed);
             }
             self.queued.retain(|q| q.voice != u.voice);
@@ -871,9 +1203,9 @@ impl Voices {
         if let Some(to) = u.seek_to.filter(|t| t.is_finite()) {
             p.ctl.seek.store((f64::from(to.max(0.0)) * f64::from(p.clip.rate)) as u64, Ordering::Relaxed);
         }
-        if p.eq != u.eq {
-            p.ctl.eq.write(&u.eq);
-            p.eq.clone_from(&u.eq);
+        if p.fx != u.fx {
+            p.ctl.fx.write(&u.fx);
+            p.fx.clone_from(&u.fx);
         }
         if !p.ctl.write(u, level) && !std::mem::replace(&mut p.told_update, true) {
             warn!(
@@ -891,7 +1223,7 @@ impl Voices {
         }
         if self.output.is_none() {
             let (tx, rx) = channel();
-            let h = outputs.add(ShipOutput { ready: Arc::new(Mutex::new(Some(OutputSource::new(rx, self.meter.clone())))) });
+            let h = outputs.add(ShipOutput { ready: Arc::new(Mutex::new(Some(OutputSource::new(rx, self.meter.clone(), self.returned.clone())))) });
             let e = commands.spawn((ShipVoice, AudioPlayer(h), PlaybackSettings::ONCE.with_volume(Volume::Linear(1.0)))).id();
             self.output = Some((e, tx));
         }
@@ -1224,7 +1556,7 @@ mod tests {
                         ctl.seek.store((f64::from(to.max(0.0)) * f64::from(clip.rate)) as u64, Ordering::Relaxed);
                     }
                     ctl.write(&u, 1.0);
-                    ctl.eq.write(&u.eq);
+                    ctl.fx.write(&u.fx);
                 }
             }
             self.most = self.most.max(self.playing.len());
@@ -1464,7 +1796,7 @@ mod tests {
             lowpass_hz: None,
             highpass_hz: None,
             virtual_voice: false,
-            eq: Vec::new(),
+            fx: Vec::new(),
         };
         let mut u = update(f32::NAN, f32::INFINITY, f32::NAN, 50.0);
         assert_eq!(volume(&u, 1.0), None);
@@ -1505,7 +1837,7 @@ mod tests {
     #[test]
     fn a_batch_starts_at_one_sample() {
         let (tx, rx) = channel();
-        let mut out = OutputSource::new(rx, Arc::default());
+        let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
         let early: Vec<f32> = out.by_ref().take(2 * 333).collect();
         assert!(early.iter().all(|s| *s == 0.0), "silent with no voice");
         let click = |v: i16| {
@@ -1526,15 +1858,16 @@ mod tests {
         assert_eq!(after[1], 0.75, "a mono voice on both channels at full level");
     }
 
-    /// A voice's EQ bands run after its filters, each the exe's section: a voice with one band (a peak of -6 dB at 1 kHz)
-    /// gives what that section gives the recording; a band that is off, or a table read half-written, changes nothing.
+    /// A voice's effects run after its filters, each the exe's: a voice with one EQ band (a peak of -6 dB at 1 kHz) gives
+    /// what that section gives the recording; a band that is off, or a table read half-written, changes nothing; a Guitar
+    /// Distortion stage gives what `filter::Distortion` gives, and its values cross the table whole.
     #[test]
-    fn a_voices_eq_bands_shape_it() {
+    fn a_voices_effects_shape_it() {
         let tone: Vec<i16> = (0..9600).map(|i| ((std::f64::consts::TAU * 1000.0 * f64::from(i) / 48000.0).sin() * 16000.0) as i16).collect();
         let clip = Arc::new(wav(&tone));
         let peak = EqNow { on: true, filter: Some(EqFilter::PeakingEq), frequency: 1000.0, gain_db: -6.0, q: 1.0 };
         let c = ctl();
-        c.eq.write(&[EqNow::OFF, peak]);
+        c.fx.write(&[FxNow::Eq([EqNow::OFF, peak, EqNow::OFF])]);
         let shaped: Vec<f32> = VoiceSource::new(clip.clone(), c, 0, Some(1), None).collect();
         let co = filter::eq_coefs(EqFilter::PeakingEq, 1000.0, -6.0, 1.0, OUTPUT_RATE).unwrap();
         let mut sec = Section::default();
@@ -1546,28 +1879,129 @@ mod tests {
         let db = 20.0 * (rms(&shaped) / rms(&plain)).log10();
         assert!((db + 6.0).abs() < 0.1, "-6 dB at the peak: {db:.2}");
         let off = ctl();
-        off.eq.write(&[EqNow { on: false, ..peak }]);
-        let untouched: Vec<f32> = VoiceSource::new(clip, off, 0, Some(1), None).collect();
+        off.fx.write(&[FxNow::Eq([EqNow { on: false, ..peak }; 3]), FxNow::Off]);
+        let untouched: Vec<f32> = VoiceSource::new(clip.clone(), off, 0, Some(1), None).collect();
         assert_eq!(untouched, plain);
-        // (A reader that meets the table mid-write keeps what it had.)
-        let t = EqTable::default();
-        t.write(&[peak]);
+        // A distortion: the voice's stage is the filter's processor, sample for sample.
+        let d = DistortionNow { pre: [peak, EqNow::OFF, EqNow::OFF], post: [EqNow::OFF; 3], kind: filter::DISTORTION_OVERDRIVE, drive: 30.0, tone: 40.0, rectification: 20.0, level: 0.8, wet: 48.0 };
+        let dc = ctl();
+        dc.fx.write(&[FxNow::Distortion(d)]);
+        let distorted: Vec<f32> = VoiceSource::new(clip, dc, 0, Some(1), None).collect();
+        let mut p = Distortion::new(1, OUTPUT_RATE);
+        p.set(&d);
+        let want: Vec<f32> = tone.iter().map(|s| {
+            let mut f = [f32::from(*s) / 32768.0];
+            p.frame(&mut f);
+            f[0]
+        }).collect();
+        assert!(distorted.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-6), "the stage is the processor");
+        // (A reader that meets the table mid-write keeps what it had; a distortion's values cross it whole.)
+        let t = FxTable::default();
+        t.write(&[FxNow::Eq([peak; 3]), FxNow::Distortion(d)]);
         let mut seen = 0;
-        let mut out = [EqNow::OFF; MAX_EQ_BANDS];
-        assert_eq!(t.read(&mut seen, &mut out), Some(1));
+        let mut out = [FxNow::Off; MAX_STAGES];
+        assert_eq!(t.read(&mut seen, &mut out), Some(2));
+        assert_eq!((out[0], out[1]), (FxNow::Eq([peak; 3]), FxNow::Distortion(d)));
         assert_eq!(t.read(&mut seen, &mut out), None, "unchanged");
         t.seq.fetch_add(1, Ordering::AcqRel);
         assert_eq!(t.read(&mut seen, &mut out), None, "being written");
     }
 
-    /// Every shipped sound's EQ bands fit a voice's table.
+    /// Every shipped sound's effects fit a voice's table, and the largest gain its chain can give a full-scale input (the
+    /// positive gains of every EQ band and output level on its way, at their clamps where a curve sets them; a distortion's
+    /// level times the larger of its dry path and twice its wet path's bands; the filters' overshoot as 6 dB) stays far
+    /// under the chain's guard (`filter::CHAIN_BOUND`), so the guard cannot mute a legitimate boost.
     #[test]
-    fn every_sounds_eq_fits() {
+    fn every_sounds_chain_fits() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/sounds.json");
         let bank = se_core::elite_sound::parse_sounds(&std::fs::read(path).unwrap()).unwrap();
         let most = bank.file.objects.keys().map(|id| bank.fx_stages(*id).len()).max().unwrap_or(0);
-        eprintln!("the most EQ stages on a shipped sound's way: {most}");
-        assert!(most * 3 <= MAX_EQ_BANDS, "{most} stages");
+        use se_core::elite_sound::data::{Accumulation, EqBand, Effect};
+        // The most a parameter reaches: its block value, or its curves' most (an exclusive curve's, or the block value plus
+        // each additive curve's most), held to the plug-in's clamp.
+        let reach = |e: &Effect, p: u32, base: f64, hi: f64| {
+            let curves: Vec<_> = e.rtpc.iter().filter(|r| r.param_id == p).collect();
+            let top = |r: &&se_core::elite_sound::data::Rtpc| r.points.iter().map(|q| q.y).fold(f64::MIN, f64::max);
+            let v = match curves.iter().find(|r| r.accumulation == Accumulation::Exclusive) {
+                Some(r) => top(r),
+                None => base + curves.iter().map(top).sum::<f64>(),
+            };
+            if curves.is_empty() { v } else { v.min(hi) }
+        };
+        let band_db = |e: &Effect, b: &EqBand, p: u32, hi: f64| {
+            let shaping = matches!(b.filter, EqFilter::PeakingEq | EqFilter::LowShelf | EqFilter::HiShelf) || e.rtpc.iter().any(|r| r.param_id == p);
+            let on = b.on || e.rtpc.iter().any(|r| r.param_id == p + 4);
+            if on && shaping { reach(e, p + 1, b.gain_db, hi).max(0.0) } else { 0.0 }
+        };
+        let mut worst = (0.0f64, se_core::elite_sound::Id(0));
+        for id in bank.file.objects.keys() {
+            let mut db = 6.0;
+            for st in bank.fx_stages(*id) {
+                let Some(e) = bank.file.effects.get(&st.effect) else { continue };
+                if let Some(eq) = &e.eq {
+                    db += eq.bands.iter().enumerate().map(|(k, b)| band_db(e, b, 5 * k as u32, 24.0)).sum::<f64>();
+                    db += reach(e, 15, eq.output_level_db, 24.0).max(0.0);
+                }
+                if let Some(d) = &e.distortion {
+                    let at = |k: usize| ((k / 3) * 30 + (k % 3) * 10) as u32;
+                    let pre: f64 = d.pre_eq.iter().enumerate().map(|(k, b)| band_db(e, b, at(k), 48.0)).sum();
+                    let post: f64 = d.post_eq.iter().enumerate().map(|(k, b)| band_db(e, b, at(k + 3), 48.0)).sum();
+                    let wet = 6.0 + post + if d.distortion == filter::DISTORTION_NONE { pre } else { 0.0 };
+                    db += wet.max(0.0) + reach(e, 64, d.output_level_db, 24.0).max(0.0);
+                }
+                if let Some(l) = &e.limiter {
+                    db += reach(e, 4, l.output_level_db, 24.0).max(0.0);
+                }
+            }
+            if db > worst.0 {
+                worst = (db, *id);
+            }
+        }
+        let bound = 20.0 * f64::from(filter::CHAIN_BOUND).log10();
+        eprintln!("the most effects on a shipped sound's way: {most}; the largest chain gain {:.1} dB ({}), the guard at {bound:.0} dB", worst.0, worst.1);
+        assert!(most <= MAX_STAGES, "{most} stages");
+        assert!(worst.0 + 12.0 < bound, "{} can reach {:.1} dB", worst.1, worst.0);
+    }
+
+    /// The Guitar Distortions the data puts on buses (the GUI bus 368d104e, the Voice bus d4fc004a) are not linear, so per
+    /// voice they would be wrong where they distort: but their wet share is 0 at their game parameters' defaults, and
+    /// nothing the ship does sets those (a flight with every trigger: the boost, flight assist, supercruise trips, a jump),
+    /// so where the mod plays them each is its output level and DC blocker alone, linear, and per voice is exact.
+    #[test]
+    #[ignore]
+    fn every_effect_on_a_bus_is_linear_where_it_acts() {
+        let mut r = Run::new(false);
+        let mut v = Run::flying();
+        r.hold(&v, 3.0);
+        v.flight_assist = false;
+        r.hold(&v, 1.0);
+        v.flight_assist = true;
+        v.boost = 2;
+        r.hold(&v, 2.0);
+        v.boost = 0;
+        r.hold(&v, 1.0);
+        r.supercruise_trip(5.0, 3.0);
+        r.jump_trip(3.0);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/sounds.json");
+        let bank = se_core::elite_sound::parse_sounds(&std::fs::read(path).unwrap()).unwrap();
+        let mut checked = 0;
+        for (sound, _) in bank.file.objects.iter().filter(|(_, o)| matches!(o, se_core::elite_sound::Object::Sound(_))) {
+            for st in bank.fx_stages(*sound).iter().filter(|st| st.on_bus) {
+                let Some(e) = bank.file.effects.get(&st.effect).filter(|e| e.distortion.is_some()) else { continue };
+                let d = e.distortion.as_ref().unwrap();
+                let mut wet = d.wet_dry;
+                for c in e.rtpc.iter().filter(|c| c.param_id == se_core::elite_sound::GD_PARAM_WET) {
+                    let def = bank.file.game_syncs.game_parameters.get(&c.game_parameter.id).map_or(0.0, |g| g.default);
+                    let now = f64::from(r.mixer.game_parameter_id(c.game_parameter.id, None));
+                    assert!((now - def).abs() < 1e-6, "{}: game parameter {} was set ({now}, default {def})", st.effect, c.game_parameter.id);
+                    wet += se_core::elite_sound::curve::eval(&c.points, c.scaling, def);
+                }
+                assert!(wet.abs() < 1e-9, "the distortion {} on bus {} has a wet share of {wet} where the mod plays it", st.effect, st.holder);
+                checked += 1;
+            }
+        }
+        eprintln!("{checked} sound ways through a bus's distortion, each at a wet share of 0");
+        assert!(checked > 0);
     }
 
     /// A long session (the review's finding): supercruise round trips with a boost after each, through the real triggers
@@ -1640,6 +2074,79 @@ mod tests {
         for (stage, secs) in [(1u8, 0.6), (2, 2.0), (3, 3.0), (0, 2.0)] {
             v.boost = stage;
             cue(&mut r, &format!("boost stage {stage}"), &v, secs);
+        }
+    }
+
+    /// A loop too long to keep in memory restarts on the spare decoder made off the audio thread (no frame decoded and
+    /// dropped there, the join still sample for sample, the old decoder put down for the game thread, a new spare asked);
+    /// a voice that ends and a spent batch list go back to the game thread instead of being dropped on the audio thread;
+    /// the frames over the limiter's threshold are counted.
+    #[test]
+    fn long_loops_restart_on_a_spare_and_what_ends_goes_back() {
+        let n = (LOOP_CACHE_S * 48000.0) as usize + 4800;
+        let samples: Vec<i16> = (0..n).map(|i| (i % 30000) as i16).collect();
+        let clip = Arc::new(wav(&samples));
+        let c = ctl();
+        let mut src = VoiceSource::new(clip.clone(), c.clone(), 0, None, None);
+        assert!(src.looped.is_empty() && c.spare.lock().unwrap().is_some(), "a long loop gets a spare when built");
+        let got: Vec<i32> = src.by_ref().take(n + 10).map(|s| (s * 32768.0).round() as i32).collect();
+        assert_eq!(got[n - 1], ((n - 1) % 30000) as i32);
+        assert_eq!(&got[n..n + 10], &(0..10).collect::<Vec<i32>>()[..], "the restart joins sample for sample");
+        assert_eq!(c.meter.skipped.load(Ordering::Relaxed), 0, "nothing decoded and dropped on the audio thread");
+        assert!(c.spare.lock().unwrap().is_none() && c.retired.lock().unwrap().is_some() && c.wants_spare.load(Ordering::Relaxed));
+        // What ends goes back.
+        let (tx, rx) = channel();
+        let returned = Arc::new(Mutex::new(Returned::with_room()));
+        let meter = Arc::new(Meter::new());
+        meter.limit.store(0.5f32.to_bits(), Ordering::Relaxed);
+        let mut out = OutputSource::new(rx, meter.clone(), returned.clone());
+        let click = {
+            let ctl = ctl();
+            Ready { src: VoiceSource::new(Arc::new(wav(&[30000, 0, 0, 0])), ctl.clone(), 0, Some(1), None), ctl }
+        };
+        tx.send(vec![click]).unwrap();
+        let _: Vec<f32> = out.by_ref().take(2 * 20).collect();
+        let r = returned.lock().unwrap();
+        assert_eq!((r.voices.len(), r.batches.len()), (1, 1), "the ended voice and its batch's list are handed back");
+        assert_eq!(meter.over_limit.load(Ordering::Relaxed), 1, "one frame over the threshold");
+        assert_eq!(meter.dropped_here.load(Ordering::Relaxed), 0);
+    }
+
+    /// The audio thread's cost: 50 voices (the longest shipped recordings, looping) with 12 EQ stages of three peaking bands
+    /// each, mixed by the output for 10 s of audio; the CPU time per second of audio. Then the same with a Guitar Distortion
+    /// stage added to each (the drive layers' 02382a72 at full wet share: its six bands, the Overdrive, the rectifier).
+    #[test]
+    #[ignore]
+    fn fifty_voices_cost() {
+        let l = super::super::load::load().unwrap_or_else(|(f, e)| panic!("{f}: {e}"));
+        let mut clips: Vec<Arc<Clip>> = l.clips.values().cloned().collect();
+        clips.sort_by_key(|c| (std::cmp::Reverse(c.frames * u64::from(c.channels)), c.file.clone()));
+        let eqs: Vec<FxNow> = (0..12).map(|k| FxNow::Eq(std::array::from_fn(|i| EqNow { on: true, filter: Some(EqFilter::PeakingEq), frequency: 100.0 + 300.0 * (3 * k + i) as f32, gain_db: -3.0, q: 1.0 }))).collect();
+        let band = |filter, gain_db, frequency| EqNow { on: true, filter: Some(filter), frequency, gain_db, q: 1.0 };
+        let gd = FxNow::Distortion(DistortionNow {
+            pre: [band(EqFilter::LowShelf, 12.5, 462.0), band(EqFilter::PeakingEq, -2.0, 5200.0), band(EqFilter::HiShelf, -2.0, 1500.0)],
+            post: [band(EqFilter::PeakingEq, 3.0, 892.0), band(EqFilter::PeakingEq, -2.5, 5234.0), band(EqFilter::HiShelf, -3.0, 5522.0)],
+            kind: filter::DISTORTION_OVERDRIVE,
+            drive: 29.0,
+            tone: 35.0,
+            rectification: 29.0,
+            level: 1.0,
+            wet: 48.0,
+        });
+        let with_gd: Vec<FxNow> = std::iter::once(gd).chain(eqs.iter().copied()).collect();
+        for (name, stages) in [("12 EQ stages each", &eqs), ("12 EQ stages and a Guitar Distortion each", &with_gd)] {
+            let (tx, rx) = channel();
+            let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+            let batch: Vec<Ready> = clips.iter().take(50).map(|c| {
+                let ctl = ctl();
+                ctl.fx.write(stages);
+                Ready { src: VoiceSource::new(c.clone(), ctl.clone(), 0, None, None), ctl }
+            }).collect();
+            tx.send(batch).unwrap();
+            let t = std::time::Instant::now();
+            let n = out.by_ref().take(48000 * 2 * 10).filter(|s| s.is_finite()).count();
+            let ms = t.elapsed().as_secs_f64() * 1000.0 / 10.0;
+            eprintln!("50 voices, {name}: {ms:.1} ms of CPU per second of audio ({n} samples)");
         }
     }
 

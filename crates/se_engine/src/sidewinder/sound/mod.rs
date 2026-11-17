@@ -29,9 +29,15 @@
 //! player still plays them centred).
 //!
 //! **Filters and effects:** each voice's low-pass and high-pass run as Elite's own sound engine runs them, then the
-//! Parametric EQs on its way to the master, node's and buses' (`voices.rs`, `se_core::elite_sound::filter`, decompiled from
-//! the exe). The buses' other effects (compressors, the master's limiter, meters' ballistics, Frontier's own plug-ins) are
-//! not built: `se_core::elite_sound`'s docs list them.
+//! Parametric EQs and Guitar Distortions on its way to the master, node's and buses' (`voices.rs`,
+//! `se_core::elite_sound::filter`, decompiled from the exe); the master limiter's output level is in every voice's gain,
+//! and the output counts the frames its mix passes the limiter's threshold (logged with `sw sound log on` and `sw sound
+//! state`: 0 means Elite's limiter would never have acted). The other effects (compressors, the limiting itself, the
+//! master's plug-in 0x00BA0003, meters' ballistics, the DTS headphone plug-ins, Tremolo, Flanger) are not built:
+//! `se_core::elite_sound`'s docs list them.
+//!
+//! **The player's context:** player_location is outside_station and OnFootLocation NotOnFoot from the start (no station
+//! near, never on foot: `triggers.rs`); POV is never set (no setter in the exe).
 
 mod load;
 mod triggers;
@@ -318,6 +324,7 @@ fn drive(
     mut rumble: MessageWriter<GamepadRumbleRequest>,
 ) {
     let snd = &mut *snd;
+    snd.voices.service(&mut commands);
     let parked = ship.parked.as_ref().map(|p| (p.obj, p.pos));
     let playing = seat.seated && control.pilot && parked.is_some() && !pilot.destroyed;
     if !playing {
@@ -414,6 +421,7 @@ fn drive(
             }
         }
     }
+    snd.voices.set_limit(snd.mixer.master_limiter(), level);
     let built = std::time::Instant::now();
     let queued = snd.voices.queued();
     snd.voices.start_queued(&mut commands, &mut outputs);
@@ -428,9 +436,10 @@ fn drive(
     let t = time.elapsed_secs_f64();
     if snd.log && t - snd.beat.0 >= 1.0 {
         let (made, bad, skipped, longest_us, refused, top) = snd.voices.meter();
+        let (over, dropped) = snd.voices.over_limit();
         let top: Vec<String> = top.iter().map(|(id, f, n, s)| format!("{id} {f} {n} at {s:.2}")).collect();
         info!(
-            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} samples not finite, {refused} voices refused so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
+            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} samples not finite, {refused} voices refused, {over} frames over the master limiter's threshold, {dropped} drops on the audio thread so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
             made - snd.beat.1,
             t - snd.beat.0,
             snd.voices.count(),
@@ -498,7 +507,16 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         ["state"] => {
             let gps: Vec<String> = LISTED.iter().map(|n| format!("{n} {:.3}", snd.mixer.game_parameter(n, None))).collect();
-            info!("sidewinder sound: {}, {} voices (most {}), mixer at {:.2} s; {}", if snd.active { "playing" } else { "not playing" }, snd.voices.count(), snd.most, snd.mixer.time(), gps.join(", "));
+            let (over, dropped) = snd.voices.over_limit();
+            let limiter = snd.mixer.master_limiter().map_or("none".to_string(), |l| format!("threshold {:.2} dB, output {:+.2} dB", l.threshold_db, l.output_db));
+            info!(
+                "sidewinder sound: {}, {} voices (most {}), mixer at {:.2} s; the master limiter {limiter}: {over} frames over its threshold, {dropped} drops on the audio thread; {}",
+                if snd.active { "playing" } else { "not playing" },
+                snd.voices.count(),
+                snd.most,
+                snd.mixer.time(),
+                gps.join(", ")
+            );
             for (id, (file, u)) in &snd.now {
                 info!(
                     "sidewinder sound:   voice {id} {file}: gain {:.4} ({:.1} dB, fade {:.3}), pitch {:.3}, low-pass {:.0}, high-pass {:.0}{}",

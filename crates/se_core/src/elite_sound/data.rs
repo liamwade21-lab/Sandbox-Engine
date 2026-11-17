@@ -867,6 +867,22 @@ impl EqFilter {
             _ => return None,
         })
     }
+
+    /// The filter of a design type of `FUN_144a05110` (the band designer the Parametric EQ reaches through `FUN_144a0f510`'s
+    /// map, and the Guitar Distortion calls with its band's own type, `FUN_144a06470`): 0 low shelf, 1 peaking, 2 high
+    /// shelf, 3 low-pass, 4 high-pass, 5 band-pass, 6 notch. Its types 7 and 8 are not built (no shipped band uses them).
+    pub fn from_design(i: i64) -> Option<EqFilter> {
+        Some(match i {
+            0 => EqFilter::LowShelf,
+            1 => EqFilter::PeakingEq,
+            2 => EqFilter::HiShelf,
+            3 => EqFilter::LowPass,
+            4 => EqFilter::HiPass,
+            5 => EqFilter::BandPass,
+            6 => EqFilter::Notch,
+            _ => return None,
+        })
+    }
 }
 
 /// One band of a Parametric EQ as its parameter block stores it (`EQModuleParams`): gain in dB, frequency in Hz.
@@ -890,10 +906,43 @@ pub struct ParamEq {
     pub process_lfe: bool,
 }
 
-/// An effect the mixer runs (only the Wwise Parametric EQ: the module's docs list the others, kept out). `rtpc` are the
-/// game parameter curves on its parameters, by the plug-in's own parameter index (`param_id`; the EQ's, from its
-/// `SetParam` in Elite's exe, `0x144a10630`: band n's type, gain, frequency, Q and on/off at 5n..5n+4, the output level
-/// at 15, LFE at 16).
+/// A Wwise Guitar Distortion's parameter block (plug-in 0x007e0003, `AkGuitarDistortionFXParams`; Elite's own
+/// `SetParamsBlock` at 0x144a04f50 copies it as stored): three pre-EQ and three post-EQ bands (their filter read from the
+/// band's type by [`EqFilter::from_design`]), the distortion's type ([`super::filter::DISTORTION_OVERDRIVE`] ...), drive,
+/// tone and rectification (0-100), the output level (dB) and the wet share (0-100).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuitarDistortion {
+    pub pre_eq: Vec<EqBand>,
+    pub post_eq: Vec<EqBand>,
+    pub distortion: u32,
+    pub drive: f64,
+    pub tone: f64,
+    pub rectification: f64,
+    pub output_level_db: f64,
+    pub wet_dry: f64,
+}
+
+/// A Wwise Peak Limiter's parameter block (plug-in 0x006e0003, `AkPeakLimiterFXParams`; Elite's `SetParam` at 0x144a12330
+/// numbers them 0-6 in this order).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeakLimiter {
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub lookahead_s: f64,
+    pub release_s: f64,
+    pub output_level_db: f64,
+    pub process_lfe: bool,
+    pub channel_link: bool,
+}
+
+/// An effect the mixer runs: a Wwise Parametric EQ (`eq`), Guitar Distortion (`distortion`) or Peak Limiter (`limiter`),
+/// exactly one of them, by `plugin` (the module's docs list the others, kept out). `rtpc` are the game parameter curves on
+/// its parameters, by the plug-in's own parameter index (`param_id`, as its `SetParam` in Elite's exe numbers them: the
+/// EQ's `0x144a10630`, band n's type, gain, frequency, Q and on/off at 5n..5n+4, the output level at 15, LFE at 16; the
+/// Guitar Distortion's `0x144a04b60`, pre-EQ band n at 10n..10n+4, post-EQ band n at 30+10n.., then type 60, drive 61, tone
+/// 62, rectification 63, output level 64, wet share 65; the limiter's `0x144a12330`, its fields' order).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effect {
@@ -903,7 +952,12 @@ pub struct Effect {
     pub name: Option<String>,
     pub plugin: String,
     pub params_hex: String,
-    pub eq: ParamEq,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq: Option<ParamEq>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distortion: Option<GuitarDistortion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limiter: Option<PeakLimiter>,
     pub rtpc: Vec<Rtpc>,
 }
 
