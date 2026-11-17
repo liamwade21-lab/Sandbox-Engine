@@ -271,6 +271,12 @@ pub struct Pilot {
     pub stick: Vec2,
     accum: f64,
     pub ticks: u64,
+    /// The cockpit point's change of velocity tick by tick in this frame's flight (`record_tick`), for the pilot chair's
+    /// buffets (`facts::ShipFacts::ticks`).
+    pub tick_dv: TickChanges,
+    /// The cockpit point's velocity after the last tick (the flight's rest frame, m/s), None when there is none to compare the
+    /// next tick with: a new ship or a boarding (`Pilot::default`), and whenever the motion isn't the flight's.
+    tick_cockpit: Option<DVec3>,
     /// A test's controls held for some seconds (`sw stick`, `sw thrust`), and a test's boost press (`sw boost`).
     pub dev: Option<(Input, f32)>,
     pub dev_boost: bool,
@@ -339,6 +345,67 @@ impl Default for Pilot {
             dev_jump: false,
             log: false,
             controls: Input::default(),
+            tick_dv: TickChanges::default(),
+            tick_cockpit: None,
+        }
+    }
+}
+
+/// The most ticks one frame's flight runs (`flight::MAX_SUBSTEPS`).
+const MAX_TICKS: usize = flight::MAX_SUBSTEPS as usize;
+
+/// The cockpit point's change of velocity of each tick of one frame's flight, in order (ship space's axes, m/s): a fixed
+/// list, so nothing is allocated a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TickChanges {
+    /// The frame whose flight recorded them (`FrameCount`): they are that frame's only.
+    pub frame: u32,
+    len: usize,
+    dv: [Vec3; MAX_TICKS],
+}
+
+impl TickChanges {
+    pub fn as_slice(&self) -> &[Vec3] {
+        &self.dv[..self.len]
+    }
+
+    /// Emptied for `frame`'s flight.
+    fn start(&mut self, frame: u32) {
+        self.frame = frame;
+        self.len = 0;
+    }
+
+    /// (A frame runs at most `MAX_TICKS` ticks, so the list never overflows.)
+    fn push(&mut self, dv: Vec3) {
+        if let Some(slot) = self.dv.get_mut(self.len) {
+            *slot = dv;
+            self.len += 1;
+        }
+    }
+}
+
+impl Pilot {
+    /// After a tick: the cockpit point's (`cockpit`, ship space) velocity, v + w x r (Elite's cockpit-point velocity,
+    /// `sidewinder_chair.md` "Buffets"), against the last tick's, turned into the ship's axes, recorded in `tick_dv`. Zero,
+    /// with nothing to compare the next tick with, while the motion isn't the flight's: in supercruise (whose speed and turn
+    /// live in `Cruise`), in the tunnel and on a test's placing (which resets it). The glide's motion is the flight's.
+    fn record_tick(&mut self, cockpit: Vec3) {
+        let live = self.cruise.is_none() && self.jump.is_none() && !self.put;
+        // (`vel` in the rest frame, `rot` ship axes to it, `omega` in ship axes; elite_sim's glam, so through arrays.)
+        let rot = DQuat::from_array(self.motion.rot.to_array());
+        let now = live.then(|| DVec3::from_array(self.motion.vel.to_array()) + rot * DVec3::from_array(self.motion.omega.to_array()).cross(cockpit.as_dvec3()));
+        let dv = match (now, self.tick_cockpit) {
+            (Some(now), Some(last)) => (rot.inverse() * (now - last)).as_vec3(),
+            _ => Vec3::ZERO,
+        };
+        self.tick_dv.push(dv);
+        self.tick_cockpit = now;
+    }
+
+    /// The flight didn't run this frame (not seated, the tunnel, no ship): its next tick has nothing to compare with.
+    fn forget_ticks(&mut self) {
+        if self.tick_cockpit.is_some() {
+            self.tick_cockpit = None;
         }
     }
 }
@@ -564,20 +631,29 @@ pub fn fly(
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
     mut panels: ResMut<super::panels::Panels>,
-    (mut ask, probe, lib, mut town, parts): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>),
+    (mut ask, probe, lib, mut town, parts, frame): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>, Res<bevy::diagnostic::FrameCount>),
 ) {
     // The gear's real state, as the gear machines left it (`parts::update`, last frame).
     let gear = parts.gear();
     if pilot.put {
         pilot.put = false;
     }
-    let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else { return };
+    // (This frame's ticks' changes of the cockpit's velocity: none until a tick runs.)
+    pilot.tick_dv.start(frame.0);
+    let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else {
+        pilot.forget_ticks();
+        return;
+    };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
     life_support(&mut pilot, time.delta_secs_f64(), &mut msg);
     if pilot.jump.is_some() {
+        pilot.forget_ticks();
         return;
     }
-    let Some(p) = ship.parked.as_mut() else { return };
+    let Some(p) = ship.parked.as_mut() else {
+        pilot.forget_ticks();
+        return;
+    };
     // A test's placing (`sw put NAME ALT_KM`): over the body's day side, level, in thruster flight, the gear up.
     let put_now = pilot.dev_put.is_some();
     if let Some((obj, alt)) = pilot.dev_put.take() {
@@ -982,7 +1058,13 @@ pub fn fly(
     }
     pilot.accum += dt;
     let mut n = 0;
+    // (Each tick's change of the cockpit's velocity is recorded once it has ended: at the next tick's start, or after the
+    // loop for the last; the loop's `continue` and `break` both pass one of the two.)
+    let cockpit = Vec3::from_array(assets.eye);
     while pilot.accum >= TICK && n < flight::MAX_SUBSTEPS {
+        if n > 0 {
+            pilot.record_tick(cockpit);
+        }
         pilot.accum -= TICK;
         n += 1;
         pilot.ticks += 1;
@@ -1353,6 +1435,9 @@ pub fn fly(
             }
         }
     }
+    if n > 0 {
+        pilot.record_tick(cockpit);
+    }
     if pilot.accum > TICK {
         pilot.accum = 0.0;
     }
@@ -1515,6 +1600,79 @@ fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::facts::ShipFacts;
+
+    /// The cockpit point's change of velocity tick by tick: the ship's own change turned into its axes, plus the spin carried
+    /// to the cockpit; nothing on a new flight's first tick, in supercruise or on the tick after it; the facts take a frame's
+    /// list only in that frame.
+    #[test]
+    fn the_cockpits_change_of_velocity_tick_by_tick() {
+        let cockpit = Vec3::new(0.0, 6.7, -1.3);
+        let mut pilot = Pilot::default();
+        pilot.tick_dv.start(7);
+        // (The ship turned 90 degrees left about its up axis: its nose, -Z in its axes, points along -X of the rest frame.)
+        pilot.motion.rot = glam::DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2);
+        pilot.record_tick(cockpit);
+        // 3 m/s more along the rest frame's -X: straight ahead of the ship, its -Z.
+        pilot.motion.vel = glam::DVec3::new(-3.0, 0.0, 0.0);
+        pilot.record_tick(cockpit);
+        // A spin of 1 rad/s about the ship's up axis (to the left) moves the cockpit (1.3 m ahead of the origin) to the left.
+        pilot.motion.omega = glam::DVec3::new(0.0, 1.0, 0.0);
+        pilot.record_tick(cockpit);
+        let ticks = pilot.tick_dv.as_slice().to_vec();
+        assert_eq!(ticks[0], Vec3::ZERO, "the first tick has nothing to compare with");
+        assert!((ticks[1] - Vec3::new(0.0, 0.0, -3.0)).length() < 1e-5, "{}", ticks[1]);
+        assert!((ticks[2] - Vec3::new(-1.3, 0.0, 0.0)).length() < 1e-5, "{}", ticks[2]);
+        // The facts take the list in its frame only.
+        let keys = PilotKeys::default();
+        assert_eq!(ShipFacts::of(&pilot, &keys, true, 7, &ShipFacts::default()).ticks.as_slice(), ticks.as_slice());
+        assert!(ShipFacts::of(&pilot, &keys, true, 8, &ShipFacts::default()).ticks.as_slice().is_empty());
+        // Supercruise's motion isn't the flight's: nothing then, nor on the tick after.
+        pilot.tick_dv.start(8);
+        pilot.motion.vel = glam::DVec3::new(-500.0, 0.0, 0.0);
+        pilot.cruise = Some(Cruise { pos: Default::default(), rot: DQuat::IDENTITY, speed: 3e4, cap: 3e4, carrier: None });
+        pilot.record_tick(cockpit);
+        pilot.cruise = None;
+        pilot.record_tick(cockpit);
+        pilot.motion.vel = glam::DVec3::new(-501.0, 0.0, 0.0);
+        pilot.record_tick(cockpit);
+        let after: Vec<Vec3> = pilot.tick_dv.as_slice().to_vec();
+        assert_eq!(&after[..2], &[Vec3::ZERO; 2]);
+        assert!(after[2].length() > 0.5, "live again: {}", after[2]);
+        // (A frame never holds more ticks than the flight runs.)
+        for _ in 0..10 {
+            pilot.record_tick(cockpit);
+        }
+        assert_eq!(pilot.tick_dv.as_slice().len(), MAX_TICKS);
+    }
+
+    /// A ship lost at speed, then a new one spawned (and one boarded): the new flight's first tick gives no change of
+    /// velocity, so the chair takes no knock from the lost ship's speed; a flight that didn't run (the tunnel, not seated)
+    /// forgets its last velocity too.
+    #[test]
+    fn a_new_ship_takes_no_knock_from_the_last() {
+        let cockpit = Vec3::new(0.0, 6.7, -1.3);
+        let mut pilot = Pilot::default();
+        pilot.motion.vel = glam::DVec3::new(0.0, 0.0, -400.0);
+        pilot.record_tick(cockpit);
+        pilot.record_tick(cockpit);
+        pilot.destroyed = true;
+        pilot.fresh_ship();
+        pilot.tick_dv.start(1);
+        pilot.record_tick(cockpit);
+        assert_eq!(pilot.tick_dv.as_slice(), &[Vec3::ZERO]);
+        pilot.motion.vel = glam::DVec3::new(0.0, 0.0, -400.0);
+        pilot.record_tick(cockpit);
+        let mut boarded = pilot.boarding();
+        boarded.tick_dv.start(2);
+        boarded.record_tick(cockpit);
+        assert_eq!(boarded.tick_dv.as_slice(), &[Vec3::ZERO]);
+        pilot.forget_ticks();
+        pilot.tick_dv.start(3);
+        pilot.motion.vel = glam::DVec3::ZERO;
+        pilot.record_tick(cockpit);
+        assert_eq!(pilot.tick_dv.as_slice(), &[Vec3::ZERO]);
+    }
 
     /// While landed the gear's command stays (down); flying, the key toggles it; boarding a parked ship gives the command
     /// down whatever it was.

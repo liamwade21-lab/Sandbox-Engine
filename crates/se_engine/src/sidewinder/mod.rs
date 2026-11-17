@@ -416,7 +416,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
             let words: Vec<&str> = arg.split_whitespace().skip(1).collect();
             let nums: Option<Vec<f32>> = words.iter().map(|w| w.parse().ok()).collect();
             let look = match (&words[..], nums.as_deref()) {
-                (_, Some(&[yaw, pitch])) => Some(Some(Vec2::new(yaw.to_radians(), pitch.to_radians()))),
+                // (A turn that isn't finite is refused here, before anything is logged: the seat's own rule.)
+                (_, Some(&[yaw, pitch])) => seat::test_turn(Vec2::new(yaw.to_radians(), pitch.to_radians())).map(Some),
                 (&[w], _) if w.eq_ignore_ascii_case("off") => Some(None),
                 _ => None,
             };
@@ -425,7 +426,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
                     info!("sidewinder: the head {}", look.map_or("is the pilot's again".to_string(), |l| format!("turned {:.2} {:.2} degrees (a test)", l.x.to_degrees(), l.y.to_degrees())));
                     world.resource_mut::<seat::Seat>().test_look = look;
                 }
-                None => warn!("sw look: use `sw look YAW PITCH` (degrees, yaw to the left, pitch up) or `sw look off`; got `{}`", words.join(" ")),
+                None => warn!("sw look: use `sw look YAW PITCH` (finite degrees, yaw to the left, pitch up) or `sw look off`; got `{}`", words.join(" ")),
             }
             None
         }

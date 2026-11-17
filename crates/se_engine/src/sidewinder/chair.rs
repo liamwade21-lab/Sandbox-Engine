@@ -20,9 +20,11 @@
 //!   flight's yaw, nose left +). Elite's invert settings (template +0x60..+0x70) are off (`Inverted Value="0"` on
 //!   the three axes in both bindings the mod ships).
 //! - `fire`: Elite's `PrimaryFire`, raw (template +0x28): the primary trigger's key or button held, or a test's `sw fire`.
-//! - `velocity_change`: the cockpit point's change of velocity (v + w x r, FUN_1430692a0) in the ship's axes
-//!   (`ShipFacts::cockpit_dv`, the change since the last frame), in Elite's axes through `ShipSpace::direction` (the mirror
-//!   in z is its own inverse), spread evenly over the fixed steps that take it (`Clock`), so its sum is unchanged.
+//! - `velocity_change`: the cockpit point's change of velocity (v + w x r, FUN_1430692a0) tick by tick as the flight made
+//!   it (`ShipFacts::ticks`, `Pilot::record_tick`), in Elite's axes through `ShipSpace::direction` (the mirror in z is its
+//!   own inverse): each chair step takes the oldest tick's change not yet taken (`Knocks`), none if there is none. A
+//!   buffet's strength grows with the square of the change, so the changes are never summed or spread: a knock is as
+//!   strong at any frame rate.
 //!
 //! The outside chair (`ext_cockpit_chair`, drawn when nobody is seated) stays in its bind pose: its skeleton is not the
 //! chair's (75 bones, 73 of them at other indices, four of its own: `the_outside_chair_is_rigid`), so `Chair::new` refuses
@@ -33,6 +35,7 @@
 //! be `Empty_Ship`'s base loop, which moves only the button cover visibly (`the_empty_chair_rests_in_its_bind_pose`), and
 //! no vertex of the outside chair hangs on its button cover.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -41,7 +44,6 @@ use bevy::prelude::*;
 use se_core::catalog::ObjectRef;
 use se_core::elite_asset::parse_edm;
 use se_core::elite_chair::{Chair, ChairError, ChairInputs, ChairSkeleton};
-use se_core::elite_rig::MAX_FRAMES;
 use se_core::elite_ship::{parse_chair_clips, parse_chair_graph, ChairClips, ChairGraph, ShipDataError};
 
 use super::assets::ShipSpace;
@@ -57,42 +59,69 @@ const GRAPH_FILE: &str = "chair/graph.json";
 const REPORTED: [(&str, &str); 3] = [("throttle lever", "BN_LHAccelLever_joint"), ("stick's grip", "BN_JoyStickTrigger01_joint"), ("seat", "BN_MainChair_joint")];
 /// The chair's step (s of real time). Ours (E): Elite steps the chair once a frame by the frame's time, and its smoothing of
 /// the throttle and the stick takes one sample a step, so its timing would follow the frame rate; here it runs in fixed
-/// steps of 1/60 s, the rate Elite's recordings ran at. A long frame takes several (at most `MAX_FRAMES`, as the parts'
-/// runner; time beyond that is dropped), each with the frame's inputs.
+/// steps of 1/60 s, the rate Elite's recordings ran at. A long frame takes several (at most `MAX_STEPS`), each with the
+/// frame's inputs.
 const STEP_S: f64 = 1.0 / 60.0;
+/// The most steps one frame takes: the flight's own cap on its ticks a frame (`elite_sim::flight::MAX_SUBSTEPS`); the time
+/// beyond it is dropped, as the flight drops its own.
+const MAX_STEPS: usize = elite_sim::flight::MAX_SUBSTEPS as usize;
+/// The most ticks' changes of velocity waiting for a chair step. Ours: the flight and the chair both run at 60 a second of
+/// real time, so a few wait at most (their clocks' phases differ); beyond this many the oldest are dropped.
+const KNOCKS_HELD: usize = 16;
 /// Time short of a whole step by less than this still takes it: the frames' rounding (144 frames of 1/144 s are 60 steps,
 /// not 59 and a remainder).
 const STEP_SLACK_S: f64 = 1e-6;
 
-/// The fixed step's clock: the real time not yet stepped and the cockpit's change of velocity not yet handed to a step.
+/// The fixed step's clock: the real time not yet stepped.
 #[derive(Clone, Copy, Debug, Default)]
 struct Clock {
     /// Under one step (s).
     left_s: f64,
-    /// Elite's axes (m/s).
-    dv: Vec3,
 }
 
 impl Clock {
-    /// A frame of `dt` real seconds in which the cockpit's velocity changed by `dv`: the steps to run and the change of
-    /// velocity each takes, the frame's (with any a frame without a step left) spread evenly over them, so their sum is the
-    /// frames'. A non-finite or negative `dt` is no time, a non-finite `dv` no change.
-    fn advance(&mut self, dt: f32, dv: Vec3) -> (usize, Vec3) {
+    /// A frame of `dt` real seconds: the steps to run (at most `MAX_STEPS`; beyond them the time left over is dropped, as
+    /// the flight's loop drops it). A non-finite or negative `dt` is no time.
+    fn advance(&mut self, dt: f32) -> usize {
         if dt.is_finite() && dt > 0.0 {
             self.left_s += dt as f64;
         }
-        if dv.is_finite() {
-            self.dv += dv;
-        }
         let whole = ((self.left_s + STEP_SLACK_S) / STEP_S).floor();
         if whole < 1.0 {
-            return (0, Vec3::ZERO);
+            return 0;
         }
-        self.left_s = (self.left_s - whole * STEP_S).max(0.0);
-        let steps = (whole as usize).min(MAX_FRAMES);
-        let each = self.dv / steps as f32;
-        self.dv = Vec3::ZERO;
-        (steps, each)
+        let steps = (whole as usize).min(MAX_STEPS);
+        self.left_s = (self.left_s - steps as f64 * STEP_S).max(0.0);
+        if self.left_s > STEP_S {
+            self.left_s = 0.0;
+        }
+        steps
+    }
+}
+
+/// The flight's ticks' changes of the cockpit's velocity waiting for the chair's steps (Elite's axes, m/s), oldest first: a
+/// frame's ticks go in, each step takes the oldest (`KNOCKS_HELD` at most).
+#[derive(Debug, Default)]
+struct Knocks {
+    queue: VecDeque<Vec3>,
+}
+
+impl Knocks {
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.queue.reserve(KNOCKS_HELD);
+    }
+
+    fn push(&mut self, dv: Vec3) {
+        if self.queue.len() == KNOCKS_HELD {
+            self.queue.pop_front();
+        }
+        self.queue.push_back(dv);
+    }
+
+    /// A step's change of velocity: the oldest waiting, or none.
+    fn take(&mut self) -> Vec3 {
+        self.queue.pop_front().unwrap_or(Vec3::ZERO)
     }
 }
 
@@ -134,9 +163,9 @@ pub(super) fn load(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, model_file: &
     Ok(Arc::new(data))
 }
 
-/// What the chair is fed this frame, from the ship's facts (the module's notes give each one's source).
-fn inputs(facts: &ShipFacts, space: &ShipSpace) -> ChairInputs {
-    let dv = space.direction(facts.cockpit_dv.as_dvec3());
+/// What the chair is fed this frame, from the ship's facts (the module's notes give each one's source); the change of
+/// velocity is each step's own (`knocks`, `Knocks`).
+fn inputs(facts: &ShipFacts) -> ChairInputs {
     ChairInputs {
         seated: facts.seated,
         throttle: facts.throttle as f32,
@@ -144,8 +173,13 @@ fn inputs(facts: &ShipFacts, space: &ShipSpace) -> ChairInputs {
         pitch: -facts.pitch as f32,
         yaw: -facts.yaw as f32,
         fire: facts.fire,
-        velocity_change: dv.to_array(),
+        velocity_change: [0.0; 3],
     }
+}
+
+/// This frame's flight ticks' changes of the cockpit's velocity (`ShipFacts::ticks`), in Elite's axes.
+fn knocks<'a>(facts: &'a ShipFacts, space: &'a ShipSpace) -> impl Iterator<Item = Vec3> + 'a {
+    facts.ticks.as_slice().iter().map(|dv| space.direction(dv.as_dvec3()))
 }
 
 /// The step's cost (real time on this thread), for `sw chair`.
@@ -169,6 +203,7 @@ pub struct ChairPose {
     last: Vec<Mat4>,
     revision: u64,
     clock: Clock,
+    knocks: Knocks,
     cost: Cost,
     /// For the log: the state, the cross-fade and the clips playing after the last step.
     seen: (String, Option<(u32, u32)>, Vec<String>),
@@ -214,6 +249,7 @@ impl ChairPose {
                 self.seen = (c.state().to_string(), None, Vec::new());
                 self.chair = Some(c);
                 self.clock = Clock::default();
+                self.knocks.clear();
                 self.revision += 1;
             }
             // (Checked at load, so this would be a bug: the chair stays in its bind pose.)
@@ -234,15 +270,18 @@ impl ChairPose {
         c.last_s = spent;
     }
 
-    /// One frame of `dt` real seconds with these inputs: the whole steps it completes (`Clock::advance`), each with the
-    /// frame's inputs and its share of the change of velocity; the pose's revision moves only if a matrix changed.
-    fn frame(&mut self, dt: f32, inputs: &ChairInputs) {
+    /// One frame of `dt` real seconds with these inputs and this frame's flight ticks' changes of the cockpit's velocity
+    /// (`ticks`, Elite's axes): the ticks join the waiting ones, and the whole steps the frame completes (`Clock::advance`)
+    /// each run with the frame's inputs and the oldest waiting change; the pose's revision moves only if a matrix changed.
+    fn frame(&mut self, dt: f32, inputs: &ChairInputs, ticks: impl Iterator<Item = Vec3>) {
         if self.chair.is_none() {
             return;
         }
-        let (steps, dv) = self.clock.advance(dt, Vec3::from_array(inputs.velocity_change));
-        let each = ChairInputs { velocity_change: dv.to_array(), ..*inputs };
-        for _ in 0..steps {
+        for dv in ticks {
+            self.knocks.push(dv);
+        }
+        for _ in 0..self.clock.advance(dt) {
+            let each = ChairInputs { velocity_change: self.knocks.take().to_array(), ..*inputs };
             self.step(&each);
         }
         let Some(chair) = self.chair.as_ref() else { return };
@@ -332,7 +371,7 @@ pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship:
         pose.make(&assets.chair);
     }
     pose.ship = Some(at);
-    pose.frame(time.delta_secs(), &inputs(&facts, &assets.rig.space));
+    pose.frame(time.delta_secs(), &inputs(&facts), knocks(&facts, &assets.rig.space));
     if pose.log {
         pose.log_changes(time.elapsed_secs_f64());
     }
@@ -381,10 +420,40 @@ mod tests {
 
     /// A pose for a parked ship, run `secs` at `hz` frames a second with the same facts each frame.
     fn run(pose: &mut ChairPose, facts: &ShipFacts, secs: f32, hz: f32) {
-        let space = ShipSpace { lift: 4.718 };
         for _ in 0..(secs * hz).round() as usize {
-            pose.frame(1.0 / hz, &inputs(facts, &space));
+            pose.frame(1.0 / hz, &inputs(facts), std::iter::empty());
         }
+    }
+
+    /// The flight's ticks as `pilot::fly` runs them (`flight::MAX_SUBSTEPS` a frame at most, the time beyond dropped) for
+    /// frames of `1 / hz` s: `secs` of frames, the k-th tick's change of velocity `tick_dv(k)` (Elite's axes), the chair fed
+    /// the facts `facts` and each frame's ticks; at the start and after each frame, (the time, the buffet's intensity
+    /// variable).
+    fn flown(d: &ChairData, facts: &ShipFacts, secs: f32, hz: f32, tick_dv: impl Fn(u64) -> Vec3) -> Vec<(f64, f32)> {
+        let tick = 1.0 / elite_sim::flight::PHYSICS_HZ;
+        let (mut pose, mut accum, mut k) = (fresh(d), 0.0f64, 0u64);
+        let mut out = vec![(0.0, buffet(d, &pose))];
+        for f in 1..=(secs * hz).round() as usize {
+            let dt = 1.0 / hz;
+            accum += dt as f64;
+            let mut ticks = Vec::new();
+            while accum >= tick && ticks.len() < MAX_STEPS {
+                accum -= tick;
+                ticks.push(tick_dv(k));
+                k += 1;
+            }
+            if accum > tick {
+                accum = 0.0;
+            }
+            pose.frame(dt, &inputs(facts), ticks.into_iter());
+            out.push((f as f64 / hz as f64, buffet(d, &pose)));
+        }
+        out
+    }
+
+    /// The buffet's intensity variable now (`BuffetIntensityProp`).
+    fn buffet(d: &ChairData, pose: &ChairPose) -> f32 {
+        pose.chair.as_ref().and_then(|c| c.variable(&d.graph.templates.buffet_intensity_variable)).unwrap_or(0.0)
     }
 
     fn fresh(d: &ChairData) -> ChairPose {
@@ -449,7 +518,7 @@ mod tests {
         }
         let rev = pose.revision();
         let palette = pose.skin_matrices().to_vec();
-        pose.frame(0.0, &ChairInputs::default());
+        pose.frame(0.0, &ChairInputs::default(), std::iter::empty());
         assert_eq!(pose.skin_matrices(), palette.as_slice());
         assert_eq!(pose.revision(), rev, "a step that changed nothing counted");
         // (Without a ship: nothing to skin with.)
@@ -529,11 +598,11 @@ mod tests {
         assert!(held > 1e-3, "the trigger held moved its bone {held}");
         run(&mut pose, &seated(), 2.0, 60.0);
         assert!(most_apart(&pose.bone_matrices()[trigger..=trigger], &rest[trigger..=trigger]) < 1e-5);
-        // A buffet: a hard knock from the left (the cockpit's velocity changed by 60 m/s to the right in one frame).
-        pose.frame(1.0 / 60.0, &inputs(&ShipFacts { cockpit_dv: Vec3::new(60.0, 0.0, 0.0), ..seated() }, &ShipSpace { lift: 4.718 }));
+        // A buffet: a hard knock from the left (the cockpit's velocity changed by 60 m/s to the right in one tick).
+        pose.frame(1.0 / 60.0, &inputs(&seated()), std::iter::once(Vec3::new(60.0, 0.0, 0.0)));
         let mut most = 0.0f32;
         for _ in 0..30 {
-            pose.frame(1.0 / 60.0, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
+            pose.frame(1.0 / 60.0, &inputs(&seated()), std::iter::empty());
             most = most.max(most_apart(&pose.bone_matrices()[seat..=seat], &rest[seat..=seat]));
         }
         assert!(most > 1e-3, "the buffet moved the seat {most}");
@@ -547,19 +616,18 @@ mod tests {
     #[test]
     fn the_same_pose_at_any_frame_rate() {
         let d = data();
-        let space = ShipSpace { lift: 4.718 };
         let facts = ShipFacts { throttle: 0.6, pitch: 0.4, roll: -0.3, yaw: 0.5, fire: true, ..seated() };
         let mut reference = fresh(&d);
         let mut steps = vec![reference.bone_matrices().to_vec()];
         for _ in 0..120 {
-            reference.step(&inputs(&facts, &space));
+            reference.step(&inputs(&facts));
             steps.push(reference.bone_matrices().to_vec());
         }
         for hz in [30.0f32, 60.0, 144.0] {
             let mut pose = fresh(&d);
             let frames = (2.0 * hz).round() as usize;
             for k in 1..=frames {
-                pose.frame(1.0 / hz, &inputs(&facts, &space));
+                pose.frame(1.0 / hz, &inputs(&facts), std::iter::empty());
                 let t = k as f64 / hz as f64;
                 let apart = (0..steps.len()).filter(|&n| (n as f64 * STEP_S - t).abs() <= STEP_S + 1e-9).map(|n| most_apart(pose.bone_matrices(), &steps[n])).fold(f32::MAX, f32::min);
                 assert!(apart < 1e-4, "{hz} frames a second, frame {k}: {apart} from every step within one");
@@ -569,28 +637,78 @@ mod tests {
         }
     }
 
-    /// The clock: a second at 144 frames a second (frames without a step) and at 20 (three steps a frame) is 60 steps, and
-    /// the steps' changes of velocity add up to the frames'; no time and no change from non-finite values; a long frame
-    /// takes its steps.
+    /// The clock: a second at 144 frames a second (frames without a step) and at 20 (three steps a frame) is 60 steps; no
+    /// time from non-finite values; a long frame takes the flight's cap of steps and drops the time beyond it.
     #[test]
-    fn the_clock_keeps_the_steps_and_the_change_of_velocity() {
+    fn the_clock_keeps_the_steps_and_caps_a_long_frame() {
         for hz in [144.0f32, 20.0] {
-            let (mut clock, mut steps, mut given, mut sent) = (Clock::default(), 0, Vec3::ZERO, Vec3::ZERO);
-            for k in 0..hz as usize {
-                let dv = Vec3::new(k as f32, 1.0, -2.0);
-                let (n, each) = clock.advance(1.0 / hz, dv);
-                steps += n;
-                given += each * n as f32;
-                sent += dv;
-            }
+            let mut clock = Clock::default();
+            let steps: usize = (0..hz as usize).map(|_| clock.advance(1.0 / hz)).sum();
             assert_eq!(steps, 60, "{hz}");
-            assert!((given - sent).length() < 1e-3, "{hz}: {given} for {sent}");
         }
         let mut clock = Clock::default();
-        assert_eq!(clock.advance(f32::NAN, Vec3::NAN), (0, Vec3::ZERO));
-        assert_eq!(clock.advance(-1.0, Vec3::ZERO), (0, Vec3::ZERO));
-        assert_eq!(clock.advance(1.0 / 60.0, Vec3::X), (1, Vec3::X));
-        assert_eq!(Clock::default().advance(0.5, Vec3::ZERO).0, 30);
+        assert_eq!(clock.advance(f32::NAN), 0);
+        assert_eq!(clock.advance(-1.0), 0);
+        assert_eq!(clock.advance(1.0 / 60.0), 1);
+        let mut long = Clock::default();
+        assert_eq!((long.advance(0.5), MAX_STEPS), (4, 4));
+        assert_eq!(long.advance(0.0), 0, "the time beyond the cap is dropped");
+    }
+
+    /// The waiting changes of velocity: frames of 0, 1, 2 and 3 ticks against frames of 0 to 3 chair steps: every tick's
+    /// change is taken once, in order, none lost or doubled; a step with none waiting takes none; beyond `KNOCKS_HELD` the
+    /// oldest go.
+    #[test]
+    fn knocks_are_never_lost_or_doubled() {
+        let mut knocks = Knocks::default();
+        knocks.clear();
+        let (mut sent, mut taken, mut next) = (Vec::new(), Vec::new(), 1.0f32);
+        for (ticks, steps) in [(0, 1), (1, 0), (2, 1), (3, 2), (1, 3), (0, 2), (2, 2), (3, 1), (1, 1), (0, 0), (2, 3)] {
+            for _ in 0..ticks {
+                let dv = Vec3::new(next, 0.0, 0.0);
+                next += 1.0;
+                knocks.push(dv);
+                sent.push(dv);
+            }
+            for _ in 0..steps {
+                let dv = knocks.take();
+                if dv != Vec3::ZERO {
+                    taken.push(dv);
+                }
+            }
+        }
+        taken.extend(knocks.queue.drain(..));
+        assert_eq!(taken, sent);
+        assert_eq!(knocks.take(), Vec3::ZERO);
+        for k in 0..20 {
+            knocks.push(Vec3::splat(k as f32));
+        }
+        assert_eq!((knocks.queue.len(), knocks.take()), (KNOCKS_HELD, Vec3::splat(4.0)), "the four oldest dropped");
+    }
+
+    /// A buffet's strength grows with the square of the change of velocity, so the changes are taken tick by tick: one 60
+    /// m/s knock in one tick gives the same buffet at 20, 30, 60 and 144 frames a second (Elite's rule: 0.3 x 5 x 60^2 /
+    /// 200^2), and a steady acceleration (the same change every tick) gives the same buffet step by step at every frame
+    /// rate: every frame's intensity is the 60 a second run's at a time within two steps.
+    #[test]
+    fn a_knock_is_as_strong_at_any_frame_rate() {
+        let d = data();
+        let want = 0.3 * 5.0 * 60.0f32.powi(2) / 200.0f32.powi(2);
+        let knock = |k: u64| if k == 40 { Vec3::new(60.0, 0.0, 0.0) } else { Vec3::ZERO };
+        let steady = |_: u64| Vec3::new(0.0, 0.0, -45.0);
+        let reference = flown(&d, &seated(), 3.0, 60.0, steady);
+        for hz in [20.0f32, 30.0, 60.0, 144.0] {
+            let most = flown(&d, &seated(), 2.0, hz, knock).iter().map(|f| f.1).fold(0.0f32, f32::max);
+            println!("{hz} frames a second: the knock's buffet {most:.5} (Elite's rule {want:.5})");
+            assert!((most - want).abs() < 1e-6, "{hz}: {most} for {want}");
+            for (t, b) in flown(&d, &seated(), 3.0, hz, steady) {
+                let near = reference.iter().filter(|r| (r.0 - t).abs() <= 2.0 * STEP_S + 1e-9).any(|r| (r.1 - b).abs() < 1e-6);
+                assert!(near, "{hz} frames a second at {t:.3} s: the steady buffet {b} matches none of the 60 a second run's near then");
+            }
+        }
+        // (A new ship's first tick gives no change, `Pilot::record_tick`: with no change no knock reaches the chair.)
+        let calm = flown(&d, &seated(), 2.0, 60.0, |_| Vec3::ZERO);
+        assert!(calm.iter().all(|f| f.1 == 0.0));
     }
 
     /// The palette's mirror (`ShipSpace::skin`): posed (full throttle, the stick forward and left), every vertex of the chair
@@ -651,10 +769,12 @@ mod tests {
         let mut pose = fresh(&d);
         run(&mut pose, &seated(), 2.0, 60.0);
         let rest = pose.bone_matrices().to_vec();
-        let bad = ShipFacts { throttle: f64::NAN, pitch: f64::INFINITY, roll: f64::NEG_INFINITY, yaw: f64::NAN, cockpit_dv: Vec3::new(f32::NAN, f32::INFINITY, 0.0), ..seated() };
-        run(&mut pose, &bad, 1.0, 60.0);
-        pose.frame(f32::NAN, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
-        pose.frame(f32::INFINITY, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
+        let bad = ShipFacts { throttle: f64::NAN, pitch: f64::INFINITY, roll: f64::NEG_INFINITY, yaw: f64::NAN, ..seated() };
+        for _ in 0..60 {
+            pose.frame(1.0 / 60.0, &inputs(&bad), std::iter::once(Vec3::new(f32::NAN, f32::INFINITY, 0.0)));
+        }
+        pose.frame(f32::NAN, &inputs(&seated()), std::iter::empty());
+        pose.frame(f32::INFINITY, &inputs(&seated()), std::iter::empty());
         assert!(pose.skin_matrices().iter().all(|m| m.is_finite()));
         run(&mut pose, &seated(), 3.0, 60.0);
         assert!(pose.bone_matrices().iter().all(|m| m.is_finite()));
