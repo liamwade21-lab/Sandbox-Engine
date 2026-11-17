@@ -7,6 +7,7 @@
 pub mod air;
 pub mod boost;
 pub mod data;
+pub mod deployables;
 pub mod drive;
 pub mod flight;
 pub mod fsd;
@@ -16,6 +17,7 @@ pub mod heat;
 pub mod hyperspace;
 pub mod landing;
 pub mod life;
+pub mod orbital;
 pub mod power;
 pub mod replay;
 pub mod shields;

@@ -300,6 +300,11 @@ pub mod record {
     pub const BOOST_FIRE_S: f64 = 2.0;
     pub const BOOST_COOL_S: f64 = 1.0;
     pub const BOOST_HEAT_PER_S: f64 = 10.0;
+
+    /// +0x3EC and +0x3E8: the top and boost speeds' multiplier with the landing gear down (read by the gear module,
+    /// 0x14307F8A0) and with the cargo scoop out (the cargo bay, 0x142A69A40): `deployables.rs`.
+    pub const GEAR_SPEED: f64 = 0.5;
+    pub const SCOOP_SPEED: f64 = 0.5;
 }
 
 /// Measured in the user's Elite (grade D: step 0.9's traces in `tests/traces`, each named).
@@ -322,11 +327,17 @@ pub mod measured {
 /// full-power block's top speed (the same curves at t = 1). t = ENG pips / most pips (0x1437FEF60; the most, 4 whole pips,
 /// is the distributor prototype's byte +0x13, B).
 pub fn sidewinder_block(eng_pips: f64, mass_t: f64) -> (Block, f64) {
+    sidewinder_block_with(eng_pips, mass_t, 1.0)
+}
+
+/// `sidewinder_block` with the speed multiplier `speed_k` of 0x142E86E20's step 4 (the gear's and the scoop's,
+/// `deployables::speed_factor`), which scales both blocks' top and boost speeds after the thrusters' curves (0x141B2DA50).
+pub fn sidewinder_block_with(eng_pips: f64, mass_t: f64, speed_k: f64) -> (Block, f64) {
     let t = (eng_pips / 4.0).clamp(0.0, 1.0);
     let th = &THRUSTERS_2E;
     let k = mass_curve(mass_t, [th.min_mass, th.opt_mass, th.max_mass], [th.min_mul, th.opt_mul, th.max_mul]);
-    let current = Block::blend(&record::BASE, &record::FULL, t).scaled(k, k, k);
-    let full_top = Block::blend(&record::BASE, &record::FULL, 1.0).top_speed * k;
+    let current = Block::blend(&record::BASE, &record::FULL, t).scaled(k, k, k).speeds_times(speed_k);
+    let full_top = Block::blend(&record::BASE, &record::FULL, 1.0).top_speed * k * speed_k;
     (current, full_top)
 }
 

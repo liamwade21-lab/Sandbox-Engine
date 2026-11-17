@@ -524,7 +524,8 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
 /// The canopy and the emergency oxygen (step 2.3's F6: `elite_sim::life`), once a frame on the frame's whole real seconds:
 /// outside the flight's capped ticks (exact at any frame rate: the rule is linear in time) and before the tunnel's early
 /// return (life support runs whatever the ship is doing). The module needs its switch and the power plant. Out of oxygen the
-/// ship is lost through `destroyed`: in the tunnel `seat_camera`'s hyperspace branch loses it at once (it needs no body).
+/// ship is lost through `destroyed`, which `seat_camera`'s one way out of the seat (`release`) takes wherever the ship is,
+/// the tunnel too.
 fn life_support(pilot: &mut Pilot, real_dt: f64, msg: &mut crate::messages::Messages) {
     pilot.life.hull(pilot.hull.percent() / 100.0);
     let was_running = pilot.life.running();
@@ -746,7 +747,9 @@ pub fn fly(
     pilot.gear_t += (towards - pilot.gear_t).clamp(-(dt as f32) / GEAR_SECONDS, dt as f32 / GEAR_SECONDS);
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
-    let (block, full_top) = elite_sim::data::sidewinder_block(pilot.dist.pips(ENG), pilot.mass_t());
+    // The gear down or the cargo scoop out halves the top and boost speeds (`elite_sim::deployables`, C; the record's 0.5, B).
+    let speed_k = elite_sim::deployables::speed_factor(pilot.gear_down, pilot.scoop);
+    let (block, full_top) = elite_sim::data::sidewinder_block_with(pilot.dist.pips(ENG), pilot.mass_t(), speed_k);
     let spec = BoostSpec::sidewinder(block.boost_ramp);
     pilot.full_top = full_top;
     pilot.top_share = block.top_speed / full_top.max(1e-9);
@@ -1047,7 +1050,12 @@ pub fn fly(
             c.rot = from_sim_q(m.rot).normalize();
             pilot.motion.omega = m.omega;
             pilot.motion.last_alpha = m.last_alpha;
-            c.speed = supercruise::step_speed(c.speed, throttle, cap, TICK);
+            // (The jerk limit's memory is the flight controller's one +0x630, normal flight's and supercruise's alike: kept in
+            // `Motion::last_acc`, forward along z.)
+            let mut speed = supercruise::Speed { v: c.speed, last_acc: pilot.motion.last_acc.length() };
+            speed.step_held(throttle, cap, TICK);
+            c.speed = speed.v;
+            pilot.motion.last_acc = glam::DVec3::new(0.0, 0.0, speed.last_acc);
             let heading = c.rot * DVec3::NEG_Z;
             let step = heading * c.speed * TICK;
             // A60's swept test (checker 3: tested at one point a tick, a fast ship went from above the entry height to under
@@ -1397,6 +1405,9 @@ pub fn fly(
                 info!("sidewinder: dropped from supercruise at {:.0} km/s", c.speed / 1000.0);
             }
         }
+        if pilot.log && n > 0 {
+            info!("sidewinder: supercruise {:.0} m/s, the cap {:.0} m/s, throttle {:.2}, accel {:.4e} m/s^2, {:.0} km over {:?}'s radius", c.speed, c.cap, pilot.throttle, pilot.motion.last_acc.z, (c.pos.delta_m(b.pos).length() - b.radius_m) / 1000.0, b.obj);
+        }
         return;
     }
     // Each beam runs along the nose from its gun to the ground or the lasers' range (a ray stepped against the loaded heights).
@@ -1437,7 +1448,7 @@ pub fn fly(
     if pilot.log && n > 0 {
         let v = from_sim_v(pilot.motion.vel);
         let (ground, _) = crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos);
-        info!("sidewinder: {:.1} m/s, {:.1} m over the ground (its origin), throttle {:.2}, FA {}, gear {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down);
+        info!("sidewinder: {:.1} m/s, {:.1} m over the ground (its origin), throttle {:.2}, FA {}, gear {}, scoop {}, top {:.1} m/s, boost {}", v.length(), p.pos.length() - ground, pilot.throttle, pilot.flight_assist, pilot.gear_down, pilot.scoop, block.top_speed, pilot.boost.firing());
     }
 }
 

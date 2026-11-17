@@ -162,6 +162,12 @@ impl Block {
         }
         b
     }
+
+    /// The block refresh's speed multiplier (0x142E86E20 step 4, 0x141B2DA50): the top speed and the boost speed times `k`,
+    /// nothing else.
+    pub fn speeds_times(&self, k: f64) -> Block {
+        Block { top_speed: self.top_speed * k, boost_speed: self.boost_speed * k, ..self.clone() }
+    }
 }
 
 /// The thrusters' mass curve (0x142CAC400): the multiplier at mass `m` from (min, optimal, max mass) and (min, optimal, max
