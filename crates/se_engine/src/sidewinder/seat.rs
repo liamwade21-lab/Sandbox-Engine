@@ -192,6 +192,15 @@ pub fn exit_rule(why: Why, landed: bool, ground: bool, ship: bool, in_seat_mode:
     (lost, place)
 }
 
+/// Whether there is ground to stand on by the ship (`exit_rule`'s `ground`): a solid body's (not a star's or a gas giant's)
+/// ground loaded under it (`level`: the node it comes from, None for no such ground), out of supercruise and hyperspace
+/// (there the ship's body can be millions of km away, or a star with no ground at all). The sea counts, as it does for the
+/// ship (the spec: every solid world is landable, the sea is ground for the ship, F): its surface is what `ship::ground_on`
+/// gives over an ocean, and the sandbox stands him on it (`Sandbox::set_down`, its "(the sea)" case).
+pub fn ground_by_ship(level: Option<u8>, in_cruise: bool, in_jump: bool) -> bool {
+    level.is_some() && !in_cruise && !in_jump
+}
+
 /// Whether a boarding is refused this frame (`seat_camera`): only while boarding, before the sandbox first gives the seat
 /// its mode, and only from anywhere but on foot (the sandbox gives the seat its mode only from walking: a test's `sw board`
 /// in the free flight would leave the free camera where it was). Once seated in the seat's mode, a mode the seat loses is
@@ -685,18 +694,13 @@ fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain
     let landed = out.pilot.landed;
     let at = out.ship.parked.as_ref().map(|p| (p.obj, p.pos, p.rot));
     let body = at.and_then(|(obj, _, _)| bodies.iter().find(|(b, _)| b.obj == obj));
-    // Ground to stand on by the ship: a solid body's (not a star's or a gas giant's), loaded under it and not the sea (the
-    // set-down's own test: an ocean world's ground at or under its radius), out of supercruise and hyperspace (there the ship's
-    // body can be millions of km away, or a star with no ground at all). Else the launch's dry-land place.
-    let ground = !in_cruise
-        && !in_jump
-        && body.zip(at).is_some_and(|((b, t), (_, pos, _))| {
-            t.filter(|t| !b.star && !t.proc.kind.is_giant()).is_some_and(|t| {
-                let (r, level) = crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos);
-                let land = (pos / b.shape).try_normalize().map_or(0.0, |dir| r / (dir * b.shape).length() - b.radius_m);
-                level.is_some() && !(t.has_ocean && land <= 0.0)
-            })
-        });
+    // (The loaded ground's node level under the ship, on a solid body: `ship::ground_on` gives the sea's surface over an
+    // ocean, as the sandbox's set-down reads it.)
+    let level = body.zip(at).and_then(|((b, t), (_, pos, _))| {
+        let t = t.filter(|t| !b.star && !t.proc.kind.is_giant())?;
+        crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos).1
+    });
+    let ground = ground_by_ship(level, in_cruise, in_jump);
     let (lost, place) = exit_rule(why, landed, ground, at.is_some(), out.sb.mode == Mode::Pilot);
     free_seat(out.seat, out.sim, out.control, out.pilot, out.panels);
     let eye = Vec3::from_array(assets.eye).as_dvec3();
@@ -829,6 +833,18 @@ mod tests {
         assert_eq!(exit_rule(Why::Removed, false, true, true, true), (true, Place::Under));
         assert_eq!(exit_rule(Why::Removed, true, true, false, true), (true, Place::Earth));
         assert_eq!(exit_rule(Why::Out, true, true, true, false), (false, Place::Stay));
+    }
+
+    /// Ground to stand on by the ship is any loaded ground of a solid body, the sea's surface included (no sea test: landed on
+    /// the sea, B sets him down beside the ship, never back at the game's start); none in supercruise or hyperspace, or with
+    /// nothing loaded (or no solid body) under it.
+    #[test]
+    fn the_sea_is_ground_to_get_out_on() {
+        assert!(ground_by_ship(Some(14), false, false));
+        assert_eq!(exit_rule(Why::Out, true, ground_by_ship(Some(14), false, false), true, true), (false, Place::Beside));
+        for (level, cruise, jump) in [(None, false, false), (Some(14), true, false), (Some(14), false, true)] {
+            assert!(!ground_by_ship(level, cruise, jump), "{level:?} {cruise} {jump}");
+        }
     }
 
     /// A boarding is refused only before the seat's mode first comes and only away from foot; seated in the seat's mode, any

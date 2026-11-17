@@ -273,17 +273,23 @@ impl<'a> Sketch<'a> {
         for shape in self.shapes {
             tess.tessellate_shape(shape, &mut mesh);
         }
-        let (mid, h) = (self.rect.center(), self.rect.height());
         for v in &mut mesh.vertices {
-            let s = ((v.pos.x - mid.x) / h - design.x) / design.hw;
-            let t = -((v.pos.y - mid.y) / h - design.y) / design.hh;
-            match view.project(SeatView::on(anchor, s, t)) {
+            match place(view, anchor, design, self.rect, v.pos) {
                 Some(p) => v.pos = p,
                 None => return,
             }
         }
         self.painter.add(egui::Shape::mesh(mesh));
     }
+}
+
+/// A point of a group's flat layout (`pos` on the screen `rect`) where `Sketch::finish` puts it: onto `anchor` (`design`
+/// fills it), projected with `view`; None behind the eye.
+pub fn place(view: &SeatView, anchor: &Anchor, design: DesignBox, rect: egui::Rect, pos: egui::Pos2) -> Option<egui::Pos2> {
+    let (mid, h) = (rect.center(), rect.height());
+    let s = ((pos.x - mid.x) / h - design.x) / design.hw;
+    let t = -((pos.y - mid.y) / h - design.y) / design.hh;
+    view.project(SeatView::on(anchor, s, t))
 }
 
 #[cfg(test)]

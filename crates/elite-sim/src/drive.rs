@@ -56,6 +56,20 @@ pub const ARRIVING_S: f64 = 5.0;
 pub const DEPARTING_S: f64 = 5.0;
 pub const ARRIVING_AFTER_JUMP_S: f64 = 1.0;
 
+/// The countdown's whole second as Elite's voice countdown reads it: floor(seconds left) (`FUN_14415b6f0`: n = floor of the
+/// ship audio component's countdown float, proven; that the float is the seconds left is the inferred link, its feeder was
+/// not found: `re/elite/notes/sidewinder_sound_events.md`). The count's tick plays on each drop of it.
+pub fn countdown_second(left: f64) -> i32 {
+    left.floor() as i32
+}
+
+/// The number the countdown is at, `left` seconds before the jump: the one the HUD shows and the voice last said, by the
+/// voice's rule (`countdown_second`; the exe says "five" at 6 and nothing at 5, "four" to "one" at 4 to 1, then nothing
+/// until the jump at 0): the second held between 1 and 5.
+pub fn countdown_number(left: f64) -> u32 {
+    countdown_second(left).clamp(1, 5) as u32
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Drive {
     Ready,
@@ -289,6 +303,11 @@ impl Drive {
             Drive::Departing(x) => Some((1.0 - x) * DEPARTING_S),
             _ => None,
         }
+    }
+
+    /// The number the countdown is at (`countdown_number`), None while none runs.
+    pub fn countdown_number(&self) -> Option<u32> {
+        self.countdown().map(countdown_number)
     }
 
     /// Leaving supercruise (a drop): Arriving, then the cooldown.

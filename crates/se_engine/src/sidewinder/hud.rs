@@ -30,6 +30,28 @@ const DIM: egui::Color32 = egui::Color32::from_rgb(110, 55, 0);
 const CYAN: egui::Color32 = egui::Color32::from_rgb(0, 200, 195);
 const BLUE_ZONE: egui::Color32 = egui::Color32::from_rgb(40, 140, 220);
 
+/// The speed's text: in supercruise (`cruise`, its speed) in c from a tenth of light's, Mm/s from 1,000 km/s, else km/s;
+/// in normal flight the flight's `speed` in m/s.
+fn speed_text(cruise: Option<f64>, speed: f64) -> String {
+    match cruise {
+        Some(v) if v >= 0.1 * elite_sim::supercruise::C => format!("{:.2} c", v / elite_sim::supercruise::C),
+        Some(v) if v >= 1.0e6 => format!("{:.1} Mm/s", v / 1.0e6),
+        Some(v) => format!("{:.1} km/s", v / 1000.0),
+        None => format!("{:.0}", speed),
+    }
+}
+
+/// Where the speed's text stands on the throttle's anchor, in the flat layout, its alignment there and its size. The place
+/// is ours (E): its left end above the radar's ring on the right, so that the longest text (supercruise's "1000.0 km/s")
+/// clears the ring, the hologram's ring, the gauge, the drive's charge bar and its label and the first two notes; at the
+/// anchor's measured figure (0.174, 0.308, centred: Elite's figure is short) that text ran into the ring.
+const SPEED_AT: (f32, f32) = (0.11, 0.258);
+const SPEED_ALIGN: egui::Align2 = egui::Align2::LEFT_CENTER;
+const SPEED_FONT: f32 = 0.024;
+
+/// The throttle gauge's foot and top, in the flat layout on the throttle's anchor.
+const GAUGE: [(f32, f32); 2] = [(0.194, 0.458), (0.236, 0.333)];
+
 /// A point `x`, `y` screen heights from the middle (y down).
 fn at(r: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
     let h = r.height();
@@ -78,14 +100,8 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     // block's curve peak `p`).
     let mut g = Sketch::new(&p, r);
     let speed = pilot.motion.vel.length();
-    let shown = match pilot.cruise {
-        Some(c) if c.speed >= 0.1 * elite_sim::supercruise::C => format!("{:.2} c", c.speed / elite_sim::supercruise::C),
-        Some(c) if c.speed >= 1.0e6 => format!("{:.1} Mm/s", c.speed / 1.0e6),
-        Some(c) => format!("{:.1} km/s", c.speed / 1000.0),
-        None => format!("{:.0}", speed),
-    };
-    g.text(at(r, 0.174, 0.308), egui::Align2::CENTER_CENTER, shown, font(0.024), ORANGE);
-    let (x0, y0, x1, y1) = (0.194f32, 0.458f32, 0.236f32, 0.333f32);
+    g.text(at(r, SPEED_AT.0, SPEED_AT.1), SPEED_ALIGN, speed_text(pilot.cruise.map(|c| c.speed), speed), font(SPEED_FONT), ORANGE);
+    let [(x0, y0), (x1, y1)] = GAUGE;
     let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
     g.line_segment([along(0.0), along(1.0)], stroke(DIM));
     let full_top = pilot.full_top.max(1.0);
@@ -149,11 +165,12 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     }
     g.finish(&view, &anchor::MESSAGES, anchor::MESSAGES_BOX);
 
-    // The top of the view: the jump's countdown (A50's Departing: 5 s), the canopy and the emergency oxygen (F6: the clock
-    // while it runs, red from 30 s left, the exe's critical alarm), and the planet HUD's heading.
+    // The top of the view: the jump's countdown (A50's Departing: 5 s; its number the voice's, `drive::countdown_number`),
+    // the canopy and the emergency oxygen (F6: the clock while it runs, red from 30 s left, the exe's critical alarm), and
+    // the planet HUD's heading.
     let mut g = Sketch::new(&p, r);
-    if let Some(left) = pilot.drive.countdown() {
-        g.text(at(r, 0.0, -0.1), egui::Align2::CENTER_CENTER, format!("{}", left.ceil().max(1.0) as u32), font(0.06), ORANGE);
+    if let Some(n) = pilot.drive.countdown_number() {
+        g.text(at(r, 0.0, -0.1), egui::Align2::CENTER_CENTER, format!("{n}"), font(0.06), ORANGE);
     }
     let alarm = pilot.life.alarm();
     if alarm != Alarm::Off {
@@ -274,4 +291,81 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  1 4 panels  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
     p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::seat::Head;
+    use super::*;
+
+    /// The eye: the cockpit's `!Camera` bone in the ship's space (`SidewinderAssets::eye` from the shipped files).
+    const EYE: Vec3 = Vec3::new(0.0001, 6.7223, 1.3465);
+
+    /// The speed's longest texts: km/s just under 1,000 km/s, Mm/s just under a tenth of light's, c at supercruise's top
+    /// speed, and normal flight's m/s.
+    fn longest() -> Vec<String> {
+        let c = elite_sim::supercruise::C;
+        vec![speed_text(Some(999_999.9), 0.0), speed_text(Some(0.1 * c - 1.0), 0.0), speed_text(Some(elite_sim::supercruise::VSC), 0.0), speed_text(None, 9_999.0)]
+    }
+
+    /// The text's size at `px` (egui's monospace, as the HUD lays it out).
+    fn text_size(text: &str, px: f32) -> egui::Vec2 {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        let size = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_string(), egui::FontId::monospace(px), ORANGE).size());
+        let _ = ctx.end_pass();
+        size
+    }
+
+    /// Whether `p` is inside the closed polygon `poly` (crossings of a ray to the right).
+    fn inside(p: egui::Pos2, poly: &[egui::Pos2]) -> bool {
+        let mut odd = false;
+        for (a, b) in poly.iter().zip(poly.iter().cycle().skip(1)) {
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+                odd = !odd;
+            }
+        }
+        odd
+    }
+
+    /// An ellipse filling a group's design box (the radar's outer ring, the hologram's ring) as drawn on the screen.
+    fn ring(view: &SeatView, r: egui::Rect, a: &anchor::Anchor, d: anchor::DesignBox) -> Vec<egui::Pos2> {
+        (0..512)
+            .map(|i| {
+                let t = i as f32 / 512.0 * std::f32::consts::TAU;
+                let p = at(r, d.x + d.hw * t.cos(), d.y + d.hh * t.sin());
+                anchor::place(view, a, d, r, p).unwrap()
+            })
+            .collect()
+    }
+
+    /// The speed's text, at its longest, stands clear of the radar's ring, the hologram's ring and the throttle's gauge at
+    /// 1600 x 900 and at 3440 x 1440, seen straight ahead (by at least 0.3 % of the screen's height).
+    #[test]
+    fn the_speed_clears_the_radar() {
+        for (w, hh) in [(1600.0f32, 900.0f32), (3440.0, 1440.0)] {
+            let r = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, hh));
+            let view = SeatView::new(EYE, Head::default(), r);
+            let rings = [ring(&view, r, &anchor::RADAR, anchor::RADAR_BOX), ring(&view, r, &anchor::HEALTH, anchor::HEALTH_BOX)];
+            let gauge: Vec<egui::Pos2> = (0..=64)
+                .map(|i| {
+                    let f = i as f32 / 64.0;
+                    let [(x0, y0), (x1, y1)] = GAUGE;
+                    anchor::place(&view, &anchor::THROTTLE, anchor::THROTTLE_BOX, r, at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)).unwrap()
+                })
+                .collect();
+            let margin = 0.003 * hh;
+            for text in longest() {
+                let flat = SPEED_ALIGN.anchor_size(at(r, SPEED_AT.0, SPEED_AT.1), text_size(&text, SPEED_FONT * hh));
+                let quad = [flat.left_top(), flat.right_top(), flat.right_bottom(), flat.left_bottom()].map(|p| anchor::place(&view, &anchor::THROTTLE, anchor::THROTTLE_BOX, r, p).unwrap());
+                let edge: Vec<egui::Pos2> = (0..4).flat_map(|k| (0..32).map(move |j| quad[k] + (quad[(k + 1) % 4] - quad[k]) * (j as f32 / 32.0))).collect();
+                let near = |p: &egui::Pos2| inside(*p, &quad) || edge.iter().any(|e| e.distance(*p) < margin);
+                let b = egui::Rect::from_points(&quad);
+                for (k, ring) in rings.iter().enumerate() {
+                    assert!(!edge.iter().any(|e| inside(*e, ring)) && !ring.iter().any(near), "{text:?} at {w}x{hh} meets ring {k}: {b:?}");
+                }
+                assert!(!gauge.iter().any(near), "{text:?} at {w}x{hh} meets the gauge: {b:?}");
+            }
+        }
+    }
 }

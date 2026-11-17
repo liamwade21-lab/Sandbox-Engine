@@ -312,6 +312,10 @@ impl Parts {
         if run.asked[i].as_deref() == Some(want.as_str()) {
             return false;
         }
+        if machines::made_afresh(rig, i, run.runners[i].state(), &want) {
+            self.remake(rig, i, facts);
+        }
+        let Some(run) = self.run.as_mut() else { return false };
         let asked = run.runners[i].request(&want);
         run.asked[i] = Some(want.clone());
         match asked {
@@ -322,6 +326,21 @@ impl Parts {
                 }
                 false
             }
+        }
+    }
+
+    /// Machine `i` made afresh in its initial state, its first events acted on (`machines::made_afresh`: `JumpEffects` out of
+    /// a state with no way out).
+    fn remake(&mut self, rig: &ShipRig, i: usize, facts: &ShipFacts) {
+        let m = &rig.ship.machines[i];
+        match Runner::new(m, &mut self.values) {
+            Ok((r, ev)) => {
+                let Some(run) = self.run.as_mut() else { return };
+                info!("sidewinder parts: machine {} made afresh in {} (out of {}, which has no way out)", m.name, r.state(), run.runners[i].state());
+                run.runners[i] = r;
+                self.act(rig, facts, i, ev, false);
+            }
+            Err(e) => self.warn_once(format!("remake {}", m.name), || format!("the machine can't be made afresh: {e}")),
         }
     }
 
@@ -635,11 +654,16 @@ mod tests {
 
         /// Frames with the gear commanded `down` for `secs`.
         fn run(&mut self, rig: &ShipRig, down: bool, secs: f64) {
+            self.run_with(rig, &facts(down), secs);
+        }
+
+        /// Frames with the facts `f` for `secs`.
+        fn run_with(&mut self, rig: &ShipRig, f: &ShipFacts, secs: f64) {
             let n = rig.ship.machines.len();
             for _ in 0..(secs / self.dt).round() as usize {
                 let before: Vec<String> = (0..n).map(|i| self.state(i).to_string()).collect();
                 self.t += self.dt;
-                if self.parts.frame(rig, &facts(down), self.dt, false) {
+                if self.parts.frame(rig, f, self.dt, false) {
                     self.parts.repose(rig);
                 }
                 self.events.append(&mut self.parts.events);
@@ -788,6 +812,37 @@ mod tests {
         s.parts.dev_states.clear();
         s.run(&rig, true, 4.0);
         assert_eq!(s.state(doors), "DoorsOpen", "auto: the leg's last request back");
+    }
+
+    /// `JumpEffects` on the shipped data through a whole jump (the charge, the countdown and the tunnel, the arrival, the
+    /// arrival's end), a jump without its charge (`sw hyper`, its 60 s fallback too: the drive's phases are the same), a
+    /// cancelled charge and a cancelled countdown: every request finds a route (nothing refused), and each ends in Idle.
+    #[test]
+    fn the_jump_effects_end_idle_after_every_jump() {
+        use super::super::facts::JumpPhase::{self, Arriving, Charging, Departing, Idle};
+        let rig = rig();
+        let jump = rig.ship.machines.iter().position(|m| m.name == "JumpEffects").unwrap();
+        let flying = ShipFacts { seated: true, landed: false, ..facts(false) };
+        let walk = |phases: &[(JumpPhase, f64)]| {
+            let mut s = Sim::new(&rig, false, 1.0 / 60.0);
+            for &(phase, secs) in phases {
+                s.run_with(&rig, &ShipFacts { jump: phase, ..flying }, secs);
+            }
+            assert!(!s.parts.warned.iter().any(|w| w.starts_with("ask ")), "refused: {:?}", s.parts.warned);
+            let seen: Vec<String> = s.entries.iter().filter(|e| e.1 == jump).map(|e| e.2.clone()).collect();
+            (s.state(jump).to_string(), seen)
+        };
+        let (end, seen) = walk(&[(Idle, 1.0), (Charging, 15.0), (Departing, 5.0 + 13.5), (Arriving, 1.0 + 40.0), (Idle, 2.0)]);
+        assert_eq!(end, "Idle");
+        assert_eq!(seen, ["Charging_Internal", "Departing_Internal", "Arriving_Internal", "Arrived_Internal", "Idle"]);
+        for phases in [
+            &[(Idle, 1.0), (Departing, 13.5), (Arriving, 41.0), (Idle, 2.0)][..],
+            &[(Idle, 1.0), (Departing, 60.0), (Arriving, 41.0), (Idle, 2.0)][..],
+            &[(Idle, 1.0), (Charging, 5.0), (Idle, 2.0)][..],
+            &[(Idle, 1.0), (Charging, 15.0), (Departing, 2.0), (Idle, 2.0)][..],
+        ] {
+            assert_eq!(walk(phases).0, "Idle", "{phases:?}");
+        }
     }
 
     /// A door held by a test (`sw parts ask`) can't hang its leg: the leg waits for the door's own target, so it goes on

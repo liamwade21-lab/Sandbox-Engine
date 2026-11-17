@@ -16,6 +16,7 @@
 //! | `Lights` | `ShutDown` once the power is out, its initial state when it is back | exe: FUN_142dc6dc0, FUN_142dc2180 (the machine's own initial state) |
 //! | `CockpitEffects` | `Emergency` once the power is out (so a power loss leaves the Emergency state's lamps lit, not the cockpit all dark), `InFlight` when it is back (the reboot's flicker between them, FUN_142dc87e0, is not modelled: `Pilot` has no reboot); `LightsOut`: no code of the exe names it | exe: FUN_142dc6dc0, FUN_142dc2180 |
 //! | `JumpEffects` | `Charging`, `Departing`, `Arriving` by the drive's phase, else `Idle`, the `_Internal` twins from the seat | exe: FUN_142c71440 at 0x142c757a8 (phase byte 3, 4, 0); which drive states the phases are, and that its "internal" test is the seat, ours |
+//! | `JumpEffects` out of `Departing` | made afresh in its initial state (`Idle`) when asked for anything else (`made_afresh`), then asked: the data's Departing states have no transitions, so the arrival goes Idle -> Arriving -> Arrived -> Idle by the data's routes, and a cancelled countdown rests in Idle | ours: the notes say only "Departing has no way out"; how Elite's arriving ship gets its machine was not traced |
 //! | `CockpitState` | `Canopy Breached` once the canopy is broken (through `Breaching`), else `Normal` | exe: FUN_1430c6130 makes the machine in one of the two by the canopy; the live request ours |
 //! | `OperationsMode` | `Dead` destroyed, `Stealth` silent, `Combat` hardpoints out, `Docked` landed, else `Travel` | ours (the states' names) |
 //! | `LandingGearExtension` (and the legs' `ShipRaised`) | nothing: the manager's trigger (FUN_14307e4e0) was not traced | exe shows the requests (FUN_143082320), not when |
@@ -97,6 +98,15 @@ pub fn wanted<'a>(rig: &'a ShipRig, i: usize, f: &ShipFacts) -> Option<&'a str> 
     }
 }
 
+/// Whether machine `i`, standing in `state`, is made afresh in its initial state before it is asked for `want` (the table's
+/// `JumpEffects` out of `Departing` row, ours): `JumpEffects` in a state with no way out (the data's `Departing` and
+/// `Departing_Internal`) asked for any other state. Elite's ship that arrives from a jump would be a new one (its machine
+/// from its initial state, whence the data leads to `Arriving` and back to `Idle`); not traced.
+pub fn made_afresh(rig: &ShipRig, i: usize, state: &str, want: &str) -> bool {
+    let Some(m) = rig.ship.machines.get(i) else { return false };
+    rig.machine_owner(i) == MachineOwner::Hull && m.name == "JumpEffects" && want != state && m.state(state).is_some_and(|s| s.transitions.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +169,10 @@ mod tests {
         let lost = facts[3];
         assert_eq!((wanted(&rig, legs[1], &lost), get(&lost, "OperationsMode", Hull), get(&lost, "CockpitState", Cockpit)), (Some("Up"), Some("Dead"), Some("Canopy Breached")));
         assert_eq!(get(&ShipFacts { jump: JumpPhase::Charging, seated: true, ..parked }, "JumpEffects", Hull), Some("Charging_Internal"));
+        // Only a Departing state (no way out in the data) is made afresh, and only for another state.
+        let jump = of("JumpEffects", Hull);
+        assert!(made_afresh(&rig, jump, "Departing_Internal", "Arriving_Internal") && made_afresh(&rig, jump, "Departing", "Idle"));
+        assert!(!made_afresh(&rig, jump, "Departing", "Departing") && !made_afresh(&rig, jump, "Charging", "Idle"));
+        assert!(!made_afresh(&rig, of("OperationsMode", Hull), "Dead", "Travel"));
     }
 }

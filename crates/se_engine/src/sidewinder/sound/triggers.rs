@@ -19,7 +19,7 @@
 //! producer+0x688 (which snaps "stationary" to 1); the component's byte D+0x30 (which snaps speed_relative); and the
 //! Euler decomposition of the spin (0x1405e0db0: taken as the spin's own components).
 
-use elite_sim::drive::Drive;
+use elite_sim::drive::{countdown_number, countdown_second, Drive};
 
 use super::super::facts::SoundMotion;
 
@@ -416,8 +416,9 @@ impl HullVoice {
     }
 }
 
-/// The voice countdown (`fsd_countdown`): each whole second's drop posts the kind's tick; the voice says 6 -> "five",
-/// 4..1 -> "four".."one" then "engage" (5 says nothing).
+/// The voice countdown (`fsd_countdown`): each whole second's drop (`drive::countdown_second`) posts the kind's tick; the
+/// voice says 6 -> "five", 4..1 -> "four".."one" then "engage" (5 says nothing), each the number the countdown is then at
+/// (`drive::countdown_number`, the HUD's).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Countdown {
     last: i32,
@@ -437,22 +438,30 @@ impl Countdown {
             *self = Countdown::default();
             return (false, &[]);
         };
-        let n = left.floor() as i32;
+        let n = countdown_second(left);
         let tick = self.last >= 0 && n < self.last;
         self.last = n;
         let mut voice: &'static [&'static str] = &[];
         if n < self.lowest_voiced {
             self.lowest_voiced = n;
-            voice = match n {
-                6 => &["VoxV01_Number5"],
-                4 => &["VoxV01_Number4"],
-                3 => &["VoxV01_Number3"],
-                2 => &["VoxV01_Number2"],
-                1 => &["VoxV01_Number1", "VoxV01_Engage"],
-                _ => &[],
-            };
+            if matches!(n, 1..=4 | 6) {
+                voice = number_lines(countdown_number(left));
+            }
         }
         (tick, voice)
+    }
+}
+
+/// The voice's lines for the countdown's number (the exe's table 0x145ea28f0: 0x83 Number5 .. 0x7f Number1, then 0x32
+/// Engage after one).
+fn number_lines(n: u32) -> &'static [&'static str] {
+    match n {
+        5 => &["VoxV01_Number5"],
+        4 => &["VoxV01_Number4"],
+        3 => &["VoxV01_Number3"],
+        2 => &["VoxV01_Number2"],
+        1 => &["VoxV01_Number1", "VoxV01_Engage"],
+        _ => &[],
     }
 }
 
@@ -1101,6 +1110,28 @@ mod tests {
         assert_eq!(c.step(None), (false, &[][..]));
         let (t, v) = c.step(Some(5.0));
         assert!(!t && v.is_empty());
+    }
+
+    /// The voice and the HUD give the same number at every 0.1 s of the flight's countdown: each number said is the one the
+    /// HUD shows then (`countdown_number`), and from the first one said on the HUD shows the last one said.
+    #[test]
+    fn the_voice_says_the_huds_number() {
+        let mut c = Countdown::default();
+        let mut last: Option<u32> = None;
+        let mut said = Vec::new();
+        for k in 0..=(elite_sim::drive::DEPARTING_S * 10.0) as i32 {
+            let left = elite_sim::drive::DEPARTING_S - k as f64 / 10.0;
+            let hud = countdown_number(left);
+            let (_, lines) = c.step(Some(left));
+            if let Some(n) = lines.first().and_then(|l| l.strip_prefix("VoxV01_Number")).map(|d| d.parse::<u32>().unwrap()) {
+                assert_eq!(n, hud, "{left:.1} s left: the voice says {n}, the HUD shows {hud}");
+                last = Some(n);
+                said.push(n);
+            }
+            assert!(last.is_none_or(|n| n == hud), "{left:.1} s left: the HUD shows {hud}, the voice last said {last:?}");
+            assert!(last.is_some() || hud == 5, "{left:.1} s left: the HUD shows {hud} before any number is said");
+        }
+        assert_eq!(said, [4, 3, 2, 1]);
     }
 
     /// carried_00 as T5e corrected it: assist ON is state On and FlightAssist_b, OFF state Off and FlightAssist_e (the
