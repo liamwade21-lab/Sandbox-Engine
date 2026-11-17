@@ -1,8 +1,8 @@
 //! The mixer's voices as sound. The ship has one output on the audio device: [`ShipOutput`], an `AudioPlayer` entity
 //! spawned when the first voice starts and despawned when the sound stops, whose [`OutputSource`] mixes every built voice
-//! on the audio thread at the output rate (two channels, a mono voice on both at full level, as the player had it). The
-//! game thread hands it voices and writes each voice's controls in place ([`VoiceCtl`]: level, speed, filter values, EQ
-//! bands, a seek, a stop); nothing else crosses between the threads.
+//! on the audio thread at the output rate (two channels; a centred mono voice on both at full level, as the player had it;
+//! a placed one panned). The game thread hands it voices and writes each voice's controls in place ([`VoiceCtl`]: level,
+//! speed, filter values, EQ bands, its emitter's place, a seek, a stop); nothing else crosses between the threads.
 //!
 //! A voice's recording is played by [`VoiceSource`]: cut at the media table's length and looped by starting the decoder
 //! again, so a loop joins sample for sample; a recording with a loop region plays its intro once and then loops the region
@@ -46,12 +46,19 @@
 //! Batches go in the order they were asked for. The voices a mixer step stops end at the frame its batch of starts begins
 //! (with no starts in the step, at once), so a set handing over to another leaves no hole (`a_stop_meets_its_steps_starts`).
 //!
-//! **The guard:** a sample of the last stage that is not finite, or beyond the bound, becomes 0, its voice's filters start from rest, and it is
-//! counted (one log line a voice, `Voices::tell_guard`); an update whose level, speed or filter value is not finite is
+//! **The guard:** a sample of the last stage that is not finite, or beyond the bound, becomes 0, its voice's filters start
+//! from rest, and its block is counted (one log line a voice, `Voices::tell_guard`); an update whose level, speed or filter value is not finite is
 //! dropped (the last value stays) and logged once a voice; a build that panics loses that voice only. `sw sound log on`
 //! logs the audio thread's heartbeat once a second (`Voices::meter`: frames made, the busiest voices, frames skipped).
 //!
-//! Every voice plays centred: where each emitter sits is a later task (the mixer's distances already act on its gains).
+//! **Where a voice sits (T5d-5):** a voice the mixer hands a placement (`VoiceUpdate::place`: its emitter placed by the game,
+//! its sound 3D on the emitter's position) gets its emitter's place from the listener each frame (`VoiceCtl::place`, a
+//! sequence lock written from the update, as its other controls are written); at each block's start it works out the
+//! distance's gain, low-pass and high-pass shares, spread and pan (`se_core::elite_sound::place`), adds the filter shares
+//! to the mixer's values before their ramp, and the output mixes it through the pan matrix (the distance's gain in it),
+//! each gain ramped frame by frame from the last block's over the block (`mix_placed`). Every other voice plays centred
+//! exactly as before (a mono voice on both channels at full level): the pan law puts a mono source straight ahead at full
+//! level on both too.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -62,7 +69,7 @@ use bevy::audio::{AudioPlayer, AudioSource, ChannelCount, Decodable, PlaybackSet
 use bevy::prelude::*;
 use se_core::elite_sound::data::EqFilter;
 use se_core::elite_sound::filter::{self, Coefs, Distortion, Section};
-use se_core::elite_sound::{DistortionNow, EqNow, FxNow, VoiceUpdate, OUTPUT_RATE};
+use se_core::elite_sound::{DistortionNow, EqNow, FxNow, PlaceNow, Placement, VoiceUpdate, OUTPUT_RATE};
 
 use super::load::Clip;
 
@@ -90,11 +97,11 @@ const STAGE_WORDS: usize = 32;
 const MAX_ACTIVE: usize = 512;
 
 /// What the audio thread has done, shared by every voice: frames made (a heartbeat: written every `RAMP_FRAMES` frames)
-/// and samples the last stage found not finite.
+/// and blocks in which the last stage found a sample not finite or beyond the bound (the guard acts a block at a time).
 #[derive(Debug, Default)]
 pub struct Meter {
     made: AtomicU64,
-    bad: AtomicU64,
+    bad_blocks: AtomicU64,
     /// Frames decoded and dropped to reach a seek or a loop's restart on the audio thread, and the longest such skip
     /// (microseconds).
     skipped: AtomicU64,
@@ -116,21 +123,73 @@ impl Meter {
     }
 }
 
-/// A voice's effects, written by the game thread and read by the audio thread at each ramp step under a sequence lock:
-/// the writer makes `seq` odd, writes, makes it even; a reader that finds it odd, or changed by the end, keeps what it had.
-/// Each stage is `STAGE_WORDS` words: its kind (0 off, 1 EQ, 2 distortion), then an EQ's three bands or a distortion's six
-/// (four words each: on and the filter, `bit 8` on and the low byte the filter's index or 0xff; frequency; gain; Q),
-/// then a distortion's type, drive, tone, rectification, level and wet share.
+/// A sequence lock over words the game thread writes and the audio thread reads at a ramp step: the writer makes the count
+/// odd, writes, makes it even; a reader that finds it odd, or changed by the end, keeps what it had (it never waits).
+#[derive(Debug, Default)]
+struct SeqLock(AtomicU32);
+
+impl SeqLock {
+    fn write(&self, f: impl FnOnce()) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        fence(Ordering::Release);
+        f();
+        self.0.fetch_add(1, Ordering::Release);
+    }
+
+    /// What `f` loads, if the words changed since `seen` and were read whole (the loads, then an acquire fence, then the
+    /// count again: a write that overlapped shows as a changed count).
+    fn read<T>(&self, seen: &mut u32, f: impl FnOnce() -> T) -> Option<T> {
+        let s0 = self.0.load(Ordering::Acquire);
+        if s0 == *seen || s0 & 1 == 1 {
+            return None;
+        }
+        let v = f();
+        fence(Ordering::Acquire);
+        (self.0.load(Ordering::Relaxed) == s0).then(|| {
+            *seen = s0;
+            v
+        })
+    }
+}
+
+/// A voice's effects, under a sequence lock. Each stage is `STAGE_WORDS` words: its kind (0 off, 1 EQ, 2 distortion), then
+/// an EQ's three bands or a distortion's six (four words each: on and the filter, `bit 8` on and the low byte the filter's
+/// index or 0xff; frequency; gain; Q), then a distortion's type, drive, tone, rectification, level and wet share.
 #[derive(Debug)]
 struct FxTable {
-    seq: AtomicU32,
+    seq: SeqLock,
     n: AtomicU32,
     stages: [[AtomicU32; STAGE_WORDS]; MAX_STAGES],
 }
 
 impl Default for FxTable {
     fn default() -> Self {
-        FxTable { seq: AtomicU32::new(0), n: AtomicU32::new(0), stages: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))) }
+        FxTable { seq: SeqLock::default(), n: AtomicU32::new(0), stages: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU32::new(0))) }
+    }
+}
+
+/// A placed voice's emitter from the listener (metres, the listener's axes: x right, y up, -z ahead), as `f32` bits under
+/// a sequence lock: written by the game each frame from the mixer's update, read by the voice at each block's start.
+#[derive(Debug, Default)]
+struct PlaceWords {
+    seq: SeqLock,
+    xyz: [AtomicU32; 3],
+}
+
+impl PlaceWords {
+    /// A place not finite is dropped (the last one stays).
+    fn write(&self, p: [f32; 3]) {
+        if p.iter().all(|v| v.is_finite()) {
+            self.seq.write(|| {
+                for (a, v) in self.xyz.iter().zip(p) {
+                    a.store(v.to_bits(), Ordering::Relaxed);
+                }
+            });
+        }
+    }
+
+    fn read(&self, seen: &mut u32) -> Option<[f32; 3]> {
+        self.seq.read(seen, || self.xyz.each_ref().map(|a| f32::from_bits(a.load(Ordering::Relaxed))))
     }
 }
 
@@ -186,31 +245,23 @@ fn stage_of(w: &[u32; STAGE_WORDS]) -> FxNow {
 impl FxTable {
     fn write(&self, fx: &[FxNow]) {
         let n = fx.len().min(MAX_STAGES);
-        self.seq.fetch_add(1, Ordering::Relaxed);
-        fence(Ordering::Release);
-        for (slot, f) in self.stages.iter().zip(&fx[..n]) {
-            for (a, v) in slot.iter().zip(stage_words(f)) {
-                a.store(v, Ordering::Relaxed);
+        self.seq.write(|| {
+            for (slot, f) in self.stages.iter().zip(&fx[..n]) {
+                for (a, v) in slot.iter().zip(stage_words(f)) {
+                    a.store(v, Ordering::Relaxed);
+                }
             }
-        }
-        self.n.store(n as u32, Ordering::Relaxed);
-        self.seq.fetch_add(1, Ordering::Release);
+            self.n.store(n as u32, Ordering::Relaxed);
+        });
     }
 
-    /// The stages into `out` (their count returned) if the table changed since `seen` and was read whole (the data's
-    /// loads, then an acquire fence, then the sequence again: a write that overlapped shows as a changed sequence).
+    /// The stages into `out` (their count returned) if the table changed since `seen` and was read whole.
     fn read(&self, seen: &mut u32, out: &mut [FxNow; MAX_STAGES]) -> Option<usize> {
-        let s0 = self.seq.load(Ordering::Acquire);
-        if s0 == *seen || s0 & 1 == 1 {
-            return None;
-        }
-        let n = (self.n.load(Ordering::Relaxed) as usize).min(MAX_STAGES);
-        for (o, slot) in out.iter_mut().zip(&self.stages).take(n) {
-            *o = stage_of(&slot.each_ref().map(|a| a.load(Ordering::Relaxed)));
-        }
-        fence(Ordering::Acquire);
-        (self.seq.load(Ordering::Relaxed) == s0).then(|| {
-            *seen = s0;
+        self.seq.read(seen, || {
+            let n = (self.n.load(Ordering::Relaxed) as usize).min(MAX_STAGES);
+            for (o, slot) in out.iter_mut().zip(&self.stages).take(n) {
+                *o = stage_of(&slot.each_ref().map(|a| a.load(Ordering::Relaxed)));
+            }
             n
         })
     }
@@ -232,9 +283,12 @@ pub struct VoiceCtl {
     /// batch begins, so a stop and the starts of one mixer step meet at one sample (`Voices::start_queued`).
     stop_with: AtomicU64,
     fx: FxTable,
-    /// Samples of this voice found not finite, and the low-pass, high-pass and speed in force at the first (`f32` bits),
-    /// for the one line the game thread logs.
-    bad: AtomicU32,
+    /// Where it sits (`VoiceUpdate::place`, fixed for the voice's life; None: centred) and its emitter's place now.
+    placement: Option<Arc<Placement>>,
+    place: PlaceWords,
+    /// Blocks of this voice in which the guard found a sample not finite or beyond the bound, and the low-pass, high-pass
+    /// and speed in force at the first (`f32` bits), for the one line the game thread logs.
+    bad_blocks: AtomicU32,
     first_bad: [AtomicU32; 3],
     /// Frames this voice has made (as `Meter::made`).
     made: AtomicU64,
@@ -261,7 +315,9 @@ impl VoiceCtl {
             stop: AtomicBool::new(false),
             stop_with: AtomicU64::new(0),
             fx: FxTable::default(),
-            bad: AtomicU32::new(0),
+            placement: None,
+            place: PlaceWords::default(),
+            bad_blocks: AtomicU32::new(0),
             first_bad: Default::default(),
             made: AtomicU64::new(0),
             meter,
@@ -272,9 +328,13 @@ impl VoiceCtl {
     }
 
     fn new(u: &VoiceUpdate, level: f32, meter: Arc<Meter>) -> VoiceCtl {
-        let c = VoiceCtl::idle(meter);
+        let mut c = VoiceCtl::idle(meter);
         c.write(u, level);
         c.fx.write(&u.fx);
+        c.placement = u.place.clone();
+        if let Some(p) = u.position {
+            c.place.write(p);
+        }
         c
     }
 
@@ -455,6 +515,42 @@ impl SpeedRamp {
     }
 }
 
+/// A placed voice's distance and pan (`VoiceCtl::placement`, `se_core::elite_sound::place`): the place last read and what
+/// it gives (the distance's filter shares, added to the voice's values at each block's start), and the pan matrix (the
+/// distance's gain in it) of the last block and of this one, which the output ramps between over the block.
+struct Placed {
+    data: Arc<Placement>,
+    seen: u32,
+    now: PlaceNow,
+    from: [[f32; 2]; 2],
+}
+
+impl Placed {
+    fn new(data: Arc<Placement>, ctl: &VoiceCtl, channels: usize) -> Placed {
+        let mut seen = u32::MAX;
+        let now = data.at(ctl.place.read(&mut seen).unwrap_or([0.0; 3]), channels);
+        Placed { data, seen, now, from: now.matrix }
+    }
+
+    /// A block's start: the place read if it changed, the last block's matrix kept to ramp from.
+    fn step(&mut self, ctl: &VoiceCtl, channels: usize) {
+        self.from = self.now.matrix;
+        if let Some(rel) = ctl.place.read(&mut self.seen) {
+            self.now = self.data.at(rel, channels);
+        }
+    }
+}
+
+/// A voice's low-pass and high-pass values now: the mixer's, plus a placed voice's distance shares (the sections clamp the
+/// sum to 0-100, as the mixer clamps an unplaced voice's).
+fn filter_targets(ctl: &VoiceCtl, placed: Option<&Placed>) -> [f32; 2] {
+    let [lp, hp] = [&ctl.lowpass, &ctl.highpass].map(|a| f32::from_bits(a.load(Ordering::Relaxed)));
+    match placed {
+        Some(p) => [lp + p.now.lowpass, hp + p.now.highpass],
+        None => [lp, hp],
+    }
+}
+
 /// A filter value as the sections take it: one that is not a number is 0 (bypassed).
 fn finite_value(v: f32) -> f32 {
     if v.is_finite() { v.clamp(0.0, 100.0) } else { 0.0 }
@@ -507,6 +603,8 @@ pub struct VoiceSource {
     level: f32,
     level_to: f32,
     level_step: f32,
+    /// Where it sits (None: centred).
+    placed: Option<Placed>,
     /// The last play is over: nothing more to hand out.
     over: bool,
     /// Built and handed over: skips from here on are the audio thread's (`Meter::skipped`).
@@ -522,10 +620,9 @@ impl VoiceSource {
         let speed = finite_speed(f32::from_bits(ctl.speed.load(Ordering::Relaxed)));
         let level = f32::from_bits(ctl.level.load(Ordering::Relaxed));
         let level = if level.is_finite() { level } else { 0.0 };
-        let filters = [
-            Filter::new(false, f32::from_bits(ctl.lowpass.load(Ordering::Relaxed)), clip.channels),
-            Filter::new(true, f32::from_bits(ctl.highpass.load(Ordering::Relaxed)), clip.channels),
-        ];
+        let placed = ctl.placement.clone().map(|p| Placed::new(p, &ctl, ch));
+        let [lp, hp] = filter_targets(&ctl, placed.as_ref());
+        let filters = [Filter::new(false, lp, clip.channels), Filter::new(true, hp, clip.channels)];
         let stages = (0..MAX_STAGES).map(|_| Stage::new(ch)).collect();
         let mut s = VoiceSource {
             clip,
@@ -553,6 +650,7 @@ impl VoiceSource {
             level,
             level_to: level,
             level_step: 0.0,
+            placed,
             over: false,
             built: false,
         };
@@ -721,13 +819,15 @@ impl VoiceSource {
         }
     }
 
-    /// A ramp step's controls taken (at each block's start: the speed, the filter values and the effects step on, the
-    /// level's ramp to the latest set over the block).
+    /// A ramp step's controls taken (at each block's start: the speed, the place, the filter values and the effects step
+    /// on, the level's ramp to the latest set over the block).
     fn step_controls(&mut self) {
         self.speed.tick(f32::from_bits(self.ctl.speed.load(Ordering::Relaxed)));
-        let targets = [self.ctl.lowpass.load(Ordering::Relaxed), self.ctl.highpass.load(Ordering::Relaxed)];
-        for (f, t) in self.filters.iter_mut().zip(targets) {
-            f.tick(f32::from_bits(t));
+        if let Some(p) = &mut self.placed {
+            p.step(&self.ctl, self.cur.len());
+        }
+        for (f, t) in self.filters.iter_mut().zip(filter_targets(&self.ctl, self.placed.as_ref())) {
+            f.tick(t);
         }
         self.read_fx();
         let to = f32::from_bits(self.ctl.level.load(Ordering::Relaxed));
@@ -812,8 +912,8 @@ impl VoiceSource {
     fn not_finite(&mut self) {
         self.filters.iter_mut().for_each(Filter::clear);
         self.stages.iter_mut().for_each(Stage::clear);
-        self.ctl.meter.bad.fetch_add(1, Ordering::Relaxed);
-        if self.ctl.bad.fetch_add(1, Ordering::Relaxed) == 0 {
+        self.ctl.meter.bad_blocks.fetch_add(1, Ordering::Relaxed);
+        if self.ctl.bad_blocks.fetch_add(1, Ordering::Relaxed) == 0 {
             let now = [self.filters[0].now, self.filters[1].now, self.speed.now];
             for (a, v) in self.ctl.first_bad.iter().zip(now) {
                 a.store(v.to_bits(), Ordering::Relaxed);
@@ -966,15 +1066,19 @@ impl OutputSource {
             let stopped = r.ctl.stop.load(Ordering::Relaxed) || (with != 0 && with <= self.begun);
             let n = if stopped { 0 } else { r.src.make_block() };
             let (b, ch) = (&r.src.buf, r.src.cur.len());
-            if ch == 1 {
-                for (f, s) in self.mix.chunks_exact_mut(2).zip(&b[..n]) {
-                    f[0] += s;
-                    f[1] += s;
+            match &r.src.placed {
+                Some(p) => mix_placed(&mut self.mix, b, ch, n, p.from, p.now.matrix),
+                None if ch == 1 => {
+                    for (f, s) in self.mix.chunks_exact_mut(2).zip(&b[..n]) {
+                        f[0] += s;
+                        f[1] += s;
+                    }
                 }
-            } else {
-                for (f, (l, rt)) in self.mix.chunks_exact_mut(2).zip(b[..n].iter().zip(&b[BLOCK..BLOCK + n])) {
-                    f[0] += l;
-                    f[1] += rt;
+                None => {
+                    for (f, (l, rt)) in self.mix.chunks_exact_mut(2).zip(b[..n].iter().zip(&b[BLOCK..BLOCK + n])) {
+                        f[0] += l;
+                        f[1] += rt;
+                    }
                 }
             }
             if n < BLOCK {
@@ -991,6 +1095,25 @@ impl OutputSource {
         }
         self.pos = 0;
         self.hand_back();
+    }
+}
+
+/// A placed voice's first `n` frames (`ch` channels, `BLOCK` apart in `b`) added to the stereo mix through its pan matrix
+/// (`[input channel][output channel]`), each gain ramped frame by frame from the last block's matrix to this one's over a
+/// ramp step, so a moving emitter or a turning head never steps a gain.
+fn mix_placed(mix: &mut [f32; 2 * BLOCK], b: &[f32], ch: usize, n: usize, from: [[f32; 2]; 2], to: [[f32; 2]; 2]) {
+    let d = |c: usize, o: usize| (to[c][o] - from[c][o]) / RAMP_FRAMES as f32;
+    let (d00, d01, d10, d11) = (d(0, 0), d(0, 1), d(1, 0), d(1, 1));
+    for (i, f) in mix.chunks_exact_mut(2).take(n).enumerate() {
+        let k = (i + 1) as f32;
+        let l = b[i];
+        f[0] += l * (from[0][0] + d00 * k);
+        f[1] += l * (from[0][1] + d01 * k);
+        if ch > 1 {
+            let r = b[BLOCK + i];
+            f[0] += r * (from[1][0] + d10 * k);
+            f[1] += r * (from[1][1] + d11 * k);
+        }
     }
 }
 
@@ -1065,6 +1188,10 @@ pub struct Voices {
     /// Voices stopped in this mixer step (or gone virtual, or replaced): they end with this step's starts if it has any,
     /// else at once (`start_queued`).
     stopping: Vec<Arc<VoiceCtl>>,
+    /// Voices stopped with a batch not yet handed to the output: its sequence number and when (`settle_stops`). They stay
+    /// here until the batch goes (the output then ends them where it begins), so a stop of everything meanwhile reaches
+    /// them too (`stop_all`); one whose batch is not handed over within `STOP_WAIT_S` stops at once (`expire_stops`).
+    waiting: Vec<(u64, Arc<VoiceCtl>, std::time::Instant)>,
     building: VecDeque<Batch>,
     /// The next batch's sequence number.
     next_batch: u64,
@@ -1087,6 +1214,7 @@ impl Default for Voices {
             playing: HashMap::new(),
             queued: Vec::new(),
             stopping: Vec::new(),
+            waiting: Vec::new(),
             building: VecDeque::new(),
             next_batch: 1,
             output: None,
@@ -1101,6 +1229,9 @@ impl Default for Voices {
 
 /// How long a stopped output is kept for its voices to come back before it is despawned.
 const RETIRE_S: f64 = 0.5;
+/// The longest a stop waits for the batch it is to meet (ours: about ten times the slowest hand-over measured, 28 ms in
+/// T5d-4's acceptance run); past it the voice stops at once, so a build that never returns holds no stop for ever.
+const STOP_WAIT_S: f64 = 0.25;
 
 struct Playing {
     ctl: Arc<VoiceCtl>,
@@ -1185,14 +1316,15 @@ impl Voices {
         self.queued.len()
     }
 
-    /// Every voice stopped at once: each is told to stop, so the output hands it back to be dropped here, and the output
-    /// is despawned `RETIRE_S` later (`service`); batches still building are dropped when done. A new start meanwhile makes
-    /// a new output.
+    /// Every voice stopped at once (the playing ones, this step's stopped ones and those waiting for their batch): each is
+    /// told to stop, so the output hands it back to be dropped here, and the output is despawned `RETIRE_S` later
+    /// (`service`); batches still building are dropped when done. A new start meanwhile makes a new output.
     pub fn stop_all(&mut self, commands: &mut Commands) {
-        for ctl in self.playing.values().map(|p| &p.ctl).chain(&self.stopping) {
+        for ctl in self.playing.values().map(|p| &p.ctl).chain(&self.stopping).chain(self.waiting.iter().map(|w| &w.1)) {
             ctl.stop.store(true, Ordering::Relaxed);
         }
         self.stopping.clear();
+        self.waiting.clear();
         if let Some((e, _)) = self.output.take() {
             if let Some((old, _)) = self.retiring.replace((e, std::time::Instant::now())) {
                 commands.entity(old).try_despawn();
@@ -1204,8 +1336,10 @@ impl Voices {
     }
 
     /// Once a frame, playing or not: what the output handed back dropped here, the spare decoders long loops asked for
-    /// made on worker threads (and the ones they put down dropped), a stopped output despawned once its voices are back.
+    /// made on worker threads (and the ones they put down dropped), a stopped output despawned once its voices are back,
+    /// stops that waited too long for their batch acted on.
     pub fn service(&mut self, commands: &mut Commands) {
+        self.expire_stops(std::time::Instant::now());
         if let Ok(mut r) = self.returned.lock() {
             std::mem::swap(&mut *r, &mut self.spare);
         }
@@ -1271,6 +1405,9 @@ impl Voices {
             return;
         }
         let Some(p) = self.playing.get_mut(&u.voice) else { return };
+        if let (Some(_), Some(at)) = (&p.ctl.placement, u.position) {
+            p.ctl.place.write(at);
+        }
         if let Some(to) = u.seek_to.filter(|t| t.is_finite()) {
             p.ctl.seek.store((f64::from(to.max(0.0)) * f64::from(p.clip.rate)) as u64, Ordering::Relaxed);
         }
@@ -1317,14 +1454,30 @@ impl Voices {
         self.building.push_back(Batch { seq, parts, asked: std::time::Instant::now(), count });
     }
 
-    /// This step's stopped voices told when to end: with the batch `with` (where it begins), or at once.
+    /// This step's stopped voices told when to end: with the batch `with` (where it begins; kept in `waiting` until it is
+    /// handed over), or at once.
     fn settle_stops(&mut self, with: Option<u64>) {
+        let now = std::time::Instant::now();
         for ctl in self.stopping.drain(..) {
             match with {
-                Some(seq) => ctl.stop_with.store(seq, Ordering::Relaxed),
+                Some(seq) => {
+                    ctl.stop_with.store(seq, Ordering::Relaxed);
+                    self.waiting.push((seq, ctl, now));
+                }
                 None => ctl.stop.store(true, Ordering::Relaxed),
             }
         }
+    }
+
+    /// The stops that waited `STOP_WAIT_S` for their batch made at once (a build that never returns holds none for ever).
+    fn expire_stops(&mut self, now: std::time::Instant) {
+        self.waiting.retain(|(_, ctl, at)| {
+            let late = now.saturating_duration_since(*at).as_secs_f64() >= STOP_WAIT_S;
+            if late {
+                ctl.stop.store(true, Ordering::Relaxed);
+            }
+            !late
+        });
     }
 
     /// The batches whose voices are all built handed to the output, in the order they were asked for. Returns, for each
@@ -1347,15 +1500,23 @@ impl Voices {
             if lost > 0 {
                 warn!("sidewinder sound: {lost} of {} starts could not be built (they stay silent)", b.count);
             }
-            if let Some((_, tx)) = &self.output {
-                let _ = tx.send((b.seq, ready));
-            }
+            let sent = self.output.as_ref().is_some_and(|(_, tx)| tx.send((b.seq, ready)).is_ok());
+            // (The stops waiting for this batch are the output's now; with no output to take it they stop at once.)
+            self.waiting.retain(|(seq, ctl, _)| {
+                if *seq > b.seq {
+                    return true;
+                }
+                if !sent {
+                    ctl.stop.store(true, Ordering::Relaxed);
+                }
+                false
+            });
             done.push((b.count, b.asked.elapsed().as_secs_f64()));
         }
         done
     }
 
-    /// Frames the audio thread has made and samples it found not finite, since the voices began; frames skipped and the
+    /// Frames the audio thread has made and blocks in which the guard acted, since the voices began; frames skipped and the
     /// longest skip (us) since the last call; voices refused for want of room so far; the voices that made the most frames
     /// since the last call (id, file, frames, speed).
     pub fn meter(&mut self) -> (u64, u64, u64, u64, u64, Vec<(u32, String, u64, f32)>) {
@@ -1373,7 +1534,7 @@ impl Voices {
         top.truncate(3);
         (
             m.made.load(Ordering::Relaxed),
-            m.bad.load(Ordering::Relaxed),
+            m.bad_blocks.load(Ordering::Relaxed),
             m.skipped.swap(0, Ordering::Relaxed),
             m.longest_skip_us.swap(0, Ordering::Relaxed),
             m.refused.load(Ordering::Relaxed),
@@ -1384,10 +1545,10 @@ impl Voices {
     /// The guard's one line a voice: the first sample of it the last stage found not finite.
     pub fn tell_guard(&mut self) {
         for (id, p) in &mut self.playing {
-            let n = p.ctl.bad.load(Ordering::Relaxed);
+            let n = p.ctl.bad_blocks.load(Ordering::Relaxed);
             if n > 0 && !std::mem::replace(&mut p.told_sample, true) {
                 let [lp, hp, sp] = p.ctl.first_bad.each_ref().map(|a| f32::from_bits(a.load(Ordering::Relaxed)));
-                warn!("sidewinder sound: voice {id} {}: a sample not finite replaced by 0 and its filters reset (speed {sp:.3}, low-pass {lp:.1}, high-pass {hp:.1}; {n} so far)", p.clip.file);
+                warn!("sidewinder sound: voice {id} {}: a sample not finite replaced by 0 and its filters reset (speed {sp:.3}, low-pass {lp:.1}, high-pass {hp:.1}; {n} blocks so far)", p.clip.file);
             }
         }
     }
@@ -1770,7 +1931,7 @@ mod tests {
             share,
             r.cpu.as_secs_f64()
         );
-        assert_eq!(r.meter.bad.load(Ordering::Relaxed), 0);
+        assert_eq!(r.meter.bad_blocks.load(Ordering::Relaxed), 0);
         assert!(share < 0.25, "the sources alone take {share:.2} of real time");
     }
 
@@ -1787,7 +1948,6 @@ mod tests {
     #[test]
     #[ignore]
     fn round_trips_leave_the_same_voices_playing() {
-        const GROWING: [(u32, Id); 2] = [(0x100, Id(0x1223_e7e9)), (0x205, Id(0x06a6_2f20))];
         let steady = |v: Vec<(u32, Id)>| -> Vec<(u32, Id)> { v.into_iter().filter(|x| !GROWING.contains(x)).collect() };
         let mut r = Run::new(false);
         r.hold(&Run::flying(), 5.0);
@@ -1878,6 +2038,7 @@ mod tests {
             output: Output::Audio { source: Id(1) },
             emitter: 0,
             position: None,
+            place: None,
             start: None,
             stop: false,
             seek_to: None,
@@ -2003,11 +2164,23 @@ mod tests {
             eprintln!("{}: {holes} silent frames, the new voice from frame {first_new}", if with_batch { "stopped with the batch" } else { "stopped at once" });
         }
         // The game side.
-        let update = |stop: bool| VoiceUpdate {
+        let clip = dc(1);
+        for with in [Some(5), None] {
+            let (mut v, ctl) = stopped_voice(&clip);
+            assert!(!ctl.stop.load(Ordering::Relaxed) && ctl.stop_with.load(Ordering::Relaxed) == 0, "nothing ends before the step's starts are known");
+            v.settle_stops(with);
+            assert_eq!((ctl.stop.load(Ordering::Relaxed), ctl.stop_with.load(Ordering::Relaxed)), (with.is_none(), with.unwrap_or(0)));
+        }
+    }
+
+    /// Voice 7's start (a loop of source 1) or its stop, centred, at level 1.
+    fn plain_update(stop: bool) -> VoiceUpdate {
+        VoiceUpdate {
             voice: 7,
             output: Output::Audio { source: Id(1) },
             emitter: 0,
             position: None,
+            place: None,
             start: (!stop).then_some(se_core::elite_sound::VoiceStart { offset: 0.0, looping: true, loop_count: None, loop_region: None }),
             stop,
             seek_to: None,
@@ -2022,19 +2195,109 @@ mod tests {
             highpass_hz: None,
             virtual_voice: false,
             fx: Vec::new(),
-        };
-        let clip = dc(1);
-        for with in [Some(5), None] {
-            let mut v = Voices::default();
-            let (start, stop) = (update(false), update(true));
-            v.apply(&start, Some(&clip), 1.0, &mut |_| {});
-            let ctl = v.playing[&7].ctl.clone();
-            v.queued.clear();
-            v.apply(&stop, Some(&clip), 1.0, &mut |_| {});
-            assert!(!ctl.stop.load(Ordering::Relaxed) && ctl.stop_with.load(Ordering::Relaxed) == 0, "nothing ends before the step's starts are known");
-            v.settle_stops(with);
-            assert_eq!((ctl.stop.load(Ordering::Relaxed), ctl.stop_with.load(Ordering::Relaxed)), (with.is_none(), with.unwrap_or(0)));
         }
+    }
+
+    /// The game side with voice 7 started and then stopped in the next mixer step (its stop not yet settled), and its
+    /// controls.
+    fn stopped_voice(clip: &Arc<Clip>) -> (Voices, Arc<VoiceCtl>) {
+        let mut v = Voices::default();
+        v.apply(&plain_update(false), Some(clip), 1.0, &mut |_| {});
+        let ctl = v.playing[&7].ctl.clone();
+        v.queued.clear();
+        v.apply(&plain_update(true), Some(clip), 1.0, &mut |_| {});
+        (v, ctl)
+    }
+
+    /// The last review's finding: a voice stopped with a batch that is not handed over yet waits for it in `waiting`, so
+    /// leaving the seat meanwhile (`stop_all`) stops it too (before, it was in neither list and sounded on until the output
+    /// went, 0.5 s later); a batch that never finishes building holds the stop at most `STOP_WAIT_S`; a batch handed over
+    /// with no output to take it stops its waiting voices at once.
+    #[test]
+    fn stops_waiting_for_a_batch_are_never_lost() {
+        let clip = Arc::new(wav(&[1; 480]));
+        // Leaving before the batch is handed over.
+        let (mut v, ctl) = stopped_voice(&clip);
+        v.settle_stops(Some(3));
+        assert_eq!(v.waiting.len(), 1);
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let world = World::new();
+        v.stop_all(&mut Commands::new(&mut queue, &world));
+        assert!(ctl.stop.load(Ordering::Relaxed) && v.waiting.is_empty(), "stop_all reaches the voice waiting for its batch");
+        // A build that never returns: the stop waits its bound, then acts.
+        let (mut v, ctl) = stopped_voice(&clip);
+        let (hold, never) = std::sync::mpsc::channel::<()>();
+        v.building.push_back(Batch { seq: 3, parts: vec![std::thread::spawn(move || { let _ = never.recv(); Vec::new() })], asked: std::time::Instant::now(), count: 1 });
+        v.settle_stops(Some(3));
+        let t0 = std::time::Instant::now();
+        assert!(v.hand_over().is_empty(), "the batch is still building");
+        v.expire_stops(t0);
+        assert!(!ctl.stop.load(Ordering::Relaxed), "within its bound the stop still waits for the batch");
+        v.expire_stops(t0 + std::time::Duration::from_secs_f64(STOP_WAIT_S + 0.01));
+        assert!(ctl.stop.load(Ordering::Relaxed) && v.waiting.is_empty(), "past it the voice stops at once");
+        drop(hold);
+        // A batch handed over with no output: its waiting voices stop at once.
+        let (mut v, ctl) = stopped_voice(&clip);
+        v.building.push_back(Batch { seq: 4, parts: vec![std::thread::spawn(Vec::new)], asked: std::time::Instant::now(), count: 0 });
+        v.settle_stops(Some(4));
+        while v.hand_over().is_empty() {
+            std::thread::yield_now();
+        }
+        assert!(ctl.stop.load(Ordering::Relaxed) && v.waiting.is_empty());
+    }
+
+    /// A placed voice of a steady level as the output mixes it, its emitter moved each block (as the game writes it each
+    /// frame) from hard left to hard right round the front: the left and right gains go from sqrt 2 / 0 to 0 / sqrt 2
+    /// through 1 / 1 straight ahead, and no gain ever steps by more than 1 % from one frame to the next (each is ramped
+    /// over its block). Straight ahead, a placed mono voice gives exactly the samples a centred one gives.
+    #[test]
+    fn a_moving_emitter_pans_smoothly() {
+        let level = 0.25f32;
+        let clip = Arc::new(wav(&vec![(level * 32768.0) as i16; 48000]));
+        let placed = |at: [f32; 3]| {
+            let mut c = VoiceCtl::idle(Arc::default());
+            c.level.store(1f32.to_bits(), Ordering::Relaxed);
+            c.placement = Some(Arc::new(Placement { pan: true, volume: None, lowpass: None, highpass: None, spread: None }));
+            c.place.write(at);
+            let ctl = Arc::new(c);
+            Ready { src: VoiceSource::new(clip.clone(), ctl.clone(), 0, None, None), ctl }
+        };
+        let (tx, rx) = channel();
+        let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+        let r = placed([-3.0, 0.0, 0.0]);
+        let moving = r.ctl.clone();
+        send_batch(&tx, vec![r]);
+        let mut got: Vec<f32> = Vec::new();
+        let blocks = 60;
+        for k in 0..=blocks {
+            // Round the front at 3 m: from -90 to +90 degrees.
+            let a = (-90.0 + 180.0 * k as f32 / blocks as f32).to_radians();
+            moving.place.write([3.0 * a.sin(), 0.0, -3.0 * a.cos()]);
+            got.extend(out.by_ref().take(2 * BLOCK));
+        }
+        got.extend(out.by_ref().take(4 * BLOCK));
+        let gains: Vec<[f32; 2]> = got.chunks_exact(2).map(|f| [f[0] / level, f[1] / level]).collect();
+        let first = gains[BLOCK];
+        let last = *gains.last().unwrap();
+        let r2 = std::f32::consts::SQRT_2;
+        assert!((first[0] - r2).abs() < 0.02 && first[1].abs() < 0.02, "hard left first: {first:?}");
+        assert!(last[0].abs() < 1e-3 && (last[1] - r2).abs() < 1e-3, "hard right last: {last:?}");
+        let mid = gains[gains.len() / 2 - BLOCK];
+        assert!((mid[0] - 1.0).abs() < 0.1 && (mid[1] - 1.0).abs() < 0.1, "near the middle: {mid:?}");
+        let step = gains.windows(2).map(|w| (w[1][0] - w[0][0]).abs().max((w[1][1] - w[0][1]).abs())).fold(0.0f32, f32::max);
+        assert!(step <= 0.01, "a gain stepped by {step} in one frame");
+        // Straight ahead: the same bits as centred.
+        let mix = |r: Ready| {
+            let (tx, rx) = channel();
+            let o = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+            send_batch(&tx, vec![r]);
+            o.take(2 * 4 * BLOCK).map(f32::to_bits).collect::<Vec<u32>>()
+        };
+        let centred = {
+            let c = ctl();
+            Ready { src: VoiceSource::new(clip.clone(), c.clone(), 0, None, None), ctl: c }
+        };
+        assert_eq!(mix(placed([0.0, 0.0, -2.0])), mix(centred));
     }
 
     /// The block path against the frame-at-a-time path it replaced (kept here only): a supercruise entry's heard voices
@@ -2157,7 +2420,7 @@ mod tests {
         assert_eq!(t.read(&mut seen, &mut out), Some(2));
         assert_eq!((out[0], out[1]), (FxNow::Eq([peak; 3]), FxNow::Distortion(d)));
         assert_eq!(t.read(&mut seen, &mut out), None, "unchanged");
-        t.seq.fetch_add(1, Ordering::AcqRel);
+        t.seq.0.fetch_add(1, Ordering::AcqRel);
         assert_eq!(t.read(&mut seen, &mut out), None, "being written");
     }
 
@@ -2258,9 +2521,14 @@ mod tests {
         assert!(checked > 0);
     }
 
+    /// The two silent objects Elite's own banks grow (`round_trips_leave_the_same_voices_playing`): by emitter and object.
+    const GROWING: [(u32, Id); 2] = [(0x100, Id(0x1223_e7e9)), (0x205, Id(0x06a6_2f20))];
+
     /// A long session (the review's finding): supercruise round trips with a boost after each, through the real triggers
-    /// and mixer, and the voices built as the game builds them (heard ones only). After 1, 50 and 500 trips: the objects
-    /// playing, the voices built, the starts of a boost, and the mixer's step time (median over the last trip's frames).
+    /// and mixer, and the voices built as the game builds them (heard ones only). After 50 and 500 trips the voices playing
+    /// (heard or virtual), the voices built (heard) and a boost's builds stay what they were after the first trip, within a
+    /// few voices, and the frame's cost (the triggers and the mixer, median over 2 s) stays bounded; the silent objects the
+    /// banks grow (`GROWING`, four a trip) are printed: they cost no voice.
     #[test]
     #[ignore]
     fn a_long_session_stays_bounded() {
@@ -2278,6 +2546,8 @@ mod tests {
             t.sort_by(f64::total_cmp);
             t[t.len() / 2]
         };
+        // After the first trip: (voices playing, voices built, a boost's builds, the frame's median ms).
+        let mut first: Option<(usize, usize, usize, f64)> = None;
         for trip in 1..=500 {
             r.supercruise_trip(2.0, 1.0);
             let builds = r.builds;
@@ -2291,12 +2561,26 @@ mod tests {
             r.hold(&b, 0.5);
             if [1, 50, 500].contains(&trip) {
                 let ms = step_ms(&mut r, &v, 2.0);
+                let objects = r.mixer.playing_objects();
+                let idle = objects.iter().filter(|o| GROWING.contains(o)).count();
                 eprintln!(
-                    "after {trip} trips: {} objects playing, {} voices ({} built), a boost built {boost_builds} voices with {boost_voices} voices in all; frame (triggers + mixer) median {ms:.3} ms",
-                    r.mixer.playing_objects().len(),
+                    "after {trip} trips: {} objects playing ({idle} of them the banks' growing silent ones), {} voices ({} built), a boost built {boost_builds} voices with {boost_voices} voices in all; frame (triggers + mixer) median {ms:.3} ms",
+                    objects.len(),
                     r.playing.len(),
                     r.built.len()
                 );
+                let now = (r.playing.len(), r.built.len(), boost_builds, ms);
+                match first {
+                    None => first = Some(now),
+                    Some(f) => {
+                        assert!(now.0 <= f.0 + 8 && now.1 <= f.1 + 8, "after {trip} trips {} voices playing, {} built (after the first {}, {})", now.0, now.1, f.0, f.1);
+                        assert!(now.2 <= f.2 + 3, "a boost builds {} voices after {trip} trips, {} after the first", now.2, f.2);
+                        // (The banks' idle objects cost the mixer's walk a little each: T5d-4 measured 0.42 ms after one
+                        // trip and 0.83 ms after 500. Bounded here: at most three times the first trip's, and under a
+                        // quarter of a 60 Hz frame.)
+                        assert!(now.3 <= 3.0 * f.3 && now.3 < 4.0, "the frame takes {:.3} ms after {trip} trips, {:.3} after the first", now.3, f.3);
+                    }
+                }
             }
         }
     }
@@ -2447,15 +2731,44 @@ mod tests {
         let bands: usize = set.iter().map(|(_, _, u)| u.fx.iter().map(|f| match f { FxNow::Eq(b) => b.iter().filter(|b| b.on).count(), _ => 0 }).sum::<usize>()).sum();
         let dists = set.iter().map(|(_, _, u)| u.fx.iter().filter(|f| matches!(f, FxNow::Distortion(_))).count()).sum::<usize>();
         let mono = set.iter().filter(|(c, _, _)| c.channels == 1).count();
-        let meter = Arc::new(Meter::new());
-        let (tx, rx) = channel();
-        let mut out = OutputSource::new(rx, meter.clone(), Arc::default());
-        let batch: Vec<Ready> = set.iter().map(|(c, s, u)| built(c, s, u, &meter)).collect();
-        send_batch(&tx, batch);
-        let t = std::time::Instant::now();
-        let n = out.by_ref().take(48000 * 2 * 10).filter(|s| s.is_finite()).count();
-        let ms = t.elapsed().as_secs_f64() * 1000.0 / 10.0;
-        eprintln!("80 voices of a supercruise entry ({distinct} distinct, {mono} mono; {bands} EQ bands switched on, {dists} distortions): {ms:.1} ms of CPU per second of audio ({n} samples)");
+        // (Then every voice placed, as a gear motor's cue is: panned, with its attenuation `258639ce`'s curves, its emitter
+        // moving round the head every block: the positioning's cost on top.)
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/sounds.json");
+        let bank = se_core::elite_sound::parse_sounds(&std::fs::read(path).unwrap()).unwrap();
+        let Some(se_core::elite_sound::Object::Attenuation(att)) = bank.file.objects.get(&Id(0x2586_39ce)) else { panic!("no attenuation 258639ce") };
+        let placement = Arc::new(Placement::new(true, Some(att)).unwrap());
+        for placed in [false, true] {
+            let meter = Arc::new(Meter::new());
+            let (tx, rx) = channel();
+            let mut out = OutputSource::new(rx, meter.clone(), Arc::default());
+            let batch: Vec<Ready> = set
+                .iter()
+                .map(|(c, s, u)| {
+                    let mut u = u.clone();
+                    if placed {
+                        u.place = Some(placement.clone());
+                        u.position = Some([-3.0, -1.0, 2.0]);
+                    }
+                    built(c, s, &u, &meter)
+                })
+                .collect();
+            let ctls: Vec<Arc<VoiceCtl>> = batch.iter().map(|r| r.ctl.clone()).collect();
+            send_batch(&tx, batch);
+            let t = std::time::Instant::now();
+            let mut n = 0;
+            for k in 0..48000 * 10 / BLOCK {
+                if placed {
+                    let a = k as f32 * 0.01;
+                    ctls.iter().for_each(|c| c.place.write([4.0 * a.sin(), -1.0, -4.0 * a.cos()]));
+                }
+                n += out.by_ref().take(2 * BLOCK).filter(|s| s.is_finite()).count();
+            }
+            let ms = t.elapsed().as_secs_f64() * 1000.0 / 10.0;
+            eprintln!(
+                "80 voices of a supercruise entry ({distinct} distinct, {mono} mono; {bands} EQ bands switched on, {dists} distortions){}: {ms:.1} ms of CPU per second of audio ({n} samples)",
+                if placed { ", every voice placed and moving" } else { "" }
+            );
+        }
     }
 
     /// The dropout's cause, shown on the player's own sample rate converter (rodio 0.22's `SampleRateConverter`, reached

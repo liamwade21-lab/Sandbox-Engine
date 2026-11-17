@@ -1,7 +1,8 @@
 //! The ship's sounds (T5b-1): `sounds.json` (`se_core::elite_sound`) and `sfx/<source id>.ogg`, from the audio export
 //! (`sidewinder_audio`): `events.json` (every Wwise event the Sidewinder uses with everything the banks say of it, made by
 //! `re/elite/tools/sidewinder_events.py`), `media/` (each recording the events reach, the game's own packets rewrapped,
-//! made by `re/elite/tools/sidewinder_media.py`, with `index.json` and the source plugins' `plugins.json`).
+//! or its exact decoded samples as 16-bit PCM where the stream cannot be rewrapped (63: ADPCM, and Vorbis streams ww2ogg
+//! cannot rebuild), made by `re/elite/tools/sidewinder_media.py`, with `index.json` and the source plugins' `plugins.json`).
 //!
 //! Which events ship: `SHIP_EVENTS` (each with the `triggers.json` entry or state machine cue that proves the game posts
 //! it) and `OPEN_EVENTS` (the sender is not found, but the event is for something the mod has: shipped when the banks at
@@ -976,7 +977,7 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
         let (grade, note) = if ext == "ogg" {
             ("A", "The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.")
         } else {
-            ("A", "The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.")
+            ("A", "Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.")
         };
         shipped.add(&rel, &[format!("Wwise source {src} (re/elite/frea_export/sidewinder_audio/media/{file})")], grade, note);
     }

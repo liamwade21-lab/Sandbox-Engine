@@ -8,19 +8,12 @@
 //! meaning is the event it posts, and the motion inputs' units are the bank curves' x ranges (marked `UNIT INFERRED`).
 //! What the ship's state cannot drive (no such state in the flight) is listed in `mod.rs`.
 //!
-//! Three entries have no function because the game sets nothing for them: `audio_engine_class`, `engine_mass_modifier`
-//! and `speed_stationary` (certainty "proven setter, input not found"). Their setters are proven (`FUN_14415ab60` sets
-//! the state AudioEngineClass from the ship audio component's +0x08 and engine_mass_modifier from its +0x04;
-//! `FUN_14415c5c0` sets spaceship_speed_stationary_self from its +0x2c every frame), but what fills those fields is not
-//! found and no record of the Sidewinder holds them, so each stays at the bank's default.
+//! Two entries have no function yet: `engine_mass_modifier` and `speed_stationary` (their setters are proven,
+//! `FUN_14415ab60` and `FUN_14415c5c0`; T5e found what feeds them, the next task's work), so each stays at the bank's
+//! default. `audio_engine_class` is set (`ENGINE_CLASS`).
 //!
-//! T5d-4 looked for the feeder of the component's motion floats again (the systems that declare the component, its getter
-//! `FUN_1413b3650`, the listener `0x14413a370` that hands GameAudioShip the data, scans of the whole code for stores at
-//! its offsets) and did not find it: every motion feed below keeps its reading and stays `UNIT INFERRED`. What the user's
-//! recordings say about two of them (the full-throttle drive layer 02ad84c3 plays 200 cents over the mod's pitch and
-//! 7 dB over its level on three speed plateaus: AudioEngineClass Class1, or speed_relative >= 150, and
-//! accel_relative_smooth >= 12 there, would explain it) is an inference from a pitch and a level, not a reading of the
-//! setters, so nothing here follows it (triggers.json `motion_rtpcs` `t5d4`).
+//! The motion feeds below keep their readings (`UNIT INFERRED`); T5e found the producer that fills the component
+//! (triggers.json `motion_rtpcs`, the notes' "T5e") and its rules are the next task's: nothing here follows them yet.
 
 use elite_sim::drive::Drive;
 
@@ -50,7 +43,7 @@ pub enum Emitter {
     Ship,
     /// The ship voice's lines.
     Voice,
-    /// A cue at a set of bones (`ShipSound::post_at`): the event's id, so each cue keeps its own position.
+    /// A state machine's cue emitter (`mod.rs` `ShipSound::cue_emitter`: one per machine and bone set, placed at its bones).
     Cue(u32),
 }
 
@@ -67,6 +60,14 @@ impl Emitter {
         }
     }
 }
+
+/// `audio_engine_class`: the state AudioEngineClass of the Sidewinder's stock thrusters. Proven (triggers.json
+/// `audio_engine_class`, T5e): the audio update's engine block (0x14415a9a0) hands the setter (0x14415ab60) the string at
+/// +0xe8 of the thruster module's data (0x142ec6b60), and the record of `Int_Engine_Size2_Class1`, the ship's stock
+/// thrusters, holds "Class1" there (grade C, the read; B, the record). Measured too (T5d-4): the full-throttle drive layer
+/// 02ad84c3 sits exactly at Class1's pitch in the user's recordings (+200 cents on its chain; a spectral score of 0.82
+/// against 0.30 for the next state), and the layer 2e468dbb agrees weakly at Class1's +300.
+pub const ENGINE_CLASS: &str = "Class1";
 
 /// `engine_loops_start`: the internal reporter's 8 drive loops.
 pub const DRIVE_LOOPS: [&str; 8] = ["ShipOrigin", "MainDriveL", "MainDriveR", "MainDriveC", "RetroDriveL", "RetroDriveR", "RetroDriveC", "Front_Centre"];
@@ -536,6 +537,9 @@ impl Triggers {
         // engine_loops_start: the loops in mode 1 with the engines on, and state Drives.
         self.engines_on = v.engines_on;
         out.push(Call::State("Drives", if v.engines_on { "On" } else { "Off" }));
+        // audio_engine_class: set when the audio object starts (Elite sets it whenever the thrusters' class differs from
+        // the one last set; the mod's thrusters never change).
+        out.push(Call::State("AudioEngineClass", ENGINE_CLASS));
         if v.mode == 1 && v.engines_on {
             self.drive_loops(true, out);
         }

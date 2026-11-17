@@ -29,7 +29,6 @@ use serde_json::{Map, Value};
 use super::assets::{ShipRig, ShipShape};
 use super::facts::ShipFacts;
 use super::machines;
-use super::sound::ShipSound;
 use super::{Sidewinder, SidewinderAssets};
 
 /// Settling a new ship: steps of this many seconds, at most `SETTLE_STEPS` of them (the longest route, doors then legs,
@@ -227,9 +226,7 @@ impl Parts {
     }
 
 
-    /// This frame's events for the sound (`ShipEvent`). (Its next task reads them here; until then one call to
-    /// `ShipSound::post_cue` in `update` plays the cues.)
-    #[allow(dead_code)]
+    /// This frame's events for the sound (`ShipEvent`; the sound's `cues` reads them after `update`).
     pub fn events(&self) -> &[ShipEvent] {
         &self.events
     }
@@ -536,7 +533,7 @@ impl Parts {
 }
 
 /// Runs the machines each frame and poses the parts when a value changed.
-pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship: Res<Sidewinder>, time: Res<Time<Real>>, sound: Option<ResMut<ShipSound>>, mut parts: ResMut<Parts>) {
+pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship: Res<Sidewinder>, time: Res<Time<Real>>, mut parts: ResMut<Parts>) {
     let rig = &assets.rig;
     let parts = &mut *parts;
     parts.events.clear();
@@ -568,26 +565,6 @@ pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship:
     }
     if moved {
         parts.repose(rig);
-    }
-    // The cues' begin and end events to the sound. (The sound's next task reads every cue from `Parts::events`, one emitter
-    // per leg, and this call goes.)
-    let Some(mut sound) = sound else { return };
-    let cues: Vec<(usize, String, Option<String>, Vec<String>, bool)> = parts
-        .events
-        .iter()
-        .filter_map(|e| match &e.event {
-            Event::SoundBegin { cue, event, bones } => Some((e.machine, cue.clone(), event.clone(), bones.clone(), true)),
-            Event::SoundEnd { cue, event, bones } => Some((e.machine, cue.clone(), event.clone(), bones.clone(), false)),
-            _ => None,
-        })
-        .collect();
-    for (i, cue, event, bones, begin) in cues {
-        // (No bank has the cue's event: it plays nothing, as in Elite.)
-        let Some(event) = event else { continue };
-        match event.strip_prefix(&format!("{cue}_{}_", if begin { "b" } else { "e" })) {
-            Some(suffix) => sound.post_cue(&cue, suffix, begin, &rig.cue_nodes(i, &bones), parts, assets.eye),
-            None => parts.warn_once(format!("cue {event}"), || format!("{event} isn't {cue}'s begin or end event")),
-        }
     }
 }
 

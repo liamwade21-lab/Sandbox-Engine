@@ -370,7 +370,7 @@ chair/graph.json (A): The chair's motion graph CockpitChairMotionGraph for the s
   from: decoded/animation/chair_clips.json and animation/chair_clips.bin (Elite's 53d917bd9cf21fbe372bfd4cf5a9417bae9c2637); decoded/animation/chair_motiongraph.json (Elite's 660a195dc12d3fc7194ac4dff5bc12996d56fd6c.bin, build 2026.10.23.334925)
 sounds.json (A): The ship's Wwise events (227 the game posts, 204 whose sender is not found) and all they reach: 476 events with the ones they post, 3291 objects, 849 media, 32 source plugins, 42 Parametric EQs, 16 Guitar Distortions, 1 Peak Limiter(s), the Init bank's game syncs. Values are the banks'.
   from: re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py); re/elite/frea_export/sidewinder_audio/effects.json (the effects in the nodes' and buses' slots, from the same payloads, by sidewinder_effects.py)
-sfx/00084529.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/00084529.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 00084529 (re/elite/frea_export/sidewinder_audio/media/00084529.wav)
 sfx/000858a6.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 000858a6 (re/elite/frea_export/sidewinder_audio/media/000858a6.ogg)
@@ -392,11 +392,11 @@ sfx/00623350.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 00623350 (re/elite/frea_export/sidewinder_audio/media/00623350.ogg)
 sfx/006f82ac.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 006f82ac (re/elite/frea_export/sidewinder_audio/media/006f82ac.ogg)
-sfx/0074888a.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0074888a.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0074888a (re/elite/frea_export/sidewinder_audio/media/0074888a.wav)
 sfx/00791a34.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 00791a34 (re/elite/frea_export/sidewinder_audio/media/00791a34.ogg)
-sfx/007b5e87.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/007b5e87.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 007b5e87 (re/elite/frea_export/sidewinder_audio/media/007b5e87.wav)
 sfx/00898423.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 00898423 (re/elite/frea_export/sidewinder_audio/media/00898423.ogg)
@@ -404,9 +404,9 @@ sfx/008b9917.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 008b9917 (re/elite/frea_export/sidewinder_audio/media/008b9917.ogg)
 sfx/008bf881.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 008bf881 (re/elite/frea_export/sidewinder_audio/media/008bf881.ogg)
-sfx/008e311d.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/008e311d.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 008e311d (re/elite/frea_export/sidewinder_audio/media/008e311d.wav)
-sfx/008f6714.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/008f6714.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 008f6714 (re/elite/frea_export/sidewinder_audio/media/008f6714.wav)
 sfx/00b732dd.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 00b732dd (re/elite/frea_export/sidewinder_audio/media/00b732dd.ogg)
@@ -440,7 +440,7 @@ sfx/010af684.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 010af684 (re/elite/frea_export/sidewinder_audio/media/010af684.ogg)
 sfx/010e3267.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 010e3267 (re/elite/frea_export/sidewinder_audio/media/010e3267.ogg)
-sfx/011309c8.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/011309c8.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 011309c8 (re/elite/frea_export/sidewinder_audio/media/011309c8.wav)
 sfx/0133373d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0133373d (re/elite/frea_export/sidewinder_audio/media/0133373d.ogg)
@@ -456,7 +456,7 @@ sfx/01420d16.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 01420d16 (re/elite/frea_export/sidewinder_audio/media/01420d16.ogg)
 sfx/015080f3.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 015080f3 (re/elite/frea_export/sidewinder_audio/media/015080f3.ogg)
-sfx/015181b0.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/015181b0.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 015181b0 (re/elite/frea_export/sidewinder_audio/media/015181b0.wav)
 sfx/015432ea.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 015432ea (re/elite/frea_export/sidewinder_audio/media/015432ea.ogg)
@@ -488,7 +488,7 @@ sfx/01bc5733.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 01bc5733 (re/elite/frea_export/sidewinder_audio/media/01bc5733.ogg)
 sfx/01ce4a67.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 01ce4a67 (re/elite/frea_export/sidewinder_audio/media/01ce4a67.ogg)
-sfx/01db53d8.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/01db53d8.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 01db53d8 (re/elite/frea_export/sidewinder_audio/media/01db53d8.wav)
 sfx/01e1b05d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 01e1b05d (re/elite/frea_export/sidewinder_audio/media/01e1b05d.ogg)
@@ -524,13 +524,13 @@ sfx/02811089.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 02811089 (re/elite/frea_export/sidewinder_audio/media/02811089.ogg)
 sfx/0284131d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0284131d (re/elite/frea_export/sidewinder_audio/media/0284131d.ogg)
-sfx/02923bae.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/02923bae.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 02923bae (re/elite/frea_export/sidewinder_audio/media/02923bae.wav)
 sfx/0299524a.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0299524a (re/elite/frea_export/sidewinder_audio/media/0299524a.ogg)
 sfx/02ad84c3.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 02ad84c3 (re/elite/frea_export/sidewinder_audio/media/02ad84c3.ogg)
-sfx/02ae301d.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/02ae301d.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 02ae301d (re/elite/frea_export/sidewinder_audio/media/02ae301d.wav)
 sfx/02af7561.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 02af7561 (re/elite/frea_export/sidewinder_audio/media/02af7561.ogg)
@@ -618,7 +618,7 @@ sfx/04605936.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 04605936 (re/elite/frea_export/sidewinder_audio/media/04605936.ogg)
 sfx/046b5e0d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 046b5e0d (re/elite/frea_export/sidewinder_audio/media/046b5e0d.ogg)
-sfx/047fbdf1.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/047fbdf1.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 047fbdf1 (re/elite/frea_export/sidewinder_audio/media/047fbdf1.wav)
 sfx/0480889d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0480889d (re/elite/frea_export/sidewinder_audio/media/0480889d.ogg)
@@ -630,7 +630,7 @@ sfx/04b2d379.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 04b2d379 (re/elite/frea_export/sidewinder_audio/media/04b2d379.ogg)
 sfx/04b89d28.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 04b89d28 (re/elite/frea_export/sidewinder_audio/media/04b89d28.ogg)
-sfx/04ba39af.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/04ba39af.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 04ba39af (re/elite/frea_export/sidewinder_audio/media/04ba39af.wav)
 sfx/04bc0992.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 04bc0992 (re/elite/frea_export/sidewinder_audio/media/04bc0992.ogg)
@@ -674,7 +674,7 @@ sfx/05701c69.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 05701c69 (re/elite/frea_export/sidewinder_audio/media/05701c69.ogg)
 sfx/057a3f74.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 057a3f74 (re/elite/frea_export/sidewinder_audio/media/057a3f74.ogg)
-sfx/057c276e.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/057c276e.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 057c276e (re/elite/frea_export/sidewinder_audio/media/057c276e.wav)
 sfx/0582febc.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0582febc (re/elite/frea_export/sidewinder_audio/media/0582febc.ogg)
@@ -730,7 +730,7 @@ sfx/06ed8318.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 06ed8318 (re/elite/frea_export/sidewinder_audio/media/06ed8318.ogg)
 sfx/06f7fecf.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 06f7fecf (re/elite/frea_export/sidewinder_audio/media/06f7fecf.ogg)
-sfx/06ff0803.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/06ff0803.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 06ff0803 (re/elite/frea_export/sidewinder_audio/media/06ff0803.wav)
 sfx/070a9e4c.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 070a9e4c (re/elite/frea_export/sidewinder_audio/media/070a9e4c.ogg)
@@ -754,7 +754,7 @@ sfx/075aba95.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 075aba95 (re/elite/frea_export/sidewinder_audio/media/075aba95.ogg)
 sfx/0770a7d0.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0770a7d0 (re/elite/frea_export/sidewinder_audio/media/0770a7d0.ogg)
-sfx/077535cd.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/077535cd.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 077535cd (re/elite/frea_export/sidewinder_audio/media/077535cd.wav)
 sfx/077c47c2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 077c47c2 (re/elite/frea_export/sidewinder_audio/media/077c47c2.ogg)
@@ -794,9 +794,9 @@ sfx/080eaa89.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 080eaa89 (re/elite/frea_export/sidewinder_audio/media/080eaa89.ogg)
 sfx/0821acce.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0821acce (re/elite/frea_export/sidewinder_audio/media/0821acce.ogg)
-sfx/082e74ff.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/082e74ff.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 082e74ff (re/elite/frea_export/sidewinder_audio/media/082e74ff.wav)
-sfx/08356a83.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/08356a83.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 08356a83 (re/elite/frea_export/sidewinder_audio/media/08356a83.wav)
 sfx/085187cf.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 085187cf (re/elite/frea_export/sidewinder_audio/media/085187cf.ogg)
@@ -816,7 +816,7 @@ sfx/08a0187f.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 08a0187f (re/elite/frea_export/sidewinder_audio/media/08a0187f.ogg)
 sfx/08a3c211.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 08a3c211 (re/elite/frea_export/sidewinder_audio/media/08a3c211.ogg)
-sfx/08b44909.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/08b44909.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 08b44909 (re/elite/frea_export/sidewinder_audio/media/08b44909.wav)
 sfx/08b6c11c.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 08b6c11c (re/elite/frea_export/sidewinder_audio/media/08b6c11c.ogg)
@@ -828,7 +828,7 @@ sfx/08f36a45.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 08f36a45 (re/elite/frea_export/sidewinder_audio/media/08f36a45.ogg)
 sfx/093501ed.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 093501ed (re/elite/frea_export/sidewinder_audio/media/093501ed.ogg)
-sfx/09478399.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/09478399.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 09478399 (re/elite/frea_export/sidewinder_audio/media/09478399.wav)
 sfx/09526cb2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 09526cb2 (re/elite/frea_export/sidewinder_audio/media/09526cb2.ogg)
@@ -838,23 +838,23 @@ sfx/0968fe1a.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0968fe1a (re/elite/frea_export/sidewinder_audio/media/0968fe1a.ogg)
 sfx/096ecfc2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 096ecfc2 (re/elite/frea_export/sidewinder_audio/media/096ecfc2.ogg)
-sfx/096fa094.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/096fa094.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 096fa094 (re/elite/frea_export/sidewinder_audio/media/096fa094.wav)
 sfx/09753621.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 09753621 (re/elite/frea_export/sidewinder_audio/media/09753621.ogg)
 sfx/097e1950.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 097e1950 (re/elite/frea_export/sidewinder_audio/media/097e1950.ogg)
-sfx/0992e950.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0992e950.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0992e950 (re/elite/frea_export/sidewinder_audio/media/0992e950.wav)
 sfx/0993f585.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0993f585 (re/elite/frea_export/sidewinder_audio/media/0993f585.ogg)
 sfx/09984fd6.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 09984fd6 (re/elite/frea_export/sidewinder_audio/media/09984fd6.ogg)
-sfx/099bee6e.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/099bee6e.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 099bee6e (re/elite/frea_export/sidewinder_audio/media/099bee6e.wav)
 sfx/09a3ab25.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 09a3ab25 (re/elite/frea_export/sidewinder_audio/media/09a3ab25.ogg)
-sfx/09b113c5.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/09b113c5.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 09b113c5 (re/elite/frea_export/sidewinder_audio/media/09b113c5.wav)
 sfx/09c7dce6.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 09c7dce6 (re/elite/frea_export/sidewinder_audio/media/09c7dce6.ogg)
@@ -888,7 +888,7 @@ sfx/0a9b5367.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0a9b5367 (re/elite/frea_export/sidewinder_audio/media/0a9b5367.ogg)
 sfx/0aa05f9e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0aa05f9e (re/elite/frea_export/sidewinder_audio/media/0aa05f9e.ogg)
-sfx/0aa6425f.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0aa6425f.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0aa6425f (re/elite/frea_export/sidewinder_audio/media/0aa6425f.wav)
 sfx/0aa7780e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0aa7780e (re/elite/frea_export/sidewinder_audio/media/0aa7780e.ogg)
@@ -916,13 +916,13 @@ sfx/0b5e1c39.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0b5e1c39 (re/elite/frea_export/sidewinder_audio/media/0b5e1c39.ogg)
 sfx/0b89d1bd.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0b89d1bd (re/elite/frea_export/sidewinder_audio/media/0b89d1bd.ogg)
-sfx/0b9b317a.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0b9b317a.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0b9b317a (re/elite/frea_export/sidewinder_audio/media/0b9b317a.wav)
 sfx/0b9cb40b.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0b9cb40b (re/elite/frea_export/sidewinder_audio/media/0b9cb40b.ogg)
 sfx/0bb38f44.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0bb38f44 (re/elite/frea_export/sidewinder_audio/media/0bb38f44.ogg)
-sfx/0bb7f8d6.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0bb7f8d6.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0bb7f8d6 (re/elite/frea_export/sidewinder_audio/media/0bb7f8d6.wav)
 sfx/0bc1c53b.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0bc1c53b (re/elite/frea_export/sidewinder_audio/media/0bc1c53b.ogg)
@@ -930,7 +930,7 @@ sfx/0bcfda4f.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0bcfda4f (re/elite/frea_export/sidewinder_audio/media/0bcfda4f.ogg)
 sfx/0bea4dd2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0bea4dd2 (re/elite/frea_export/sidewinder_audio/media/0bea4dd2.ogg)
-sfx/0bef2d39.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0bef2d39.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0bef2d39 (re/elite/frea_export/sidewinder_audio/media/0bef2d39.wav)
 sfx/0bf168f9.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0bf168f9 (re/elite/frea_export/sidewinder_audio/media/0bf168f9.ogg)
@@ -1008,7 +1008,7 @@ sfx/0ef6404b.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0ef6404b (re/elite/frea_export/sidewinder_audio/media/0ef6404b.ogg)
 sfx/0efaae66.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0efaae66 (re/elite/frea_export/sidewinder_audio/media/0efaae66.ogg)
-sfx/0efdeeec.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0efdeeec.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0efdeeec (re/elite/frea_export/sidewinder_audio/media/0efdeeec.wav)
 sfx/0f13db04.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0f13db04 (re/elite/frea_export/sidewinder_audio/media/0f13db04.ogg)
@@ -1016,7 +1016,7 @@ sfx/0f264908.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0f264908 (re/elite/frea_export/sidewinder_audio/media/0f264908.ogg)
 sfx/0f439217.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0f439217 (re/elite/frea_export/sidewinder_audio/media/0f439217.ogg)
-sfx/0f4596d0.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0f4596d0.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0f4596d0 (re/elite/frea_export/sidewinder_audio/media/0f4596d0.wav)
 sfx/0f533b5d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0f533b5d (re/elite/frea_export/sidewinder_audio/media/0f533b5d.ogg)
@@ -1034,7 +1034,7 @@ sfx/0fcbd2fa.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 0fcbd2fa (re/elite/frea_export/sidewinder_audio/media/0fcbd2fa.ogg)
 sfx/0fcddd28.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0fcddd28 (re/elite/frea_export/sidewinder_audio/media/0fcddd28.ogg)
-sfx/0fd8bde0.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/0fd8bde0.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 0fd8bde0 (re/elite/frea_export/sidewinder_audio/media/0fd8bde0.wav)
 sfx/0fffdcf2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 0fffdcf2 (re/elite/frea_export/sidewinder_audio/media/0fffdcf2.ogg)
@@ -1044,7 +1044,7 @@ sfx/1011d9a6.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1011d9a6 (re/elite/frea_export/sidewinder_audio/media/1011d9a6.ogg)
 sfx/1050c213.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1050c213 (re/elite/frea_export/sidewinder_audio/media/1050c213.ogg)
-sfx/10642dff.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/10642dff.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 10642dff (re/elite/frea_export/sidewinder_audio/media/10642dff.wav)
 sfx/107bae79.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 107bae79 (re/elite/frea_export/sidewinder_audio/media/107bae79.ogg)
@@ -1104,7 +1104,7 @@ sfx/121af080.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 121af080 (re/elite/frea_export/sidewinder_audio/media/121af080.ogg)
 sfx/1227dd88.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1227dd88 (re/elite/frea_export/sidewinder_audio/media/1227dd88.ogg)
-sfx/12350d97.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/12350d97.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 12350d97 (re/elite/frea_export/sidewinder_audio/media/12350d97.wav)
 sfx/1243a217.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1243a217 (re/elite/frea_export/sidewinder_audio/media/1243a217.ogg)
@@ -1120,7 +1120,7 @@ sfx/12a34445.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 12a34445 (re/elite/frea_export/sidewinder_audio/media/12a34445.ogg)
 sfx/12a7811d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 12a7811d (re/elite/frea_export/sidewinder_audio/media/12a7811d.ogg)
-sfx/12aa01b9.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/12aa01b9.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 12aa01b9 (re/elite/frea_export/sidewinder_audio/media/12aa01b9.wav)
 sfx/12c568c8.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 12c568c8 (re/elite/frea_export/sidewinder_audio/media/12c568c8.ogg)
@@ -1202,11 +1202,11 @@ sfx/15a0c9d3.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 15a0c9d3 (re/elite/frea_export/sidewinder_audio/media/15a0c9d3.ogg)
 sfx/15bf48d5.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 15bf48d5 (re/elite/frea_export/sidewinder_audio/media/15bf48d5.ogg)
-sfx/15c369dd.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/15c369dd.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 15c369dd (re/elite/frea_export/sidewinder_audio/media/15c369dd.wav)
 sfx/15c7a864.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 15c7a864 (re/elite/frea_export/sidewinder_audio/media/15c7a864.ogg)
-sfx/15d076ca.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/15d076ca.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 15d076ca (re/elite/frea_export/sidewinder_audio/media/15d076ca.wav)
 sfx/15d19ba9.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 15d19ba9 (re/elite/frea_export/sidewinder_audio/media/15d19ba9.ogg)
@@ -1222,7 +1222,7 @@ sfx/1619f0f3.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1619f0f3 (re/elite/frea_export/sidewinder_audio/media/1619f0f3.ogg)
 sfx/16328595.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 16328595 (re/elite/frea_export/sidewinder_audio/media/16328595.ogg)
-sfx/16419720.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/16419720.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 16419720 (re/elite/frea_export/sidewinder_audio/media/16419720.wav)
 sfx/1670abe8.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1670abe8 (re/elite/frea_export/sidewinder_audio/media/1670abe8.ogg)
@@ -1252,7 +1252,7 @@ sfx/178bb934.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 178bb934 (re/elite/frea_export/sidewinder_audio/media/178bb934.ogg)
 sfx/1798fc2e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1798fc2e (re/elite/frea_export/sidewinder_audio/media/1798fc2e.ogg)
-sfx/17c6ac2e.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/17c6ac2e.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 17c6ac2e (re/elite/frea_export/sidewinder_audio/media/17c6ac2e.wav)
 sfx/17e3ba32.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 17e3ba32 (re/elite/frea_export/sidewinder_audio/media/17e3ba32.ogg)
@@ -1286,7 +1286,7 @@ sfx/19562800.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 19562800 (re/elite/frea_export/sidewinder_audio/media/19562800.ogg)
 sfx/1958a552.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1958a552 (re/elite/frea_export/sidewinder_audio/media/1958a552.ogg)
-sfx/19653203.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/19653203.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 19653203 (re/elite/frea_export/sidewinder_audio/media/19653203.wav)
 sfx/196b0a3e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 196b0a3e (re/elite/frea_export/sidewinder_audio/media/196b0a3e.ogg)
@@ -1318,13 +1318,13 @@ sfx/1abd1723.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1abd1723 (re/elite/frea_export/sidewinder_audio/media/1abd1723.ogg)
 sfx/1ad6dafa.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1ad6dafa (re/elite/frea_export/sidewinder_audio/media/1ad6dafa.ogg)
-sfx/1ae0c0a1.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1ae0c0a1.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1ae0c0a1 (re/elite/frea_export/sidewinder_audio/media/1ae0c0a1.wav)
 sfx/1ae30181.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1ae30181 (re/elite/frea_export/sidewinder_audio/media/1ae30181.ogg)
 sfx/1af8e230.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1af8e230 (re/elite/frea_export/sidewinder_audio/media/1af8e230.ogg)
-sfx/1b0b9b1d.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1b0b9b1d.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1b0b9b1d (re/elite/frea_export/sidewinder_audio/media/1b0b9b1d.wav)
 sfx/1b1bc8be.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1b1bc8be (re/elite/frea_export/sidewinder_audio/media/1b1bc8be.ogg)
@@ -1352,7 +1352,7 @@ sfx/1bed0dba.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1bed0dba (re/elite/frea_export/sidewinder_audio/media/1bed0dba.ogg)
 sfx/1bf8381e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1bf8381e (re/elite/frea_export/sidewinder_audio/media/1bf8381e.ogg)
-sfx/1c08007c.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1c08007c.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1c08007c (re/elite/frea_export/sidewinder_audio/media/1c08007c.wav)
 sfx/1c1084bc.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1c1084bc (re/elite/frea_export/sidewinder_audio/media/1c1084bc.ogg)
@@ -1390,7 +1390,7 @@ sfx/1d9eec56.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1d9eec56 (re/elite/frea_export/sidewinder_audio/media/1d9eec56.ogg)
 sfx/1ddb76a5.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1ddb76a5 (re/elite/frea_export/sidewinder_audio/media/1ddb76a5.ogg)
-sfx/1de7b44a.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1de7b44a.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1de7b44a (re/elite/frea_export/sidewinder_audio/media/1de7b44a.wav)
 sfx/1de7c95e.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1de7c95e (re/elite/frea_export/sidewinder_audio/media/1de7c95e.ogg)
@@ -1402,7 +1402,7 @@ sfx/1e29e0cd.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1e29e0cd (re/elite/frea_export/sidewinder_audio/media/1e29e0cd.ogg)
 sfx/1e2d3166.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1e2d3166 (re/elite/frea_export/sidewinder_audio/media/1e2d3166.ogg)
-sfx/1e33918b.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1e33918b.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1e33918b (re/elite/frea_export/sidewinder_audio/media/1e33918b.wav)
 sfx/1e35de7d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1e35de7d (re/elite/frea_export/sidewinder_audio/media/1e35de7d.ogg)
@@ -1420,11 +1420,11 @@ sfx/1e924958.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 1e924958 (re/elite/frea_export/sidewinder_audio/media/1e924958.ogg)
 sfx/1eaf3033.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1eaf3033 (re/elite/frea_export/sidewinder_audio/media/1eaf3033.ogg)
-sfx/1eea3ece.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1eea3ece.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1eea3ece (re/elite/frea_export/sidewinder_audio/media/1eea3ece.wav)
 sfx/1eece542.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1eece542 (re/elite/frea_export/sidewinder_audio/media/1eece542.ogg)
-sfx/1eedd981.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/1eedd981.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 1eedd981 (re/elite/frea_export/sidewinder_audio/media/1eedd981.wav)
 sfx/1ef092a7.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 1ef092a7 (re/elite/frea_export/sidewinder_audio/media/1ef092a7.ogg)
@@ -1448,13 +1448,13 @@ sfx/20650953.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 20650953 (re/elite/frea_export/sidewinder_audio/media/20650953.ogg)
 sfx/208052fb.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 208052fb (re/elite/frea_export/sidewinder_audio/media/208052fb.ogg)
-sfx/2090361c.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/2090361c.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 2090361c (re/elite/frea_export/sidewinder_audio/media/2090361c.wav)
 sfx/2099ffcb.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 2099ffcb (re/elite/frea_export/sidewinder_audio/media/2099ffcb.ogg)
 sfx/20a23aa2.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 20a23aa2 (re/elite/frea_export/sidewinder_audio/media/20a23aa2.ogg)
-sfx/20ceadba.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/20ceadba.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 20ceadba (re/elite/frea_export/sidewinder_audio/media/20ceadba.wav)
 sfx/20d84dd5.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 20d84dd5 (re/elite/frea_export/sidewinder_audio/media/20d84dd5.ogg)
@@ -1468,9 +1468,9 @@ sfx/2154ba8d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 2154ba8d (re/elite/frea_export/sidewinder_audio/media/2154ba8d.ogg)
 sfx/216a8172.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 216a8172 (re/elite/frea_export/sidewinder_audio/media/216a8172.ogg)
-sfx/217397a1.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/217397a1.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 217397a1 (re/elite/frea_export/sidewinder_audio/media/217397a1.wav)
-sfx/21864575.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/21864575.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 21864575 (re/elite/frea_export/sidewinder_audio/media/21864575.wav)
 sfx/2194007f.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 2194007f (re/elite/frea_export/sidewinder_audio/media/2194007f.ogg)
@@ -1514,7 +1514,7 @@ sfx/23354c2c.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 23354c2c (re/elite/frea_export/sidewinder_audio/media/23354c2c.ogg)
 sfx/2364b6a5.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 2364b6a5 (re/elite/frea_export/sidewinder_audio/media/2364b6a5.ogg)
-sfx/236cc03c.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/236cc03c.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 236cc03c (re/elite/frea_export/sidewinder_audio/media/236cc03c.wav)
 sfx/23783926.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 23783926 (re/elite/frea_export/sidewinder_audio/media/23783926.ogg)
@@ -1528,7 +1528,7 @@ sfx/23ee64ef.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 23ee64ef (re/elite/frea_export/sidewinder_audio/media/23ee64ef.ogg)
 sfx/23f739f7.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 23f739f7 (re/elite/frea_export/sidewinder_audio/media/23f739f7.ogg)
-sfx/242b53bc.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/242b53bc.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 242b53bc (re/elite/frea_export/sidewinder_audio/media/242b53bc.wav)
 sfx/24351d99.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 24351d99 (re/elite/frea_export/sidewinder_audio/media/24351d99.ogg)
@@ -1584,17 +1584,17 @@ sfx/262f6062.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 262f6062 (re/elite/frea_export/sidewinder_audio/media/262f6062.ogg)
 sfx/26a3bb2d.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 26a3bb2d (re/elite/frea_export/sidewinder_audio/media/26a3bb2d.ogg)
-sfx/26bb8a0d.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/26bb8a0d.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 26bb8a0d (re/elite/frea_export/sidewinder_audio/media/26bb8a0d.wav)
 sfx/270b7985.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 270b7985 (re/elite/frea_export/sidewinder_audio/media/270b7985.ogg)
-sfx/27247356.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/27247356.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 27247356 (re/elite/frea_export/sidewinder_audio/media/27247356.wav)
-sfx/2728a5be.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/2728a5be.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 2728a5be (re/elite/frea_export/sidewinder_audio/media/2728a5be.wav)
 sfx/272d4d11.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 272d4d11 (re/elite/frea_export/sidewinder_audio/media/272d4d11.ogg)
-sfx/274597c7.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/274597c7.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 274597c7 (re/elite/frea_export/sidewinder_audio/media/274597c7.wav)
 sfx/27a429d0.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 27a429d0 (re/elite/frea_export/sidewinder_audio/media/27a429d0.ogg)
@@ -1692,7 +1692,7 @@ sfx/2c2607b9.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 2c2607b9 (re/elite/frea_export/sidewinder_audio/media/2c2607b9.ogg)
 sfx/2c31271b.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 2c31271b (re/elite/frea_export/sidewinder_audio/media/2c31271b.ogg)
-sfx/2c5c1cb8.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/2c5c1cb8.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 2c5c1cb8 (re/elite/frea_export/sidewinder_audio/media/2c5c1cb8.wav)
 sfx/2c678e30.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 2c678e30 (re/elite/frea_export/sidewinder_audio/media/2c678e30.ogg)
@@ -1798,7 +1798,7 @@ sfx/31ae83a0.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 31ae83a0 (re/elite/frea_export/sidewinder_audio/media/31ae83a0.ogg)
 sfx/31b76bb5.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 31b76bb5 (re/elite/frea_export/sidewinder_audio/media/31b76bb5.ogg)
-sfx/31e52d4c.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/31e52d4c.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 31e52d4c (re/elite/frea_export/sidewinder_audio/media/31e52d4c.wav)
 sfx/31ec5d81.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 31ec5d81 (re/elite/frea_export/sidewinder_audio/media/31ec5d81.ogg)
@@ -1830,7 +1830,7 @@ sfx/33083b33.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 33083b33 (re/elite/frea_export/sidewinder_audio/media/33083b33.ogg)
 sfx/330ddd55.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 330ddd55 (re/elite/frea_export/sidewinder_audio/media/330ddd55.ogg)
-sfx/332209b7.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/332209b7.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 332209b7 (re/elite/frea_export/sidewinder_audio/media/332209b7.wav)
 sfx/33284507.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 33284507 (re/elite/frea_export/sidewinder_audio/media/33284507.ogg)
@@ -1894,7 +1894,7 @@ sfx/36d3b0d8.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 36d3b0d8 (re/elite/frea_export/sidewinder_audio/media/36d3b0d8.ogg)
 sfx/370796c9.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 370796c9 (re/elite/frea_export/sidewinder_audio/media/370796c9.ogg)
-sfx/3726ada3.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/3726ada3.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 3726ada3 (re/elite/frea_export/sidewinder_audio/media/3726ada3.wav)
 sfx/37404db9.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 37404db9 (re/elite/frea_export/sidewinder_audio/media/37404db9.ogg)
@@ -1936,13 +1936,13 @@ sfx/3918aef4.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 3918aef4 (re/elite/frea_export/sidewinder_audio/media/3918aef4.ogg)
 sfx/392957ea.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 392957ea (re/elite/frea_export/sidewinder_audio/media/392957ea.ogg)
-sfx/397a4e49.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/397a4e49.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 397a4e49 (re/elite/frea_export/sidewinder_audio/media/397a4e49.wav)
 sfx/39ae0376.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 39ae0376 (re/elite/frea_export/sidewinder_audio/media/39ae0376.ogg)
 sfx/39c3cdd8.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 39c3cdd8 (re/elite/frea_export/sidewinder_audio/media/39c3cdd8.ogg)
-sfx/39dc8438.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/39dc8438.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 39dc8438 (re/elite/frea_export/sidewinder_audio/media/39dc8438.wav)
 sfx/3a213a64.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 3a213a64 (re/elite/frea_export/sidewinder_audio/media/3a213a64.ogg)
@@ -1976,7 +1976,7 @@ sfx/3b8e00e0.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 3b8e00e0 (re/elite/frea_export/sidewinder_audio/media/3b8e00e0.ogg)
 sfx/3ba53bd4.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 3ba53bd4 (re/elite/frea_export/sidewinder_audio/media/3ba53bd4.ogg)
-sfx/3c0a1df7.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/3c0a1df7.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 3c0a1df7 (re/elite/frea_export/sidewinder_audio/media/3c0a1df7.wav)
 sfx/3c1a3264.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 3c1a3264 (re/elite/frea_export/sidewinder_audio/media/3c1a3264.ogg)
@@ -2058,7 +2058,7 @@ sfx/3fb4de26.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 3fb4de26 (re/elite/frea_export/sidewinder_audio/media/3fb4de26.ogg)
 sfx/3fbb88b0.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 3fbb88b0 (re/elite/frea_export/sidewinder_audio/media/3fbb88b0.ogg)
-sfx/3fbc4ccb.wav (A): The game's audio decoded to 16-bit PCM by vgmstream (ADPCM, or a Vorbis stream ww2ogg cannot rebuild): an Ogg would mean re-encoding.
+sfx/3fbc4ccb.wav (A): Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.
   from: Wwise source 3fbc4ccb (re/elite/frea_export/sidewinder_audio/media/3fbc4ccb.wav)
 sfx/3fc2f177.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg without re-encoding (ww2ogg, aoTuV 6.03 codebooks; granule positions worked out from the block sizes); decodes to the .wem's audio sample for sample.
   from: Wwise source 3fc2f177 (re/elite/frea_export/sidewinder_audio/media/3fc2f177.ogg)

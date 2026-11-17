@@ -3,6 +3,7 @@
 use super::curve::{cents_to_ratio, db_to_gain, eval, find, gain_to_db, interpolate};
 use super::data::*;
 use super::filter;
+use super::place::Placement;
 use super::{
     event_id, wwise_id, FxStage, SoundBank, SoundError, EQ_PARAM_LFE, EQ_PARAM_OUTPUT_LEVEL, GD_PARAM_DRIVE, GD_PARAM_OUTPUT_LEVEL, GD_PARAM_RECTIFICATION,
     GD_PARAM_TONE, GD_PARAM_TYPE, GD_PARAM_WET, LIMITER_PARAM_OUTPUT_LEVEL, LIMITER_PARAM_THRESHOLD,
@@ -102,8 +103,14 @@ pub struct VoiceUpdate {
     pub voice: u32,
     pub output: Output,
     pub emitter: u32,
-    /// The emitter's position from the listener, if the game gave one.
+    /// The emitter's position from the listener, if the game gave one ([`Mixer::set_emitter`]).
     pub position: Option<[f32; 3]>,
+    /// Where the voice sits, for the player (T5d-5): given when the game placed its emitter and its sound's positioning in
+    /// force is 3D on the emitter's position ([`Placement`]). The player then applies the distance's curves (volume,
+    /// low-pass, high-pass) and the pan itself, from the place it is given each frame, so `gain`, `volume_db`, `lowpass` and
+    /// `highpass` leave the attenuation's share out (and the filter values are not clamped: the player adds the distance's
+    /// share, then clamps to 0-100, as the mixer clamps the sum). None: the voice plays centred, as given.
+    pub place: Option<Arc<Placement>>,
     pub start: Option<VoiceStart>,
     /// Ends now (the player stops it; any fade has already run down to silence).
     pub stop: bool,
@@ -117,7 +124,7 @@ pub struct VoiceUpdate {
     pub fade: f32,
     pub pitch: f32,
     pub pitch_cents: f32,
-    /// Wwise's 0-100 filter values.
+    /// Wwise's 0-100 filter values (a placed voice's without its distance's share: `place`).
     pub lowpass: f32,
     pub highpass: f32,
     /// Cutoff frequencies at [`OUTPUT_RATE`] (Elite's own conversion, [`super::filter`]); `None` where the filter is
@@ -441,6 +448,8 @@ pub struct Mixer {
     states: BTreeMap<Id, StateNow>,
     switches: BTreeMap<(Id, u32), Id>,
     emitters: BTreeMap<u32, [f32; 3]>,
+    /// Each sound's placement for a placed emitter (made once a sound: `placement_of`).
+    placements: BTreeMap<Id, Option<Arc<Placement>>>,
     /// Delayed actions by (due time's bits, order posted): due times are never negative, so their bits sort as they do.
     pending: BTreeMap<(u64, u64), Pending>,
     insts: BTreeMap<u64, Inst>,
@@ -470,6 +479,10 @@ struct Mix {
     delay: f64,
     priority_add: f64,
     transition_add: f64,
+    /// The distance attenuation's shares (already in `db`, `lpf`, `hpf`): a placed voice's player applies them itself.
+    att_db: f64,
+    att_lpf: f64,
+    att_hpf: f64,
 }
 
 impl Mix {
@@ -498,6 +511,7 @@ impl Mixer {
             states: BTreeMap::new(),
             switches: BTreeMap::new(),
             emitters: BTreeMap::new(),
+            placements: BTreeMap::new(),
             pending: BTreeMap::new(),
             insts: BTreeMap::new(),
             next_voice: 1,
@@ -656,12 +670,18 @@ impl Mixer {
         self.layer_gain(container, child, emitter, &mut Mix::default())
     }
 
-    /// Where an emitter is, from the listener (metres, the listener's axes). It drives attenuation and Distance.
-    /// A position that is not finite is ignored.
+    /// Where an emitter is, from the listener (metres, the listener's axes: x right, y up, -z ahead). It drives
+    /// attenuation, Distance and priority, and makes its voices placed ([`VoiceUpdate::place`]). A position that is not
+    /// finite is ignored.
     pub fn set_emitter(&mut self, emitter: u32, position_from_listener: [f32; 3]) {
         if position_from_listener.iter().all(|x| x.is_finite()) {
             self.emitters.insert(emitter, position_from_listener);
         }
+    }
+
+    /// Where an emitter is from the listener, if the game placed it.
+    pub fn emitter(&self, emitter: u32) -> Option<[f32; 3]> {
+        self.emitters.get(&emitter).copied()
     }
 
     /// Runs time on by `dt` seconds: delayed actions, starts and ends, container schedules, ramps, fades. Returns one
@@ -1576,13 +1596,34 @@ impl Mixer {
         self.bank.chain(obj).iter().find_map(|a| self.bank.node(*a).and_then(|n| n.override_bus.as_ref().map(|b| b.id)))
     }
 
+    /// The positioning in force on an object: the nearest node up its chain that overrides its parent's, else the top one.
+    fn positioning(&self, obj: Id) -> Option<&Positioning> {
+        let bank = &self.bank;
+        let chain = bank.chain(obj);
+        chain.iter().filter_map(|a| bank.node(*a)).find(|n| n.positioning.override_parent).or_else(|| chain.last().and_then(|a| bank.node(*a))).map(|n| &n.positioning)
+    }
+
+    /// A sound's placement on a placed emitter (made once a sound and kept): its positioning in force is 3D on the
+    /// emitter's position (listener-relative routing, position type Emitter), panned unless its spatialisation is None,
+    /// with its attenuation's curves. A path automation's voice and a 2D sound's are not placed (they play centred).
+    fn placement_of(&mut self, obj: Id) -> Option<Arc<Placement>> {
+        if let Some(p) = self.placements.get(&obj) {
+            return p.clone();
+        }
+        let p = self.positioning(obj).filter(|p| p.listener_relative_routing && p.position_3d_type == "Emitter").and_then(|p| {
+            let pan = p.spatialization.as_deref().is_some_and(|s| s != "None");
+            Placement::new(pan, self.attenuation(obj)).map(Arc::new)
+        });
+        self.placements.insert(obj, p.clone());
+        p
+    }
+
     /// The attenuation that applies: the nearest AttenuationID on the chain, if the positioning in force is 3D with
     /// attenuation on.
     fn attenuation(&self, obj: Id) -> Option<&Attenuation> {
         let bank = &self.bank;
         let chain = bank.chain(obj);
-        let pos = chain.iter().filter_map(|a| bank.node(*a)).find(|n| n.positioning.override_parent).or_else(|| chain.last().and_then(|a| bank.node(*a)))?;
-        if pos.positioning.enable_attenuation != Some(true) {
+        if self.positioning(obj)?.enable_attenuation != Some(true) {
             return None;
         }
         chain.iter().filter_map(|a| bank.node(*a)).find_map(|n| match n.props.get("AttenuationID") {
@@ -1650,13 +1691,16 @@ impl Mixer {
             let d = self.distance(inst.emitter);
             let use_curve = |k: &str| att.curve_to_use.get(k).copied().filter(|i| *i >= 0).map(|i| &att.curves[i as usize]);
             if let Some(c) = use_curve("VolumeDry") {
-                m.db += eval(&c.points, c.scaling, d);
+                m.att_db = eval(&c.points, c.scaling, d);
+                m.db += m.att_db;
             }
             if let Some(c) = use_curve("LowPassFilter") {
-                m.lpf += eval(&c.points, c.scaling, d);
+                m.att_lpf = eval(&c.points, c.scaling, d);
+                m.lpf += m.att_lpf;
             }
             if let Some(c) = use_curve("HighPassFilter") {
-                m.hpf += eval(&c.points, c.scaling, d);
+                m.att_hpf = eval(&c.points, c.scaling, d);
+                m.hpf += m.att_hpf;
             }
         }
         m.db += self.normalisation_db(inst);
@@ -2025,6 +2069,8 @@ impl Mixer {
         let over_limit = self.limited_virtual();
         let mut fx = Vec::new();
         for id in ids {
+            let (obj, emitter) = (self.insts[&id].obj, self.insts[&id].emitter);
+            let place = if self.emitters.contains_key(&emitter) { self.placement_of(obj) } else { None };
             let (m, fade) = self.voice_mix_fx(id, Some(&mut fx));
             let level_db = m.db + gain_to_db(fade);
             let (behaviour, queue) = self.below_threshold(self.insts[&id].obj);
@@ -2044,8 +2090,7 @@ impl Mixer {
                 continue;
             }
             virt |= over_limit.contains(&id);
-            let position = self.emitters.get(&inst.emitter).copied();
-            let emitter = inst.emitter;
+            let position = self.emitters.get(&emitter).copied();
             let Some(out) = output(v.out) else { continue };
             let Some(Inst { kind: Kind::Voice(v), .. }) = self.insts.get_mut(&id) else { continue };
             let mut seek = v.seek.take();
@@ -2071,22 +2116,25 @@ impl Mixer {
             if virt {
                 seek = None;
             }
-            let gain = db_to_gain(m.db) * fade;
+            // (A placed voice's player applies the attenuation's shares itself.)
+            let (db, lowpass, highpass) = if place.is_some() { (m.db - m.att_db, m.lpf - m.att_lpf, m.hpf - m.att_hpf) } else { (m.db, m.lpf.clamp(0.0, 100.0), m.hpf.clamp(0.0, 100.0)) };
+            let gain = db_to_gain(db) * fade;
             self.updates.push(VoiceUpdate {
                 voice: v.id,
                 output: out,
                 emitter,
                 position,
+                place,
                 start,
                 stop: false,
                 seek_to: seek.map(|s| s as f32),
                 gain: gain as f32,
-                volume_db: m.db as f32,
+                volume_db: db as f32,
                 fade: fade as f32,
                 pitch: cents_to_ratio(m.cents) as f32,
                 pitch_cents: m.cents as f32,
-                lowpass: m.lpf.clamp(0.0, 100.0) as f32,
-                highpass: m.hpf.clamp(0.0, 100.0) as f32,
+                lowpass: lowpass as f32,
+                highpass: highpass as f32,
                 lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
                 highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: virt,
@@ -2111,6 +2159,7 @@ impl Mixer {
                 output: out,
                 emitter: inst.emitter,
                 position: self.emitters.get(&inst.emitter).copied(),
+                place: None,
                 start: None,
                 stop: true,
                 seek_to: None,

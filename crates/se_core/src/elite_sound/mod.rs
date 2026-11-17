@@ -60,7 +60,10 @@
 //!   interpolation shape (all ten in use) and the dB scaling ([`curve`]); game parameter defaults, SlewRate (312) and
 //!   FilteringOverTime (313) ramps, the built-in Distance parameter (132).
 //! - States (333): their deltas on nodes and buses, transition times (per pair and default).
-//! - Distance attenuation (269): VolumeDry, LowPassFilter (134), HighPassFilter (29) curves.
+//! - Distance attenuation (269): VolumeDry, LowPassFilter (134), HighPassFilter (29) curves. A voice on an emitter the game
+//!   has placed whose positioning in force is 3D on the emitter's position gets its [`Placement`] ([`place`]: those
+//!   curves, the Spread curve and whether it is panned) and its player applies them and the pan from the place it is
+//!   given each frame (T5d-5); the mixer applies them itself to every other voice (at distance 0 unless placed).
 //! - Bus ducking (45); playback limits with priority and its distance factor (node limits 130, bus limits 21), each
 //!   killing or, where `use_virtual_behavior` is set (35 limited nodes), making the voices beyond it virtual, and
 //!   `ignore_parent_max_instances` (what plays under such a node does not count against the limits above it); virtual
@@ -86,10 +89,10 @@
 //!   291, game 183, their curves 137) and the attenuation's wet curves (269), HDR (every bus carries HDR settings: 317;
 //!   HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or 1.414 on mono recordings, its meaning not
 //!   proven).
-//! - Panning and spatialisation: speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Spread (267)
-//!   and Focus (4) attenuation curves, positioning-type blend curves (10), a 2D pan curve (1), path automation (13),
-//!   held emitter / listener orientation (7), cone attenuation (9; the update has no orientation): the update carries
-//!   the emitter's position for the player to pan.
+//! - Panning and spatialisation beyond [`place`]'s (the pan of a placed voice by azimuth and the Spread curve): 2D
+//!   speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Focus curve (4), positioning-type blend
+//!   curves (10), a 2D pan curve (1), path automation (13: such a voice is not placed), held emitter / listener
+//!   orientation (7), cone attenuation (9; no emitter orientation is known), the attenuations' own game parameter curves.
 //! - Modulators: LFO (42) and envelope (10) modulator curves contribute nothing (their output formulas are not public,
 //!   and `events.json` names their properties with the node table's names).
 //! - The global voice cap (256).
@@ -122,12 +125,14 @@ pub mod curve;
 pub mod data;
 pub mod filter;
 mod mixer;
+pub mod place;
 
 #[cfg(test)]
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
 pub use mixer::{DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
+pub use place::{PlaceNow, Placement};
 
 use data::*;
 use std::collections::HashMap;

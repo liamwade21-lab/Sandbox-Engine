@@ -15,18 +15,25 @@
 //! record of an emergency drop), the fuel scoop, power plant and reboot cues (not modelled), the cargo scoop's acquired
 //! and warning cues (no cargo), the canopy's crack stages 01-04 and its voice reports (which lines report kinds 0 and 1 is
 //! not closed), the heat sink and malfunction lines (no heat sink, no malfunctions), `UnderAttack`, `EnginesOn_<suffix>`
-//! (no event of the banks), the supercruise speed and SCO parameters (not decompiled), and the gear's and doors' state
-//! machine cues (`ShipSound::post_cue`, for the animation task). Left at the banks' defaults, their setters found but not
-//! what they read (`triggers.rs`, `unset_engine_syncs`): `AudioEngineClass`, `engine_mass_modifier`,
-//! `spaceship_speed_stationary_self`.
+//! (no event of the banks), the supercruise speed and SCO parameters (not decompiled). Left at the banks' defaults, their
+//! setters found (`triggers.rs`): `engine_mass_modifier`, `spaceship_speed_stationary_self`.
 //!
-//! **Emitters have no positions, so every voice plays centred:** the loops' emitters (`ship.json`'s `Internal_MainDrive_Left`,
-//! `Cockpit_Back_Centre`, `Internal_Cockpit_Origin` ... 21 names) are Elite's audio emitter components, named by the
-//! entity's template (not at rest); no bone or locator of the shipped models carries those names (the hull's 156 bones and
-//! the cockpit's 148 checked, T5c), so where each hangs is not proven. 112 of the shipped events play 3D-positioned
-//! recordings (positioning Emitter, spatialised) and all sound centred until their emitters are found. The state
-//! machines' cues name their bones (`ShipSound::post_cue` gives the mixer their places, for its distance curves; the
-//! player still plays them centred).
+//! **Where each sound sits (T5d-5).** The listener is the pilot's head: the seat's eye (`SidewinderAssets::eye`) turned by
+//! the head this frame (`seat::head_turn` of `Seat::head`, what the camera is written with). The state machines' cues come
+//! from `Parts::events()` (`cues`, after `parts::update`): each is posted on an emitter of its own for its machine and
+//! bones (`ShipSound::cue_emitter`: the two rear legs are two emitters), placed every frame at its bones as posed now
+//! (`ShipRig::bone_frames` with the parts' values; `MODEL_ORIGIN` at its rig node's origin, `Parts::matrix`) from the
+//! head, in the head's axes; their voices are panned and attenuated by the output (`voices.rs`,
+//! `se_core::elite_sound::place`). Placed: the three legs' (at `ModelOrigin`, read as each leg model's origin, E). The
+//! hull's cues name bones no shipped model has (`Ship_Origin`, `HardpointDoorLeft`, `HardpointDoorRight`): their emitters
+//! are the listener's own. The machines' audio states (`AudioState`) are set from the same list. Every other emitter is
+//! the listener's own and plays centred: the loops' and reporters' emitters
+//! (`ship.json`'s `Internal_MainDrive_Left`, `Cockpit_Back_Centre`, `Internal_Cockpit_Origin`, `Alarms` ... 21 names:
+//! `triggers::Emitter`'s `Drive`, `Cockpit`, `CockpitOrigin`, `Ship`, `Voice`) are Elite's audio emitter components named
+//! by the entity's template, and no bone, locator or rig node of the shipped models carries those names (the hull's 156
+//! bones and the cockpit's 148 checked in T5c; the rigs' 84 nodes in T5d-5), so the data gives them no place. Not built:
+//! `KeepAudioEmitterComponentDisabled` (a gear leg's emitter disabled while it rests: what disabling does to its voices
+//! was not traced) and the `Audio*` activities' starts and stops (logged with `sw sound log on`).
 //!
 //! **Filters and effects:** each voice's low-pass and high-pass run as Elite's own sound engine runs them, then the
 //! Parametric EQs and Guitar Distortions on its way to the master, node's and buses' (`voices.rs`,
@@ -52,14 +59,16 @@ use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use bevy::tasks::{futures, AsyncComputeTaskPool, Task};
 use se_core::catalog::ObjectRef;
-use se_core::elite_sound::{curve, wwise_id, Mixer, Output, SoundBank, VoiceUpdate};
+use se_core::elite_rig::Event as MachineEvent;
+use se_core::elite_sound::{curve, Mixer, Output, SoundBank, VoiceUpdate};
 
 use crate::mods::ModControl;
 use crate::sound::SoundSettings;
 
-use super::parts::Parts;
+use super::assets::ShipRig;
+use super::parts::{Parts, ShipEvent};
 use super::pilot::{Pilot, PilotKeys, TICK};
-use super::seat::Seat;
+use super::seat::{head_turn, Seat};
 use super::{Sidewinder, SidewinderAssets};
 use load::{Clip, Loaded, Rumble};
 use triggers::{Call, Emitter, Flight, ShipView, Triggers};
@@ -106,11 +115,59 @@ pub struct ShipSound {
     /// What each voice is now, for `sw sound state`; the most voices at once.
     now: BTreeMap<u32, (String, VoiceUpdate)>,
     most: usize,
+    /// The state machines' cue emitters by the mixer's id (`cue_emitter`: one per machine and bone set), each placed every
+    /// frame from the head.
+    cue_emitters: BTreeMap<u32, CueEmitter>,
+    /// The parts' pose (`Parts::revision`) the cue emitters' places were worked out for.
+    cue_rev: Option<u64>,
     /// Unknown events and unbuilt outputs already logged.
     warned: HashSet<String>,
     pub log: bool,
     /// When the audio thread's heartbeat was last logged, and its frame count then.
     beat: (f64, u64),
+}
+
+/// A state machine's cue emitter: its machine (`ship.machines`' index) and bones, the rig nodes they are on
+/// (`ShipRig::cue_nodes`), each bone as `Node!Bone` (`ShipRig::bone_frames`' form) and where they are now in the ship's
+/// space (their middle; None: the data gives them no place, so the emitter is the listener's own).
+struct CueEmitter {
+    machine: usize,
+    bones: Vec<String>,
+    nodes: Vec<usize>,
+    names: Vec<String>,
+    at: Option<Vec3>,
+}
+
+/// The cue bone that names its model's origin: the gear legs' cues are all at `ModelOrigin`, which is no bone of the leg
+/// models (nor of any shipped model): read by its name as the leg's own model's origin, its rig's root node (where
+/// `ShipRig::cue_nodes` puts a bone no model has), grade E. The hull's cue bones (`Ship_Origin`, the name of the hull's
+/// audio emitter of its loops, a string of the exe; `HardpointDoorLeft`, `HardpointDoorRight`) are no bone either and
+/// name no model: those emitters are the listener's own.
+const MODEL_ORIGIN: &str = "ModelOrigin";
+
+/// The first cue emitter's id (`Emitter::Cue`): after the listener's own (`triggers::Emitter`'s 0x100..0x302).
+const FIRST_CUE_EMITTER: u32 = 0x1000;
+
+/// The listener: the pilot's head in the ship's space (the seat's eye, turned by the head this frame).
+struct Listener {
+    eye: Vec3,
+    turn: Quat,
+}
+
+impl Listener {
+    fn of(assets: &SidewinderAssets, seat: &Seat) -> Listener {
+        Listener { eye: Vec3::from_array(assets.eye), turn: head_turn(seat.head.turn) }
+    }
+
+    /// A point of the ship's space from the head, in the head's axes (x right, y up, -z ahead).
+    fn from(&self, p: Vec3) -> [f32; 3] {
+        (self.turn.inverse() * (p - self.eye)).to_array()
+    }
+}
+
+/// The middle of some points (the origin for none).
+fn middle(points: &[Vec3]) -> Vec3 {
+    points.iter().sum::<Vec3>() / points.len().max(1) as f32
 }
 
 /// The drive's and boost's keys of this frame, read before the flight takes the test commands' presses.
@@ -127,15 +184,9 @@ pub fn plugin(app: &mut App) {
     app.add_audio_source::<ShipOutput>().init_resource::<SoundLoad>().init_resource::<Presses>();
     // (The spec's C20: nothing before a spawn's files are read.)
     app.add_systems(Update, load_sounds.run_if(resource_exists::<SidewinderAssets>).run_if(|l: Res<SoundLoad>| l.task.is_some() || !l.started));
-    app.add_systems(
-        PostUpdate,
-        (
-            note_presses.before(super::hyper::tunnel),
-            drive.after(super::seat::seat_camera).before(crate::camera::sync_camera_transform),
-        )
-            .run_if(resource_exists::<ShipSound>)
-            .in_set(crate::universe::UniverseSet::Camera),
-    );
+    app.add_systems(PostUpdate, note_presses.before(super::hyper::tunnel).run_if(resource_exists::<ShipSound>).in_set(crate::universe::UniverseSet::Camera));
+    // (After the machines ran this frame: their cues and the parts' places are this frame's.)
+    app.add_systems(PostUpdate, (cues, drive).chain().after(super::parts::update).run_if(resource_exists::<ShipSound>).run_if(resource_exists::<SidewinderAssets>));
 }
 
 /// Starts reading at the first spawn; takes the result when ready.
@@ -190,6 +241,8 @@ impl ShipSound {
             rumble_on: false,
             now: BTreeMap::new(),
             most: 0,
+            cue_emitters: BTreeMap::new(),
+            cue_rev: None,
             warned: HashSet::new(),
             log: false,
             beat: (0.0, 0),
@@ -208,28 +261,94 @@ impl ShipSound {
                         warn!("sidewinder sound: {name} is no event of sounds.json");
                     }
                 }
-                Call::State(g, s) => {
-                    if self.log {
-                        info!("sidewinder sound: state {g} = {s}");
-                    }
-                    self.mixer.set_state(g, s);
-                }
+                Call::State(g, s) => self.set_state(g, s),
                 Call::Gp(n, v) => self.mixer.set_game_parameter(n, *v, None),
             }
         }
     }
 
-    /// Posts a state machine's sound cue (`<cue>_b_<suffix>` or `_e`) at a set of bones: the emitter is placed at their
-    /// middle from the pilot's eye in the ship's space. For the animation task (the gear's and doors' cues of `ship.json`).
-    #[allow(dead_code)]
-    pub fn post_cue(&mut self, cue: &str, suffix: &str, begin: bool, bones: &[usize], parts: &Parts, eye: [f32; 3]) {
-        if !self.active || bones.is_empty() {
-            return;
+    fn set_state(&mut self, group: &str, state: &str) {
+        if self.log {
+            info!("sidewinder sound: state {group} = {state}");
         }
-        let mid = bones.iter().map(|b| parts.matrix(*b).w_axis.truncate()).sum::<Vec3>() / bones.len() as f32;
-        let e = Emitter::Cue(wwise_id(cue).0 | 0x8000_0000);
-        self.mixer.set_emitter(e.id(), (mid - Vec3::from_array(eye)).to_array());
-        self.call(&[Call::Post(format!("{cue}_{}_{suffix}", if begin { "b" } else { "e" }), e)]);
+        self.mixer.set_state(group, state);
+    }
+
+    /// The emitter of machine `machine`'s cues at `bones` (made at its first cue, placed from then on every frame): one per
+    /// machine and bone set, so the same cue of two legs plays at two places.
+    fn cue_emitter(&mut self, rig: &ShipRig, machine: usize, bones: &[String], nodes: Vec<usize>) -> u32 {
+        if let Some((id, _)) = self.cue_emitters.iter().find(|(_, e)| e.machine == machine && e.bones == bones) {
+            return *id;
+        }
+        let id = FIRST_CUE_EMITTER + self.cue_emitters.len() as u32;
+        let names = bones.iter().zip(&nodes).filter_map(|(b, n)| rig.nodes.get(*n).map(|node| format!("{}!{b}", node.name))).collect();
+        self.cue_emitters.insert(id, CueEmitter { machine, bones: bones.to_vec(), nodes, names, at: None });
+        self.cue_rev = None;
+        id
+    }
+
+    /// Every cue emitter placed from the head now: its bones' places (`ShipRig::bone_frames` with the parts' values, worked
+    /// out again whenever the parts' pose changed or an emitter was made; `MODEL_ORIGIN` at its node's origin), in the head's
+    /// axes. An emitter none of whose bones the data places is left unplaced: the listener's own.
+    fn place_cue_emitters(&mut self, rig: &ShipRig, parts: &Parts, listener: &Listener) {
+        if self.cue_rev != Some(parts.revision()) {
+            self.cue_rev = Some(parts.revision());
+            let names: Vec<String> = self.cue_emitters.values().flat_map(|e| e.names.iter().cloned()).collect();
+            let frames = rig.bone_frames(parts.values(), &names).unwrap_or_default();
+            let mut k = 0;
+            for e in self.cue_emitters.values_mut() {
+                let frames = frames.get(k..k + e.names.len()).unwrap_or_default();
+                k += e.names.len();
+                let found: Vec<Vec3> = e
+                    .bones
+                    .iter()
+                    .zip(&e.nodes)
+                    .zip(frames)
+                    .filter_map(|((b, n), f)| f.map(|f| f.0).or_else(|| (b == MODEL_ORIGIN).then(|| parts.matrix(*n).w_axis.truncate())))
+                    .collect();
+                e.at = (!found.is_empty()).then(|| middle(&found));
+            }
+        }
+        for (id, e) in &self.cue_emitters {
+            if let Some(at) = e.at {
+                self.mixer.set_emitter(*id, listener.from(at));
+            }
+        }
+    }
+
+    /// One of this frame's machine events (`Parts::events`): a cue's begin, end or single event posted on its emitter
+    /// (none when no bank has it: it plays nothing, as in Elite), an audio state set, an audio activity logged.
+    fn machine_event(&mut self, e: &ShipEvent, assets: &SidewinderAssets, parts: &Parts, listener: &Listener) {
+        let rig = &assets.rig;
+        match &e.event {
+            MachineEvent::SoundBegin { event, bones, .. } | MachineEvent::SoundEnd { event, bones, .. } | MachineEvent::SoundSingle { event, bones, .. } => {
+                let Some(event) = event else { return };
+                let nodes = rig.cue_nodes(e.machine, bones);
+                if nodes.is_empty() {
+                    if self.warned.insert(format!("cue nodes {} {bones:?}", e.machine)) {
+                        warn!("sidewinder sound: no rig node holds machine {}'s bones {bones:?}: {event} is not posted", e.machine);
+                    }
+                    return;
+                }
+                let id = self.cue_emitter(rig, e.machine, bones, nodes);
+                self.place_cue_emitters(rig, parts, listener);
+                if self.log {
+                    let m = rig.ship.machines.get(e.machine);
+                    let at = self.cue_emitters[&id].at.map(|p| listener.from(p)).map_or("the listener's own (the data gives its bones no place)".to_string(), |[x, y, z]| {
+                        format!("({x:.2}, {y:.2}, {z:.2}) m from the head ({:.2} m)", Vec3::new(x, y, z).length())
+                    });
+                    info!("sidewinder sound: cue {event} of machine {} ({} {}) at {bones:?} on emitter {id:#x}, {at}", e.machine, m.map_or("?", |m| m.name.as_str()), m.map_or("?", |m| m.owner.as_str()));
+                }
+                self.call(&[Call::Post(event.clone(), Emitter::Cue(id))]);
+            }
+            MachineEvent::AudioState { group, state } => self.set_state(group, state),
+            MachineEvent::Started { kind, .. } | MachineEvent::Stopped { kind, .. } => {
+                if self.log {
+                    info!("sidewinder sound: machine {} {}: {kind} (not built)", e.machine, if matches!(e.event, MachineEvent::Started { .. }) { "starts" } else { "stops" });
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Every voice stopped, the mixer made afresh, the triggers back to before the audio starts.
@@ -240,6 +359,8 @@ impl ShipSound {
         self.voices.stop_all(commands);
         self.seeds += 1;
         self.mixer = Mixer::new(self.bank.clone(), self.seeds);
+        self.cue_emitters.clear();
+        self.cue_rev = None;
         self.active = false;
         self.last_vel = None;
         self.rumbling.clear();
@@ -310,7 +431,24 @@ fn view(pilot: &Pilot, presses: &Presses, dt: f64, acc: DVec3) -> ShipView {
     }
 }
 
-/// Once a frame after the seat and the flight: the triggers, the mixer, the voices.
+/// The sound plays: seated in the parked ship, the mod's pilot on, the ship not lost.
+fn playing(seat: &Seat, control: &ModControl, pilot: &Pilot, ship: &Sidewinder) -> bool {
+    seat.seated && control.pilot && ship.parked.is_some() && !pilot.destroyed
+}
+
+/// This frame's machine events (`Parts::events`, after `parts::update`) while the sound plays: the cues posted on their
+/// emitters, the audio states set (`ShipSound::machine_event`).
+fn cues(mut snd: ResMut<ShipSound>, parts: Res<Parts>, assets: Res<SidewinderAssets>, seat: Res<Seat>, control: Res<ModControl>, pilot: Res<Pilot>, ship: Res<Sidewinder>) {
+    if parts.events().is_empty() || !playing(&seat, &control, &pilot, &ship) {
+        return;
+    }
+    let listener = Listener::of(&assets, &seat);
+    for e in parts.events() {
+        snd.machine_event(e, &assets, &parts, &listener);
+    }
+}
+
+/// Once a frame after the seat, the flight and the machines: the triggers, the cue emitters' places, the mixer, the voices.
 #[allow(clippy::too_many_arguments)]
 fn drive(
     mut commands: Commands,
@@ -321,6 +459,7 @@ fn drive(
     control: Res<ModControl>,
     pilot: Res<Pilot>,
     ship: Res<Sidewinder>,
+    (parts, assets): (Res<Parts>, Res<SidewinderAssets>),
     settings: Res<SoundSettings>,
     mut outputs: ResMut<Assets<ShipOutput>>,
     pads: Query<Entity, With<Gamepad>>,
@@ -329,8 +468,7 @@ fn drive(
     let snd = &mut *snd;
     snd.voices.service(&mut commands);
     let parked = ship.parked.as_ref().map(|p| (p.obj, p.pos));
-    let playing = seat.seated && control.pilot && parked.is_some() && !pilot.destroyed;
-    if !playing {
+    if !playing(&seat, &control, &pilot, &ship) {
         if snd.active {
             snd.left_at = parked;
             snd.stop(&mut commands, &pads, &mut rumble);
@@ -359,6 +497,7 @@ fn drive(
     let mut calls = Vec::new();
     snd.triggers.step(&v, &mut calls);
     snd.call(&calls);
+    snd.place_cue_emitters(&assets.rig, &parts, &Listener::of(&assets, &seat));
     let level = LEVEL * settings.volume;
     let ShipSound { mixer, voices, clips, rumbles, rumbling, now, log, warned, .. } = snd;
     let log = *log;
@@ -377,7 +516,7 @@ fn drive(
                 voices.apply(u, clip, level, &mut |e| if log {
                     match e {
                         Event::Started(u, file) => info!(
-                            "sidewinder sound: voice {} starts {file} on emitter {:#x}: gain {:.4} ({:.1} dB), pitch {:.3}, low-pass {:.0}, high-pass {:.0}{}{}",
+                            "sidewinder sound: voice {} starts {file} on emitter {:#x}: gain {:.4} ({:.1} dB), pitch {:.3}, low-pass {:.0}, high-pass {:.0}{}{}{}",
                             u.voice,
                             u.emitter,
                             u.gain,
@@ -386,7 +525,8 @@ fn drive(
                             u.lowpass,
                             u.highpass,
                             u.start.map_or(String::new(), |s| if s.looping { format!(", looping {:?}", s.loop_count) } else { String::new() }),
-                            if u.virtual_voice { ", virtual" } else { "" }
+                            if u.virtual_voice { ", virtual" } else { "" },
+                            placed_text(u, clip)
                         ),
                         Event::Stopped(u) => info!("sidewinder sound: voice {} stops", u.voice),
                         Event::Virtual(u) => info!("sidewinder sound: voice {} goes virtual (dropped until heard)", u.voice),
@@ -435,14 +575,14 @@ fn drive(
             info!("sidewinder sound: {n} starts handed to the output together, {:.1} ms after they were asked for", waited * 1000.0);
         }
     }
-    // The audio thread's heartbeat, once a second (`sw sound log on`): frames its voices made, samples it found not finite.
+    // The audio thread's heartbeat, once a second (`sw sound log on`): frames its voices made, blocks the guard acted on.
     let t = time.elapsed_secs_f64();
     if snd.log && t - snd.beat.0 >= 1.0 {
         let (made, bad, skipped, longest_us, refused, top) = snd.voices.meter();
         let (over, dropped) = snd.voices.over_limit();
         let top: Vec<String> = top.iter().map(|(id, f, n, s)| format!("{id} {f} {n} at {s:.2}")).collect();
         info!(
-            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} samples not finite, {refused} voices refused, {over} frames over the master limiter's threshold, {dropped} drops on the audio thread so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
+            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} blocks with a sample not finite, {refused} voices refused, {over} frames over the master limiter's threshold, {dropped} drops on the audio thread so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
             made - snd.beat.1,
             t - snd.beat.0,
             snd.voices.count(),
@@ -474,6 +614,23 @@ fn drive(
     }
 }
 
+/// A placed voice's place for the log: where its emitter is from the head, the distance's gain and filter shares and the
+/// pan's gains on each channel (empty for a centred voice).
+fn placed_text(u: &VoiceUpdate, clip: Option<&Arc<Clip>>) -> String {
+    let (Some(p), Some(at)) = (&u.place, u.position) else { return String::new() };
+    let now = p.at(at, clip.map_or(1, |c| usize::from(c.channels)));
+    let [x, y, z] = at;
+    format!(
+        ", placed at ({x:.2}, {y:.2}, {z:.2}) m: distance {:+.1} dB, low-pass {:+.1}, high-pass {:+.1}, left / right {:.3} / {:.3}{}",
+        curve::gain_to_db(f64::from(now.gain)),
+        now.lowpass,
+        now.highpass,
+        now.matrix[0][0],
+        now.matrix[0][1],
+        if p.pan { "" } else { " (not panned)" }
+    )
+}
+
 /// The game parameters `sw sound state` lists.
 const LISTED: &[&str] = &[
     "spaceship_speed_self",
@@ -496,13 +653,48 @@ const LISTED: &[&str] = &[
     "PlayerInsideAndEmitterAttached",
 ];
 
-/// `sw sound log on|off|state`.
+/// The cue of machine `machine` whose begin, end or single event is `event`, as that machine's event (a test's way to play
+/// one leg's cue alone: nothing but the machines' own cue events, which are all `SHIP_EVENTS`).
+fn machine_cue(rig: &ShipRig, machine: usize, event: &str) -> Option<ShipEvent> {
+    use se_core::elite_ship::{Activity, KnownActivity};
+    let m = rig.ship.machines.get(machine)?;
+    let cue = m.states.iter().flat_map(|s| &s.activities).find_map(|a| match a {
+        Activity::Known(KnownActivity::KinematicBezierCurveMultiple(c)) => {
+            c.sound_cues.iter().find(|q| [&q.events.begin, &q.events.end, &q.events.single].iter().any(|e| e.as_deref() == Some(event)))
+        }
+        _ => None,
+    })?;
+    let (name, ev, bones) = (cue.cue.clone(), Some(event.to_string()), cue.bones.clone());
+    let event = if cue.events.end.as_deref() == Some(event) {
+        MachineEvent::SoundEnd { cue: name, event: ev, bones }
+    } else if cue.events.begin.as_deref() == Some(event) {
+        MachineEvent::SoundBegin { cue: name, event: ev, bones }
+    } else {
+        MachineEvent::SoundSingle { cue: name, event: ev, bones }
+    };
+    Some(ShipEvent { machine, event })
+}
+
+/// `sw sound log on|off|state|emitters|cue MACHINE EVENT` (`cue`: one of that machine's own cue events posted on its
+/// emitter as the machine would, for a test of one leg alone).
 pub fn dev_command(world: &mut World, arg: &str) {
-    let Some(mut snd) = world.get_resource_mut::<ShipSound>() else {
+    if !world.contains_resource::<ShipSound>() {
         info!("sidewinder sound: not read yet (it is read at the first spawn)");
         return;
-    };
+    }
     let words: Vec<&str> = arg.split_whitespace().collect();
+    if let ["cue", machine, event] = words.as_slice() {
+        let (machine, event) = (machine.parse::<usize>().ok(), event.to_string());
+        world.resource_scope(|world, mut snd: Mut<ShipSound>| {
+            let (Some(assets), Some(parts), Some(seat)) = (world.get_resource::<SidewinderAssets>(), world.get_resource::<Parts>(), world.get_resource::<Seat>()) else { return };
+            match machine.and_then(|m| machine_cue(&assets.rig, m, &event)) {
+                Some(e) => snd.machine_event(&e, assets, parts, &Listener::of(assets, seat)),
+                None => warn!("sw sound cue: {event} is no cue event of machine {machine:?}"),
+            }
+        });
+        return;
+    }
+    let mut snd = world.resource_mut::<ShipSound>();
     match words.as_slice() {
         ["log", w] => {
             snd.log = *w != "off";
@@ -533,7 +725,14 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 );
             }
         }
-        _ => warn!("sw sound: log on|off | state"),
+        ["emitters"] => {
+            for (id, e) in &snd.cue_emitters {
+                let at = snd.mixer.emitter(*id).map_or("not placed".to_string(), |[x, y, z]| format!("({x:.2}, {y:.2}, {z:.2}) m from the head"));
+                info!("sidewinder sound: emitter {id:#x}: machine {} at {:?} (rig nodes {:?}), {at}", e.machine, e.bones, e.nodes);
+            }
+            info!("sidewinder sound: every other emitter (the drive loops 0x100-0x107, the cockpit positions 0x200-0x208, the cockpit's origin 0x300, the voice 0x302) is the listener's own: centred");
+        }
+        _ => warn!("sw sound: log on|off | state | emitters | cue MACHINE EVENT"),
     }
 }
 
@@ -709,6 +908,62 @@ mod tests {
         assert!(opened.is_empty(), "OPEN_EVENTS posted: {opened:?}");
         assert!(unlisted.is_empty(), "posted but not in SHIP_EVENTS: {unlisted:?}");
         assert!(names.len() > 100, "the sweep posts {} events", names.len());
+    }
+
+    /// The gear motors' attenuation (`258639ce`, on 38 of the cues' sounds) read at three distances against the shipped
+    /// data: its VolumeDry curve (dB scaling: linear gain - 1) is 0 dB at 0 m, `20 log10(1 - 0.67647)` dB at its middle
+    /// point 49.5238 m, silence (the -96.3 dB floor) from 300 m; its LowPassFilter 0, 21 at 50.4762 m, 73 at 300 m; its
+    /// Spread 50 at 0 m, 0 at 300 m.
+    #[test]
+    fn an_attenuation_read_at_three_distances() {
+        use se_core::elite_sound::{Id, Object, Placement};
+        let bank = shipped();
+        let Some(Object::Attenuation(att)) = bank.file.objects.get(&Id(0x2586_39ce)) else { panic!("no attenuation 258639ce") };
+        let p = Placement::new(true, Some(att)).unwrap();
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(close(p.volume_db(0.0), 0.0));
+        assert!(close(p.volume_db(49.5238), 20.0 * (1.0f64 - 0.67647).log10()), "{}", p.volume_db(49.5238));
+        assert!(close(p.volume_db(300.0), se_core::elite_sound::curve::DB_FLOOR));
+        assert!(close(p.lowpass_at(0.0), 0.0) && close(p.lowpass_at(50.4762), 21.0) && close(p.lowpass_at(300.0), 73.0));
+        assert!(close(p.spread_at(0.0), 50.0) && close(p.spread_at(300.0), 0.0));
+        assert!(p.highpass.is_none());
+        // Within the ship (the legs are 3 to 8 m from the head): what the distance costs, falling with it.
+        let mut last = 0.0;
+        for d in [3.0, 8.0] {
+            eprintln!("258639ce at {d} m: {:+.2} dB, low-pass {:+.2}, spread {:.1}", p.volume_db(d), p.lowpass_at(d), p.spread_at(d));
+            assert!(p.volume_db(d) < last);
+            last = p.volume_db(d);
+        }
+    }
+
+    /// A gear motor's cue on a placed emitter: its voices carry their placement (panned, the attenuation's curves) and their
+    /// gain leaves the distance out (the output applies it), so the same cue 3 m and 30 m away has the same gain; the cue on
+    /// an emitter the game never placed is not placed and plays as before.
+    #[test]
+    fn a_cue_on_a_placed_emitter_is_placed() {
+        let bank = shipped();
+        let starts = |at: Option<[f32; 3]>| {
+            let mut m = Mixer::new(bank.clone(), 1);
+            m.set_game_parameter("PlayerInsideAndEmitterAttached", triggers::INSIDE, None);
+            if let Some(p) = at {
+                m.set_emitter(0x1000, p);
+            }
+            m.post("SideWinder_Rear_Deploy_Motor01_b_landinggear", 0x1000).unwrap();
+            let mut got = Vec::new();
+            for _ in 0..20 {
+                got.extend(m.step(0.02).iter().filter(|u| u.start.is_some() && !u.virtual_voice).cloned());
+            }
+            got
+        };
+        let (near, far, centred) = (starts(Some([-3.0, 0.0, 0.0])), starts(Some([-30.0, 0.0, 0.0])), starts(None));
+        assert!(!near.is_empty() && near.len() == far.len() && near.len() == centred.len(), "{} {} {}", near.len(), far.len(), centred.len());
+        for ((n, f), c) in near.iter().zip(&far).zip(&centred) {
+            let p = n.place.as_ref().expect("placed");
+            assert!(p.pan && p.volume.is_some(), "{p:?}");
+            assert!((n.gain - f.gain).abs() < 1e-6, "the distance is not in the gain: {} against {}", n.gain, f.gain);
+            assert!(p.volume_db(30.0) < p.volume_db(3.0));
+            assert!(c.place.is_none() && c.position.is_none());
+        }
     }
 
     /// How many shipped events start a voice with a non-zero low-pass or high-pass.
