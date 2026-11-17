@@ -338,7 +338,7 @@ pub(crate) fn draw_constellations(
 ) -> Result {
     let master = fade.constellations * fade.constellations;
     // (Nor over the main menu.)
-    if master <= 0.0 || cons.0.is_empty() || control.main_menu {
+    if master <= 0.0 || cons.0.is_empty() || control.main_menu || control.tunnel {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

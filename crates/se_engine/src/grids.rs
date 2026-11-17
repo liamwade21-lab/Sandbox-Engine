@@ -125,7 +125,7 @@ pub(crate) fn draw_grids(
     let master = sq(fade.grids);
     let geographic = sq(fade.grid[3]);
     // (Nor over the main menu.)
-    if (master <= 0.0 && geographic <= 0.0) || control.main_menu {
+    if (master <= 0.0 && geographic <= 0.0) || control.main_menu || control.tunnel {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

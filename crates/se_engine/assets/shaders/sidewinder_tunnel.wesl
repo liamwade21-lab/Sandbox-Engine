@@ -154,6 +154,9 @@ fn agx_inverse(out: vec3<f32>) -> vec3<f32> {
 
 // What the frame must hold (before the exposure) for the screen to show `out` (linear): color_correction.wesl's `final_image`
 // undone (gamma, vibrance, contrast and brightness; its dithering and sharpening left), then its tone curve (AgX only).
+// A known limit: the colours come out exact only with SE's default AgX tone curve and a bloom threshold of 0 (the user's
+// settings). With another tone shader or bloom threshold chosen in the Settings window the tunnel's colours are off: no
+// other curve is undone here, and the bloom's division below assumes the threshold 0.
 fn undo_grading(out: vec3<f32>) -> vec3<f32> {
     let g = tunnel.bcsg;
     var c = pow(max(out, vec3<f32>(1e-6)), vec3<f32>(1.0 / g.w));

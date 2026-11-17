@@ -141,7 +141,8 @@ pub struct ModControl {
     /// The mod that is on is the Faulcon DeLacy Sidewinder (`Code "sidewinder"`) and the player sits in its seat.
     pub pilot: bool,
     /// A mod is drawing hyperspace (the Sidewinder's tunnel; `sidewinder/seat.rs` sets it every frame): nothing of the universe's
-    /// overlays is shown.
+    /// overlays is shown (orbits, labels, markers, the selection pointer, constellations, grids, waypoints) and the automatic
+    /// exposure holds its adapted value (`exposure.rs` `update_auto_frame`).
     pub tunnel: bool,
     /// What the Mods row or a test asks of the Sidewinder (spawn, restock): not "a mod on" (`sidewinder/mod.rs`).
     pub ship_request: Option<crate::sidewinder::ShipRequest>,

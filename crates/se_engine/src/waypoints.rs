@@ -209,7 +209,7 @@ fn draw_waypoints(
     control: Res<crate::mods::ModControl>,
 ) -> Result {
     // (Nor over the main menu.)
-    if wps.list.is_empty() || control.main_menu {
+    if wps.list.is_empty() || control.main_menu || control.tunnel {
         return Ok(());
     }
     let Ok(camera) = cams.single() else { return Ok(()) };

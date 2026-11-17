@@ -238,13 +238,16 @@ struct AutoFrame {
     params: AutoParams,
 }
 
-fn update_auto_frame(photo: Res<PhotoMode>, e: Res<ExposureComp>, a: Res<AutoExposureSettings>, time: Res<Time>, mut frame: ResMut<AutoFrame>) {
+fn update_auto_frame(photo: Res<PhotoMode>, e: Res<ExposureComp>, a: Res<AutoExposureSettings>, time: Res<Time>, control: Option<Res<crate::mods::ModControl>>, mut frame: ResMut<AutoFrame>) {
+    // (While a mod draws hyperspace the adaptation holds: speeds 0 keep the adapted value as the jump began, so the arrival
+    // starts from it instead of from the dark tunnel's. Otherwise the settings' own speeds, unchanged.)
+    let speed = if control.is_some_and(|c| c.tunnel) { (0.0, 0.0) } else { (a.speed_up, a.speed_down) };
     *frame = AutoFrame {
         on: photo.auto(),
         params: AutoParams {
             range: Vec4::new(e.min, e.max, a.low_percent / 100.0, a.high_percent / 100.0),
             target: Vec4::new(a.target_bright.max(1e-6).log2(), a.min_comp, a.max_comp, time.delta_secs()),
-            speed: Vec4::new(a.speed_up, a.speed_down, 1.0 / (a.mask_size * a.mask_size).max(1e-6), a.mask_value),
+            speed: Vec4::new(speed.0, speed.1, 1.0 / (a.mask_size * a.mask_size).max(1e-6), a.mask_value),
         },
     };
 }
