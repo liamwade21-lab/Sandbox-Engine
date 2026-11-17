@@ -381,6 +381,8 @@ struct Export {
     objects: Map<String, Value>,
     syncs: Value,
     units: Value,
+    /// The Wwise Meter effects in the buses' slots (`events.json`'s `meters`, decoded by `sidewinder_events.py`).
+    meters: Vec<Value>,
 }
 
 impl Export {
@@ -415,7 +417,8 @@ impl Export {
         let objects = v.get("objects").and_then(Value::as_object).cloned().ok_or("events.json: no objects")?;
         let syncs = v.get("game_syncs").cloned().ok_or("events.json: no game_syncs")?;
         let units = v.get("units").cloned().ok_or("events.json: no units")?;
-        Ok(Export { events, by_name, by_bank, objects, syncs, units })
+        let meters = v.get("meters").and_then(Value::as_array).cloned().ok_or("events.json: no meters (re-make it with sidewinder_events.py)")?;
+        Ok(Export { events, by_name, by_bank, objects, syncs, units, meters })
     }
 
     /// The event id of a name of the tables (events.json's own key, case aside).
@@ -567,6 +570,13 @@ impl Reach {
     }
 
     fn finish(&mut self, x: &Export) {
+        for m in &x.meters {
+            if let (Some(b), Some(gp)) = (m.get("bus").and_then(Value::as_str), m.get("game_parameter").and_then(Value::as_str)) {
+                if self.objects.contains(b) {
+                    self.gps.insert(gp.to_string());
+                }
+            }
+        }
         for g in self.switch_groups.clone() {
             if let Some(gp) = x.syncs.pointer(&format!("/switch_groups/{g}/driven_by_game_parameter/id")).and_then(Value::as_str) {
                 self.gps.insert(gp.to_string());
@@ -697,6 +707,10 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
                 "channels": m.get("channels"),
                 "samples": m.get("samples"),
                 "loop_region": m.get("loop_region"),
+                "loudness_gain": m.pointer("/akd/loudness_gain"),
+                "akd_gain_2": m.pointer("/akd/gain_2"),
+                "rms": m.get("rms"),
+                "loop_rms": m.get("loop_rms"),
             }),
         );
         files.push((s.clone(), file.to_string()));
@@ -739,6 +753,8 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
             names.insert(id.clone(), Value::String(n.into()));
         }
     }
+    // The meters on the buses kept (what goes through them is shipped); their game parameters are in `all.gps` (`finish`).
+    let meters: Vec<Value> = x.meters.iter().filter(|m| m.get("bus").and_then(Value::as_str).is_some_and(|b| objects_v.get(b).is_some())).cloned().collect();
     let file = serde_json::json!({
         "format": FORMAT,
         "about": "The Faulcon DeLacy Sidewinder's sound events as Elite Dangerous's Wwise banks define them, and everything they reach, \
@@ -753,6 +769,7 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
         "media": media,
         "source_plugins": source_plugins,
         "names": names,
+        "meters": meters,
     });
     let file: SoundFile = serde_json::from_value(file).map_err(|e| format!("sounds.json's shape: {e}"))?;
     SoundBank::new(file.clone()).map_err(|e| format!("sounds.json: {e}"))?;

@@ -537,6 +537,10 @@ pub fn dev_command(world: &mut World, arg: &str) {
             };
             None
         }
+        "sound" => {
+            sound::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
+            None
+        }
         "hardpoints" => {
             let mut pl = world.resource_mut::<pilot::Pilot>();
             pl.weapons.deployed = !pl.weapons.deployed;

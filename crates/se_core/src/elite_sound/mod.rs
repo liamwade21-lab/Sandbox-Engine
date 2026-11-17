@@ -19,7 +19,19 @@
 //!   TriggerRate, SampleAccurate, CrossFadeAmp, CrossFadePower, their random time modifier (46) and the game parameter
 //!   on the transition time (`PlayMechanismSpecialTransitionsValue`, 22).
 //! - SwitchCntr (80): on switch groups (66), state groups (48) and game-parameter-driven switches (64); continuous
-//!   validation (56) with each child's stop / continue / first-only and fade times.
+//!   validation (56) with each child's stop / continue / first-only and fade times. A continuous container playing while
+//!   its value assigns nothing it can play waits for the next change instead of ending (Wwise's Continuous play mode plays
+//!   the new value's object "as soon as a new switch/state is detected", Wwise 2015.1 User Guide ch. 9; wwiser's
+//!   `bIsContinuousValidation`): 56 shipped events reach such a container (`re/elite/work/sound/t5c/waiting_switches.txt`),
+//!   the boost's layers among them.
+//! - Loudness normalisation (527 shipped sounds, gains -17.4 to +36.1 dB): the recording's `akd ` gain
+//!   ([`data::Media::loudness_gain`]) where the node in force (the nearest overriding its parent's analysis, wwiser's
+//!   `bOverrideAnalysis`, else the top one) has `bNormalizeLoudness`; make-up gain stays its own additive property.
+//! - Wwise Meter effects on buses (10 shipped, [`data::Meter`]): an RMS meter without ballistics (2: both on the drives'
+//!   bus, one writing 1e5ba700, the switch that turns the cockpit's background beds off while the drives are loud) writes
+//!   its bus's level into its game parameter, worked out from the voices' gains and each recording's RMS.
+//! - Low-pass / high-pass cutoffs in Hz ([`filter`]): Elite's own conversion and Butterworth sections, decompiled from its
+//!   copy of the sound engine (the value-to-cutoff function, the sections, the 8-step ramp and the 0.1 bypass).
 //! - LayerCntr (71): all children together, blend tracks with their crossfade curves (4) and track curves (7).
 //! - Properties down the actor-mixer chain (additive: Volume, MakeUpGain, Pitch, LPF, HPF, InitialDelay, OutputBus*) and
 //!   up the bus chain (Volume, BusVolume, Pitch, LPF, HPF, OutputBus*), randomisers (Volume 51, Pitch 86, LPF 21, HPF 1,
@@ -46,7 +58,8 @@
 //! # Not built (kept in the data, never refused, listed with the shipped events they touch)
 //! - Effects and plugins on buses and objects (bus effects 312, object effects 214, bus mixer plugins 225, BypassFX
 //!   curves 181 and state deltas 162), aux sends (user 291, game 183, their curves 137) and the attenuation's wet curves
-//!   (269), HDR (every bus carries HDR settings: 317; HDR envelope 24), loudness normalisation (203).
+//!   (269), HDR (every bus carries HDR settings: 317; HDR envelope 24); the `akd ` chunk's second gain (`akd_gain_2`: 1 or
+//!   1.414 on mono recordings, its meaning not proven).
 //! - Panning and spatialisation: speaker panning (PAN_LR 30, PAN_FR 34, CenterPCT 99, bus PAN_FR 96), the Spread (267)
 //!   and Focus (4) attenuation curves, positioning-type blend curves (10), a 2D pan curve (1), path automation (13),
 //!   held emitter / listener orientation (7), cone attenuation (9; the update has no orientation): the update carries
@@ -54,18 +67,23 @@
 //! - Modulators: LFO (42) and envelope (10) modulator curves contribute nothing (their output formulas are not public,
 //!   and `events.json` names their properties with the node table's names).
 //! - The global voice cap (256).
+//! - Meters other than RMS without ballistics (8 of the 10 shipped: 5 Peak, 3 RMS with attack / release / hold, whose
+//!   formulas are not public): kept, their game parameters stay where the game or their default leaves them; the effects
+//!   in the slots before a meter (a parametric EQ before both built ones) are not applied to its reading.
 //! - A blend container's continuous validation (true on 7 of the 138, 3 shipped events): a child whose crossfade falls
 //!   to 0 plays on silently instead of being stopped and started again when the parameter comes back. With it false (the
 //!   other 131) the children likewise play at their crossfade gain.
-//! - Low-pass / high-pass in Hz: Wwise's published table of cutoff frequencies could not be read (Audiokinetic's pages
-//!   refused the request); [`VoiceUpdate::lowpass_hz`] stays `None`, the 0-100 values are given.
 //!
 //! Choices the data and the public sources leave open, made here and named: FilteringOverTime is a first-order low pass
 //! whose time constant is the stored time; `PlayMechanismSpecialTransitionsValue` adds seconds to the transition time;
 //! playback limits count globally (the limit's scope bit is not in `events.json`); blend track crossfade values are
 //! linear gains; crossfade transitions start the next item that long before a recording's end (only where the item is
 //! a Sound of known length; otherwise at its end); LPF / HPF contributions add up, clamped to 0-100; trigger-rate
-//! intervals are at least 10 ms; a state change in the middle of a transition starts from the values it has then.
+//! intervals are at least 10 ms; a state change in the middle of a transition starts from the values it has then; a
+//! waiting switch container whose child ran out on its own under a value that assigns something is done (else every
+//! one-shot posted would leave one waiting); a meter reads the voices' mean RMS by their gains summed as powers (Wwise
+//! measures the signal itself, buffer by buffer), the bus's voice volume before its slot and its bus volume, ducking and
+//! state deltas after; the updates' cutoffs are given at 48 kHz ([`OUTPUT_RATE`]).
 //!
 //! Not verified against an independent source (the review's list): a fade-out runs the action's curve from 1 to 0
 //! (`AkInterpolation` from the start value to the target, as for fades in); FilteringOverTime's time constant; the
@@ -74,13 +92,14 @@
 
 pub mod curve;
 pub mod data;
+pub mod filter;
 mod mixer;
 
 #[cfg(test)]
 mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
-pub use mixer::{Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S};
+pub use mixer::{Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
 
 use data::*;
 use std::collections::HashMap;
@@ -331,6 +350,14 @@ impl SoundBank {
                     }
                 }
                 Object::Action(_) => {}
+            }
+        }
+        for m in &f.meters {
+            if !self.bus_chains.contains_key(&m.bus) {
+                return Err(bad(format!("meter {}: bus {} is missing", m.fx, m.bus)));
+            }
+            if !(m.min_db.is_finite() && m.max_db.is_finite()) {
+                return Err(bad(format!("meter {}: its range is not finite", m.fx)));
             }
         }
         Ok(())

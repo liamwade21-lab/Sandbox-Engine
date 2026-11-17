@@ -241,6 +241,7 @@ fn check_inside(rel: &str, bytes: Vec<u8>) -> Result<(), String> {
         Some("dds") => se_core::dds::parse_dds(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("sehm") => hero_asset::check_sehm(&bytes).map_err(|e| e.to_string()),
         Some("ogg") => check_sound(bytes).map(|_| ()),
+        Some("wav") => check_wav(bytes).map(|_| ()),
         Some("s3m") => se_core::skate3::parse_model(&bytes).map(|_| ()).map_err(|e| e.to_string()),
         Some("png") => image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).map(|_| ()).map_err(|e| e.to_string()),
         Some("json") => check_json(rel, &bytes),
@@ -285,6 +286,33 @@ pub fn check_sound(bytes: Vec<u8>) -> Result<(AudioSource, SoundFacts), String> 
     if !crate::music::is_ogg_vorbis(&bytes) {
         return Err("not an Ogg Vorbis file".to_string());
     }
+    decode_check(bytes)
+}
+
+/// A mod's `.wav` as `check_sound` takes an Ogg: the guard (a RIFF WAVE file of 16-bit PCM, the only kind the mods ship:
+/// the Sidewinder's ADPCM recordings decoded by its converter), then the whole file through the decoder that will play it.
+pub fn check_wav(bytes: Vec<u8>) -> Result<(AudioSource, SoundFacts), String> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("not a RIFF WAVE file".to_string());
+    }
+    let mut at = 12;
+    let fmt = loop {
+        let Some(head) = bytes.get(at..at + 8) else { return Err("no fmt chunk".to_string()) };
+        let len = u32::from_le_bytes([head[4], head[5], head[6], head[7]]) as usize;
+        if &head[0..4] == b"fmt " {
+            break bytes.get(at + 8..at + 8 + len.min(16)).filter(|f| f.len() == 16).ok_or("its fmt chunk is cut short")?;
+        }
+        at += 8 + len + (len & 1);
+    };
+    let (format, bits) = (u16::from_le_bytes([fmt[0], fmt[1]]), u16::from_le_bytes([fmt[14], fmt[15]]));
+    if format != 1 || bits != 16 {
+        return Err(format!("not 16-bit PCM (format {format}, {bits} bits)"));
+    }
+    decode_check(bytes)
+}
+
+/// The decoder run over a whole guarded sound, its panic caught.
+fn decode_check(bytes: Vec<u8>) -> Result<(AudioSource, SoundFacts), String> {
     let source = AudioSource { bytes: std::sync::Arc::from(bytes) };
     let decode = std::panic::AssertUnwindSafe(|| {
         let decoder = source.decoder();

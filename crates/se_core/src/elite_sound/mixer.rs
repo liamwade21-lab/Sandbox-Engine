@@ -2,6 +2,7 @@
 
 use super::curve::{cents_to_ratio, db_to_gain, eval, find, gain_to_db, interpolate};
 use super::data::*;
+use super::filter;
 use super::{event_id, wwise_id, SoundBank, SoundError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -55,7 +56,8 @@ pub struct VoiceUpdate {
     /// Wwise's 0-100 filter values.
     pub lowpass: f32,
     pub highpass: f32,
-    /// Cutoff frequencies: `None` (Wwise's table could not be sourced; see the module's docs).
+    /// Cutoff frequencies at [`OUTPUT_RATE`] (Elite's own conversion, [`super::filter`]); `None` where the filter is
+    /// bypassed (a value of at most 0.1).
     pub lowpass_hz: Option<f32>,
     pub highpass_hz: Option<f32>,
     /// Below the volume threshold and kept as a virtual voice: the player silences it.
@@ -411,6 +413,14 @@ impl Mixer {
         self.now
     }
 
+    /// What plays now, by what the events started: each live top-level instance (a Play action's target) and its emitter,
+    /// sorted. Unlike the voices, it does not change with a random container's pick or a sequence's gap.
+    pub fn playing_objects(&self) -> Vec<(u32, Id)> {
+        let mut v: Vec<(u32, Id)> = self.insts.values().filter(|i| i.parent.is_none() && i.stop_at.is_none()).map(|i| (i.emitter, i.obj)).collect();
+        v.sort_by_key(|(e, o)| (*e, o.0));
+        v
+    }
+
     /// Posts an event on an emitter (by name, or `event_<8 hex>` for an unnamed one). Its actions run in order: those
     /// without delay at once, the others in a later `step`. An event the file does not hold is an `Err`.
     pub fn post(&mut self, event: &str, emitter: u32) -> Result<(), SoundError> {
@@ -572,6 +582,7 @@ impl Mixer {
         let end = self.now.max(detail_end) + (dt - DETAIL_S).max(0.0);
         self.advance_voices(end - self.now);
         self.now = end;
+        self.update_meters();
         self.ramp_gps(dt);
         self.run_due();
         self.update_ducks();
@@ -1403,6 +1414,17 @@ impl Mixer {
         }
     }
 
+    /// A continuous switch container that is playing and not stopping, whose switch value now assigns nothing it could play:
+    /// it waits for the switch to change (Wwise's Continuous play mode plays the new value's object "as soon as a new
+    /// switch/state is detected"; wwiser names the flag `bIsContinuousValidation`). Once what it played has run out on its
+    /// own under a value that does assign something, it is done (the public sources do not say; otherwise every one-shot
+    /// posted would leave a container waiting for ever).
+    fn waiting(&self, inst: &Inst) -> bool {
+        let Kind::Switch(sw) = &inst.kind else { return false };
+        let Some(Object::SwitchCntr(s)) = self.bank.object(inst.obj) else { return false };
+        s.continuous_validation && inst.stop_at.is_none() && switch_nodes(s, sw.value).iter().all(|n| self.bank.node(*n).is_none())
+    }
+
     /// Containers with nothing playing and nothing to come are done.
     fn collect_done(&mut self) {
         loop {
@@ -1414,7 +1436,8 @@ impl Mixer {
                         && match &i.kind {
                             Kind::Voice(_) => false,
                             Kind::RanSeq(r) => r.next_at.is_none(),
-                            Kind::Switch(_) | Kind::Layer => true,
+                            Kind::Switch(_) => !self.waiting(i),
+                            Kind::Layer => true,
                         }
                 })
                 .map(|(k, _)| *k)
@@ -1529,21 +1552,67 @@ impl Mixer {
                 m.hpf += eval(&c.points, c.scaling, d);
             }
         }
+        m.db += self.normalisation_db(inst);
         if let Some(b) = self.output_bus(inst.obj) {
             for bid in bank.bus_chain(b) {
-                let Some(bus) = bank.bus(*bid) else { continue };
-                for (k, v) in &bus.props {
-                    if matches!(k.as_str(), "Volume" | "BusVolume" | "Pitch" | "LPF" | "HPF" | "OutputBusVolume" | "OutputBusLPF" | "OutputBusHPF") {
-                        m.add(k, v.num().unwrap_or(0.0));
-                    }
-                }
-                self.add_rtpcs(&bus.rtpc, inst.emitter, &mut m);
-                self.add_states(&bus.states, &mut m);
-                let ducked: f64 = self.ducks.iter().filter(|((src, i), _)| bank.bus(*src).is_some_and(|s| s.ducks[*i].bus.id == *bid)).map(|(_, d)| d.level.at(self.now)).sum();
-                m.db += ducked.max(bus.max_duck_volume_db);
+                let (pre, post) = self.bus_mix(*bid, inst.emitter);
+                m.db += pre.db + post;
+                m.cents += pre.cents;
+                m.lpf += pre.lpf;
+                m.hpf += pre.hpf;
             }
         }
         (m, fade)
+    }
+
+    /// What loudness normalisation adds to a voice (dB): the recording's `akd ` gain where the node in force normalises.
+    /// The node in force is the nearest on the chain that overrides its parent's analysis settings (wwiser's
+    /// `bOverrideAnalysis`), else the top one; its `bNormalizeLoudness` switches the gain on. Make-up gain is a property of
+    /// its own, added as every volume is (in `mix_of`).
+    fn normalisation_db(&self, inst: &Inst) -> f64 {
+        let Kind::Voice(Voice { out: Out::Audio(src), .. }) = &inst.kind else { return 0.0 };
+        let chain = self.bank.chain(inst.obj);
+        let n = chain.iter().filter_map(|a| self.bank.node(*a)).find(|n| n.adv.override_analysis).or_else(|| chain.last().and_then(|a| self.bank.node(*a)));
+        match (n.is_some_and(|n| n.adv.normalize_loudness), self.bank.file.media.get(src).and_then(|m| m.loudness_gain)) {
+            (true, Some(g)) if g > 0.0 && g.is_finite() => gain_to_db(g),
+            _ => 0.0,
+        }
+    }
+
+    /// One bus's share of a voice going through it: what applies to the voice as it enters (its voice volume, pitch and
+    /// filters, their curves and states: `pre`) and the bus volume applied to the bus's mix after its effects (BusVolume,
+    /// OutputBusVolume and ducking: `post`, dB).
+    fn bus_mix(&self, bid: Id, emitter: u32) -> (Mix, f64) {
+        let bank = &self.bank;
+        let (mut pre, mut all) = (Mix::default(), Mix::default());
+        let Some(bus) = bank.bus(bid) else { return (pre, 0.0) };
+        for (k, v) in &bus.props {
+            if matches!(k.as_str(), "Volume" | "BusVolume" | "Pitch" | "LPF" | "HPF" | "OutputBusVolume" | "OutputBusLPF" | "OutputBusHPF") {
+                all.add(k, v.num().unwrap_or(0.0));
+                if !matches!(k.as_str(), "BusVolume" | "OutputBusVolume") {
+                    pre.add(k, v.num().unwrap_or(0.0));
+                }
+            }
+        }
+        for r in &bus.rtpc {
+            if r.rtpc_type == RtpcType::GameParameter && r.accumulation == Accumulation::Additive {
+                let v = eval(&r.points, r.scaling, self.gp_value(r.game_parameter.id, emitter));
+                all.add(&r.param, v);
+                if !matches!(r.param.as_str(), "BusVolume" | "OutputBusVolume") {
+                    pre.add(&r.param, v);
+                }
+            }
+        }
+        let mut st = Mix::default();
+        self.add_states(&bus.states, &mut st);
+        all.db += st.db;
+        let ducked: f64 = self.ducks.iter().filter(|((src, i), _)| bank.bus(*src).is_some_and(|s| s.ducks[*i].bus.id == bid)).map(|(_, d)| d.level.at(self.now)).sum();
+        let post = all.db - pre.db + ducked.max(bus.max_duck_volume_db);
+        // (A state's deltas are not told apart by kind here: they count with the bus volume.)
+        pre.cents += st.cents;
+        pre.lpf += st.lpf;
+        pre.hpf += st.hpf;
+        (pre, post)
     }
 
     /// A blend container's tracks on one child: the product of its crossfade curves (by their game parameters), and the
@@ -1562,6 +1631,54 @@ impl Mixer {
             }
         }
         g
+    }
+
+    /// The Meter effects (`SoundFile::meters`): each RMS meter's level on its bus, written into its game parameter (which
+    /// then ramps by the Init bank's rule, as any value set). The level is worked out from what plays, not from a signal:
+    /// every voice going through the bus counts with its gain as it reaches the meter's slot (everything down the chain up
+    /// to the bus's voice volume; the bus volume, ducking and the buses beyond come after the slot unless
+    /// `apply_downstream_volume`) times its recording's RMS (`Media::rms`, the loop region's for a voice that loops), the
+    /// voices summed as powers; nothing playing reads the meter's floor. Built for RMS meters without ballistics (attack,
+    /// release and hold all 0: the level is taken as it is); the others (Peak meters, and meters with ballistics, whose
+    /// formulas are not public) are kept and leave their game parameter at its value. Not built either: the effects in the
+    /// slots before a meter (a parametric EQ before both built ones).
+    fn update_meters(&mut self) {
+        let bank = self.bank.clone();
+        for meter in bank.file.meters.iter().filter(|m| meter_built(m)) {
+            let mut power: BTreeMap<Option<u32>, f64> = BTreeMap::new();
+            if meter.scope == MeterScope::GameObject {
+                for e in self.insts.values().map(|i| i.emitter) {
+                    power.entry(Some(e)).or_insert(0.0);
+                }
+            } else {
+                power.insert(None, 0.0);
+            }
+            for (id, inst) in &self.insts {
+                let Kind::Voice(v) = &inst.kind else { continue };
+                let (Out::Audio(src), true, false) = (v.out, v.started, v.virt) else { continue };
+                let Some(chain) = self.output_bus(inst.obj).map(|b| bank.bus_chain(b)) else { continue };
+                let Some(at) = chain.iter().position(|b| *b == meter.bus) else { continue };
+                let Some(media) = bank.file.media.get(&src) else { continue };
+                let rms = if v.loops != Some(1) && v.region.is_some() { media.loop_rms.or(media.rms) } else { media.rms };
+                let Some(rms) = rms else { continue };
+                let (m, fade) = self.voice_mix(*id);
+                let mut db = m.db;
+                if !meter.apply_downstream_volume {
+                    db -= self.bus_mix(meter.bus, inst.emitter).1;
+                    for b in &chain[at + 1..] {
+                        let (pre, post) = self.bus_mix(*b, inst.emitter);
+                        db -= pre.db + post;
+                    }
+                }
+                let a = db_to_gain(db) * fade * rms;
+                *power.entry(if meter.scope == MeterScope::GameObject { Some(inst.emitter) } else { None }).or_insert(0.0) += a * a;
+            }
+            for (who, p) in power {
+                let level = if p > 0.0 { 10.0 * p.log10() } else { meter.min_db };
+                let level = level.clamp(meter.min_db.min(meter.max_db), meter.max_db.max(meter.min_db));
+                self.set_gp(meter.game_parameter, level, who, None);
+            }
+        }
     }
 
     fn update_ducks(&mut self) {
@@ -1679,8 +1796,8 @@ impl Mixer {
                 pitch_cents: m.cents as f32,
                 lowpass: m.lpf.clamp(0.0, 100.0) as f32,
                 highpass: m.hpf.clamp(0.0, 100.0) as f32,
-                lowpass_hz: None,
-                highpass_hz: None,
+                lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
+                highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: virt,
             });
         }
@@ -1717,8 +1834,8 @@ impl Mixer {
                 pitch_cents: m.cents as f32,
                 lowpass: m.lpf.clamp(0.0, 100.0) as f32,
                 highpass: m.hpf.clamp(0.0, 100.0) as f32,
-                lowpass_hz: None,
-                highpass_hz: None,
+                lowpass_hz: filter::cutoff(m.lpf.clamp(0.0, 100.0) as f32, false, OUTPUT_RATE),
+                highpass_hz: filter::cutoff(m.hpf.clamp(0.0, 100.0) as f32, true, OUTPUT_RATE),
                 virtual_voice: false,
             });
         }
@@ -1746,6 +1863,11 @@ struct Ended {
 
 /// Floating tolerance on times (s).
 const EPS: f64 = 1e-6;
+
+/// The output sample rate the updates' cutoffs are given at (Hz): the sound engine's in Elite's exe at rest
+/// (`DAT_145ee0a4c` = 48,000 in its data section). A player at another rate works the cutoff out again with
+/// [`super::filter::cutoff`].
+pub const OUTPUT_RATE: f32 = 48000.0;
 
 /// How much of one step is run event by event (s): see [`Mixer::step`].
 pub const DETAIL_S: f64 = 1.0;
@@ -1783,6 +1905,11 @@ fn prop_opt(p: &Props, k: &str) -> Option<f64> {
 
 fn switch_nodes(s: &SwitchCntr, value: Option<Id>) -> Vec<Id> {
     value.and_then(|v| s.switches.iter().find(|e| e.value.id == v)).map(|e| e.nodes.clone()).unwrap_or_default()
+}
+
+/// The meters [`Mixer`] works out (`update_meters`).
+pub(super) fn meter_built(m: &Meter) -> bool {
+    m.mode == MeterMode::Rms && m.attack == 0.0 && m.release == 0.0 && m.hold == 0.0
 }
 
 fn switch_param(s: &SwitchCntr, node: Id) -> Option<&SwitchParam> {

@@ -737,6 +737,56 @@ pub struct Media {
     /// voice repeats (the end inclusive, as smpl stores it). Absent when the recording has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_region: Option<[u64; 2]>,
+    /// The stream's `akd ` chunk (Wwise's analysis of the recording), its first two floats as stored: the loudness
+    /// normalisation gain (a linear factor: it brings the recording's integrated loudness to one target, -23.5 +- 2 LUFS
+    /// over 42 recordings measured by `re/elite/work/sound/t5c/akd_vs_lufs.py`) and a second gain (1 or 1.414 on mono
+    /// streams, 1 on stereo: its meaning is not proven and the mixer does not apply it). Absent without the chunk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loudness_gain: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub akd_gain_2: Option<f64>,
+    /// The decoded recording's RMS (linear, full scale 1, every channel's samples together), and its loop region's alone
+    /// (measured by `sidewinder_media.py` from the game's decode): what a bus meter reads of it ([`Meter`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_rms: Option<f64>,
+}
+
+/// What a Wwise Meter effect measures (wwiser's `CAkMeterFX__AkMeterMode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeterMode {
+    Peak,
+    #[serde(rename = "RMS")]
+    Rms,
+}
+
+/// Whose game parameter a meter writes (wwiser's `CAkMeterFX__AkMeterScope`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MeterScope {
+    Global,
+    GameObject,
+}
+
+/// A Wwise Meter effect (plugin 0x00810003) in a bus's effect slot: it measures the bus's signal at that slot and writes
+/// the level (dB, clamped to `min_db..max_db`) into a game parameter. Fields as wwiser's `CAkMeterFXParams__SetParamsBlock`
+/// names them for a 27-byte block; times in seconds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Meter {
+    /// The effect share set's id, the bus and its slot (0-3).
+    pub fx: Id,
+    pub bus: Id,
+    pub slot: u32,
+    pub game_parameter: Id,
+    pub attack: f64,
+    pub release: f64,
+    pub min_db: f64,
+    pub max_db: f64,
+    pub hold: f64,
+    pub mode: MeterMode,
+    pub scope: MeterScope,
+    pub apply_downstream_volume: bool,
 }
 
 impl Media {
@@ -772,6 +822,9 @@ pub struct SoundFile {
     pub media: BTreeMap<Id, Media>,
     pub source_plugins: BTreeMap<Id, SourcePlugin>,
     pub names: BTreeMap<Id, String>,
+    /// The Meter effects on the buses the shipped sounds go through (each writes a game parameter; absent in older files).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meters: Vec<Meter>,
 }
 
 /// Reads `sounds.json`: the shape, then every reference and every behaviour checked ([`super::check`]).

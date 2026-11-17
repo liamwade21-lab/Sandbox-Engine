@@ -103,7 +103,8 @@ fn events_start_what_the_reference_walker_says() {
         for seed in 0..200 {
             let mut m = Mixer::new(b.clone(), seed);
             m.post(name, 7).unwrap();
-            for u in m.step(0.0).to_vec() {
+            // (The walker lists recordings only: the boost's events also start Motion Generator rumbles.)
+            for u in m.step(0.0).iter().filter(|u| matches!(u.output, Output::Audio { .. })).cloned().collect::<Vec<_>>() {
                 assert!(u.start.is_some(), "{name}: a voice at t = 0 must be starting");
                 let src = source(&u);
                 assert!(allowed.contains(&src), "{name}: {src} is not one the walker allows ({allowed:?})");
@@ -651,4 +652,145 @@ fn state_change_mid_transition_starts_where_it_is() {
     assert!((m.states_db(node) - mid).abs() < 1e-9, "no jump at the change: {} against {mid}", m.states_db(node));
     m.step(60.0);
     assert!(m.states_db(node).abs() < 1e-9, "it ends at the new state's value");
+}
+
+/// Every recording under an object (container children and switch nodes), in the slice.
+fn sources_under(b: &SoundBank, id: Id, out: &mut BTreeSet<Id>) {
+    match b.object(id) {
+        Some(Object::Sound(s)) if s.plugin_type != 2 => {
+            out.insert(s.source_id);
+        }
+        Some(Object::RanSeqCntr(r)) => r.children.iter().for_each(|c| sources_under(b, *c, out)),
+        Some(Object::LayerCntr(l)) => l.children.iter().for_each(|c| sources_under(b, *c, out)),
+        Some(Object::SwitchCntr(s)) => s.switches.iter().flat_map(|e| &e.nodes).for_each(|n| sources_under(b, *n, out)),
+        _ => {}
+    }
+}
+
+/// The boost's layers (T5c): the ShipOrigin loop's continuous switch containers on BOOST start with nothing to play while
+/// the boost idles, and must stay to play the warm-up's and the firing's recordings when the triggers change the switch
+/// (`triggers.rs`' order: the new state's `_b`, then the others' `_e`). What each state must start is read from the data:
+/// the recordings under that switch value's nodes of a BOOST container.
+#[test]
+fn boost_layers_sound_through_warmup_firing_and_cooldown() {
+    let b = bank();
+    let boost = wwise_id("BOOST");
+    let under = |value: &str| {
+        let mut out = BTreeSet::new();
+        for o in b.file.objects.values() {
+            if let Object::SwitchCntr(s) = o {
+                if s.group.id == boost {
+                    for e in s.switches.iter().filter(|e| e.value.id == wwise_id(value)) {
+                        e.nodes.iter().for_each(|n| sources_under(&b, *n, &mut out));
+                    }
+                }
+            }
+        }
+        out
+    };
+    let (warm, active) = (under("WarmUp"), under("Active"));
+    assert!(!warm.is_empty() && !active.is_empty(), "the slice holds the boost's layers");
+    assert!(under("CoolDown").is_empty() && under("Idle").is_empty(), "the data: nothing plays at cool-down or idle");
+    let mut m = Mixer::new(b.clone(), 3);
+    m.post("ShipOrigin_b_sidewinder_internal", 9).unwrap();
+    let mut playing: BTreeMap<u32, (Id, bool)> = BTreeMap::new();
+    let run = |m: &mut Mixer, playing: &mut BTreeMap<u32, (Id, bool)>, s: f32| {
+        let mut started = BTreeSet::new();
+        for _ in 0..(s * 60.0) as usize {
+            for u in m.step(1.0 / 60.0) {
+                let Output::Audio { source } = u.output else { continue };
+                if u.stop {
+                    playing.remove(&u.voice);
+                    continue;
+                }
+                if u.start.is_some() {
+                    started.insert(source);
+                }
+                playing.insert(u.voice, (source, u.fade >= 0.999));
+            }
+        }
+        started
+    };
+    let idle = run(&mut m, &mut playing, 2.0);
+    assert!(idle.is_disjoint(&warm) && idle.is_disjoint(&active), "nothing of the boost while it idles");
+    let names = ["idle", "warmup", "firing", "cooldown"];
+    let set = |m: &mut Mixer, n: usize| {
+        m.post(&format!("boost_{}_b_sidewinder_internal", names[n]), 9).unwrap();
+        for (_, o) in names.iter().enumerate().filter(|(i, _)| *i != n) {
+            m.post(&format!("boost_{o}_e_sidewinder_internal"), 9).unwrap();
+        }
+    };
+    set(&mut m, 1);
+    let s = run(&mut m, &mut playing, 1.0);
+    assert!(!s.is_empty() && s.is_subset(&warm), "warm-up starts the warm-up's layers only: {s:?} of {warm:?}");
+    set(&mut m, 2);
+    let s = run(&mut m, &mut playing, 1.0);
+    let new_active: BTreeSet<Id> = s.difference(&warm).copied().collect();
+    assert!(!new_active.is_empty() && new_active.is_subset(&active), "firing starts the firing's layers: {s:?} of {active:?}");
+    set(&mut m, 3);
+    let s = run(&mut m, &mut playing, 0.5);
+    assert!(s.is_disjoint(&warm) && s.is_disjoint(&active), "cool-down starts none of them");
+    // (Each layer leaves with its own switch fade-out, up to 7 s.)
+    run(&mut m, &mut playing, 8.0);
+    assert!(playing.values().all(|(src, _)| !warm.contains(src) && !active.contains(src)), "cooled down, the layers are gone");
+    set(&mut m, 0);
+    set(&mut m, 1);
+    assert!(!run(&mut m, &mut playing, 1.0).is_empty(), "the containers still wait: a second boost sounds again");
+}
+
+/// A continuous switch container waiting on nothing goes when what holds it is stopped.
+#[test]
+fn a_waiting_switch_container_ends_with_its_loop() {
+    let b = bank();
+    let mut m = Mixer::new(b.clone(), 1);
+    m.post("ShipOrigin_b_sidewinder_internal", 2).unwrap();
+    m.step(1.0);
+    m.post("ShipOrigin_e_sidewinder_internal", 2).unwrap();
+    for _ in 0..40 {
+        m.step(1.0);
+    }
+    m.post("boost_warmup_b_sidewinder_internal", 2).unwrap();
+    assert!(m.step(1.0).iter().all(|u| !matches!(u.output, Output::Audio { .. }) || u.stop), "no container left to start the warm-up");
+}
+
+/// The Wwise Meter on the drives' bus (28bc85e1 on e2c3f9d2) writes game parameter 1e5ba700: its floor (-60 dB) with
+/// nothing playing, and the voices' level summed as powers otherwise (twice a recording's RMS reads 6.02 dB more).
+#[test]
+fn the_meter_writes_its_bus_level() {
+    let gp = Id(0x1e5b_a700);
+    let meter_bus = Id(0xe2c3_f9d2);
+    let base = bank();
+    assert!(base.file.meters.iter().any(|m| m.bus == meter_bus && m.game_parameter == gp));
+    let mut m = Mixer::new(base.clone(), 1);
+    m.step(5.0);
+    assert!((m.game_parameter_id(gp, None) + 60.0).abs() < 1e-6, "nothing playing: the floor");
+    // A recording going through the bus, played alone, at two RMS values (the parameter's ramp taken out to read it).
+    let sound = base
+        .file
+        .objects
+        .iter()
+        .find_map(|(id, o)| match o {
+            Object::Sound(s) if s.plugin_type != 2 => {
+                let bus = base.chain(*id).iter().find_map(|a| base.object(*a).and_then(Object::node).and_then(|n| n.override_bus.as_ref().map(|r| r.id)))?;
+                base.bus_chain(bus).contains(&meter_bus).then_some((*id, s.source_id))
+            }
+            _ => None,
+        })
+        .expect("a recording under the metered bus");
+    let level = |rms: f64| {
+        let b = edited(|f| {
+            f.media.get_mut(&sound.1).unwrap().rms = Some(rms);
+            f.media.get_mut(&sound.1).unwrap().loop_rms = Some(rms);
+            f.game_syncs.game_parameters.get_mut(&gp).unwrap().ramp = data::Ramp::None;
+        })
+        .unwrap();
+        let mut m = Mixer::new(Arc::new(b), 1);
+        m.play_object(sound.0, 4);
+        m.step(0.01);
+        m.step(0.01);
+        m.game_parameter_id(gp, None)
+    };
+    let (a, b2) = (level(0.25), level(0.5));
+    assert!(a > -60.0 && b2 < 0.0, "within the meter's range: {a} {b2}");
+    assert!((b2 - a - 6.0206).abs() < 1e-3, "{a} -> {b2}");
 }
