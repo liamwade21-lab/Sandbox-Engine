@@ -43,7 +43,7 @@ pub struct SoundMotion {
     pub accel_fwd: f64,
     /// The speed-limited turn rates the controller divides the spin by (rad/s; x pitch, y yaw, z roll):
     /// `elite_sim::flight::share_limits` of the current block at the speed now.
-    pub turn_limits: [f64; 3],
+    pub share_limits: [f64; 3],
     /// The physics time simulated this frame: the flight's ticks this frame x the tick (s; 0 in a frame with none).
     pub physics_dt: f64,
     /// The velocity and the spin in the ship's axes (m/s, rad/s; x right, y up, z back; spin x pitch nose up, y yaw nose left,
@@ -63,7 +63,7 @@ impl SoundMotion {
             full_top,
             top: block.top_speed,
             accel_fwd: block.accel_fwd,
-            turn_limits: elite_sim::flight::share_limits(block, speed).to_array(),
+            share_limits: elite_sim::flight::share_limits(block, speed).to_array(),
             physics_dt: ticks as f64 * TICK,
             vel,
             omega,
@@ -248,7 +248,7 @@ mod tests {
         assert!((DVec3::from_array(m.vel) - DVec3::new(0.0, 0.0, -100.0)).length() < 1e-9, "{:?}", m.vel);
         assert_eq!((m.full_top, m.top, m.accel_fwd, m.omega), (full_top, block.top_speed, block.accel_fwd, [0.1, -0.2, 0.3]));
         let w = elite_sim::flight::share_limits(&block, 100.0).to_array();
-        assert!(m.turn_limits.iter().zip(w).all(|(a, b)| (a - b).abs() < 1e-12), "{:?}", m.turn_limits);
+        assert!(m.share_limits.iter().zip(w).all(|(a, b)| (a - b).abs() < 1e-12), "{:?}", m.share_limits);
         assert_eq!(m.mass_k, elite_sim::data::thrusters_mass_k(pilot.mass_t()));
         assert_eq!(m.physics_dt, 0.0, "no tick this frame");
         assert_eq!(SoundMotion::new(&block, full_top, m.vel, m.omega, 3, pilot.mass_t()).physics_dt, 3.0 * TICK);

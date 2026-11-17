@@ -11,12 +11,14 @@
 //! speed, their changes over the physics time simulated, the spin's shares of the speed-limited turn rates (high-passed
 //! with assist off), "stationary", `engine_mass_modifier`; then the audio object's slews on the physics time
 //! (0x14415c5c0, 0x14415c3d0). The flight's numbers come in as `facts::SoundMotion`: nothing of the flight is worked out
-//! here. Not built, for want of an identified source: the producer's state flags 0x37 (the "stopped" test, and the slewed
-//! physics time it selects), 0x48 (the predicted speed in place of the controller's), producer+0xbc8 (which zeroes the
-//! turn lanes), the object at producer+0x688 (which snaps "stationary" to 1), the component's byte D+0x30 (which snaps
-//! speed_relative), the full-power top speed's slew (0xaf0: rate 3 after a change of 10 % or more, or while the object at
-//! producer+0x5f8 answers; not in T5e's table, one of its two thresholds not read) and the Euler decomposition of the spin
-//! (0x1405e0db0: taken as the spin's own components).
+//! here. Not built, for want of an identified source: the producer's state flag 0x37 (the "stopped" test, and the slewed
+//! physics time it selects); the predicted speed (0x14415ebc0 line 126: Elite takes it whenever input +0x95 is 1, assist
+//! on, or flag 0x48 is clear: last update's world velocity plus the physics time x the controller's ship-axis acceleration
+//! +0x710, less a term under flag 0x37; that acceleration's source, body slot 0x170, is not identified, so the flight's
+//! own speed stands in, the same number in steady flight); producer+0xbc8 (which zeroes the turn lanes); the object at
+//! producer+0x688 (which snaps "stationary" to 1); the component's byte D+0x30 (which snaps speed_relative); the gear
+//! component's answer that keeps the full-power top speed slewing (`Producer::slewed_full_top`); and the Euler
+//! decomposition of the spin (0x1405e0db0: taken as the spin's own components).
 
 use elite_sim::drive::Drive;
 
@@ -143,6 +145,12 @@ pub const HIGH_PASS_GAIN: f64 = 2.5;
 pub const HIGH_PASS_MOST: f64 = 2.0;
 /// The pitch and roll lanes' clamp (0x14415deb0 lines 159-180).
 pub const LANE_MOST: f64 = 1.99;
+/// The full-power top speed's slew (0x14415ebc0 lines 153-203, its producer+0xaf0): it slews at this rate (square-root law,
+/// frame time) while `1 - kept / new` is at most `FULL_TOP_DROP` or at least `FULL_TOP_RISE` (the constants at
+/// 0x14556e468, 0x144e29758, 0x144deaa5c, read from the exe), and snaps to the new value otherwise.
+pub const FULL_TOP_DROP: f64 = -0.1;
+pub const FULL_TOP_RISE: f64 = 0.1;
+pub const FULL_TOP_SLEW: f64 = 3.0;
 
 /// The ship audio data producer's motion rules (`motion_rtpcs`, `speed_stationary`: 0x14415ebc0 speeds, accelerations,
 /// target and stationary; 0x14415deb0 rotation), with what they keep from one update to the next. Made afresh whenever the
@@ -156,8 +164,14 @@ pub struct Producer {
     directional: f64,
     /// D+0x2c as slewed (None before the first update: it starts at its target).
     stationary: Option<f64>,
-    /// The high-pass's slewed lanes (pitch, yaw, roll), moved only while assist is off.
+    /// The high-pass's slewed lanes (pitch, yaw, roll), moved only while assist is off, set to the last outputs whenever
+    /// assist changes.
     high_pass: [f64; 3],
+    /// Flight assist as the turn lanes read it (producer+0xbd5: taken from the input at the first update, then at the end of
+    /// every update in which it changed; None before the first update).
+    assist: Option<bool>,
+    /// The full-power top speed as slewed (producer+0xaf0; None before the first update: it starts at the flight's).
+    full_top: Option<f64>,
 }
 
 impl Producer {
@@ -167,7 +181,7 @@ impl Producer {
         let [_, _, vz] = f.vel;
         let s = f.vel.iter().map(|v| v * v).sum::<f64>().sqrt();
         let percent_of = |top: f64| if top > 0.0 { 100.0 * s / top } else { 0.0 };
-        let speed = percent_of(f.full_top);
+        let speed = percent_of(self.slewed_full_top(f.full_top, dt));
         // (Elite's nose is +z, ours -z.)
         let relative = if -vz < -BACKWARDS_MPS { -percent_of(f.top) } else { percent_of(f.top) };
         let (accel, accel_relative, directional) = match self.last {
@@ -180,14 +194,23 @@ impl Producer {
         self.last = Some((speed, relative));
         self.accel = accel;
         self.directional = directional;
-        // The spin's share of each speed-limited turn rate; assist off, only its changes (the high-pass).
-        let mut lane = [0, 1, 2].map(|k| if f.turn_limits[k] > 0.0 { f.omega[k] / f.turn_limits[k] } else { 0.0 });
+        // The spin's share of each speed-limited turn rate; assist off, only its changes (the high-pass). The lanes read
+        // assist as the producer last stored it (0x14415deb0 tests +0xbd5, which the update changes only after it).
+        let mut lane = [0, 1, 2].map(|k| if f.share_limits[k] > 0.0 { f.omega[k] / f.share_limits[k] } else { 0.0 });
         let out_of_control_yaw = lane[1];
-        if !flight_assist {
+        let assist = *self.assist.get_or_insert(flight_assist);
+        if !assist {
             for (l, hp) in lane.iter_mut().zip(self.high_pass.iter_mut()) {
                 *hp = slew(*hp, *l, HIGH_PASS_SLEW, dt);
                 *l = ((*l - *hp) * HIGH_PASS_GAIN).clamp(-HIGH_PASS_MOST, HIGH_PASS_MOST);
             }
+        }
+        let (pitch, yaw, roll) = (lane[0].clamp(-LANE_MOST, LANE_MOST), lane[1], lane[2].clamp(-LANE_MOST, LANE_MOST));
+        // A change of assist (0x144145200 lines 289-298, after the lanes): stored, and the high-pass set to this update's
+        // outputs D+0x34, +0x38, +0x3c, so a change adds nothing.
+        if assist != flight_assist {
+            self.assist = Some(flight_assist);
+            self.high_pass = [pitch, yaw, roll];
         }
         MotionIn {
             accel,
@@ -201,12 +224,27 @@ impl Producer {
             accel_directional: directional,
             target_speed: 100.0 * throttle,
             stationary,
-            pitch: lane[0].clamp(-LANE_MOST, LANE_MOST),
-            yaw: lane[1],
-            roll: lane[2].clamp(-LANE_MOST, LANE_MOST),
+            pitch,
+            yaw,
+            roll,
             speed_rot: lane.iter().map(|l| l.clamp(-1.0, 1.0).abs()).fold(0.0, f64::max),
             out_of_control_yaw,
         }
+    }
+
+    /// The full-power top speed the percents are taken of: the flight's `now`, reached by `FULL_TOP_SLEW` after a change of
+    /// 10 % or more (the gear's or the scoop's halving), snapped after a smaller one. The exe also slews while the gear's
+    /// component answers its slot 0x30 (0x14307e6e0: some leg answers its own slot 0x38, not identified): taken as never.
+    fn slewed_full_top(&mut self, now: f64, dt: f64) -> f64 {
+        let v = match self.full_top {
+            Some(kept) => {
+                let change = if now != 0.0 { 1.0 - kept / now } else { 0.0 };
+                if change <= FULL_TOP_DROP || change >= FULL_TOP_RISE { slew(kept, now, FULL_TOP_SLEW, dt) } else { now }
+            }
+            None => now,
+        };
+        self.full_top = Some(v);
+        v
     }
 
     /// `speed_stationary`: the target 1 with assist on; off, 1 while `speed` moved by more than `STATIONARY_MOVE` since the
@@ -297,8 +335,9 @@ impl ShipView {
 
 /// The old feeder's input, kept only so `voices.rs`'s tests (another task's file) still build: `motion_in` makes the flight's
 /// numbers of a ship flying at `vel` with `top_speed` as both top speeds and no physics time (the throttle is `ShipView`'s
-/// now). TO GO when `voices.rs`'s tests use `stock`.
+/// now). TO GO when `voices.rs`'s tests use `stock` (its writer's change no longer calls it: unused until then).
 #[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Flight {
     pub vel: [f64; 3],
@@ -311,6 +350,7 @@ pub struct Flight {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn motion_in(f: &Flight) -> SoundMotion {
     SoundMotion { full_top: f.top_speed, top: f.top_speed, accel_fwd: f.accel_fwd, vel: f.vel, omega: f.omega, mass_k: 1.0, ..SoundMotion::default() }
 }
@@ -1330,7 +1370,7 @@ mod tests {
     fn a_turn_at_the_full_rate_and_at_half() {
         let top = stock(2.0, [0.0; 3]).top;
         let base = flying(2.0, [0.0, 0.0, -top], true, 1.0);
-        let w = base.motion.turn_limits;
+        let w = base.motion.share_limits;
         // At the top speed the share's divisors are the raw rates x the turn curve's b (0.35 at ENG 2), roll's too.
         let k = elite_sim::data::thrusters_mass_k(elite_sim::data::JOURNAL_UNLADEN_MASS + 2.3);
         for (got, rate) in w.iter().zip([39.0f64, 17.0, 110.0]) {
@@ -1360,7 +1400,7 @@ mod tests {
         let mut v = flying(2.0, [0.0, 0.0, -top], false, 1.0);
         let mut t = Triggers::default();
         settle(&mut t, &v, 5);
-        let w = v.motion.turn_limits;
+        let w = v.motion.share_limits;
         v.motion.omega = [w[0], 0.5 * w[1], 0.0];
         let out = settle(&mut t, &v, 1);
         near(gp(&out, "spaceship_pitch_self"), LANE_MOST, "the step");
@@ -1370,13 +1410,116 @@ mod tests {
         assert!(gp(&out, "spaceship_pitch_self").abs() < 1e-6 && gp(&out, "spaceship_speed_rot_self").abs() < 1e-6, "settled to 0");
         near(gp(&out, "spaceship_outOfControlYaw_self"), 0.5, "raw");
         v.flight_assist = true;
-        let out = settle(&mut t, &v, 1);
+        let out = settle(&mut t, &v, 2);
         near(gp(&out, "spaceship_pitch_self"), 1.0, "assist on");
         let mut out = Vec::new();
         t.teardown(&mut out);
         v.flight_assist = false;
         let out = settle(&mut t, &v, 1);
         near(gp(&out, "spaceship_pitch_self"), LANE_MOST, "a new start: the high-pass from 0");
+    }
+
+    /// The lanes' pitch, yaw and roll this frame.
+    fn lanes(out: &[Call]) -> [f64; 3] {
+        ["spaceship_pitch_self", "spaceship_yaw_self", "spaceship_roll_self"].map(|n| gp(out, n))
+    }
+
+    /// A change of assist reseeds the high-pass with the update's own outputs (0x144145200 lines 289-298, after the lanes,
+    /// which read assist as stored): switched off in a full-rate turn, the switch's frame still gives the share (1) and
+    /// every frame after it 0; switched on in a settled assist-off turn, the switch's frame gives 0 and the next the share;
+    /// switched off at rest after an earlier assist-off turn, nothing at all (the old memory is gone).
+    #[test]
+    fn a_change_of_assist_reseeds_the_high_pass() {
+        let top = stock(2.0, [0.0; 3]).top;
+        let mut v = flying(2.0, [0.0, 0.0, -top], true, 1.0);
+        let w = v.motion.share_limits;
+        let turning = [w[0], 0.5 * w[1], 0.0];
+        // Off in a full-rate turn.
+        let mut t = Triggers::default();
+        v.motion.omega = turning;
+        settle(&mut t, &v, 30);
+        v.flight_assist = false;
+        let first = lanes(&settle(&mut t, &v, 1));
+        near(first[0], 1.0, "the switch's frame: the outputs as assist was");
+        near(first[1], 0.5, "the switch's frame: the outputs as assist was");
+        for frame in 0..120 {
+            let out = settle(&mut t, &v, 1);
+            assert!(lanes(&out).iter().all(|l| l.abs() < 1e-9) && gp(&out, "spaceship_speed_rot_self").abs() < 1e-9, "frame {frame}: {:?}", lanes(&out));
+        }
+        // On again in the (settled) assist-off turn: 0 in the switch's frame, the shares after it.
+        v.flight_assist = true;
+        let first = lanes(&settle(&mut t, &v, 1));
+        assert!(first.iter().all(|l| l.abs() < 1e-9), "{first:?}");
+        let next = lanes(&settle(&mut t, &v, 1));
+        near(next[0], 1.0, "assist on");
+        near(next[1], 0.5, "assist on");
+        // Off at rest after an earlier assist-off turn (begun, then switched on mid-transient, then stopped).
+        let mut t = Triggers::default();
+        v.flight_assist = false;
+        v.motion.omega = [0.0; 3];
+        settle(&mut t, &v, 5);
+        v.motion.omega = turning;
+        settle(&mut t, &v, 30);
+        v.flight_assist = true;
+        settle(&mut t, &v, 2);
+        v.motion.omega = [0.0; 3];
+        settle(&mut t, &v, 60);
+        v.flight_assist = false;
+        for frame in 0..120 {
+            let out = settle(&mut t, &v, 1);
+            assert!(lanes(&out).iter().all(|l| l.abs() < 1e-9), "frame {frame}: {:?} with no spin", lanes(&out));
+        }
+    }
+
+    /// The full-power top speed slews after the gear's or the scoop's halving (sqrt law, rate 3, frame time) until within
+    /// 10 %, then snaps: at 100 m/s speed_self follows that slew (its change a tick at most what the slew gives, never the
+    /// whole halving's 45 points at once), and the last 10 % snap is the exe's own. At rest nothing moves.
+    #[test]
+    fn the_full_power_top_speed_slews_after_the_gear_or_the_scoop() {
+        let speed_of = |full: f64| 100.0 * 100.0 / full;
+        for (gear, scoop) in [(true, false), (false, true), (true, true)] {
+            let k = elite_sim::deployables::speed_factor(gear, scoop);
+            let up = stock(2.0, [0.0, 0.0, -100.0]);
+            let down = SoundMotion { full_top: up.full_top * k, top: up.top * k, ..up };
+            for (from, to) in [(up, down), (down, up)] {
+                let mut t = Triggers::default();
+                let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..from }, ..view() };
+                settle(&mut t, &v, 10);
+                v.motion = SoundMotion { physics_dt: TICK, ..to };
+                // The exe's rule worked alongside: kept, its speed_self, the largest change a tick while slewing.
+                let mut kept = from.full_top;
+                let mut snapped = false;
+                for frame in 0..600 {
+                    let was = speed_of(kept);
+                    let change = 1.0 - kept / to.full_top;
+                    let slewing = change <= FULL_TOP_DROP || change >= FULL_TOP_RISE;
+                    kept = if slewing { slew(kept, to.full_top, FULL_TOP_SLEW, TICK) } else { to.full_top };
+                    let out = settle(&mut t, &v, 1);
+                    let what = format!("gear {gear}, scoop {scoop}, {} to {}, frame {frame}", from.full_top, to.full_top);
+                    near(gp(&out, "spaceship_speed_self"), speed_of(kept), &what);
+                    near(gp(&out, "spaceship_accel_self"), (speed_of(kept) - was) / TICK, &what);
+                    if slewing {
+                        // sqrt law: at most 3 sqrt(110 m/s) / 60 = 0.53 m/s of full-power speed a tick (26 %/s at most, against the snap's 2,700).
+                        assert!(gp(&out, "spaceship_accel_self").abs() < 50.0, "{what}: {}", gp(&out, "spaceship_accel_self"));
+                    } else if !snapped && kept == to.full_top {
+                        snapped = true;
+                        // (The snap: under 10 % of speed_self.)
+                        assert!((speed_of(kept) - was).abs() <= 0.11 * speed_of(kept), "{what}");
+                    }
+                }
+                assert!(snapped && kept == to.full_top, "reached");
+            }
+            // At rest the halving moves nothing.
+            let mut t = Triggers::default();
+            let rest = stock(2.0, [0.0; 3]);
+            let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..rest }, ..view() };
+            settle(&mut t, &v, 5);
+            v.motion = SoundMotion { full_top: rest.full_top * k, top: rest.top * k, ..v.motion };
+            for _ in 0..300 {
+                let out = settle(&mut t, &v, 1);
+                assert_eq!((gp(&out, "spaceship_speed_self"), gp(&out, "spaceship_accel_self")), (0.0, 0.0));
+            }
+        }
     }
 
     /// At rest and landed (ticks running, no motion): every motion input 0, stationary 1 with assist on and 0 with it off
@@ -1479,7 +1622,7 @@ mod tests {
     /// acceleration, moving and spinning.
     #[test]
     fn nothing_non_finite_from_zeros() {
-        let zero = SoundMotion { full_top: 0.0, top: 0.0, accel_fwd: 0.0, turn_limits: [0.0; 3], physics_dt: 0.0, vel: [3.0, -2.0, -50.0], omega: [0.4, -0.2, 1.0], mass_k: 1.0 };
+        let zero = SoundMotion { full_top: 0.0, top: 0.0, accel_fwd: 0.0, share_limits: [0.0; 3], physics_dt: 0.0, vel: [3.0, -2.0, -50.0], omega: [0.4, -0.2, 1.0], mass_k: 1.0 };
         for fa in [true, false] {
             let mut t = Triggers::default();
             for m in [zero, SoundMotion { physics_dt: TICK, ..zero }, SoundMotion { vel: [0.0; 3], ..zero }] {
