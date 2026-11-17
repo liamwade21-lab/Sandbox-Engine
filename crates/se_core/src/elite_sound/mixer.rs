@@ -1720,6 +1720,8 @@ impl Mixer {
 
     /// A plug-in's parameters now: each its block value (`base`), or its curves' (an exclusive curve replaces it, additive
     /// ones add to it), and whether a curve sets it (such a value goes through the plug-in's `SetParam`, its clamps).
+    /// (A Modulator curve on an effect's parameter is not read: modulators are not built, and such an effect is NOT EXACT:
+    /// `SoundBank::effects_not_exact` lists them, and the game logs each when it reads the data.)
     fn plugin_params<const N: usize>(&self, e: &Effect, base: [f64; N], emitter: u32) -> ([f64; N], [bool; N]) {
         let (mut exclusive, mut added, mut set) = ([None::<f64>; N], [0.0f64; N], [false; N]);
         for r in e.rtpc.iter().filter(|r| r.rtpc_type == RtpcType::GameParameter && (r.param_id as usize) < N) {

@@ -171,6 +171,9 @@ fn load_sounds(mut commands: Commands, mut load: ResMut<SoundLoad>) {
 impl ShipSound {
     fn new(l: Loaded) -> ShipSound {
         let mixer = Mixer::new(l.bank.clone(), 1);
+        for (effect, modulator, param) in l.bank.effects_not_exact() {
+            info!("sidewinder sound: effect {effect} is not exact: its modulator {modulator} (on its parameter {param}) is not built, so that parameter keeps its value without it");
+        }
         ShipSound {
             bank: l.bank,
             clips: l.clips,
@@ -586,6 +589,14 @@ mod tests {
         let meter_flying = m.game_parameter_id(se_core::elite_sound::Id(0x1e5b_a700), None);
         eprintln!("audible voices: {rest} at rest, {flying} at 150 m/s; the drives' meter {meter:.1} dB at rest, {meter_flying:.1} flying");
         assert!(flying > 0);
+    }
+
+    /// The one effect of the shipped data that is not exact for want of modulators: the ship voice's Guitar Distortion
+    /// `d1b95c6e` (node `1d2c221f`), its wet share (parameter 65) the LFO modulator `2bf46665`'s curve.
+    #[test]
+    fn the_only_effect_not_exact_is_the_voice_distortion() {
+        use se_core::elite_sound::Id;
+        assert_eq!(shipped().effects_not_exact(), vec![(Id(0xd1b9_5c6e), Id(0x2bf4_6665), se_core::elite_sound::GD_PARAM_WET)]);
     }
 
     /// Nothing the triggers post is an `OPEN_EVENTS` event, and everything they post is a `SHIP_EVENTS` one: the triggers

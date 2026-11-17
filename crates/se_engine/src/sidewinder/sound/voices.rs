@@ -26,15 +26,25 @@
 //! a buffer of 1024 frames and ramped over it). The level comes last, as Wwise applies a voice's volume after its effects.
 //! A sample at the chain's end beyond `filter::CHAIN_BOUND`, or not finite, is the guard's (below).
 //!
+//! **Blocks (T5d-4):** a voice is made a block of `BLOCK` frames (one ramp step) at a time and the output mixes a block at
+//! a time: the controls are taken at the block's start (where the ramp's step took them before), the recording is
+//! resampled into the block, then each filter and effect runs over the whole block, its state held across it
+//! (`Section::run_block`, `Distortion::block`), the level last. Each sample gets the arithmetic it got frame by frame, in
+//! the same order (`blocks_sound_as_frames_did` renders a supercruise entry's voices both ways); a band that is off and a
+//! filter at its bypass value are skipped, as before. A Guitar Distortion is never skipped, even at a wet share of 0: its
+//! DC blocker and level act on the dry signal and its wet path's bands keep their memory. A mono voice stays one channel
+//! until it is mixed.
+//!
 //! **Virtual voices** are not built: a voice is built when the mixer reports it heard (`VoiceUpdate::start`, from where its
 //! virtual behaviour says) and dropped when it goes virtual; a virtual voice costs the audio thread nothing.
 //!
 //! **Starts:** the voices a frame starts are built (decoder set-up, the skip to the start offset, the loop region's
 //! decode: most of a start's cost) on worker threads, one batch a frame, without holding up the game thread
 //! ([`Voices::start_queued`]); a batch is handed to the output whole in the frame its last voice is ready
-//! ([`Voices::hand_over`]), and the output starts all of it at one output frame, so the layers of one event stay aligned
-//! sample for sample (`a_batch_starts_at_one_sample`). The delay is logged with `sw sound log on`. Batches go in the order
-//! they were asked for.
+//! ([`Voices::hand_over`]), and the output starts all of it at one output frame (a block's first), so the layers of one
+//! event stay aligned sample for sample (`a_batch_starts_at_one_sample`). The delay is logged with `sw sound log on`.
+//! Batches go in the order they were asked for. The voices a mixer step stops end at the frame its batch of starts begins
+//! (with no starts in the step, at once), so a set handing over to another leaves no hole (`a_stop_meets_its_steps_starts`).
 //!
 //! **The guard:** a sample of the last stage that is not finite, or beyond the bound, becomes 0, its voice's filters start from rest, and it is
 //! counted (one log line a voice, `Voices::tell_guard`); an update whose level, speed or filter value is not finite is
@@ -64,6 +74,9 @@ const NO_SEEK: u64 = u64::MAX;
 /// one step.
 const RAMP_STEPS: u8 = 8;
 const RAMP_FRAMES: u32 = 128;
+/// The frames a voice makes at a time and the output mixes at a time: one ramp step, so every control value holds across
+/// a block (the level's own ramp goes frame by frame inside it).
+const BLOCK: usize = RAMP_FRAMES as usize;
 /// Starts in one frame up to this many are built on one worker thread; more are shared among several.
 const BUILD_ALONE: usize = 4;
 /// A loop region up to this long (s) is decoded when the voice is built and replayed from memory.
@@ -215,6 +228,9 @@ pub struct VoiceCtl {
     level: AtomicU32,
     /// Stopped: the output drops it.
     stop: AtomicBool,
+    /// Stopped together with a batch of starts (its sequence number; 0 none): the output drops it at the block where that
+    /// batch begins, so a stop and the starts of one mixer step meet at one sample (`Voices::start_queued`).
+    stop_with: AtomicU64,
     fx: FxTable,
     /// Samples of this voice found not finite, and the low-pass, high-pass and speed in force at the first (`f32` bits),
     /// for the one line the game thread logs.
@@ -243,6 +259,7 @@ impl VoiceCtl {
             speed: AtomicU32::new(1f32.to_bits()),
             level: AtomicU32::new(0),
             stop: AtomicBool::new(false),
+            stop_with: AtomicU64::new(0),
             fx: FxTable::default(),
             bad: AtomicU32::new(0),
             first_bad: Default::default(),
@@ -327,10 +344,11 @@ impl Filter {
         }
     }
 
-    fn run(&mut self, chan: usize, x: f32) -> f32 {
-        match (&self.coefs, self.channels.get_mut(chan)) {
-            (Some(c), Some(s)) => s.run(c, x),
-            _ => x,
+    /// The first `n` frames of a block (the channels apart, `BLOCK` apart) in place; a bypassed filter leaves them.
+    fn run_block(&mut self, buf: &mut [f32], n: usize) {
+        let Some(co) = &self.coefs else { return };
+        for (s, chan) in self.channels.iter_mut().zip(buf.chunks_mut(BLOCK)) {
+            s.run_block(co, &mut chan[..n]);
         }
     }
 }
@@ -397,19 +415,19 @@ impl Stage {
         self.dist.reset();
     }
 
-    /// One frame, every channel, in place.
-    fn run(&mut self, frame: &mut [f32]) {
+    /// The first `n` frames of a block of `channels` channels (each `BLOCK` apart) in place: each band that has a section
+    /// over the frames (a band that is off is skipped, as the plug-in skips it), or the distortion over them.
+    fn run_block(&mut self, buf: &mut [f32], channels: usize, n: usize) {
         match self.now {
             FxNow::Eq(_) => {
-                for (c, y) in frame.iter_mut().enumerate() {
-                    for b in &mut self.bands {
-                        if let (Some(co), Some(s)) = (&b.coefs, b.channels.get_mut(c)) {
-                            *y = s.run(co, *y);
-                        }
+                for b in &mut self.bands {
+                    let Some(co) = &b.coefs else { continue };
+                    for (s, chan) in b.channels.iter_mut().zip(buf.chunks_mut(BLOCK)).take(channels) {
+                        s.run_block(co, &mut chan[..n]);
                     }
                 }
             }
-            FxNow::Distortion(_) => self.dist.frame(frame),
+            FxNow::Distortion(_) => self.dist.block(buf, channels, BLOCK, n),
             FxNow::Off => {}
         }
     }
@@ -473,20 +491,18 @@ pub struct VoiceSource {
     cur: Vec<f32>,
     nxt: Vec<f32>,
     phase: f64,
-    /// The output frame made last, and the channel `next` hands out next.
-    out: Vec<f32>,
-    out_chan: usize,
+    /// The block made last (`BLOCK` frames a channel, the channels one after another: a mono voice stays one channel until
+    /// it is mixed), its frames, and the sample the iterator hands out next.
+    buf: Vec<f32>,
+    made: usize,
+    pos: usize,
     speed: SpeedRamp,
     filters: [Filter; 2],
-    /// The effects (room for `MAX_STAGES`, `stages_n` of them in use), the table's sequence last read and a scratch copy;
-    /// the frame being made, a sample a channel.
+    /// The effects (room for `MAX_STAGES`, `stages_n` of them in use), the table's sequence last read and a scratch copy.
     stages: Vec<Stage>,
     stages_n: usize,
     fx_seen: u32,
     fx_read: Box<[FxNow; MAX_STAGES]>,
-    work: Vec<f32>,
-    /// Output frames since the last ramp step.
-    since_step: u32,
     /// The level now and where its ramp goes (over one step).
     level: f32,
     level_to: f32,
@@ -525,16 +541,15 @@ impl VoiceSource {
             cur: vec![0.0; ch],
             nxt: vec![0.0; ch],
             phase: 0.0,
-            out: vec![0.0; ch],
-            out_chan: 0,
+            buf: vec![0.0; ch * BLOCK],
+            made: 0,
+            pos: 0,
             speed: SpeedRamp { now: speed, from: speed, to: speed, step: RAMP_STEPS },
             filters,
             stages,
             stages_n: 0,
             fx_seen: u32::MAX,
             fx_read: Box::new([FxNow::Off; MAX_STAGES]),
-            work: vec![0.0; ch],
-            since_step: 0,
             level,
             level_to: level,
             level_step: 0.0,
@@ -706,26 +721,26 @@ impl VoiceSource {
         }
     }
 
-    /// The next output frame into `self.out`, or false once the voice is over.
-    fn make_frame(&mut self) -> bool {
-        if self.over {
-            return false;
+    /// A ramp step's controls taken (at each block's start: the speed, the filter values and the effects step on, the
+    /// level's ramp to the latest set over the block).
+    fn step_controls(&mut self) {
+        self.speed.tick(f32::from_bits(self.ctl.speed.load(Ordering::Relaxed)));
+        let targets = [self.ctl.lowpass.load(Ordering::Relaxed), self.ctl.highpass.load(Ordering::Relaxed)];
+        for (f, t) in self.filters.iter_mut().zip(targets) {
+            f.tick(f32::from_bits(t));
         }
-        if self.since_step == 0 {
-            self.speed.tick(f32::from_bits(self.ctl.speed.load(Ordering::Relaxed)));
-            let targets = [self.ctl.lowpass.load(Ordering::Relaxed), self.ctl.highpass.load(Ordering::Relaxed)];
-            for (f, t) in self.filters.iter_mut().zip(targets) {
-                f.tick(f32::from_bits(t));
-            }
-            self.read_fx();
-            let to = f32::from_bits(self.ctl.level.load(Ordering::Relaxed));
-            if to.is_finite() {
-                self.level = self.level_to;
-                self.level_to = to.clamp(0.0, MOST_VOLUME);
-                self.level_step = (self.level_to - self.level) / RAMP_FRAMES as f32;
-            }
+        self.read_fx();
+        let to = f32::from_bits(self.ctl.level.load(Ordering::Relaxed));
+        if to.is_finite() {
+            self.level = self.level_to;
+            self.level_to = to.clamp(0.0, MOST_VOLUME);
+            self.level_step = (self.level_to - self.level) / RAMP_FRAMES as f32;
         }
-        self.since_step = (self.since_step + 1) % RAMP_FRAMES;
+    }
+
+    /// The recording's frame pair moved on until the output's position lies between them (the end of the last play sets
+    /// `over`; the frame then made is the last).
+    fn advance(&mut self) {
         while self.phase >= 1.0 {
             std::mem::swap(&mut self.cur, &mut self.nxt);
             let mut next = std::mem::take(&mut self.nxt);
@@ -740,35 +755,57 @@ impl VoiceSource {
                 break;
             }
         }
-        let k = self.phase as f32;
-        self.level += self.level_step;
-        for c in 0..self.work.len() {
-            let x = self.cur[c] + (self.nxt[c] - self.cur[c]) * k;
-            let low = self.filters[0].run(c, x);
-            self.work[c] = self.filters[1].run(c, low);
+    }
+
+    /// The next block into `self.buf`: its frame count, `BLOCK` while the voice plays, fewer in the block where it ends,
+    /// then 0. One block is one ramp step: the controls are taken at its start, the recording is resampled into it (linear
+    /// between its frames), then each filter and each effect runs over the whole block in turn, the level last, frame by
+    /// frame (each sample gets the arithmetic the frame-at-a-time chain gave it, in the same order, so the same bits:
+    /// `blocks_sound_as_frames_did`). The guard acts at the block's end: a bad sample is 0 and the chain starts again from
+    /// rest for the next block.
+    fn make_block(&mut self) -> usize {
+        if self.over {
+            return 0;
+        }
+        self.step_controls();
+        let ch = self.cur.len();
+        let inc = f64::from(self.clip.rate) / f64::from(OUTPUT_RATE) * f64::from(self.speed.now);
+        let mut n = 0;
+        while n < BLOCK && !self.over {
+            self.advance();
+            let k = self.phase as f32;
+            for (c, (a, b)) in self.cur.iter().zip(&self.nxt).enumerate() {
+                self.buf[c * BLOCK + n] = a + (b - a) * k;
+            }
+            self.phase += inc;
+            n += 1;
+        }
+        for f in &mut self.filters {
+            f.run_block(&mut self.buf, n);
         }
         for stage in &mut self.stages[..self.stages_n] {
-            stage.run(&mut self.work);
+            stage.run_block(&mut self.buf, ch, n);
         }
         let mut bad = false;
-        for (o, y) in self.out.iter_mut().zip(&self.work) {
-            *o = if y.is_finite() && y.abs() <= filter::CHAIN_BOUND { y * self.level } else {
-                bad = true;
-                0.0
-            };
+        for i in 0..n {
+            self.level += self.level_step;
+            for c in 0..ch {
+                let y = &mut self.buf[c * BLOCK + i];
+                *y = if y.is_finite() && y.abs() <= filter::CHAIN_BOUND { *y * self.level } else {
+                    bad = true;
+                    0.0
+                };
+            }
         }
         if bad {
             self.not_finite();
         }
-        self.phase += f64::from(self.clip.rate) / f64::from(OUTPUT_RATE) * f64::from(self.speed.now);
-        if self.since_step == 0 {
-            self.ctl.meter.made.fetch_add(u64::from(RAMP_FRAMES), Ordering::Relaxed);
-            self.ctl.made.fetch_add(u64::from(RAMP_FRAMES), Ordering::Relaxed);
-        }
-        true
+        self.ctl.meter.made.fetch_add(n as u64, Ordering::Relaxed);
+        self.ctl.made.fetch_add(n as u64, Ordering::Relaxed);
+        n
     }
 
-    /// The guard of the last stage: a frame with a sample that is not finite or beyond `filter::CHAIN_BOUND` has it as 0,
+    /// The guard of the last stage: a block with a sample that is not finite or beyond `filter::CHAIN_BOUND` has it as 0,
     /// the voice's filters and effects start again from rest, and it is counted (the values in force at the first are kept
     /// for the game thread's log line).
     #[cold]
@@ -790,12 +827,17 @@ impl Iterator for VoiceSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.out_chan == 0 && !self.make_frame() {
-            return None;
+        let ch = self.cur.len().max(1);
+        if self.pos >= self.made * ch {
+            self.made = self.make_block();
+            self.pos = 0;
+            if self.made == 0 {
+                return None;
+            }
         }
-        let s = self.out.get(self.out_chan).copied().unwrap_or(0.0);
-        self.out_chan = (self.out_chan + 1) % self.out.len().max(1);
-        Some(s)
+        let (i, c) = (self.pos / ch, self.pos % ch);
+        self.pos += 1;
+        Some(self.buf[c * BLOCK + i])
     }
 }
 
@@ -838,24 +880,31 @@ impl Returned {
     }
 }
 
-/// The ship's output: every built voice mixed at the output rate into two channels. Batches of voices arrive whole
-/// through `rx` and start at one output frame. On the audio thread it allocates nothing of its own (its lists' room is
-/// made with it), never blocks (`try_recv`, `try_lock`), and drops nothing it can hand back: what ends waits in `held`
-/// and goes to `returned` when its lock is free (a full list drops the rest here, counted in `Meter::dropped_here`).
-/// The channel itself frees a block of its own every 31 batches received (the standard library's list channel).
+/// A batch of starts as the output receives it: its sequence number (from 1, in the order asked for) and its voices.
+type BatchMsg = (u64, Vec<Ready>);
+
+/// The ship's output: every built voice mixed at the output rate into two channels, a block (`BLOCK` frames) at a time.
+/// Batches of voices arrive whole through `rx` and start together at a block's first frame, and the voices stopped with
+/// them (`VoiceCtl::stop_with`) end there. On the audio thread it allocates nothing of its own (its lists' room is made
+/// with it), never blocks (`try_recv`, `try_lock`), and drops nothing it can hand back: what ends waits in `held` and goes
+/// to `returned` when its lock is free (a full list drops the rest here, counted in `Meter::dropped_here`). The channel
+/// itself frees a block of its own every 31 batches received (the standard library's list channel).
 pub struct OutputSource {
-    rx: Receiver<Vec<Ready>>,
+    rx: Receiver<BatchMsg>,
     active: Vec<Ready>,
     held: Returned,
     returned: Arc<Mutex<Returned>>,
-    frame: [f32; 2],
-    chan: usize,
+    /// The block being handed out, its frames' two channels interleaved, and the next sample of it.
+    mix: [f32; 2 * BLOCK],
+    pos: usize,
+    /// The newest batch begun.
+    begun: u64,
     meter: Arc<Meter>,
 }
 
 impl OutputSource {
-    fn new(rx: Receiver<Vec<Ready>>, meter: Arc<Meter>, returned: Arc<Mutex<Returned>>) -> OutputSource {
-        OutputSource { rx, active: Vec::with_capacity(MAX_ACTIVE), held: Returned::with_room(), returned, frame: [0.0; 2], chan: 0, meter }
+    fn new(rx: Receiver<BatchMsg>, meter: Arc<Meter>, returned: Arc<Mutex<Returned>>) -> OutputSource {
+        OutputSource { rx, active: Vec::with_capacity(MAX_ACTIVE), held: Returned::with_room(), returned, mix: [0.0; 2 * BLOCK], pos: 2 * BLOCK, begun: 0, meter }
     }
 
     /// A voice that ended, or a spent batch list, kept to hand back (dropped here only if the room is full).
@@ -891,11 +940,12 @@ impl OutputSource {
         }
     }
 
-    /// One output frame: the batches that arrived join first (all of a batch at this frame), then every voice adds its
-    /// frame; a voice stopped or over is held to be handed back. A frame whose mix passes the limiter's threshold is
-    /// counted.
-    fn mix(&mut self) {
-        while let Ok(mut batch) = self.rx.try_recv() {
+    /// One output block: the batches that arrived join first (all of a batch at its first frame), then every voice adds its
+    /// block (a mono voice to both channels at full level, as the player had it); a voice stopped (at once, or with a
+    /// batch now begun) or over is held to be handed back. Each frame whose mix passes the limiter's threshold is counted.
+    fn mix_block(&mut self) {
+        while let Ok((seq, mut batch)) = self.rx.try_recv() {
+            self.begun = self.begun.max(seq);
             while let Some(r) = batch.pop() {
                 if r.ctl.stop.load(Ordering::Relaxed) {
                     self.hold_voice(r);
@@ -908,25 +958,38 @@ impl OutputSource {
             }
             self.hold_batch(batch);
         }
-        let mut f = [0.0f32; 2];
+        self.mix.fill(0.0);
         let mut i = 0;
         while i < self.active.len() {
             let r = &mut self.active[i];
-            if r.ctl.stop.load(Ordering::Relaxed) || !r.src.make_frame() {
+            let with = r.ctl.stop_with.load(Ordering::Relaxed);
+            let stopped = r.ctl.stop.load(Ordering::Relaxed) || (with != 0 && with <= self.begun);
+            let n = if stopped { 0 } else { r.src.make_block() };
+            let (b, ch) = (&r.src.buf, r.src.cur.len());
+            if ch == 1 {
+                for (f, s) in self.mix.chunks_exact_mut(2).zip(&b[..n]) {
+                    f[0] += s;
+                    f[1] += s;
+                }
+            } else {
+                for (f, (l, rt)) in self.mix.chunks_exact_mut(2).zip(b[..n].iter().zip(&b[BLOCK..BLOCK + n])) {
+                    f[0] += l;
+                    f[1] += rt;
+                }
+            }
+            if n < BLOCK {
                 let done = self.active.swap_remove(i);
                 self.hold_voice(done);
                 continue;
             }
-            let o = &r.src.out;
-            f[0] += o[0];
-            f[1] += o.get(1).copied().unwrap_or(o[0]);
             i += 1;
         }
         let limit = f32::from_bits(self.meter.limit.load(Ordering::Relaxed));
-        if f[0].abs() > limit || f[1].abs() > limit {
-            self.meter.over_limit.fetch_add(1, Ordering::Relaxed);
+        let over = self.mix.chunks_exact(2).filter(|f| f[0].abs() > limit || f[1].abs() > limit).count();
+        if over > 0 {
+            self.meter.over_limit.fetch_add(over as u64, Ordering::Relaxed);
         }
-        self.frame = f;
+        self.pos = 0;
         self.hand_back();
     }
 }
@@ -935,11 +998,11 @@ impl Iterator for OutputSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.chan == 0 {
-            self.mix();
+        if self.pos == self.mix.len() {
+            self.mix_block();
         }
-        let s = self.frame[self.chan];
-        self.chan ^= 1;
+        let s = self.mix[self.pos];
+        self.pos += 1;
         Some(s)
     }
 }
@@ -999,11 +1062,18 @@ pub struct ShipVoice;
 pub struct Voices {
     playing: HashMap<u32, Playing>,
     queued: Vec<Queued>,
+    /// Voices stopped in this mixer step (or gone virtual, or replaced): they end with this step's starts if it has any,
+    /// else at once (`start_queued`).
+    stopping: Vec<Arc<VoiceCtl>>,
     building: VecDeque<Batch>,
-    output: Option<(Entity, Sender<Vec<Ready>>)>,
+    /// The next batch's sequence number.
+    next_batch: u64,
+    output: Option<(Entity, Sender<BatchMsg>)>,
     meter: Arc<Meter>,
-    /// What the output hands back, emptied (and dropped) here every frame.
+    /// What the output hands back, taken here every frame by swapping in `spare` (emptied, its room kept: nothing is
+    /// allocated for it frame to frame).
     returned: Arc<Mutex<Returned>>,
+    spare: Returned,
     /// Voices whose long loop asked for a spare decoder, being made on worker threads.
     spares: Vec<std::thread::JoinHandle<()>>,
     /// The output stopped: its entity, despawned `RETIRE_S` later (the output hands back what ends every frame, so by then
@@ -1016,10 +1086,13 @@ impl Default for Voices {
         Voices {
             playing: HashMap::new(),
             queued: Vec::new(),
+            stopping: Vec::new(),
             building: VecDeque::new(),
+            next_batch: 1,
             output: None,
             meter: Arc::new(Meter::new()),
             returned: Arc::new(Mutex::new(Returned::with_room())),
+            spare: Returned::with_room(),
             spares: Vec::new(),
             retiring: None,
         }
@@ -1053,8 +1126,9 @@ struct Queued {
     region: Option<(u64, u64)>,
 }
 
-/// One frame's starts on worker threads: the threads, when asked, and how many.
+/// One frame's starts on worker threads: its sequence number, the threads, when asked, and how many.
 struct Batch {
+    seq: u64,
     parts: Vec<std::thread::JoinHandle<Vec<Option<Ready>>>>,
     asked: std::time::Instant,
     count: usize,
@@ -1115,9 +1189,10 @@ impl Voices {
     /// is despawned `RETIRE_S` later (`service`); batches still building are dropped when done. A new start meanwhile makes
     /// a new output.
     pub fn stop_all(&mut self, commands: &mut Commands) {
-        for p in self.playing.values() {
-            p.ctl.stop.store(true, Ordering::Relaxed);
+        for ctl in self.playing.values().map(|p| &p.ctl).chain(&self.stopping) {
+            ctl.stop.store(true, Ordering::Relaxed);
         }
+        self.stopping.clear();
         if let Some((e, _)) = self.output.take() {
             if let Some((old, _)) = self.retiring.replace((e, std::time::Instant::now())) {
                 commands.entity(old).try_despawn();
@@ -1131,15 +1206,11 @@ impl Voices {
     /// Once a frame, playing or not: what the output handed back dropped here, the spare decoders long loops asked for
     /// made on worker threads (and the ones they put down dropped), a stopped output despawned once its voices are back.
     pub fn service(&mut self, commands: &mut Commands) {
-        let back = self.returned.lock().map(|mut r| (std::mem::take(&mut r.voices), std::mem::take(&mut r.batches))).ok();
-        if let Some((voices, batches)) = back {
-            drop(voices);
-            drop(batches);
-            if let Ok(mut r) = self.returned.lock() {
-                r.voices.reserve(MAX_ACTIVE);
-                r.batches.reserve(MAX_ACTIVE);
-            }
+        if let Ok(mut r) = self.returned.lock() {
+            std::mem::swap(&mut *r, &mut self.spare);
         }
+        self.spare.voices.clear();
+        self.spare.batches.clear();
         if let Some((e, at)) = self.retiring {
             if at.elapsed().as_secs_f64() > RETIRE_S {
                 commands.entity(e).try_despawn();
@@ -1174,12 +1245,12 @@ impl Voices {
         (self.meter.over_limit.load(Ordering::Relaxed), self.meter.dropped_here.load(Ordering::Relaxed))
     }
 
-    /// One mixer update: queue its voice's start, update it in place, drop it when it goes virtual or stop it. `level`
-    /// maps the mixer's gain to the output's level.
+    /// One mixer update: queue its voice's start, update it in place, drop it when it goes virtual or stop it (at this
+    /// step's starts: `start_queued`). `level` maps the mixer's gain to the output's level.
     pub fn apply<'a>(&mut self, u: &'a VoiceUpdate, clip: Option<&'a Arc<Clip>>, level: f32, log: &mut impl FnMut(Event<'a>)) {
         if u.stop || u.virtual_voice {
             if let Some(p) = self.playing.remove(&u.voice) {
-                p.ctl.stop.store(true, Ordering::Relaxed);
+                self.stopping.push(p.ctl);
                 log(if u.stop { Event::Stopped(u) } else { Event::Virtual(u) });
             }
             self.queued.retain(|q| q.voice != u.voice);
@@ -1193,7 +1264,7 @@ impl Voices {
             log(Event::Started(u, &c.file));
             let ctl = Arc::new(VoiceCtl::new(u, level, self.meter.clone()));
             if let Some(old) = self.playing.insert(u.voice, Playing { ctl: ctl.clone(), clip: c.clone(), fx: u.fx.clone(), told_update: false, told_sample: false, made_seen: 0, restart: loop_restart(region, c.frames) }) {
-                old.ctl.stop.store(true, Ordering::Relaxed);
+                self.stopping.push(old.ctl);
             }
             self.queued.retain(|q| q.voice != u.voice);
             self.queued.push(Queued { voice: u.voice, clip: c.clone(), ctl, start_frame, plays, region });
@@ -1216,11 +1287,17 @@ impl Voices {
     }
 
     /// The frame's queued starts sent to worker threads as one batch (shared among a few threads when there are more than
-    /// `BUILD_ALONE`); the game thread does not wait for them. The output is spawned with the first start.
+    /// `BUILD_ALONE`); the game thread does not wait for them. The output is spawned with the first start. The voices this
+    /// mixer step stopped end where the batch begins (T5d-4: stopped at once, they left a hole of the batch's build time,
+    /// 6 to 13 ms, at every supercruise entry); with no starts in the step they stop at once.
     pub fn start_queued(&mut self, commands: &mut Commands, outputs: &mut Assets<ShipOutput>) {
         if self.queued.is_empty() {
+            self.settle_stops(None);
             return;
         }
+        let seq = self.next_batch;
+        self.next_batch += 1;
+        self.settle_stops(Some(seq));
         if self.output.is_none() {
             let (tx, rx) = channel();
             let h = outputs.add(ShipOutput { ready: Arc::new(Mutex::new(Some(OutputSource::new(rx, self.meter.clone(), self.returned.clone())))) });
@@ -1237,7 +1314,17 @@ impl Voices {
             let part: Vec<Queued> = jobs.by_ref().take(per).collect();
             parts.push(std::thread::spawn(move || part.iter().map(build).collect()));
         }
-        self.building.push_back(Batch { parts, asked: std::time::Instant::now(), count });
+        self.building.push_back(Batch { seq, parts, asked: std::time::Instant::now(), count });
+    }
+
+    /// This step's stopped voices told when to end: with the batch `with` (where it begins), or at once.
+    fn settle_stops(&mut self, with: Option<u64>) {
+        for ctl in self.stopping.drain(..) {
+            match with {
+                Some(seq) => ctl.stop_with.store(seq, Ordering::Relaxed),
+                None => ctl.stop.store(true, Ordering::Relaxed),
+            }
+        }
     }
 
     /// The batches whose voices are all built handed to the output, in the order they were asked for. Returns, for each
@@ -1261,7 +1348,7 @@ impl Voices {
                 warn!("sidewinder sound: {lost} of {} starts could not be built (they stay silent)", b.count);
             }
             if let Some((_, tx)) = &self.output {
-                let _ = tx.send(ready);
+                let _ = tx.send((b.seq, ready));
             }
             done.push((b.count, b.asked.elapsed().as_secs_f64()));
         }
@@ -1476,6 +1563,8 @@ mod tests {
         /// Starts by source, and every start with its time.
         started: HashMap<Id, usize>,
         starts: Vec<(f64, VoiceUpdate)>,
+        /// Each built voice's start and its latest update (a benchmark's snapshot).
+        last: HashMap<u32, (VoiceUpdate, VoiceUpdate)>,
         sources: HashMap<u32, (VoiceSource, Arc<VoiceCtl>, f64)>,
         meter: Arc<Meter>,
         worst: f32,
@@ -1498,6 +1587,7 @@ mod tests {
                 builds: 0,
                 started: HashMap::new(),
                 starts: Vec::new(),
+                last: HashMap::new(),
                 sources: HashMap::new(),
                 meter: Arc::default(),
                 worst: 0.0,
@@ -1535,6 +1625,7 @@ mod tests {
                     if self.built.remove(&u.voice) {
                         self.sources.remove(&u.voice);
                     }
+                    self.last.remove(&u.voice);
                     continue;
                 }
                 if u.start.is_some() {
@@ -1543,6 +1634,7 @@ mod tests {
                     self.builds += 1;
                     *self.started.entry(source).or_default() += 1;
                     self.starts.push((self.simulated, u.clone()));
+                    self.last.insert(u.voice, (u.clone(), u.clone()));
                     if self.audio {
                         let (frame, plays, region) = start_of(&u, clip.rate).unwrap();
                         let ctl = Arc::new(VoiceCtl::new(&u, 1.0, self.meter.clone()));
@@ -1551,6 +1643,9 @@ mod tests {
                     continue;
                 }
                 self.playing.insert(u.voice, (u.emitter, source));
+                if let Some((_, now)) = self.last.get_mut(&u.voice) {
+                    now.clone_from(&u);
+                }
                 if let Some((_, ctl, _)) = self.sources.get(&u.voice) {
                     if let Some(to) = u.seek_to.filter(|t| t.is_finite()) {
                         ctl.seek.store((f64::from(to.max(0.0)) * f64::from(clip.rate)) as u64, Ordering::Relaxed);
@@ -1812,6 +1907,12 @@ mod tests {
         assert_eq!(f32::from_bits(c.speed.load(Ordering::Relaxed)), 1.0);
     }
 
+    /// A batch handed to the output as `hand_over` hands it.
+    fn send_batch(tx: &Sender<BatchMsg>, batch: Vec<Ready>) {
+        static SEQ: AtomicU64 = AtomicU64::new(1);
+        tx.send((SEQ.fetch_add(1, Ordering::Relaxed), batch)).unwrap();
+    }
+
     /// A mono 16-bit WAV clip of the given samples at 48 kHz.
     fn wav(samples: &[i16]) -> Clip {
         let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
@@ -1832,14 +1933,17 @@ mod tests {
     }
 
     /// Two voices built apart (as two worker threads build them) and handed over as one batch while the output is already
-    /// playing start at the same output frame: a click of +0.25 in one and +0.5 in the other add up to 0.75 in a single
-    /// frame, and nothing of either comes before it.
+    /// playing start at the same output frame, the next block's first: a click of +0.25 in one and +0.5 in the other add
+    /// up to 0.75 in a single frame, and nothing of either comes before it.
     #[test]
     fn a_batch_starts_at_one_sample() {
         let (tx, rx) = channel();
         let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
         let early: Vec<f32> = out.by_ref().take(2 * 333).collect();
         assert!(early.iter().all(|s| *s == 0.0), "silent with no voice");
+        let wait = (BLOCK - 333 % BLOCK) % BLOCK;
+        let early: Vec<f32> = out.by_ref().take(2 * wait).collect();
+        assert!(early.iter().all(|s| *s == 0.0), "the rest of the block already mixed");
         let click = |v: i16| {
             let c = Arc::new(wav(&[v, 0, 0, 0, 0, 0, 0, 0]));
             let ctl = ctl();
@@ -1850,12 +1954,162 @@ mod tests {
             let b = s.spawn(|| click(16384));
             vec![a.join().unwrap(), b.join().unwrap()]
         });
-        tx.send(batch).unwrap();
+        send_batch(&tx, batch);
         let after: Vec<f32> = out.by_ref().take(2 * 20).collect();
         let left: Vec<f32> = after.iter().step_by(2).copied().collect();
         assert_eq!(left[0], 0.75, "both clicks in the batch's first frame: {left:?}");
         assert!(left[1..].iter().all(|s| *s == 0.0), "{left:?}");
         assert_eq!(after[1], 0.75, "a mono voice on both channels at full level");
+    }
+
+    /// A stop posted in the same mixer step as starts ends its voice where that step's batch begins, however long the
+    /// batch takes to build: a loop stopped and another started in one step (a supercruise entry's kind) leave no zero
+    /// frame between them, the old one sounding up to the frame the new one starts. Stopped at once, as before T5d-4, the
+    /// same pair leaves a hole as long as the build (shown too). On the game side a step's stops take its batch, or end at
+    /// once when the step has no starts.
+    #[test]
+    fn a_stop_meets_its_steps_starts() {
+        let dc = |v: i16| Arc::new(wav(&vec![v; 4800]));
+        let looped = |clip: Arc<Clip>| {
+            let ctl = ctl();
+            Ready { src: VoiceSource::new(clip, ctl.clone(), 0, None, None), ctl }
+        };
+        for with_batch in [true, false] {
+            let (tx, rx) = channel();
+            let mut out = OutputSource::new(rx, Arc::new(Meter::new()), Arc::default());
+            let a = looped(dc(8192));
+            let a_ctl = a.ctl.clone();
+            tx.send((1, vec![a])).unwrap();
+            let mut got: Vec<f32> = out.by_ref().take(2 * 1000).collect();
+            // The step: the old loop stops, the new one's start goes to be built as batch 2, ready 600 frames (12.5 ms) on.
+            if with_batch {
+                a_ctl.stop_with.store(2, Ordering::Relaxed);
+            } else {
+                a_ctl.stop.store(true, Ordering::Relaxed);
+            }
+            got.extend(out.by_ref().take(2 * 600));
+            tx.send((2, vec![looped(dc(16384))])).unwrap();
+            got.extend(out.by_ref().take(2 * 1000));
+            let left: Vec<f32> = got.iter().step_by(2).copied().collect();
+            let holes = left.iter().filter(|s| **s == 0.0).count();
+            let first_new = left.iter().position(|s| *s == 0.5).unwrap();
+            if with_batch {
+                assert_eq!(holes, 0, "no frame between the stop and the starts is silent");
+                assert!(left[..first_new].iter().all(|s| *s == 0.25) && left[first_new..].iter().all(|s| *s == 0.5), "the old voice up to the frame the new one starts, never both");
+                assert_eq!(first_new % BLOCK, 0, "at a block's first frame");
+            } else {
+                assert!(holes >= 600 - BLOCK, "stopped at once: a hole of {holes} frames");
+            }
+            eprintln!("{}: {holes} silent frames, the new voice from frame {first_new}", if with_batch { "stopped with the batch" } else { "stopped at once" });
+        }
+        // The game side.
+        let update = |stop: bool| VoiceUpdate {
+            voice: 7,
+            output: Output::Audio { source: Id(1) },
+            emitter: 0,
+            position: None,
+            start: (!stop).then_some(se_core::elite_sound::VoiceStart { offset: 0.0, looping: true, loop_count: None, loop_region: None }),
+            stop,
+            seek_to: None,
+            gain: 1.0,
+            volume_db: 0.0,
+            fade: 1.0,
+            pitch: 1.0,
+            pitch_cents: 0.0,
+            lowpass: 0.0,
+            highpass: 0.0,
+            lowpass_hz: None,
+            highpass_hz: None,
+            virtual_voice: false,
+            fx: Vec::new(),
+        };
+        let clip = dc(1);
+        for with in [Some(5), None] {
+            let mut v = Voices::default();
+            let (start, stop) = (update(false), update(true));
+            v.apply(&start, Some(&clip), 1.0, &mut |_| {});
+            let ctl = v.playing[&7].ctl.clone();
+            v.queued.clear();
+            v.apply(&stop, Some(&clip), 1.0, &mut |_| {});
+            assert!(!ctl.stop.load(Ordering::Relaxed) && ctl.stop_with.load(Ordering::Relaxed) == 0, "nothing ends before the step's starts are known");
+            v.settle_stops(with);
+            assert_eq!((ctl.stop.load(Ordering::Relaxed), ctl.stop_with.load(Ordering::Relaxed)), (with.is_none(), with.unwrap_or(0)));
+        }
+    }
+
+    /// The block path against the frame-at-a-time path it replaced (kept here only): a supercruise entry's heard voices
+    /// with their chains (`supercruise_entry`: filters, EQ bands, distortions, mono and stereo, loops) rendered for 4 s of
+    /// audio both ways and mixed in the same order give the same samples (the largest difference is printed: float noise
+    /// at most, from a voice's removal reordering the sum a few frames apart; it is 0 while no voice ends).
+    #[test]
+    #[ignore]
+    fn blocks_sound_as_frames_did() {
+        // The old path: a frame through the chain, a sample a channel (the code before T5d-4).
+        fn old_frame(s: &mut VoiceSource, since_step: &mut u32, out: &mut Vec<f32>) -> bool {
+            if s.over {
+                return false;
+            }
+            if *since_step == 0 {
+                s.step_controls();
+            }
+            *since_step = (*since_step + 1) % RAMP_FRAMES;
+            s.advance();
+            let k = s.phase as f32;
+            s.level += s.level_step;
+            let mut work: Vec<f32> = s.cur.iter().zip(&s.nxt).map(|(a, b)| a + (b - a) * k).collect();
+            for (c, x) in work.iter_mut().enumerate() {
+                for f in &mut s.filters {
+                    if let (Some(co), Some(sec)) = (&f.coefs, f.channels.get_mut(c)) {
+                        *x = sec.run(co, *x);
+                    }
+                }
+            }
+            for stage in &mut s.stages[..s.stages_n] {
+                match stage.now {
+                    FxNow::Eq(_) => {
+                        for (c, y) in work.iter_mut().enumerate() {
+                            for b in &mut stage.bands {
+                                if let (Some(co), Some(sec)) = (&b.coefs, b.channels.get_mut(c)) {
+                                    *y = sec.run(co, *y);
+                                }
+                            }
+                        }
+                    }
+                    FxNow::Distortion(_) => stage.dist.frame(&mut work),
+                    FxNow::Off => {}
+                }
+            }
+            out.clear();
+            out.extend(work.iter().map(|y| if y.is_finite() && y.abs() <= filter::CHAIN_BOUND { y * s.level } else { 0.0 }));
+            s.phase += f64::from(s.clip.rate) / f64::from(OUTPUT_RATE) * f64::from(s.speed.now);
+            true
+        }
+        let set = supercruise_entry(80);
+        let meter = Arc::new(Meter::new());
+        let frames = 48000 * 4;
+        let mut old: Vec<(VoiceSource, u32, bool)> = set.iter().map(|(c, s, u)| (built(c, s, u, &meter).src, 0, true)).collect();
+        let mut want = vec![0.0f32; 2 * frames];
+        let mut o = Vec::new();
+        for f in want.chunks_exact_mut(2) {
+            for (s, since, live) in &mut old {
+                if *live && old_frame(s, since, &mut o) {
+                    f[0] += o[0];
+                    f[1] += o.get(1).copied().unwrap_or(o[0]);
+                } else {
+                    *live = false;
+                }
+            }
+        }
+        let (tx, rx) = channel();
+        let mut out = OutputSource::new(rx, meter.clone(), Arc::default());
+        // (The output pops a batch from its end: reversed, it keeps the set's order, as the old mix above has it.)
+        send_batch(&tx, set.iter().rev().map(|(c, s, u)| built(c, s, u, &meter)).collect());
+        let got: Vec<f32> = out.by_ref().take(2 * frames).collect();
+        let worst = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        let same = got.iter().zip(&want).filter(|(a, b)| a.to_bits() == b.to_bits()).count();
+        let peak = want.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        eprintln!("{} voices, {frames} frames: {same} of {} samples the same bits, the largest difference {worst:e} (the mix's peak {peak:.3})", set.len(), got.len());
+        assert!(worst <= peak * 1e-6, "the block path differs by {worst}");
     }
 
     /// A voice's effects run after its filters, each the exe's: a voice with one EQ band (a peak of -6 dB at 1 kHz) gives
@@ -2104,7 +2358,7 @@ mod tests {
             let ctl = ctl();
             Ready { src: VoiceSource::new(Arc::new(wav(&[30000, 0, 0, 0])), ctl.clone(), 0, Some(1), None), ctl }
         };
-        tx.send(vec![click]).unwrap();
+        send_batch(&tx, vec![click]);
         let _: Vec<f32> = out.by_ref().take(2 * 20).collect();
         let r = returned.lock().unwrap();
         assert_eq!((r.voices.len(), r.batches.len()), (1, 1), "the ended voice and its batch's list are handed back");
@@ -2142,12 +2396,66 @@ mod tests {
                 ctl.fx.write(stages);
                 Ready { src: VoiceSource::new(c.clone(), ctl.clone(), 0, None, None), ctl }
             }).collect();
-            tx.send(batch).unwrap();
+            send_batch(&tx, batch);
             let t = std::time::Instant::now();
             let n = out.by_ref().take(48000 * 2 * 10).filter(|s| s.is_finite()).count();
             let ms = t.elapsed().as_secs_f64() * 1000.0 / 10.0;
             eprintln!("50 voices, {name}: {ms:.1} ms of CPU per second of audio ({n} samples)");
         }
+    }
+
+    /// The heard voices of a real supercruise entry, as the game builds them: the triggers and the mixer through 5 s of
+    /// flight, the charge and 0.5 s of supercruise; each built voice's recording, its start and its latest update (gain,
+    /// pitch, filter values, effects), sorted by voice. Taken round to `n` (the set again from its start) for a benchmark.
+    fn supercruise_entry(n: usize) -> Vec<(Arc<Clip>, VoiceUpdate, VoiceUpdate)> {
+        let mut r = Run::new(false);
+        let v = Run::flying();
+        r.hold(&v, 5.0);
+        r.ramp(&v, CHARGE_S, Drive::Charging);
+        let mut sc = v.clone();
+        sc.mode = 2;
+        sc.drive = Drive::Supercruise;
+        r.hold(&sc, 0.5);
+        let mut ids: Vec<u32> = r.last.keys().copied().collect();
+        ids.sort_unstable();
+        let set: Vec<_> = ids
+            .iter()
+            .filter_map(|id| {
+                let (start, now) = r.last[id].clone();
+                let Output::Audio { source } = start.output else { return None };
+                Some((r.clips.get(&source)?.clone(), start, now))
+            })
+            .collect();
+        set.iter().cycle().take(n).cloned().collect()
+    }
+
+    /// One voice of a snapshot built as the game builds it: its controls from the latest update, its source from the start.
+    fn built(clip: &Arc<Clip>, start: &VoiceUpdate, now: &VoiceUpdate, meter: &Arc<Meter>) -> Ready {
+        let (frame, plays, region) = start_of(start, clip.rate).unwrap();
+        let ctl = Arc::new(VoiceCtl::new(now, 1.0, meter.clone()));
+        Ready { src: VoiceSource::new(clip.clone(), ctl.clone(), frame, plays, region), ctl }
+    }
+
+    /// The audio thread's cost on the ship's own chains: 80 voices of a supercruise entry (its heard voices taken round to
+    /// 80: `supercruise_entry`) mixed by the output for 10 s of audio, in CPU time per second of audio; the stages the
+    /// voices really run are counted (EQ bands with a section, distortions).
+    #[test]
+    #[ignore]
+    fn supercruise_voices_cost() {
+        let set = supercruise_entry(80);
+        let distinct = set.iter().map(|(_, s, _)| s.voice).collect::<std::collections::HashSet<_>>().len();
+        let bands: usize = set.iter().map(|(_, _, u)| u.fx.iter().map(|f| match f { FxNow::Eq(b) => b.iter().filter(|b| b.on).count(), _ => 0 }).sum::<usize>()).sum();
+        let dists = set.iter().map(|(_, _, u)| u.fx.iter().filter(|f| matches!(f, FxNow::Distortion(_))).count()).sum::<usize>();
+        let mono = set.iter().filter(|(c, _, _)| c.channels == 1).count();
+        let meter = Arc::new(Meter::new());
+        let (tx, rx) = channel();
+        let mut out = OutputSource::new(rx, meter.clone(), Arc::default());
+        let batch: Vec<Ready> = set.iter().map(|(c, s, u)| built(c, s, u, &meter)).collect();
+        send_batch(&tx, batch);
+        let t = std::time::Instant::now();
+        let n = out.by_ref().take(48000 * 2 * 10).filter(|s| s.is_finite()).count();
+        let ms = t.elapsed().as_secs_f64() * 1000.0 / 10.0;
+        eprintln!("80 voices of a supercruise entry ({distinct} distinct, {mono} mono; {bands} EQ bands switched on, {dists} distortions): {ms:.1} ms of CPU per second of audio ({n} samples)");
     }
 
     /// The dropout's cause, shown on the player's own sample rate converter (rodio 0.22's `SampleRateConverter`, reached

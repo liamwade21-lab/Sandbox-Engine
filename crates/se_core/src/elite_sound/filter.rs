@@ -109,6 +109,7 @@ fn fast_pow10(x: f32) -> Option<f32> {
 }
 
 /// The fast power's last stage: the float of `bits`' exponent times the quadratic on its mantissa.
+#[inline]
 fn fast_mantissa(bits: u32) -> f32 {
     let m = f32::from_bits((bits & 0x007f_ffff) + 0x3f80_0000);
     let e = f32::from_bits(bits & 0xff80_0000);
@@ -203,6 +204,7 @@ pub struct Section {
 }
 
 impl Section {
+    #[inline]
     pub fn run(&mut self, c: &Coefs, x: f32) -> f32 {
         let x = if x.is_finite() { f64::from(x) } else { 0.0 };
         let y = c.b0 * x + c.b1 * self.x1 + c.b2 * self.x2 - c.a1 * self.y1 - c.a2 * self.y2;
@@ -218,6 +220,17 @@ impl Section {
         *self = Section { x1: x, x2: self.x1, y1: y, y2: self.y1 };
         y as f32
     }
+
+    /// [`Section::run`] on each sample of a block in place, its state held locally across the block: the same arithmetic
+    /// sample for sample, so the same output bits.
+    #[inline]
+    pub fn run_block(&mut self, c: &Coefs, xs: &mut [f32]) {
+        let mut s = *self;
+        for x in xs {
+            *x = s.run(c, *x);
+        }
+        *self = s;
+    }
 }
 
 /// The Guitar Distortion's curves (the `Execute`'s dispatch `FUN_144a068a0` on the type; 0 runs none).
@@ -231,6 +244,7 @@ pub const DISTORTION_HEAVY: u32 = 2;
 
 /// The Overdrive curve of one already gained sample (`FUN_144a07950`; thirds as the exe's `DAT_1457dc0fc` 0.33333331 and
 /// `DAT_1457dc100` 0.66666663).
+#[inline]
 pub fn overdrive(gx: f32) -> f32 {
     const THIRD: f32 = 0.333_333_31;
     const TWO_THIRDS: f32 = 0.666_666_63;
@@ -248,6 +262,7 @@ pub fn overdrive(gx: f32) -> f32 {
 
 /// The Heavy curve of one already gained sample (`FUN_144a07400`: `e^-a` from the float bits `127 x 2^23 - a x 2^23 / ln
 /// 2`, `DAT_1457dc10c`, through the same quadratic; the comparison with `-0.0`, `DAT_144ded02c`, puts 0 with the positives).
+#[inline]
 pub fn heavy(gx: f32) -> f32 {
     let a = gx.abs();
     let e = if a <= 37.0 { fast_mantissa((1_065_353_216.0_f32 - a * 12_102_203.0_f32) as i64 as u32) } else { 0.0 };
@@ -439,6 +454,73 @@ impl Distortion {
             *s = out;
         }
     }
+
+    /// `frames` frames at once, the channels apart (channel `c`'s samples at `buf[c * stride..][..frames]`), in place:
+    /// [`Distortion::frame`]'s arithmetic sample for sample (the same output bits), done a stage at a time over a run of
+    /// frames (each band's section over the run, then the curve and the rectifier, then the mix and the DC blocker), runs
+    /// cut at the buffer's edges and at `CHUNK` frames (the wet signal's room).
+    pub fn block(&mut self, buf: &mut [f32], channels: usize, stride: usize, frames: usize) {
+        const CHUNK: usize = 128;
+        let mut wet = [0.0f32; CHUNK];
+        let mut i = 0;
+        while i < frames {
+            if self.frame == 0 {
+                self.begin_buffer();
+            }
+            let run = (frames - i).min((BUFFER_FRAMES - self.frame) as usize).min(CHUNK);
+            let f0 = self.frame;
+            self.frame = (self.frame + run as u32) % BUFFER_FRAMES;
+            if self.started {
+                let (from, to) = (self.from, self.to);
+                let g = |j: usize| from.at(&to, (f0 + j as u32) as f32 / BUFFER_FRAMES as f32);
+                for c in 0..channels {
+                    let Some(dry) = buf.get_mut(c * stride + i..c * stride + i + run) else { continue };
+                    let w = &mut wet[..run];
+                    w.copy_from_slice(dry);
+                    for b in &mut self.pre {
+                        if let (Some(co), Some(s)) = (&b.coefs, b.channels.get_mut(c)) {
+                            s.run_block(co, w);
+                        }
+                    }
+                    match self.kind {
+                        DISTORTION_OVERDRIVE => w.iter_mut().enumerate().for_each(|(j, x)| {
+                            let g = g(j);
+                            *x = overdrive(g.pre * *x) * g.post;
+                        }),
+                        DISTORTION_HEAVY => w.iter_mut().enumerate().for_each(|(j, x)| {
+                            let g = g(j);
+                            *x = heavy(g.pre * *x) * g.post;
+                        }),
+                        _ => {}
+                    }
+                    if self.rect_mode != 0 {
+                        for (j, x) in w.iter_mut().enumerate() {
+                            let g = g(j);
+                            let floored = if *x <= g.floor { g.floor } else { *x };
+                            *x = if self.rect_mode == 2 && *x <= 0.0 { floored - *x * g.fold } else { floored };
+                        }
+                    }
+                    for b in &mut self.post {
+                        if let (Some(co), Some(s)) = (&b.coefs, b.channels.get_mut(c)) {
+                            s.run_block(co, w);
+                        }
+                    }
+                    let Some(dc) = self.dc.get_mut(c) else { continue };
+                    let mut d = *dc;
+                    for (j, (s, x)) in dry.iter_mut().zip(w.iter()).enumerate() {
+                        let g = g(j);
+                        let y = g.wet * *x + g.dry * *s;
+                        let out = y - d.0 + self.r * d.1;
+                        let out = if out.is_finite() { if out.abs() < FLUSH as f32 { 0.0 } else { out } } else { 0.0 };
+                        d = (if y.is_finite() { y } else { 0.0 }, out);
+                        *s = out;
+                    }
+                    *dc = d;
+                }
+            }
+            i += run;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -477,6 +559,61 @@ mod tests {
                 assert!(y == 0.0 || y.is_normal(), "{y:e}");
             }
             assert_eq!(s, Section::default(), "rung down to nothing");
+        }
+    }
+
+    /// The block forms give the per-sample forms' bits: a section over blocks of uneven lengths, and a stereo distortion
+    /// over 3.5 buffers in blocks of 128 and of 100 frames whose parameters change between buffers (bands switched on and
+    /// off, the curve, the rectifier's two modes, the wet share).
+    #[test]
+    fn blocks_give_the_samples_bits() {
+        let input: Vec<f32> = (0..3584).map(|i| ((i as f32 * 0.037).sin() * 0.7 + (i as f32 * 0.31).cos() * 0.2) * if i % 997 == 0 { 3.0 } else { 1.0 }).collect();
+        let c = eq_coefs(super::super::data::EqFilter::PeakingEq, 900.0, 7.0, 0.8, 48000.0).unwrap();
+        let (mut a, mut b) = (Section::default(), Section::default());
+        let one: Vec<f32> = input.iter().map(|x| a.run(&c, *x)).collect();
+        let mut blk = input.clone();
+        for part in blk.chunks_mut(77) {
+            b.run_block(&c, part);
+        }
+        assert_eq!(one.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), blk.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+        let band = |on, filter, gain_db, frequency| super::super::EqNow { on, filter: Some(filter), frequency, gain_db, q: 1.0 };
+        use super::super::data::EqFilter as F;
+        let params = [
+            super::super::DistortionNow { pre: [band(true, F::LowShelf, 12.5, 462.0), band(false, F::PeakingEq, -2.0, 5200.0), band(true, F::HiShelf, -2.0, 1500.0)], post: [band(true, F::PeakingEq, 3.0, 892.0); 3], kind: DISTORTION_OVERDRIVE, drive: 29.0, tone: 35.0, rectification: 29.0, level: 1.0, wet: 48.0 },
+            super::super::DistortionNow { pre: [band(true, F::PeakingEq, 6.0, 300.0); 3], post: [band(false, F::HiShelf, -3.0, 5522.0); 3], kind: DISTORTION_HEAVY, drive: 70.0, tone: 0.0, rectification: 80.0, level: 0.7, wet: 100.0 },
+            super::super::DistortionNow { pre: [band(false, F::PeakingEq, 0.0, 300.0); 3], post: [band(false, F::PeakingEq, 0.0, 300.0); 3], kind: DISTORTION_NONE, drive: 0.0, tone: 0.0, rectification: 0.0, level: 1.0, wet: 0.0 },
+            super::super::DistortionNow { pre: [band(true, F::LowShelf, 3.0, 200.0); 3], post: [band(true, F::PeakingEq, -6.0, 2000.0); 3], kind: DISTORTION_OVERDRIVE, drive: 100.0, tone: 100.0, rectification: 50.0, level: 1.3, wet: 12.0 },
+        ];
+        for block in [128usize, 100] {
+            let mut p = Distortion::new(2, 48000.0);
+            let mut q = Distortion::new(2, 48000.0);
+            let mut want = Vec::new();
+            for (i, x) in input.iter().enumerate() {
+                if i % BUFFER_FRAMES as usize == 0 {
+                    p.set(&params[i / BUFFER_FRAMES as usize]);
+                }
+                let mut f = [*x, -*x * 0.5];
+                p.frame(&mut f);
+                want.extend(f);
+            }
+            let mut got = vec![0.0f32; input.len() * 2];
+            let mut i = 0;
+            while i < input.len() {
+                let n = block.min(input.len() - i);
+                if i % BUFFER_FRAMES as usize == 0 || (i / BUFFER_FRAMES as usize) != ((i + n - 1) / BUFFER_FRAMES as usize) {
+                    // (A block that reaches a new buffer: the next buffer's values, as `frame` takes them at its start.)
+                    q.set(&params[(i + n - 1) / BUFFER_FRAMES as usize]);
+                }
+                let mut planar: Vec<f32> = input[i..i + n].iter().copied().chain(input[i..i + n].iter().map(|x| -x * 0.5)).collect();
+                q.block(&mut planar, 2, n, n);
+                for j in 0..n {
+                    got[2 * (i + j)] = planar[j];
+                    got[2 * (i + j) + 1] = planar[n + j];
+                }
+                i += n;
+            }
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&got), bits(&want), "blocks of {block}");
         }
     }
 

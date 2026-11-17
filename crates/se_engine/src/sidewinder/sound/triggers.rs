@@ -13,6 +13,14 @@
 //! the state AudioEngineClass from the ship audio component's +0x08 and engine_mass_modifier from its +0x04;
 //! `FUN_14415c5c0` sets spaceship_speed_stationary_self from its +0x2c every frame), but what fills those fields is not
 //! found and no record of the Sidewinder holds them, so each stays at the bank's default.
+//!
+//! T5d-4 looked for the feeder of the component's motion floats again (the systems that declare the component, its getter
+//! `FUN_1413b3650`, the listener `0x14413a370` that hands GameAudioShip the data, scans of the whole code for stores at
+//! its offsets) and did not find it: every motion feed below keeps its reading and stays `UNIT INFERRED`. What the user's
+//! recordings say about two of them (the full-throttle drive layer 02ad84c3 plays 200 cents over the mod's pitch and
+//! 7 dB over its level on three speed plateaus: AudioEngineClass Class1, or speed_relative >= 150, and
+//! accel_relative_smooth >= 12 there, would explain it) is an inference from a pitch and a level, not a reading of the
+//! setters, so nothing here follows it (triggers.json `motion_rtpcs` `t5d4`).
 
 use elite_sim::drive::Drive;
 

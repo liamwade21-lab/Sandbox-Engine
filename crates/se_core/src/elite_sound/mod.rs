@@ -587,6 +587,20 @@ impl SoundBank {
         self.fx_stages.get(&sound).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// The effects the mixer hands out that are NOT EXACT because a modulator drives one of their parameters and
+    /// modulators are not built (the parameter keeps its value without the modulator's curve): each effect's id with the
+    /// modulator and the parameter. In the shipped data one: the Guitar Distortion `d1b95c6e` on the ship voice's node
+    /// `1d2c221f`, whose wet share is the LFO modulator `2bf46665`'s curve (0 to 100 %); that LFO's depth is itself an
+    /// exclusive curve of VesselVoiceGlitch (0 at 0, the parameter's default, which the ship never sets), and what an LFO
+    /// of depth 0 outputs is not given by Audiokinetic's documentation, so the distortion plays dry (wet share 0).
+    pub fn effects_not_exact(&self) -> Vec<(Id, Id, u32)> {
+        self.file
+            .effects
+            .values()
+            .flat_map(|e| e.rtpc.iter().filter(|r| r.rtpc_type == data::RtpcType::Modulator).map(move |r| (e.id, r.game_parameter.id, r.param_id)))
+            .collect()
+    }
+
     fn check_props(&self, p: &Props) -> Result<(), String> {
         for (k, v) in p {
             if !BUILT_PARAMS.contains(&k.as_str()) && !NOT_BUILT_PARAMS.contains(&k.as_str()) {
