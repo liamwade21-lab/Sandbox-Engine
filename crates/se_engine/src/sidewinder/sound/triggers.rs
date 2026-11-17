@@ -16,9 +16,8 @@
 //! on, or flag 0x48 is clear: last update's world velocity plus the physics time x the controller's ship-axis acceleration
 //! +0x710, less a term under flag 0x37; that acceleration's source, body slot 0x170, is not identified, so the flight's
 //! own speed stands in, the same number in steady flight); producer+0xbc8 (which zeroes the turn lanes); the object at
-//! producer+0x688 (which snaps "stationary" to 1); the component's byte D+0x30 (which snaps speed_relative); the gear
-//! component's answer that keeps the full-power top speed slewing (`Producer::slewed_full_top`); and the Euler
-//! decomposition of the spin (0x1405e0db0: taken as the spin's own components).
+//! producer+0x688 (which snaps "stationary" to 1); the component's byte D+0x30 (which snaps speed_relative); and the
+//! Euler decomposition of the spin (0x1405e0db0: taken as the spin's own components).
 
 use elite_sim::drive::Drive;
 
@@ -175,13 +174,14 @@ pub struct Producer {
 }
 
 impl Producer {
-    /// One update: the flight's numbers this frame, the forward demand (-1..1), flight assist and the frame's real seconds.
-    pub fn update(&mut self, f: &SoundMotion, throttle: f64, flight_assist: bool, dt: f64) -> MotionIn {
+    /// One update: the flight's numbers this frame, the forward demand (-1..1), flight assist, whether any gear leg is moving
+    /// (`parts::Gear::moving`) and the frame's real seconds.
+    pub fn update(&mut self, f: &SoundMotion, throttle: f64, flight_assist: bool, gear_moving: bool, dt: f64) -> MotionIn {
         let dtp = f.physics_dt;
         let [_, _, vz] = f.vel;
         let s = f.vel.iter().map(|v| v * v).sum::<f64>().sqrt();
         let percent_of = |top: f64| if top > 0.0 { 100.0 * s / top } else { 0.0 };
-        let speed = percent_of(self.slewed_full_top(f.full_top, dt));
+        let speed = percent_of(self.slewed_full_top(f.full_top, gear_moving, dt));
         // (Elite's nose is +z, ours -z.)
         let relative = if -vz < -BACKWARDS_MPS { -percent_of(f.top) } else { percent_of(f.top) };
         let (accel, accel_relative, directional) = match self.last {
@@ -233,13 +233,16 @@ impl Producer {
     }
 
     /// The full-power top speed the percents are taken of: the flight's `now`, reached by `FULL_TOP_SLEW` after a change of
-    /// 10 % or more (the gear's or the scoop's halving), snapped after a smaller one. The exe also slews while the gear's
-    /// component answers its slot 0x30 (0x14307e6e0: some leg answers its own slot 0x38, not identified): taken as never.
-    fn slewed_full_top(&mut self, now: f64, dt: f64) -> f64 {
+    /// 10 % or more (the gear's or the scoop's halving) or while any gear leg is moving, snapped otherwise. The exe's test
+    /// (0x14415ebc0 lines 158-184): the change first (none when `now` is 0), then the gear component's slot 0x30
+    /// (0x14307e6e0: any leg's slot 0x38, the leg's "moving" test 0x1430c9500, state 1 or 3; T5d-6c); the scoop has no
+    /// condition of its own.
+    fn slewed_full_top(&mut self, now: f64, gear_moving: bool, dt: f64) -> f64 {
         let v = match self.full_top {
             Some(kept) => {
                 let change = if now != 0.0 { 1.0 - kept / now } else { 0.0 };
-                if change <= FULL_TOP_DROP || change >= FULL_TOP_RISE { slew(kept, now, FULL_TOP_SLEW, dt) } else { now }
+                let big = change <= FULL_TOP_DROP || change >= FULL_TOP_RISE;
+                if big || gear_moving { slew(kept, now, FULL_TOP_SLEW, dt) } else { now }
             }
             None => now,
         };
@@ -297,6 +300,8 @@ pub struct ShipView {
     /// The flight's numbers the motion rules read (`facts::SoundMotion`) and the forward demand (-1..1: Elite's input +0x10).
     pub motion: SoundMotion,
     pub throttle: f64,
+    /// Any gear leg moving (`parts::Gear::moving`: the legs' own test, the exe's gear component slot 0x30).
+    pub gear_moving: bool,
     /// The pips (0..4) of systems, engines, weapons.
     pub pips: [f64; 3],
 }
@@ -328,6 +333,7 @@ impl ShipView {
             glide: false,
             motion: SoundMotion { physics_dt: 1.0 / 60.0, ..stock(2.0, [0.0; 3]) },
             throttle: 0.0,
+            gear_moving: false,
             pips: [2.0; 3],
         }
     }
@@ -769,7 +775,7 @@ impl Triggers {
     /// motion_rtpcs, speed_stationary, engine_mass_modifier, power_heat_contacts_rtpcs, player_inside_switch,
     /// supercruise_rtpcs' heat, the charge's game parameters.
     fn motion(&mut self, v: &ShipView, out: &mut Vec<Call>) {
-        let m = self.producer.update(&v.motion, v.throttle, v.flight_assist, v.dt);
+        let m = self.producer.update(&v.motion, v.throttle, v.flight_assist, v.gear_moving, v.dt);
         let dt = v.dt;
         // The audio object's slews run on the physics time (0x144143830 hands 0x14415c5c0 and 0x14415c3d0 D+0x1ac): none
         // moves in a frame with no physics step. speed_relative reads D+0x08 with assist on, D+0x04 with it off.
@@ -1471,48 +1477,58 @@ mod tests {
         }
     }
 
-    /// The full-power top speed slews after the gear's or the scoop's halving (sqrt law, rate 3, frame time) until within
-    /// 10 %, then snaps: at 100 m/s speed_self follows that slew (its change a tick at most what the slew gives, never the
-    /// whole halving's 45 points at once), and the last 10 % snap is the exe's own. At rest nothing moves.
+    /// The full-power top speed slews after the gear's or the scoop's halving (sqrt law, rate 3, frame time) while the
+    /// change is 10 % or more or any gear leg is moving, and snaps otherwise (0x14415ebc0 lines 158-184). At 100 m/s and
+    /// 60 frames a second, worked alongside by the exe's rule: with the legs moving as long as the data has them (down: the
+    /// left door's 2.73 s, then lowering 5.33 s; up: the front leg's rising 5.03 s, then its doors' 2.37 s: `elite_rig`'s
+    /// tests) the slew (7.0 s for the halving) ends on its own and spaceship_accel_self never passes what a slewed tick
+    /// gives; the scoop has no condition, so it ends with the exe's snap inside the 10 % band. At rest nothing moves.
+    /// Prints the largest |spaceship_accel_self| a tick with the legs' answer and without it (T5d-6b).
     #[test]
     fn the_full_power_top_speed_slews_after_the_gear_or_the_scoop() {
+        const LEGS_DOWN_S: f64 = 2.733_333_3 + 5.333_333_5;
+        const LEGS_UP_S: f64 = 5.033_333_3 + 2.366_666_6;
         let speed_of = |full: f64| 100.0 * 100.0 / full;
         for (gear, scoop) in [(true, false), (false, true), (true, true)] {
             let k = elite_sim::deployables::speed_factor(gear, scoop);
             let up = stock(2.0, [0.0, 0.0, -100.0]);
             let down = SoundMotion { full_top: up.full_top * k, top: up.top * k, ..up };
-            for (from, to) in [(up, down), (down, up)] {
-                let mut t = Triggers::default();
-                let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..from }, ..view() };
-                settle(&mut t, &v, 10);
-                v.motion = SoundMotion { physics_dt: TICK, ..to };
-                // The exe's rule worked alongside: kept, its speed_self, the largest change a tick while slewing.
-                let mut kept = from.full_top;
-                let mut snapped = false;
-                for frame in 0..600 {
-                    let was = speed_of(kept);
-                    let change = 1.0 - kept / to.full_top;
-                    let slewing = change <= FULL_TOP_DROP || change >= FULL_TOP_RISE;
-                    kept = if slewing { slew(kept, to.full_top, FULL_TOP_SLEW, TICK) } else { to.full_top };
-                    let out = settle(&mut t, &v, 1);
-                    let what = format!("gear {gear}, scoop {scoop}, {} to {}, frame {frame}", from.full_top, to.full_top);
-                    near(gp(&out, "spaceship_speed_self"), speed_of(kept), &what);
-                    near(gp(&out, "spaceship_accel_self"), (speed_of(kept) - was) / TICK, &what);
-                    if slewing {
-                        // sqrt law: at most 3 sqrt(110 m/s) / 60 = 0.53 m/s of full-power speed a tick (26 %/s at most, against the snap's 2,700).
-                        assert!(gp(&out, "spaceship_accel_self").abs() < 50.0, "{what}: {}", gp(&out, "spaceship_accel_self"));
-                    } else if !snapped && kept == to.full_top {
-                        snapped = true;
-                        // (The snap: under 10 % of speed_self.)
-                        assert!((speed_of(kept) - was).abs() <= 0.11 * speed_of(kept), "{what}");
+            for (from, to, legs_s) in [(up, down, LEGS_DOWN_S), (down, up, LEGS_UP_S)] {
+                for answered in [true, false] {
+                    let mut t = Triggers::default();
+                    let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..from }, ..view() };
+                    settle(&mut t, &v, 10);
+                    v.motion = SoundMotion { physics_dt: TICK, ..to };
+                    let mut kept = from.full_top;
+                    let (mut most, mut snaps) = (0.0f64, 0);
+                    for frame in 0..900 {
+                        v.gear_moving = answered && gear && (frame as f64) * TICK < legs_s;
+                        let was = speed_of(kept);
+                        let change = 1.0 - kept / to.full_top;
+                        let slewing = change <= FULL_TOP_DROP || change >= FULL_TOP_RISE || v.gear_moving;
+                        kept = if slewing { slew(kept, to.full_top, FULL_TOP_SLEW, TICK) } else { to.full_top };
+                        snaps += (!slewing && was != speed_of(kept)) as u32;
+                        let out = settle(&mut t, &v, 1);
+                        let what = format!("gear {gear}, scoop {scoop}, legs answering {answered}, {:.1} to {:.1}, frame {frame}", from.full_top, to.full_top);
+                        near(gp(&out, "spaceship_speed_self"), speed_of(kept), &what);
+                        let accel = gp(&out, "spaceship_accel_self");
+                        near(accel, (speed_of(kept) - was) / TICK, &what);
+                        most = most.max(accel.abs());
+                    }
+                    assert_eq!(kept, to.full_top, "reached");
+                    eprintln!("gear {gear}, scoop {scoop}, {:.1} -> {:.1} m/s, legs answering {answered}: largest |accel_self| {most:.1} %/s, {snaps} snap", from.full_top, to.full_top);
+                    if gear && answered {
+                        // sqrt law: at most 3 sqrt(110 m/s) / 60 = 0.53 m/s of full-power speed a tick: 26 %/s.
+                        assert!(snaps == 0 && most < 30.0, "{most} {snaps}");
+                    } else {
+                        assert!(snaps == 1, "the exe's snap inside the band: {snaps}");
                     }
                 }
-                assert!(snapped && kept == to.full_top, "reached");
             }
             // At rest the halving moves nothing.
             let mut t = Triggers::default();
             let rest = stock(2.0, [0.0; 3]);
-            let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..rest }, ..view() };
+            let mut v = ShipView { motion: SoundMotion { physics_dt: TICK, ..rest }, gear_moving: gear, ..view() };
             settle(&mut t, &v, 5);
             v.motion = SoundMotion { full_top: rest.full_top * k, top: rest.top * k, ..v.motion };
             for _ in 0..300 {

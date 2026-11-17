@@ -377,8 +377,8 @@ fn note_presses(pilot: Res<Pilot>, keys: Res<PilotKeys>, mut p: ResMut<Presses>)
 }
 
 /// The ship's state as the triggers read it: the pilot's state, and the flight's numbers for the engine's inputs as the
-/// facts carry them (`ShipFacts::motion`, the flight's demands).
-fn view(pilot: &Pilot, presses: &Presses, dt: f64, facts: &ShipFacts) -> ShipView {
+/// facts carry them (`ShipFacts::motion`, the flight's demands), and whether any gear leg is moving (`Parts::gear`).
+fn view(pilot: &Pilot, presses: &Presses, dt: f64, facts: &ShipFacts, gear_moving: bool) -> ShipView {
     use elite_sim::boost::State;
     use elite_sim::power::{ENG, SYS, WEP};
     let boost = match pilot.boost.state {
@@ -410,6 +410,7 @@ fn view(pilot: &Pilot, presses: &Presses, dt: f64, facts: &ShipFacts) -> ShipVie
         glide: pilot.glide.is_some(),
         motion: facts.motion,
         throttle: facts.throttle,
+        gear_moving,
         pips: [pilot.dist.pips(SYS), pilot.dist.pips(ENG), pilot.dist.pips(WEP)],
     }
 }
@@ -466,7 +467,7 @@ fn drive(
         info!("sidewinder sound: started");
     }
     let dt = time.delta_secs_f64().min(0.25);
-    let v = view(&pilot, &presses, dt, &facts);
+    let v = view(&pilot, &presses, dt, &facts, parts.gear().moving());
     let mut calls = Vec::new();
     snd.triggers.step(&v, &mut calls);
     snd.call(&calls);
