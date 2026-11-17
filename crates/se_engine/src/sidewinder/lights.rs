@@ -32,7 +32,7 @@
 //! it follows the exposure the frame is drawn with (`super::exposure`).
 //!
 //! The parameters (what feeds each, in the order: the notes, the exe, else the data's default as a labelled stand-in):
-//! - `Option_HeadlightsEnabled` (bool, the headlights): the pilot's lights switch (`Pilot::lights`; the name and the
+//! - `Option_HeadlightsEnabled` (bool, the headlights): the pilot's lights switch (`ShipFacts::headlights`; the name and the
 //!   headlights' spot activity, re/elite/notes/agent_paint.md section 6).
 //! - `Option_LandingGearDeployed` (bool, the two beacons' pairs): the gear as the parts are posed (`Parts::gear`, every leg
 //!   deployed).
@@ -641,7 +641,6 @@ pub fn update(
     assets: Res<SidewinderAssets>,
     parts: Res<Parts>,
     facts: Res<ShipFacts>,
-    pilot: Res<Pilot>,
     time: Res<Time>,
     list: Option<ResMut<LightList>>,
     lights: Option<ResMut<ShipLights>>,
@@ -682,7 +681,7 @@ pub fn update(
         state.scene = Some(now);
     }
     // The parameters.
-    let p = Params::of(facts.heat, facts.radiator, state.dev_headlights.unwrap_or(pilot.lights), parts.gear().deployed());
+    let p = Params::of(facts.heat, facts.radiator, state.dev_headlights.unwrap_or(facts.headlights), parts.gear().deployed());
     let dt = time.delta_secs();
     let st = &mut *state;
     // The GUI panel lamps' colours: FUN_1430dbae0's calls in this frame's real time, the side panels as the facts give them.

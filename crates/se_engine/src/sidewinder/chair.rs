@@ -1,5 +1,5 @@
 //! The pilot chair's animation in the game (ARCHITECTURE.md A6): Elite's own motion graph and clips
-//! (`se_core::elite_chair::Chair`, the reviewed rules) stepped once a frame by the frame's real seconds with what the ship's
+//! (`se_core::elite_chair::Chair`, the reviewed rules) stepped in fixed steps of real time (`STEP_S`) with what the ship's
 //! facts say (`facts::ShipFacts`, nothing else), its pose held in `ChairPose` for `draw` to skin `cockpit_chair` with.
 //! Nothing here draws. The proofs are `re/elite/notes/sidewinder_chair.md` ("Inputs", "Buffets") and `agent_motiongraph.md`
 //! (the variables' table, MG 2.6); the game's feeding of each variable is the notes' section "What the game feeds".
@@ -22,7 +22,7 @@
 //! - `fire`: Elite's `PrimaryFire`, raw (template +0x28): the primary trigger's key or button held, or a test's `sw fire`.
 //! - `velocity_change`: the cockpit point's change of velocity (v + w x r, FUN_1430692a0) in the ship's axes
 //!   (`ShipFacts::cockpit_dv`, the change since the last frame), in Elite's axes through `ShipSpace::direction` (the mirror
-//!   in z is its own inverse).
+//!   in z is its own inverse), spread evenly over the fixed steps that take it (`Clock`), so its sum is unchanged.
 //!
 //! The outside chair (`ext_cockpit_chair`, drawn when nobody is seated) stays in its bind pose: its skeleton is not the
 //! chair's (75 bones, 73 of them at other indices, four of its own: `the_outside_chair_is_rigid`), so `Chair::new` refuses
@@ -41,6 +41,7 @@ use bevy::prelude::*;
 use se_core::catalog::ObjectRef;
 use se_core::elite_asset::parse_edm;
 use se_core::elite_chair::{Chair, ChairError, ChairInputs, ChairSkeleton};
+use se_core::elite_rig::MAX_FRAMES;
 use se_core::elite_ship::{parse_chair_clips, parse_chair_graph, ChairClips, ChairGraph, ShipDataError};
 
 use super::assets::ShipSpace;
@@ -54,6 +55,46 @@ const GRAPH_FILE: &str = "chair/graph.json";
 /// slider), the stick's grip by its trigger's pivot (`chairmale_rightstickmove` tilts the stick under it,
 /// `chairmale_rightstick_yaw` turns it) and the seat (the buffets turn the frame under it).
 const REPORTED: [(&str, &str); 3] = [("throttle lever", "BN_LHAccelLever_joint"), ("stick's grip", "BN_JoyStickTrigger01_joint"), ("seat", "BN_MainChair_joint")];
+/// The chair's step (s of real time). Ours (E): Elite steps the chair once a frame by the frame's time, and its smoothing of
+/// the throttle and the stick takes one sample a step, so its timing would follow the frame rate; here it runs in fixed
+/// steps of 1/60 s, the rate Elite's recordings ran at. A long frame takes several (at most `MAX_FRAMES`, as the parts'
+/// runner; time beyond that is dropped), each with the frame's inputs.
+const STEP_S: f64 = 1.0 / 60.0;
+/// Time short of a whole step by less than this still takes it: the frames' rounding (144 frames of 1/144 s are 60 steps,
+/// not 59 and a remainder).
+const STEP_SLACK_S: f64 = 1e-6;
+
+/// The fixed step's clock: the real time not yet stepped and the cockpit's change of velocity not yet handed to a step.
+#[derive(Clone, Copy, Debug, Default)]
+struct Clock {
+    /// Under one step (s).
+    left_s: f64,
+    /// Elite's axes (m/s).
+    dv: Vec3,
+}
+
+impl Clock {
+    /// A frame of `dt` real seconds in which the cockpit's velocity changed by `dv`: the steps to run and the change of
+    /// velocity each takes, the frame's (with any a frame without a step left) spread evenly over them, so their sum is the
+    /// frames'. A non-finite or negative `dt` is no time, a non-finite `dv` no change.
+    fn advance(&mut self, dt: f32, dv: Vec3) -> (usize, Vec3) {
+        if dt.is_finite() && dt > 0.0 {
+            self.left_s += dt as f64;
+        }
+        if dv.is_finite() {
+            self.dv += dv;
+        }
+        let whole = ((self.left_s + STEP_SLACK_S) / STEP_S).floor();
+        if whole < 1.0 {
+            return (0, Vec3::ZERO);
+        }
+        self.left_s = (self.left_s - whole * STEP_S).max(0.0);
+        let steps = (whole as usize).min(MAX_FRAMES);
+        let each = self.dv / steps as f32;
+        self.dv = Vec3::ZERO;
+        (steps, each)
+    }
+}
 
 /// The chair's files, read and checked at the first spawn (`load`): its clips, its motion graph and its skeleton.
 pub struct ChairData {
@@ -127,6 +168,7 @@ pub struct ChairPose {
     /// The palette last frame, to tell whether the pose changed.
     last: Vec<Mat4>,
     revision: u64,
+    clock: Clock,
     cost: Cost,
     /// For the log: the state, the cross-fade and the clips playing after the last step.
     seen: (String, Option<(u32, u32)>, Vec<String>),
@@ -134,8 +176,7 @@ pub struct ChairPose {
     ship: Option<(ObjectRef, DVec3, DQuat)>,
 }
 
-/// What `draw` reads. (The drawing's next task skins the chair with these; until then only the tests read them.)
-#[allow(dead_code)]
+/// What `draw` reads: the palette and its revision (the bones' matrices and the state for the tests).
 impl ChairPose {
     /// The skinning palette, one matrix per bone of the chair model (`models/cockpit_chair.edm`'s bones, in its order, as
     /// `ChairSkeleton::from_edm` reads them): posed world x inverse bind, in the chair model's space (Elite's axes), so a
@@ -145,6 +186,7 @@ impl ChairPose {
     }
 
     /// Each bone's posed world matrix in the chair model's space (Elite's axes). Empty without a ship.
+    #[cfg(test)]
     pub fn bone_matrices(&self) -> &[Mat4] {
         self.chair.as_ref().map_or(&[], |c| c.bone_matrices())
     }
@@ -155,6 +197,7 @@ impl ChairPose {
     }
 
     /// The graph's state (`Mode_Ship`, `Empty_Ship`, ...; the one being entered during a cross-fade), "" without a ship.
+    #[cfg(test)]
     pub fn state(&self) -> &str {
         self.chair.as_ref().map_or("", |c| c.state())
     }
@@ -170,6 +213,7 @@ impl ChairPose {
                 self.last = c.skin_matrices().to_vec();
                 self.seen = (c.state().to_string(), None, Vec::new());
                 self.chair = Some(c);
+                self.clock = Clock::default();
                 self.revision += 1;
             }
             // (Checked at load, so this would be a bug: the chair stays in its bind pose.)
@@ -177,17 +221,31 @@ impl ChairPose {
         }
     }
 
-    /// One frame of `dt` real seconds with these inputs; the pose's revision moves only if a matrix changed.
-    fn step(&mut self, dt: f32, inputs: &ChairInputs) {
+    /// One step of the chair (`STEP_S`) with these inputs.
+    fn step(&mut self, inputs: &ChairInputs) {
         let Some(chair) = self.chair.as_mut() else { return };
         let t0 = Instant::now();
-        chair.step(dt, inputs);
+        chair.step(STEP_S as f32, inputs);
         let spent = t0.elapsed().as_secs_f64();
         let c = &mut self.cost;
         c.steps += 1;
         c.total_s += spent;
         c.most_s = c.most_s.max(spent);
         c.last_s = spent;
+    }
+
+    /// One frame of `dt` real seconds with these inputs: the whole steps it completes (`Clock::advance`), each with the
+    /// frame's inputs and its share of the change of velocity; the pose's revision moves only if a matrix changed.
+    fn frame(&mut self, dt: f32, inputs: &ChairInputs) {
+        if self.chair.is_none() {
+            return;
+        }
+        let (steps, dv) = self.clock.advance(dt, Vec3::from_array(inputs.velocity_change));
+        let each = ChairInputs { velocity_change: dv.to_array(), ..*inputs };
+        for _ in 0..steps {
+            self.step(&each);
+        }
+        let Some(chair) = self.chair.as_ref() else { return };
         if chair.skin_matrices() != self.last.as_slice() {
             self.last.clear();
             self.last.extend_from_slice(chair.skin_matrices());
@@ -257,8 +315,8 @@ impl ChairPose {
     }
 }
 
-/// Steps the chair once a frame for the parked ship (after `facts::update`); made with a new ship (one nobody sits in that
-/// is not where the last was: a spawn), dropped with it.
+/// Steps the chair by the frame's real time for the parked ship (after `facts::update`); made with a new ship (one nobody
+/// sits in that is not where the last was: a spawn), dropped with it.
 pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship: Res<Sidewinder>, time: Res<Time<Real>>, mut pose: ResMut<ChairPose>) {
     let pose = &mut *pose;
     let Some(p) = ship.parked.as_ref() else {
@@ -274,7 +332,7 @@ pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship:
         pose.make(&assets.chair);
     }
     pose.ship = Some(at);
-    pose.step(time.delta_secs(), &inputs(&facts, &assets.rig.space));
+    pose.frame(time.delta_secs(), &inputs(&facts, &assets.rig.space));
     if pose.log {
         pose.log_changes(time.elapsed_secs_f64());
     }
@@ -321,11 +379,11 @@ mod tests {
         d.skeleton.bones[b].parent as usize
     }
 
-    /// A pose for a parked ship, stepped `secs` at `hz` steps a second with the same facts each step.
+    /// A pose for a parked ship, run `secs` at `hz` frames a second with the same facts each frame.
     fn run(pose: &mut ChairPose, facts: &ShipFacts, secs: f32, hz: f32) {
         let space = ShipSpace { lift: 4.718 };
         for _ in 0..(secs * hz).round() as usize {
-            pose.step(1.0 / hz, &inputs(facts, &space));
+            pose.frame(1.0 / hz, &inputs(facts, &space));
         }
     }
 
@@ -391,7 +449,7 @@ mod tests {
         }
         let rev = pose.revision();
         let palette = pose.skin_matrices().to_vec();
-        pose.step(0.0, &ChairInputs::default());
+        pose.frame(0.0, &ChairInputs::default());
         assert_eq!(pose.skin_matrices(), palette.as_slice());
         assert_eq!(pose.revision(), rev, "a step that changed nothing counted");
         // (Without a ship: nothing to skin with.)
@@ -472,10 +530,10 @@ mod tests {
         run(&mut pose, &seated(), 2.0, 60.0);
         assert!(most_apart(&pose.bone_matrices()[trigger..=trigger], &rest[trigger..=trigger]) < 1e-5);
         // A buffet: a hard knock from the left (the cockpit's velocity changed by 60 m/s to the right in one frame).
-        pose.step(1.0 / 60.0, &inputs(&ShipFacts { cockpit_dv: Vec3::new(60.0, 0.0, 0.0), ..seated() }, &ShipSpace { lift: 4.718 }));
+        pose.frame(1.0 / 60.0, &inputs(&ShipFacts { cockpit_dv: Vec3::new(60.0, 0.0, 0.0), ..seated() }, &ShipSpace { lift: 4.718 }));
         let mut most = 0.0f32;
         for _ in 0..30 {
-            pose.step(1.0 / 60.0, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
+            pose.frame(1.0 / 60.0, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
             most = most.max(most_apart(&pose.bone_matrices()[seat..=seat], &rest[seat..=seat]));
         }
         assert!(most > 1e-3, "the buffet moved the seat {most}");
@@ -483,23 +541,107 @@ mod tests {
         assert!(most_apart(&pose.bone_matrices()[seat..=seat], &rest[seat..=seat]) < 1e-5);
     }
 
-    /// 10 s of the same controls at 30, 60 and 120 steps a second end in the same pose.
+    /// The fixed step: 2 s of the same controls at 30, 60 and 144 frames a second end in the same pose (within 1e-4) and
+    /// pass through the same poses at the same times: every frame's pose is the pose after some step (one fixed step at a
+    /// time) whose time is within one step of the frame's.
     #[test]
     fn the_same_pose_at_any_frame_rate() {
         let d = data();
+        let space = ShipSpace { lift: 4.718 };
         let facts = ShipFacts { throttle: 0.6, pitch: 0.4, roll: -0.3, yaw: 0.5, fire: true, ..seated() };
-        let poses: Vec<Vec<Mat4>> = [30.0, 60.0, 120.0]
-            .into_iter()
-            .map(|hz| {
-                let mut pose = fresh(&d);
-                run(&mut pose, &facts, 10.0, hz);
-                pose.bone_matrices().to_vec()
-            })
-            .collect();
-        for p in &poses[1..] {
-            let apart = most_apart(&poses[0], p);
-            assert!(apart < 1e-3, "{apart}");
+        let mut reference = fresh(&d);
+        let mut steps = vec![reference.bone_matrices().to_vec()];
+        for _ in 0..120 {
+            reference.step(&inputs(&facts, &space));
+            steps.push(reference.bone_matrices().to_vec());
         }
+        for hz in [30.0f32, 60.0, 144.0] {
+            let mut pose = fresh(&d);
+            let frames = (2.0 * hz).round() as usize;
+            for k in 1..=frames {
+                pose.frame(1.0 / hz, &inputs(&facts, &space));
+                let t = k as f64 / hz as f64;
+                let apart = (0..steps.len()).filter(|&n| (n as f64 * STEP_S - t).abs() <= STEP_S + 1e-9).map(|n| most_apart(pose.bone_matrices(), &steps[n])).fold(f32::MAX, f32::min);
+                assert!(apart < 1e-4, "{hz} frames a second, frame {k}: {apart} from every step within one");
+            }
+            let end = most_apart(pose.bone_matrices(), &steps[120]);
+            assert!(end < 1e-4, "{hz} frames a second: {end} from the end");
+        }
+    }
+
+    /// The clock: a second at 144 frames a second (frames without a step) and at 20 (three steps a frame) is 60 steps, and
+    /// the steps' changes of velocity add up to the frames'; no time and no change from non-finite values; a long frame
+    /// takes its steps.
+    #[test]
+    fn the_clock_keeps_the_steps_and_the_change_of_velocity() {
+        for hz in [144.0f32, 20.0] {
+            let (mut clock, mut steps, mut given, mut sent) = (Clock::default(), 0, Vec3::ZERO, Vec3::ZERO);
+            for k in 0..hz as usize {
+                let dv = Vec3::new(k as f32, 1.0, -2.0);
+                let (n, each) = clock.advance(1.0 / hz, dv);
+                steps += n;
+                given += each * n as f32;
+                sent += dv;
+            }
+            assert_eq!(steps, 60, "{hz}");
+            assert!((given - sent).length() < 1e-3, "{hz}: {given} for {sent}");
+        }
+        let mut clock = Clock::default();
+        assert_eq!(clock.advance(f32::NAN, Vec3::NAN), (0, Vec3::ZERO));
+        assert_eq!(clock.advance(-1.0, Vec3::ZERO), (0, Vec3::ZERO));
+        assert_eq!(clock.advance(1.0 / 60.0, Vec3::X), (1, Vec3::X));
+        assert_eq!(Clock::default().advance(0.5, Vec3::ZERO).0, 30);
+    }
+
+    /// The palette's mirror (`ShipSpace::skin`): posed (full throttle, the stick forward and left), every vertex of the chair
+    /// in the mod's axes (as its mesh holds it, `to_mod_space`) skinned by its bone's palette entry lands where the same
+    /// vertex skinned in Elite's axes lands, in the mod's axes; and the bones did move (the throttle lever's vertices among
+    /// them).
+    #[test]
+    fn the_palette_poses_the_mods_vertices_as_elites() {
+        let d = data();
+        let edm = parse_edm(&read_mod(MODEL).unwrap()).unwrap();
+        let space = ShipSpace { lift: 4.718 };
+        let mut pose = fresh(&d);
+        run(&mut pose, &ShipFacts { throttle: 1.0, pitch: -1.0, roll: 1.0, ..seated() }, 3.0, 60.0);
+        let skin = pose.skin_matrices();
+        let (mut moved, mut most) = (0usize, 0.0f32);
+        for raw in edm.draws.iter().flat_map(|d| d.vertices.iter()) {
+            let b = edm.vertex_bone(raw).unwrap();
+            let elite = raw.decode();
+            let mut mods = [elite.clone()];
+            se_core::elite::to_mod_space(&mut mods, &mut []);
+            let (p_e, n_e) = (Vec3::from_array(elite.position), Vec3::from_array(elite.normal));
+            let (p_m, n_m) = (Vec3::from_array(mods[0].position), Vec3::from_array(mods[0].normal));
+            let to_mods = |v: Vec3| Vec3::new(v.x, v.y, -v.z);
+            let want = to_mods(skin[b].transform_point3(p_e));
+            let got = space.skin(skin[b]).transform_point3(p_m);
+            assert!((want - got).length() < 1e-5, "bone {b}: {got} for {want}");
+            let (want_n, got_n) = (to_mods(skin[b].transform_vector3(n_e)), space.skin(skin[b]).transform_vector3(n_m));
+            assert!((want_n - got_n).length() < 1e-5, "bone {b}'s normal: {got_n} for {want_n}");
+            let shift = (want - p_m).length();
+            moved += usize::from(shift > 0.01);
+            most = most.max(shift);
+        }
+        let lever = bone(&d, "BN_LHAccelLever_joint");
+        assert!(most_apart(&skin[lever..=lever], &[Mat4::IDENTITY]) > 1e-3, "the lever's bone moved");
+        assert!(moved > 100, "{moved} vertices moved over 1 cm (most {most} m)");
+        // (For the pictures: how far the seated rest pose, controls centred, stands from the bind pose, bone by bone.)
+        let mut rest = fresh(&d);
+        run(&mut rest, &seated(), 3.0, 60.0);
+        let mut far: Vec<(f32, &str)> = Vec::new();
+        for raw in edm.draws.iter().flat_map(|d| d.vertices.iter()) {
+            let b = edm.vertex_bone(raw).unwrap();
+            let p = Vec3::from_array(raw.decode().position);
+            let shift = (rest.skin_matrices()[b].transform_point3(p) - p).length();
+            match far.iter_mut().find(|(_, n)| *n == d.skeleton.bones[b].name) {
+                Some(f) => f.0 = f.0.max(shift),
+                None => far.push((shift, &d.skeleton.bones[b].name)),
+            }
+        }
+        far.retain(|(s, _)| *s > 1e-3);
+        far.sort_by(|a, b| b.0.total_cmp(&a.0));
+        println!("seated at rest, the bones whose vertices stand over 1 mm from the bind pose (m): {far:?}");
     }
 
     /// Non-finite controls and frame times don't poison the pose: it stays finite and comes back to rest.
@@ -511,8 +653,8 @@ mod tests {
         let rest = pose.bone_matrices().to_vec();
         let bad = ShipFacts { throttle: f64::NAN, pitch: f64::INFINITY, roll: f64::NEG_INFINITY, yaw: f64::NAN, cockpit_dv: Vec3::new(f32::NAN, f32::INFINITY, 0.0), ..seated() };
         run(&mut pose, &bad, 1.0, 60.0);
-        pose.step(f32::NAN, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
-        pose.step(f32::INFINITY, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
+        pose.frame(f32::NAN, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
+        pose.frame(f32::INFINITY, &inputs(&seated(), &ShipSpace { lift: 4.718 }));
         assert!(pose.skin_matrices().iter().all(|m| m.is_finite()));
         run(&mut pose, &seated(), 3.0, 60.0);
         assert!(pose.bone_matrices().iter().all(|m| m.is_finite()));

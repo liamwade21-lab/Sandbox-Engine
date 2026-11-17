@@ -8,7 +8,8 @@
 // - sidewinder_lit.wesl: the lighting (the sandbox's light record at the player's place, which hero_light.wesl writes before
 //   the main pass, as the props take it, and the ship's own lights buffer).
 // Each material compiles only its own family's code (its key's shader def, material.rs `Family::def`). Nothing in a material
-// changes a frame: the light is in the storage buffers.
+// changes a frame: the light is in the storage buffers. A skinned material (the seat's chair, `SHIP_SKINNED`) poses each
+// vertex by its bone's palette matrix before the model's transform (`posed`); an unskinned one compiles as before.
 
 import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_normal_local_to_world, mesh_tangent_local_to_world};
 import bevy_pbr::render::view_transformations::position_world_to_clip;
@@ -31,6 +32,9 @@ import super::sidewinder_glass::{GlassVertex, GlassOut, glass_vertex, glass_cock
 @group(constants::MATERIAL_BIND_GROUP) @binding(8) var tex5: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(9) var<uniform> params: ShipParams;
 // (Bindings 10-13, the ship's lights, are sidewinder_lit.wesl's.)
+// The pilot chair's bone palette (material.rs `ShipPalette`, `PALETTE_BONES` long): per bone, the bind pose to the posed one
+// in the model's space, in the mod's axes. Bound to every material; only a skinned one (the seat's chair) declares it.
+@if(SHIP_SKINNED) @group(constants::MATERIAL_BIND_GROUP) @binding(19) var<storage, read> palette: array<mat4x4<f32>, 142>;
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -41,7 +45,28 @@ struct Vertex {
     @location(3) uv0: vec2<f32>,
     @location(4) uv1: vec2<f32>,
     @location(5) uv2: vec2<f32>,
+    // A skinned model's: the vertex's one bone (material.rs `ATTRIBUTE_BONE`).
+    @if(SHIP_SKINNED) @location(7) bone: u32,
 };
+
+// The vertex posed by its bone, in the model's space, before the model's own transform: position, normal and tangent (the
+// bones turn and scale evenly, so the matrix's 3x3 turns the directions; the world transform normalises them after).
+@if(SHIP_SKINNED)
+fn posed(v: Vertex) -> Vertex {
+    let b = palette[v.bone];
+    let r = mat3x3<f32>(b[0].xyz, b[1].xyz, b[2].xyz);
+    var o = v;
+    o.position = (b * vec4<f32>(v.position, 1.0)).xyz;
+    o.normal = r * v.normal;
+    o.tangent = vec4<f32>(r * v.tangent.xyz, v.tangent.w);
+    return o;
+}
+
+// (Unskinned: as it is.)
+@if(!SHIP_SKINNED)
+fn posed(v: Vertex) -> Vertex {
+    return v;
+}
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -54,7 +79,8 @@ struct VertexOut {
 };
 
 @vertex
-fn vertex(v: Vertex) -> VertexOut {
+fn vertex(input: Vertex) -> VertexOut {
+    let v = posed(input);
     let m = get_world_from_local(v.instance_index);
     let world = mesh_position_local_to_world(m, vec4<f32>(v.position, 1.0));
     var o: VertexOut;

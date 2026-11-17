@@ -7,8 +7,9 @@
 //! (`ShipLights`, A6's contract).
 //!
 //! Made once per Elite material at the first spawn, twice for a material both the outside and the seat's view use (the
-//! seat's draws in its own depth slice: `SEAT_SLICE`); never changed after: per-frame values live in the storage buffers
-//! (`ShipLights`, `ShipScene`, `ShipGlow`, which `lights.rs` writes in place, and `ShipGlass`, which `draw.rs` does).
+//! seat's draws in its own depth slice: `SEAT_SLICE`), and once more for a skinned model's draws (`ShipMaterial::skinned`:
+//! the pilot chair seen from the seat); never changed after: per-frame values live in the storage buffers (`ShipLights`,
+//! `ShipScene`, `ShipGlow`, which `lights.rs` writes in place, and `ShipGlass` and `ShipPalette`, which `draw.rs` does).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
@@ -31,6 +32,11 @@ pub const ATTRIBUTE_UV_2: MeshVertexAttribute = MeshVertexAttribute::new("ShipUv
 /// Elite's vertex colour (`DecodedVertex::colour`, bytes 20-23 / 255): only the glass's shaders read it (its masks), so only
 /// the glass's meshes carry it.
 pub const ATTRIBUTE_COLOUR: MeshVertexAttribute = MeshVertexAttribute::new("ShipColour", 0x5E5D_0003, VertexFormat::Unorm8x4);
+
+/// The vertex's bone (`Edm::vertex_bone`: an index into its model's bones, the palette's order): only the skinned model's
+/// meshes carry it (the pilot chair seen from the seat, whose vertices each hang on one bone), and only a skinned material
+/// (`ShipMaterial::skinned`) reads it.
+pub const ATTRIBUTE_BONE: MeshVertexAttribute = MeshVertexAttribute::new("ShipBone", 0x5E5D_0004, VertexFormat::Uint32);
 
 /// Elite's shader families not drawn yet, by a piece of the shader's name, and why: each comes with its own shader in a later
 /// task.
@@ -853,7 +859,8 @@ const SEAT_GLASS_BIAS: f32 = 4.0e15;
 /// The ship's material: the sandbox's two light buffers, its family's textures (unused ones white) with one repeating,
 /// trilinear, anisotropic sampler, `ShipParams`, the ship's lights buffer and pose, the IES profile, `CockpitParams`, the
 /// scene's exposure inputs (`ShipScene`), the heat effect's glow (`ShipGlow`), the automatic exposure's adapted compensation
-/// (`ShipScene::adapt`), the canopy's glass effects (`ShipGlass`). Made once.
+/// (`ShipScene::adapt`), the canopy's glass effects (`ShipGlass`), the pilot chair's bone palette (`ShipPalette`: bound to
+/// every material, read only by a skinned one). Made once.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 #[bind_group_data(ShipKey)]
 pub struct ShipMaterial {
@@ -893,26 +900,32 @@ pub struct ShipMaterial {
     pub adapt: Handle<ShaderBuffer>,
     #[storage(18, read_only)]
     pub glass: Handle<ShaderBuffer>,
+    #[storage(19, read_only)]
+    pub palette: Handle<ShaderBuffer>,
     pub family: Family,
+    /// Its meshes carry the vertex's bone (`ATTRIBUTE_BONE`) and its vertex stage skins them by the palette (the shader def
+    /// `SHIP_SKINNED`). Never a glass family's (the skinned chair has no glass: `assets.rs` refuses it).
+    pub skinned: bool,
 }
 
-/// A pipeline per family: each compiles only its own surface code.
+/// A pipeline per family, and per skinning: each compiles only its own surface code, and only a skinned one the palette.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ShipKey {
     family: Family,
+    skinned: bool,
 }
 
 impl From<&ShipMaterial> for ShipKey {
     fn from(m: &ShipMaterial) -> Self {
-        ShipKey { family: m.family }
+        ShipKey { family: m.family, skinned: m.skinned }
     }
 }
 
 impl ShipMaterial {
     /// A material of family `family` with its slots' images `textures` (in `Family::slots`' order; `white` for the rest),
-    /// `params` and `cockpit`.
+    /// `params` and `cockpit`; unskinned (`skinned` set after for a skinned model's draw).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, glass: &ShipGlass, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
+    pub fn new(light: &PropLight, lights: &ShipLights, scene: &ShipScene, glow: &ShipGlow, glass: &ShipGlass, palette: &ShipPalette, family: Family, textures: &[Handle<Image>], white: &Handle<Image>, ies: &Handle<Image>, params: ShipParams, cockpit: CockpitParams) -> ShipMaterial {
         let tex = |i: usize| textures.get(i).cloned().unwrap_or_else(|| white.clone());
         ShipMaterial {
             frame: light.frame.clone(),
@@ -932,7 +945,9 @@ impl ShipMaterial {
             glow: glow.buffer.clone(),
             adapt: scene.adapt.clone(),
             glass: glass.buffer.clone(),
+            palette: palette.buffer.clone(),
             family,
+            skinned: false,
         }
     }
 }
@@ -1011,14 +1026,19 @@ impl Material for ShipMaterial {
                 ATTRIBUTE_COLOUR.at_shader_location(6),
             ])?
         } else {
-            layout.0.get_layout(&[
+            let mut attributes = vec![
                 Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
                 Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
                 Mesh::ATTRIBUTE_TANGENT.at_shader_location(2),
                 Mesh::ATTRIBUTE_UV_0.at_shader_location(3),
                 Mesh::ATTRIBUTE_UV_1.at_shader_location(4),
                 ATTRIBUTE_UV_2.at_shader_location(5),
-            ])?
+            ];
+            if key.bind_group_data.skinned {
+                defs.push("SHIP_SKINNED");
+                attributes.push(ATTRIBUTE_BONE.at_shader_location(7));
+            }
+            layout.0.get_layout(&attributes)?
         };
         descriptor.vertex.buffers = vec![vertex_layout];
         for def in defs {
@@ -1174,6 +1194,50 @@ impl ShipScene {
             *slot = *t;
         }
         write_in_place(buffers, &self.buffer, &gpu);
+    }
+}
+
+// ---- The pilot chair's bone palette ----
+
+/// The palette's length: the bones of the seat's chair (`models/cockpit_chair.edm`, 142; `sidewinder_ship.wesl` `palette`
+/// has the same fixed length, so the binding's size is known from the start and the same for every material). A test checks
+/// the shipped chair against it.
+pub const PALETTE_BONES: usize = 142;
+
+/// `sidewinder_ship.wesl` `palette`: a matrix per bone, from the bind pose to the posed one, both in the model's space in
+/// the mod's axes (the vertices' as `assets.rs` decodes them).
+#[derive(ShaderType)]
+struct ShipPaletteGpu {
+    bones: [Mat4; PALETTE_BONES],
+}
+
+/// The buffer holding the pilot chair's palette (`ShipPaletteGpu`), bound to every `ShipMaterial` (only a skinned one reads
+/// it), identities until the first pose; `draw.rs` writes it in place from `chair::ChairPose` when the pose changes.
+#[derive(Resource)]
+pub struct ShipPalette {
+    pub buffer: Handle<ShaderBuffer>,
+    /// The pose's revision last written (`ChairPose::revision`).
+    written: u64,
+}
+
+impl ShipPalette {
+    pub fn new(buffers: &mut Assets<ShaderBuffer>) -> ShipPalette {
+        let rest = ShipPaletteGpu { bones: [Mat4::IDENTITY; PALETTE_BONES] };
+        ShipPalette { buffer: buffers.add(ShaderBuffer::new(crate::stars::gpu_bytes(&rest), RenderAssetUsages::default())), written: 0 }
+    }
+
+    /// Writes the palette in place if the pose's `revision` is not the one last written: `bones` (the mod's axes,
+    /// `assets::ShipSpace::skin`), identities for the bones it lacks (none without a ship: the bind pose).
+    pub fn write(&mut self, buffers: &mut Assets<ShaderBuffer>, revision: u64, bones: impl Iterator<Item = Mat4>) {
+        if revision == self.written {
+            return;
+        }
+        let mut gpu = ShipPaletteGpu { bones: [Mat4::IDENTITY; PALETTE_BONES] };
+        for (slot, m) in gpu.bones.iter_mut().zip(bones) {
+            *slot = m;
+        }
+        write_in_place(buffers, &self.buffer, &gpu);
+        self.written = revision;
     }
 }
 

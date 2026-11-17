@@ -14,9 +14,12 @@ use super::seat::Seat;
 use super::SidewinderAssets;
 
 /// The ship's damage the cockpit's cracks read (0..1): the cockpit's `Damage` parameter is bound to the ship's `ShipDamage`
-/// (FUN_1430c6130, lines 178-188), whose writer was not found (the name's only reference in the exe's strings is that
-/// binding): 0, so the canopy stays whole until it breaches.
-pub const SHIP_DAMAGE: f32 = 0.0;
+/// (FUN_1430c6130, lines 178-188). E: the parameter's name is `ShipDamage`; its writer was not traced (the name's only
+/// reference in the exe's strings is that binding); taken as the hull's damage share, 1 minus the hull's share of its full
+/// strength (`Pilot::hull`).
+pub fn ship_damage(pilot: &Pilot) -> f32 {
+    (1.0 - pilot.hull.strength / pilot.hull.max.max(1e-9)).clamp(0.0, 1.0) as f32
+}
 
 /// The frame shift drive's phase as `JumpEffects` reads it (FUN_142c71440 at 0x142c757a8: the drive's phase byte +0x759).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,8 +47,10 @@ pub struct ShipFacts {
     /// The side panels open (left, right), as the panels stand (`panels::Panels::open`, written by `update`): the GUI panel
     /// lamps' fades.
     pub panels_open: [bool; 2],
-    /// The ship's damage the cracks read: a test's `sw canopy damage F` over `SHIP_DAMAGE`.
+    /// The ship's damage the cracks read: a test's `sw canopy damage F` over `ship_damage`.
     pub damage: f32,
+    /// The headlights' switch (`Option_HeadlightsEnabled`): the pilot's lights switch (`Pilot::lights`).
+    pub headlights: bool,
     /// The heat fraction (heat / capacity), a test's `sw lights heat F` over the ship's.
     pub heat: f64,
     /// The radiator runs: powered and not silent (`elite_sim::heat::visual_dissipation`'s switch).
@@ -58,7 +63,7 @@ pub struct ShipFacts {
     pub dev_heat: Option<f64>,
     /// `sw pose up|down|auto`: a test's gear command over the pilot's (seated, the free camera can't look at the ship).
     pub dev_gear: Option<bool>,
-    /// `sw canopy damage F|auto`: a test's ship damage over `SHIP_DAMAGE`.
+    /// `sw canopy damage F|auto`: a test's ship damage over `ship_damage`.
     pub dev_damage: Option<f32>,
     /// The flight's demands this frame (`Pilot::controls`, the flight's signs): the throttle (forward +1, reverse -1) and the
     /// turn (pitch nose up +, yaw nose left +, roll right wing up +), each -1..1.
@@ -112,7 +117,8 @@ impl ShipFacts {
             seated,
             jump,
             panels_open: prev.panels_open,
-            damage: prev.dev_damage.unwrap_or(SHIP_DAMAGE),
+            damage: prev.dev_damage.unwrap_or_else(|| ship_damage(pilot)),
+            headlights: pilot.lights,
             heat,
             radiator,
             dissipation: visual_dissipation(heat, radiator),
@@ -166,11 +172,19 @@ mod tests {
         assert_eq!(f.param("HeatRadiator_VisualActiveDissipation"), Some(visual_dissipation(f.heat, true).active));
         assert_eq!(f.param("cockpitAmberLightIntensity"), None);
         assert!(ShipFacts::of(&pilot, &keys, false, Vec3::ZERO, &f).gear_down);
-        assert!(f.damage == SHIP_DAMAGE && f.panels_open == [false; 2]);
+        assert!(f.damage == 0.0 && f.panels_open == [false; 2] && !f.headlights, "a whole hull, the lights off");
         let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), dev_damage: Some(0.65), panels_open: [true, false], ..f };
         let g = ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev);
         assert!(g.gear_down && g.heat == 1.6 && g.dissipation.active == 1.0 && g.dev_heat == Some(1.6) && g.dev_gear == Some(true));
         assert!(g.damage == 0.65 && g.dev_damage == Some(0.65) && g.panels_open == [true, false], "the damage's override; the panels kept");
+        // The damage is the hull's lost share (none past empty), the headlights the pilot's switch.
+        pilot.lights = true;
+        for (left, want) in [(0.5, 0.5), (0.2, 0.8), (0.05, 0.95), (0.0, 1.0)] {
+            pilot.hull.strength = left * pilot.hull.max;
+            let h = ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &f);
+            assert!((h.damage - want).abs() < 1e-6 && h.headlights, "{left}: {}", h.damage);
+        }
+        assert_eq!(ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev).damage, 0.65, "the test's override over the hull's");
         pilot.silent = true;
         assert_eq!(ShipFacts::of(&pilot, &keys, true, Vec3::ZERO, &dev).dissipation, VisualDissipation::default());
     }

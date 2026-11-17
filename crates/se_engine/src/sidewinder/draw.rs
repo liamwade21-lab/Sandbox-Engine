@@ -7,7 +7,9 @@
 //! slice (`material::SEAT_SLICE`); from anywhere else (parked, walking round it, the free camera) only the hull rig's, the
 //! gear rigs' and the outside chair; a node the state machines hide (`Parts::shown`: the `KModelState` activities, the
 //! windscreen once breached, its broken twin while whole) in neither. Made once, the first time the files are read; never
-//! changed after.
+//! changed after. The seat's chair moves by its vertices' bones: its meshes carry them and its materials are skinned ones
+//! (`ShipMaterial::skinned`), posed by the pilot chair's palette (`ShipPalette`, written in place from `chair::ChairPose`
+//! when the pose changes: `skin`); the outside chair stays in its bind pose.
 
 use std::collections::HashMap;
 
@@ -23,7 +25,8 @@ use crate::universe::ScaledSpace;
 
 use super::assets::ShipBuild;
 use super::lights::{self, LightList};
-use super::material::{self, Family, GlassEffects, ShipGlass, ShipGlow, ShipLights, ShipMaterial, ShipScene, TexSource};
+use super::chair::ChairPose;
+use super::material::{self, Family, GlassEffects, ShipGlass, ShipGlow, ShipLights, ShipMaterial, ShipPalette, ShipScene, TexSource};
 use super::parts::Parts;
 use super::{Sidewinder, SidewinderAssets};
 
@@ -59,7 +62,11 @@ pub struct ShipDraw {
 pub fn build(app: &mut App) {
     material::build(app);
     lights::build(app);
-    app.init_resource::<Parts>().init_resource::<super::facts::ShipFacts>().add_systems(Update, make.run_if(resource_exists::<ShipBuild>)).add_systems(
+    app.init_resource::<Parts>()
+        .init_resource::<super::facts::ShipFacts>()
+        .add_systems(Update, make.run_if(resource_exists::<ShipBuild>))
+        .add_systems(PostUpdate, skin.run_if(resource_exists::<SidewinderAssets>).after(super::chair::update))
+        .add_systems(
         PostUpdate,
         // (The facts first: from this frame's flight, before the machines, the lights and the sound read them.)
         (super::facts::update, super::parts::update, lights::update, place)
@@ -108,21 +115,24 @@ fn make(
     let scene = ShipScene::new(&mut buffers, &lights::scene_inputs(0.0, crate::exposure::AutoExposureSettings::default().target_bright));
     let glow = ShipGlow::new(&mut buffers);
     let glass = ShipGlass::new(&mut buffers);
+    let palette = ShipPalette::new(&mut buffers);
     // (The heat effect's element: the outside materials of that name; only the hull's model has one outside.)
     let glow_element = rig.ship.machines.iter().flat_map(|m| &m.states).find_map(lights::HeatEffect::of_state).map(|e| e.element.to_lowercase());
     let resolved = std::mem::take(&mut build.materials);
     let mut constants: HashMap<[u8; 4], Handle<Image>> = HashMap::new();
-    // One material per Elite material and set (the seat's pieces draw in the seat's depth slice).
-    let mut mats: HashMap<(String, bool), Handle<ShipMaterial>> = HashMap::new();
+    // One material per Elite material, set (the seat's pieces draw in the seat's depth slice) and skinning (the seat's
+    // chair's draws carry their bones).
+    let mut mats: HashMap<(String, bool, bool), Handle<ShipMaterial>> = HashMap::new();
     let mut pieces = Vec::new();
     for (i, node) in rig.nodes.iter().enumerate() {
         let Some(model) = node.model else { continue };
         let inside = node.group.inside();
+        let skinned = rig.models[model].skinned;
         for (key, mesh) in rig.models[model].draws.iter().zip(&model_meshes[model]) {
             // (Every drawn material was resolved when the files were read: `ShipBuild::materials`.)
             let Some(r) = resolved.get(key) else { continue };
             let mat = mats
-                .entry((key.clone(), inside))
+                .entry((key.clone(), inside, skinned))
                 .or_insert_with(|| {
                     if let Some(m) = rig.materials.get(key) {
                         let unread = material::unaccounted_attributes(m);
@@ -141,7 +151,7 @@ fn make(
                     let mut params = if inside { r.params.in_seat() } else { r.params };
                     params.lights = list.range(inside);
                     params.heat_glow.x = (!inside && glow_element.as_deref() == Some(key.as_str())) as u32;
-                    ship_materials.add(ShipMaterial::new(&light, &lights, &scene, &glow, &glass, r.family, &tex, &white, &ies, params, r.cockpit))
+                    ship_materials.add(ShipMaterial { skinned, ..ShipMaterial::new(&light, &lights, &scene, &glow, &glass, &palette, r.family, &tex, &white, &ies, params, r.cockpit) })
                 })
                 .clone();
             pieces.push(
@@ -159,14 +169,15 @@ fn make(
             );
         }
     }
-    let families: std::collections::HashSet<(Family, bool)> = mats.keys().filter_map(|(k, inside)| Some((resolved.get(k)?.family, *inside))).collect();
-    info!("sidewinder: the ship's materials: {} ({} pipelines by family and set), {} textures, {} constants", mats.len(), families.len(), textures.len(), constants.len());
+    let families: std::collections::HashSet<(Family, bool, bool)> = mats.keys().filter_map(|(k, inside, skinned)| Some((resolved.get(k)?.family, *inside, *skinned))).collect();
+    info!("sidewinder: the ship's materials: {} ({} pipelines by family, set and skinning), {} textures, {} constants", mats.len(), families.len(), textures.len(), constants.len());
     info!("sidewinder: the ship's lights: {} slots, {} the hull's (the outside's range), {} the cockpit's", list.lamps.len(), list.hull, list.lamps.len() - list.hull);
     commands.insert_resource(list);
     commands.insert_resource(lights);
     commands.insert_resource(scene);
     commands.insert_resource(glow);
     commands.insert_resource(glass);
+    commands.insert_resource(palette);
     info!("sidewinder: the ship's {} meshes are made ({} models, {} materials, {} textures)", pieces.len(), model_meshes.len(), mats.len(), textures.len());
     // The lasers' beams: one box each, from its gun along -Z, a metre long before it is stretched; a light of its own so it
     // shows by day and night.
@@ -182,6 +193,14 @@ fn make(
         commands.spawn((Name::new("Sidewinder laser beam"), Beam(i), Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling));
     }
     commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX });
+}
+
+/// The pilot chair's palette (`ShipPalette`) written in place when its pose changed (`ChairPose::revision`): each bone's
+/// skinning matrix turned into the mod's axes (`ShipSpace::skin`); identities without a ship (the bind pose).
+fn skin(assets: Res<SidewinderAssets>, pose: Res<ChairPose>, palette: Option<ResMut<ShipPalette>>, mut buffers: ResMut<Assets<ShaderBuffer>>) {
+    let Some(mut palette) = palette else { return };
+    let space = assets.rig.space;
+    palette.write(&mut buffers, pose.revision(), pose.skin_matrices().iter().map(|m| space.skin(*m)));
 }
 
 /// The parked ship where it stands this frame, from the camera, as `place_props` places the props; the canopy's glass effects

@@ -27,7 +27,7 @@ use se_core::elite_asset::{parse_edm, Binds, Edm, VertexDecode};
 use se_core::elite_rig::{self, BoneTable, NodePose, RigError, Values};
 use se_core::elite_ship::{parse_materials, parse_ship, Machine, Materials, Paint, Rig, Ship};
 
-use super::material::{self, Family, ATTRIBUTE_COLOUR, ATTRIBUTE_UV_2};
+use super::material::{self, Family, ATTRIBUTE_BONE, ATTRIBUTE_COLOUR, ATTRIBUTE_UV_2};
 
 const SHIP_FILE: &str = "ship.json";
 const MATERIALS_FILE: &str = "materials.json";
@@ -88,6 +88,14 @@ impl ShipSpace {
         (DMat4::from_translation(DVec3::new(0.0, self.lift, 0.0)) * MIRROR * m * MIRROR).as_mat4()
     }
 
+    /// A skinning matrix of a model's bone (bind pose to posed, both in the model's own space in Elite's axes, as
+    /// `elite_chair` gives them), as one for the model's vertices in the mod's axes (`to_mod_space`): the mirror on the right
+    /// takes the vertex into Elite's axes, where the matrix applies, and the one on the left takes the result back. No lift:
+    /// the node's matrix (`matrix`) places the model after.
+    pub fn skin(&self, m: Mat4) -> Mat4 {
+        (MIRROR * m.as_dmat4() * MIRROR).as_mat4()
+    }
+
     /// `point` undone.
     #[cfg(test)]
     pub fn elite_point(&self, p: Vec3) -> DVec3 {
@@ -142,10 +150,12 @@ pub struct ShipNode {
 }
 
 /// A model the ship draws: its draws that are drawn now (`material::material_drawn`), each by its material's key in
-/// `materials.json`.
+/// `materials.json`, and whether its meshes carry the vertices' bones to be skinned by the pilot chair's palette (the seat's
+/// chair alone).
 #[derive(Clone, Debug)]
 pub struct ShipModel {
     pub draws: Vec<String>,
+    pub skinned: bool,
 }
 
 /// A gear rig and where it hangs: the hull rig's node and that node's model's bone.
@@ -385,17 +395,24 @@ struct Decoded {
     solid: bool,
     /// Glass: its mesh carries the vertex's colour (`material::ATTRIBUTE_COLOUR`).
     glass: bool,
+    /// A skinned model's: each vertex's bone (`Edm::vertex_bone`), carried as `material::ATTRIBUTE_BONE`.
+    bones: Option<Vec<u32>>,
 }
 
 fn model_file(name: &str) -> String {
     format!("models/{name}.edm")
 }
 
-/// A model's drawn draws (`material::material_drawn`): their materials' keys and their vertices decoded in the mod's axes.
-fn decode_model(edm: &Edm, materials: &Materials, paint: &Paint, name: &str) -> Result<(ShipModel, Vec<Decoded>), Fault> {
+/// A model's drawn draws (`material::material_drawn`): their materials' keys and their vertices decoded in the mod's axes;
+/// for a `skinned` model each vertex's bone too (its heaviest, `Edm::vertex_bone`: the seat's chair hangs every vertex on
+/// one bone).
+fn decode_model(edm: &Edm, materials: &Materials, paint: &Paint, name: &str, skinned: bool) -> Result<(ShipModel, Vec<Decoded>), Fault> {
     let bad = |why: String| (model_file(name), why);
     if edm.vertex_decode != VertexDecode::Elite {
         return Err(bad("not one of Elite's models (its vertices aren't Elite's)".to_string()));
+    }
+    if skinned && edm.parts.len() > material::PALETTE_BONES {
+        return Err(bad(format!("{} bones, more than the palette's {}", edm.parts.len(), material::PALETTE_BONES)));
     }
     let (mut draws, mut decoded) = (Vec::new(), Vec::new());
     for d in &edm.draws {
@@ -413,9 +430,18 @@ fn decode_model(edm: &Edm, materials: &Materials, paint: &Paint, name: &str) -> 
         draws.push(mat_name.to_lowercase());
         let family = Family::of(mat.shader.as_deref().unwrap_or(""));
         let solid = !matches!(family, Family::Overlay | Family::Stamp);
-        decoded.push(Decoded { vertices, indices, solid, glass: family.is_glass() });
+        let bones = if skinned {
+            // (The glass has its own vertex stage, which doesn't skin.)
+            if family.is_glass() {
+                return Err(bad(format!("its glass ({mat_name}) can't be skinned")));
+            }
+            Some(d.vertices.iter().map(|v| edm.vertex_bone(v).map(|b| b as u32).ok_or_else(|| bad(format!("a vertex of material {mat_name} names a bone it hasn't")))).collect::<Result<Vec<_>, Fault>>()?)
+        } else {
+            None
+        };
+        decoded.push(Decoded { vertices, indices, solid, glass: family.is_glass(), bones });
     }
-    Ok((ShipModel { draws }, decoded))
+    Ok((ShipModel { draws, skinned }, decoded))
 }
 
 /// A `Node!Bone` seat (the item's facts: the bone without its `!`).
@@ -490,7 +516,9 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
             rig.bones.insert(&name, &p.name, elite_rig::elite_matrix(&inv.map(|x| x as f64)).inverse());
         }
         if material::model_drawn(&name) {
-            let (model, draws) = decode_model(&edm, &rig.materials, &rig.ship.paint, &name)?;
+            // (The seat's chair is the one the pilot chair's animation poses: `chair.rs`.)
+            let skinned = name.eq_ignore_ascii_case(&rig.cockpit_seat.chair);
+            let (model, draws) = decode_model(&edm, &rig.materials, &rig.ship.paint, &name, skinned)?;
             index.insert(name, rig.models.len());
             rig.models.push(model);
             decoded.push(draws);
@@ -614,7 +642,8 @@ fn eye_and_guns(rig: &ShipRig) -> Result<([f32; 3], [[f32; 3]; 2]), Fault> {
     Ok((eye, guns))
 }
 
-/// A draw's mesh: position, normal, tangent (its sign in w), UV0, UV1, UV2, and for the glass the vertex's colour.
+/// A draw's mesh: position, normal, tangent (its sign in w), UV0, UV1, UV2, for the glass the vertex's colour, for a skinned
+/// model the vertex's bone.
 fn mesh(d: &Decoded) -> Mesh {
     let v = &d.vertices;
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
@@ -626,6 +655,9 @@ fn mesh(d: &Decoded) -> Mesh {
     mesh.insert_attribute(ATTRIBUTE_UV_2, v.iter().map(|v| v.uv[2]).collect::<Vec<_>>());
     if d.glass {
         mesh.insert_attribute(ATTRIBUTE_COLOUR, VertexAttributeValues::Unorm8x4(v.iter().map(|v| v.colour).collect()));
+    }
+    if let Some(bones) = &d.bones {
+        mesh.insert_attribute(ATTRIBUTE_BONE, VertexAttributeValues::Uint32(bones.clone()));
     }
     mesh.insert_indices(Indices::U16(d.indices.clone()));
     mesh
@@ -755,6 +787,42 @@ mod tests {
             assert_eq!(file, MATERIALS_FILE);
             assert!(why.contains(material) && why.contains(name), "{why}");
         }
+    }
+
+    /// The shipped ship: only the seat's chair is skinned; its meshes' bones are `Edm::vertex_bone` of each vertex of its
+    /// drawn draws, in order, under the palette's length (which is its bone count); no other mesh carries bones.
+    #[test]
+    fn only_the_seats_chair_carries_its_bones() {
+        let loaded = load(&read_mod).unwrap_or_else(|(f, why)| panic!("{f}: {why}"));
+        let rig = &loaded.assets.rig;
+        let skinned: Vec<usize> = (0..rig.models.len()).filter(|&m| rig.models[m].skinned).collect();
+        assert_eq!(skinned.len(), 1);
+        let chair = &rig.cockpit_seat.chair;
+        assert!(rig.nodes.iter().any(|n| n.model == Some(skinned[0]) && n.name.eq_ignore_ascii_case(chair) && n.group == Group::InsideChair));
+        let edm = parse_edm(&read_mod(&model_file(chair)).unwrap()).unwrap();
+        assert_eq!(edm.parts.len(), material::PALETTE_BONES);
+        let drawn: Vec<_> = edm
+            .draws
+            .iter()
+            .filter(|d| {
+                let name = &edm.materials[d.material as usize].name;
+                material::material_drawn(name, rig.materials.get(name).unwrap(), &rig.ship.paint)
+            })
+            .collect();
+        let meshes = &loaded.build.meshes[skinned[0]];
+        assert_eq!(drawn.len(), meshes.len());
+        let mut count = 0;
+        for (d, mesh) in drawn.iter().zip(meshes) {
+            let Some(VertexAttributeValues::Uint32(bones)) = mesh.attribute(ATTRIBUTE_BONE) else { panic!("a chair mesh without bones") };
+            let want: Vec<u32> = d.vertices.iter().map(|v| edm.vertex_bone(v).unwrap() as u32).collect();
+            assert_eq!(bones, &want);
+            assert!(bones.iter().all(|&b| (b as usize) < material::PALETTE_BONES));
+            count += bones.len();
+        }
+        for (m, meshes) in loaded.build.meshes.iter().enumerate().filter(|(m, _)| *m != skinned[0]) {
+            assert!(meshes.iter().all(|mesh| mesh.attribute(ATTRIBUTE_BONE).is_none()), "model {m} carries bones");
+        }
+        println!("the seat's chair: {count} vertices with their bones in {} meshes", meshes.len());
     }
 
     /// The eye's source (the mod's shipped cockpit model, in git): the cockpit model has its own `EYE_BONE`, at the model's
