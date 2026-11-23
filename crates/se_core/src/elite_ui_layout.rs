@@ -109,6 +109,9 @@ pub enum MovieKind {
     Screen,
 }
 
+/// The chair rig's name, as Elite writes it (and as a head-look target qualifies a bone of it: `CockpitChair_Bone_Rig!RoleSwitch_Panel`).
+pub const CHAIR_RIG_NAME: &str = "CockpitChair_Bone_Rig";
+
 /// The rig a bone belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Rig {
@@ -182,14 +185,23 @@ pub struct Background {
     pub model: String,
 }
 
-/// A component's panel quad: four corners in the bone's own frame (top-left, top-right, bottom-left, bottom-right), each
-/// x y z (metres, the mod's axes) and u v (0..1 of the stage), and the six indices as the data gives them
-/// (`0 3 2 1 0 3`: triangles (0,3,2) and (1,0,3), counted in Elite's axes: the mirror reverses their turn).
+/// A component's panel quad: four corners in its bone's own frame (top-left, top-right, bottom-left, bottom-right), each
+/// x y z (metres, the mod's axes) and u v (0..1 of the stage), and its two triangles' indices in the mod's axes: the
+/// data's `0 3 2 1 0 3` with two indices of each triangle swapped as the ship's models are on load
+/// (`elite::to_mod_space`), so `0 2 3 1 3 0`. Not drawn: the game draws the panel's `gui_*` model, the same rectangle.
+/// The quad is most likely the panel's pointer surface (grade B: Elite's own index list winds its two triangles opposite
+/// ways, so it cannot be a culled draw; how Elite uses it is not decoded). As in Elite's data, the first triangle (0,2,3)
+/// is counter-clockwise seen from the panel's front (the pilot's side) in the mod's axes, the second (1,3,0) clockwise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PanelQuad {
     pub vertices: [[f32; 5]; 4],
     pub indices: [u8; 6],
+    /// The bone whose frame the corners are in (a key of `Layout::bones`): the component's GUI panel's bone (a stand-in
+    /// reading, `Layout::stand_ins`: the record holds the quad without a bone of its own).
+    pub bone: String,
+    /// That bone's rig.
+    pub rig: Rig,
 }
 
 /// A `gui_*` (or quad) model: the file and what the movie's texture does on it.
@@ -320,6 +332,32 @@ pub struct BoneFrames {
     /// In the chair rig's own space (cockpit space at rest: add `ChairRig::offset`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chair_rig: Option<BoneFrame>,
+}
+
+impl BoneFrames {
+    /// The bone's frame in that rig's space, if Elite gives it one.
+    pub fn frame(&self, rig: Rig) -> Option<&BoneFrame> {
+        match rig {
+            Rig::Cockpit => self.cockpit.as_ref(),
+            Rig::Chair => self.chair_rig.as_ref(),
+        }
+    }
+}
+
+impl Layout {
+    /// The bone and rig a head-look target names: a rig-qualified bone (`CockpitChair_Bone_Rig!RoleSwitch_Panel` is
+    /// `!RoleSwitch_Panel` of the chair rig), or a cockpit rig joint of `head_look_joints` (a cockpit model bone).
+    pub fn joint_bone<'a>(&'a self, joint: &'a str) -> Option<(&'a str, Rig)> {
+        match joint.strip_prefix(CHAIR_RIG_NAME) {
+            Some(bone) => Some((bone, Rig::Chair)),
+            None => self.head_look_joints.iter().find(|j| j.joint == joint).map(|j| (j.bone.as_str(), Rig::Cockpit)),
+        }
+    }
+
+    /// The frame of `bone` in `rig`'s space, if the layout holds it.
+    pub fn bone_frame(&self, bone: &str, rig: Rig) -> Option<&BoneFrame> {
+        self.bones.get(bone)?.frame(rig)
+    }
 }
 
 /// A bone's rest frame in its rig's space: its origin and its own x, y, z axes, the mod's axes.
@@ -488,8 +526,9 @@ pub struct MappedFont {
 }
 
 /// Reads `layout.json`, refusing anything a reader could trip on: another format, a panel, plate or flat quad naming a
-/// model that isn't there, a model naming a material that isn't there, a model file outside `ui/models/`, a texture file
-/// outside `ui/tex/`.
+/// model that isn't there, a model naming a material that isn't there, a panel, plate or quad whose bone (or panel
+/// fallback) isn't in `bones` in its rig's frame, a quad index outside its corners, a head-look target whose joint or bone
+/// isn't there, a model file outside `ui/models/`, a texture file outside `ui/tex/`.
 pub fn parse_layout(bytes: &[u8]) -> Result<Layout, UiLayoutError> {
     let l: Layout = serde_json::from_slice(bytes).map_err(|e| bad(LAYOUT_FILE, e.to_string()))?;
     if l.format != LAYOUT_FORMAT {
@@ -502,6 +541,38 @@ pub fn parse_layout(bytes: &[u8]) -> Result<Layout, UiLayoutError> {
         }
         if let Some(n) = m.screen_materials.iter().find(|n| !l.materials.contains_key(*n)) {
             return Err(bad(LAYOUT_FILE, format!("movie {}: material {n} is not in the table", m.name)));
+        }
+        // Every bone a panel, plate or quad hangs on is in `bones` in its rig's frame (a panel's, or its fallback's).
+        let held = |bone: &str, rig: Rig| l.bone_frame(bone, rig).is_some();
+        for p in &m.panels {
+            if !held(&p.bone, p.rig) && !p.bone_fallback.as_deref().is_some_and(|f| held(f, p.rig)) {
+                return Err(bad(LAYOUT_FILE, format!("movie {}, panel {}: neither its bone {} nor its fallback is in bones in its rig's frame", m.name, p.name, p.bone)));
+            }
+        }
+        if let Some(b) = m.backgrounds.iter().find(|b| !held(&b.bone, b.rig)) {
+            return Err(bad(LAYOUT_FILE, format!("movie {}, plate {}: its bone {} is not in bones in its rig's frame", m.name, b.name, b.bone)));
+        }
+        if let Some(q) = &m.quad {
+            if !held(&q.bone, q.rig) {
+                return Err(bad(LAYOUT_FILE, format!("movie {}, quad: its bone {} is not in bones in its rig's frame", m.name, q.bone)));
+            }
+            if q.indices.iter().any(|&i| i >= 4) {
+                return Err(bad(LAYOUT_FILE, format!("movie {}, quad: an index is outside its 4 corners", m.name)));
+            }
+        }
+    }
+    for j in &l.head_look_joints {
+        if !l.bones.contains_key(&j.bone) {
+            return Err(bad(LAYOUT_FILE, format!("head-look joint {}: its bone {} is not in bones", j.joint, j.bone)));
+        }
+    }
+    for h in &l.head_look {
+        if let Some(joint) = &h.joint {
+            match l.joint_bone(joint) {
+                Some((bone, rig)) if l.bone_frame(bone, rig).is_some() => {}
+                Some((bone, _)) => return Err(bad(LAYOUT_FILE, format!("head look of {}: joint {joint}'s bone {bone} is not in bones in its rig's frame", h.state))),
+                None => return Err(bad(LAYOUT_FILE, format!("head look of {}: joint {joint} is not among the head-look joints", h.state))),
+            }
         }
     }
     for (name, model) in &l.models {
@@ -619,7 +690,7 @@ mod tests {
                     rig: Rig::Cockpit,
                     model: "gui_left_panel".into(),
                 }],
-                quad: Some(PanelQuad { vertices: [[-0.5, 0.26, 0.05, 0.0, 0.0]; 4], indices: [0, 3, 2, 1, 0, 3] }),
+                quad: Some(PanelQuad { vertices: [[-0.5, 0.26, 0.05, 0.0, 0.0]; 4], indices: [0, 2, 3, 1, 3, 0], bone: "!Left_Panel".into(), rig: Rig::Chair }),
                 flat_quads: vec![],
                 screen_materials: vec!["left_panel".into()],
             }],
@@ -627,7 +698,10 @@ mod tests {
             materials: BTreeMap::from([("left_panel".into(), material)]),
             bones: BTreeMap::from([(
                 "!Left_Panel".into(),
-                BoneFrames { cockpit: Some(BoneFrame { position: [1.0, 2.0, 3.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] }), chair_rig: None },
+                BoneFrames {
+                    cockpit: Some(BoneFrame { position: [1.0, 2.0, 3.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] }),
+                    chair_rig: Some(BoneFrame { position: [1.0, 3.0, 3.0], axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] }),
+                },
             )]),
             chair_rig: ChairRig { bone: "!Pilot_Chair".into(), offset: [0.0, -1.6098, -0.12855] },
             head_look: vec![HeadLook {
@@ -686,6 +760,42 @@ mod tests {
         }
         assert!(parse_layout(&write_layout(&l)).is_err());
         assert!(parse_layout(b"{\"format\": 1, \"unknown\": 0}").is_err());
+        // What a reader of the bones trips on: a quad index past its corners, a bone missing from its rig's frame, a
+        // panel whose bone and fallback are both missing, a head-look joint that names nothing.
+        let refused = |l: &Layout, word: &str| {
+            let e = parse_layout(&write_layout(l)).unwrap_err().to_string();
+            assert!(e.contains(LAYOUT_FILE) && e.contains(word), "{e}");
+        };
+        let mut l = layout();
+        l.movies[0].quad.as_mut().unwrap().indices[2] = 4;
+        refused(&l, "outside its 4 corners");
+        let mut l = layout();
+        l.bones.get_mut("!Left_Panel").unwrap().chair_rig = None;
+        refused(&l, "Gui_Left_Panel");
+        let mut l = layout();
+        l.movies[0].quad.as_mut().unwrap().bone = "!Comms_Panel".into();
+        refused(&l, "quad: its bone !Comms_Panel");
+        let mut l = layout();
+        l.movies[0].panels[0].bone = "!Gauges_Panel".into();
+        l.movies[0].panels[0].bone_fallback = Some("!Left_Panel".into());
+        assert!(parse_layout(&write_layout(&l)).is_ok(), "a missing bone with a fallback in bones is fine");
+        l.movies[0].panels[0].bone_fallback = Some("!Radar".into());
+        refused(&l, "nor its fallback");
+        let mut l = layout();
+        l.head_look[0].joint = Some("Nowhere_Focus".into());
+        refused(&l, "Nowhere_Focus");
+        let mut l = layout();
+        l.head_look[0].joint = Some("CockpitChair_Bone_Rig!Nothing".into());
+        refused(&l, "!Nothing");
+    }
+
+    #[test]
+    fn a_head_look_joint_names_its_bone_and_rig() {
+        let l = layout();
+        assert_eq!(l.joint_bone("LeftPanel_Focus"), Some(("!Left_Panel", Rig::Cockpit)));
+        assert_eq!(l.joint_bone("CockpitChair_Bone_Rig!RoleSwitch_Panel"), Some(("!RoleSwitch_Panel", Rig::Chair)));
+        assert_eq!(l.joint_bone("Nowhere"), None);
+        assert!(l.bone_frame("!Left_Panel", Rig::Chair).is_some());
     }
 
     #[test]

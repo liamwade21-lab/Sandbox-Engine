@@ -52,6 +52,7 @@ const STRINGS_MAX_BYTES: usize = 20 << 20;
 /// SWF tag codes: the image definitions, and DoABC2.
 const IMAGE_TAGS: [u16; 6] = [6, 20, 21, 35, 36, 90];
 const DO_ABC2: u16 = 82;
+const DO_ABC: u16 = 72;
 
 /// The bridge's compiled ActionScript, committed beside its source in `elite-gfx`.
 fn bridge() -> Result<Vec<u8>, String> {
@@ -119,10 +120,19 @@ fn image_ids(s: &Swf) -> BTreeSet<u16> {
     s.tags.iter().filter(|(c, b)| IMAGE_TAGS.contains(c) && b.len() >= 2).map(|(_, b)| u16::from_le_bytes([b[0], b[1]])).collect()
 }
 
-/// The bridge's block of a movie: the DoABC2 tag named `elite_gfx::convert::BRIDGE_BLOCK`, its code.
-fn bridge_code<'a>(s: &Swf<'a>) -> Option<&'a [u8]> {
+/// Whether a tag is the bridge's block: the DoABC2 tag named `elite_gfx::convert::BRIDGE_BLOCK`.
+fn is_bridge((code, body): &(u16, &[u8])) -> bool {
     let name = elite_gfx::convert::BRIDGE_BLOCK.as_bytes();
-    s.tags.iter().find_map(|(c, b)| (*c == DO_ABC2 && b.get(4..4 + name.len()) == Some(name) && b.get(4 + name.len()) == Some(&0)).then(|| &b[5 + name.len()..]))
+    *code == DO_ABC2 && body.get(4..4 + name.len()) == Some(name) && body.get(4 + name.len()) == Some(&0)
+}
+
+/// The bridge's block of a movie, its code: only when there is exactly one and it comes before every other code block
+/// (the first class of a name wins, so it must be loaded before the movie's own).
+fn bridge_code<'a>(s: &Swf<'a>) -> Option<&'a [u8]> {
+    let mut code = s.tags.iter().enumerate().filter(|(_, t)| t.0 == DO_ABC2 || t.0 == DO_ABC);
+    let (first, (_, body)) = code.next()?;
+    let bridges = s.tags.iter().filter(|t| is_bridge(t)).count();
+    (bridges == 1 && is_bridge(&s.tags[first])).then(|| &body[5 + elite_gfx::convert::BRIDGE_BLOCK.len()..])
 }
 
 /// A shipped movie as the game loads it: an ActionScript 3 SWF that parses to its end and holds the bridge's block as
@@ -134,7 +144,7 @@ pub(super) fn check_movie(bytes: &[u8]) -> Result<(), String> {
         return Err("its first tag is not the file attributes saying ActionScript 3".into());
     }
     if bridge_code(&s) != Some(bridge()?.as_slice()) {
-        return Err("it does not hold the bridge's block as elite-gfx/as3/bridge.abc has it".into());
+        return Err("it does not hold exactly one bridge block, before its own code, as elite-gfx/as3/bridge.abc has it".into());
     }
     Ok(())
 }
@@ -275,8 +285,14 @@ fn plan(ctx: &Ctx) -> Result<(Vec<Planned>, Vec<String>), String> {
     let table = elite_ui::text::Text::from_json(&strings).map_err(|e| format!("{STRINGS_EXPORT}: {e}"))?;
     let subset = read_json(&dec.join("strings/en.json"))?;
     let subset = subset.as_object().ok_or("strings/en.json is not a table")?;
-    if let Some(k) = subset.keys().find(|k| !table.contains(k)) {
-        return Err(format!("{STRINGS_EXPORT} lacks {k}, which the export's subset holds"));
+    for (k, e) in subset {
+        if !table.contains(k) {
+            return Err(format!("{STRINGS_EXPORT} lacks {k}, which the export's subset holds"));
+        }
+        let text = e.get("text").and_then(Value::as_str).ok_or_else(|| format!("strings/en.json: {k} has no text"))?;
+        if table.get_string(k) != text {
+            return Err(format!("{STRINGS_EXPORT}'s text of {k} differs from the export's subset's"));
+        }
     }
     let keys = serde_json::from_slice::<serde_json::Map<String, Value>>(&strings).map_err(|e| e.to_string())?.len();
     files.push(Planned {
@@ -559,6 +575,11 @@ mod tests {
         assert_eq!(s.tags.len(), 4);
         assert_eq!(image_ids(&s), BTreeSet::from([7]));
         assert_eq!(bridge_code(&s), Some(&b"CODE"[..]));
+        let own = [1u8, 0, 0, 0, b'm', 0, b'X'];
+        let after = movie(&[(69, &[8, 0, 0, 0]), (DO_ABC2, &own), (DO_ABC2, &abc)]);
+        assert_eq!(bridge_code(&swf(&after).unwrap()), None, "a bridge after the movie's own code");
+        let twice = movie(&[(69, &[8, 0, 0, 0]), (DO_ABC2, &abc), (DO_ABC2, &abc), (DO_ABC2, &own)]);
+        assert_eq!(bridge_code(&swf(&twice).unwrap()), None, "two bridges");
         let mut cut = file.clone();
         cut.truncate(file.len() - 3);
         assert!(swf(&cut).is_err());

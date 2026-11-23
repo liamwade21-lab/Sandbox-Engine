@@ -377,12 +377,14 @@
         ],
         "indices": [
           0,
-          3,
           2,
+          3,
           1,
-          0,
-          3
-        ]
+          3,
+          0
+        ],
+        "bone": "!Left_Panel",
+        "rig": "CockpitChair_Bone_Rig"
       }
     },
     {
@@ -455,12 +457,14 @@
         ],
         "indices": [
           0,
-          3,
           2,
+          3,
           1,
-          0,
-          3
-        ]
+          3,
+          0
+        ],
+        "bone": "!Right_Panel",
+        "rig": "CockpitChair_Bone_Rig"
       }
     },
     {
@@ -533,12 +537,14 @@
         ],
         "indices": [
           0,
-          3,
           2,
+          3,
           1,
-          0,
-          3
-        ]
+          3,
+          0
+        ],
+        "bone": "!RoleSwitch_Panel",
+        "rig": "CockpitChair_Bone_Rig"
       }
     },
     {
@@ -631,12 +637,14 @@
         ],
         "indices": [
           0,
-          3,
           2,
+          3,
           1,
-          0,
-          3
-        ]
+          3,
+          0
+        ],
+        "bone": "!Comms_Panel",
+        "rig": "CockpitChair_Bone_Rig"
       }
     },
     {
@@ -13820,7 +13828,7 @@
       },
       {
         "formula": "/user_settings",
-        "name": "DashboardGUIBrightness, this PC's Elite setting (Custom.4.4.misc); that gGuiBrightness's option factor is it was not traced (E)",
+        "name": "DashboardGUIBrightness, this PC's Elite setting (Custom.4.4.misc); that it is the option factor of gGuiBrightness is not traced (E)",
         "values": [
           0.69
         ],
@@ -13830,10 +13838,28 @@
   },
   "stand_ins": [
     {
+      "what": "the bone each panel quad's corners are in",
+      "value": "its component's one GUI panel's bone: cockpitexternalpanel on !Left_Panel, cockpitinternalpanel2 on !Right_Panel, rolepanel3 on !RoleSwitch_Panel, cockpitchatpanel on !Comms_Panel",
+      "grade": "B",
+      "why": "the record holds the quad in the panel block beside its GUI panels, without a bone of its own (ui_rendering.md 2.1); the left quad                   projected through the chair rig's !Left_Panel fits the user's picture to 4.65 px rms (2.2, C)"
+    },
+    {
+      "what": "the panel quads: what they are",
+      "value": "the panel's pointer surface, not drawn (the game draws the gui_* panel model); its triangles the data's 0 3 2 1 0 3 turned as the ship's models are (0 2 3 1 3 0): the first faces the pilot, the second away",
+      "grade": "B",
+      "why": "Elite's index list winds its two triangles opposite ways (0,3,2 clockwise and 1,0,3 counter-clockwise seen from the front, in all four quads), so it cannot be a culled draw; how Elite uses the quad is not decoded"
+    },
+    {
+      "what": "the comms panel quad's fourth corner (bottom-right)",
+      "value": "as Elite's data gives it, 0.140 m off the plane of the other three",
+      "grade": "A",
+      "why": "its z is the side panels' corner constant -0.139237: a slip in Elite's own data (ui_rendering.md 2.2); the comms panel is drawn on                   the gui_comms_panel model, whose aspect is its 512 x 767 stage's"
+    },
+    {
       "what": "each panel movie's render-target size",
       "value": "its stage size",
       "grade": "B",
-      "why": "no texture-create call was found for a cockpit movie; every panel quad's aspect is its movie's stage aspect (ui_rendering.md 2.5)"
+      "why": "no texture-create call was found for a cockpit movie; the panel quads' aspects match their movies' stage aspects, but for the role                   switch's quad (aspect 1.7454, 1152:660, against its 1056 x 660 stage) and the fuel scoop's, which break it unexplained                   (ui_rendering.md 2.5)"
     },
     {
       "what": "the device factor of gGuiBrightness = DashboardGUIBrightness x 1 x the device's block+0x36bc",

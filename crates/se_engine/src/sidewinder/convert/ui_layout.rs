@@ -19,7 +19,7 @@ use serde_json::Value;
 use se_core::elite_asset::parse_edm;
 use se_core::elite_ui_layout::{
     parse_layout, write_layout, Background, BoneFrame, BoneFrames, ChairRig, Component, GaugeAtlas, GaugePart, GuiModel, GuiObject, GuiPanel, GuiSlotValue,
-    HeadLook, Island, JointBone, Layout, MovieKind, MovieLayout, PanelQuad, Rig, Shading, ShaderConstant, SightZone, StandIn, LAYOUT_FORMAT,
+    HeadLook, Island, JointBone, Layout, MovieKind, MovieLayout, PanelQuad, Rig, Shading, ShaderConstant, SightZone, StandIn, CHAIR_RIG_NAME, LAYOUT_FORMAT,
 };
 
 use super::super::assets::ShipSpace;
@@ -40,8 +40,6 @@ const HEAD_LOOK_JOINTS: &[(&str, &str)] = &[
     ("FuelScoop_Focus", "!FuelScoop_Panel"),
     ("Camera", "!Camera"),
 ];
-/// A head-look target naming a bone of a rig directly (`CockpitChair_Bone_Rig!RoleSwitch_Panel`).
-const CHAIR_RIG: &str = "CockpitChair_Bone_Rig";
 
 const HUD_QUAD: &str = "/shader_formulas/HudQuad_Alpha_UnlitNoScale_GuiBrightnessScale_UVScaleOffset_FarPlaneFix_GUIColourRotate_Forward";
 const GUI_LIGHTING: &str = "/shader_formulas/GuiLighting_Alpha_GuiLighting_Gui_GuiBrightnessScale_Saturation_GUIColourRotate_Forward";
@@ -69,7 +67,7 @@ const SHADER_CONSTANTS: &[(&str, &str, &[f64], &str)] = &[
     (EDGE, "pSobelTintLow", &[1.0, 0.0, 0.0], "pSobelTintLow(1,0,0)"),
     (EDGE, "pSobelTintHigh", &[1.0, 0.5, 0.0], "pSobelTintHigh(1,0.5,0)"),
     (CLIP, "the clip test: discard if dot(out, out) is under it", &[0.001], "dot(out,out) < 0.001"),
-    ("/user_settings", "DashboardGUIBrightness, this PC's Elite setting (Custom.4.4.misc); that gGuiBrightness's option factor is it was not traced (E)", &[0.69], "\"DashboardGUIBrightness\":0.69"),
+    ("/user_settings", "DashboardGUIBrightness, this PC's Elite setting (Custom.4.4.misc); that it is the option factor of gGuiBrightness is not traced (E)", &[0.69], "\"DashboardGUIBrightness\":0.69"),
 ];
 /// The screen-space GUI render target (A), and the export's words saying so.
 const SCREEN_TARGET: ([u32; 2], &str) = ([1920, 1080], "1920x1080");
@@ -119,7 +117,7 @@ fn f32_at(v: &Value, key: &str, file: &str) -> Result<f32, String> {
 fn rig(name: &str, file: &str) -> Result<Rig, String> {
     match name {
         "Root" => Ok(Rig::Cockpit),
-        CHAIR_RIG => Ok(Rig::Chair),
+        CHAIR_RIG_NAME => Ok(Rig::Chair),
         r => Err(format!("{file}: unknown rig {r}")),
     }
 }
@@ -180,11 +178,17 @@ fn movie(r: &Value, name: &str, materials: &mut Materials, hud3d: &std::path::Pa
                 vertices[k] = [p[0], p[1], p[2], u, w];
             }
             let bytes: Vec<u8> = g.get("index_bytes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).map(|b| b as u8).collect();
-            let indices: [u8; 6] = bytes.get(..6).and_then(|b| b.try_into().ok()).ok_or_else(|| format!("{cf}: its quad has not 6 indices"))?;
-            if indices.iter().any(|&i| i >= 4) {
+            let elite: [u8; 6] = bytes.get(..6).and_then(|b| b.try_into().ok()).ok_or_else(|| format!("{cf}: its quad has not 6 indices"))?;
+            if elite.iter().any(|&i| i >= 4) {
                 return Err(format!("{cf}: a quad index is outside its 4 vertices"));
             }
-            out.quad = Some(PanelQuad { vertices, indices });
+            // The triangles turned as the ship's are on load: the mirror would otherwise wind them backwards.
+            let mut turned = elite.map(u16::from);
+            se_core::elite::to_mod_space(&mut [], &mut turned);
+            // The record holds the quad in the panel block beside the GUI panels, without a bone of its own: it is read as
+            // in the frame of the component's one GUI panel's bone (the stand-in `stand_ins` names).
+            let [panel] = out.panels.as_slice() else { return Err(format!("{cf}: a quad with {} GUI panels: whose bone is it in?", out.panels.len())) };
+            out.quad = Some(PanelQuad { vertices, indices: turned.map(|i| i as u8), bone: panel.bone.clone(), rig: panel.rig });
         }
     } else if let Some(c) = rec.get("cockpit_component").filter(|c| !c.is_null()) {
         if let Some(q) = c.get("quads") {
@@ -290,7 +294,7 @@ fn bones(r: &Value, movies: &[MovieLayout], head_look: &[HeadLook], chair_bone: 
     }
     wanted.extend(HEAD_LOOK_JOINTS.iter().map(|(_, b)| b.to_string()));
     for h in head_look {
-        if let Some(bone) = h.joint.as_deref().and_then(|j| j.strip_prefix(CHAIR_RIG)) {
+        if let Some(bone) = h.joint.as_deref().and_then(|j| j.strip_prefix(CHAIR_RIG_NAME)) {
             wanted.insert(bone.to_string());
         }
     }
@@ -337,7 +341,7 @@ fn head_look(csm: &Value) -> Result<Vec<HeadLook>, String> {
     }
     for h in &out {
         if let Some(j) = &h.joint {
-            if !j.starts_with(CHAIR_RIG) && !HEAD_LOOK_JOINTS.iter().any(|(n, _)| n == j) {
+            if !j.starts_with(CHAIR_RIG_NAME) && !HEAD_LOOK_JOINTS.iter().any(|(n, _)| n == j) {
                 return Err(format!("{f} {}: joint {j} is not among HEAD_LOOK_JOINTS", h.state));
             }
         }
@@ -415,14 +419,48 @@ fn shading(r: &Value) -> Result<Shading, String> {
     Ok(Shading { gui_colour_matrix: matrix, screen_target: SCREEN_TARGET.0, constants })
 }
 
-fn stand_ins(r: &Value) -> Result<Vec<StandIn>, String> {
+/// How far a panel quad's fourth corner lies off the plane of its first three, metres (Elite's axes or the mod's alike).
+fn off_plane(q: &PanelQuad) -> f32 {
+    let p = |k: usize| bevy::math::Vec3::from_slice(&q.vertices[k][..3]);
+    let n = (p(1) - p(0)).cross(p(2) - p(0)).normalize();
+    (p(3) - p(0)).dot(n).abs()
+}
+
+fn stand_ins(r: &Value, movies: &[MovieLayout]) -> Result<Vec<StandIn>, String> {
     let open = ptr(r, "/brightness_path/open", "rendering.json")?.as_str().unwrap_or("").to_string();
+    let quads: Vec<String> = movies.iter().filter_map(|m| m.quad.as_ref().map(|q| format!("{} on {}", m.name, q.bone))).collect();
+    let comms = movies.iter().find(|m| m.name == "cockpitchatpanel").and_then(|m| m.quad.as_ref()).ok_or("cockpitchatpanel has no quad")?;
     Ok(vec![
+        StandIn {
+            what: "the bone each panel quad's corners are in".into(),
+            value: format!("its component's one GUI panel's bone: {}", quads.join(", ")),
+            grade: "B".into(),
+            why: "the record holds the quad in the panel block beside its GUI panels, without a bone of its own (ui_rendering.md 2.1); the left quad                   projected through the chair rig's !Left_Panel fits the user's picture to 4.65 px rms (2.2, C)"
+                .into(),
+        },
+        StandIn {
+            what: "the panel quads: what they are".into(),
+            value: "the panel's pointer surface, not drawn (the game draws the gui_* panel model); its triangles the data's 0 3 2 1 0 3 turned as \
+                    the ship's models are (0 2 3 1 3 0): the first faces the pilot, the second away"
+                .into(),
+            grade: "B".into(),
+            why: "Elite's index list winds its two triangles opposite ways (0,3,2 clockwise and 1,0,3 counter-clockwise seen from the front, in \
+                  all four quads), so it cannot be a culled draw; how Elite uses the quad is not decoded"
+                .into(),
+        },
+        StandIn {
+            what: "the comms panel quad's fourth corner (bottom-right)".into(),
+            value: format!("as Elite's data gives it, {:.3} m off the plane of the other three", off_plane(comms)),
+            grade: "A".into(),
+            why: "its z is the side panels' corner constant -0.139237: a slip in Elite's own data (ui_rendering.md 2.2); the comms panel is drawn on                   the gui_comms_panel model, whose aspect is its 512 x 767 stage's"
+                .into(),
+        },
         StandIn {
             what: "each panel movie's render-target size".into(),
             value: "its stage size".into(),
             grade: "B".into(),
-            why: "no texture-create call was found for a cockpit movie; every panel quad's aspect is its movie's stage aspect (ui_rendering.md 2.5)".into(),
+            why: "no texture-create call was found for a cockpit movie; the panel quads' aspects match their movies' stage aspects, but for the role                   switch's quad (aspect 1.7454, 1152:660, against its 1056 x 660 stage) and the fuel scoop's, which break it unexplained                   (ui_rendering.md 2.5)"
+                .into(),
         },
         StandIn {
             what: "the device factor of gGuiBrightness = DashboardGUIBrightness x 1 x the device's block+0x36bc".into(),
@@ -491,7 +529,7 @@ fn plan(ctx: &Ctx) -> Result<(Vec<Planned>, Layout, BTreeSet<(String, String, St
         gauge_atlas: gauge_atlas(&r)?,
         sight_zones: sight_zones(&r)?,
         shading: shading(&r)?,
-        stand_ins: stand_ins(&r)?,
+        stand_ins: stand_ins(&r, &movies)?,
         movies,
         models,
         materials: mats.table,
@@ -505,13 +543,13 @@ fn plan(ctx: &Ctx) -> Result<(Vec<Planned>, Layout, BTreeSet<(String, String, St
         note: format!(
             "How the {} movies sit in the cockpit: their stages, components, GUI panels and plates with their bones and models, the panel quads, \
              {} panel models with their uv0 rectangles and islands, {} materials with every attribute, {} bones, the chair rig, the head-look \
-             targets, the gauge sheet, the target sights' zones, the shaders' constants and {} stand-ins. Elite's numbers, positions in the mod's \
-             axes (z mirrored).",
+             targets, the gauge sheet, the target sights' zones and the shaders' constants. Elite's numbers, positions in the mod's axes \
+             (z mirrored), the quads' triangles turned to match. Stand-ins (the notes' grades): {}.",
             layout.movies.len(),
             layout.models.len(),
             layout.materials.len(),
             layout.bones.len(),
-            layout.stand_ins.len()
+            layout.stand_ins.iter().map(|s| format!("{}: {} ({})", s.what, s.value, s.grade)).collect::<Vec<_>>().join("; ")
         ),
         bytes,
         sources: vec![
@@ -598,6 +636,52 @@ mod tests {
         let m = point([v[0] as f32, v[1] as f32, v[2] as f32]);
         let ours: [f32; 3] = std::array::from_fn(|k| b.position[k] + b.axes[0][k] * m[0] + b.axes[1][k] * m[1] + b.axes[2][k] * m[2]);
         assert!(close(ours, point(elite.as_vec3().to_array())), "{ours:?}");
+    }
+
+    fn shipped_layout() -> Layout {
+        parse_layout(&std::fs::read(super::super::out_dir().join(LAYOUT)).unwrap()).unwrap()
+    }
+
+    /// Each shipped panel quad, placed in the cockpit model's space by its bone (the chair rig's at rest: plus the rig's
+    /// offset), winds as Elite's data does once turned into the mod's right-handed axes: its first triangle
+    /// counter-clockwise seen from the pilot's eye (`!Camera`), its second clockwise. A change in the converter shows here.
+    #[test]
+    fn shipped_quads_wind_as_elites_data() {
+        use bevy::math::Vec3;
+        let l = shipped_layout();
+        let eye = Vec3::from(l.bone_frame("!Camera", Rig::Cockpit).unwrap().position);
+        let mut seen = 0;
+        for m in &l.movies {
+            let Some(q) = &m.quad else { continue };
+            let f = l.bone_frame(&q.bone, q.rig).unwrap();
+            let origin = Vec3::from(f.position) + if q.rig == Rig::Chair { Vec3::from(l.chair_rig.offset) } else { Vec3::ZERO };
+            let corner = |k: usize| origin + Vec3::from(f.axes[0]) * q.vertices[k][0] + Vec3::from(f.axes[1]) * q.vertices[k][1] + Vec3::from(f.axes[2]) * q.vertices[k][2];
+            for (k, t) in q.indices.chunks_exact(3).enumerate() {
+                let (a, b, c) = (corner(t[0] as usize), corner(t[1] as usize), corner(t[2] as usize));
+                let facing = (b - a).cross(c - a).dot(eye - a) > 0.0;
+                assert_eq!(facing, k == 0, "{}: triangle {t:?} should {}face the pilot", m.name, if k == 0 { "" } else { "not " });
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 4, "the left, right, role and comms quads");
+    }
+
+    /// The shipped head-look targets are `ui_rendering.md` section 4.3's table: state, joint, displacement (m), field-of-view
+    /// channel normal and second (degrees).
+    #[test]
+    fn shipped_head_look_is_the_notes_table() {
+        let want: &[(&str, Option<&str>, f32, f32)] = &[
+            ("Comms Panel Full", Some("CommsPanel_Focus"), -8.0, -5.0),
+            ("External Panel", Some("LeftPanel_Focus"), -17.0, -13.0),
+            ("Internal Panel", Some("RightPanel_Focus"), -17.0, -13.0),
+            ("Radar Panel", Some("RadarPanel_Focus"), -20.0, -20.0),
+            ("Role Switch", Some("CockpitChair_Bone_Rig!RoleSwitch_Panel"), -17.0, -17.0),
+            ("Select UI Mode", None, 10.0, 0.0),
+        ];
+        let l = shipped_layout();
+        let got: Vec<(&str, Option<&str>, f32, f32)> = l.head_look.iter().map(|h| (h.state.as_str(), h.joint.as_deref(), h.fov_channel_deg, h.fov_channel_deg_alt)).collect();
+        assert_eq!(got, want);
+        assert!(l.head_look.iter().all(|h| h.displacement_m == 0.0 && h.displacement_m_alt == 0.0));
     }
 
     #[test]
