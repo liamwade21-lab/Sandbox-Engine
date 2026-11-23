@@ -883,8 +883,11 @@ impl Mixer {
             ActionKind::SetGameParameter | ActionKind::ResetGameParameter => {
                 let id = a.target;
                 let value = if a.kind == ActionKind::ResetGameParameter {
-                    // (Wwise's ResetRTPCValue: the parameter's default as the Init bank defines it, whatever the block's
-                    // value says.)
+                    // (Wwise's ResetRTPCValue on a game object drops that object's own value, so the global one shows
+                    // again; here the object's value goes to the Init bank's default over the fade instead. The same for
+                    // the one shipped reset, PopUpShow_e_Cockpit's of a61ce9fc on its game object: nothing sets that
+                    // parameter globally (no trigger, no action of global scope), so its global value is the default
+                    // throughout. A reset of global scope is Wwise's rule as it stands: the default.)
                     self.gp_def(id).map_or(0.0, |d| d.default)
                 } else {
                     let v = self.value_of(a);
@@ -2104,6 +2107,10 @@ impl Mixer {
         let mut st = Mix::default();
         self.add_states(&bus.states, &mut st);
         all.db += st.db;
+        // (Every duck acts on the ducked bus after its effects, with its bus volume: right for a duck of BusVolume (AkPropID
+        // 5); one of Volume (0) acts before them in Wwise. The same in the shipped data: its one duck of Volume on a bus the
+        // file holds, e490d5d9's of ebbae2e9, is on a bus with no effect, no meter and no sub-mix, so before or after its
+        // effects gives the same (`sidewinder/sound` `the_shipped_data_needs_no_finer_reset_or_duck_rule`).)
         let ducked: f64 = self.ducks.iter().filter(|((src, i), _)| bank.bus(*src).is_some_and(|s| s.ducks[*i].bus.id == bid)).map(|(_, d)| d.level.at(self.now)).sum();
         let post = all.db - pre.db + ducked.max(bus.max_duck_volume_db);
         // (A state's deltas are not told apart by kind here: they count with the bus volume.)

@@ -14,7 +14,12 @@
 //! **Where the sounds play (a stand-in, labelled):** Elite's reader of the queue, which turns the queued ids into posts and
 //! picks the emitter by the `source` argument, is not found (the note's section 6). Every UI sound is posted on one
 //! emitter of its own, [`EMITTER`], the listener's (never placed: its voices play through their sounds' routes at the
-//! listener); `source` is kept in the queue record and logged.
+//! listener); `source` is kept in the queue record and logged. Tested and refused (US1b, `mod.rs`
+//! `ui_panel_placement_hypothesis`): an emitter at the panel's bone (the left panel 1.26 m from the eye) by the mixer's own
+//! placement does not give what Elite plays (the US1 review's correlation of the recordings with session ui1): closing the
+//! left panel and moving a row there sit at one place and turn, so placement gives both the same gains (forward L +1.1 /
+//! R -9.5 dB, turned to the panel 0.0 / -4.4), where Elite plays the close +2.3 / -2.9 dB and the row move -8 / -8 dB as
+//! one signal against this emitter: their difference is the buses' (a034728d against d424e3b1), not a place.
 //!
 //! **The game parameters and states the shipped UI events read** are left at the banks' defaults, but for those the
 //! ship's triggers already set (`triggers.rs`: `OnFootLocation` NotOnFoot, `player_location` outside_station,

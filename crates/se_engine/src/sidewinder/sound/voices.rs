@@ -4245,9 +4245,15 @@ mod tests {
     /// the game plays them (`Outputs`, level 1: a mixer gain of 1 is full scale, as `mod.rs` `LEVEL` sets at the default
     /// volume), 8 seeds (the random containers' picks), at `PlayerInSeat` 1 (the bank's default, seated) and 0. For each
     /// voice: the mixer's volume against the bank's own gains (`bank_gain_db`, within 0.01 dB), the recording's peak and
-    /// RMS; the output's peak beside the peaks session ui1 measured in Elite's own loopback recordings
-    /// (`re/elite/measure/raw/ui1/observations.md`). A begin / end pair (`TargetScan_b` / `_e`): the loop plays until the end
-    /// stops it. Prints its table (`--nocapture`).
+    /// RMS, and the output's peak. Beside each case the reference: what Elite plays against this output, left / right, as
+    /// the US1 review measured it (the shipped recordings cross-correlated with Elite's own loopback recording of session
+    /// ui1 at the logged key presses, `.optimize/scratch/run/us1_review/` `xcorr_all.txt`; "Elite minus port", the port's
+    /// level the unplaced voice through the master chain's linear part). Which keyword each key press plays is the
+    /// movies' code's, confirmed by that correlation (the review): a row moved plays `focusChanged`, a tab `tabChanged`, a
+    /// row selected `popUpShowBegin` (the pop-up opens: `PopUpShow_b`), the pop-up's button `select` (`Select_b`); opening
+    /// a panel plays `showBegin`, then its show effect's sounds, then `showEnd` (only `showBegin` here, the one measured);
+    /// closing it `hide`. Every one of them is posted with no source (`Content.as`, the item renderers: one argument). A
+    /// begin / end pair (`TargetScan_b` / `_e`): the loop plays until the end stops it. Prints its table (`--nocapture`).
     #[test]
     #[ignore]
     fn ui_offline_check_on_the_built_code() {
@@ -4290,15 +4296,14 @@ mod tests {
             .collect();
         let db = |x: f64| if x > 0.0 { 20.0 * x.log10() } else { f64::NEG_INFINITY };
         let cases: &[(&str, &str, &str)] = &[
-            ("CockpitExternalPanel", "showBegin", "focus left panel: peak about -19 dBFS, 0.26 s"),
-            ("CockpitExternalPanel", "hide", "unfocus left panel: peak -20.6 dBFS, 0.28 s"),
-            ("CockpitExternalPanel", "focusChanged", "row move: peak -22 to -25 dBFS"),
-            ("CockpitExternalPanel", "tabChanged", "left panel tab change: peak -24 to -28 dBFS"),
-            ("CockpitExternalPanel", "select", "select (opens a pop-up): peak -18 to -23 dBFS"),
-            ("CockpitInternalPanel2", "showBegin", "focus right panel: peak -22 dBFS"),
-            ("CockpitInternalPanel2", "tabChanged", "right panel tab change: peak -23 to -26 dBFS"),
-            ("RolePanel3", "showBegin", "focus role panel: peak -21 dBFS"),
-            ("RolePanel3", "tabChanged", "role panel tab change: peak -20 to -22 dBFS"),
+            ("CockpitExternalPanel", "showBegin", "open the left panel: Elite minus port +2.1 / -2.3 dB"),
+            ("CockpitExternalPanel", "hide", "close the left panel (4 presses): +2.3 / -2.9 dB"),
+            ("CockpitExternalPanel", "focusChanged", "row move (about 30): -7.5 to -8.5 / -8.0 to -8.4 dB, the stereo file as one signal (L+R)/2"),
+            ("CockpitExternalPanel", "tabChanged", "tab change (6): -7.5 to -7.7 / -6.9 to -7.3 dB"),
+            ("CockpitExternalPanel", "popUpShowBegin", "row select, the pop-up opens (5): -7.69 / -7.69 dB"),
+            ("CockpitExternalPanel", "select", "the pop-up's button (4): -7.6 / -7.3 dB"),
+            ("CockpitInternalPanel2", "showBegin", "open the right panel: -0.6 / +0.8 dB"),
+            ("CockpitInternalPanel2", "hide", "close the right panel: -0.6 / +0.6 dB"),
         ];
         let dt = 1.0 / 60.0;
         let mut worst_gap = 0.0f64;
@@ -4354,7 +4359,7 @@ mod tests {
                     outs.push(db(f64::from(o.peak)));
                 }
                 let (lo, hi) = outs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(*x), b.max(*x)));
-                eprintln!("  {iface} {name} -> {event}: output peak {lo:.1} to {hi:.1} dBFS over 8 seeds (master chain on); Elite (ui1): {measured}");
+                eprintln!("  {iface} {name} -> {event}: output peak {lo:.1} to {hi:.1} dBFS over 8 seeds (master chain on); reference: {measured}");
             }
         }
         eprintln!("largest gap between the mixer's volume and the bank's gains with their randomisers' range: {worst_gap:.4} dB");

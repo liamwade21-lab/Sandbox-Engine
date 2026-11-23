@@ -190,9 +190,9 @@ pub(super) fn pick(tables: &BTreeMap<String, TableSource>, x: &Export) -> Result
 pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
     let tables = read_tables(ctx)?;
     let about = "The ship UI's PlaySound tables (sidewinder/sound/ui.rs reads them): per cockpit interface its 29 keywords (the \
-                 AudioEvents fields; 0x10 and 0x11 labelled extra0x10 / extra0x11, their names not found) and its names, \
-                 lower-cased, each to the event name the table holds, as it is (an empty value or one no bank holds is \
-                 silence), and its flagged names. Written by copy_sidewinder (sidewinder/convert/ui_sound.rs) from the decoded \
+                 AudioEvents fields, spelt as Elite spells them; 0x10 and 0x11 labelled extra0x10 / extra0x11, their names not \
+                 found) and its names, lower-cased, each to the event name the table holds, as it is (an empty value or one no \
+                 bank holds is silence), and its flagged names, lower-cased. Written by copy_sidewinder (sidewinder/convert/ui_sound.rs) from the decoded \
                  ui_audio_tables.json; Elite's lookup is case-insensitive (re/elite/notes/ui_sounds.md section 1).";
     let bytes = serde_json::to_vec_pretty(&tables_json(about, &tables)).map_err(|e| e.to_string())?;
     let rel = "ui/sound_tables.json";

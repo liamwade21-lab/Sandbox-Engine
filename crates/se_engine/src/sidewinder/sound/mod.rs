@@ -1199,4 +1199,115 @@ mod tests {
         }
         eprintln!("{n} of {} shipped events start a voice with a filter value over 0", bank.file.ship_events.len());
     }
+
+    /// US1b, the hypothesis that a UI sound plays from its panel: each case's event posted once unplaced (as shipped) and
+    /// once on an emitter at its panel's bone (`re/elite/frea_export/sidewinder_ui/decoded/rendering.json`
+    /// `bones_elite_axes`, cockpit space: the eye `!Camera` at its origin, Elite's axes x right, y up, z forward, so the
+    /// point from the head is (x, y, -z) in the listener's axes), oriented by the bone's axes, the head forward or turned by
+    /// the measured panel turn (`seat::PANEL_TURN_*`). For every voice started: the placed output's gain on each side
+    /// against the unplaced one's (dB, the inputs' powers summed) and how alike the two input channels feed each side
+    /// (1 = one signal). Prints its table (`--nocapture`).
+    #[test]
+    #[ignore]
+    fn ui_panel_placement_hypothesis() {
+        use super::super::seat::{head_turn, PANEL_TURN_LEFT, PANEL_TURN_RIGHT};
+        let bank = shipped();
+        let left = (Vec3::new(-1.04593, -0.390667, -0.577033), [[0.347397, 0.003415, 0.937712], [-0.006561, 0.999977, -0.001211], [-0.937695, -0.005732, 0.347412]]);
+        let right = (Vec3::new(1.04923, -0.391625, -0.579653), [[0.342019, 0.0, -0.939693], [-0.002865, 0.999995, -0.001043], [0.939689, 0.003049, 0.342017]]);
+        let cases: &[(&str, &str, (Vec3, [[f32; 3]; 3]), Vec2, &str)] = &[
+            ("open left", "Open_b_Cockpit", left, Vec2::ZERO, "+2.1 / -2.3"),
+            ("close left", "Close_b_Cockpit", left, PANEL_TURN_LEFT, "+2.3 / -2.9"),
+            ("open right", "Open_b_Cockpit", right, Vec2::ZERO, "-0.6 / +0.8"),
+            ("close right", "Close_b_Cockpit", right, PANEL_TURN_RIGHT, "-0.6 / +0.6"),
+            ("row move left", "Navi_b_Cockpit", left, PANEL_TURN_LEFT, "-7.5..-8.5 / -8.0..-8.4, one signal"),
+            ("tab left", "NaviPane_b_Cockpit", left, PANEL_TURN_LEFT, "-7.5..-7.7 / -6.9..-7.3"),
+            ("row select left", "PopUpShow_b_Cockpit", left, PANEL_TURN_LEFT, "-7.69 / -7.69"),
+            ("pop-up button left", "Select_b_Cockpit", left, PANEL_TURN_LEFT, "-7.6 / -7.3"),
+        ];
+        const E: u32 = 0x400;
+        let starts = |name: &str, at: Option<([f32; 3], [[f32; 3]; 2])>| {
+            let mut m = Mixer::new(bank.clone(), 3);
+            if let Some((p, o)) = at {
+                m.set_emitter(E, p);
+                m.set_emitter_orientation(E, o[0], o[1]);
+            }
+            m.post(name, E).unwrap();
+            let mut got = Vec::new();
+            for k in 0..60 {
+                got.extend(m.step(if k == 0 { 0.0 } else { 1.0 / 60.0 }).iter().filter(|u| u.start.is_some() && !u.virtual_voice).cloned());
+            }
+            got
+        };
+        let db = |x: f32| 10.0 * f64::from(x.max(1e-20)).log10();
+        for (what, event, (pos, axes), turn, measured) in cases {
+            for (label, look) in [("forward", Vec2::ZERO), ("turned", *turn)] {
+                if label == "turned" && *turn == Vec2::ZERO {
+                    continue;
+                }
+                let inv = head_turn(look).inverse();
+                let p = (inv * *pos).to_array();
+                // (The bone's +z, Elite's forward, is the emitter's front: -z in the listener's axes; its +y the top.)
+                let front = inv * Vec3::new(axes[2][0], axes[2][1], -axes[2][2]);
+                let top = inv * Vec3::new(axes[1][0], axes[1][1], -axes[1][2]);
+                let (plain, placed) = (starts(event, None), starts(event, Some((p, [front.to_array(), top.to_array()]))));
+                for (a, b) in plain.iter().zip(&placed) {
+                    let channels = bank.file.media.get(&match a.output { Output::Audio { source } => source, _ => continue }).map_or(1, |m| m.channels as usize);
+                    let m0 = a.matrix.map(|r| r.map(|g| g * a.gain));
+                    let pl = b.place.as_ref().map(|pl| pl.at(p, [front.to_array(), top.to_array()], channels));
+                    let m1 = match &pl {
+                        Some(now) => now.matrix.map(|r| r.map(|g| g * b.gain)),
+                        None => b.matrix.map(|r| r.map(|g| g * b.gain)),
+                    };
+                    let side = |m: &[[f32; 2]; 2], o: usize| if channels > 1 { m[0][o] * m[0][o] + m[1][o] * m[1][o] } else { m[0][o] * m[0][o] };
+                    let alike = |o: usize| if channels > 1 && m1[0][o].abs().max(m1[1][o].abs()) > 0.0 { m1[0][o].abs().min(m1[1][o].abs()) / m1[0][o].abs().max(m1[1][o].abs()) } else { 1.0 };
+                    eprintln!(
+                        "{what:<19} {label:<8} {event:<20} {:?} {}ch placed {}: L {:+6.2} R {:+6.2} dB (alike L {:.2} R {:.2}; distance {:.2} m{}){}   measured {measured}",
+                        a.output,
+                        channels,
+                        b.place.is_some(),
+                        db(side(&m1, 0)) - db(side(&m0, 0)),
+                        db(side(&m1, 1)) - db(side(&m0, 1)),
+                        alike(0),
+                        alike(1),
+                        pos.length(),
+                        b.place.as_ref().map_or(String::new(), |pl| format!(", pan {}, curve at 0 m {:+.2} dB at it {:+.2} dB", pl.pan, pl.volume_db(0.0), pl.volume_db(f64::from(pos.length())))),
+                        if a.output != b.output { " (OTHER VOICE)" } else { "" }
+                    );
+                }
+            }
+        }
+    }
+
+    /// The two places the mixer is simpler than Wwise give the same sound on the shipped data (the US1 review's notes 3, 4):
+    /// a ResetGameParameter sets its game object's value to the default where Wwise drops it to show the global value,
+    /// the same while nothing sets that parameter globally (no action of global scope sets it; the triggers set parameters
+    /// by name, and the reset ones are unnamed); every duck acts after the ducked bus's effects, where Wwise puts a duck of
+    /// Volume (AkPropID 0) before them, the same where the ducked bus has no effect, no meter and is not the sub-mix.
+    #[test]
+    fn the_shipped_data_needs_no_finer_reset_or_duck_rule() {
+        use se_core::elite_sound::data::{ActionKind, Object, Scope};
+        let bank = shipped();
+        let actions: Vec<_> = bank.file.objects.values().filter_map(|o| if let Object::Action(a) = o { Some(a) } else { None }).collect();
+        let resets: Vec<_> = actions.iter().filter(|a| a.kind == ActionKind::ResetGameParameter).collect();
+        assert!(!resets.is_empty());
+        for r in &resets {
+            assert!(matches!(r.scope, Scope::GameObject | Scope::GameObjectNoTarget), "reset {} of global scope", r.id);
+            let global = actions.iter().filter(|a| a.target == r.target && matches!(a.kind, ActionKind::SetGameParameter) && matches!(a.scope, Scope::Global | Scope::GlobalAll)).count();
+            assert_eq!(global, 0, "{} is set globally", r.target);
+            assert!(bank.file.names.get(&r.target).is_none(), "{} has a name a trigger could set", r.target);
+        }
+        let mut volume_ducks = 0;
+        for o in bank.file.objects.values() {
+            let Object::Bus(b) = o else { continue };
+            for d in b.ducks.iter().filter(|d| d.target_prop == 0) {
+                if let Some(Object::Bus(t)) = bank.object(d.bus.id) {
+                    volume_ducks += 1;
+                    assert!(t.fx.fx.is_empty(), "ducked bus {} has effects", t.id);
+                    assert!(!bank.file.meters.iter().any(|m| m.bus == t.id), "ducked bus {} has a meter", t.id);
+                    assert_ne!(t.id, se_core::elite_sound::SUBMIX_BUS);
+                }
+            }
+        }
+        eprintln!("{} resets, {volume_ducks} ducks of Volume on a bus of the file", resets.len());
+    }
 }
