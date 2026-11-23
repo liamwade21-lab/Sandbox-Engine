@@ -276,7 +276,7 @@ pub fn tunnel(
     pilot.cruise = Some(Cruise { pos: j.arrive, rot: j.rot, speed: start, cap: start, carrier: Some((star.obj, star.pos)) });
     pilot.drive = elite_sim::drive::Drive::arrived();
     pilot.jump = None;
-    pilot.target = None;
+    (pilot.target, pilot.nav_body) = (None, None);
     msg.show(format!("Arrived: {}", active.name));
     info!("sidewinder: arrived at {} after {} frames, {:.1} s", active.name, j.frames, j.seconds);
 }

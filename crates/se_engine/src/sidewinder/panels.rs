@@ -191,6 +191,10 @@ impl Panels {
     }
 }
 
+/// The locked row's marker's height, a share of the row's height, and its width, a share of its height (ours, F).
+const LOCK_MARK: f32 = 0.5;
+const LOCK_MARK_W: f32 = 0.7;
+
 /// How far head look must turn (radians) to focus a side panel.
 pub const LOOK_FOCUS_RAD: f32 = 0.6;
 
@@ -205,6 +209,16 @@ pub fn distance_text(m: f64) -> String {
         format!("{:.1} LS", m / LS)
     } else if m >= 1000.0 {
         format!("{:.0} KM", m / 1000.0)
+    } else {
+        format!("{:.0} M", m)
+    }
+}
+
+/// A height over the ground as the planet HUD's altimeter shows it (metres under 10 km, else km to a tenth); a destination
+/// whose distance is that height shows it the same way (`DestMark::distance_text`).
+pub fn altitude_text(m: f64) -> String {
+    if m.abs() >= 10_000.0 {
+        format!("{:.1} KM", m / 1000.0)
     } else {
         format!("{:.0} M", m)
     }
@@ -228,9 +242,10 @@ pub fn columns(rect: egui::Rect, across: (f32, f32)) -> egui::Rect {
 
 /// Draws the open panel on its anchor beside the seat (`hud_anchor::LEFT_PANEL`, `RIGHT_PANEL`: Elite's place, seen when the
 /// head turns to it), laid out in its own shares (`hud_anchor::PANEL_W` x `PANEL_H`, (0, 0) its top left), its columns in
-/// the part of it on the screen (`columns`). `on` is each module's switch, `ship` each ship function's state.
+/// the part of it on the screen (`columns`). `on` is each module's switch, `ship` each ship function's state, `locked` the
+/// ship's destination (its Navigation row is marked).
 #[allow(clippy::too_many_arguments)]
-pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, orange: egui::Color32, dim: egui::Color32) {
+pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, locked: Option<ObjectRef>, orange: egui::Color32, dim: egui::Color32) {
     let Some(side) = panels.open else { return };
     let anchor = if side == Side::Left { &LEFT_PANEL } else { &RIGHT_PANEL };
     let h = r.height();
@@ -257,7 +272,7 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
     }
     let row_h = 0.022 * h;
     let top = rect.top() + 0.04 * h;
-    let line = |g: &mut Sketch, i: usize, text: String, right: String, lit: bool, selected: bool| {
+    let line = |g: &mut Sketch, i: usize, text: String, right: String, lit: bool, selected: bool, marked: bool| {
         let y = top + row_h * i as f32;
         if y + row_h > rect.bottom() {
             return;
@@ -265,8 +280,16 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
         if selected {
             g.rect_filled(egui::Rect::from_min_size(egui::pos2(cols.left() + 0.004 * h, y), egui::vec2(w - 0.008 * h, row_h)), 2.0, orange.gamma_multiply(0.35));
         }
+        // The locked destination's row: a filled triangle pointing at it at the row's left edge, half the row high (ours, F:
+        // Elite's panel art is not built); every row's text starts past it, so the columns stay aligned.
+        let (half, mark_w) = (row_h * LOCK_MARK / 2.0, row_h * LOCK_MARK * LOCK_MARK_W);
+        let x = cols.left() + 0.0045 * h;
+        if marked {
+            let m = y + row_h * 0.5;
+            g.add(egui::Shape::convex_polygon(vec![egui::pos2(x, m - half), egui::pos2(x + mark_w, m), egui::pos2(x, m + half)], orange, egui::Stroke::NONE));
+        }
         let c = if lit { orange } else { dim };
-        g.text(egui::pos2(cols.left() + 0.012 * h, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
+        g.text(egui::pos2(cols.left() + 0.012 * h + mark_w, y + row_h * 0.5), egui::Align2::LEFT_CENTER, text, font(0.0115), c);
         g.text(egui::pos2(cols.right() - 0.012 * h, y + row_h * 0.5), egui::Align2::RIGHT_CENTER, right, font(0.0115), c);
     };
     match (side, panels.tab[s]) {
@@ -275,22 +298,22 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
             let shown = ((rect.height() - 0.05 * h) / row_h) as usize;
             let first = panels.row.saturating_sub(shown.saturating_sub(1));
             for (k, n) in panels.nav.iter().enumerate().skip(first).take(shown) {
-                line(&mut g, k - first, format!("{} {}", n.kind, n.name), distance_text(n.dist_m), true, k == panels.row);
+                line(&mut g, k - first, format!("{} {}", n.kind, n.name), distance_text(n.dist_m), true, k == panels.row, Some(n.obj) == locked);
             }
             if panels.nav.is_empty() {
-                line(&mut g, 0, "Nothing in range".to_string(), String::new(), false, false);
+                line(&mut g, 0, "Nothing in range".to_string(), String::new(), false, false, false);
             }
         }
         (Side::Right, 1) => {
             for (i, (name, switchable)) in MODULES.iter().enumerate() {
                 let state = if !switchable { "ALWAYS ON" } else if on[i] { "ON" } else { "OFF" };
-                line(&mut g, i, name.to_string(), state.to_string(), on[i], i == panels.row);
+                line(&mut g, i, name.to_string(), state.to_string(), on[i], i == panels.row, false);
             }
         }
         (Side::Right, 3) => {
             let words = [("ON", "OFF"), ("DOWN", "UP"), ("DEPLOYED", "RETRACTED")];
             for (i, (name, _)) in SHIP_FUNCTIONS.iter().enumerate() {
-                line(&mut g, i, name.to_string(), (if ship[i] { words[i].0 } else { words[i].1 }).to_string(), true, i == panels.row);
+                line(&mut g, i, name.to_string(), (if ship[i] { words[i].0 } else { words[i].1 }).to_string(), true, i == panels.row, false);
             }
         }
         (Side::Right, t) => {
@@ -300,7 +323,7 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
                 _ => &lines.status,
             };
             for (i, l) in ls.iter().enumerate() {
-                line(&mut g, i, l.clone(), String::new(), true, false);
+                line(&mut g, i, l.clone(), String::new(), true, false, false);
             }
         }
     }

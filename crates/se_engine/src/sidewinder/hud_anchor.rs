@@ -103,6 +103,15 @@ pub const PIPS_BOX: DesignBox = DesignBox { x: 0.605, y: 0.361, hw: 0.060, hh: 0
 pub const TARGET: Anchor = anchor([-0.8759, 6.3079, 0.1421], [0.1223, 0.0108, -0.0590], [-0.0012, 0.0163, 0.0006], (Grade::A, Grade::D));
 pub const TARGET_BOX: DesignBox = DesignBox { x: 0.0, y: 0.469, hw: 0.15, hh: 0.018 };
 
+/// The navigation compass, left of the radar (U1). Plane and place (A): the decoded `cockpit_ui_hightlight_compass` outline
+/// itself, hung at the cockpit's `!TutorialGuide_Compass` bone: its middle (-0.4561, -0.5923, -1.9437) from the eye, its plane
+/// square to the ship's z (the outline's normal (0, 0, 1); `t4e4_inventory.json`, fitted to the outline's vertices). Size (E):
+/// the outline is the tutorial's highlight round the compass, a ring from 0.093 to 0.1005 m radius, so Elite's own compass may
+/// be smaller inside it; no recording shows Elite's compass. The ring is drawn at the highlight's outer size, 0.201 x 0.2007
+/// m. The box is that place seen straight ahead at 56.249 degrees (layout coordinates only: the ring fills it).
+pub const COMPASS: Anchor = anchor([-0.4560, 6.1300, -0.5972], [0.1005, 0.0, 0.0], [0.0, 0.1003, 0.0], (Grade::A, Grade::E));
+pub const COMPASS_BOX: DesignBox = DesignBox { x: -0.2197, y: 0.2852, hw: 0.0484, hh: 0.0484 };
+
 /// The messages under the view (the notes, the drive's charge, a held drive, the way out): no Elite place known. Plane (A):
 /// facing the eye at the radar outline's middle. Extent (E): the old layout's, seen straight ahead at 56.249 degrees.
 pub const MESSAGES: Anchor = anchor([0.0001, 6.0699, -0.5606], [0.5097, 0.0, 0.0], [0.0, 0.1812, -0.0669], (Grade::A, Grade::E));
@@ -405,7 +414,7 @@ mod tests {
     fn the_anchors_are_where_the_cockpit_is() {
         for (w, h) in SIZES {
             let view = SeatView::new(EYE, Head::default(), screen(w, h));
-            for a in [RADAR, HEAT, THROTTLE, HEALTH, FUEL, PIPS, TARGET, MESSAGES, TOP, ALTITUDE, ATTITUDE] {
+            for a in [RADAR, HEAT, THROTTLE, HEALTH, FUEL, PIPS, TARGET, COMPASS, MESSAGES, TOP, ALTITUDE, ATTITUDE] {
                 assert!(a.centre[2] - EYE.z < -0.5 && Vec3::from_array(a.right).length() > 0.01 && Vec3::from_array(a.up).length() > 0.01, "{a:?}");
                 let c = view.corners(&a).unwrap_or_else(|| panic!("{a:?} off the straight view at {w}x{h}"));
                 assert!(screen(w, h).contains_rect(egui::Rect::from_points(&c)), "{a:?} cut at {w}x{h}: {c:?}");

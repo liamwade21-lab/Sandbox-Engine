@@ -11,6 +11,8 @@
 //!   (`mods::load_sidewinder`): Elite's own hull, gear, cockpit and chairs, posed by Elite's rigs (ARCHITECTURE.md A6).
 //! - `parts.rs` says which pose the moving parts have; `draw.rs` draws every rig node's model with `ShipMaterial`
 //!   (`material.rs`), lit by the sandbox's light records as the props are.
+//! - `mouse_widget.rs` is Elite's mouse widget in the seat (the dot and the arrow of the mouse's virtual stick), measured
+//!   from the recordings; `hud.rs` draws it.
 //! - `convert` (tests only) makes the mod's files from Elite's files.
 
 pub mod assets;
@@ -23,6 +25,7 @@ pub mod hyper;
 pub mod lights;
 mod machines;
 pub mod material;
+mod mouse_widget;
 pub mod panels;
 pub mod parts;
 pub mod hud;
@@ -493,12 +496,46 @@ pub fn dev_command(world: &mut World, arg: &str) {
             };
             None
         }
-        // `sw dest NAME|none`: the destination (a body of this system, as the Navigation tab picks); `sw aim DEG`: the nose DEG
-        // over the horizon, the heading kept (a test's stick).
+        // `sw dest NAME|none|state`: the destination (a body of this system, as the Navigation tab picks, through
+        // `Pilot::lock`: it clears a star target; set, never unlocked by naming it again); `state` logs the locked destination
+        // and the HUD's mark of it. `sw aim DEG`: the nose DEG over the horizon, the heading kept (a test's stick).
         "dest" => {
             let name = arg.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+            if name == "state" {
+                let pl = world.resource::<pilot::Pilot>();
+                let mark = pl.dest.as_ref().map_or("none".to_string(), |m| {
+                    format!("{:?} dir ({:.5}, {:.5}, {:.5}), {:.0} m, angular radius {:.5} rad", m.name, m.dir.x, m.dir.y, m.dir.z, m.dist_m, m.ang_radius)
+                });
+                info!("sidewinder: locked {:?}, the mark {mark}", pl.locked());
+                return;
+            }
             let found = world.resource::<crate::data::SeData>().catalog.find(&name);
-            world.resource_mut::<pilot::Pilot>().nav_body = found;
+            if found.is_none() && name != "none" {
+                info!("sidewinder: no body named {name:?}");
+            }
+            let mut pl = world.resource_mut::<pilot::Pilot>();
+            let now = match found {
+                Some(o) => pl.lock(pilot::Dest::Body(o), false),
+                None => {
+                    pl.unlock(false);
+                    pl.locked()
+                }
+            };
+            info!("sidewinder: sw dest: {}", pilot::dest_text(&world.resource::<crate::data::SeData>().catalog, now));
+            None
+        }
+        // `sw mouse DX DY`: a test's mouse counts (x right, y down, as real counts and the measuring sessions' `keys.py
+        // mouse`), through the same line of `fly` as the real ones. The mod reads Elite's default binds (sensitivity 1.0:
+        // 321.6 counts full stick); the recordings' 100 counts at the user's 0.2725 are `sw mouse 0 -27.25` here.
+        "mouse" => {
+            let nums: Option<Vec<f32>> = arg.split_whitespace().skip(1).map(|w| w.parse::<f32>().ok().filter(|x| x.is_finite())).collect();
+            match nums.as_deref() {
+                Some(&[dx, dy]) => {
+                    world.resource_mut::<pilot::Pilot>().dev_mouse += Vec2::new(dx, dy);
+                    info!("sidewinder: mouse {dx} {dy} counts (a test)");
+                }
+                _ => warn!("sw mouse: use `sw mouse DX DY` (finite counts, x right, y down); got `{arg}`"),
+            }
             None
         }
         "aim" => {
@@ -551,7 +588,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
             world.resource_mut::<pilot::Pilot>().dev_face = true;
             None
         }
-        // `sw target NAME|none` sets hyperspace's target; `sw hyper NAME` jumps there at once (the tunnel without the charge).
+        // `sw target NAME|none` sets hyperspace's target (through `Pilot::lock`: it clears a body destination; `none` or a name
+        // that is no star clears the target only); `sw hyper NAME` jumps there at once (the tunnel without the charge).
         "target" | "hyper" => {
             let mut words: Vec<&str> = arg.split_whitespace().skip(1).collect();
             let fail = verb == "hyper" && words.last() == Some(&"fail");
@@ -574,7 +612,12 @@ pub fn dev_command(world: &mut World, arg: &str) {
             }
             let mut pl = world.resource_mut::<pilot::Pilot>();
             if verb == "target" {
-                pl.target = found;
+                match found {
+                    Some(t) => {
+                        pl.lock(pilot::Dest::System(t), false);
+                    }
+                    None => pl.unlock(true),
+                }
             } else {
                 pl.dev_hyper = found;
                 pl.dev_hyper_fail = fail;

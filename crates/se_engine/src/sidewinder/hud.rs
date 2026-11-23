@@ -9,11 +9,12 @@
 //! gauge's arc (the fill the speed, the marker the throttle, its blue band the blue zone), the ship's hologram ring with the
 //! shields' and hull's percentages, the three pip bars (the pips as notches, the capacitor as the fill), fuel and the four
 //! indicators (mass locked, landing gear, cargo scoop, lights), the notes (silent running, the safe disengage), the emergency
-//! oxygen's clock, and the keys at the bottom (the mod's help, not Elite's HUD: still flat on the screen, as the hyperspace
+//! oxygen's clock, the locked destination (U1: a marker in the view at its direction, through the seat's camera, and the
+//! compass on its decoded place left of the radar), Elite's mouse widget (U2, `mouse_widget.rs`), and the keys at the bottom (the mod's help, not Elite's HUD: still flat on the screen, as the hyperspace
 //! tunnel's name is; the tunnel itself is in the scene, `tunnel.rs`). The fade from black after boarding is
 //! `seat::draw_prompt`'s.
 
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec2, Vec3};
 use bevy::prelude::*;
 use bevy_egui::egui;
 use elite_sim::life::Alarm;
@@ -21,7 +22,7 @@ use elite_sim::life::Alarm;
 use crate::mods::ModControl;
 
 use super::hud_anchor::{self as anchor, SeatView, Sketch};
-use super::pilot::Pilot;
+use super::pilot::{Dest, DestMark, Pilot};
 use super::seat::Seat;
 use super::SidewinderAssets;
 
@@ -52,6 +53,61 @@ const SPEED_FONT: f32 = 0.024;
 /// The throttle gauge's foot and top, in the flat layout on the throttle's anchor.
 const GAUGE: [(f32, f32); 2] = [(0.194, 0.458), (0.236, 0.333)];
 
+// The in-view marker of the destination (U1). Its look is ours (F: Elite's own reticle art is not decoded): four arcs of a
+// ring round the destination's middle, gaps at the diagonals, the name above right and the distance under it. Sizes are
+// shares of the screen's height.
+
+/// How far along the destination's direction the marker's point is put before projecting (m; any distance past the
+/// cockpit gives the same place: only the direction counts).
+const MARK_FAR_M: f32 = 1000.0;
+/// The ring's least radius (ours, F).
+const MARK_MIN_RADIUS: f32 = 0.016;
+/// The ring's margin outside the body's disc (ours, F).
+const MARK_MARGIN: f32 = 0.006;
+/// The ring's greatest radius (ours, F): a ring round the view's middle then stays clear of the HUD's lower parts (the
+/// messages start 0.22 under the middle). A bigger disc gets the least ring on its middle instead (`mark_radius`).
+const MARK_MAX_RADIUS: f32 = 0.2;
+/// Each arc's length (radians; ours, F): four of them, centred right, down, left and up.
+const MARK_ARC: f32 = 0.9;
+/// The name's and the distance's sizes, and their gap from the ring's right edge (ours, F).
+const MARK_FONT: f32 = 0.013;
+const MARK_DIST_FONT: f32 = 0.011;
+const MARK_TEXT_GAP: f32 = 0.006;
+
+/// The compass's dot's radius, a share of the screen's height in the compass's layout (ours, F: big enough that the hollow
+/// dot reads as hollow inside the HUD's stroke).
+const COMPASS_DOT: f32 = 0.0075;
+
+/// The marker's ring radius (px) for a disc of `disc` px on a screen `h` px high (ours, F): the disc plus the margin, at least
+/// the least radius; when that is over the greatest (a body filling the view), or the disc can't be measured (infinite or
+/// NaN), the least radius on the body's middle.
+fn mark_radius(disc: f32, h: f32) -> f32 {
+    let r = (disc + MARK_MARGIN * h).max(MARK_MIN_RADIUS * h);
+    if r <= MARK_MAX_RADIUS * h { r } else { MARK_MIN_RADIUS * h }
+}
+
+/// Where the in-view marker goes on the `screen`: the destination's middle and its disc's apparent radius there (px), the
+/// direction from the eye (`eye`, ship space) projected through the seat's camera as the cockpit is drawn; None when it is
+/// behind the eye or off the screen. (A disc too big to project, its edge behind the eye, has an infinite radius.)
+fn mark_place(view: &SeatView, eye: Vec3, screen: egui::Rect, m: &DestMark) -> Option<(egui::Pos2, f32)> {
+    let far = |d: Vec3| view.project(eye + d * MARK_FAR_M);
+    let at = far(m.dir).filter(|p| screen.contains(*p))?;
+    // The disc's edge: the direction turned by the angular radius about an axis square to it.
+    let edge = Quat::from_axis_angle(m.dir.any_orthonormal_vector(), m.ang_radius) * m.dir;
+    let radius = far(edge).map_or(f32::INFINITY, |e| e.distance(at));
+    Some((at, radius))
+}
+
+/// The compass's dot (grade E: no recording shows Elite's compass or its in-view marker, since nothing was locked in any of
+/// them, `re/elite/notes/sidewinder_hud_marks.md` C and R; with nothing locked the recordings show no compass, which is why it
+/// is drawn only while something is locked): the destination's direction `dir` (ship space) seen down the nose, orthographic: its x and y as shares of the
+/// ring's radius (x right, y up), so dead ahead and dead astern are both the middle and a right angle off the nose is on the
+/// ring; `true` with the destination ahead (drawn filled), `false` behind (hollow).
+pub fn compass_dot(dir: Vec3) -> (Vec2, bool) {
+    let d = dir.normalize_or(Vec3::NEG_Z);
+    (Vec2::new(d.x, d.y), d.z <= 0.0)
+}
+
 /// A point `x`, `y` screen heights from the middle (y down).
 fn at(r: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
     let h = r.height();
@@ -72,7 +128,8 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     }
     // The seat's camera as the cockpit is drawn with it this frame: the eye, the head's turn `seat_camera` wrote the camera
     // with (this pass runs after it: the mod's `plugin` orders them), Elite's field of view for the screen's aspect.
-    let view = SeatView::new(Vec3::from_array(assets.eye), seat.head, r);
+    let eye = Vec3::from_array(assets.eye);
+    let view = SeatView::new(eye, seat.head, r);
     let font = |s: f32| egui::FontId::monospace(s * h);
     let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
 
@@ -193,12 +250,56 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     }
     g.finish(&view, &anchor::TARGET, anchor::TARGET_BOX);
 
+    // The locked destination (U1): the marker in the view at its real direction, and the compass left of the radar (shown
+    // only while a destination is locked: E, as `compass_dot`).
+    if let Some(m) = &pilot.dest {
+        if let Some((mid, disc)) = mark_place(&view, eye, r, m) {
+            let radius = mark_radius(disc, h);
+            for k in 0..4 {
+                let middle = k as f32 * std::f32::consts::FRAC_PI_2;
+                let pts: Vec<egui::Pos2> = (0..=12)
+                    .map(|i| {
+                        let t = middle + MARK_ARC * (i as f32 / 12.0 - 0.5);
+                        mid + radius * egui::vec2(t.cos(), t.sin())
+                    })
+                    .collect();
+                p.add(egui::Shape::line(pts, stroke(ORANGE)));
+            }
+            // The name and the distance start past the ring's right edge, the name over the middle's height, the distance under.
+            let text_at = mid + egui::vec2(radius + MARK_TEXT_GAP * h, 0.0);
+            p.text(text_at, egui::Align2::LEFT_BOTTOM, &m.name, font(MARK_FONT), ORANGE);
+            p.text(text_at, egui::Align2::LEFT_TOP, m.distance_text(), font(MARK_DIST_FONT), ORANGE);
+        }
+        let mut g = Sketch::new(&p, r);
+        let d = anchor::COMPASS_BOX;
+        let (centre, ring) = (at(r, d.x, d.y), d.hw * h);
+        let pts: Vec<egui::Pos2> = (0..=64)
+            .map(|i| {
+                let t = i as f32 / 64.0 * std::f32::consts::TAU;
+                centre + ring * egui::vec2(t.cos(), t.sin())
+            })
+            .collect();
+        g.add(egui::Shape::line(pts, stroke(ORANGE)));
+        let (dot, ahead) = compass_dot(m.dir);
+        let at_dot = centre + ring * egui::vec2(dot.x, -dot.y);
+        if ahead {
+            g.circle_filled(at_dot, COMPASS_DOT * h, ORANGE);
+        } else {
+            g.add(egui::Shape::circle_stroke(at_dot, COMPASS_DOT * h, stroke(ORANGE)));
+        }
+        g.finish(&view, &anchor::COMPASS, anchor::COMPASS_BOX);
+    }
+
+    // Elite's mouse widget (U2): the dot on the nose's axis and the arrow off it along the mouse's virtual stick.
+    if super::mouse_widget::shown(assets.keys.value("MouseGUI"), panels.open.is_some()) {
+        super::mouse_widget::draw(&p, &view, eye, pilot.stick);
+    }
+
     // The planet HUD (step 4.3, ours in its look: Elite's is a hologram): the altimeter and vertical speed on the right rail,
     // the pitch and roll on the left.
     if let Some(ph) = pilot.planet {
         let mut g = Sketch::new(&p, r);
-        let alt = if ph.alt_m.abs() >= 10_000.0 { format!("{:.1} KM", ph.alt_m / 1000.0) } else { format!("{:.0} M", ph.alt_m) };
-        g.text(at(r, 0.30, 0.02), egui::Align2::LEFT_CENTER, format!("ALT {alt}"), font(0.016), ORANGE);
+        g.text(at(r, 0.30, 0.02), egui::Align2::LEFT_CENTER, format!("ALT {}", super::panels::altitude_text(ph.alt_m)), font(0.016), ORANGE);
         g.text(at(r, 0.30, 0.045), egui::Align2::LEFT_CENTER, format!("V {:+.0} M/S", ph.vspeed), font(0.013), if ph.vspeed < -5.0 && ph.alt_m < 200.0 { egui::Color32::RED } else { ORANGE });
         g.finish(&view, &anchor::ALTITUDE, anchor::ALTITUDE_BOX);
         let mut g = Sketch::new(&p, r);
@@ -285,7 +386,7 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
             ],
         };
         let ship = [pilot.flight_assist, pilot.gear_down, pilot.weapons.deployed];
-        super::panels::draw(&p, r, &view, &panels, &pilot.modules, ship, &lines, ORANGE, DIM);
+        super::panels::draw(&p, r, &view, &panels, &pilot.modules, ship, &lines, pilot.locked().map(Dest::obj), ORANGE, DIM);
     }
 
     let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  1 4 panels  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
@@ -337,6 +438,62 @@ mod tests {
                 anchor::place(view, a, d, r, p).unwrap()
             })
             .collect()
+    }
+
+    /// The compass's dot: dead ahead the middle, filled; dead astern the middle, hollow; a right angle to the right on the
+    /// ring's right edge, straight up on its top; behind and to the left inside the ring's left half, hollow.
+    #[test]
+    fn the_compass_dot() {
+        assert_eq!(compass_dot(Vec3::NEG_Z), (Vec2::ZERO, true));
+        assert_eq!(compass_dot(Vec3::Z * 3.0), (Vec2::ZERO, false));
+        assert_eq!(compass_dot(Vec3::X), (Vec2::X, true));
+        assert_eq!(compass_dot(Vec3::Y), (Vec2::Y, true));
+        let (d, ahead) = compass_dot(Vec3::new(-1.0, 0.0, 1.0));
+        assert!(!ahead && (d - Vec2::new(-std::f32::consts::FRAC_1_SQRT_2, 0.0)).length() < 1e-6, "{d}");
+    }
+
+    /// The ring's radius: the disc plus the margin, at least the least radius; a disc whose ring would pass the greatest
+    /// radius, or one that can't be measured, gets the least ring on its middle.
+    #[test]
+    fn the_marker_ring_radius() {
+        let h = 900.0;
+        assert_eq!(mark_radius(1.0, h), MARK_MIN_RADIUS * h);
+        assert!((mark_radius(100.0, h) - (100.0 + MARK_MARGIN * h)).abs() < 1e-3);
+        assert!((mark_radius(MARK_MAX_RADIUS * h - MARK_MARGIN * h, h) - MARK_MAX_RADIUS * h).abs() < 1e-3);
+        for disc in [MARK_MAX_RADIUS * h, 432.0, f32::INFINITY, f32::NAN] {
+            assert_eq!(mark_radius(disc, h), MARK_MIN_RADIUS * h, "{disc}");
+        }
+    }
+
+    fn mark(dir: Vec3, ang_radius: f32) -> DestMark {
+        DestMark { obj: se_core::catalog::ObjectRef::Body(2), dir, dist_m: 1.0e6, over_ground: false, ang_radius, name: "Moon".into(), system: false }
+    }
+
+    /// The in-view marker: a destination dead ahead lands in the view's middle with a level head, at both sizes; with the
+    /// head turned left it moves right on the screen (and with the head turned up, down); behind the eye, or turned off the
+    /// screen, there is none. The disc's radius on the screen is the focal times tan of its angular radius dead ahead.
+    #[test]
+    fn the_marker_is_at_the_destinations_direction() {
+        for (w, hh) in [(1600.0f32, 900.0f32), (3440.0, 1440.0)] {
+            let r = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, hh));
+            let level = SeatView::new(EYE, Head::default(), r);
+            let (at, disc) = mark_place(&level, EYE, r, &mark(Vec3::NEG_Z, 0.01)).unwrap();
+            assert!((at - r.center()).length() < 1e-2, "{at:?}");
+            let focal = 0.5 * hh / (0.5 * super::super::seat::view_vertical_fov(w / hh, 0.0)).tan();
+            assert!((disc - focal * 0.01f32.tan()).abs() < 0.05, "{disc} against {}", focal * 0.01f32.tan());
+            let left = SeatView::new(EYE, Head::turned(Vec2::new(0.2, 0.0)), r);
+            let (at_left, _) = mark_place(&left, EYE, r, &mark(Vec3::NEG_Z, 0.01)).unwrap();
+            assert!(at_left.x > r.center().x + 10.0 && (at_left.y - r.center().y).abs() < 1.0, "{at_left:?}");
+            let up = SeatView::new(EYE, Head::turned(Vec2::new(0.0, 0.2)), r);
+            let (at_up, _) = mark_place(&up, EYE, r, &mark(Vec3::NEG_Z, 0.01)).unwrap();
+            assert!(at_up.y > r.center().y + 10.0, "{at_up:?}");
+            // A destination 10 degrees right of the nose is right of the middle by the focal times tan 10 degrees.
+            let right = Vec3::new(10f32.to_radians().sin(), 0.0, -10f32.to_radians().cos());
+            let (at_right, _) = mark_place(&level, EYE, r, &mark(right, 0.0)).unwrap();
+            assert!((at_right.x - r.center().x - focal * 10f32.to_radians().tan()).abs() < 0.05, "{at_right:?}");
+            assert!(mark_place(&level, EYE, r, &mark(Vec3::Z, 0.01)).is_none(), "behind the eye");
+            assert!(mark_place(&level, EYE, r, &mark(Vec3::new(1.0, 0.0, -0.2).normalize(), 0.01)).is_none(), "off the screen");
+        }
     }
 
     /// The speed's text, at its longest, stands clear of the radar's ring, the hologram's ring and the throttle's gauge at

@@ -77,6 +77,102 @@ pub struct PlanetHud {
     pub roll_deg: f64,
 }
 
+/// The ship's one locked destination (U1, A9; grade E: how Elite plays, not traced in the exe): a body of this system
+/// (`Pilot::nav_body`) or another system's star, hyperspace's target (`Pilot::target`), never both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dest {
+    Body(ObjectRef),
+    System(ObjectRef),
+}
+
+impl Dest {
+    pub fn obj(self) -> ObjectRef {
+        match self {
+            Dest::Body(o) | Dest::System(o) => o,
+        }
+    }
+}
+
+/// The locked destination as the HUD shows it this frame: written by `fly` once a frame (from where the frame's ticks left
+/// the ship), read by the HUD and nothing else (A9).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DestMark {
+    pub obj: ObjectRef,
+    /// The unit direction to it in ship space (x right, y up, -z the nose).
+    pub dir: Vec3,
+    /// Its distance (m): for the body whose frame the ship is in, the height over its loaded ground at any height
+    /// (`own_body_distance`); for another body of this system, to its mean radius; for another system, to the star.
+    pub dist_m: f64,
+    /// The distance is shown in the altimeter's form: it is the height over the ground and the planet HUD shows it too.
+    pub over_ground: bool,
+    /// Its angular radius (radians; 0 for another system's star, a right angle from inside a body's radius).
+    pub ang_radius: f32,
+    /// Its display name, made when the lock changes (kept from frame to frame while the object is the same).
+    pub name: String,
+    /// Another system's star.
+    pub system: bool,
+}
+
+impl DestMark {
+    /// Its distance as the HUD shows it: as the altimeter does while it is the height over the ground (so the two read the
+    /// same), else as the panels do.
+    pub fn distance_text(&self) -> String {
+        if self.over_ground {
+            super::panels::altitude_text(self.dist_m)
+        } else {
+            super::panels::distance_text(self.dist_m)
+        }
+    }
+}
+
+/// Whether the planet HUD shows `alt` m over the loaded ground (out of supercruise, near a body that isn't a star).
+fn planet_hud_shows(alt: f64, star: bool, cruise: bool) -> bool {
+    !cruise && !star && alt < PLANET_HUD_M
+}
+
+/// The distance of a destination that is the body whose frame the ship is in, `alt` m over its loaded ground: that height
+/// at any height and in supercruise (never under 0: under a giant's cloud tops it reads 0), so it runs on without a jump
+/// through the planet HUD's height; only its text's form changes there (the altimeter's while the planet HUD shows it).
+fn own_body_distance(alt: f64, star: bool, cruise: bool) -> (f64, bool) {
+    (alt.max(0.0), planet_hud_shows(alt, star, cruise))
+}
+
+/// The mark of a destination `to` away (m, the universe's axes) with radius `radius_m` (0 for another system's star,
+/// `system`), seen from a ship turned `rot_u` (its axes to the universe's). `last` is last frame's mark: its name is kept
+/// while the object is the same, else `name` makes it.
+pub fn dest_mark(last: Option<DestMark>, obj: ObjectRef, to: DVec3, radius_m: f64, rot_u: DQuat, system: bool, name: impl FnOnce() -> String) -> DestMark {
+    let d = to.length();
+    let ang_radius = if system {
+        0.0
+    } else if d <= radius_m {
+        std::f32::consts::FRAC_PI_2
+    } else {
+        (radius_m / d).asin() as f32
+    };
+    let name = match last {
+        Some(m) if m.obj == obj => m.name,
+        _ => name(),
+    };
+    DestMark {
+        obj,
+        dir: (rot_u.inverse() * to).normalize_or(DVec3::NEG_Z).as_vec3(),
+        dist_m: if system { d } else { (d - radius_m).max(0.0) },
+        over_ground: false,
+        ang_radius,
+        name,
+        system,
+    }
+}
+
+/// What a destination is called in the messages and the log ("Target: NAME", "Destination: NAME", or none locked).
+pub fn dest_text(catalog: &Catalog, dest: Option<Dest>) -> String {
+    match dest {
+        Some(Dest::System(t)) => format!("Target: {}", catalog.display_name(t)),
+        Some(Dest::Body(o)) => format!("Destination: {}", catalog.display_name(o)),
+        None => "Destination cleared".to_string(),
+    }
+}
+
 /// The planet HUD shows within this height of a solid body's ground (ours: Elite shows it in orbital cruise and below, whose
 /// start wasn't found: A60).
 pub const PLANET_HUD_M: f64 = 100_000.0;
@@ -239,10 +335,14 @@ pub struct Pilot {
     pub jump_fuel: Option<(ObjectRef, f64)>,
     pub air_density: f64,
     /// The modules' switches (the right panel's Modules tab, `panels::MODULES`), and the destination picked on the Navigation
-    /// tab (a body of this system) with its HUD line.
+    /// tab (a body of this system) with its HUD line. `nav_body` and `target` are the one destination (`Dest`): change them
+    /// through `lock` and `unlock`, which keep at most one of them set.
     pub modules: [bool; 10],
     pub nav_body: Option<ObjectRef>,
     pub nav_note: String,
+    /// The locked destination's mark for the HUD this frame (`fly`; None with nothing locked, the body not found, or in the
+    /// tunnel).
+    pub dest: Option<DestMark>,
     pub planet: Option<PlanetHud>,
     /// Silent running, the cargo scoop deployed, the lights on; the canopy and the emergency oxygen (`elite_sim::life`); the
     /// destination's safe disengage (in supercruise with a destination: ready or not).
@@ -283,6 +383,8 @@ pub struct Pilot {
     /// A test's trigger held for some seconds (`sw fire SECS`), and a test's press of the drive's key (`sw jump`).
     pub dev_fire: f32,
     pub dev_jump: bool,
+    /// A test's mouse counts (`sw mouse DX DY`: x right, y down, as real counts), added to the next flown frame's counts.
+    pub dev_mouse: Vec2,
     pub log: bool,
     /// The demands the flight read this frame (`controls`).
     controls: Input,
@@ -322,6 +424,7 @@ impl Default for Pilot {
             modules: [true; 10],
             nav_body: None,
             nav_note: String::new(),
+            dest: None,
             planet: None,
             silent: false,
             scoop: false,
@@ -343,6 +446,7 @@ impl Default for Pilot {
             dev_boost: false,
             dev_fire: 0.0,
             dev_jump: false,
+            dev_mouse: Vec2::ZERO,
             log: false,
             controls: Input::default(),
             tick_dv: TickChanges::default(),
@@ -418,16 +522,65 @@ impl Pilot {
         self.controls
     }
 
+    /// The locked destination (`Dest`), if any.
+    pub fn locked(&self) -> Option<Dest> {
+        match (self.nav_body, self.target) {
+            (Some(o), _) => Some(Dest::Body(o)),
+            (None, Some(t)) => Some(Dest::System(t)),
+            (None, None) => None,
+        }
+    }
+
+    /// Every way of picking a destination goes through here (the Navigation tab, T, `sw dest`, `sw target`): `pick` becomes
+    /// the ship's one destination and the other kind is cleared; with `again_unlocks` (the panel's pick) picking the one
+    /// already locked unlocks it instead. Returns the destination now. (A jump's charge is cancelled by `fly` when the
+    /// target changes, as before.)
+    pub fn lock(&mut self, pick: Dest, again_unlocks: bool) -> Option<Dest> {
+        if again_unlocks && self.locked() == Some(pick) {
+            self.nav_body = None;
+            self.target = None;
+        } else {
+            (self.nav_body, self.target) = match pick {
+                Dest::Body(o) => (Some(o), None),
+                Dest::System(t) => (None, Some(t)),
+            };
+        }
+        self.locked()
+    }
+
+    /// Unlocks the destination if it is of the kind given (`system`: another system's star; else a body of this one): T
+    /// finding no star ahead clears the star target only, as `sw target none` does; `sw dest none` the body.
+    pub fn unlock(&mut self, system: bool) {
+        if system {
+            self.target = None;
+        } else {
+            self.nav_body = None;
+        }
+    }
+
     /// The HUD's heat percentage.
     pub fn heat_percent(&self) -> f64 {
         self.heat.hud_percent(&self.heat_spec)
     }
 
     /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
-    /// capacitors) are kept.
+    /// capacitors) are kept, and so is its locked destination (grade E: how Elite plays; a new ship, `fresh_ship`, has none).
     pub fn boarding(&self) -> Pilot {
         // (A parked ship is landed on its gear: its command is down, whatever it was when he left.)
-        Pilot { fuel: self.fuel, shields: self.shields, hull: self.hull, heat: self.heat.clone(), dist: self.dist.clone(), modules: self.modules, life: self.life, gear_down: true, landed: true, ..Pilot::default() }
+        Pilot {
+            fuel: self.fuel,
+            shields: self.shields,
+            hull: self.hull,
+            heat: self.heat.clone(),
+            dist: self.dist.clone(),
+            modules: self.modules,
+            life: self.life,
+            nav_body: self.nav_body,
+            target: self.target,
+            gear_down: true,
+            landed: true,
+            ..Pilot::default()
+        }
     }
 
     /// A new ship: everything full.
@@ -623,6 +776,13 @@ fn life_support(pilot: &mut Pilot, real_dt: f64, msg: &mut crate::messages::Mess
     }
 }
 
+/// The Navigation tab's pick (`Pilot::lock`: the locked one again unlocks it), shown and logged.
+fn panel_pick(pilot: &mut Pilot, pick: Dest, catalog: &Catalog, msg: &mut crate::messages::Messages) {
+    let text = dest_text(catalog, pilot.lock(pick, true));
+    info!("sidewinder: the panel's pick: {text}");
+    msg.show(text);
+}
+
 /// Seated in Pilot mode: the frame's controls, the ticks, the ground. The camera follows from the ship's pose (`seat_camera`,
 /// which runs after this).
 #[allow(clippy::too_many_arguments)]
@@ -653,16 +813,19 @@ pub fn fly(
     pilot.tick_dv.start(frame.0);
     let (Some(assets), true) = (assets, seat.seated && control.pilot && sb.mode == Mode::Pilot) else {
         pilot.forget_ticks();
+        pilot.dest = None;
         return;
     };
     // In the tunnel the old system's bodies go: `hyper::tunnel` holds the ship and the camera until the new one is entered.
     life_support(&mut pilot, time.delta_secs_f64(), &mut msg);
     if pilot.jump.is_some() {
         pilot.forget_ticks();
+        pilot.dest = None;
         return;
     }
     let Some(p) = ship.parked.as_mut() else {
         pilot.forget_ticks();
+        pilot.dest = None;
         return;
     };
     // A test's placing (`sw put NAME ALT_KM`): over the body's day side, level, in thruster flight, the gear up.
@@ -686,7 +849,10 @@ pub fn fly(
             info!("sidewinder: put over {obj:?} at {:.1} km", alt / 1000.0);
         }
     }
-    let Some((b, terrain)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
+    let Some((b, terrain)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else {
+        pilot.dest = None;
+        return;
+    };
     // Gas giants (step 6.3, ours: F4): no ground but the port's own floor, 10 scale heights under the radius, which stops the
     // ship (it can't land there); the glide, the beams and the air's heights go by the radius.
     let giant = terrain.is_some_and(|t| t.proc.kind.is_giant());
@@ -733,17 +899,8 @@ pub fn fly(
     for a in std::mem::take(&mut panels.actions) {
         use super::panels::{PanelAction, MODULES, M_FSD};
         match a {
-            PanelAction::Target(t) => {
-                pilot.target = Some(t);
-                msg.show(format!("Target: {}", data.catalog.display_name(t)));
-            }
-            PanelAction::NavBody(o) => {
-                pilot.nav_body = if pilot.nav_body == Some(o) { None } else { Some(o) };
-                msg.show(match pilot.nav_body {
-                    Some(o) => format!("Destination: {}", data.catalog.display_name(o)),
-                    None => "Destination cleared".to_string(),
-                });
-            }
+            PanelAction::Target(t) => panel_pick(pilot, Dest::System(t), &data.catalog, &mut msg),
+            PanelAction::NavBody(o) => panel_pick(pilot, Dest::Body(o), &data.catalog, &mut msg),
             PanelAction::FlightAssist => keys.flight_assist = true,
             PanelAction::Gear => keys.gear = true,
             PanelAction::Hardpoints => keys.hardpoints = true,
@@ -825,6 +982,8 @@ pub fn fly(
     let rate = elite_sim::data::measured::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
     // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
+    // A test's counts (`sw mouse DX DY`) join the frame's real ones here.
+    keys.mouse += std::mem::take(&mut pilot.dev_mouse);
     let setting = |name: &str, or: f32| assets.keys.value(name).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(or);
     let full = elite_sim::data::measured::MOUSE_FULL_COUNTS as f32 / setting("MouseSensitivity", 1.0).max(0.01);
     pilot.stick = (pilot.stick + Vec2::new(keys.mouse.x, -keys.mouse.y) / full).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
@@ -888,7 +1047,7 @@ pub fn fly(
         pilot.motion.omega = Default::default();
     }
     if std::mem::take(&mut pilot.dev_face) {
-        if let Some(t) = pilot.target.or(pilot.nav_body) {
+        if let Some(t) = pilot.locked().map(Dest::obj) {
             let from = pilot.cruise.map_or(b.pos.offset_m(b.orient * p.pos), |c| c.pos);
             let dir = se_core::ephemeris::Ephemeris::new(&data.catalog).position(t, sim.jd).delta_m(from).normalize_or(DVec3::NEG_Z);
             let rot_u = DQuat::from_rotation_arc(DVec3::NEG_Z, dir);
@@ -903,17 +1062,19 @@ pub fn fly(
         Some(c) => (c.pos, c.rot),
         None => (b.pos.offset_m(b.orient * p.pos), (b.orient * p.rot).normalize()),
     };
-    // Hyperspace's target (step 5.3): T takes the star nearest the nose within the jump's range (ours: Elite targets
-    // systems from its Navigation panel and galaxy map, step 4.2), or clears it; then its angle from the nose, or why it can't
-    // be jumped to.
+    // Hyperspace's target (step 5.3): T locks the star nearest the nose within the jump's range (ours: Elite targets
+    // systems from its Navigation panel and galaxy map, step 4.2), or, finding none, clears the star target only (a locked
+    // body stays); then its angle from the nose, or why it can't be jumped to.
     let here = data.catalog.system_root(b.obj);
     if keys.select_target {
         let range = elite_sim::fsd::jump_range(&elite_sim::data::FSD_2E, pilot.mass_t(), pilot.fuel.main);
-        pilot.target = super::hyper::star_ahead(&data, sim.jd, ship_u, ship_rot_u * DVec3::NEG_Z, range, here);
-        msg.show(match pilot.target {
-            Some(t) => format!("Target: {}", data.catalog.display_name(t)),
-            None => "No target".to_string(),
-        });
+        match super::hyper::star_ahead(&data, sim.jd, ship_u, ship_rot_u * DVec3::NEG_Z, range, here) {
+            Some(t) => msg.show(dest_text(&data.catalog, pilot.lock(Dest::System(t), false))),
+            None => {
+                pilot.unlock(true);
+                msg.show("No target".to_string());
+            }
+        }
     }
     let others: Vec<(DVec3, f64)> = bodies.iter().map(|(sb, _)| (sb.pos.delta_m(ship_u), sb.radius_m)).collect();
     if panels.open == Some(super::panels::Side::Left) && (panels.nav.is_empty() || pilot.ticks % 60 == 0) {
@@ -951,9 +1112,12 @@ pub fn fly(
         rows.extend(stars);
         panels.nav = rows;
     }
-    pilot.nav_note = match pilot.nav_body.and_then(|o| bodies.iter().find(|(sb, _)| sb.obj == o)) {
-        Some((sb, _)) => format!("{}  {}", data.catalog.display_name(sb.obj), super::panels::distance_text((sb.pos.delta_m(ship_u).length() - sb.radius_m).max(0.0))),
-        None => String::new(),
+    // The locked destination's place and radius this frame (a body found among this system's, or another system's star by
+    // the ephemeris): its mark and the HUD's line are made from it below, once the ticks have moved the ship.
+    let dest_at = match pilot.locked() {
+        Some(Dest::Body(o)) => bodies.iter().find(|(sb, _)| sb.obj == o).map(|(sb, _)| (o, sb.pos, sb.radius_m, false)),
+        Some(Dest::System(t)) => Some((t, se_core::ephemeris::Ephemeris::new(&data.catalog).position(t, sim.jd), 0.0, true)),
+        None => None,
     };
     // The stars' heat (step 5.4: A50's form, its numbers stand-ins), a share of the heat capacity a second.
     let star_heat: f64 = bodies.iter().filter(|(sb, _)| sb.star).map(|(sb, _)| elite_sim::stars::heat_rate(sb.pos.delta_m(ship_u).length(), sb.radius_m)).sum();
@@ -1452,19 +1616,39 @@ pub fn fly(
         pilot.accum = 0.0;
     }
     pilot.dev_fire = (pilot.dev_fire - dt as f32).max(0.0);
+    // The ship's pose in the universe as the ticks left it (the camera is written from it after this), and the HUD's mark of
+    // the destination seen from there (A9), so the mark sits on the body as the cockpit sees it, turning or not.
+    let (now_u, now_rot_u) = match pilot.cruise {
+        Some(c) => (c.pos, c.rot),
+        None => (b.pos.offset_m(b.orient * p.pos), (b.orient * p.rot).normalize()),
+    };
+    pilot.dest = dest_at.map(|(obj, at, radius, system)| dest_mark(pilot.dest.take(), obj, at.delta_m(now_u), radius, now_rot_u, system, || data.catalog.display_name(obj).to_string()));
+    // The height over the loaded ground under the ship in the frame's body (in supercruise from the cruise's own pose, as the
+    // parked pose is written below): the planet HUD's altitude, and the distance of a destination that is that body
+    // (`own_body_distance`), so the marker, the DESTINATION line and ALT read the same number. (A star or a gas giant has no
+    // solid terrain: its ground is its ellipsoid.)
+    let ship_b = match pilot.cruise {
+        Some(c) => b.orient.inverse() * c.pos.delta_m(b.pos),
+        None => p.pos,
+    };
+    let alt = ship_b.length() - crate::ship::ground_on(b.radius_m, b.shape, solid, ship_b).0;
+    let planet_hud = planet_hud_shows(alt, b.star, pilot.cruise.is_some());
+    if let Some(m) = pilot.dest.as_mut().filter(|m| !m.system && m.obj == b.obj) {
+        (m.dist_m, m.over_ground) = own_body_distance(alt, b.star, pilot.cruise.is_some());
+    }
+    pilot.nav_note = match &pilot.dest {
+        Some(m) if !m.system => format!("{}  {}", m.name, m.distance_text()),
+        _ => String::new(),
+    };
     if jump_now {
-        let from = match pilot.cruise {
-            Some(c) => c.pos,
-            None => b.pos.offset_m(b.orient * p.pos),
-        };
         match (pilot.jump_fuel.take(), pilot.target) {
             (Some((t, worked_out)), Some(target)) if t == target => {
                 let fuel = worked_out.min(pilot.fuel.main);
                 pilot.fuel.main = (pilot.fuel.main - fuel).max(0.0);
                 msg.show(format!("Hyperspace: {}", data.catalog.display_name(t)));
                 info!("sidewinder: jump to {} for {fuel:.6} t of fuel", data.catalog.display_name(t));
-                let rot_u = pilot.cruise.map_or((b.orient * p.rot).normalize(), |c| c.rot);
-                super::hyper::begin(&data, sim.jd, pilot, from, rot_u, b.obj, fuel, t);
+                super::hyper::begin(&data, sim.jd, pilot, now_u, now_rot_u, b.obj, fuel, t);
+                pilot.dest = None;
             }
             _ => pilot.drive = if pilot.cruise.is_some() { Drive::Supercruise } else { Drive::Ready },
         }
@@ -1552,8 +1736,8 @@ pub fn fly(
         }
         pilot.beam_len[i] = if pilot.modules[super::panels::M_LASERS[i]] { len as f32 } else { 0.0 };
     }
-    let alt = p.pos.length() - crate::ship::ground_on(b.radius_m, b.shape, solid, p.pos).0;
-    if !b.star && alt < PLANET_HUD_M {
+    // (`alt` and `planet_hud` from above: the pose hasn't moved since, out of supercruise.)
+    if planet_hud {
         let up = p.pos.normalize_or(DVec3::Y);
         let north = (DVec3::Y - up * up.y).try_normalize().unwrap_or_else(|| up.any_orthonormal_vector());
         let east = north.cross(up);
@@ -1611,6 +1795,76 @@ fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option
 mod tests {
     use super::*;
     use super::super::facts::ShipFacts;
+
+    /// One destination: a body clears a star target and a star a body; the panel's pick of the locked one unlocks it, the
+    /// dev commands' (no `again_unlocks`) keeps it; T finding no star (`unlock(true)`) clears only a star target.
+    #[test]
+    fn one_destination() {
+        let (earth, moon, rigil) = (ObjectRef::Body(1), ObjectRef::Body(2), ObjectRef::Star(7));
+        let mut p = Pilot::default();
+        assert_eq!(p.lock(Dest::Body(earth), true), Some(Dest::Body(earth)));
+        assert_eq!(p.lock(Dest::System(rigil), true), Some(Dest::System(rigil)));
+        assert_eq!((p.nav_body, p.target), (None, Some(rigil)), "the star cleared the body");
+        assert_eq!(p.lock(Dest::Body(moon), true), Some(Dest::Body(moon)));
+        assert_eq!((p.nav_body, p.target), (Some(moon), None), "the body cleared the star");
+        assert_eq!(p.lock(Dest::Body(moon), false), Some(Dest::Body(moon)), "a dev command sets, never unlocks");
+        assert_eq!(p.lock(Dest::Body(moon), true), None, "the panel's pick of the locked one unlocks it");
+        assert_eq!((p.nav_body, p.target), (None, None));
+        p.lock(Dest::Body(earth), true);
+        p.unlock(true);
+        assert_eq!(p.locked(), Some(Dest::Body(earth)), "T finding no star keeps a locked body");
+        p.lock(Dest::System(rigil), false);
+        p.unlock(false);
+        assert_eq!(p.locked(), Some(Dest::System(rigil)), "`sw dest none` keeps a star target");
+        p.unlock(true);
+        assert_eq!(p.locked(), None);
+        // The destination is the ship's: getting out and boarding again keeps it; a new ship has none.
+        for d in [Dest::Body(moon), Dest::System(rigil)] {
+            p.lock(d, false);
+            let mut again = p.boarding();
+            assert_eq!(again.locked(), Some(d));
+            again.fresh_ship();
+            assert_eq!(again.locked(), None);
+        }
+    }
+
+    /// The mark: the direction in the ship's axes (a ship turned 90 degrees left sees a body along the universe's -X dead
+    /// ahead), the distance to the surface, the angular radius; a star of another system has none; the name is kept while
+    /// the object is the same and made anew when it changes.
+    #[test]
+    fn the_destinations_mark() {
+        let rot = DQuat::from_rotation_y(std::f64::consts::FRAC_PI_2);
+        let m = dest_mark(None, ObjectRef::Body(2), DVec3::new(-2.0e6, 0.0, 0.0), 1.0e6, rot, false, || "Moon".to_string());
+        assert!((m.dir - Vec3::NEG_Z).length() < 1e-6, "{}", m.dir);
+        assert_eq!((m.dist_m, m.name.as_str(), m.system), (1.0e6, "Moon", false));
+        assert!((m.ang_radius - std::f32::consts::FRAC_PI_6).abs() < 1e-6);
+        // To its right in the ship (the universe's -Z for this turn: the nose's right is the universe's -Z), name kept.
+        let m = dest_mark(Some(m), ObjectRef::Body(2), DVec3::new(0.0, 0.0, -5.0e6), 1.0e6, rot, false, || panic!("the name is kept"));
+        assert!((m.dir - Vec3::X).length() < 1e-6, "{}", m.dir);
+        let s = dest_mark(Some(m), ObjectRef::Star(7), DVec3::new(0.0, 4.0e16, 0.0), 0.0, rot, true, || "Rigil Kentaurus".to_string());
+        assert_eq!((s.dist_m, s.ang_radius, s.name.as_str(), s.system), (4.0e16, 0.0, "Rigil Kentaurus", true));
+        assert!((s.dir - Vec3::Y).length() < 1e-6);
+        // The distance's text: the panels' form, or the altimeter's while it is the height over the ground.
+        let mut g = dest_mark(None, ObjectRef::Body(2), DVec3::new(0.0, -1.0e6 - 4732.0, 0.0), 1.0e6, DQuat::IDENTITY, false, String::new);
+        assert_eq!(g.distance_text(), "5 KM");
+        g.over_ground = true;
+        assert_eq!(g.distance_text(), "4732 M");
+        // The frame's own body: the height over the ground runs on through the planet HUD's height (the same metres just
+        // under and just over it), only the text's form changing; in supercruise and over a star the ordinary form; never
+        // under 0.
+        let (under, over) = (own_body_distance(PLANET_HUD_M - 0.5, false, false), own_body_distance(PLANET_HUD_M + 0.5, false, false));
+        assert_eq!((under.0, under.1, over.0, over.1), (PLANET_HUD_M - 0.5, true, PLANET_HUD_M + 0.5, false));
+        assert_eq!(own_body_distance(5_000.0, false, true), (5_000.0, false));
+        assert_eq!(own_body_distance(5_000.0, true, false), (5_000.0, false));
+        assert_eq!(own_body_distance(-30_000.0, false, false), (0.0, true));
+        for (d, form) in [under, over] {
+            g.dist_m = d;
+            g.over_ground = form;
+            assert!(g.distance_text().starts_with("100"), "{}", g.distance_text());
+        }
+        // Inside the body's radius it fills half the sky.
+        assert_eq!(dest_mark(None, ObjectRef::Body(2), DVec3::new(0.0, -5.0e5, 0.0), 1.0e6, DQuat::IDENTITY, false, String::new).ang_radius, std::f32::consts::FRAC_PI_2);
+    }
 
     /// The cockpit point's change of velocity tick by tick: the ship's own change turned into its axes, plus the spin carried
     /// to the cockpit; nothing on a new flight's first tick, in supercruise or on the tick after it; the facts take a frame's
