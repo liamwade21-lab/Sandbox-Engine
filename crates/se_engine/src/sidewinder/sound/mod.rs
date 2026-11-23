@@ -240,7 +240,7 @@ fn load_sounds(mut commands: Commands, mut load: ResMut<SoundLoad>) {
 
 impl ShipSound {
     fn new(l: Loaded) -> ShipSound {
-        let mixer = Mixer::new(l.bank.clone(), 1);
+        let mixer = ui::mixer(l.bank.clone(), 1);
         let voices = Voices::with_master(mixer.master_suite()).with_bus(mixer.bus_now());
         for (effect, modulator, param) in l.bank.effects_not_exact() {
             info!("sidewinder sound: effect {effect} is not exact: its modulator {modulator} (on its parameter {param}) is not built, so that parameter keeps its value without it");
@@ -403,7 +403,7 @@ impl ShipSound {
         self.call(&calls);
         self.voices.stop_all(commands);
         self.seeds += 1;
-        self.mixer = Mixer::new(self.bank.clone(), self.seeds);
+        self.mixer = ui::mixer(self.bank.clone(), self.seeds);
         self.cue_emitters.clear();
         self.cue_rev = None;
         self.active = false;
@@ -1156,8 +1156,42 @@ mod tests {
         }
     }
 
+    /// The measured trims (`ui::BUS_TRIMS`) touch no ship voice: each is for the UI's own emitter, which none of the ship's
+    /// emitters is (the triggers' `Emitter`s 0x100..0x302, the cue emitters from `FIRST_CUE_EMITTER`); and with them on, the
+    /// ship's 58 events whose sounds share the trimmed bus (the voice, the cockpit cues) play every update as without them,
+    /// each posted on its own kind of emitter.
+    #[test]
+    fn no_ship_voice_is_ever_trimmed() {
+        let ship_emitters: Vec<u32> = (0..8u8)
+            .map(|i| Emitter::Drive(i).id())
+            .chain((0..9u8).map(|i| Emitter::Cockpit(i).id()))
+            .chain([Emitter::CockpitOrigin.id(), Emitter::Ship.id(), Emitter::Voice.id(), Emitter::Cue(FIRST_CUE_EMITTER).id()])
+            .collect();
+        for (bus, emitter, _) in ui::BUS_TRIMS {
+            assert_eq!(*emitter, ui::EMITTER, "the trim on {bus} is for another emitter");
+        }
+        assert!(!ship_emitters.contains(&ui::EMITTER) && ui::EMITTER < FIRST_CUE_EMITTER);
+        let bank = shipped();
+        let mut compared = 0;
+        for name in bank.file.ship_events.iter().chain(&bank.file.open_events) {
+            for e in [Emitter::Voice.id(), Emitter::CockpitOrigin.id(), Emitter::Ship.id(), FIRST_CUE_EMITTER] {
+                let (mut a, mut b) = (Mixer::new(bank.clone(), 5), ui::mixer(bank.clone(), 5));
+                a.post(name, e).unwrap();
+                b.post(name, e).unwrap();
+                for k in 0..60 {
+                    let dt = if k == 0 { 0.0 } else { 1.0 / 30.0 };
+                    let (ua, ub) = (a.step(dt).to_vec(), b.step(dt).to_vec());
+                    assert_eq!(ua, ub, "{name} on {e:#x}");
+                    compared += ua.len();
+                }
+            }
+        }
+        assert!(compared > 10_000, "{compared} updates");
+    }
+
     /// After a re-conversion, the ship's own events play as before: each of `ship_events` and `open_events` posted alone in
-    /// a mixer of the old file (`SOUNDS_BEFORE`, a copy of the `sounds.json` it replaced) and of the shipped one, the same
+    /// a mixer of the old file (`SOUNDS_BEFORE`, a copy of the `sounds.json` it replaced) and of the shipped one as the game
+    /// makes it (`ui::mixer`, the measured trims on), the same
     /// seed, 3 s of steps: every voice update the same. `SOUNDS_BEFORE=... cargo test -p se_engine --profile agent
     /// ship_events_play_as_before -- --ignored --nocapture`.
     #[test]
@@ -1169,7 +1203,7 @@ mod tests {
         assert_eq!((&old.file.ship_events, &old.file.open_events), (&new.file.ship_events, &new.file.open_events));
         let mut updates = 0;
         for name in old.file.ship_events.iter().chain(&old.file.open_events) {
-            let (mut a, mut b) = (Mixer::new(old.clone(), 7), Mixer::new(new.clone(), 7));
+            let (mut a, mut b) = (Mixer::new(old.clone(), 7), ui::mixer(new.clone(), 7));
             a.post(name, 0x200).unwrap();
             b.post(name, 0x200).unwrap();
             for k in 0..180 {

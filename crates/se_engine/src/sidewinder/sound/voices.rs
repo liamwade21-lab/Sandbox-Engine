@@ -2510,7 +2510,7 @@ mod tests {
         fn new(audio: bool) -> Run {
             let l = super::super::load::load().unwrap_or_else(|(f, e)| panic!("{f}: {e}"));
             Run {
-                mixer: Mixer::new(l.bank.clone(), 1),
+                mixer: super::super::ui::mixer(l.bank.clone(), 1),
                 triggers: Triggers::default(),
                 clips: l.clips,
                 audio,
@@ -3782,7 +3782,7 @@ mod tests {
         let v = ShipView::at_rest();
         let mut loudest_event = vec![(f64::NEG_INFINITY, Id(0)); COMPRESSORS.len()];
         for (k, id) in ui.iter().enumerate() {
-            r.mixer = Mixer::new(bank.clone(), 1 + k as u64);
+            r.mixer = super::super::ui::mixer(bank.clone(), 1 + k as u64);
             r.triggers = Triggers::default();
             r.sources.clear();
             r.playing.clear();
@@ -4295,21 +4295,24 @@ mod tests {
             })
             .collect();
         let db = |x: f64| if x > 0.0 { 20.0 * x.log10() } else { f64::NEG_INFINITY };
-        let cases: &[(&str, &str, &str)] = &[
-            ("CockpitExternalPanel", "showBegin", "open the left panel: Elite minus port +2.1 / -2.3 dB"),
-            ("CockpitExternalPanel", "hide", "close the left panel (4 presses): +2.3 / -2.9 dB"),
-            ("CockpitExternalPanel", "focusChanged", "row move (about 30): -7.5 to -8.5 / -8.0 to -8.4 dB, the stereo file as one signal (L+R)/2"),
-            ("CockpitExternalPanel", "tabChanged", "tab change (6): -7.5 to -7.7 / -6.9 to -7.3 dB"),
-            ("CockpitExternalPanel", "popUpShowBegin", "row select, the pop-up opens (5): -7.69 / -7.69 dB"),
-            ("CockpitExternalPanel", "select", "the pop-up's button (4): -7.6 / -7.3 dB"),
-            ("CockpitInternalPanel2", "showBegin", "open the right panel: -0.6 / +0.8 dB"),
-            ("CockpitInternalPanel2", "hide", "close the right panel: -0.6 / +0.6 dB"),
+        // (The measured trim's cases: Elite plays the file's mono signal (L+R)/2 at the voice's scalar gain less 7.9 +- 0.4 dB
+        // on both sides (`ui::BUS_TRIMS`); `Some(db)`: what each of their voices on bus 9f83e9e8 must give against that
+        // template. `None`: not through it, the route's matrix as before.)
+        let cases: &[(&str, &str, &str, Option<f64>)] = &[
+            ("CockpitExternalPanel", "showBegin", "open the left panel: Elite minus port +2.1 / -2.3 dB", None),
+            ("CockpitExternalPanel", "hide", "close the left panel (4 presses): +2.3 / -2.9 dB", None),
+            ("CockpitExternalPanel", "focusChanged", "row move (about 30): -7.5 to -8.5 / -8.0 to -8.4 dB, the stereo file as one signal (L+R)/2", Some(-7.9)),
+            ("CockpitExternalPanel", "tabChanged", "tab change (6): -7.5 to -7.7 / -6.9 to -7.3 dB", Some(-7.9)),
+            ("CockpitExternalPanel", "popUpShowBegin", "row select, the pop-up opens (5): -7.69 / -7.69 dB", Some(-7.9)),
+            ("CockpitExternalPanel", "select", "the pop-up's button (4): -7.6 / -7.3 dB", Some(-7.9)),
+            ("CockpitInternalPanel2", "showBegin", "open the right panel: -0.6 / +0.8 dB", None),
+            ("CockpitInternalPanel2", "hide", "close the right panel: -0.6 / +0.6 dB", None),
         ];
         let dt = 1.0 / 60.0;
         let mut worst_gap = 0.0f64;
         for seated in [1.0f32, 0.0] {
             eprintln!("== PlayerInSeat {seated}");
-            for (iface, name, measured) in cases {
+            for (iface, name, measured, trimmed) in cases {
                 let mut q = UiSounds::default();
                 q.play(iface, name, None);
                 let req = q.take().remove(0);
@@ -4319,7 +4322,7 @@ mod tests {
                 let sound_of = |src: se_core::elite_sound::Id| played.iter().copied().find(|s| matches!(bank.object(*s), Some(se_core::elite_sound::data::Object::Sound(x)) if x.source_id == src));
                 let mut outs = Vec::new();
                 for seed in 1..=8u64 {
-                    let mut m = Mixer::new(bank.clone(), seed);
+                    let mut m = super::super::ui::mixer(bank.clone(), seed);
                     m.set_game_parameter("PlayerInSeat", seated, None);
                     m.step(dt as f32);
                     let mut o = Outputs::new(&m, true);
@@ -4340,6 +4343,21 @@ mod tests {
                                     // (Outside the randomisers' range: by how much.)
                                     worst_gap = worst_gap.max((want + lo - v).max(v - want - hi).max(0.0));
                                     let (pk, rms) = peaks.get(&source).copied().unwrap_or((0.0, 0.0));
+                                    // Each side against the mono template (L+R)/2 at the voice's scalar gain: `matrix[0][o] +
+                                    // matrix[1][o]` (a stereo file; the route's own matrix gives 1.110 + 0.322 = +3.12 dB);
+                                    // and how alike the two inputs feed it.
+                                    let m = u.matrix;
+                                    let stereo = clip.channels > 1;
+                                    let side = |o: usize| if stereo { 20.0 * f64::from(m[0][o] + m[1][o]).log10() } else { 20.0 * f64::from(m[0][o]).log10() };
+                                    let alike = |o: usize| if stereo { f64::from(m[0][o].min(m[1][o]) / m[0][o].max(m[1][o])) } else { 1.0 };
+                                    let through = bank.output_bus(snd).is_some_and(|b| bank.bus_chain(b).contains(&se_core::elite_sound::Id(0x9f83_e9e8)));
+                                    eprintln!("    against (L+R)/2 x its gain: L {:+.2} R {:+.2} dB, inputs alike L {:.2} R {:.2}{}", side(0), side(1), alike(0), alike(1), if through { " (through 9f83e9e8)" } else { "" });
+                                    match trimmed {
+                                        Some(want) if through => {
+                                            assert!((side(0) - want).abs() <= 0.4 && (side(1) - want).abs() <= 0.4 && alike(0) > 0.999 && alike(1) > 0.999, "{event}: not the measured fold");
+                                        }
+                                        _ => assert!(!through || trimmed.is_some(), "{event} passes the trimmed bus"),
+                                    }
                                     eprintln!(
                                         "  {iface} {name} -> {event}: voice {} {}: recording peak {:.1} dBFS, RMS {:.1} dBFS; mixer {:.2} dB, the bank's gains {want:.2} dB ({parts}); recording's own gain x{:.3}",
                                         u.voice,

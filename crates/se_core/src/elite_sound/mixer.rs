@@ -503,10 +503,42 @@ pub struct Mixer {
     pitch_over: BTreeMap<(Id, Option<u32>), Anim>,
     playlists: BTreeMap<(Id, Option<u32>), Playlist>,
     ducks: BTreeMap<(Id, usize), DuckState>,
+    /// Measured trims by bus and emitter ([`Mixer::set_bus_trim`]).
+    trims: BTreeMap<(Id, u32), BusTrim>,
     /// Voices removed since the last step (their stop update is still owed).
     ended: Vec<Ended>,
     updates: Vec<VoiceUpdate>,
     post_depth: usize,
+}
+
+/// A measured trim on a bus for one emitter's voices (US1c, a stand-in: the game hands it over, the data does not hold it):
+/// every voice on that emitter whose way to the master passes the bus plays, IN PLACE of its route's stereo matrix ([`super::place::Placement::
+/// listener_matrix`]), the fold `gain_db` sets ([`BusTrim::matrix`]). Nothing else of the voice changes: its `gain`,
+/// filters, effects and timing are as without it, and the master chain still follows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BusTrim {
+    /// The level against the voice's own scalar gain (dB).
+    pub gain_db: f32,
+    /// Both inputs on both sides alike (the recording's channels folded to one signal).
+    pub fold: bool,
+}
+
+impl BusTrim {
+    /// The matrix (`[input channel][output channel]`, as [`VoiceUpdate::matrix`]) for a recording of `channels`
+    /// channels. The player makes each side `gain x sum over inputs of matrix[in][side] x input`, then applies the master
+    /// chain; the reference measured is `gain x 10^(gain_db / 20) x (L + R) / 2` on each side of a stereo recording (its
+    /// mono signal at the voice's scalar gain, before the master chain: the review's `gains.py` x `xcorr.py` `pred`, which
+    /// leave the route's matrix out), `gain x 10^(gain_db / 20) x M` of a mono one. So with `k = 10^(gain_db / 20)`: folded,
+    /// stereo `[[k / 2, k / 2], [k / 2, k / 2]]` (left = gain (k/2 L + k/2 R) = gain k (L + R) / 2, the right the same),
+    /// mono `[[k, k], [0, 0]]`; not folded, each input on its own side, `[[k, 0], [0, k]]` (mono `[[k, k], [0, 0]]` too).
+    pub fn matrix(&self, channels: usize) -> [[f32; 2]; 2] {
+        let k = 10f32.powf(self.gain_db / 20.0);
+        match (channels > 1, self.fold) {
+            (true, true) => [[k * 0.5, k * 0.5], [k * 0.5, k * 0.5]],
+            (true, false) => [[k, 0.0], [0.0, k]],
+            (false, _) => [[k, k], [0.0, 0.0]],
+        }
+    }
 }
 
 /// The state every group starts in (Wwise's "None").
@@ -565,6 +597,7 @@ impl Mixer {
             pitch_over: BTreeMap::new(),
             playlists: BTreeMap::new(),
             ducks: BTreeMap::new(),
+            trims: BTreeMap::new(),
             ended: Vec::new(),
             updates: Vec::new(),
             post_depth: 0,
@@ -1660,6 +1693,23 @@ impl Mixer {
         self.emitters.get(&emitter).map(|p| f64::from((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt())).unwrap_or(0.0)
     }
 
+    /// A measured trim on a bus for the voices of one emitter (`BusTrim`): every voice on `emitter` whose way to the master
+    /// passes `bus` plays the trim's matrix instead of its route's (a placed voice's player still works its own matrix out
+    /// from its place); the voices of every other emitter through the bus are untouched. A trim of 0 dB unfolded on a
+    /// stereo route is not the route: a trim stands for the whole of a measured way.
+    pub fn set_bus_trim(&mut self, bus: Id, emitter: u32, trim: BusTrim) {
+        self.trims.insert((bus, emitter), trim);
+    }
+
+    /// The trim on a voice's way to the master for its emitter, if any (the bus nearest the sound).
+    fn trim_of(&self, obj: Id, emitter: u32) -> Option<BusTrim> {
+        if self.trims.is_empty() {
+            return None;
+        }
+        let bus = self.output_bus(obj)?;
+        self.bank.bus_chain(bus).iter().find_map(|b| self.trims.get(&(*b, emitter)).copied())
+    }
+
     fn output_bus(&self, obj: Id) -> Option<Id> {
         self.bank.output_bus(obj)
     }
@@ -2305,7 +2355,7 @@ impl Mixer {
                 position,
                 orientation: self.orientations.get(&emitter).copied(),
                 place,
-                matrix: routed.listener_matrix(channels),
+                matrix: self.trim_of(obj, emitter).map_or_else(|| routed.listener_matrix(channels), |t| t.matrix(channels)),
                 media_gain,
                 start,
                 stop: false,
@@ -2337,7 +2387,7 @@ impl Mixer {
             let Kind::Voice(v) = &inst.kind else { continue };
             let Some(out) = output(v.out) else { continue };
             let (channels, media_gain) = self.media_of(v.out);
-            let matrix = self.placement_of(inst.obj).listener_matrix(channels);
+            let matrix = self.trim_of(inst.obj, inst.emitter).map_or_else(|| self.placement_of(inst.obj).listener_matrix(channels), |t| t.matrix(channels));
             let (m, fade) = premix.unwrap_or_default();
             self.updates.push(VoiceUpdate {
                 voice: v.id,

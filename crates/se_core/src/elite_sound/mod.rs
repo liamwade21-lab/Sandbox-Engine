@@ -92,6 +92,8 @@
 //!   killing or, where `use_virtual_behavior` is set (35 limited nodes), making the voices beyond it virtual, and
 //!   `ignore_parent_max_instances` (what plays under such a node does not count against the limits above it); virtual
 //!   voice behaviour below the volume threshold (all four behaviours, the three queue behaviours).
+//! - Measured bus trims ([`BusTrim`], US1c, a stand-in the game hands over, not in the data): a voice of the trim's emitter
+//!   whose way passes its bus plays the trim's fold in place of its route's matrix.
 //! - Loop regions: a looping recording with an intro (11 of the shipped ones) reports the region it repeats
 //!   ([`VoiceStart::loop_region`], from `Media::loop_region`, the bank's smpl loop points).
 //! - Source plugins: Wwise Silence (10; timing only, no update), Motion Generator (21; a `Rumble` output), Tone
@@ -160,7 +162,7 @@ mod tests;
 
 pub use data::{parse_sounds, write_sounds, Id, Object, SoundFile};
 pub use compressor::CompressorNow;
-pub use mixer::{BusNow, BusShare, DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
+pub use mixer::{BusNow, BusShare, BusTrim, DistortionNow, EqNow, FxNow, LimiterNow, Mixer, Output, VoiceStart, VoiceUpdate, DETAIL_S, MAX_STEP_S, MIN_TRIGGER_S, OUTPUT_RATE};
 pub use place::{Layout, Panner, PlaceNow, Placement, Route};
 
 use data::*;

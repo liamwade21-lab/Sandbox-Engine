@@ -41,6 +41,35 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use serde_json::Value;
 
+/// The measured trims (US1c, a stated stand-in: the data gives no cause for them), each for a bus and an emitter, handed to
+/// every mixer the mod makes ([`mixer`]). One: bus `9f83e9e8` (under the GUI bus), the UI's own emitter ([`EMITTER`]),
+/// -7.9 dB, folded (both sides the recording's mono signal).
+/// - **Measured (grade C)** on the side panels' four navigation sounds, `Navi_b_Cockpit`, `NaviPane_b_Cockpit`,
+///   `PopUpShow_b_Cockpit` and `Select_b_Cockpit`: Elite's own recording of session ui1 (2026-11-23) holds, on both sides,
+///   the shipped file's mono signal (L+R)/2 at the voice's scalar gain less 7.9 +- 0.4 dB, over about 45 presses (the US1
+///   review's cross-correlation, `.optimize/scratch/run/us1_review/` `xcorr.py`, `gains.py`, `xcorr_mono.txt`).
+/// - **Applied (grade B)** to every UI sound on the same emitter through the same bus (137 more shipped events: the gauge
+///   panel's power and shield sounds, the panels' toggles and values, the orbital HUD's gauges and warnings, the role
+///   panel, most of the FSS and surface scanner sets...), not themselves measured.
+/// - **Not applied** to the ship's own voice and cockpit cues, which share the bus (58 `ship_events` / `open_events`, the
+///   `VoxV01_*` lines, `Cockpit_FlightAssist_*`, `LandingGear_*`...) on their own emitters: never measured against this,
+///   left as the banks say (`mod.rs` `no_ship_voice_is_ever_trimmed`). `Open_b` / `Close_b` (bus `d424e3b1`) match the
+///   port within 0.5 dB and are not trimmed.
+///
+/// The cause was not found (US1b's Build log entry): the candidates are game parameter `35fb439e` on that bus (never set,
+/// unnamed) and the GUI bus's compressor `72391599`.
+pub const BUS_TRIMS: &[(se_core::elite_sound::Id, u32, se_core::elite_sound::BusTrim)] =
+    &[(se_core::elite_sound::Id(0x9f83_e9e8), EMITTER, se_core::elite_sound::BusTrim { gain_db: -7.9, fold: true })];
+
+/// The mixer the mod plays with: the shipped data's, with the measured trims ([`BUS_TRIMS`]).
+pub fn mixer(bank: std::sync::Arc<se_core::elite_sound::SoundBank>, seed: u64) -> se_core::elite_sound::Mixer {
+    let mut m = se_core::elite_sound::Mixer::new(bank, seed);
+    for (bus, emitter, trim) in BUS_TRIMS {
+        m.set_bus_trim(*bus, *emitter, *trim);
+    }
+    m
+}
+
 /// The emitter every UI sound is posted on (the listener's own: never placed). After the ship's own (`triggers::Emitter`
 /// 0x100..0x302) and before the cue emitters (`mod.rs` `FIRST_CUE_EMITTER`, 0x1000).
 pub const EMITTER: u32 = 0x400;

@@ -1269,3 +1269,40 @@ fn a_clip_loads_only_silent_at_its_defaults() {
     let e = clip(1.0).err().map(|e| e.to_string()).unwrap_or_default();
     assert!(e.contains("Clip distortion with a wet share of 100"), "{e}");
 }
+
+/// A measured bus trim (US1c): a voice of the trim's emitter whose way passes the trimmed bus plays the trim's fold in
+/// place of its route's matrix, its gain unchanged; a voice of another way, or of another emitter on the same way, keeps
+/// its route's matrix.
+#[test]
+fn a_bus_trim_folds_the_voices_through_it() {
+    let r = reference();
+    let le = &r["loop_end"];
+    let b = bank();
+    let run = |trim: Option<(Id, u32, BusTrim)>| {
+        let mut m = Mixer::new(b.clone(), 4);
+        if let Some((bus, emitter, t)) = trim {
+            m.set_bus_trim(bus, emitter, t);
+        }
+        m.post(le["begin"].as_str().unwrap(), 1).unwrap();
+        m.step(0.0).iter().find(|u| matches!(u.output, Output::Audio { .. }) && !u.stop).cloned().unwrap()
+    };
+    let plain = run(None);
+    let snd = b.file.objects.iter().find(|(_, o)| matches!(o, Object::Sound(s) if s.source_id == source(&plain))).map(|(k, _)| *k).unwrap();
+    let bus = b.output_bus(snd).unwrap();
+    let master = *b.bus_chain(bus).last().unwrap();
+    let channels = b.file.media[&source(&plain)].channels as usize;
+    let t = BusTrim { gain_db: -7.9, fold: true };
+    let folded = run(Some((master, 1, t)));
+    let k = 10f32.powf(-7.9 / 20.0);
+    assert_eq!(folded.gain, plain.gain, "the gain is the voice's own");
+    assert_eq!(folded.matrix, t.matrix(channels));
+    if channels > 1 {
+        assert!((folded.matrix[0][0] - k / 2.0).abs() < 1e-7 && folded.matrix[0][0] == folded.matrix[1][1] && folded.matrix[0][1] == folded.matrix[1][0] && folded.matrix[0][0] == folded.matrix[0][1]);
+    } else {
+        assert_eq!(folded.matrix, [[k, k], [0.0, 0.0]]);
+    }
+    let other = run(Some((Id(0x0bad_0bad), 1, t)));
+    assert_eq!(other.matrix, plain.matrix, "a bus off its way changes nothing");
+    let elsewhere = run(Some((master, 2, t)));
+    assert_eq!(elsewhere.matrix, plain.matrix, "another emitter's trim changes nothing");
+}
