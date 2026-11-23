@@ -1,0 +1,7192 @@
+{
+ "initial": "Idle",
+ "states": {
+  "Idle": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "CockpitTransitionState": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "UI_Left",
+       "External Panel"
+      ],
+      [
+       "UI_Right",
+       "Internal Panel"
+      ],
+      [
+       "UI_Down",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "UI_Up",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 0
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "In Flight",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Select UI Mode",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Internal Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "External Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Idle",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Jumping",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Docked",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Back From",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PreFlight Check",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Interdicting",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "StationServices",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Rebooting",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PhotoCamera",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Full",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Mini",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Turret Intermediate State",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "RedirectRoleSwitch",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "SwitchingVehicle",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Launching",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew FireCon ThirdPerson",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "ScoutEncouter",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "VesselShutDown",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "VanityCameraSystem",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CodexState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Exploration_FSS",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MissionHubState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Exploration SAA",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "TrainingMissionSelectorState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Access UI",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Access UI Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CarrierManagement",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "AvatarWardrobe",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Outfitting",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Livery",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayPledge",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Squadrons_EnterUI",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Fade Into Operations (Audio)",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Fade Into Operations (Audio)": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Fade Into Operations",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Fade Into Operations": {
+   "activities": [
+    {
+     "type": "FullScreenTransitionActivity"
+    },
+    {
+     "type": "WaitSomeRealTime"
+    },
+    {
+     "type": "SetTargetState"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Operations": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "OperationsMainUIActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations Lobby EmoteWheel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operation Ship Selection Intermediate",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations Galaxy Map Intermediate",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "Operations Humanid Outfitting Intermediate",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "Operations Humanid Outfitting Intermediate": {
+   "activities": [
+    {
+     "type": "FullScreenTransitionActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "Humanoid Outfitting",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "Humanoid Outfitting": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI",
+      "Bindings_OrbitCameraController"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "HumanoidOutfittingInteraction"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Role Switch",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Livery",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Weapons Livery",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations Humanid Outfitting Intermediate",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "Humanoid Weapons Livery": {
+   "activities": [
+    {
+     "type": "HumanoidWeaponLiveryActivity"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Miscellaneous",
+      "Bindings_InterfaceModal",
+      "UIMouse",
+      "UIMouse_Mask",
+      "Bindings_OrbitCameraController"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Humanoid Outfitting",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Humanoid Livery": {
+   "activities": [
+    {
+     "type": "HumanoidLiveryActivity"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Miscellaneous",
+      "Bindings_InterfaceModal",
+      "UIMouse",
+      "UIMouse_Mask",
+      "Bindings_OrbitCameraController"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Humanoid Outfitting",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Role Switch": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusRadarPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Back From",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": "RoleSwitchPanel",
+     "bone": "CockpitChair_Bone_Rig!RoleSwitch_Panel",
+     "disp_m": 0.0,
+     "fov_channel_deg": -17.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": -17.0
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "AudioHeadlookTarget"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Outfitting",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Role Switch Disembark",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Role Switch Disembark": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": []
+  },
+  "Operations Galaxy Map Intermediate": {
+   "activities": [
+    {
+     "type": "FullScreenTransitionActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "Galaxy Map": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "GalaxyMapControls",
+      "Bindings_Interface_GalaxyMap",
+      "UiEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "UIPause"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "PowerPlayDetails",
+     "wait_for_activities": false,
+     "cost": 3
+    },
+    {
+     "target": "keepSupressingLocation",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "CodexState",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "Galaxy Map AX Help",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 3
+    },
+    {
+     "target": "Galaxy Map Powerplay Help",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Galaxy Map Initial Station Selection",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Galaxy Map System Claim Help",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations Galaxy Map Intermediate",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "Galaxy Map System Claim Help": {
+   "activities": [
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Galaxy Map Initial Station Selection": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Galaxy Map Initial Station Selection Help",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Galaxy Map Initial Station Selection Help": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    },
+    {
+     "type": "HelpPopupActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map Initial Station Selection",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Galaxy Map Powerplay Help": {
+   "activities": [
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PowerplayHub": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "PowerplayHubActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "PowerplayPledge",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerPlayDetails",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CodexState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHelp",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PowerplayHelp": {
+   "activities": [
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "PowerplayHubActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "To Maps": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "VignetteActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "System Map",
+     "wait_for_activities": true,
+     "cost": 1
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "GalaxyMapControls",
+      "Bindings_Interface_GalaxyMap",
+      "UiEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "UIPause"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "keepSupressingLocation",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "CodexState",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "System Map Orbital Construction",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Initial Station Selection",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Rename Facility",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Architect Help",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Architect Help": {
+   "activities": [
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "GalaxyMapControls",
+      "Bindings_Interface_GalaxyMap",
+      "UiEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Rename Facility": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UITextInput"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationRenameActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Initial Station Selection": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Initial Station Selection Help",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Initial Station Selection Help": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    },
+    {
+     "type": "HelpPopupActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map Initial Station Selection",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Orbital Construction": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Orbital Construction Help",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "System Map Orbital Construction Arx Completion",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Orbital Construction Arx Completion": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    },
+    {
+     "type": "ColonisationArxConfirmationActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map Orbital Construction",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "System Map Orbital Construction Help": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ActivateSystemMap"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ColonisationTechTreeActivity"
+    },
+    {
+     "type": "HelpPopupActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "System Map Orbital Construction",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "CodexState": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "CodexActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "keepSupressingLocation": {
+   "activities": [
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 1
+    }
+   ]
+  },
+  "PowerPlayDetails": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayPledge",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PowerplayPledge": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "PowerplayPledgeActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayHub",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerPlayDetails",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "PowerplayPledgeHelp",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CodexState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PowerplayPledgeHelp": {
+   "activities": [
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "PowerplayPledgeActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "PowerplayPledge",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Galaxy Map AX Help": {
+   "activities": [
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ActivateGalaxyMap"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Operation Ship Selection Intermediate": {
+   "activities": [
+    {
+     "type": "FullScreenTransitionActivity"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operation Ship Selection",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Operation Ship Selection": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ShipPurchaseStoreInteraction"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack",
+      "UIMouse",
+      "UIMouse_Mask"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operation Ship Selection Intermediate",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Operations Lobby EmoteWheel": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "OperationsMainUIActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Humanoid_ItemWheel",
+      "Processing_Humanoid_ItemWheel"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "AudioGameflowState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Operations",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Squadrons_EnterUI": {
+   "activities": [
+    {
+     "type": "AudioSquadronActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIEscBack",
+      "UI",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit",
+      "Bindings_UiFocus",
+      "Bindings_Mouse"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Squadrons",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Squadrons": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIEscBack",
+      "UI",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit",
+      "Bindings_UiFocus",
+      "Bindings_Mouse"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "OpenSquadronPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Squadrons_ExitUI",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Squadrons Bank Ship Deposit",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Squadrons Bank Ship Deposit": {
+   "activities": [
+    {
+     "type": "ShipPurchaseStoreInteraction"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIEscBack",
+      "UI",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit",
+      "Bindings_UiFocus",
+      "Bindings_Mouse"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Squadrons",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Squadrons_ExitUI": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "AudioSquadronActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIEscBack",
+      "UI",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit",
+      "Bindings_UiFocus",
+      "Bindings_Mouse"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Galaxy Map",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew Turret": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 9,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "MultiCrew Turret Comms Panel"
+      ],
+      [
+       "FocusCommsPanel",
+       "MultiCrew Turret Comms Focus"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "MultiCrew Turret Comms Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew Turret Comms Focus",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew Turret Comms Focus": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 9,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "MultiCrew Turret"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "MultiCrew Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew Turret Comms Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew Turret Comms Panel": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 9,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "MultiCrew Turret"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "MultiCrew Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew Turret Comms Focus",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "AvatarWardrobe": {
+   "activities": [
+    {
+     "type": "RunAvatarEditorActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "FullScreenColourOverlayActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "CarrierManagement": {
+   "activities": [
+    {
+     "type": "CarrierManagementActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CarrierMarketPrices_BlackMarket",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CarrierMarketPrices",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CarrierLivery",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CarrierMaterialPrices",
+     "wait_for_activities": true,
+     "cost": 2
+    }
+   ]
+  },
+  "CarrierMaterialPrices": {
+   "activities": [
+    {
+     "type": "CarrierMarketPriceActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CarrierManagement",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "CarrierLivery": {
+   "activities": [
+    {
+     "type": "CarrierLiveryActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_OrbitCameraController"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CarrierManagement",
+     "wait_for_activities": true,
+     "cost": 2
+    }
+   ]
+  },
+  "CarrierMarketPrices": {
+   "activities": [
+    {
+     "type": "CarrierMarketPriceActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CarrierManagement",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "CarrierMarketPrices_BlackMarket": {
+   "activities": [
+    {
+     "type": "CarrierMarketPriceActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CarrierManagement",
+     "wait_for_activities": true,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Access UI Panel": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitAccessUIActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusRadarPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Access UI",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Access UI": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitAccessUIActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusRadarPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Access UI Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "TrainingMissionSelectorState": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_InterfaceModal_Pagination",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "TrainingMissionSelectorActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Exploration SAA": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_ExplorationSAA",
+      "Bindings_Mouse"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Miscellaneous",
+      "Processing_Flight",
+      "Processing_ExplorationSAA"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "SAAModeActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 3,
+     "flag": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "AudioState"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Exploration_SAA_Help",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Exploration_SAA_Help": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 3,
+     "flag": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "SAAModeActivity"
+    },
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "AudioState"
+    },
+    {
+     "type": "AudioPostGlobalEvent"
+    },
+    {
+     "type": "AudioPostGlobalEvent"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Exploration SAA",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MissionHubState": {
+   "activities": [
+    {
+     "type": "MissionsHubActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Exploration_FSS": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 3,
+     "flag": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_ExplorationFSS"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "FSSModeActivity"
+    },
+    {
+     "type": "AudioState"
+    },
+    {
+     "type": "EffectStateActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Exploration_FSS_Help",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Exploration_FSS_Help": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 3,
+     "flag": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "FSSModeActivity"
+    },
+    {
+     "type": "HelpPopupActivity"
+    },
+    {
+     "type": "AudioState"
+    },
+    {
+     "type": "AudioPostGlobalEvent"
+    },
+    {
+     "type": "AudioPostGlobalEvent"
+    },
+    {
+     "type": "EffectStateActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Exploration_FSS",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "VanityCameraSystem": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_VanityCameraToggle",
+      "Bindings_VanityCameraToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_FreeCamera"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "VesselShutDown": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface",
+      "Bindings_Mouse",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_Flight",
+      "Bindings_Driving"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_VanityCameraToggle",
+      "Bindings_VanityCameraToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "ScoutEncouter": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew FireCon ThirdPerson": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_Common"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_FireCon",
+      "Bindings_MultiCrew_ThirdPerson",
+      "Bindings_Mouse",
+      "Bindings_Interface",
+      "Processing_Miscellaneous",
+      "Bindings_UiFocus"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 4,
+     "flag": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "MultiCrew FireCon ThirdPerson Comms Panel"
+      ],
+      [
+       "FocusCommsPanel",
+       "MultiCrew FireCon ThirdPerson Comms Focus"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew FireCon ThirdPerson Comms Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew FireCon ThirdPerson Comms Focus",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew FireCon ThirdPerson Comms Focus": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_Common"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_FireCon",
+      "Bindings_MultiCrew_ThirdPerson",
+      "Bindings_Mouse",
+      "Bindings_Interface",
+      "Processing_Miscellaneous",
+      "Bindings_UiFocus"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal_Pagination"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 4,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "MultiCrew FireCon ThirdPerson",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew FireCon ThirdPerson Comms Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "MultiCrew FireCon ThirdPerson Comms Panel": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_Common"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_MultiCrew_FireCon",
+      "Bindings_MultiCrew_ThirdPerson",
+      "Bindings_Mouse",
+      "Bindings_Interface",
+      "Processing_Miscellaneous",
+      "Bindings_UiFocus"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 4,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "MultiCrew FireCon ThirdPerson"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitFireConHUDActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "MultiCrew FireCon ThirdPerson",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "MultiCrew FireCon ThirdPerson Comms Focus",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Launching": {
+   "activities": [
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_VanityCameraToggle",
+      "Bindings_VanityCameraToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "SwitchingVehicle": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": []
+  },
+  "RedirectRoleSwitch": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "RedirectRolePanelActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Role Switch",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Radar Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Radar Panel": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ],
+      [
+       "UI_Select",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusRadarPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": null,
+     "bone": "RadarPanel_Focus",
+     "disp_m": 0.0,
+     "fov_channel_deg": -20.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": -20.0
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "AudioHeadlookTarget"
+    },
+    {
+     "type": "CockpitHideFullscreenMoviesActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Turret Intermediate State": {
+   "activities": [
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 2,
+     "flag": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Turret": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowTurretPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 2,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "FOVFromGenericParamCamera"
+    },
+    {
+     "type": "KinematicBezierCurveMultiple"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini Turret"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full Turret"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Turret Input Focused",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Turret Intermediate State",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Mini Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Full Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Turret Input Focused",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Turret Input Focused": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowTurretPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 2,
+     "flag": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "FOVFromGenericParamCamera"
+    },
+    {
+     "type": "KinematicBezierCurveMultiple"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "UIFocus",
+       "Turret"
+      ],
+      [
+       "UI_Up",
+       "Comms Panel Full Turret"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Mini Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Full Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Comms Panel Full Turret": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal_Pagination"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "Turret"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowTurretPanelActivity"
+    },
+    {
+     "type": "FOVFromGenericParamCamera"
+    },
+    {
+     "type": "KinematicBezierCurveMultiple"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 2,
+     "flag": 1
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Comms Panel Mini Turret": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Turret",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_FireCon"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "QuickCommsPanel",
+       "Turret"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowTurretPanelActivity"
+    },
+    {
+     "type": "FOVFromGenericParamCamera"
+    },
+    {
+     "type": "KinematicBezierCurveMultiple"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitUIOutputModeActivity",
+     "mode": 2,
+     "flag": 1
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Comms Panel Full Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Turret",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Comms Panel Mini": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "CockpitHideFullscreenMoviesActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Full",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Comms Panel Full": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal_Pagination"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "SetTargetStateOnInput"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusCommsPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": "CommsPanel",
+     "bone": "CommsPanel_Focus",
+     "disp_m": 0.0,
+     "fov_channel_deg": -8.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": -5.0
+    },
+    {
+     "type": "CockpitHideFullscreenMoviesActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "AudioHeadlookTarget"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PhotoCamera": {
+   "activities": [
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "PhotoCamera_Toggle",
+      "PhotoCamera_Toggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Interface",
+      "Bindings_Mouse",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Rebooting": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "StationServices": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Miscellaneous",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_UiFocus",
+      "Bindings_Mouse",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Interdicting": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "PreFlight Check": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "InterimState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "InterimState": {
+   "activities": [
+    {
+     "type": "WaitSomeRealTime"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Launching",
+     "wait_for_activities": true,
+     "cost": 2
+    }
+   ]
+  },
+  "Back From": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Docked": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Miscellaneous",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_UiFocus",
+      "Bindings_Mouse",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy",
+      "Bindings_MultiCrew_Cockpit"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "KeepMovieLoadedActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_VanityCameraToggle",
+      "Bindings_VanityCameraToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "PreFlight Check",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Launching",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Role Switch Disembark",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Jumping": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "External Panel": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusLeftPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Back From",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": "ExternalDataPanel",
+     "bone": "LeftPanel_Focus",
+     "disp_m": 0.0,
+     "fov_channel_deg": -17.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": -13.0
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "AudioHeadlookTarget"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Internal Panel": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus",
+      "FocusRightPanel",
+      "UI_Back"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": "InternalDataPanel",
+     "bone": "RightPanel_Focus",
+     "disp_m": 0.0,
+     "fov_channel_deg": -17.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": -13.0
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "AudioHeadlookTarget"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 1
+    },
+    {
+     "target": "Squadrons_EnterUI",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Humanoid Livery Internal Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "GalnetNews Internal",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "To Maps",
+     "wait_for_activities": false,
+     "cost": 3
+    }
+   ]
+  },
+  "GalnetNews Internal": {
+   "activities": [
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "RenderFeatureEnable"
+    },
+    {
+     "type": "SuppressLocationRenderingActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "SetPowerplayStateOnInput"
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "Bindings_Interface",
+      "Bindings_Interface_GalaxyMap",
+      "UIMouse",
+      "UIMouse_Mask",
+      "UIEscBack",
+      "UI"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitPowerNewsActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "PanelExposureControlActivity",
+     "exposure_ev": -7.5
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Internal Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Humanoid Livery Internal Panel": {
+   "activities": [
+    {
+     "type": "HumanoidLiveryActivity"
+    },
+    {
+     "type": "PowerplayNavigationStateRecorder"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Miscellaneous",
+      "Bindings_InterfaceModal",
+      "UIMouse",
+      "UIMouse_Mask",
+      "Bindings_OrbitCameraController"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "MouseCursorActivity"
+    },
+    {
+     "type": "TrapMouse"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitDangerBootActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ScopedSoundbankActivity"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "Internal Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "Select UI Mode": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_InterfaceModal",
+      "UIEscBack"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "UI_Left",
+       "External Panel"
+      ],
+      [
+       "UI_Right",
+       "Internal Panel"
+      ],
+      [
+       "UI_Down",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "UI_Up",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 0
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "UIFocus",
+       "Back From"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "HeadlookTargetBoneActivity",
+     "panel_component": null,
+     "bone": null,
+     "disp_m": 0.0,
+     "fov_channel_deg": 10.0,
+     "disp_m_alt": 0.0,
+     "fov_channel_deg_alt": 0.0
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Internal Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "External Panel",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Full",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "Comms Panel Mini",
+     "wait_for_activities": false,
+     "cost": 2
+    },
+    {
+     "target": "RedirectRoleSwitch",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  },
+  "In Flight": {
+   "activities": [
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Processing_Camera",
+      "Processing_Flight",
+      "Processing_Driving",
+      "Processing_Miscellaneous",
+      "Processing_Miscellaneous_Buggy",
+      "Motion"
+     ],
+     "raw_u8": 0
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_Flight",
+      "Bindings_Flight_Cruising",
+      "Bindings_Flight_Landing",
+      "Bindings_Driving",
+      "Bindings_Miscellaneous",
+      "Bindings_Miscellaneous_Cruising",
+      "Bindings_Miscellaneous_Buggy",
+      "Bindings_Interface",
+      "Bindings_Interface_Buggy",
+      "Bindings_Interface_GalaxyMap",
+      "Bindings_Interface_GalaxyMap_Buggy",
+      "Bindings_UiFocus",
+      "Bindings_UIFocus_Buggy",
+      "Bindings_Mouse",
+      "Bindings_MultiCrew_Common",
+      "Bindings_MultiCrew_Cockpit",
+      "HeadLookToggle",
+      "HeadLookToggle_Buggy"
+     ],
+     "raw_u8": 1
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "FocusLeftPanel",
+       "External Panel"
+      ],
+      [
+       "FocusRightPanel",
+       "Internal Panel"
+      ],
+      [
+       "FocusRadarPanel",
+       "RedirectRoleSwitch"
+      ],
+      [
+       "QuickCommsPanel",
+       "Comms Panel Mini"
+      ],
+      [
+       "FocusCommsPanel",
+       "Comms Panel Full"
+      ]
+     ],
+     "exit_inputs": [
+      "UIFocus"
+     ],
+     "exit_target": "Select UI Mode",
+     "flag8": 1
+    },
+    {
+     "type": "CockpitShowPanelActivity"
+    },
+    {
+     "type": "CockpitFocusPanelActivity"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitStateMotivator"
+    },
+    {
+     "type": "CockpitFocusInputActivity",
+     "inputs": [
+      [
+       "GalaxyMapOpen",
+       "Galaxy Map"
+      ],
+      [
+       "SystemMapOpen",
+       "System Map"
+      ]
+     ],
+     "exit_inputs": [],
+     "exit_target": null,
+     "flag8": 1
+    },
+    {
+     "type": "CockpitHeadlookActivity",
+     "enable": 1
+    },
+    {
+     "type": "MultiCrewUIElementSwitcherActivity"
+    },
+    {
+     "type": "PowerplayNavigationHelper"
+    },
+    {
+     "type": "ControlInputScheme",
+     "control_sets": [
+      "Bindings_VanityCameraToggle",
+      "Bindings_VanityCameraToggle_Buggy"
+     ],
+     "raw_u8": 1
+    }
+   ],
+   "transitions": [
+    {
+     "target": "CockpitTransitionState",
+     "wait_for_activities": false,
+     "cost": 2
+    }
+   ]
+  }
+ }
+}

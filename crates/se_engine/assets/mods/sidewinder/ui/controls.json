@@ -1,0 +1,3145 @@
+{
+ "ui": [
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 33554553,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 117440512,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 33554558,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 117440513,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 33554556,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 33554555,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 117440522,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 117440523,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 117440515,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 117440514,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 33554460,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 33554538,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 33554462,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 33554464,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 33554449,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 33554463,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 117440524,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 117440525,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 33554489,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 33554450,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 33554448,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 33554447,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 117440521,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 117440520,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 50331652,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 50331654,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 50331662,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 50331661,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 50331653,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 50331655,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 50331663,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 50331664,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 50331659,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 50331658,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 419430400,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 419430401,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 419430410,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 419430411,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 419430403,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 419430402,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CancelBinding",
+   "code": 419430405,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 419430412,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 419430413,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 419430409,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 419430408,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FriendsMenu",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 117440516,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 50331651,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 419430404,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 536870912,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 536870913,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 536870926,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 536870925,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 536870915,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 536870914,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 536870928,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 536870924,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 536870921,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 536870920,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 570425348,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 570425344,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 570425345,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CancelBinding",
+   "code": 570425350,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 570425347,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 570425351,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 570425352,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 436207623,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 436207624,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 436207616,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 436207617,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 436207626,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 436207625,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CancelBinding",
+   "code": 436207628,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 436207631,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 436207632,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 436207634,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 436207633,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 436207627,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 553648128,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 553648129,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 553648140,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 553648139,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Right",
+   "code": 553648131,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Left",
+   "code": 553648130,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Confirm",
+   "code": 553648138,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Toggle",
+   "code": 553648141,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPanel",
+   "code": 553648133,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": 553648132,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "ClearBinding",
+   "code": 553648142,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 33554459,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 33554458,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 117440519,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 117440518,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 436207629,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 436207630,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 419430407,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 419430406,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 553648135,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 553648134,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 536870937,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 536870936,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 570425353,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 570425354,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleNextPage",
+   "code": 50331657,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": 50331656,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  }
+ ],
+ "uiback": [
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 117440523,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 50331661,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 419430411,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 536870925,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 570425345,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 436207617,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 553648139,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "uiescback": [
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Back",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "uimouse": [
+  {
+   "kind": "PhysicalValue",
+   "name": "UI_Mouse_ZAxis",
+   "code": 16777226,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     16777226
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Mouse_Button0",
+   "code": 16777216,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 117440527,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     117440527
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 117440526,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     117440526
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "UI_Up",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "UI_Down",
+    "32": "LStickY",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "UI_Right",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "UI_Left",
+    "32": "LStickX",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "RStickY",
+   "code": 117440529,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     117440529
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "UI_Scroll_Up",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "32": "RStickY",
+    "u40": [
+     1045220557,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": null,
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "UI_Scroll_Down",
+    "32": "RStickY",
+    "u40": [
+     1045220557,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 50331697,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u8": [
+     0,
+     50331697
+    ],
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 50331696,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u8": [
+     0,
+     50331696
+    ],
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "RStickY",
+   "code": 50331701,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u8": [
+     0,
+     50331701
+    ],
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 419430416,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     419430416
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 419430415,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     419430415
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "RStickY",
+   "code": 419430418,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     419430418
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 536870931,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     536870931
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 536870930,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     536870930
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "RStickY",
+   "code": 536870933,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     536870933
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 570425358,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     570425358
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 570425357,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     570425357
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "RStickY",
+   "code": 570425356,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     570425356
+    ]
+   }
+  }
+ ],
+ "uimouse_mask": [
+  {
+   "kind": "DeviceMask",
+   "name": null,
+   "code": 16777216,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     16777216
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "PointerXDelta",
+   "code": 16777224,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     16777224
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "PointerYDelta",
+   "code": 16777225,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     16777225
+    ]
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "HeadLookToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "uimouse_noscroll": [
+  {
+   "kind": "PhysicalValue",
+   "name": "UI_Mouse_ZAxis",
+   "code": 16777226,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     16777226
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Mouse_Button0",
+   "code": 16777216,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 117440527,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     117440527
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 117440526,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     117440526
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "UI_Up",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "UI_Down",
+    "32": "LStickY",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "UI_Right",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "UI_Left",
+    "32": "LStickX",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 50331697,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u8": [
+     0,
+     50331697
+    ],
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 50331696,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u8": [
+     0,
+     50331696
+    ],
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 419430416,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     419430416
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 419430415,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     419430415
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 536870931,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     536870931
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 536870930,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     536870930
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickY",
+   "code": 570425358,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     570425358
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalValue",
+   "name": "LStickX",
+   "code": 570425357,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     570425357
+    ]
+   }
+  }
+ ],
+ "uipause": [
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 117440516,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "Pause",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 50331651,
+   "lo": 0,
+   "device_filter": "Playstation3Controller",
+   "extra": {
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FriendsMenu",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 419430404,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 536870928,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 570425350,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 436207627,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Pause",
+   "code": 553648142,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "uitextinput": [
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 33554460,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CancelTextInput",
+   "code": 33554433,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "DeviceMask",
+   "name": null,
+   "code": 33554432,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     33554432
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Up",
+   "code": 33554553,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Down",
+   "code": 33554558,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "UI_Select",
+   "code": 33554538,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConstantValue",
+   "name": "TextInputActive",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "u24": [
+     1065353216,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "CycleTextTarget",
+   "code": 33554447,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "InputChord",
+   "name": "NextTextTarget",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "CycleTextTarget"
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "Key_LeftShift",
+   "code": 33554474,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "InputChord",
+   "name": "PrevTextTarget",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "CycleTextTarget",
+    "u40": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "OpenSoftKeyboard",
+   "code": 419430410,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u32": [
+     256,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "OpenSoftKeyboard",
+   "code": 536870926,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u32": [
+     256,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "OpenSoftKeyboard",
+   "code": 436207629,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u32": [
+     256,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "PhysicalButton",
+   "name": "OpenSoftKeyboard",
+   "code": 553648140,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u32": [
+     256,
+     0
+    ]
+   }
+  }
+ ],
+ "bindings_interface": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ToggleMouseLookInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusLeftPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusRightPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusRadarPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusCommsPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "QuickCommsPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ShowPGScoreSummaryInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "ShowPGScoreSummary",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "ShowPGScoreSummaryInput",
+    "32": "ShowPGScoreSummaryInput"
+   }
+  },
+  {
+   "kind": "SwipeDetection",
+   "name": null,
+   "code": 1045220557,
+   "lo": 0,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     0,
+     1045220557
+    ],
+    "24": "FocusCommsPanel",
+    "32": "FocusRadarPanel",
+    "40": "FocusLeftPanel"
+   }
+  }
+ ],
+ "bindings_interfacemodal": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Up",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Down",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Left",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Right",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Select",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CyclePreviousPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleNextPanel",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Back",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UI_Toggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "HumanoidToggleMissionHelpPanelButton",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "HumanoidToggleMissionHelpPanel"
+   }
+  }
+ ],
+ "bindings_interfacemodal_pagination": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CyclePreviousPage",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleNextPage",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "bindings_uifocus": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UIFocus",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "bindings_uifocus_buggy": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UIFocus_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "UIFocus"
+   }
+  }
+ ],
+ "bindings_interface_buggy": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ToggleMouseLookInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusLeftPanel_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "FocusLeftPanel"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusRightPanel_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "FocusRightPanel"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusRadarPanel_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "FocusRadarPanel"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FocusCommsPanel_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "FocusCommsPanel"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "QuickCommsPanel_Buggy",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "QuickCommsPanel"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ShowPGScoreSummaryInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "ShowPGScoreSummary",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "ShowPGScoreSummaryInput",
+    "32": "ShowPGScoreSummaryInput"
+   }
+  }
+ ],
+ "bindings_interface_galaxymap": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "GalaxyMapOpen",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "SystemMapOpen",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "headlooktoggle": [
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "HeadLookToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConstantValue",
+   "name": "Bindings_HeadLook_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "u24": [
+     1065353216,
+     1
+    ]
+   }
+  }
+ ],
+ "bindings_multicrew_cockpit": [
+  {
+   "kind": "ConstantValue",
+   "name": "Bindings_MultiCrew_Cockpit_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "u24": [
+     1065353216,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "MultiCrewCockpitUICycleForward",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "CockpitUICycleForward"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "MultiCrewCockpitUICycleBackward",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "CockpitUICycleBackward"
+   }
+  }
+ ],
+ "bindings_multicrew_common": [
+  {
+   "kind": "ConstantValue",
+   "name": "Bindings_MultiCrew_Common_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "u24": [
+     1065353216,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "MultiCrewToggleMode",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseSystemsPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseEnginesPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ResetPowerDistribution",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseWeaponsPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "PlayerHUDModeToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "NightVisionToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ],
+ "processing_miscellaneous": [
+  {
+   "kind": "DummyValue",
+   "name": "HeadLookToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "HeadLookToggled",
+   "code": 0,
+   "lo": 3,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     3,
+     0
+    ],
+    "24": "HeadLookToggle",
+    "32": "HeadLookToggle",
+    "40": "HeadLookToggleReset"
+   }
+  },
+  {
+   "kind": "ReadValueFromOptions",
+   "name": "TrackIRActive_RAW",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "TrackIRActive",
+    "u32": [
+     0,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "HeadLookToggleReset",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "32": "TrackIRActive_RAW",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "ToggleButtonUpInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "ToggleButtonUp",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "24": "ToggleButtonUpInput",
+    "32": "ToggleButtonUpInput",
+    "40": "Bindings_Cruising_Active"
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "ToggleMouseLookInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "ToggleMouseLook",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "24": "ToggleMouseLookInput",
+    "32": "ToggleMouseLookInput"
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "ToggleCargoScoop",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurableToggle",
+   "name": "CargoScoopLowered",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "24": "ToggleCargoScoop",
+    "32": "ToggleCargoScoop"
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "Bindings_Cruising_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ReadValueFromOptions",
+   "name": "HeadlookDefault",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "HeadlookDefault",
+    "u32": [
+     0,
+     65536
+    ]
+   }
+  },
+  {
+   "kind": "InvertValue",
+   "name": "HeadlookDefaultInvert",
+   "code": 0,
+   "lo": 3,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     3,
+     0
+    ],
+    "24": "HeadlookDefault"
+   }
+  },
+  {
+   "kind": "SelectValue",
+   "name": "HeadLookActive",
+   "code": 0,
+   "lo": 4,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     4,
+     0
+    ],
+    "24": "HeadLookToggled",
+    "32": "HeadlookDefault",
+    "40": "HeadlookDefaultInvert"
+   }
+  },
+  {
+   "kind": "ReadValueFromOptions",
+   "name": "TrackHMDActive_RAW",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "TrackHMDActive",
+    "u32": [
+     0,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "HeadLookToggleReset",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "32": "TrackHMDActive_RAW",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "Bindings_Miscellaneous_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "SelectValue",
+   "name": "RadarRangeAxisFinal",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "Bindings_Miscellaneous_Active",
+    "32": "PreviousRadarRangeAxis",
+    "40": "RadarRangeAxis"
+   }
+  },
+  {
+   "kind": "DummyValue",
+   "name": "RadarRangeAxis",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "PreviousValue",
+   "name": "PreviousRadarRangeAxis",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "CopyValue",
+   "name": "PreviousRadarRangeAxis",
+   "code": 0,
+   "lo": 3,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     3,
+     0
+    ],
+    "24": "RadarRangeAxisFinal",
+    "u32": [
+     1,
+     0
+    ]
+   }
+  },
+  {
+   "kind": "ReadValueFromOptions",
+   "name": "TutorialHeadlookReset",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "24": "TutorialHeadlookReset",
+    "u32": [
+     0,
+     65537
+    ]
+   }
+  },
+  {
+   "kind": "ButtonFromValue",
+   "name": "HeadLookToggleReset",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "32": "TutorialHeadlookReset",
+    "u40": [
+     1056964608,
+     0
+    ]
+   }
+  }
+ ],
+ "bindings_miscellaneous": [
+  {
+   "kind": "ConstantValue",
+   "name": "Bindings_Miscellaneous_Active",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {
+    "u24": [
+     1065353216,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "HyperSuperCombination",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "Hyperspace",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "Supercruise",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ShipSpotLightToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalValue",
+   "name": "RadarRangeAxis",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "RadarIncreaseRange",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "RadarDecreaseRange",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseEnginesPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseWeaponsPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ResetPowerDistribution",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "IncreaseSystemsPower",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "InterfaceDim",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "EjectAllCargo",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ToggleCargoScoop",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "LandingGearToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "DeployHeatSink",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ToggleButtonUpInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ToggleShields",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ShiftShieldsForeInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ShiftShieldsAftInput",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ValueFromButton",
+   "name": "ShiftShieldsForeValue",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "ShiftShieldsForeInput",
+    "u32": [
+     1045220557,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "ValueFromButton",
+   "name": "ShiftShieldsAftValue",
+   "code": 0,
+   "lo": 1,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     1,
+     0
+    ],
+    "24": "ShiftShieldsAftInput",
+    "u32": [
+     1045220557,
+     1
+    ]
+   }
+  },
+  {
+   "kind": "TwoInputAxis",
+   "name": "ShiftShieldAxis",
+   "code": 0,
+   "lo": 2,
+   "device_filter": null,
+   "extra": {
+    "u8": [
+     2,
+     0
+    ],
+    "24": "ShiftShieldsForeValue",
+    "32": "ShiftShieldsAftValue"
+   }
+  },
+  {
+   "kind": "ConfigurablePhysicalValue",
+   "name": "ShiftShieldAxis",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "EqualiseShields",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "SelectTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "SelectHighestThreat",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleNextTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CyclePreviousTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleNextHostileTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CyclePreviousHostileTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleNextSubsystem",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CyclePreviousSubsystem",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "PrimaryFire",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "SecondaryFire",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleFireGroupNext",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "CycleFireGroupPrevious",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "DeployHardpointToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "UseShieldCell",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "FireChaffLauncher",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TargetWingman0",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TargetWingman1",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TargetWingman2",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "SelectTargetsTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TargetNextRouteSystem",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "WingNavLock",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrbitLinesToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "WeaponColourToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "EngineColourToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderRequestDock",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderDefensiveBehaviour",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderAggressiveBehaviour",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderFocusTarget",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderHoldFire",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderHoldPosition",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OrderFollow",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ChargeECM",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OpenOrders",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "GalnetAudio_Play_Pause",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "GalnetAudio_SkipForward",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "GalnetAudio_SkipBackward",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "GalnetAudio_ClearQueue",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "PlayerHUDModeToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "ExplorationFSSEnter",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "OpenCodexGoToDiscovery",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "NightVisionToggle",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TriggerFieldNeutraliser",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  },
+  {
+   "kind": "ConfigurablePhysicalButton",
+   "name": "TriggerColonisationModule",
+   "code": null,
+   "lo": null,
+   "device_filter": null,
+   "extra": {}
+  }
+ ]
+}

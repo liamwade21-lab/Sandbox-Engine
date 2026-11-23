@@ -7,12 +7,15 @@
 //! export (default `re/elite/frea_export/sidewinder`; its `decoded/` subfolder is what is read, `README.md` there the
 //! reference) for Elite's original assets; and the audio export beside it (`sidewinder_audio`). Without the decoded
 //! export the run fails, naming it. The ship UI's export beside it (`sidewinder_ui`: its `audio/` and `decoded/sounds/`)
-//! gives the UI's sounds. The FREA key is never read.
+//! gives the UI's sounds; its decoded folder (`ELITE_UI_EXPORT`, default `sidewinder_ui/decoded` beside `ELITE_EXPORT`)
+//! the UI's movies, fonts, strings, layout and panel models. The FREA key is never read.
 //!
 //! Each kind of file is its own file here, `convert(ctx, shipped)` writing its files into `Ctx::out`, reading them back
 //! and reporting each in `Shipped`: `binds.rs` (Elite's key files), `models.rs` (Elite's models, materials and
 //! textures), `assembly.rs` (`ship.json`, checked against the models by `assembly::check`), `chair.rs`, `sound.rs` (the
-//! ship's and the UI's events in one `sounds.json`), `ui_sound.rs` (which UI events, and `ui/sound_tables.json`).
+//! ship's and the UI's events in one `sounds.json`), `ui_sound.rs` (which UI events, and `ui/sound_tables.json`),
+//! `ui_movies.rs` (the UI's movies, fonts, strings, focus machine and controls under `ui/`), `ui_layout.rs` (`ui/layout.json`
+//! with the panel models and their textures, which `ui_models.rs` makes).
 //! Then `SOURCES.txt` and `mod.cfg` are written from `Shipped`, and every file of the folder is read back: each must be
 //! a `Need`, read as the game reads it, and be at most 90 MB. A file the converter no longer ships is not deleted by it:
 //! the read-back refuses the folder until it is removed (`git rm`).
@@ -22,6 +25,9 @@ mod binds;
 mod chair;
 mod models;
 mod sound;
+mod ui_layout;
+mod ui_models;
+mod ui_movies;
 mod ui_sound;
 
 use std::path::{Path, PathBuf};
@@ -47,6 +53,9 @@ pub(super) struct Ctx {
     pub audio: PathBuf,
     /// The ship UI's export (`sidewinder_ui`, beside `ELITE_EXPORT`): its `audio/` and `decoded/sounds/`, `ui_sound.rs`'s.
     pub ui: PathBuf,
+    /// The ship UI's decoded export (`ELITE_UI_EXPORT`, default `ui`'s `decoded/`; its `README.md` the handoff): the
+    /// `ui_movies.rs`, `ui_layout.rs` and `ui_models.rs` input.
+    pub ui_decoded: PathBuf,
     /// The mod's folder.
     pub out: PathBuf,
 }
@@ -66,7 +75,9 @@ impl Ctx {
         }
         let audio = export_root.parent().map(|p| p.join("sidewinder_audio")).unwrap_or_default();
         let ui = export_root.parent().map(|p| p.join("sidewinder_ui")).unwrap_or_default();
-        Ok(Ctx { install: install(), export, audio, ui, out: out_dir() })
+        let ui_decoded = std::env::var_os("ELITE_UI_EXPORT").map(PathBuf::from).unwrap_or_else(|| ui.join("decoded"));
+        let ui_decoded = if ui_decoded.is_absolute() { ui_decoded } else { project.join(ui_decoded) };
+        Ok(Ctx { install: install(), export, audio, ui, ui_decoded, out: out_dir() })
     }
 
     /// Writes a file of the mod's folder (`rel` with forward slashes), making its folders.
@@ -93,6 +104,52 @@ pub(super) struct ShippedFile {
     /// The spec's grade (A = Elite's own bytes ... E = recreated).
     pub grade: &'static str,
     pub note: String,
+}
+
+/// A file a kind plans to ship, worked out from the export alone: written by `Planned::ship`, compared with the folder by
+/// `Planned::same` (the UI's kinds plan first, then write or verify).
+pub(super) struct Planned {
+    /// Relative to the mod's folder, forward slashes.
+    pub path: String,
+    pub bytes: Vec<u8>,
+    pub sources: Vec<String>,
+    pub grade: &'static str,
+    pub note: String,
+}
+
+impl Planned {
+    /// Writes each file, reads it back the same, and reports it in `Shipped`.
+    pub fn ship(ctx: &Ctx, shipped: &mut Shipped, files: Vec<Planned>) -> Result<(), String> {
+        for f in files {
+            ctx.write(&f.path, &f.bytes)?;
+            if ctx.read(&f.path)? != f.bytes {
+                return Err(format!("{} reads back different", f.path));
+            }
+            shipped.files.push(ShippedFile { path: f.path, sources: f.sources, grade: f.grade, note: f.note });
+        }
+        Ok(())
+    }
+
+    /// The folder holds each file byte for byte, and `dirs` (folders only these kinds write) hold nothing else.
+    pub fn same(ctx: &Ctx, files: &[Planned], dirs: &[&str]) -> Result<(), String> {
+        for f in files {
+            if ctx.read(&f.path)? != f.bytes {
+                return Err(format!("{} differs from what the export makes", f.path));
+            }
+        }
+        for dir in dirs {
+            let mut held = Vec::new();
+            folder_files(&ctx.out.join(dir), &format!("{dir}/"), &mut held)?;
+            let mut held: Vec<String> = held.into_iter().map(|(n, _)| n).collect();
+            let mut want: Vec<String> = files.iter().map(|f| f.path.clone()).filter(|p| p.starts_with(&format!("{dir}/"))).collect();
+            held.sort();
+            want.sort();
+            if held != want {
+                return Err(format!("{dir}/ holds {} files, the export makes {}: {:?}", held.len(), want.len(), held.iter().filter(|h| !want.contains(h)).collect::<Vec<_>>()));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Every file the kinds wrote, in order, and their lines on what is left out on purpose.
@@ -130,6 +187,8 @@ fn run() -> Result<(), String> {
     chair::convert(&ctx, &mut shipped)?;
     sound::convert(&ctx, &mut shipped)?;
     ui_sound::convert(&ctx, &mut shipped)?;
+    ui_movies::convert(&ctx, &mut shipped)?;
+    ui_layout::convert(&ctx, &mut shipped)?;
     write_sources(&ctx, &mut shipped)?;
     write_cfg(&ctx, &shipped)?;
     read_back(&ctx, &shipped)
@@ -232,6 +291,12 @@ fn check_folder(ctx: &Ctx) -> Result<usize, String> {
             Some("json") if name == "ship.json" => assembly::check(ctx, &bytes),
             Some("json") if name == "sounds.json" => sound::check(&bytes),
             Some("json") if name == "ui/sound_tables.json" => ui_sound::check_tables(&bytes),
+            Some("json") if name == ui_layout::LAYOUT => ui_layout::check(ctx, &bytes),
+            Some("json") if name == ui_movies::FONTMAP => ui_movies::check_fontmap(ctx, &bytes),
+            Some("json") if name == ui_movies::STRINGS => ui_movies::check_strings(&bytes),
+            Some("json") if name == ui_movies::FOCUS => ui_movies::check_focus(&bytes),
+            Some("swf") => ui_movies::check_movie(&bytes),
+            Some("ttf") => ui_movies::check_font(&bytes),
             Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
             _ => Ok(()),
         };
@@ -245,7 +310,8 @@ fn check_folder(ctx: &Ctx) -> Result<usize, String> {
 
 /// Re-checks the shipped folder against the export without converting (writes nothing): every file a `Need` and read
 /// as the game reads it, the models' draw bytes and bones, the materials and every texture byte for byte as a fresh
-/// plan from the export makes them, and `ship.json` as the decoded files give it (with its checks against the models).
+/// plan from the export makes them, `ship.json` as the decoded files give it (with its checks against the models), and the
+/// UI's movies, fonts, strings, focus data, layout, panel models and textures as the UI export makes them.
 #[test]
 #[ignore]
 fn shipped_files_are_the_exports() {
@@ -254,7 +320,9 @@ fn shipped_files_are_the_exports() {
         check_folder(&ctx)?;
         models::verify(&ctx)?;
         assembly::verify(&ctx)?;
-        chair::verify(&ctx)
+        chair::verify(&ctx)?;
+        ui_movies::verify(&ctx)?;
+        ui_layout::verify(&ctx)
     };
     if let Err(e) = check() {
         panic!("shipped_files_are_the_exports: {e}");

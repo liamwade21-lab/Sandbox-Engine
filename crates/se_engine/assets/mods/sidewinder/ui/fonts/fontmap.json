@@ -1,0 +1,55 @@
+{
+  "library": "fonts_roman",
+  "fonts": [
+    {
+      "file": "Telegrama_Render.ttf",
+      "name": "Telegrama Render",
+      "bold": false
+    },
+    {
+      "file": "Euro_Caps.ttf",
+      "name": "Euro Caps",
+      "bold": false
+    },
+    {
+      "file": "Sintony_Bold.ttf",
+      "name": "Sintony Bold",
+      "bold": true
+    },
+    {
+      "file": "Sintony.ttf",
+      "name": "Sintony",
+      "bold": false
+    }
+  ],
+  "map": [
+    {
+      "name": "$ParagraphFont",
+      "font": "Sintony",
+      "bold": false,
+      "regular": "Sintony.ttf",
+      "heavy": "Sintony_Bold.ttf"
+    },
+    {
+      "name": "$BoldParagraphFont",
+      "font": "Sintony",
+      "bold": true,
+      "regular": "Sintony_Bold.ttf",
+      "heavy": "Sintony_Bold.ttf"
+    },
+    {
+      "name": "$TitleFont",
+      "font": "Euro Caps",
+      "bold": false,
+      "regular": "Euro_Caps.ttf",
+      "heavy": "Euro_Caps.ttf"
+    },
+    {
+      "name": "$NumeralFont",
+      "font": "Telegrama Render",
+      "bold": false,
+      "regular": "Telegrama_Render.ttf",
+      "heavy": "Telegrama_Render.ttf"
+    }
+  ]
+}

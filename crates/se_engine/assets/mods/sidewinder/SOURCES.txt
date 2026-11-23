@@ -12,6 +12,8 @@ Sounds: the open events left out because the banks at rest lack their media: eve
 
 Ship UI sounds: values of the cockpit interfaces' tables and HUD events of the game with no event in any bank (Elite posts their ids and nothing answers: silence), not shipped: AlarmIncomingMissle_b, CloseBack_b_Cockpit, CloseCancel_b_Cockpit, Complete_ModulePowerUp_CockpitInternalPanel, MessageSurfaceDiscovery, ModulePowerUp_b_CockpitInternalPanel, ModulePowerUp_e_CockpitInternalPanel, ModulePowerUp_Pulse_CockpitInternalPanel, ModuleRepair_CockpitCanopy_CockpitInternalPanel, OpenBack_b_Cockpit, OpenForward_b_Cockpit, PPRank_0_Powerplay_3d, PPRank_1_Powerplay_3d, PPRank_2_Powerplay_3d, PPRank_3_Powerplay_3d, PPRank_4_Powerplay_3d, Select_ModulePowerUp_CockpitInternalPanel, TelepresenceHide, ValueUpLocked_b__Cockpit, WarningViolation_b.
 
+The ship UI: not shipped, as no export holds them whole: the textures fsshud.pdiffuse_alphatexture (material fsshud: in no export), mc_roledesignation_background.pdiffuse_alphatexture (material mc_roledesignation_background: the UI export's copy is damaged: tail size 49664, expected 17920), saahud.pdiffuse_alphatexture (material saahud: in no export), uibackground.pcloudynesstexture (material fsshud: in no export), uibackground.pcloudynesstexture (material saahud: in no export), uiedgedetection_frontend.pscanlinestexture (material effectplane: in no export), uifrontend_parallax_smoke2.pdiffuse_alphatexture (material notifications: in no export), uifrontend_parallax_stripe.pcloudynesstexture (material notifications: in no export). Not shipped either: the UIModuleManager's per-panel scales and tuning block (what they multiply was not found, E), the multicrew seats' alternative chairs, and the movies out of A10's scope.
+
 binds/KeyboardMouseOnly.binds (A): A copy of Elite's key file.
   from: Elite install ControlSchemes/KeyboardMouseOnly.binds
 binds/ControlPad.binds (A): A copy of Elite's key file.
@@ -3318,4 +3320,142 @@ sfx/3ffda63b.ogg (A): The game's own Wwise Vorbis packets, rewrapped into Ogg wi
   from: Wwise source 3ffda63b (re/elite/frea_export/sidewinder_audio/media/3ffda63b.ogg)
 ui/sound_tables.json (A): The PlaySound tables of 17 cockpit interfaces (696 entries), the values as Elite's data holds them.
   from: re/elite/frea_export/sidewinder_ui/decoded/sounds/ui_audio_tables.json (the UIMovie records of the UIStreams archive ac954620287b)
+ui/movies/cockpitgaugepanel.swf (A): Elite's movie cockpitgaugepanel (1100 x 900 px, 305 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpitgaugepanel/cockpitgaugepanel.swf; Elite file 7860312bb6b4203eacbb6d687ce5a6c2f3262ee2; crates/elite-gfx/as3/bridge.abc
+ui/movies/cockpithudring.swf (A): Elite's movie cockpithudring (1024 x 640 px, 2 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpithudring/cockpithudring.swf; Elite file c5d2bf2352432f56e71a39fe3580d53e909be241; crates/elite-gfx/as3/bridge.abc
+ui/movies/targetsights.swf (A): Elite's movie targetsights (2304 x 2016 px, 48 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/targetsights/targetsights.swf; Elite file 5cc937d0f36c33f22d467f819ee9714897ec1f75; crates/elite-gfx/as3/bridge.abc
+ui/movies/cockpitinfopanel.swf (A): Elite's movie cockpitinfopanel (1536 x 330 px, 512 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpitinfopanel/cockpitinfopanel.swf; Elite file 4a66aa6689fff175986f203435fdea8e2a296a4f; crates/elite-gfx/as3/bridge.abc
+ui/movies/orbitalhud.swf (A): Elite's movie orbitalhud (800 x 800 px, 211 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/orbitalhud/orbitalhud.swf; Elite file aa14d1aea87c222a148cecc1a81964d1796902c4; crates/elite-gfx/as3/bridge.abc
+ui/movies/notifications.swf (A): Elite's movie notifications (1920 x 1080 px, 32 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/notifications/notifications.swf; Elite file a25ea224393cd546f39615bca710751f4e38420e; crates/elite-gfx/as3/bridge.abc
+ui/movies/cockpitexternalpanel.swf (A): Elite's movie cockpitexternalpanel (1152 x 660 px, 521 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpitexternalpanel/cockpitexternalpanel.swf; Elite file d5cd6f1c6d4c730748078d9675e19c5d151b4887; crates/elite-gfx/as3/bridge.abc
+ui/movies/cockpitinternalpanel2.swf (A): Elite's movie cockpitinternalpanel2 (1152 x 660 px, 556 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpitinternalpanel2/cockpitinternalpanel2.swf; Elite file 469d5b272ca4c4e23e9649303cba6ebb894f487d; crates/elite-gfx/as3/bridge.abc
+ui/movies/rolepanel3.swf (A): Elite's movie rolepanel3 (1056 x 660 px, 434 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/rolepanel3/rolepanel3.swf; Elite file cc6805c1c9bbe89039dd611dcd8572b6b7cf4454; crates/elite-gfx/as3/bridge.abc
+ui/movies/cockpitchatpanel.swf (A): Elite's movie cockpitchatpanel (512 x 767 px, 506 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/cockpitchatpanel/cockpitchatpanel.swf; Elite file c03a5d1f74874489c6c735ed1a9dc564c6e78a59; crates/elite-gfx/as3/bridge.abc
+ui/movies/fsshud.swf (A): Elite's movie fsshud (1920 x 1080 px, 442 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/fsshud/fsshud.swf; Elite file 8d2d71713f9cf1ab57df638eaf9acab1a4d6439c; crates/elite-gfx/as3/bridge.abc
+ui/movies/saahud.swf (A): Elite's movie saahud (1920 x 1080 px, 402 images embedded by the export), through elite_gfx::convert_movie: the export tool's slips mended, the font library's import dropped (the game registers the fonts), and the bridge's ActionScript (ours, crates/elite-gfx/as3) put before the movie's own code.
+  from: decoded/movies/saahud/saahud.swf; Elite file 321d454ec10fea0f109b1f28de65cb5448164e0f; crates/elite-gfx/as3/bridge.abc
+ui/fonts/Telegrama_Render.ttf (A): Elite's font Telegrama Render from its font library fonts_roman, bytes unchanged.
+  from: decoded/fonts/Telegrama_Render__fonts_roman.ttf; the font library archive 95b6ccd26144... (re-made by re/elite/tools/gfx/export.py)
+ui/fonts/Euro_Caps.ttf (A): Elite's font Euro Caps from its font library fonts_roman, bytes unchanged.
+  from: decoded/fonts/Euro_Caps__fonts_roman.ttf; the font library archive 95b6ccd26144... (re-made by re/elite/tools/gfx/export.py)
+ui/fonts/Sintony_Bold.ttf (A): Elite's font Sintony Bold (bold) from its font library fonts_roman, bytes unchanged.
+  from: decoded/fonts/Sintony_Bold_Bold__fonts_roman.ttf; the font library archive 95b6ccd26144... (re-made by re/elite/tools/gfx/export.py)
+ui/fonts/Sintony.ttf (A): Elite's font Sintony from its font library fonts_roman, bytes unchanged.
+  from: decoded/fonts/Sintony__fonts_roman.ttf; the font library archive 95b6ccd26144... (re-made by re/elite/tools/gfx/export.py)
+ui/fonts/fontmap.json (B): The font map's names ($ParagraphFont, $BoldParagraphFont, $TitleFont, $NumeralFont) to the shipped files, with each file's name and boldness in the library.
+  from: decoded/strings/fontmap.json (the English language data's scaleformlanguagedata record); decoded/fonts/fonts_roman.glyphs.json
+ui/strings/en.json (A): Elite's whole English string table (179164 keys, the 1430 the export's subset holds among them), key -> text, as strings.py writes it.
+  from: decoded/strings/en_full.json (re/elite/tools/gfx/strings.py); Elite file 21903df0cbbbfc40290cac095519f073d5567c0b (the English language archive)
+ui/focus.json (B): The cockpitui state machine (focus between the panels, the head-look targets, the control sets), as the export decoded it.
+  from: decoded/cockpitui_state_machine.json (re/elite/notes/ui_rendering.md section 4)
+ui/controls.json (B): The UI's control sets and button table, as the export decoded them.
+  from: decoded/controls.json (re/elite/notes/ui_rendering.md section 4)
+ui/models/gui_alert_panel.edm (A): Elite's UI panel model gui_alert_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Info_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_alert_panel.json; decoded/hud3d/models/gui_alert_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_cockpitschematic_panel.edm (A): Elite's UI panel model gui_cockpitschematic_panel, LOD0 (1 draws, 145 triangles, 169 vertices): vertex and index bytes unchanged (uv0 exactly), 3 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_cockpitschematic_panel.json; decoded/hud3d/models/gui_cockpitschematic_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_cockpitschematic_panel_background.edm (A): Elite's UI panel model gui_cockpitschematic_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials RadarPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_cockpitschematic_panel_background.json; decoded/hud3d/models/gui_cockpitschematic_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_comms_default_panel_background.edm (A): Elite's UI panel model gui_comms_default_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials InfoPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_comms_default_panel_background.json; decoded/hud3d/models/gui_comms_default_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_comms_extended_panel_background.edm (A): Elite's UI panel model gui_comms_extended_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials CommsPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_comms_extended_panel_background.json; decoded/hud3d/models/gui_comms_extended_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_comms_full_panel_background.edm (A): Elite's UI panel model gui_comms_full_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials CommsPanel_Full_background by Elite's name.
+  from: decoded/hud3d/models/gui_comms_full_panel_background.json; decoded/hud3d/models/gui_comms_full_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_comms_panel.edm (A): Elite's UI panel model gui_comms_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Communication_panel by Elite's name.
+  from: decoded/hud3d/models/gui_comms_panel.json; decoded/hud3d/models/gui_comms_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_gauges_panel.edm (A): Elite's UI panel model gui_gauges_panel, LOD0 (1 draws, 93 triangles, 109 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_gauges_panel.json; decoded/hud3d/models/gui_gauges_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_info_default_panel_background.edm (A): Elite's UI panel model gui_info_default_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials InfoPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_info_default_panel_background.json; decoded/hud3d/models/gui_info_default_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_info_extended_panel_background.edm (A): Elite's UI panel model gui_info_extended_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials CommsPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_info_extended_panel_background.json; decoded/hud3d/models/gui_info_extended_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_info_panel.edm (A): Elite's UI panel model gui_info_panel, LOD0 (1 draws, 6 triangles, 12 vertices): vertex and index bytes unchanged (uv0 exactly), 2 bones, materials Info_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_info_panel.json; decoded/hud3d/models/gui_info_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_left_panel.edm (A): Elite's UI panel model gui_left_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Left_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_left_panel.json; decoded/hud3d/models/gui_left_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_left_panel_background.edm (A): Elite's UI panel model gui_left_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Left_Panel_background by Elite's name.
+  from: decoded/hud3d/models/gui_left_panel_background.json; decoded/hud3d/models/gui_left_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_lrail_panel.edm (A): Elite's UI panel model gui_lrail_panel, LOD0 (1 draws, 4 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 2 bones, materials Rail_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_lrail_panel.json; decoded/hud3d/models/gui_lrail_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_mc_gauges.edm (A): Elite's UI panel model gui_mc_gauges, LOD0 (1 draws, 1210 triangles, 898 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_mc_gauges.json; decoded/hud3d/models/gui_mc_gauges.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_mc_gauges_background.edm (A): Elite's UI panel model gui_mc_gauges_background, LOD0 (3 draws, 10 triangles, 16 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MC_RadarPanel_Background, MC_Gauges_Background, MC_RoleDesignation_Background by Elite's name.
+  from: decoded/hud3d/models/gui_mc_gauges_background.json; decoded/hud3d/models/gui_mc_gauges_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_default_panel_background.edm (A): Elite's UI panel model gui_minileft_default_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniLeftPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_default_panel_background.json; decoded/hud3d/models/gui_minileft_default_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_full_panel_background.edm (A): Elite's UI panel model gui_minileft_full_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniLeftPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_full_panel_background.json; decoded/hud3d/models/gui_minileft_full_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_panel.edm (A): Elite's UI panel model gui_minileft_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_panel.json; decoded/hud3d/models/gui_minileft_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_target_location_background.edm (A): Elite's UI panel model gui_minileft_target_location_background, LOD0 (1 draws, 6 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniLeftPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_target_location_background.json; decoded/hud3d/models/gui_minileft_target_location_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_target_panel_background.edm (A): Elite's UI panel model gui_minileft_target_panel_background, LOD0 (1 draws, 6 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniLeftPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_target_panel_background.json; decoded/hud3d/models/gui_minileft_target_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_minileft_targetsub_panel_background.edm (A): Elite's UI panel model gui_minileft_targetsub_panel_background, LOD0 (1 draws, 6 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniLeftPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_minileft_targetsub_panel_background.json; decoded/hud3d/models/gui_minileft_targetsub_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_miniright_panel.edm (A): Elite's UI panel model gui_miniright_panel, LOD0 (1 draws, 4 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_miniright_panel.json; decoded/hud3d/models/gui_miniright_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_miniright_panel_background.edm (A): Elite's UI panel model gui_miniright_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials MiniRight_Panel_background by Elite's name.
+  from: decoded/hud3d/models/gui_miniright_panel_background.json; decoded/hud3d/models/gui_miniright_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_radar_panel_background.edm (A): Elite's UI panel model gui_radar_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials RadarPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_radar_panel_background.json; decoded/hud3d/models/gui_radar_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_right_panel.edm (A): Elite's UI panel model gui_right_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Right_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_right_panel.json; decoded/hud3d/models/gui_right_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_right_panel_background.edm (A): Elite's UI panel model gui_right_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Left_Panel_background by Elite's name.
+  from: decoded/hud3d/models/gui_right_panel_background.json; decoded/hud3d/models/gui_right_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_roleswitch_panel.edm (A): Elite's UI panel model gui_roleswitch_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials RoleSwitch_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_roleswitch_panel.json; decoded/hud3d/models/gui_roleswitch_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_roleswitch_panel_background.edm (A): Elite's UI panel model gui_roleswitch_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials RoleSwitch_Panel_Background by Elite's name.
+  from: decoded/hud3d/models/gui_roleswitch_panel_background.json; decoded/hud3d/models/gui_roleswitch_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_rrail_panel.edm (A): Elite's UI panel model gui_rrail_panel, LOD0 (1 draws, 4 triangles, 8 vertices): vertex and index bytes unchanged (uv0 exactly), 2 bones, materials Rail_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_rrail_panel.json; decoded/hud3d/models/gui_rrail_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_targetschematic_panel.edm (A): Elite's UI panel model gui_targetschematic_panel, LOD0 (1 draws, 145 triangles, 175 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gauges_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_targetschematic_panel.json; decoded/hud3d/models/gui_targetschematic_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_targetschematic_panel_background.edm (A): Elite's UI panel model gui_targetschematic_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials RadarPanel_background by Elite's name.
+  from: decoded/hud3d/models/gui_targetschematic_panel_background.json; decoded/hud3d/models/gui_targetschematic_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_warning_panel.edm (A): Elite's UI panel model gui_warning_panel, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Info_Panel by Elite's name.
+  from: decoded/hud3d/models/gui_warning_panel.json; decoded/hud3d/models/gui_warning_panel.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/gui_warning_panel_background.edm (A): Elite's UI panel model gui_warning_panel_background, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Warning_Panel_background by Elite's name.
+  from: decoded/hud3d/models/gui_warning_panel_background.json; decoded/hud3d/models/gui_warning_panel_background.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/ontopquad.edm (A): Elite's UI panel model ontopquad, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials OnTopGunsights by Elite's name.
+  from: decoded/hud3d/models/ontopquad.json; decoded/hud3d/models/ontopquad.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/ontopquadstenciled.edm (A): Elite's UI panel model ontopquadstenciled, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials OnTopStenciledGunsights by Elite's name.
+  from: decoded/hud3d/models/ontopquadstenciled.json; decoded/hud3d/models/ontopquadstenciled.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/orbitalhudquad.edm (A): Elite's UI panel model orbitalhudquad, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials OrbitalHudMat by Elite's name.
+  from: decoded/hud3d/models/orbitalhudquad.json; decoded/hud3d/models/orbitalhudquad.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/models/quad.edm (A): Elite's UI panel model quad, LOD0 (1 draws, 2 triangles, 4 vertices): vertex and index bytes unchanged (uv0 exactly), 1 bones, materials Gunsights by Elite's name.
+  from: decoded/hud3d/models/quad.json; decoded/hud3d/models/quad.0.buf0.bin; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af
+ui/layout.json (B): How the 12 movies sit in the cockpit: their stages, components, GUI panels and plates with their bones and models, the panel quads, 38 panel models with their uv0 rectangles and islands, 27 materials with every attribute, 18 bones, the chair rig, the head-look targets, the gauge sheet, the target sights' zones, the shaders' constants and 4 stand-ins. Elite's numbers, positions in the mod's axes (z mirrored).
+  from: decoded/rendering.json; decoded/panels_sidewinder_cockpit.json; decoded/cockpitui_state_machine.json; decoded/hud3d/materials.json, textures.json; re/elite/notes/ui_rendering.md sections 2 to 4 (the head-look joints' names: 4.3)
+ui/tex/analysis_panel__pcloudynesstexture.dds (A): Elite's texture analysis_panel.pcloudynesstexture (BC1), every level byte for byte.
+  from: decoded/hud3d/textures/analysis_panel__pcloudynesstexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 789736b3ab013120d32104ce96b171bfa3ee1b6d
+ui/tex/commspanel_background__pdiffuse_alphatexture.dds (A): Elite's texture commspanel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/commspanel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 42d22b02adbbdc8d5f92c7fbe14f91f9142bff07
+ui/tex/commspanel_full_background__pdiffuse_alphatexture.dds (A): Elite's texture commspanel_full_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/commspanel_full_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file eb8b1f1fdb2c4144c369150ce16a86bd6d98b4c3
+ui/tex/commspanel_full_background__pscanlinestexture.dds (A): Elite's texture commspanel_full_background.pscanlinestexture (BC7), every level byte for byte.
+  from: decoded/hud3d/textures/commspanel_full_background__pscanlinestexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 6793fd5d0c4e0e4c8896fa13da4c1c07c723c9f2
+ui/tex/infopanel_background__pdiffuse_alphatexture.dds (A): Elite's texture infopanel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/infopanel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 8b2a19a39100b2d424acff55337fde7f287b5fb3
+ui/tex/left_panel_background__pdiffuse_alphatexture.dds (A): Elite's texture left_panel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/left_panel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file b5caa258ca7b59093a73ef218be69b758faa7b51
+ui/tex/mc_radarpanel_background__pdiffuse_alphatexture.dds (A): Elite's texture mc_radarpanel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/mc_radarpanel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 81fcb78d563ea525732142ca77b33e2a52512f13
+ui/tex/minileftpanel_background__pdiffuse_alphatexture.dds (A): Elite's texture minileftpanel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/minileftpanel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file f5b16639997a699fa7a500f067906bfa98c62ecf
+ui/tex/miniright_panel_background__pdiffuse_alphatexture.dds (A): Elite's texture miniright_panel_background.pdiffuse_alphatexture (BC7, sampled as sRGB), every level byte for byte.
+  from: decoded/hud3d/textures/miniright_panel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 36efdac50a5e590f3e966a0f208ab32fcde235cc
+ui/tex/warning_panel_background__pdiffuse_alphatexture.dds (A): Elite's texture warning_panel_background.pdiffuse_alphatexture (BGRA8), every level byte for byte.
+  from: decoded/hud3d/textures/warning_panel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL)
 SOURCES.txt (-): This list.

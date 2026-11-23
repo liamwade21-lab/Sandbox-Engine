@@ -20,6 +20,7 @@ pub mod elite_chair;
 pub mod elite_rig;
 pub mod elite_ship;
 pub mod elite_sound;
+pub mod elite_ui_layout;
 pub mod ephemeris;
 pub mod galaxy_model;
 pub mod gmod;

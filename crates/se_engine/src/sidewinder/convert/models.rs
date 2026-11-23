@@ -50,7 +50,7 @@ const TEXTURES_EXTRA: &[(&str, &str)] = &[
     ("ies_emergency_elmre_lp220l_fxo.dds", "the headlight's IES profile"),
 ];
 /// How far the decoded vertices may lie from the bounds the export states.
-const BOUNDS_M: f32 = 0.000_05;
+pub(super) const BOUNDS_M: f32 = 0.000_05;
 
 pub(super) fn read_json(path: &Path) -> Result<Value, String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -58,23 +58,23 @@ pub(super) fn read_json(path: &Path) -> Result<Value, String> {
 }
 
 /// A field of a JSON object, or an error naming the file and the field.
-fn at<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a Value, String> {
+pub(super) fn at<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a Value, String> {
     v.get(key).ok_or_else(|| format!("{file}: no {key}"))
 }
 
-fn list<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a Vec<Value>, String> {
+pub(super) fn list<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a Vec<Value>, String> {
     at(v, key, file)?.as_array().ok_or_else(|| format!("{file}: {key} is not a list"))
 }
 
-fn text<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a str, String> {
+pub(super) fn text<'a>(v: &'a Value, key: &str, file: &str) -> Result<&'a str, String> {
     at(v, key, file)?.as_str().ok_or_else(|| format!("{file}: {key} is not text"))
 }
 
-fn count(v: &Value, key: &str, file: &str) -> Result<usize, String> {
+pub(super) fn count(v: &Value, key: &str, file: &str) -> Result<usize, String> {
     at(v, key, file)?.as_u64().map(|n| n as usize).ok_or_else(|| format!("{file}: {key} is not a count"))
 }
 
-fn floats<const N: usize>(v: &Value, key: &str, file: &str) -> Result<[f32; N], String> {
+pub(super) fn floats<const N: usize>(v: &Value, key: &str, file: &str) -> Result<[f32; N], String> {
     let l = list(v, key, file)?;
     let f: Vec<f32> = l.iter().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
     f.try_into().map_err(|_| format!("{file}: {key} is not {N} numbers"))
@@ -143,18 +143,21 @@ fn model_names(dec: &Path) -> Result<BTreeSet<String>, String> {
 }
 
 /// What a model's read-back compares against: the export's buffer, the part of it each draw is, and the stated bounds.
-struct Expect {
-    bin: String,
+pub(super) struct Expect {
+    /// The buffer's file in `models/`.
+    pub(super) bin: String,
     parts: Vec<PartLayout>,
     /// Whether LOD0 draws every part of its buffer (then its vertices must fill the buffer's decoded bounds).
     whole_buffer: bool,
     buffer_bounds: ([f32; 3], [f32; 3]),
-    model_bounds: ([f32; 3], [f32; 3]),
-    sources: Vec<String>,
+    pub(super) model_bounds: ([f32; 3], [f32; 3]),
+    /// The model's JSON and buffer (relative to the folder above `dec`, as `decoded/models/...`) and Elite's file.
+    pub(super) sources: Vec<String>,
 }
 
-/// One model set's LOD0 as an `.edm`.
-fn model(dec: &Path, name: &str) -> Result<(Edm, Expect), String> {
+/// One model set's LOD0 as an `.edm`, from `dec/models/NAME.json` and its buffer (the ship's decoded export, or the UI
+/// export's `hud3d/`, which has the same shape: `ui_models.rs`).
+pub(super) fn model(dec: &Path, name: &str) -> Result<(Edm, Expect), String> {
     let file = format!("models/{name}.json");
     let j = read_json(&dec.join(&file))?;
     let infos = list(&j, "models", &file)?;
@@ -261,8 +264,30 @@ fn check_model(ctx: &Ctx, rel: &str, written: &Edm, e: &Expect) -> Result<(), St
 }
 
 /// The texture's file name in `decoded/textures` and `tex/`: its name with the dot as `__`.
-fn texture_file(texture: &str) -> String {
+pub(super) fn texture_file(texture: &str) -> String {
     format!("{}.dds", texture.replace('.', "__"))
+}
+
+/// A constant colour slot's value as Elite stores it: 16 hex digits, two RGBA8.
+pub(super) fn colour(hex: &str, f: &str) -> Result<[[u8; 4]; 2], String> {
+    let byte = |k: usize| hex.get(2 * k..2 * k + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(|| format!("{f}: colour {hex} is not 8 bytes of hex"));
+    if hex.len() != 16 {
+        return Err(format!("{f}: colour {hex} is not 8 bytes of hex"));
+    }
+    Ok([[byte(0)?, byte(1)?, byte(2)?, byte(3)?], [byte(4)?, byte(5)?, byte(6)?, byte(7)?]])
+}
+
+/// A material record's attributes (`attrs`: [name, type, values] each).
+pub(super) fn attrs(src: &Value, f: &str) -> Result<Vec<Attr>, String> {
+    let mut attrs = Vec::new();
+    for a in src.get("attrs").and_then(|v| v.as_array()).into_iter().flatten() {
+        let a = a.as_array().filter(|a| a.len() == 3).ok_or_else(|| format!("{f}: an attribute is not [name, type, values]"))?;
+        let name = a[0].as_str().ok_or_else(|| format!("{f}: an attribute's name is not text"))?.to_string();
+        let kind = a[1].as_u64().filter(|&k| k <= 6).ok_or_else(|| format!("{f}: attribute {name}'s type is not 0-6"))? as u8;
+        let values = a[2].as_array().into_iter().flatten().map(|x| x.as_f64().ok_or_else(|| format!("{f}: attribute {name} has a value that isn't a number"))).collect::<Result<_, _>>()?;
+        attrs.push(Attr { name, kind, values });
+    }
+    Ok(attrs)
 }
 
 /// The materials table for these material names (any case), with the materials their fallbacks name.
@@ -296,26 +321,12 @@ fn materials(dec: &Path, wanted: &BTreeSet<String>) -> Result<(Materials, BTreeS
                         texture,
                     }
                 }
-                "dt7" => {
-                    let hex = item(2)?;
-                    let byte = |k: usize| hex.get(2 * k..2 * k + 2).and_then(|h| u8::from_str_radix(h, 16).ok()).ok_or_else(|| format!("{f}: colour {hex} is not 8 bytes of hex"));
-                    if hex.len() != 16 {
-                        return Err(format!("{f}: colour {hex} is not 8 bytes of hex"));
-                    }
-                    SlotValue::Colour { colour: [[byte(0)?, byte(1)?, byte(2)?, byte(3)?], [byte(4)?, byte(5)?, byte(6)?, byte(7)?]] }
-                }
+                "dt7" => SlotValue::Colour { colour: colour(item(2)?, &f)? },
                 k => return Err(format!("{f}: slot {slot} of unknown kind {k}")),
             };
             slots.push(TextureSlot { slot, value });
         }
-        let mut attrs = Vec::new();
-        for a in src.get("attrs").and_then(|v| v.as_array()).into_iter().flatten() {
-            let a = a.as_array().filter(|a| a.len() == 3).ok_or_else(|| format!("{f}: an attribute is not [name, type, values]"))?;
-            let name = a[0].as_str().ok_or_else(|| format!("{f}: an attribute's name is not text"))?.to_string();
-            let kind = a[1].as_u64().filter(|&k| k <= 6).ok_or_else(|| format!("{f}: attribute {name}'s type is not 0-6"))? as u8;
-            let values = a[2].as_array().into_iter().flatten().map(|x| x.as_f64().ok_or_else(|| format!("{f}: attribute {name} has a value that isn't a number"))).collect::<Result<_, _>>()?;
-            attrs.push(Attr { name, kind, values });
-        }
+        let attrs = attrs(src, &f)?;
         let fallback_to = opt_text("fallback_to");
         if let Some(t) = &fallback_to {
             todo.push(t.clone());
@@ -337,7 +348,7 @@ fn texture_record<'a>(textures: &'a Value, paintjobs: &'a Value, file: &str) -> 
 }
 
 /// Where a texture's levels came from in Elite's files (its record's OVL and streams).
-fn texture_sources(record: &Value) -> Vec<String> {
+pub(super) fn texture_sources(record: &Value) -> Vec<String> {
     let mut out: Vec<String> = record.get("ovl").and_then(|v| v.as_str()).map(|o| format!("Elite file {o} (its OVL)")).into_iter().collect();
     for s in record.get("sources").and_then(|v| v.as_array()).into_iter().flatten() {
         if let Some(st) = s.get("stream").and_then(|v| v.as_str()) {
@@ -359,6 +370,18 @@ fn format_name(f: DdsFormat) -> &'static str {
         DdsFormat::Bgra8 => "BGRA8",
         _ => "other",
     }
+}
+
+/// A texture's bytes (`path`, named `rel` in errors), checked against its export record: format, width, height, levels.
+pub(super) fn checked_texture(path: &Path, rel: &str, record: &Value) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{rel}: {e}"))?;
+    let info = se_core::dds::parse_dds(&bytes).map_err(|e| format!("{rel}: {e}"))?;
+    let want = (text(record, "format", rel)?, [count(record, "width", rel)?, count(record, "height", rel)?, count(record, "mips", rel)?]);
+    let got = (format_name(info.format), [info.width as usize, info.height as usize, info.mips as usize]);
+    if got != want {
+        return Err(format!("{rel}: {got:?} (format, width, height, levels), its record says {want:?}"));
+    }
+    Ok(bytes)
 }
 
 /// A texture to ship: its bytes from `decoded/textures`, checked against its record (format, size, levels).
@@ -404,14 +427,8 @@ fn plan(dec: &Path) -> Result<Plan, String> {
     let mut textures = Vec::new();
     for (file, note) in wanted {
         let rel = format!("decoded/textures/{file}");
-        let bytes = std::fs::read(dec.join("textures").join(&file)).map_err(|e| format!("{rel}: {e}"))?;
-        let info = se_core::dds::parse_dds(&bytes).map_err(|e| format!("{rel}: {e}"))?;
         let record = texture_record(&textures_json, &paintjobs, &file).ok_or_else(|| format!("{rel}: neither textures.json nor paintjobs.json lists it"))?;
-        let want = (text(record, "format", &rel)?, [count(record, "width", &rel)?, count(record, "height", &rel)?, count(record, "mips", &rel)?]);
-        let got = (format_name(info.format), [info.width as usize, info.height as usize, info.mips as usize]);
-        if got != want {
-            return Err(format!("{rel}: {got:?} (format, width, height, levels), its record says {want:?}"));
-        }
+        let bytes = checked_texture(&dec.join("textures").join(&file), &rel, record)?;
         let mut sources = vec![rel];
         sources.extend(texture_sources(record));
         textures.push(Tex { file, bytes, note, sources });
