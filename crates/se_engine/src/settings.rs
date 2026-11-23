@@ -25,6 +25,8 @@ use crate::lensflare::LensFlareSettings;
 use crate::music::MusicState;
 use crate::overlay::{KindSet, MarkerKind, OverlaySettings, SkySwitches};
 use crate::screenshot::ScreenshotSettings;
+use crate::sidewinder::pilot::{DEFAULT_MOUSE_SENSITIVITY, MOUSE_SENSITIVITY_RANGE};
+use crate::sidewinder::MouseSetting;
 use crate::stars::StarSettings;
 use crate::switches::RenderSwitches;
 
@@ -124,6 +126,7 @@ struct Live<'w, 's> {
     cam: ResMut<'w, FlyCamera>,
     music: Option<ResMut<'w, MusicState>>,
     sound: ResMut<'w, crate::sound::SoundSettings>,
+    ship_mouse: Option<ResMut<'w, MouseSetting>>,
     i18n: ResMut<'w, I18n>,
     skin: ResMut<'w, crate::skin::Skin>,
     gfx: ResMut<'w, GraphicsSettings>,
@@ -175,6 +178,8 @@ struct Snapshot {
     music_volume: f32,
     /// SE's `SoundVolume` (interface sounds).
     sound_volume: f32,
+    /// The Sidewinder's mouse sensitivity (`SidewinderMouseSensitivity`, U3).
+    ship_mouse: f32,
     language: String,
     /// The interface skin (SE's `Skin`).
     skin: String,
@@ -241,6 +246,7 @@ impl Snapshot {
             music: l.music.as_ref().map(|m| m.enabled).unwrap_or(true),
             music_volume: l.music.as_ref().map(|m| m.volume).unwrap_or(crate::music::DEFAULT_VOLUME),
             sound_volume: l.sound.volume,
+            ship_mouse: l.ship_mouse.as_ref().map_or(DEFAULT_MOUSE_SENSITIVITY, |m| m.sensitivity),
             photo_mode: photo.0,
             exposure_comp: -exposure.stops,
             tone: fi.tone_name().to_string(),
@@ -259,7 +265,7 @@ impl Snapshot {
     fn to_cfg(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
         format!(
-            "// SpaceEngine-rs user settings (overrides of the install's config/main-def.cfg)\nVersion \"{}\"\nSettings\n{{\n\tStarMagnLimit   {}\n\tPointOverbright {}\n\tPointScale      {}\n\tStarColorSaturation {}\n\tPointDesaturation {}\n\tStarColorShift  {}\n\tSunIllumSaturation {}\n\tIllumSaturationAuto {}\n\tStarPointMethod {}\n\tMotionBlurLength {}\n\tPointFlareBright {}\n\tPointFlareDecay {}\n\tLinkScaleToScreenRes {}\n\tFOV             {}\n\tAutoHorizon     {}\n\tShowOrbits      {}\n\tLabelsMode      {}\n\tShowMarkers     {}\n\tStarNameMagn    {}\n\tFPS             {}\n\tTextMode        {}\n\tMusic           {}\n\tMusicVolume     {}\n\tSoundVolume     {}\n\tLanguage        \"{}\"\n\tSkin            \"{}\"\n\tEnableSelfEmission {}\n\tSelfEmissionBright {}\n\tShowWater       {}\n{}}}\n",
+            "// SpaceEngine-rs user settings (overrides of the install's config/main-def.cfg)\nVersion \"{}\"\nSettings\n{{\n\tStarMagnLimit   {}\n\tPointOverbright {}\n\tPointScale      {}\n\tStarColorSaturation {}\n\tPointDesaturation {}\n\tStarColorShift  {}\n\tSunIllumSaturation {}\n\tIllumSaturationAuto {}\n\tStarPointMethod {}\n\tMotionBlurLength {}\n\tPointFlareBright {}\n\tPointFlareDecay {}\n\tLinkScaleToScreenRes {}\n\tFOV             {}\n\tAutoHorizon     {}\n\tShowOrbits      {}\n\tLabelsMode      {}\n\tShowMarkers     {}\n\tStarNameMagn    {}\n\tFPS             {}\n\tTextMode        {}\n\tMusic           {}\n\tMusicVolume     {}\n\tSoundVolume     {}\n{}\tLanguage        \"{}\"\n\tSkin            \"{}\"\n\tEnableSelfEmission {}\n\tSelfEmissionBright {}\n\tShowWater       {}\n{}}}\n",
             env!("CARGO_PKG_VERSION"),
             self.mag_limit,
             self.star_overbright,
@@ -285,6 +291,7 @@ impl Snapshot {
             b(self.music),
             (self.music_volume * 100.0).round(),
             (self.sound_volume * 100.0).round(),
+            ship_mouse_cfg(self.ship_mouse),
             self.language,
             self.skin,
             b(self.self_emission.0),
@@ -349,6 +356,17 @@ impl Snapshot {
             self.bloom.threshold
         )
     }
+}
+
+/// The Sidewinder's mouse sensitivity's line of the `Settings` block (U3, ARCHITECTURE.md A9).
+fn ship_mouse_cfg(sensitivity: f32) -> String {
+    format!("\tSidewinderMouseSensitivity {sensitivity}\n")
+}
+
+/// The saved mouse sensitivity, if the block has a usable one (finite, over 0), clamped to the slider's range; a file
+/// without the key keeps the default.
+fn load_ship_mouse(b: &se_core::sc::Block) -> Option<f32> {
+    b.f64("SidewinderMouseSensitivity").filter(|v| v.is_finite() && *v > 0.0).map(|v| (v as f32).clamp(*MOUSE_SENSITIVITY_RANGE.start(), *MOUSE_SENSITIVITY_RANGE.end()))
 }
 
 /// SE's deep-sky filters kept in the `Settings` block.
@@ -508,6 +526,9 @@ fn load_settings(mut commands: Commands, cfg: Res<EngineConfig>, data: Res<SeDat
             saved_lang = b.str("Language").map(str::to_string);
             if let Some(v) = b.f64("SoundVolume") {
                 live.sound.volume = (v / 100.0).clamp(0.0, 1.0) as f32;
+            }
+            if let (Some(m), Some(s)) = (live.ship_mouse.as_mut(), load_ship_mouse(b)) {
+                m.sensitivity = s;
             }
             if let (false, Some(l)) = (lang_forced, &saved_lang) {
                 live.i18n.set_language(&data.vfs, l);
@@ -768,6 +789,21 @@ mod tests {
         load_graphics(doc.sub("Graphics").unwrap(), &mut back, &mut lens, &mut bloom);
         assert_eq!(back.preset, "Custom");
         assert_eq!(back.quality, gfx.quality);
+    }
+
+    /// U3: the Sidewinder's mouse sensitivity is written and read back exactly; a file without it, or with a value that isn't
+    /// finite and over 0, keeps the default; a value past the slider's range is clamped to it.
+    #[test]
+    fn ship_mouse_sensitivity_round_trips() {
+        let read = |text: &str| load_ship_mouse(se_core::sc::parse(text).sub("Settings").unwrap());
+        let line = ship_mouse_cfg(DEFAULT_MOUSE_SENSITIVITY);
+        assert_eq!(line, "\tSidewinderMouseSensitivity 0.2725\n");
+        assert_eq!(read(&format!("Settings\n{{\n{line}}}\n")), Some(0.2725));
+        assert_eq!(read("Settings\n{\n\tSoundVolume 30\n}\n"), None, "no key: the default stays");
+        for bad in ["0", "-1", "nan"] {
+            assert_eq!(read(&format!("Settings\n{{\n\tSidewinderMouseSensitivity {bad}\n}}\n")), None, "{bad}");
+        }
+        assert_eq!(read("Settings\n{\n\tSidewinderMouseSensitivity 5.0\n}\n"), Some(2.0));
     }
 
     #[test]

@@ -41,6 +41,7 @@ mod sound;
 mod convert;
 
 pub use assets::{load, ShipShape, SidewinderAssets};
+pub use pilot::MouseSetting;
 
 use bevy::math::{DQuat, DVec3, Mat3, Vec3};
 use bevy::prelude::*;
@@ -330,7 +331,8 @@ pub struct SidewinderPlugin;
 
 impl Plugin for SidewinderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Sidewinder>();
+        // (The mouse's sensitivity is a setting: there whether the mod or the sandbox is on or not, as `settings.rs` saves it.)
+        app.init_resource::<Sidewinder>().init_resource::<MouseSetting>();
         if !crate::sandbox::enabled() {
             return;
         }
@@ -525,8 +527,8 @@ pub fn dev_command(world: &mut World, arg: &str) {
             None
         }
         // `sw mouse DX DY`: a test's mouse counts (x right, y down, as real counts and the measuring sessions' `keys.py
-        // mouse`), through the same line of `fly` as the real ones. The mod reads Elite's default binds (sensitivity 1.0:
-        // 321.6 counts full stick); the recordings' 100 counts at the user's 0.2725 are `sw mouse 0 -27.25` here.
+        // mouse`), through the same line of `fly` as the real ones. At the default sensitivity (the user's 0.2725, `MouseSetting`)
+        // full stick is 1,180 counts and one step of the recordings is `sw mouse 0 -100`.
         "mouse" => {
             let nums: Option<Vec<f32>> = arg.split_whitespace().skip(1).map(|w| w.parse::<f32>().ok().filter(|x| x.is_finite())).collect();
             match nums.as_deref() {
@@ -536,6 +538,23 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 }
                 _ => warn!("sw mouse: use `sw mouse DX DY` (finite counts, x right, y down); got `{arg}`"),
             }
+            None
+        }
+        // `sw sens X|state`: the mouse's sensitivity for this run (U3; not saved: test runs skip the settings), and the stick.
+        "sens" => {
+            let word = arg.split_whitespace().nth(1).unwrap_or("");
+            if word != "state" {
+                match word.parse::<f32>().ok().filter(|s| s.is_finite() && *s > 0.0) {
+                    Some(s) => world.resource_mut::<MouseSetting>().sensitivity = s,
+                    None => {
+                        warn!("sw sens: use `sw sens X` (a finite sensitivity over 0) or `sw sens state`; got `{arg}`");
+                        return;
+                    }
+                }
+            }
+            let s = world.resource::<MouseSetting>().sensitivity;
+            let stick = world.resource::<pilot::Pilot>().stick;
+            info!("sidewinder: mouse sensitivity {s} (full stick at {:.1} counts), the stick {:.5} {:.5}", pilot::full_counts(s), stick.x, stick.y);
             None
         }
         "aim" => {

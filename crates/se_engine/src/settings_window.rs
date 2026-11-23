@@ -87,7 +87,7 @@ fn settings_window(
     mut state: Local<WindowState>,
     (mut i18n, data, mut skin): (ResMut<I18n>, Res<crate::data::SeData>, ResMut<crate::skin::Skin>),
     (mut stars, mut overlay, mut cam): (ResMut<StarSettings>, ResMut<crate::overlay::OverlaySettings>, ResMut<FlyCamera>),
-    (mut music, mut sound): (Option<ResMut<crate::music::MusicState>>, ResMut<crate::sound::SoundSettings>),
+    (mut music, mut sound, mut ship_mouse): (Option<ResMut<crate::music::MusicState>>, ResMut<crate::sound::SoundSettings>, Option<ResMut<crate::sidewinder::MouseSetting>>),
     (mut gs, mut lens, flare_presets, mut bloom, mut display): (
         ResMut<GraphicsSettings>,
         ResMut<LensFlareSettings>,
@@ -311,6 +311,15 @@ fn settings_window(
                 let mut m = crate::camera::MoveMode::ALL.iter().position(|x| *x == cam.move_mode).unwrap_or(0);
                 if combo(ui, "move_mode", "Movement mode", &mut m, &labels, &i18n) {
                     cam.set_move_mode(crate::camera::MoveMode::ALL[m]);
+                }
+                // The Sidewinder's mouse (U3, ARCHITECTURE.md A9): edited on a copy and written back only when moved, so the
+                // saved 0.2725 stays exact; four decimals show it whole.
+                if let Some(m) = ship_mouse.as_mut() {
+                    let mut v = m.sensitivity;
+                    let slider = egui::Slider::new(&mut v, crate::sidewinder::pilot::MOUSE_SENSITIVITY_RANGE).min_decimals(2).max_decimals(4).text(i18n.tr("Ship mouse sensitivity"));
+                    if ui.add(slider).on_hover_text(i18n.tr("The Sidewinder's mouse sensitivity, as Elite Dangerous's own setting (Elite's default is 1.0)")).changed() {
+                        m.sensitivity = v;
+                    }
                 }
             }
             Tab::Display => {

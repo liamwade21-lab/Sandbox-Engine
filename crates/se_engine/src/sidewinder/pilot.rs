@@ -238,6 +238,32 @@ fn crash_damage(mass_t: f64, speed: f64) -> f64 {
     0.5 * mass_t * (speed - CRASH_FREE_MPS).max(0.0).powi(2) / 1000.0
 }
 
+/// The user's own Elite's mouse sensitivity (their `Custom.4.2.binds`), the value every measuring session was flown with.
+pub const DEFAULT_MOUSE_SENSITIVITY: f32 = 0.2725;
+/// The Settings window's slider's range (ours, F; U3, ARCHITECTURE.md A9); a saved value is clamped to it.
+pub const MOUSE_SENSITIVITY_RANGE: std::ops::RangeInclusive<f32> = 0.05..=2.0;
+
+/// The mouse's sensitivity (U3, ARCHITECTURE.md A9): the player's own setting, as in Elite (the preset file says 1.0, the
+/// player's bindings file holds theirs). The default is the user's own Elite's 0.2725, their decision of 2026-11-23 ("Yes,
+/// use 0.27"). Always there, the mod on or off; `settings.rs` saves it, and the mod reads nothing of the settings.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct MouseSetting {
+    pub sensitivity: f32,
+}
+
+impl Default for MouseSetting {
+    fn default() -> Self {
+        Self { sensitivity: DEFAULT_MOUSE_SENSITIVITY }
+    }
+}
+
+/// The mouse counts that move the virtual stick from the middle to full at this sensitivity (`MOUSE_FULL_COUNTS` is 1.0's;
+/// a sensitivity that isn't finite counts as the default).
+pub fn full_counts(sensitivity: f32) -> f32 {
+    let s = if sensitivity.is_finite() { sensitivity } else { DEFAULT_MOUSE_SENSITIVITY };
+    elite_sim::data::measured::MOUSE_FULL_COUNTS as f32 / s.max(0.01)
+}
+
 /// What the seat's keys asked for this frame (read by `seat::take_keys` before it takes the presses from everyone else).
 #[derive(Resource, Default, Clone, Copy, Debug)]
 pub struct PilotKeys {
@@ -802,7 +828,7 @@ pub fn fly(
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
     mut panels: ResMut<super::panels::Panels>,
-    (mut ask, probe, lib, mut town, parts, frame): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>, Res<bevy::diagnostic::FrameCount>),
+    (mut ask, probe, lib, mut town, parts, frame, mouse): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>, Res<bevy::diagnostic::FrameCount>, Res<MouseSetting>),
 ) {
     // The gear's real state, as the gear machines left it (`parts::update`, last frame).
     let gear = parts.gear();
@@ -981,11 +1007,12 @@ pub fn fly(
     }
     let rate = elite_sim::data::measured::THROTTLE_RATE * dt;
     pilot.throttle = (pilot.throttle + rate * (keys.throttle_up as i8 - keys.throttle_down as i8) as f64).clamp(-1.0, 1.0);
-    // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's.
+    // The mouse's virtual stick: counts move it, it stays (no decay in Elite's default file); its dead zone is the file's,
+    // its sensitivity the player's setting (`MouseSetting`, U3: never the file's).
     // A test's counts (`sw mouse DX DY`) join the frame's real ones here.
     keys.mouse += std::mem::take(&mut pilot.dev_mouse);
     let setting = |name: &str, or: f32| assets.keys.value(name).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(or);
-    let full = elite_sim::data::measured::MOUSE_FULL_COUNTS as f32 / setting("MouseSensitivity", 1.0).max(0.01);
+    let full = full_counts(mouse.sensitivity);
     pilot.stick = (pilot.stick + Vec2::new(keys.mouse.x, -keys.mouse.y) / full).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
     // The exe's rule (0x1408F2210, step 0.11): stick = sign(v) x ((|v| - dead zone) / (1 - dead zone)) ^ linearity.
     // (Without the setting in the file, the exe's defaults: dead zone 0.05, linearity 1: its table 0x145E77BD0.)
@@ -1795,6 +1822,18 @@ fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option
 mod tests {
     use super::*;
     use super::super::facts::ShipFacts;
+
+    /// U3: the user's 0.2725 by default; full stick at 1,180 counts there and at `MOUSE_FULL_COUNTS` at Elite's preset 1.0;
+    /// no sensitivity gives an infinite or NaN scale.
+    #[test]
+    fn mouse_sensitivity_sets_full_stick() {
+        assert_eq!(MouseSetting::default().sensitivity, 0.2725);
+        assert!((full_counts(0.2725) - 1180.0).abs() < 0.5, "{}", full_counts(0.2725));
+        assert_eq!(full_counts(1.0), elite_sim::data::measured::MOUSE_FULL_COUNTS as f32);
+        for s in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(full_counts(s).is_finite() && full_counts(s) > 0.0, "{s}: {}", full_counts(s));
+        }
+    }
 
     /// One destination: a body clears a star target and a star a body; the panel's pick of the locked one unlocks it, the
     /// dev commands' (no `again_unlocks`) keeps it; T finding no star (`unlock(true)`) clears only a star target.
