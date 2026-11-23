@@ -1,0 +1,13 @@
+# Sandbox Engine patch c (vendor/ruffle/UPSTREAM.md): the stamp that ties core/prebuilt to the
+# ActionScript it was compiled from.
+[package]
+name = "playerglobal_stamp"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

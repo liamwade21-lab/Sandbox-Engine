@@ -1,0 +1,35 @@
+[
+ {
+  "t": 0,
+  "msg": "Open",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Enable",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Show",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "FocusOn",
+  "args": [
+   2
+  ]
+ },
+ {
+  "t": 0,
+  "msg": "ReceivingButtons",
+  "args": [
+   true
+  ]
+ },
+ {
+  "t": 2.0,
+  "shot": "open"
+ }
+]

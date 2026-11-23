@@ -1,0 +1,216 @@
+[
+ {
+  "t": 0.0,
+  "msg": "Open"
+ },
+ {
+  "t": 0.0,
+  "msg": "Enable"
+ },
+ {
+  "t": 0.0,
+  "msg": "SetPanelsMode",
+  "args": [
+   0
+  ]
+ },
+ {
+  "t": 0.0,
+  "msg": "Show"
+ },
+ {
+  "t": 0.033,
+  "msg": "SetDestinationData",
+  "args": [
+   {
+    "system": "SYNUEFE XM-K B28-1",
+    "location": "SYNUEFE XM-K B28-1",
+    "jurisdiction": "",
+    "destination": "",
+    "isOnRoute": false,
+    "distance": "",
+    "numJumps": 0,
+    "finalDestination": "",
+    "jumping": false,
+    "charging": false,
+    "timeLeft": 0,
+    "totalTime": 0,
+    "filtersActive": false,
+    "isPlanningRouteInProgress": false,
+    "routeProgress": 0,
+    "hasPendingDestination": false,
+    "destinationList": [
+     {
+      "id": 101,
+      "depth": 0,
+      "type": 1,
+      "stationStatus": 0,
+      "label": "SYNUEFE XM-K B28-1",
+      "distance": "290.12Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": false,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 0,
+      "showHatchesOverride": false
+     },
+     {
+      "id": 102,
+      "depth": 1,
+      "type": 2,
+      "stationStatus": 0,
+      "label": "SYNUEFE XM-K B28-1 2",
+      "distance": "229.40Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": true,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 0,
+      "showHatchesOverride": false
+     },
+     {
+      "id": 103,
+      "depth": 2,
+      "type": 28,
+      "stationStatus": 0,
+      "label": "SYNUEFE XM-K B28-1 2 A",
+      "distance": "228.01Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": false,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 0,
+      "showHatchesOverride": false
+     },
+     {
+      "id": 104,
+      "depth": 2,
+      "type": 7,
+      "stationStatus": 0,
+      "label": "LIWEI RELAY",
+      "distance": "228.10Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": false,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 2,
+      "showHatchesOverride": false
+     },
+     {
+      "id": 105,
+      "depth": 2,
+      "type": 24,
+      "stationStatus": 0,
+      "label": "RESOURCE EXTRACTION SITE [HIGH]",
+      "distance": "229.02Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": false,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 0,
+      "showHatchesOverride": false
+     },
+     {
+      "id": 106,
+      "depth": 1,
+      "type": 21,
+      "stationStatus": 0,
+      "label": "NAV BEACON",
+      "distance": "287.33Ls",
+      "selectable": true,
+      "current": false,
+      "disabledReason": "",
+      "isMissionObjective": false,
+      "statusIconA": 0,
+      "statusIconB": 0,
+      "statusIconC": 0,
+      "statusIconD": 0,
+      "isTargetLocation": false,
+      "hasBeenBookmarked": false,
+      "isOwnCarrier": false,
+      "securityLevel": 0,
+      "showHatchesOverride": false
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "t": 0.067,
+  "msg": "FocusOn"
+ },
+ {
+  "t": 0.067,
+  "msg": "ReceivingButtons",
+  "args": [
+   true
+  ]
+ },
+ {
+  "t": 0.1,
+  "shot": "tl_0100"
+ },
+ {
+  "t": 0.25,
+  "shot": "tl_0250"
+ },
+ {
+  "t": 0.5,
+  "shot": "tl_0500"
+ },
+ {
+  "t": 0.75,
+  "shot": "tl_0750"
+ },
+ {
+  "t": 1.0,
+  "shot": "tl_1000"
+ },
+ {
+  "t": 1.5,
+  "shot": "tl_1500"
+ },
+ {
+  "t": 2.5,
+  "shot": "tl_2500"
+ },
+ {
+  "t": 4.0,
+  "shot": "tl_4000"
+ }
+]

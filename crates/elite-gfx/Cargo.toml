@@ -1,0 +1,27 @@
+[package]
+name = "elite-gfx"
+description = "Runs Elite Dangerous's ship-UI movies for the Sidewinder mod on the vendored Ruffle: messages in, a drawn texture and events out (ARCHITECTURE.md A10)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-only"
+
+[dependencies]
+elite-ui = { path = "../elite-ui" }
+# Ruffle, vendored and patched (vendor/ruffle/UPSTREAM.md). No audio, no video, no default font.
+ruffle_core = { path = "../../vendor/ruffle/core", default-features = false }
+ruffle_render_wgpu = { path = "../../vendor/ruffle/render/wgpu", default-features = false }
+# What Ruffle's navigator trait names (the same versions Ruffle uses).
+url = "2.5"
+async-channel = "2.5"
+
+[dev-dependencies]
+serde = { workspace = true }
+tracing = "0.1"
+# The proofs' headless device (the game passes its own): Vulkan only, nothing else of wgpu's defaults.
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+serde_json = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
+futures = "0.3"
+# Ruffle's warnings into the proofs' logs.
+tracing-subscriber = "0.3"

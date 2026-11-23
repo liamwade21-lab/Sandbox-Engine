@@ -1,0 +1,224 @@
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index 96fb518..58147bc 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -96,4 +96,5 @@ default_font = []
+ serde = ["serde/derive"]
+ 
+ [build-dependencies]
+-build_playerglobal = { path = "build_playerglobal" }
++# Sandbox Engine patch c: the built-ins come from prebuilt/ (build_playerglobal remakes them).
++playerglobal_stamp = { path = "playerglobal_stamp" }
+diff --git a/core/build.rs b/core/build.rs
+index 290f15d..13872b4 100644
+--- a/core/build.rs
++++ b/core/build.rs
+@@ -1,23 +1,39 @@
++//! Sandbox Engine patch c (vendor/ruffle/UPSTREAM.md): the built-in ActionScript is carried already
++//! compiled in `prebuilt/` and copied to OUT_DIR, so a build needs no Java. `prebuilt/` is remade by
++//! `vendor/ruffle/remake_playerglobal.sh` (Java 21); the build stops if the ActionScript sources
++//! are not the ones the prebuilt files were made from.
++
+ use std::path::{Path, PathBuf};
+ 
+ fn main() {
+-    let repo_root = Path::new("../");
++    assert!(
++        !cfg!(feature = "known_stubs"),
++        "known_stubs needs the stub list, which the prebuilt built-ins do not carry"
++    );
++    let core = Path::new(".");
+     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
++    let prebuilt = core.join("prebuilt");
+ 
+-    build_playerglobal::build_avm1_playerglobal(repo_root, &out_dir)
+-        .expect("Failed to build playerglobal_avm1");
+-    build_playerglobal::build_avm2_playerglobal(repo_root, &out_dir, cfg!(feature = "known_stubs"))
+-        .expect("Failed to build playerglobal_avm2");
++    let stamp = std::fs::read_to_string(prebuilt.join(playerglobal_stamp::STAMP_FILE))
++        .expect("core/prebuilt/SOURCES is missing: run vendor/ruffle/remake_playerglobal.sh");
++    let sources = playerglobal_stamp::sources_stamp(core).expect("read the built-in ActionScript");
++    assert_eq!(
++        stamp.trim(),
++        sources,
++        "core/prebuilt was made from other ActionScript than core/src/avm*/globals: \
++         run vendor/ruffle/remake_playerglobal.sh (needs Java 21)"
++    );
++    for file in playerglobal_stamp::PREBUILT_FILES {
++        std::fs::copy(prebuilt.join(file), out_dir.join(file))
++            .unwrap_or_else(|e| panic!("copy core/prebuilt/{file}: {e}"));
++    }
+ 
+     println!(
+         "cargo:rustc-env=RUFFLE_PLAYERGLOBAL_ABC_PATH={}/playerglobal_import.abc",
+         out_dir.to_str().unwrap()
+     );
+-
+-    // This is overly conservative - it will cause us to rebuild playerglobals
+-    // if *any* files in these directories change, not just .as files.
+-    // However, this script is fast to run, so it shouldn't matter in practice.
+-    // If Cargo ever adds glob support to 'rerun-if-changed', we should use it.
+-    println!("cargo:rerun-if-changed=src/avm1/globals/");
+-    println!("cargo:rerun-if-changed=src/avm2/globals/");
++    println!("cargo:rerun-if-changed=prebuilt/");
++    for dir in playerglobal_stamp::SOURCE_DIRS {
++        println!("cargo:rerun-if-changed={dir}/");
++    }
+ }
+diff --git a/core/build_playerglobal/Cargo.toml b/core/build_playerglobal/Cargo.toml
+index df07a86..a5b62d5 100644
+--- a/core/build_playerglobal/Cargo.toml
++++ b/core/build_playerglobal/Cargo.toml
+@@ -20,3 +20,5 @@ clap = { workspace = true }
+ regex = { workspace = true }
+ walkdir = { workspace = true }
+ rascal = { workspace = true }
++# Sandbox Engine patch c: writes the stamp of the sources beside the prebuilt files.
++playerglobal_stamp = { path = "../playerglobal_stamp" }
+diff --git a/core/build_playerglobal/src/main.rs b/core/build_playerglobal/src/main.rs
+index 5a6ebbf..a6b2fe8 100644
+--- a/core/build_playerglobal/src/main.rs
++++ b/core/build_playerglobal/src/main.rs
+@@ -4,6 +4,9 @@
+ //! where `<repo_root>` is the location of the Ruffle repository,
+ //! and `out_dir` is the directory where the two SWFs should
+ //! be written
++//!
++//! Sandbox Engine patch c (vendor/ruffle/UPSTREAM.md): it writes both built-ins and the stamp of
++//! their sources, which is how `core/prebuilt/` is made (`remake_playerglobal.sh`).
+ 
+ mod cli;
+ 
+@@ -19,8 +22,11 @@ fn main() {
+     let args = cli::Cli::parse();
+     match args.command {
+         Commands::Compile { out_dir } => {
+-            build_playerglobal::build_avm2_playerglobal(&repo_root, Path::new(&out_dir), false)
+-                .unwrap();
++            let out_dir = Path::new(&out_dir);
++            build_playerglobal::build_avm1_playerglobal(&repo_root, out_dir).unwrap();
++            build_playerglobal::build_avm2_playerglobal(&repo_root, out_dir, false).unwrap();
++            let stamp = playerglobal_stamp::sources_stamp(&repo_root.join("core")).unwrap();
++            std::fs::write(out_dir.join(playerglobal_stamp::STAMP_FILE), stamp + "\n").unwrap();
+         }
+     }
+ }
+diff --git a/core/playerglobal_stamp/Cargo.toml b/core/playerglobal_stamp/Cargo.toml
+new file mode 100644
+index 0000000..1ca907d
+--- /dev/null
++++ b/core/playerglobal_stamp/Cargo.toml
+@@ -0,0 +1,13 @@
++# Sandbox Engine patch c (vendor/ruffle/UPSTREAM.md): the stamp that ties core/prebuilt to the
++# ActionScript it was compiled from.
++[package]
++name = "playerglobal_stamp"
++authors.workspace = true
++edition.workspace = true
++homepage.workspace = true
++license.workspace = true
++repository.workspace = true
++version.workspace = true
++
++[lints]
++workspace = true
+diff --git a/core/playerglobal_stamp/src/lib.rs b/core/playerglobal_stamp/src/lib.rs
+new file mode 100644
+index 0000000..bf61b58
+--- /dev/null
++++ b/core/playerglobal_stamp/src/lib.rs
+@@ -0,0 +1,72 @@
++//! Sandbox Engine patch c (vendor/ruffle/UPSTREAM.md): the stamp of Ruffle's built-in
++//! ActionScript. `core/prebuilt/` holds the compiled built-ins and, in `SOURCES`, the stamp of the
++//! sources they were made from; `core/build.rs` refuses prebuilt files whose stamp differs, and
++//! `build_playerglobal` writes the stamp when it remakes them.
++
++use std::fs;
++use std::io;
++use std::path::{Path, PathBuf};
++
++/// The folders under `core/` holding the built-in ActionScript.
++pub const SOURCE_DIRS: [&str; 2] = ["src/avm1/globals", "src/avm2/globals"];
++
++/// The file in `core/prebuilt/` holding the stamp.
++pub const STAMP_FILE: &str = "SOURCES";
++
++/// The compiled files `core/prebuilt/` carries (what `core/build.rs` used to make).
++pub const PREBUILT_FILES: [&str; 4] = [
++    "playerglobal_avm1.swf",
++    "playerglobal_avm2.swf",
++    "playerglobal_import.abc",
++    "native_table.rs",
++];
++
++/// FNV-1a (64 bit) over every `.as` file under `core`'s source folders, in path order: each file's
++/// path relative to `core` with `/` separators, a zero byte, its bytes without carriage returns
++/// (so a checkout's line endings do not matter), a zero byte. Written as 16 hex digits.
++pub fn sources_stamp(core: &Path) -> io::Result<String> {
++    let mut files = Vec::new();
++    for dir in SOURCE_DIRS {
++        collect(&core.join(dir), &mut files)?;
++    }
++    let mut named: Vec<(String, PathBuf)> = files
++        .into_iter()
++        .map(|path| {
++            let relative = path.strip_prefix(core).unwrap_or(&path);
++            let name = relative
++                .components()
++                .map(|c| c.as_os_str().to_string_lossy().into_owned())
++                .collect::<Vec<_>>()
++                .join("/");
++            (name, path)
++        })
++        .collect();
++    named.sort();
++    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
++    let mut feed = |bytes: &[u8]| {
++        for &b in bytes {
++            hash ^= u64::from(b);
++            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
++        }
++    };
++    for (name, path) in named {
++        feed(name.as_bytes());
++        feed(&[0]);
++        let bytes: Vec<u8> = fs::read(&path)?.into_iter().filter(|&b| b != b'\r').collect();
++        feed(&bytes);
++        feed(&[0]);
++    }
++    Ok(format!("{hash:016x}"))
++}
++
++fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
++    for entry in fs::read_dir(dir)? {
++        let path = entry?.path();
++        if path.is_dir() {
++            collect(&path, out)?;
++        } else if path.extension().is_some_and(|e| e == "as") {
++            out.push(path);
++        }
++    }
++    Ok(())
++}
+diff --git a/remake_playerglobal.sh b/remake_playerglobal.sh
+new file mode 100644
+index 0000000..36d7a52
+--- /dev/null
++++ b/remake_playerglobal.sh
+@@ -0,0 +1,16 @@
++#!/bin/bash
++# Sandbox Engine patch c (UPSTREAM.md): remakes core/prebuilt/ (Ruffle's built-in ActionScript,
++# compiled) with Ruffle's own compiler, tools/asc/asc.jar, which needs Java. Run it after changing
++# any .as file under core/src/avm1/globals or core/src/avm2/globals (our patch b adds some), or
++# after taking a newer Ruffle; a normal build refuses a stale core/prebuilt.
++#
++#   bash vendor/ruffle/remake_playerglobal.sh
++#
++# Java: JAVA_HOME if set, else the JDK 21 at C:\Users\liamw\tools\jdk-21 (for this script only).
++set -e
++cd "$(dirname "$0")"
++export JAVA_HOME="${JAVA_HOME:-/c/Users/liamw/tools/jdk-21}"
++export PATH="$JAVA_HOME/bin:$PATH"
++java -version > /dev/null 2>&1 || { echo "no Java at $JAVA_HOME"; exit 1; }
++cargo run --quiet --release --target-dir ../../target/vendor-ruffle -p build_playerglobal -- compile core/prebuilt
++ls -l core/prebuilt

@@ -1,0 +1,1842 @@
+[
+ {
+  "t": 0,
+  "msg": "Open",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Enable",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Show",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "FocusOn",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "ReceivingButtons",
+  "args": [
+   true
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetPlayerInfo",
+  "args": [
+   {
+    "pilotName": "SANDBOX",
+    "squadronID": "",
+    "avatarSource": "",
+    "ranks": [],
+    "wanted": "",
+    "staticRows": [
+     {
+      "label": "$INT_PANEL_balance;",
+      "value": "$PRICE:#value=1000;",
+      "state": 0,
+      "mercCoinsString": ""
+     }
+    ],
+    "numNewInLog": 0,
+    "galnetAlert": false,
+    "holomeAlert": false,
+    "powerPlayAlert": false
+   }
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetShipOrVehicleInfo",
+  "args": [
+   {
+    "type": "$sidewinder_name;",
+    "name": "",
+    "id": "SW-01",
+    "schematic": "$sidewinder_name;",
+    "manufacturerIcon": "",
+    "isVehicle": false
+   }
+  ]
+ },
+ {
+  "t": 1.5,
+  "shot": "home"
+ },
+ {
+  "t": 1.6,
+  "msg": "OnInputButton",
+  "args": [
+   "UI_CycleNextPanel",
+   "buttonDown"
+  ]
+ },
+ {
+  "t": 1.65,
+  "msg": "OnInputButton",
+  "args": [
+   "UI_CycleNextPanel",
+   "buttonUp"
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7"
+   ],
+   "powerData",
+   {
+    "powerPriorityGroups": [
+     {
+      "priority": 0,
+      "powerUsage": 2.69,
+      "offline": false
+     }
+    ],
+    "baseTotalCharge": 4.5,
+    "currentCharge": 4.5,
+    "currentPowerUsed": 2.69
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7"
+   ],
+   "blocked",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7"
+   ],
+   "baseTotalCharge",
+   4.5
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7"
+   ],
+   "currentCharge",
+   4.5
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7"
+   ],
+   "currentPowerUsed",
+   2.69
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "sortIndex",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "callbackID",
+   100
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "databaseId",
+   500
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "powerUsage",
+   0.0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "type",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 1"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "sortIndex",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "callbackID",
+   101
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "databaseId",
+   501
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "powerUsage",
+   2.0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "type",
+   2
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 2"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "sortIndex",
+   2
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "callbackID",
+   102
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "databaseId",
+   502
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "powerUsage",
+   0.16
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "type",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 3"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "sortIndex",
+   3
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "callbackID",
+   103
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "databaseId",
+   503
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "powerUsage",
+   0.32
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "type",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 4"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "sortIndex",
+   4
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "callbackID",
+   104
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "databaseId",
+   504
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "powerUsage",
+   0.32
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "type",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 5"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "sortIndex",
+   5
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "callbackID",
+   105
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "databaseId",
+   505
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "powerUsage",
+   0.16
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "type",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 6"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "sortIndex",
+   6
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "callbackID",
+   106
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "databaseId",
+   506
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "powerUsage",
+   0.39
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "type",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 7"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "sortIndex",
+   7
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "callbackID",
+   107
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "databaseId",
+   507
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isPowered",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isMarkedForRepair",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "powerUsage",
+   0.39
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "type",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "slotSize",
+   1
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "ammoData",
+   ""
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "boostGrade",
+   0
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "hideClassAndRating",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isMercModified",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isMercCoinsActive",
+   false
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "isOwnedByPlayer",
+   true
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "health",
+   {
+    "string": "",
+    "health": 1.0
+   }
+  ]
+ },
+ {
+  "t": 1.7,
+  "store": [
+   [
+    "7",
+    "Slots",
+    "Slot 8"
+   ],
+   "priority",
+   {
+    "hasPriority": true,
+    "priority": 0
+   }
+  ]
+ },
+ {
+  "t": 1.75,
+  "msg": "SetModuleContext",
+  "args": [
+   [
+    7
+   ]
+  ]
+ },
+ {
+  "t": 3.0,
+  "shot": "modules"
+ }
+]

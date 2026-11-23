@@ -1,0 +1,311 @@
+[
+ {
+  "t": 0,
+  "msg": "Open",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Enable",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Show",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "ConfigureCockpit",
+  "args": [
+   0
+  ]
+ },
+ {
+  "t": 0.0,
+  "msg": "ClearTarget",
+  "args": []
+ },
+ {
+  "t": 0.0,
+  "msg": "ClearTargetLocation",
+  "args": []
+ },
+ {
+  "t": 0.0,
+  "msg": "ClearCruiseInfo",
+  "args": []
+ },
+ {
+  "t": 0.0,
+  "msg": "ClearScoopData",
+  "args": []
+ },
+ {
+  "t": 0.0,
+  "msg": "HideCargoScoopMessage",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "ShowFuelLevels",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "SetCompassVisible",
+  "args": [
+   true
+  ]
+ },
+ {
+  "t": 0,
+  "msg": "SetCompassData",
+  "args": [
+   {
+    "x": 0.3,
+    "y": 0.2,
+    "z": 0.93,
+    "w": 0.0
+   },
+   false,
+   false
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetHeat",
+  "args": [
+   0.09999999999999999,
+   0.42857142857142855,
+   0.7142857142857143
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetThrottle",
+  "args": [
+   {
+    "speedProp": 0.2,
+    "speedString": "$UNIT:#value=44;",
+    "optimal": 0.36363636363636365,
+    "desiredVisible": false,
+    "desired": 0.2
+   }
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetThrottleMaxSpeed",
+  "args": [
+   0.7272727272727273,
+   true
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetThrottleOptimal",
+  "args": [
+   0.36363636363636365,
+   true
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetFuelLevels",
+  "args": [
+   1.0,
+   1.0,
+   2.0,
+   0.3,
+   0.0,
+   "$FUEL_USAGE_PER_HOUR:#value=0.12;"
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetPowerLevels",
+  "args": [
+   1.0,
+   1.0,
+   1.0
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetPowerAssignment",
+  "args": [
+   {
+    "distEng": 0.5,
+    "engExtraPip": 0,
+    "distWep": 0.5,
+    "wepExtraPip": 0,
+    "distSys": 0.5,
+    "sysExtraPip": 0
+   }
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetDamage",
+  "args": [
+   {
+    "shieldsPercents": [
+     1.0,
+     0
+    ],
+    "shieldSubState": 0
+   },
+   {
+    "hullPercent": 1.0,
+    "hullType": 0,
+    "pulseRate": 0
+   }
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetSignature",
+  "args": [
+   0.2,
+   0.1,
+   false
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetStatusIndicators",
+  "args": [
+   {
+    "first": {
+     "label": "$GAUGE_PANEL_landing_gear;",
+     "enabled": true
+    }
+   }
+  ]
+ },
+ {
+  "t": 1.5,
+  "shot": "A"
+ },
+ {
+  "t": 1.6,
+  "msg": "SetHeat",
+  "args": [
+   0.5428571428571428,
+   0.42857142857142855,
+   0.7142857142857143
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetThrottle",
+  "args": [
+   {
+    "speedProp": 0.9,
+    "speedString": "$UNIT:#value=198;",
+    "optimal": 0.5,
+    "desiredVisible": false,
+    "desired": 0.9
+   }
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetThrottleMaxSpeed",
+  "args": [
+   1.0,
+   true
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetThrottleOptimal",
+  "args": [
+   0.5,
+   true
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetFuelLevels",
+  "args": [
+   0.25,
+   1.0,
+   2.0,
+   0.3,
+   0.0,
+   "$FUEL_USAGE_PER_HOUR:#value=1.32;"
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetPowerLevels",
+  "args": [
+   1.0,
+   1.0,
+   1.0
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetPowerAssignment",
+  "args": [
+   {
+    "distEng": 1.0,
+    "engExtraPip": 0,
+    "distWep": 0.25,
+    "wepExtraPip": 0,
+    "distSys": 0.25,
+    "sysExtraPip": 0
+   }
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetDamage",
+  "args": [
+   {
+    "shieldsPercents": [
+     0.0,
+     0
+    ],
+    "shieldSubState": 0
+   },
+   {
+    "hullPercent": 0.62,
+    "hullType": 0,
+    "pulseRate": 0
+   }
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetSignature",
+  "args": [
+   0.9,
+   0.45,
+   false
+  ]
+ },
+ {
+  "t": 1.6,
+  "msg": "SetStatusIndicators",
+  "args": [
+   {
+    "first": {
+     "label": "$GAUGE_PANEL_mass_lock_warning;",
+     "enabled": true
+    },
+    "second": {
+     "label": "$GAUGE_PANEL_landing_gear;",
+     "enabled": false
+    }
+   }
+  ]
+ },
+ {
+  "t": 3.5,
+  "shot": "B"
+ }
+]

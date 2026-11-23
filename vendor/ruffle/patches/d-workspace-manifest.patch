@@ -1,0 +1,93 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index fde20f1..42c0603 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -3,43 +3,20 @@ members = [
+     "core",
+     "core/macros",
+     "core/build_playerglobal",
+-    "desktop",
+     "swf",
+     "flv",
+-    "web",
+-    "web/packages/extension/safari",
+     "wstr",
+-    "scanner",
+-
+-    "exporter",
+-    "exporter/integration_tests",
+-
+-    "frontend-utils",
+ 
+     "render",
+-    "render/canvas",
+     "render/naga-agal",
+     "render/pixel_bender",
+-    "render/pixel_bender/assembly_tests",
+     "render/wgpu",
+-    "render/webgl",
+ 
+     "video",
+-    "video/software",
+-    "video/external",
+-
+-    "tests",
+-    "tests/fs-tests-runner",
+-    "tests/input-format",
+-    "tests/socket-format",
+-    "tests/mocket",
+-    "tests/framework",
+ 
+     "tools/asc",
+-    "tools/fuzzer",
+-    "tools/stub-report",
+ ]
+-default-members = ["desktop"]
++default-members = ["core"]
+ resolver = "2"
+ 
+ [workspace.package]
+@@ -58,8 +35,10 @@ zip = { version = "9.0.5", default-features = false }
+ quote = "1.0.45"
+ tracing = "0.1.43"
+ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+-naga = { version = "30.0.2", features = ["wgsl-out"] }
+-wgpu = "30.0.2"
++naga = { version = "30.0.1", features = ["wgsl-out"] }
++# Sandbox Engine patch d: no default features (they reached the engine's wgpu); the renderer's own
++# WGSL shaders need "wgsl", render/wgpu adds "naga-ir"; the backends are the host's.
++wgpu = { version = "30.0.1", default-features = false, features = ["wgsl"] }
+ wgpu-profiler = "0.28.0"
+ egui = "0.36.1"
+ egui_extras = { version = "0.36.1", default-features = false }
+@@ -86,7 +65,7 @@ num-derive = "0.4.2"
+ num-traits = "0.2.19"
+ serde = "1.0.228"
+ thiserror = "2.0.18"
+-url = "2.5.9"
++url = "2.5.8"
+ quick-xml = "0.41.0"
+ regress = { git = "https://github.com/ruffle-rs/regras3", rev = "6d48179d6bd448f2cc66b76352c9f048dde968d1" }
+ # Make sure to match wasm-bindgen-cli version to this everywhere.
+@@ -170,21 +149,9 @@ inherits = "release"
+ lto = true
+ codegen-units = 1
+ 
+-[profile.dev.package.h263-rs]
+-opt-level = 3
+-
+ [profile.dev.package.h263-rs-yuv]
+ opt-level = 3
+ 
+-[profile.dev.package.nihav_core]
+-opt-level = 3
+-
+-[profile.dev.package.nihav_codec_support]
+-opt-level = 3
+-
+-[profile.dev.package.nihav_duck]
+-opt-level = 3
+-
+ # TODO: Set rustflags here instead of in tools/build_wasm.ts, when that
+ # feature becomes stable. See: https://github.com/rust-lang/cargo/issues/10271
+ # Until then, these custom profiles let cargo keep the build cache alive

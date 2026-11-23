@@ -1,0 +1,14 @@
+diff --git a/core/Cargo.toml b/core/Cargo.toml
+index 58147bc..d63b735 100644
+--- a/core/Cargo.toml
++++ b/core/Cargo.toml
+@@ -40,7 +40,8 @@ web-time = "1.1.0"
+ encoding_rs = { workspace = true }
+ rand = { workspace = true, features = ["std", "sys_rng"] }
+ serde = { workspace = true }
+-serde_json = { workspace = true, features = ["preserve_order"] }
++# Sandbox Engine patch e: no "preserve_order" (cargo gave it to the whole engine's serde_json).
++serde_json = { workspace = true }
+ nellymoser-rs = { git = "https://github.com/ruffle-rs/nellymoser", rev = "073eb48d907201f46dea0c8feb4e8d9a1d92208c", optional = true }
+ regress = { workspace = true }
+ flash-lso = { git = "https://github.com/ruffle-rs/rust-flash-lso", rev = "11a0836a52c4aacbca96d8299bffd12f9715eec2" }

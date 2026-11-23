@@ -1,0 +1,118 @@
+diff --git a/core/src/backend/ui.rs b/core/src/backend/ui.rs
+index b68f74f..ddf1075 100644
+--- a/core/src/backend/ui.rs
++++ b/core/src/backend/ui.rs
+@@ -104,6 +104,12 @@ pub type DialogResultFuture = OwnedFuture<FileDialogResult, DialogLoaderError>;
+ pub type MultiDialogResultFuture = OwnedFuture<MultiFileDialogResult, DialogLoaderError>;
+ 
+ pub trait UiBackend: Any {
++    /// Scaleform's Translator (Sandbox Engine patch a): a text field's text (plain or HTML source)
++    /// passes through here when it is set, and the returned text replaces it. `None` keeps it.
++    fn translate_text(&self, _text: &str) -> Option<String> {
++        None
++    }
++
+     fn mouse_visible(&self) -> bool;
+ 
+     fn set_mouse_visible(&mut self, visible: bool);
+diff --git a/core/src/display_object/edit_text.rs b/core/src/display_object/edit_text.rs
+index 3d70420..97e86b3 100644
+--- a/core/src/display_object/edit_text.rs
++++ b/core/src/display_object/edit_text.rs
+@@ -268,8 +268,16 @@ impl<'gc> EditText<'gc> {
+         let default_format = TextFormat::from_swf_tag(swf_tag.clone(), swf_movie, context);
+         let encoding = swf_movie.encoding();
+         let text = swf_tag.initial_text().unwrap_or_default().decode(encoding);
++        // Sandbox Engine patch a: Scaleform's Translator, on the authored text too.
++        let (text, translated_html) = match translate(context, &text) {
++            Some(t) => {
++                let html = looks_like_html(&t);
++                (std::borrow::Cow::Owned(t), html)
++            }
++            None => (text, false),
++        };
+ 
+-        let mut text_spans = if swf_tag.is_html() {
++        let mut text_spans = if swf_tag.is_html() || translated_html {
+             FormatSpans::from_html(
+                 &text,
+                 default_format,
+@@ -443,6 +451,30 @@ impl<'gc> EditText<'gc> {
+     }
+ 
+     pub fn set_text(self, text: &WStr, context: &mut UpdateContext<'gc>) {
++        // Sandbox Engine patch a: Scaleform's Translator; a translation holding markup is set as HTML.
++        if let Some(t) = translate(context, text) {
++            if looks_like_html(&t) {
++                return self.set_translated_html(&t, context);
++            }
++            return self.set_text_untranslated(&t, context);
++        }
++        self.set_text_untranslated(text, context)
++    }
++
++    /// Sets a translation holding markup as HTML; the field is laid out again only if its text or
++    /// formats change (Sandbox Engine patch a: the same `$KEY;` set again costs no layout).
++    fn set_translated_html(self, html: &WStr, context: &mut UpdateContext<'gc>) {
++        let force_update = self.take_force_next_text_update();
++        let version = self.swf_version();
++        let before = self.0.text_spans.borrow().to_html(version);
++        self.0.parse_html(html);
++        if !force_update && self.0.text_spans.borrow().to_html(version) == before {
++            return;
++        }
++        self.relayout(context);
++    }
++
++    fn set_text_untranslated(self, text: &WStr, context: &mut UpdateContext<'gc>) {
+         let force_update = self.take_force_next_text_update();
+ 
+         if self.text() == text && !force_update {
+@@ -479,6 +511,9 @@ impl<'gc> EditText<'gc> {
+     }
+ 
+     pub fn set_html_text(self, text: &WStr, context: &mut UpdateContext<'gc>) {
++        // Sandbox Engine patch a: Scaleform's Translator, on the HTML source.
++        let translated = translate(context, text);
++        let text: &WStr = translated.as_deref().unwrap_or(text);
+         let force_update = self.take_force_next_text_update();
+ 
+         if self.html_text() == text && !force_update {
+@@ -495,7 +530,7 @@ impl<'gc> EditText<'gc> {
+             self.0.parse_html(text);
+             self.relayout(context);
+         } else {
+-            self.set_text(text, context);
++            self.set_text_untranslated(text, context);
+         }
+     }
+ 
+@@ -3694,3 +3729,28 @@ struct EditTextRenderState {
+     /// rendered outside of the text mask.
+     draw_caret_command: Option<RenderCommand>,
+ }
++
++/// Scaleform's Translator (Sandbox Engine patch a): the UI backend's translation of a text field's
++/// text, if it gives one.
++fn translate(context: &UpdateContext<'_>, text: &WStr) -> Option<WString> {
++    context
++        .ui
++        .translate_text(&text.to_utf8_lossy())
++        .map(|t| WString::from_utf8(&t))
++}
++
++/// The tags of Flash's HTML text (the ones Elite's string table holds are `font` and `br`).
++const HTML_TAGS: [&str; 11] = ["a", "b", "br", "font", "i", "img", "li", "p", "span", "textformat", "u"];
++
++/// Whether a translation holds one of those tags, opening or closing, so it is set as HTML (a `<`
++/// that starts no such tag, as in "< 1", is text).
++fn looks_like_html(text: &WStr) -> bool {
++    let text = text.to_utf8_lossy().to_ascii_lowercase();
++    text.match_indices('<').any(|(at, _)| {
++        let rest = &text[at + 1..];
++        let rest = rest.strip_prefix('/').unwrap_or(rest);
++        HTML_TAGS
++            .iter()
++            .any(|tag| rest.strip_prefix(tag).is_some_and(|after| after.starts_with([' ', '>', '/'])))
++    })
++}

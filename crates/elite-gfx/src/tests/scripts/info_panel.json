@@ -1,0 +1,51 @@
+[
+ {
+  "t": 0,
+  "msg": "Open",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Enable",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Show",
+  "args": []
+ },
+ {
+  "t": 0.05,
+  "msg": "SetTime",
+  "args": [
+   49025
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "SetHeadlightState",
+  "args": [
+   1
+  ]
+ },
+ {
+  "t": 0.1,
+  "msg": "AddMessage",
+  "args": [
+   {
+    "message": "$alarm_flightassist;",
+    "shortMessage": "$alarm_flightassist;",
+    "priority": 1,
+    "icon": 0
+   }
+  ]
+ },
+ {
+  "t": 0.6,
+  "shot": "message"
+ },
+ {
+  "t": 2.0,
+  "shot": "later"
+ }
+]

@@ -1,0 +1,46 @@
+[
+ {
+  "t": 0,
+  "msg": "Open",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Enable",
+  "args": []
+ },
+ {
+  "t": 0,
+  "msg": "Show",
+  "args": []
+ },
+ {
+  "t": 0.05,
+  "msg": "SetGaugeVisibility",
+  "args": [
+   true,
+   true,
+   false,
+   true,
+   true,
+   false
+  ]
+ },
+ {
+  "t": 0.05,
+  "msg": "UpdateAltitude",
+  "args": [
+   0.4,
+   "$DISTANCE:#value=12500;",
+   0.1,
+   1,
+   0.7,
+   2,
+   "SYNUEFE XM-K B28-1 2 A"
+  ]
+ },
+ {
+  "t": 2.0,
+  "shot": "open"
+ }
+]

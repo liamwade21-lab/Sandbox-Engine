@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/se_core", "crates/se_engine", "crates/skate-core", "crates/skate-data", "crates/skate-dynamics", "crates/skate-net", "crates/skate-mods", "crates/skate-sim", "crates/elite-sim"]
+members = ["crates/se_core", "crates/se_engine", "crates/skate-core", "crates/skate-data", "crates/skate-dynamics", "crates/skate-net", "crates/skate-mods", "crates/skate-sim", "crates/elite-sim", "crates/elite-ui", "crates/elite-gfx"]
+# Ruffle's crates keep their own workspace (vendor/ruffle/UPSTREAM.md); elite-gfx uses them by path.
+exclude = ["vendor/ruffle"]
 
 [workspace.package]
 version = "0.1.0"

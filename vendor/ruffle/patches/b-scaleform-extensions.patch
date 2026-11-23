@@ -1,0 +1,739 @@
+diff --git a/core/src/avm2/globals.rs b/core/src/avm2/globals.rs
+index ba4df7a..754175a 100644
+--- a/core/src/avm2/globals.rs
++++ b/core/src/avm2/globals.rs
+@@ -32,6 +32,7 @@ mod number;
+ mod object;
+ mod q_name;
+ mod reg_exp;
++pub mod scaleform;
+ mod string;
+ mod toplevel;
+ mod r#uint;
+diff --git a/core/src/avm2/globals/globals.as b/core/src/avm2/globals/globals.as
+index 84c9734..5d15994 100644
+--- a/core/src/avm2/globals/globals.as
++++ b/core/src/avm2/globals/globals.as
+@@ -498,3 +498,9 @@ include "flash/utils/Timer.as"
+ include "flash/xml/XMLNodeType.as"
+ include "flash/xml/XMLNode.as" // XMLDocument extends XMLNode, so XMLNode needs to come before it.
+ include "flash/xml/XMLDocument.as"
++
++// Sandbox Engine patch b: Scaleform GFx's extension classes (superclasses first).
++include "scaleform/gfx/Extensions.as"
++include "scaleform/gfx/DisplayObjectEx.as"
++include "scaleform/gfx/InteractiveObjectEx.as"
++include "scaleform/gfx/TextFieldEx.as"
+diff --git a/core/src/avm2/globals/scaleform.rs b/core/src/avm2/globals/scaleform.rs
+new file mode 100644
+index 0000000..eda34c0
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform.rs
+@@ -0,0 +1,3 @@
++//! `scaleform` namespace (Sandbox Engine patch b: Scaleform GFx's extension classes)
++
++pub mod gfx;
+diff --git a/core/src/avm2/globals/scaleform/gfx.rs b/core/src/avm2/globals/scaleform/gfx.rs
+new file mode 100644
+index 0000000..db58258
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx.rs
+@@ -0,0 +1,4 @@
++//! `scaleform.gfx` namespace (Sandbox Engine patch b)
++
++pub mod extensions;
++pub mod text_field_ex;
+diff --git a/core/src/avm2/globals/scaleform/gfx/DisplayObjectEx.as b/core/src/avm2/globals/scaleform/gfx/DisplayObjectEx.as
+new file mode 100644
+index 0000000..3615b49
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/DisplayObjectEx.as
+@@ -0,0 +1,28 @@
++// Sandbox Engine patch b (vendor/ruffle/UPSTREAM.md): Scaleform GFx 4's DisplayObjectEx. Batching
++// and renderer strings are hints to Scaleform's own renderer; this player has nothing to give them.
++package scaleform.gfx {
++    import flash.display.DisplayObject;
++
++    public class DisplayObjectEx {
++        public static function disableBatching(object:DisplayObject, value:Boolean):void {
++        }
++
++        public static function isBatchingDisabled(object:DisplayObject):Boolean {
++            return false;
++        }
++
++        public static function setRendererString(object:DisplayObject, value:String):void {
++        }
++
++        public static function getRendererString(object:DisplayObject):String {
++            return null;
++        }
++
++        public static function setRendererFloat(object:DisplayObject, value:Number):void {
++        }
++
++        public static function getRendererFloat(object:DisplayObject):Number {
++            return NaN;
++        }
++    }
++}
+diff --git a/core/src/avm2/globals/scaleform/gfx/Extensions.as b/core/src/avm2/globals/scaleform/gfx/Extensions.as
+new file mode 100644
+index 0000000..1496373
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/Extensions.as
+@@ -0,0 +1,73 @@
++// Sandbox Engine patch b (vendor/ruffle/UPSTREAM.md): Scaleform GFx 4's AS3 extension classes as
++// built-ins, so they shadow the empty stand-ins Scaleform movies carry (a definition in the system
++// domain wins). Written from Scaleform's documented behaviour; no Scaleform code.
++package scaleform.gfx {
++    import flash.display.DisplayObject;
++    import flash.geom.Rectangle;
++    import flash.text.TextField;
++
++    public final class Extensions {
++        public static const EDGEAA_INHERIT:uint = 0;
++        public static const EDGEAA_ON:uint = 1;
++        public static const EDGEAA_OFF:uint = 2;
++        public static const EDGEAA_DISABLE:uint = 3;
++
++        // A game, not Scaleform's own viewer.
++        public static var isGFxPlayer:Boolean = false;
++        public static var CLIK_addedToStageCallback:Function;
++        public static var gfxProcessSound:Function;
++
++        private static var _enabled:Boolean = false;
++
++        // The movie runs in Scaleform: the movies' Scaleform branches are taken.
++        public static function get isScaleform():Boolean {
++            return true;
++        }
++
++        public static function get enabled():Boolean {
++            return _enabled;
++        }
++
++        public static function set enabled(value:Boolean):void {
++            _enabled = value;
++        }
++
++        // Invisible movie clips' timelines do not advance (native: the player skips them).
++        public static native function get noInvisibleAdvance():Boolean;
++        public static native function set noInvisibleAdvance(value:Boolean):void;
++
++        // Mouse picking, cursors and edge anti-aliasing are not part of this player: neutral answers.
++        public static function getTopMostEntity(x:Number, y:Number, testAll:Boolean = true):DisplayObject {
++            return null;
++        }
++
++        public static function getMouseTopMostEntity(testAll:Boolean = true, mouseIndex:uint = 0):DisplayObject {
++            return null;
++        }
++
++        public static function setMouseCursorType(cursor:String, mouseIndex:uint = 0):void {
++        }
++
++        public static function getMouseCursorType(mouseIndex:uint = 0):String {
++            return "";
++        }
++
++        public static function get numControllers():uint {
++            return 1;
++        }
++
++        public static function get visibleRect():Rectangle {
++            return new Rectangle(0, 0, 0, 0);
++        }
++
++        public static function getEdgeAAMode(object:DisplayObject):uint {
++            return EDGEAA_INHERIT;
++        }
++
++        public static function setEdgeAAMode(object:DisplayObject, mode:uint):void {
++        }
++
++        public static function setIMEEnabled(textField:TextField, enabled:Boolean):void {
++        }
++    }
++}
+diff --git a/core/src/avm2/globals/scaleform/gfx/InteractiveObjectEx.as b/core/src/avm2/globals/scaleform/gfx/InteractiveObjectEx.as
+new file mode 100644
+index 0000000..6cf62d9
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/InteractiveObjectEx.as
+@@ -0,0 +1,22 @@
++// Sandbox Engine patch b (vendor/ruffle/UPSTREAM.md): Scaleform GFx 4's InteractiveObjectEx. Both
++// settings concern mouse picking and drawing order of the mouse's topmost level; this player takes no
++// mouse input, so they have no effect.
++package scaleform.gfx {
++    import flash.display.InteractiveObject;
++
++    public class InteractiveObjectEx extends DisplayObjectEx {
++        public static function setHitTestDisable(object:InteractiveObject, value:Boolean):void {
++        }
++
++        public static function getHitTestDisable(object:InteractiveObject):Boolean {
++            return false;
++        }
++
++        public static function setTopmostLevel(object:InteractiveObject, value:Boolean):void {
++        }
++
++        public static function getTopmostLevel(object:InteractiveObject):Boolean {
++            return false;
++        }
++    }
++}
+diff --git a/core/src/avm2/globals/scaleform/gfx/TextFieldEx.as b/core/src/avm2/globals/scaleform/gfx/TextFieldEx.as
+new file mode 100644
+index 0000000..87ae64c
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/TextFieldEx.as
+@@ -0,0 +1,37 @@
++// Sandbox Engine patch b (vendor/ruffle/UPSTREAM.md): Scaleform GFx 4's TextFieldEx. No-translate,
++// vertical alignment and text auto-size are native (display_object/scaleform_text.rs); inline image
++// substitution is not drawn (Ruffle's text layout has no inline images).
++package scaleform.gfx {
++    import flash.display.BitmapData;
++    import flash.text.TextField;
++
++    public final class TextFieldEx extends InteractiveObjectEx {
++        public static const VALIGN_NONE:String = "none";
++        public static const VALIGN_TOP:String = "top";
++        public static const VALIGN_CENTER:String = "center";
++        public static const VALIGN_BOTTOM:String = "bottom";
++        public static const TEXTAUTOSZ_NONE:String = "none";
++        public static const TEXTAUTOSZ_SHRINK:String = "shrink";
++        public static const TEXTAUTOSZ_FIT:String = "fit";
++
++        public static function appendHtml(textField:TextField, html:String):void {
++            textField.htmlText = textField.htmlText + html;
++        }
++
++        public static function setIMEEnabled(textField:TextField, enabled:Boolean):void {
++        }
++
++        public static native function setVerticalAlign(textField:TextField, align:String):void;
++        public static native function getVerticalAlign(textField:TextField):String;
++        public static native function setTextAutoSize(textField:TextField, mode:String):void;
++        public static native function getTextAutoSize(textField:TextField):String;
++        public static native function setNoTranslate(textField:TextField, value:Boolean):void;
++        public static native function getNoTranslate(textField:TextField):Boolean;
++
++        public static function setImageSubstitutions(textField:TextField, substitutions:Object):void {
++        }
++
++        public static function updateImageSubstitution(textField:TextField, id:String, image:BitmapData):void {
++        }
++    }
++}
+diff --git a/core/src/avm2/globals/scaleform/gfx/extensions.rs b/core/src/avm2/globals/scaleform/gfx/extensions.rs
+new file mode 100644
+index 0000000..dbc66db
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/extensions.rs
+@@ -0,0 +1,29 @@
++//! `scaleform.gfx.Extensions` native methods (Sandbox Engine patch b)
++
++use crate::avm2::Error;
++use crate::avm2::activation::Activation;
++use crate::avm2::function::FunctionArgs;
++use crate::avm2::parameters::ParametersExt;
++use crate::avm2::value::Value;
++
++/// Implements `Extensions.noInvisibleAdvance`'s getter
++pub fn get_no_invisible_advance<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    _args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    Ok(activation.context.stage.no_invisible_advance().into())
++}
++
++/// Implements `Extensions.noInvisibleAdvance`'s setter
++pub fn set_no_invisible_advance<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    activation
++        .context
++        .stage
++        .set_no_invisible_advance(args.get_bool(0));
++    Ok(Value::Undefined)
++}
+diff --git a/core/src/avm2/globals/scaleform/gfx/text_field_ex.rs b/core/src/avm2/globals/scaleform/gfx/text_field_ex.rs
+new file mode 100644
+index 0000000..9ad0a9e
+--- /dev/null
++++ b/core/src/avm2/globals/scaleform/gfx/text_field_ex.rs
+@@ -0,0 +1,88 @@
++//! `scaleform.gfx.TextFieldEx` native methods (Sandbox Engine patch b; the behaviour is
++//! `display_object/scaleform_text.rs`)
++
++use crate::avm2::Error;
++use crate::avm2::activation::Activation;
++use crate::avm2::function::FunctionArgs;
++use crate::avm2::parameters::ParametersExt;
++use crate::avm2::value::Value;
++use crate::display_object::{EditText, ScaleformText, TextAutoSize, VerticalAlign};
++use crate::string::AvmString;
++
++/// The text field passed first, if it is one.
++fn text_field<'gc>(args: &FunctionArgs<'_, 'gc>) -> Option<EditText<'gc>> {
++    args.try_get_object(0)?.as_display_object()?.as_edit_text()
++}
++
++/// Changes one Scaleform setting of the field passed first.
++fn change<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    args: &FunctionArgs<'_, 'gc>,
++    edit: impl FnOnce(&mut ScaleformText),
++) -> Result<Value<'gc>, Error<'gc>> {
++    if let Some(field) = text_field(args) {
++        let mut settings = field.scaleform();
++        edit(&mut settings);
++        field.set_scaleform(settings, activation.context);
++    }
++    Ok(Value::Undefined)
++}
++
++pub fn set_vertical_align<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let name = args.get_string(activation, 1).to_string();
++    let Some(align) = VerticalAlign::from_name(&name) else {
++        return Ok(Value::Undefined);
++    };
++    change(activation, &args, |s| s.vertical_align = align)
++}
++
++pub fn get_vertical_align<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let name = text_field(&args).map_or("none", |field| field.scaleform().vertical_align.name());
++    Ok(AvmString::new_utf8(activation.gc(), name).into())
++}
++
++pub fn set_text_auto_size<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let name = args.get_string(activation, 1).to_string();
++    let Some(mode) = TextAutoSize::from_name(&name) else {
++        return Ok(Value::Undefined);
++    };
++    change(activation, &args, |s| s.auto_size = mode)
++}
++
++pub fn get_text_auto_size<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let name = text_field(&args).map_or("none", |field| field.scaleform().auto_size.name());
++    Ok(AvmString::new_utf8(activation.gc(), name).into())
++}
++
++pub fn set_no_translate<'gc>(
++    activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    let value = args.get_bool(1);
++    change(activation, &args, |s| s.no_translate = value)
++}
++
++pub fn get_no_translate<'gc>(
++    _activation: &mut Activation<'_, 'gc>,
++    _this: Value<'gc>,
++    args: FunctionArgs<'_, 'gc>,
++) -> Result<Value<'gc>, Error<'gc>> {
++    Ok(text_field(&args).is_some_and(|field| field.scaleform().no_translate).into())
++}
+diff --git a/core/src/display_object.rs b/core/src/display_object.rs
+index f08f608..6e3b66c 100644
+--- a/core/src/display_object.rs
++++ b/core/src/display_object.rs
+@@ -37,6 +37,7 @@ mod interactive;
+ mod loader_display;
+ mod morph_shape;
+ mod movie_clip;
++mod scaleform_text;
+ mod stage;
+ mod text;
+ mod text_line;
+@@ -59,6 +60,7 @@ pub use interactive::{Avm2MousePick, InteractiveObject, TInteractiveObject};
+ pub use loader_display::LoaderDisplay;
+ pub use morph_shape::MorphShape;
+ pub use movie_clip::{GotoInfo, MovieClip, MovieClipHandle, MovieClipWeak, Scene, StopOrPlay};
++pub use scaleform_text::{ScaleformText, TextAutoSize, VerticalAlign};
+ use ruffle_render::backend::{BitmapCacheEntry, RenderBackend};
+ use ruffle_render::bitmap::{BitmapInfo, PixelSnapping};
+ use ruffle_render::blend::ExtendedBlendMode;
+diff --git a/core/src/display_object/edit_text.rs b/core/src/display_object/edit_text.rs
+index 97e86b3..b611795 100644
+--- a/core/src/display_object/edit_text.rs
++++ b/core/src/display_object/edit_text.rs
+@@ -52,6 +52,7 @@ use swf::{CharacterId, Color, ColorTransform, Point, Rectangle, Twips};
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+ use super::interactive::Avm2MousePick;
++use super::scaleform_text::{self, ScaleformText, TextAutoSize};
+ 
+ /// The kind of autosizing behavior an `EditText` should have, if any
+ #[derive(Copy, Clone, Collect, Debug, PartialEq, Eq)]
+@@ -199,6 +200,9 @@ pub struct EditTextData<'gc> {
+     /// See <https://docs.ruffle.rs/en_US/FlashPlatform/reference/actionscript/3/flash/text/engine/package-detail.html>
+     /// See <https://docs.ruffle.rs/en_US/as3/dev/WS9dd7ed846a005b294b857bfa122bd808ea6-8000.html>
+     is_fte: Cell<bool>,
++
++    /// Scaleform's text field extensions (Sandbox Engine patch b).
++    scaleform: Cell<ScaleformText>,
+ }
+ 
+ impl EditTextData<'_> {
+@@ -356,6 +360,7 @@ impl<'gc> EditText<'gc> {
+                 max_chars: Cell::new(swf_tag.max_length().unwrap_or_default() as i32),
+                 mouse_wheel_enabled: Cell::new(true),
+                 is_fte: Cell::new(false),
++                scaleform: Cell::new(ScaleformText::default()),
+                 restrict: RefCell::new(EditTextRestrict::allow_all()),
+                 last_click: Cell::new(None),
+                 layout_debug_boxes_flags: Cell::new(LayoutDebugBoxesFlag::empty()),
+@@ -452,7 +457,7 @@ impl<'gc> EditText<'gc> {
+ 
+     pub fn set_text(self, text: &WStr, context: &mut UpdateContext<'gc>) {
+         // Sandbox Engine patch a: Scaleform's Translator; a translation holding markup is set as HTML.
+-        if let Some(t) = translate(context, text) {
++        if let Some(t) = self.translation(context, text) {
+             if looks_like_html(&t) {
+                 return self.set_translated_html(&t, context);
+             }
+@@ -512,7 +517,7 @@ impl<'gc> EditText<'gc> {
+ 
+     pub fn set_html_text(self, text: &WStr, context: &mut UpdateContext<'gc>) {
+         // Sandbox Engine patch a: Scaleform's Translator, on the HTML source.
+-        let translated = translate(context, text);
++        let translated = self.translation(context, text);
+         let text: &WStr = translated.as_deref().unwrap_or(text);
+         let force_update = self.take_force_next_text_update();
+ 
+@@ -534,6 +539,27 @@ impl<'gc> EditText<'gc> {
+         }
+     }
+ 
++    /// The translation of `text` for this field: none when Scaleform's no-translate is set
++    /// (Sandbox Engine patch b).
++    fn translation(self, context: &UpdateContext<'gc>, text: &WStr) -> Option<WString> {
++        if self.0.scaleform.get().no_translate {
++            return None;
++        }
++        translate(context, text)
++    }
++
++    /// The field's Scaleform settings (Sandbox Engine patch b).
++    pub fn scaleform(self) -> ScaleformText {
++        self.0.scaleform.get()
++    }
++
++    /// Changes the field's Scaleform settings and lays it out again (Sandbox Engine patch b).
++    pub fn set_scaleform(self, settings: ScaleformText, context: &mut UpdateContext<'gc>) {
++        if self.0.scaleform.replace(settings) != settings {
++            self.relayout(context);
++        }
++    }
++
+     pub fn text_length(self) -> usize {
+         self.0.text_spans.borrow().text().len()
+     }
+@@ -835,7 +861,8 @@ impl<'gc> EditText<'gc> {
+         let bounds = self.0.bounds.get();
+         let matrix = Matrix::translate(
+             bounds.x_min + Self::GUTTER - Twips::from_pixels(self.0.hscroll.get()),
+-            bounds.y_min + Self::GUTTER - self.0.vertical_scroll_offset(),
++            bounds.y_min + Self::GUTTER - self.0.vertical_scroll_offset()
++                + self.vertical_align_offset(),
+         );
+ 
+         if self.font_type() == FontType::Device {
+@@ -849,6 +876,15 @@ impl<'gc> EditText<'gc> {
+         }
+     }
+ 
++    /// How far Scaleform's vertical alignment moves the text down in the box (Sandbox Engine
++    /// patch b).
++    fn vertical_align_offset(self) -> Twips {
++        let free = self.0.bounds.get().height()
++            - Self::GUTTER * 2
++            - self.0.layout.borrow().text_size().height();
++        self.0.scaleform.get().vertical_align.offset(free)
++    }
++
+     /// Returns the matrix for transforming from this object's
+     /// local space into its layout coordinate space.
+     fn local_to_layout_matrix(self) -> Option<Matrix> {
+@@ -950,8 +986,19 @@ impl<'gc> EditText<'gc> {
+             is_word_wrap,
+             font_type: self.0.font_type(),
+         };
+-        let new_layout =
+-            html::lower_from_text_spans(&text_spans, context, layout_params, content_width);
++        // Sandbox Engine patch b: Scaleform's text auto-size, for a field whose box is fixed.
++        let auto_size = match (autosize, content_width) {
++            (AutoSizeMode::None, Some(_)) => self.0.scaleform.get().auto_size,
++            _ => TextAutoSize::None,
++        };
++        let height = self.0.bounds.get().height() - padding;
++        let new_layout = scaleform_text::auto_size(
++            auto_size,
++            &text_spans,
++            content_width.unwrap_or_default(),
++            height,
++            |spans| html::lower_from_text_spans(spans, context, layout_params.clone(), content_width),
++        );
+         drop(text_spans);
+ 
+         unlock!(Gc::write(context.gc(), self.0), EditTextData, layout).replace(new_layout);
+@@ -1277,6 +1324,7 @@ impl<'gc> EditText<'gc> {
+         //      culls any other line which is not fully visible; masking is always used for left/right bounds
+         // TODO: also cull text that's simply out of screen, just like we cull whole DOs in render_self().
+         if origin.y() + Self::GUTTER - self.0.vertical_scroll_offset()
++            + self.vertical_align_offset()
+             > self.0.bounds.get().height()
+         {
+             return;
+diff --git a/core/src/display_object/movie_clip.rs b/core/src/display_object/movie_clip.rs
+index 4f8a297..02ed7a0 100644
+--- a/core/src/display_object/movie_clip.rs
++++ b/core/src/display_object/movie_clip.rs
+@@ -453,6 +453,18 @@ impl<'gc> MovieClip<'gc> {
+         false
+     }
+ 
++    /// Whether this clip and every ancestor are visible (Sandbox Engine patch b).
++    fn visible_in_tree(self) -> bool {
++        let mut node: Option<DisplayObject<'gc>> = Some(self.into());
++        while let Some(object) = node {
++            if !object.visible() {
++                return false;
++            }
++            node = object.parent();
++        }
++        true
++    }
++
+     /// Execute all other timeline actions on this object.
+     pub fn run_frame_avm1(self, context: &mut UpdateContext<'gc>) {
+         if !self.movie().is_action_script_3() {
+@@ -2568,8 +2580,13 @@ impl<'gc> TDisplayObject<'gc> for MovieClip<'gc> {
+ 
+         if self.movie().is_action_script_3() {
+             let is_playing = self.playing();
++            // Sandbox Engine patch b: Scaleform's noInvisibleAdvance holds invisible clips' timelines
++            // (a clip still enters its first frame: its content exists from its creation).
++            let held = context.stage.no_invisible_advance()
++                && self.current_frame() > 0
++                && !self.visible_in_tree();
+ 
+-            if is_playing {
++            if is_playing && !held {
+                 self.run_frame_internal(context, true, true, true);
+             }
+ 
+diff --git a/core/src/display_object/scaleform_text.rs b/core/src/display_object/scaleform_text.rs
+new file mode 100644
+index 0000000..4d519b7
+--- /dev/null
++++ b/core/src/display_object/scaleform_text.rs
+@@ -0,0 +1,145 @@
++//! Sandbox Engine patch b (vendor/ruffle/UPSTREAM.md): Scaleform GFx 4's text field extensions
++//! (`scaleform.gfx.TextFieldEx`), written from Scaleform's documented behaviour.
++//!
++//! - no-translate: the field's text is shown as set, never passed to the UI backend's translator;
++//! - vertical alignment: the laid-out text sits at the top, middle or bottom of the field's box
++//!   (`none` is the top, as Flash);
++//! - text auto-size: `shrink` lowers every span's font size until the text fits the box (never
++//!   above the authored size), `fit` scales it up or down until it just fills the box. Only for
++//!   fields whose Flash `autoSize` is none: an auto-sized field's box follows its text instead.
++
++use crate::html::{FormatSpans, Layout, TextFormat};
++use swf::Twips;
++
++/// A field's vertical alignment (`TextFieldEx.setVerticalAlign`).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum VerticalAlign {
++    #[default]
++    None,
++    Top,
++    Center,
++    Bottom,
++}
++
++impl VerticalAlign {
++    pub fn from_name(name: &str) -> Option<Self> {
++        match name {
++            "none" => Some(Self::None),
++            "top" => Some(Self::Top),
++            "center" => Some(Self::Center),
++            "bottom" => Some(Self::Bottom),
++            _ => None,
++        }
++    }
++
++    pub fn name(self) -> &'static str {
++        match self {
++            Self::None => "none",
++            Self::Top => "top",
++            Self::Center => "center",
++            Self::Bottom => "bottom",
++        }
++    }
++
++    /// How far down the text is moved in a box `free` taller than the text (no move when the
++    /// text is the taller one).
++    pub fn offset(self, free: Twips) -> Twips {
++        let free = free.max(Twips::ZERO);
++        match self {
++            Self::None | Self::Top => Twips::ZERO,
++            Self::Center => free / 2,
++            Self::Bottom => free,
++        }
++    }
++}
++
++/// A field's text auto-size mode (`TextFieldEx.setTextAutoSize`).
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum TextAutoSize {
++    #[default]
++    None,
++    Shrink,
++    Fit,
++}
++
++impl TextAutoSize {
++    pub fn from_name(name: &str) -> Option<Self> {
++        match name {
++            "none" => Some(Self::None),
++            "shrink" => Some(Self::Shrink),
++            "fit" => Some(Self::Fit),
++            _ => None,
++        }
++    }
++
++    pub fn name(self) -> &'static str {
++        match self {
++            Self::None => "none",
++            Self::Shrink => "shrink",
++            Self::Fit => "fit",
++        }
++    }
++}
++
++/// The Scaleform settings of one text field.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct ScaleformText {
++    pub no_translate: bool,
++    pub vertical_align: VerticalAlign,
++    pub auto_size: TextAutoSize,
++}
++
++/// Steps of the search for the font scale: the scale is found to 1/2^STEPS of its range.
++const STEPS: u32 = 12;
++
++/// The largest scale `fit` tries (a field filled by text 64 times its authored size).
++const MOST: f64 = 64.0;
++
++/// Lays out `spans` at the font scale `mode` asks for in a box of `width` x `height` (layout
++/// units, the gutter already taken off). `lay` lays out a set of spans.
++pub fn auto_size<'gc>(
++    mode: TextAutoSize,
++    spans: &FormatSpans,
++    width: Twips,
++    height: Twips,
++    mut lay: impl FnMut(&FormatSpans) -> Layout<'gc>,
++) -> Layout<'gc> {
++    let fits = |layout: &Layout<'gc>| {
++        let size = layout.text_size();
++        size.width() <= width && size.height() <= height
++    };
++    let authored = lay(spans);
++    let (mut low, mut high) = match mode {
++        TextAutoSize::None => return authored,
++        TextAutoSize::Shrink if fits(&authored) => return authored,
++        TextAutoSize::Shrink => (0.0, 1.0),
++        TextAutoSize::Fit if fits(&authored) => (1.0, MOST),
++        TextAutoSize::Fit => (0.0, 1.0),
++    };
++    let mut best = (low == 1.0).then_some(authored);
++    for _ in 0..STEPS {
++        let scale = (low + high) / 2.0;
++        let layout = lay(&scaled(spans, scale));
++        if fits(&layout) {
++            low = scale;
++            best = Some(layout);
++        } else {
++            high = scale;
++        }
++    }
++    // Nothing fitted: the smallest scale tried.
++    best.unwrap_or_else(|| lay(&scaled(spans, high)))
++}
++
++/// `spans` with every font size multiplied by `scale`.
++fn scaled(spans: &FormatSpans, scale: f64) -> FormatSpans {
++    let mut out = spans.clone();
++    for (start, end, _, span) in spans.iter_spans() {
++        let format = TextFormat {
++            size: Some(span.font.size * scale),
++            ..Default::default()
++        };
++        out.set_text_format(start, end, &format);
++    }
++    out
++}
+diff --git a/core/src/display_object/stage.rs b/core/src/display_object/stage.rs
+index cd57f4d..e792d4b 100644
+--- a/core/src/display_object/stage.rs
++++ b/core/src/display_object/stage.rs
+@@ -141,6 +141,10 @@ pub struct StageData<'gc> {
+     /// This setting is currently ignored in Ruffle.
+     use_bitmap_downsampling: Cell<bool>,
+ 
++    /// Scaleform's `Extensions.noInvisibleAdvance` (Sandbox Engine patch b): invisible movie clips'
++    /// timelines do not advance.
++    no_invisible_advance: Cell<bool>,
++
+     /// The window mode of the viewport.
+     ///
+     /// Only used on web to control how the Flash content layers with other content on the page.
+@@ -179,6 +183,7 @@ impl<'gc> Stage<'gc> {
+                 forced_align: Cell::new(false),
+                 allow_fullscreen: Cell::new(true),
+                 use_bitmap_downsampling: Cell::new(false),
++                no_invisible_advance: Cell::new(false),
+                 view_bounds: Default::default(),
+                 window_mode: Default::default(),
+                 show_menu: Cell::new(true),
+@@ -449,6 +454,16 @@ impl<'gc> Stage<'gc> {
+         self.0.use_bitmap_downsampling.set(value);
+     }
+ 
++    /// Whether invisible movie clips' timelines are held (Scaleform's `noInvisibleAdvance`).
++    pub fn no_invisible_advance(self) -> bool {
++        self.0.no_invisible_advance.get()
++    }
++
++    /// Sets Scaleform's `noInvisibleAdvance`.
++    pub fn set_no_invisible_advance(self, value: bool) {
++        self.0.no_invisible_advance.set(value);
++    }
++
+     /// Get the stage mode.
+     /// This controls how the content layers with other content on the page.
+     /// Only used on web.
