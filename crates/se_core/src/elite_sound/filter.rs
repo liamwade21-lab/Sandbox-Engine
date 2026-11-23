@@ -241,6 +241,12 @@ pub const DISTORTION_OVERDRIVE: u32 = 1;
 /// `FUN_144a07400`: `1 - e^-a` by the exe's fast exponential (0 past `a = 37`), the input's sign turned over (a positive
 /// input gives a negative output).
 pub const DISTORTION_HEAVY: u32 = 2;
+/// Clip (the dispatch's case 4; 3 Fuzz is not in the data). **A stated stand-in (US1, the orchestrator's decision):** its
+/// curve is not decoded from the exe. Its wet signal is taken as silence, so the stage gives its dry path as Elite's does
+/// (the output level, then the DC blocker): exact wherever its wet share is 0, which the bank checks at its game
+/// parameters' defaults (`SoundBank::new`); a frame in which a Clip's wet share is over 0 is counted
+/// ([`Distortion::take_unbuilt`]).
+pub const DISTORTION_CLIP: u32 = 4;
 
 /// The Overdrive curve of one already gained sample (`FUN_144a07950`; thirds as the exe's `DAT_1457dc0fc` 0.33333331 and
 /// `DAT_1457dc100` 0.66666663).
@@ -303,7 +309,8 @@ impl DistortionGains {
             post: fast_pow10(d.drive * -0.01).unwrap_or(0.0),
             floor: (50.0 - d.rectification.min(50.0)) * -0.02,
             fold: (d.rectification - 50.0) * 0.02,
-            wet: d.level * (1.0 - dry_share),
+            // (Clip's wet signal is not built: silence, `DISTORTION_CLIP`.)
+            wet: if d.kind == DISTORTION_CLIP { 0.0 } else { d.level * (1.0 - dry_share) },
             dry: d.level * dry_share,
         }
     }
@@ -366,6 +373,10 @@ pub struct Distortion {
     dc: Vec<(f32, f32)>,
     r: f32,
     sample_rate: f32,
+    /// A Clip whose wet share is over 0 at the last buffer's start and at this one's (`DISTORTION_CLIP`), and the frames
+    /// made since the last `take_unbuilt` in which either held.
+    clip_live: (bool, bool),
+    unbuilt: u64,
 }
 
 impl Distortion {
@@ -384,6 +395,8 @@ impl Distortion {
             dc: vec![(0.0, 0.0); channels.max(1)],
             r: 1.0 - 251.327_42 / sample_rate,
             sample_rate,
+            clip_live: (false, false),
+            unbuilt: 0,
         }
     }
 
@@ -415,7 +428,15 @@ impl Distortion {
         let g = DistortionGains::of(&d);
         self.from = if self.started { self.to } else { g };
         self.to = g;
+        let live = d.kind == DISTORTION_CLIP && d.wet > 0.0;
+        self.clip_live = (if self.started { self.clip_live.1 } else { live }, live);
         self.started = true;
+    }
+
+    /// The frames made since the last call in which a Clip's wet share was over 0 (its curve is not built: Elite's sound
+    /// would differ there), and the count back to 0.
+    pub fn take_unbuilt(&mut self) -> u64 {
+        std::mem::take(&mut self.unbuilt)
     }
 
     /// One frame (a sample a channel) in place.
@@ -427,6 +448,9 @@ impl Distortion {
         self.frame = (self.frame + 1) % BUFFER_FRAMES;
         if !self.started {
             return;
+        }
+        if self.clip_live.0 || self.clip_live.1 {
+            self.unbuilt += 1;
         }
         for (c, s) in x.iter_mut().enumerate() {
             let dry = *s;
@@ -471,6 +495,9 @@ impl Distortion {
             let f0 = self.frame;
             self.frame = (self.frame + run as u32) % BUFFER_FRAMES;
             if self.started {
+                if self.clip_live.0 || self.clip_live.1 {
+                    self.unbuilt += run as u64;
+                }
                 let (from, to) = (self.from, self.to);
                 let g = |j: usize| from.at(&to, (f0 + j as u32) as f32 / BUFFER_FRAMES as f32);
                 for c in 0..channels {
@@ -702,6 +729,35 @@ mod tests {
         assert!((g.pre - 17.0).abs() < 1e-4 && (g.post - 10f32.powf(-0.5)).abs() < 0.003, "{g:?}");
         assert!((g.floor - 0.0).abs() < 1e-7 && (g.fold - 0.5).abs() < 1e-6 && g.wet == 0.0 && g.dry == 1.0);
         assert!((DistortionGains::of(&d(DISTORTION_OVERDRIVE, 0.0, 0.0, 10.0, 0.0)).floor + 0.8).abs() < 1e-6);
+    }
+
+    /// The Clip stand-in (US1): at a wet share of 0 it is the dry path exactly (the level and the DC blocker, as Elite's mix
+    /// gives it whatever the curve), counting nothing; with a wet share over 0 its frames are counted, by `frame` and by
+    /// `block` alike, and taken once.
+    #[test]
+    fn a_clip_is_its_dry_path_and_counts_a_wet_share() {
+        let fs = 48000.0;
+        let d = |wet| crate::elite_sound::DistortionNow { pre: [super::super::EqNow::OFF; 3], post: [super::super::EqNow::OFF; 3], kind: DISTORTION_CLIP, drive: 68.0, tone: 13.0, rectification: 100.0, level: 1.5, wet };
+        let input: Vec<f32> = (0..3000).map(|i| ((i as f32) * 0.07).sin() * 0.8).collect();
+        let mut s = Distortion::new(1, fs);
+        s.set(&d(0.0));
+        let r = 1.0 - 251.327_42 / fs;
+        let (mut x1, mut y1) = (0.0f32, 0.0f32);
+        for x in &input {
+            let mut f = [*x];
+            s.frame(&mut f);
+            let y = x * 1.5 - x1 + r * y1;
+            (x1, y1) = (x * 1.5, y);
+            assert!((f[0] - y).abs() < 1e-5);
+        }
+        assert_eq!(s.take_unbuilt(), 0);
+        let mut b = Distortion::new(2, fs);
+        b.set(&d(40.0));
+        let mut buf = vec![0.25f32; 2 * 512];
+        b.block(&mut buf, 2, 512, 512);
+        assert_eq!(b.take_unbuilt(), 512, "frames, not samples");
+        assert_eq!(b.take_unbuilt(), 0);
+        assert!(buf.iter().all(|x| x.is_finite()));
     }
 
     /// The Guitar Distortion on a signal: with no wet share it is the output level and the DC blocker alone (`R = 1 -

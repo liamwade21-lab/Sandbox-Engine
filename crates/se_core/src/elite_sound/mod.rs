@@ -11,7 +11,9 @@
 //!   SetVolume (6), ResetVolume (8), SetPitch (7), ResetPitch (6), Seek (4, relative to the duration); delays with their
 //!   random range; fade times with the seven fade curves in use (Linear 387, SCurve 30, Sine 9, Exp1 7, Log1 5,
 //!   SineRecip 5, Exp3 4); scopes game object (397), global (33), global all (39), game object without target (11);
-//!   absolute and offset values with their random range.
+//!   absolute and offset values with their random range. ResetGameParameter (US1, the ship UI's events: one,
+//!   `PopUpShow_e_Cockpit`'s reset of game parameter a61ce9fc over 1000 ms, Linear, on its game object): back to the Init
+//!   bank's default over the fade, as Wwise's `ResetRTPCValue`.
 //! - Sound (317): loop count (infinite on 390 objects, 57 events), initial delay (property 37, randomiser 37, game
 //!   parameter curve 4).
 //! - RanSeqCntr (249): random (normal, shuffle) and sequence, step and continuous, avoid-repeat (249), weights, loop
@@ -50,8 +52,12 @@
 //! - The Wwise Guitar Distortion (plug-in 0x007e0003; 16 shipped: 14 in node slots, run per voice; 2 on buses, the GUI and
 //!   Voice buses, whose wet share is 0 wherever the mod plays them, so per voice is exact there too), from Elite's own copy
 //!   (record 0x145ee00f8; `SetParam` 0x144a04b60, `SetParamsBlock` 0x144a04f50, `Execute` 0x144a04230: [`filter::Distortion`],
-//!   its parameters [`DistortionNow`]): pre-EQ, the Overdrive and Heavy curves (the only types in the data), the
-//!   rectifier, post-EQ, the wet / dry mix and output level, the DC blocker, every gain ramped over a 1024-frame buffer.
+//!   its parameters [`DistortionNow`]): pre-EQ, the Overdrive and Heavy curves, the rectifier, post-EQ, the wet / dry mix
+//!   and output level, the DC blocker, every gain ramped over a 1024-frame buffer. The Clip type (US1: the ship UI's
+//!   `249d84b8`, `2f208561`, under `Open_b_Cockpit`, `Navi_b_Cockpit` ...) is a stated stand-in: its curve is not decoded,
+//!   its wet signal is silence ([`filter::DISTORTION_CLIP`]); the bank takes only a Clip whose wet share is 0 at its game
+//!   parameters' defaults (those two: `Glitch_Mosaic_AGZ_Global` at 0 gives -100 on a block value of 100), and the player
+//!   counts the frames where one is over 0. Fuzz is not in the data.
 //! - The master bus's Wwise Peak Limiter (plug-in 0x006e0003): its output level is a gain after the limiting (`Execute`
 //!   0x144a108d0 runs the limiter, then ramps the buffer by the output gain), so it is in every voice's gain (+1.28 dB at
 //!   DynamicRange's default); its threshold (-4 dB) is reported ([`Mixer::master_limiter`]) for the player to count frames
@@ -80,7 +86,9 @@
 //!   has placed whose positioning in force is 3D on the emitter's position gets its [`Placement`] ([`place`]: those
 //!   curves, the Spread curve and whether it is panned) and its player applies them and the pan from the place it is
 //!   given each frame (T5d-5); the mixer applies them itself to every other voice (at distance 0 unless placed).
-//! - Bus ducking (45); playback limits with priority and its distance factor (node limits 130, bus limits 21), each
+//! - Bus ducking (45; of the ducked bus's Volume, and since US1 of its BusVolume, AkPropID 5: the ship UI's bus 20b49439,
+//!   which the Rank_* events go through, ducks Music by -10 dB, a bus no shipped sound goes through; both act on the
+//!   ducked bus's mix after its effects); playback limits with priority and its distance factor (node limits 130, bus limits 21), each
 //!   killing or, where `use_virtual_behavior` is set (35 limited nodes), making the voices beyond it virtual, and
 //!   `ignore_parent_max_instances` (what plays under such a node does not count against the limits above it); virtual
 //!   voice behaviour below the volume threshold (all four behaviours, the three queue behaviours).
@@ -457,8 +465,10 @@ impl SoundBank {
                     self.check_rtpcs(&b.rtpc).map_err(at)?;
                     self.check_states(&b.states).map_err(at)?;
                     for d in &b.ducks {
-                        if d.target_prop != 0 {
-                            return Err(at(format!("ducking property {} is not built (only volume)", d.target_prop)));
+                        // (AkPropID 0 Volume and 5 BusVolume: both a dB on the ducked bus's mix, which `bus_mix` applies
+                        // after its effects, with its bus volume.)
+                        if !matches!(d.target_prop, 0 | 5) {
+                            return Err(at(format!("ducking property {} is not built (only Volume, BusVolume)", d.target_prop)));
                         }
                         // A ducked bus not in the file carries none of the shipped sounds (nothing to duck).
                         if obj(&d.bus.id).is_some_and(|o| !matches!(o, Object::Bus(_))) {
@@ -595,8 +605,15 @@ impl SoundBank {
             if d.pre_eq.len() != 3 || d.post_eq.len() != 3 {
                 return Err(format!("{} + {} bands, the Guitar Distortion has 3 + 3", d.pre_eq.len(), d.post_eq.len()));
             }
-            if d.distortion > filter::DISTORTION_HEAVY {
-                return Err(format!("distortion type {} is not built (Fuzz and Clip are not in the data)", d.distortion));
+            if d.distortion == filter::DISTORTION_CLIP {
+                let wet = self.clip_wet_at_defaults(e, d)?;
+                if wet != 0.0 {
+                    return Err(format!(
+                        "a Clip distortion with a wet share of {wet} at its game parameters' defaults: its curve is not built, so only one silent there is played (filter::DISTORTION_CLIP)"
+                    ));
+                }
+            } else if d.distortion > filter::DISTORTION_HEAVY {
+                return Err(format!("distortion type {} is not built (Fuzz is not in the data)", d.distortion));
             }
         }
         for r in &e.rtpc {
@@ -615,6 +632,24 @@ impl SoundBank {
             }
         }
         Ok(())
+    }
+
+    /// A Clip distortion's wet share where every game parameter its curves read stands at its default (the Init bank's;
+    /// 0 for one the file does not define, as the mixer reads it): the block's value plus each additive game parameter
+    /// curve on the wet share at its parameter's default, held to 0-100 as its `SetParam` holds it. A curve of another kind
+    /// on the wet share is refused (its value there is not known at load).
+    fn clip_wet_at_defaults(&self, e: &Effect, d: &GuitarDistortion) -> Result<f64, String> {
+        let mut wet = d.wet_dry;
+        let mut set = false;
+        for r in e.rtpc.iter().filter(|r| r.param_id == GD_PARAM_WET) {
+            if r.rtpc_type != RtpcType::GameParameter || r.accumulation != Accumulation::Additive {
+                return Err("a Clip distortion whose wet share a modulator or a non-additive curve drives is not built".into());
+            }
+            let x = self.file.game_syncs.game_parameters.get(&r.game_parameter.id).map_or(0.0, |g| g.default);
+            wet += curve::eval(&r.points, r.scaling, x);
+            set = true;
+        }
+        Ok(if set { wet.clamp(0.0, 100.0) } else { wet })
     }
 
     /// The effects of one node's or bus's slots the mixer runs on its voices, in slot order, into `out`: every shipped
@@ -911,6 +946,8 @@ impl SoundBank {
                     return Err(at("SetGameParameter without its value"));
                 }
             }
+            // (Its target is the game parameter, which needs no definition: without one its default is 0.)
+            ActionKind::ResetGameParameter => {}
         }
         if matches!(a.kind, ActionKind::SetVolume | ActionKind::SetPitch | ActionKind::ResetVolume | ActionKind::ResetPitch) && a.params.value.is_none() {
             return Err(at("a set / reset without its value"));

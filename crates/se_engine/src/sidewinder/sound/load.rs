@@ -3,7 +3,7 @@
 //! (`mods::check_sound`, `mods::check_wav`), on worker threads. A damaged recording is logged and stays silent; a damaged
 //! `sounds.json` leaves the ship silent. Each Wwise Tone Generator is a clip too (T5d-8: `se_core::elite_sound::tone`
 //! makes its samples as it plays), under its source plug-in's id; every noise voice shares one noise state, as in the
-//! exe.
+//! exe. With them the ship UI's tables (`ui/sound_tables.json`, `ui.rs`): refused, the UI's `PlaySound`s stay silent.
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU32;
@@ -15,6 +15,7 @@ use se_core::elite_sound::tone::{ToneParams, NOISE_SEED};
 use se_core::elite_sound::{parse_sounds, Id, SoundBank, OUTPUT_RATE};
 
 use super::super::CODE;
+use super::ui::UiTables;
 
 /// A recording, checked: its bytes and the length the media table gives (the decoder's own end is cut there, so a loop
 /// joins sample for sample); or a Tone Generator, whose samples are made as it plays (its own length: `frames` endless).
@@ -44,7 +45,9 @@ pub struct Loaded {
     pub bank: Arc<SoundBank>,
     pub clips: HashMap<Id, Arc<Clip>>,
     pub rumbles: HashMap<Id, Rumble>,
-    /// Recordings refused (file, why): they stay silent.
+    /// The ship UI's tables (`ui/sound_tables.json`); None if refused (the UI's `PlaySound`s are then silent).
+    pub tables: Option<UiTables>,
+    /// Recordings (and the UI's tables) refused (file, why): they stay silent.
     pub refused: Vec<(String, String)>,
     pub seconds: f64,
 }
@@ -110,5 +113,8 @@ pub fn load() -> Result<Loaded, (String, String)> {
             clips.insert(*id, Arc::new(clip));
         }
     }
-    Ok(Loaded { bank: Arc::new(bank), clips, rumbles, refused, seconds: started.elapsed().as_secs_f64() })
+    const TABLES: &str = "ui/sound_tables.json";
+    let tables = read(TABLES).and_then(|b| UiTables::parse(&b).map_err(|why| (TABLES.to_string(), why)));
+    let tables = tables.map_err(|r| refused.push(r)).ok();
+    Ok(Loaded { bank: Arc::new(bank), clips, rumbles, tables, refused, seconds: started.elapsed().as_secs_f64() })
 }

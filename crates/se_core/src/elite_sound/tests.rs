@@ -1177,3 +1177,95 @@ fn an_emitters_orientation_reaches_its_voices() {
     assert!(!u.is_empty());
     assert!(u.iter().all(|u| u.orientation == Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])), "{:?}", u.first().map(|u| u.orientation));
 }
+
+/// ResetGameParameter (US1, the ship UI's `PopUpShow_e_Cockpit`): a game parameter set on an emitter goes back to the Init
+/// bank's default over the action's fade, along its curve (Linear: halfway at half the fade), whatever the block's value
+/// says; the global value is not touched.
+#[test]
+fn a_reset_takes_a_game_parameter_back_to_its_default_over_its_fade() {
+    let gp = wwise_id("ui_reset_probe");
+    let (set_id, reset_id) = (Id(0x5e70_0001), Id(0x5e70_0002));
+    let b = edited(|f| {
+        let mut set = f.objects.values().find_map(|o| if let Object::Action(a) = o { Some(a.clone()) } else { None }).unwrap();
+        set.id = set_id;
+        set.kind = data::ActionKind::SetGameParameter;
+        set.scope = data::Scope::GameObject;
+        set.target = gp;
+        set.target_is_bus = false;
+        set.params = data::ActionParams { value: Some(data::ValueRange { base: 7.0, min: 0.0, max: 0.0 }), value_meaning: Some(data::ValueMeaning::Absolute), ..Default::default() };
+        set.props = data::Props::new();
+        set.ranged = data::Ranged::new();
+        let mut reset = set.clone();
+        reset.id = reset_id;
+        reset.kind = data::ActionKind::ResetGameParameter;
+        reset.params.value = Some(data::ValueRange { base: 5.0, min: 0.0, max: 0.0 });
+        reset.params.fade_curve = Some(Interp::Linear);
+        reset.props.insert("TransitionTime".into(), data::PropValue::Num(1000.0));
+        f.objects.insert(set_id, Object::Action(set));
+        f.objects.insert(reset_id, Object::Action(reset));
+        f.events.insert(wwise_id("ui_reset_set"), data::Event { name: Some("ui_reset_set".into()), actions: vec![set_id] });
+        f.events.insert(wwise_id("ui_reset_reset"), data::Event { name: Some("ui_reset_reset".into()), actions: vec![reset_id] });
+        f.game_syncs.game_parameters.insert(gp, data::GameParameter { name: None, defined_in_init: true, default: 2.0, ramp: data::Ramp::None, ramp_up: 0.0, ramp_down: 0.0, built_in: 0 });
+    })
+    .unwrap();
+    let mut m = Mixer::new(Arc::new(b), 1);
+    m.post("ui_reset_set", 9).unwrap();
+    m.step(0.1);
+    assert!((m.game_parameter_id(gp, Some(9)) - 7.0).abs() < 1e-6);
+    m.post("ui_reset_reset", 9).unwrap();
+    m.step(0.5);
+    let half = m.game_parameter_id(gp, Some(9));
+    assert!((half - 4.5).abs() < 1e-3, "halfway through the fade: {half}");
+    m.step(0.6);
+    assert!((m.game_parameter_id(gp, Some(9)) - 2.0).abs() < 1e-6, "at the default");
+    assert!((m.game_parameter_id(gp, None) - 2.0).abs() < 1e-6, "the global value is the default throughout");
+}
+
+/// The Clip stand-in at load (US1): a Clip distortion is taken only if its wet share is 0 where its game parameters stand
+/// at their defaults, as the ship UI's `249d84b8` is (a block value of 100, the curve of `Glitch_Mosaic_AGZ_Global` -100 at
+/// its default 0); the same effect with that parameter's default at 1 (the curve's 50: a share of 100) is refused.
+#[test]
+fn a_clip_loads_only_silent_at_its_defaults() {
+    let gp = wwise_id("glitch_probe");
+    let clip = |default: f64| {
+        edited(|f| {
+            let id = Id(0x0d0d_0c11);
+            let band = data::EqBand { filter: data::EqFilter::PeakingEq, gain_db: 0.0, frequency: 1000.0, q: 1.0, on: false };
+            f.effects.insert(id, Effect {
+                kind: "FxShareSet".into(),
+                id,
+                name: None,
+                plugin: GUITAR_DISTORTION.into(),
+                params_hex: String::new(),
+                eq: None,
+                distortion: Some(data::GuitarDistortion {
+                    pre_eq: vec![band.clone(), band.clone(), band.clone()],
+                    post_eq: vec![band.clone(), band.clone(), band],
+                    distortion: filter::DISTORTION_CLIP,
+                    drive: 68.0,
+                    tone: 13.0,
+                    rectification: 100.0,
+                    output_level_db: 0.0,
+                    wet_dry: 100.0,
+                }),
+                limiter: None,
+                master: None,
+                compressor: None,
+                rtpc: vec![Rtpc {
+                    game_parameter: data::Ref { id: gp, name: None },
+                    rtpc_type: RtpcType::GameParameter,
+                    accumulation: Accumulation::Additive,
+                    param_id: GD_PARAM_WET,
+                    param: format!("plugin parameter {GD_PARAM_WET}"),
+                    curve_id: Id(1),
+                    scaling: Scaling::None,
+                    points: vec![Point { x: 0.0, y: -100.0, interp: Interp::Constant }, Point { x: 0.7, y: -100.0, interp: Interp::Linear }, Point { x: 1.0, y: 50.0, interp: Interp::Linear }],
+                }],
+            });
+            f.game_syncs.game_parameters.insert(gp, data::GameParameter { name: None, defined_in_init: true, default, ramp: data::Ramp::None, ramp_up: 0.0, ramp_down: 0.0, built_in: 0 });
+        })
+    };
+    assert!(clip(0.0).is_ok(), "{:?}", clip(0.0).err());
+    let e = clip(1.0).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("Clip distortion with a wet share of 100"), "{e}");
+}

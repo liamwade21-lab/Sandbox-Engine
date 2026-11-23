@@ -880,12 +880,18 @@ impl Mixer {
                 let (g, s) = (a.params.switch_group.as_ref().unwrap().id, a.params.switch.as_ref().unwrap().id);
                 self.switches.insert((g, emitter), s);
             }
-            ActionKind::SetGameParameter => {
-                let v = self.value_of(a);
+            ActionKind::SetGameParameter | ActionKind::ResetGameParameter => {
                 let id = a.target;
-                let value = match a.params.value_meaning {
-                    Some(ValueMeaning::Offset) => self.gps.get(&(id, scope_emitter)).map(|g| g.target.to).unwrap_or_else(|| self.gp_value(id, emitter)) + v,
-                    _ => v,
+                let value = if a.kind == ActionKind::ResetGameParameter {
+                    // (Wwise's ResetRTPCValue: the parameter's default as the Init bank defines it, whatever the block's
+                    // value says.)
+                    self.gp_def(id).map_or(0.0, |d| d.default)
+                } else {
+                    let v = self.value_of(a);
+                    match a.params.value_meaning {
+                        Some(ValueMeaning::Offset) => self.gps.get(&(id, scope_emitter)).map(|g| g.target.to).unwrap_or_else(|| self.gp_value(id, emitter)) + v,
+                        _ => v,
+                    }
                 };
                 self.set_gp(id, value, scope_emitter, Some(fade));
                 if a.params.bypass_transition == Some(true) {

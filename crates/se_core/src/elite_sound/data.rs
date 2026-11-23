@@ -453,6 +453,8 @@ pub enum ActionKind {
     SetState,
     SetSwitch,
     SetGameParameter,
+    /// Back to the Init bank's default over the fade (US1: the ship UI's `PopUpShow_e_Cockpit`).
+    ResetGameParameter,
     SetVolume,
     ResetVolume,
     SetPitch,

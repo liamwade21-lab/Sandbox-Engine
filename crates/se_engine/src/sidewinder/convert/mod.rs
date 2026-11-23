@@ -6,11 +6,13 @@
 //! (`ControlSchemes`) and the version line of `SOURCES.txt` (`VersionInfo.txt`) alone; `ELITE_EXPORT`, the Sidewinder's
 //! export (default `re/elite/frea_export/sidewinder`; its `decoded/` subfolder is what is read, `README.md` there the
 //! reference) for Elite's original assets; and the audio export beside it (`sidewinder_audio`). Without the decoded
-//! export the run fails, naming it. The FREA key is never read.
+//! export the run fails, naming it. The ship UI's export beside it (`sidewinder_ui`: its `audio/` and `decoded/sounds/`)
+//! gives the UI's sounds. The FREA key is never read.
 //!
 //! Each kind of file is its own file here, `convert(ctx, shipped)` writing its files into `Ctx::out`, reading them back
 //! and reporting each in `Shipped`: `binds.rs` (Elite's key files), `models.rs` (Elite's models, materials and
-//! textures), `assembly.rs` (`ship.json`, checked against the models by `assembly::check`), `chair.rs`, `sound.rs`.
+//! textures), `assembly.rs` (`ship.json`, checked against the models by `assembly::check`), `chair.rs`, `sound.rs` (the
+//! ship's and the UI's events in one `sounds.json`), `ui_sound.rs` (which UI events, and `ui/sound_tables.json`).
 //! Then `SOURCES.txt` and `mod.cfg` are written from `Shipped`, and every file of the folder is read back: each must be
 //! a `Need`, read as the game reads it, and be at most 90 MB. A file the converter no longer ships is not deleted by it:
 //! the read-back refuses the folder until it is removed (`git rm`).
@@ -20,6 +22,7 @@ mod binds;
 mod chair;
 mod models;
 mod sound;
+mod ui_sound;
 
 use std::path::{Path, PathBuf};
 
@@ -40,9 +43,10 @@ pub(super) struct Ctx {
     pub install: PathBuf,
     /// The decoded export (`ELITE_EXPORT`'s `decoded/`).
     pub export: PathBuf,
-    /// The audio export (`sidewinder_audio`, beside `ELITE_EXPORT`): `sound.rs`'s, once T5a fills it.
-    #[allow(dead_code)]
+    /// The audio export (`sidewinder_audio`, beside `ELITE_EXPORT`): `sound.rs`'s.
     pub audio: PathBuf,
+    /// The ship UI's export (`sidewinder_ui`, beside `ELITE_EXPORT`): its `audio/` and `decoded/sounds/`, `ui_sound.rs`'s.
+    pub ui: PathBuf,
     /// The mod's folder.
     pub out: PathBuf,
 }
@@ -61,7 +65,8 @@ impl Ctx {
             ));
         }
         let audio = export_root.parent().map(|p| p.join("sidewinder_audio")).unwrap_or_default();
-        Ok(Ctx { install: install(), export, audio, out: out_dir() })
+        let ui = export_root.parent().map(|p| p.join("sidewinder_ui")).unwrap_or_default();
+        Ok(Ctx { install: install(), export, audio, ui, out: out_dir() })
     }
 
     /// Writes a file of the mod's folder (`rel` with forward slashes), making its folders.
@@ -124,6 +129,7 @@ fn run() -> Result<(), String> {
     assembly::convert(&ctx, &mut shipped)?;
     chair::convert(&ctx, &mut shipped)?;
     sound::convert(&ctx, &mut shipped)?;
+    ui_sound::convert(&ctx, &mut shipped)?;
     write_sources(&ctx, &mut shipped)?;
     write_cfg(&ctx, &shipped)?;
     read_back(&ctx, &shipped)
@@ -225,6 +231,7 @@ fn check_folder(ctx: &Ctx) -> Result<usize, String> {
             Some("json") if name == "materials.json" => se_core::elite_ship::parse_materials(&bytes).map(|_| ()).map_err(|e| e.to_string()),
             Some("json") if name == "ship.json" => assembly::check(ctx, &bytes),
             Some("json") if name == "sounds.json" => sound::check(&bytes),
+            Some("json") if name == "ui/sound_tables.json" => ui_sound::check_tables(&bytes),
             Some("json") => serde_json::from_slice::<serde_json::Value>(&bytes).map(|_| ()).map_err(|e| e.to_string()),
             _ => Ok(()),
         };

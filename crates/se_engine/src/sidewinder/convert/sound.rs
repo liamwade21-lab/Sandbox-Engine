@@ -17,6 +17,10 @@
 //! `events.json` does not hold), their parameter blocks decoded (`effect`). Every recording shipped
 //! passed `sidewinder_media.py`'s proof (`decode_identical` in `media/index.json`: the file decodes to the `.wem`'s audio,
 //! sample for sample); `build` refuses any other.
+//!
+//! The ship UI's events (`ui_sound.rs` picks them) come from a second export of the same shape, made by the same tools
+//! (`re/elite/frea_export/sidewinder_ui/audio`); the two are merged (`Export::merge`) before anything is reached, so the
+//! one `sounds.json` holds both.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +28,7 @@ use serde_json::{Map, Value};
 
 use se_core::elite_sound::{data::FORMAT, event_id, parse_sounds, write_sounds, Mixer, SoundBank, SoundFile, COMPRESSOR, GUITAR_DISTORTION, MASTER_SUITE, PARAMETRIC_EQ, PEAK_LIMITER};
 
+use super::ui_sound::{self, UiPick};
 use super::{Ctx, Shipped};
 
 /// Every event the game posts, with what proves it (`triggers.json` entry ids, `ship.json` state machine cues).
@@ -379,11 +384,13 @@ fn id_of(v: &Value) -> Option<&str> {
     v.get("id").and_then(Value::as_str)
 }
 
-/// The audio export read once: events by id (with those only met nested as posted events), objects, game syncs.
-struct Export {
+/// An audio export read once: events by id (with those only met nested as posted events), objects, game syncs, media.
+pub(super) struct Export {
     events: BTreeMap<String, (Option<String>, Vec<String>)>,
     by_name: BTreeMap<String, String>,
     by_bank: BTreeMap<String, Vec<String>>,
+    /// The wanted names no bank of the export holds (`events.json`'s `absent`), lower-cased.
+    absent: BTreeSet<String>,
     objects: Map<String, Value>,
     syncs: Value,
     units: Value,
@@ -391,10 +398,14 @@ struct Export {
     meters: Vec<Value>,
     /// Every effect in a slot of a node or bus of `events.json` (`effects.json`, by `sidewinder_effects.py`).
     effects: Map<String, Value>,
+    /// Every recording of `media/index.json` (made by `sidewinder_media.py`) with the export it is in.
+    media: BTreeMap<String, (Value, std::path::PathBuf)>,
+    /// The source plugins (`media/plugins.json`).
+    plugins: Map<String, Value>,
 }
 
 impl Export {
-    fn read(audio: &std::path::Path) -> Result<Export, String> {
+    pub(super) fn read(audio: &std::path::Path) -> Result<Export, String> {
         let v = read_json(&audio.join("events.json"))?;
         let mut events = BTreeMap::new();
         let mut by_name = BTreeMap::new();
@@ -436,13 +447,141 @@ impl Export {
                 table.entry(id.clone()).or_insert_with(|| d.clone());
             }
         }
-        Ok(Export { events, by_name, by_bank, objects, syncs, units, meters, effects })
+        let absent = v.get("absent").and_then(Value::as_array).into_iter().flatten().filter_map(|a| a.get("name").and_then(Value::as_str)).map(str::to_lowercase).collect();
+        let index = read_json(&audio.join("media").join("index.json"))?;
+        let index = index.get("media").and_then(Value::as_object).cloned().ok_or("media/index.json: no media")?;
+        let media = index.into_iter().map(|(s, m)| (s, (m, audio.join("media")))).collect();
+        let plugins = read_json(&audio.join("media").join("plugins.json"))?;
+        let plugins = plugins.get("plugins").and_then(Value::as_object).cloned().ok_or("media/plugins.json: no plugins")?;
+        Ok(Export { events, by_name, by_bank, absent, objects, syncs, units, meters, effects, media, plugins })
     }
 
     /// The event id of a name of the tables (events.json's own key, case aside).
     fn event(&self, name: &str) -> Result<String, String> {
         self.by_name.get(&name.to_lowercase()).cloned().ok_or_else(|| format!("events.json has no event {name}"))
     }
+
+    /// Whether the export holds an event of this name (case aside).
+    pub(super) fn has(&self, name: &str) -> bool {
+        self.by_name.contains_key(&name.to_lowercase())
+    }
+
+    /// Whether the export lists the name as wanted and held by no bank (case aside).
+    pub(super) fn absent(&self, name: &str) -> bool {
+        self.absent.contains(&name.to_lowercase())
+    }
+
+    /// The named events the export holds (their own spelling).
+    pub(super) fn names(&self) -> impl Iterator<Item = &str> {
+        self.events.values().filter_map(|(n, _)| n.as_deref())
+    }
+
+    /// This export with another's (the UI's) added. What both hold must be the same, but for what `sidewinder_events.py`'s
+    /// own rule for copies in several banks unites (`merge_copy`: a container's children, each bank listing those it holds,
+    /// united and sorted; seen on 2 actor-mixers, the UI export's 9 more GUI banks holding a child more) and the summaries
+    /// the trim drops (`resolved`, `bank`, `banks`, a Sound's `media`). A recording both hold is taken from this export.
+    fn merge(mut self, other: Export) -> Result<Export, String> {
+        for (id, e) in other.events {
+            match self.events.get(&id) {
+                Some(mine) if *mine != e => return Err(format!("event {id} differs between the exports")),
+                Some(_) => {}
+                None => {
+                    self.events.insert(id, e);
+                }
+            }
+        }
+        for (name, id) in other.by_name {
+            if self.by_name.get(&name).is_some_and(|mine| *mine != id) {
+                return Err(format!("{name} names two events"));
+            }
+            self.by_name.insert(name, id);
+        }
+        for (bank, names) in other.by_bank {
+            let mine = self.by_bank.entry(bank).or_default();
+            for n in names {
+                if !mine.contains(&n) {
+                    mine.push(n);
+                }
+            }
+        }
+        for (id, o) in other.objects {
+            let merged = match self.objects.get(&id) {
+                Some(mine) => united(&id, mine, &o)?,
+                None => o,
+            };
+            self.objects.insert(id, merged);
+        }
+        if self.units != other.units {
+            return Err("the exports' units differ".into());
+        }
+        for key in ["volume_threshold_db", "max_voices"] {
+            if self.syncs.get(key) != other.syncs.get(key) {
+                return Err(format!("the exports' game syncs differ in {key}"));
+            }
+        }
+        for table in ["game_parameters", "state_groups", "switch_groups"] {
+            let theirs = other.syncs.get(table).and_then(Value::as_object).cloned().unwrap_or_default();
+            let mine = self.syncs.get_mut(table).and_then(Value::as_object_mut).ok_or_else(|| format!("events.json: no game_syncs {table}"))?;
+            same_union(mine, theirs, table, &[])?;
+        }
+        for m in other.meters {
+            if !self.meters.contains(&m) {
+                self.meters.push(m);
+            }
+        }
+        // (An effect's `holders` are the export's nodes that hold it, its `bank` / `banks` where the export met it; a
+        // plugin's `from_` the bank its block was read from: none ships.)
+        same_union(&mut self.effects, other.effects, "effect", &["holders", "bank", "banks"])?;
+        same_union(&mut self.plugins, other.plugins, "source plugin", &["from_"])?;
+        for (s, m) in other.media {
+            self.media.entry(s).or_insert(m);
+        }
+        Ok(self)
+    }
+}
+
+/// `theirs` added to `mine`; an id both hold must be the same but for the fields `ignore` names (the export's own notes,
+/// which nothing ships: `mine`'s are kept).
+fn same_union(mine: &mut Map<String, Value>, theirs: Map<String, Value>, what: &str, ignore: &[&str]) -> Result<(), String> {
+    let strip = |v: &Value| v.as_object().map(|o| o.iter().filter(|(k, _)| !ignore.contains(&k.as_str())).map(|(k, x)| (k.clone(), x.clone())).collect::<Map<String, Value>>());
+    for (id, v) in theirs {
+        match mine.get(&id) {
+            Some(m) if strip(m) != strip(&v) => return Err(format!("{what} {id} differs between the exports")),
+            Some(_) => {}
+            None => {
+                mine.insert(id, v);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One object both exports hold, as `Export::merge` takes it.
+fn united(id: &str, mine: &Value, theirs: &Value) -> Result<Value, String> {
+    let strip = |v: &Value| {
+        let mut o = v.as_object().cloned().unwrap_or_default();
+        for k in ["resolved", "bank", "banks", "media", "children"] {
+            o.remove(k);
+        }
+        o
+    };
+    if strip(mine) != strip(theirs) {
+        return Err(format!("object {id} differs between the exports"));
+    }
+    let mut out = mine.clone();
+    let kids = |v: &Value| v.get("children").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<BTreeSet<String>>());
+    match (kids(mine), kids(theirs)) {
+        (Some(a), Some(b)) if a != b => {
+            let t = mine.get("type").and_then(Value::as_str).unwrap_or("");
+            if !["ActorMixer", "SwitchCntr", "RanSeqCntr", "LayerCntr"].contains(&t) {
+                return Err(format!("object {id} ({t}): its children differ between the exports"));
+            }
+            out["children"] = Value::Array(a.union(&b).cloned().map(Value::String).collect());
+        }
+        (a, b) if a.is_some() != b.is_some() => return Err(format!("object {id}: children in one export only")),
+        _ => {}
+    }
+    Ok(out)
 }
 
 /// What a set of events reaches.
@@ -805,21 +944,22 @@ fn master_block(id: &str, e: &Value) -> Result<Value, String> {
     }))
 }
 
-/// `sounds.json` built from the export: the file and the media files to copy (source id, file in `media/`).
+/// `sounds.json` built from the exports: the file, the media files to copy (source id, the file in its export's `media/`)
+/// and the UI's events.
 struct Built {
     file: SoundFile,
-    media: Vec<(String, String)>,
+    media: Vec<(String, std::path::PathBuf)>,
     left_out: Vec<String>,
+    ui: UiPick,
 }
 
-fn build(audio: &std::path::Path) -> Result<Built, String> {
-    let x = Export::read(audio)?;
-    let index = read_json(&audio.join("media").join("index.json"))?;
-    let index = index.get("media").and_then(Value::as_object).cloned().ok_or("media/index.json: no media")?;
-    let plugins = read_json(&audio.join("media").join("plugins.json"))?;
-    let plugins = plugins.get("plugins").and_then(Value::as_object).cloned().ok_or("media/plugins.json: no plugins")?;
-    let proven = |s: &String| index.get(s).is_some_and(|m| m.get("decode_identical") == Some(&Value::Bool(true)));
-    let media_ok = |r: &Reach| r.sources.iter().all(proven) && r.plugins.iter().all(|p| plugins.contains_key(p));
+fn build(ctx: &Ctx) -> Result<Built, String> {
+    let ship = Export::read(&ctx.audio)?;
+    let ui_export = Export::read(&ui_sound::audio(ctx))?;
+    let ui = ui_sound::pick(&ui_sound::read_tables(ctx)?, &ui_export)?;
+    let x = ship.merge(ui_export)?;
+    let proven = |s: &String| x.media.get(s).is_some_and(|(m, _)| m.get("decode_identical") == Some(&Value::Bool(true)));
+    let media_ok = |r: &Reach| r.sources.iter().all(proven) && r.plugins.iter().all(|p| x.plugins.contains_key(p));
 
     let mut all = Reach::default();
     let mut ship_names = Vec::new();
@@ -851,6 +991,16 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
                 left_out.push(format!("{name} ({why}): its media is not at rest"));
             }
         }
+    }
+    // The UI's events (`ui_sound.rs`): every one ships, its media proven as the ship's.
+    for name in &ui.events {
+        let id = x.event(name)?;
+        let mut r = Reach::default();
+        r.event(&x, &id)?;
+        if !media_ok(&r) {
+            return Err(format!("UI event {name}: some of its media is not in the UI export's media/ or did not pass sidewinder_media.py's decode proof"));
+        }
+        all.event(&x, &id)?;
     }
     all.finish(&x);
 
@@ -914,7 +1064,7 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
     let mut media = Map::new();
     let mut files = Vec::new();
     for s in &all.sources {
-        let m = &index[s];
+        let (m, dir) = &x.media[s];
         let file = m.get("file").and_then(Value::as_str).ok_or_else(|| format!("media/index.json: {s} has no file"))?;
         let ext = file.rsplit('.').next().unwrap_or("ogg");
         media.insert(
@@ -932,11 +1082,11 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
                 "loop_rms": m.get("loop_rms"),
             }),
         );
-        files.push((s.clone(), file.to_string()));
+        files.push((s.clone(), dir.join(file)));
     }
     let mut source_plugins = Map::new();
     for p in &all.plugins {
-        let mut rec = plugins[p].as_object().cloned().unwrap_or_default();
+        let mut rec = x.plugins[p].as_object().cloned().unwrap_or_default();
         rec.remove("from_");
         source_plugins.insert(p.clone(), Value::Object(rec));
     }
@@ -976,9 +1126,11 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
     let meters: Vec<Value> = x.meters.iter().filter(|m| m.get("bus").and_then(Value::as_str).is_some_and(|b| objects_v.get(b).is_some())).cloned().collect();
     let file = serde_json::json!({
         "format": FORMAT,
-        "about": "The Faulcon DeLacy Sidewinder's sound events as Elite Dangerous's Wwise banks define them, and everything they reach, \
-                  trimmed from the audio export's events.json without changing a value (written by copy_sidewinder, \
-                  sidewinder/convert/sound.rs; played by se_core::elite_sound::Mixer). Ids are Wwise ids as 8 hex digits.",
+        "about": "The Faulcon DeLacy Sidewinder's sound events and its ship UI's (the cockpit interfaces' PlaySound tables and the \
+                  HUD events the game posts: ui/sound_tables.json) as Elite Dangerous's Wwise banks define them, and everything \
+                  they reach, trimmed from the audio exports' events.json without changing a value (written by copy_sidewinder, \
+                  sidewinder/convert/sound.rs and ui_sound.rs; played by se_core::elite_sound::Mixer). Ids are Wwise ids as 8 \
+                  hex digits.",
         "units": x.units,
         "ship_events": ship_names,
         "open_events": open_names,
@@ -993,11 +1145,11 @@ fn build(audio: &std::path::Path) -> Result<Built, String> {
     });
     let file: SoundFile = serde_json::from_value(file).map_err(|e| format!("sounds.json's shape: {e}"))?;
     SoundBank::new(file.clone()).map_err(|e| format!("sounds.json: {e}"))?;
-    Ok(Built { file, media: files, left_out })
+    Ok(Built { file, media: files, left_out, ui })
 }
 
 pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
-    let built = build(&ctx.audio)?;
+    let built = build(ctx)?;
     let bytes = write_sounds(&built.file).map_err(|e| e.to_string())?;
     ctx.write("sounds.json", &bytes)?;
     shipped.add(
@@ -1005,14 +1157,17 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
         &[
             "re/elite/frea_export/sidewinder_audio/events.json (the 62 Wwise bank payloads at rest, read by sidewinder_events.py)".to_string(),
             "re/elite/frea_export/sidewinder_audio/effects.json (the effects in the nodes' and buses' slots, from the same payloads, by sidewinder_effects.py)".to_string(),
+            "re/elite/frea_export/sidewinder_ui/audio/events.json and effects.json (the ship UI's events, by the same tools from the 62 payloads and 9 more GUI banks: re/elite/work/ui/sounds/ui_export.py)".to_string(),
         ],
         "A",
         &format!(
-            "The ship's Wwise events ({} the game posts, {} whose sender is not found) and all they reach: {} events with the ones \
-             they post, {} objects, {} media, {} source plugins, {} Parametric EQs, {} Guitar Distortions, {} Peak Limiter(s), {} \
-             master plug-in(s) 0x00BA0003, {} Compressors, the Init bank's game syncs. Values are the banks'.",
+            "The ship's Wwise events ({} the game posts, {} whose sender is not found), the ship UI's ({}: ui_sound.rs) and all they \
+             reach: {} events with the ones they post, {} objects, {} media, {} source plugins, {} Parametric EQs, {} Guitar \
+             Distortions, {} Peak Limiter(s), {} master plug-in(s) 0x00BA0003, {} Compressors, the Init bank's game syncs. Values \
+             are the banks'.",
             built.file.ship_events.len(),
             built.file.open_events.len(),
+            built.ui.events.len(),
             built.file.events.len(),
             built.file.objects.len(),
             built.file.media.len(),
@@ -1029,10 +1184,9 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
     if sfx.is_dir() {
         std::fs::remove_dir_all(&sfx).map_err(|e| format!("{}: {e}", sfx.display()))?;
     }
-    let media_dir = ctx.audio.join("media");
-    for (src, file) in &built.media {
-        let bytes = std::fs::read(media_dir.join(file)).map_err(|e| format!("media/{file}: {e}"))?;
-        let ext = file.rsplit('.').next().unwrap_or("ogg");
+    for (src, path) in &built.media {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("ogg");
         let rel = format!("sfx/{src}.{ext}");
         ctx.write(&rel, &bytes)?;
         let (grade, note) = if ext == "ogg" {
@@ -1040,23 +1194,42 @@ pub(super) fn convert(ctx: &Ctx, shipped: &mut Shipped) -> Result<(), String> {
         } else {
             ("A", "Elite's exact decoded samples, not its packets: vgmstream's 16-bit PCM decode of the game's stream (Platinum ADPCM, or a Wwise Vorbis stream ww2ogg cannot rebuild), sample for sample what the .wem decodes to; such a stream cannot be rewrapped in Ogg without re-encoding.")
         };
-        shipped.add(&rel, &[format!("Wwise source {src} (re/elite/frea_export/sidewinder_audio/media/{file})")], grade, note);
+        // (The export's path from `re/` on, as the other sources are named.)
+        let from = path.to_string_lossy().replace('\\', "/");
+        let from = from.find("re/elite/").map_or(from.as_str(), |i| &from[i..]);
+        shipped.add(&rel, &[format!("Wwise source {src} ({from})")], grade, note);
     }
     shipped.note(&format!(
         "Sounds: the open events left out because the banks at rest lack their media: {}.",
         if built.left_out.is_empty() { "none".to_string() } else { built.left_out.join("; ") }
     ));
+    shipped.note(&format!(
+        "Ship UI sounds: values of the cockpit interfaces' tables and HUD events of the game with no event in any bank (Elite posts \
+         their ids and nothing answers: silence), not shipped: {}.",
+        built.ui.silent.join(", ")
+    ));
     read_back(ctx, &built)
 }
 
 /// Every media `sounds.json` names passed the decode proof (`media/index.json`), is in `sfx/` and is what it says (Ogg
-/// Vorbis, or RIFF WAVE for the PCM ones), and the file reads back as the game reads it.
+/// Vorbis, or RIFF WAVE for the PCM ones), and the file reads back as the game reads it, with every UI event picked in it.
 fn read_back(ctx: &Ctx, built: &Built) -> Result<(), String> {
     let bytes = ctx.read("sounds.json")?;
     check(&bytes)?;
-    let index = read_json(&ctx.audio.join("media").join("index.json"))?;
+    let bank = parse_sounds(&bytes).map_err(|e| e.to_string())?;
+    if let Some(e) = built.ui.events.iter().find(|e| bank.event(e).is_none()) {
+        return Err(format!("UI event {e} is missing"));
+    }
+    let index: BTreeMap<String, Value> = [&ctx.audio, &ui_sound::audio(ctx)]
+        .iter()
+        .map(|a| read_json(&a.join("media").join("index.json")))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .rev()
+        .flat_map(|v| v.get("media").and_then(Value::as_object).cloned().unwrap_or_default())
+        .collect();
     for (src, m) in &built.file.media {
-        let entry = index.pointer(&format!("/media/{src}")).ok_or_else(|| format!("{}: not in media/index.json", m.file))?;
+        let entry = index.get(&src.to_string()).ok_or_else(|| format!("{}: in neither export's media/index.json", m.file))?;
         if entry.get("decode_identical") != Some(&Value::Bool(true)) {
             return Err(format!("{}: media/index.json does not say it decodes to the .wem's audio", m.file));
         }
@@ -1073,8 +1246,8 @@ fn read_back(ctx: &Ctx, built: &Built) -> Result<(), String> {
     Ok(())
 }
 
-/// `sounds.json` as the game reads it: parsed, every `SHIP_EVENTS` event in it, and a mixer made from it that hands out the
-/// master's plug-in 0x00BA0003 (without it the ship would sound 14 dB too quiet).
+/// `sounds.json` as the game reads it: parsed, every `SHIP_EVENTS` event in it, the UI's exe events (`ui_sound::check_bank`),
+/// and a mixer made from it that hands out the master's plug-in 0x00BA0003 (without it the ship would sound 14 dB too quiet).
 pub(super) fn check(bytes: &[u8]) -> Result<(), String> {
     let bank = parse_sounds(bytes).map_err(|e| e.to_string())?;
     for (name, _) in SHIP_EVENTS {
@@ -1082,6 +1255,7 @@ pub(super) fn check(bytes: &[u8]) -> Result<(), String> {
             return Err(format!("event {name} is missing"));
         }
     }
+    ui_sound::check_bank(&bank)?;
     if Mixer::new(std::sync::Arc::new(bank), 0).master_suite().is_none() {
         return Err("the master bus's plug-in 0x00BA0003 is missing".into());
     }
@@ -1095,7 +1269,7 @@ pub(super) fn check(bytes: &[u8]) -> Result<(), String> {
 #[ignore]
 fn sounds_from_the_export() {
     let ctx = Ctx::from_env().unwrap();
-    let built = build(&ctx.audio).unwrap_or_else(|e| panic!("{e}"));
+    let built = build(&ctx).unwrap_or_else(|e| panic!("{e}"));
     let bytes = write_sounds(&built.file).unwrap();
     let out = ctx.audio.join("..").join("..").join("work").join("sound").join("t5b").join("sounds.json");
     std::fs::write(&out, &bytes).unwrap();

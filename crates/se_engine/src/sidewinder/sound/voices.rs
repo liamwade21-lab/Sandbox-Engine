@@ -147,6 +147,9 @@ pub struct Meter {
     /// a frame counted is one where Elite's limiter would have acted (the mod builds its output gain only).
     limit: AtomicU32,
     over_limit: AtomicU64,
+    /// Voice frames in which a Guitar Distortion of type Clip had a wet share over 0 (its curve is not built, a stated
+    /// stand-in: `filter::DISTORTION_CLIP`): a frame counted is one where Elite's sound would differ.
+    clip_unbuilt: AtomicU64,
     /// Voices or decoders the audio thread had to drop itself (the game thread's hands were full or busy).
     dropped_here: AtomicU64,
     /// The master's plug-in (`MasterChain::counts`): frames through it, frames where a compressor band reduced its gain
@@ -653,6 +656,11 @@ impl Stage {
             FxNow::Off => {}
         }
     }
+
+    /// The frames since the last call in which this stage was a Clip with a wet share over 0 (`Distortion::take_unbuilt`).
+    fn take_unbuilt(&mut self) -> u64 {
+        self.dist.take_unbuilt()
+    }
 }
 
 /// A voice's speed moving to the latest in `RAMP_STEPS` steps, as its filter values do.
@@ -1075,6 +1083,10 @@ impl VoiceSource {
         }
         for stage in &mut self.stages[..self.stages_n] {
             stage.run_block(&mut self.buf, ch, n);
+            let unbuilt = stage.take_unbuilt();
+            if unbuilt > 0 {
+                self.ctl.meter.clip_unbuilt.fetch_add(unbuilt, Ordering::Relaxed);
+            }
         }
         let mut bad = false;
         // (The level, and the recording's own gain with it: Elite's make-up gain, after the effects.)
@@ -1283,6 +1295,10 @@ impl BusMix {
         }
         for stage in &mut self.stages[..self.stages_n] {
             stage.run_block(&mut self.folded, 2, BLOCK);
+            let unbuilt = stage.take_unbuilt();
+            if unbuilt > 0 {
+                meter.clip_unbuilt.fetch_add(unbuilt, Ordering::Relaxed);
+            }
         }
         let mut bad = false;
         for (i, f) in mix.chunks_exact_mut(2).enumerate() {
@@ -1890,6 +1906,12 @@ impl Voices {
         (self.meter.over_limit.load(Ordering::Relaxed), self.meter.dropped_here.load(Ordering::Relaxed))
     }
 
+    /// Voice frames in which a Clip distortion had a wet share over 0 (`Meter::clip_unbuilt`): 0 means its stand-in was
+    /// exact throughout.
+    pub fn clip_unbuilt(&self) -> u64 {
+        self.meter.clip_unbuilt.load(Ordering::Relaxed)
+    }
+
     /// One mixer update: queue its voice's start, update it in place, drop it when it goes virtual or stop it (at this
     /// step's starts: `start_queued`). `level` maps the mixer's gain to the output's level.
     pub fn apply<'a>(&mut self, u: &'a VoiceUpdate, clip: Option<&'a Arc<Clip>>, level: f32, log: &mut impl FnMut(Event<'a>)) {
@@ -2379,12 +2401,16 @@ mod tests {
     /// ship's events reach, its block's threshold plus its curve on parameter 0 at the default; bypassed slots left out:
     /// 13d02225's). The seven on 12-channel buses (25b1912f, 34b88e1e, 80c77eb0, 94f4d066, b28d0893, b804e991, and 87de5a42,
     /// which no ship event reaches) read their bus's power averaged over 12 channels; here every one is read in stereo, on
-    /// the safe side (T5g-2 section 5: 7.8 dB higher for a point source ahead).
+    /// the safe side (T5g-2 section 5: 7.8 dB higher for a point source ahead). With them the three the ship UI's events
+    /// reach that no ship event does (US1: 20b49439, 52bcab2d, d424e3b1, each the Compressor 72391599 in slot 3, -25 dB
+    /// with no curve on it: the shipped `sounds.json`), watched by `no_bus_compressor_would_act_on_the_ui`.
     const COMPRESSORS: &[(u32, u32, f64)] = &[
         (0x180710c3, 3, -18.0),
+        (0x20b49439, 3, -25.0),
         (0x25b1912f, 3, -20.0),
         (0x34b88e1e, 1, -44.6),
         (0x368d104e, 0, -25.0),
+        (0x52bcab2d, 3, -25.0),
         (0x722bdfeb, 0, -17.0),
         (0x80c77eb0, 3, -17.0),
         (0x8ad0fcab, 3, -17.0),
@@ -2398,6 +2424,7 @@ mod tests {
         (0xb7a6077a, 0, -17.0),
         (0xb804e991, 3, -17.0),
         (0xbfd4c387, 3, -12.0),
+        (0xd424e3b1, 3, -25.0),
         (0xd4fc004a, 1, -17.0),
     ];
 
@@ -3737,6 +3764,56 @@ mod tests {
         assert!(acting.is_empty(), "compressors that would act: {acting:?}");
     }
 
+    /// US1: no unbuilt bus compressor would act on the ship UI's sounds. Every event of the shipped file outside its ship
+    /// and open lists (the UI's, and the events they post) posted alone on the UI's emitter over the cockpit at rest (the
+    /// triggers' beds playing), each in a fresh mixer, 2.5 s of frames, every heard voice fed to the taps
+    /// (`Taps`, as `no_bus_compressor_would_act`): the loudest 10 ms mean square at each compressor on its way against its
+    /// threshold.
+    #[test]
+    #[ignore]
+    fn no_bus_compressor_would_act_on_the_ui() {
+        use super::super::ui::EMITTER;
+        let mut r = Run::new(true);
+        r.taps = Some(Taps::new(&r.mixer));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/sounds.json");
+        let bank = Arc::new(se_core::elite_sound::parse_sounds(&std::fs::read(path).unwrap()).unwrap());
+        let listed: std::collections::HashSet<Id> = bank.file.ship_events.iter().chain(&bank.file.open_events).map(|n| se_core::elite_sound::event_id(n)).collect();
+        let ui: Vec<Id> = bank.file.events.keys().copied().filter(|id| !listed.contains(id)).collect();
+        let v = ShipView::at_rest();
+        let mut loudest_event = vec![(f64::NEG_INFINITY, Id(0)); COMPRESSORS.len()];
+        for (k, id) in ui.iter().enumerate() {
+            r.mixer = Mixer::new(bank.clone(), 1 + k as u64);
+            r.triggers = Triggers::default();
+            r.sources.clear();
+            r.playing.clear();
+            r.built.clear();
+            r.last.clear();
+            r.frame(&v);
+            let before: Vec<f64> = r.taps.as_ref().unwrap().loudest.iter().map(|l| l.0).collect();
+            r.mixer.post(&format!("event_{id}"), EMITTER).unwrap();
+            r.hold(&v, 2.5);
+            for (i, (now, was)) in r.taps.as_ref().unwrap().loudest.iter().zip(before).enumerate() {
+                if now.0 > was {
+                    loudest_event[i] = (now.0, *id);
+                }
+            }
+        }
+        let t = r.taps.take().unwrap();
+        let mut acting = Vec::new();
+        eprintln!("{} events posted; bus      slot threshold  loudest input (10 ms mean square, stereo), by the event", ui.len());
+        for ((bus, slot, threshold), (db, id)) in COMPRESSORS.iter().zip(&loudest_event) {
+            if db.is_finite() {
+                let name = bank.file.names.get(id).cloned().unwrap_or_else(|| id.to_string());
+                eprintln!("{bus:08x} {slot}    {threshold:+7.2}    {db:+7.2} dB ({:+.2} under) {name}", threshold - db);
+                if db > threshold {
+                    acting.push(format!("{bus:08x} by {name}"));
+                }
+            }
+        }
+        drop(t);
+        assert!(acting.is_empty(), "compressors that would act: {acting:?}");
+    }
+
     /// Decision 4 of T5d-9: the sub-mix changes nothing but what its compressor does. A scripted flight (3 s in normal
     /// space at full throttle, the charge, 30 s of supercruise, the drop, its cooldown and 3 s more) through the real
     /// triggers and mixer, every heard voice fed to three outputs (`Outputs`): the voices mixed straight (as before T5d-9),
@@ -4119,5 +4196,198 @@ mod tests {
         let ours = pull("the source's own speed", Box::new(VoiceSource::new(clip.clone(), c, 0, None, None)));
         assert!(ours, "our source must pass through");
         assert!(!theirs, "rodio's converter was expected to hang (rodio fixed? then the note in voices.rs is history)");
+    }
+
+    /// The bank's own gains for one started voice of `sound` (dB), worked out from the data apart from the mixer: the
+    /// volume and make-up gain of every node up its chain and their additive curves on them at the parameters' values now,
+    /// the voice and bus volumes of every bus up its output bus's chain and their curves, the loudness normalisation where
+    /// the node in force normalises, the Parametric EQs' output levels on its way and the master limiter's output level.
+    /// Returns the sum, the range its nodes' randomisers add to it (each play draws in it) and its parts as text.
+    fn bank_gain_db(m: &Mixer, bank: &se_core::elite_sound::SoundBank, sound: se_core::elite_sound::Id, src: se_core::elite_sound::Id, emitter: u32) -> (f64, (f64, f64), String) {
+        use se_core::elite_sound::data::{Accumulation, Object, RtpcType};
+        let num = |p: &se_core::elite_sound::data::Props, k: &str| p.get(k).and_then(|v| v.num()).unwrap_or(0.0);
+        let curves = |rtpc: &[se_core::elite_sound::data::Rtpc], keys: &[&str]| -> f64 {
+            rtpc.iter()
+                .filter(|r| r.rtpc_type == RtpcType::GameParameter && r.accumulation == Accumulation::Additive && keys.contains(&r.param.as_str()))
+                .map(|r| se_core::elite_sound::curve::eval(&r.points, r.scaling, f64::from(m.game_parameter_id(r.game_parameter.id, Some(emitter)))))
+                .sum()
+        };
+        let (mut nodes, mut node_curves, mut random) = (0.0, 0.0, (0.0, 0.0));
+        let chain = bank.chain(sound);
+        for n in chain.iter().filter_map(|a| bank.object(*a).and_then(Object::node)) {
+            nodes += num(&n.props, "Volume") + num(&n.props, "MakeUpGain");
+            node_curves += curves(&n.rtpc, &["Volume", "MakeUpGain"]);
+            for r in ["Volume", "MakeUpGain"].iter().filter_map(|k| n.ranged.get(*k)) {
+                random.0 += r.min;
+                random.1 += r.max;
+            }
+        }
+        let (mut buses, mut bus_curves) = (0.0, 0.0);
+        for b in bank.output_bus(sound).map(|b| bank.bus_chain(b).to_vec()).unwrap_or_default() {
+            if let Some(Object::Bus(b)) = bank.object(b) {
+                buses += ["Volume", "BusVolume", "OutputBusVolume"].iter().map(|k| num(&b.props, k)).sum::<f64>();
+                bus_curves += curves(&b.rtpc, &["Volume", "BusVolume", "OutputBusVolume"]);
+            }
+        }
+        let force = chain.iter().filter_map(|a| bank.object(*a).and_then(Object::node)).find(|n| n.adv.override_analysis).or_else(|| chain.last().and_then(|a| bank.object(*a).and_then(Object::node)));
+        let norm = match (force.is_some_and(|n| n.adv.normalize_loudness), bank.file.media.get(&src).and_then(|x| x.loudness_gain)) {
+            (true, Some(g)) if g > 0.0 => 20.0 * g.log10(),
+            _ => 0.0,
+        };
+        let eqs: f64 = bank.fx_stages(sound).iter().filter_map(|s| bank.file.effects.get(&s.effect)).filter_map(|e| e.eq.as_ref().map(|q| q.output_level_db)).sum();
+        let limiter = m.master_limiter().map_or(0.0, |l| f64::from(l.output_db));
+        let sum = nodes + node_curves + buses + bus_curves + norm + eqs + limiter;
+        (sum, random, format!("nodes {nodes:+.2} (randomised by {:+.2} to {:+.2}), their curves {node_curves:+.2}, buses {buses:+.2}, their curves {bus_curves:+.2}, loudness {norm:+.2}, EQs {eqs:+.2}, limiter {limiter:+.2}", random.0, random.1))
+    }
+
+    /// US1's offline check on the built code: each UI case resolved through the shipped tables (`ui.rs`) and posted on the
+    /// UI's emitter in a fresh mixer of the shipped data, its voices played by the output sources with the master chain as
+    /// the game plays them (`Outputs`, level 1: a mixer gain of 1 is full scale, as `mod.rs` `LEVEL` sets at the default
+    /// volume), 8 seeds (the random containers' picks), at `PlayerInSeat` 1 (the bank's default, seated) and 0. For each
+    /// voice: the mixer's volume against the bank's own gains (`bank_gain_db`, within 0.01 dB), the recording's peak and
+    /// RMS; the output's peak beside the peaks session ui1 measured in Elite's own loopback recordings
+    /// (`re/elite/measure/raw/ui1/observations.md`). A begin / end pair (`TargetScan_b` / `_e`): the loop plays until the end
+    /// stops it. Prints its table (`--nocapture`).
+    #[test]
+    #[ignore]
+    fn ui_offline_check_on_the_built_code() {
+        use super::super::ui::{Resolved, UiSounds, EMITTER};
+        use se_core::elite_sound::{Mixer, Output};
+        let l = super::super::load::load().unwrap_or_else(|(f, e)| panic!("{f}: {e}"));
+        let tables = l.tables.expect("ui/sound_tables.json read");
+        let bank = l.bank.clone();
+        // (The Sound objects an event plays, through its Play and PlayEvent actions and the containers' children: several
+        // Sounds share a recording, each with its own chain.)
+        fn sounds_under(bank: &se_core::elite_sound::SoundBank, event: se_core::elite_sound::Id, out: &mut Vec<se_core::elite_sound::Id>) {
+            use se_core::elite_sound::data::{ActionKind, Object};
+            fn node(bank: &se_core::elite_sound::SoundBank, id: se_core::elite_sound::Id, out: &mut Vec<se_core::elite_sound::Id>) {
+                match bank.object(id) {
+                    Some(Object::Sound(_)) => out.push(id),
+                    Some(Object::RanSeqCntr(c)) => c.children.iter().for_each(|k| node(bank, *k, out)),
+                    Some(Object::SwitchCntr(c)) => c.children.iter().for_each(|k| node(bank, *k, out)),
+                    Some(Object::LayerCntr(c)) => c.children.iter().for_each(|k| node(bank, *k, out)),
+                    _ => {}
+                }
+            }
+            for a in bank.file.events.get(&event).map(|e| e.actions.clone()).unwrap_or_default() {
+                match bank.object(a) {
+                    Some(Object::Action(x)) if x.kind == ActionKind::Play => node(bank, x.target, out),
+                    Some(Object::Action(x)) if x.kind == ActionKind::PlayEvent => sounds_under(bank, x.target, out),
+                    _ => {}
+                }
+            }
+        }
+        let peaks: HashMap<se_core::elite_sound::Id, (f32, f64)> = l
+            .clips
+            .iter()
+            .filter_map(|(id, c)| match &c.source {
+                ClipSource::Recorded(a) => {
+                    let (_, facts) = crate::mods::check_sound(a.bytes.to_vec()).or_else(|_| crate::mods::check_wav(a.bytes.to_vec())).ok()?;
+                    Some((*id, (facts.peak, bank.file.media.get(id).and_then(|m| m.rms).unwrap_or(0.0))))
+                }
+                ClipSource::Tone(..) => None,
+            })
+            .collect();
+        let db = |x: f64| if x > 0.0 { 20.0 * x.log10() } else { f64::NEG_INFINITY };
+        let cases: &[(&str, &str, &str)] = &[
+            ("CockpitExternalPanel", "showBegin", "focus left panel: peak about -19 dBFS, 0.26 s"),
+            ("CockpitExternalPanel", "hide", "unfocus left panel: peak -20.6 dBFS, 0.28 s"),
+            ("CockpitExternalPanel", "focusChanged", "row move: peak -22 to -25 dBFS"),
+            ("CockpitExternalPanel", "tabChanged", "left panel tab change: peak -24 to -28 dBFS"),
+            ("CockpitExternalPanel", "select", "select (opens a pop-up): peak -18 to -23 dBFS"),
+            ("CockpitInternalPanel2", "showBegin", "focus right panel: peak -22 dBFS"),
+            ("CockpitInternalPanel2", "tabChanged", "right panel tab change: peak -23 to -26 dBFS"),
+            ("RolePanel3", "showBegin", "focus role panel: peak -21 dBFS"),
+            ("RolePanel3", "tabChanged", "role panel tab change: peak -20 to -22 dBFS"),
+        ];
+        let dt = 1.0 / 60.0;
+        let mut worst_gap = 0.0f64;
+        for seated in [1.0f32, 0.0] {
+            eprintln!("== PlayerInSeat {seated}");
+            for (iface, name, measured) in cases {
+                let mut q = UiSounds::default();
+                q.play(iface, name, None);
+                let req = q.take().remove(0);
+                let Resolved::Event(event) = req.resolve(Some(&tables), |e| bank.event(e).is_some()) else { panic!("{iface} {name}: no event") };
+                let mut played = Vec::new();
+                sounds_under(&bank, se_core::elite_sound::event_id(&event), &mut played);
+                let sound_of = |src: se_core::elite_sound::Id| played.iter().copied().find(|s| matches!(bank.object(*s), Some(se_core::elite_sound::data::Object::Sound(x)) if x.source_id == src));
+                let mut outs = Vec::new();
+                for seed in 1..=8u64 {
+                    let mut m = Mixer::new(bank.clone(), seed);
+                    m.set_game_parameter("PlayerInSeat", seated, None);
+                    m.step(dt as f32);
+                    let mut o = Outputs::new(&m, true);
+                    m.post(&event, EMITTER).unwrap();
+                    for k in 0..150 {
+                        let step = if k == 0 { 0.0 } else { dt };
+                        for u in m.step(step as f32).to_vec() {
+                            let Output::Audio { source } = u.output else { continue };
+                            let Some(clip) = l.clips.get(&source) else { continue };
+                            if u.stop || u.virtual_voice {
+                                o.stop(u.voice);
+                            } else if u.start.is_some() {
+                                o.start(&u, clip);
+                                if seed == 1 {
+                                    let snd = sound_of(source).unwrap();
+                                    let (want, (lo, hi), parts) = bank_gain_db(&m, &bank, snd, source, EMITTER);
+                                    let v = f64::from(u.volume_db);
+                                    // (Outside the randomisers' range: by how much.)
+                                    worst_gap = worst_gap.max((want + lo - v).max(v - want - hi).max(0.0));
+                                    let (pk, rms) = peaks.get(&source).copied().unwrap_or((0.0, 0.0));
+                                    eprintln!(
+                                        "  {iface} {name} -> {event}: voice {} {}: recording peak {:.1} dBFS, RMS {:.1} dBFS; mixer {:.2} dB, the bank's gains {want:.2} dB ({parts}); recording's own gain x{:.3}",
+                                        u.voice,
+                                        clip.file,
+                                        db(f64::from(pk)),
+                                        db(rms),
+                                        u.volume_db,
+                                        u.media_gain
+                                    );
+                                }
+                            } else {
+                                o.update(&u, clip.rate);
+                            }
+                        }
+                        o.end_frame(&m, step);
+                    }
+                    outs.push(db(f64::from(o.peak)));
+                }
+                let (lo, hi) = outs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(*x), b.max(*x)));
+                eprintln!("  {iface} {name} -> {event}: output peak {lo:.1} to {hi:.1} dBFS over 8 seeds (master chain on); Elite (ui1): {measured}");
+            }
+        }
+        eprintln!("largest gap between the mixer's volume and the bank's gains with their randomisers' range: {worst_gap:.4} dB");
+        assert!(worst_gap < 0.01, "the mixer's volume differs from the bank's gains by {worst_gap} dB");
+        // The begin / end pair: TargetScan_b's loop plays 2 s, TargetScan_e stops it.
+        let mut m = Mixer::new(bank.clone(), 1);
+        let mut q = UiSounds::default();
+        q.post("TargetScan_b");
+        let begin = q.take().remove(0);
+        let Resolved::Event(b) = begin.resolve(Some(&tables), |e| bank.event(e).is_some()) else { panic!("TargetScan_b") };
+        m.post(&b, EMITTER).unwrap();
+        let mut looping = std::collections::BTreeSet::new();
+        for _ in 0..120 {
+            for u in m.step(dt as f32) {
+                if u.start.is_some_and(|s| s.looping) && !u.stop {
+                    looping.insert(u.voice);
+                }
+                if u.stop {
+                    looping.remove(&u.voice);
+                }
+            }
+        }
+        assert!(!looping.is_empty(), "TargetScan_b starts a loop");
+        let playing = looping.len();
+        m.post("TargetScan_e", EMITTER).unwrap();
+        for _ in 0..180 {
+            for u in m.step(dt as f32) {
+                if u.stop {
+                    looping.remove(&u.voice);
+                }
+            }
+        }
+        eprintln!("TargetScan_b: {playing} looping voice(s) after 2 s; after TargetScan_e and 3 s: {} still playing", looping.len());
+        assert!(looping.is_empty(), "TargetScan_e stops the loop");
     }
 }

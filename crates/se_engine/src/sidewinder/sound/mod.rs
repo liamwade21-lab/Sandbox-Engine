@@ -7,6 +7,9 @@
 //!   (`triggers.json`'s ids).
 //! - `voices.rs`: the mixer's voice updates as sound: one output source mixing every heard voice, built off the game
 //!   thread.
+//! - `ui.rs`: the ship UI's sounds: `UiSounds`, the queue any part of the mod pushes a movie's `PlaySound` or one of the
+//!   exe's HUD posts on, emptied by `drive` once a frame through the interfaces' tables (`ui/sound_tables.json`) into the
+//!   same mixer, on the UI's own emitter.
 //!
 //! Getting out, losing the ship or the mod going off stops every voice at once and starts the mixer afresh.
 //!
@@ -51,6 +54,7 @@
 
 mod load;
 mod triggers;
+pub mod ui;
 mod voices;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -77,6 +81,7 @@ use super::seat::{head_turn, Seat};
 use super::{Sidewinder, SidewinderAssets};
 use load::{Clip, Loaded, Rumble};
 use triggers::{Call, Emitter, ShipView, Triggers};
+use ui::{Resolved, UiRequest, UiSounds, UiTables};
 use voices::{Event, ShipOutput, Voices};
 
 /// Wwise's 0 dB (a mixer gain of 1) as Bevy's volume: unity at the game's default sound volume (`SoundSettings::volume`,
@@ -103,6 +108,8 @@ pub struct ShipSound {
     bank: Arc<SoundBank>,
     clips: HashMap<se_core::elite_sound::Id, Arc<Clip>>,
     rumbles: HashMap<se_core::elite_sound::Id, Rumble>,
+    /// The ship UI's `PlaySound` tables (`ui.rs`; None: refused at the read, the UI's `PlaySound`s are silent).
+    ui_tables: Option<UiTables>,
     mixer: Mixer,
     seeds: u64,
     triggers: Triggers,
@@ -225,6 +232,7 @@ fn load_sounds(mut commands: Commands, mut load: ResMut<SoundLoad>) {
                 warn!("sidewinder sound: {file} refused: {why} (it stays silent)");
             }
             commands.insert_resource(ShipSound::new(l));
+            commands.insert_resource(UiSounds::default());
         }
         Err((file, why)) => warn!("sidewinder sound: {file}: {why} (the ship stays silent)"),
     }
@@ -241,6 +249,7 @@ impl ShipSound {
             bank: l.bank,
             clips: l.clips,
             rumbles: l.rumbles,
+            ui_tables: l.tables,
             mixer,
             seeds: 1,
             triggers: Triggers::default(),
@@ -273,6 +282,21 @@ impl ShipSound {
                 }
                 Call::State(g, s) => self.set_state(g, s),
                 Call::Gp(n, v) => self.mixer.set_game_parameter(n, *v, None),
+            }
+        }
+    }
+
+    /// The UI's requests of this frame (`ui.rs`): each by Elite's rule, the event posted on the UI's emitter.
+    fn ui(&mut self, asked: &[UiRequest]) {
+        let log = self.log || ui::logged();
+        for r in asked {
+            let resolved = r.resolve(self.ui_tables.as_ref(), |e| self.bank.event(e).is_some());
+            if let Resolved::Event(e) = &resolved {
+                // (`resolve` found it in the bank: the post cannot fail.)
+                let _ = self.mixer.post(e, ui::EMITTER);
+            }
+            if log {
+                info!("sidewinder sound: ui {}: {resolved} at {:.3} s", r.describe(), self.mixer.time());
             }
         }
     }
@@ -471,11 +495,17 @@ fn drive(
     mut outputs: ResMut<Assets<ShipOutput>>,
     pads: Query<Entity, With<Gamepad>>,
     mut rumble: MessageWriter<GamepadRumbleRequest>,
+    mut ui_asks: ResMut<UiSounds>,
 ) {
     let snd = &mut *snd;
     snd.voices.service(&mut commands);
     let parked = ship.parked.as_ref().map(|p| (p.obj, p.pos));
+    let asked = ui_asks.take();
+    let ui_log = snd.log || ui::logged();
     if !playing(&seat, &control, &pilot, &ship) {
+        if ui_log && !asked.is_empty() {
+            info!("sidewinder sound: {} ui sounds dropped unheard (not seated)", asked.len());
+        }
         if snd.active {
             snd.left_at = parked;
             snd.stop(&mut commands, &pads, &mut rumble);
@@ -494,6 +524,7 @@ fn drive(
     let mut calls = Vec::new();
     snd.triggers.step(&v, &mut calls);
     snd.call(&calls);
+    snd.ui(&asked);
     snd.place_cue_emitters(&assets.rig, &parts, &Listener::of(&assets, &seat));
     let level = LEVEL * settings.volume;
     let ShipSound { mixer, voices, clips, rumbles, rumbling, now, log, .. } = snd;
@@ -506,6 +537,16 @@ fn drive(
             // (A Tone Generator is a clip too, under its source plug-in's id: `load.rs`.)
             Output::Audio { source } | Output::Synth { source } => {
                 let clip = clips.get(&source);
+                if ui_log && u.emitter == ui::EMITTER && u.start.is_some() {
+                    info!(
+                        "sidewinder sound: ui voice {} starts {}: gain {:.1} dB, pitch {:.3}{}",
+                        u.voice,
+                        clip.map_or_else(|| format!("source {source} (no recording)"), |c| c.file.clone()),
+                        u.volume_db,
+                        u.pitch,
+                        if u.virtual_voice { ", virtual (not heard)" } else { "" }
+                    );
+                }
                 if log {
                     if let Some(to) = u.seek_to {
                         info!("sidewinder sound: voice {} seeks to {to:.3} s", u.voice);
@@ -576,10 +617,11 @@ fn drive(
         let (over, dropped) = snd.voices.over_limit();
         let top: Vec<String> = top.iter().map(|(id, f, n, s)| format!("{id} {f} {n} at {s:.2}")).collect();
         info!(
-            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} blocks with a sample not finite, {refused} voices refused, {over} frames over the master limiter's threshold, {dropped} drops on the audio thread so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
+            "sidewinder sound: audio thread made {} frames in {:.2} s over {} voices ({bad} blocks with a sample not finite, {refused} voices refused, {over} frames over the master limiter's threshold, {} voice frames of a Clip distortion with a wet share over 0, {dropped} drops on the audio thread so far; {skipped} frames skipped, the longest skip {:.1} ms; most: {})",
             made - snd.beat.1,
             t - snd.beat.0,
             snd.voices.count(),
+            snd.voices.clip_unbuilt(),
             longest_us as f64 / 1000.0,
             top.join(", ")
         );
@@ -672,14 +714,21 @@ fn machine_cue(rig: &ShipRig, machine: usize, event: &str) -> Option<ShipEvent> 
     Some(ShipEvent { machine, event })
 }
 
-/// `sw sound log on|off|state|emitters|cue MACHINE EVENT` (`cue`: one of that machine's own cue events posted on its
-/// emitter as the machine would, for a test of one leg alone).
+/// `sw sound log on|off|state|emitters|cue MACHINE EVENT|ui INTERFACE NAME [SOURCE]|post EVENT` (`cue`: one of that
+/// machine's own cue events posted on its emitter as the machine would, for a test of one leg alone; `ui` and `post`: the
+/// UI's `UiSounds::play` and `post`, heard at the next frame while seated, logged with `SE_SANDBOX_SOUNDS=1`).
 pub fn dev_command(world: &mut World, arg: &str) {
     if !world.contains_resource::<ShipSound>() {
         info!("sidewinder sound: not read yet (it is read at the first spawn)");
         return;
     }
     let words: Vec<&str> = arg.split_whitespace().collect();
+    match words.as_slice() {
+        ["ui", interface, name] => return world.resource_mut::<UiSounds>().play(interface, name, None),
+        ["ui", interface, name, source] => return world.resource_mut::<UiSounds>().play(interface, name, Some(source)),
+        ["post", event] => return world.resource_mut::<UiSounds>().post(event),
+        _ => {}
+    }
     if let ["cue", machine, event] = words.as_slice() {
         let (machine, event) = (machine.parse::<usize>().ok(), event.to_string());
         world.resource_scope(|world, mut snd: Mut<ShipSound>| {
@@ -702,11 +751,12 @@ pub fn dev_command(world: &mut World, arg: &str) {
             let (over, dropped) = snd.voices.over_limit();
             let limiter = snd.mixer.master_limiter().map_or("none".to_string(), |l| format!("threshold {:.2} dB, output {:+.2} dB", l.threshold_db, l.output_db));
             info!(
-                "sidewinder sound: {}, {} voices (most {}), mixer at {:.2} s; the master limiter {limiter}: {over} frames over its threshold, {dropped} drops on the audio thread; {}",
+                "sidewinder sound: {}, {} voices (most {}), mixer at {:.2} s; the master limiter {limiter}: {over} frames over its threshold, {dropped} drops on the audio thread; {} voice frames of a Clip distortion with a wet share over 0 (its curve is a stand-in); {}",
                 if snd.active { "playing" } else { "not playing" },
                 snd.voices.count(),
                 snd.most,
                 snd.mixer.time(),
+                snd.voices.clip_unbuilt(),
                 gps.join(", ")
             );
             for (id, (file, u)) in &snd.now {
@@ -727,9 +777,9 @@ pub fn dev_command(world: &mut World, arg: &str) {
                 let at = snd.mixer.emitter(*id).map_or("not placed".to_string(), |[x, y, z]| format!("({x:.2}, {y:.2}, {z:.2}) m from the head"));
                 info!("sidewinder sound: emitter {id:#x}: machine {} at {:?} (rig nodes {:?}), {at}", e.machine, e.bones, e.nodes);
             }
-            info!("sidewinder sound: every other emitter (the drive loops 0x100-0x107, the cockpit positions 0x200-0x208, the cockpit's origin 0x300, the voice 0x302) is the listener's own: it plays through its sound's route as a voice at the listener");
+            info!("sidewinder sound: every other emitter (the drive loops 0x100-0x107, the cockpit positions 0x200-0x208, the cockpit's origin 0x300, the voice 0x302, the UI {:#x}) is the listener's own: it plays through its sound's route as a voice at the listener", ui::EMITTER);
         }
-        _ => warn!("sw sound: log on|off | state | emitters | cue MACHINE EVENT"),
+        _ => warn!("sw sound: log on|off | state | emitters | cue MACHINE EVENT | ui INTERFACE NAME [SOURCE] | post EVENT"),
     }
 }
 
@@ -861,12 +911,20 @@ mod tests {
         }
     }
 
-    /// The one effect of the shipped data that is not exact for want of modulators: the ship voice's Guitar Distortion
-    /// `d1b95c6e` (node `1d2c221f`), its wet share (parameter 65) the LFO modulator `2bf46665`'s curve.
+    /// The effects of the shipped data that are not exact for want of modulators: the ship voice's Guitar Distortion
+    /// `d1b95c6e` (node `1d2c221f`), its wet share (parameter 65) the LFO modulator `2bf46665`'s curve; and the ship UI's two
+    /// Clip distortions (`249d84b8`, `2f208561`, US1), their drive (61) and rectification (63) the modulator `1ffc2a08`'s:
+    /// those shape only the wet signal, which the Clip stand-in leaves silent (`filter::DISTORTION_CLIP`; its wet share is 0
+    /// where the mod plays, `nothing_moves_a_clip_off_its_silent_defaults`), so nothing heard depends on them.
     #[test]
-    fn the_only_effect_not_exact_is_the_voice_distortion() {
-        use se_core::elite_sound::Id;
-        assert_eq!(shipped().effects_not_exact(), vec![(Id(0xd1b9_5c6e), Id(0x2bf4_6665), se_core::elite_sound::GD_PARAM_WET)]);
+    fn the_only_effects_not_exact_are_the_voice_distortion_and_the_clips_wet_path() {
+        use se_core::elite_sound::{Id, GD_PARAM_DRIVE, GD_PARAM_RECTIFICATION, GD_PARAM_WET};
+        let mut got = shipped().effects_not_exact();
+        got.sort();
+        let clip = |e: u32, p: u32| (Id(e), Id(0x1ffc_2a08), p);
+        let mut want = vec![(Id(0xd1b9_5c6e), Id(0x2bf4_6665), GD_PARAM_WET), clip(0x249d_84b8, GD_PARAM_DRIVE), clip(0x249d_84b8, GD_PARAM_RECTIFICATION), clip(0x2f20_8561, GD_PARAM_DRIVE), clip(0x2f20_8561, GD_PARAM_RECTIFICATION)];
+        want.sort();
+        assert_eq!(got, want);
     }
 
     /// Nothing the triggers post is an `OPEN_EVENTS` event, and everything they post is a `SHIP_EVENTS` one: the triggers
@@ -875,17 +933,74 @@ mod tests {
     /// with their drops, cancels and refusals), and every name posted is checked against the shipped file's two lists.
     #[test]
     fn nothing_open_is_ever_posted() {
-        use elite_sim::drive::Drive;
         let bank = shipped();
+        let (posted, _) = sweep();
+        let open: HashSet<se_core::elite_sound::Id> = bank.file.open_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
+        let ship: HashSet<se_core::elite_sound::Id> = bank.file.ship_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
+        let mut names: Vec<&String> = posted.iter().collect();
+        names.sort();
+        let opened: Vec<&&String> = names.iter().filter(|n| open.contains(&se_core::elite_sound::event_id(n))).collect();
+        let unlisted: Vec<&&String> = names.iter().filter(|n| !ship.contains(&se_core::elite_sound::event_id(n))).collect();
+        assert!(opened.is_empty(), "OPEN_EVENTS posted: {opened:?}");
+        assert!(unlisted.is_empty(), "posted but not in SHIP_EVENTS: {unlisted:?}");
+        assert!(names.len() > 100, "the sweep posts {} events", names.len());
+    }
+
+    /// The Clip stand-in holds where the mod plays (US1, `se_core::elite_sound::filter::DISTORTION_CLIP`): the bank took
+    /// each Clip because its wet share is 0 at its game parameters' defaults (the ship UI's `249d84b8` and `2f208561`: the
+    /// curve of `Glitch_Mosaic_AGZ_Global`, the damaged cockpit's glitch, which the mod does not simulate, -100 at its
+    /// default 0 on a block value of 100); nothing in the mod moves those parameters off their defaults: no action of the
+    /// shipped events sets or resets them, and the triggers, run through every state the flight gives them (`sweep`), never
+    /// set them.
+    #[test]
+    fn nothing_moves_a_clip_off_its_silent_defaults() {
+        use se_core::elite_sound::data::{ActionKind, Object};
+        use se_core::elite_sound::{filter::DISTORTION_CLIP, wwise_id, GD_PARAM_WET};
+        let bank = shipped();
+        let clip_gps: HashSet<se_core::elite_sound::Id> = bank
+            .file
+            .effects
+            .values()
+            .filter(|e| e.distortion.as_ref().is_some_and(|d| d.distortion == DISTORTION_CLIP))
+            .flat_map(|e| e.rtpc.iter().filter(|r| r.param_id == GD_PARAM_WET).map(|r| r.game_parameter.id))
+            .collect();
+        assert!(clip_gps.contains(&wwise_id("Glitch_Mosaic_AGZ_Global")), "the shipped Clips' wet share reads Glitch_Mosaic_AGZ_Global: {clip_gps:?}");
+        let set_by_events: Vec<_> = bank
+            .file
+            .objects
+            .values()
+            .filter_map(|o| if let Object::Action(a) = o { Some(a) } else { None })
+            .filter(|a| matches!(a.kind, ActionKind::SetGameParameter | ActionKind::ResetGameParameter) && clip_gps.contains(&a.target))
+            .map(|a| a.id)
+            .collect();
+        assert!(set_by_events.is_empty(), "actions moving a Clip's wet share: {set_by_events:?}");
+        let (_, gps) = sweep();
+        let set_by_triggers: Vec<&String> = gps.iter().filter(|n| clip_gps.contains(&wwise_id(n))).collect();
+        assert!(set_by_triggers.is_empty(), "the triggers set {set_by_triggers:?}");
+    }
+
+    /// The triggers run through every state the flight can give them (each cockpit switch both ways, the boost's stages
+    /// and a refusal, heat and hull falling, the shields, the canopy and the mask, the engines, a glide, the drive's
+    /// supercruise and jump with their drops, cancels and refusals, the teardown): every event name they post and every
+    /// game parameter they set.
+    fn sweep() -> (HashSet<String>, HashSet<String>) {
+        use elite_sim::drive::Drive;
         let mut t = Triggers::default();
         let mut posted = HashSet::new();
+        let mut gps = HashSet::new();
         let mut run = |t: &mut Triggers, v: &ShipView, frames: usize| {
             for _ in 0..frames {
                 let mut calls = Vec::new();
                 t.step(v, &mut calls);
                 for c in calls {
-                    if let Call::Post(n, _) = c {
-                        posted.insert(n);
+                    match c {
+                        Call::Post(n, _) => {
+                            posted.insert(n);
+                        }
+                        Call::Gp(n, _) => {
+                            gps.insert(n.to_string());
+                        }
+                        Call::State(..) => {}
                     }
                 }
             }
@@ -967,18 +1082,22 @@ mod tests {
         drive(&mut t, &mut v, 2, Drive::Supercruise, 60);
         drive(&mut t, &mut v, 1, Drive::Arriving(4.0), 60);
         drive(&mut t, &mut v, 1, Drive::Ready, 5);
+        drop(drive);
+        drop(run);
         let mut calls = Vec::new();
         t.teardown(&mut calls);
-        posted.extend(calls.into_iter().filter_map(|c| if let Call::Post(n, _) = c { Some(n) } else { None }));
-        let open: HashSet<se_core::elite_sound::Id> = bank.file.open_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
-        let ship: HashSet<se_core::elite_sound::Id> = bank.file.ship_events.iter().map(|n| se_core::elite_sound::event_id(n)).collect();
-        let mut names: Vec<&String> = posted.iter().collect();
-        names.sort();
-        let opened: Vec<&&String> = names.iter().filter(|n| open.contains(&se_core::elite_sound::event_id(n))).collect();
-        let unlisted: Vec<&&String> = names.iter().filter(|n| !ship.contains(&se_core::elite_sound::event_id(n))).collect();
-        assert!(opened.is_empty(), "OPEN_EVENTS posted: {opened:?}");
-        assert!(unlisted.is_empty(), "posted but not in SHIP_EVENTS: {unlisted:?}");
-        assert!(names.len() > 100, "the sweep posts {} events", names.len());
+        for c in calls {
+            match c {
+                Call::Post(n, _) => {
+                    posted.insert(n);
+                }
+                Call::Gp(n, _) => {
+                    gps.insert(n.to_string());
+                }
+                Call::State(..) => {}
+            }
+        }
+        (posted, gps)
     }
 
     /// The gear motors' attenuation (`258639ce`, on 38 of the cues' sounds) read at three distances against the shipped
@@ -1035,6 +1154,32 @@ mod tests {
             assert!(p.volume_db(30.0) < p.volume_db(3.0));
             assert!(c.place.is_none() && c.position.is_none());
         }
+    }
+
+    /// After a re-conversion, the ship's own events play as before: each of `ship_events` and `open_events` posted alone in
+    /// a mixer of the old file (`SOUNDS_BEFORE`, a copy of the `sounds.json` it replaced) and of the shipped one, the same
+    /// seed, 3 s of steps: every voice update the same. `SOUNDS_BEFORE=... cargo test -p se_engine --profile agent
+    /// ship_events_play_as_before -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn ship_events_play_as_before() {
+        let before = std::env::var_os("SOUNDS_BEFORE").expect("SOUNDS_BEFORE: the old sounds.json");
+        let old = Arc::new(se_core::elite_sound::parse_sounds(&std::fs::read(before).unwrap()).unwrap());
+        let new = shipped();
+        assert_eq!((&old.file.ship_events, &old.file.open_events), (&new.file.ship_events, &new.file.open_events));
+        let mut updates = 0;
+        for name in old.file.ship_events.iter().chain(&old.file.open_events) {
+            let (mut a, mut b) = (Mixer::new(old.clone(), 7), Mixer::new(new.clone(), 7));
+            a.post(name, 0x200).unwrap();
+            b.post(name, 0x200).unwrap();
+            for k in 0..180 {
+                let dt = if k == 0 { 0.0 } else { 1.0 / 60.0 };
+                let (ua, ub) = (a.step(dt).to_vec(), b.step(dt).to_vec());
+                assert_eq!(ua, ub, "{name} at step {k}");
+                updates += ua.len();
+            }
+        }
+        eprintln!("{} events, {updates} voice updates, every one the same", old.file.ship_events.len() + old.file.open_events.len());
     }
 
     /// How many shipped events start a voice with a non-zero low-pass or high-pass.
