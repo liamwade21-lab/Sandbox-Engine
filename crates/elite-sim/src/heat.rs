@@ -8,12 +8,16 @@
 //! 5 s; heat damage over the ship's threshold `t0`, at a rate rising to a ceiling by `f`, dealt every so many seconds, with
 //! `$HeatWarningDamage;` when `f` rises through `t0`, at most every 5 s (`0x142DC1940`).
 //!
+//! The HUD's percentage (grade A, UI4c): `f / 1.5 x 100` (`hud_percent`): the exe sends the gauge `f / 3.5` with its marks
+//! at 1.5 / 3.5 and 2.5 / 3.5 (FUN_142d6d3e0) and the movie prints `int(arg1 / arg2 x 100 + 0.5)` percent
+//! (`re/elite/notes/ui_messages_hud.md`, "Resolved question: the heat percentage"). So 100 % is where `$HeatWarning100;`
+//! fires, the bar's second mark (167 %) is where the heat damage starts and its full scale (233 %) where it reaches its most.
+//!
 //! Numbers: the capacity is the ship's heat record's (B: item data +0x20, +0xF0, 140; coriolis agrees). The radiator's are
 //! `ext_radiator_standard`'s record (B, N1: +0x08 the most, 18.15; +0x18, +0x1C the curve's ends, 0 and 1; that the radiator
 //! component's +0x1B0 is this record is inferred, its writer 0x1443A6BA0 taking it from a module-data object). The damage's
-//! interval is the heat record's +0x104 (B, 2 s). Open (`stand_in`): what the radiator's least is, what the damage's threshold
-//! and rates mean against the HUD's percentage, every load's size; and what the HUD's heat percentage is (`hud_percent` is
-//! `f x 100` until N1's H1 run reads it).
+//! threshold, the fraction of its most and its interval are the heat record's +0xF4, +0xF8, +0x104 (B: 2.5, 3.5, 2 s). Open
+//! (`stand_in`): what the radiator's least is, the damage rates' unit, every load's size but the idle's fit.
 
 /// `ext_radiator_standard`'s R+0x08: the radiator's rate at the top of its curve (heat a second, B with the inferred link).
 pub const DISSIPATE_MAX: f64 = 18.15;
@@ -22,6 +26,14 @@ pub const DISSIPATE_F0: f64 = 0.0;
 pub const DISSIPATE_F1: f64 = 1.0;
 /// The heat record's +0x104: heat damage is dealt every this many seconds (B).
 pub const DAMAGE_EVERY_S: f64 = 2.0;
+/// The heat record's +0xF4 and +0xF8: the heat fraction where heat damage starts and where its rate reaches its most (B; the
+/// exe compares heat / capacity with them, `0x142DC1940`, C). On the HUD 167 % and 233 %, the gauge's second mark and full
+/// scale (`f / 1.5`, A).
+pub const DAMAGE_F0: f64 = 2.5;
+pub const DAMAGE_F1: f64 = 3.5;
+/// The heat fraction the HUD shows as 100 % (A: the gauge's message `f / 3.5` against its mark 1.5 / 3.5, FUN_142d6d3e0, and
+/// the movie's `int(arg1 / arg2 x 100 + 0.5)`; the same number as `WARNING_FRACTION`, from another constant of the exe).
+pub const HUD_FULL_FRACTION: f64 = 1.5;
 
 /// What is open, each kept as the mod has had it until a measurement says what the record's number means.
 pub mod stand_in {
@@ -31,19 +43,18 @@ pub mod stand_in {
     pub const DISSIPATE_MIN: f64 = 1.18;
     /// The radiator's multiplier `k` (starts at 1 in the exe's tick; its other values not found).
     pub const DISSIPATE_K: f64 = 1.0;
-    /// Heat damage: the threshold fraction, the fraction where the rate reaches its ceiling, the rates (a share of the hull a
-    /// second here). The heat record holds 2.5, 3.5, 0.5 and 1.5 (+0xF4..+0x100), but 2.5 as heat / capacity disagrees with the
-    /// game's known damage above 100 % unless the HUD's percentage is not heat / capacity, and the rates' unit is not known:
-    /// kept until N1's H1 run reads the HUD's scale.
-    pub const DAMAGE_F0: f64 = 1.0;
-    pub const DAMAGE_F1: f64 = 1.5;
+    /// Heat damage's rates at `DAMAGE_F0` and at `DAMAGE_F1` (a share of the hull a second here). The heat record holds 0.5 and
+    /// 1.5 (+0xFC, +0x100), but their unit is not known: the exe hands the summed damage to an object it holds (+0x98, virtual
+    /// +0x30) that was not traced, so what 0.5 is (hull points, a share, module damage) is open: kept as the mod has had them.
     pub const DAMAGE_RATE_LO: f64 = 0.0;
     pub const DAMAGE_RATE_HI: f64 = 0.01;
     /// The heat the ship makes idling (MJ a second: the power plant and whatever else runs), the one number that holds session
-    /// 2's idle at its measured 36 % (s09, 60 s at rest, 2/2/2 pips; near the system's star, so the star's heat is in it) with
-    /// the radiator's numbers above and the HUD's percentage taken as heat / capacity: a stand-in fitted to one measurement
-    /// (E) until N1's H1 and F1 runs separate the loads.
-    pub const IDLE_LOAD: f64 = 3.379;
+    /// 2's idle at its measured 36 % (s09, 60 s at rest, 2/2/2 pips, 36 in all 3834 frames; near the system's star, so the
+    /// star's heat is in it) with the radiator's numbers above. On the HUD's scale (`f / 1.5`, A) 36 % is f = 0.54, where the
+    /// radiator takes 1.18 + (18.15 - 1.18) x 0.54^2 = 6.128 a second; the HUD's whole percent (35.5 to 36.5) bounds it to
+    /// 5.99 to 6.27. A stand-in fitted to one measurement (E) until N1's H1 and F1 runs separate the loads. (It was 3.379,
+    /// fitted with the percentage taken as heat / capacity, f = 0.36.)
+    pub const IDLE_LOAD: f64 = 6.128;
 }
 
 /// The radiator's two visual values, which the ship's lights and its vents' flaps read as generic parameters.
@@ -94,8 +105,8 @@ impl HeatSpec {
             dis_f0: DISSIPATE_F0,
             dis_f1: DISSIPATE_F1,
             dis_k: stand_in::DISSIPATE_K,
-            dmg_f0: stand_in::DAMAGE_F0,
-            dmg_f1: stand_in::DAMAGE_F1,
+            dmg_f0: DAMAGE_F0,
+            dmg_f1: DAMAGE_F1,
             dmg_lo: stand_in::DAMAGE_RATE_LO,
             dmg_hi: stand_in::DAMAGE_RATE_HI,
             dmg_every: DAMAGE_EVERY_S,
@@ -134,9 +145,9 @@ impl Heat {
         self.heat / spec.capacity.max(1e-9)
     }
 
-    /// The HUD's percentage (open: `f x 100` until measured).
+    /// The HUD's percentage, `f / 1.5 x 100` (A, `HUD_FULL_FRACTION`; the movie rounds it to a whole percent).
     pub fn hud_percent(&self, spec: &HeatSpec) -> f64 {
-        self.fraction(spec) * 100.0
+        self.fraction(spec) / HUD_FULL_FRACTION * 100.0
     }
 
     /// Adds `q` MJ (a load x dt); with `cap` the result is held to that share of the capacity (`0x143813740`).
@@ -220,7 +231,8 @@ mod tests {
         assert_eq!(visual_dissipation(0.9, false), VisualDissipation::default());
     }
 
-    /// The warning fires once as the fraction rises through 1.5; heat damage over the threshold is dealt on its interval.
+    /// The warning fires once as the fraction rises through 1.5 (the HUD's 100 %); heat damage starts over the record's 2.5
+    /// (the HUD's 167 %) and is dealt on its interval.
     #[test]
     fn warnings_and_damage() {
         let spec = HeatSpec::sidewinder();
@@ -229,8 +241,13 @@ mod tests {
         assert!(!h.tick(&spec, 0.0, false, false).warning);
         h.add(&spec, 0.02 * spec.capacity, None);
         let ev = h.tick(&spec, 0.0, false, false);
-        assert!(ev.warning);
+        assert!(ev.warning && !ev.damage_warning);
+        assert!((h.hud_percent(&spec) - 100.67).abs() < 0.01);
         assert!(!h.tick(&spec, 0.0, false, false).warning);
+        // Under 2.5 no damage, however long.
+        assert!((0..300).all(|_| h.tick(&spec, 1.0 / 60.0, false, false).damage == 0.0));
+        h.add(&spec, 2.51 * spec.capacity - h.heat, None);
+        assert!(h.tick(&spec, 0.0, false, false).damage_warning);
         // The damage is dealt every 2 s (the record's +0x104): nothing in the first 1.9 s, then all of it at once.
         let mut dealt = Vec::new();
         for i in 0..150 {
@@ -241,5 +258,58 @@ mod tests {
         }
         assert_eq!(spec.dmg_every, 2.0);
         assert!(dealt.len() == 1 && (119..=120).contains(&dealt[0]), "{dealt:?}");
+    }
+
+    /// The HUD's scale: 100 % at the warning's 1.5, the gauge's marks at 2.5 (167 %) and 3.5 (233 %).
+    #[test]
+    fn hud_percent_is_heat_over_one_and_a_half_capacities() {
+        let spec = HeatSpec::sidewinder();
+        let mut h = Heat::new(&spec);
+        for (f, pct) in [(0.4, 26.667), (1.5, 100.0), (2.5, 166.667), (3.5, 233.333)] {
+            h.heat = f * spec.capacity;
+            assert!((h.hud_percent(&spec) - pct).abs() < 1e-3, "{f}: {}", h.hud_percent(&spec));
+        }
+    }
+
+    /// A powered tick of the ship at rest, in `pilot.rs`'s order: the idle load and `extra` (heat a second), the radiator.
+    fn idle_tick(h: &mut Heat, spec: &HeatSpec, extra: f64) {
+        let dt = 1.0 / 60.0;
+        h.add(spec, (stand_in::IDLE_LOAD + extra) * dt, None);
+        h.tick(spec, dt, true, false);
+    }
+
+    /// The idle ship settles at session 2's measured 36 % (s09: 36 in every frame of 60 s at rest): within the HUD's whole
+    /// percent, 35.5 to 36.5.
+    #[test]
+    fn the_idle_ship_reads_session_twos_36_percent() {
+        let spec = HeatSpec::sidewinder();
+        let mut h = Heat::new(&spec);
+        for _ in 0..600 * 60 {
+            idle_tick(&mut h, &spec, 0.0);
+        }
+        let pct = h.hud_percent(&spec);
+        assert!((35.5..36.5).contains(&pct), "{pct}");
+    }
+
+    /// A boost from that idle (1 s warming, 2 s firing at the boost record's 10 a second) peaks at session 2's 44 % (s05 and
+    /// s06: 36 or 37 before, 44 at most; with the percentage taken as heat / capacity it would read 49 %).
+    #[test]
+    fn a_boost_from_idle_peaks_at_session_twos_44_percent() {
+        use crate::boost::{Boost, BoostSpec, State};
+        let spec = HeatSpec::sidewinder();
+        let bs = BoostSpec::sidewinder(0.0);
+        let mut h = Heat::new(&spec);
+        for _ in 0..600 * 60 {
+            idle_tick(&mut h, &spec, 0.0);
+        }
+        let mut b = Boost { state: State::Warm(0.0) };
+        let mut peak: f64 = 0.0;
+        for _ in 0..10 * 60 {
+            let extra = b.heat_rate(&bs);
+            b.tick(&bs, 1.0 / 60.0);
+            idle_tick(&mut h, &spec, extra);
+            peak = peak.max(h.hud_percent(&spec));
+        }
+        assert_eq!((peak + 0.5) as i32, 44, "{peak}");
     }
 }
