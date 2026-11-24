@@ -11,3 +11,11 @@ pub use value::Value;
 
 pub use facts::UiFacts;
 pub use text::Text;
+
+// The cockpit side panels and the focus machine (task UI5a).
+pub mod focus;
+pub mod panel_facts;
+pub mod panels;
+
+pub use focus::Focus;
+pub use panel_facts::PanelFacts;

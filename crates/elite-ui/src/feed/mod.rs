@@ -15,6 +15,20 @@ mod sights;
 #[cfg(test)]
 mod tests;
 
+// The cockpit side panels' feeders (task UI5a): `Panels` below.
+mod comms;
+mod left;
+#[cfg(test)]
+mod panel_tests;
+mod right;
+mod role;
+
+pub use right::database_item;
+
+use crate::focus::{FocusState, Panel};
+use crate::panel_facts::PanelFacts;
+use crate::panels::PanelAction;
+
 use crate::{UiFacts, Value};
 
 pub use gauges::Gauges;
@@ -72,16 +86,34 @@ pub struct Msg {
 
 /// What a frame's feeding produced: the messages in order, and the Wwise events the exe posts itself alongside them (by
 /// name; only those the notes prove: none of the messages sent here has one).
+/// The side panels' DataStore writes (`stores`, in order) go to their movies BEFORE the frame's messages: a message that
+/// hands a movie a DataStore path (`SetModuleContext`, `InitDataStore`) then finds the nodes already written.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Outbox {
     pub msgs: Vec<Msg>,
     pub posts: Vec<&'static str>,
+    pub stores: Vec<Store>,
 }
 
 impl Outbox {
     pub fn send(&mut self, movie: Movie, name: &'static str, args: Vec<Value>) {
         self.msgs.push(Msg { movie, name, args });
     }
+
+    /// A DataStore write for `movie` (`elite_gfx::Movie::store`).
+    pub fn store(&mut self, movie: Movie, context: &[&str], property: &str, value: Value) {
+        let context = context.iter().map(|s| s.to_string()).collect();
+        self.stores.push(Store { movie, context, property: property.to_string(), value });
+    }
+}
+
+/// One DataStore write: the node's path, the property, its value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Store {
+    pub movie: Movie,
+    pub context: Vec<String>,
+    pub property: String,
+    pub value: Value,
 }
 
 /// Every flight HUD feeder, fed together: the movies' life cycle first (so a movie is opened before its data), then the
@@ -127,6 +159,99 @@ impl Hud {
         self.info.reset();
         self.orbital.reset();
         self.notifications.reset();
+    }
+}
+
+/// The cockpit side panels' feeders, fed together (task UI5a; `re/elite/notes/ui_messages_panels.md`): the left, right,
+/// role and comms panels, by their exe's send rules (each feeder's notes). The movies' life cycle (`Open`, `Show`, the
+/// focus) is the focus machine's alone (`focus::Focus`, which sends it in order); each panel is fed only while it is on
+/// screen (`FocusState::on_screen`), and a page is sent whole when the movie says it is entered (`hear`). `hear` takes what the movies sent back (`panels::on_out`) and returns the ship's actions,
+/// the pop-ups' buttons resolved against the pop-up open (as Elite's controllers keep the selected place and module).
+///
+/// A panel's feeder produces nothing while its panel is not on screen, so nothing piles up for a movie the game has not
+/// loaded yet (it loads each the first time it is wanted), however long the flight. While a wanted movie is still
+/// loading, the game drops what its feeder gives; once it is ready the game calls `reset_movie` for it (and
+/// `Focus::reload_movie`), and that one feeder sends its whole state again while the others carry on.
+#[derive(Clone, Debug, Default)]
+pub struct Panels {
+    left: left::Left,
+    right: right::Right,
+    role: role::Role,
+    comms: comms::Comms,
+}
+
+impl Panels {
+    /// One frame: `dt` the frame's seconds.
+    pub fn feed(&mut self, facts: &PanelFacts, focus: &FocusState, dt: f64, out: &mut Outbox) {
+        if focus.on_screen.is_empty() {
+            return;
+        }
+        let facts = &facts.finite();
+        let on = |p: Panel| focus.on_screen.contains(&p);
+        if on(Panel::Left) {
+            self.left.feed(facts, out);
+        }
+        if on(Panel::Right) {
+            self.right.feed(facts, out);
+        }
+        if on(Panel::Role) {
+            self.role.feed(facts, out);
+        }
+        if on(Panel::Comms) {
+            self.comms.feed(facts, dt, out);
+        }
+    }
+
+    /// The movies have just been loaded: everything is sent again (with `Focus::reload` for their life cycle).
+    pub fn reset(&mut self) {
+        for p in Panel::ALL {
+            self.reset_movie(p.movie());
+        }
+    }
+
+    /// One panel's movie has just been loaded (or loaded again): its feeder sends its whole state on its next feed; the
+    /// others carry on. For the comms movie this puts its log back (`PushMultipleMessagesToLog`): call it only when that
+    /// movie was really loaded. Not a panel movie: nothing.
+    pub fn reset_movie(&mut self, movie: Movie) {
+        match movie {
+            Movie::CockpitExternalPanel => self.left.reset(),
+            Movie::CockpitInternalPanel2 => self.right.reset(),
+            Movie::RolePanel3 => self.role.reset(),
+            Movie::CockpitChatPanel => self.comms.reset(),
+            _ => {}
+        }
+    }
+
+    /// What the movies sent back (`panels::on_out`'s actions): the panels' own state is kept here; the ship's actions come
+    /// back (the pop-ups' buttons as the actions they mean).
+    pub fn hear(&mut self, actions: &[PanelAction], facts: &PanelFacts) -> Vec<PanelAction> {
+        let mut out = Vec::new();
+        for action in actions {
+            let resolved = match action {
+                PanelAction::Page { movie: Movie::CockpitExternalPanel, .. }
+                | PanelAction::Popup { movie: Movie::CockpitExternalPanel, .. }
+                | PanelAction::LocationSelected(_)
+                | PanelAction::LocationButton(_)
+                | PanelAction::LocationBack => self.left.hear(action, facts),
+                PanelAction::Page { movie: Movie::CockpitInternalPanel2, .. }
+                | PanelAction::Popup { movie: Movie::CockpitInternalPanel2, .. }
+                | PanelAction::ModuleSelected(_)
+                | PanelAction::ModuleOption(_)
+                | PanelAction::ModuleRow(_) => self.right.hear(action, facts),
+                PanelAction::TabsReady => {
+                    self.comms.tabs_ready();
+                    None
+                }
+                PanelAction::Page { .. }
+                | PanelAction::Popup { .. }
+                | PanelAction::ShowComplete(_)
+                | PanelAction::HideComplete(_)
+                | PanelAction::RoleScreen { .. } => None,
+                ship => Some(ship.clone()),
+            };
+            out.extend(resolved);
+        }
+        out
     }
 }
 
