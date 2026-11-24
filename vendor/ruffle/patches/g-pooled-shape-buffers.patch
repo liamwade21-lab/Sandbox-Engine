@@ -1,0 +1,439 @@
+diff --git a/render/wgpu/src/backend.rs b/render/wgpu/src/backend.rs
+index 3846b63..25ae4c2 100644
+--- a/render/wgpu/src/backend.rs
++++ b/render/wgpu/src/backend.rs
+@@ -4,6 +4,7 @@ use crate::context3d::WgpuContext3D;
+ use crate::filters::FilterSource;
+ use crate::mesh::{CommonGradient, Mesh, PendingDraw};
+ use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
++use crate::shape_buffers::ShapeBuffers;
+ use crate::surface::buffers::ChunkBuffers;
+ use crate::surface::{LayerRef, Surface};
+ use crate::target::{MaybeOwnedBuffer, TextureTarget};
+@@ -328,31 +329,30 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
+             }
+         }
+ 
+-        let uniform_buffer = uniform_buffer.finish(
+-            &self.descriptors.device,
+-            create_debug_label!("Shape {} uniforms", shape_id),
+-            wgpu::BufferUsages::UNIFORM,
+-        );
+-        let vertex_buffer = vertex_buffer.finish(
+-            &self.descriptors.device,
+-            create_debug_label!("Shape {} vertices", shape_id),
+-            wgpu::BufferUsages::VERTEX,
+-        );
+-        let index_buffer = index_buffer.finish(
+-            &self.descriptors.device,
+-            create_debug_label!("Shape {} indices", shape_id),
+-            wgpu::BufferUsages::INDEX,
+-        );
++        let (device, queue) = (&self.descriptors.device, &self.descriptors.queue);
++        let pool = &mut self.active_frame.shape_buffers;
++        let uniforms = pool.uniforms.add(device, queue, uniform_buffer.bytes());
++        let vertices = pool.vertices.add(device, queue, vertex_buffer.bytes());
++        let indices = pool.indices.add(device, queue, index_buffer.bytes());
+ 
+         let draws = draws
+             .into_iter()
+-            .map(|d| d.finish(&self.descriptors, &uniform_buffer, &gradients))
++            .map(|d| {
++                d.finish(
++                    &self.descriptors,
++                    vertices.as_ref(),
++                    indices.as_ref(),
++                    uniforms.as_ref(),
++                    &gradients,
++                )
++            })
+             .collect();
+ 
+         Mesh {
+             draws,
+-            vertex_buffer,
+-            index_buffer,
++            vertices,
++            indices,
++            _uniforms: uniforms,
+         }
+     }
+ 
+@@ -1269,6 +1269,9 @@ impl RenderTargetMode {
+ pub struct ActiveFrame {
+     pub staging_belt: wgpu::util::StagingBelt,
+     pub command_encoder: wgpu::CommandEncoder,
++    /// Sandbox Engine patch g: the registered shapes' buffers. A dropped shape's ranges are
++    /// reused once the work recorded so far is submitted, which only this frame knows.
++    pub shape_buffers: ShapeBuffers,
+     draws_since_flush: u32,
+ }
+ 
+@@ -1281,6 +1284,7 @@ impl ActiveFrame {
+                 .device
+                 .create_command_encoder(&Default::default()),
+             staging_belt: wgpu::util::StagingBelt::new(descriptors.device.clone(), 65536),
++            shape_buffers: ShapeBuffers::new(&descriptors.limits),
+             draws_since_flush: 0,
+         }
+     }
+@@ -1306,6 +1310,7 @@ impl ActiveFrame {
+             frame,
+         );
+         self.staging_belt.recall();
++        self.shape_buffers.recycle();
+         index
+     }
+ 
+@@ -1320,6 +1325,7 @@ impl ActiveFrame {
+         );
+         let index = descriptors.queue.submit(Some(draw_encoder.finish()));
+         self.staging_belt.recall();
++        self.shape_buffers.recycle();
+         index
+     }
+ 
+diff --git a/render/wgpu/src/buffer_builder.rs b/render/wgpu/src/buffer_builder.rs
+index b526c34..ea8a594 100644
+--- a/render/wgpu/src/buffer_builder.rs
++++ b/render/wgpu/src/buffer_builder.rs
+@@ -85,6 +85,10 @@ impl BufferBuilder {
+         }
+     }
+ 
++    pub fn bytes(&self) -> &[u8] {
++        &self.inner
++    }
++
+     pub fn len(&self) -> usize {
+         self.inner.len()
+     }
+diff --git a/render/wgpu/src/lib.rs b/render/wgpu/src/lib.rs
+index b6fc744..6b2e9cb 100644
+--- a/render/wgpu/src/lib.rs
++++ b/render/wgpu/src/lib.rs
+@@ -44,6 +44,7 @@ mod filters;
+ mod layouts;
+ mod mesh;
+ mod shaders;
++mod shape_buffers;
+ mod surface;
+ 
+ impl BitmapHandleImpl for Texture {}
+diff --git a/render/wgpu/src/mesh.rs b/render/wgpu/src/mesh.rs
+index bb2058f..7447152 100644
+--- a/render/wgpu/src/mesh.rs
++++ b/render/wgpu/src/mesh.rs
+@@ -6,6 +6,7 @@ use std::ops::Range;
+ use wgpu::util::DeviceExt;
+ 
+ use crate::buffer_builder::BufferBuilder;
++use crate::shape_buffers::Slice;
+ use ruffle_render::backend::{ShapeHandle, ShapeHandleImpl};
+ use ruffle_render::bitmap::BitmapSource;
+ use ruffle_render::tessellator::{Bitmap, Draw as LyonDraw, DrawType as TessDrawType, Gradient};
+@@ -14,11 +15,15 @@ use swf::{CharacterId, GradientInterpolation};
+ /// How big to make gradient textures. Larger will keep more detail, but be slower and use more memory.
+ const GRADIENT_SIZE: usize = 256;
+ 
++/// A registered shape. Sandbox Engine patch g: its draws' ranges are in its vertex and index
++/// slices' buffers (pooled, `shape_buffers`), and its gradients' bind groups point into its uniform
++/// slice; upstream gives each shape three buffers of its own.
+ #[derive(Debug)]
+ pub struct Mesh {
+     pub draws: Vec<Draw>,
+-    pub vertex_buffer: wgpu::Buffer,
+-    pub index_buffer: wgpu::Buffer,
++    pub vertices: Option<Slice>,
++    pub indices: Option<Slice>,
++    pub _uniforms: Option<Slice>,
+ }
+ 
+ impl ShapeHandleImpl for Mesh {}
+@@ -37,19 +42,23 @@ pub struct PendingDraw {
+ }
+ 
+ impl PendingDraw {
++    /// The draw with its ranges moved to where its shape's vertices and indices were placed.
+     pub fn finish(
+         self,
+         descriptors: &Descriptors,
+-        uniform_buffer: &wgpu::Buffer,
++        vertices: Option<&Slice>,
++        indices: Option<&Slice>,
++        uniforms: Option<&Slice>,
+         gradients: &[CommonGradient],
+     ) -> Draw {
++        let vertex_base = vertices.map_or(0, Slice::offset);
++        let index_offset = self.index_offset
++            + indices.map_or(0, |slice| (slice.offset() / size_of::<u32>() as u64) as u32);
+         Draw {
+-            draw_type: self
+-                .draw_type
+-                .finish(descriptors, uniform_buffer, gradients),
+-            vertices: self.vertices,
+-            indices: self.index_offset..(self.index_offset + self.num_indices),
+-            mask_indices: self.index_offset..(self.index_offset + self.num_mask_indices),
++            draw_type: self.draw_type.finish(descriptors, uniforms, gradients),
++            vertices: (vertex_base + self.vertices.start)..(vertex_base + self.vertices.end),
++            indices: index_offset..(index_offset + self.num_indices),
++            mask_indices: index_offset..(index_offset + self.num_mask_indices),
+         }
+     }
+ }
+@@ -195,7 +204,7 @@ impl PendingDrawType {
+     pub fn finish(
+         self,
+         descriptors: &Descriptors,
+-        uniform_buffer: &wgpu::Buffer,
++        uniforms: Option<&Slice>,
+         gradients: &[CommonGradient],
+     ) -> DrawType {
+         match self {
+@@ -205,6 +214,7 @@ impl PendingDrawType {
+                 bind_group_label,
+             } => {
+                 let common = &gradients[gradient_index];
++                let uniforms = uniforms.expect("A gradient's shape has uniforms");
+                 let bind_group = descriptors
+                     .device
+                     .create_bind_group(&wgpu::BindGroupDescriptor {
+@@ -213,8 +223,8 @@ impl PendingDrawType {
+                             wgpu::BindGroupEntry {
+                                 binding: 0,
+                                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+-                                    buffer: uniform_buffer,
+-                                    offset: common.buffer_offset,
++                                    buffer: uniforms.buffer(),
++                                    offset: uniforms.offset() + common.buffer_offset,
+                                     size: wgpu::BufferSize::new(
+                                         std::mem::size_of::<GradientUniforms>() as u64,
+                                     ),
+diff --git a/render/wgpu/src/surface/commands.rs b/render/wgpu/src/surface/commands.rs
+index 334384e..16f3f16 100644
+--- a/render/wgpu/src/surface/commands.rs
++++ b/render/wgpu/src/surface/commands.rs
+@@ -419,6 +419,10 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
+ 
+     fn render_shape(&mut self, shape: ShapeHandle, transform: Transform) {
+         let mesh = as_mesh(&shape);
++        let (Some(mesh_vertices), Some(mesh_indices)) = (&mesh.vertices, &mesh.indices) else {
++            // Sandbox Engine patch g: a shape without vertices holds no slices and draws nothing.
++            return;
++        };
+         let mut instance = None;
+         for draw in &mesh.draws {
+             let indices = if self.mask_state.mode != MaskMode::DrawMaskStencil
+@@ -434,9 +438,9 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
+             }
+ 
+             let vertices = DrawVertices::CustomBuffers {
+-                vertex_buffer: mesh.vertex_buffer.clone(),
++                vertex_buffer: mesh_vertices.buffer().clone(),
+                 vertex_range: draw.vertices.clone(),
+-                index_buffer: mesh.index_buffer.clone(),
++                index_buffer: mesh_indices.buffer().clone(),
+                 indices,
+             };
+             match &draw.draw_type {
+diff --git a/render/wgpu/src/shape_buffers.rs b/render/wgpu/src/shape_buffers.rs
+new file mode 100644
+index 0000000..1a9d978
+--- /dev/null
++++ b/render/wgpu/src/shape_buffers.rs
+@@ -0,0 +1,195 @@
++//! Sandbox Engine patch g: registered shapes' vertices, indices and gradient uniforms, pooled in a
++//! few large buffers.
++//!
++//! Each kind lives in blocks owned by the backend, and a shape holds a range of one block for
++//! each kind it has, where it would otherwise own buffers of its own: wgpu sizes every pass's
++//! resource tracking by the most buffers ever alive at once, so hundreds of shapes (glyphs
++//! included) made every later frame of the host slower. Blocks start at `FIRST_BLOCK` and double
++//! up to `LARGEST_BLOCK` (a larger shape gets a block of its own size); they live as long as the
++//! backend. A dropped shape's ranges are reused only after the work recorded so far has been
++//! submitted (`ShapeBuffers::recycle`), so no draw recorded before then reads another shape's
++//! data, and a new shape's data is written through the queue, which orders it after everything
++//! submitted before.
++
++use std::ops::Range;
++use std::sync::{Arc, Mutex};
++
++const FIRST_BLOCK: u64 = 64 * 1024;
++const LARGEST_BLOCK: u64 = 4 * 1024 * 1024;
++
++pub struct ShapeBuffers {
++    pub vertices: Arena,
++    pub indices: Arena,
++    pub uniforms: Arena,
++}
++
++impl ShapeBuffers {
++    pub fn new(limits: &wgpu::Limits) -> Self {
++        Self {
++            vertices: Arena::new(
++                "Shape vertices",
++                wgpu::BufferUsages::VERTEX,
++                wgpu::COPY_BUFFER_ALIGNMENT,
++            ),
++            indices: Arena::new(
++                "Shape indices",
++                wgpu::BufferUsages::INDEX,
++                wgpu::COPY_BUFFER_ALIGNMENT,
++            ),
++            uniforms: Arena::new(
++                "Shape uniforms",
++                wgpu::BufferUsages::UNIFORM,
++                u64::from(limits.min_uniform_buffer_offset_alignment),
++            ),
++        }
++    }
++
++    /// Makes the ranges of shapes dropped so far free for new shapes. Called once the work
++    /// recorded so far has been submitted.
++    pub fn recycle(&self) {
++        for arena in [&self.vertices, &self.indices, &self.uniforms] {
++            for block in &arena.blocks {
++                block.ranges.lock().expect("shape buffer ranges").recycle();
++            }
++        }
++    }
++}
++
++pub struct Arena {
++    label: &'static str,
++    usage: wgpu::BufferUsages,
++    alignment: u64,
++    blocks: Vec<Arc<Block>>,
++}
++
++#[derive(Debug)]
++struct Block {
++    buffer: wgpu::Buffer,
++    ranges: Mutex<Ranges>,
++}
++
++/// A block's free ranges (sorted, never touching) and the ranges given back since the last
++/// submission.
++#[derive(Debug)]
++struct Ranges {
++    free: Vec<Range<u64>>,
++    given_back: Vec<Range<u64>>,
++}
++
++impl Ranges {
++    fn take(&mut self, size: u64) -> Option<Range<u64>> {
++        let index = self.free.iter().position(|r| r.end - r.start >= size)?;
++        let range = &mut self.free[index];
++        let taken = range.start..range.start + size;
++        range.start = taken.end;
++        if range.is_empty() {
++            self.free.remove(index);
++        }
++        Some(taken)
++    }
++
++    fn recycle(&mut self) {
++        for range in std::mem::take(&mut self.given_back) {
++            let index = self.free.partition_point(|r| r.start < range.start);
++            let joins_previous = index > 0 && self.free[index - 1].end == range.start;
++            let joins_next = index < self.free.len() && self.free[index].start == range.end;
++            match (joins_previous, joins_next) {
++                (true, true) => {
++                    self.free[index - 1].end = self.free[index].end;
++                    self.free.remove(index);
++                }
++                (true, false) => self.free[index - 1].end = range.end,
++                (false, true) => self.free[index].start = range.start,
++                (false, false) => self.free.insert(index, range),
++            }
++        }
++    }
++}
++
++/// A shape's range in one block; it goes back to the block when dropped.
++#[derive(Debug)]
++pub struct Slice {
++    block: Arc<Block>,
++    range: Range<u64>,
++}
++
++impl Slice {
++    pub fn buffer(&self) -> &wgpu::Buffer {
++        &self.block.buffer
++    }
++
++    pub fn offset(&self) -> wgpu::BufferAddress {
++        self.range.start
++    }
++}
++
++impl Drop for Slice {
++    fn drop(&mut self) {
++        self.block
++            .ranges
++            .lock()
++            .expect("shape buffer ranges")
++            .given_back
++            .push(self.range.clone());
++    }
++}
++
++impl Arena {
++    fn new(label: &'static str, usage: wgpu::BufferUsages, alignment: u64) -> Self {
++        Self {
++            label,
++            usage,
++            alignment,
++            blocks: Vec::new(),
++        }
++    }
++
++    /// `data` in a range of one block, or `None` for no data. `data` is whole 4-byte words, as
++    /// a queue write needs (vertices and indices are 4-byte values, uniforms 16-byte records).
++    pub fn add(
++        &mut self,
++        device: &wgpu::Device,
++        queue: &wgpu::Queue,
++        data: &[u8],
++    ) -> Option<Slice> {
++        if data.is_empty() {
++            return None;
++        }
++        let size = (data.len() as u64).next_multiple_of(self.alignment);
++        let found = self.blocks.iter().find_map(|block| {
++            let range = block
++                .ranges
++                .lock()
++                .expect("shape buffer ranges")
++                .take(size)?;
++            Some((block.clone(), range))
++        });
++        let (block, range) = found.unwrap_or_else(|| self.new_block(device, size));
++        queue.write_buffer(&block.buffer, range.start, data);
++        Some(Slice { block, range })
++    }
++
++    /// A new block holding at least `size` bytes, its first `size` taken.
++    fn new_block(&mut self, device: &wgpu::Device, size: u64) -> (Arc<Block>, Range<u64>) {
++        let doubled = (0..self.blocks.len()).fold(FIRST_BLOCK, |s, _| (s * 2).min(LARGEST_BLOCK));
++        let block_size = doubled.max(size);
++        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
++            label: Some(self.label),
++            size: block_size,
++            usage: self.usage | wgpu::BufferUsages::COPY_DST,
++            mapped_at_creation: false,
++        });
++        let block = Arc::new(Block {
++            buffer,
++            ranges: Mutex::new(Ranges {
++                free: (size < block_size)
++                    .then_some(size..block_size)
++                    .into_iter()
++                    .collect(),
++                given_back: Vec::new(),
++            }),
++        });
++        self.blocks.push(block.clone());
++        (block, 0..size)
++    }
++}

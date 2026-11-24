@@ -419,6 +419,10 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
 
     fn render_shape(&mut self, shape: ShapeHandle, transform: Transform) {
         let mesh = as_mesh(&shape);
+        let (Some(mesh_vertices), Some(mesh_indices)) = (&mesh.vertices, &mesh.indices) else {
+            // Sandbox Engine patch g: a shape without vertices holds no slices and draws nothing.
+            return;
+        };
         let mut instance = None;
         for draw in &mesh.draws {
             let indices = if self.mask_state.mode != MaskMode::DrawMaskStencil
@@ -434,9 +438,9 @@ impl CommandHandler for WgpuCommandHandler<'_, '_> {
             }
 
             let vertices = DrawVertices::CustomBuffers {
-                vertex_buffer: mesh.vertex_buffer.clone(),
+                vertex_buffer: mesh_vertices.buffer().clone(),
                 vertex_range: draw.vertices.clone(),
-                index_buffer: mesh.index_buffer.clone(),
+                index_buffer: mesh_indices.buffer().clone(),
                 indices,
             };
             match &draw.draw_type {

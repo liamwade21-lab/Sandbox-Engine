@@ -44,6 +44,7 @@ mod filters;
 mod layouts;
 mod mesh;
 mod shaders;
+mod shape_buffers;
 mod surface;
 
 impl BitmapHandleImpl for Texture {}

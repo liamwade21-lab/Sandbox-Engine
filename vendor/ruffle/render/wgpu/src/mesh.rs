@@ -6,6 +6,7 @@ use std::ops::Range;
 use wgpu::util::DeviceExt;
 
 use crate::buffer_builder::BufferBuilder;
+use crate::shape_buffers::Slice;
 use ruffle_render::backend::{ShapeHandle, ShapeHandleImpl};
 use ruffle_render::bitmap::BitmapSource;
 use ruffle_render::tessellator::{Bitmap, Draw as LyonDraw, DrawType as TessDrawType, Gradient};
@@ -14,11 +15,15 @@ use swf::{CharacterId, GradientInterpolation};
 /// How big to make gradient textures. Larger will keep more detail, but be slower and use more memory.
 const GRADIENT_SIZE: usize = 256;
 
+/// A registered shape. Sandbox Engine patch g: its draws' ranges are in its vertex and index
+/// slices' buffers (pooled, `shape_buffers`), and its gradients' bind groups point into its uniform
+/// slice; upstream gives each shape three buffers of its own.
 #[derive(Debug)]
 pub struct Mesh {
     pub draws: Vec<Draw>,
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
+    pub vertices: Option<Slice>,
+    pub indices: Option<Slice>,
+    pub _uniforms: Option<Slice>,
 }
 
 impl ShapeHandleImpl for Mesh {}
@@ -37,19 +42,23 @@ pub struct PendingDraw {
 }
 
 impl PendingDraw {
+    /// The draw with its ranges moved to where its shape's vertices and indices were placed.
     pub fn finish(
         self,
         descriptors: &Descriptors,
-        uniform_buffer: &wgpu::Buffer,
+        vertices: Option<&Slice>,
+        indices: Option<&Slice>,
+        uniforms: Option<&Slice>,
         gradients: &[CommonGradient],
     ) -> Draw {
+        let vertex_base = vertices.map_or(0, Slice::offset);
+        let index_offset = self.index_offset
+            + indices.map_or(0, |slice| (slice.offset() / size_of::<u32>() as u64) as u32);
         Draw {
-            draw_type: self
-                .draw_type
-                .finish(descriptors, uniform_buffer, gradients),
-            vertices: self.vertices,
-            indices: self.index_offset..(self.index_offset + self.num_indices),
-            mask_indices: self.index_offset..(self.index_offset + self.num_mask_indices),
+            draw_type: self.draw_type.finish(descriptors, uniforms, gradients),
+            vertices: (vertex_base + self.vertices.start)..(vertex_base + self.vertices.end),
+            indices: index_offset..(index_offset + self.num_indices),
+            mask_indices: index_offset..(index_offset + self.num_mask_indices),
         }
     }
 }
@@ -195,7 +204,7 @@ impl PendingDrawType {
     pub fn finish(
         self,
         descriptors: &Descriptors,
-        uniform_buffer: &wgpu::Buffer,
+        uniforms: Option<&Slice>,
         gradients: &[CommonGradient],
     ) -> DrawType {
         match self {
@@ -205,6 +214,7 @@ impl PendingDrawType {
                 bind_group_label,
             } => {
                 let common = &gradients[gradient_index];
+                let uniforms = uniforms.expect("A gradient's shape has uniforms");
                 let bind_group = descriptors
                     .device
                     .create_bind_group(&wgpu::BindGroupDescriptor {
@@ -213,8 +223,8 @@ impl PendingDrawType {
                             wgpu::BindGroupEntry {
                                 binding: 0,
                                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: uniform_buffer,
-                                    offset: common.buffer_offset,
+                                    buffer: uniforms.buffer(),
+                                    offset: uniforms.offset() + common.buffer_offset,
                                     size: wgpu::BufferSize::new(
                                         std::mem::size_of::<GradientUniforms>() as u64,
                                     ),

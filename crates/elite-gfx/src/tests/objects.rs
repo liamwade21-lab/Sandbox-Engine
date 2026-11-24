@@ -2,7 +2,10 @@
 //! its frames with its values changing (the HUD movies fed by `elite_ui::feed::Hud` from a generated
 //! flight, the left panel by its buttons and its destination data), drawn whenever `changed` says
 //! so, and wgpu's own registry (`Instance::generate_report`: the objects whose handles are alive) is
-//! read every 1,000 frames, the GPU waited for every frame as a game frame does. Results in
+//! read every 1,000 frames, the GPU waited for every frame as a game frame does. A movie's own
+//! buffers must also stay few (`MOST_BUFFERS`): Ruffle patch g pools its shapes' vertices, indices
+//! and gradient uniforms, which upstream gives a buffer each per shape (800 to 1,400 buffers a
+//! movie, and every pass of the host's frame slows with the most buffers ever alive). Results in
 //! `ui1/objects.txt`.
 
 use super::rig::{Rig, opened};
@@ -19,6 +22,9 @@ use std::fmt::Write as _;
 
 const FRAMES: u64 = 10_000;
 const EVERY: u64 = 1_000;
+/// The most buffers a movie may keep beyond the device's own (the largest measured, the left
+/// panel, keeps 15 with patch g, 1,381 without).
+const MOST_BUFFERS: usize = 32;
 
 /// The objects alive: buffers, textures, texture views, bind groups, samplers.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -230,6 +236,10 @@ fn gpu_objects_stay_flat() {
             if later > by_middle {
                 failures.push(format!("{name}: kind {i} grew from {by_middle} to {later} after frame {}", half as u64 * EVERY));
             }
+        }
+        let most = counts.iter().map(|c| c.0[0]).max().unwrap() - empty.0[0];
+        if most > MOST_BUFFERS {
+            failures.push(format!("{name}: {most} buffers of its own, more than {MOST_BUFFERS}"));
         }
         if after != empty {
             failures.push(format!("{name}: dropping the movie left {} (the device alone {})", after.line(), empty.line()));

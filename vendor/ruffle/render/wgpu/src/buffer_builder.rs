@@ -85,6 +85,10 @@ impl BufferBuilder {
         }
     }
 
+    pub fn bytes(&self) -> &[u8] {
+        &self.inner
+    }
+
     pub fn len(&self) -> usize {
         self.inner.len()
     }

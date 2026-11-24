@@ -4,6 +4,7 @@ use crate::context3d::WgpuContext3D;
 use crate::filters::FilterSource;
 use crate::mesh::{CommonGradient, Mesh, PendingDraw};
 use crate::pixel_bender::{ShaderMode, run_pixelbender_shader_impl};
+use crate::shape_buffers::ShapeBuffers;
 use crate::surface::buffers::ChunkBuffers;
 use crate::surface::{LayerRef, Surface};
 use crate::target::{MaybeOwnedBuffer, TextureTarget};
@@ -328,31 +329,30 @@ impl<T: RenderTarget> WgpuRenderBackend<T> {
             }
         }
 
-        let uniform_buffer = uniform_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} uniforms", shape_id),
-            wgpu::BufferUsages::UNIFORM,
-        );
-        let vertex_buffer = vertex_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} vertices", shape_id),
-            wgpu::BufferUsages::VERTEX,
-        );
-        let index_buffer = index_buffer.finish(
-            &self.descriptors.device,
-            create_debug_label!("Shape {} indices", shape_id),
-            wgpu::BufferUsages::INDEX,
-        );
+        let (device, queue) = (&self.descriptors.device, &self.descriptors.queue);
+        let pool = &mut self.active_frame.shape_buffers;
+        let uniforms = pool.uniforms.add(device, queue, uniform_buffer.bytes());
+        let vertices = pool.vertices.add(device, queue, vertex_buffer.bytes());
+        let indices = pool.indices.add(device, queue, index_buffer.bytes());
 
         let draws = draws
             .into_iter()
-            .map(|d| d.finish(&self.descriptors, &uniform_buffer, &gradients))
+            .map(|d| {
+                d.finish(
+                    &self.descriptors,
+                    vertices.as_ref(),
+                    indices.as_ref(),
+                    uniforms.as_ref(),
+                    &gradients,
+                )
+            })
             .collect();
 
         Mesh {
             draws,
-            vertex_buffer,
-            index_buffer,
+            vertices,
+            indices,
+            _uniforms: uniforms,
         }
     }
 
@@ -1269,6 +1269,9 @@ impl RenderTargetMode {
 pub struct ActiveFrame {
     pub staging_belt: wgpu::util::StagingBelt,
     pub command_encoder: wgpu::CommandEncoder,
+    /// Sandbox Engine patch g: the registered shapes' buffers. A dropped shape's ranges are
+    /// reused once the work recorded so far is submitted, which only this frame knows.
+    pub shape_buffers: ShapeBuffers,
     draws_since_flush: u32,
 }
 
@@ -1281,6 +1284,7 @@ impl ActiveFrame {
                 .device
                 .create_command_encoder(&Default::default()),
             staging_belt: wgpu::util::StagingBelt::new(descriptors.device.clone(), 65536),
+            shape_buffers: ShapeBuffers::new(&descriptors.limits),
             draws_since_flush: 0,
         }
     }
@@ -1306,6 +1310,7 @@ impl ActiveFrame {
             frame,
         );
         self.staging_belt.recall();
+        self.shape_buffers.recycle();
         index
     }
 
@@ -1320,6 +1325,7 @@ impl ActiveFrame {
         );
         let index = descriptors.queue.submit(Some(draw_encoder.finish()));
         self.staging_belt.recall();
+        self.shape_buffers.recycle();
         index
     }
 
