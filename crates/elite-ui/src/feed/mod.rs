@@ -23,6 +23,10 @@ mod panel_tests;
 mod right;
 mod role;
 
+// The FSS screen's feeder (task UI7).
+mod fss;
+pub use fss::Fss;
+
 pub use right::database_item;
 
 use crate::focus::{FocusState, Panel};

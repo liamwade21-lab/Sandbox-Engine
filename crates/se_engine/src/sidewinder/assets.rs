@@ -31,7 +31,7 @@ use super::material::{self, Family, ATTRIBUTE_BONE, ATTRIBUTE_COLOUR, ATTRIBUTE_
 
 const SHIP_FILE: &str = "ship.json";
 const MATERIALS_FILE: &str = "materials.json";
-const KEYS_FILE: &str = "binds/KeyboardMouseOnly.binds";
+pub(crate) const KEYS_FILE: &str = "binds/KeyboardMouseOnly.binds";
 const PAD_FILE: &str = "binds/ControlPad.binds";
 /// The cockpit's rig is the one from the export file `cockpit`: `ship.json` holds two rigs named `Sidewinder_Cockpit`, and
 /// the other (`cockpit_tutorial`) hangs the same cockpit with the tutorial's highlight overlays.
@@ -308,6 +308,12 @@ impl ShipRig {
                 Some((self.space.point(frame.w_axis.truncate()), self.space.direction(frame.z_axis.truncate().normalize())))
             })
             .collect())
+    }
+
+    /// The cockpit rig's root node (the cockpit model's: its bones' frames are the cockpit model's space), in `nodes`.
+    pub fn cockpit_node(&self) -> Option<usize> {
+        let root = &self.ship.rigs[self.cockpit].root.name;
+        self.nodes.iter().position(|n| n.group == Group::Cockpit && n.name.eq_ignore_ascii_case(root))
     }
 
     /// A still pose: every machine in its initial state's pose, except the gear legs `Down` with the hull's gear doors

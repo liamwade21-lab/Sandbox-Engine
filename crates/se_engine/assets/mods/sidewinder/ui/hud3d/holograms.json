@@ -1,0 +1,1049 @@
+{
+  "class_data": {
+    "jovian_epistellargasgiant": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/jovian_epistellargasgiant.edm",
+      "heightmap": "ui/hud3d/tex/jovian_epistellargasgiant__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovian_smallgasgiant": {
+      "data": [
+        0.141,
+        6.08,
+        4.68,
+        0.416
+      ],
+      "file": "ui/hud3d/models/jovian_smallgasgiant.edm",
+      "heightmap": "ui/hud3d/tex/jovian_smallgasgiant__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovian_watergiant": {
+      "data": [
+        0.114,
+        10.0,
+        8.55,
+        0.581
+      ],
+      "file": "ui/hud3d/models/jovian_watergiant.edm",
+      "heightmap": "ui/hud3d/tex/jovian_watergiant__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovian_watergiant_withlife": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovian_watergiant_withlife.edm",
+      "heightmap": "ui/hud3d/tex/jovian_watergiant_withlife__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_ammonialife": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_ammonialife.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_ammonialife__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_sudarskyclassi": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_sudarskyclassi.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_sudarskyclassi__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_sudarskyclassii": {
+      "data": [
+        0.061,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_sudarskyclassii.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_sudarskyclassii__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_sudarskyclassiii": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_sudarskyclassiii.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_sudarskyclassiii__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_sudarskyclassiv": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_sudarskyclassiv.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_sudarskyclassiv__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "jovianclassification_sudarskyclassv": {
+      "data": [
+        0.059,
+        2.5,
+        2.5,
+        0.25
+      ],
+      "file": "ui/hud3d/models/jovianclassification_sudarskyclassv.edm",
+      "heightmap": "ui/hud3d/tex/jovianclassification_sudarskyclassv__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_deadearth": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_deadearth.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_deadearth__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_habitableoutdoorworld": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_habitableoutdoorworld.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_habitableoutdoorworld__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_icemantle": {
+      "data": [
+        0.227,
+        6.73,
+        10.0,
+        0.622
+      ],
+      "file": "ui/hud3d/models/terrestrial_icemantle.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_icemantle__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_metalrich": {
+      "data": [
+        0.129,
+        2.61,
+        9.9,
+        0.578
+      ],
+      "file": "ui/hud3d/models/terrestrial_metalrich.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_metalrich__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_rocky": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_rocky.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_rocky__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_rockyiceworld": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_rockyiceworld.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_rockyiceworld__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_rockywiththinatmosphere": {
+      "data": [
+        0.463,
+        10.0,
+        10.0,
+        0.349
+      ],
+      "file": "ui/hud3d/models/terrestrial_rockywiththinatmosphere.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_rockywiththinatmosphere__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_slushworld": {
+      "data": [
+        0.092,
+        1.13,
+        0.52,
+        0.505
+      ],
+      "file": "ui/hud3d/models/terrestrial_slushworld.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_slushworld__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_venusian": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_venusian.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_venusian__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_volcanic": {
+      "data": [
+        0.169,
+        10.0,
+        0.63,
+        0.758
+      ],
+      "file": "ui/hud3d/models/terrestrial_volcanic.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_volcanic__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "terrestrial_waterworld": {
+      "data": [
+        0.096,
+        10.0,
+        10.0,
+        0.405
+      ],
+      "file": "ui/hud3d/models/terrestrial_waterworld.edm",
+      "heightmap": "ui/hud3d/tex/terrestrial_waterworld__planetschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    }
+  },
+  "colours": {
+    "component": [
+      [
+        0.3100000023841858,
+        0.11999999731779099,
+        0.0
+      ],
+      [
+        0.1379999965429306,
+        0.1354999989271164,
+        0.15299999713897705
+      ],
+      [
+        0.30000001192092896,
+        0.014999999664723873,
+        0.029999999329447746
+      ]
+    ],
+    "stellar": [
+      [
+        0.5,
+        0.5,
+        0.5
+      ],
+      [
+        0.23800000548362732,
+        0.2854999899864197,
+        0.3529999852180481
+      ]
+    ]
+  },
+  "display": {
+    "own": {
+      "attrs": {
+        "pAnimationTime": [
+          0.0
+        ],
+        "pDestAlphaScale": [
+          0.125
+        ],
+        "pEmissiveRescalingEVClamps": [
+          -20.0,
+          20.0
+        ],
+        "pEmissiveRescalingEVOffset": [
+          0.0
+        ],
+        "pEmissiveRescalingEnable": [
+          0.0
+        ],
+        "pEmissiveRescalingEnableClamping": [
+          0.0
+        ],
+        "pEmissiveRescalingType": [
+          0.0
+        ],
+        "pMosaicGlitchNormalisedColour": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "pMosaicPercentage": [
+          0.9
+        ],
+        "pMosaicSeed": [
+          0.0
+        ],
+        "pReferenceRight": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "pReferenceUp": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "pRenderLayerOverride": [
+          4294967295.0
+        ],
+        "pScanlineOffset": [
+          0.0,
+          0.0
+        ],
+        "pScanlineScaleOffset": [
+          0.75,
+          0.25
+        ],
+        "pScanlineTile": [
+          1.9,
+          1.9
+        ],
+        "pSchematic03ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematic47ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematic89ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematicColourTintingBrightness": [
+          1.0
+        ],
+        "pSchematicColourTintingEnabled": [
+          0.0
+        ],
+        "pSchematicColourTintingLuminancePreservation": [
+          1.0
+        ],
+        "pSchematicColoursMapDimensions": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematicId01ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId23ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId45ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId67ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId89ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicIdTintingEnabled": [
+          0.0
+        ],
+        "pSchematicOpacity": [
+          0.6
+        ],
+        "pSchematicPhaseInLerpValue": [
+          1.0
+        ],
+        "pShakeOffsets": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSobelCoreIntensity": [
+          1.5
+        ],
+        "pSobelDistanceScale": [
+          15.9
+        ],
+        "pSobelEdgeIntensity": [
+          9.0
+        ],
+        "pSobelEdgeThickness": [
+          0.5
+        ],
+        "pSobelMaxDistance": [
+          1.0
+        ],
+        "pSobelPower": [
+          3.2
+        ],
+        "pSobelTintCoordScale": [
+          2.3
+        ],
+        "pSobelTintHigh": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSobelTintLow": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "material": "cockpitschematic_panel",
+      "shader": "Schematic_Display_BillboardSobel"
+    },
+    "target": {
+      "attrs": {
+        "pAnimationTime": [
+          0.0
+        ],
+        "pDestAlphaScale": [
+          0.125
+        ],
+        "pEmissiveRescalingEVClamps": [
+          -20.0,
+          20.0
+        ],
+        "pEmissiveRescalingEVOffset": [
+          0.0
+        ],
+        "pEmissiveRescalingEnable": [
+          0.0
+        ],
+        "pEmissiveRescalingEnableClamping": [
+          0.0
+        ],
+        "pEmissiveRescalingType": [
+          0.0
+        ],
+        "pMosaicGlitchNormalisedColour": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "pMosaicPercentage": [
+          0.9
+        ],
+        "pMosaicSeed": [
+          0.0
+        ],
+        "pReferenceRight": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "pReferenceUp": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "pRenderLayerOverride": [
+          4294967295.0
+        ],
+        "pScanlineOffset": [
+          0.0,
+          0.0
+        ],
+        "pScanlineScaleOffset": [
+          0.75,
+          0.25
+        ],
+        "pScanlineTile": [
+          1.9,
+          1.9
+        ],
+        "pSchematic03ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematic47ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematic89ColourIntensity": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematicColourTintingBrightness": [
+          1.0
+        ],
+        "pSchematicColourTintingEnabled": [
+          0.0
+        ],
+        "pSchematicColourTintingLuminancePreservation": [
+          1.0
+        ],
+        "pSchematicColoursMapDimensions": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSchematicId01ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId23ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId45ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId67ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicId89ColourMapping": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSchematicIdTintingEnabled": [
+          0.0
+        ],
+        "pSchematicOpacity": [
+          0.6
+        ],
+        "pSchematicPhaseInLerpValue": [
+          1.0
+        ],
+        "pShakeOffsets": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pSobelCoreIntensity": [
+          1.5
+        ],
+        "pSobelDistanceScale": [
+          15.9
+        ],
+        "pSobelEdgeIntensity": [
+          8.5
+        ],
+        "pSobelEdgeThickness": [
+          0.5
+        ],
+        "pSobelMaxDistance": [
+          1.0
+        ],
+        "pSobelPower": [
+          3.2
+        ],
+        "pSobelTintCoordScale": [
+          1.6
+        ],
+        "pSobelTintHigh": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pSobelTintLow": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "material": "cockpitschematictarget_panel",
+      "shader": "Schematic_Display_BillboardSobel"
+    }
+  },
+  "format": 1,
+  "planet_classes": [
+    {
+      "key": [
+        8,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Jovian_WaterGiant"
+    },
+    {
+      "key": [
+        9,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Jovian_WaterGiant_WithLife"
+    },
+    {
+      "key": [
+        10,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Jovian_WaterGiant_WithLife"
+    },
+    {
+      "key": [
+        11,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_AmmoniaLife"
+    },
+    {
+      "key": [
+        12,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_SudarskyClassI"
+    },
+    {
+      "key": [
+        13,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_SudarskyClassII"
+    },
+    {
+      "key": [
+        14,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_SudarskyClassIII"
+    },
+    {
+      "key": [
+        15,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_SudarskyClassIV"
+    },
+    {
+      "key": [
+        16,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "JovianClassification_SudarskyClassV"
+    },
+    {
+      "key": [
+        17,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Jovian_EpistellarGasGiant"
+    },
+    {
+      "key": [
+        18,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Jovian_SmallGasGiant"
+    },
+    {
+      "key": [
+        5,
+        21,
+        4,
+        15,
+        3
+      ],
+      "model": "Terrestrial_Volcanic"
+    },
+    {
+      "key": [
+        4,
+        21,
+        4,
+        15,
+        3
+      ],
+      "model": "Terrestrial_DeadEarth"
+    },
+    {
+      "key": [
+        5,
+        21,
+        1,
+        15,
+        4
+      ],
+      "model": "Terrestrial_RockyWithThinAtmosphere"
+    },
+    {
+      "key": [
+        4,
+        21,
+        1,
+        15,
+        4
+      ],
+      "model": "Terrestrial_RockyWithThinAtmosphere"
+    },
+    {
+      "key": [
+        5,
+        21,
+        2,
+        15,
+        4
+      ],
+      "model": "Terrestrial_Venusian"
+    },
+    {
+      "key": [
+        4,
+        21,
+        2,
+        15,
+        4
+      ],
+      "model": "Terrestrial_SlushWorld"
+    },
+    {
+      "key": [
+        5,
+        21,
+        3,
+        15,
+        4
+      ],
+      "model": "Terrestrial_Venusian"
+    },
+    {
+      "key": [
+        4,
+        21,
+        3,
+        15,
+        4
+      ],
+      "model": "Terrestrial_Venusian"
+    },
+    {
+      "key": [
+        5,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_Rocky"
+    },
+    {
+      "key": [
+        4,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_Rocky"
+    },
+    {
+      "key": [
+        3,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_MetalRich"
+    },
+    {
+      "key": [
+        7,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_RockyIceWorld"
+    },
+    {
+      "key": [
+        6,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_IceMantle"
+    },
+    {
+      "key": [
+        0,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_HabitableOutdoorWorld"
+    },
+    {
+      "key": [
+        1,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_WaterWorld"
+    },
+    {
+      "key": [
+        2,
+        21,
+        4,
+        15,
+        4
+      ],
+      "model": "Terrestrial_HabitableOutdoorWorld"
+    }
+  ],
+  "scanlines": "ui/hud3d/tex/cockpitschematicdocking_landingpad_panel__pscanlinetexture.dds",
+  "target": {
+    "blackholeschematic": {
+      "data": [
+        0.189,
+        0.81,
+        2.2,
+        0.925
+      ],
+      "file": "ui/hud3d/models/blackholeschematic.edm",
+      "heightmap": "ui/hud3d/tex/blackholeschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.19,
+        0.11
+      ],
+      "tiling": 0.25
+    },
+    "neutronstarschematic": {
+      "data": [
+        0.091,
+        0.75,
+        0.0,
+        0.825
+      ],
+      "file": "ui/hud3d/models/neutronstarschematic.edm",
+      "heightmap": "ui/hud3d/tex/white_dwarf_schematic__pheightmaptexture.dds",
+      "scroll": [
+        0.81,
+        1.48
+      ],
+      "tiling": 0.25
+    },
+    "orrery": {
+      "data": [
+        0.017,
+        0.12,
+        10.0,
+        0.5
+      ],
+      "file": "ui/hud3d/models/orrery.edm",
+      "heightmap": "ui/hud3d/tex/orrery__pheightmaptexture.dds",
+      "scroll": [
+        0.0,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "starschematic": {
+      "data": [
+        0.038,
+        1.02,
+        0.61,
+        0.858
+      ],
+      "file": "ui/hud3d/models/starschematic.edm",
+      "heightmap": "ui/hud3d/tex/starschematic__pheightmaptexture.dds",
+      "scroll": [
+        0.01,
+        0.0
+      ],
+      "tiling": 0.25
+    },
+    "white_dwarf_schematic": {
+      "data": [
+        0.034,
+        6.49,
+        0.06,
+        0.825
+      ],
+      "file": "ui/hud3d/models/white_dwarf_schematic.edm",
+      "heightmap": "ui/hud3d/tex/white_dwarf_schematic__pheightmaptexture.dds",
+      "scroll": [
+        1.42,
+        0.0
+      ],
+      "tiling": 0.25
+    }
+  }
+}

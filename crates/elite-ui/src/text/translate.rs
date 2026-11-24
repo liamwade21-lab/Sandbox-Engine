@@ -7,8 +7,8 @@
 //! `_wcsnicmp`; the same for fields and types is our reading, B).
 //!
 //! What the notes do not give (E), done here as stated: a key the table lacks, a field the token was not given, a type
-//! not built (`currency`, the ordinals, `binding`, `style`, `keyword`: no flight HUD text uses them) and a typed value
-//! that is not a number are all left exactly as written. Nesting deeper than `MAX_DEPTH` is left as written too, and the
+//! not built (`currency`, the ordinals, `style`, `keyword`: no flight HUD text uses them; `binding` is `Text::binding`)
+//! and a typed value that is not a number are all left exactly as written. Nesting deeper than `MAX_DEPTH` is left as written too, and the
 //! parser stops looking into values nested deeper than that (their `$` is then plain text), so no input can run it out of
 //! stack.
 //!
@@ -174,8 +174,12 @@ impl Text {
 
     /// A typed field's value written by its type, or None if the type is not built or the value is not a number.
     fn typed(&self, ty: &str, value: &str, params: &[(&str, &str)]) -> Option<String> {
-        let v: f64 = value.trim().parse().ok()?;
         let on = |name: &str| param(params, name, 0.0) != 0.0;
+        // (The `binding` type's value is an action's name, not a number: `Text::binding`, task UI7.)
+        if ty.eq_ignore_ascii_case("binding") {
+            return Some(self.binding(value, param(params, "index", 1.0) as u32, param(params, "showUnboundText", 1.0) != 0.0));
+        }
+        let v: f64 = value.trim().parse().ok()?;
         match ty.to_ascii_lowercase().as_str() {
             "number" => {
                 let decimals = param(params, "decimalPlaces", 0.0).clamp(0.0, 15.0) as u32;

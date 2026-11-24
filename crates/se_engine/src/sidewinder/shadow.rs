@@ -28,7 +28,8 @@
 //!   maps stay fitted to the ship, only which one a pixel reads follows Elite. So a point straight ahead is the first
 //!   cascade's alone to 12.6 m (faded into the second's by 13.9 m), the second's to 203 m, the third's to 1,860 m (at
 //!   3440 x 1440, seated). Outside the third box no shadow is read: Elite's fourth cascade's texel (about 32 m) is wider than
-//!   the ship. The seat's cockpit set takes the same pick over its two maps (it lies well inside the second box).
+//!   the ship. The seat's cockpit set takes the same pick over its two maps (the first box reads what lies near the eye, the
+//!   second the rest, short of its fade toward the third: `MAPS`).
 //! - **The textures:** every map is a square region of a moments texture (`REGIONS`), allocated once at each region's largest
 //!   size; a map drawn smaller uses the region's corner, and the lookup scales its coordinates and keeps its taps inside it.
 //!   The outside set's three are in the engine's texture (`volumetric_clouds::SHIP_SHADE_IMAGE`, allocated at start-up for
@@ -200,8 +201,12 @@ impl FitFov {
 
 // ---- The maps ----
 
-/// The maps: the outside set's at Elite's cascades 0, 1, 2, then the seat's (the cockpit set) at cascades 0 and 1 (nothing of
-/// it lies past 80.8 m from the eye, so no third).
+/// The maps: the outside set's at Elite's cascades 0, 1, 2, then the seat's (the cockpit set) at cascades 0 and 1. No third:
+/// the cockpit set lies within 12.42 m of the eye, and by Elite's pick none of it the eye can see ever reads the third
+/// cascade, in any view the seat draws. At a side panel's 39.249 degrees at 16:9 the second box's middle is 68.18 m ahead and
+/// its fade toward the third starts at 66.55 m, but a seen point in that fade would have to be less than about 1.64 m deep
+/// in the view, and every such point is within 3.97 m of the first box's middle, inside its full-weight zone (4.18 m): the
+/// first box reads it alone (`the_map_covers_every_caster`, `the_seat_never_reads_the_third_cascade`). Don't add a third.
 const MAPS: usize = 5;
 /// Each map's cascade.
 const MAP_CASCADE: [usize; MAPS] = [0, 1, 2, 0, 1];
@@ -1350,8 +1355,17 @@ mod tests {
     /// The light's frame covers every caster vertex for any star direction and any pose: in poses four times finer than the
     /// sphere was made from (the gear, every machine's every state: the hardpoints' doors, the vents' flaps...) and with the
     /// pilot chair's bones posed by every control at its limits, every vertex lies inside the sphere, so on the maps' square and
-    /// in their depth range. The seat's two maps serve every pixel of the cockpit set: by Elite's pick every point of it the eye
-    /// sees lies inside the second cascade's box, short of its fade (so none fades out to lit for want of a third map).
+    /// in their depth range. The seat's two maps serve every pixel of the cockpit set: for every vertex of it the eye sees, in
+    /// every view the seat draws (`CHANNELS_DEG`, the head straight ahead and at each panel's turn, both window shapes) and every
+    /// star direction, the cascades Elite's `cascade_pick` reads have maps: the first box at full weight, the first fading into
+    /// the second, or the second inside its own full weight (so none fades out to lit for want of a third map).
+    ///
+    /// The bound this test used before left the first box out: it put a seen point anywhere up to 12.42 m from the eye, the eye
+    /// itself included, against the second box alone. At a side panel's 39.249 degrees at 16:9 the second box's middle is
+    /// 68.18 m ahead and its fade toward the third starts at 66.55 m, so the eye's own spot lay in that fade and the bound failed.
+    /// But a seen point in that fade would have to be less than about 1.64 m deep in the view, and every such point is within
+    /// 3.97 m of the first box's middle, inside its full-weight zone (4.18 m), so the first box reads it alone
+    /// (`the_seat_never_reads_the_third_cascade` proves it for every star direction).
     #[test]
     fn the_map_covers_every_caster() {
         let Loaded { assets, build } = shipped();
@@ -1397,20 +1411,108 @@ mod tests {
             c.centre,
             beyond * 100.0
         );
-        // The seat's two maps hold the cockpit set wherever the eye sees it, never fading out to lit: a point the eye sees within
-        // `farthest` of it lies, across the light, at most max(zc, sqrt(f^2 + zc^2 - 2 f zc cos b)) from the second box's middle
-        // (zc its distance ahead, b the fit's frustum's corner angle from the view), which must be short of that box's fade, for
-        // the seat's view and the right panel's narrower one at both window shapes.
-        use super::super::{panels::Side, seat};
+        // Every vertex of the cockpit set inside the view drawn, for every view, head turn and star direction: Elite's pick reads
+        // only cascades the seat has maps of.
+        use super::super::seat;
+        let seat_last = MAP_CASCADE[MAPS - 1];
+        let mut corners: Vec<u32> = c.indices[c.seat.start as usize..c.seat.end as usize].to_vec();
+        corners.sort_unstable();
+        corners.dedup();
+        let points: Vec<Vec3> = corners.iter().map(|&i| &c.vertices[i as usize]).map(|v| still[v.node as usize].transform_point3(Vec3::from_array(v.pos))).collect();
         for aspect in [SQUARE, WIDE] {
-            for fov in [seat::seat_vertical_fov(aspect), seat::view_vertical_fov(aspect, seat::panel_head(Side::Right, eye, aspect).fov_add)] {
+            for add in CHANNELS_DEG {
+                let fov = seat::view_vertical_fov(aspect, add.to_radians());
+                let boxes = cascades(FitFov::default().fit(fov), aspect);
+                let ty = (fov * 0.5).tan();
+                let tx = ty * aspect;
+                let (mut seen_most, mut blended) = (0, 0);
+                for turn in head_turns() {
+                    let head = seat::head_turn(turn);
+                    let view = head * Vec3::NEG_Z;
+                    let seen: Vec<Vec3> = points
+                        .iter()
+                        .copied()
+                        .filter(|&p| {
+                            let q = head.inverse() * (p - eye);
+                            -q.z > 0.0 && q.x.abs() <= -q.z * tx && q.y.abs() <= -q.z * ty
+                        })
+                        .collect();
+                    seen_most = seen_most.max(seen.len());
+                    for &l in &dirs {
+                        for &p in &seen {
+                            let (first, second) = pick(&boxes, eye, view, l, p);
+                            let (k, w) = first.unwrap_or_else(|| panic!("{p} in no box"));
+                            assert!(k <= seat_last && second.is_none_or(|s| s.0 <= seat_last), "aspect {aspect}, {} degrees, turn {turn}, star {l}: {p} picks {first:?} {second:?}", fov.to_degrees());
+                            blended += usize::from(k == 0 && w != 1.0);
+                        }
+                    }
+                }
+                println!("aspect {aspect:.3}, {:.3} degrees: up to {seen_most} of the cockpit set's vertices seen, every pick within the seat's maps ({blended} picks blend the first box into the second)", fov.to_degrees());
+            }
+        }
+    }
+
+    /// The head look camera's field-of-view channels the seat draws with (degrees, added to the configured view: Elite's data
+    /// through the focus machine, `Panels::fov_add_deg`): none (seated, and the comms bar's 0), a side or the role panel's (the
+    /// stand-in panels' copy, -17), the full comms panel's (-8), and the choice of a panel while the focus key is held (+10).
+    const CHANNELS_DEG: [f32; 4] = [0.0, super::super::panels::STAND_IN_FOV_DEG, -8.0, 10.0];
+
+    /// The head's turns the seat draws with: straight ahead (also the comms panel's) and each measured panel's.
+    fn head_turns() -> [Vec2; 4] {
+        use super::super::{panels::Side, seat::panel_turn};
+        [Vec2::ZERO, panel_turn(Side::Left), panel_turn(Side::Right), panel_turn(Side::Role)]
+    }
+
+    /// No point the eye can see within the cockpit set's reach (12.42 m, `the_map_covers_every_caster` prints it) is ever both
+    /// outside the first box's full weight and inside the second box's fade toward the third, for any star direction, in every
+    /// view the seat draws (`CHANNELS_DEG`) at 16:9 and 3440 x 1440: so the seat's pick never reads the third cascade.
+    ///
+    /// Why the sweep is exact. A point's distance across the light from a box's middle, in either of the box's axes, is at most
+    /// its distance in space from that middle, whatever the star's direction: within (1 - the fade) x the half-width of the
+    /// first box's middle it is at that box's full weight, within that of the second box's it is short of the second's fade.
+    /// Both distances depend only on the point's depth z along the view and its distance r off the view's axis, so one sweep of
+    /// (z, r) serves every head turn (the eye does not move: the head straight ahead and every panel's turn alike). A seen point
+    /// has r <= z tan(the fit's frustum's corner angle) (wider than the drawn view's) and z^2 + r^2 <= 12.42^2. Both distances
+    /// change by at most a cell's half-diagonal across a cell of the sweep, so a cell is covered whole if its middle is inside
+    /// either zone by more than that; every cell touching the seen region is checked. The step is 0.05 m (half-diagonal 0.035
+    /// m); the smallest margin found is printed (metres, against 0.035).
+    #[test]
+    fn the_seat_never_reads_the_third_cascade() {
+        use super::super::seat;
+        const REACH_M: f32 = 12.42;
+        const STEP_M: f32 = 0.05;
+        let slack = STEP_M * std::f32::consts::FRAC_1_SQRT_2;
+        let cells = (REACH_M / STEP_M).ceil() as usize;
+        for aspect in [SQUARE, WIDE] {
+            for add in CHANNELS_DEG {
+                let fov = seat::view_vertical_fov(aspect, add.to_radians());
                 let fit = FitFov::default().fit(fov);
                 let ty = (fit * 0.5).tan();
-                let corner = (ty * ty * (1.0 + aspect * aspect)).sqrt().atan();
-                let b = cascades(fit, aspect)[1];
-                let across = b.ahead.max((farthest * farthest + b.ahead * b.ahead - 2.0 * farthest * b.ahead * corner.cos()).sqrt());
-                println!("aspect {aspect:.3}, {:.2} degrees: the cockpit set at most {across:.1} m across the light from the second box's middle, its fade from {:.1} m", fov.to_degrees(), (1.0 - crossfade(1)) * b.half);
-                assert!(across <= (1.0 - crossfade(1)) * b.half);
+                let corner = ty * (1.0 + aspect * aspect).sqrt();
+                let b = cascades(fit, aspect);
+                let (full0, fade1) = ((1.0 - crossfade(0)) * b[0].half, (1.0 - crossfade(1)) * b[1].half);
+                let mut margin = f32::MAX;
+                for i in 0..cells {
+                    for j in 0..cells {
+                        let (z0, r0) = (i as f32 * STEP_M, j as f32 * STEP_M);
+                        // (The cell touches the seen region: its nearest corner within reach and inside the frustum's cone.)
+                        if z0 * z0 + r0 * r0 > REACH_M * REACH_M || r0 > (z0 + STEP_M) * corner {
+                            continue;
+                        }
+                        let (z, r) = (z0 + 0.5 * STEP_M, r0 + 0.5 * STEP_M);
+                        let inside0 = full0 - (b[0].ahead - z).hypot(r);
+                        let inside1 = fade1 - (b[1].ahead - z).hypot(r);
+                        let best = inside0.max(inside1);
+                        assert!(best > slack, "aspect {aspect}, {} degrees: a point {z:.2} m deep, {r:.2} m off the axis is outside the first box's full weight ({:.2} m from its middle, the zone {full0:.2} m) and in the second box's fade ({:.2} m from its middle, the fade from {fade1:.2} m)", fov.to_degrees(), (b[0].ahead - z).hypot(r), (b[1].ahead - z).hypot(r));
+                        margin = margin.min(best);
+                    }
+                }
+                println!(
+                    "aspect {aspect:.3}, {:.3} degrees: the first box {:.2} m ahead, full weight within {full0:.2} m; the second {:.2} m ahead, its fade from {fade1:.2} m; the smallest margin {margin:.3} m",
+                    fov.to_degrees(),
+                    b[0].ahead,
+                    b[1].ahead
+                );
             }
         }
     }

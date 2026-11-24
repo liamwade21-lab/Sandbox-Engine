@@ -344,7 +344,8 @@ mod tests {
     /// seat's own code (`seat::eye_pose`, the head turned by `seat::head_turn`) with the projection's field of view
     /// (`seat::view_vertical_fov` of the aspect and the head look's channel), straight ahead, turned left and down, and
     /// focused on each panel (its turn and its narrower view), at both sizes. If the seat and the HUD ever turned the head or
-    /// took the field of view differently, this fails.
+    /// took the field of view differently, this fails. Only points landing within a screen's size of the screen are compared
+    /// (x in -w..2w, y in -h..2h): far off it the f32 rounding of the two projections grows past the test's 0.1 px.
     #[test]
     fn a_head_turn_matches_the_cockpits_projection() {
         let ship = DQuat::from_euler(bevy::math::EulerRot::YXZ, 0.7, -0.2, 0.3);
@@ -360,21 +361,23 @@ mod tests {
                 for p in [RADAR.centre, LEFT_PANEL.centre, RIGHT_PANEL.centre, HEALTH.centre, (EYE + Vec3::new(-0.3, 0.1, -1.2)).to_array()] {
                     let ship_p = Vec3::from_array(p);
                     let Some(ours) = view.project(ship_p) else { continue };
+                    if !(-w..=2.0 * w).contains(&ours.x) || !(-h..=2.0 * h).contains(&ours.y) {
+                        continue;
+                    }
                     let c = clip_from_world * (at + ship * ship_p.as_dvec3()).as_vec3().extend(1.0);
                     let ndc = c.xyz() / c.w;
                     let bevy = egui::pos2((ndc.x + 1.0) * 0.5 * w, (1.0 - ndc.y) * 0.5 * h);
                     assert!((ours - bevy).length() < 0.1, "{p:?} at {head:?}, {w}x{h}: ours {ours:?}, Bevy's {bevy:?}");
                     seen += 1;
                 }
-                assert!(seen >= 2, "{head:?}");
+                assert!(seen >= 1, "{head:?}");
             }
         }
     }
 
-    /// The part of a focused panel on the screen (`SeatView::visible_across`), which its columns use: the whole left panel at
-    /// 3440 x 1440, 1920 x 1080 and 1600 x 900 (nothing of it is cut, so its layout is as before); the right panel without
-    /// its outer strip, the strip's inner end exactly at the screen's right side at its top or bottom, so every column of
-    /// both panels is on the screen.
+    /// The part of a focused panel on the screen (`SeatView::visible_across`), which its columns use: at Elite's turn
+    /// (`seat::panel_turn`) both panels are whole at 3440 x 1440, 1920 x 1080 and 1600 x 900, so their columns are the whole
+    /// panel.
     #[test]
     fn a_panels_columns_are_the_part_of_it_on_the_screen() {
         for (w, h) in [(3440.0f32, 1440.0f32), (1920.0, 1080.0), (1600.0, 900.0)] {
@@ -382,12 +385,24 @@ mod tests {
             let left = SeatView::new(EYE, panel_head(Side::Left, EYE, w / h), r);
             assert_eq!(left.visible_across(&LEFT_PANEL), (-1.0, 1.0), "{w}x{h}");
             let right = SeatView::new(EYE, panel_head(Side::Right, EYE, w / h), r);
-            let (lo, hi) = right.visible_across(&RIGHT_PANEL);
-            // (Its columns end at 0.920 of its -1..1 at all three: the yaw rule keeps the same cut.)
-            assert!(lo == -1.0 && (hi - 0.920).abs() < 0.001, "{w}x{h}: {lo} {hi}");
-            let x = |s: f32, t: f32| right.project(SeatView::on(&RIGHT_PANEL, s, t)).unwrap().x;
-            assert!(x(hi, 1.0) <= w + 1e-2 && x(hi, -1.0) <= w + 1e-2, "{w}x{h}");
-            assert!((x(hi, 1.0).max(x(hi, -1.0)) - w).abs() < 0.05, "{w}x{h}: {} {}", x(hi, 1.0), x(hi, -1.0));
+            assert_eq!(right.visible_across(&RIGHT_PANEL), (-1.0, 1.0), "{w}x{h}");
+        }
+    }
+
+    /// A focused panel is whole (its four corners on the screen) on every window shape from 1:2 to 4:1 at Elite's turn and
+    /// the stand-ins' view: narrower than 16:9 the view keeps 16:9's horizontal angle (Elite's rule), wider it keeps its
+    /// vertical one, so no shape cuts a panel (the number for the notes: none). The panels are the stand-in panels' anchors
+    /// (`LEFT_PANEL`, `RIGHT_PANEL`), not Elite's own panel quads, whose size their owner is correcting.
+    #[test]
+    fn the_panels_are_whole_on_every_window() {
+        for k in 0..=35 {
+            let aspect = 0.5 + 0.1 * k as f32;
+            let (w, h) = (900.0 * aspect, 900.0);
+            for (side, a) in [(Side::Left, LEFT_PANEL), (Side::Right, RIGHT_PANEL)] {
+                let view = SeatView::new(EYE, panel_head(side, EYE, aspect), screen(w, h));
+                let c = view.corners(&a).unwrap_or_else(|| panic!("{side:?} behind the eye at {aspect}"));
+                assert!(screen(w, h).contains_rect(egui::Rect::from_points(&c)), "{side:?} cut at {aspect}: {c:?}");
+            }
         }
     }
 
@@ -408,8 +423,8 @@ mod tests {
     }
 
     /// Every anchor is in front of the eye with real half-vectors, and seen straight ahead the HUD's groups are on the screen
-    /// at both sizes while the side panels are not; focused on a panel (`seat::panel_head`) the panel's first ten rows are on
-    /// the screen at 3440 x 1440, the user's, and at 1600 x 900.
+    /// at both sizes while the side panels are not; focused on a panel (`seat::panel_head`) the whole panel is on the screen
+    /// at 3440 x 1440, the user's, and at 1600 x 900.
     #[test]
     fn the_anchors_are_where_the_cockpit_is() {
         for (w, h) in SIZES {
@@ -423,18 +438,13 @@ mod tests {
                 assert!(view.corners(&a).is_none_or(|c| !egui::Rect::from_points(&c).intersects(screen(w, h).shrink(0.3 * w))));
             }
         }
-        // The tabs and the first ten rows fill the panel's top 60 % (`panels::draw`: 0.04 + 10 rows x 0.022 of PANEL_H 0.5,
-        // and the selection's margin): that part of each panel on the screen, but for the right panel's outer edge, which is
-        // cut as Elite's is on the user's screen (`seat::panel_turn`): there it reaches past the screen's right side, by no
-        // more than on the user's screen at 1600 x 900.
+        // Focused, the whole panel (its four corners) on the screen.
         for (w, h) in SIZES {
             for (a, side) in [(LEFT_PANEL, Side::Left), (RIGHT_PANEL, Side::Right)] {
                 let view = SeatView::new(EYE, panel_head(side, EYE, w / h), screen(w, h));
-                for (s, t) in [(-1.0, 1.0), (1.0, 1.0), (-1.0, -0.2), (1.0, -0.2)] {
+                for (s, t) in [(-1.0, 1.0), (1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
                     let p = view.project(SeatView::on(&a, s, t)).unwrap();
-                    let cut = side == Side::Right && s > 0.0;
-                    assert!(p.y >= -0.5 && p.y <= h + 0.5 && p.x >= -0.5 && (cut || p.x <= w + 0.5), "{a:?} ({s}, {t}) at {w}x{h}: {p:?}");
-                    assert!(!cut || (p.x > w && p.x < 1.05 * w), "{a:?} ({s}, {t}) at {w}x{h}: {p:?}");
+                    assert!(p.y >= -0.5 && p.y <= h + 0.5 && p.x >= -0.5 && p.x <= w + 0.5, "{a:?} ({s}, {t}) at {w}x{h}: {p:?}");
                 }
             }
         }

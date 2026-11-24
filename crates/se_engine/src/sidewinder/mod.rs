@@ -36,6 +36,7 @@ pub mod shadow;
 pub mod solids;
 mod tunnel;
 mod sound;
+pub mod ui;
 
 #[cfg(test)]
 mod convert;
@@ -276,6 +277,9 @@ fn handle_requests(
                 let pos = world.frame.to_body(at.as_dvec3());
                 let rot = (world.frame.rotation() * DQuat::from_mat3(&axes.as_dmat3())).normalize();
                 info!("sidewinder: spawned at {:.1} {:.1} {:.1} m in the sandbox's frame, {:.0} m away", at.x, at.y, at.z, (at - sb.eye).truncate().length());
+                if ship.parked.is_some() {
+                    ui::new_ship(&mut commands);
+                }
                 ship.parked = Some(Parked { obj: world.frame.obj, pos, rot, solids: Vec::new(), solids_epoch: None });
                 if let Some(pl) = pilot.as_mut() {
                     pl.fresh_ship();
@@ -383,6 +387,8 @@ impl Plugin for SidewinderPlugin {
             // After the sandbox's frame (its world may have been rebased this frame), before its props are drawn.
             .add_systems(PostUpdate, keep_solid.run_if(resource_exists::<SidewinderAssets>).after(crate::sandbox::sandbox_step));
         sound::plugin(app);
+        // Elite's own UI movies in the cockpit (on unless `SE_SW_UI=0`; with it 0 the plugin adds only `ui::UiLive`).
+        ui::plugin(app);
         // The pilot chair's pose: from this frame's facts, for the parked ship.
         app.init_resource::<chair::ChairPose>().add_systems(PostUpdate, chair::update.run_if(resource_exists::<SidewinderAssets>).after(facts::update));
     }
@@ -665,6 +671,11 @@ pub fn dev_command(world: &mut World, arg: &str) {
         }
         "sound" => {
             sound::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
+            None
+        }
+        // `sw ui state|send MOVIE NAME JSON_ARGS|want MOVIE on|off|plate NAME on|off`: Elite's UI movies (`SE_SW_UI=1`).
+        "ui" => {
+            ui::dev_command(world, arg.split_once(' ').map_or("", |(_, rest)| rest));
             None
         }
         "hardpoints" => {

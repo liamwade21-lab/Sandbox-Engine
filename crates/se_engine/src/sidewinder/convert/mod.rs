@@ -25,6 +25,7 @@ mod binds;
 mod chair;
 mod models;
 mod sound;
+mod ui_hud3d;
 mod ui_layout;
 mod ui_models;
 mod ui_movies;
@@ -189,6 +190,7 @@ fn run() -> Result<(), String> {
     ui_sound::convert(&ctx, &mut shipped)?;
     ui_movies::convert(&ctx, &mut shipped)?;
     ui_layout::convert(&ctx, &mut shipped)?;
+    ui_hud3d::convert(&ctx, &mut shipped)?;
     write_sources(&ctx, &mut shipped)?;
     write_cfg(&ctx, &shipped)?;
     read_back(&ctx, &shipped)
@@ -292,6 +294,7 @@ fn check_folder(ctx: &Ctx) -> Result<usize, String> {
             Some("json") if name == "sounds.json" => sound::check(&bytes),
             Some("json") if name == "ui/sound_tables.json" => ui_sound::check_tables(&bytes),
             Some("json") if name == ui_layout::LAYOUT => ui_layout::check(ctx, &bytes),
+            Some("json") if name == ui_hud3d::RADAR || name == ui_hud3d::HOLOGRAMS => ui_hud3d::check(ctx, name, &bytes),
             Some("json") if name == ui_movies::FONTMAP => ui_movies::check_fontmap(ctx, &bytes),
             Some("json") if name == ui_movies::STRINGS => ui_movies::check_strings(&bytes),
             Some("json") if name == ui_movies::FOCUS => ui_movies::check_focus(&bytes),
@@ -322,7 +325,8 @@ fn shipped_files_are_the_exports() {
         assembly::verify(&ctx)?;
         chair::verify(&ctx)?;
         ui_movies::verify(&ctx)?;
-        ui_layout::verify(&ctx)
+        ui_layout::verify(&ctx)?;
+        ui_hud3d::verify(&ctx)
     };
     if let Err(e) = check() {
         panic!("shipped_files_are_the_exports: {e}");

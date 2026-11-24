@@ -114,8 +114,8 @@ fn at(r: egui::Rect, x: f32, y: f32) -> egui::Pos2 {
     egui::pos2(r.center().x + x * h, r.center().y + y * h)
 }
 
-pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>, panels: Res<super::panels::Panels>, assets: Res<SidewinderAssets>) -> Result {
-    if !seat.seated || !control.pilot || control.main_menu {
+pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: Res<Pilot>, control: Res<ModControl>, panels: Res<super::panels::Panels>, assets: Res<SidewinderAssets>, screens: Option<Res<super::ui::screens::UiScreens>>, live: Res<super::ui::UiLive>) -> Result {
+    if !seat.seated || !control.pilot || control.main_menu || screens.is_some_and(|s| s.covers()) {
         return Ok(());
     }
     let ctx = contexts.ctx_mut()?;
@@ -132,11 +132,15 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     let view = SeatView::new(eye, seat.head, r);
     let font = |s: f32| egui::FontId::monospace(s * h);
     let stroke = |c: egui::Color32| egui::Stroke::new((0.0018 * h).max(1.0), c);
+    // While Elite's UI is made and running (`UiLive`) the gauges its movies show are theirs (`ui`): the heat, the speed and
+    // throttle, the target and destination lines, the compass, the shields and hull, the pips, the fuel and the indicators
+    // are not drawn here. Otherwise (`SE_SW_UI=0`, or the UI could not be made or turned itself off) these stand-ins are.
+    let movies = live.0;
 
     // The radar's ring (an ellipse under the view; the sensors switched off take it away).
     let mut g = Sketch::new(&p, r);
     let radar = at(r, 0.0, 0.354);
-    let rings: &[(f32, f32)] = if pilot.modules[super::panels::M_SENSORS] { &[(1.0, 0.2014), (0.66, 0.13), (0.33, 0.065)] } else { &[] };
+    let rings: &[(f32, f32)] = if pilot.modules[super::panels::M_SENSORS] && !movies { &[(1.0, 0.2014), (0.66, 0.13), (0.33, 0.065)] } else { &[] };
     for &(k, a) in rings {
         let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
             let t = i as f32 / 64.0 * std::f32::consts::TAU;
@@ -147,33 +151,35 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     g.finish(&view, &anchor::RADAR, anchor::RADAR_BOX);
 
     // Heat, upper left of the radar.
-    let mut g = Sketch::new(&p, r);
-    let heat = pilot.heat_percent();
-    g.text(at(r, -0.125, 0.292), egui::Align2::CENTER_CENTER, format!("{:03.0}%", heat), font(0.022), if heat >= 100.0 { egui::Color32::RED } else { ORANGE });
-    g.finish(&view, &anchor::HEAT, anchor::HEAT_BOX);
+    if !movies {
+        let mut g = Sketch::new(&p, r);
+        let heat = pilot.heat_percent();
+        g.text(at(r, -0.125, 0.292), egui::Align2::CENTER_CENTER, format!("{:03.0}%", heat), font(0.022), if heat >= 100.0 { egui::Color32::RED } else { ORANGE });
+        g.finish(&view, &anchor::HEAT, anchor::HEAT_BOX);
 
-    // The speed, upper right, and the throttle gauge's arc to its right: the fill the speed (of the full block's top), the
-    // marker the throttle, the blue band the blue zone (the throttle shares where the turn curve is at its best: the
-    // block's curve peak `p`).
-    let mut g = Sketch::new(&p, r);
-    let speed = pilot.motion.vel.length();
-    g.text(at(r, SPEED_AT.0, SPEED_AT.1), SPEED_ALIGN, speed_text(pilot.cruise.map(|c| c.speed), speed), font(SPEED_FONT), ORANGE);
-    let [(x0, y0), (x1, y1)] = GAUGE;
-    let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
-    g.line_segment([along(0.0), along(1.0)], stroke(DIM));
-    let full_top = pilot.full_top.max(1.0);
-    // (In supercruise the gauge's fill is the speed against the wells' cap.)
-    let fill = match pilot.cruise {
-        Some(c) => (c.speed / c.cap.max(1.0)).clamp(0.0, 1.0) as f32,
-        None => (speed / full_top).clamp(0.0, 1.0) as f32,
-    };
-    g.line_segment([along(0.0), along(fill)], egui::Stroke::new(0.006 * h, ORANGE));
-    let (bz0, bz1) = pilot.blue_zone;
-    g.line_segment([along(bz0), along(bz1)], egui::Stroke::new(0.003 * h, BLUE_ZONE));
-    let th = pilot.throttle as f32;
-    let mark = along((th.abs() * pilot.top_share as f32).clamp(0.0, 1.0));
-    g.line_segment([mark - egui::vec2(0.012 * h, 0.0), mark + egui::vec2(0.012 * h, 0.0)], stroke(if th < 0.0 { egui::Color32::RED } else { egui::Color32::WHITE }));
-    g.finish(&view, &anchor::THROTTLE, anchor::THROTTLE_BOX);
+        // The speed, upper right, and the throttle gauge's arc to its right: the fill the speed (of the full block's top), the
+        // marker the throttle, the blue band the blue zone (the throttle shares where the turn curve is at its best: the
+        // block's curve peak `p`).
+        let mut g = Sketch::new(&p, r);
+        let speed = pilot.motion.vel.length();
+        g.text(at(r, SPEED_AT.0, SPEED_AT.1), SPEED_ALIGN, speed_text(pilot.cruise.map(|c| c.speed), speed), font(SPEED_FONT), ORANGE);
+        let [(x0, y0), (x1, y1)] = GAUGE;
+        let along = |f: f32| at(r, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f);
+        g.line_segment([along(0.0), along(1.0)], stroke(DIM));
+        let full_top = pilot.full_top.max(1.0);
+        // (In supercruise the gauge's fill is the speed against the wells' cap.)
+        let fill = match pilot.cruise {
+            Some(c) => (c.speed / c.cap.max(1.0)).clamp(0.0, 1.0) as f32,
+            None => (speed / full_top).clamp(0.0, 1.0) as f32,
+        };
+        g.line_segment([along(0.0), along(fill)], egui::Stroke::new(0.006 * h, ORANGE));
+        let (bz0, bz1) = pilot.blue_zone;
+        g.line_segment([along(bz0), along(bz1)], egui::Stroke::new(0.003 * h, BLUE_ZONE));
+        let th = pilot.throttle as f32;
+        let mark = along((th.abs() * pilot.top_share as f32).clamp(0.0, 1.0));
+        g.line_segment([mark - egui::vec2(0.012 * h, 0.0), mark + egui::vec2(0.012 * h, 0.0)], stroke(if th < 0.0 { egui::Color32::RED } else { egui::Color32::WHITE }));
+        g.finish(&view, &anchor::THROTTLE, anchor::THROTTLE_BOX);
+    }
 
     // The messages under the view: the drive's charge (a bar over the radar), a complete charge held by its condition (A50's
     // codes at the charge's end), the way out when landed, and the notes of the moment.
@@ -187,7 +193,8 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if let Some((why, _)) = pilot.drive.held() {
         g.text(at(r, 0.0, 0.29), egui::Align2::CENTER_CENTER, if why == elite_sim::drive::Refusal::Align { "ALIGN WITH THE DESTINATION" } else { "POINT AWAY FROM THE BODY" }, font(0.013), ORANGE);
     }
-    if pilot.landed {
+    // (The mod's own hints, not Elite's: with Elite's UI the role panel is the way out; B still works.)
+    if pilot.landed && !movies {
         g.text(at(r, 0.0, 0.40), egui::Align2::CENTER_CENTER, "DISEMBARK  (B)", font(0.014), ORANGE);
     }
     let mut notes = Vec::new();
@@ -197,7 +204,7 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     if pilot.boost.firing() {
         notes.push("BOOST");
     }
-    if pilot.landed {
+    if pilot.landed && !movies {
         notes.push("LANDED");
     }
     if pilot.cruise.is_some() {
@@ -241,14 +248,16 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     g.finish(&view, &anchor::TOP, anchor::TOP_BOX);
 
     // The target and the destination, on the target panel.
-    let mut g = Sketch::new(&p, r);
-    if pilot.target.is_some() {
-        g.text(at(r, 0.0, 0.46), egui::Align2::CENTER_CENTER, format!("TARGET  {}", pilot.target_note), font(0.013), ORANGE);
+    if !movies {
+        let mut g = Sketch::new(&p, r);
+        if pilot.target.is_some() {
+            g.text(at(r, 0.0, 0.46), egui::Align2::CENTER_CENTER, format!("TARGET  {}", pilot.target_note), font(0.013), ORANGE);
+        }
+        if pilot.nav_body.is_some() {
+            g.text(at(r, 0.0, 0.478), egui::Align2::CENTER_CENTER, format!("DESTINATION  {}", pilot.nav_note), font(0.013), ORANGE);
+        }
+        g.finish(&view, &anchor::TARGET, anchor::TARGET_BOX);
     }
-    if pilot.nav_body.is_some() {
-        g.text(at(r, 0.0, 0.478), egui::Align2::CENTER_CENTER, format!("DESTINATION  {}", pilot.nav_note), font(0.013), ORANGE);
-    }
-    g.finish(&view, &anchor::TARGET, anchor::TARGET_BOX);
 
     // The locked destination (U1): the marker in the view at its real direction, and the compass left of the radar (shown
     // only while a destination is locked: E, as `compass_dot`).
@@ -270,24 +279,26 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
             p.text(text_at, egui::Align2::LEFT_BOTTOM, &m.name, font(MARK_FONT), ORANGE);
             p.text(text_at, egui::Align2::LEFT_TOP, m.distance_text(), font(MARK_DIST_FONT), ORANGE);
         }
-        let mut g = Sketch::new(&p, r);
-        let d = anchor::COMPASS_BOX;
-        let (centre, ring) = (at(r, d.x, d.y), d.hw * h);
-        let pts: Vec<egui::Pos2> = (0..=64)
-            .map(|i| {
-                let t = i as f32 / 64.0 * std::f32::consts::TAU;
-                centre + ring * egui::vec2(t.cos(), t.sin())
-            })
-            .collect();
-        g.add(egui::Shape::line(pts, stroke(ORANGE)));
-        let (dot, ahead) = compass_dot(m.dir);
-        let at_dot = centre + ring * egui::vec2(dot.x, -dot.y);
-        if ahead {
-            g.circle_filled(at_dot, COMPASS_DOT * h, ORANGE);
-        } else {
-            g.add(egui::Shape::circle_stroke(at_dot, COMPASS_DOT * h, stroke(ORANGE)));
+        if !movies {
+            let mut g = Sketch::new(&p, r);
+            let d = anchor::COMPASS_BOX;
+            let (centre, ring) = (at(r, d.x, d.y), d.hw * h);
+            let pts: Vec<egui::Pos2> = (0..=64)
+                .map(|i| {
+                    let t = i as f32 / 64.0 * std::f32::consts::TAU;
+                    centre + ring * egui::vec2(t.cos(), t.sin())
+                })
+                .collect();
+            g.add(egui::Shape::line(pts, stroke(ORANGE)));
+            let (dot, ahead) = compass_dot(m.dir);
+            let at_dot = centre + ring * egui::vec2(dot.x, -dot.y);
+            if ahead {
+                g.circle_filled(at_dot, COMPASS_DOT * h, ORANGE);
+            } else {
+                g.add(egui::Shape::circle_stroke(at_dot, COMPASS_DOT * h, stroke(ORANGE)));
+            }
+            g.finish(&view, &anchor::COMPASS, anchor::COMPASS_BOX);
         }
-        g.finish(&view, &anchor::COMPASS, anchor::COMPASS_BOX);
     }
 
     // Elite's mouse widget (U2): the dot on the nose's axis and the arrow off it along the mouse's virtual stick.
@@ -309,33 +320,34 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
     }
 
     // The ship's hologram ring: shields (cyan) and hull.
-    let mut g = Sketch::new(&p, r);
-    let ring = at(r, 0.385, 0.303);
-    let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
-        let t = i as f32 / 64.0 * std::f32::consts::TAU;
-        egui::pos2(ring.x + 0.108 * h * t.cos(), ring.y + 0.055 * h * t.sin())
-    }).collect();
-    g.add(egui::Shape::line(pts, egui::Stroke::new(0.004 * h, if pilot.shields.up { CYAN } else { DIM })));
-    g.text(at(r, 0.401, 0.367), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.shields.percent()), font(0.016), CYAN);
-    g.text(at(r, 0.317, 0.424), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.hull.percent()), font(0.016), ORANGE);
-    g.finish(&view, &anchor::HEALTH, anchor::HEALTH_BOX);
+    if !movies {
+        let mut g = Sketch::new(&p, r);
+        let ring = at(r, 0.385, 0.303);
+        let pts: Vec<egui::Pos2> = (0..=64).map(|i| {
+            let t = i as f32 / 64.0 * std::f32::consts::TAU;
+            egui::pos2(ring.x + 0.108 * h * t.cos(), ring.y + 0.055 * h * t.sin())
+        }).collect();
+        g.add(egui::Shape::line(pts, egui::Stroke::new(0.004 * h, if pilot.shields.up { CYAN } else { DIM })));
+        g.text(at(r, 0.401, 0.367), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.shields.percent()), font(0.016), CYAN);
+        g.text(at(r, 0.317, 0.424), egui::Align2::CENTER_CENTER, format!("{:.0}%", pilot.hull.percent()), font(0.016), ORANGE);
+        g.finish(&view, &anchor::HEALTH, anchor::HEALTH_BOX);
 
-    // The pips: three bars (SYS, ENG, WEP), the capacitor's charge as the fill and the pips as notches beside.
-    let mut g = Sketch::new(&p, r);
-    let d = &pilot.dist;
-    for (i, &(c, label, lx)) in [(elite_sim::power::SYS, "SYS", 0.553f32), (elite_sim::power::ENG, "ENG", 0.597), (elite_sim::power::WEP, "WEP", 0.642)].iter().enumerate() {
-        let (top, bottom) = (0.3125f32, 0.382f32);
-        let half_w = 0.0083f32;
-        let charge = (d.charge[c] / d.caps[c].capacity.max(1e-9)).clamp(0.0, 1.0) as f32;
-        let frame = egui::Rect::from_min_max(at(r, lx - half_w, top), at(r, lx + half_w, bottom));
-        g.rect_stroke(frame, 0.0, stroke(DIM), egui::StrokeKind::Inside);
-        let fill = egui::Rect::from_min_max(at(r, lx - half_w, bottom - (bottom - top) * charge), at(r, lx + half_w, bottom));
-        g.rect_filled(fill, 0.0, ORANGE);
-        for k in 0..d.half[c] {
-            let y = bottom - (bottom - top) * (k as f32 + 0.5) / elite_sim::power::MOST_HALF as f32;
-            g.circle_filled(at(r, lx + half_w + 0.006, y), 0.0025 * h, ORANGE);
-        }
-        g.text(at(r, lx, 0.398 + 0.004 * i as f32), egui::Align2::CENTER_TOP, label, font(0.011), ORANGE);
+        // The pips: three bars (SYS, ENG, WEP), the capacitor's charge as the fill and the pips as notches beside.
+        let mut g = Sketch::new(&p, r);
+        let d = &pilot.dist;
+        for (i, &(c, label, lx)) in [(elite_sim::power::SYS, "SYS", 0.553f32), (elite_sim::power::ENG, "ENG", 0.597), (elite_sim::power::WEP, "WEP", 0.642)].iter().enumerate() {
+            let (top, bottom) = (0.3125f32, 0.382f32);
+            let half_w = 0.0083f32;
+            let charge = (d.charge[c] / d.caps[c].capacity.max(1e-9)).clamp(0.0, 1.0) as f32;
+            let frame = egui::Rect::from_min_max(at(r, lx - half_w, top), at(r, lx + half_w, bottom));
+            g.rect_stroke(frame, 0.0, stroke(DIM), egui::StrokeKind::Inside);
+            let fill = egui::Rect::from_min_max(at(r, lx - half_w, bottom - (bottom - top) * charge), at(r, lx + half_w, bottom));
+            g.rect_filled(fill, 0.0, ORANGE);
+            for k in 0..d.half[c] {
+                let y = bottom - (bottom - top) * (k as f32 + 0.5) / elite_sim::power::MOST_HALF as f32;
+                g.circle_filled(at(r, lx + half_w + 0.006, y), 0.0025 * h, ORANGE);
+            }
+            g.text(at(r, lx, 0.398 + 0.004 * i as f32), egui::Align2::CENTER_TOP, label, font(0.011), ORANGE);
     }
     g.finish(&view, &anchor::PIPS, anchor::PIPS_BOX);
 
@@ -357,9 +369,10 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
         g.text(at(r, 0.705, y), egui::Align2::LEFT_CENTER, *label, font(0.012), if *on { ORANGE } else { DIM });
     }
     g.finish(&view, &anchor::FUEL, anchor::FUEL_BOX);
+    }
 
-    // The side panels (step 4.2), each on its own anchor beside the seat.
-    if panels.open.is_some() {
+    // The side panels (step 4.2), each on its own anchor beside the seat (with Elite's UI on, its own panels instead: `ui`).
+    if panels.open.is_some() && !movies {
         let mass = pilot.mass_t();
         let fsd = &elite_sim::data::FSD_2E;
         let lines = super::panels::StatusLines {
@@ -389,8 +402,10 @@ pub fn draw_hud(mut contexts: bevy_egui::EguiContexts, seat: Res<Seat>, pilot: R
         super::panels::draw(&p, r, &view, &panels, &pilot.modules, ship, &lines, pilot.locked().map(Dest::obj), ORANGE, DIM);
     }
 
-    let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  1 4 panels  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
-    p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
+    if !movies {
+        let keys = "Mouse pitch/roll  A D yaw  W S X throttle  Q E R F thrust  Tab boost  Arrows pips  J supercruise/jump  T target ahead  1 4 panels  U hardpoints  Z assist  L gear  Middle button head look  B out (landed)";
+        p.text(egui::pos2(r.center().x, r.bottom() - 0.01 * h), egui::Align2::CENTER_BOTTOM, keys, egui::FontId::proportional(0.0095 * h), ORANGE.gamma_multiply(0.7));
+    }
     Ok(())
 }
 

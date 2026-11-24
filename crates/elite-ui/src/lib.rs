@@ -19,3 +19,8 @@ pub mod panels;
 
 pub use focus::Focus;
 pub use panel_facts::PanelFacts;
+
+// Elite's FSS screen (task UI7).
+pub mod screen_facts;
+
+pub use screen_facts::FssFacts;

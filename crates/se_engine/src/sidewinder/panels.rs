@@ -15,10 +15,14 @@ use se_core::catalog::ObjectRef;
 
 use super::hud_anchor::{SeatView, Sketch, LEFT_PANEL, PANEL_BOX, PANEL_H, PANEL_W, RIGHT_PANEL};
 
+/// The panel that has the keys. The stand-in panels have the left and the right; Elite's UI (`SE_SW_UI=1`, `ui::focus`)
+/// also focuses the role panel and the comms panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Left,
     Right,
+    Role,
+    Comms,
 }
 
 /// A row of the Navigation tab.
@@ -32,20 +36,37 @@ pub struct NavRow {
     pub other_system: bool,
 }
 
-/// What a panel asks the ship to do (`fly` does it, with the same rules as the keys).
+/// What a panel asks the ship to do (`fly` does it, with the same rules as the keys). `Unlock` and the keys' presses after
+/// it (the jump key, the lights, silent running, the cargo scoop) are asked by Elite's panels only (`ui::panels`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PanelAction {
     Target(ObjectRef),
     NavBody(ObjectRef),
+    Unlock,
     FlightAssist,
     Gear,
     Hardpoints,
     Module(usize),
+    Jump,
+    Lights,
+    Silent,
+    Scoop,
 }
 
 #[derive(Resource, Default)]
 pub struct Panels {
     pub open: Option<Side>,
+    /// The modal control set is live though no panel has the keys, so its keys are the UI's (`pilot::read_keys`): Elite's
+    /// focus machine's word (`ui::focus`: `Select UI Mode`, `UIFocus` held). The
+    /// stand-in panels leave it false (an open panel takes the modal set's keys).
+    pub quiet: bool,
+    /// The comms panel's pages' control set is live (Elite's focus machine, `ui::focus`): its keys are the UI's too.
+    pub pages: bool,
+    /// The head look's field of view's channel, degrees, as Elite's focus machine gives it for its state, every seated frame
+    /// (its `HeadlookTargetBoneActivity`, A: -17 for the side and role panels, -8 for the full comms panel, +10 in `Select UI
+    /// Mode`, which has no bone; 0 in a state without one, the comms bar's and the flight's); None with the stand-in panels,
+    /// which take `STAND_IN_FOV_DEG` at an open panel.
+    pub fov_add_deg: Option<f32>,
     /// Opened by head look: it closes when the look comes back.
     pub by_look: bool,
     /// Each side's tab, and the highlighted row.
@@ -55,6 +76,22 @@ pub struct Panels {
     pub nav: Vec<NavRow>,
     pub actions: Vec<PanelAction>,
 }
+
+/// The UI's control sets live now (`Panels::sets`): their buttons' keys are the UI's, quiet for the ship (`pilot::read_keys`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiSets {
+    /// The modal set (a panel has the keys, or the focus machine or a screen says so).
+    pub modal: bool,
+    /// The comms panel's pages.
+    pub pages: bool,
+    /// Elite's FSS screen covers the view (`Seat::screen`, set by the seat when it reads the keys): every ship action is quiet.
+    pub screen: bool,
+}
+
+/// The stand-in panels' field of view's channel at an open side panel (degrees): a copy of Elite's data (the side panels'
+/// `HeadlookTargetBoneActivity`, -17, normal set), for the stand-ins only, which run without Elite's focus machine; with
+/// Elite's UI the machine's own channel is taken (`Panels::fov_add_deg`).
+pub const STAND_IN_FOV_DEG: f32 = -17.0;
 
 pub const LEFT_TABS: [&str; 1] = ["NAVIGATION"];
 pub const RIGHT_TABS: [&str; 5] = ["HOME", "MODULES", "FIRE GROUPS", "SHIP", "STATUS"];
@@ -100,8 +137,22 @@ impl Panels {
     /// Closes the open panel, however it was opened (getting out of the seat: `seat::free_seat`); each side's tab is kept.
     pub fn close(&mut self) {
         self.open = None;
+        self.quiet = false;
+        self.pages = false;
+        self.fov_add_deg = None;
         self.by_look = false;
         self.row = 0;
+    }
+
+    /// The UI's control sets live now: the modal set while a panel has the keys (or `quiet` says so), the pages.
+    pub fn sets(&self) -> UiSets {
+        UiSets { modal: self.open.is_some() || self.quiet, pages: self.pages, screen: false }
+    }
+
+    /// The head look's field of view's channel (radians): the focus machine's, else (the stand-in panels, which only have it
+    /// at an open panel) the stand-in's copy.
+    pub fn fov_add(&self) -> f32 {
+        self.fov_add_deg.unwrap_or(STAND_IN_FOV_DEG).to_radians()
     }
 
     /// How many rows the open tab has (`ship` the Ship functions' count).
@@ -147,7 +198,8 @@ impl Panels {
             }
             _ => {}
         }
-        let Some(side) = self.open else { return };
+        // (Only Elite's UI focuses the role and comms panels, and it never calls this.)
+        let Some(side @ (Side::Left | Side::Right)) = self.open else { return };
         if k.back {
             self.open = None;
             return;
@@ -246,8 +298,12 @@ pub fn columns(rect: egui::Rect, across: (f32, f32)) -> egui::Rect {
 /// ship's destination (its Navigation row is marked).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, on: &[bool; 10], ship: [bool; 3], lines: &StatusLines, locked: Option<ObjectRef>, orange: egui::Color32, dim: egui::Color32) {
-    let Some(side) = panels.open else { return };
-    let anchor = if side == Side::Left { &LEFT_PANEL } else { &RIGHT_PANEL };
+    let (side, anchor) = match panels.open {
+        Some(Side::Left) => (Side::Left, &LEFT_PANEL),
+        Some(Side::Right) => (Side::Right, &RIGHT_PANEL),
+        // (The stand-in has no role or comms panel: only Elite's UI focuses them, and it draws its own.)
+        Some(Side::Role | Side::Comms) | None => return,
+    };
     let h = r.height();
     let at = |x: f32, y: f32| egui::pos2(r.center().x + x * h, r.center().y + y * h);
     let mut g = Sketch::new(p, r);
@@ -316,7 +372,7 @@ pub fn draw(p: &egui::Painter, r: egui::Rect, view: &SeatView, panels: &Panels, 
                 line(&mut g, i, name.to_string(), (if ship[i] { words[i].0 } else { words[i].1 }).to_string(), true, i == panels.row, false);
             }
         }
-        (Side::Right, t) => {
+        (Side::Right | Side::Role | Side::Comms, t) => {
             let ls = match t {
                 0 => &lines.home,
                 2 => &lines.fire,

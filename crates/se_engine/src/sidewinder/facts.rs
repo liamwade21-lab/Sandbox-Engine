@@ -94,9 +94,9 @@ pub struct ShipFacts {
     pub canopy_intact: bool,
     pub seated: bool,
     pub jump: JumpPhase,
-    /// The side panels open (left, right), as the panels stand (`panels::Panels::open`, written by `update`): the GUI panel
-    /// lamps' fades.
-    pub panels_open: [bool; 2],
+    /// The panels open (left, right, role: the role panel only with Elite's UI), as the panels stand (`panels::Panels::open`,
+    /// written by `update`): the GUI panel lamps' fades.
+    pub panels_open: [bool; 3],
     /// The ship's damage the cracks read: a test's `sw canopy damage F` over `ship_damage`.
     pub damage: f32,
     /// The headlights' switch (`Option_HeadlightsEnabled`): the pilot's lights switch (`Pilot::lights`).
@@ -188,7 +188,7 @@ impl ShipFacts {
 
 /// Writes the facts once a frame (before `parts::update` and `chair::update`), only when one changed.
 pub(super) fn update(pilot: Res<Pilot>, keys: Res<PilotKeys>, seat: Res<Seat>, panels: Res<Panels>, frame: Res<FrameCount>, mut facts: ResMut<ShipFacts>) {
-    let panels_open = [panels.open == Some(Side::Left), panels.open == Some(Side::Right)];
+    let panels_open = [Side::Left, Side::Right, Side::Role].map(|s| panels.open == Some(s));
     let now = ShipFacts { panels_open, ..ShipFacts::of(&pilot, &keys, seat.seated, frame.0, &facts) };
     if *facts != now {
         *facts = now;
@@ -211,11 +211,11 @@ mod tests {
         assert_eq!(f.param("HeatRadiator_VisualActiveDissipation"), Some(visual_dissipation(f.heat, true).active));
         assert_eq!(f.param("cockpitAmberLightIntensity"), None);
         assert!(ShipFacts::of(&pilot, &keys, false, 0, &f).gear_down);
-        assert!(f.damage == 0.0 && f.panels_open == [false; 2] && !f.headlights, "a whole hull, the lights off");
-        let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), dev_damage: Some(0.65), panels_open: [true, false], ..f };
+        assert!(f.damage == 0.0 && f.panels_open == [false; 3] && !f.headlights, "a whole hull, the lights off");
+        let dev = ShipFacts { dev_heat: Some(1.6), dev_gear: Some(true), dev_damage: Some(0.65), panels_open: [true, false, false], ..f };
         let g = ShipFacts::of(&pilot, &keys, true, 0, &dev);
         assert!(g.gear_down && g.heat == 1.6 && g.dissipation.active == 1.0 && g.dev_heat == Some(1.6) && g.dev_gear == Some(true));
-        assert!(g.damage == 0.65 && g.dev_damage == Some(0.65) && g.panels_open == [true, false], "the damage's override; the panels kept");
+        assert!(g.damage == 0.65 && g.dev_damage == Some(0.65) && g.panels_open == [true, false, false], "the damage's override; the panels kept");
         // The damage is the hull's lost share (none past empty), the headlights the pilot's switch.
         pilot.lights = true;
         for (left, want) in [(0.5, 0.5), (0.2, 0.8), (0.05, 0.95), (0.0, 1.0)] {

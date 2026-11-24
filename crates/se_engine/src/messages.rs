@@ -15,11 +15,13 @@ pub struct Messages {
     pub enabled: bool,
     text: String,
     age: f32,
+    /// How many messages were shown since start (`said`).
+    said: u64,
 }
 
 impl Default for Messages {
     fn default() -> Self {
-        Self { enabled: true, text: String::new(), age: f32::INFINITY }
+        Self { enabled: true, text: String::new(), age: f32::INFINITY, said: 0 }
     }
 }
 
@@ -27,6 +29,13 @@ impl Messages {
     pub fn show(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.age = 0.0;
+        self.said += 1;
+    }
+
+    /// The count of messages shown so far and the last one's text (the Sidewinder's comms log takes the pilot's messages
+    /// from here: `sidewinder::ui::panels`).
+    pub fn said(&self) -> (u64, &str) {
+        (self.said, &self.text)
     }
 
     /// "<name> enabled" or "<name> disabled", translated.

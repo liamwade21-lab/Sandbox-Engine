@@ -61,6 +61,8 @@ pub struct ShipDraw {
     nodes_shown: u64,
     /// The ship's space to the render frame this frame (its scale the scaled space's), while it is near enough to draw.
     placed: Option<Transform>,
+    /// The same as every piece is placed with it this frame, in hyperspace's tunnel too (the UI's quads hang on it).
+    frame: Option<Transform>,
 }
 
 impl ShipDraw {
@@ -73,6 +75,12 @@ impl ShipDraw {
     /// The seat's set shows (else the outside set, while drawn).
     pub fn seat_shown(&self) -> bool {
         self.shown.1
+    }
+
+    /// The ship's space to the render frame this frame, as every piece is placed with it (`place`), the tunnel's pose
+    /// included; None when the ship is not drawn. The UI's quads hang on it (`ui::place`).
+    pub fn frame(&self) -> Option<Transform> {
+        self.frame
     }
 }
 
@@ -214,7 +222,7 @@ fn make(
     for i in 0..2 {
         commands.spawn((Name::new("Sidewinder laser beam"), Beam(i), Mesh3d(beam_mesh.clone()), MeshMaterial3d(beam_mat.clone()), Transform::default(), Visibility::Hidden, NoFrustumCulling));
     }
-    commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX, placed: None });
+    commands.insert_resource(ShipDraw { pieces, shown: (false, false), nodes_shown: u64::MAX, placed: None, frame: None });
 }
 
 /// The pilot chair's palette (`ShipPalette`) written in place when its pose changed (`ChairPose::revision`): each bone's
@@ -240,7 +248,7 @@ pub(super) fn place(
     bodies: Query<&SystemBody>,
     mut pieces: Query<(&ShipPiece, &mut Transform, &mut Visibility), Without<Beam>>,
     mut beams: Query<(&Beam, &mut Transform, &mut Visibility), Without<ShipPiece>>,
-    frame: Res<bevy::diagnostic::FrameCount>,
+    (frame, screens): (Res<bevy::diagnostic::FrameCount>, Option<Res<super::ui::screens::UiScreens>>),
     lights: Option<Res<ShipLights>>,
     glass: Option<ResMut<ShipGlass>>,
     scene: Option<ResMut<ShipScene>>,
@@ -259,6 +267,7 @@ pub(super) fn place(
         g.write(&mut buffers, GlassEffects { crack: parts.crack(), ..GlassEffects::stock() });
     }
     draw.placed = None;
+    draw.frame = None;
     // In hyperspace's tunnel no body is near (the old system's go): the ship is the jump's pose, its eye at the camera
     // (`seat::seat_camera` writes the camera there), the render frame's origin. Not `placed` there: no star lights it in the
     // tunnel (the outside light's scale, `ShipScene::set_outside`), so the shadow passes rest.
@@ -277,6 +286,7 @@ pub(super) fn place(
             if tunnel.is_none() {
                 draw.placed = Some(ship_tf);
             }
+            draw.frame = Some(ship_tf);
             for (piece, mut tf, _) in pieces.iter_mut() {
                 *tf = ship_tf * Transform::from_matrix(parts.matrix(piece.node));
             }
@@ -306,7 +316,8 @@ pub(super) fn place(
             }
         }
     }
-    let show = shown(near, seat.view);
+    // (Elite's FSS screen covers the view: nothing of the ship is drawn, so neither are Elite's HUD pieces on it.)
+    let show = if screens.is_some_and(|s| s.covers()) { (false, false) } else { shown(near, seat.view) };
     if draw.shown != show || draw.nodes_shown != parts.shown_revision() {
         if draw.shown != show {
             let what = match show {

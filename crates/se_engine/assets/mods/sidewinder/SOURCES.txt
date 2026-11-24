@@ -14,6 +14,8 @@ Ship UI sounds: values of the cockpit interfaces' tables and HUD events of the g
 
 The ship UI: not shipped, as no export holds them whole: the textures fsshud.pdiffuse_alphatexture (material fsshud: in no export), mc_roledesignation_background.pdiffuse_alphatexture (material mc_roledesignation_background: the UI export's copy is damaged: tail size 49664, expected 17920), saahud.pdiffuse_alphatexture (material saahud: in no export), uibackground.pcloudynesstexture (material fsshud: in no export), uibackground.pcloudynesstexture (material saahud: in no export), uiedgedetection_frontend.pscanlinestexture (material effectplane: in no export), uifrontend_parallax_smoke2.pdiffuse_alphatexture (material notifications: in no export), uifrontend_parallax_stripe.pcloudynesstexture (material notifications: in no export). Not shipped either: the UIModuleManager's per-panel scales and tuning block (what they multiply was not found, E), the multicrew seats' alternative chairs, and the movies out of A10's scope.
 
+The ship UI's scanner and holograms (ui/hud3d/): not shipped, as the mod has nothing they would show: the scanner's contact shapes, stalks, overlays and spheres; the target hologram's station, belt, signal and point-of-interest models.
+
 binds/KeyboardMouseOnly.binds (A): A copy of Elite's key file.
   from: Elite install ControlSchemes/KeyboardMouseOnly.binds
 binds/ControlPad.binds (A): A copy of Elite's key file.
@@ -3458,4 +3460,114 @@ ui/tex/miniright_panel_background__pdiffuse_alphatexture.dds (A): Elite's textur
   from: decoded/hud3d/textures/miniright_panel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL); Elite file 36efdac50a5e590f3e966a0f208ab32fcde235cc
 ui/tex/warning_panel_background__pdiffuse_alphatexture.dds (A): Elite's texture warning_panel_background.pdiffuse_alphatexture (BGRA8), every level byte for byte.
   from: decoded/hud3d/textures/warning_panel_background__pdiffuse_alphatexture.dds; Elite file 790fe6e4b4a5e9e3f69d289b9c03356f316f58af (its OVL)
+ui/hud3d/radar.json (A): The scanner: the disc's, the own-ship marker's and the range indicator's vertices as the exe's builders make them (emulated), the three Radar_* materials' attributes, the range table 500..8000 m.
+  from: decoded/hud3d/radar_vertex_buffers.json; decoded/hud3d/materials.json; decoded/hud3d/hud3d.json (radar.range_selection); Elite file faa55c57328a394a345d4df58a2b4da4667bd85c
+ui/hud3d/models/orrery.edm (A): Elite's target hologram model orrery, LOD0 (1 draws, 3288 triangles, 4155 vertices): vertex and index bytes unchanged, 2 bones, material Orrery.
+  from: decoded/hud3d/models/orrery.json; decoded/hud3d/models/orrery.0.buf0.bin; Elite file 169a9af6be6b9aaf724d0ee31655aa62c6098c94
+ui/hud3d/models/starschematic.edm (A): Elite's target hologram model starschematic, LOD0 (1 draws, 8206 triangles, 8280 vertices): vertex and index bytes unchanged, 2 bones, material StarSchematic.
+  from: decoded/hud3d/models/starschematic.json; decoded/hud3d/models/starschematic.0.buf0.bin; Elite file d834480eca9451acce897aa281e7e3d245d83820
+ui/hud3d/models/white_dwarf_schematic.edm (A): Elite's target hologram model white_dwarf_schematic, LOD0 (1 draws, 3576 triangles, 2493 vertices): vertex and index bytes unchanged, 1 bones, material White_Dwarf_Schematic.
+  from: decoded/hud3d/models/white_dwarf_schematic.json; decoded/hud3d/models/white_dwarf_schematic.0.buf0.bin; Elite file 773d6fd40fb9bb71ae5d6440a2eff6cdcace59ae
+ui/hud3d/models/neutronstarschematic.edm (A): Elite's target hologram model neutronstarschematic, LOD0 (1 draws, 3576 triangles, 2511 vertices): vertex and index bytes unchanged, 1 bones, material NeutronStarSchematic.
+  from: decoded/hud3d/models/neutronstarschematic.json; decoded/hud3d/models/neutronstarschematic.0.buf0.bin; Elite file 5befdfee625f7c1f1e560a6cef633df770c79276
+ui/hud3d/models/blackholeschematic.edm (A): Elite's target hologram model blackholeschematic, LOD0 (1 draws, 9556 triangles, 5250 vertices): vertex and index bytes unchanged, 1 bones, material BlackHoleSchematic.
+  from: decoded/hud3d/models/blackholeschematic.json; decoded/hud3d/models/blackholeschematic.0.buf0.bin; Elite file 80582dad53008fb93fd3d38f55c9937c545e3685
+ui/hud3d/models/jovian_watergiant.edm (A): Elite's target hologram model jovian_watergiant, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovian_watergiant.json; decoded/hud3d/models/jovian_watergiant.0.buf0.bin; Elite file d5df3e9a85ba7a9330edda2134bbdd3747513135
+ui/hud3d/models/jovian_watergiant_withlife.edm (A): Elite's target hologram model jovian_watergiant_withlife, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovian_watergiant_withlife.json; decoded/hud3d/models/jovian_watergiant_withlife.0.buf0.bin; Elite file 00da9891f15053bb1a48871aa765d504b4c241d6
+ui/hud3d/models/jovianclassification_ammonialife.edm (A): Elite's target hologram model jovianclassification_ammonialife, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_ammonialife.json; decoded/hud3d/models/jovianclassification_ammonialife.0.buf0.bin; Elite file 311fff12f410c7aed39a6a47f3cbb30547a52799
+ui/hud3d/models/jovianclassification_sudarskyclassi.edm (A): Elite's target hologram model jovianclassification_sudarskyclassi, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_sudarskyclassi.json; decoded/hud3d/models/jovianclassification_sudarskyclassi.0.buf0.bin; Elite file 100b92f5b9fc09a031b086761a59f99edb349935
+ui/hud3d/models/jovianclassification_sudarskyclassii.edm (A): Elite's target hologram model jovianclassification_sudarskyclassii, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_sudarskyclassii.json; decoded/hud3d/models/jovianclassification_sudarskyclassii.0.buf0.bin; Elite file 0261ddb1e89d95d83dda13bad1f3baad4763db31
+ui/hud3d/models/jovianclassification_sudarskyclassiii.edm (A): Elite's target hologram model jovianclassification_sudarskyclassiii, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_sudarskyclassiii.json; decoded/hud3d/models/jovianclassification_sudarskyclassiii.0.buf0.bin; Elite file 19169b803d4bcce34d66e59507e0774bc97726fc
+ui/hud3d/models/jovianclassification_sudarskyclassiv.edm (A): Elite's target hologram model jovianclassification_sudarskyclassiv, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_sudarskyclassiv.json; decoded/hud3d/models/jovianclassification_sudarskyclassiv.0.buf0.bin; Elite file 85701b9151bdae13c65079782bf10671140addaa
+ui/hud3d/models/jovianclassification_sudarskyclassv.edm (A): Elite's target hologram model jovianclassification_sudarskyclassv, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 0 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovianclassification_sudarskyclassv.json; decoded/hud3d/models/jovianclassification_sudarskyclassv.0.buf0.bin; Elite file 391ec767fb3c454127c5dbad6dcb36cc5bc92f62
+ui/hud3d/models/jovian_epistellargasgiant.edm (A): Elite's target hologram model jovian_epistellargasgiant, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovian_epistellargasgiant.json; decoded/hud3d/models/jovian_epistellargasgiant.0.buf0.bin; Elite file b68a6bf37c796c600e23da7d6f3611436395312f
+ui/hud3d/models/jovian_smallgasgiant.edm (A): Elite's target hologram model jovian_smallgasgiant, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/jovian_smallgasgiant.json; decoded/hud3d/models/jovian_smallgasgiant.0.buf0.bin; Elite file 36d54f5c74053bf0973ba0481c6e6e67e7e2f60d
+ui/hud3d/models/terrestrial_volcanic.edm (A): Elite's target hologram model terrestrial_volcanic, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_volcanic.json; decoded/hud3d/models/terrestrial_volcanic.0.buf0.bin; Elite file 7c669cfa97630151bc0007ce5e7e3a6294b51ac6
+ui/hud3d/models/terrestrial_deadearth.edm (A): Elite's target hologram model terrestrial_deadearth, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_deadearth.json; decoded/hud3d/models/terrestrial_deadearth.0.buf0.bin; Elite file 98df7e5572049838ab491317e309def254f715a3
+ui/hud3d/models/terrestrial_rockywiththinatmosphere.edm (A): Elite's target hologram model terrestrial_rockywiththinatmosphere, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_rockywiththinatmosphere.json; decoded/hud3d/models/terrestrial_rockywiththinatmosphere.0.buf0.bin; Elite file f1cf4dc80b52ff317c21f5ff95fdcf2a56b37687
+ui/hud3d/models/terrestrial_venusian.edm (A): Elite's target hologram model terrestrial_venusian, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_venusian.json; decoded/hud3d/models/terrestrial_venusian.0.buf0.bin; Elite file 747f0fdde9f165a89263600de0b8d92586098c51
+ui/hud3d/models/terrestrial_slushworld.edm (A): Elite's target hologram model terrestrial_slushworld, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_slushworld.json; decoded/hud3d/models/terrestrial_slushworld.0.buf0.bin; Elite file f58eb8d16d96d6cb63be0a5dbfe3a862a32f6582
+ui/hud3d/models/terrestrial_rocky.edm (A): Elite's target hologram model terrestrial_rocky, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_rocky.json; decoded/hud3d/models/terrestrial_rocky.0.buf0.bin; Elite file 8cfb0fc624d6a0ea530808361fffc380e99dcde7
+ui/hud3d/models/terrestrial_metalrich.edm (A): Elite's target hologram model terrestrial_metalrich, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_metalrich.json; decoded/hud3d/models/terrestrial_metalrich.0.buf0.bin; Elite file 4ae2639fe665787290139cc68e203e98999bd0f8
+ui/hud3d/models/terrestrial_rockyiceworld.edm (A): Elite's target hologram model terrestrial_rockyiceworld, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_rockyiceworld.json; decoded/hud3d/models/terrestrial_rockyiceworld.0.buf0.bin; Elite file 81a6899aecab5f8fe2be7a9bfc3195a128305fa1
+ui/hud3d/models/terrestrial_icemantle.edm (A): Elite's target hologram model terrestrial_icemantle, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_icemantle.json; decoded/hud3d/models/terrestrial_icemantle.0.buf0.bin; Elite file 603607c0b41ed91984d46983510f3d1bd915989b
+ui/hud3d/models/terrestrial_habitableoutdoorworld.edm (A): Elite's target hologram model terrestrial_habitableoutdoorworld, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_habitableoutdoorworld.json; decoded/hud3d/models/terrestrial_habitableoutdoorworld.0.buf0.bin; Elite file 33e67bcefe22364d401e4a699cf257bfd7544ff2
+ui/hud3d/models/terrestrial_waterworld.edm (A): Elite's target hologram model terrestrial_waterworld, LOD0 (1 draws, 3072 triangles, 1649 vertices): vertex and index bytes unchanged, 1 bones, material PlanetSchematic.
+  from: decoded/hud3d/models/terrestrial_waterworld.json; decoded/hud3d/models/terrestrial_waterworld.0.buf0.bin; Elite file f368676fad4e7e79f538ad11e8d9657f33b9ef98
+ui/hud3d/holograms.json (A): The holograms: the two Schematic_Display_BillboardSobel materials' attributes, each target model's generation values and files, the 27-entry planet class table and each class's data, the stellar record's and the SchematicsComponent's colours.
+  from: decoded/hud3d/materials.json; decoded/hud3d/planet_classes.json; decoded/hud3d/stellar_records/planet_class_table.json; decoded/hud3d/stellar_records/stellarschematicsdata.txt (record [280,13120]); re/elite/work/numbers/records/proto_sidewinder_cockpit.txt (SchematicsComponent template (243,12688)); Elite files 790fe6e4b4a5e9e3f69d289b9c03356f316f58af, 169a9af6be6b9aaf724d0ee31655aa62c6098c94
+ui/hud3d/tex/radar_radarplane__pdiffusealphatexture.dds (A): Elite's texture (BC7), every level byte for byte: the scanner disc's rings and wedge (alpha the mask).
+  from: decoded/hud3d/textures/radar_radarplane__pdiffusealphatexture.dds
+ui/hud3d/tex/cockpitschematicdocking_landingpad_panel__pscanlinetexture.dds (A): Elite's texture (BC4), every level byte for byte: the holograms' scanlines.
+  from: decoded/hud3d/textures/cockpitschematicdocking_landingpad_panel__pscanlinetexture.dds
+ui/hud3d/tex/orrery__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: orrery's height map.
+  from: decoded/hud3d/textures/orrery__pheightmaptexture.dds
+ui/hud3d/tex/starschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: starschematic's height map.
+  from: decoded/hud3d/textures/starschematic__pheightmaptexture.dds
+ui/hud3d/tex/white_dwarf_schematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: white_dwarf_schematic's height map.
+  from: decoded/hud3d/textures/white_dwarf_schematic__pheightmaptexture.dds
+ui/hud3d/tex/blackholeschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: blackholeschematic's height map.
+  from: decoded/hud3d/textures/blackholeschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovian_watergiant__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Jovian_WaterGiant's height map.
+  from: decoded/hud3d/textures/jovian_watergiant__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovian_watergiant_withlife__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Jovian_WaterGiant_WithLife's height map.
+  from: decoded/hud3d/textures/jovian_watergiant_withlife__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_ammonialife__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_AmmoniaLife's height map.
+  from: decoded/hud3d/textures/jovianclassification_ammonialife__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_sudarskyclassi__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_SudarskyClassI's height map.
+  from: decoded/hud3d/textures/jovianclassification_sudarskyclassi__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_sudarskyclassii__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_SudarskyClassII's height map.
+  from: decoded/hud3d/textures/jovianclassification_sudarskyclassii__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_sudarskyclassiii__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_SudarskyClassIII's height map.
+  from: decoded/hud3d/textures/jovianclassification_sudarskyclassiii__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_sudarskyclassiv__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_SudarskyClassIV's height map.
+  from: decoded/hud3d/textures/jovianclassification_sudarskyclassiv__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovianclassification_sudarskyclassv__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class JovianClassification_SudarskyClassV's height map.
+  from: decoded/hud3d/textures/jovianclassification_sudarskyclassv__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovian_epistellargasgiant__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Jovian_EpistellarGasGiant's height map.
+  from: decoded/hud3d/textures/jovian_epistellargasgiant__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/jovian_smallgasgiant__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Jovian_SmallGasGiant's height map.
+  from: decoded/hud3d/textures/jovian_smallgasgiant__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_volcanic__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_Volcanic's height map.
+  from: decoded/hud3d/textures/terrestrial_volcanic__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_deadearth__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_DeadEarth's height map.
+  from: decoded/hud3d/textures/terrestrial_deadearth__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_rockywiththinatmosphere__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_RockyWithThinAtmosphere's height map.
+  from: decoded/hud3d/textures/terrestrial_rockywiththinatmosphere__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_venusian__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_Venusian's height map.
+  from: decoded/hud3d/textures/terrestrial_venusian__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_slushworld__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_SlushWorld's height map.
+  from: decoded/hud3d/textures/terrestrial_slushworld__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_rocky__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_Rocky's height map.
+  from: decoded/hud3d/textures/terrestrial_rocky__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_metalrich__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_MetalRich's height map.
+  from: decoded/hud3d/textures/terrestrial_metalrich__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_rockyiceworld__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_RockyIceWorld's height map.
+  from: decoded/hud3d/textures/terrestrial_rockyiceworld__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_icemantle__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_IceMantle's height map.
+  from: decoded/hud3d/textures/terrestrial_icemantle__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_habitableoutdoorworld__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_HabitableOutdoorWorld's height map.
+  from: decoded/hud3d/textures/terrestrial_habitableoutdoorworld__planetschematic__pheightmaptexture.dds
+ui/hud3d/tex/terrestrial_waterworld__planetschematic__pheightmaptexture.dds (A): Elite's texture (BC4), every level byte for byte: the planet class Terrestrial_WaterWorld's height map.
+  from: decoded/hud3d/textures/terrestrial_waterworld__planetschematic__pheightmaptexture.dds
 SOURCES.txt (-): This list.

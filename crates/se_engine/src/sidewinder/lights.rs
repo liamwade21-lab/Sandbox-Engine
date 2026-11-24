@@ -175,8 +175,9 @@ pub fn hud_colour() -> Vec3 {
 /// The GUI panel lamps' override colours, FUN_1430dbae0: `OverrideColour_Left` the second display's colour, `_Right` the
 /// first's, each unit length x `PANEL_COLOUR_SCALE`; `_SidePanelLeft`, `_SidePanelRight` and `_RoleSwitchPanel` the first
 /// display's x its panel's fade (the panels the component's +0x4da, +0x4dc, +0x4de name, taken to be those three by the
-/// parameters' names). The mod's left and right panels are its side panels (`ShipFacts::panels_open`); it has no role
-/// panel, so that fade stays 0.
+/// parameters' names). The fades follow `ShipFacts::panels_open`: the left and right side panels, and the role panel, which
+/// only Elite's UI (`SE_SW_UI=1`) focuses (the shipped `ship.json` has its `OverrideColour_RoleSwitchPanel` and the
+/// `RoleSwitchGuiPanelLight`); with the stand-in panels it stays 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PanelGlow {
     /// The left side panel's, the right's and the role panel's fade, 0..1.
@@ -697,7 +698,7 @@ pub fn update(
     let dt = time.delta_secs();
     let st = &mut *state;
     // The GUI panel lamps' colours: FUN_1430dbae0's calls in this frame's real time, the side panels as the facts give them.
-    st.panels.advance(real.delta_secs_f64(), [facts.panels_open[0], facts.panels_open[1], false]);
+    st.panels.advance(real.delta_secs_f64(), facts.panels_open);
     let mut records = Vec::with_capacity(n);
     for (i, lamp) in list.lamps.iter().enumerate() {
         // Out of its state the activity is stopped: no light, and nothing steps its animator (the module's notes).

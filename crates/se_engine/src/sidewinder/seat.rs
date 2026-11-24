@@ -29,7 +29,6 @@ use crate::system::SystemBody;
 use crate::terrain::Terrain;
 use crate::universe::SimTime;
 
-use super::hud_anchor::{LEFT_PANEL, RIGHT_PANEL};
 use super::panels::{Panels, Side};
 use super::pilot::{Pilot, PilotKeys};
 use super::{Sidewinder, SidewinderAssets, CODE};
@@ -67,6 +66,9 @@ pub struct Seat {
     /// past 180 degrees comes round the other way, a pitch past 90 looks on over backwards, upside down), but only if
     /// finite: `seat_camera` drops one that is not (`test_turn`).
     pub test_look: Option<Vec2>,
+    /// Elite's FSS screen covers the view (`ui::screens`, `SE_SW_UI=1`, written every seated frame): the head straight ahead,
+    /// head look not toggled, the mouse not steering (`pilot::fly`).
+    pub screen: bool,
     /// B was pressed this frame (`seat_camera` acts on it).
     leave: bool,
     /// The ship is to be removed while he sits in it (`ShipRequest::Remove`: `seat_camera` releases the seat, then takes it).
@@ -379,20 +381,20 @@ pub fn take_keys(
     let real = crate::mods::real_window(&cfg);
     let free = control.main_menu || (real && !window.focused);
     let pad = pads.iter().next();
-    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look, panels.open.is_some()) };
+    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look, super::panels::UiSets { screen: seat.screen, ..panels.sets() }) };
     if !free {
         if keys.just_pressed(KeyCode::KeyB) {
             seat.leave = true;
         }
         // Head look (`HeadLookToggle`, the middle button in Elite's file).
         let toggle = assets.keys.get("HeadLookToggle").is_some_and(|a| a.keys().any(|k| k.device == "Mouse" && k.key == "Mouse_3"));
-        if toggle && buttons.just_pressed(MouseButton::Middle) {
+        if toggle && !seat.screen && buttons.just_pressed(MouseButton::Middle) {
             seat.head_look = !seat.head_look;
             if !seat.head_look {
                 seat.look = Vec2::ZERO;
             }
         }
-        if seat.head_look && real && seat.regain == 0 {
+        if seat.head_look && !seat.screen && real && seat.regain == 0 {
             let d = motion.delta;
             seat.look.x = (seat.look.x - d.x * LOOK_RATE).clamp(-LOOK_YAW_MOST, LOOK_YAW_MOST);
             seat.look.y = (seat.look.y - d.y * LOOK_RATE).clamp(-LOOK_PITCH_MOST, LOOK_PITCH_MOST);
@@ -453,103 +455,68 @@ pub fn eye_pose(pos: DVec3, rot: DQuat, eye: Vec3, head: Vec2) -> (DVec3, DQuat)
     (pos + rot * eye.as_dvec3(), (rot * head_turn(head).as_dquat()).normalize())
 }
 
-/// The head's turn while a side panel is open by its key (radians, yaw left, pitch up): Elite turns its head look camera to
-/// the focused panel's target (`FUN_14107f170`: the direction to a bone the target names, in the target's data, which is not
-/// at hand; no decoded bone lies along these turns), so the turns are measured (grade D) on the user's own pictures with each
-/// panel open (`2.webp` the left, `3.webp` the right), each with its OWN camera: the eye at the `!Camera` bone, a turn about
-/// it, its focal free, from the red canopy lamps seen in it (their directions from the mod's own picture; `s1b_fit.py`,
-/// `re/elite/notes/sidewinder_hud.md`). The left 38.13 +- 0.05 degrees left and 7.95 +- 0.12 down (focal 740.8 px at 2000
-/// wide, residuals 0.3 to 0.5 px), the right 36.04 +- 0.02 right and 2.84 +- 0.05 down (747.9 px, 0.1 to 0.3 px); Elite's
-/// HUD parts seen there agree within 0.2 degrees. The two differ though the panels' bones are mirrors: Elite's targets are
-/// their own.
-pub const PANEL_TURN_LEFT: Vec2 = Vec2::new(0.66557, -0.13871);
-pub const PANEL_TURN_RIGHT: Vec2 = Vec2::new(-0.62896, -0.04958);
+/// The head's turn while a side panel is open by its key (radians, yaw left, pitch up), measured (grade C) on session ui1's
+/// settled pictures with each panel open (`re/elite/measure/raw/ui1/shots`, 3440 x 1440 at the user's 56.249 degrees), the
+/// way the role panel's is (`PANEL_TURN_ROLE`; `.optimize/scratch/run/ui5b/tools/role_turn.py`): Elite's HUD parts seen
+/// both there and in the straight-ahead `a00_start.png` (at its own focal, 1365.2 px), the head turning about the eye.
+/// - The right (`p2_right_3`, `_4`, `_5`, within 0.02 degrees of each other): the shield's 100 % and the fuel, ENG, SYS,
+///   RST and WEP labels: 60.33 +- 0.20 degrees right, 13.60 +- 0.03 down, roll held 0 (free: 0.1, none), focal 2085.9 +-
+///   17.0 px, residuals 0 to 4.3 px.
+/// - The left (`p1_left_open_0`; `p2_left_2` gives 60.53 / 13.06): the info block's shipping-lane icon and the first
+///   letters of its lines: 60.50 +- 0.16 degrees left (from the parts' places across), 13.28 down (+- 0.5: the block's lines
+///   stand differently spaced in the two pictures, vertical residuals up to 22 px), the focal held at the right's (free, the
+///   left's parts lie too close together to give it: 2463 +- 238 px).
+/// So Elite aims the head at the panels' bones (the notes' 61 and 14 degrees, `re/elite/notes/ui_rendering.md` 4.3), the
+/// two sides mirrors within 0.2 / 0.3 degrees, and whatever the window: one turn a panel (the mod's earlier rule that turned
+/// the head further on narrower windows is gone). These replace the turns measured on the user's single screenshots
+/// (`2.webp` left 38.13 / 7.95, `3.webp` right 36.04 / 2.84, S1b in `re/elite/notes/sidewinder_hud.md`): one picture each at
+/// its own field of view, likely caught while the head was still turning (session ui1 timed the turn at about 1.1 s to
+/// 90 %); they left both panels cut by the screen's edge, where ui1's settled pictures centre them.
+pub const PANEL_TURN_LEFT: Vec2 = Vec2::new(1.05593, -0.23172);
+pub const PANEL_TURN_RIGHT: Vec2 = Vec2::new(-1.05291, -0.23745);
 
-/// The head look camera's field of view's channel while a side panel is focused (degrees; `Head::fov_add`): Elite's is the
-/// focused target's own value (data, not at hand), so it is measured (grade D) as the panel picture's vertical field of view
-/// less the straight-ahead `1.webp`'s, where the head has no target and the channel is 0, so `1.webp` shows the configured
-/// view (63.49 degrees then: its lamps fit a focal of 676.5 px, residuals under 1 px): the left 58.94 (740.8 px), -4.55 +-
-/// 0.27; the right 58.47 (747.9 px), -5.02 +- 0.14 (`s1b_fit.py`; each panel's own, as Elite's targets carry their own).
-const PANEL_FOV_ADD_LEFT_DEG: f32 = -4.554;
-const PANEL_FOV_ADD_RIGHT_DEG: f32 = -5.020;
+/// The head's turn with the role panel focused (Elite's UI only, `SE_SW_UI=1`), measured (grade C) on session ui1's role
+/// pictures (`re/elite/measure/raw/ui1/shots/p2_role_2..10.png` against the straight-ahead `a00_start.png`;
+/// `.optimize/scratch/run/ui5b/tools/role_turn.py`): the canopy lamps are above that view, so the camera is fitted from eight
+/// of Elite's HUD parts seen in both (the scanner's middle, the shield's and hull's 100 %, the fuel, pips and RST labels),
+/// the head turning about the eye as `head_turn` does (Elite's data give the role target no displacement), a00 at its own
+/// focal (its lamps against the mod's picture: 1.0135 x 1347.05 = 1365.2 px): yaw 0.02 +- 0.04 degrees, pitch 36.87 +- 0.04
+/// down (+- 0.44 for a00's focal: 37.31 at the configured 1347.05), roll -0.06 +- 0.09 (none, as the head look camera's),
+/// residuals 0 to 5 px (rms 1.6); the same on all nine pictures within 0.01 degrees.
+pub const PANEL_TURN_ROLE: Vec2 = Vec2::new(0.00042, -0.64350);
 
-/// The screen the panels' turns were measured on (the user's, 3440 x 1440): its aspect.
-const MEASURED_ASPECT: f32 = 3440.0 / 1440.0;
-
-/// How far down a side panel the yaw's rule keeps its outer edge on the screen (in its anchor's -1..1 up from the bottom):
-/// its top 60 %, the tabs and the first ten rows (`panels::draw`: 0.04 + 10 x 0.022 of its 0.5 shares, and the selection's
-/// margin). A long tab goes on down to 0.48 of the 0.5 (the Navigation tab's 20 rows), over the keys' help line; the rule
-/// (the coordinator's, 2026-11-17) holds the first ten.
-const ROWS_DOWN: f32 = -0.2;
-
-/// The horizontal angle (radians, atan(x / -z) in the view turned by `turn`) of the panel's outer edge (the left panel's
-/// left, the right panel's right) where its rows are: the outermost of its top corner and its point at the rows' foot.
-/// None if one is behind the eye.
-fn outer_edge(side: Side, eye: Vec3, turn: Vec2) -> Option<f32> {
-    let (anchor, s) = match side {
-        Side::Left => (&LEFT_PANEL, -1.0),
-        Side::Right => (&RIGHT_PANEL, 1.0),
-    };
-    let inv = head_turn(turn).inverse();
-    let at = |t: f32| {
-        let v = inv * (Vec3::from_array(anchor.centre) - eye + s * Vec3::from_array(anchor.right) + t * Vec3::from_array(anchor.up));
-        (v.z < -1e-3).then(|| (v.x / -v.z).atan())
-    };
-    let (top, foot) = (at(1.0)?, at(ROWS_DOWN)?);
-    Some(if side == Side::Left { top.min(foot) } else { top.max(foot) })
-}
-
-/// A side panel's field of view's channel (radians; `PANEL_FOV_ADD_*_DEG`).
-fn panel_fov_add(side: Side) -> f32 {
-    if side == Side::Left { PANEL_FOV_ADD_LEFT_DEG } else { PANEL_FOV_ADD_RIGHT_DEG }.to_radians()
-}
-
-/// Half the view's angle (radians) across at `aspect` with the field of view's channel `fov_add`, the projection's
-/// (`view_vertical_fov`).
-fn half_across(aspect: f32, fov_add: f32) -> f32 {
-    ((0.5 * view_vertical_fov(aspect, fov_add)).tan() * aspect).atan()
-}
-
-/// The margin (radians) a panel's outer edge keeps from the screen's edge in the measured case: on the user's 3440 x 1440
-/// screen at the game's view (the configured one with the panel's channel) with the measured turn. Negative is a cut of that
-/// many degrees: the left panel's 1.58 degrees, the right's -1.58 (its last 1.58 degrees are off the screen, as Elite's are
-/// there: its head aims at the target's bone whatever the view).
-fn panel_margin(side: Side, eye: Vec3) -> f32 {
-    let measured = if side == Side::Left { PANEL_TURN_LEFT } else { PANEL_TURN_RIGHT };
-    outer_edge(side, eye, measured).map_or(0.0, |x| half_across(MEASURED_ASPECT, panel_fov_add(side)) - x.abs())
-}
-
-/// The head's turn to an open side panel on a window `aspect` wide. On the user's 3440 x 1440 screen and any wider one it is
-/// the measured turn, cut and all (D: Elite aims its head at the focused target's bone, which no window or view changes).
-/// The pitch is always the measured one. On a narrower window, where the panel's outer edge (`outer_edge`: where the rows
-/// are) would come nearer the screen's edge than its margin on the user's screen (`panel_margin`), the yaw grows by just
-/// what keeps it at that margin, so a narrower window shows no more of a cut than the user's screen does (a stand-in, grade
-/// E: what Elite shows on a narrower screen at this view is not measured; the rule is ours, stated, not tuned). Worked out
-/// from the panel's anchor and the window's projection (the panel's own view) whenever it is asked for: no table of sizes.
-/// At 16:9 the left 46.60 degrees, the right 44.48.
-pub fn panel_turn(side: Side, eye: Vec3, aspect: f32) -> Vec2 {
-    let mut turn = if side == Side::Left { PANEL_TURN_LEFT } else { PANEL_TURN_RIGHT };
-    let room = half_across(aspect, panel_fov_add(side)) - panel_margin(side, eye);
-    // (A yaw moves the edge's angle nearly one for one: a few rounds settle it. Turning left, yaw up, moves the view's
-    // contents right.)
-    for _ in 0..16 {
-        let Some(x) = outer_edge(side, eye, turn) else { break };
-        let dx = match side {
-            Side::Left => (-room - x).max(0.0),
-            Side::Right => (room - x).min(0.0),
-        };
-        if dx.abs() < 1e-7 {
-            break;
-        }
-        turn.x += dx;
+/// The head's turn to a focused panel: the measured one, whatever the window (`PANEL_TURN_*`). The comms panel (Elite's UI
+/// only) has no measured turn (session ui1 never focused it): the head stays straight ahead (a stand-in, grade E, until a
+/// picture gives it).
+pub fn panel_turn(side: Side) -> Vec2 {
+    match side {
+        Side::Left => PANEL_TURN_LEFT,
+        Side::Right => PANEL_TURN_RIGHT,
+        Side::Role => PANEL_TURN_ROLE,
+        Side::Comms => Vec2::ZERO,
     }
-    turn
 }
 
-/// The head look camera focused on an open side panel on a window `aspect` wide: the panel's turn (`panel_turn`) and its
-/// field of view's channel.
-pub fn panel_head(side: Side, eye: Vec3, aspect: f32) -> Head {
-    Head { turn: panel_turn(side, eye, aspect), fov_add: panel_fov_add(side) }
+/// The head look camera focused on an open panel: its turn (`panel_turn`) and the field of view's channel the stand-in
+/// panels use (`panels::STAND_IN_FOV_DEG`, a copy of Elite's data). With Elite's UI the seat takes the focus machine's own
+/// channel instead (`Panels::fov_add`, grade A: the data's -17 for the side and role panels, -8 for the comms panel; the
+/// fits above gave -17.53 +- 0.29 for the right panel and -16.75 +- 0.1 for the role panel against the pictures' own view,
+/// so they confirm the data within 2.5 sigma). The eye and the window no longer change it (kept for the callers).
+pub fn panel_head(side: Side, _eye: Vec3, _aspect: f32) -> Head {
+    Head { turn: panel_turn(side), fov_add: super::panels::STAND_IN_FOV_DEG.to_radians() }
+}
+
+/// The head look camera the panels' carrier asks for: at an open panel its turn (`panel_head`) with the carrier's channel
+/// (`Panels::fov_add`); with no panel open, a channel Elite's focus machine gives (`Panels::fov_add_deg`: `Select UI Mode`'s
+/// +10, a head look with no bone, B: the notes, `re/elite/notes/ui_rendering.md` 4.3, read its first pair as the one stored
+/// for the camera unless the activity's +0x50 is -1 and +0x58 is not 0, two fields not decoded; the data's first pair is
+/// taken) widens or narrows the view straight ahead; else none.
+pub fn carrier_head(panels: &Panels, eye: Vec3, aspect: f32) -> Option<Head> {
+    match (panels.open, panels.fov_add_deg) {
+        (Some(side), _) => Some(Head { fov_add: panels.fov_add(), ..panel_head(side, eye, aspect) }),
+        (None, Some(deg)) if deg != 0.0 => Some(Head { turn: Vec2::ZERO, fov_add: deg.to_radians() }),
+        _ => None,
+    }
 }
 
 /// A test's head turn as the seat takes it: any finite turn, as it is (no limits); None for one that is not finite (a NaN
@@ -647,7 +614,7 @@ pub fn seat_camera(
         warn!("sidewinder: a test's head turn of {:?} degrees is not a number: refused, the head is the pilot's", bad * 180.0 / std::f32::consts::PI);
         seat.test_look = None;
     }
-    seat.head = head_aim(seat.test_look, seat.head_look, seat.look, panels.open.map(|side| panel_head(side, eye, aspect)));
+    seat.head = if seat.screen { Head::default() } else { head_aim(seat.test_look, seat.head_look, seat.look, carrier_head(&panels, eye, aspect)) };
     // In hyperspace's tunnel the ship's pose is the jump's (in the universe: the old system's bodies go meanwhile), held by
     // `hyper::tunnel`; the camera is at the eye there, unbound, the head turned as in flight.
     if let Some(j) = pilot.jump {
@@ -873,7 +840,7 @@ mod tests {
         seat.head_look = true;
         seat.look = Vec2::new(0.5, -0.2);
         seat.test_look = Some(Vec2::new(0.4, 0.1));
-        seat.head = panel_head(Side::Right, EYE, MEASURED_ASPECT);
+        seat.head = panel_head(Side::Right, EYE, 3440.0 / 1440.0);
         seat.request_leave();
         seat.request_remove();
         let mut panels = Panels::default();
@@ -917,7 +884,7 @@ mod tests {
         assert!((fov(&world).to_degrees() - SEAT_FOV_DEG).abs() < 1e-4, "{}", fov(&world).to_degrees());
         world.resource_mut::<Seat>().head = panel_head(Side::Left, EYE, ELITE_ASPECT);
         world.run_system_once(seat_fov).unwrap();
-        assert!((fov(&world).to_degrees() - (SEAT_FOV_DEG + PANEL_FOV_ADD_LEFT_DEG)).abs() < 1e-4, "{}", fov(&world).to_degrees());
+        assert!((fov(&world).to_degrees() - (SEAT_FOV_DEG + super::super::panels::STAND_IN_FOV_DEG)).abs() < 1e-4, "{}", fov(&world).to_degrees());
         // Out of the seat (any way: `view` is false), after the camera's systems wrote the view's own again.
         if let Some(mut p) = world.get_mut::<Projection>(cam) {
             *p = Projection::Perspective(PerspectiveProjection { fov: own, ..default() });
@@ -944,22 +911,50 @@ mod tests {
         assert!((across(narrow, 4.0 / 3.0) - across(seat_vertical_fov(16.0 / 9.0), 16.0 / 9.0)).abs() < 1e-5);
     }
 
-    /// A focused panel's view (`view_vertical_fov` with its channel): the configured 56.249 degrees plus the panel's measured
-    /// channel at 16:9 and wider (the left 51.695, the right 51.229), the same rule for the aspect below (4:3: 16:9's
-    /// horizontal angle of that view); no channel, the configured view. The check on the pictures: 1.webp's straight view,
-    /// 63.49 degrees, with the channels gives the panel pictures' 58.94 and 58.47.
+    /// A focused panel's view (`view_vertical_fov` with its channel): the configured 56.249 degrees plus Elite's channel at
+    /// 16:9 and wider (the side panels' -17: 39.249), the same rule for the aspect below (4:3: 16:9's horizontal angle of
+    /// that view); no channel, the configured view. The seat takes the focus machine's channel when Elite's UI gives one
+    /// (the comms panel's -8), else the stand-in's copy of the data.
     #[test]
     fn a_focused_panel_narrows_the_view_by_its_channel() {
         let deg = |side, aspect| view_vertical_fov(aspect, panel_head(side, EYE, aspect).fov_add).to_degrees();
         for (w, h) in [(1600.0f32, 900.0f32), (1920.0, 1080.0), (3440.0, 1440.0)] {
-            assert!((deg(Side::Left, w / h) - 51.695).abs() < 1e-3, "{w}x{h}: {}", deg(Side::Left, w / h));
-            assert!((deg(Side::Right, w / h) - 51.229).abs() < 1e-3, "{w}x{h}: {}", deg(Side::Right, w / h));
+            assert!((deg(Side::Left, w / h) - 39.249).abs() < 1e-3, "{w}x{h}: {}", deg(Side::Left, w / h));
+            assert!((deg(Side::Right, w / h) - 39.249).abs() < 1e-3, "{w}x{h}: {}", deg(Side::Right, w / h));
         }
         let across = |v: f32, a: f32| 2.0 * ((0.5 * v).tan() * a).atan();
         let narrow = deg(Side::Left, 4.0 / 3.0).to_radians();
-        assert!((across(narrow, 4.0 / 3.0) - across(51.695f32.to_radians(), 16.0 / 9.0)).abs() < 1e-4);
+        assert!((across(narrow, 4.0 / 3.0) - across(39.249f32.to_radians(), 16.0 / 9.0)).abs() < 1e-4);
         assert_eq!(view_vertical_fov(4.0 / 3.0, 0.0), seat_vertical_fov(4.0 / 3.0));
-        assert!((63.49 + PANEL_FOV_ADD_LEFT_DEG - 58.94).abs() < 0.01 && (63.49 + PANEL_FOV_ADD_RIGHT_DEG - 58.47).abs() < 0.01);
+        let mut panels = Panels { open: Some(Side::Comms), ..default() };
+        assert!((panels.fov_add().to_degrees() - super::super::panels::STAND_IN_FOV_DEG).abs() < 1e-5, "the stand-in's copy");
+        panels.fov_add_deg = Some(-8.0);
+        assert!((panels.fov_add().to_degrees() + 8.0).abs() < 1e-5, "the machine's own");
+    }
+
+    /// The carrier's head: at a panel its turn with the machine's channel (the stand-in's copy only without one); with no
+    /// panel, a channel the machine gives alone (`Select UI Mode`'s +10) straight ahead; 0 or the stand-in path: none.
+    #[test]
+    fn the_carrier_asks_for_its_head() {
+        let at = |open, deg| carrier_head(&Panels { open, fov_add_deg: deg, ..default() }, EYE, 16.0 / 9.0);
+        assert_eq!(at(None, None), None);
+        assert_eq!(at(None, Some(0.0)), None, "the comms bar, the flight");
+        assert_eq!(at(None, Some(10.0)), Some(Head { turn: Vec2::ZERO, fov_add: 10f32.to_radians() }), "Select UI Mode");
+        assert_eq!(at(Some(Side::Comms), Some(-8.0)), Some(Head { turn: Vec2::ZERO, fov_add: (-8f32).to_radians() }));
+        assert_eq!(at(Some(Side::Left), Some(-17.0)), Some(Head { turn: PANEL_TURN_LEFT, fov_add: (-17f32).to_radians() }));
+        assert_eq!(at(Some(Side::Left), None).map(|h| h.fov_add), Some(super::super::panels::STAND_IN_FOV_DEG.to_radians()), "the stand-in");
+    }
+
+    /// One turn a panel, whatever the window (Elite aims at the panel's bone): the measured ones; the comms panel straight.
+    #[test]
+    fn a_panels_turn_is_the_measured_one() {
+        for (w, h) in [(1024.0f32, 768.0f32), (1600.0, 900.0), (3440.0, 1440.0), (5120.0, 1440.0)] {
+            assert_eq!(panel_head(Side::Left, EYE, w / h).turn, PANEL_TURN_LEFT);
+            assert_eq!(panel_head(Side::Right, EYE, w / h).turn, PANEL_TURN_RIGHT);
+            assert_eq!(panel_head(Side::Role, EYE, w / h).turn, PANEL_TURN_ROLE);
+            assert_eq!(panel_head(Side::Comms, EYE, w / h).turn, Vec2::ZERO);
+        }
+        assert!((PANEL_TURN_LEFT.x.to_degrees() - 60.50).abs() < 0.01 && (PANEL_TURN_RIGHT.x.to_degrees() + 60.33).abs() < 0.01);
     }
 
     /// A panel opened by its key turns the head to it with its narrower view and closing it gives the head back; the pilot's
@@ -993,44 +988,6 @@ mod tests {
 
     /// The eye: the cockpit's `!Camera` bone in the ship's space (`SidewinderAssets::eye` from the shipped files).
     const EYE: Vec3 = Vec3::new(0.0001, 6.7223, 1.3465);
-
-    /// A panel's turn by the stated rule (`panel_turn`): on the user's screen (and a wider one) both turns are exactly the
-    /// measured ones, the right panel's last 1.58 degrees off the screen; on narrower windows the pitch is still the measured
-    /// one and each panel's outer edge, where its rows are, keeps its margin from the user's screen (projected as the HUD
-    /// projects it, at the panel's own view), the yaw grown only as far as that takes.
-    #[test]
-    fn an_open_panel_keeps_its_outer_edge_on_the_screen() {
-        use super::super::hud_anchor::SeatView;
-        use bevy_egui::egui;
-        let margin = |side| panel_margin(side, EYE).to_degrees();
-        assert!((margin(Side::Left) - 1.583).abs() < 0.001 && (margin(Side::Right) + 1.584).abs() < 0.001, "{} {}", margin(Side::Left), margin(Side::Right));
-        for aspect in [MEASURED_ASPECT, 32.0 / 9.0] {
-            assert_eq!(panel_turn(Side::Left, EYE, aspect), PANEL_TURN_LEFT);
-            assert_eq!(panel_turn(Side::Right, EYE, aspect), PANEL_TURN_RIGHT);
-        }
-        for (w, h) in [(1600.0f32, 900.0f32), (1920.0, 1080.0), (1024.0, 768.0), (2560.0, 1440.0)] {
-            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
-            for (side, anchor, measured, s) in [(Side::Left, &LEFT_PANEL, PANEL_TURN_LEFT, -1.0f32), (Side::Right, &RIGHT_PANEL, PANEL_TURN_RIGHT, 1.0)] {
-                let head = panel_head(side, EYE, w / h);
-                assert_eq!(head.turn.y, measured.y, "{side:?} at {w}x{h}: the pitch");
-                assert!(head.turn.x.abs() > measured.x.abs(), "{side:?} at {w}x{h}: the yaw didn't grow");
-                let view = SeatView::new(EYE, head, screen);
-                // The outer edge from the top corner to the rows' foot: no further out than the margin lets it.
-                let focal = 0.5 * h / (0.5 * view_vertical_fov(w / h, head.fov_add)).tan();
-                let most = focal * (half_across(w / h, head.fov_add) - panel_margin(side, EYE)).tan();
-                for t in [1.0, 0.6, 0.2, ROWS_DOWN] {
-                    let p = view.project(Vec3::from_array(anchor.centre) + s * Vec3::from_array(anchor.right) + t * Vec3::from_array(anchor.up)).unwrap();
-                    assert!((p.x - 0.5 * w).abs() <= most + 0.5, "{side:?} at {w}x{h} ({s}, {t}): {p:?}");
-                }
-                // Just enough: the edge sits at the margin, not further in.
-                let x = outer_edge(side, EYE, head.turn).unwrap();
-                assert!((half_across(w / h, head.fov_add) - x.abs() - panel_margin(side, EYE)).abs() < 1e-4, "{side:?} at {w}x{h}");
-            }
-        }
-        let yaw = |side: Side, aspect: f32| panel_turn(side, EYE, aspect).x.to_degrees();
-        // At 16:9 (1920 x 1080, 1600 x 900) the left 46.60 degrees, the right 44.48.
-        assert!((yaw(Side::Left, 16.0 / 9.0) - 46.60).abs() < 0.01 && (yaw(Side::Right, 16.0 / 9.0) + 44.48).abs() < 0.01, "{} {}", yaw(Side::Left, 16.0 / 9.0), yaw(Side::Right, 16.0 / 9.0));
-    }
 
     /// A test's head turn: any finite turn is taken as it is, past the head look's limits too; one that is not finite is
     /// refused.

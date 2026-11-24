@@ -300,6 +300,99 @@ pub struct PilotKeys {
     pub silent: bool,
     pub scoop: bool,
     pub lights: bool,
+    /// Elite's UI buttons pressed and released this frame (`ui_edges`), for Elite's own panels (`SE_SW_UI=1`: the focus
+    /// machine, `ui::focus`).
+    pub ui: UiEdges,
+    /// The scanner's range keys pressed this frame (`RadarIncreaseRange`, `RadarDecreaseRange`: PageUp, PageDown in the
+    /// shipped binds), for Elite's scanner (`SE_SW_UI=1`: `ui::focus` hands them to `ui::scanner::RadarKeys`). Flight keys
+    /// in Elite: a focused panel does not quiet them (no UI button shares their keys).
+    pub radar_up: bool,
+    pub radar_down: bool,
+    /// The FSS's enter and quit keys pressed this frame (`ExplorationFSSEnter`, `ExplorationFSSQuit`: ' and Backspace or ' in
+    /// the shipped binds), for Elite's FSS screen (`SE_SW_UI=1`: `ui::screens`).
+    pub fss_enter: bool,
+    pub fss_quit: bool,
+}
+
+/// Elite's UI buttons the cockpit's panels take (`re/elite/notes/ui_rendering.md` 4.1 and 4.2: the focus keys, `UIFocus`, the
+/// modal set's and the comms pages'), in the order a frame's edges reach the focus machine: `UIFocus` first, so a direction
+/// pressed in the frame `UIFocus` goes down finds `Select UI Mode`.
+pub const UI_BUTTONS: [&str; 17] = [
+    "UIFocus", "FocusLeftPanel", "FocusRightPanel", "FocusCommsPanel", "QuickCommsPanel", "FocusRadarPanel", "UI_Up", "UI_Down", "UI_Left", "UI_Right",
+    "UI_Select", "UI_Back", "UI_Toggle", "CycleNextPanel", "CyclePreviousPanel", "CycleNextPage", "CyclePreviousPage",
+];
+
+/// Keys of Elite's fixed `ui` control set (not rebindable; `ui_rendering.md` 4.1, DirectInput scancodes) that the shipped binds
+/// do not already give: CyclePreviousPage 26 (`[`) and CycleNextPage 27 (`]`). Left out (ours, E: Elite's rule between the
+/// fixed set and the binds was not decoded): Select on Enter (the binds' QuickCommsPanel: in flight one press would open the
+/// mini comms panel and select in it), CycleNextPanel on Tab (the binds' boost), Back on Esc (the port's menu, which the seat
+/// leaves alone), and the codes the notes could not name (121 to 126, 106). The rest (W S A D, Space, E, Q) are the binds' own.
+const UI_FIXED: [(&str, KeyCode); 2] = [("CyclePreviousPage", KeyCode::BracketLeft), ("CycleNextPage", KeyCode::BracketRight)];
+
+/// A frame's presses (`down`) and releases (`up`) of Elite's UI buttons, and which are down now (`held`), one bit each in
+/// `UI_BUTTONS`' order. A frame whose keys are not the pilot's (`seat::take_keys`' `free`: a menu up, the window not in
+/// front) gives none, so nothing is held then.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiEdges {
+    pub down: u32,
+    pub up: u32,
+    pub held: u32,
+}
+
+impl UiEdges {
+    /// Whether a button (of `UI_BUTTONS`) is down this frame.
+    pub fn is_held(self, button: &str) -> bool {
+        UI_BUTTONS.iter().position(|b| *b == button).is_some_and(|i| self.held & (1 << i) != 0)
+    }
+
+    /// The edges in order, (button, pressed): a button pressed and released within the frame gives both, the press first.
+    pub fn iter(self) -> impl Iterator<Item = (&'static str, bool)> {
+        UI_BUTTONS.iter().enumerate().flat_map(move |(i, &name)| {
+            let bit = 1u32 << i;
+            [(self.down & bit != 0).then_some((name, true)), (self.up & bit != 0).then_some((name, false))].into_iter().flatten()
+        })
+    }
+}
+
+/// One button's edge from its keys' states this frame (`now`: one of them is down; `before`: one was down last frame;
+/// `tapped`: one went down this frame): (pressed, released). A press and release within one frame is both.
+pub fn ui_edge(now: bool, before: bool, tapped: bool) -> (bool, bool) {
+    match (now, before) {
+        (true, false) => (true, false),
+        (false, true) => (false, true),
+        (false, false) => (tapped, tapped),
+        (true, true) => (false, false),
+    }
+}
+
+/// The frame's edges of Elite's UI buttons from every key the shipped binds give each (keyboard keys without modifiers, as
+/// `action_pressed` reads them, mouse buttons, the pad's buttons) and the fixed set's (`UI_FIXED`).
+fn ui_edges(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>) -> UiEdges {
+    let mut edges = UiEdges::default();
+    for (i, &name) in UI_BUTTONS.iter().enumerate() {
+        // Each key: (down now, pressed this frame, released this frame).
+        let mut states: Vec<(bool, bool, bool)> = Vec::new();
+        for k in b.get(name).into_iter().flat_map(|a| a.keys()) {
+            match k.device.as_str() {
+                "Keyboard" if k.modifiers.is_empty() => states.extend(super::seat::key_code(&k.key).map(|c| (keys.pressed(c), keys.just_pressed(c), keys.just_released(c)))),
+                "Mouse" => states.extend(mouse_button(&k.key).map(|m| (buttons.pressed(m), buttons.just_pressed(m), buttons.just_released(m)))),
+                _ => {}
+            }
+        }
+        if let (Some(g), Some(a)) = (pad, pad_binds.get(name)) {
+            states.extend(a.keys().filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)).map(|bt| (g.pressed(bt), g.just_pressed(bt), g.just_released(bt))));
+        }
+        states.extend(UI_FIXED.iter().filter(|(n, _)| *n == name).map(|&(_, c)| (keys.pressed(c), keys.just_pressed(c), keys.just_released(c))));
+        let now = states.iter().any(|s| s.0);
+        // (Down last frame: down now and not pressed this frame, or released this frame after a press before it; a key
+        // pressed and released within the frame was not down before it.)
+        let before = states.iter().any(|s| (s.0 || s.2) && !s.1);
+        let (down, up) = ui_edge(now, before, states.iter().any(|s| s.1));
+        edges.down |= u32::from(down) << i;
+        edges.up |= u32::from(up) << i;
+        edges.held |= u32::from(now) << i;
+    }
+    edges
 }
 
 /// The ship's switches a test can press (`sw silent|scoop|lights`): the same as their keys.
@@ -724,29 +817,76 @@ fn mouse_button(name: &str) -> Option<MouseButton> {
     })
 }
 
+/// Elite's control set a focused panel adds (`ui/controls.json` `bindings_interfacemodal`, A: a test checks it against the
+/// shipped file; its on-foot button, `HumanoidToggleMissionHelpPanelButton`, left out) and the one the comms panel adds for its
+/// pages (`bindings_interfacemodal_pagination`).
+pub const MODAL_SET: [&str; 9] = ["UI_Up", "UI_Down", "UI_Left", "UI_Right", "UI_Select", "CyclePreviousPanel", "CycleNextPanel", "UI_Back", "UI_Toggle"];
+pub const PAGINATION_SET: [&str; 2] = ["CyclePreviousPage", "CycleNextPage"];
+
+/// The frame's input as the ship's actions see it: the keys bound (in the shipped binds, and the fixed set's `UI_FIXED`) to
+/// a button of the UI's live control sets (`sets`: the modal set while a panel has the keys, the pages in the comms panel)
+/// are quiet for every ship action, whatever it is (in the shipped binds: W S A D the throttle and yaw, Q E the lateral
+/// thrust, the arrows the pips, Delete silent running, Home the cargo scoop, Insert the lights, Z flight assist, the right
+/// button secondary fire); keys the UI does not use go on flying the ship. The one rule for the stand-in panels and Elite's.
+/// Elite's notes (`re/elite/notes/ui_rendering.md` 4.2; `ui_messages_panels.md` 12.3, the states' activities) say a focused
+/// panel adds `Bindings_InterfaceModal` (the comms states `_Pagination` too) to the live control sets, with the sets' members
+/// (A); how a live set's keys block another set's was not decoded (the sets' flags, E): that the UI's keys are the UI's alone
+/// while those sets are live is our reading of it. Returned: the keys, the mouse buttons, and the pad's buttons taken.
+fn ship_input(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, sets: super::panels::UiSets) -> (ButtonInput<KeyCode>, ButtonInput<MouseButton>, Vec<GamepadButton>) {
+    let (mut keys, mut buttons, mut pad) = (keys.clone(), buttons.clone(), Vec::new());
+    // Elite's FSS screen is an input mode of its own (B: Elite's observed behaviour, the ship cannot be flown from it; the
+    // per-set flags of its input schemes were not decoded): every ship action is quiet; its own keys are read unmasked.
+    if sets.screen {
+        keys.reset_all();
+        buttons.reset_all();
+        let all = pad_binds.actions.values().flat_map(|a| a.keys()).filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key));
+        return (keys, buttons, all.collect());
+    }
+    let taken = MODAL_SET.iter().filter(|_| sets.modal).chain(PAGINATION_SET.iter().filter(|_| sets.pages));
+    for &action in taken {
+        for k in b.get(action).into_iter().flat_map(|a| a.keys()) {
+            match k.device.as_str() {
+                "Keyboard" => super::seat::key_code(&k.key).into_iter().for_each(|c| keys.reset(c)),
+                "Mouse" => mouse_button(&k.key).into_iter().for_each(|m| buttons.reset(m)),
+                _ => {}
+            }
+        }
+        pad.extend(pad_binds.get(action).into_iter().flat_map(|a| a.keys()).filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)));
+        UI_FIXED.iter().filter(|(n, _)| *n == action).for_each(|&(_, c)| keys.reset(c));
+    }
+    (keys, buttons, pad)
+}
+
+/// The seat's keys this frame: the UI's buttons from the input as it is (`ui_edges`, the stand-in panels' keys, the FSS's
+/// keys), the ship's actions from it without the keys the UI's live control sets take (`ship_input`, `sets`).
 #[allow(clippy::too_many_arguments)]
-pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, motion: &AccumulatedMouseMotion, real: bool, panel_open: bool) -> PilotKeys {
+pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_asset::Binds, pad: Option<&Gamepad>, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>, motion: &AccumulatedMouseMotion, real: bool, sets: super::panels::UiSets) -> PilotKeys {
+    let ui_press = |a: &str| action_pressed(b, keys, a, true) || pad.zip(pad_binds.get(a)).is_some_and(|(g, a)| a.keys().filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)).any(|bt| g.just_pressed(bt)));
+    let panel = super::panels::PanelKeys {
+        left: ui_press("FocusLeftPanel"),
+        right: ui_press("FocusRightPanel"),
+        up: ui_press("UI_Up"),
+        down: ui_press("UI_Down"),
+        change_left: ui_press("UI_Left"),
+        change_right: ui_press("UI_Right"),
+        select: ui_press("UI_Select"),
+        back: ui_press("UI_Back"),
+        next_tab: ui_press("CycleNextPanel"),
+        prev_tab: ui_press("CyclePreviousPanel"),
+    };
+    let (fss_enter, fss_quit) = (ui_press("ExplorationFSSEnter"), ui_press("ExplorationFSSQuit"));
+    let ui = ui_edges(b, pad_binds, pad, keys, buttons);
+    let (keys, buttons, pad_taken) = ship_input(b, pad_binds, keys, buttons, sets);
+    let (keys, buttons) = (&keys, &buttons);
     let mouse_held = |action: &str| b.get(action).is_some_and(|a| a.keys().filter(|k| k.device == "Mouse").filter_map(|k| mouse_button(&k.key)).any(|m| buttons.pressed(m)));
     let pad_btn = |action: &str, just: bool| -> bool {
         let (Some(g), Some(a)) = (pad, pad_binds.get(action)) else { return false };
-        a.keys().filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)).any(|bt| if just { g.just_pressed(bt) } else { g.pressed(bt) })
+        a.keys().filter(|k| is_pad(&k.device)).filter_map(|k| pad_button(&k.key)).filter(|bt| !pad_taken.contains(bt)).any(|bt| if just { g.just_pressed(bt) } else { g.pressed(bt) })
     };
     let held = |a: &str| action_pressed(b, keys, a, false) || pad_btn(a, false);
     let press = |a: &str| action_pressed(b, keys, a, true) || pad_btn(a, true);
     let axis = |plus: &str, minus: &str| held(plus) as i8 as f64 - held(minus) as i8 as f64;
     let pv = |action: &str| pad.map_or(0.0, |g| pad_value(pad_binds, g, action));
-    let panel = super::panels::PanelKeys {
-        left: press("FocusLeftPanel"),
-        right: press("FocusRightPanel"),
-        up: press("UI_Up"),
-        down: press("UI_Down"),
-        change_left: press("UI_Left"),
-        change_right: press("UI_Right"),
-        select: press("UI_Select"),
-        back: press("UI_Back"),
-        next_tab: press("CycleNextPanel"),
-        prev_tab: press("CyclePreviousPanel"),
-    };
     let k = PilotKeys {
         gear: press("LandingGearToggle"),
         flight_assist: press("ToggleFlightAssist"),
@@ -774,13 +914,13 @@ pub fn read_keys(b: &se_core::elite_asset::Binds, pad_binds: &se_core::elite_ass
         silent: press("ToggleButtonUpInput"),
         scoop: press("ToggleCargoScoop"),
         lights: press("ShipSpotLightToggle"),
+        ui,
+        radar_up: press("RadarIncreaseRange"),
+        radar_down: press("RadarDecreaseRange"),
+        fss_enter,
+        fss_quit,
     };
-    // A focused panel takes its keys from the flight, as in Elite (W S A D Q E and the arrows); the mouse still flies.
-    if panel_open {
-        PilotKeys { throttle_up: false, throttle_down: false, yaw: 0.0, lateral: 0.0, pip_eng: false, pip_sys: false, pip_wep: false, pip_reset: false, boost: k.boost && !k.panel.back, ..k }
-    } else {
-        k
-    }
+    k
 }
 
 /// The canopy and the emergency oxygen (step 2.3's F6: `elite_sim::life`), once a frame on the frame's whole real seconds:
@@ -828,7 +968,7 @@ pub fn fly(
     mut air_cache: ResMut<crate::ship::air::AirCache>,
     mut air: Local<AirState>,
     mut panels: ResMut<super::panels::Panels>,
-    (mut ask, probe, lib, mut town, parts, frame, mouse): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>, Res<bevy::diagnostic::FrameCount>, Res<MouseSetting>),
+    (mut ask, probe, lib, mut town, parts, frame, mouse, ui_live): (ResMut<crate::scatter::probe::ProbeAsk>, Res<crate::scatter::probe::BuildingProbe>, Option<Res<crate::scatter::library::ScatterLibrary>>, Local<(Option<u32>, Vec<super::solids::Obb>)>, Res<super::parts::Parts>, Res<bevy::diagnostic::FrameCount>, Res<MouseSetting>, Res<super::ui::UiLive>),
 ) {
     // The gear's real state, as the gear machines left it (`parts::update`, last frame).
     let gear = parts.gear();
@@ -919,17 +1059,31 @@ pub fn fly(
     }
     let pilot = &mut *pilot;
     let dt = (time.delta_secs() as f64).min(0.25);
-    // The side panels (step 4.2): their keys and head look; what they ask for goes in as the keys would.
-    panels.update(&keys.panel, seat.head_look.then_some(seat.look.x));
+    // The side panels (step 4.2): their keys and head look; what they ask for goes in as the keys would. While Elite's UI is
+    // made and running (`UiLive`) its focus machine drives `panels` and pushes the panels' asks (`ui::focus`, `ui::panels`).
+    if !ui_live.0 {
+        panels.update(&keys.panel, seat.head_look.then_some(seat.look.x));
+    }
     let mut keys = *keys;
     for a in std::mem::take(&mut panels.actions) {
         use super::panels::{PanelAction, MODULES, M_FSD};
         match a {
             PanelAction::Target(t) => panel_pick(pilot, Dest::System(t), &data.catalog, &mut msg),
             PanelAction::NavBody(o) => panel_pick(pilot, Dest::Body(o), &data.catalog, &mut msg),
+            PanelAction::Unlock => {
+                pilot.unlock(false);
+                pilot.unlock(true);
+                let text = dest_text(&data.catalog, pilot.locked());
+                info!("sidewinder: the panel's unlock: {text}");
+                msg.show(text);
+            }
             PanelAction::FlightAssist => keys.flight_assist = true,
             PanelAction::Gear => keys.gear = true,
             PanelAction::Hardpoints => keys.hardpoints = true,
+            PanelAction::Jump => keys.jump = true,
+            PanelAction::Lights => keys.lights = true,
+            PanelAction::Silent => keys.silent = true,
+            PanelAction::Scoop => keys.scoop = true,
             PanelAction::Module(i) if i == M_FSD && pilot.modules[i] && (pilot.cruise.is_some() || !matches!(pilot.drive, Drive::Ready | Drive::Arriving(_) | Drive::Cooldown(_))) => {
                 msg.show("The frame shift drive is in use".to_string());
             }
@@ -1011,6 +1165,8 @@ pub fn fly(
     // its sensitivity the player's setting (`MouseSetting`, U3: never the file's).
     // A test's counts (`sw mouse DX DY`) join the frame's real ones here.
     keys.mouse += std::mem::take(&mut pilot.dev_mouse);
+    // (Elite's FSS screen takes the mouse and the sticks for its own view, `Seat::screen`: the ship flies on straight.)
+    if seat.screen { (keys.mouse, keys.pad_roll, keys.pad_pitch, pilot.stick) = (Vec2::ZERO, 0.0, 0.0, Vec2::ZERO); }
     let setting = |name: &str, or: f32| assets.keys.value(name).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(or);
     let full = full_counts(mouse.sensitivity);
     pilot.stick = (pilot.stick + Vec2::new(keys.mouse.x, -keys.mouse.y) / full).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
@@ -2084,5 +2240,65 @@ mod tests {
         let b = shipped("KeyboardMouseOnly.binds");
         let missing: Vec<String> = b.actions.values().flat_map(|a| a.keys()).filter(|k| k.device == "Keyboard").filter(|k| super::super::seat::key_code(&k.key).is_none()).map(|k| k.key.clone()).collect();
         assert!(missing.is_empty(), "{missing:?}");
+    }
+
+    /// Elite's UI buttons: a press and a release are each one edge, a press and release within one frame both (the press
+    /// first), a key held on or a second key of the same button nothing; the edges come out in `UI_BUTTONS`' order, UIFocus
+    /// first.
+    #[test]
+    fn ui_buttons_give_their_edges() {
+        assert_eq!(ui_edge(true, false, true), (true, false));
+        assert_eq!(ui_edge(false, true, false), (false, true));
+        assert_eq!(ui_edge(false, false, true), (true, true));
+        assert_eq!((ui_edge(true, true, false), ui_edge(true, true, true), ui_edge(false, false, false)), ((false, false), (false, false), (false, false)));
+        let at = |b: &str| UI_BUTTONS.iter().position(|n| *n == b).unwrap();
+        let edges = UiEdges { down: 1 << at("UI_Left") | 1 << at("UIFocus") | 1 << at("UI_Select"), up: 1 << at("UI_Select"), held: 1 << at("UIFocus") };
+        assert_eq!(edges.iter().collect::<Vec<_>>(), [("UIFocus", true), ("UI_Left", true), ("UI_Select", true), ("UI_Select", false)]);
+        assert!(edges.is_held("UIFocus") && !edges.is_held("UI_Left"));
+        assert!(UI_BUTTONS.len() <= 32, "one bit each");
+        // A key pressed and released within one frame: a press and a release (it was not down before the frame).
+        let b = shipped("KeyboardMouseOnly.binds");
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::Space);
+        keys.release(KeyCode::Space);
+        let tap = ui_edges(&b, &b, None, &keys, &ButtonInput::default());
+        assert_eq!(tap.iter().collect::<Vec<_>>(), [("UI_Select", true), ("UI_Select", false)]);
+        assert!(!tap.is_held("UI_Select"));
+    }
+
+    /// The modal and page sets are the shipped `ui/controls.json`'s members (the modal set's on-foot button left out).
+    #[test]
+    fn the_ui_sets_are_the_shipped_ones() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder/ui/controls.json");
+        let c: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        let names = |set: &str| c[set].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let modal: Vec<String> = names("bindings_interfacemodal").into_iter().filter(|n| !n.starts_with("Humanoid")).collect();
+        assert_eq!(modal, MODAL_SET.map(str::to_string));
+        assert_eq!(names("bindings_interfacemodal_pagination"), PAGINATION_SET.map(str::to_string));
+    }
+
+    /// While a set of the UI is live its keys fly nothing (the binds' own answer), and keys it does not use fly on: with a
+    /// panel open W, Q, the up arrow and Delete are the UI's; Z (the pages' key) still toggles flight assist outside the comms
+    /// panel's pages, and not within them; R (vertical thrust) always flies.
+    #[test]
+    fn the_uis_keys_fly_nothing_while_its_set_is_live() {
+        use super::super::panels::UiSets;
+        let b = shipped("KeyboardMouseOnly.binds");
+        let read = |held: &[KeyCode], sets: UiSets| {
+            let mut keys = ButtonInput::<KeyCode>::default();
+            for &k in held {
+                keys.press(k);
+            }
+            read_keys(&b, &b, None, &keys, &ButtonInput::default(), &AccumulatedMouseMotion::default(), false, sets)
+        };
+        let all = [KeyCode::KeyW, KeyCode::KeyQ, KeyCode::ArrowUp, KeyCode::Delete, KeyCode::KeyZ, KeyCode::KeyR];
+        let flying = read(&all, UiSets::default());
+        assert!(flying.throttle_up && flying.lateral < 0.0 && flying.pip_eng && flying.silent && flying.flight_assist && flying.vertical > 0.0);
+        let panel = read(&all, UiSets { modal: true, pages: false, screen: false });
+        assert!(!panel.throttle_up && panel.lateral == 0.0 && !panel.pip_eng && !panel.silent, "the modal set's keys");
+        assert!(panel.flight_assist && panel.vertical > 0.0, "keys the panel does not use");
+        assert!(panel.panel.up && panel.ui.is_held("UI_Up"), "the UI still sees its keys");
+        let comms = read(&all, UiSets { modal: true, pages: true, screen: false });
+        assert!(!comms.flight_assist && comms.vertical > 0.0, "the pages' Z");
     }
 }
