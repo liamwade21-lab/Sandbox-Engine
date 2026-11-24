@@ -11,6 +11,8 @@ elite-ui = { path = "../elite-ui" }
 # Ruffle, vendored and patched (vendor/ruffle/UPSTREAM.md). No audio, no video, no default font.
 ruffle_core = { path = "../../vendor/ruffle/core", default-features = false }
 ruffle_render_wgpu = { path = "../../vendor/ruffle/render/wgpu", default-features = false }
+# The render backend trait, for the frame test in front of the wgpu backend (frames.rs).
+ruffle_render = { path = "../../vendor/ruffle/render", default-features = false }
 # What Ruffle's navigator trait names (the same versions Ruffle uses).
 url = "2.5"
 async-channel = "2.5"

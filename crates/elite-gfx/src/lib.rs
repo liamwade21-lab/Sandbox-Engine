@@ -6,6 +6,7 @@
 pub mod bridge;
 pub mod convert;
 pub mod easing;
+mod frames;
 pub mod gpu;
 pub mod host;
 pub mod movie;

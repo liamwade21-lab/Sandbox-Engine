@@ -129,8 +129,8 @@ impl Rig {
         (movie, texture)
     }
 
-    /// Writes the texture as a PNG (straight alpha) and a `.view.png` over dark grey to look at.
-    pub fn shot(&self, texture: &wgpu::Texture, path: &Path) {
+    /// The texture's pixels read back (premultiplied RGBA, rows packed), the GPU waited for.
+    pub fn pixels(&self, texture: &wgpu::Texture) -> Vec<u8> {
         let (w, h) = (texture.width(), texture.height());
         let padded = (w * 4).div_ceil(256) * 256;
         let device = self.gpu.device();
@@ -154,11 +154,19 @@ impl Rig {
         slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
         device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let data = slice.get_mapped_range().expect("mapped range");
+        let row = (w * 4) as usize;
+        data.chunks(padded as usize).flat_map(|line| &line[..row]).copied().collect()
+    }
+
+    /// Writes the texture as a PNG (straight alpha) and a `.view.png` over dark grey to look at.
+    pub fn shot(&self, texture: &wgpu::Texture, path: &Path) {
+        let (w, h) = (texture.width(), texture.height());
+        let data = self.pixels(texture);
         let mut straight = image::RgbaImage::new(w, h);
         let mut view = image::RgbImage::new(w, h);
         for y in 0..h {
             for x in 0..w {
-                let at = (y * padded + x * 4) as usize;
+                let at = ((y * w + x) * 4) as usize;
                 let p = &data[at..at + 4];
                 let a = u32::from(p[3]);
                 let un = |c: u8| ((u32::from(c) * 255 + a / 2).checked_div(a).unwrap_or(0)).min(255) as u8;
@@ -168,7 +176,6 @@ impl Rig {
                 view.put_pixel(x, y, image::Rgb([over(p[0]), over(p[1]), over(p[2])]));
             }
         }
-        drop(data);
         straight.save(path).unwrap();
         view.save(path.with_extension("view.png")).unwrap();
     }
@@ -312,4 +319,19 @@ fn is_error(text: &str) -> bool {
 pub fn script(file: &str) -> Vec<Step> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/scripts").join(file);
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{file}: {e}"))
+}
+
+/// A movie made ready and sent its script's first second (opened, its data in), not stepped further.
+pub fn opened(rig: &Rig, name: &str, file: &str) -> (Movie, wgpu::Texture) {
+    let (mut movie, texture) = rig.load(name);
+    while !movie.ready() {
+        movie.step(1.0 / movie.frame_rate());
+    }
+    for step in script(file).iter().filter(|s| s.t < 1.0) {
+        if let Some(msg) = &step.msg {
+            movie.send(msg, &step.args);
+        }
+    }
+    movie.drain();
+    (movie, texture)
 }

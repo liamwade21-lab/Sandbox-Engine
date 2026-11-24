@@ -1,7 +1,7 @@
 #!/bin/bash
 # Re-checks this copy against Ruffle itself (UPSTREAM.md): takes the same paths from a clone of
-# https://github.com/ruffle-rs/ruffle at the pinned commit, applies patches/*.patch in order, and
-# compares the result with this folder. Prints nothing but "identical" when all is well.
+# https://github.com/ruffle-rs/ruffle at the pinned commit, applies patches/*.patch in order (which
+# must be exactly the patches UPSTREAM.md lists), and compares the result with this folder. Prints nothing but "identical" when all is well.
 #
 #   bash vendor/ruffle/check_upstream.sh PATH_TO_A_RUFFLE_CLONE
 #
@@ -19,6 +19,13 @@ git -c core.autocrlf=false -C "$CLONE" archive --format=tar "$COMMIT" -- \
   wstr tools/asc ':(exclude)render/naga-agal/tests' ':(exclude)render/naga-agal/agal-helper' \
   ':(exclude)render/pixel_bender/assembly_tests' ':(exclude)swf/tests' ':(exclude)swf/examples' \
   | tar -x -C "$WORK"
+# The patches applied are exactly the ones UPSTREAM.md's table lists, in its order.
+LISTED="$(grep -o '^| `[a-z0-9-]*\.patch`' "$HERE/UPSTREAM.md" | tr -d '|` ')"
+FOUND="$(cd "$HERE/patches" && ls -1 -- *.patch)"
+if [ "$LISTED" != "$FOUND" ]; then
+  echo "patches/ and the table in UPSTREAM.md differ"
+  exit 1
+fi
 for p in "$HERE"/patches/*.patch; do
   git -c core.autocrlf=false -C "$WORK" apply --whitespace=nowarn "$p"
 done

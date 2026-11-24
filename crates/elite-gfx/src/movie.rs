@@ -3,6 +3,7 @@
 //! what it sends back.
 
 use crate::bridge::{self, Interface, Link, Log, NoFiles, Ui};
+use crate::frames::Frames;
 use crate::gpu::Gpu;
 use crate::host::Host;
 use crate::target::Target;
@@ -16,6 +17,7 @@ use ruffle_core::{FloatDuration, Player, PlayerBuilder, PlayerMode};
 use ruffle_render_wgpu::backend::WgpuRenderBackend;
 use ruffle_render_wgpu::target::RenderTarget;
 use ruffle_render_wgpu::wgpu;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -73,6 +75,19 @@ pub struct Movie {
     /// Messages and writes refused because `WAITING_MOST` already waited.
     refused: usize,
     stage: (u32, u32),
+    /// What the last render made of the movie as it is now.
+    rendered: Rendered,
+}
+
+/// Whether the movie's frame as it is now was rendered (`Movie::changed`, `Movie::draw`).
+#[derive(Clone, Copy, PartialEq)]
+enum Rendered {
+    /// Not since the movie was last stepped, sent a message or written to.
+    Not,
+    /// Held by `Frames` (`Frames::release`), and it differs from what the target shows.
+    Held,
+    /// The target shows it (drawn, or found the same as what was drawn).
+    Shown,
 }
 
 /// The most messages (and, apart, DataStore writes) that wait for a movie to be ready: a movie that
@@ -107,7 +122,7 @@ impl Movie {
             bridge_up: Cell::new(false),
         });
         let player = PlayerBuilder::new()
-            .with_renderer(renderer)
+            .with_renderer(Frames::new(renderer))
             .with_ui(Ui::new(link.clone()))
             .with_navigator(NoFiles::new(&executor))
             .with_log(Log(link.clone()))
@@ -119,8 +134,16 @@ impl Movie {
             .with_autoplay(true)
             .build();
         let fallback = link.host.get_mapped_font_name(PARAGRAPH_FONT);
-        let movie =
-            Movie { player, executor, link, sends: VecDeque::new(), stores: VecDeque::new(), refused: 0, stage };
+        let movie = Movie {
+            player,
+            executor,
+            link,
+            sends: VecDeque::new(),
+            stores: VecDeque::new(),
+            refused: 0,
+            stage,
+            rendered: Rendered::Not,
+        };
         {
             let mut player = movie.player();
             player.set_window_mode("transparent");
@@ -167,6 +190,7 @@ impl Movie {
     /// Sends a message to the movie's `HandleMessage` (before `ready` it waits, in order, up to
     /// `WAITING_MOST`; beyond that it is refused and an `Out::Trace` says so).
     pub fn send(&mut self, name: &str, args: &[Value]) {
+        self.rendered = Rendered::Not;
         if self.ready() && self.sends.is_empty() {
             self.deliver(name, args);
         } else if self.sends.len() < WAITING_MOST {
@@ -194,6 +218,7 @@ impl Movie {
     /// Writes a property of a DataStore node (the node and its parents are made if they do not
     /// exist; listeners hear the change).
     pub fn store(&mut self, context: &[&str], property: &str, value: Value) {
+        self.rendered = Rendered::Not;
         let context: Vec<String> = context.iter().map(|s| s.to_string()).collect();
         if self.link.bridge_up.get() && self.stores.is_empty() {
             self.write(&context, property, &value);
@@ -213,6 +238,7 @@ impl Movie {
     /// Runs the movie's own frames for `dt` seconds of game time (at its own frame rate). Returns
     /// whether anything may have changed, so `draw` is worth calling.
     pub fn step(&mut self, dt: f64) -> bool {
+        self.rendered = Rendered::Not;
         self.executor.run();
         self.player().tick(FloatDuration::from_secs(dt));
         let delivered = self.flush();
@@ -242,13 +268,80 @@ impl Movie {
         delivered
     }
 
-    /// Draws the movie into its target, transparent where it is empty.
+    /// Draws the movie into its target, transparent where it is empty. A frame that would draw
+    /// exactly what the target already shows is not drawn (`frames.rs`): nothing reaches the GPU.
     pub fn draw(&mut self) {
-        self.player().render();
+        let skipping = {
+            let mut player = self.player();
+            let skipping = frames(&mut player).skipping();
+            match self.rendered {
+                Rendered::Held => frames(&mut player).draw_held(),
+                Rendered::Shown if skipping => {}
+                Rendered::Not | Rendered::Shown => player.render(),
+            }
+            skipping
+        };
+        self.rendered = if skipping { Rendered::Shown } else { Rendered::Not };
+    }
+
+    /// Whether `draw` would change the target now. It renders the frame (running the movie's
+    /// `Event.RENDER` listeners, as `draw` would) and keeps it for `draw`, so asking costs no second
+    /// render. The answer is always against the last frame really drawn into the target.
+    ///
+    /// Between `changed` and `draw` a caller may do anything (`step`, `send`, `store`, `changed`
+    /// again, or not draw at all for as long as it likes): the kept frame is then out of date and
+    /// `draw` renders anew, and nothing the kept frame had to draw is lost (`frames.rs`).
+    pub fn changed(&mut self) -> bool {
+        if self.rendered == Rendered::Not {
+            let mut player = self.player();
+            frames(&mut player).hold();
+            player.render();
+            let differs = frames(&mut player).release();
+            drop(player);
+            self.rendered = if differs { Rendered::Held } else { Rendered::Shown };
+        }
+        self.rendered == Rendered::Held
+    }
+
+    /// The frames drawn into the target since the movie was loaded.
+    pub fn draws(&self) -> u64 {
+        let player = self.player();
+        let frames: &dyn Any = player.renderer();
+        frames.downcast_ref::<Frames>().expect("the movie's renderer is Frames").drawn()
+    }
+
+    /// The movie's frame rate, from its header (frames a second).
+    pub fn frame_rate(&self) -> f64 {
+        self.link.frame_rate
+    }
+
+    /// Turns the skipping of unchanged frames off (every `draw` draws), for comparisons.
+    #[cfg(test)]
+    pub(crate) fn set_skipping(&mut self, skipping: bool) {
+        frames(&mut self.player()).set_skipping(skipping);
+        self.rendered = Rendered::Not;
+    }
+
+    /// The time spent testing frames (comparing, and keeping the drawn list) and the frames compared.
+    #[cfg(test)]
+    pub(crate) fn checking(&mut self) -> (std::time::Duration, u64) {
+        frames(&mut self.player()).checking.get()
+    }
+
+    /// The bitmap-cache entries drawn so far.
+    #[cfg(test)]
+    pub(crate) fn caches_drawn(&mut self) -> u64 {
+        frames(&mut self.player()).caches_drawn
     }
 
     /// What the movie has told the game since the last call.
     pub fn drain(&mut self) -> Vec<Out> {
         std::mem::take(&mut *self.link.outbox.borrow_mut())
     }
+}
+
+/// The player's renderer, which `Movie::load` made a `Frames`.
+fn frames(player: &mut Player) -> &mut Frames {
+    let renderer: &mut dyn Any = player.renderer_mut();
+    renderer.downcast_mut::<Frames>().expect("the movie's renderer is Frames")
 }

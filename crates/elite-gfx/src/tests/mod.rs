@@ -4,5 +4,8 @@
 mod bridge_proof;
 mod bridge_stamp;
 mod host;
+mod objects;
 mod proofs;
 mod rig;
+mod skip;
+mod text;

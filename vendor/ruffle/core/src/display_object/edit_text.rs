@@ -2837,7 +2837,9 @@ impl<'gc> TDisplayObject<'gc> for EditText<'gc> {
 
         context.commands.push_mask();
 
-        let mask_bounds = self.0.bounds.get().grow_x(-Self::GUTTER);
+        // Sandbox Engine patch f: Scaleform draws text over the gutter, so the mask is the field's own
+        // bounds (Flash Player, and upstream since 6429cc886, masks 2 px inside each side).
+        let mask_bounds = self.0.bounds.get();
         let mask = Matrix::create_box_from_rectangle(&mask_bounds);
 
         context.commands.draw_rect(
