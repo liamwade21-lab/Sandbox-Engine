@@ -13,15 +13,14 @@
 //! other machine before the legs, in frames of at most `elite_rig::MAX_FRAME_S`; a leg waiting on its doors asks whether
 //! the doors' machine is busy (`elite_rig::door_busy`: not in its own target state, FUN_142d393d0); (d) the events are acted
 //! on after each of those frames: a leg's door request reaches its doors' machine at once, in the same frame (Elite's request
-//! sets the door's target synchronously); (e) the parts are posed only if a value may have changed. A new ship (a spawn, a
-//! parked ship nobody sits in put somewhere else, or a test's `sw put`) is settled: made afresh and run forward silently
-//! until every machine rests.
+//! sets the door's target synchronously); (e) the parts are posed only if a value may have changed. A new ship (a spawn: a new
+//! `Parked::spawn`, never the ship moving; or a test's `sw put`) is settled: made afresh and run forward silently until
+//! every machine rests.
 
 use std::collections::HashSet;
 
-use bevy::math::{DQuat, DVec3, Mat4};
+use bevy::math::Mat4;
 use bevy::prelude::*;
-use se_core::catalog::ObjectRef;
 use se_core::elite_rig::{self, Cracks, Event, Runner, Values, CRACKS_NONE, MAX_FRAMES, MAX_FRAME_S};
 use se_core::elite_ship::Activity;
 use serde_json::{Map, Value};
@@ -138,8 +137,8 @@ struct Run {
     cracks: Option<(usize, usize, Cracks)>,
     /// Nodes a `KModelState` with `restore_on_stop` changed, to give back at its Stop: (machine, activity, node, shown).
     saved: Vec<(usize, usize, usize, bool)>,
-    /// The parked ship these machines are for (its place, to tell a new ship).
-    ship: (ObjectRef, DVec3, DQuat),
+    /// The parked ship these machines are for (its `Parked::spawn`, to tell a new ship).
+    ship: u32,
 }
 
 impl Run {
@@ -244,7 +243,7 @@ impl Parts {
     /// The machines made afresh for a new ship and run forward silently until every one rests. Their first requests (the
     /// facts' wanted states, asked once here) are ours: Elite's init asks the gear legs by owner conditions not traced
     /// (FUN_1430bfdc0) and makes `CockpitState` in its state by the canopy (FUN_1430c6130).
-    fn make(&mut self, rig: &ShipRig, ship: (ObjectRef, DVec3, DQuat), facts: &ShipFacts) {
+    fn make(&mut self, rig: &ShipRig, ship: u32, facts: &ShipFacts) {
         let n = rig.ship.machines.len();
         let mut values = Values::new();
         let mut runners = Vec::with_capacity(n);
@@ -563,17 +562,14 @@ pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship:
         }
         return;
     };
-    let at = (p.obj, p.pos, p.rot);
-    let new_ship = facts.settle || parts.run.as_ref().is_none_or(|r| !facts.seated && r.ship != at);
+    // (A ship carried, thrown, flown, boarded or left is the same ship: only its spawn number tells a new one.)
+    let new_ship = facts.settle || parts.run.as_ref().is_none_or(|r| r.ship != p.spawn);
     let moved = if new_ship {
-        parts.make(rig, at, &facts);
+        parts.make(rig, p.spawn, &facts);
         true
     } else {
         let dt = time.delta_secs_f64();
         parts.clock += dt;
-        if let Some(r) = parts.run.as_mut() {
-            r.ship = at;
-        }
         parts.frame(rig, &facts, dt, false)
     };
     if let Some(run) = parts.run.as_ref() {
@@ -622,7 +618,8 @@ mod tests {
         files().rig
     }
 
-    const SHIP: (ObjectRef, DVec3, DQuat) = (ObjectRef::Star(0), DVec3::ZERO, DQuat::IDENTITY);
+    /// A ship's spawn number.
+    const SHIP: u32 = 1;
 
     /// A parked, powered ship with a cool radiator running (heat 0.3).
     fn facts(gear_down: bool) -> ShipFacts {

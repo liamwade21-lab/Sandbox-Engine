@@ -39,9 +39,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-use bevy::math::{DQuat, DVec3, Mat4};
+use bevy::math::Mat4;
 use bevy::prelude::*;
-use se_core::catalog::ObjectRef;
 use se_core::elite_asset::parse_edm;
 use se_core::elite_chair::{Chair, ChairError, ChairInputs, ChairSkeleton};
 use se_core::elite_ship::{parse_chair_clips, parse_chair_graph, ChairClips, ChairGraph, ShipDataError};
@@ -207,8 +206,8 @@ pub struct ChairPose {
     cost: Cost,
     /// For the log: the state, the cross-fade and the clips playing after the last step.
     seen: (String, Option<(u32, u32)>, Vec<String>),
-    /// The parked ship the chair is for (its body and place): another one nobody sits in (a new spawn) gets a new chair.
-    ship: Option<(ObjectRef, DVec3, DQuat)>,
+    /// The parked ship the chair is for (its `Parked::spawn`): a new spawn gets a new chair, the same ship moved keeps it.
+    ship: Option<u32>,
 }
 
 /// What `draw` reads: the palette and its revision (the bones' matrices and the state for the tests).
@@ -354,8 +353,8 @@ impl ChairPose {
     }
 }
 
-/// Steps the chair by the frame's real time for the parked ship (after `facts::update`); made with a new ship (one nobody
-/// sits in that is not where the last was: a spawn), dropped with it.
+/// Steps the chair by the frame's real time for the parked ship (after `facts::update`); made with a new ship (a new
+/// `Parked::spawn`: the same ship moved keeps its chair), dropped with it.
 pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship: Res<Sidewinder>, time: Res<Time<Real>>, mut pose: ResMut<ChairPose>) {
     let pose = &mut *pose;
     let Some(p) = ship.parked.as_ref() else {
@@ -366,11 +365,10 @@ pub(super) fn update(assets: Res<SidewinderAssets>, facts: Res<ShipFacts>, ship:
         }
         return;
     };
-    let at = (p.obj, p.pos, p.rot);
-    if pose.chair.is_none() || (!facts.seated && pose.ship != Some(at)) {
+    if pose.chair.is_none() || pose.ship != Some(p.spawn) {
         pose.make(&assets.chair);
     }
-    pose.ship = Some(at);
+    pose.ship = Some(p.spawn);
     pose.frame(time.delta_secs(), &inputs(&facts), knocks(&facts, &assets.rig.space));
     if pose.log {
         pose.log_changes(time.elapsed_secs_f64());
@@ -393,6 +391,7 @@ pub fn dev_command(world: &mut World, args: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::math::DVec3;
     use se_core::elite_chair::sample_clip;
 
     /// A bone's position in its ancestor's frame (both the skeleton's indices), from posed world matrices.

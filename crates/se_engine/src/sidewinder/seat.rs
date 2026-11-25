@@ -83,15 +83,20 @@ pub struct Seat {
     /// Boarded and the sandbox not yet in the seat's mode (`Mode::Pilot`): only then is a boarding from anywhere but on foot
     /// refused (`boarding_refused`).
     boarding: bool,
+    /// The keys and buttons that were down when he sat down (E that boarded, above all): none of them counts for the ship
+    /// until it has been let go once (`unheld`; E is the ship's thrust to the right).
+    held_keys: Vec<KeyCode>,
+    held_buttons: Vec<MouseButton>,
 }
 
 impl Seat {
-    /// Just sat down: the game clock to real time and running, its old state kept.
-    pub fn boarded(sim: &mut SimTime) -> Seat {
+    /// Just sat down: the game clock to real time and running, its old state kept; what is held down is the boarding's.
+    pub fn boarded(sim: &mut SimTime, keys: &ButtonInput<KeyCode>, buttons: &ButtonInput<MouseButton>) -> Seat {
         let clock = Some((sim.rate, sim.paused));
         sim.rate = 1.0;
         sim.paused = false;
-        Seat { seated: true, regain: 3, clock, fade: FADE_S, boarding: true, ..default() }
+        let (held_keys, held_buttons) = (keys.get_pressed().copied().collect(), buttons.get_pressed().copied().collect());
+        Seat { seated: true, regain: 3, clock, fade: FADE_S, boarding: true, held_keys, held_buttons, ..default() }
     }
 
     /// Get out (as B does: only when landed).
@@ -301,6 +306,7 @@ fn look_at_ship(ship: &Sidewinder, sb: &Sandbox, assets: &SidewinderAssets) -> O
 #[allow(clippy::too_many_arguments)]
 pub fn board(
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     sb: Res<Sandbox>,
     ship: Res<Sidewinder>,
     assets: Option<Res<SidewinderAssets>>,
@@ -313,7 +319,8 @@ pub fn board(
 ) {
     prompt.0 = false;
     let Some(assets) = assets else { return };
-    if !sb.walking() || !sb.placed || sb.menu || control.main_menu || control.skate || sb.skate.is_some() {
+    // (While a gun or his hands hold a prop E is theirs: the physics gun turns the held prop with it, Garry's Mod's rule.)
+    if !sb.walking() || !sb.placed || sb.menu || control.main_menu || control.skate || sb.skate.is_some() || sb.held.is_some() {
         return;
     }
     let Some(d) = look_at_ship(&ship, &sb, &assets) else { return };
@@ -325,8 +332,10 @@ pub fn board(
         keys.clear_just_pressed(KeyCode::KeyE);
         if let Some(id) = reg.mods.iter().find(|m| m.code == CODE).map(|m| m.id.clone()) {
             control.board(&reg, &id);
-            *seat = Seat::boarded(&mut sim);
-            *pilot = pilot.boarding();
+            *seat = Seat::boarded(&mut sim, &keys, &buttons);
+            // (Whether it stands landed or flies from where it hangs is the flight's to decide, at the velocity it had.)
+            let vel = ship.parked.as_ref().map_or(DVec3::ZERO, |p| p.velocity(sb.world.as_ref()));
+            *pilot = pilot.boarding(vel);
             info!("sidewinder: boarded ({d:.1} m from the hull)");
         }
     }
@@ -381,7 +390,9 @@ pub fn take_keys(
     let real = crate::mods::real_window(&cfg);
     let free = control.main_menu || (real && !window.focused);
     let pad = pads.iter().next();
-    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, &keys, &buttons, &motion, real && seat.regain == 0 && !seat.head_look, super::panels::UiSets { screen: seat.screen, ..panels.sets() }) };
+    // (What was down when he sat down counts only once let go: the E that boarded doesn't thrust.)
+    let (seen_keys, seen_buttons) = (unheld(&keys, &mut seat.held_keys), unheld(&buttons, &mut seat.held_buttons));
+    *pilot_keys = if free { PilotKeys::default() } else { super::pilot::read_keys(&assets.keys, &assets.pad, pad, seen_keys.as_ref().unwrap_or(&keys), seen_buttons.as_ref().unwrap_or(&buttons), &motion, real && seat.regain == 0 && !seat.head_look, super::panels::UiSets { screen: seat.screen, ..panels.sets() }) };
     if !free {
         if keys.just_pressed(KeyCode::KeyB) {
             seat.leave = true;
@@ -421,6 +432,19 @@ pub fn take_keys(
         cursor.visible = free;
     }
     seat.regain = seat.regain.saturating_sub(1);
+}
+
+/// The input as the ship sees it while some of what was held at boarding is still down (`held`, which loses each key or
+/// button once it is let go): those reset as if up. None when nothing of it is still held.
+fn unheld<T: Copy + Eq + std::hash::Hash + Send + Sync + 'static>(input: &ButtonInput<T>, held: &mut Vec<T>) -> Option<ButtonInput<T>> {
+    held.retain(|k| input.pressed(*k));
+    (!held.is_empty()).then(|| {
+        let mut seen = input.clone();
+        for k in held.iter() {
+            seen.reset(*k);
+        }
+        seen
+    })
 }
 
 /// The head's turn from straight ahead (`look`: radians, yaw to the left about the ship's up, then pitch up about the turned
@@ -693,7 +717,7 @@ fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain
     }
     if lost {
         if let Some(mut gone) = out.ship.parked.take() {
-            super::remove_solids(out.sb, &mut gone);
+            super::take_out(out.sb, &mut gone);
         }
     }
     out.control.ship_parked = out.ship.parked.is_some();
@@ -775,6 +799,29 @@ pub fn seat_fov(seat: Res<Seat>, window: Query<&Window, With<PrimaryWindow>>, mu
 mod tests {
     use super::*;
 
+    /// The E that boards (and whatever else is down then) does nothing in the ship until it has been let go once; pressed
+    /// again it is the ship's key (E is the thrust to the right).
+    #[test]
+    fn the_boarding_press_counts_only_once_let_go() {
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyE);
+        keys.press(KeyCode::KeyW);
+        let mut sim = SimTime::default();
+        let mut seat = Seat::boarded(&mut sim, &keys, &ButtonInput::default());
+        keys.clear();
+        // Still held a frame later: the ship sees neither.
+        let seen = unheld(&keys, &mut seat.held_keys).expect("held at boarding");
+        assert!(!seen.pressed(KeyCode::KeyE) && !seen.pressed(KeyCode::KeyW));
+        // E let go, W still down: W stays out.
+        keys.release(KeyCode::KeyE);
+        let seen = unheld(&keys, &mut seat.held_keys).expect("W still held");
+        assert!(!seen.pressed(KeyCode::KeyW) && seat.held_keys == vec![KeyCode::KeyW]);
+        // E pressed again counts; once W is up nothing is masked.
+        keys.press(KeyCode::KeyE);
+        keys.release(KeyCode::KeyW);
+        assert!(unheld(&keys, &mut seat.held_keys).is_none() && keys.pressed(KeyCode::KeyE));
+    }
+
     /// The spec's C13: getting out works only when landed; B in flight is refused, the mod going off in flight loses the ship.
     #[test]
     fn leaving_works_only_when_landed() {
@@ -824,7 +871,7 @@ mod tests {
             assert!(!boarding_refused(false, mode), "{mode:?}");
         }
         let mut sim = SimTime { jd: 2_460_000.0, rate: 1.0, paused: false };
-        assert!(Seat::boarded(&mut sim).boarding);
+        assert!(Seat::boarded(&mut sim, &ButtonInput::default(), &ButtonInput::default()).boarding);
         // Another mod on in flight: the release's rule loses the ship.
         assert_eq!(exit_rule(Why::Out, false, true, true, false).0, true);
     }
@@ -835,7 +882,7 @@ mod tests {
     #[test]
     fn the_release_frees_the_seat() {
         let mut sim = SimTime { jd: 2_460_000.0, rate: 1000.0, paused: true };
-        let mut seat = Seat::boarded(&mut sim);
+        let mut seat = Seat::boarded(&mut sim, &ButtonInput::default(), &ButtonInput::default());
         assert_eq!((sim.rate, sim.paused), (1.0, false));
         seat.head_look = true;
         seat.look = Vec2::new(0.5, -0.2);
@@ -979,7 +1026,7 @@ mod tests {
         let (l, r) = (head(Side::Left), head(Side::Right));
         assert!(l.turn.x > 0.6 && r.turn.x < -0.6 && l.turn.y < 0.0 && r.turn.y < 0.0 && l.fov_add < 0.0 && r.fov_add < 0.0);
         let mut sim = SimTime { jd: 2_460_000.0, rate: 1.0, paused: false };
-        let mut seat = Seat::boarded(&mut sim);
+        let mut seat = Seat::boarded(&mut sim, &ButtonInput::default(), &ButtonInput::default());
         seat.head = l;
         panels.update(&one, None);
         free_seat(&mut seat, &mut sim, &mut ModControl::default(), &mut Pilot::default(), &mut panels);

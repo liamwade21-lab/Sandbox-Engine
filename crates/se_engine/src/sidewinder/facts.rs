@@ -88,6 +88,8 @@ pub struct ShipFacts {
     pub silent: bool,
     pub destroyed: bool,
     pub hardpoints: bool,
+    /// The cargo scoop deployed (`Pilot::scoop`): the cargo hatch's machine lowers its doors as the scoop.
+    pub scoop: bool,
     pub landed: bool,
     /// The gear's command (Elite's request byte +0xBB): the pilot's, a test's `sw pose`, and down while nobody sits in it.
     pub gear_down: bool,
@@ -151,6 +153,8 @@ impl ShipFacts {
             silent: pilot.silent,
             destroyed: pilot.destroyed,
             hardpoints: pilot.weapons.deployed,
+            // (As the gear's command: nobody seated, the scoop is in and the hatch closes; boarding starts the switch afresh.)
+            scoop: seated && pilot.scoop,
             landed: pilot.landed,
             gear_down: prev.dev_gear.unwrap_or(!seated || pilot.gear_down),
             canopy_intact: pilot.life.canopy,

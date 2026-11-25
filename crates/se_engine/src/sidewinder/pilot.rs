@@ -486,6 +486,10 @@ pub struct Pilot {
     /// animated (`facts::ShipFacts::settle`). Cleared at the start of every frame's flight.
     pub put: bool,
     pub landed: bool,
+    /// Boarded and not yet flown: the flight's first frame decides whether the ship stands landed or flies from the pose it
+    /// was left in (`stands_landed`), at this velocity (the prop's at the boarding, body frame, m/s). Meanwhile it counts as
+    /// landed but stands in the sandbox's world as nothing (`keep_in_world`).
+    pub boarded: Option<DVec3>,
     /// The mouse's virtual stick (x roll, y pitch), -1..1: it stays where the mouse left it (Elite's default: no decay).
     pub stick: Vec2,
     accum: f64,
@@ -558,6 +562,7 @@ impl Default for Pilot {
             gear_down: true,
             put: false,
             landed: true,
+            boarded: None,
             stick: Vec2::ZERO,
             accum: 0.0,
             ticks: 0,
@@ -684,9 +689,12 @@ impl Pilot {
 
     /// Sitting down in the parked ship: the flight starts afresh, the ship's systems (fuel, shields, hull, heat, pips and
     /// capacitors) are kept, and so is its locked destination (grade E: how Elite plays; a new ship, `fresh_ship`, has none).
-    pub fn boarding(&self) -> Pilot {
-        // (A parked ship is landed on its gear: its command is down, whatever it was when he left.)
+    /// `vel` is the parked ship's own velocity (body frame, m/s: the prop's, if it was moving): whether it stands landed or
+    /// flies from there is the flight's first frame's to decide (`boarded`).
+    pub fn boarding(&self, vel: DVec3) -> Pilot {
+        // (A parked ship's gear command is down, whatever it was when he left.)
         Pilot {
+            boarded: Some(vel),
             fuel: self.fuel,
             shields: self.shields,
             hull: self.hull,
@@ -1196,6 +1204,23 @@ pub fn fly(
     pilot.controls = input;
 
     let gm = se_core::units::G * crate::ship::body_mass(&data, b.obj, b.radius_m);
+    // Boarded: landed only if it stands on its gear by the touchdown's own test; else it flies from the pose it was left in
+    // (hanging frozen in the air, tumbling, tilted), its thrusters from hover thrust as a liftoff starts them, at the velocity
+    // it had. Getting out stays the landed ship's alone: the pilot flies it level and lands it.
+    if let Some(vel) = pilot.boarded.take() {
+        let feet: Vec<f64> = parts.feet(&assets.shape).iter().map(|f| over_ground(b, solid, floor_m, p.pos, p.rot, *f)).collect();
+        let tilt = (p.rot * DVec3::Y).dot(p.pos.normalize()).clamp(-1.0, 1.0).acos().to_degrees();
+        pilot.landed = !giant && stands_landed(gear.deployed(), tilt, &feet, vel.length());
+        if !pilot.landed {
+            pilot.motion = Motion { rot: to_sim_q(p.rot), vel: to_sim_v(vel), last_acc: to_sim_v(hover_acc(p.pos, p.rot, gm)), ..Motion::default() };
+        }
+        info!(
+            "sidewinder: boarded {}: {tilt:.1} degrees of tilt, the feet {:?} m over the ground, {:.2} m/s",
+            if pilot.landed { "landed" } else { "flying (not standing on its gear)" },
+            feet.iter().map(|f| (f * 100.0).round() / 100.0).collect::<Vec<_>>(),
+            vel.length()
+        );
+    }
     let speed_k = pilot.speed_k();
     let (block, full_top) = pilot.block();
     let spec = BoostSpec::sidewinder(block.boost_ramp);
@@ -1627,10 +1652,7 @@ pub fn fly(
                 // (The thrusters start from the thrust that holds the ship against gravity, so the jerk limit (block 0x28) ramps
                 // from hovering: from zero the ship sank back for the 0.4 s the limit takes to reach 1 g. Elite doesn't fly a
                 // landed ship, so how its liftoff starts is not known: E.)
-                let r0 = p.pos.length().max(1.0);
-                let g_ship = p.rot.inverse() * (-(p.pos / r0) * gm / (r0 * r0));
-                let hover = -DVec3::new(g_ship.x, g_ship.y, -g_ship.z);
-                pilot.motion = Motion { rot: to_sim_q(p.rot), last_acc: to_sim_v(hover), ..Motion::default() };
+                pilot.motion = Motion { rot: to_sim_q(p.rot), last_acc: to_sim_v(hover_acc(p.pos, p.rot, gm)), ..Motion::default() };
                 msg.show("Liftoff".to_string());
                 info!("sidewinder: liftoff");
             }
@@ -1724,10 +1746,7 @@ pub fn fly(
         // down on moving legs stands on them and rises as they extend. Touching down needs every leg deployed (the leg's own
         // test, state 2 or 4: 0x1430c94e0).
         let gear_out = gear.deployed();
-        let height = |p: &super::Parked, pt: Vec3| -> f64 {
-            let w = p.pos + p.rot * pt.as_dvec3();
-            w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
-        };
+        let height = |p: &super::Parked, pt: Vec3| over_ground(b, solid, floor_m, p.pos, p.rot, pt);
         let contact = parts.feet(&assets.shape);
         let feet: Vec<f64> = contact.iter().map(|f| height(p, *f)).collect();
         let lowest = assets.shape.belly.iter().map(|q| height(p, *q)).chain(feet.iter().copied()).fold(f64::MAX, f64::min);
@@ -1960,6 +1979,31 @@ fn gear_toggle(landed: bool, down: bool) -> Result<bool, &'static str> {
     }
 }
 
+/// Whether a ship boarded where it stands is landed (the review of ARCHITECTURE.md A11): the touchdown's own test on the
+/// pose as it is (`touchdown`: the gear out, the tilt, the feet's spread, the speed) with its feet on the ground, the highest
+/// of them within the touchdown's spread of it (`feet`: each foot's height over the loaded ground, m). Anything else (hanging
+/// in the air, tilted, on its side, still moving fast) flies from that pose.
+fn stands_landed(gear_out: bool, tilt_deg: f64, feet: &[f64], speed: f64) -> bool {
+    let (low, high) = feet.iter().fold((f64::MAX, f64::MIN), |(l, h), &f| (l.min(f), h.max(f)));
+    !feet.is_empty() && high <= landing::TOUCHDOWN_SPREAD_M && touchdown(gear_out, tilt_deg, high - low, speed).is_none()
+}
+
+/// The thrust that holds the ship against the body's gravity, as the flight's jerk memory takes it (`Motion::last_acc`, ship
+/// space, z back): a liftoff and a ship boarded in the air start their thrusters from it, or the jerk limit lets the ship
+/// sink for the 0.4 s it takes to reach 1 g.
+fn hover_acc(pos: DVec3, rot: DQuat, gm: f64) -> DVec3 {
+    let r0 = pos.length().max(1.0);
+    let g_ship = rot.inverse() * (-(pos / r0) * gm / (r0 * r0));
+    -DVec3::new(g_ship.x, g_ship.y, -g_ship.z)
+}
+
+/// A point of the ship (ship space) over the ground under it, straight down the radial (m): the loaded ground of a solid body
+/// (`solid`), a giant's floor (`floor_m`) otherwise.
+fn over_ground(b: &SystemBody, solid: Option<&Terrain>, floor_m: f64, pos: DVec3, rot: DQuat, pt: Vec3) -> f64 {
+    let w = pos + rot * pt.as_dvec3();
+    w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
+}
+
 fn touchdown(gear_out: bool, tilt_deg: f64, spread_m: f64, speed: f64) -> Option<&'static str> {
     if !gear_out {
         Some("the landing gear isn't down")
@@ -2016,7 +2060,7 @@ mod tests {
         // The destination is the ship's: getting out and boarding again keeps it; a new ship has none.
         for d in [Dest::Body(moon), Dest::System(rigil)] {
             p.lock(d, false);
-            let mut again = p.boarding();
+            let mut again = p.boarding(DVec3::ZERO);
             assert_eq!(again.locked(), Some(d));
             again.fresh_ship();
             assert_eq!(again.locked(), None);
@@ -2122,7 +2166,7 @@ mod tests {
         assert_eq!(pilot.tick_dv.as_slice(), &[Vec3::ZERO]);
         pilot.motion.vel = glam::DVec3::new(0.0, 0.0, -400.0);
         pilot.record_tick(cockpit);
-        let mut boarded = pilot.boarding();
+        let mut boarded = pilot.boarding(DVec3::ZERO);
         boarded.tick_dv.start(2);
         boarded.record_tick(cockpit);
         assert_eq!(boarded.tick_dv.as_slice(), &[Vec3::ZERO]);
@@ -2142,8 +2186,25 @@ mod tests {
         let mut pilot = Pilot::default();
         pilot.gear_down = false;
         pilot.landed = false;
-        let boarded = pilot.boarding();
-        assert!(boarded.gear_down && boarded.landed);
+        let boarded = pilot.boarding(DVec3::ZERO);
+        assert!(boarded.gear_down && boarded.landed && boarded.boarded == Some(DVec3::ZERO));
+    }
+
+    /// Boarding decides landed or flying by the touchdown's own test on the pose as it is (the review of A11): on its gear on
+    /// flat ground it stands landed; hanging 6 m up, tilted past the touchdown's 20 degrees, lying on its side, its gear not
+    /// out or still moving fast, it flies.
+    #[test]
+    fn a_boarded_ship_is_landed_only_standing_on_its_gear() {
+        let on_gear = [0.01, -0.005, 0.02];
+        assert!(stands_landed(true, 1.2, &on_gear, 0.0));
+        assert!(!stands_landed(true, 1.2, &on_gear.map(|h| h + 6.0), 0.0), "6 m up");
+        assert!(!stands_landed(true, 25.0, &on_gear, 0.0), "tilted past the touchdown's limit");
+        // On its side: one foot on the ground, the others metres up, the hull's up 90 degrees off.
+        assert!(!stands_landed(true, 90.0, &[0.0, 4.5, 9.0], 0.0), "on its side");
+        assert!(!stands_landed(true, 9.0, &[0.0, 0.3, 0.9], 0.0), "the feet too uneven");
+        assert!(!stands_landed(false, 1.2, &on_gear, 0.0), "the gear not out");
+        assert!(!stands_landed(true, 1.2, &on_gear, 35.0), "tumbling at 35 m/s");
+        assert!(!stands_landed(true, 1.2, &[], 0.0), "no feet");
     }
 
     /// Elite's touchdown rule on the game's numbers: gear down, tilt at most 20 degrees, the feet within 0.5 m of each other,

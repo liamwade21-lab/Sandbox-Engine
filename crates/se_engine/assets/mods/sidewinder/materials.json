@@ -82,6 +82,2057 @@
         }
       ]
     },
+    "cargoguidancemarkers": {
+      "shader": "LEDSign_NearFade_EmissiveRescaling",
+      "textures": [
+        {
+          "slot": "pImageMapTexture",
+          "kind": "tex",
+          "texture": "cargoguidancemarkers.pimagemaptexture",
+          "file": "tex/cargoguidancemarkers__pimagemaptexture.dds",
+          "srgb": false,
+          "format": "BC1"
+        },
+        {
+          "slot": "pLEDAlphaMapTexture",
+          "kind": "tex",
+          "texture": "cargoguidancemarkers.pledalphamaptexture",
+          "file": "tex/cargoguidancemarkers__pledalphamaptexture.dds",
+          "srgb": false,
+          "format": "BC1"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "pAlphaFunc",
+          "type": 5,
+          "values": [
+            7.0
+          ]
+        },
+        {
+          "name": "pAlphaRef",
+          "type": 5,
+          "values": [
+            127.0
+          ]
+        },
+        {
+          "name": "pAlphaTestEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pBaseAlpha",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pBlendEnable",
+          "type": 6,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pClipVertices",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pCullMode",
+          "type": 5,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pDepthWriteMask",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDestBlend",
+          "type": 5,
+          "values": [
+            5.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pLEDBrightness",
+          "type": 0,
+          "values": [
+            1000.0
+          ]
+        },
+        {
+          "name": "pLEDCount",
+          "type": 1,
+          "values": [
+            59.2,
+            4.0
+          ]
+        },
+        {
+          "name": "pNearFadeRange",
+          "type": 0,
+          "values": [
+            100.0
+          ]
+        },
+        {
+          "name": "pNearFadeZeroAlphaDistance",
+          "type": 0,
+          "values": [
+            5.0
+          ]
+        },
+        {
+          "name": "pRenderLayer",
+          "type": 5,
+          "values": [
+            16.0
+          ]
+        },
+        {
+          "name": "pSrcBlend",
+          "type": 5,
+          "values": [
+            4.0
+          ]
+        },
+        {
+          "name": "pUVScrollSpeedHorizontal",
+          "type": 0,
+          "values": [
+            0.6
+          ]
+        },
+        {
+          "name": "pUVScrollSpeedVertical",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        }
+      ]
+    },
+    "cargoguidancemarkers_fade": {
+      "shader": "LEDSign_NearFarFade_EmissiveRescaling",
+      "textures": [
+        {
+          "slot": "pImageMapTexture",
+          "kind": "tex",
+          "texture": "cargoguidancemarkers_fade.pimagemaptexture",
+          "file": "tex/cargoguidancemarkers_fade__pimagemaptexture.dds",
+          "srgb": false,
+          "format": "BC1"
+        },
+        {
+          "slot": "pLEDAlphaMapTexture",
+          "kind": "tex",
+          "texture": "cargoguidancemarkers_fade.pledalphamaptexture",
+          "file": "tex/cargoguidancemarkers_fade__pledalphamaptexture.dds",
+          "srgb": false,
+          "format": "BC1"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "pAlphaFunc",
+          "type": 5,
+          "values": [
+            7.0
+          ]
+        },
+        {
+          "name": "pAlphaRef",
+          "type": 5,
+          "values": [
+            127.0
+          ]
+        },
+        {
+          "name": "pAlphaTestEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pBaseAlpha",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pBlendEnable",
+          "type": 6,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pClipVertices",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pCullMode",
+          "type": 5,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pDepthWriteMask",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDestBlend",
+          "type": 5,
+          "values": [
+            5.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "name": "pFarFadeRange",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pFarFadeStart",
+          "type": 0,
+          "values": [
+            1000000.0
+          ]
+        },
+        {
+          "name": "pLEDBrightness",
+          "type": 0,
+          "values": [
+            30.0
+          ]
+        },
+        {
+          "name": "pLEDCount",
+          "type": 1,
+          "values": [
+            256.0,
+            256.0
+          ]
+        },
+        {
+          "name": "pNearFadeRange",
+          "type": 0,
+          "values": [
+            100.0
+          ]
+        },
+        {
+          "name": "pNearFadeStart",
+          "type": 0,
+          "values": [
+            5.0
+          ]
+        },
+        {
+          "name": "pRenderLayer",
+          "type": 5,
+          "values": [
+            16.0
+          ]
+        },
+        {
+          "name": "pSrcBlend",
+          "type": 5,
+          "values": [
+            4.0
+          ]
+        },
+        {
+          "name": "pUVScrollSpeedHorizontal",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pUVScrollSpeedVertical",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        }
+      ]
+    },
+    "cb_blackenedsteelcoated": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_DetailMaps",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "blackenedsteelcoated.pbasecolour_roughness",
+          "file": "tex/blackenedsteelcoated__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaldetailmap",
+          "file": "tex/blackenedsteel__pnormaldetailmap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaltexture",
+          "file": "tex/blackenedsteel__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pRoughnessDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.proughnessdetailmap",
+          "file": "tex/blackenedsteel__proughnessdetailmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pBaseColourDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_blackenedsteelcoated_black": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_DetailMaps",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "blackenedsteelcoated.pbasecolour_roughness",
+          "file": "tex/blackenedsteelcoated__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaldetailmap",
+          "file": "tex/blackenedsteel__pnormaldetailmap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaltexture",
+          "file": "tex/blackenedsteel__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pRoughnessDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.proughnessdetailmap",
+          "file": "tex/blackenedsteel__proughnessdetailmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pBaseColourDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            0.2189,
+            0.2189,
+            0.2189,
+            1.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_blackenedsteelcoated_green": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_DetailMaps",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "blackenedsteelcoated.pbasecolour_roughness",
+          "file": "tex/blackenedsteelcoated__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaldetailmap",
+          "file": "tex/blackenedsteel__pnormaldetailmap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "blackenedsteel.pnormaltexture",
+          "file": "tex/blackenedsteel__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pRoughnessDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.proughnessdetailmap",
+          "file": "tex/blackenedsteel__proughnessdetailmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pBaseColourDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            0.2704,
+            0.2655,
+            0.216,
+            1.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_edgetrim01": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_Emissive",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "edgetrim01.pbasecolour_roughness",
+          "file": "tex/edgetrim01__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pEmissiveTexture",
+          "kind": "dt7",
+          "colour": [
+            [
+              255,
+              255,
+              255,
+              255
+            ],
+            [
+              255,
+              255,
+              255,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "tex",
+          "texture": "edgetrim01.pmetalnessmap",
+          "file": "tex/edgetrim01__pmetalnessmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "edgetrim01.pnormaltexture",
+          "file": "tex/edgetrim01__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveColour",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVClamps",
+          "type": 1,
+          "values": [
+            -20.0,
+            20.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnableClamping",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveScale",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pUVScaleOffset",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_exteriordirtandscratches01": {
+      "shader": "Metalness_Roughness_AlphaDeferred_Overlay",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "exteriordirtandscratches01.pbasecolour_roughness",
+          "file": "tex/exteriordirtandscratches01__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessAlphaMap",
+          "kind": "tex",
+          "texture": "exteriordirtandscratches01.pmetalnessalphamap",
+          "file": "tex/exteriordirtandscratches01__pmetalnessalphamap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "dt7",
+          "colour": [
+            [
+              127,
+              127,
+              0,
+              127
+            ],
+            [
+              127,
+              127,
+              0,
+              255
+            ]
+          ]
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pDepthBias",
+          "type": 3,
+          "values": [
+            -6513.292,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_genericdecals01": {
+      "shader": "Metalness_Roughness_AlphaDeferred_Overlay",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "genericdecals01.pbasecolour_roughness",
+          "file": "tex/genericdecals01__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessAlphaMap",
+          "kind": "tex",
+          "texture": "genericdecals01.pmetalnessalphamap",
+          "file": "tex/genericdecals01__pmetalnessalphamap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "dt7",
+          "colour": [
+            [
+              127,
+              127,
+              0,
+              127
+            ],
+            [
+              127,
+              127,
+              0,
+              255
+            ]
+          ]
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pDepthBias",
+          "type": 3,
+          "values": [
+            -6513.292,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_genericgrecals01": {
+      "shader": "DetailStamp_NormalAO",
+      "textures": [
+        {
+          "slot": "pAOMap",
+          "kind": "tex",
+          "texture": "genericgrecals01.paomap",
+          "file": "tex/genericgrecals01__paomap.dds",
+          "srgb": false,
+          "format": "BC4"
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "tex",
+          "texture": "genericgrecals01.pnormaldetailmap",
+          "file": "tex/genericgrecals01__pnormaldetailmap.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDepthBias",
+          "type": 3,
+          "values": [
+            -6513.292,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_metalstainlesssteel01": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_DetailMaps",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "metalstainlesssteel01.pbasecolour_roughness",
+          "file": "tex/metalstainlesssteel01__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.pmetalnessmap",
+          "file": "tex/blackenedsteel__pmetalnessmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              127,
+              127,
+              0,
+              127
+            ],
+            [
+              127,
+              127,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "metalstainlesssteel01.pnormaltexture",
+          "file": "tex/metalstainlesssteel01__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pRoughnessDetailMap",
+          "kind": "tex",
+          "texture": "metalaluminiumcoated.proughnessdetailmap",
+          "file": "tex/metalaluminiumcoated__proughnessdetailmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pBaseColourDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            0.8087,
+            0.8087,
+            0.8087,
+            1.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_rubberfloor": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "rubberfloor.pbasecolour_roughness",
+          "file": "tex/rubberfloor__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "rubberfloor.pnormaltexture",
+          "file": "tex/rubberfloor__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            1.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cb_stainlesssteelcoated": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_BaseColourOverride_DetailMaps",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "exteriorstainlesssteelcoated.pbasecolour_roughness",
+          "file": "tex/exteriorstainlesssteelcoated__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalDetailMap",
+          "kind": "tex",
+          "texture": "exteriorstainlesssteelcoated.pnormaldetailmap",
+          "file": "tex/exteriorstainlesssteelcoated__pnormaldetailmap.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "exteriorstainlesssteelcoated.pnormaltexture",
+          "file": "tex/exteriorstainlesssteelcoated__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        },
+        {
+          "slot": "pRoughnessDetailMap",
+          "kind": "tex",
+          "texture": "blackenedsteel.proughnessdetailmap",
+          "file": "tex/blackenedsteel__proughnessdetailmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pBaseColourDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pMaterialModulationSlot",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pNormalDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pOverrideBaseColour",
+          "type": 3,
+          "values": [
+            0.1,
+            0.1,
+            0.1,
+            1.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapStrength",
+          "type": 0,
+          "values": [
+            1.0
+          ]
+        },
+        {
+          "name": "pRoughnessDetailMapUVScale",
+          "type": 1,
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "cdinterior": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_Emissive",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "cdinterior.pbasecolour_roughness",
+          "file": "tex/cdinterior__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pEmissiveTexture",
+          "kind": "tex",
+          "texture": "cdinterior.pemissivetexture",
+          "file": "tex/cdinterior__pemissivetexture.dds",
+          "srgb": true,
+          "format": "BC1"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "tex",
+          "texture": "cdinterior.pmetalnessmap",
+          "file": "tex/cdinterior__pmetalnessmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "cdinterior.pnormaltexture",
+          "file": "tex/cdinterior__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pClipVertices",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveColour",
+          "type": 2,
+          "values": [
+            11.95,
+            13.98,
+            18.34
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVClamps",
+          "type": 1,
+          "values": [
+            -20.0,
+            20.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnableClamping",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveScale",
+          "type": 0,
+          "values": [
+            10.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pUVScaleOffset",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "ch_lightdetail": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_Emissive",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "ch_lightdetail.pbasecolour_roughness",
+          "file": "tex/ch_lightdetail__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC1"
+        },
+        {
+          "slot": "pEmissiveTexture",
+          "kind": "tex",
+          "texture": "ch_lightdetail.pemissivetexture",
+          "file": "tex/ch_lightdetail__pemissivetexture.dds",
+          "srgb": true,
+          "format": "BC1"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "dt7",
+          "colour": [
+            [
+              127,
+              127,
+              0,
+              127
+            ],
+            [
+              127,
+              127,
+              0,
+              255
+            ]
+          ]
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pClipVertices",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveColour",
+          "type": 2,
+          "values": [
+            10.0,
+            20.0,
+            50.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVClamps",
+          "type": 1,
+          "values": [
+            -20.0,
+            20.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnableClamping",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveScale",
+          "type": 0,
+          "values": [
+            15.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pUVScaleOffset",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
     "cockpit_chair": {
       "shader": "Metalness_Roughness_CockpitOpaqueDeferred_BaseColourOverride",
       "textures": [
@@ -10442,6 +12493,257 @@
           "type": 0,
           "values": [
             1.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "universalcargodoor": {
+      "shader": "Metalness_Roughness_OpaqueDeferred",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "universalcargodoor.pbasecolour_roughness",
+          "file": "tex/universalcargodoor__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "tex",
+          "texture": "universalcargodoor.pmetalnessmap",
+          "file": "tex/universalcargodoor__pmetalnessmap.dds",
+          "srgb": false,
+          "format": "BC4"
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "universalcargodoor.pnormaltexture",
+          "file": "tex/universalcargodoor__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pVerticalTiling",
+          "type": 0,
+          "values": [
+            0.25
+          ]
+        }
+      ]
+    },
+    "universalcargodooremissive": {
+      "shader": "Metalness_Roughness_OpaqueDeferred_Emissive",
+      "textures": [
+        {
+          "slot": "pBaseColour_Roughness",
+          "kind": "tex",
+          "texture": "universalcargodoor.pbasecolour_roughness",
+          "file": "tex/universalcargodoor__pbasecolour_roughness.dds",
+          "srgb": true,
+          "format": "BC7"
+        },
+        {
+          "slot": "pEmissiveTexture",
+          "kind": "tex",
+          "texture": "universalcargodooremissive.pemissivetexture",
+          "file": "tex/universalcargodooremissive__pemissivetexture.dds",
+          "srgb": true,
+          "format": "BC1"
+        },
+        {
+          "slot": "pMetalnessMap",
+          "kind": "dt7",
+          "colour": [
+            [
+              0,
+              0,
+              0,
+              255
+            ],
+            [
+              0,
+              0,
+              0,
+              255
+            ]
+          ]
+        },
+        {
+          "slot": "pNormalTexture",
+          "kind": "tex",
+          "texture": "universalcargodoor.pnormaltexture",
+          "file": "tex/universalcargodoor__pnormaltexture.dds",
+          "srgb": false,
+          "format": "BC5"
+        }
+      ],
+      "attrs": [
+        {
+          "name": "bfrAtlasModel2DAndWallExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModel3DExtrusionInstanceDataEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "bfrAtlasModelEnableExtrusionProcessing",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "gStandardMapScales",
+          "type": 2,
+          "values": [
+            1.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "pClipVertices",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pDeferredFlags",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveColour",
+          "type": 2,
+          "values": [
+            10.0,
+            20.0,
+            50.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVClamps",
+          "type": 1,
+          "values": [
+            -20.0,
+            20.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEVOffset",
+          "type": 0,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnable",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingEnableClamping",
+          "type": 6,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveRescalingType",
+          "type": 5,
+          "values": [
+            0.0
+          ]
+        },
+        {
+          "name": "pEmissiveScale",
+          "type": 0,
+          "values": [
+            7.0
+          ]
+        },
+        {
+          "name": "pRenderLayerOverride",
+          "type": 5,
+          "values": [
+            4294967295.0
+          ]
+        },
+        {
+          "name": "pUVScaleOffset",
+          "type": 3,
+          "values": [
+            1.0,
+            1.0,
+            0.0,
+            0.0
           ]
         },
         {

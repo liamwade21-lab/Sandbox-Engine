@@ -174,6 +174,12 @@ impl ModControl {
         self.main_menu || self.walker || self.pilot || self.spawn_menu || (self.hero && !self.loading && !self.menus_open())
     }
 
+    /// The sandbox's undo (Z) or its "Clean up everything" takes the parked Sidewinder away: the same removal its Mods row
+    /// asks for (`sidewinder/mod.rs` does it; ARCHITECTURE.md A11).
+    pub fn remove_ship(&mut self) {
+        self.ship_request = Some(crate::sidewinder::ShipRequest::Remove);
+    }
+
     /// Into the Sidewinder's seat: it becomes the mod that is on (any other goes off). The one way on that isn't a row's
     /// click: its row spawns a ship, E at the ship boards it (`sidewinder/seat.rs`).
     pub(crate) fn board(&mut self, reg: &ModRegistry, id: &str) {

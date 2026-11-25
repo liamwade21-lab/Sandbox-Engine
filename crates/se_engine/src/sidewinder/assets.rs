@@ -13,7 +13,8 @@
 //!
 //! Where things hang (the ship item's facts, `ship.json` `item`): the gear rigs at the hull rig's `LandingGearRoot` bones;
 //! the cockpit rig at the hull's `!Cockpit` bone (`COCKPIT_BONE`); the two chairs at the item's two seat bones
-//! (`Sidewinder!Pilot_Chair`, `Sidewinder_Cockpit!Pilot_Chair`), paired with its two chair models in order.
+//! (`Sidewinder!Pilot_Chair`, `Sidewinder_Cockpit!Pilot_Chair`), paired with its two chair models in order; the cargo hatch's
+//! rig at the hull's `!CargoBayDoor` (`CARGO_HATCH_RIG`: the item's record, a constant).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use bevy::prelude::*;
 use se_core::elite::{to_mod_space, DecodedVertex};
 use se_core::elite_asset::{parse_edm, Binds, Edm, VertexDecode};
 use se_core::elite_rig::{self, BoneTable, NodePose, RigError, Values};
-use se_core::elite_ship::{parse_materials, parse_ship, Machine, Materials, Paint, Rig, Ship};
+use se_core::elite_ship::{parse_materials, parse_ship, Activity, Machine, Materials, Paint, Rig, Ship};
 
 use super::material::{self, Family, ATTRIBUTE_BONE, ATTRIBUTE_COLOUR, ATTRIBUTE_UV_2};
 
@@ -41,6 +42,12 @@ const COCKPIT_RIG_FILE: &str = "cockpit";
 /// glows and bespoke parts), which lands within 4 cm of the hull's from this bone (18 cm, had the cockpit's seat bone been put on the hull's) (the ignored test
 /// `the_cockpit_fits_the_hull`).
 const COCKPIT_BONE: &str = "!Cockpit";
+/// The cargo hatch: the ship item's slot `CargoHatch` fits `ModularCargoBayDoor` at `SideWinder!CargoBayDoor` (item 201ee494,
+/// the Sidewinder item record's bytes +0x1c0..+0x210, as decoded in the research notes; grade A). The item's record is not in the decoded
+/// export, so these are constants (as `machines::GEAR_DOORS`): the rig of that name (the export's `cargo_hatch`), hung at
+/// that bone of the hull rig's root node. Its doors close the hole the hull's model leaves in the belly round that bone.
+pub const CARGO_HATCH_RIG: &str = "ModularCargoBayDoor";
+const CARGO_HATCH_BONE: &str = "!CargoBayDoor";
 /// The gear legs' machines' states (`LandingGearCSM`) and the hull's gear doors' (`LandingGearDoors*`).
 const LEG_DOWN: &str = "Down";
 const LEG_UP: &str = "Up";
@@ -121,6 +128,8 @@ pub enum Group {
     OutsideChair,
     /// The chair seen seated (`cockpit_chair`, at the cockpit's seat bone).
     InsideChair,
+    /// The cargo hatch's rig (`CARGO_HATCH_RIG`, at the hull's `CARGO_HATCH_BONE`): part of the outside, as the hull.
+    Hatch,
 }
 
 impl Group {
@@ -136,6 +145,8 @@ pub enum MachineOwner {
     Hull,
     Gear,
     Cockpit,
+    /// The cargo hatch's (`CARGO_HATCH_RIG`).
+    Hatch,
     /// Another file's (the cockpit tutorial's).
     Other,
 }
@@ -185,6 +196,7 @@ pub struct ShipRig {
     /// Indices in `ship.rigs`.
     hull: usize,
     cockpit: usize,
+    hatch: usize,
     gear: Vec<Hang>,
     /// The hull's seat (the outside chair's) and the cockpit's (the inside chair's).
     hull_seat: Seat,
@@ -204,7 +216,7 @@ struct Placed<'a> {
 
 impl ShipRig {
     /// Every node posed with `values`, in Elite's model space, in the nodes' order: the hull rig's, each gear rig's, the
-    /// cockpit rig's, then the two chairs.
+    /// cockpit rig's, the two chairs, then the cargo hatch's rig (last, so every earlier node keeps its index).
     fn walk(&self, values: &Values) -> Result<Vec<Placed<'_>>, RigError> {
         let rigs = &self.ship.rigs;
         let hull = elite_rig::pose(&rigs[self.hull].root, &self.bones, values, DMat4::IDENTITY)?;
@@ -217,6 +229,8 @@ impl ShipRig {
         let base = elite_rig::attach_base(&hull, &self.bones, &rigs[self.hull].root.name, COCKPIT_BONE)?;
         let cockpit = elite_rig::pose(&rigs[self.cockpit].root, &self.bones, values, base)?;
         let cockpit_seat = elite_rig::attach_base(&cockpit, &self.bones, &self.cockpit_seat.node, &self.cockpit_seat.bone)?;
+        let base = elite_rig::attach_base(&hull, &self.bones, &rigs[self.hull].root.name, CARGO_HATCH_BONE)?;
+        let hatch = elite_rig::pose(&rigs[self.hatch].root, &self.bones, values, base)?;
         fn placed<'a, 'p>(poses: &'p [NodePose<'a>], group: Group) -> impl Iterator<Item = Placed<'a>> + 'p {
             poses.iter().map(move |p| Placed { name: p.node.name.as_str(), model: p.node.model.as_deref(), group, world: p.world })
         }
@@ -227,6 +241,7 @@ impl ShipRig {
         out.extend(placed(&cockpit, Group::Cockpit));
         out.push(Placed { name: &self.hull_seat.chair, model: Some(&self.hull_seat.chair), group: Group::OutsideChair, world: hull_seat });
         out.push(Placed { name: &self.cockpit_seat.chair, model: Some(&self.cockpit_seat.chair), group: Group::InsideChair, world: cockpit_seat });
+        out.extend(placed(&hatch, Group::Hatch));
         Ok(out)
     }
 
@@ -235,7 +250,8 @@ impl ShipRig {
         Ok(self.walk(values)?.iter().map(|p| self.space.matrix(p.world)).collect())
     }
 
-    /// Whose machine `ship.machines[i]` is: the hull rig's, a gear rig's or the cockpit rig's (by its owner and file).
+    /// Whose machine `ship.machines[i]` is: the hull rig's, a gear rig's, the cockpit rig's or the cargo hatch's (by its
+    /// owner and file).
     pub fn machine_owner(&self, i: usize) -> MachineOwner {
         let Some(m) = self.ship.machines.get(i) else { return MachineOwner::Other };
         let of = |rig: usize| self.ship.rigs.get(rig).is_some_and(|r| r.name.eq_ignore_ascii_case(&m.owner) && r.file == m.file);
@@ -245,6 +261,8 @@ impl ShipRig {
             MachineOwner::Cockpit
         } else if self.gear.iter().any(|g| of(g.rig)) {
             MachineOwner::Gear
+        } else if of(self.hatch) {
+            MachineOwner::Hatch
         } else {
             MachineOwner::Other
         }
@@ -257,6 +275,7 @@ impl ShipRig {
             MachineOwner::Hull => Some(Group::Hull),
             MachineOwner::Cockpit => Some(Group::Cockpit),
             MachineOwner::Gear => self.gear.iter().position(|g| self.ship.rigs[g.rig].name.eq_ignore_ascii_case(&m.owner)).map(Group::Gear),
+            MachineOwner::Hatch => Some(Group::Hatch),
             MachineOwner::Other => None,
         }
     }
@@ -332,6 +351,26 @@ impl ShipRig {
             }
         }
         v
+    }
+
+    /// The nodes (`nodes`' order) the machines' initial states hide: each `KModelState` of those states with `visible` 0 (as
+    /// `parts.rs` runs them when a ship is made; the cargo hatch's `DoorsClosed` hides its guidance hologram `GUI_Guide`,
+    /// which hangs metres below the hull). The still shape leaves them out.
+    fn hidden_at_rest(&self) -> Vec<bool> {
+        let mut hidden = vec![false; self.nodes.len()];
+        for (i, m) in self.ship.machines.iter().enumerate() {
+            for a in m.state(&m.initial).into_iter().flat_map(|s| &s.activities) {
+                let Activity::Other(o) = a else { continue };
+                if a.type_name() != "KModelState" || o.fields.get("visible").and_then(|v| v.as_u64()) != Some(0) {
+                    continue;
+                }
+                let names = o.fields.get("node_names").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str());
+                for n in names.filter_map(|n| self.machine_node(i, n)) {
+                    hidden[n] = true;
+                }
+            }
+        }
+        hidden
     }
 }
 
@@ -464,6 +503,7 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
     let root_is = |r: &Rig, model: &str| r.root.model.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(model));
     let hull = ship.rigs.iter().position(|r| root_is(r, &item.hull_model)).ok_or_else(|| refuse(format!("no rig hangs the hull {}", item.hull_model)))?;
     let cockpit = ship.rigs.iter().position(|r| r.file == COCKPIT_RIG_FILE && root_is(r, &item.cockpit_model)).ok_or_else(|| refuse(format!("no rig of {COCKPIT_RIG_FILE} hangs the cockpit {}", item.cockpit_model)))?;
+    let hatch = ship.rigs.iter().position(|r| r.name.eq_ignore_ascii_case(CARGO_HATCH_RIG)).ok_or_else(|| refuse(format!("no cargo hatch rig {CARGO_HATCH_RIG}")))?;
     let gear = item
         .gear
         .iter()
@@ -499,6 +539,7 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
         bones: BoneTable::default(),
         hull,
         cockpit,
+        hatch,
         gear,
         hull_seat,
         cockpit_seat,
@@ -507,7 +548,7 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
     };
     // Every model the rigs hang and the chairs, read once (each one's bones go in the table, drawn or not: a node hangs
     // from its parent's bones).
-    let mut wanted: Vec<String> = rig.ship.rigs.iter().enumerate().filter(|(i, _)| *i == hull || *i == cockpit || rig.gear.iter().any(|g| g.rig == *i)).flat_map(|(_, r)| r.root.walk()).filter_map(|n| n.model.clone()).collect();
+    let mut wanted: Vec<String> = rig.ship.rigs.iter().enumerate().filter(|(i, _)| *i == hull || *i == cockpit || *i == hatch || rig.gear.iter().any(|g| g.rig == *i)).flat_map(|(_, r)| r.root.walk()).filter_map(|n| n.model.clone()).collect();
     wanted.extend([rig.hull_seat.chair.clone(), rig.cockpit_seat.chair.clone()]);
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut decoded = Vec::new();
@@ -543,9 +584,10 @@ fn assemble(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, ship: Ship, material
 }
 
 /// Every outside node's drawn vertices in the ship's space with the matrices `pose` (`nodes`' order), with the node and its
-/// group.
+/// group; not the nodes the machines hide at rest (`ShipRig::hidden_at_rest`).
 fn outside_points<'a>(rig: &'a ShipRig, decoded: &'a [Vec<Decoded>], pose: &'a [Mat4]) -> impl Iterator<Item = (usize, Group, Vec<Vec3>)> + 'a {
-    rig.nodes.iter().zip(pose).enumerate().filter(|(_, (n, _))| !n.group.inside()).filter_map(|(i, (n, m))| Some((i, n.group, n.model?, *m))).flat_map(move |(i, group, model, m)| {
+    let hidden = rig.hidden_at_rest();
+    rig.nodes.iter().zip(pose).enumerate().filter(move |(i, (n, _))| !n.group.inside() && !hidden[*i]).filter_map(|(i, (n, m))| Some((i, n.group, n.model?, *m))).flat_map(move |(i, group, model, m)| {
         decoded[model].iter().filter(|d| d.solid).map(move |d| (i, group, d.vertices.iter().map(|v| m.transform_point3(Vec3::from_array(v.position))).collect()))
     })
 }
@@ -600,18 +642,19 @@ fn shape(rig: &mut ShipRig, decoded: &[Vec<Decoded>]) -> Result<ShipShape, Fault
         .map(|(foot, &(node, _))| down.get(node).map(|m| (node, m.inverse().transform_point3(*foot))))
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| (SHIP_FILE.to_string(), "a landing gear leg has nothing drawn to stand on".to_string()))?;
-    // The belly: the hull's lowest point (not the gear's) in each cell of a 3 x 3 grid over the plan, the gear up.
+    // The belly: the hull's lowest point (not the gear's) in each cell of a 3 x 3 grid over the plan, the gear up; the
+    // cargo hatch closed is part of it (its frame stands under the hull's belly).
     let up = rig.pose(&rig.static_pose(false)).map_err(refuse)?;
     let mut cells: [Option<Vec3>; 9] = [None; 9];
     let size = (hi - lo).max(Vec3::splat(1e-3));
-    let hull_up: Vec<Vec3> = outside_points(rig, decoded, &up).filter(|(_, g, _)| *g == Group::Hull).flat_map(|(_, _, pts)| pts).collect();
+    let hull_up: Vec<Vec3> = outside_points(rig, decoded, &up).filter(|(_, g, _)| matches!(g, Group::Hull | Group::Hatch)).flat_map(|(_, _, pts)| pts).collect();
     for &p in &hull_up {
         let i = (((p.x - lo.x) / size.x * 3.0) as usize).min(2) + 3 * (((p.z - lo.z) / size.z * 3.0) as usize).min(2);
         if cells[i].is_none_or(|c| p.y < c.y) {
             cells[i] = Some(p);
         }
     }
-    // (The drag: the hull rig's vertices with the gear up, its doors closed.)
+    // (The drag: the hull rig's and the closed cargo hatch's vertices with the gear up, its doors closed.)
     let drag_hull = convex_shell(&hull_up).ok_or_else(|| (SHIP_FILE.to_string(), "the hull has no volume to meet the air with".to_string()))?;
     Ok(ShipShape { hulls, lo, hi, feet, foot_nodes, belly: cells.into_iter().flatten().collect(), drag_hull })
 }

@@ -33,6 +33,9 @@ pub(super) const RIGS: &[(&str, Option<&str>)] = &[
     ("gear_right", None),
     ("cockpit", Some("sidewinder_cockpit")),
     ("cockpit_tutorial", None),
+    // The cargo hatch the ship item fits at the hull's `!CargoBayDoor` (`assets::CARGO_HATCH_RIG`): Elite's
+    // ModularCargoBayDoor (export file 133cf76f, the decoded export's README, "The cargo hatch").
+    ("cargo_hatch", None),
 ];
 /// `SOURCES.txt`'s line on what is left out on purpose.
 pub(super) const NOT_SHIPPED: &str = "Not shipped: the pg_sidewinder_extendedengine drive bolt-ons (the export's \

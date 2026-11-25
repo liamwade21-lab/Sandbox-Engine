@@ -251,6 +251,16 @@ pub struct Prop {
     pub radius: f32,
 }
 
+impl Prop {
+    /// Where it is drawn `t` (0..1, `Sandbox::tick_fraction`) of the way from its last tick's pose to this tick's.
+    pub fn between(&self, t: f32) -> Pose {
+        // (At rest exactly where it rests: between two equal poses a lerp or a slerp comes out a few bits off them, by `t`.)
+        let pos = if self.prev.pos == self.now.pos { self.now.pos } else { self.prev.pos.lerp(self.now.pos, t) };
+        let rot = if self.prev.rot == self.now.rot { self.now.rot } else { self.prev.rot.slerp(self.now.rot, t) };
+        Pose { pos, rot }
+    }
+}
+
 /// A prop hit something hard enough to hear.
 #[derive(Clone, Copy, Debug)]
 pub struct Impact {
@@ -289,6 +299,9 @@ pub struct HullHit {
 }
 
 pub struct SandboxWorld {
+    /// Which world this is: one made again (for another body, or after the last was dropped) has another, so what was put
+    /// in an earlier world (its prop ids start again at 1) is known not to be in this one.
+    pub id: u32,
     pub frame: LocalFrame,
     world: PhysicsWorld,
     terrain: Option<(ColliderHandle, TerrainGrid)>,
@@ -308,6 +321,8 @@ pub struct SandboxWorld {
 
 /// Where each new world's `solids_cleared` starts (a million counts apart).
 static WORLD_COUNTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The next world's `id`.
+static WORLD_IDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 impl SandboxWorld {
     pub fn new(frame: LocalFrame, dt: f32) -> Self {
@@ -320,6 +335,7 @@ impl SandboxWorld {
             ColliderBuilder::cuboid(0.3, 0.3, 0.68).collision_groups(groups(G_PLAYER, G_PROP)).friction(0.0),
         );
         SandboxWorld {
+            id: WORLD_IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             frame,
             world,
             terrain: None,
@@ -611,6 +627,48 @@ impl SandboxWorld {
     pub fn motion(&self, id: u32) -> Option<(Vec3, Vec3)> {
         let b = self.body(id)?;
         Some((b.center_of_mass(), b.linvel()))
+    }
+
+    /// Whether the physics has put a prop to sleep (it rests until something wakes it).
+    pub fn sleeping(&self, id: u32) -> bool {
+        self.body(id).is_some_and(|b| b.is_sleeping())
+    }
+
+    /// Keep a prop from sleeping (`true`), or let the physics put it to sleep by its own rule again (`false`). Rapier lets a
+    /// body sleep once its farthest point has moved under 0.05 m/s for half a second: a big, heavy prop coming down slowly
+    /// onto its feet (the parked Sidewinder: 45 t, 21 m across) passes that while it is still tipping, and would sleep on two
+    /// feet with the third in the air. Its owner keeps it awake only until it rests (`sidewinder::keep_in_world`).
+    pub fn set_keep_awake(&mut self, id: u32, awake: bool) {
+        let Some(b) = self.body_mut(id) else { return };
+        let a = b.activation_mut();
+        let (lin, ang) = if awake { (-1.0, -1.0) } else { (RigidBodyActivation::default_normalized_linear_threshold(), RigidBodyActivation::default_angular_threshold()) };
+        if a.normalized_linear_threshold != lin {
+            a.normalized_linear_threshold = lin;
+            a.angular_threshold = ang;
+            if awake {
+                b.wake_up(true);
+            }
+        }
+    }
+
+    /// Where a prop touches the ground or a solid piece: the physics' own contact points (each within the engine's contact
+    /// distance, `IntegrationParameters::normalized_prediction_distance`), in the prop's own frame (its pieces stand at its
+    /// origin).
+    pub fn ground_contacts(&self, id: u32) -> Vec<Vec3> {
+        let mut out = Vec::new();
+        let terrain = self.terrain.as_ref().map(|t| t.0);
+        for (&c, _) in self.by_collider.iter().filter(|(_, v)| **v == id) {
+            for pair in self.world.narrow_phase.contact_pairs_with(c) {
+                let first = pair.collider1 == c;
+                let other = if first { pair.collider2 } else { pair.collider1 };
+                if Some(other) != terrain && !self.solids.contains_key(&other) {
+                    continue;
+                }
+                let PairContacts::Rigid(r) = &pair.contacts else { continue };
+                out.extend(r.manifolds.iter().flat_map(|m| m.points.iter().map(move |p| if first { p.local_p1 } else { p.local_p2 })));
+            }
+        }
+        out
     }
 
     pub fn velocity_at(&self, id: u32, point: Vec3) -> Vec3 {

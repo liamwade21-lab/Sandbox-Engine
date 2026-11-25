@@ -19,6 +19,7 @@
 //! | `JumpEffects` out of `Departing` | made afresh in its initial state (`Idle`) when asked for anything else (`made_afresh`), then asked: the data's Departing states have no transitions, so the arrival goes Idle -> Arriving -> Arrived -> Idle by the data's routes, and a cancelled countdown rests in Idle | ours: the notes say only "Departing has no way out"; how Elite's arriving ship gets its machine was not traced |
 //! | `CockpitState` | `Canopy Breached` once the canopy is broken (through `Breaching`), else `Normal` | exe: FUN_1430c6130 makes the machine in one of the two by the canopy; the live request ours |
 //! | `OperationsMode` | `Dead` destroyed, `Stealth` silent, `Combat` hardpoints out, `Docked` landed, else `Travel` | ours (the states' names) |
+//! | the cargo hatch's `ModularCargoBayDoor` | `CargoScoopLowered` with the cargo scoop deployed, else `DoorsClosed` (the data's route: `LowerCargoScoop`, `RaiseCargoScoop`) | data: the hatch's prototype `CargoHatch` runs this machine, and its states name the scoop; the scoop's switch as the trigger ours (Elite's request not traced) |
 //! | `LandingGearExtension` (and the legs' `ShipRaised`) | nothing: the manager's trigger (FUN_14307e4e0) was not traced | exe shows the requests (FUN_143082320), not when |
 //! | `CockpitHeatState` | nothing: FUN_1434d8f00 switches it when a value crosses the middle of two others, inputs not traced (its one activity is steam) | not traced |
 //! | `DamageEffects`, the two `Audio` | nothing: one state each | the data |
@@ -92,6 +93,7 @@ pub fn wanted<'a>(rig: &'a ShipRig, i: usize, f: &ShipFacts) -> Option<&'a str> 
             (JumpPhase::Arriving, false) => "Arriving",
             (JumpPhase::Arriving, true) => "Arriving_Internal",
         }),
+        (MachineOwner::Hatch, "ModularCargoBayDoor") => Some(if f.scoop { "CargoScoopLowered" } else { "DoorsClosed" }),
         (MachineOwner::Cockpit, "CockpitEffects") => Some(if f.powered { "InFlight" } else { "Emergency" }),
         (MachineOwner::Cockpit, "CockpitState") => Some(if f.canopy_intact { "Normal" } else { "Canopy Breached" }),
         _ => None,
@@ -169,6 +171,11 @@ mod tests {
         let lost = facts[3];
         assert_eq!((wanted(&rig, legs[1], &lost), get(&lost, "OperationsMode", Hull), get(&lost, "CockpitState", Cockpit)), (Some("Up"), Some("Dead"), Some("Canopy Breached")));
         assert_eq!(get(&ShipFacts { jump: JumpPhase::Charging, seated: true, ..parked }, "JumpEffects", Hull), Some("Charging_Internal"));
+        // The cargo hatch: closed, lowered as the scoop when the scoop is out (a state of its own machine).
+        assert_eq!(get(&parked, "ModularCargoBayDoor", MachineOwner::Hatch), Some("DoorsClosed"));
+        let scoop = ShipFacts { scoop: true, ..parked };
+        assert_eq!(get(&scoop, "ModularCargoBayDoor", MachineOwner::Hatch), Some("CargoScoopLowered"));
+        assert!(rig.ship.machines[of("ModularCargoBayDoor", MachineOwner::Hatch)].state("CargoScoopLowered").is_some());
         // Only a Departing state (no way out in the data) is made afresh, and only for another state.
         let jump = of("JumpEffects", Hull);
         assert!(made_afresh(&rig, jump, "Departing_Internal", "Arriving_Internal") && made_afresh(&rig, jump, "Departing", "Idle"));

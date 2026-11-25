@@ -62,10 +62,8 @@ use std::sync::Arc;
 
 use bevy::audio::AddAudioSource;
 use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest};
-use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{futures, AsyncComputeTaskPool, Task};
-use se_core::catalog::ObjectRef;
 use se_core::elite_rig::Event as MachineEvent;
 use se_core::elite_sound::place::LISTENER_AXES;
 use se_core::elite_sound::{curve, Mixer, Output, SoundBank, VoiceUpdate};
@@ -116,8 +114,9 @@ pub struct ShipSound {
     voices: Voices,
     /// Playing (seated): the audio objects exist.
     active: bool,
-    /// The parked pose when the audio last stopped: a different one at the next boarding is a new ship.
-    left_at: Option<(ObjectRef, DVec3)>,
+    /// The parked ship's `Parked::spawn` when the audio last stopped: another at the next boarding is a new ship (the same
+    /// ship moved meanwhile is not).
+    left_with: Option<u32>,
     /// Motion Generator voices: their age (s) and source.
     rumbling: HashMap<u32, (f64, se_core::elite_sound::Id)>,
     rumble_on: bool,
@@ -255,7 +254,7 @@ impl ShipSound {
             triggers: Triggers::default(),
             voices,
             active: false,
-            left_at: None,
+            left_with: None,
             rumbling: HashMap::new(),
             rumble_on: false,
             now: BTreeMap::new(),
@@ -499,7 +498,7 @@ fn drive(
 ) {
     let snd = &mut *snd;
     snd.voices.service(&mut commands);
-    let parked = ship.parked.as_ref().map(|p| (p.obj, p.pos));
+    let parked = ship.parked.as_ref().map(|p| p.spawn);
     let asked = ui_asks.take();
     let ui_log = snd.log || ui::logged();
     if !playing(&seat, &control, &pilot, &ship) {
@@ -507,15 +506,16 @@ fn drive(
             info!("sidewinder sound: {} ui sounds dropped unheard (not seated)", asked.len());
         }
         if snd.active {
-            snd.left_at = parked;
+            snd.left_with = parked;
             snd.stop(&mut commands, &pads, &mut rumble);
         }
         return;
     }
     if !snd.active {
         snd.active = true;
-        if snd.left_at != parked {
+        if snd.left_with != parked {
             snd.triggers.new_ship();
+            info!("sidewinder sound: a new ship (spawn {parked:?}): the hull's once-flags are cleared");
         }
         info!("sidewinder sound: started");
     }

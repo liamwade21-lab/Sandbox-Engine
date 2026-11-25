@@ -6,7 +6,7 @@
 //! the outside chair is a low-detail twin of the cockpit's, so the two sets are never drawn together. From the seat (the
 //! camera at the pilot's eye this frame, `Seat::view`) only the cockpit rig's models and its chair, in the seat's depth
 //! slice (`material::SEAT_SLICE`); from anywhere else (parked, walking round it, the free camera) only the hull rig's, the
-//! gear rigs' and the outside chair; a node the state machines hide (`Parts::shown`: the `KModelState` activities, the
+//! gear rigs', the cargo hatch's and the outside chair; a node the state machines hide (`Parts::shown`: the `KModelState` activities, the
 //! windscreen once breached, its broken twin while whole) in neither. Made once, the first time the files are read; never
 //! changed after. The seat's chair moves by its vertices' bones: its meshes carry them and its materials are skinned ones
 //! (`ShipMaterial::skinned`), posed by the pilot chair's palette (`ShipPalette`, written in place from `chair::ChairPose`
@@ -98,7 +98,7 @@ pub fn build(app: &mut App) {
             .chain()
             .run_if(resource_exists::<SidewinderAssets>)
             .after(crate::universe::UniverseSet::Camera)
-            .after(super::keep_solid)
+            .after(super::keep_in_world)
             .after(crate::terrain::update_node_transforms)
             .before(crate::universe::UniverseSet::FloatingOrigin)
             .before(bevy::camera::CameraUpdateSystems),
@@ -358,7 +358,8 @@ mod tests {
     }
 
     /// The mod's ship (its shipped files, in git): every drawn node is in exactly one of the two sets; the seat's set is
-    /// the cockpit rig's models and `cockpit_chair`, the outside set the hull rig's, the gear rigs' and `ext_cockpit_chair`.
+    /// the cockpit rig's models and `cockpit_chair`, the outside set the hull rig's, the gear rigs', the cargo hatch's and
+    /// `ext_cockpit_chair`.
     #[test]
     fn the_sets_split_every_drawn_node() {
         let read = |rel: &str| std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/mods/sidewinder").join(rel)).map_err(|e| e.to_string());
@@ -367,12 +368,12 @@ mod tests {
         let (seat, outside): (Vec<&&assets::ShipNode>, Vec<&&assets::ShipNode>) = drawn.iter().partition(|n| n.group.inside());
         assert_eq!(seat.len() + outside.len(), drawn.len());
         assert!(seat.iter().all(|n| matches!(n.group, Group::Cockpit | Group::InsideChair)));
-        assert!(outside.iter().all(|n| matches!(n.group, Group::Hull | Group::Gear(_) | Group::OutsideChair)));
+        assert!(outside.iter().all(|n| matches!(n.group, Group::Hull | Group::Gear(_) | Group::OutsideChair | Group::Hatch)));
         let names = |set: &[&&assets::ShipNode]| set.iter().map(|n| n.name.to_lowercase()).collect::<Vec<_>>();
         let (seat_names, outside_names) = (names(&seat), names(&outside));
         assert!(seat_names.iter().any(|n| n == "cockpit_chair") && !seat_names.iter().any(|n| n == "ext_cockpit_chair"), "{seat_names:?}");
         assert!(outside_names.iter().any(|n| n == "ext_cockpit_chair") && !outside_names.iter().any(|n| n == "cockpit_chair"), "{outside_names:?}");
-        for g in [Group::Hull, Group::Gear(0), Group::Cockpit] {
+        for g in [Group::Hull, Group::Gear(0), Group::Cockpit, Group::Hatch] {
             assert!(drawn.iter().any(|n| std::mem::discriminant(&n.group) == std::mem::discriminant(&g)), "nothing drawn of {g:?}");
         }
         println!("{} drawn nodes: {} in the seat's set, {} outside", drawn.len(), seat.len(), outside.len());
