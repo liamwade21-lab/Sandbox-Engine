@@ -1999,7 +1999,7 @@ fn hover_acc(pos: DVec3, rot: DQuat, gm: f64) -> DVec3 {
 
 /// A point of the ship (ship space) over the ground under it, straight down the radial (m): the loaded ground of a solid body
 /// (`solid`), a giant's floor (`floor_m`) otherwise.
-fn over_ground(b: &SystemBody, solid: Option<&Terrain>, floor_m: f64, pos: DVec3, rot: DQuat, pt: Vec3) -> f64 {
+pub(super) fn over_ground(b: &SystemBody, solid: Option<&Terrain>, floor_m: f64, pos: DVec3, rot: DQuat, pt: Vec3) -> f64 {
     let w = pos + rot * pt.as_dvec3();
     w.length() - (crate::ship::ground_on(b.radius_m, b.shape, solid, w).0 + floor_m)
 }

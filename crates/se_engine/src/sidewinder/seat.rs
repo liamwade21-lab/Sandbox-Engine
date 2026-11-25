@@ -1,6 +1,8 @@
 //! Getting in and out of the Sidewinder and sitting in it (the spec's F2, step 1.3): E at the parked ship boards it, the camera
-//! sits at the pilot's eyes with Elite's head look on the middle button, and B (landed only, the spec's D8) sets him down
-//! beside it. Both cuts, into the seat and out of it, come up from black over `FADE_S` real seconds (ours, F: Elite's own
+//! sits at the pilot's eyes with Elite's head look on the middle button, and B gets him out: landed or within reach of the
+//! ground, beside it; anywhere else the ship is gone and he is in the free flight where it was (ARCHITECTURE.md A12, the
+//! user's choice over the spec's D8).
+//! Both cuts, into the seat and out of it, come up from black over `FADE_S` real seconds (ours, F: Elite's own
 //! boarding is Odyssey's walk-in sequence, not built).
 //!
 //! - Boarding turns the mod on (`ModControl::board`): the sandbox leaves first person at the end of that frame and the seat
@@ -8,12 +10,15 @@
 //! - Seated, every key's press is taken from the frame's input (`take_keys`) once Elite's bindings have been read, so the
 //!   port's own readers never see them (K would slow the clock, I open the wiki); Esc (the menu) and F11 (a screenshot) are
 //!   left. The game clock runs at real time while he sits and is given back when he gets out (the spec's edge cases).
-//! - Getting out (`leave_rule`): B only when landed (the spec's D8); the mod turned off by any other way while flying loses
-//!   the ship (the spec's edge cases: "if that was in flight it is lost"). Every way out (B, the mod off, the ship destroyed,
-//!   lost in hyperspace, removed) goes through one function, `release` (`exit_rule` says where he goes, the spec's F6):
-//!   beside the ship's left side when it is landed, on the ground under it when it was flying by ground he can stand on,
-//!   else on Earth, unless something else already put him somewhere (the main menu's Play puts him on Earth). The seat's
-//!   view stays until the sandbox has set him down.
+//! - Getting out (`leave_rule`): B (or the role panel's Disembark) anywhere; landed or within reach of the ground
+//!   (`within_step_out`) he is out beside the ship, whichever way he leaves; out of reach, B abandons the ship (A12) and the
+//!   mod turned off by any other way loses it (the spec's edge cases: "if that was in flight it is lost"). Every way out (B,
+//!   the mod off, the ship destroyed, lost in hyperspace, removed) goes through one function, `release` (`exit_rule` says
+//!   where he goes, the spec's F6), which writes the camera where the seat's camera is (`seat_at`, `write_seat_camera`),
+//!   turned as the ship without the head's turn; he goes beside the ship's left side when it stays (landed or within
+//!   reach); in the free flight where the ship was when he abandoned it; on the ground under it when it was lost flying by
+//!   ground he can stand on, else on Earth, unless something else already put him somewhere (the main menu's Play puts him
+//!   on Earth). The seat's view stays until the sandbox has set him down (in the free flight: not past the release's frame).
 
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::math::{DQuat, DVec3, Quat, Vec3};
@@ -99,7 +104,7 @@ impl Seat {
         Seat { seated: true, regain: 3, clock, fade: FADE_S, boarding: true, held_keys, held_buttons, ..default() }
     }
 
-    /// Get out (as B does: only when landed).
+    /// Get out (as B does: anywhere, `leave_rule`).
     pub fn request_leave(&mut self) {
         self.leave = true;
     }
@@ -138,63 +143,86 @@ pub fn fade_clock(time: Res<Time<Real>>, mut seat: ResMut<Seat>, mut took: Local
     }
 }
 
-/// What getting out does.
+//// What getting out does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Leave {
-    /// Refused, with Elite's message (B while flying).
-    Refused,
-    /// Out beside the ship, which stays parked.
+    /// Out beside the ship, which stays parked (landed or within reach of the ground, whichever way he leaves).
     Out,
-    /// Out, and the ship is lost (the mod turned off while flying).
+    /// Out into the free flight where the ship was, and the ship is gone (B or Disembark anywhere else: A12).
+    Abandon,
+    /// Out, and the ship is lost (the mod turned off another way, flying out of reach of the ground).
     Lost,
 }
 
-/// The rule for getting out (the spec's D8 and its edge cases): `by_b` for B or Disembark, else the mod turned off by any way.
-pub fn leave_rule(landed: bool, by_b: bool) -> Leave {
-    match (landed, by_b) {
+/// The rule for getting out (ARCHITECTURE.md A12, replacing the spec's D8; the spec's edge cases): `by_ground` for the ship
+/// within reach to step out (`within_step_out`), `by_b` for B or Disembark, else the mod turned off by any way. Landed or
+/// within reach, he is out beside it and the ship stays, whichever way he leaves (a ship on the ground is never deleted by
+/// leaving it); anywhere else B abandons it and any other way loses it. Nothing refuses; the ship goes only where he cannot
+/// be put on foot.
+pub fn leave_rule(landed: bool, by_ground: bool, by_b: bool) -> Leave {
+    match (landed || by_ground, by_b) {
         (true, _) => Leave::Out,
-        (false, true) => Leave::Refused,
+        (false, true) => Leave::Abandon,
         (false, false) => Leave::Lost,
     }
 }
 
-/// Why the seat is released (every way out of it goes through `release`).
+/// Why the seat is released (every way out of it goes through `release`), as `seat_camera` decided it: `exit_rule` takes
+/// the decision as it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// B while landed, or the mod turned off by any way (in flight, or in hyperspace, that loses the ship).
+    /// Out beside the ship, which stays (`Leave::Out`): landed or within reach of the ground, by B, Disembark or the mod
+    /// turned off by any way.
     Out,
+    /// B or Disembark anywhere else (higher, over no ground he can stand on, the glide, supercruise, the jump's countdown,
+    /// the tunnel): the ship is gone and he is in the free flight (`Leave::Abandon`, A12).
+    Abandon,
+    /// The mod turned off by any other way while not landed and out of reach of the ground (`Leave::Lost`): the ship is lost.
+    Lost,
     /// The hull at zero or the oxygen run out.
     Destroyed,
     /// The ship removed (`sw remove`, the Mods row) while he sits in it.
     Removed,
 }
 
+impl From<Leave> for Why {
+    fn from(leave: Leave) -> Why {
+        match leave {
+            Leave::Out => Why::Out,
+            Leave::Abandon => Why::Abandon,
+            Leave::Lost => Why::Lost,
+        }
+    }
+}
+
 /// Where he goes out of the seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Place {
-    /// Beside the ship's left side, on the ground (it is landed).
+    /// Beside the ship's left side, on the ground (landed, or within reach of the ground: the ship is set down there).
     Beside,
     /// On the ground under the ship, on its body (it was flying: destroyed, lost or removed in flight).
     Under,
     /// On Earth, as the main menu's Play puts him: there is no ground to stand on by the ship.
     Earth,
+    /// In the port's free flight where the ship was (`Mode::Fly`, what V gives): he abandoned it (A12). Nothing is set down.
+    Flight,
     /// Nowhere: the sandbox isn't in the seat's mode (he is already somewhere: the mod went off before it took the camera).
     Stay,
 }
 
-/// The release's rule (the spec's F6): whether the ship is lost and where he goes. Beside the ship when it is landed; on the
-/// ground under it when it was flying by a body he can stand on (`ground`: a solid body's loaded ground, out of supercruise
-/// and hyperspace); else (deep space, the tunnel, a star, a gas giant, ground not loaded, no ship) on Earth.
+/// The release's rule (the spec's F6): whether the ship is lost and where he goes. Out (`Why::Out`): the ship stays and he is
+/// beside it. Abandoned (A12): the ship is lost and he is in the free flight where it was, whatever the ground. Lost,
+/// destroyed or removed: beside the ship when it is landed, on the ground under it when it was flying by a body he can stand
+/// on (`ground`: a solid body's loaded ground, out of supercruise and hyperspace); else (deep space, the tunnel, a star, a
+/// gas giant, ground not loaded, no ship) on Earth. Outside the seat's mode he stays where he is.
 pub fn exit_rule(why: Why, landed: bool, ground: bool, ship: bool, in_seat_mode: bool) -> (bool, Place) {
-    let lost = match why {
-        Why::Out => leave_rule(landed, false) == Leave::Lost,
-        Why::Destroyed | Why::Removed => true,
-    };
-    let place = match (in_seat_mode, ship && ground, landed) {
-        (false, _, _) => Place::Stay,
-        (true, false, _) => Place::Earth,
-        (true, true, true) => Place::Beside,
-        (true, true, false) => Place::Under,
+    let lost = why != Why::Out;
+    let place = match (in_seat_mode, why, ship && ground, landed || why == Why::Out) {
+        (false, ..) => Place::Stay,
+        (true, Why::Abandon, ..) => Place::Flight,
+        (true, _, false, _) => Place::Earth,
+        (true, _, true, true) => Place::Beside,
+        (true, _, true, false) => Place::Under,
     };
     (lost, place)
 }
@@ -207,6 +235,100 @@ pub fn exit_rule(why: Why, landed: bool, ground: bool, ship: bool, in_seat_mode:
 pub fn ground_by_ship(level: Option<u8>, in_cruise: bool, in_jump: bool) -> bool {
     level.is_some() && !in_cruise && !in_jump
 }
+
+/// Within reach to step out (A12: `leave_rule`'s `by_ground`): ground to stand on by the ship (`ground_by_ship`) and the
+/// ship's lowest point no higher than `BOARD_REACH_M` over it (`height_m`: `GroundUnder::lowest_m`): the distance he boards
+/// it from is the distance he steps out from.
+pub fn within_step_out(level: Option<u8>, height_m: f64, in_cruise: bool, in_jump: bool) -> bool {
+    ground_by_ship(level, in_cruise, in_jump) && height_m <= f64::from(BOARD_REACH_M)
+}
+
+/// Whether the free flight starts slow after an abandon (A12: its speed then starts at V's pace): ground to stand on by the
+/// ship (`ground_by_ship`) within `SOLID_REACH_M` of it (`height_m`: the ship's origin over that loaded ground), the reach
+/// within which the ship belongs to the sandbox's world. Higher, in supercruise or in hyperspace: no.
+pub fn flight_by_ground(level: Option<u8>, height_m: f64, in_cruise: bool, in_jump: bool) -> bool {
+    ground_by_ship(level, in_cruise, in_jump) && height_m <= super::SOLID_REACH_M
+}
+
+/// Where the seat's camera is this frame: the one decision `seat_camera` writes the camera by and `release` writes it once
+/// more by, so the two never disagree. Hyperspace's tunnel first (the jump's pose in the universe, whatever bodies still
+/// exist: the old system's live on for the tunnel's first frames while the target is generated), else the ship's place in
+/// its body's frame.
+enum SeatAt<'a> {
+    Tunnel(super::hyper::Jump),
+    Body { body: &'a SystemBody, terrain: Option<&'a Terrain>, pos: DVec3, rot: DQuat },
+    Nowhere,
+}
+
+fn seat_at<'a>(pilot: &Pilot, ship: &Sidewinder, bodies: &'a Query<(&SystemBody, Option<&Terrain>)>) -> SeatAt<'a> {
+    if let Some(j) = pilot.jump {
+        return SeatAt::Tunnel(j);
+    }
+    let Some(p) = ship.parked.as_ref() else { return SeatAt::Nowhere };
+    match bodies.iter().find(|(b, _)| b.obj == p.obj) {
+        Some((body, terrain)) => SeatAt::Body { body, terrain, pos: p.pos, rot: p.rot },
+        None => SeatAt::Nowhere,
+    }
+}
+
+/// The ground by the seat's place (`seat_at`), the one reading `seat_camera`'s rule and `release` both use.
+#[derive(Clone, Copy, Debug)]
+struct GroundUnder {
+    /// The loaded ground's node level under the ship on a solid body (`ship::ground_on` gives the sea's surface over an
+    /// ocean, as the sandbox's set-down reads it); None with no such ground (a star, a gas giant, the tunnel, no body).
+    level: Option<u8>,
+    /// The ship's origin over that ground (its distance from the centre less the ground's), m: `flight_by_ground`'s.
+    origin_m: f64,
+    /// The lowest corner of the ship's model box over the ground under that corner (`pilot::over_ground`), m: about 0 for a
+    /// ship lying on its side or back on the ground, its feet's or belly's height for a level one. `within_step_out`'s.
+    lowest_m: f64,
+}
+
+fn ground_under(at: &SeatAt, shape: &super::ShipShape) -> GroundUnder {
+    match at {
+        SeatAt::Body { body: b, terrain: Some(t), pos, rot } if !b.star && !t.proc.kind.is_giant() => {
+            let (ground_r, level) = crate::ship::ground_on(b.radius_m, b.shape, Some(*t), *pos);
+            let lowest_m = box_corners(shape.lo, shape.hi).into_iter().map(|c| super::pilot::over_ground(b, Some(*t), 0.0, *pos, *rot, c)).fold(f64::INFINITY, f64::min);
+            GroundUnder { level, origin_m: pos.length() - ground_r, lowest_m }
+        }
+        _ => GroundUnder { level: None, origin_m: f64::INFINITY, lowest_m: f64::INFINITY },
+    }
+}
+
+/// The eight corners of a box from its least to its greatest corner (ship space).
+fn box_corners(lo: Vec3, hi: Vec3) -> [Vec3; 8] {
+    std::array::from_fn(|i| Vec3::new(if i & 1 == 0 { lo.x } else { hi.x }, if i & 2 == 0 { lo.y } else { hi.y }, if i & 4 == 0 { lo.z } else { hi.z }))
+}
+
+/// The ship's level heading frame at `pos` (body frame, metres from the centre), as a turn from ship space (X right, Y up,
+/// -Z the nose): up the radial there, forward the nose `rot` gives laid onto the horizontal plane, right from the two. With
+/// the nose within `LEVEL_NOSE_MIN` (sine) of straight up or down, the belly (nose up) or the top (nose down) laid onto the
+/// plane is the heading instead, so there always is one. Where he steps out of a ship that was not landed (`release`).
+fn level_frame(pos: DVec3, rot: DQuat) -> DQuat {
+    let up = pos.normalize_or(DVec3::Y);
+    let flat = |v: DVec3| v - up * v.dot(up);
+    let nose = rot * DVec3::NEG_Z;
+    let mut forward = flat(nose);
+    if forward.length() < LEVEL_NOSE_MIN {
+        forward = flat(rot * if nose.dot(up) > 0.0 { DVec3::NEG_Y } else { DVec3::Y });
+    }
+    let forward = forward.normalize_or(up.any_orthonormal_vector());
+    DQuat::from_mat3(&bevy::math::DMat3::from_cols(forward.cross(up), up, -forward)).normalize()
+}
+
+/// The turn he is handed at the release beside or under the ship (ship space to the body's frame: the camera's turn and the
+/// pose `Sandbox::set_down` is given, and the frame he steps out by): the ship's own, except out of a ship that was not
+/// landed (beside it, within reach of the ground), where it is its level heading frame (`level_frame`), so he faces its
+/// heading level, never down the nose of a ship tipped or on its tail.
+fn out_turn(place: Place, landed: bool, pos: DVec3, rot: DQuat) -> DQuat {
+    match (place, landed) {
+        (Place::Beside, false) => level_frame(pos, rot),
+        _ => rot,
+    }
+}
+
+/// `level_frame`'s nose is "straight up or down" within this sine of the vertical (about 3 degrees).
+const LEVEL_NOSE_MIN: f64 = 0.05;
 
 /// Whether a boarding is refused this frame (`seat_camera`): only while boarding, before the sandbox first gives the seat
 /// its mode, and only from anywhere but on foot (the sandbox gives the seat its mode only from walking: a test's `sw board`
@@ -563,7 +685,7 @@ pub fn head_aim(test: Option<Vec2>, head_look: bool, look: Vec2, panel: Option<H
 }
 
 /// The seat's camera at the pilot's eyes (bound to the body this frame), and every way out of the seat (`release`): B
-/// (landed only, `leave_rule`), the mod off by any way (in flight that loses the ship), the ship destroyed or removed.
+/// (anywhere, `leave_rule`), the mod off by any way (in flight that loses the ship), the ship destroyed or removed.
 #[allow(clippy::too_many_arguments)]
 pub fn seat_camera(
     mut sb: ResMut<Sandbox>,
@@ -606,28 +728,35 @@ pub fn seat_camera(
     if sb.mode == Mode::Pilot {
         seat.boarding = false;
     }
-    // Every way out: the ship removed (or gone), destroyed, the mod turned off by any way, B while landed.
+    // Where the seat's camera is this frame (the tunnel first, then the ship's body): the camera below and the release both
+    // go by it.
+    let at = seat_at(&pilot, &ship, &bodies);
+    // Every way out: the ship removed (or gone), destroyed, the mod turned off by any way, B (`leave_rule`).
+    let leave = |by_b: bool| {
+        let g = ground_under(&at, &assets.shape);
+        let reach = within_step_out(g.level, g.lowest_m, pilot.cruise.is_some(), pilot.jump.is_some());
+        Why::from(leave_rule(pilot.landed, reach, by_b))
+    };
     let why = if seat.remove || ship.parked.is_none() {
         Some(Why::Removed)
     } else if pilot.destroyed {
         Some(Why::Destroyed)
     } else if !control.pilot {
-        Some(Why::Out)
+        Some(leave(false))
     } else if std::mem::take(&mut seat.leave) {
-        match leave_rule(pilot.landed, true) {
-            Leave::Out => Some(Why::Out),
-            _ => {
-                msg.show("Disembark is only possible when landed".to_string());
-                info!("sidewinder: B refused: disembark is only possible when landed");
-                None
-            }
+        if sb.mode == Mode::Pilot {
+            Some(leave(true))
+        } else {
+            // (The boarding frames: a ship he has not yet sat in is never abandoned, nor got out of.)
+            info!("sidewinder: B dropped: the seat does not have its mode yet (boarding)");
+            None
         }
     } else {
         None
     };
     if let Some(why) = why {
         let mut out = Out { seat: &mut *seat, sim: &mut *sim, control: &mut *control, pilot: &mut *pilot, ship: &mut *ship, sb: &mut *sb, cam: &mut *cam, msg: &mut *msg, panels: &mut *panels };
-        release(why, &mut out, &bodies, &data, &assets);
+        release(why, &mut out, &at, &data, &assets);
         // (The camera is at the eye this frame: the seat's view until he is set down.)
         seat.view = seat.setting_down && sb.walking() && !sb.placed;
         return;
@@ -639,27 +768,51 @@ pub fn seat_camera(
         seat.test_look = None;
     }
     seat.head = if seat.screen { Head::default() } else { head_aim(seat.test_look, seat.head_look, seat.look, carrier_head(&panels, eye, aspect)) };
-    // In hyperspace's tunnel the ship's pose is the jump's (in the universe: the old system's bodies go meanwhile), held by
-    // `hyper::tunnel`; the camera is at the eye there, unbound, the head turned as in flight.
-    if let Some(j) = pilot.jump {
-        let (eye_at, rot) = eye_pose(DVec3::ZERO, j.rot, eye, seat.head.turn);
-        cam.pos = j.arrive.offset_m(eye_at);
-        cam.rot = rot;
-        seat.view = true;
-        control.tunnel = true;
-        return;
+    match at {
+        // In hyperspace's tunnel the ship's pose is the jump's (in the universe: the old system's bodies go meanwhile), held by
+        // `hyper::tunnel`; the camera is at the eye there, unbound, the head turned as in flight.
+        SeatAt::Tunnel(_) => {
+            write_seat_camera(&mut cam, &at, eye, seat.head.turn);
+            seat.view = true;
+            control.tunnel = true;
+        }
+        SeatAt::Body { .. } if control.pilot && sb.mode == Mode::Pilot => {
+            write_seat_camera(&mut cam, &at, eye, seat.head.turn);
+            seat.view = true;
+        }
+        // (Otherwise boarded this frame: the sandbox leaves first person at the end of its step; the seat takes the camera next
+        // frame.)
+        _ => {}
     }
-    let Some(p) = ship.parked.as_ref() else { return };
-    let Some((b, _)) = bodies.iter().find(|(b, _)| b.obj == p.obj) else { return };
-    let (eye_body, rot_body) = eye_pose(p.pos, p.rot, eye, seat.head.turn);
-    if control.pilot && sb.mode == Mode::Pilot {
-        cam.pos = b.pos.offset_m(b.orient * eye_body);
-        cam.rot = (b.orient * rot_body).normalize();
-        crate::sandbox::bind_camera(&mut cam, b);
-        seat.view = true;
+}
+
+/// Writes the camera at the seat's place (`seat_at`), at the eye (`eye`, ship space) with the head's turn (`head`): in
+/// hyperspace's tunnel at the eye of the jump's pose in the universe, unbound and at rest; by a body at the eye, bound to it
+/// as of this frame (the 500 m-a-frame rule), and the eye's pose in the body's frame is returned. With no place nothing is
+/// written. The one writer `seat_camera` and `release` share, so the release never moves the camera's place (the eye's
+/// place does not depend on the head's turn).
+fn write_seat_camera(cam: &mut FlyCamera, at: &SeatAt, eye: Vec3, head: Vec2) -> Option<(DVec3, DQuat)> {
+    match at {
+        SeatAt::Tunnel(j) => {
+            let (eye_at, rot) = eye_pose(DVec3::ZERO, j.rot, eye, head);
+            cam.pos = j.arrive.offset_m(eye_at);
+            cam.rot = rot;
+            cam.velocity = DVec3::ZERO;
+            cam.travel = None;
+            cam.track = false;
+            cam.hold_agl = None;
+            cam.follow = None;
+            None
+        }
+        SeatAt::Body { body: b, pos, rot, .. } => {
+            let (eye_body, rot_body) = eye_pose(*pos, *rot, eye, head);
+            cam.pos = b.pos.offset_m(b.orient * eye_body);
+            cam.rot = (b.orient * rot_body).normalize();
+            crate::sandbox::bind_camera(cam, b);
+            Some((eye_body, rot_body))
+        }
+        SeatAt::Nowhere => None,
     }
-    // (Otherwise boarded this frame: the sandbox leaves first person at the end of its step; the seat takes the camera next
-    // frame.)
 }
 
 /// What the seat's release changes (borrowed from `seat_camera`'s parameters).
@@ -676,65 +829,77 @@ struct Out<'a> {
 }
 
 /// Releases the seat, whichever way he leaves it (`Why`): `free_seat`'s state changes; the camera written once more this
-/// frame at the eye and bound to the body (the 500 m-a-frame rule: whatever takes it carries it on from there); he is put
-/// down beside the landed ship, on the ground under a flying one, else on Earth (`exit_rule`); a lost or removed ship goes,
+/// frame where the seat's camera is (`write_seat_camera` at `at`: the release never moves its place), turned as the ship
+/// without the head's turn, level by the ship's heading out of a ship that was not landed (`out_turn`: also the pose
+/// `Sandbox::set_down` is given); he is put down beside the
+/// ship when it stays (landed or within reach of the ground: `keep_in_world` sets it down on its feet), in the free flight
+/// where an abandoned one was, on the ground under a lost one, else on Earth (`exit_rule`); a lost or removed ship goes,
 /// solids and all (a ship left behind in flight would hang in the air as a solid thing).
-fn release(why: Why, out: &mut Out, bodies: &Query<(&SystemBody, Option<&Terrain>)>, data: &crate::data::SeData, assets: &SidewinderAssets) {
+fn release(why: Why, out: &mut Out, at: &SeatAt, data: &crate::data::SeData, assets: &SidewinderAssets) {
+    // (The camera's place is the seat's, its turn the ship's own without the head's, as before A12, or its level heading out of
+    // a ship that was not landed (`out_turn`): out of the seat he faces along the ship, not where his head looked. The fade
+    // from black covers the change of view.)
+    let head = Vec2::ZERO;
     let in_jump = out.pilot.jump.is_some();
     let in_cruise = out.pilot.cruise.is_some();
     let landed = out.pilot.landed;
-    let at = out.ship.parked.as_ref().map(|p| (p.obj, p.pos, p.rot));
-    let body = at.and_then(|(obj, _, _)| bodies.iter().find(|(b, _)| b.obj == obj));
-    // (The loaded ground's node level under the ship, on a solid body: `ship::ground_on` gives the sea's surface over an
-    // ocean, as the sandbox's set-down reads it.)
-    let level = body.zip(at).and_then(|((b, t), (_, pos, _))| {
-        let t = t.filter(|t| !b.star && !t.proc.kind.is_giant())?;
-        crate::ship::ground_on(b.radius_m, b.shape, Some(t), pos).1
-    });
-    let ground = ground_by_ship(level, in_cruise, in_jump);
-    let (lost, place) = exit_rule(why, landed, ground, at.is_some(), out.sb.mode == Mode::Pilot);
+    let g = ground_under(at, &assets.shape);
+    let ground = ground_by_ship(g.level, in_cruise, in_jump);
+    let (lost, place) = exit_rule(why, landed, ground, out.ship.parked.is_some(), out.sb.mode == Mode::Pilot);
     free_seat(out.seat, out.sim, out.control, out.pilot, out.panels);
-    let eye = Vec3::from_array(assets.eye).as_dvec3();
-    match (place, at, body) {
-        (Place::Beside | Place::Under, Some((obj, pos, rot)), Some((b, _))) => {
-            let eye_body = pos + rot * eye;
-            out.cam.pos = b.pos.offset_m(b.orient * eye_body);
-            out.cam.rot = (b.orient * rot).normalize();
-            crate::sandbox::bind_camera(out.cam, b);
-            // Beside: out from the hull's left side; under: the ship's own place (the sandbox drops the point to the ground).
-            let point = if place == Place::Beside {
-                pos + rot * Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5).as_dvec3()
-            } else {
-                pos
-            };
-            out.sb.set_down(obj, point, None, eye_body, rot);
+    let eye = Vec3::from_array(assets.eye);
+    match (place, at) {
+        (Place::Flight, _) => {
+            // (With no place, the camera stays where it is, unbound and at rest.)
+            if write_seat_camera(out.cam, at, eye, head).is_none() {
+                out.cam.velocity = DVec3::ZERO;
+                out.cam.travel = None;
+                out.cam.follow = None;
+            }
+            out.sb.free_flight(out.cam, flight_by_ground(g.level, g.origin_m, in_cruise, in_jump));
         }
-        (Place::Beside | Place::Under | Place::Earth, ..) => {
+        (Place::Beside | Place::Under, SeatAt::Body { body: b, pos, rot, .. }) => {
+            // (The camera at the seat's place; its turn, and the pose he is set down with, `out_turn`'s.)
+            let turn = out_turn(place, landed, *pos, *rot);
+            let eye_body = write_seat_camera(out.cam, at, eye, head).map_or(*pos, |(e, _)| e);
+            out.cam.rot = (b.orient * turn).normalize();
+            // Beside: out from the hull's left side, as the ship will stand (not landed: in its level heading frame, the heading
+            // `keep_in_world` sets it down with); under: the ship's own place (the sandbox drops the point to the ground).
+            let beside = Vec3::new(assets.shape.lo.x - EXIT_OUT_M, 1.0, (assets.shape.lo.z + assets.shape.hi.z) * 0.5).as_dvec3();
+            let point = if place == Place::Beside { *pos + turn * beside } else { *pos };
+            out.sb.set_down(b.obj, point, None, eye_body, turn);
+        }
+        (Place::Beside | Place::Under | Place::Earth, _) => {
             // (`put_on_earth` writes the camera at the spot it waits at, bound to Earth.)
             crate::sandbox::put_on_earth(data, out.sim.jd, out.cam, out.sb, "out of the Sidewinder far from ground beside it: back");
         }
-        (Place::Stay, ..) => {}
+        (Place::Stay, _) => {}
     }
     if lost {
         if let Some(mut gone) = out.ship.parked.take() {
             super::take_out(out.sb, &mut gone);
         }
+    } else {
+        // The ship stays, set down on its feet at rest (`keep_in_world`): nothing of the flight may go on thinking it flies.
+        out.pilot.landed = true;
     }
     out.control.ship_parked = out.ship.parked.is_some();
     let where_ = if in_jump { " in hyperspace" } else { "" };
-    let text = match (why, lost) {
-        (Why::Destroyed, _) => format!("The Sidewinder was destroyed{where_}"),
-        (Why::Removed, _) => "The Sidewinder was removed".to_string(),
-        (Why::Out, true) => format!("The Sidewinder was lost{where_}"),
-        (Why::Out, false) => "Disembarked".to_string(),
+    let text = match why {
+        Why::Destroyed => format!("The Sidewinder was destroyed{where_}"),
+        Why::Removed => "The Sidewinder was removed".to_string(),
+        Why::Abandon => format!("Disembarked{where_}: the Sidewinder is gone"),
+        Why::Lost => format!("The Sidewinder was lost{where_}"),
+        Why::Out => "Disembarked".to_string(),
     };
     out.msg.show(text.clone());
-    info!("sidewinder: the seat is released ({why:?}): {text}; {}", match place {
+    info!("sidewinder: the seat is released ({why:?}): {text}; {}; over the ground: the ship's origin {:.2} m, its lowest point {:.2} m", match place {
         Place::Beside => "out, beside the ship",
         Place::Under => "out, on the ground under the ship",
         Place::Earth => "back on Earth",
+        Place::Flight => "in the free flight where the ship was",
         Place::Stay => "already out of the seat's mode",
-    });
+    }, g.origin_m, g.lowest_m);
 }
 
 /// The `<FOV>` of the user's Elite settings (`Options/Graphics/Settings.xml`), degrees (grade B: the user's file; the mod
@@ -822,24 +987,118 @@ mod tests {
         assert!(unheld(&keys, &mut seat.held_keys).is_none() && keys.pressed(KeyCode::KeyE));
     }
 
-    /// The spec's C13: getting out works only when landed; B in flight is refused, the mod going off in flight loses the ship.
+    /// A12 (replacing the spec's C13): landed or within reach of the ground, out (the ship stays), whichever way he leaves;
+    /// anywhere else B or Disembark abandons the ship and the mod going off any other way loses it. Nothing refuses.
     #[test]
-    fn leaving_works_only_when_landed() {
-        assert_eq!(leave_rule(true, true), Leave::Out);
-        assert_eq!(leave_rule(true, false), Leave::Out);
-        assert_eq!(leave_rule(false, true), Leave::Refused);
-        assert_eq!(leave_rule(false, false), Leave::Lost);
+    fn leaving_works_anywhere() {
+        // (landed, within reach to step out, by B): every row.
+        for by_b in [true, false] {
+            assert_eq!(leave_rule(true, true, by_b), Leave::Out);
+            assert_eq!(leave_rule(true, false, by_b), Leave::Out);
+            assert_eq!(leave_rule(false, true, by_b), Leave::Out);
+        }
+        assert_eq!(leave_rule(false, false, true), Leave::Abandon);
+        assert_eq!(leave_rule(false, false, false), Leave::Lost);
+        assert_eq!(Why::from(Leave::Out), Why::Out);
+        assert_eq!(Why::from(Leave::Abandon), Why::Abandon);
+        assert_eq!(Why::from(Leave::Lost), Why::Lost);
     }
 
-    /// The release's rule (F6): out while landed keeps the ship and sets him down beside it; in flight the ship is lost and he
-    /// goes to the ground under it, or to Earth with no ground to stand on; destroyed or removed, the ship goes; outside the
-    /// seat's mode he stays where he is.
+    /// Within reach to step out is the boarding's reach over ground he can stand on (A12): never in supercruise or the tunnel.
+    #[test]
+    fn within_reach_to_step_out_is_the_boarding_reach() {
+        assert!(within_step_out(Some(14), 5.9, false, false));
+        assert!(!within_step_out(Some(14), 6.1, false, false));
+        assert!(!within_step_out(None, 1.0, false, false));
+        assert!(!within_step_out(Some(14), 1.0, true, false));
+        assert!(!within_step_out(Some(14), 1.0, false, true));
+    }
+    /// The model box's lowest corner (what `ground_under` measures the reach by) in ship space (X right, Y up, -Z the nose):
+    /// level, the box's bottom; turned 90 degrees about the nose, half its width under the origin; upside down, its top.
+    #[test]
+    fn the_lowest_corner_of_a_turned_box() {
+        let (lo, hi) = (Vec3::new(-6.0, 0.5, -7.0), Vec3::new(6.0, 3.0, 8.0));
+        let corners = box_corners(lo, hi);
+        assert_eq!(corners.len(), 8);
+        for c in [lo, hi, Vec3::new(lo.x, hi.y, lo.z), Vec3::new(hi.x, lo.y, hi.z)] {
+            assert!(corners.contains(&c), "{c:?}");
+        }
+        let lowest = |rot: DQuat| corners.iter().map(|c| (rot * c.as_dvec3()).y).fold(f64::INFINITY, f64::min);
+        assert!((lowest(DQuat::IDENTITY) - 0.5).abs() < 1e-9);
+        assert!((lowest(DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2)) + 6.0).abs() < 1e-9);
+        assert!((lowest(DQuat::from_rotation_z(std::f64::consts::PI)) + 3.0).abs() < 1e-9);
+    }
+
+    /// Out of a ship that was not landed he steps out by its level heading frame: a level ship's is its own turn (today's
+    /// point), rolled 90 or 180 degrees about its nose it is the level one, and with the nose straight up or down it is
+    /// still a finite frame (the belly's or top's heading).
+    #[test]
+    fn the_level_frame_keeps_the_heading() {
+        let pos = DVec3::new(0.0, 6_371_000.0, 0.0);
+        let beside = DVec3::new(-8.5, 1.0, 0.5);
+        let point = |q: DQuat| pos + q * beside;
+        let level = DQuat::from_rotation_y(0.7);
+        assert!(point(level_frame(pos, level)).distance(point(level)) < 1e-6);
+        for roll in [std::f64::consts::FRAC_PI_2, std::f64::consts::PI] {
+            let rolled = level * DQuat::from_rotation_z(roll);
+            assert!(point(level_frame(pos, rolled)).distance(point(level)) < 1e-6, "{roll}");
+        }
+        for pitch in [std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
+            let q = level_frame(pos, level * DQuat::from_rotation_x(pitch));
+            assert!(q.is_finite() && (q.length() - 1.0).abs() < 1e-9, "{pitch}");
+            assert!((q * DVec3::Y).distance(DVec3::Y) < 1e-9, "up stays the radial: {pitch}");
+        }
+    }
+
+    /// The turn handed over at the release: out of a ship that was not landed it is level (its forward has no part along the
+    /// radial) along the ship's heading, for a ship pitched 66 degrees nose up or down and one on its tail or its nose (whose
+    /// heading is the belly's or the top's); landed, and under a lost ship, it is the ship's own turn exactly.
+    #[test]
+    fn out_of_a_tipped_ship_he_faces_its_heading_level() {
+        let pos = DVec3::new(0.0, 6_371_000.0, 0.0);
+        let heading = DQuat::from_rotation_y(0.7);
+        for deg in [66.0f64, -66.0, 90.0, -90.0] {
+            let tipped = heading * DQuat::from_rotation_x(deg.to_radians());
+            let fwd = out_turn(Place::Beside, false, pos, tipped) * DVec3::NEG_Z;
+            assert!(fwd.y.abs() < 1e-9, "{deg}: the forward's pitch {} degrees", fwd.y.asin().to_degrees());
+            assert!(fwd.distance(heading * DVec3::NEG_Z) < 1e-6, "{deg}: the heading {fwd:?}");
+            assert_eq!(out_turn(Place::Beside, true, pos, tipped), tipped, "{deg}: landed");
+            assert_eq!(out_turn(Place::Under, false, pos, tipped), tipped, "{deg}: under");
+        }
+    }
+
+    /// Abandoned (A12): in the seat's mode the ship is lost and he is in the free flight, whatever the ground (and whether a
+    /// body was found); outside it he stays where he is.
+    #[test]
+    fn an_abandon_gives_the_free_flight() {
+        for ground in [true, false] {
+            for ship in [true, false] {
+                assert_eq!(exit_rule(Why::Abandon, false, ground, ship, true), (true, Place::Flight), "{ground} {ship}");
+            }
+        }
+        assert_eq!(exit_rule(Why::Abandon, false, true, true, false), (true, Place::Stay));
+    }
+
+    /// The free flight's speed starts at V's pace only by ground within the sandbox's reach of the ship (A12).
+    #[test]
+    fn by_ground_for_the_free_flight_is_within_reach() {
+        assert!(flight_by_ground(Some(14), 1499.0, false, false));
+        assert!(!flight_by_ground(Some(14), 1501.0, false, false));
+        assert!(!flight_by_ground(None, 100.0, false, false));
+        assert!(!flight_by_ground(Some(14), 100.0, true, false));
+        assert!(!flight_by_ground(Some(14), 100.0, false, true));
+    }
+
+    /// The release's rule (F6): out (landed, or within reach of the ground though not landed) keeps the ship and sets him down
+    /// beside it; lost in flight he goes to the ground under it, or to Earth with no ground to stand on; destroyed or removed,
+    /// the ship goes; outside the seat's mode he stays where he is.
     #[test]
     fn the_release_rule() {
         // (why, landed, ground, ship, in the seat's mode)
         assert_eq!(exit_rule(Why::Out, true, true, true, true), (false, Place::Beside));
-        assert_eq!(exit_rule(Why::Out, false, true, true, true), (true, Place::Under));
-        assert_eq!(exit_rule(Why::Out, false, false, true, true), (true, Place::Earth));
+        assert_eq!(exit_rule(Why::Out, false, true, true, true), (false, Place::Beside));
+        assert_eq!(exit_rule(Why::Lost, false, true, true, true), (true, Place::Under));
+        assert_eq!(exit_rule(Why::Lost, false, false, true, true), (true, Place::Earth));
         assert_eq!(exit_rule(Why::Destroyed, true, true, true, true), (true, Place::Beside));
         assert_eq!(exit_rule(Why::Destroyed, false, true, true, true), (true, Place::Under));
         assert_eq!(exit_rule(Why::Destroyed, false, false, true, true), (true, Place::Earth));
@@ -847,6 +1106,7 @@ mod tests {
         assert_eq!(exit_rule(Why::Removed, false, true, true, true), (true, Place::Under));
         assert_eq!(exit_rule(Why::Removed, true, true, false, true), (true, Place::Earth));
         assert_eq!(exit_rule(Why::Out, true, true, true, false), (false, Place::Stay));
+        assert_eq!(exit_rule(Why::Lost, false, true, true, false), (true, Place::Stay));
     }
 
     /// Ground to stand on by the ship is any loaded ground of a solid body, the sea's surface included (no sea test: landed on
@@ -872,8 +1132,10 @@ mod tests {
         }
         let mut sim = SimTime { jd: 2_460_000.0, rate: 1.0, paused: false };
         assert!(Seat::boarded(&mut sim, &ButtonInput::default(), &ButtonInput::default()).boarding);
-        // Another mod on in flight: the release's rule loses the ship.
-        assert_eq!(exit_rule(Why::Out, false, true, true, false).0, true);
+        // Another mod on in flight: out of reach of the ground the release's rule loses the ship; within reach it stays, and
+        // he stays where the other mod put him.
+        assert_eq!(exit_rule(Why::from(leave_rule(false, false, false)), false, true, true, false).0, true);
+        assert_eq!(exit_rule(Why::from(leave_rule(false, true, false)), false, true, true, false), (false, Place::Stay));
     }
 
     /// The release's state changes: out of the seat, the old clock given back, head look, a test's head turn, an open side

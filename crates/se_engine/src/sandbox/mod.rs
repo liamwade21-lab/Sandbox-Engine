@@ -70,6 +70,10 @@ const WALK_REACH_RADII: f64 = 3.0;
 const EYE_FLOOR_M: f64 = 0.12;
 /// Source's `sv_maxvelocity`: nothing moves faster on any axis (a fall's terminal speed: 67 m/s).
 const MAX_VELOCITY: f32 = 3500.0;
+/// The free flight's assigned speed at most when it takes over by the ground (V, or out of the Sidewinder low down), m/s:
+/// whatever it was left at (100 km/s at a fresh start) is a kilometre a frame from standing on the ground. A running pace to
+/// begin with, as SE sets on landing; the wheel changes it.
+const FLIGHT_START_SPEED: f64 = 20.0;
 
 /// Where the game may start, picked by where the Sun is highest at launch: open, level land round the world (latitude and
 /// longitude in degrees, east positive, and the way he faces, degrees from north).
@@ -484,6 +488,20 @@ impl Sandbox {
         self.pending = Some(Pending { obj, point, eyes: false, heading, cam_point, cam_rot });
         enter_walk(self);
     }
+
+    /// Into the free flight (what V gives) from the Sidewinder's seat, where the ship was (ARCHITECTURE.md A12): nothing is set
+    /// down, the camera stays where the seat wrote it. `by_ground`: the ship was by ground he could stand on, so the free
+    /// flight's assigned speed starts at V's running pace; in space it is left as it was.
+    pub(crate) fn free_flight(&mut self, cam: &mut FlyCamera, by_ground: bool) {
+        self.mode = Mode::Fly;
+        self.pending = None;
+        if by_ground {
+            cam.speed = cam.speed.min(FLIGHT_START_SPEED);
+        }
+        if let Some(w) = self.world.as_mut() {
+            w.park_player();
+        }
+    }
 }
 
 fn enter_walk(sb: &mut Sandbox) {
@@ -865,7 +883,7 @@ pub(crate) fn sandbox_step(
             probe.clear();
             // The free flight's assigned velocity is whatever it was left at (100 km/s at a fresh start): from standing on
             // the ground that is a kilometre a frame. A running pace to begin with, as SE sets on landing; the wheel changes it.
-            cam.speed = cam.speed.min(20.0);
+            cam.speed = cam.speed.min(FLIGHT_START_SPEED);
         }
         if let Some(w) = sb.world.as_mut() {
             w.park_player();

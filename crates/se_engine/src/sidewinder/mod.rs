@@ -67,7 +67,7 @@ const SPAWN_MOST_SLOPE_M: f32 = 1.5;
 /// A spawn asked for while the player isn't on foot yet (the Q menu turned another mod off) waits this long at most.
 const SPAWN_WAIT_S: f32 = 10.0;
 /// It is in the sandbox's world (a prop, or its solid pieces while seated) while it is this near the world's anchor.
-const SOLID_REACH_M: f64 = 1500.0;
+pub(super) const SOLID_REACH_M: f64 = 1500.0;
 
 /// What the Mods row, a test command or the game asks of the ship.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +96,8 @@ pub struct Parked {
     solids_epoch: Option<u32>,
     /// Its prop: the world's `id` and the prop's (a world made again holds no prop of the old one's).
     prop: Option<(u32, u32)>,
-    /// The next prop is set down on its feet (`set_down_on_feet`): he has sat in it since the last.
+    /// The next prop is set down on its feet (`set_down_on_feet`): he has sat in it since the last. Cleared only once it is
+    /// (`put_back`, which waits for the ground under the feet); a new ship starts without it.
     set_down: bool,
     /// Its prop has come down onto its feet since it last left the ground or was held, and the seconds it has rested on all
     /// three so far (`kept_awake`).
@@ -246,6 +247,21 @@ fn add_prop(world: &mut SandboxWorld, p: &mut Parked, shape: &ShipShape, mass_kg
         Some((_, id)) => info!("sidewinder: a prop of the sandbox's world (prop {id}, {mass_kg:.0} kg) at {:.2} {:.2} {:.2} m", at.x, at.y, at.z),
         None => warn!("sidewinder: its pieces make no prop"),
     }
+}
+
+/// The ship's prop put back where `Parked` has it (`add_prop`), and whether it was. Out of the seat (`Parked::set_down`) it
+/// is set down on its feet first (`set_down_on_feet`), and it WAITS for the ground (ARCHITECTURE.md A12): until the
+/// sandbox's ground field reaches under every foot (on the release frame it is still round where he last walked; the
+/// sandbox moves it to where he is set down) nothing is made, the flag stays and the ship is in the world as nothing, drawn
+/// where `Parked` has it. Made at the flown pose, it dropped and slid.
+fn put_back(world: &mut SandboxWorld, p: &mut Parked, shape: &ShipShape, mass_kg: f32) -> bool {
+    if p.set_down {
+        let Some((pos, rot)) = set_down_on_feet(world, p, shape) else { return false };
+        (p.pos, p.rot) = (pos, rot);
+        p.set_down = false;
+    }
+    add_prop(world, p, shape, mass_kg);
+    true
 }
 
 /// `Parked` from its prop's pose this frame, between the prop's last two ticks as the props are drawn (`props::place_props`).
@@ -400,9 +416,9 @@ fn handle_requests(
 /// The parked ship in the sandbox's world while it is near (ARCHITECTURE.md A11). Nobody in it: one prop, and `Parked`
 /// follows the prop every frame (the only writer of it then). Seated and landed: its solid pieces (the flight writes
 /// `Parked`); flying, nothing (it moves). Boarding takes the prop out where `Parked` last had it, getting out puts it back
-/// there at rest. What is missing is put back where `Parked` says: the solid pieces after a rebase took them out, the prop in
+/// there at rest, set down on its feet once the ground field reaches under them (`put_back`). What is missing is put back where `Parked` says: the solid pieces after a rebase took them out, the prop in
 /// a world made again (a rebase moves it with the other props).
-fn keep_in_world(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: Option<Res<SidewinderAssets>>, seat: Res<seat::Seat>, pilot: Res<pilot::Pilot>, time: Res<Time<Real>>) {
+fn keep_in_world(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: Option<Res<SidewinderAssets>>, seat: Res<seat::Seat>, pilot: Res<pilot::Pilot>, time: Res<Time<Real>>, mut waited: Local<u32>) {
     let (Some(p), Some(assets)) = (ship.parked.as_mut(), assets) else { return };
     let sb = &mut *sb;
     let t = sb.tick_fraction();
@@ -423,6 +439,7 @@ fn keep_in_world(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: 
     // (Seated, the next prop is the one he gets out to: set down on its feet, as a spawn sets it down.)
     if seat.seated {
         p.set_down = true;
+        *waited = 0;
     }
     // (Boarded and not yet flown, it may be hanging in the air: no pieces until the flight says it stands landed.)
     let want_solids = near && seat.seated && pilot.landed && pilot.boarded.is_none();
@@ -441,12 +458,15 @@ fn keep_in_world(mut ship: ResMut<Sidewinder>, mut sb: ResMut<Sandbox>, assets: 
     }
     match (want_prop, prop) {
         (true, None) => {
-            if std::mem::take(&mut p.set_down) {
-                if let Some((pos, rot)) = set_down_on_feet(world, p, &assets.shape) {
-                    (p.pos, p.rot) = (pos, rot);
+            let pending = p.set_down;
+            if put_back(world, p, &assets.shape, (pilot.mass_t() * 1000.0) as f32) {
+                if pending {
+                    info!("sidewinder: set down on its feet, after {} frames waiting for the ground under them", *waited);
                 }
+                *waited = 0;
+            } else {
+                *waited += 1;
             }
-            add_prop(world, p, &assets.shape, (pilot.mass_t() * 1000.0) as f32);
         }
         (false, Some(_)) => {
             drop_prop(world, &mut sb.held, p);
@@ -953,6 +973,28 @@ pub fn dev_command(world: &mut World, arg: &str) {
             }
             None
         }
+        // `sw cam`: the camera's place in the frame of the body it is bound to (or the nearest body's, unbound), its speed and
+        // the sandbox's mode (getting out's proofs: the camera must not step at the release).
+        "cam" => {
+            let (pos, vel, speed, follow) = {
+                let cam = world.resource::<crate::camera::FlyCamera>();
+                (cam.pos, cam.velocity, cam.speed, cam.follow.as_ref().map(|f| f.target))
+            };
+            let mode = world.resource::<Sandbox>().mode;
+            let mut q = world.query::<&crate::system::SystemBody>();
+            let body = match follow {
+                Some(t) => q.iter(world).find(|b| b.obj == t),
+                None => q.iter(world).min_by(|a, b| pos.delta_m(a.pos).length().total_cmp(&pos.delta_m(b.pos).length())),
+            };
+            match body {
+                Some(b) => {
+                    let at = b.orient.inverse() * pos.delta_m(b.pos);
+                    info!("sidewinder: the camera at {:.3} {:.3} {:.3} m in {:?}'s frame ({}), {:.3} m from its centre; velocity {:.3} m/s, speed {:.1} m/s; the sandbox {mode:?}", at.x, at.y, at.z, b.obj, if follow.is_some() { "bound" } else { "unbound, the nearest" }, at.length(), vel.length(), speed);
+                }
+                None => info!("sidewinder: the camera with no body ({}); velocity {:.3} m/s; the sandbox {mode:?}", if follow.is_some() { "bound to a body that is gone" } else { "unbound" }, vel.length()),
+            }
+            None
+        }
         "state" => {
             let ship = world.resource::<Sidewinder>();
             let sb = world.resource::<Sandbox>();
@@ -1032,7 +1074,7 @@ pub fn dev_command(world: &mut World, arg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::world::{LocalFrame, TerrainGrid};
+    use crate::sandbox::world::{LocalFrame, Met, TerrainGrid};
 
     /// A world of `rise_e`, `rise_n` (m a metre, east and north) and the ship's pieces.
     fn sloped(rise_e: f32, rise_n: f32) -> (SandboxWorld, TerrainGrid, std::sync::Arc<ShipShape>) {
@@ -1103,5 +1145,76 @@ mod tests {
         let feet = feet_over(&grid, &shape, end);
         assert!(feet.iter().all(|h| h.abs() < 0.02), "the feet {feet:?} m over the ground");
         assert!((end.pos - early.pos).length() < 0.001 && w.sleeping(id), "crept {} m from 60 s to 120 s", (end.pos - early.pos).length());
+    }
+
+    /// Boarding and getting out landed hand the ship over as `keep_in_world` does (its prop out, its solid pieces in while
+    /// seated, then the pieces out and a prop put back set down on its feet): the prop he gets out to is one the physics gun's
+    /// ray meets as it met the spawned one, neither frozen nor held, and it comes to rest and sleeps (ARCHITECTURE.md A11).
+    /// The places are the game's (task B2's runs): the ship's origin 13.2 m west of where he is set down, its nose south. From
+    /// there a ray 2 degrees down passes under the belly between the legs to the ground: aim up at the hull to grab it.
+    #[test]
+    fn the_ship_he_gets_out_to_is_the_prop_a_spawn_makes() {
+        let (mut w, grid, shape) = sloped(0.0, 0.0);
+        let level = model_axes(Vec3::NEG_Y, Vec3::Z);
+        let ground: Vec<Vec3> = shape.feet.iter().map(|f| { let p = Vec3::new(-13.22, 0.2, 0.0) + level * *f; Vec3::new(p.x, p.y, grid.height(p.x, p.y).unwrap()) }).collect();
+        let (at, axes) = stand_on(&ground, Vec3::NEG_Y, feet_mid(&shape));
+        let (pos, rot) = (w.frame.to_body(at.as_dvec3()), (w.frame.rotation() * DQuat::from_mat3(&axes.as_dmat3())).normalize());
+        let mut p = Parked { spawn: 1, obj: w.frame.obj, pos, rot, solids: Vec::new(), solids_epoch: None, prop: None, set_down: false, down: false, on_feet: 0.0 };
+        // His eyes where he is set down (Source's 64 units over his feet), looking west (yaw 180) `pitch` degrees up; the
+        // physics gun's reach (`weapons::num::PHYS_REACH`).
+        let eye = Vec3::new(0.0, 0.0, crate::sandbox::movement::VIEW_Z * crate::sandbox::movement::UNIT_M);
+        let aim = |w: &SandboxWorld, pitch: f32| w.ray(eye, Vec3::new(-pitch.to_radians().cos(), 0.0, pitch.to_radians().sin()), 70.0, None).map(|h| h.met);
+        add_prop(&mut w, &mut p, &shape, 45200.0);
+        let spawned = p.prop_in(&w).expect("the spawn's prop");
+        assert_eq!(aim(&w, 15.0), Some(Met::Prop(spawned)), "the spawned ship");
+        // Boarded and landed: the prop out, the solid pieces in.
+        let mut held = None;
+        drop_prop(&mut w, &mut held, &mut p);
+        add_solids(&mut w, &mut p, &shape);
+        assert_eq!(aim(&w, 15.0), Some(Met::Solid(Surface::Metal)), "seated: its solid pieces");
+        // Out, landed: the pieces out, the prop back on its feet.
+        p.set_down = true;
+        drop_solids(&mut w, &mut p);
+        w.refresh();
+        assert!(put_back(&mut w, &mut p, &shape, 45200.0) && !p.set_down, "the ground is under its feet");
+        let out = p.prop_in(&w).expect("the prop he gets out to");
+        assert!(out != spawned && w.prop(spawned).is_none() && w.props().count() == 1, "one prop, the new one");
+        assert_eq!(aim(&w, 15.0), Some(Met::Prop(out)), "the ship he got out to");
+        assert_eq!(aim(&w, -2.0), Some(Met::Ground), "2 degrees down, under the belly");
+        let prop = w.prop(out).unwrap();
+        assert!(!prop.frozen && !prop.held, "frozen {} held {}", prop.frozen, prop.held);
+        let (early, end) = settle(&mut w, out, &shape, 5.0, 120.0);
+        let feet = feet_over(&grid, &shape, end);
+        assert!(feet.iter().all(|h| h.abs() < 0.02) && (end.pos - early.pos).length() < 0.001 && w.sleeping(out), "the feet {feet:?} m over the ground");
+    }
+
+    /// Out after a flight, the put-down waits for the ground (ARCHITECTURE.md A12): the ship hovering 1.5 m up, its nose
+    /// 6 degrees down, 111 m east of where the ground field still lies (where he last walked), is not made a prop and its put-down
+    /// stays pending, its pose untouched; once the field is round where he is set down beside it (the sandbox's rebase), it
+    /// is made on its feet there, and neither drops nor slides: it rests where it was put and sleeps.
+    #[test]
+    fn the_put_down_after_a_flight_waits_for_the_ground_under_its_feet() {
+        let (mut w, _, shape) = sloped(0.0, 0.0);
+        let axes = Mat3::from_rotation_y(6f32.to_radians()) * model_axes(Vec3::X, Vec3::Z);
+        let flown = Vec3::new(111.0, 0.0, 1.5);
+        let (pos, rot) = (w.frame.to_body(flown.as_dvec3()), (w.frame.rotation() * DQuat::from_mat3(&axes.as_dmat3())).normalize());
+        let mut p = Parked { spawn: 1, obj: w.frame.obj, pos, rot, solids: Vec::new(), solids_epoch: None, prop: None, set_down: true, down: false, on_feet: 0.0 };
+        // The release frame: the field is round the old spot, the feet off it.
+        assert!(!put_back(&mut w, &mut p, &shape, 45200.0), "made a prop with no ground under its feet");
+        assert!(p.set_down && p.prop.is_none() && w.props().count() == 0 && p.pos == pos && p.rot == rot, "the put-down must wait, the pose untouched");
+        // The sandbox sets him down beside it: a new field round there.
+        let frame = LocalFrame::at(w.frame.obj, DVec3::ONE, w.frame.to_body(DVec3::new(108.0, -4.0, 0.0)));
+        w.clear_terrain();
+        w.rebase(frame);
+        w.set_terrain(TerrainGrid { n: 161, cell: 0.75, heights: vec![0.0; 161 * 161] });
+        let grid = w.terrain().unwrap().clone();
+        assert!(put_back(&mut w, &mut p, &shape, 45200.0) && !p.set_down, "the ground is under its feet now");
+        let id = p.prop_in(&w).expect("its prop");
+        let made = w.prop(id).unwrap().now;
+        let feet = feet_over(&grid, &shape, made);
+        assert!(feet.iter().all(|h| h.abs() < 0.005), "made with the feet {feet:?} m over the ground");
+        assert!((made.rot * Vec3::Y).z > 0.9999, "made tilted {} degrees", (made.rot * Vec3::Y).z.acos().to_degrees());
+        let (early, end) = settle(&mut w, id, &shape, 5.0, 60.0);
+        assert!((end.pos - made.pos).length() < 0.01 && (end.pos - early.pos).length() < 0.001 && w.sleeping(id), "moved {} m from where it was put", (end.pos - made.pos).length());
     }
 }

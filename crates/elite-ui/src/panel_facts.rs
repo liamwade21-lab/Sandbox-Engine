@@ -29,7 +29,8 @@ pub struct PanelFacts {
     /// Where the ship is in its flight (the role panel's reason for refusing to let the pilot out, the right panel's
     /// hyperspace page).
     pub flight: FlightPhase,
-    /// The mod's own leave rule allows getting out now (`seat::leave_rule`: landed).
+    /// The game's rule for B and Disembark allows getting out now (`seat::leave_rule`: since 2026-11-24 anywhere while
+    /// seated; not landed, the ship is abandoned).
     pub leave_allowed: bool,
     /// The comms log's local lines the mod has to show, oldest first (none today). The game may hand over any recent
     /// window of them: each is pushed once, by its `LogLine::id`.

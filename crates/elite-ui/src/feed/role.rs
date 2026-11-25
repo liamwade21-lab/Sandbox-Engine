@@ -38,9 +38,10 @@ const EMPTY_DATA: [(&str, &str); 12] = [
 
 /// Why the pilot may not get out, as Elite's disembark rule names it (A for the order, B for the meanings: notes part 4
 /// 12.2 and 12.3): the gate first (supercruise, which covers the jump: bit 4; the glide: bit 9; silent running: bit 43),
-/// then the hull not at rest (bit 19, "Ship is in motion"). With the mod's rule refusing while landed and none of these
-/// true there is no reason line (Elite's table has none to give). The text is the last matching bit's in Elite's table
-/// order; with one bit set, that bit's.
+/// then the hull not at rest (bit 19, "Ship is in motion"). Sent only when the game's rule for B and Disembark refuses,
+/// which since 2026-11-24 it never does while seated (it allows getting out anywhere); refused while landed, there would
+/// be no reason line (Elite's table has none to give). The text is the last matching bit's in Elite's table order; with
+/// one bit set, that bit's.
 pub fn refusal(facts: &PanelFacts, silent_running: bool) -> Option<&'static str> {
     if facts.leave_allowed {
         return None;

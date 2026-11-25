@@ -31,7 +31,7 @@ use se_core::catalog::ObjectRef;
 
 use super::super::panels::{self as stand_in, NavRow, MODULES, M_LASERS};
 use super::super::pilot::{Dest, Pilot};
-use super::super::seat::{leave_rule, Leave, Seat};
+use super::super::seat::Seat;
 use super::super::sound::ui::UiSounds;
 use super::super::Sidewinder;
 use super::facts::{time_of_day_s, HudFacts};
@@ -313,7 +313,7 @@ pub fn facts_of(s: &Sources, ids: &mut Ids) -> PanelFacts {
             silent_running: p.silent,                           // `Pilot::silent`
         },
         flight: phase(p),                                       // `Pilot`'s tunnel, landing, supercruise and glide
-        leave_allowed: leave_rule(p.landed, true) == Leave::Out, // the seat's rule for B and Disembark
+        leave_allowed: true,                                    // the seat's rule for B and Disembark: nothing refuses (A12)
         comms: s.comms.to_vec(),                                // the pilot's messages while seated (`Comms`)
         time_of_day_s: Some(time_of_day_s(s.jd)),               // the game's date (`SimTime::jd`, UTC), as the HUD's clock
     }
