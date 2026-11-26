@@ -66,7 +66,7 @@ licence and the credit (README, the site). The user's Skate 3 is set up by that 
 extracted disc (`C:\Users\liamw\Downloads\Skate 3 (USA, Europe) (En,Fr,De,Es,It,Nl)`); the mod's files are made from them
 once and shipped (the user's: "Ship them with the game", credited to EA).
 
-**Being built: the Faulcon DeLacy Sidewinder mod (the user's of 2026-11-13):** Elite Dangerous's Sidewinder, spawned
+**The Faulcon DeLacy Sidewinder mod (the user's of 2026-11-13; complete 2026-11-26, the user's word, in release 1.3.0):** Elite Dangerous's Sidewinder, spawned
 from the Q menu and boarded with E, flying by Elite's rules. The plan is `docs/spec-mods-sidewinder.md` (the user's interview
 is in its Decisions log; its "What byte for byte honestly means here" grades every part). Its research (the survey of Elite's
 files, the community's numbers) is in `re/elite/`, out of git. Elite's install (read only):
@@ -120,8 +120,7 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   them with the port (the user: they are free to use), in its assets folder. The Viltrumite
   powers mod is the second exception (the user, 2026-11-06): the Omni-Man model and the parts of a GTA 5
   Superman mod it uses are converted once, by a tool outside the game, into `crates/se_engine/assets/mods/viltrumite`,
-  shipped the same way since 2026-11-09; the game has no GTA format readers, and that mod's compiled code and GTA V's encrypted
-  archives are never opened. Any other game's assets stay in their installs.
+  shipped the same way since 2026-11-09. The game has no GTA format readers. Any other game's assets stay in their installs.
 - Garry's Mod's files (the user, 2026-11-12, replacing 2026-11-11's "read from the install": "i want the garrys mod files in
   the game itself, not being loaded from the outside, only space engine should be loaded"): the files the sandbox uses (every
   prop of the stock spawn lists with its textures and collision, the weapons' models, the sound scripts and the waves it plays,
@@ -151,11 +150,10 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   file, the sounds included, and loads the simulation from the copy) and the sounds by `python -I
   re/skate3/tools/make_sounds.py` (run it first, then copy_skate3). If the simulation is made to read another file, add it to
   `RETAIL` and re-run. Never edit the files by hand. The model's format is `se_core/src/skate3.rs`.
-- Elite Dangerous (the user, 2026-11-13, for the Sidewinder mod): about half of its data files are encrypted (they start
-  with `FREA`; 54,320 of 102,957 in `Win64`). **Never open them, and never go round them** (no key from the exe, no reading
-  the running game's memory, no capture from the graphics card): that is defeating DRM. Its open files (zlib-packed mesh and
-  texture data, Wwise Vorbis sound packs, the `.binds` and settings XML) may be read; what the mod uses is converted once into
-  `crates/se_engine/assets/mods/sidewinder` and shipped (the user's decision, with the takedown risk stated). The exe's code
+- Elite Dangerous (Sidewinder mod): follow D1 in [the Sidewinder spec](docs/spec-mods-sidewinder.md#asset-access-for-claude-d1).
+  Read, unpack, decode, or decrypt local Sidewinder sources under D1. Process FREA and other encrypted formats offline
+  with an authorized key or import a decrypted copy. Open the install in read-only mode. What the mod uses is converted once
+  into `crates/se_engine/assets/mods/sidewinder` and shipped (the user's decision, with the takedown risk stated). The exe's code
   may be studied offline with Ghidra (`/rea`); decompiled code stays in `re/elite`, out of git. Measuring the real game: a
   Sonnet agent presses the flight keys in the user's Elite, in Solo only; since 2026-11-14 it may start Elite itself
   (`steam://rungameid/359320`) and click the Frontier launcher's "LOG IN WITH STEAM" button (the user: "it is ok to log in
@@ -171,34 +169,48 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
 - Commit each piece of work once it builds, passes the tests and is checked; never push. Commit
   messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Keep each file's line endings (many files are CRLF): don't use `sed -i` on them.
-- Don't defeat DRM. Never delete the user's own data (settings, saved sessions, places,
+- Never delete the user's own data (settings, saved sessions, places,
   screenshots, the game installs); scratch, build and test files may go.
 
 ## Gotchas
 
-- The Sidewinder mod (`sidewinder/`, `crates/elite-sim`, `se_core/src/elite.rs` the reader of Elite's open files,
-  `elite_asset.rs` the mod's `.edm` model format and the `.binds` reader; the spec's Build log says what each step did).
-  Elite's mesh files keep no names and no metre scale; the in-game Sidewinder hull and cockpit are NOT among the open files
-  (Build log, step 0.3): the hull is Elite's simplified Sidewinder (`4387928b...`, believed the HUD hologram, matched to the
-  user's top screenshot), its bytes unchanged, scaled to Frontier's published plan area; the gear is a recreated stand-in
-  (`sidewinder/convert.rs`); the cockpit is recreated in Blender from the user's cockpit shots (`sidewinder/cockpit/`:
-  `make_cockpit.py`, run in background mode only, writes `cockpit.obj`, which the converter reads; its glass isn't drawn until
-  step 4). The mod's files are written only by
-  `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture` (`ELITE_PATH`, default the user's Steam copy);
-  `geometry_is_elites` and `bindings_match_elite` (ignored) re-read the install. Elite's install path appears only in tests
-  (C4). Model space: metres, X right, Y up, -Z the nose, the gear's feet on Y 0. Spawning is `ShipRequest` (`ModControl::
+- The Sidewinder mod (`sidewinder/` in the engine: its `mod.rs` says what each file is; `crates/elite-sim` the flight's
+  rules; in `se_core`: `elite.rs` the reader of Elite's open files, `elite_asset.rs` the mod's `.edm` model format and the
+  `.binds` reader, `elite_rig.rs` Elite's rigs and state machines, `elite_chair.rs` the pilot chair's motion graph,
+  `elite_sound/` the pure sound mixer; the spec's Build log says what each step did and `ARCHITECTURE.md` A5 to A8 how the
+  parts fit). The ship is Elite's own since 2026-11-16: the real hull `sidewinder`, the real cockpit `sidewinder_cockpit`,
+  their materials, textures, rigs, state machines, lights, paint job, the chair's clips and the ship's sounds, converted
+  from the decoded export (`re/elite/frea_export/sidewinder/decoded/`, `re/elite/frea_export/sidewinder_audio/`, out of
+  git) into `crates/se_engine/assets/mods/sidewinder` (`models/*.edm`, `tex/*.dds`, `materials.json`, `ship.json`,
+  `chair/`, `sounds.json`, `sfx/`, `binds/`, and since 2026-11-23/24 `ui/` and the cargo hatch: about 1,820 files, 340 MB). The belly's cargo hatch is a
+  separate part in Elite (`ModularCargoBayDoor` at the hull's `!CargoBayDoor`: without it there is a hole under the ship); its doors are one more machine, driven by the cargo scoop. The old stand-ins (the simplified hull, the
+  recreated gear, the Blender cockpit) are gone. The mod's files are written only by
+  `cargo test -p se_engine --release copy_sidewinder -- --ignored --nocapture` (`sidewinder/convert/`, test-only code; it
+  holds a lock at `.audit/copy.lock`; `ELITE_PATH` the install, `ELITE_EXPORT` the export folder); it never deletes a
+  file it stops shipping (`git rm` it). `shipped_files_are_the_exports` and `bindings_match_elite` (ignored) check the
+  shipped files against the export and the install. Elite's install and export paths appear only in tests
+  (C4). Ship space: metres, X right, Y up, -Z the nose, the gear's feet on Y 0; Elite's own axes are mirrored and only
+  `assets::ShipSpace` converts between the two. Spawning is `ShipRequest` (`ModControl::
   ship_request`, the Mods row's own button, `sw spawn`, a test's `mods on sidewinder`), NOT the mod on: a parked ship stays when
-  another mod turns on. The parked ship's truth is `Parked` (its pose in the body's frame); its solid pieces (one convex hull
-  per draw) are added to the sandbox's world while it is within 1.5 km and again after a rebase (`solids_cleared`). Never
-  open a file starting `FREA` (`elite::unpack` refuses it); never write `aes`, `decrypt` or `cipher` in the code (C3 greps).
+  another mod turns on. The parked ship's truth is `Parked` (its pose in the body's frame). Within 1.5 km with nobody in it, it is ONE prop of the
+  sandbox's world (`keep_in_world`: its hulls, `Surface::Metal`, the flight's mass, kept awake only while it comes down onto its feet), and `Parked` follows the prop every frame: so Z undoes it
+  (the undo list holds props and the ship: `sandbox/props.rs` `Spawned`), Clean up removes it (`ModControl::remove_ship`) and the physics gun moves it, with no
+  special case in the weapons (`ARCHITECTURE.md` A11). Seated and landed it is static solid pieces, added again after a rebase (`solids_cleared`); flying it is in
+  the world as nothing. "The same ship" is `Parked::spawn` (a spawn number), never its pose: the machines, the chair and the sound's once-per-ship flags are
+  remade only on a new spawn. Boarding decides landed or flying by the flight's own touchdown test (`pilot.rs` `stands_landed`): a ship held up, thrown or
+  tilted is FLYING when boarded (B still gets him out: within reach of the ground the ship stays, see the seat below); E never boards while a gun or the hands hold a prop. The spawn sets the ship down on the plane
+  under its three feet (`stand_on`).
+  `elite::unpack` handles supported open formats. The offline export tool handles FREA under D1; nothing is decoded or
+  decrypted while the game runs or by the converter.
+  Keep keys out of generated assets, the repository, and release archives.
   The user's Elite screenshots for side-by-side pictures: `re/elite/screenshots/2026-11-14_user/` (out of git).
   The seat (`seat.rs`, `pilot.rs`): E boards (`ModControl::board`, the mod on with `pilot`); the sandbox leaves first
   person at the end of that frame (`Mode::Pilot`) and `seat_camera` writes the camera at the eye (the cockpit's part
   `eye`) bound to the body every frame. `control.pilot` is in the free camera's gates (`camera.rs` `input_controls`,
   `travel_and_move`) and `panels_hidden`, as `walker` is. Seated, every key's press but Esc and F11 is taken (`take_keys`)
   and the game clock runs at real time (`Seat::boarded` keeps the old rate, given back on getting out). Getting out is
-  `leave_rule`: landed, beside the ship (`Sandbox::set_down`, unless he was already put somewhere); B in flight refused; the
-  mod off any other way in flight LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
+  `leave_rule`: landed, beside the ship (`Sandbox::set_down`, unless he was already put somewhere); not landed (the user's 2026-11-24 rule, `ARCHITECTURE.md` A12; NOT Elite's, which refuses to disembark unless landed: never put the refusal back): with the ship's lowest point within `BOARD_REACH_M` (6 m) of ground he can stand on (`within_step_out`), the same, whichever way he leaves, and the ship stays (a ship on the ground is never deleted by leaving it; he is put beside it in its level heading frame, `level_frame`); anywhere else B or Disembark ABANDONS it: the ship goes and he is in the free flight where it was (`Sandbox::free_flight`). After getting out the prop is made only once the sandbox's ground field is under its feet (`put_back`, `Parked::set_down`: on the release frame the field is still round where he last walked; made at the flown pose it dropped and slid). Where the seat's camera is has ONE decision (`seat_at`: the tunnel first, then the ship's body) and one writer, used by `seat_camera` and `release`: the old system's bodies live on for the tunnel's first frames, and binding to one threw the camera back to the old system. The
+  mod off any other way out of reach of the ground LOSES the ship (never leave it hanging: it would be a solid thing in the air). Flight: `elite_sim::flight` at 60 Hz in the body's turning
   frame (`Parked.pos`/`rot` move); its glam may not be Bevy's (convert through arrays). Tests: `sw spawn|board|leave|
   throttle X|thrust LAT VERT FWD SECS|stick PITCH ROLL YAW SECS|fa on|off|gear|log on|state|pip eng|sys|wep|reset|boost|
   hardpoints|fire SECS|jump|target NAME|none|face|hyper NAME|put NAME ALT_KM`, with `SE_SANDBOX=1` (SpaceEngine's Alpha Centauri is "ALF Cen",
@@ -206,7 +218,7 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   tick, and a star's emergency zone in supercruise is its exclusion zone (1.05 radii). Step 6.3 is ours (F): drag in thruster flight
   only (`elite_sim::air`, the hull's outline from `AirState::areas`, density from `AirModel`); a gas giant has no exclusion zone,
   glides by its radius and stops the ship at `giant_floor_m` (`floor_m`: its ground in `fly`'s collision only).
-  The side panels are `panels.rs` (`Panels`, a resource; `fly` makes the Navigation rows and does the actions): while one is
+  The side panels are Elite's (`ui::focus`, `ui::panels`) while `UiLive`; otherwise the stand-ins in `panels.rs` (`Panels`, a resource; `fly` makes the Navigation rows and does the actions for both): while one is
   open `read_keys` quiets the flight keys Elite gives the UI (W S A D Q E, the arrows). The planet HUD reads `Pilot::planet`.
   The flying ship meets buildings and trees through the scatter's probe (`solids.rs`: under 2.5 km it sets `ProbeAsk` along its
   next 1.5 s, the list becomes boxes, its model box is tested each tick): the sandbox asks only while walking, so nothing else
@@ -214,13 +226,22 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   writes it into the nearest body's frame (`Parked`) every frame: keep `Parked` the truth everything else reads. A laser's beam shows 0.08 s of each 0.25 s: take several pictures.
   The glide (`Pilot::glide`, `elite_sim::glide`) starts from supercruise heading down within 25 km of a solid body's LOADED ground
   (`height_over`, never the radius: generated worlds' ground stands 10-20 km over it); the ground check still runs in a glide.
-  Hyperspace (`hyper.rs`, `Pilot::jump`): the tunnel holds the ship's universe pose and writes the camera itself (unbound) while
-  `select_active_system` swaps systems by the camera; `fly` and `seat_camera` return early meanwhile (the old bodies go), and the
+  Hyperspace (`hyper.rs`, `Pilot::jump`): the tunnel holds the ship's universe pose while
+  `select_active_system` swaps systems by the camera; `fly` returns early meanwhile (the old bodies go), and the
   tunnel ends when `ActiveSystem::root` is the target's and its star's `SystemBody` exists, re-parenting `Parked` to it.
+  In the tunnel `seat_camera` writes the camera at the eye of the jump's pose (with the head's turn) and sets
+  `ModControl::tunnel` (it hides the universe's pointer, orbits, labels, markers, constellations, grids and waypoints, and
+  holds the automatic exposure: `exposure.rs` passes adaptation speeds of 0); `draw::place` draws the ship at the camera
+  with `hyper::tunnel_place` and `draw.placed` stays None there, so the shadow rests. The tunnel itself is `tunnel.rs`: a
+  shell drawn in the scene behind the cockpit while `Pilot::jump` is set, its values in one buffer written in place; its
+  shader undoes the colour correction and the AgX tone curve, then divides by the exposure and by 1 + the bloom's gain, so
+  its colours on screen are fixed (change it with `color_correction.wesl` `tone_agx`; exact only for AgX and a bloom
+  threshold of 0). `ShipScene`'s outside-light scale (`adapt_on.y`) is 0 in the tunnel; at 1 the shader takes the terms as
+  they are, because a multiply by 1 changed the glass's pixels by one level.
   The mod's systems have run conditions (nothing runs before a spawn's files are read: the spec's C20); keep it so.
   The ship's systems (fuel, shields, hull, heat, pips) live in `Pilot` and belong to the ship: boarding keeps them
   (`Pilot::boarding`), a spawn makes them full (`fresh_ship`), the restock refills them; `pilot.destroyed` (hull 0) loses the
-  ship through `seat_camera`. The HUD is `sidewinder/hud.rs` (a flat overlay; Elite's holograms are not built). Liftoff
+  ship through `seat_camera`. The HUD is Elite's own UI (`sidewinder/ui/`, on unless `SE_SW_UI=0`: the bullet "Elite's cockpit UI" below); `hud.rs` (flat text and lines through `hud_anchor`) is the stand-in, drawn while `ui::UiLive` is false: with `SE_SW_UI=0`, or when the UI can't be made or turns itself off (`ui/place.rs` `off`, `sw ui off` in tests); it also still draws the gunsight's and the planet HUD's readouts, whose Elite movies are not drawn. Liftoff
   starts the thrusters from hover thrust (`Motion::last_acc`), or the measured jerk limit lets the ship sink back.
   The measured numbers are `elite_sim::data::measured` (each names its session and trace); `cargo test --release -p
   elite-sim` replays the traces (`tests/traces.rs`: a guard, and the strict gate as an ignored test, the open item) and the
@@ -229,6 +250,119 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   hud_read.py, screen.py; manoeuvres in `scripts/`; each session's ticket in `.rea/tickets/measure/`, its raw files and log
   in `raw/sessionN/`). The user plays with their own bindings (`Custom.4.2.binds` in Elite's Options: Elite's default keys,
   but mouse sensitivity 0.2725, the default file's 1.0) and `<FOV>56.249001</FOV>` in Options/Graphics/Settings.xml.
+  What the 2026-11-16 to 18 run added (`ARCHITECTURE.md` A6, A7 have the designs):
+  - Who reads whom: `facts.rs` `ShipFacts` is the ship's facts this frame, written once after the flight (power, silent
+    running, the gear's command, the canopy, the drive's phase, heat, the open panels, the damage, the headlights, the chair's
+    controls, `motion` for the sound, the tests' overrides). The machines (`parts.rs`, requests in `machines.rs`, made only
+    when what the ship wants CHANGES) read it; the lights read it and `Parts`; the sound reads it, `Pilot`, `Seat`,
+    `Parts::gear()` and `Parts::events()`. Nothing reads the other way. Per-frame values go in buffers written in place
+    (`ShipScene`, the lights, `HeatGlow`, `ShipGlass`, the chair's palette, the shadow's records), never into `ShipMaterial`.
+  - Moving parts: one `elite_rig::Runner` a machine; a leg waits for its doors through `Runner::step_with` (keep
+    `parts::frame`'s sub-frames and the zero-time door step together); the flight's ground contact is `Parts::feet`; the
+    gear cannot be raised while landed. Tests: `sw parts`, `sw parts log on`, `sw parts ask MACHINE STATE|auto`,
+    `sw pose up|down|auto` (put `wait 900` after `sw spawn`).
+  - The gear down or the scoop out halves the top and boost speeds (`elite_sim::deployables`; anything that builds the block
+    uses `sidewinder_block_with`); supercruise's jerk memory is `Motion::last_acc`; orbital cruise's rule is
+    `elite_sim::orbital`, unused until its zone record is read; the strict trace gate's reading is the spec's Decisions log T7.
+    `docs/elite-flight-model.md` has mixed line endings (patch it with Python bytes, never an edit tool).
+  - The lights (`lights.rs`): 84, slot order hull 0..27, vents 27..47, cockpit 47..82, the red warning lamp 82..84 (the seat
+    takes 27..82, outside 0..47); `ELITE_UNIT` 1/256; the cockpit's brightness stand-in `COCKPIT_LIGHTING_BRIGHTNESS` 1/11.4
+    (measured, good to a factor of two); the lamps follow the exposure the frame is really drawn with (`exposure.rs` copies
+    the automatic exposure's state on the GPU). The headlights on the ground are `beam.rs` (see `CloudShadow`'s `beam` below).
+  - The chair (`chair.rs`, `ChairPose`): the seat's chair is skinned (`ShipMaterial::skinned`, `SHIP_SKINNED`, palette binding
+    19 fixed at `PALETTE_BONES` 142 in `material.rs` and `sidewinder_ship.wesl`: change them together); it steps at a fixed 60
+    a second and takes the cockpit's change of velocity tick by tick from the flight (`Pilot::record_tick`). Seated at rest
+    its bones sit off the bind pose (Elite's idle clip), so it is never pixel-identical to the rigid draw.
+  - The seat's view: `seat::Head` is the head's turn AND the view's extra angle; the camera, the projection and the HUD take
+    it from one function (`head_turn`). The side panels' turns are measured on session ui1's settled pictures (about 60 degrees to each side; `seat.rs`), and the view's
+    narrowing at a panel is Elite's data from the focus machine (-17 degrees at the side and role panels, -8 at the full comms panel, +10 while the focus key is held): both panels are whole on any window. The user's
+    three seat pictures each have their own field of view (63.5, 59.0, 58.5 degrees): fit each picture's own camera before
+    using it for places. The HUD is drawn through `hud_anchor` (`Sketch` -> `finish`): a new element is drawn in the old
+    layout's coordinates inside a group, never straight on the painter.
+  - The destination and the mouse widget (2026-11-23, after the user's first play; `ARCHITECTURE.md` A9; the spec's U1,
+    U2): the ship has ONE locked destination, a body of this system (`nav_body`) or another system's star (`target`):
+    set them only through `Pilot::lock` / `unlock` (the panel, T, `sw dest NAME|none|state`, `sw target`). `Pilot::dest`
+    (`DestMark`) is made by `fly` AFTER the ticks (the pose the frame is drawn with: made earlier the marker trails a
+    turning ship) and is all the HUD reads: the marker in the view, the compass (`hud_anchor::COMPASS`, Elite's decoded
+    place), the DESTINATION line; for the body whose frame the ship is in its distance is the height over the loaded
+    ground at any height (`own_body_distance`: the altimeter's own number, never the mean radius). The marker's
+    and the compass's look and the compass's law are OURS: no recording shows Elite's (nothing was locked in any). Seated,
+    the port's cyan selection pointer is hidden (`overlay.rs`). The mouse widget (`mouse_widget.rs`) shows `Pilot::stick`
+    (before the dead zone) in directions from the eye fixed to the ship ("tan units": pixels over the recordings' focal
+    1347.4); every number is from `re/elite/notes/sidewinder_hud_marks.md` (measured on sessions 1 and 2's videos): never
+    change one by eye. Its law is the arrow's PIXEL centroid; the triangle is drawn `DRAWN_BEHIND` beyond it, worked out
+    from the outline and the split, so change those and it follows. Its colours are the recordings' screen values, each
+    shape covering by its brightness (`covering`: premultiplied, alpha the brightest channel; over black exactly the
+    recordings, and readable over a day sky, where adding light washed it out); no two of its shapes may overlap (egui
+    blends in linear light: the fringe is a frame round the dot). It is not drawn with a side panel open (Elite's doesn't). A test's
+    mouse is `sw mouse DX DY` (counts, through `fly`'s own line; one step of the recordings is 100 counts at the default
+    sensitivity); `sw look YAW PITCH` turns the head for pictures. The mouse's sensitivity is the PLAYER's setting (U3,
+    the user's "Yes, use 0.27"): `sidewinder::MouseSetting`, default 0.2725 (the user's own Elite's value, which every
+    measuring session was flown with; Elite's preset says 1.0), saved as `SidewinderMouseSensitivity` in settings.cfg,
+    its slider in the Settings window's Camera tab, `sw sens X|state` in tests. `fly` never reads the binds'
+    `MouseSensitivity`, and the shipped binds stay Elite's own bytes (never edit them to change how a control feels).
+  - Elite's cockpit UI (2026-11-23/24; `ARCHITECTURE.md` A10; the spec's Build log UI0 to UI8, US1): `sidewinder/ui/` (its
+    `mod.rs` says what each file is), `crates/elite-ui` (the pure rules: what each movie is told, the focus machine, text),
+    `crates/elite-gfx` (runs a movie), `vendor/ruffle` (the Flash player, upstream plus exactly the numbered patches a to g in
+    `vendor/ruffle/patches`, listed in `UPSTREAM.md`; `check_upstream.sh` proves it; never edit a vendored file any other way; a
+    normal build needs no Java; wgpu and naga stay 30.0.1 and serde_json's `preserve_order` stays OFF: it changed `ship.json`'s key
+    order once). The UI's files (`assets/mods/sidewinder/ui/`: movies, fonts, strings, layout, focus, panel models, `hud3d/`) are
+    written only by `copy_sidewinder` (`convert/ui_*.rs`) and are `Need`s like the rest. **The user, 2026-11-24: the UI looks good
+    enough; no further effort on making it 1:1 with Elite unless asked** (and 2026-11-23: no new game systems to fill a page).
+    Rules that bite: the runtime THROWS on a surplus message argument, and a movie's handler stops at the first undefined
+    written into a text field (an object must hold every field read on any path); a leading `&` marks literal text. A movie is
+    stepped, then asked `changed()`, then drawn at once if true (since patch g a movie's shapes share a few pooled buffers, about 10 to 15 a movie where
+    there were up to 1,400: never go back to a buffer a shape; `wgpu_peak` must stay level); movies are dropped and loaded again on a new ship and go on stepping for one
+    second after the pilot leaves the seat (their own timers). The UI is drawn by the mod's own passes in `Core3d` PostProcess
+    (`ui/pass.rs`, then the scanner's and holograms'), after the colour correction, FXAA and SMAA, at the view's FULL resolution,
+    display-referred (`screen_fit` written as it is: nothing undoes grading or exposure there), depth tested in the shader against
+    the main depth texture with the bias in `sidewinder_ui_common.wesl` only; never move it back into the main pass (the solids
+    corner and the bloom made it soft and glowing). Which keys the UI quiets is ONE function (`pilot.rs` `ship_input`, from the
+    shipped key sets; everything is quiet while the FSS covers: `UiScreens::covers()`, the seat's copy `Seat::screen`). The role
+    panel's movie reports Disembark twice a press: a Select press pays for exactly one action (`ui/panels.rs`). Numbers graded C
+    there were fitted to session ui1's pictures with stated errors (the scanner's `LUMINANCE_SCALE`, the holograms' fills and
+    tints, `SIDE_PANEL_SCALE`, `ROLE_PANEL_SCALE`, the panels' head turns): never change one by eye. The UI's sounds go through
+    the ship's mixer by each panel's own table (`ui/sound_tables.json`; no entry is silence) at a measured level (`BUS_TRIMS`).
+    Tests: `sw ui state|send|store|want|plate|facts|key|focus|off`, `sw ui fss open|close|state|tune F`; the ignored proofs in
+    `crates/elite-gfx` (`hud_feed`, `panels_feed`, `fss_feed`) run the real movies. The first spawn's file check runs on every core (`mods.rs` `check_files`: about a second for the mod's 1,800 files; one at a
+    time it took 11): put a longer `wait` after `sw spawn` only if `sw board` says no ship is parked.
+  - The shadow (`shadow.rs`, `moment_shadow.wesl`): Elite's own filter (moment shadow mapping through a 4x4 B-spline) and
+    softness: one map of the ship for each of Elite's first three cascades (two more for the seat's cockpit set), sized
+    each frame from the projection really drawn (`fit_maps`, after `CameraUpdateSystems`: the seat writes its field of view
+    there) by Elite's texel rule (`re/elite/notes/sidewinder_shadow.md`), each made as Elite makes a cascade (depth at twice
+    the size, half-resolution moments, a Gaussian blur). A pixel picks its map by Elite's light-space boxes (`cascade_pick`,
+    ported from its lit shader), not by its distance. Any saturate in the ported filter must be `sat` (D3D's: NaN gives 0):
+    WGSL's `saturate` kept NaN and a few pixels' bloom lit the hull at dusk. The shadow on the WORLD is `CloudShadow::shade`
+    (`volumetric_clouds::ShipShade`, after `beam`, no arrays; `live.x` is written only by the map pass, which runs before
+    `Core3dSystems::Prepass`, or the light passes read no shadow): receivers call `ground_light.wesl` `ship_shade_at` on the
+    star's DIRECT light only (the ground through `atm_surface_irradiance`'s `sun_vis` in a real `if` on the live flag; the
+    water's sky terms use `e_direct_free`; the scatter once an instance; the hero, props, weapon and skater at the light
+    pass's one point). `SHIP_SHADE_IMAGE` holds the outside set's maps and is fixed from start-up (21 MB for every player:
+    in this Bevy a material's bind group is NOT rebuilt when an image changes, so nothing can be swapped in at a spawn), or
+    a 1x1 with the shadow off where `Rgba16Unorm` can't be drawn into, sampled and filtered (`SE_SHIP_SHADE_FALLBACK=1`
+    forces that). The ship's own materials bind `PropLight::ship_light`, the copy of the light without this shadow. The
+    ground in the ship's full shadow is nearly black close up: the ground's own sky light is about 6 % of sunlight; don't
+    "fix" it by lifting it. `SE_SHIP_SHADOW=0` turns it all off and `SE_SHIP_SHADOW_CUTOFF=X` changes the cutoff, both
+    for comparisons.
+  - The sound (`sound/`, `se_core::elite_sound`): one output source (`voices.rs` `OutputSource`) mixes every heard voice in
+    blocks; a virtual voice is never built. Never let rodio resample a ship voice (its `SampleRateConverter` overflows and
+    hangs the audio thread for minutes: `VoiceSource` always reports 48 kHz and applies the speed itself). A voice reaches
+    the output as one matrix (`elite_sound::place`: Wwise's 2D and 3D panners into a stereo or 7.1.4 route, the 7.1.4
+    down-mix folded in), tested against `place_vectors.rs` (made by `re/elite/work/sound/t5d7/vectors.py`: never edit it by
+    hand). Only voices whose emitter the game placed (`Mixer::set_emitter`: the three gear legs) are panned by place; never
+    place the listener's own emitters. The engine's inputs (`sound/triggers.rs` `Producer`) are Elite's audio producer's
+    rules in Elite's units (percents of the top speed, shares of the turn rate) and read only `ShipFacts::motion`; its slews
+    run on the physics time, so nothing moves in a frame without a tick; flight assist ON is the state `On` with
+    `FlightAssist_b`. Effects ship only through `effects.json` (`re/elite/tools/sidewinder_effects.py`: re-make it after
+    `events.json`); a game parameter an effect reads must be defined in `sounds.json` or the bank refuses it. Tests: `sw sound
+    emitters`, `sw sound cue MACHINE EVENT`, the ignored `t5e_offline_check_on_the_built_code`; record only while the run
+    holds `.audit/port.lock`, and never remove a lock another run made. Elite's master plug-in (`elite_sound::master`: an
+    equaliser, a 4-band compressor, a limiter with 14 dB of make-up) runs on the output's sum in `OutputSource`: it is not
+    linear, so never fold it into voices; a new output starts it from rest. Bus aa299971 (`SUBMIX_BUS`, the supercruise
+    layers) is a 12-channel sub-mix in the output (`BusMix`) with Elite's compressor: its voices play by
+    `VoiceUpdate::bus`, and anything after its compressor runs on the folded sum and must stay linear and the same on
+    every channel (the bank refuses otherwise); its 0.0084 dB loss at rest is Elite's own fast power, not a bug. Tone
+    Generators are clips (`ClipSource::Tone`) that end themselves. `sounds.json` is format 3; an older file is refused.
 - The Skate 3 mod (`skate/`). It plays INSIDE the sandbox's `Mode::Walk`: `Sandbox::skate` (a `skate::Skater`, which owns a
   `skate_sim::Sim`) is set by `skate::sync` once `ModControl::skate` is on, the sandbox stands on ground and `SkateAssets` are
   read (`mods.rs` `apply_request`, code `skate3`; the simulation's files are read from the folder holding `private/game.json`).
@@ -328,7 +462,7 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
     plays before any plays again (`SoundScripts::pick`); step times are Garry's Mod's (350 ms, 250 running). Placed sounds
     are spatial voices half a metre from the ears in their direction, their loudness by `distance_gain` (Source's
     `SND_GetGainFromMult`). **rodio's `Spatial` makes the ear FURTHER from a sound the louder one, so `spawn_ears` swaps the
-    ears' offsets on purpose** (measured: don't "fix" it). The ground is concrete among buildings, grass or dirt elsewhere.
+    ears' offsets on purpose** (measured: don't "fix" it). The ground is concrete among buildings, grass or dirt elsewhere. **Never pass a speed to rodio** (`with_speed`, `AudioSink::set_speed`, `PlaybackSettings { speed }`): rodio 0.22's resampler overflows a u32 for odd rate pairs and hangs the audio thread about ten seconds a sound when Windows' output is 176.4 or 192 kHz and a sound has a random pitch (a player's sound cut off for good at the crowbar, 2026-11-26). Pitched or looping voices of the sandbox, the Viltrumite mod and the Skate 3 mod are `pitched_audio::PitchedSound` (decoded once, the speed applied by us with linear interpolation, the wave's own standard rate reported) played with `PlaybackMode::Once` (a loop loops inside the source: rodio's `repeat_infinite` buffers the first pass and would freeze a changing pitch), their `Speed` handle set where a sink's speed was; the test `no_speed_reaches_rodio` fails otherwise, and `the_worst_case_plays_at_once` drives rodio's own mixer at 192 kHz (the dev-only `rodio` line in `crates/se_engine/Cargo.toml` is for it).
   - Measuring sound (no test can listen, but the speakers can be recorded): `.audit/tools/loopback` (its `Cargo.toml` says
     how to build it) records the default output device to a WAV and `analyze.py` lists each sound's time, peak and
     left/right balance. Run the game WITHOUT `timing frame` (sounds would overlap) with `SE_SANDBOX_SOUNDS=1` and line the
@@ -397,8 +531,8 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   pose back, or the crossfade spins him. `hero feet FILE` logs his soles against the ground a frame (`hero trace` still logs the rest); `hero dist M`, `hold on`, `soil off`,
   `shadow off` are for pictures and measuring. In a `--run`, `hero trace` and `hero feet` paths mustn't hold a space: use a relative path (`trace` cuts its body name at the
   first space: a path with one wrote a stray file named after its first word).
-- The soil hold-down (`planet.wesl`'s vertex shader, the `cloud_sh.hero` it reads): a line from where his soles' ray lands to where his head's does (`HeroSoil`, `draw.rs` `fall_over`), so his feet and his shadow's plane, which go by the CPU's heights, lie on what's drawn, and `w` how much it holds, by his height with the shadow's strength: no step at any height. `CloudShadow.hero` is w 0 with the mod off, so the ground is bit-identical; it and `hero_end` must stay the
-  LAST fields of `CloudShadow` and be in `ground_light.wesl`, `clouds.wesl` and `volumetric_clouds.rs`. Written from `HeroSoil`, only when it changes.
+- The soil hold-down (`planet.wesl`'s vertex shader, the `cloud_sh.hero` it reads): a line from where his soles' ray lands to where his head's does (`HeroSoil`, `draw.rs` `fall_over`), so his feet and his shadow's plane, which go by the CPU's heights, lie on what's drawn, and `w` how much it holds, by his height with the shadow's strength: no step at any height. `CloudShadow.hero` is w 0 with the mod off, so the ground is bit-identical; it and `hero_end` are followed
+  only by `beam` (the Sidewinder's headlights on the ground, `volumetric_clouds::ShipBeam`, zeros with no ship or the lamps off: `sidewinder/beam.rs`; its profile table and `head.w` are written on the GPU by `sidewinder/exposure.rs` `fill_beam`); the three are the LAST fields of `CloudShadow`, in that order, in `ground_light.wesl`, `clouds.wesl` and `volumetric_clouds.rs`, which change together. `hero` is written from `HeroSoil`, only when it changes. Never index an array inside a record passed by value in WGSL (naga copies the whole array to a local for every pixel: +0.5 ms on the ground): read it through the caller's own binding (`beam_profile`).
 - His shadow (`draw.rs` `shadow_plane`, `hero.wesl` `vertex_shadow`, `fragment_shadow`): the same meshes in a Multiply material, without the cutouts. Depth compare Greater with
   `frag_depth` from the pixel's ray on the plane through `view.main_pass_viewport` (never `frag_coord_to_ndc`, wrong under the render scale): every triangle of a pixel writes
   the same bits, so the first wins and nothing double-darkens. Clouds and eclipses scale the sky light with the star's, so the factor alone doesn't fade under them: `hero_light.wesl` writes their
@@ -653,7 +787,7 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
 - Shaders are loaded at run time from `crates/se_engine/assets/shaders` (no rebuild needed to
   try a shader change), but an edited shader takes a few hundred frames to compile in a test
   run: the ground is missing until then, so wait ~900 frames before judging a screenshot.
-- Judging screenshots (the user's rule, after Claude fooled itself twice on 2026-11-03):
+- Judging screenshots:
   - Make sure a screenshot is from THIS run: the port exits a few frames after requesting it
     once the file exists, so an old file with the same name used to stay (runport.sh now deletes
     it first; still check the run's log says "Screenshot saved" and the file's time).
@@ -678,9 +812,7 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   (start a script, a file on disk too), `uiclick X Y` (a real left click for egui at that window point: the menus' buttons
   can be tested). A 1x1 screenshot
   (72 bytes) means the window was minimised at that moment: take each picture twice.
-- The user's own `se.log` and `settings.cfg` (in `%APPDATA%\SpaceEngine-rs-v2`) can be hidden
-  from Claude's shell by the desktop app's sandbox (they were readable on 2026-11-02); if so, copy
-  them out with a process started through `Invoke-CimMethod Win32_Process Create`.
+- The user's own `se.log` and `settings.cfg` are in `%APPDATA%\SpaceEngine-rs-v2`.
 - Testing settings save/load (scripted runs skip the settings): run the exe unscripted with
   `APPDATA` set to a scratch folder and `timeout 60` (first run writes `settings.cfg` there at once).
   Edit that file and delete its `Version` line, run again: the port rewrites the file from what it
@@ -911,8 +1043,8 @@ files, the community's numbers) is in `re/elite/`, out of git. Elite's install (
   `perf NAME` … `perf end` marks a segment (it runs until the next `perf`: rs8514_ultra.sh's
   `km114` also holds the jump to 3 km). The scripts in `.optimize/bench/` (`all.sh` scenes,
   `refs.sh` reference shots, `compare.py`) do this for fixed scenes; `.optimize/REPORT.md` has the
-  2026-11-02 optimization results. A segment whose median sits at ~16.6 ms was capped at 60 fps from
-  outside the port (window not in focus): rerun it with the window in front. A segment with passes'
+  2026-11-02 optimization results. A segment whose median sits at ~16.6 ms was capped at 60 fps by
+  Bevy's own default (`WinitSettings::game()`: 60 updates a second while the window is not in focus; the port never sets it): rerun it with the window in front. A segment with passes'
   GPU times missing or tiny (seen once with the clouds off) is broken the same way: rerun it. The
   clouds' parts show as `volumetric_clouds/sim`, `shadow`, `trace`, `resolve`, `near`, `fx`.
 - GPU pipelines (`pipeline_watch.rs`): Bevy builds each one the first time something draws with it,

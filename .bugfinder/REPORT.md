@@ -80,7 +80,7 @@ All 10 high, these medium: 03-1, 03-3, 03-4, 04-1, 04-2, 04-3, 04-4 (Moon/Star p
 ones: 03-2, 06-4, 07-4, 08-5, 08-7, 08-8, 09-5, 10-3, 10-5, 02-4, 05-4, 11-4, 01-3, 01-4
 (generated worlds).
 
-## Won't fix now
+## Open at the end of round 1
 
 All of these except 01-5 were fixed afterwards in round 2, at the user's request (see "Round 2"
 below).
@@ -130,7 +130,7 @@ Decisions the fixers made:
 
 
 ### What's left
-- Everything under "Won't fix now" above.
+- Everything listed under "Open at the end of round 1".
 - A parked or landed ship whose generated system is freed from the cache (more than 64 systems
   visited) still loses its place. `system.rs` would need to keep ships' systems loaded.
 - Optional (F2): `terrain.rs` around line 764 could also call `with_se` for bodies with a bump
@@ -155,7 +155,7 @@ Decisions the fixers made:
   is up to date.
 - Smoke runs on Earth's surface (night and day): no panics.
 
-## Round 2: the "won't fix now" items
+## Round 2 follow-up
 
 The user asked for 9 of the 10 to be fixed; 01-5 stays as it is. Four fixers (G1-G4,
 `fixers/G*.md`) worked in worktrees on top of the round-1 fixes. Their changed files were

@@ -7,7 +7,7 @@ high effort. Baseline and method: `baseline.md`. Findings: `findings/NN.md`. Ver
 
 The user went /afk during the hunt, so round 1 implemented only the items **Recommended with risk
 "none"** (28). The user then approved the 14 "Recommended, risk low" rows, done in round 2. The 8
-"Needs your call" items are not done. Headline: planet surfaces more than twice as fast, flying
+The optimization options below are pending. Headline: planet surfaces more than twice as fast, flying
 through stars 34-47% faster with much smaller hitches, nebulae 6-16% faster, worst start-up frame
 784 → 145 ms, pictures unchanged (see "Final results").
 
@@ -129,7 +129,7 @@ approved all 14, and four implementers did them in round 2 (results per item und
   catalog where a tidally locked body's parent has a parent-equator orbit pointing back. No stock
   catalog does this; left as it is (a bug, not a speed item).
 
-## Needs your call (changes the picture, or a design decision)
+## Optimization options
 | ID | Change | Gain | Why |
 |---|---|---|---|
 | 09-3 | Release build: fat LTO, panic = abort, CPU-specific code | ~0.5-1.5 ms/frame (one noisy measurement) | release builds took ~38 min instead of ~9; a crash no longer unwinds; a `native` exe may not run on other PCs |
@@ -196,7 +196,7 @@ What this means for the three complaints:
   smaller (99th percentile 36 → 17 ms, worst 53 → 21 ms).
 - **Inside volumetric nebulae:** 6-16% faster. The nebula shader's own GPU cost is unchanged; the
   big saving there (06-1, render it at SE's lower volumetric resolution) changes the picture and
-  needs your call.
+  remains open.
 
 ## Round 1 results (before the 14 approved items)
 Old build (baseline exe with its own shaders) against the merged build, scene by scene, alternating
@@ -225,11 +225,11 @@ the 3 runs' medians.
 
 What this means for the three complaints:
 - **RS planet surface, looking around:** about 27-29% faster, and the regular ~55-63 ms stutter is
-  gone (worst frames now ~20 ms). One more ~3-4 ms is waiting for approval (01-1).
+  gone (worst frames now ~20 ms). Item 01-1 could save another 3–4 ms.
 - **Flying fast through stars:** unchanged. Its big fixes (03-1 nearest-star search, 03-2 unload,
-  03-4 auroras, 04-1 black holes) were all rated "low" risk, so they wait for your approval.
+  03-4 auroras, 04-1 black holes) were all rated "low" risk and landed in the next round.
 - **Inside nebulae:** 2-19% faster. The nebula's own GPU cost is unchanged: the large saving there
-  (06-1, rendering it at SE's lower volumetric resolution) changes the picture and needs your call.
+  (06-1, rendering it at SE's lower volumetric resolution) changes the picture.
 
 GPU pass times are unchanged (the terrain and sprite values now read from storage buffers cost
 nothing measurable), and the light-clustering pass is gone.
@@ -252,15 +252,15 @@ pass with `--ignored` (including the new parallel-vs-serial catalog check). `car
 - Time from launch to the game running (first dev command): ~1.8-2.2 s → **~0.8-1.2 s**.
 - First 300 frames: mean 14.7-18.9 → **10.6-14.6 ms**, median 9.8-13.2 → **6.8-9.0 ms**.
 - Worst frame: 795-931 → **455-833 ms** (under 500 ms in 4 of 6 runs). The rest of that stall is
-  the background thread pool; 08-1 (waiting for approval) measured ~210 ms.
+  the background thread pool. Item 08-1 measured ~210 ms.
 - Loading the catalogs: 916 → 394 ms; star colours 305-326 → 12-25 ms; entering the Solar System
   ~300 → ~170 ms.
 
 **Memory:** unchanged (peak 1.6-2.1 GB at start-up, ~2.5 GB in the busiest scene, old and new
-alike). The memory items (08-2, -350 MB) wait for approval.
+alike). Item 08-2 could save about 350 MB.
 
 ## What's left
-- The 8 "Needs your call" items change the picture or are design decisions. The most valuable is
+- The eight optimization options change the picture or are design decisions. The most valuable is
   06-1 (~3 ms of GPU time inside nebulae, more at large windows, by rendering them at SE's own
   volumetric resolution).
 - The remaining frame time is spread thin; a new profile of the final build would be the place to

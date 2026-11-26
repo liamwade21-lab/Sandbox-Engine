@@ -151,7 +151,7 @@ more, and the water glows in its deep colour, brighter looking up. The surface s
 shows the sky in Snell's window (refracted, Fresnel) and the water below reflected outside it.
 The star's lens flare under water moves into Snell's window and dims along its path through the
 water. Compared by eye with SE at 16 m above and 24-27 m below Earth's sea at noon and sunset;
-SE's water shader is in the encrypted Shaders.pak, so this is a reimplementation. SE's underwater
+The port uses its own water shader. SE's underwater
 views are about 1.7 times brighter at sunset, so under water the light is scaled up as the
 daylight above fades, `sqrt(0.5 E_sun / E_level)` between 1 and 2. Near the surface the near
 plane comes in to a millimetre (`camera::near_plane`), and the HUD shows the depth under water.

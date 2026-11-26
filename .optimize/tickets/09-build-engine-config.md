@@ -10,7 +10,7 @@ clustering (`clustering/elapsed_gpu` 0.06 ms, `cluster_on_gpu`, `prepare_cluster
 GPU passes appear in surface scenes. The release profile is `lto = "thin"`, `codegen-units = 1`.
 
 **Questions:** compiler/profile settings (fat LTO, panic strategy, `-C target-cpu`; mark any that
-could change float results or crash behaviour as "needs your call"); Bevy default features/plugins
+could change float results or crash behaviour as a behavior change); Bevy default features/plugins
 the port doesn't use (PBR light clustering, shadows, prepasses, gltf, a second audio backend...)
 whose systems still run every frame; system sets forcing serial execution (many systems taking
 `ResMut` of the same resource, exclusive systems, `.chain()` where not needed); logging (`info!` /

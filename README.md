@@ -6,8 +6,7 @@ textures, atmosphere tables, models, music, saved places, the JPL ephemeris) dir
 from an existing SpaceEngine installation at runtime. No SpaceEngine assets are
 copied into this repository.
 
-> Internal use only. The encrypted `data/shaders/Shaders.pak` is not read; all
-> shaders here are new WESL code.
+> Internal use only. The renderer uses WESL shaders.
 
 ## Requirements
 
@@ -370,13 +369,15 @@ Not there: grinds (the planet has no rails), the props don't feel the board (the
 
 The third mod is **Elite Dangerous's starter ship**. Its row in the Q menu's Mods tab says **Spawn**: a click puts a Sidewinder
 on its landing gear where you look, 18 to 60 m ahead, nose towards you (a second click replaces it; while one is parked a
-second row, "Refuel, repair, restock", fills it up for free). It is solid: walk round it, crouch under it, stand on it.
+second row, "Refuel, repair, restock", fills it up for free). It is solid: walk round it, crouch under it, stand on it. It is a prop like the others: Z undoes it, "Clean up everything"
+removes it, and the physics gun picks it up, carries it, throws it and freezes it (board a ship left hanging or tilted and
+you are flying it; B gets you out of it all the same).
 Walk up to it and look at it from within 6 m: **E boards it**. Seated, Elite's own default keys apply, read from copies of
 Elite's key files:
 
 | Key | What it does |
 |---|---|
-| Mouse | Pitch (up and down) and roll (left and right): the mouse moves a virtual stick that stays where you leave it |
+| Mouse | Pitch (up and down) and roll (left and right): the mouse moves a virtual stick that stays where you leave it. Elite's mouse widget shows where the stick is: a yellow dot in the middle of the view and an arrow that moves off it the way and as far as the mouse is deflected (move the mouse back until only the dot shows to stop turning). How far the mouse must move is "Ship mouse sensitivity" in Settings (the Camera tab): 0.2725 by default, Elite Dangerous's own default is 1.0 |
 | A, D | Yaw |
 | W, S; X | Throttle up and down; throttle to zero |
 | Q, E; R, F | Thrust left and right; up and down (R lifts it off the ground) |
@@ -384,28 +385,61 @@ Elite's key files:
 | Arrow keys | The power distributor's pips (up engines, left systems, right weapons, down resets) |
 | U; left mouse button | Hardpoints out and in; fire the two pulse lasers |
 | J | Frame shift drive: supercruise (again to drop out); with a target, a hyperspace jump |
-| T | Target the star nearest the nose within jump range (again on nothing clears it) |
-| 1; 4 | The left panel (Navigation: this system's bodies and the stars in range) and the right panel (modules, ship, status); Q/E tabs, W/S rows, Space selects, A/D changes, Backspace closes |
+| T | Target the star nearest the nose within jump range (again on nothing clears it). The ship has one destination at a time: a star system (J then jumps) or a body of this system (J then is supercruise) |
+| 1; 4; 2; 3 | Elite's own cockpit panels: the left one (Navigation: this system's bodies and the stars in range), the right one (Home, Modules, Fire groups, Ship, Inventory, Status), the comms panel and the role panel (Disembark gets you out, as B does). Your head turns to the panel. W/S/A/D move, Space selects, Q/E change tab, Backspace closes. Space on a Navigation row opens Elite's pop-up to lock it as the destination: a ring with its name and distance sits on it in the view and the compass left of the scanner shows which way to turn. Holding Left Shift and pressing a direction also picks a panel |
+| ' (apostrophe) | The FSS scanner screen, only in supercruise with the throttle at zero: the system's spectrum with a peak for each planet and moon. Backspace closes it. Nothing is scanned or discovered |
+| PageUp, PageDown | The scanner's range, 500 m to 8 km |
 | Z | Flight assist on and off |
 | L | Landing gear |
+| Delete; Home; Insert | Silent running (the shields drop, the heat builds); the cargo scoop; the lights (at night the headlights light the ground, trees and buildings ahead) |
 | Middle mouse button | Head look (then the mouse turns your head; far left or right focuses a panel) |
-| B | Get out (only when landed) |
+| B | Get out, anywhere. Landed, or with the ship within about 6 m of the ground (hovering, tilted, even overturned), you step out beside it and the ship stays, set on its feet. Higher up, in space, in supercruise or in a hyperspace jump the ship disappears and you are in free flight (as with V) where you sat |
 
 It flies by Elite's own rules, read out of Elite's program: flight assist, the speed cap, the thrusters' limits, the turn rates,
 the power distributor, heat, shields, fuel, supercruise's gravity wells, the glide into a planet, hyperspace's countdown and
-cooldowns, stars' heat (`docs/elite-flight-model.md`). The ship's numbers that are not in the program come from measuring
-sessions in the real game (its accelerations, flight assist's timing, the turn rates at rest, the idle fuel burn, the hyperspace
-tunnel's length) or, until a session measures them, are the community's numbers or stand-ins, each one labelled in
-`crates/elite-sim/src` (the spec's grades A to F say where every part comes from). Hyperspace goes between SpaceEngine's own
-stars (Alpha Centauri is "ALF Cen" in SpaceEngine's catalog), with Elite's fuel formula. Some of it is the port's own, not
-Elite's, and is labelled so: real air's drag in thruster flight (Venus's thick air holds the ship to about 27 m/s), flying down
-into a gas giant to the port's floor 200 km under Jupiter's clouds, every solid world landable. The HUD and panels are flat,
-laid out from Elite's, not its holograms; the ship has no sounds yet.
+cooldowns, stars' heat, the halved top speed with the gear down or the scoop out (`docs/elite-flight-model.md`). The ship's
+numbers come from Elite's own records for the ship and its stock modules, or from measuring sessions in the real game (its
+accelerations, flight assist's timing, the turn rates at rest, the idle fuel burn, the hyperspace tunnel's length); the few
+still not known are labelled in `crates/elite-sim/src` (the spec's grades A to F say where every part comes from). Hyperspace
+goes between SpaceEngine's own stars (Alpha Centauri is "ALF Cen" in SpaceEngine's catalog), with Elite's fuel formula. Some
+of it is the port's own, not Elite's, and is labelled so: real air's drag in thruster flight (Venus's thick air holds the ship
+to about 27 m/s), flying down into a gas giant to the port's floor 200 km under Jupiter's clouds, every solid world landable,
+the look of the hyperspace tunnel.
 
-Elite's real hull and cockpit are in its encrypted files, which are never opened: the hull is Elite's own simplified Sidewinder
-model (matched to the real ship's outline from above), the gear and the cockpit are stand-ins. The files are made once from your
-own Elite install by the ignored test `copy_sidewinder` (CLAUDE.md says how). Elite Dangerous and its files are Frontier
-Developments'. The plan, with what is done and what each part's accuracy is: `docs/spec-mods-sidewinder.md`.
+The ship itself is Elite's:
+
+- **The model:** the real hull and cockpit with Elite's materials, paint job (white with red stripes), decals and glass, lit
+  by Elite's own lighting maths; the canopy cracks when the hull is damaged and breaks when breached.
+- **The lights:** all 84 of the ship's lights with their blink rules, the cockpit's panel lamps, the vents' glow with heat,
+  and the headlights' beam on the ground at night.
+- **The moving parts:** the landing gear, its doors, the hardpoint doors, the heat vents and the cargo hatch under the belly
+  (the cargo scoop's switch opens it), moved by Elite's own rigs and
+  state machines at their real timings; the pilot's chair, whose throttle lever, stick and trigger follow your controls.
+- **The shadow:** by day the ship shadows itself (the cockpit's inside, the underside) and the ground under it, with Elite's
+  own shadow filter and softness.
+- **The sound:** the ship's own sounds (the engines, the boost, flight assist, the frame shift drive, supercruise, the gear,
+  the cockpit, the ship's voice), triggered and mixed by the rules of Elite's audio engine.
+- **The seat and its displays:** Elite's field of view and Elite's own cockpit UI: the game's own Flash screens (the
+  gauges, the weapons ring, the info strip, the four panels, the FSS screen) are run inside the port by the open-source
+  Ruffle Flash player (ruffle.rs, MIT / Apache-2.0; a patched copy is in `vendor/ruffle`) and shown on Elite's own panel
+  shapes in the cockpit, fed by the ship's real numbers; the scanner disc and the two holograms (your ship; the
+  Orrery, or the locked star or planet) are drawn from Elite's own data and shader maths; Elite's UI sounds play
+  through the ship's mixer. All of it is drawn at the screen's full sharpness, whatever the render scale. Opening a
+  panel turns your head to it. Through a hyperspace jump you stay in the cockpit and see the tunnel outside. The
+  mouse widget in the middle of the view is Elite's own, measured from recordings of the real game; the destination's
+  ring in the view is the port's. `SE_SW_UI=0` brings back the port's older flat stand-in HUD and panels (they also
+  take over if Elite's UI cannot be made).
+
+Known differences from Elite: the scene's exposure is the port's own; steam, sparks, glass particles and reverb are not built;
+the canopy's glass is drawn before the clouds; near planets supercruise uses a stand-in speed cap instead of orbital cruise;
+the gunsight and the planet HUD are still the port's flat readouts (their place on screen was not found in Elite's files); the
+scanner shows no contacts (there are no other ships); pages with nothing behind them in the port (missions, cargo, contacts)
+are empty; the FSS's tuning keys do nothing; the ship's hologram shows a maze of lines inside where Elite's is clean;
+Elite's low hum at rest is missing (it was not found among the ship's sounds); the hyperspace tunnel's look is the port's.
+
+The mod's files (about 1,820 files, 340 MB, in `assets/mods/sidewinder`) are converted from Elite's own by the ignored test
+`copy_sidewinder` (see `CLAUDE.md`). Elite Dangerous and its files belong to Frontier Developments. See
+`docs/spec-mods-sidewinder.md` for the asset plan and accuracy grades.
 
 ## Architecture
 

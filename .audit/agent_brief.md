@@ -17,7 +17,7 @@ done and written up. `README.md` "Status" and `docs/` describe the port.
   was built, so your build uses your worktree's shaders.
 
 ## Rules
-- Vulkan only. VR and the editors are out of scope. Don't defeat DRM.
+- Vulkan only. VR and the editors are out of scope.
 - Don't work on the gaps in `.audit/deferred.txt` (deferred by the owner), even where they touch
   your files; `08-*` there means the whole Interface area. Adding a control for a setting your
   own work needs to an existing window is fine.

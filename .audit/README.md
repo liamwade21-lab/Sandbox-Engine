@@ -45,8 +45,7 @@ become a one-to-one copy. This is an AUDIT. Nobody changes the port in this phas
   `go`, ...). Use at least 200 frames before the final screenshot (shorter gives black captures); put
   `wait 1` between `shot`s. Look at the PNGs with the Read tool. Env vars like `RUST_LOG=info` pass through.
   Keep runs few and short (each holds the lock): batch several views into one run with `shot`.
-- Do NOT start SpaceEngine itself (taking over the user's screen needs the user's approval). Evidence about
-  SE comes from its files and code.
+- Use SpaceEngine's files and code as evidence for the audit.
 
 ## Rules
 

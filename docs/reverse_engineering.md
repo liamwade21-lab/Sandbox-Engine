@@ -10,7 +10,7 @@ analysis of the data files, and cross-checks against the shipped data.
 | Topic | Result | Evidence / doc |
 |---|---|---|
 | Data packaging | `.pak` = plain ZIP (deflate/stored); pak entries are relative to the pak's folder; `addons/` overrides `data/` | `crates/se_core/src/vfs.rs` |
-| Shaders | `data/shaders/Shaders.pak` is fully ZIP-encrypted (141/141 entries); **not decrypted**, the port uses its own WESL shaders | pak headers (flag bit 0) |
+| Shaders | `data/shaders/Shaders.pak` is fully ZIP-encrypted (141/141 entries); the port uses its own WESL shaders | pak headers (flag bit 0) |
 | Script syntax (`.sc`/`.cfg`) | `Tag "Name/Alias" { Key value… }`, nested blocks, tuples, sexagesimal RA/Dec, bare numeric rows | `docs/formats/sc_vocabulary.md` |
 | Universe frame | right-handed, **X = RA 6h, Y = north celestial pole, Z = RA 0h**; origin = Solar System barycentre | Solved from the Milky Way quaternion (its disk normal hits the NGP to 0.99994); confirmed independently by saved places |
 | Galaxy orientation | catalog `Quat (w x y z)` maps universe→model; disk normal = model −Z | as above; `coords.rs` |

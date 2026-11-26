@@ -1,35 +1,47 @@
 # Progress
 
-## Waiting for you (the Sidewinder mod)
+## Now (2026-11-26): version 1.3.0, with the Sidewinder mod and the sound fix
 
-1. **Nothing for the measuring sessions unless one stops**: you allowed the agent to open Elite and log in through the
-   launcher's "LOG IN WITH STEAM" (2026-11-14). It types nothing; if a password, code, Steam Guard or terms screen appears
-   it stops and this item comes back. Sessions 1 (the shakedown) and 2 (the first flight measurements) worked; Elite was
-   closed through its own menu afterwards (you asked, 2026-11-14), the Sidewinder left at rest in open space in Synuefe
-   XM-K b28-1. The next session reopens it.
-2. **Fly the mod yourself, with the keyboard and mouse and with a pad:** in the sandbox, Q, Mods, Sidewinder to spawn it;
-   walk up and E to board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust,
-   Tab boost, the arrows for pips, Z flight assist, L gear; J supercruise (dive at a planet for the glide), T to target a
-   star ahead and J to jump; 1 and 4 the panels; come down slowly with the gear down; B to get out once landed (README's
-   table has every key). The tests can't press a real mouse, keyboard or pad (step 7.1's pad flight needs you): say how it
-   feels against Elite and anything wrong.
-3. **Refuel the Sidewinder in Elite (this blocks measuring session 3):** the main tank is down to 0.8 t of 2 (the reservoir
-   0.27 t). Session 3 started Elite, saw 0.8 t and stopped before flying, by its rule (under 1.0 t). Most of the drop was
-   Elite left running idle after session 2 (it burns about 0.4 t an hour just sitting). Fly to a station and refuel (the
-   agent never does: station services are yours), then tell me "refuelled"; you can leave the ship docked or in open
-   space (if docked, the agent uses Launch only).
-4. **Turn Elite's music volume to 0 (Options, Audio), or tell me the agent may do it:** step 0.7 looked for the
-   Sidewinder's sounds among Elite's 245,156 open sound streams by matching the session recordings, and found none: the
-   music plays under every recording (the agent identified the track), and the ship's sounds look made by the game or kept
-   in the encrypted files (never opened). With the music off the next session records each sound on its own from the
-   speakers (the spec's fallback, grade E). It's your setting, so I won't touch it without your word.
-5. **A hyperspace jump in the Sidewinder, for the jump's fuel check (step 5.3's proof):** your journals hold jumps of
-   your other ship only. The next jump you make in the Sidewinder (any system) gives the `FSDJump` line the mod's fuel is
-   checked against to six digits. No need to do it specially: say when there is one.
-6. **Whether pitch and yaw are 42 and 16 or 43 and 17 deg/s**: the community's two data sets disagree. A screenshot of the
-   outfitting screen's Sidewinder page (or the measuring session) settles it.
+- **Released as 1.3.0** (your go: "clean workspace and carry on with uploading to website"): the players' zip is
+  `release\Sandbox-Engine-1.3.0-windows.zip` (823.7 MiB), a GitHub Release on liamwade21-lab/Sandbox-Engine, and the
+  Wadeball Mod Collection's entry points at it. Tested as a player gets it (unzipped outside the project, empty
+  settings folders): the Sidewinder spawned, boarded and flew with Elite's cockpit screens.
+- **A player's sound cut off for good while hitting things with the crowbar: fixed** (commit 8200513). The sound
+  library (rodio) froze the sound for about ten seconds at a time on PCs whose Windows output is set to 176.4 or
+  192 kHz, whenever a sound played at a random pitch; keep swinging and it never came back. The game now changes a
+  sound's pitch itself (`pitched_audio.rs`) and never hands the library a speed: the sandbox's sounds, the Omni-Man
+  mod's and the Skate 3 mod's. The worst case (the crowbar's own hit sound at 192 kHz) took about 10 s of work before
+  and takes about 0.003 s now. Checked by an independent reviewer. Tests: the whole workspace in release: 2,526 passed, 1 failed (the known one in the untouched Skate 3 copy), 215 ignored.
+  Nobody can listen in a test, and this PC's output is not 192 kHz: the proof drives the sound library directly at
+  192 kHz. Players on an older version can set Windows' output device to 48000 Hz as a workaround.
+- **Your question about a player stuck at 60 fps until they changed to 1440p: nothing changed, an answer only.** Most
+  likely VSync following their screen (many 4K screens run 60 Hz at 4K and 120 Hz at 1440p; or a frame just over 8.3 ms
+  at 4K halves 120 to 60 with VSync on), not the 60-a-second cap the game has while its window is NOT in focus (that
+  cap does not care about resolution). What I would change if you say so: stop capping the game when its window is out
+  of focus (Bevy's `WinitSettings`), and log the screen's refresh rate and the VSync mode at start so a report can be
+  told apart. CLAUDE.md's note on 16.6 ms test segments now names that cap.
+- **Known, not fixed:** the Skate 3 mod's rolling sound never starts in test runs (older than this change; not
+  checked by ear); the Omni-Man mod's sounds now take 29 MB of memory and a 0.16 s pause the first time the mod is
+  turned on; every sound loses up to its last 512 samples in the sound library (as before).
+- The workspace was cleaned on 2026-11-26: 11 GB of test pictures and logs and the old test zips went to the Recycle
+  Bin (emptying it is yours).
 
-Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-14_user/`); the Claude Code restart.
+## The Sidewinder mod (2026-11-13 to 26): complete
+
+Elite Dangerous's Sidewinder, spawned from the Q menu's Mods tab and boarded with E: Elite's own hull, cockpit, moving
+parts, lights, pilot chair, sounds and cockpit screens, flying by Elite's rules (thrusters, flight assist, boost, pips,
+heat, shields, supercruise, the glide, hyperspace). README's "Faulcon DeLacy Sidewinder" has the keys.
+- The parked ship is a sandbox prop: Z undoes it, the physics gun moves it. B gets you out anywhere (landed or near
+  the ground the ship stays; higher up or in space it goes and you are in free flight).
+- The finished work's detailed notes are in `docs/progress-archive.md` ("The Sidewinder mod, finished sections"); the
+  plan and every step's Build log entry are in `docs/spec-mods-sidewinder.md`; the designs in `ARCHITECTURE.md`.
+- **Left as it is (you said the mod is complete):** the gunsight's and the planet HUD's own Elite screens are not
+  drawn (the plain readouts stand in); the FSS screen scans nothing; the cargo hatch has no sounds or lights of its
+  own; on sloping ground the parked ship sometimes creeps a few centimetres every ten seconds; a ship spawned seconds
+  after the game starts can pop and tilt while the ground loads; the skater passes through the parked ship; a few of
+  the flight's numbers are stand-ins (orbital cruise's zone numbers, the strict trace gate's last 10 rows of 18,344).
+- **Yours, if you ever want them:** fly it with a pad and say how it feels against Elite; one hyperspace jump in
+  Elite's Sidewinder gives the fuel line the mod's jump cost is checked against.
 
 ## Current state (2026-11-14)
 
@@ -60,9 +72,8 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   - Also in: the lasers (U hardpoints, left button fires; beams to the horizon), and supercruise (J charges 15 s, then the
     speed builds by the exe's gravity-well rule: from Earth's surface 78 c after 25 s, 215 c after 35 s; J drops out). Its
     numbers are stand-ins until a supercruise measuring session.
-  - Sounds: none of the Sidewinder's sounds is among Elite's open sound files (an agent searched all 245,156); they will be
-    recorded from the speakers, which needs Elite's music off (waiting list).
-  - Waiting on you: fuel (session 3), the music volume (the sounds).
+  - Sounds: none of the Sidewinder's sounds is among Elite's open sound files (an agent searched all 245,156); speaker
+    recordings with Elite's music off are a fallback source (grade E).
   - Also in: the glide (6.2, first cut): diving at a planet in supercruise hands over into Elite's glide (the exe's rules,
     study A60; its numbers are stand-ins until a planetary approach is measured), ending in normal flight a few km up.
     Flown at Earth: a -35 degree dive glided from 20.6 km to 6.5 km; a -61 degree one ended at once, too steep.
@@ -92,8 +103,8 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
 - **The Sidewinder mod's earlier notes** (installs, step 0.1).
   - **Step 0.1 done (go/no-go G1 passed):** the game can now read Elite's open 3D mesh files
     (`crates/se_core/src/elite.rs`): 21,896 of 22,008 read, 215 million triangles; 300 of them drawn as contact sheets look
-    like real things (ships, a helmet, a wine glass, rocks, station parts). The encrypted files are refused by their first
-    four bytes. Not known from the open files: the meshes' size in metres and their names.
+    like real things (ships, a helmet, a wine glass, rocks, station parts). The meshes' size in metres and their names
+    are still unknown.
   - **Installs:** REA 6.7.0 (`npx rea-agents setup --client claude_code`: an MCP entry in `~/.claude.json`, backup
     `~/.claude.json.rea.backup`, and the skill `~/.claude/skills/reverse-engineer-anything`). ffmpeg 8.1.3 (the BtbN build
     ffmpeg.org links to, `ffmpeg-n8.1-latest-win64-gpl-8.1.zip`) in `C:\Users\liamw\tools\ffmpeg` (for step 0.8). Ghidra
@@ -105,9 +116,8 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
     (`C:\Users\liamw\tools\ww2ogg`), both from their official GitHub releases, for Elite's Wwise sound streams.
 - **The Sidewinder plan** (2026-11-13, your request: Elite Dangerous's Sidewinder in the
   Q menu, E to get in, everything as close to Elite as can be proven). Your
-  answers are in its Decisions log. Found on the way: about half of Elite's data files are encrypted and stay closed (your
-  rule); the 3D shapes, textures and sound recordings are open but have no names, so they must be found by looking and
-  listening. You bought the
+  answers are in its Decisions log. The data files use opaque names, so models, textures and sound recordings need to be
+  matched to the Sidewinder by their contents. You bought the
   stock Sidewinder on 2026-11-14 (its journal `Loadout` is in the plan: gimballed lasers, 42.9 t, 8.15 ly); leave it stock. The survey's tools and data are in
   `re/elite/` (out of git).
 - **The Skate 3 mod is complete** (the user, 2026-11-13, after trying 1.2.0: "the mod is now complete"). The workspace was
@@ -277,10 +287,9 @@ Received: your 9 screenshots (2026-11-14, kept in `re/elite/screenshots/2026-11-
   level; the peak stays at 10,205 buffers. The street objects cost nothing measurable (15.6-16.3 ms with,
   15.7 without). Still open: the graphics card's time on that planet reads 8.7 ms or 10.2 ms for the same
   view (not explained yet), memory still grows round by round, and the render graph's time rises from
-  3.5 to about 6 ms over the first round. A patch to wgpu-core that could give some of that back (a
-  side session's idea, judged safe by reading the code, not built) waits on the user's yes. The ground's
-  shaders are built at start and the loading screen waits for the first view. `.optimize/REPORT.md`
-  lists 8 "needs your call" speedups that would change the picture.
+  3.5 to about 6 ms over the first round. A proposed wgpu-core patch could lower the render graph's cost.
+  The ground's shaders are built at start and the loading screen waits for the first view.
+  `.optimize/REPORT.md` lists eight further optimization options.
 - **Open oddities:** the `surface` dev command sometimes leaves the camera 1 m above the sea instead of
   at the height asked for; one or two log lines "RenderMesh ... cannot be extracted" while the galaxies
   load (nothing visible found); the user's planet 2 spot (25.5 N, 48.2 W) is clear-skied now (a dry

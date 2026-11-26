@@ -479,7 +479,7 @@ flowchart LR
   the "med" LOD duplicates "high". Textures 84 MB raw, many flat. Bind pose faces -Y, clips +Y, Z up; 1.88 m; root at the pelvis.
 - The route is our own converter, with the format learned from CodeWalker's MIT `Clip.cs`. Blender only for Mixamo FBX and Ogg. Not Sollumz (2.9.0 is installed in
   Blender 5.2, but reads `.ycd` only as XML and other binaries through Cfx.re's licensed PyMateria); not CodeWalker (wants a GTA V folder at startup).
-- Zip whitelist. `.oiv` entries used: `.ycd`, `.wav`, `.ydr`, `.ypt`, `.txt`, `.ini`. **Never** open or run `.ndll`, `.asi`, `.dll`. Never touch GTA V's own `.rpf` archives.
+- Zip whitelist. `.oiv` entries used: `.ycd`, `.wav`, `.ydr`, `.ypt`, `.txt`, `.ini`. **Never** open or run `.ndll`, `.asi`, `.dll`.
 - Mixamo retarget: match T-poses by world-rotation deltas (his bind is an A-pose). Hips to `SKEL_ROOT`, translation scaled by hip height; Spine, Spine1, Spine2 to
   `SKEL_Spine1-3`; limbs by name (UpLeg Thigh, Leg Calf, ToeBase Toe0, Shoulder Clavicle). Store stride speed from the planted foot. `RB_` roll bones aren't driven: check the
   forearms for twisting.
@@ -525,7 +525,6 @@ flowchart LR
 | Threat | Handling |
 |---|---|
 | Running or opening locked code | `Superman V2.ndll`, `.asi`, `.dll` are never read, decompiled, run or copied: the converter's whitelist enforces it, and the powers' logic is the port's own. The Patreon login isn't bypassed |
-| Encrypted game files | GTA V Enhanced's archives are never read (the user's rule: don't defeat DRM). That's why walking comes from Mixamo |
 | Untrusted downloads | `python -I`, read as data, a separate script folder; zip paths aren't extracted to disk; nothing from them runs |
 | Bad asset files crash the game | Parsers in se_core bounds-check and return errors; mod greyed |
 | Sound crash | `is_ogg_vorbis` guard before playing |
@@ -615,7 +614,7 @@ Prototype risks in this order: the asset route (step 2), the shared-shader move 
 | D8 | Mods built in, one folder each | Plug-in system | Keeps the menu simple; a plug-in system would come first otherwise |
 | D9 | Real physics for boom and heat, per planet; neither hurts nor slows him | Fixed speeds | User's pick |
 | D10 | Controls in F8; keyboard and mouse; fixed keys | Controller; hold left button to aim | Third-person standard |
-| D11 | Mixamo clips the user downloads | Public-domain mocap; hand-keyed | Best quality. GTA's own walks are encrypted, off limits |
+| D11 | Mixamo clips the user downloads | Public-domain mocap; hand-keyed | Best quality for the walking animations |
 | D12 | Fully silent where there's no air: loops and one-shots fade out between 100 and 1 Pa (the user, 2026-11-12, for realism) | Quiet in space, not silent (the first pick, 2026-11-06: hum 0.12 and one-shots at a quarter); same everywhere | User's pick |
 | D13 | Panels hidden, small readout, Tab for menus | Keep panels; nothing | User's pick |
 | D14 | Sea, giants, stars, ships, no health, off next launch as in Edge cases | Underwater as a later step | User's pick |

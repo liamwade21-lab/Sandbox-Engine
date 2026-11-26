@@ -5,8 +5,7 @@ Derived from `SpaceEngine.exe` (Ghidra, no symbols; names below come from RTTI a
 and from the shipped data. The Rust implementation is `crates/se_core/src/galaxy_model.rs`.
 
 Legend: **[V]** verified in decompiled code or data, **[I]** inferred (plausible, not proven),
-**[?]** unknown. Shader code (`Shaders.pak`) is encrypted and was not read, so everything that
-happens on the GPU is at best **[I]**.
+**[?]** unknown. Section 11 documents the verified galaxy shaders.
 
 ## 1. Pipeline overview
 

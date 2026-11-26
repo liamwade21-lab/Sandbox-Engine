@@ -442,7 +442,7 @@ Finished work's detailed notes, moved out of PROGRESS.md (read only when needed)
   behaviour the same are in (28 rated "risk none", done while the user was away,
   plus 14 rated "risk low" that the user approved). One more was tried and reverted because it made
   start-up worse. The full list and measurements are in `.optimize/REPORT.md`, which also lists 8
-  "needs your call" items that would change the picture (the biggest: render nebulae at SE's own
+  optimization options that would change the picture (the biggest: render nebulae at SE's own
   lower volumetric resolution, ~3 ms of GPU time). Also added: a frame-time logger for measuring
   (`perf.rs`, the `perf` dev command; only active with `SE_PERF=FILE`).
 - **Surface FPS fix (user's video, 2026-11-02 afternoon, not committed):** on procedural planets
@@ -771,3 +771,511 @@ Finished work's detailed notes, moved out of PROGRESS.md (read only when needed)
   - **Step 7 done (2026-11-07): the sonic boom and the heat.** Past each planet's own speed of sound (Earth about 335 m/s low down, Mars 233, Venus 449) you get the boom's sounds and a ring of cloud; a cone of vapour hangs round him up to Mach 1.6, lit by the sun, so nearly gone at night; slowing back under Mach 0.92 plays the ending sound and a puff of the cone, no boom. At most one boom in 3 s. Above the air (55 km on Earth, 16 on Mars, 188 on Venus by the game's numbers) there's none, so a dive from orbit makes none on the way in, nor does turning on at speed; on Pluto or a 1 mbar air there's never one. His skin heats by the real formula: dull orange at 800 K, yellow 2,000, white with a shell of plasma 3,500, a blue-white trail 6,000, looks clamped at 10,000 K, then only the shell and the trail grow. The heat bar in the readout is filled, in the colour of the heat. **Checked by numbers:** at the table's speeds in the game's real air, Earth at the sea and 60 km, Mars and Venus at the ground come within 7 % of the table, 1 mbar's air within 9.1 % (Mars 21 km up; no body in the solar system has 1 mbar, Pluto has 1 Pa and was flown too). **Checked by pictures,** from behind and the side: every stage on Earth low and at 60 km, Mars and Venus by day and night, Pluto, the cone, the ring, dives from orbit by day and night, in clear air and over cloud, in photo 0, 1 and 2 (no jump in the exposure, never dark), your 3440x1440 with Ultra clouds, 4x MSAA. **Cost:** 0.01 ms of the graphics card when hot at your size, nothing when cold or off. **With the mod off** the ground, towns, trees and Mars are unchanged (bit for bit, or only the HUD's digits), Jupiter's floor by 1 level in 0.2 % of a nearly black picture. **Your calls on what was left open:** a Go To through the air booms and heats him too, by its real speed (D9, real physics; the look is clamped at 10,000 K anyway): a landing from orbit (Shift+G) peaks at about 26,000 K, white for about 3 s, then he stands cooling for about 2 s; a plain G from near the ground leaves the air at hundreds of km/s, so he flashes white-hot and fades out over about 2 s on his way up (please look: too much?). The trail lies behind the camera when you fly straight, so from straight behind you don't see it; you do in any turn, or from the side. Catalogs' Jupiter and the other giants really have no air pressure in the game's files, so they take 1 atm at the radius. **Fixed on the way:** deep in a giant he no longer stays brighter than the cloud round him (his light now falls as the decks' does), and at Jupiter's floor he's no longer hidden: the game fades the whole view to black down there on purpose, which covered him too; it now leaves out what's right by the camera, and a faint light keeps him just visible in the black. Titan's air now has Titan's gravity (it was ending 8 times too low). **Not judged, stills and logs only:** how any of it moves: the speed of the flames and the ring, the trail's points dying, the sound by ear; a Go To's pictures in mid-flight. **Seen, and left:** clouds overhead get blocky edges when flying under them at several km/s (the build before this plan does it too); in thin air and at high speed his cape can stand up off his back like a flag (step 5's cloth, worth a look); his cape crosses the shell as a dark shape. A review then fixed: the cone of vapour hung round him in near vacuum (up to 200 km on Earth, on Pluto, in a 1 mbar air), and now shows only where the boom's air is; the trail vanished all at once a second after he slowed, and now each part fades in turn; it's as long at any frame rate (at 165 Hz its tail was cut off while bright), and seen end-on it no longer makes a bright spot; at x1000 a plain G from low over a planet counted the planet's spin a thousand times over (465 km/s over Earth's equator), and now reads as at x1; deep in a gas giant the air now thickens and warms with depth, as it really does (on Jupiter he falls at 63 m/s 100 km down instead of 190); the 30 km/s cap on a Go To's heat is gone. Left as it is: with the 3D clouds off, his shell and trail show through flat clouds in front of them. Every number is in `viltrumite/tune.rs`.
   - **Step 8 done (2026-11-07): craters, dust, punches, the thunderclap.** A hard landing (35 m/s or more) leaves a crater: 2.4 m in radius at 35 m/s, 12 m at 900 m/s, 60 m at most, a burnt bowl drawn on the ground itself (so it follows the hills, takes cloud shadow and goes dark at night), broken rock round him, and a burst of dust in the ground's own colour (green-brown on grass, sand on the Sahara, white on snow, grey on the Moon, where it flies out and falls back with no air). On the sea a white splash instead. **Left button:** a punch (a puff where it hits the ground within 5 m); aimed 45 degrees or more down within 15 m of the ground, a ground punch: he goes down to it and leaves a 6 m crater. **Right button:** hold 0.4 to 2.5 s and let go for the thunderclap: a ring of air 30 to 150 m by how long you held it, going away ahead of him, and over the ground a second ring and dust thrown out along it; it breaks nothing. Big impacts shake the view a little (1 degree at most). Craters stay until both he and the camera are 20.5 km away, with no fading before that, also after the mod is turned off; 32 at most, the farthest giving way. **Checked by pictures,** from behind and the side: real dives onto Kansas farmland, Irish grass in a town (by day and night), the Sahara, the Moon and Greenland's snow; a fall from 300 m; ground punches; a punch into the ground and in the air; claps at three charges on the ground and 130 m up, in clear air, under Manaus's rain clouds and inside a cloud (where nothing shows, as it should); splashes from a fall and a 411 m/s dive, in sun and under rain. **Checked by the log:** a crater is still there after flying 3 km and 10 km away and back (it stays on the ground as the ground's detail changes), freed at 20.51 km, gone on the way back; turned off, it stays and is drawn. **Cost** at your 3440x1440 with Ultra clouds: 0.2-0.25 ms for six or seven craters in view, 0.05 ms for a big crater's dust, 0.3 ms at a full clap's peak (measured with the window capped at 60 fps by Windows, so likely a bit high); nothing with the mod off. **With the mod off** the ground, towns and Mars are unchanged against the build before the plan (bit for bit, or only the HUD's digits, or what two runs of the old build differ by). **Differs from the plan:** the rocks round a crater use a material of their own that takes the ground's light (the planned one ignored clouds: under rain they stood sunlit), and they're scaled flatter (at full scale a big crater's slabs buried him to the chest); the dust takes its colour from the ground round it; the clap's ring travels ahead, or from behind it would surround the camera at once. **Please look at / listen for:** how the dust billows and settles, the shake, the clap's ring and dust in motion (stills only so far); whether a full clap's dust is too much (it fills the view from 22 m); the punches are still stand-ins (the batman and thor clips raise the arm, more uppercut than punch) until you download the Mixamo ones; the punch, ground punch and clap sounds by ear. **A review then fixed:** a ground punch from a jump no longer throws him (and the view) 6-8 m sideways for a frame; turned off beside a crater, its rocks now go dark at dusk and night (they stayed in the sunlight of the moment you turned off); punching the ground several times in one spot makes one crater, not ever darker ones; the crater's darkening no longer falls on his fist or arms (it now follows his pose) nor on the sea; the charge sound plays only while a clap really charges; letting go early no longer jumps his pose; opening the menus (Tab) or leaving the window while charging cancels the clap instead of firing it; a clap far out in space now shows its ring and shakes the view, and a clap in the air shakes it properly; the clouds now shake with the view; nothing of the craters is drawn any more once the mod is off and they're gone. Left as it is: with 3D clouds off, a crater under SE's flat clouds darkens the cloud over it, and a crater 10-20 km away stays a little too dark in the haze.
   - **Step 9, first part done (2026-11-07): the game can tell him which buildings are round him.** Solid buildings need to know where each building is, and the buildings are placed by the graphics card, so each frame the card now also lists the buildings near him and his path ahead, and the game reads that list back. Nothing is solid yet (the next part makes him stop at walls, slide along them and stand on roofs). Measured: the list arrives 3 to 5 frames later at any frame rate (31 ms at 130 fps, 98 ms at 51 fps on your screen with Ultra); it holds 5-80 buildings in play over New York and a level 3 city, up to about 300 at 30 km/s, never more than it can hold. The worry was that a building seen from near and the same one seen from afar might not be recognised as the same (they are placed by two different grids): measured over 919 buildings in New York, a level 3 city and a domed colony, the two always lie within a quarter of a metre of each other, so the planned 4 m match is plenty and nothing had to change. What can differ is a building's height (a tower near can be a low block from afar: that is how the cities already look, and step 10 handles it by name). No two buildings were ever mixed up. With the mod off this step changes nothing: the pictures are bit for bit the same as before it and it costs nothing. Found on the way, not from this step: since step 8's review fixes, New York by night with the mod off differs very slightly from the game before the plan (a fine grain on the window edges, not visible by eye; by day it is identical); worth a look later. Also measured for the next part: which building shapes work as 8 stacked boxes (most do; the twisted tower, the spires, the watchtower's legs and the landmark's frame need care). A review then fixed: when the buildings stop being drawn (`scatter off`, Cities and Vegetation off, leaving the planet) the list is now emptied at once instead of keeping the last buildings (they would have been solid while invisible), and the game now knows how old a list is; with the mod off the probe's work now stops completely; a frame whose list the card had no room to copy is now counted (and two more copy buffers make it unlikely: none in a test at your size with Ultra). The record now says honestly that a building's middle can move between near and far: a quarter metre measured, at most about 2-3 m in theory (near a corner of the planet's cube), still inside the 4 m match. **Next: step 9's second part** (stopping, sliding, roofs, the camera kept out of buildings).
+
+## The Sidewinder's finishing run (2026-11-16 to 17, moved from PROGRESS.md on 2026-11-17)
+
+
+One session now owns all of the mod's files and works through this list with two writers at a time; the plan and the
+rules are `ARCHITECTURE.md` A5 to A8. Baseline checked 2026-11-16: the tree as it stood builds (release) and
+`elite-sim` and `se_core` tests pass. Writers iterate with `cargo build --profile agent`.
+
+**Next (2026-11-18, morning):** committed: A (0109fb9), T3 (bcaec70), N1b-1 (41678f5), T4a-1 (d0bce8f), T4b-1
+(2296db0), T3c with T5b-1 (d71096e), T4a-2a with T4a-2b (0d90b56: Elite's materials, the paint job, the glass, the
+lit maths), N1b-2 with the seat fixes (bb65059), N2 and N2b (5bfabc7, ebb8942: the gate's new reading; the gate
+itself still open at 10 rows, see its line below), T4a-3 (638ff85: the ship's lights), the ship's sound in the game (b65a821: T5b-2, T5c and the fix round
+T5d-1; reviewed twice; its open items are T5d-2 in the queue and T5b's line below), N3 (41a67b1: the gear's and scoop's limits; orbital
+cruise's rule, not switched on, see N3's line), T4a-4 (39b0bcd: the lights' fix round, see T4a's line), X1 (527f552: the old stand-in `ship.edm` /
+`cockpit.edm`, the Blender cockpit folder and the code that only served them are gone), N4 (ceeff2e: the gear's
+factor in supercruise and supercruise's 0.5 s time constant, in the flight crate), T5d-2 (1c4341b: the sound's
+one output source and Elite's equaliser), T4c with T4c-2 (17201a5: the ship's state machines run), T4e-4
+(b5a67dd: the HUD anchored in the cockpit), S1 (9fef26c: the seat's field of view by Elite's rule; the head turns to
+an opened side panel), T5d-3 (aedbc2c: Elite's distortion effect, the limiter's gain and the player's context states
+in the sound), T4d-a (3e0b71d: the pilot chair's animation runs from the controls; not drawn yet), T4a-5 (93dc42f: the
+cockpit's panel lamps, its brightness measured again, the broken canopy), T5d-4 (e0b9d4f: the sound's voices in
+blocks; no click at supercruise entry), S1b (da49a6c: Elite's head-look camera; the side panels fitted on each
+picture's own camera), T4d-b (d06e65a: the pilot chair drawn with its animation), T4e-2 (afb1ef1: the
+headlights light the ground), S1c (d1cd006: the right panel's state column on screen, its rectangle refitted), T5d-5 (48325b9: the gear's
+sounds at their legs, the cues from the machines' events, the drive at Elite's pitch), T4d-c (208b6c1: a knock
+shakes the chair the same at any frame rate), T4e-1 (d4e7499: the ship's shadow with Elite's own filter), T5d-6
+(23e8fe0: the engine's sound inputs in Elite's units, flight assist the right way round) with its fix rounds
+T5d-6b and T5d-6c (af2e1cc, f6924e8), T4e-3 (507f2e6: the hyperspace tunnel seen from inside the cockpit), T4e-2b
+(5521ebc: ground outside the headlights' beams no longer pays for them), T5d-7 (ed0e477: every voice reaches the
+stereo output by Wwise's own rules; the left landing leg is heard 10 dB to the left), T4e-3c (8f3ae9a: nothing
+of the universe's overlays over the tunnel; the exposure held through a jump), T5d-8 with T5d-9 (2e02874: Elite's
+master effect with its 14 dB, the tone generators, the supercruise bus's compressor; reviewed) and T5d-10 (dc7f522:
+three small notes). THE SOUND IS FINISHED. The shadow as a whole (b773a6b: T4e-1c, T4e-1d, T4e-1b and their
+review's fixes: as soft as Elite's, and on the world through each thing's own lighting). Not committed:
+- **T6, the wrap-up**: running: the release build; one reviewer on the shadow as a whole; a second on the whole
+  mod (the spec's checks, the ship against your Elite screenshots, a full play-through).
+- **T4e-1c (study)**: done (`re/elite/notes/sidewinder_shadow.md`): Elite's own shadow settings read from its
+  plain configuration file and its exe. Your Elite is on High shadows: three ranges by distance from the camera,
+  each with its own softness (a shadow texel of 2 cm under 5 m, 38 cm to 81 m, 3.4 m beyond), blurred before
+  the filter; measured on your picture `9.webp` the leg's shadow fades over 0.17 to 0.25 m where that rule says
+  0.37. The two stand-in filter inputs are settled (the bias was right; the light-bleeding cutoff is 0.3, not
+  0). To be built: one map of the ship for each of Elite's ranges, made as Elite makes them.
+The measuring session could not start (see the top of this file). The mod's folder is 1,031 files, 187.6 MB.
+You asked (2026-11-18) to finish up: reviews are batched (one for the shadow as a whole, one for the last two
+sound tasks). Queue, in order: T4e-1b (the world's shadow in the receivers' own lighting, after T4e-1d); the sound, two more
+tasks one after another in the same files (the design is `ARCHITECTURE.md` A7's last block): T5d-8 (the master's
+last effect with its 14 dB, from the study T5f; the four tone generators; each recording's gain moved beside
+the make-up gain), T5d-9 (the supercruise bus mixed in its 12 channels with its compressor, which may act by up
+to 3.5 dB at supercruise's loudest); then T6 (measuring the sound against your recordings again is cut). Still
+unexplained in the sound: Elite's hum at rest. Three looks did not find it among the ship's sounds (lines at
+multiples of 19.43 Hz, loudest at 58 to 97 Hz; the recording was made in open space near the system's star;
+every recording, synth source and modulator of the ship's 63 sound banks is ruled out). The guess left: it is
+the star's own rumble, a sound of the world, not of the ship; a recording at rest far from any star would tell
+(YOUR step, or a measuring session). A recording of the gear going down with the head straight would check the
+left / right law against Elite itself.
+
+- [x] W0 The tree builds and its tests pass (checked 2026-11-16)
+- [x] T3a Convert the real models, materials, textures and bones (`models/*.edm`, `tex/*.dds`, `materials.json`):
+  done and committed (bcaec70). Written 2026-11-16 (104 models, 240,663 triangles, 74 textures, 46 materials, 122 MB, every byte checked against
+  the export; the game still draws the stand-ins until T4a). Reviewed 2026-11-16: pass (the reviewer re-checked every
+  vertex and index byte, all 273,911 decoded vertices against the reference decoder, every texture and material, and
+  3,400 damaged-file cases: no faults). Four small follow-ups go to T3b's writer when it finishes: `parse_edm` must
+  refuse a vertex naming a bone the file lacks (one overlay model has no bones); a re-check test of the shipped files
+  against the export; the paint mask's and IES profile's sources in `SOURCES.txt`; `materials.json` and `ship.json`
+  checked by their own parsers when the mod is first turned on. All four done; the arena-only drive bolt-ons were
+  dropped (99 models, 73 textures, 45 materials, 123 MB)
+- [x] T3b Convert the assembly (rigs, state machines, lights, paint job: `ship.json`) and build Elite's rig and state
+  machine rules as tested code (`se_core::elite_rig`): done and committed (bcaec70). It matches the reference code to
+  1e-14; gear times proven by tests; the ship rests 4.718 m over its feet. The review's two runner bugs are fixed
+  (`SetTargetState` takes the route when one exists; no recursion, loops refused)
+- [x] T3c Convert the chair's clips and motion graph and build their rules as tested code (`se_core::elite_chair`):
+  done and committed (d71096e): 3 states and 13 clips for a seated solo pilot; positions and blends bit for bit
+  against the reference; damaged data is refused, never a crash
+- [ ] T4a Draw the real hull and gear with Elite's materials: the default paint job, the decals, the ship's lights.
+  T4a-1 (the real ship in the game, plain shading, real solids, feet, gun mounts, ship space) is done and committed
+  (d0bce8f; pictures `.optimize/scratch/run/t4a1_*.png`: the hull, gear and cockpit frame match your screenshots;
+  the review's two findings fixed: the air's drag uses the hull's convex outline, a second spawn is not blocked by
+  the old ship). T4a-2a and T4a-2b (Elite's material maths for every family the ship draws, the default paint job,
+  the glass, Elite's lit maths, the hull's wear by the game's own rule) are done and committed (0d90b56; pictures
+  `.optimize/scratch/run/t4a2a_*.png`, `t4a2b_*.png`). T4a-3 (the ship's own lights: all 84 from Elite's data with
+  the exe's blink rules, the vents' orange glow with heat) is done and committed (638ff85; the outside views match
+  your pictures). T4a-4 (its review's fix round) is done and committed (39b0bcd): a light goes dark at once when
+  its state ends; the seat takes only the lights Elite flags for it; the lamps follow the exposure the frame is
+  really drawn with (the automatic exposure's too); the cockpit's lamps carry one measured stand-in, 1/21.6 (the
+  console against the red canopy lamps in your seat picture: 0.016 now, Elite 0.021, 0.88 before), because
+  Elite's exe did not give the missing brightness value. Left (T4a-5, small): the two GUI panel lamps are dark in
+  the mod (their colour is the HUD's) and light the side consoles in Elite, so the stand-in is partly making up
+  for them (measured fairly it is 1/30 to 1/42); the exposure copy keeps running after the ship is gone. T4a-5
+  is done and committed (93dc42f; reviewed): the five GUI panel lamps follow Elite's own rule; the cockpit's
+  brightness, measured again by steps, is 1/11.4 (brighter than before; good to about a factor of two); the broken
+  canopy's own model is drawn once breached, with Elite's cracks rule. Left: in play the cracks get no damage to
+  follow yet, so a breach shows broken glass without cracks (T4d-b feeds them the hull's damage); the side
+  consoles Elite shows lit stay black (not the panel lamps' light: open); the cracks' inner reflection and the
+  blowout shards are not built. Left for T4e: by day the sun lights the cockpit's inside with no shadow
+- [ ] T4b Draw the real cockpit, its glass and the chair from the seat (Elite's field of view): T4b-1 done and
+  committed (2296db0): only the cockpit set from the seat, 56.249 degrees, never cut by the near plane, the eye at the
+  cockpit model's own `!Camera` bone (against your straight-ahead screenshot the crossbar matches within 3 px of
+  2,000, the side rails are 14 px high and the dashboard's edge 16 to 30 px low: the reviewer's reading is that
+  Elite's head sits 0.1 to 0.2 m off the bone, for example its movement under acceleration, and that your picture is
+  a crop). The glass and the cockpit's materials are T4a-2b
+- [x] T4c Animate the gear, doors, hardpoint doors and heat vents in the game from the rigs and state machines:
+  done and committed (17201a5; reviewed twice). The 20 state machines run; the gear's doors open in 2.50 / 2.73 /
+  2.63 s, each leg lowers in 5.33 s once its doors are open and rises in 4.23 to 5.03 s; hardpoint doors 1.07 s
+  out, 2.57 s back; the vents' flaps follow the heat; the gear's sound cues post at their data times. The flight
+  reads the gear's real state (the 3 s stand-in is gone); a ship coming down on moving legs is held by them; the
+  gear cannot be raised while landed. Not built: the breached windscreen's own model and cracks (T4a-5), steam,
+  sparks and glass particles, the raised stance
+- [x] T4d Animate the pilot chair (throttle, stick, trigger, buffets): T4d-a done and committed (3e0b71d): Elite's
+  motion graph and clips run from the controls every frame (the throttle lever and the stick's grip move in the
+  simulation). T4d-b is done and committed (d06e65a; reviewed): the chair is drawn with that pose (the lever, the
+  stick, its twist and the trigger move on screen), stepped at a fixed 60 a second. T4d-c is done and committed (208b6c1): a knock shakes the chair
+  the same at any frame rate; a new ship takes no knock from the lost one's speed. Scratch
+  to clear at the wrap-up: `.optimize/scratch/run/t4d_b_target` (4 GB; its `t4d_b_rigid/assets` and
+  `t4d_b_before/assets` hold LINKS to the real asset folders: `rmdir` each link, never a recursive delete)
+- [ ] T4e The headlight's IES beam on the ground; the cockpit UI overlays in the HUD's layout: T4e-4 (the HUD
+  anchored in the cockpit at Elite's places, turning with the cockpit) is done and committed (b5a67dd; reviewed).
+  S1 is done and committed (9fef26c; reviewed): the seat's field of view was RIGHT (Elite's own rule makes your
+  setting's 56.249 the vertical angle on 16:9 and wider screens, and the measuring sessions' video frames fit it;
+  your three seat screenshots were taken at wider views, so the earlier "1.14 times too big" was the pictures,
+  not the mod); a side panel opened by its key turns the head to it. S1b is done and committed (da49a6c;
+  reviewed): Elite's head-look camera read from its code (the head aims at a point each focused panel names and
+  the view narrows by that panel's own amount, 4.5 to 5 degrees measured on your pictures); the panels fitted on
+  each picture's own camera (the left's corners within 3 px); on your screen the turns are exactly the measured
+  ones. S1c is done and committed (d1cd006): the right panel's ON / OFF column, which sat in the 1.6 degrees
+  that are off your screen's edge, is laid out inside the screen; the right panel is refitted with its bottom
+  edge. T4e-1 is done and committed (d4e7499; reviewed): by day the ship shadows itself (no sun through the
+  cockpit's roof, the struts' shadows on the dashboard, a dark underside) and the ground under it, with Elite's
+  own shadow filter, found in its shader. Left: T4e-1b (the shadow on the WORLD is wrong in places: a prop's side
+  facing away from the sun goes black inside it, and your weapon stays sunlit: it moves into the ground's, the
+  plants' and the props' own lighting), T4e-1c (the shadow's edges are much sharper than Elite's: take the
+  softness from Elite's own shadow settings: being written). T4e-3 is done and committed (507f2e6; reviewed):
+  through a hyperspace jump you sit in the cockpit and see the tunnel outside it (before, a flat picture covered
+  everything, and the cockpit was not drawn at all). T4e-3c (8f3ae9a) fixed its review's notes (no constellations, grids or
+  waypoints over the tunnel; the exposure held through a jump). Not built, known: the canopy's glass is drawn before the clouds, so its reflections, dirt and cracks
+  fade where a thick cloud is behind (see `ARCHITECTURE.md` A6, T4e-3)
+- [x] T5a Read the ship's sound events, mix data and triggers out of the exported banks and the exe: done 2026-11-16,
+  nothing decrypted. `re/elite/frea_export/sidewinder_audio/events.json` (all 59,537 objects of the 63 banks parse to
+  their exact size: 809 events with their sounds, containers, volumes, pitch, filters, randomisers, game-parameter
+  curves, states, switches, attenuations, buses; the Init bank with 1,034 game parameters is at rest),
+  `triggers.json` (37 triggers from Elite's code: engine loops and their 20 motion parameters, boost, the frame shift
+  drive's charge / countdown / cancel, the three audio modes, cockpit cues, plus the 8 proven before) and
+  `re/elite/notes/sidewinder_sound_events.md`. Still open: the pulse laser's shot event (in the weapon's data file,
+  not at rest), the jump event's sender, the targeting UI cues, the low-fuel and other voice lines' senders; 261
+  sounds the events reach still need rewrapping to Ogg (the old tool capped a role at 40 files); the old manifest has
+  3 wrong loop flags and calls the positional cockpit loops "thrusters"
+- [x] T5b Play them: gear cues, flight assist, boost, thrusters, lasers, supercruise, hyperspace, heat, hull, shields,
+  the voice. Done and committed: T5b-1 (d71096e: `sounds.json`, 849 recordings in `sfx/`, the pure mixer
+  `se_core::elite_sound`) and the sound in the game (b65a821: `sidewinder/sound/`, triggers from Elite's code, the
+  mixer's second round, the review's fixes). It plays while seated: engine and cockpit loops, boost, flight assist,
+  the drive's charge and countdown, supercruise and hyperspace, gear, scoop, lights, silent running, the heat, hull
+  and shield voice lines. The dead audio after a supercruise drop is fixed (a bug in the audio library; the voices
+  resample themselves now). The level is unity, within 1 dB of your recordings on the flight-assist beeps.
+  OPEN (T5d-2, T5d-3): the flight loops are 5 to 9 dB under Elite's (full throttle -5.5, the boost's firing -8.5;
+  the likely cause is the buses' effects, not built: the drives' bus has an equaliser with a +5 dB bass shelf);
+  silent copies pile up over a long session (500 supercruise trips: 300 a boost); a supercruise entry blocks one
+  frame for 14 ms; every positioned sound plays centred; the gear's cues wait for T4c (both done by T5d-5,
+  48325b9: the gear's sounds come from each leg's own side and turn with the head; every other sound stays
+  centred because Elite's data names bones for them that are in no model); the pulse laser's shot, the
+  jump event, the targeting cues and the low-fuel line have no proven trigger (nothing is played for them);
+  reverb is not built. FINISHED 2026-11-18 (the commits b65a821 to 2e02874; each reviewed): one output of our
+  own mixes every voice; Elite's equaliser, distortion, master effect (the 14 dB), tone generators and the
+  supercruise bus's compressor are ported from Elite's own code; every voice reaches the stereo output by
+  Wwise's own rules (the gear's legs sound from their own side); the engine's inputs are Elite's own, and
+  flight assist plays the right beep each way. Known differences that stay (the last measurement, before you
+  cut measuring): the ship is 2 dB louder than Elite on the beeps; its 2 to 4 kHz is 9 to 19 dB too strong at
+  full throttle and in the boost; Elite's low hum at rest is missing (not found among the ship's sounds:
+  probably the star's rumble); reverb is not built; the pulse laser's shot, the jump event, the targeting cues
+  and the low-fuel line have no proven trigger and stay silent
+- [x] A The ship systems finished and checked (committed 0109fb9): silent running (Delete), the cargo scoop (Home), the lights' switch
+  (Insert), the canopy and the 5-minute emergency oxygen, the safe-disengage sign, the fades, supercruise's wider wells:
+  written and shown working in game runs 2026-11-16 (the Build log has the numbers). Reviewed; the three findings
+  fixed (the oxygen clock now runs in the hyperspace tunnel and at any frame rate; a breached ship at 0 is lost).
+  The reviewer's warning for N1: the wells' width formula gives even a 5 km asteroid a 22 AU well (Sol has 2,516 bodies)
+- [x] N1 Real numbers from Elite's data and exe for every stand-in: study done 2026-11-16
+  (`re/elite/notes/sidewinder_numbers.md`, `re/elite/work/numbers/numbers.json`). 70 of 99 stand-ins have the game's
+  own value (grade B: read from the ship item's, its stock modules' and its prototype's records; the records alone
+  give the journal's 8.149506 ly range and the 42.9 t mass), 3 a rule from the exe, 26 stay to measure
+  (`re/elite/measure/BACKLOG.md`: a 10-run plan). What disagreed with the numbers in use: base shield 55 (not 40),
+  pitch 43 (35 at 0 pips) and yaw 17, forward acceleration 45 at every pip setting (the fit said 43.42 at 0 pips),
+  supercruise's cap floor 200 km/s near planets (30 km/s is the zero-throttle speed), supercruise charge 5 s (not 15),
+  alignment 10 degrees (not 60), touchdown 15 m/s and 20 degrees, boost acceleration x4, the capacitors' curve power
+  1.1. Four files were opened with the offline reader for this (the ship item, the stock modules, the prototypes, the
+  laser's ammunition); only the Sidewinder's values were kept. Not yet applied to the code: that is N1b
+- [x] N1b Apply N1's numbers in `elite-sim` and `pilot.rs`: done. N1b-1 (`elite-sim`) committed 41678f5 (reviewed:
+  every one of the 99 entries compared, no value or unit wrong). N1b-2 (`pilot.rs` on those numbers, one way out of
+  the seat, the overlays' field of view from the seat) committed bb65059 (reviewed: every way out re-tested in game
+  runs). Left for N3: by a planet the cap is still the stand-in 30 km/s, which holds supercruise's turn at 60 % of
+  its best there; small notes for the next writer in those files: a stale comment (`pilot.rs` ~527), review notes
+  written into code (`seat.rs` ~477, ~485), the `sw canopy SECS` hook (works only after the 6.5 s grace)
+- [ ] N2 The strict trace gate passing: as far as the exe and the recordings go, done and committed (N2 5bfabc7,
+  N2b ebb8942; reviewed). The gate reads the simulated curve between ticks, rounded as the HUD rounds its number,
+  with one measured capture delay per recording session (the spec's Decisions log T7). 10 of 18,344 rows still
+  miss (s01 1, s04 9), all about 2 s after W, the moment the throttle reaches full: the test stays ignored. No
+  ship number changed. What is left is in the keys, not the flight rules: Elite acts on W and S 67 to 92 ms after
+  the key, on a thruster key's release 55 to 59 ms, on the boost 26 to 32 ms, on X and a thruster key's press 13
+  to 22 ms; the replay acts on all alike. Elite's exe holds no rule for that: its keys go through an input graph
+  loaded as data (`re/elite/notes/sidewinder_input.md`). To close it: read that graph's file with the offline
+  reader (YOUR decision: the run's rule was to decrypt nothing new), or measure the throttle keys' delay without
+  the flight model
+- [ ] N3 Orbital cruise, the landing gear's limits, the scoop: the limits are done and committed (41a67b1,
+  reviewed): the gear down or the scoop out halves the top and boost speeds (Elite's code and records; 110.5 m/s
+  against 221 on the Moon), the boost stays allowed. Orbital cruise's rule is read out of Elite's exe and built
+  (`elite_sim::orbital`) but NOT switched on: its seven zone numbers are in a game record that was not exported,
+  so near planets the stand-in 30 km/s cap stays and supercruise turns at 60 % of its best there. To finish it:
+  read that record with the offline reader (YOUR decision: this run decrypts nothing new), or measure it in Elite
+  (run G1 in `re/elite/measure/BACKLOG.md`, which needs the ship refuelled). Small notes left for the flight's
+  next writer in `pilot.rs` (once T4c-2 is committed), three lines from N4 (ceeff2e), so a gear down in
+  supercruise halves the cruise speed as Elite's code does: ~1041 `let turning = supercruise::cruise_block(cap,
+  speed_k, c.speed);`, ~1048 `flight::step(&turning, supercruise::VSC, false, &rin, ...)`, ~1052
+  `speed.step_held_with(throttle, cap, speed_k, TICK);` (`speed_k` is `deployables::speed_factor(pilot.gear_down,
+  pilot.scoop)`), and the comment at ~1053 (the jerk memory is reset by every drop and glide)
+- [x] M Measuring sessions in Elite: CUT by you (2026-11-18: "Cut the measuring sounds and measuring session
+  4"). Session 4 was prepared and never ran (the launcher's access prompt); the 26 numbers it would have measured
+  stay as they are, each marked in `elite_sim::data` and listed in `re/elite/measure/BACKLOG.md`. Measuring the
+  mod's sound against your Elite recordings again is cut too: the last tables are the ones in the spec's Build
+  log (T5d-6, T5d-7), taken before the master's effect was built
+- [ ] T6 The ship checked against your screenshots, the spec's checks, a tested release zip, the notes
+
+For `CLAUDE.md`'s Gotchas at the wrap-up (T6), so nothing is lost: never let rodio resample a ship voice (its
+`SampleRateConverter` overflows and hangs the audio thread for minutes: `VoiceSource` always reports 48 kHz and
+applies the speed itself; keep the player's speed at 1); the gear down or the scoop out halves the top and boost
+speeds (`elite_sim::deployables`; anything that builds the block uses `sidewinder_block_with`); supercruise's jerk
+memory is `Motion::last_acc`; orbital cruise's rule is `elite_sim::orbital`, unused until its zone record is read;
+`docs/elite-flight-model.md` has mixed line endings (patch it with Python bytes, never an edit tool); the gate's
+reading is the spec's Decisions log T7; a leg waits for its doors through `Runner::step_with`. The ship's machines
+(`parts.rs`, the requests in `machines.rs`) read `facts::ShipFacts` (written once a frame after the flight, holding
+the tests' heat and gear overrides); a gear door is asked in its leg's own frame (keep `parts::frame`'s sub-frames
+and the zero-time door step together); the flight's ground contact is `Parts::feet`; test verbs `sw parts`,
+`sw parts log on`, `sw parts ask MACHINE STATE|auto`, `sw pose up|down|auto` (put `wait 900` after `sw spawn`).
+The sound: one output source (`voices.rs` `OutputSource`) mixes every heard voice, virtual voices are never built;
+effects ship only through `effects.json` (`re/elite/tools/sidewinder_effects.py`: re-make it after `events.json`);
+a game parameter an effect reads must be defined in `sounds.json` or the bank refuses it. The HUD is drawn through
+`hud_anchor` (`Sketch` -> `finish`): a new element is drawn in the old layout's coordinates inside a group, never
+straight on the painter; an anchor's numbers come from `.optimize/scratch/run/t4e4_anchors.py`. The mod's files
+no longer hold `ship.edm` / `cockpit.edm`; the converter does not delete a file it stops shipping (`git rm` it).
+The sentences that still describe the stand-ins: `CLAUDE.md` 178-186, `README.md` 405-406, the spec 289 and its
+claim C6 (`geometry_is_elites` is gone: `shipped_files_are_the_exports` re-checks the models).
+The seat's view: `seat::Head` is the head's turn AND the view's extra angle; the camera, the projection and the
+HUD all take it from the one function (`head_turn`); the user's three seat pictures each have their own field of
+view (63.5, 59.0, 58.5 degrees): use them for places only after fitting each picture's own camera, never the
+game's 56.249. The side panels' turns are measured numbers (`PANEL_TURN_*`): don't "fix" the right panel's
+outer edge being off the screen by turning further. In Elite's sound flight assist ON is the state `On` with
+`FlightAssist_b` (T5e); the engine's inputs are percent of the full-power top speed and shares of the
+speed-limited turn rate, never m/s or rad/s.
+
+## The Sidewinder mod, finished sections (2026-11-17 to 24; moved from PROGRESS.md on 2026-11-26)
+
+### Sidewinder: B gets you out anywhere (2026-11-24): done
+
+Your rule, not Elite's (Elite refuses unless landed). B, and the role panel's Disembark:
+- **Landed:** as before, you step out beside the ship.
+- **On or near the ground but not landed** (hovering up to about 6 m, tilted, even on its side or upside down): you
+  step out beside it and the ship stays; it is set back on its feet. A ship on the ground is never deleted by leaving
+  it, whichever way you leave.
+- **Anywhere else** (higher in the air, in space, in supercruise, in a hyperspace jump): the Sidewinder disappears and
+  you are in free flight (as with V) exactly where you sat. V from there walks if there is ground below.
+- Checked by an independent reviewer (it caught one fault, fixed: getting out in the first moments of a jump threw the
+  view back to the old system). Tests: the release build is made; the whole workspace in release: 2,513 passed, 1 failed (the known one in the untouched Skate 3 copy), 213 ignored. Commit: 75dceac. The design is `ARCHITECTURE.md` A12;
+  the decision is D8a and the Build log entry B1 in `docs/spec-mods-sidewinder.md`.
+- Also fixed on the way: after any flight the ship is set on its feet when you get out (it could drop or slide).
+- Known: B has no "are you sure": one press in space and the ship is gone (spawn another from the Q menu, on foot).
+- **Next (found on the way, older than this change, not fixed):** on sloping ground the parked ship sometimes does
+  not come to rest and creeps a few centimetres every ten seconds. Also: a ship spawned seconds after the game
+  starts can pop and tilt while the ground is still loading under it (not seen once the ground has loaded).
+
+### Sidewinder: the three faults from your second play, and the lasting slowdown (2026-11-24): fixed
+
+- **Z did not undo the ship; the physics gun could not move it.** The parked ship is now a real sandbox prop: Z undoes
+  it in order with your props, "Clean up everything" removes it, and the physics gun grabs, carries, throws and freezes
+  it (its gear, lights and shadow go with it). Board a ship you left hanging or tilted and you are flying it (B gets you
+  out of it all the same: see above). E does not board while the gun is holding something.
+- **"The under side does not have a texture."** It was a hole: Elite fills it with a separate part, the cargo hatch,
+  which had never been exported. Elite's own hatch is now fitted; the cargo scoop's switch (Home) opens its doors.
+  Not there: the hatch's own sounds and lights.
+- **The slowdown after using the panels** (the task card): each of Elite's screens kept hundreds of small graphics
+  buffers; they are pooled now (opening every panel adds about 60 where it added about 5,300), pictures identical.
+- Checked by independent reviewers. Tests: the release build is made; the whole workspace in release: 2,505 passed, 1 failed (the known one in the untouched Skate 3 copy), 213 ignored. Commits: 09e813f (the buffer pooling) and b8c2037 (the prop and the hatch) (never pushed). The design is
+  `ARCHITECTURE.md` A11; the Build log entries are P1, P2, P3 in `docs/spec-mods-sidewinder.md`.
+- Known: a thrown ship that leaves the ground near you hangs frozen at its edge until you walk towards it (as props
+  do); the ship re-settles a little when the ground under it loads finer; the skater passes through the parked ship.
+
+### Sidewinder: Elite's ship UI (2026-11-23 to 24, `/project-coordinator`): done
+
+**What you get when you board the Sidewinder now:** Elite's own cockpit UI, on by default.
+- The flight HUD: Elite's gauges on their cockpit panels (speed and throttle, heat, fuel, shields and hull, pips, the
+  compass, the status lamps), the weapons ring, the info strip with the clock, all reading the ship's real numbers.
+- The four panels with Elite's keys: 1 left (Navigation, with Elite's lock pop-up), 4 right (Home, Modules, Fire groups,
+  Ship, Inventory, Status), 2 comms, 3 role (Disembark). Your head turns to the panel; holding Left Shift with a
+  direction also picks one.
+- The scanner disc (PageUp / PageDown change its range) and the two holograms (your ship; the Orrery, or the locked star
+  or planet).
+- The FSS scanner screen (the ' key, in supercruise at zero throttle): the system's spectrum. Nothing is scanned.
+- Elite's UI sounds, through the ship's sound mixer.
+- All of it is drawn at the screen's full sharpness, after the game's glow and colour steps.
+- `SE_SW_UI=0` brings back the older flat HUD and panels; they also take over by themselves if Elite's UI fails.
+
+**How it works, in one line:** Elite's own Flash screens are run inside the game by the open-source Ruffle player
+(`vendor/ruffle`), fed by plain rules (`crates/elite-ui`) from the ship's simulation. The design is `ARCHITECTURE.md` A10
+and its addendum; every step (UI0 to UI9, US1) has an entry in the Build log of `docs/spec-mods-sidewinder.md`; the
+gotchas are in `CLAUDE.md` ("Elite's cockpit UI").
+
+**Checked:** every part by an independent reviewer as it was built, and the whole once more as you play it (default
+on): no crash, no stuck state, no dead keys. Tests: the release build is made; the whole workspace in release: 2,496 passed, 1 failed (the known one in the untouched Skate 3 copy), 213 ignored. Commits: 13a04f4 (the runtime) and fafda76 (the game side), after the eight earlier ones of this task (never pushed).
+
+**Your word, 2026-11-24: "the UI looks good enough to me, no need for further effort in getting things to be 1:1 from
+elite."** So these stay as they are (the full list is the Build log's UI8 entry):
+- The gunsight and the planet HUD are still the old flat readouts (where Elite puts them on screen was never found;
+  one Elite screenshot of each, hardpoints out and near a planet, would give it).
+- No contacts on the scanner (no other ships); pages with nothing behind them (missions, cargo, contacts) are empty.
+- The FSS's tuning keys do nothing; the surface scanner screen does not exist (the stock Sidewinder has none in Elite).
+- The ship's hologram shows a maze of lines inside; the holograms darken a sunlit dashboard a little.
+- The comms panel shows the game's own messages as its lines (our choice: Elite has none without other players).
+
+**Costs to know:**
+- About 2 ms a frame of the main thread while seated (Elite's screens running).
+- (The lasting slowdown after opening the panels is fixed: see the section above.)
+- About 500 MB more memory while seated.
+
+**Open, yours to decide:**
+- The players' zip has not been remade with any of this (the mod's folder is now 340 MB, 1,824 files).
+- The notes files (`PROGRESS.md`, `CLAUDE.md`, `README.md`, `ARCHITECTURE.md`, the spec, `docs/elite-flight-model.md`)
+  are updated but not committed, as before: they also hold other sessions' uncommitted changes.
+
+### Sidewinder: the faults from your first play (2026-11-23)
+
+You played the mod and reported two faults. Both are fixed, reviewed and committed (2c4eccb, not pushed; the design is
+`ARCHITECTURE.md` A9, the reports the spec's Build log U1 and U2). `target\release\spaceengine-rs.exe` is built from it.
+
+1. **"Selecting a planet from the left side screen doesn't actually select it and I can't see where to go."** The pick
+   was stored and named in one line of text, but nothing in the view showed where it is, and the port's own cyan
+   selection pointer stayed on Earth. Now (U1):
+   - Space on a row of the left panel locks it as the destination (Space again unlocks): the row gets a mark.
+   - A ring with the name and distance sits on the destination in the view, and turns with your head.
+   - The compass left of the radar shows which way to turn: the dot in the middle is dead ahead, on the edge is a right
+     angle off; filled is ahead of you, hollow is behind.
+   - The ship has ONE destination, as Elite: picking a planet clears a picked star system and the other way round (J
+     jumps with a system locked, and is supercruise otherwise). Getting out and boarding again keeps it.
+   - Coming down to the planet you locked, the marker, the DESTINATION line and the altimeter read the same number.
+   - The cyan pointer is hidden while you sit in the ship.
+2. **"There is no crosshair in the middle of the screen to show how much you are turning with the mouse."** Elite's
+   mouse widget is built (U2): a yellow dot in the middle of the view and a split arrow that moves off it the way and as
+   far as the mouse is deflected; the dot fades as the arrow brightens. Its size, travel and colours were measured from
+   the videos of measuring sessions 1 and 2 (`re/elite/notes/sidewinder_hud_marks.md`); measured back at 3440x1440 the
+   arrow sits within 0.4 px of Elite's. As in Elite it is not drawn while a side panel is open, and it shows nothing
+   for a small deflection (under about a sixth of full stick the arrow is still invisible: Elite's own look).
+
+**Checks:** `cargo build --release`; `cargo test --workspace --release --no-fail-fast`: 2,336 passed, 1 failed (the known
+test in the untouched upstream `skate-core`), 184 ignored. Two independent reviews of each part (pass, their faults fixed
+and checked again); a run of the release exe shows the marker, the compass and the widget.
+
+**What is ours, not Elite's (no recording shows Elite's: nothing was ever locked in them):** the look of the ring on the
+destination, the compass's size and the way its dot moves. The compass's place is Elite's own. One Elite screenshot from
+the seat with a planet locked from the left panel (ideally one with it ahead and one with it off to the side) would let
+them be made Elite's.
+
+**Known:** by day the widget is drawn covering what is behind it (so it stays readable; it only added light at first and
+washed out to pale pink over the sky); how Elite's own looks over a bright sky is not in the recordings.
+
+**Mouse sensitivity (U3; you, 2026-11-23: "Yes, use 0.27"):** the ship's mouse now has your own Elite's sensitivity,
+0.2725 (it had Elite's default 1.0, which made it about 3.7 times as quick). It is a setting of the game: Settings, the
+Camera tab, "Ship mouse sensitivity" (0.05 to 2; Elite's own default is 1.0). Your saved settings needed no change: a
+settings file without the value gets 0.2725. The bindings files shipped with the mod are still Elite's own, unchanged.
+Checked: an independent review (pass, nothing to fix); the release exe rebuilt and run; all tests: 2,338 passed, 1
+failed (the known test in the untouched upstream `skate-core`), 184 ignored. Not checked by a test: dragging the slider
+with a real mouse (a test can't drag); loading, saving and the slider's look were. Committed (e34b850, not pushed).
+
+**Not released:** the players' zip in `release/` is still the build of 2026-11-17, without these two fixes.
+
+### Sidewinder: what is yours to do (2026-11-17)
+
+The mod is finished as far as the run of 2026-11-16 to 17 could take it (see "Finishing the Sidewinder" below). These
+are the things only you can do or decide:
+
+1. **Play it, with the keyboard and mouse and with a pad:** in the sandbox, Q, Mods, Sidewinder to spawn it; walk up and
+   E to board; lift off with R (up thrust), throttle W/S/X, the mouse to pitch and roll, A/D yaw, Q/E/R/F thrust, Tab
+   boost, the arrows for pips, Z flight assist, L gear, Insert the lights; J supercruise (dive at a planet for the
+   glide), T to target a star ahead and J to jump; 1 and 4 the panels; come down slowly with the gear down; B to get out
+   once landed (README's table has every key). The tests can't press a real mouse, keyboard or pad: say how it feels
+   against Elite and anything wrong. The ship's sound is 14 dB louder than it was (Elite's own master effect).
+2. **Two decisions about Elite's data** (this run decrypted nothing new, as you said): may the offline reader open (a)
+   the input graph's file (it would close the strict trace gate's last 10 rows of 18,344: the keys' different delays)
+   and (b) the game record with orbital cruise's seven zone numbers (the rule is built in `elite_sim::orbital` and waits
+   for them; until then supercruise near planets uses the stand-in 30 km/s cap)?
+3. **The notes are NOT committed:** `PROGRESS.md`, `CLAUDE.md`, `README.md`, `ARCHITECTURE.md`,
+   `docs/spec-mods-sidewinder.md` and `docs/elite-flight-model.md` held other sessions' uncommitted changes when the
+   run began, so only the code and the mod's files were committed (never pushed). Say the word and they are committed
+   whole.
+4. **When you next play Elite in the Sidewinder** (no hurry): one hyperspace jump gives the `FSDJump` line the mod's
+   jump fuel is checked against (the spec's C16); the ship's tank was at 0.8 t of 2.
+5. **Measuring is cut** (you, 2026-11-17: session 4 and measuring the sound against your recordings). If you ever want
+   them: session 4 is still prepared (`.rea/tickets/measure/04-heat-gear-lasers-supercruise.md`, the scripts
+   `re/elite/measure/scripts/m1..m10`); a recording at rest far from any star would tell whether Elite's low hum is
+   the star's rumble; a recording of the gear going down with your head straight would check the left / right law.
+6. **A question:** your three seat screenshots fit a field of view of 63.5, 59.0 and 58.5 degrees, but your Elite
+   settings file says 56.249 (which the measuring sessions' videos confirm). Were they taken with another setting?
+7. **To know:** the earlier study N1 opened four more of Elite's data files with the existing offline reader for the
+   ship's numbers (the ship item, the stock modules, the prototypes, the laser's ammunition); only the Sidewinder's
+   values were kept.
+
+### Original Sidewinder assets
+
+Plan in `ARCHITECTURE.md`.
+
+- [x] T1 Build the offline FREA reader (`re/elite/tools/frea/`)
+- [x] T2 Catalog the archives and decode the Sidewinder assets (2026-11-15/16). Every encrypted file opens (54,315 of
+  54,320 pass every check; `re/elite/frea_export/catalog.csv`). Decoded into `re/elite/frea_export/sidewinder/decoded/`
+  (**start with its `README.md`**) by `python -I re/elite/tools/sidewinder_decode.py`: 93 models (the hull's 4 levels of
+  detail, every door, plate and vent, the shield, the hologram, the second hull `pg_sidewinder`, the landing gear and its
+  pieces, the cockpit, its glass and UI overlays), 40 materials, 81 textures (full mip chains, DDS), the bones, and the
+  disassembly of the 801 compiled shader variants the materials use. The vertex positions were solved from Elite's own
+  vertex shader (a per-vertex exponent): all 93 models fill their own true-metre bounds within 0.02 mm and the hull
+  matches your top screenshot. Sounds: `re/elite/frea_export/sidewinder_audio/` (1,710 Ogg files, proven by their Wwise
+  name hashes). How the formats work: `re/elite/notes/sidewinder_assets.md`. Labelled gaps: the README's
+  "Left open". Stopped here at your word: the next session integrates them into the mod (T3-T6).
+- [x] T2b Animations and the missing sounds (2026-11-16). Elite animates the ship with rigs and state machines, not
+  clips: all 10 files' rigs and 39 state machines decoded into `decoded/animation/` (gear, doors, hardpoint doors, heat
+  vents, cockpit), with `kinpose.py` (the exe's posing and curve rules) and the formats in
+  `re/elite/notes/sidewinder_animation.md`. Checked: the gear posed up and down sits right, 188 of 189 curve end values
+  match the next pose. The landing gear's mechanical sounds were found: cues inside the gear curves, played as
+  `<cue>_b/_e_landinggear` (120 files, roles `gear_*`, with their exact times). No separate heat, hull or shield-down
+  alarm tone exists for the ship (all 1,309 sound banks indexed by `re/elite/tools/bank_index.py`): the game uses the
+  voice lines, the shield break sounds and the cockpit lamps.
+- [x] T2c Paint, hull choice, lights (2026-11-16). The ship item proves the game draws the hull `sidewinder` and the cockpit
+  `sidewinder_cockpit` (the `pg_` ones are the CQC arena's); that cockpit was missing and is now decoded (119 models).
+  The default paint job (`PaintJob_Sidewinder_Default`, found by Elite's own name hashing) is decoded: four colour keys and
+  a mask texture; drawn by the shader's rule it matches your top screenshot (white hull, red stripes). All 70 lights are
+  decoded (colour, brightness, range, cone). Notes: `re/elite/notes/sidewinder_paintjob.md`.
+- [x] T2d The pilot chair (2026-11-16). Found how Elite names its encrypted files (a SHA-1 of the file's path; an item's
+  content is its path plus `/Data`; `re/elite/tools/frea_name.py`), which proves the Sidewinder's chair is the standard
+  `Cockpit_Chair` (file `781c37a2...`).
+- [x] T2e Everything else decoded (2026-11-16). The chair's 91 clips (the game's own decoder run in an emulator; sampling
+  checked against the game's samplers bit for bit) and its motion graph (which clip plays when, the inputs from the
+  throttle / stick / trigger / buffets, the template values: a seated pilot gets `Mode_Ship`); every bone's parent and
+  local transform; every state machine activity typed; the paint record, decal colours and shader constant layouts
+  read from Elite's own code and tables; missing materials drawn with Elite's fallback `null`; the headlight's IES
+  profile and lighting maths; the sound triggers (heat, hull, flight assist measured from a recording, rumble). Export:
+  123 models, 52 materials, 94 textures, 0 problems. Handoff: `re/elite/frea_export/sidewinder/decoded/README.md`. The one
+  value no static search found: the lighting manager's scene exposure input (the mod's own exposure stands in). Also
+  not found: what raises the overheating malfunction message (`WarningMalfunction_b` plays with any module-malfunction
+  message). An in-game overheating test would settle it, but it damages modules; the user chose to leave it
+  (2026-11-16): don't run it or ask again unless they bring it up.
+- [x] T2f The ship's UI decoded for a later session to build (2026-11-23, nothing in the engine yet): every cockpit
+  panel, screen and HUD movie (Scaleform GFx: art, layouts, images, fonts, decompiled ActionScript), the data the game
+  feeds each and the events back, placement on the cockpit and the look, the keys and focus rules, the scanner and the
+  holograms, every UI sound (`.ogg`), the English text. Checked against the running game (session ui1). The galaxy and
+  system maps are cut from the mod (the user). Handoff: `re/elite/frea_export/sidewinder_ui/decoded/README.md` (out of
+  git); notes `re/elite/notes/ui_*.md`; tools `re/elite/tools/gfx/`.
+### Finishing the Sidewinder (the run of 2026-11-16 to 17, `/project-coordinator`): done
+
+Every part was written by an executor, reviewed by a checker and committed (never pushed): 42 commits, 0109fb9 to
+68ee0cc (`git log --oneline --grep=Sidewinder`). The step-by-step record of the run is in `docs/progress-archive.md`
+("The Sidewinder's finishing run"); each task's report is in the spec's Build log (`docs/spec-mods-sidewinder.md`);
+the designs are `ARCHITECTURE.md` A5 to A8; the things to know when changing it are in `CLAUDE.md`'s Sidewinder Gotcha.
+
+**What the ship has now**
+- **Elite's own ship:** the real hull and cockpit, materials, paint job, decals and glass, drawn by Elite's lighting
+  maths; the canopy cracks with damage and breaks when breached (1,031 files, 188 MB, every byte checked against the
+  export; the old stand-ins are gone).
+- **Lights:** all 84 with Elite's blink rules, the cockpit's panel lamps, the vents' glow; at night the headlights
+  light the ground, grass, trees and buildings.
+- **Moving parts:** the gear, its doors, the hardpoint doors and the vents by Elite's rigs and state machines at their
+  real timings; the pilot's chair (throttle lever, stick, trigger, knocks) follows your controls.
+- **The shadow:** Elite's own filter and softness, on the ship itself and, through each thing's own lighting, on the
+  ground, plants, props and your weapon.
+- **The sound:** the ship's own recordings, triggered by Elite's rules and mixed by Elite's audio engine's rules
+  (its equaliser, distortion, compressors, tone generators and master effect ported from Elite's own code; the engine's
+  inputs in Elite's units; the gear's legs heard from their own side).
+- **The seat:** Elite's field of view; the HUD and the side panels at Elite's places in the cockpit, turning with your
+  head; through a hyperspace jump you stay in the cockpit and see the tunnel outside.
+- **Systems and numbers:** silent running, the scoop, the lights' switch, the canopy and its 5 minutes of oxygen; 70
+  of the 99 stand-in numbers replaced from Elite's own records and 3 from its code; the gear's and scoop's limits.
+
+**The checks at the end (2026-11-17)**
+- `cargo build --release`: built. `cargo test --workspace --release --no-fail-fast`: 2,318 passed, 1 failed (the known
+  test in the untouched upstream `skate-core`), 184 ignored.
+- The spec's claims C1 to C20: all pass that can be run; C9 (the strict gate) misses 10 of 18,344 rows, as known.
+- Two final reviews (the shadow as a whole; the whole mod with a full play-through and your Elite pictures side by
+  side): pass with notes, the notes fixed. Without a ship the game is pixel-identical to the build before and no
+  slower.
+- The release zip (`release/Sandbox-Engine-sidewinder-2026-11-17-windows.zip`) was unzipped in a fresh folder with
+  empty user folders: it found SpaceEngine through Steam, read all 1,030 of the mod's files from its own assets
+  folder, spawned the ship and showed the cockpit.
+
+**Open, and why**
+- **The strict trace gate** (10 rows) and **orbital cruise** (its zone numbers): both need Elite data this run did not
+  open (your decision, item 2 at the top).
+- **26 numbers** still marked as stand-ins or community values (`elite_sim::data`, `re/elite/measure/BACKLOG.md`):
+  measuring was cut.
+
+**Known differences from Elite that stay**
+- The picture: the scene's exposure is the port's own (the cockpit's brightness is a measured stand-in, good to a
+  factor of two); the side consoles Elite shows lit stay dark; no steam, sparks or glass particles; the HUD's
+  holograms are flat text and lines; the canopy's glass is drawn before the clouds; the hyperspace tunnel's look is the
+  port's and it does not light the cockpit; side panels cannot be opened in the tunnel.
+- The shadow: a tree or a building is shadowed as a whole; props follow the player's light point; the ground in the
+  ship's full shadow is nearly black close up (the ground's own sky light here is about 6 % of sunlight); the
+  headlights' beam casts no shadows.
+- The sound (the last measurement, before measuring was cut): 2 dB over Elite on the beeps; 2 to 4 kHz is 9 to 19 dB
+  too strong at full throttle and in the boost; Elite's low hum at rest is missing (not found among the ship's sounds);
+  reverb is not built; the pulse laser's shot, the jump event, the targeting cues and the low-fuel line have no proven
+  trigger and stay silent.
+- The two gaps you said to leave: the scene exposure input, and what raises the overheating malfunction message.
+
+**Scratch left on disk** (can go; nothing here is needed to play): `.optimize/scratch/run` (about 6 GB of test
+pictures and logs the notes point at), `re/elite/work` (5.4 GB of recordings and study files: `re/` is out of git, keep
+what you want of it), `target/agent` (28 GB of test builds; `target/release` holds the exe you play).
+
+Reference screenshots: `re/elite/screenshots/2026-11-14_user/` (2026-11-14).

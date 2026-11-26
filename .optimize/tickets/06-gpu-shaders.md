@@ -12,7 +12,7 @@ per-step work that is constant along the ray, overdraw from several volumes, ful
 full resolution)? Which passes run every frame at full resolution, and do any run when their effect
 is off? Shader changes must give **the same output**: hoisting loop-invariant work, removing dead
 code, skipping work whose result is multiplied by zero, early-outs that provably give the same
-pixel. Anything that changes step counts, precision or sampling is "needs your call". To time a
+pixel. Anything that changes step counts, precision or sampling changes the output. To time a
 pass, Bevy's `RenderContext::diagnostic_recorder()` time spans show up in the perf log (`perf.rs`
 lists every `render/*/elapsed_gpu`); try that in a worktree copy only.
 
