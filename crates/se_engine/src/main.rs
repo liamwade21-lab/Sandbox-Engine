@@ -45,6 +45,7 @@ mod music;
 mod overlay;
 mod perf;
 mod pipeline_watch;
+mod pitched_audio;
 mod procgalaxies;
 mod projection;
 mod procsystems;
@@ -181,6 +182,8 @@ fn main() {
         scripting::ScriptingPlugin,
         ship::ShipPlugin,
     ))
+    // Sounds played at a pitch the port applies itself (rodio's own speed hangs the audio thread at 192 kHz).
+    .add_plugins(pitched_audio::PitchedAudioPlugin)
     .add_plugins(mods::ModsPlugin)
     .add_plugins(viltrumite::ViltrumitePlugin)
     // The sandbox: the first-person player, the props and the Q menu.

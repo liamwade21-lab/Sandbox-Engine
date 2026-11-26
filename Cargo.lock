@@ -5543,6 +5543,7 @@ dependencies = [
  "glam 0.33.12",
  "image",
  "rapier3d 0.36.1",
+ "rodio",
  "se_core",
  "serde_json",
  "skate-core",

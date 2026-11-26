@@ -7,10 +7,13 @@
 //! Source's own rule (`soundscript::distance_gain`) and to the side it is on (Bevy's spatial voices: one listener at the
 //! eyes, turned with the view). What he does himself (his weapon, his steps, the menu) plays in the middle.
 
+use std::collections::HashMap;
+
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, SpatialAudioSink, SpatialListener, Volume};
 use bevy::prelude::*;
 
 use crate::camera::FlyCamera;
+use crate::pitched_audio::{PitchedSound, Speed, Wave};
 use crate::sound::SoundSettings;
 use crate::system::SystemBody;
 
@@ -248,6 +251,17 @@ pub struct ChannelVoice(u8);
 #[derive(Component)]
 pub struct Ears;
 
+/// Each sound's samples, decoded the first time it plays (`None`: it can't be decoded). Voices play them as
+/// `PitchedSound`s, at the script's pitch applied by the port (`pitched_audio.rs`: rodio's own speed can hang the sound).
+#[derive(Default)]
+pub struct Waves(HashMap<AssetId<AudioSource>, Option<Wave>>);
+
+impl Waves {
+    fn of(&mut self, sources: &Assets<AudioSource>, h: &Handle<AudioSource>) -> Option<Wave> {
+        self.0.entry(h.id()).or_insert_with(|| sources.get(h).and_then(Wave::decode)).clone()
+    }
+}
+
 /// `SE_SANDBOX_SOUNDS=1`: log every sound as it starts to play.
 fn log_sounds() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -275,6 +289,8 @@ pub fn play_cues(
     mut sb: ResMut<Sandbox>,
     mut assets: ResMut<GmodAssets>,
     mut sources: ResMut<Assets<AudioSource>>,
+    mut pitched: ResMut<Assets<PitchedSound>>,
+    mut waves: Local<Waves>,
     settings: Res<SoundSettings>,
     cam: Res<FlyCamera>,
     bodies: Query<&SystemBody>,
@@ -330,7 +346,7 @@ pub fn play_cues(
     let mut cut = [false; 8];
     let mut fresh: [Option<Entity>; 8] = [None; 8];
     for (path, volume, pitch, dir, channel) in voices {
-        let Some(h) = assets.sound(&mut sources, &path) else {
+        let Some(wave) = assets.sound(&mut sources, &path).and_then(|h| waves.of(&sources, &h)) else {
             if log_sounds() {
                 info!("sandbox: no sound for {path}");
             }
@@ -340,16 +356,16 @@ pub fn play_cues(
         if volume <= 0.004 {
             continue;
         }
-        let speed = pitch.clamp(0.5, 2.0);
+        let h = pitched.add(PitchedSound::once(&wave, pitch.clamp(0.5, 2.0)));
         let mut voice = match dir {
             Some(d) => commands.spawn((
                 AudioPlayer(h),
-                PlaybackSettings::DESPAWN.with_volume(Volume::Linear((volume * SPATIAL_MAKE_UP).min(1.6))).with_speed(speed).with_spatial(true),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear((volume * SPATIAL_MAKE_UP).min(1.6))).with_spatial(true),
                 // (Both, so the voice starts where it belongs: the transforms were propagated before this frame's commands.)
                 Transform::from_translation(d * VOICE_DIST),
                 GlobalTransform::from_translation(d * VOICE_DIST),
             )),
-            None => commands.spawn((AudioPlayer(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(speed))),
+            None => commands.spawn((AudioPlayer(h), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)))),
         };
         if log_sounds() {
             voice.insert(CueVoice(format!("{path}{}", if dir.is_some() { " (placed)" } else { "" }), volume));
@@ -388,8 +404,10 @@ pub fn play_cues(
         }
     }
     if let (false, Some((name, path, volume))) = (playing, want) {
-        if let Some(h) = assets.sound(&mut sources, &path) {
-            commands.spawn((LoopVoice(name), AudioPlayer(h), PlaybackSettings::LOOP.with_volume(Volume::Linear((volume * master).clamp(0.0, 1.5)))));
+        if let Some(wave) = assets.sound(&mut sources, &path).and_then(|h| waves.of(&sources, &h)) {
+            // (It loops inside its source and never ends: `Once` keeps it until it is despawned, as `Loop` did.)
+            let h = pitched.add(PitchedSound::looping(&wave, &Speed::new(1.0)));
+            commands.spawn((LoopVoice(name), AudioPlayer(h), PlaybackSettings::ONCE.with_volume(Volume::Linear((volume * master).clamp(0.0, 1.5)))));
         }
     }
 }

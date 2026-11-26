@@ -8,10 +8,11 @@
 
 use std::collections::HashMap;
 
-use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackMode, PlaybackSettings, Volume};
+use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackMode, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
 use super::SkateEvent;
+use crate::pitched_audio::{PitchedSound, Speed, Wave};
 use crate::sandbox::Sandbox;
 
 /// What the sounds are for: a one-shot by event, or the rolling loop.
@@ -21,22 +22,23 @@ pub const ROLES: [&str; 9] = ["roll", "pop", "land", "land_hard", "push", "bail"
 /// The game's sounds are mixed for a volume slider near full; the port's is 0.3 by default (as the sandbox's `GAIN`).
 const GAIN: f32 = 2.6;
 
-/// The sounds by role.
+/// The sounds by role, decoded once (they play as `PitchedSound`s: `pitched_audio.rs`, rodio's own speed can hang the sound).
 #[derive(Default)]
 pub struct SoundBank {
-    pub by_role: HashMap<String, Vec<AudioSource>>,
+    pub by_role: HashMap<String, Vec<Wave>>,
 }
 
 impl SoundBank {
-    /// Every `sfx/ROLE_N.ogg` the mod needs, decoded once (a refusal names the file).
+    /// Every `sfx/ROLE_N.ogg` the mod needs, checked and decoded once (a refusal names the file).
     pub fn load(read: &dyn Fn(&str) -> Result<Vec<u8>, String>, needs: &[String]) -> Result<SoundBank, (String, String)> {
         let mut bank = SoundBank::default();
         for rel in needs.iter().filter(|r| r.starts_with("sfx/") && r.ends_with(".ogg")) {
             let bytes = read(rel).map_err(|e| (rel.clone(), e))?;
             let (source, _) = crate::mods::check_sound(bytes).map_err(|e| (rel.clone(), e))?;
+            let wave = Wave::decode(&source).ok_or_else(|| (rel.clone(), "can't be decoded".to_string()))?;
             let stem = rel.trim_start_matches("sfx/").trim_end_matches(".ogg");
             let role = stem.rsplit_once('_').filter(|(_, n)| n.chars().all(|c| c.is_ascii_digit())).map(|(r, _)| r).unwrap_or(stem);
-            bank.by_role.entry(role.to_string()).or_default().push(source);
+            bank.by_role.entry(role.to_string()).or_default().push(wave);
         }
         Ok(bank)
     }
@@ -46,32 +48,26 @@ impl SoundBank {
     }
 }
 
-/// A looping voice: its role and which of the role's sounds.
+/// A looping voice: its role, which of the role's sounds, and its speed (read by its source).
 #[derive(Component)]
 pub struct LoopVoice {
     role: &'static str,
     index: usize,
+    speed: Speed,
 }
 
-/// The one-shots' and loops' handles, made once, and the turn of each role.
+/// The turn of each role.
 #[derive(Default)]
 pub struct Played {
-    handles: HashMap<String, Vec<Handle<AudioSource>>>,
     turn: HashMap<String, usize>,
 }
 
-fn handles<'a>(played: &'a mut Played, bank: &SoundBank, sources: &mut Assets<AudioSource>, role: &str) -> Option<&'a Vec<Handle<AudioSource>>> {
-    let list = bank.by_role.get(role).filter(|l| !l.is_empty())?;
-    Some(played.handles.entry(role.to_string()).or_insert_with(|| list.iter().map(|s| sources.add(s.clone())).collect()))
-}
-
 /// The next of a role's sounds, in turn.
-fn next(played: &mut Played, bank: &SoundBank, sources: &mut Assets<AudioSource>, role: &str) -> Option<Handle<AudioSource>> {
-    let n = handles(played, bank, sources, role)?.len();
+fn next<'a>(played: &mut Played, bank: &'a SoundBank, role: &str) -> Option<&'a Wave> {
+    let list = bank.by_role.get(role).filter(|l| !l.is_empty())?;
     let turn = played.turn.entry(role.to_string()).or_insert(0);
-    *turn = (*turn + 1) % n;
-    let t = *turn;
-    Some(played.handles[role][t].clone())
+    *turn = (*turn + 1) % list.len();
+    list.get(*turn)
 }
 
 /// The frame's sounds: each event's one-shot, and the loops (the wheels rolling, by speed band; the powerslide; the foot
@@ -82,7 +78,7 @@ pub fn play(
     mut sb: ResMut<Sandbox>,
     assets: Option<Res<super::SkateAssets>>,
     settings: Res<crate::sound::SoundSettings>,
-    mut sources: ResMut<Assets<AudioSource>>,
+    mut sounds: ResMut<Assets<PitchedSound>>,
     mut played: Local<Played>,
     mut loops: Query<(Entity, &LoopVoice, &mut AudioSink)>,
 ) {
@@ -107,7 +103,8 @@ pub fn play(
         if sk.log {
             info!("skate: sound {role} at {:.2}", volume);
         }
-        if let Some(h) = next(&mut played, bank, &mut sources, role) {
+        if let Some(wave) = next(&mut played, bank, role) {
+            let h = sounds.add(PitchedSound::once(wave, 1.0));
             commands.spawn((AudioPlayer(h), PlaybackSettings { mode: PlaybackMode::Despawn, volume: Volume::Linear(volume * master), ..default() }));
         }
     }
@@ -133,14 +130,17 @@ pub fn play(
             Some(i) => {
                 let (_, _, vol, speed) = want.remove(i);
                 sink.set_volume(Volume::Linear(vol));
-                sink.set_speed(speed);
+                lv.speed.set(speed);
             }
             None => commands.entity(e).despawn(),
         }
     }
     for (role, index, vol, speed) in want {
-        let Some(h) = handles(&mut played, bank, &mut sources, role).and_then(|l| l.get(index).cloned()) else { continue };
-        commands.spawn((LoopVoice { role, index }, AudioPlayer(h), PlaybackSettings { mode: PlaybackMode::Loop, volume: Volume::Linear(vol), speed, ..default() }));
+        let Some(wave) = bank.by_role.get(role).and_then(|l| l.get(index)) else { continue };
+        let speed = Speed::new(speed);
+        // (It loops inside its source, so its pitch can follow; it never ends: `Once` keeps it until it's despawned.)
+        let h = sounds.add(PitchedSound::looping(wave, &speed));
+        commands.spawn((LoopVoice { role, index, speed }, AudioPlayer(h), PlaybackSettings { mode: PlaybackMode::Once, volume: Volume::Linear(vol), ..default() }));
     }
 }
 

@@ -17,6 +17,8 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
+
+use crate::pitched_audio::{PitchedSound, Speed, Wave};
 use bevy::prelude::*;
 
 use crate::mods::ModControl;
@@ -330,6 +332,8 @@ struct LoopVoice {
     /// What the sink was last told, so an unchanged value isn't sent again.
     sent_volume: f32,
     sent_pitch: f32,
+    /// The voice's speed, read by its source (`pitched_audio.rs`: never rodio's own).
+    speed: Speed,
 }
 
 /// A one-shot that's playing.
@@ -353,8 +357,8 @@ struct Shot {
 /// The mod's voices.
 #[derive(Resource, Default)]
 pub struct Voices {
-    /// By `Sfx`, once: first on. `None`: refused by the guard or missing, so that sound stays silent.
-    handles: Vec<Option<Handle<AudioSource>>>,
+    /// By `Sfx`, decoded once: first on. `None`: refused by the guard or missing, so that sound stays silent.
+    waves: Vec<Option<Wave>>,
     loops: Vec<LoopVoice>,
     shots: [Option<Shot>; tune::SHOTS_MAX],
     /// The whole mod's fade, for turning off and the focus.
@@ -380,23 +384,26 @@ impl Voices {
 
 /// F10's guard: bevy_audio panics on anything but Ogg Vorbis. (Each file has also been decoded once by the Mods menu's first
 /// enable, `mods::check_files`: a bad one greys the row, so it doesn't get here.)
-fn load_sounds(assets: &mut Assets<AudioSource>) -> Vec<Option<Handle<AudioSource>>> {
-    let handles: Vec<_> = FILES
+fn load_sounds() -> Vec<Option<Wave>> {
+    let started = std::time::Instant::now();
+    let waves: Vec<_> = FILES
         .iter()
         .map(|name| {
             let rel = format!("sfx/{name}.ogg");
             let bytes = crate::mods::mod_file("viltrumite", &rel).and_then(|p| std::fs::read(p).ok());
-            match bytes {
-                Some(b) if crate::music::is_ogg_vorbis(&b) => Some(assets.add(AudioSource { bytes: Arc::from(b) })),
-                _ => {
-                    warn!("viltrumite: sound {rel} is missing or isn't Ogg Vorbis: it stays silent");
-                    None
-                }
+            let wave = match bytes {
+                Some(b) if crate::music::is_ogg_vorbis(&b) => Wave::decode(&AudioSource { bytes: Arc::from(b) }),
+                _ => None,
+            };
+            if wave.is_none() {
+                warn!("viltrumite: sound {rel} is missing, isn't Ogg Vorbis or can't be decoded: it stays silent");
             }
+            wave
         })
         .collect();
-    info!("viltrumite: {} of {} sounds ready", handles.iter().flatten().count(), FILES.len());
-    handles
+    let mb = waves.iter().flatten().map(|w| w.bytes()).sum::<usize>() as f64 / 1e6;
+    info!("viltrumite: {} of {} sounds ready (decoded in {} ms, {mb:.1} MB)", waves.iter().flatten().count(), FILES.len(), started.elapsed().as_millis());
+    waves
 }
 
 pub(super) fn sound_running(control: Res<ModControl>, voices: Res<Voices>) -> bool {
@@ -412,7 +419,7 @@ pub(super) fn play_sounds(
     control: Res<ModControl>,
     mut hero: ResMut<Hero>,
     mut voices: ResMut<Voices>,
-    mut assets: ResMut<Assets<AudioSource>>,
+    mut sounds: ResMut<Assets<PitchedSound>>,
     mut sinks: Query<&mut AudioSink>,
 ) {
     let voices = &mut *voices;
@@ -425,18 +432,21 @@ pub(super) fn play_sounds(
     let audible = on && !control.unfocused && !control.loading;
 
     if on && voices.loops.is_empty() {
-        if voices.handles.is_empty() {
-            voices.handles = load_sounds(&mut assets);
+        if voices.waves.is_empty() {
+            voices.waves = load_sounds();
             voices.last_fired = vec![(f64::NEG_INFINITY, 0.0); FILES.len()];
         }
         voices.fired = vec![0; FILES.len()];
         // Each from its own pitch, or the hum's first moment is a slide down from 1.
         let at_rest = loop_levels(&Reading::default());
         for (i, sfx) in LOOPS.into_iter().enumerate() {
-            let Some(handle) = voices.handles[sfx as usize].clone() else { continue };
+            let Some(wave) = voices.waves[sfx as usize].as_ref() else { continue };
             let pitch = at_rest[i].1;
-            let entity = commands.spawn((AudioPlayer(handle), PlaybackSettings::LOOP.with_volume(Volume::Linear(0.0)).with_speed(pitch).paused(), HeroVoice)).id();
-            voices.loops.push(LoopVoice { entity, sfx, level: 0.0, pitch, sent_volume: 0.0, sent_pitch: pitch });
+            let speed = Speed::new(pitch);
+            // (It loops inside its source, so its pitch can follow; it never ends: `Once` keeps it until it's despawned.)
+            let handle = sounds.add(PitchedSound::looping(wave, &speed));
+            let entity = commands.spawn((AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)).paused(), HeroVoice)).id();
+            voices.loops.push(LoopVoice { entity, sfx, level: 0.0, pitch, sent_volume: 0.0, sent_pitch: pitch, speed });
         }
     }
 
@@ -495,7 +505,7 @@ pub(super) fn play_sounds(
             voice.sent_volume = volume;
         }
         if (voice.pitch - voice.sent_pitch).abs() > 1e-3 {
-            sink.set_speed(voice.pitch);
+            voice.speed.set(voice.pitch);
             voice.sent_pitch = voice.pitch;
         }
         if sink.is_paused() {
@@ -507,7 +517,7 @@ pub(super) fn play_sounds(
     if audible && settings.volume > 0.0 {
         let share = air_share(hero.flow.air.pressure_pa);
         for cue in hero.sound.asked.into_iter().flatten() {
-            start_shot(&mut commands, voices, cue, share, settings.volume * tune::SOUND_GAIN, control.dev);
+            start_shot(&mut commands, &mut sounds, voices, cue, share, settings.volume * tune::SOUND_GAIN, control.dev);
         }
     }
     hero.sound.clear();
@@ -588,14 +598,14 @@ pub(super) fn play_sounds(
 }
 
 /// Starts a one-shot, in a free slot or the one that's played longest: at most `SHOTS_MAX`, and the newest sound counts.
-fn start_shot(commands: &mut Commands, voices: &mut Voices, cue: Cue, share: f32, volume: f32, dev: bool) {
+fn start_shot(commands: &mut Commands, sounds: &mut Assets<PitchedSound>, voices: &mut Voices, cue: Cue, share: f32, volume: f32, dev: bool) {
     let i = cue.sfx as usize;
     // (A louder one still counts: W then Shift within the gap is a quiet take-off, then the boost's own.)
     let (when, how_loud) = voices.last_fired[i];
     if voices.clock - when < cue.sfx.gap_s() && cue.gain <= how_loud {
         return;
     }
-    let Some(handle) = voices.handles[i].clone() else { return };
+    let Some(wave) = voices.waves[i].clone() else { return };
     voices.last_fired[i] = (voices.clock, cue.gain);
     voices.fired[i] += 1;
     if dev {
@@ -616,7 +626,8 @@ fn start_shot(commands: &mut Commands, voices: &mut Voices, cue: Cue, share: f32
         commands.entity(old.entity).despawn();
     }
     let sent = cue.gain * share * voices.master * volume;
-    let entity = commands.spawn((AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(sent)).with_speed(cue.pitch), HeroVoice)).id();
+    let handle = sounds.add(PitchedSound::once(&wave, cue.pitch));
+    let entity = commands.spawn((AudioPlayer(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(sent)), HeroVoice)).id();
     voices.shots[slot] = Some(Shot { entity, sfx: cue.sfx, gain: cue.gain, air: share, fade: 1.0, cut: false, played: 0.0, sent_volume: sent });
 }
 
@@ -688,18 +699,19 @@ fn log_voices(
     settings: Res<SoundSettings>,
     sinks: Query<&AudioSink>,
     mine: Query<(), With<HeroVoice>>,
-    all: Query<(), With<AudioPlayer>>,
+    all: Query<(), Or<(With<AudioPlayer>, With<AudioPlayer<PitchedSound>>)>>,
+    pitched: Res<Assets<PitchedSound>>,
 ) {
     let mut loops = String::new();
     for voice in &voices.loops {
-        let sink = sinks.get(voice.entity).map_or("no sink".to_string(), |s| format!("sink {:.4} speed {:.3} paused {} at {:.3} s", s.volume().to_linear(), s.speed(), s.is_paused(), s.position().as_secs_f32()));
+        let sink = sinks.get(voice.entity).map_or("no sink".to_string(), |s| format!("sink {:.4} speed {:.3} paused {} at {:.3} s", s.volume().to_linear(), voice.speed.get(), s.is_paused(), s.position().as_secs_f32()));
         loops += &format!("{} level {:.3} pitch {:.3} {sink}; ", voice.sfx.file(), voice.level, voice.pitch);
     }
     let shots: Vec<&str> = voices.shots.iter().flatten().map(|s| s.sfx.file()).collect();
     let fired: Vec<String> = voices.fired.iter().enumerate().filter(|(_, n)| **n > 0).map(|(i, n)| format!("{} x{n}", FILES[i])).collect();
     let (f, heat_k) = (&hero.flow, hero.heat_k);
     info!(
-        "hero sound: on {} state {:?} master {:.3} setting {:.2}; air speed {:.2} m/s q {:.3} Pa mach {:.3} skin {:.0} K heat {:.0} K, p {:.2} Pa rho {:.5} T {:.1} K a {:.1} m/s, shot share {:.3}; {loops}shots {shots:?}; entities {} of the mod, {} audio in all; fired {fired:?}",
+        "hero sound: on {} state {:?} master {:.3} setting {:.2}; air speed {:.2} m/s q {:.3} Pa mach {:.3} skin {:.0} K heat {:.0} K, p {:.2} Pa rho {:.5} T {:.1} K a {:.1} m/s, shot share {:.3}; {loops}shots {shots:?}; entities {} of the mod, {} audio in all, {} pitched sounds; fired {fired:?}",
         control.hero,
         hero.state,
         voices.master,
@@ -716,6 +728,7 @@ fn log_voices(
         air_share(f.air.pressure_pa),
         mine.iter().count(),
         all.iter().count(),
+        pitched.len(),
     );
     if let Some(t) = voices.trace.as_mut() {
         let _ = t.flush();
@@ -926,7 +939,7 @@ mod tests {
     /// The frame's world, with no `AudioPlugin`: as with no audio device, a voice gets no `AudioSink`.
     fn app() -> App {
         let mut app = App::new();
-        app.insert_resource(Assets::<AudioSource>::default())
+        app.insert_resource(Assets::<PitchedSound>::default())
             .insert_resource(SoundSettings { volume: 0.3 })
             .init_resource::<ModControl>()
             .init_resource::<Hero>()

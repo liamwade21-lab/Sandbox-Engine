@@ -78,3 +78,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 # The Skate 3 mod's converter (skate/convert.rs, an ignored test): the Skate 3 Rust Engine's readers of its converted data.
 [dev-dependencies]
 skate-data = { workspace = true }
+# The pitched sounds' proof (pitched_audio.rs's tests): it drives rodio's own mixer and Player at 192 kHz, as the sound card
+# does, without a device. Bevy's rodio, nothing more (Player and mixer are not behind a feature).
+rodio = { version = "0.22", default-features = false }
